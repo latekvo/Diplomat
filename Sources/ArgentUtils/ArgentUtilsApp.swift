@@ -18,17 +18,55 @@ struct ArgentUtilsApp: App {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        let env = ProcessInfo.processInfo.environment
+        let headless = env["ARGENT_UTILS_DUMP"] == "1" || env["ARGENT_UTILS_LOOKUP"] != nil
+
+        // Singleton, newest-wins: a freshly launched GUI instance kills any older
+        // ones so there's never more than one wrench. Skipped in headless self-test
+        // mode so a dump/lookup run can't kill the live menu-bar app.
+        if !headless {
+            SingleInstance.terminateOthers()
+        }
+
         // Menu-bar-only: no Dock icon.
         NSApp.setActivationPolicy(.accessory)
 
-        // Headless self-test: `ARGENT_UTILS_DUMP=1 swift run` runs the real
-        // fetch+filter pipeline, prints results, and exits. Used for verification.
-        if ProcessInfo.processInfo.environment["ARGENT_UTILS_DUMP"] == "1" {
+        // Headless self-tests: run the real pipeline, print, exit.
+        if env["ARGENT_UTILS_DUMP"] == "1" {
             Task { await Dump.run(); exit(0) }
         }
-        if let lk = ProcessInfo.processInfo.environment["ARGENT_UTILS_LOOKUP"], let n = Int(lk) {
+        if let lk = env["ARGENT_UTILS_LOOKUP"], let n = Int(lk) {
             Task { await Dump.lookup(n); exit(0) }
         }
+    }
+}
+
+/// Singleton enforcement: the newest instance wins and force-quits the rest.
+enum SingleInstance {
+    static let bundleID = "com.ignacy.argent-utils"
+    static let execName = "ArgentUtils"
+
+    static func terminateOthers() {
+        func others() -> [NSRunningApplication] {
+            let myPid = ProcessInfo.processInfo.processIdentifier
+            return NSWorkspace.shared.runningApplications.filter { app in
+                guard app.processIdentifier != myPid else { return false }
+                return app.bundleIdentifier == bundleID
+                    || app.executableURL?.lastPathComponent == execName
+            }
+        }
+        let initial = others()
+        guard !initial.isEmpty else { return }
+        log("found \(initial.count) old instance(s), terminating")
+        for app in initial { app.terminate() }      // ask nicely first
+        usleep(400_000)                              // 0.4s grace
+        let survivors = others()                     // re-query: terminated apps drop out
+        for app in survivors { app.forceTerminate() }
+        if !survivors.isEmpty { log("force-killed \(survivors.count) survivor(s)") }
+    }
+
+    private static func log(_ msg: String) {
+        FileHandle.standardError.write(Data("ArgentUtils singleton: \(msg)\n".utf8))
     }
 }
 
