@@ -38,6 +38,16 @@ swift run            # launches the menu-bar app (no Dock icon)
 
 Quit from the panel's ⏻ button, or `pkill ArgentUtils`.
 
+### Double-clickable applet (recommended)
+
+```bash
+./scripts/build-app.sh     # produces ./ArgentUtils.app (menu-bar-only, no Dock icon)
+open ./ArgentUtils.app
+```
+
+Drag `ArgentUtils.app` into `/Applications` and add it under
+System Settings → General → Login Items to keep the wrench in your menu bar.
+
 ### Headless self-test
 
 ```bash
