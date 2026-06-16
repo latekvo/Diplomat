@@ -26,6 +26,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if ProcessInfo.processInfo.environment["ARGENT_UTILS_DUMP"] == "1" {
             Task { await Dump.run(); exit(0) }
         }
+        if let lk = ProcessInfo.processInfo.environment["ARGENT_UTILS_LOOKUP"], let n = Int(lk) {
+            Task { await Dump.lookup(n); exit(0) }
+        }
     }
 }
 
@@ -65,6 +68,25 @@ enum Dump {
         } catch {
             let msg = (error as? LocalizedError)?.errorDescription ?? "\(error)"
             print("DUMP ERROR: \(msg)")
+        }
+    }
+
+    /// Exercises the reverse-lookup path through the real Store logic.
+    static func lookup(_ n: Int) async {
+        do {
+            let prs = try await API.fetchOpenPRs()
+            let issues = try await API.fetchOpenIssues()
+            let r = await MainActor.run { () -> LookupResult in
+                let s = Store()
+                s.prs = prs
+                s.issues = issues
+                s.hasLoaded = true
+                return s.lookup(n)
+            }
+            print("#\(n): \(r.presence)")
+            print("on lists: \(r.onLists.isEmpty ? "(none)" : r.onLists.map { $0.title }.joined(separator: ", "))")
+        } catch {
+            print("LOOKUP ERROR: \((error as? LocalizedError)?.errorDescription ?? "\(error)")")
         }
     }
 }

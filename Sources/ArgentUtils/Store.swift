@@ -10,6 +10,15 @@ struct DisplayItem: Identifiable {
     let line3: String?     // optional detail (skills / files / labels)
 }
 
+/// Reverse-lookup result: which lists a given PR/issue number lands on.
+struct LookupResult {
+    let number: Int
+    let onLists: [ToolKind]
+    let presence: String   // human description of what the number is
+    let url: String?       // canonical url if we know it (cached)
+    var isOnAnyList: Bool { !onLists.isEmpty }
+}
+
 /// The four tools in the library. Each gets a unique SF Symbol + tint so they
 /// read at a glance.
 enum ToolKind: String, CaseIterable, Identifiable {
@@ -78,6 +87,28 @@ final class Store: ObservableObject {
     }
 
     func count(for kind: ToolKind) -> Int { items(for: kind).count }
+
+    /// Reverse lookup: which lists does this PR/issue number appear on? Pure,
+    /// cache-only (instant, no network) and reuses the exact `items(for:)` filters
+    /// so it can never disagree with what the lists show.
+    func lookup(_ number: Int) -> LookupResult {
+        let onLists = ToolKind.allCases.filter { kind in
+            items(for: kind).contains { $0.id == number }
+        }
+        if let pr = prs.first(where: { $0.number == number }) {
+            return LookupResult(number: number, onLists: onLists,
+                                presence: "open PR · @\(pr.author) · \(pr.isDraft ? "draft" : "ready")",
+                                url: pr.url)
+        }
+        if let issue = issues.first(where: { $0.number == number }) {
+            return LookupResult(number: number, onLists: onLists,
+                                presence: "open issue · @\(issue.author) [\(issue.authorAssociation)]",
+                                url: issue.url)
+        }
+        return LookupResult(number: number, onLists: onLists,
+                            presence: "not in open PRs/issues (closed or unknown)",
+                            url: nil)
+    }
 
     func items(for kind: ToolKind) -> [DisplayItem] {
         switch kind {

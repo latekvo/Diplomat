@@ -3,17 +3,28 @@ import AppKit
 
 struct ContentView: View {
     @EnvironmentObject var store: Store
+    @State private var query = ""
+    @FocusState private var searchFocused: Bool
 
     var body: some View {
         VStack(spacing: 8) {
             header
+            searchBar
             if let err = store.error { errorBanner(err) }
             toolGrid
             Divider()
-            results
+            resultsPane
         }
         .padding(10)
-        .task { if !store.hasLoaded { await store.refresh() } }
+        .background(cmdFCatcher)
+        .task {
+            // Optional: launch pre-focused on a specific number (also used for headless UI checks).
+            if query.isEmpty, let pre = ProcessInfo.processInfo.environment["ARGENT_UTILS_PREFILL"], !pre.isEmpty {
+                query = pre
+                searchFocused = true
+            }
+            if !store.hasLoaded { await store.refresh() }
+        }
     }
 
     // MARK: header
@@ -35,6 +46,38 @@ struct ContentView: View {
                 Image(systemName: "power")
             }.buttonStyle(.borderless).help("Quit")
         }
+    }
+
+    // MARK: search (reverse lookup)
+
+    private var searchBar: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass").font(.caption).foregroundStyle(.secondary)
+            TextField("PR / issue #  (⌘F)", text: $query)
+                .textFieldStyle(.plain)
+                .font(.callout)
+                .focused($searchFocused)
+            if !query.isEmpty {
+                Button { query = ""; searchFocused = true } label: {
+                    Image(systemName: "xmark.circle.fill")
+                }.buttonStyle(.borderless).foregroundStyle(.secondary).help("Clear")
+            }
+        }
+        .padding(6)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.1)))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(searchFocused ? Color.accentColor : .clear, lineWidth: 1)
+        )
+    }
+
+    /// Invisible button whose ⌘F shortcut moves focus into the search field.
+    private var cmdFCatcher: some View {
+        Button("") { searchFocused = true }
+            .keyboardShortcut("f", modifiers: .command)
+            .opacity(0)
+            .frame(width: 0, height: 0)
+            .accessibilityHidden(true)
     }
 
     private func errorBanner(_ msg: String) -> some View {
@@ -62,9 +105,69 @@ struct ContentView: View {
         }
     }
 
-    // MARK: results
+    // MARK: results pane (lookup when searching, else the selected tool's list)
 
-    private var results: some View {
+    @ViewBuilder
+    private var resultsPane: some View {
+        let trimmed = query.trimmingCharacters(in: .whitespaces)
+        if !trimmed.isEmpty, let n = Int(trimmed) {
+            ScrollView { lookupView(n) }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        } else if !trimmed.isEmpty {
+            Text("Type a PR or issue number.")
+                .font(.caption).foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            toolResults
+        }
+    }
+
+    private func lookupView(_ n: Int) -> some View {
+        let r = store.lookup(n)
+        let link = r.url ?? "https://github.com/\(GH.owner)/\(GH.repo)/issues/\(n)"
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("#\(n)").font(.title3.bold().monospaced())
+                Text(r.isOnAnyList ? "on \(r.onLists.count) list\(r.onLists.count == 1 ? "" : "s")" : "on no list")
+                    .font(.caption.bold())
+                    .foregroundStyle(r.isOnAnyList ? .green : .secondary)
+                Spacer()
+                Button { if let u = URL(string: link) { NSWorkspace.shared.open(u) } } label: {
+                    Image(systemName: "arrow.up.forward.square")
+                }.buttonStyle(.borderless).help("Open #\(n) on GitHub")
+            }
+            Text(r.presence).font(.caption).foregroundStyle(.secondary)
+            VStack(spacing: 5) {
+                ForEach(ToolKind.allCases) { kind in
+                    checkRow(kind, on: r.onLists.contains(kind))
+                }
+            }
+        }
+        .padding(.top, 2)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func checkRow(_ kind: ToolKind, on: Bool) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: kind.systemImage)
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 22, height: 22)
+                .background(on ? kind.tint : Color.gray.opacity(0.35))
+                .clipShape(RoundedRectangle(cornerRadius: 5))
+            Text(kind.title).font(.caption).foregroundStyle(on ? .primary : .secondary)
+            Spacer()
+            Image(systemName: on ? "checkmark.circle.fill" : "minus")
+                .foregroundStyle(on ? kind.tint : .secondary)
+        }
+        .padding(7)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(on ? kind.tint.opacity(0.12) : Color.gray.opacity(0.05))
+        )
+    }
+
+    private var toolResults: some View {
         let items = store.items(for: store.selected)
         return VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
