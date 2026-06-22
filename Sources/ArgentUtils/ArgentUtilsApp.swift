@@ -22,6 +22,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let headless = env["ARGENT_UTILS_DUMP"] == "1"
             || env["ARGENT_UTILS_LOOKUP"] != nil
             || env["ARGENT_UTILS_PRINT_PROMPT"] != nil
+            || env["ARGENT_UTILS_SETTINGS_DUMP"] == "1"
+            || env["ARGENT_UTILS_RENDER"] != nil
 
         // Singleton, newest-wins: a freshly launched GUI instance kills any older
         // ones so there's never more than one wrench. Skipped in headless self-test
@@ -45,6 +47,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // ARGENT_UTILS_PRINT_PROMPT=mine|user (default mine).
         if let mode = env["ARGENT_UTILS_PRINT_PROMPT"] {
             Dump.printPrompt(mode: mode); exit(0)
+        }
+        // Settings self-test: build a Store (which loads persisted UserDefaults)
+        // and print the resolved settings. Run via the .app bundle's binary so it
+        // uses the same `com.ignacy.argent-utils` defaults domain as the GUI.
+        if env["ARGENT_UTILS_SETTINGS_DUMP"] == "1" {
+            Task { @MainActor in Dump.settings(); exit(0) }
+        }
+        // Headless UI render: snapshot a view to PNG and exit.
+        if let what = env["ARGENT_UTILS_RENDER"] {
+            Task { @MainActor in Render.run(what, store: Store()); exit(0) }
         }
     }
 }
@@ -172,7 +184,9 @@ enum Dump {
     /// network. `mode` is "user" to preview the someone-else's-PRs variant,
     /// anything else previews my-PRs. Mirrors the wizard's default toggle state.
     static func printPrompt(mode: String) {
-        let isUser = mode.lowercased().hasPrefix("user")
+        let m = mode.lowercased()
+        let isUser = m.hasPrefix("user")
+        let isSingle = m.hasPrefix("single")
         let cfg = ReviewConfig(
             depth: .max,
             targetIsMine: !isUser,
@@ -180,8 +194,12 @@ enum Dump {
             me: "latekvo",
             markReady: true,
             leaveReviews: true,
-            replyToReviews: true)
-        print("== ReviewConfig: \(isUser ? "someone else's PRs" : "my PRs") · depth=\(cfg.depth.title) ==\n")
+            replyToReviews: true,
+            includeDrafts: !isSingle,
+            includeReady: !isSingle,
+            specificPR: isSingle ? "337" : "")
+        let label = isSingle ? "single PR #337" : (isUser ? "someone else's PRs" : "my PRs")
+        print("== ReviewConfig: \(label) · depth=\(cfg.depth.title) ==\n")
         print("----- PROMPT -----")
         print(cfg.buildPrompt())
         if let file = try? AgentSpawner.writePrompt(cfg.buildPrompt()) {
@@ -192,5 +210,16 @@ enum Dump {
             print(AgentSpawner.appleScript(shellCommand: cmd))
             try? FileManager.default.removeItem(at: file)
         }
+    }
+
+    /// Exercises the persisted-settings load path: a fresh Store reads UserDefaults
+    /// in its initializer. Run via the .app bundle's binary so it shares the GUI's
+    /// `com.ignacy.argent-utils` defaults domain.
+    @MainActor static func settings() {
+        let s = Store()
+        print("usernameOverride : '\(s.usernameOverride)'")
+        print("effectiveMe      : '\(s.effectiveMe)'   (override if set, else gh login — empty here, no network)")
+        print("hiddenTools      : \(s.hiddenTools.sorted())")
+        print("visibleTools     : \(s.visibleTools.map { $0.rawValue })")
     }
 }

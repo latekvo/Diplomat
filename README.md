@@ -34,20 +34,33 @@ choices, and hit **SPAWN AGENT** — it opens a fresh **iTerm2** window running
 `claude "<prompt>"` in `~/dev/argent`, a detached review session you watch and
 steer yourself. The choices are baked into the prompt:
 
-- **Target** — *My PRs* (the authenticated `gh` user) or *someone else's* (a handle).
+- **Target** — *My PRs* (the resolved handle, see Settings) or *someone else's* (any handle).
+- **Scope** — *Review draft PRs* and *Review ready-for-review PRs* (both on by default).
+  Untick **both** and a PR-number field lights up: review exactly one PR.
 - **Review depth** — a slider from a quick static read → standard swarm →
   swarm + hard reproductions → full E2E with a second double-pass verification.
 - **Mark clean PRs ready for review** — *(my PRs only)* flip perfectly-clean drafts to ready.
 - **Leave reviews** — *(others' PRs only)* post formal per-line reviews.
 - **Reply to others' review threads** — *(my PRs only)* answer and resolve open threads.
 
-The three checkboxes grey out where they don't apply, so the prompt only ever asks
+The action checkboxes grey out where they don't apply, so the prompt only ever asks
 for actions that make sense for whose PRs you're reviewing.
 
 > Preview the exact assembled prompt without launching anything:
 > ```bash
-> ARGENT_UTILS_PRINT_PROMPT=mine swift run   # or =user for the someone-else's variant
+> ARGENT_UTILS_PRINT_PROMPT=mine swift run   # also: =user (someone else's), =single (one PR)
 > ```
+
+## Settings
+
+The header **⚙︎** button (next to ↻ and ⏻) swaps the panel to a settings screen:
+
+- **GitHub username** — override the handle used by the "My …" tools and the Review
+  wizard. Blank = the `gh`-authenticated user (`viewer.login`).
+- **Visible tools** — a switch per tool to hide the ones you don't use; hidden tools
+  drop out of the grid and the reverse-lookup checklist.
+
+Both persist across launches (UserDefaults, `com.ignacy.argent-utils`).
 
 ### Definitions / heuristics (where it's deliberately loose)
 
@@ -106,8 +119,15 @@ within a session (no `KeepAlive`) — it just returns next login.
 ### Headless self-test
 
 ```bash
-ARGENT_UTILS_DUMP=1 swift run     # runs the real fetch+filter pipeline, prints all 6 tools, exits
+ARGENT_UTILS_DUMP=1 swift run            # real fetch+filter pipeline, prints all 6 tools, exits
+ARGENT_UTILS_LOOKUP=337 swift run        # reverse-lookup one number through the real Store
+ARGENT_UTILS_PRINT_PROMPT=mine swift run # assemble + print a Review-PRs prompt (mine|user|single)
+ARGENT_UTILS_SETTINGS_DUMP=1 ./ArgentUtils.app/Contents/MacOS/ArgentUtils  # resolved persisted settings
+ARGENT_UTILS_RENDER=settings ./ArgentUtils.app/Contents/MacOS/ArgentUtils  # snapshot a screen to PNG (settings|wizard|panel)
 ```
+
+The `SETTINGS_DUMP` / `RENDER` checks read UserDefaults, so run them through the
+`.app` bundle's binary (it shares the GUI's `com.ignacy.argent-utils` domain).
 
 ## Requirements
 
@@ -119,10 +139,12 @@ ARGENT_UTILS_DUMP=1 swift run     # runs the real fetch+filter pipeline, prints 
 
 ```
 Sources/ArgentUtils/
-  ArgentUtilsApp.swift   @main app + MenuBarExtra + headless dump/prompt modes
+  ArgentUtilsApp.swift   @main app + MenuBarExtra + headless dump/prompt/render modes
   ContentView.swift      SwiftUI panel (tool grid + actions panel + result rows)
   ReviewWizard.swift     Review-PRs wizard, prompt builder, iTerm2 spawner
-  Store.swift            ObservableObject, ToolKind metadata, row mapping
+  SettingsView.swift     settings screen (username override + tool visibility)
+  Render.swift           headless ImageRenderer snapshots for UI checks
+  Store.swift            ObservableObject, ToolKind metadata, settings, row mapping
   Models.swift           domain models, GraphQL queries, Filters, formatting
   GH.swift               gh CLI shell-out (GraphQL)
 ```

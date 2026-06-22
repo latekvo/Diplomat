@@ -4,17 +4,22 @@ import AppKit
 struct ContentView: View {
     @EnvironmentObject var store: Store
     @State private var query = ""
+    @State private var showingSettings = false
     @FocusState private var searchFocused: Bool
 
     var body: some View {
         VStack(spacing: 8) {
             header
-            searchBar
-            if let err = store.error { errorBanner(err) }
-            toolGrid
-            ActionsPanel()
-            Divider()
-            resultsPane
+            if showingSettings {
+                SettingsView(isPresented: $showingSettings)
+            } else {
+                searchBar
+                if let err = store.error { errorBanner(err) }
+                toolGrid
+                ActionsPanel()
+                Divider()
+                resultsPane
+            }
         }
         .padding(10)
         .background(cmdFCatcher)
@@ -43,6 +48,10 @@ struct ContentView: View {
             Button { Task { await store.refresh() } } label: {
                 Image(systemName: "arrow.clockwise")
             }.buttonStyle(.borderless).help("Refresh")
+            Button { withAnimation(.easeInOut(duration: 0.15)) { showingSettings.toggle() } } label: {
+                Image(systemName: showingSettings ? "gearshape.fill" : "gearshape")
+                    .foregroundStyle(showingSettings ? Color.accentColor : .primary)
+            }.buttonStyle(.borderless).help("Settings")
             Button { QuitFlow.confirm() } label: {
                 Image(systemName: "power")
             }.buttonStyle(.borderless).help("Quit")
@@ -95,7 +104,7 @@ struct ContentView: View {
 
     private var toolGrid: some View {
         LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-            ForEach(ToolKind.allCases) { kind in
+            ForEach(store.visibleTools) { kind in
                 ToolCard(
                     kind: kind,
                     count: store.hasLoaded ? store.count(for: kind) : nil,
@@ -139,7 +148,7 @@ struct ContentView: View {
             }
             Text(r.presence).font(.caption).foregroundStyle(.secondary)
             VStack(spacing: 5) {
-                ForEach(ToolKind.allCases) { kind in
+                ForEach(store.visibleTools) { kind in
                     checkRow(kind, on: r.onLists.contains(kind))
                 }
             }
@@ -168,30 +177,42 @@ struct ContentView: View {
         )
     }
 
+    @ViewBuilder
     private var toolResults: some View {
-        let items = store.items(for: store.selected)
-        return VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-                Image(systemName: store.selected.systemImage).foregroundStyle(store.selected.tint)
-                Text(store.selected.title).font(.subheadline.bold())
-                Text("\(items.count)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                Spacer()
-            }
-            if items.isEmpty {
-                Text(store.isLoading ? "Loading…" : "Nothing here.")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollView {
-                    VStack(spacing: 4) {
-                        ForEach(items) { item in
-                            ResultRow(item: item, tint: store.selected.tint)
+        // The selected tool may have been hidden in Settings; fall back to the
+        // first visible one, or an empty-state hint if the user hid them all.
+        if let kind = store.visibleTools.contains(store.selected) ? store.selected : store.visibleTools.first {
+            let items = store.items(for: kind)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Image(systemName: kind.systemImage).foregroundStyle(kind.tint)
+                    Text(kind.title).font(.subheadline.bold())
+                    Text("\(items.count)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    Spacer()
+                }
+                if items.isEmpty {
+                    Text(store.isLoading ? "Loading…" : "Nothing here.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ScrollView {
+                        VStack(spacing: 4) {
+                            ForEach(items) { item in
+                                ResultRow(item: item, tint: kind.tint)
+                            }
                         }
                     }
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        } else {
+            VStack(spacing: 6) {
+                Image(systemName: "eye.slash").font(.title3).foregroundStyle(.secondary)
+                Text("All tools hidden").font(.caption.bold()).foregroundStyle(.secondary)
+                Text("Re-enable some under ⚙︎ Settings.").font(.caption2).foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
 

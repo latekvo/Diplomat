@@ -79,6 +79,42 @@ final class Store: ObservableObject {
     /// The authenticated user's login, used to scope the "my PRs" tools.
     @Published var me = ""
 
+    // MARK: persisted settings
+
+    /// User-specified GitHub handle that overrides the gh-authenticated login for
+    /// the "my PRs" tools and the Review wizard. Empty = fall back to `me`.
+    @Published var usernameOverride: String {
+        didSet { UserDefaults.standard.set(usernameOverride, forKey: Keys.usernameOverride) }
+    }
+    /// Tool cards the user has hidden, keyed by `ToolKind.rawValue`.
+    @Published var hiddenTools: Set<String> {
+        didSet { UserDefaults.standard.set(Array(hiddenTools), forKey: Keys.hiddenTools) }
+    }
+
+    private enum Keys {
+        static let usernameOverride = "usernameOverride"
+        static let hiddenTools = "hiddenTools"
+    }
+
+    /// The handle to treat as "me": the user's override if set, else the gh login.
+    var effectiveMe: String {
+        let o = usernameOverride.trimmingCharacters(in: .whitespaces)
+        return o.isEmpty ? me : o
+    }
+    /// Tools shown in the grid (and reverse-lookup checklist), in canonical order.
+    var visibleTools: [ToolKind] {
+        ToolKind.allCases.filter { !hiddenTools.contains($0.rawValue) }
+    }
+    /// Show or hide a tool card; hiding the selected one re-points the selection.
+    func setTool(_ kind: ToolKind, visible: Bool) {
+        if visible {
+            hiddenTools.remove(kind.rawValue)
+        } else {
+            hiddenTools.insert(kind.rawValue)
+            if selected == kind, let first = visibleTools.first { selected = first }
+        }
+    }
+
     /// How often the data auto-refreshes in the background. Defaults to 5 minutes;
     /// override with `ARGENT_UTILS_REFRESH_SECS` (clamped to ≥5s) for tuning/testing.
     static var autoRefreshInterval: TimeInterval {
@@ -88,6 +124,15 @@ final class Store: ObservableObject {
     private var autoRefreshTask: Task<Void, Never>?
 
     init() {
+        let defaults = UserDefaults.standard
+        usernameOverride = defaults.string(forKey: Keys.usernameOverride) ?? ""
+        hiddenTools = Set(defaults.stringArray(forKey: Keys.hiddenTools) ?? [])
+        // If the default selection was hidden in a previous session, re-point it.
+        if hiddenTools.contains(selected.rawValue),
+           let first = ToolKind.allCases.first(where: { !hiddenTools.contains($0.rawValue) }) {
+            selected = first
+        }
+
         // Don't spin a timer in the headless dump/lookup self-tests (those exit
         // right after one fetch); only the live menu-bar app polls.
         let env = ProcessInfo.processInfo.environment
@@ -134,7 +179,7 @@ final class Store: ObservableObject {
     /// cache-only (instant, no network) and reuses the exact `items(for:)` filters
     /// so it can never disagree with what the lists show.
     func lookup(_ number: Int) -> LookupResult {
-        let onLists = ToolKind.allCases.filter { kind in
+        let onLists = visibleTools.filter { kind in
             items(for: kind).contains { $0.id == number }
         }
         if let pr = prs.first(where: { $0.number == number }) {
@@ -186,15 +231,15 @@ final class Store: ObservableObject {
                     line3: i.labels.isEmpty ? nil : "labels: \(i.labels.joined(separator: ", "))")
             }
         case .myApproved:
-            return Filters.myApprovedPRs(prs, me: me).sorted { $0.number > $1.number }.map { p in
+            return Filters.myApprovedPRs(prs, me: effectiveMe).sorted { $0.number > $1.number }.map { p in
                 DisplayItem(
                     id: p.number, badge: "#\(p.number)", title: p.title, url: p.url,
                     line2: "@\(p.author) · \(Fmt.age(p.createdAt)) · approved · \(p.isDraft ? "draft" : "ready")",
                     line3: nil)
             }
         case .myUnaddressed:
-            return Filters.myUnaddressedReviewPRs(prs, me: me).sorted { $0.number > $1.number }.map { p in
-                let n = p.unaddressedThreads(me: me).count
+            return Filters.myUnaddressedReviewPRs(prs, me: effectiveMe).sorted { $0.number > $1.number }.map { p in
+                let n = p.unaddressedThreads(me: effectiveMe).count
                 return DisplayItem(
                     id: p.number, badge: "#\(p.number)", title: p.title, url: p.url,
                     line2: "@\(p.author) · \(Fmt.age(p.createdAt)) · \(n) open thread\(n == 1 ? "" : "s")",

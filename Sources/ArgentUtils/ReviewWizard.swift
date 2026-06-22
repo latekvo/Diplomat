@@ -60,6 +60,12 @@ struct ReviewConfig {
     var leaveReviews: Bool = true    // effective only when reviewing OTHER people's PRs
     var replyToReviews: Bool = true  // effective only when reviewing MY PRs
 
+    // Which PR states are in scope. With neither on, we fall back to reviewing a
+    // single PR by number (`specificPR`).
+    var includeDrafts: Bool = true
+    var includeReady: Bool = true
+    var specificPR: String = ""
+
     /// The @handle whose PRs we go through.
     var authorHandle: String {
         if targetIsMine { return me.isEmpty ? "me" : me }
@@ -77,17 +83,37 @@ struct ReviewConfig {
     var effLeaveReviews: Bool { leaveReviews && canLeaveReviews }
     var effReplyToReviews: Bool { replyToReviews && canReplyToReviews }
 
-    /// SPAWN is only meaningful once we know whose PRs to go through.
-    var isValid: Bool { !authorHandle.isEmpty }
+    /// With neither PR-state box ticked, we review one PR by number instead.
+    var isSinglePR: Bool { !includeDrafts && !includeReady }
+    var trimmedPR: String { specificPR.trimmingCharacters(in: .whitespaces) }
+
+    /// SPAWN is only meaningful once we know what to review: either a valid PR
+    /// number (single-PR mode) or whose PRs + at least one PR state.
+    var isValid: Bool {
+        if isSinglePR { return Int(trimmedPR) != nil }
+        return !authorHandle.isEmpty
+    }
+
+    /// Human description of which PR states are in scope (multi-PR mode).
+    private var prKind: String {
+        switch (includeDrafts, includeReady) {
+        case (true, true):  return "currently-open PR (draft or ready-for-review)"
+        case (true, false): return "currently-open DRAFT PR"
+        default:            return "currently-open ready-for-review (non-draft) PR"
+        }
+    }
 
     func buildPrompt() -> String {
-        let scope = targetIsMine
-            ? "each of my currently-open DRAFT PRs (authored by @\(authorHandle))"
-            : "each currently-open PR authored by @\(authorHandle)"
-
         var blocks: [String] = []
 
-        blocks.append("Go through \(scope) in \(GH.owner)/\(GH.repo). Use the `gh` CLI to enumerate them.")
+        if isSinglePR {
+            blocks.append("Review PR #\(trimmedPR) in \(GH.owner)/\(GH.repo). Use the `gh` CLI to fetch it.")
+        } else {
+            let scope = targetIsMine
+                ? "each \(prKind) of mine (authored by @\(authorHandle))"
+                : "each \(prKind) authored by @\(authorHandle)"
+            blocks.append("Go through \(scope) in \(GH.owner)/\(GH.repo). Use the `gh` CLI to enumerate them.")
+        }
         blocks.append(depth.promptFragment)
         blocks.append("Hold to the bar in my CLAUDE.md throughout: prove every issue beyond reasonable doubt with a concrete reproduction before you act on it, scale the swarm to the work, and never report something fixed without re-running the repro to confirm it landed.")
 
@@ -200,12 +226,19 @@ struct ActionsPanel: View {
     private let tint = Color.pink
 
     @State private var expanded = false
+
+    init(startExpanded: Bool = false) {
+        _expanded = State(initialValue: startExpanded)
+    }
     @State private var depthValue: Double = Double(ReviewDepth.deep.rawValue)
     @State private var targetIsMine = true
     @State private var username = ""
     @State private var markReady = true
     @State private var leaveReviews = true
     @State private var replyToReviews = true
+    @State private var includeDrafts = true
+    @State private var includeReady = true
+    @State private var specificPR = ""
     @State private var status: String?
 
     private var config: ReviewConfig {
@@ -213,10 +246,13 @@ struct ActionsPanel: View {
             depth: ReviewDepth(rawValue: Int(depthValue)) ?? .deep,
             targetIsMine: targetIsMine,
             username: username,
-            me: store.me,
+            me: store.effectiveMe,
             markReady: markReady,
             leaveReviews: leaveReviews,
-            replyToReviews: replyToReviews)
+            replyToReviews: replyToReviews,
+            includeDrafts: includeDrafts,
+            includeReady: includeReady,
+            specificPR: specificPR)
     }
     private var depth: ReviewDepth { config.depth }
 
@@ -249,6 +285,7 @@ struct ActionsPanel: View {
         VStack(alignment: .leading, spacing: 10) {
             header
             targetRow
+            scopeRow
             depthRow
             checkboxes
             spawnButton
@@ -272,7 +309,7 @@ struct ActionsPanel: View {
     private var targetRow: some View {
         VStack(alignment: .leading, spacing: 5) {
             Picker("", selection: $targetIsMine) {
-                Text(store.me.isEmpty ? "My PRs" : "My PRs (@\(store.me))").tag(true)
+                Text(store.effectiveMe.isEmpty ? "My PRs" : "My PRs (@\(store.effectiveMe))").tag(true)
                 Text("Someone else's").tag(false)
             }
             .labelsHidden()
@@ -288,6 +325,29 @@ struct ActionsPanel: View {
                 .padding(6)
                 .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.1)))
             }
+        }
+    }
+
+    private var scopeRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Group {
+                Toggle(isOn: $includeDrafts) { Text("Review draft PRs").font(.caption) }
+                Toggle(isOn: $includeReady) { Text("Review ready-for-review PRs").font(.caption) }
+            }
+            .toggleStyle(.checkbox)
+
+            // With neither box ticked, review exactly one PR by number.
+            HStack(spacing: 6) {
+                Image(systemName: "number").font(.caption2).foregroundStyle(.secondary)
+                TextField("PR # to review (when neither above)", text: $specificPR)
+                    .textFieldStyle(.plain)
+                    .font(.callout)
+            }
+            .padding(6)
+            .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.1)))
+            .disabled(!config.isSinglePR)
+            .opacity(config.isSinglePR ? 1 : 0.4)
+            .help(config.isSinglePR ? "Review just this one PR." : "Untick both boxes above to review a single PR by number.")
         }
     }
 
