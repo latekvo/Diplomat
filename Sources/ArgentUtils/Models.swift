@@ -13,10 +13,30 @@ struct OpenPR: Identifiable {
     /// a draft that got converted. nil means it was opened ready ("born ready").
     let readyForReviewAt: Date?
     let files: [String]
+    /// GitHub's aggregate review state: "APPROVED" / "CHANGES_REQUESTED" /
+    /// "REVIEW_REQUIRED", or nil when no review is required.
+    let reviewDecision: String?
+    let reviewThreads: [ReviewThread]
 
     var id: Int { number }
     /// Best-effort "has been ready since" timestamp.
     var readyAt: Date { readyForReviewAt ?? createdAt }
+
+    /// Review threads on *my* PR that I still owe a response on: resolvable, not
+    /// resolved, and whose most-recent comment isn't mine. i.e. a reviewer pinged
+    /// and I neither replied nor marked it resolved.
+    func unaddressedThreads(me: String) -> [ReviewThread] {
+        reviewThreads.filter { $0.viewerCanResolve && !$0.isResolved && $0.lastCommentAuthor != me }
+    }
+}
+
+/// A PR review conversation thread (one inline comment chain).
+struct ReviewThread {
+    let isResolved: Bool
+    /// True when the viewer is allowed to mark the thread resolved — GitHub only
+    /// returns this for live, unresolved threads, so it doubles as "still open".
+    let viewerCanResolve: Bool
+    let lastCommentAuthor: String?
 }
 
 struct OpenIssue: Identifiable {
@@ -65,6 +85,16 @@ enum Filters {
     static func unaddressedExternalIssues(_ issues: [OpenIssue]) -> [OpenIssue] {
         issues.filter { $0.isExternal && !$0.isAddressed }
     }
+    /// My open PRs that have picked up an approval.
+    static func myApprovedPRs(_ prs: [OpenPR], me: String) -> [OpenPR] {
+        guard !me.isEmpty else { return [] }
+        return prs.filter { $0.author == me && $0.reviewDecision == "APPROVED" }
+    }
+    /// My open PRs carrying at least one review thread I haven't addressed.
+    static func myUnaddressedReviewPRs(_ prs: [OpenPR], me: String) -> [OpenPR] {
+        guard !me.isEmpty else { return [] }
+        return prs.filter { $0.author == me && !$0.unaddressedThreads(me: me).isEmpty }
+    }
 }
 
 // MARK: - Tiny formatting helpers
@@ -98,24 +128,35 @@ enum Fmt {
 // MARK: - GitHub API (GraphQL via the gh CLI)
 
 enum API {
+    /// The authenticated user's GitHub login — needed to find "my" PRs.
+    static func fetchViewerLogin() async throws -> String {
+        try await graphqlDecoded("{ viewer { login } }", as: ViewerResponse.self).data.viewer.login
+    }
+
     static func fetchOpenPRs() async throws -> [OpenPR] {
+        // reviewThreads is the expensive leg of this query — keep `first` modest
+        // so GitHub doesn't time the whole thing out (it occasionally does at 100).
         let q = """
         { repository(owner: "\(GH.owner)", name: "\(GH.repo)") {
             pullRequests(states: OPEN, first: 100, orderBy: {field: CREATED_AT, direction: DESC}) {
               nodes {
-                number title url isDraft createdAt
+                number title url isDraft createdAt reviewDecision
                 author { login }
                 files(first: 100) { nodes { path } }
                 timelineItems(itemTypes: [READY_FOR_REVIEW_EVENT], last: 1) {
                   nodes { __typename ... on ReadyForReviewEvent { createdAt } }
                 }
+                reviewThreads(first: 50) {
+                  nodes {
+                    isResolved viewerCanResolve
+                    comments(last: 1) { nodes { author { login } } }
+                  }
+                }
               }
             }
         } }
         """
-        let data = try await GH.graphql(q)
-        try checkGraphQLErrors(data)
-        let resp = try makeDecoder().decode(PRResponse.self, from: data)
+        let resp = try await graphqlDecoded(q, as: PRResponse.self)
         return resp.data.repository.pullRequests.nodes.map { n in
             OpenPR(
                 number: n.number,
@@ -125,7 +166,15 @@ enum API {
                 author: n.author?.login ?? "ghost",
                 createdAt: n.createdAt,
                 readyForReviewAt: n.timelineItems.nodes.compactMap { $0.createdAt }.first,
-                files: n.files.nodes.map { $0.path }
+                files: n.files.nodes.map { $0.path },
+                reviewDecision: n.reviewDecision,
+                reviewThreads: n.reviewThreads.nodes.map { t in
+                    ReviewThread(
+                        isResolved: t.isResolved,
+                        viewerCanResolve: t.viewerCanResolve,
+                        lastCommentAuthor: t.comments.nodes.last?.author?.login
+                    )
+                }
             )
         }
     }
@@ -144,9 +193,7 @@ enum API {
             }
         } }
         """
-        let data = try await GH.graphql(q)
-        try checkGraphQLErrors(data)
-        let resp = try makeDecoder().decode(IssueResponse.self, from: data)
+        let resp = try await graphqlDecoded(q, as: IssueResponse.self)
         return resp.data.repository.issues.nodes.map { n in
             OpenIssue(
                 number: n.number,
@@ -162,6 +209,24 @@ enum API {
                 memberResponded: n.comments.nodes.contains { Filters.team.contains($0.authorAssociation) }
             )
         }
+    }
+
+    /// Run a GraphQL query and decode it, retrying once on failure. GitHub
+    /// intermittently times these heavier queries out ("Something went wrong…"),
+    /// so a single retry turns a transient blip into a non-event.
+    private static func graphqlDecoded<T: Decodable>(_ query: String, as: T.Type) async throws -> T {
+        var lastError: Error?
+        for attempt in 0..<2 {
+            do {
+                let data = try await GH.graphql(query)
+                try checkGraphQLErrors(data)
+                return try makeDecoder().decode(T.self, from: data)
+            } catch {
+                lastError = error
+                if attempt == 0 { try? await Task.sleep(nanoseconds: 800_000_000) }
+            }
+        }
+        throw lastError!
     }
 
     private static func makeDecoder() -> JSONDecoder {
@@ -185,6 +250,12 @@ private struct GQLEnvelope: Decodable {
     let errors: [E]?
 }
 
+private struct ViewerResponse: Decodable {
+    let data: D
+    struct D: Decodable { let viewer: V }
+    struct V: Decodable { let login: String }
+}
+
 private struct PRResponse: Decodable {
     let data: D
     struct D: Decodable { let repository: Repo }
@@ -196,15 +267,27 @@ private struct PRResponse: Decodable {
         let url: String
         let isDraft: Bool
         let createdAt: Date
+        let reviewDecision: String?
         let author: Author?
         let files: Files
         let timelineItems: Timeline
+        let reviewThreads: Threads
     }
     struct Author: Decodable { let login: String }
     struct Files: Decodable { let nodes: [PathNode] }
     struct PathNode: Decodable { let path: String }
     struct Timeline: Decodable { let nodes: [TLNode] }
     struct TLNode: Decodable { let createdAt: Date? }
+    struct Threads: Decodable { let nodes: [Thread] }
+    struct Thread: Decodable {
+        let isResolved: Bool
+        let viewerCanResolve: Bool
+        let comments: ThreadComments
+    }
+    struct ThreadComments: Decodable {
+        let nodes: [ThreadComment]
+        struct ThreadComment: Decodable { let author: Author? }
+    }
 }
 
 private struct IssueResponse: Decodable {

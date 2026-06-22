@@ -1,7 +1,7 @@
 # Argent Utils
 
 A tiny macOS **menu-bar applet** — a personal dashboard of Argent-repo triage
-tools. Click the wrench in the menu bar, get a dense panel with four utilities.
+tools. Click the wrench in the menu bar, get a dense panel with six utilities.
 Hacky on purpose, optimized for *me*, not the public.
 
 Targets `software-mansion/argent` and shells out to the authenticated `gh` CLI.
@@ -14,12 +14,16 @@ Targets `software-mansion/argent` and shells out to the authenticated `gh` CLI.
 | 📦 (orange) | **Installer/CLI PRs** | open PRs touching `packages/argent-installer/` or `packages/argent-cli/` |
 | ⏳ (red) | **Stale Ready >10d** | non-draft PRs that have been ready-for-review for over 10 days |
 | 💬 (teal) | **Unaddressed Issues** | open issues **not** opened by an SWM org member that have no team reply and no assignee |
+| ✅ (green) | **My Approved PRs** | *your* open PRs whose review decision is `APPROVED` |
+| ↩️ (indigo) | **My Unaddressed Reviews** | *your* open PRs with a review thread that's resolvable, unresolved, and that you haven't replied to |
 
 Every row is clickable → opens the PR/issue in your browser. Counts show on each
-card; hit ↻ to refresh, ⏻ to quit.
+card; hit ↻ to refresh, ⏻ to quit (with a confirmation prompt). The data also
+**auto-refreshes every 5 minutes** in the background, so the counts are fresh the
+moment you click the wrench — even if the panel was never open.
 
 **Reverse lookup:** type a PR/issue number in the search box (press **⌘F** to jump to
-it) and it instantly shows which of the four lists that number is on — a ✓/— checklist
+it) and it instantly shows which of the six lists that number is on — a ✓/— checklist
 plus what the number is (open PR/issue, author, draft/ready). Cache-only, so it reacts
 as you type. Launch with `ARGENT_UTILS_PREFILL=<n>` to open pre-focused on a number.
 
@@ -30,9 +34,22 @@ as you type. Launch with `ARGENT_UTILS_PREFILL=<n>` to open pre-focused on a num
   `ReadyForReviewEvent` (or `createdAt` if it was opened ready) is older than 10 days.
 - **"member of the SWM org"** — derived from GitHub `authorAssociation`
   (`MEMBER`/`OWNER` = org; anything else = external). Reliable without org-admin API access.
-- **"unaddressed"** — no comment from a `MEMBER`/`OWNER`/`COLLABORATOR` **and** no assignee.
+- **"unaddressed"** (issues) — no comment from a `MEMBER`/`OWNER`/`COLLABORATOR` **and** no assignee.
+- **"mine"** — authored by the authenticated `gh` user (`viewer.login`).
+- **"approved"** — GitHub's aggregate `reviewDecision == APPROVED`.
+- **"unaddressed review"** — a `reviewThread` where `viewerCanResolve` (so it *can* be
+  marked resolved) is true, `isResolved` is false, and the **last** comment isn't yours —
+  i.e. a reviewer pinged and you neither replied nor resolved it.
 
 Tweak any of these in `Filters` (`Sources/ArgentUtils/Models.swift`).
+
+### Auto-refresh
+
+Refreshes every **5 minutes**. Override the interval (seconds, min 5) for tuning/testing:
+
+```bash
+ARGENT_UTILS_REFRESH_SECS=30 open ./ArgentUtils.app   # refresh every 30s
+```
 
 ## Run
 
@@ -67,7 +84,7 @@ within a session (no `KeepAlive`) — it just returns next login.
 ### Headless self-test
 
 ```bash
-ARGENT_UTILS_DUMP=1 swift run     # runs the real fetch+filter pipeline, prints all 4 tools, exits
+ARGENT_UTILS_DUMP=1 swift run     # runs the real fetch+filter pipeline, prints all 6 tools, exits
 ```
 
 ## Requirements

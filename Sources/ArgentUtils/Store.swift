@@ -19,10 +19,10 @@ struct LookupResult {
     var isOnAnyList: Bool { !onLists.isEmpty }
 }
 
-/// The four tools in the library. Each gets a unique SF Symbol + tint so they
+/// The tools in the library. Each gets a unique SF Symbol + tint so they
 /// read at a glance.
 enum ToolKind: String, CaseIterable, Identifiable {
-    case skillPRs, installerPRs, staleReady, unaddressedIssues
+    case skillPRs, installerPRs, staleReady, unaddressedIssues, myApproved, myUnaddressed
     var id: String { rawValue }
 
     var title: String {
@@ -31,6 +31,8 @@ enum ToolKind: String, CaseIterable, Identifiable {
         case .installerPRs: return "Installer/CLI PRs"
         case .staleReady: return "Stale Ready >10d"
         case .unaddressedIssues: return "Unaddressed Issues"
+        case .myApproved: return "My Approved PRs"
+        case .myUnaddressed: return "My Unaddressed Reviews"
         }
     }
     var subtitle: String {
@@ -39,6 +41,8 @@ enum ToolKind: String, CaseIterable, Identifiable {
         case .installerPRs: return "open PRs in argent-installer / argent-cli"
         case .staleReady: return "non-draft, ready >10 days"
         case .unaddressedIssues: return "external, no team reply/assignee"
+        case .myApproved: return "my PRs that got an approval"
+        case .myUnaddressed: return "my PRs w/ an open thread I owe a reply"
         }
     }
     var systemImage: String {
@@ -47,6 +51,8 @@ enum ToolKind: String, CaseIterable, Identifiable {
         case .installerPRs: return "shippingbox.fill"
         case .staleReady: return "hourglass.tophalf.filled"
         case .unaddressedIssues: return "exclamationmark.bubble.fill"
+        case .myApproved: return "checkmark.seal.fill"
+        case .myUnaddressed: return "arrow.uturn.left.circle.fill"
         }
     }
     var tint: Color {
@@ -55,6 +61,8 @@ enum ToolKind: String, CaseIterable, Identifiable {
         case .installerPRs: return .orange
         case .staleReady: return .red
         case .unaddressedIssues: return .teal
+        case .myApproved: return .green
+        case .myUnaddressed: return .indigo
         }
     }
 }
@@ -68,14 +76,48 @@ final class Store: ObservableObject {
     @Published var lastUpdated: Date?
     @Published var selected: ToolKind = .skillPRs
     @Published var hasLoaded = false
+    /// The authenticated user's login, used to scope the "my PRs" tools.
+    @Published var me = ""
+
+    /// How often the data auto-refreshes in the background. Defaults to 5 minutes;
+    /// override with `ARGENT_UTILS_REFRESH_SECS` (clamped to ≥5s) for tuning/testing.
+    static var autoRefreshInterval: TimeInterval {
+        let secs = ProcessInfo.processInfo.environment["ARGENT_UTILS_REFRESH_SECS"].flatMap(Double.init)
+        return max(5, secs ?? 5 * 60)
+    }
+    private var autoRefreshTask: Task<Void, Never>?
+
+    init() {
+        // Don't spin a timer in the headless dump/lookup self-tests (those exit
+        // right after one fetch); only the live menu-bar app polls.
+        let env = ProcessInfo.processInfo.environment
+        let headless = env["ARGENT_UTILS_DUMP"] == "1" || env["ARGENT_UTILS_LOOKUP"] != nil
+        if !headless { startAutoRefresh() }
+    }
+
+    /// Fire a refresh every `autoRefreshInterval`, independent of whether the
+    /// panel is open — so the counts are fresh the moment you click the wrench.
+    func startAutoRefresh() {
+        guard autoRefreshTask == nil else { return }
+        autoRefreshTask = Task { [weak self] in
+            let ns = UInt64(Store.autoRefreshInterval * 1_000_000_000)
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: ns)
+                if Task.isCancelled { break }
+                await self?.refresh()
+            }
+        }
+    }
 
     func refresh() async {
         isLoading = true
         error = nil
         do {
+            async let m = API.fetchViewerLogin()
             async let p = API.fetchOpenPRs()
             async let i = API.fetchOpenIssues()
-            let (pp, ii) = try await (p, i)
+            let (mm, pp, ii) = try await (m, p, i)
+            me = mm
             prs = pp
             issues = ii
             lastUpdated = Date()
@@ -142,6 +184,21 @@ final class Store: ObservableObject {
                     id: i.number, badge: "#\(i.number)", title: i.title, url: i.url,
                     line2: "@\(i.author) [\(i.authorAssociation)] · \(Fmt.age(i.createdAt)) · \(i.commentCount)c",
                     line3: i.labels.isEmpty ? nil : "labels: \(i.labels.joined(separator: ", "))")
+            }
+        case .myApproved:
+            return Filters.myApprovedPRs(prs, me: me).sorted { $0.number > $1.number }.map { p in
+                DisplayItem(
+                    id: p.number, badge: "#\(p.number)", title: p.title, url: p.url,
+                    line2: "@\(p.author) · \(Fmt.age(p.createdAt)) · approved · \(p.isDraft ? "draft" : "ready")",
+                    line3: nil)
+            }
+        case .myUnaddressed:
+            return Filters.myUnaddressedReviewPRs(prs, me: me).sorted { $0.number > $1.number }.map { p in
+                let n = p.unaddressedThreads(me: me).count
+                return DisplayItem(
+                    id: p.number, badge: "#\(p.number)", title: p.title, url: p.url,
+                    line2: "@\(p.author) · \(Fmt.age(p.createdAt)) · \(n) open thread\(n == 1 ? "" : "s")",
+                    line3: nil)
             }
         }
     }
