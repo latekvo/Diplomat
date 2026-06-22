@@ -12,8 +12,13 @@ swift build -c release
 BIN=".build/release/$APP_NAME"
 APP="$APP_NAME.app"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/$APP_NAME"
+
+# Bundle the shared core/ assets (GraphQL queries, tool catalog, filter
+# constants, review prompt fragments) so CoreAssets resolves them via
+# Bundle.main.resourceURL/core inside the packaged .app.
+cp -R core "$APP/Contents/Resources/core"
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>

@@ -1,10 +1,17 @@
 # Argent Utils
 
-A tiny macOS **menu-bar applet** — a personal dashboard of Argent-repo triage
-tools. Click the wrench in the menu bar, get a dense panel with six utilities.
-Hacky on purpose, optimized for *me*, not the public.
+A tiny **menu-bar / system-tray applet** — a personal dashboard of Argent-repo
+triage tools. Click the wrench, get a dense panel with six utilities. Hacky on
+purpose, optimized for *me*, not the public.
 
 Targets `software-mansion/argent` and shells out to the authenticated `gh` CLI.
+
+> **Two front-ends, one brain.** The macOS SwiftUI app and the
+> [Linux Qt6/PySide6 applet](linux/README.md) are thin UI renderers over a shared,
+> language-neutral [`core/`](core/README.md) (GraphQL queries, tool catalog, filter
+> constants, review-prompt fragments). All the triage logic lives there once, so the
+> two platforms can never drift — change a query or threshold in one place and both
+> pick it up. See **[Architecture](#architecture)** below.
 
 ## The library
 
@@ -49,7 +56,7 @@ for actions that make sense for whose PRs you're reviewing.
 
 > Preview the exact assembled prompt without launching anything:
 > ```bash
-> ARGENT_UTILS_PRINT_PROMPT=mine swift run   # also: =user (someone else's), =single (one PR)
+> ARGENT_UTILS_PRINT_PROMPT=mine swift run ArgentUtils   # also: =user (someone else's), =single (one PR)
 > ```
 
 ## Settings
@@ -94,10 +101,15 @@ ARGENT_UTILS_REFRESH_SECS=30 open ./ArgentUtils.app   # refresh every 30s
 
 ```bash
 cd ~/dev/argent-utils-applet
-swift run            # launches the menu-bar app (no Dock icon)
+swift run ArgentUtils    # launches the menu-bar app (no Dock icon)
 ```
 
+> The package now has two executables (the app + a Linux-buildable
+> `ArgentUtilsCoreSmoke` core self-test), so name the target: `swift run ArgentUtils`.
+
 Quit from the panel's ⏻ button, or `pkill ArgentUtils`.
+
+**On Linux?** See [`linux/README.md`](linux/README.md) — `cd linux && ./argent-utils`.
 
 **First run from a terminal** (`swift run`, interactive TTY) offers to set itself up
 as a login daemon:
@@ -143,11 +155,15 @@ within a session (no `KeepAlive`) — it just returns next login.
 ### Headless self-test
 
 ```bash
-ARGENT_UTILS_DUMP=1 swift run            # real fetch+filter pipeline, prints all 6 tools, exits
-ARGENT_UTILS_LOOKUP=337 swift run        # reverse-lookup one number through the real Store
-ARGENT_UTILS_PRINT_PROMPT=mine swift run # assemble + print a Review-PRs prompt (mine|user|single)
+ARGENT_UTILS_DUMP=1 swift run ArgentUtils            # real fetch+filter pipeline, prints all 6 tools, exits
+ARGENT_UTILS_LOOKUP=337 swift run ArgentUtils        # reverse-lookup one number through the real Store
+ARGENT_UTILS_PRINT_PROMPT=mine swift run ArgentUtils # assemble + print a Review-PRs prompt (mine|user|single)
 ARGENT_UTILS_SETTINGS_DUMP=1 ./ArgentUtils.app/Contents/MacOS/ArgentUtils  # resolved persisted settings
 ARGENT_UTILS_RENDER=settings ./ArgentUtils.app/Contents/MacOS/ArgentUtils  # snapshot a screen to PNG (settings|wizard|panel)
+
+# The shared core itself is independently buildable & testable (also on Linux):
+swift run ArgentUtilsCoreSmoke                        # loads core/, runs filters + prompt assertions
+ARGENT_UTILS_DUMP=1 swift run ArgentUtilsCoreSmoke    # + live gh dump, cross-checks the Linux front-end
 ```
 
 The `SETTINGS_DUMP` / `RENDER` checks read UserDefaults, so run them through the
@@ -155,22 +171,34 @@ The `SETTINGS_DUMP` / `RENDER` checks read UserDefaults, so run them through the
 
 ## Requirements
 
-- macOS 13+ (uses SwiftUI `MenuBarExtra`)
+- macOS 13+ (uses SwiftUI `MenuBarExtra`) — or Linux via the [Qt6 applet](linux/README.md)
 - Swift toolchain (`swift build`)
 - GitHub CLI `gh`, authenticated (`gh auth login`)
 
-## Layout
+## Architecture
+
+The triage logic is single-sourced in [`core/`](core/README.md) — language-neutral
+GraphQL queries, the tool catalog, filter constants, and the review-prompt
+fragments. Both front-ends load it and only differ in rendering:
 
 ```
-Sources/ArgentUtils/
-  ArgentUtilsApp.swift   @main app + MenuBarExtra + headless dump/prompt/render modes
-  ContentView.swift      SwiftUI panel (tool + Review-PRs grid, result rows)
-  ReviewWizard.swift     Review-PRs wizard, prompt builder, terminal spawner
-  SettingsView.swift     settings screen (username, tool color/visibility, terminal)
-  Daemon.swift           first-run login-daemon opt-in (TTY Accept [y/N])
-  Render.swift           headless ImageRenderer snapshots for UI checks
-  Store.swift            ObservableObject, ToolKind metadata, settings, row mapping
-  Color+Hex.swift        Color ↔ "#RRGGBB" for persisted tint overrides
-  Models.swift           domain models, GraphQL queries, Filters, formatting
-  GH.swift               gh CLI shell-out (GraphQL)
+core/                          ← shared source of truth (see core/README.md)
+Sources/
+  ArgentUtilsCore/             ← Foundation-only Swift; loads core/. Builds on macOS AND Linux.
+    CoreAssets.swift             resolves + decodes core/ (config, catalog, filters, review, graphql)
+    GH.swift                     gh CLI shell-out (GraphQL via core/graphql)
+    Models.swift                 domain models, Filters, Fmt, API
+    Review.swift                 ReviewDepth + ReviewConfig prompt builder (from core/review.json)
+    ToolKind.swift               tool catalog enum + DisplayItem/LookupResult + pure ToolData engine
+  ArgentUtils/                 ← macOS SwiftUI app — thin UI over the core
+    ArgentUtilsApp.swift         @main app + MenuBarExtra + headless dump/prompt/render modes
+    ContentView.swift            SwiftUI panel (tool + Review-PRs grid, result rows)
+    ReviewWizard.swift           Review-PRs wizard (SwiftUI) + iTerm/Terminal spawner
+    SettingsView.swift           settings screen (username, tool color/visibility, terminal)
+    Store.swift                  ObservableObject; tints + settings; delegates logic to ToolData
+    Color+Hex.swift              Color ↔ "#RRGGBB" for persisted tint overrides
+    Daemon.swift                 first-run login-daemon opt-in (TTY Accept [y/N])
+    Render.swift                 headless ImageRenderer snapshots for UI checks
+  ArgentUtilsCoreSmoke/        ← Linux-buildable core self-test (filters + prompt + live dump)
+linux/                         ← Linux Qt6/PySide6 tray applet (see linux/README.md)
 ```

@@ -4,3 +4,10 @@
 .swiftpm/
 DerivedData/
 ArgentUtils.app/
+
+# Python (Linux applet)
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+.venv/

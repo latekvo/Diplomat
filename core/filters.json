@@ -1,0 +1,9 @@
+{
+  "_comment": "The tool filter logic, kept pure & data-driven. Tweak thresholds here to retune every front-end at once. Mirrors enum Filters in the original Models.swift.",
+  "skillSuffix": "skill.md",
+  "installerPrefixes": ["packages/argent-installer/", "packages/argent-cli/"],
+  "team": ["MEMBER", "OWNER", "COLLABORATOR"],
+  "orgAssociations": ["MEMBER", "OWNER"],
+  "staleReadyDays": 10,
+  "approvedDecision": "APPROVED"
+}
