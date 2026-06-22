@@ -48,8 +48,9 @@ and steer yourself. The choices are baked into the prompt:
   (after confirming past issues are resolved), APPROVE-with-nitpicks when there are
   only minor asks, or leave **changes requested** on real blockers.
 
-The action checkboxes grey out where they don't apply, so the prompt only ever asks
-for actions that make sense for whose PRs you're reviewing.
+Contextual controls (the action checkboxes, the someone-else's handle field, and the
+single-PR field) **appear only where they apply** — they animate in and out as you
+change the target/scope, so the prompt only ever offers what makes sense.
 
 > Preview the exact assembled prompt without launching anything:
 > ```bash

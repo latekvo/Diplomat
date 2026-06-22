@@ -281,6 +281,10 @@ struct ReviewWizardView: View {
     @EnvironmentObject var store: Store
     private let tint = Color.pink
 
+    /// Shared appear/disappear transition for contextual rows that are shown only
+    /// where they apply (fade + slide).
+    private let rowTransition: AnyTransition = .opacity.combined(with: .move(edge: .top))
+
     /// The results area is shorter than the wizard, so it scrolls in the app.
     /// `scrolls: false` (headless render only) drops the ScrollView so the
     /// snapshot isn't blank (ImageRenderer can't render ScrollView content).
@@ -334,6 +338,10 @@ struct ReviewWizardView: View {
             if let status { statusLine(status) }
         }
         .padding(.trailing, 2)
+        // Animate contextual rows reflowing as the target/scope change.
+        .animation(.easeInOut(duration: 0.22), value: targetIsMine)
+        .animation(.easeInOut(duration: 0.22), value: includeDrafts)
+        .animation(.easeInOut(duration: 0.22), value: includeReady)
     }
 
     private var titleRow: some View {
@@ -362,6 +370,7 @@ struct ReviewWizardView: View {
                 }
                 .padding(6)
                 .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.1)))
+                .transition(rowTransition)
             }
         }
     }
@@ -375,17 +384,18 @@ struct ReviewWizardView: View {
             .toggleStyle(.checkbox)
 
             // With neither box ticked, review exactly one PR by number.
-            HStack(spacing: 6) {
-                Image(systemName: "number").font(.caption2).foregroundStyle(.secondary)
-                TextField("PR # to review (when neither above)", text: $specificPR)
-                    .textFieldStyle(.plain)
-                    .font(.callout)
+            if config.isSinglePR {
+                HStack(spacing: 6) {
+                    Image(systemName: "number").font(.caption2).foregroundStyle(.secondary)
+                    TextField("PR # to review", text: $specificPR)
+                        .textFieldStyle(.plain)
+                        .font(.callout)
+                }
+                .padding(6)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.1)))
+                .help("Review just this one PR.")
+                .transition(rowTransition)
             }
-            .padding(6)
-            .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.1)))
-            .disabled(!config.isSinglePR)
-            .opacity(config.isSinglePR ? 1 : 0.4)
-            .help(config.isSinglePR ? "Review just this one PR." : "Untick both boxes above to review a single PR by number.")
         }
     }
 
@@ -406,23 +416,27 @@ struct ReviewWizardView: View {
 
     private var checkboxes: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Toggle(isOn: $markReady) {
-                Text("Mark clean PRs ready for review").font(.caption)
+            if config.canMarkReady {
+                Toggle(isOn: $markReady) {
+                    Text("Mark clean PRs ready for review").font(.caption)
+                }
+                .help("Mark perfectly-clean PRs ready for review.")
+                .transition(rowTransition)
             }
-            .disabled(!config.canMarkReady)
-            .help(config.canMarkReady ? "Mark perfectly-clean PRs ready for review." : "You only mark your own PRs ready.")
-
-            Toggle(isOn: $leaveReviews) {
-                Text("Leave reviews (CLAUDE.md format)").font(.caption)
+            if config.canLeaveReviews {
+                Toggle(isOn: $leaveReviews) {
+                    Text("Leave reviews (CLAUDE.md format)").font(.caption)
+                }
+                .help("Post per-line reviews on these PRs.")
+                .transition(rowTransition)
             }
-            .disabled(!config.canLeaveReviews)
-            .help(config.canLeaveReviews ? "Post per-line reviews on these PRs." : "You don't review your own PRs.")
-
-            Toggle(isOn: $replyToReviews) {
-                Text("Reply to others' review threads").font(.caption)
+            if config.canReplyToReviews {
+                Toggle(isOn: $replyToReviews) {
+                    Text("Reply to others' review threads").font(.caption)
+                }
+                .help("Reply \"Fixed in <hash>\" on threads others left.")
+                .transition(rowTransition)
             }
-            .disabled(!config.canReplyToReviews)
-            .help(config.canReplyToReviews ? "Reply \"Fixed in <hash>\" on threads others left." : "Only applies to your own PRs.")
         }
         .toggleStyle(.checkbox)
     }
