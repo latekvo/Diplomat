@@ -1,144 +1,11 @@
 import SwiftUI
 import AppKit
+import ArgentUtilsCore
 
-// MARK: - Review depth (the complexity slider)
-
-/// The review-complexity continuum, from a fast static read all the way to a
-/// maximal E2E run with a double-pass hard-repro verification. Each level
-/// subsumes the ones below it; the slider picks one and its `promptFragment`
-/// is dropped straight into the agent prompt.
-enum ReviewDepth: Int, CaseIterable, Identifiable {
-    case quick, standard, deep, max
-    var id: Int { rawValue }
-
-    var title: String {
-        switch self {
-        case .quick:    return "Quick static pass"
-        case .standard: return "Standard swarm"
-        case .deep:     return "Deep · hard repro"
-        case .max:      return "Full E2E ×2"
-        }
-    }
-    /// One-liner shown under the slider so the level reads at a glance.
-    var blurb: String {
-        switch self {
-        case .quick:    return "Read each diff, flag obvious issues. Nothing run."
-        case .standard: return "Swarm per PR across the review lenses; verify findings."
-        case .deep:     return "Swarm + concrete repro before & after every on-branch fix."
-        case .max:      return "Run each PR E2E; second independent pass; repro-verified."
-        }
-    }
-    /// The chunk of agent instructions describing how hard to review.
-    var promptFragment: String {
-        switch self {
-        case .quick:
-            return "Do a QUICK STATIC review of each PR: read the full diff and the surrounding code it touches, and flag obvious bugs, regressions, scope creep and bad practices. You don't need to run or reproduce anything — this is a fast read-through pass."
-        case .standard:
-            return "For each PR, dispatch a swarm of review agents (3–8) covering the standard lenses — correctness, scope/simplification, edge cases (nulls, boundaries, errors, concurrency) and ripple effects on callers/docs/tests. Treat every finding as a lead, not a verdict: verify it against the actual code before acting, then fix the real ones directly on the PR's branch."
-        case .deep:
-            return "For each PR, dispatch swarms of agents across the review lenses. For EVERY suspected issue, build a concrete, hard reproduction that proves it real BEFORE touching anything; then fix it directly on the PR's branch and re-run the same reproduction to confirm the fix lands. Keep dispatching fresh swarms at each PR until a full pass turns up nothing left to fix."
-        case .max:
-            return "Maximum rigor. For each PR: run it END-TO-END through its real entry point and confirm observable behaviour — not just that it compiles. Dispatch swarms across every review lens; every finding gets a concrete hard reproduction before the fix and the SAME repro re-run after to prove the fix lands. Then do a SECOND, independent verification pass over the PR to catch anything the first missed. Fix directly on the branches, and keep dispatching swarms until TWO consecutive passes come back completely clean."
-        }
-    }
-}
-
-// MARK: - Review config + prompt builder
-
-/// Everything the wizard collects, plus the logic that turns it into the prompt
-/// handed to a fresh `claude` session. Pure value type so it's trivially testable
-/// from the headless self-test.
-struct ReviewConfig {
-    var depth: ReviewDepth = .deep
-    /// True ⇒ review my own PRs; false ⇒ review `username`'s PRs.
-    var targetIsMine: Bool = true
-    var username: String = ""
-    /// The authenticated viewer login (from the Store), used as the @handle for "mine".
-    var me: String = ""
-
-    var markReady: Bool = true       // mark perfectly-clean PRs ready for review
-    var leaveReviews: Bool = true    // effective only when reviewing OTHER people's PRs
-    var replyToReviews: Bool = true  // effective only when reviewing MY PRs
-
-    // Which PR states are in scope. With neither on, we fall back to reviewing a
-    // single PR by number (`specificPR`).
-    var includeDrafts: Bool = true
-    var includeReady: Bool = true
-    var specificPR: String = ""
-
-    /// The "final pass" escalation: a culminating full-E2E verdict pass. Off by default.
-    var finalPass: Bool = false
-
-    /// The @handle whose PRs we go through.
-    var authorHandle: String {
-        if targetIsMine { return me.isEmpty ? "me" : me }
-        let u = username.trimmingCharacters(in: .whitespaces)
-        return u.isEmpty ? "" : u
-    }
-
-    // Marking ready and replying to your own threads only make sense on your own
-    // PRs; leaving a formal review only makes sense on someone else's. Each toggle
-    // is greyed out where it doesn't apply.
-    var canMarkReady: Bool { targetIsMine }
-    var canLeaveReviews: Bool { !targetIsMine }
-    var canReplyToReviews: Bool { targetIsMine }
-    var effMarkReady: Bool { markReady && canMarkReady }
-    var effLeaveReviews: Bool { leaveReviews && canLeaveReviews }
-    var effReplyToReviews: Bool { replyToReviews && canReplyToReviews }
-
-    /// With neither PR-state box ticked, we review one PR by number instead.
-    var isSinglePR: Bool { !includeDrafts && !includeReady }
-    var trimmedPR: String { specificPR.trimmingCharacters(in: .whitespaces) }
-
-    /// SPAWN is only meaningful once we know what to review: either a valid PR
-    /// number (single-PR mode) or whose PRs + at least one PR state.
-    var isValid: Bool {
-        if isSinglePR { return Int(trimmedPR) != nil }
-        return !authorHandle.isEmpty
-    }
-
-    /// Human description of which PR states are in scope (multi-PR mode).
-    private var prKind: String {
-        switch (includeDrafts, includeReady) {
-        case (true, true):  return "currently-open PR (draft or ready-for-review)"
-        case (true, false): return "currently-open DRAFT PR"
-        default:            return "currently-open ready-for-review (non-draft) PR"
-        }
-    }
-
-    func buildPrompt() -> String {
-        var blocks: [String] = []
-
-        if isSinglePR {
-            blocks.append("Review PR #\(trimmedPR) in \(GH.owner)/\(GH.repo). Use the `gh` CLI to fetch it.")
-        } else {
-            let scope = targetIsMine
-                ? "each \(prKind) of mine (authored by @\(authorHandle))"
-                : "each \(prKind) authored by @\(authorHandle)"
-            blocks.append("Go through \(scope) in \(GH.owner)/\(GH.repo). Use the `gh` CLI to enumerate them.")
-        }
-        blocks.append(depth.promptFragment)
-        blocks.append("Hold to the bar in my CLAUDE.md throughout: prove every issue beyond reasonable doubt with a concrete reproduction before you act on it, scale the swarm to the work, and never report something fixed without re-running the repro to confirm it landed.")
-
-        if effMarkReady {
-            blocks.append("If a PR turns out perfectly clean — no issues, regressions or bad practices left — mark it ready for review and report its number to me. List every PR you cleared at the end.")
-        }
-        if effLeaveReviews {
-            blocks.append("Leave a formal GitHub review on each PR (POST a pull-request review, not a top-level comment), following the review-comment rules in my CLAUDE.md: one inline per-line comment per finding anchored to the exact line(s), describe the problem and its concrete impact only (never propose the fix), strip every internal severity/category marking from the text, and never leave an LGTM / \"no issues\" comment.")
-        }
-        if effReplyToReviews {
-            blocks.append("For review threads that OTHERS have left on these PRs: address each one, and never mark a thread resolved without first replying \"Fixed in <commit_hash>\" with the real commit hash.")
-        }
-
-        blocks.append("Keep dispatching swarms until every PR you go through comes back clean. No AI attribution anywhere in git/GitHub — commits authored as me, no Co-Authored-By, no \"Generated with\" taglines.")
-
-        if finalPass {
-            blocks.append("Then, one last FULL E2E pass on the real built binaries with massive swarms of code-analysis agents. Provide super-concrete reproductions for any finding you manage to surface. Deliver a verdict on each PR:\n• If it turns out perfect — confirm every previously-raised issue is resolved, and if so, APPROVE it.\n• If there are only a few nitpicks — point them out and ask for them to be resolved, but still APPROVE.\n• If there are major blockers — leave the review as \"changes requested\".")
-        }
-
-        return blocks.joined(separator: "\n\n")
-    }
-}
+// The review-depth model and ReviewConfig prompt builder now live in
+// ArgentUtilsCore (driven by core/review.json) and are shared verbatim with the
+// Linux front-end. This file keeps only the macOS-specific bits: the terminal
+// chooser, the AppleScript/iTerm spawner, and the SwiftUI wizard view.
 
 // MARK: - Terminal choice
 
@@ -291,7 +158,7 @@ struct ReviewWizardView: View {
     private let scrolls: Bool
     init(scrolls: Bool = true) { self.scrolls = scrolls }
 
-    @State private var depthValue: Double = Double(ReviewDepth.deep.rawValue)
+    @State private var depthValue: Double = ReviewWizardView.defaultDepthValue()
     @State private var targetIsMine = true
     @State private var username = ""
     @State private var markReady = true
@@ -303,9 +170,27 @@ struct ReviewWizardView: View {
     @State private var finalPass = false
     @State private var status: String?
 
+    /// The review-depth levels, loaded once from the shared core.
+    private var depths: [ReviewDepth] { ReviewCatalog.depths() }
+    private var depthIndex: Int {
+        guard !depths.isEmpty else { return 0 }
+        return min(max(Int(depthValue), 0), depths.count - 1)
+    }
+    private var depth: ReviewDepth {
+        depths.isEmpty
+            ? ReviewDepth(id: "", title: "", blurb: "", fragment: "")
+            : depths[depthIndex]
+    }
+
+    private static func defaultDepthValue() -> Double {
+        let all = ReviewCatalog.depths()
+        let idx = all.firstIndex(where: { $0.id == ReviewCatalog.defaultDepthID() }) ?? 0
+        return Double(idx)
+    }
+
     private var config: ReviewConfig {
         ReviewConfig(
-            depth: ReviewDepth(rawValue: Int(depthValue)) ?? .deep,
+            depth: depth.id,
             targetIsMine: targetIsMine,
             username: username,
             me: store.effectiveMe,
@@ -317,7 +202,6 @@ struct ReviewWizardView: View {
             specificPR: specificPR,
             finalPass: finalPass)
     }
-    private var depth: ReviewDepth { config.depth }
 
     var body: some View {
         Group {
@@ -407,7 +291,7 @@ struct ReviewWizardView: View {
                 Text(depth.title).font(.caption.bold()).foregroundStyle(.primary)
             }
             Slider(value: $depthValue,
-                   in: 0...Double(ReviewDepth.allCases.count - 1),
+                   in: 0...Double(max(depths.count - 1, 0)),
                    step: 1)
                 .tint(tint)
             Text(depth.blurb).font(.system(size: 10)).foregroundStyle(.secondary)

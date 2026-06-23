@@ -1,4 +1,5 @@
 import SwiftUI
+import ArgentUtilsCore
 
 /// The settings screen — swapped in for the main panel body when the header gear
 /// is tapped. Two knobs: the GitHub handle to treat as "me", and which tool cards

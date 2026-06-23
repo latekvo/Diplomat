@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import ArgentUtilsCore
 
 struct ContentView: View {
     @EnvironmentObject var store: Store
@@ -145,7 +146,8 @@ struct ContentView: View {
 
     private func lookupView(_ n: Int) -> some View {
         let r = store.lookup(n)
-        let link = r.url ?? "https://github.com/\(GH.owner)/\(GH.repo)/issues/\(n)"
+        let cfg = try? CoreAssets.config()
+        let link = r.url ?? "https://github.com/\(cfg?.owner ?? "software-mansion")/\(cfg?.repo ?? "argent")/issues/\(n)"
         return VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text("#\(n)").font(.title3.bold().monospaced())

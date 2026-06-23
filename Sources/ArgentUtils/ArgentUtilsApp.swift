@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import ArgentUtilsCore
 
 @main
 struct ArgentUtilsApp: App {
@@ -204,7 +205,7 @@ enum Dump {
         let isUser = m.hasPrefix("user")
         let isSingle = m.hasPrefix("single")
         let cfg = ReviewConfig(
-            depth: .max,
+            depth: "max",
             targetIsMine: !isUser,
             username: isUser ? "someuser" : "",
             me: "latekvo",
@@ -216,7 +217,7 @@ enum Dump {
             specificPR: isSingle ? "337" : "",
             finalPass: m.contains("final"))
         let label = isSingle ? "single PR #337" : (isUser ? "someone else's PRs" : "my PRs")
-        print("== ReviewConfig: \(label) · depth=\(cfg.depth.title) ==\n")
+        print("== ReviewConfig: \(label) · depth=\(ReviewCatalog.depth(id: cfg.depth).title) ==\n")
         print("----- PROMPT -----")
         print(cfg.buildPrompt())
         if let file = try? AgentSpawner.writePrompt(cfg.buildPrompt()) {

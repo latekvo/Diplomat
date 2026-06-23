@@ -2,12 +2,12 @@ import Foundation
 
 /// Errors surfaced by the `gh` shell-out layer. Flaky-by-design: we just bubble
 /// the real failure up to the UI instead of trying to be clever.
-enum GHError: LocalizedError {
+public enum GHError: LocalizedError {
     case ghNotFound
     case process(code: Int32, stderr: String)
     case graphql(messages: [String])
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
         switch self {
         case .ghNotFound:
             return "`gh` CLI not found. Install GitHub CLI and run `gh auth login`."
@@ -22,10 +22,10 @@ enum GHError: LocalizedError {
 
 /// Thin wrapper around the `gh` CLI. We run the binary directly (args passed
 /// literally, so no shell-quoting headaches) and rely on `gh`'s own auth/config.
-enum GH {
-    static let owner = "software-mansion"
-    static let repo = "argent"
-
+/// The GraphQL queries are loaded from the shared `core/graphql` assets and the
+/// repo coordinates supplied as `$owner`/`$name` variables, so the query text
+/// itself stays repo-agnostic.
+public enum GH {
     private static var cachedPath: String?
 
     private static func ghPath() throws -> String {
@@ -44,8 +44,9 @@ enum GH {
 
     /// Last resort: ask a login shell where gh lives (covers exotic installs).
     private static func loginShellWhichGH() -> String? {
+        let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/sh"
         let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        proc.executableURL = URL(fileURLWithPath: shell)
         proc.arguments = ["-lc", "command -v gh"]
         let out = Pipe()
         proc.standardOutput = out
@@ -60,7 +61,7 @@ enum GH {
 
     /// Run `gh` with the given argv. stdout/stderr are redirected to temp files so
     /// large payloads can't deadlock a pipe buffer (and no cross-thread captures).
-    static func run(_ args: [String]) async throws -> Data {
+    public static func run(_ args: [String]) async throws -> Data {
         let path = try ghPath()
         let tmp = FileManager.default.temporaryDirectory
         let outURL = tmp.appendingPathComponent("argent-utils-\(UUID().uuidString).out")
@@ -104,7 +105,15 @@ enum GH {
         }
     }
 
-    static func graphql(_ query: String) async throws -> Data {
-        try await run(["api", "graphql", "-f", "query=\(query)"])
+    /// Run a shared `core/graphql` query. When `withRepo` is true the repo
+    /// coordinates from `core/config.json` are passed as `$owner`/`$name`.
+    public static func graphql(_ queryName: String, withRepo: Bool) async throws -> Data {
+        let query = try CoreAssets.graphql(queryName)
+        var args = ["api", "graphql", "-f", "query=\(query)"]
+        if withRepo {
+            let cfg = try CoreAssets.config()
+            args += ["-f", "owner=\(cfg.owner)", "-f", "name=\(cfg.repo)"]
+        }
+        return try await run(args)
     }
 }

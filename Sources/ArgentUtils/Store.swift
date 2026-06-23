@@ -1,68 +1,21 @@
 import SwiftUI
+import ArgentUtilsCore
 
-/// One dense row in the results list.
-struct DisplayItem: Identifiable {
-    let id: Int
-    let badge: String      // "#337"
-    let title: String
-    let url: String
-    let line2: String      // primary metadata
-    let line3: String?     // optional detail (skills / files / labels)
-}
-
-/// Reverse-lookup result: which lists a given PR/issue number lands on.
-struct LookupResult {
-    let number: Int
-    let onLists: [ToolKind]
-    let presence: String   // human description of what the number is
-    let url: String?       // canonical url if we know it (cached)
-    var isOnAnyList: Bool { !onLists.isEmpty }
-}
-
-/// The tools in the library. Each gets a unique SF Symbol + tint so they
-/// read at a glance.
-enum ToolKind: String, CaseIterable, Identifiable {
-    case skillPRs, installerPRs, staleReady, unaddressedIssues, myApproved, myUnaddressed
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .skillPRs: return "SKILL.md PRs"
-        case .installerPRs: return "Installer/CLI PRs"
-        case .staleReady: return "Stale Ready >10d"
-        case .unaddressedIssues: return "Unaddressed Issues"
-        case .myApproved: return "My Approved PRs"
-        case .myUnaddressed: return "My Unaddressed Reviews"
-        }
-    }
-    var subtitle: String {
-        switch self {
-        case .skillPRs: return "open PRs editing a SKILL.md"
-        case .installerPRs: return "open PRs in argent-installer / argent-cli"
-        case .staleReady: return "non-draft, ready >10 days"
-        case .unaddressedIssues: return "external, no team reply/assignee"
-        case .myApproved: return "my PRs that got an approval"
-        case .myUnaddressed: return "my PRs w/ an open thread I owe a reply"
-        }
-    }
-    var systemImage: String {
-        switch self {
-        case .skillPRs: return "book.closed.fill"
-        case .installerPRs: return "shippingbox.fill"
-        case .staleReady: return "hourglass.tophalf.filled"
-        case .unaddressedIssues: return "exclamationmark.bubble.fill"
-        case .myApproved: return "checkmark.seal.fill"
-        case .myUnaddressed: return "arrow.uturn.left.circle.fill"
-        }
-    }
+/// macOS UI mapping for a tool's tint. The catalog (`core/catalog.json`) carries
+/// a semantic colour *name* (so the macOS app keeps its native SwiftUI look) and
+/// a `#RRGGBB` fallback shared with the Linux front-end.
+extension ToolKind {
     var tint: Color {
-        switch self {
-        case .skillPRs: return .purple
-        case .installerPRs: return .orange
-        case .staleReady: return .red
-        case .unaddressedIssues: return .teal
-        case .myApproved: return .green
-        case .myUnaddressed: return .indigo
+        switch colorName {
+        case "purple": return .purple
+        case "orange": return .orange
+        case "red": return .red
+        case "teal": return .teal
+        case "green": return .green
+        case "indigo": return .indigo
+        case "pink": return .pink
+        case "blue": return .blue
+        default: return Color(hex: colorHex) ?? .gray
         }
     }
 }
@@ -81,20 +34,15 @@ final class Store: ObservableObject {
 
     // MARK: persisted settings
 
-    /// User-specified GitHub handle that overrides the gh-authenticated login for
-    /// the "my PRs" tools and the Review wizard. Empty = fall back to `me`.
     @Published var usernameOverride: String {
         didSet { UserDefaults.standard.set(usernameOverride, forKey: Keys.usernameOverride) }
     }
-    /// Tool cards the user has hidden, keyed by `ToolKind.rawValue`.
     @Published var hiddenTools: Set<String> {
         didSet { UserDefaults.standard.set(Array(hiddenTools), forKey: Keys.hiddenTools) }
     }
-    /// Per-tool tint overrides (`ToolKind.rawValue` → "#RRGGBB").
     @Published var colorOverrides: [String: String] {
         didSet { UserDefaults.standard.set(colorOverrides, forKey: Keys.colorOverrides) }
     }
-    /// Which terminal SPAWN AGENT opens (`SpawnTerminal.rawValue`).
     @Published var terminalChoice: String {
         didSet { UserDefaults.standard.set(terminalChoice, forKey: Keys.terminalChoice) }
     }
@@ -112,7 +60,7 @@ final class Store: ObservableObject {
         return o.isEmpty ? me : o
     }
 
-    /// A tool's tint: the user's override if set & valid, else its built-in default.
+    /// A tool's tint: the user's override if set & valid, else its catalog default.
     func tint(for kind: ToolKind) -> Color {
         if let hex = colorOverrides[kind.rawValue], let c = Color(hex: hex) { return c }
         return kind.tint
@@ -120,13 +68,10 @@ final class Store: ObservableObject {
     func setTint(_ color: Color, for kind: ToolKind) {
         colorOverrides[kind.rawValue] = color.hexRGB
     }
-    /// The terminal SPAWN AGENT will use, as a typed value (defaults to iTerm).
     var terminal: SpawnTerminal { SpawnTerminal(rawValue: terminalChoice) ?? .iterm }
-    /// Tools shown in the grid (and reverse-lookup checklist), in canonical order.
     var visibleTools: [ToolKind] {
         ToolKind.allCases.filter { !hiddenTools.contains($0.rawValue) }
     }
-    /// Show or hide a tool card; hiding the selected one re-points the selection.
     func setTool(_ kind: ToolKind, visible: Bool) {
         if visible {
             hiddenTools.remove(kind.rawValue)
@@ -136,8 +81,8 @@ final class Store: ObservableObject {
         }
     }
 
-    /// How often the data auto-refreshes in the background. Defaults to 5 minutes;
-    /// override with `ARGENT_UTILS_REFRESH_SECS` (clamped to ≥5s) for tuning/testing.
+    /// How often the data auto-refreshes. Defaults to 5 minutes; override with
+    /// `ARGENT_UTILS_REFRESH_SECS` (clamped to ≥5s) for tuning/testing.
     static var autoRefreshInterval: TimeInterval {
         let secs = ProcessInfo.processInfo.environment["ARGENT_UTILS_REFRESH_SECS"].flatMap(Double.init)
         return max(5, secs ?? 5 * 60)
@@ -151,32 +96,24 @@ final class Store: ObservableObject {
         colorOverrides = (defaults.dictionary(forKey: Keys.colorOverrides) as? [String: String]) ?? [:]
         terminalChoice = defaults.string(forKey: Keys.terminalChoice)
             ?? (SpawnTerminal.iterm.isInstalled ? SpawnTerminal.iterm.rawValue : SpawnTerminal.terminal.rawValue)
-        // If the default selection was hidden in a previous session, re-point it.
         if hiddenTools.contains(selected.rawValue),
            let first = ToolKind.allCases.first(where: { !hiddenTools.contains($0.rawValue) }) {
             selected = first
         }
 
-        // Don't spin a timer in the headless dump/lookup self-tests (those exit
-        // right after one fetch); only the live menu-bar app polls.
         let env = ProcessInfo.processInfo.environment
         let headless = env["ARGENT_UTILS_DUMP"] == "1" || env["ARGENT_UTILS_LOOKUP"] != nil
         if !headless {
             startAutoRefresh()
-            // Eagerly resolve the gh-authenticated user so the "my PRs" tools and
-            // the settings field reflect the real default before the first refresh.
             Task { await fetchMe() }
         }
     }
 
-    /// Cheap single-query fetch of the gh viewer login (the default identity).
     func fetchMe() async {
         guard me.isEmpty, let login = try? await API.fetchViewerLogin() else { return }
         me = login
     }
 
-    /// Fire a refresh every `autoRefreshInterval`, independent of whether the
-    /// panel is open — so the counts are fresh the moment you click the wrench.
     func startAutoRefresh() {
         guard autoRefreshTask == nil else { return }
         autoRefreshTask = Task { [weak self] in
@@ -208,78 +145,15 @@ final class Store: ObservableObject {
         isLoading = false
     }
 
-    func count(for kind: ToolKind) -> Int { items(for: kind).count }
+    // MARK: tool data (delegated to the shared core engine)
 
-    /// Reverse lookup: which lists does this PR/issue number appear on? Pure,
-    /// cache-only (instant, no network) and reuses the exact `items(for:)` filters
-    /// so it can never disagree with what the lists show.
-    func lookup(_ number: Int) -> LookupResult {
-        let onLists = visibleTools.filter { kind in
-            items(for: kind).contains { $0.id == number }
-        }
-        if let pr = prs.first(where: { $0.number == number }) {
-            return LookupResult(number: number, onLists: onLists,
-                                presence: "open PR · @\(pr.author) · \(pr.isDraft ? "draft" : "ready")",
-                                url: pr.url)
-        }
-        if let issue = issues.first(where: { $0.number == number }) {
-            return LookupResult(number: number, onLists: onLists,
-                                presence: "open issue · @\(issue.author) [\(issue.authorAssociation)]",
-                                url: issue.url)
-        }
-        return LookupResult(number: number, onLists: onLists,
-                            presence: "not in open PRs/issues (closed or unknown)",
-                            url: nil)
+    func count(for kind: ToolKind) -> Int {
+        ToolData.count(for: kind, prs: prs, issues: issues, me: effectiveMe)
     }
-
     func items(for kind: ToolKind) -> [DisplayItem] {
-        switch kind {
-        case .skillPRs:
-            return Filters.skillPRs(prs).sorted { $0.number > $1.number }.map { p in
-                let skills = p.files.filter(Filters.isSkillFile).map(Fmt.skillName).joined(separator: ", ")
-                return DisplayItem(
-                    id: p.number, badge: "#\(p.number)", title: p.title, url: p.url,
-                    line2: "@\(p.author) · \(Fmt.age(p.createdAt)) · \(p.isDraft ? "draft" : "ready")",
-                    line3: "skills: \(skills)")
-            }
-        case .installerPRs:
-            return Filters.installerPRs(prs).sorted { $0.number > $1.number }.map { p in
-                let fs = p.files.filter(Filters.isInstallerFile)
-                return DisplayItem(
-                    id: p.number, badge: "#\(p.number)", title: p.title, url: p.url,
-                    line2: "@\(p.author) · \(Fmt.age(p.createdAt)) · \(fs.count) file\(fs.count == 1 ? "" : "s")",
-                    line3: fs.map(Fmt.shortPath).joined(separator: "\n"))
-            }
-        case .staleReady:
-            return Filters.staleReadyPRs(prs).sorted { $0.readyAt < $1.readyAt }.map { p in
-                let d = Fmt.days(p.readyAt)
-                return DisplayItem(
-                    id: p.number, badge: "#\(p.number)", title: p.title, url: p.url,
-                    line2: "@\(p.author) · ready \(d)d · \(p.readyForReviewAt == nil ? "born-ready" : "converted")",
-                    line3: nil)
-            }
-        case .unaddressedIssues:
-            return Filters.unaddressedExternalIssues(issues).sorted { $0.createdAt < $1.createdAt }.map { i in
-                DisplayItem(
-                    id: i.number, badge: "#\(i.number)", title: i.title, url: i.url,
-                    line2: "@\(i.author) [\(i.authorAssociation)] · \(Fmt.age(i.createdAt)) · \(i.commentCount)c",
-                    line3: i.labels.isEmpty ? nil : "labels: \(i.labels.joined(separator: ", "))")
-            }
-        case .myApproved:
-            return Filters.myApprovedPRs(prs, me: effectiveMe).sorted { $0.number > $1.number }.map { p in
-                DisplayItem(
-                    id: p.number, badge: "#\(p.number)", title: p.title, url: p.url,
-                    line2: "@\(p.author) · \(Fmt.age(p.createdAt)) · approved · \(p.isDraft ? "draft" : "ready")",
-                    line3: nil)
-            }
-        case .myUnaddressed:
-            return Filters.myUnaddressedReviewPRs(prs, me: effectiveMe).sorted { $0.number > $1.number }.map { p in
-                let n = p.unaddressedThreads(me: effectiveMe).count
-                return DisplayItem(
-                    id: p.number, badge: "#\(p.number)", title: p.title, url: p.url,
-                    line2: "@\(p.author) · \(Fmt.age(p.createdAt)) · \(n) open thread\(n == 1 ? "" : "s")",
-                    line3: nil)
-            }
-        }
+        ToolData.items(for: kind, prs: prs, issues: issues, me: effectiveMe)
+    }
+    func lookup(_ number: Int) -> LookupResult {
+        ToolData.lookup(number, prs: prs, issues: issues, me: effectiveMe, visible: visibleTools)
     }
 }

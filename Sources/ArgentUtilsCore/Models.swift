@@ -2,96 +2,134 @@ import Foundation
 
 // MARK: - Domain models
 
-struct OpenPR: Identifiable {
-    let number: Int
-    let title: String
-    let url: String
-    let isDraft: Bool
-    let author: String
-    let createdAt: Date
+public struct OpenPR: Identifiable {
+    public let number: Int
+    public let title: String
+    public let url: String
+    public let isDraft: Bool
+    public let author: String
+    public let createdAt: Date
     /// Timestamp of the last "marked ready for review" event, if the PR was ever
     /// a draft that got converted. nil means it was opened ready ("born ready").
-    let readyForReviewAt: Date?
-    let files: [String]
+    public let readyForReviewAt: Date?
+    public let files: [String]
     /// GitHub's aggregate review state: "APPROVED" / "CHANGES_REQUESTED" /
     /// "REVIEW_REQUIRED", or nil when no review is required.
-    let reviewDecision: String?
-    let reviewThreads: [ReviewThread]
+    public let reviewDecision: String?
+    public let reviewThreads: [ReviewThread]
 
-    var id: Int { number }
+    public var id: Int { number }
     /// Best-effort "has been ready since" timestamp.
-    var readyAt: Date { readyForReviewAt ?? createdAt }
+    public var readyAt: Date { readyForReviewAt ?? createdAt }
+
+    public init(number: Int, title: String, url: String, isDraft: Bool, author: String,
+                createdAt: Date, readyForReviewAt: Date?, files: [String],
+                reviewDecision: String?, reviewThreads: [ReviewThread]) {
+        self.number = number
+        self.title = title
+        self.url = url
+        self.isDraft = isDraft
+        self.author = author
+        self.createdAt = createdAt
+        self.readyForReviewAt = readyForReviewAt
+        self.files = files
+        self.reviewDecision = reviewDecision
+        self.reviewThreads = reviewThreads
+    }
 
     /// Review threads on *my* PR that I still owe a response on: resolvable, not
-    /// resolved, and whose most-recent comment isn't mine. i.e. a reviewer pinged
-    /// and I neither replied nor marked it resolved.
-    func unaddressedThreads(me: String) -> [ReviewThread] {
+    /// resolved, and whose most-recent comment isn't mine.
+    public func unaddressedThreads(me: String) -> [ReviewThread] {
         reviewThreads.filter { $0.viewerCanResolve && !$0.isResolved && $0.lastCommentAuthor != me }
     }
 }
 
 /// A PR review conversation thread (one inline comment chain).
-struct ReviewThread {
-    let isResolved: Bool
-    /// True when the viewer is allowed to mark the thread resolved — GitHub only
-    /// returns this for live, unresolved threads, so it doubles as "still open".
-    let viewerCanResolve: Bool
-    let lastCommentAuthor: String?
+public struct ReviewThread {
+    public let isResolved: Bool
+    public let viewerCanResolve: Bool
+    public let lastCommentAuthor: String?
+
+    public init(isResolved: Bool, viewerCanResolve: Bool, lastCommentAuthor: String?) {
+        self.isResolved = isResolved
+        self.viewerCanResolve = viewerCanResolve
+        self.lastCommentAuthor = lastCommentAuthor
+    }
 }
 
-struct OpenIssue: Identifiable {
-    let number: Int
-    let title: String
-    let url: String
-    let author: String
-    let authorAssociation: String
-    let createdAt: Date
-    let updatedAt: Date
-    let commentCount: Int
-    let assignees: [String]
-    let labels: [String]
-    /// True if anyone with write-ish association (member/owner/collaborator) commented.
-    let memberResponded: Bool
+public struct OpenIssue: Identifiable {
+    public let number: Int
+    public let title: String
+    public let url: String
+    public let author: String
+    public let authorAssociation: String
+    public let createdAt: Date
+    public let updatedAt: Date
+    public let commentCount: Int
+    public let assignees: [String]
+    public let labels: [String]
+    public let memberResponded: Bool
 
-    var id: Int { number }
-    var isExternal: Bool { !["MEMBER", "OWNER"].contains(authorAssociation) }
-    var isAddressed: Bool { memberResponded || !assignees.isEmpty }
+    public var id: Int { number }
+    public var isExternal: Bool { !Filters.orgAssociations.contains(authorAssociation) }
+    public var isAddressed: Bool { memberResponded || !assignees.isEmpty }
+
+    public init(number: Int, title: String, url: String, author: String,
+                authorAssociation: String, createdAt: Date, updatedAt: Date,
+                commentCount: Int, assignees: [String], labels: [String],
+                memberResponded: Bool) {
+        self.number = number
+        self.title = title
+        self.url = url
+        self.author = author
+        self.authorAssociation = authorAssociation
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.commentCount = commentCount
+        self.assignees = assignees
+        self.labels = labels
+        self.memberResponded = memberResponded
+    }
 }
 
-// MARK: - Filters (the actual tool logic, kept pure & testable)
+// MARK: - Filters (the tool logic, data-driven from core/filters.json)
 
-enum Filters {
-    static func isSkillFile(_ path: String) -> Bool { path.lowercased().hasSuffix("skill.md") }
+public enum Filters {
+    private static let cfg: CoreAssets.Filters? = try? CoreAssets.filters()
 
-    /// "Argent installer CLI code" — interpreted broadly as the installer package
-    /// plus the shell CLI package. Tweak here if you want it narrower.
-    static let installerPrefixes = ["packages/argent-installer/", "packages/argent-cli/"]
-    static func isInstallerFile(_ path: String) -> Bool {
+    public static func isSkillFile(_ path: String) -> Bool {
+        guard let suffix = cfg?.skillSuffix else { return false }
+        return path.lowercased().hasSuffix(suffix)
+    }
+    public static var installerPrefixes: [String] { cfg?.installerPrefixes ?? [] }
+    public static func isInstallerFile(_ path: String) -> Bool {
         installerPrefixes.contains { path.contains($0) }
     }
-
     /// Associations that count as "the team already touched this".
-    static let team: Set<String> = ["MEMBER", "OWNER", "COLLABORATOR"]
+    public static let team: Set<String> = Set((try? CoreAssets.filters())?.team ?? [])
+    /// Associations that count as "an org member authored this".
+    public static let orgAssociations: Set<String> =
+        Set((try? CoreAssets.filters())?.orgAssociations ?? [])
 
-    static func skillPRs(_ prs: [OpenPR]) -> [OpenPR] {
+    public static func skillPRs(_ prs: [OpenPR]) -> [OpenPR] {
         prs.filter { $0.files.contains(where: isSkillFile) }
     }
-    static func installerPRs(_ prs: [OpenPR]) -> [OpenPR] {
+    public static func installerPRs(_ prs: [OpenPR]) -> [OpenPR] {
         prs.filter { $0.files.contains(where: isInstallerFile) }
     }
-    static func staleReadyPRs(_ prs: [OpenPR], now: Date = Date()) -> [OpenPR] {
-        prs.filter { !$0.isDraft && now.timeIntervalSince($0.readyAt) > 10 * 86400 }
+    public static func staleReadyPRs(_ prs: [OpenPR], now: Date = Date()) -> [OpenPR] {
+        let days = Double(cfg?.staleReadyDays ?? 10)
+        return prs.filter { !$0.isDraft && now.timeIntervalSince($0.readyAt) > days * 86400 }
     }
-    static func unaddressedExternalIssues(_ issues: [OpenIssue]) -> [OpenIssue] {
+    public static func unaddressedExternalIssues(_ issues: [OpenIssue]) -> [OpenIssue] {
         issues.filter { $0.isExternal && !$0.isAddressed }
     }
-    /// My open PRs that have picked up an approval.
-    static func myApprovedPRs(_ prs: [OpenPR], me: String) -> [OpenPR] {
+    public static func myApprovedPRs(_ prs: [OpenPR], me: String) -> [OpenPR] {
         guard !me.isEmpty else { return [] }
-        return prs.filter { $0.author == me && $0.reviewDecision == "APPROVED" }
+        let approved = cfg?.approvedDecision ?? "APPROVED"
+        return prs.filter { $0.author == me && $0.reviewDecision == approved }
     }
-    /// My open PRs carrying at least one review thread I haven't addressed.
-    static func myUnaddressedReviewPRs(_ prs: [OpenPR], me: String) -> [OpenPR] {
+    public static func myUnaddressedReviewPRs(_ prs: [OpenPR], me: String) -> [OpenPR] {
         guard !me.isEmpty else { return [] }
         return prs.filter { $0.author == me && !$0.unaddressedThreads(me: me).isEmpty }
     }
@@ -99,25 +137,25 @@ enum Filters {
 
 // MARK: - Tiny formatting helpers
 
-enum Fmt {
-    static func age(_ date: Date, now: Date = Date()) -> String {
+public enum Fmt {
+    public static func age(_ date: Date, now: Date = Date()) -> String {
         let s = max(0, now.timeIntervalSince(date))
         if s >= 86400 { return "\(Int(s / 86400))d" }
         if s >= 3600 { return "\(Int(s / 3600))h" }
         return "\(Int(s / 60))m"
     }
-    static func days(_ date: Date, now: Date = Date()) -> Int {
+    public static func days(_ date: Date, now: Date = Date()) -> Int {
         Int(max(0, now.timeIntervalSince(date)) / 86400)
     }
     /// ".../argent-native-profiler/SKILL.md" -> "argent-native-profiler"
-    static func skillName(_ path: String) -> String {
+    public static func skillName(_ path: String) -> String {
         let parts = path.split(separator: "/")
         return parts.count >= 2 ? String(parts[parts.count - 2]) : path
     }
-    static func shortPath(_ path: String) -> String {
+    public static func shortPath(_ path: String) -> String {
         path.replacingOccurrences(of: "packages/", with: "")
     }
-    static func clock(_ date: Date?) -> String {
+    public static func clock(_ date: Date?) -> String {
         guard let date else { return "—" }
         let f = DateFormatter()
         f.dateFormat = "HH:mm"
@@ -127,36 +165,14 @@ enum Fmt {
 
 // MARK: - GitHub API (GraphQL via the gh CLI)
 
-enum API {
+public enum API {
     /// The authenticated user's GitHub login — needed to find "my" PRs.
-    static func fetchViewerLogin() async throws -> String {
-        try await graphqlDecoded("{ viewer { login } }", as: ViewerResponse.self).data.viewer.login
+    public static func fetchViewerLogin() async throws -> String {
+        try await graphqlDecoded("viewer", withRepo: false, as: ViewerResponse.self).data.viewer.login
     }
 
-    static func fetchOpenPRs() async throws -> [OpenPR] {
-        // reviewThreads is the expensive leg of this query — keep `first` modest
-        // so GitHub doesn't time the whole thing out (it occasionally does at 100).
-        let q = """
-        { repository(owner: "\(GH.owner)", name: "\(GH.repo)") {
-            pullRequests(states: OPEN, first: 100, orderBy: {field: CREATED_AT, direction: DESC}) {
-              nodes {
-                number title url isDraft createdAt reviewDecision
-                author { login }
-                files(first: 100) { nodes { path } }
-                timelineItems(itemTypes: [READY_FOR_REVIEW_EVENT], last: 1) {
-                  nodes { __typename ... on ReadyForReviewEvent { createdAt } }
-                }
-                reviewThreads(first: 50) {
-                  nodes {
-                    isResolved viewerCanResolve
-                    comments(last: 1) { nodes { author { login } } }
-                  }
-                }
-              }
-            }
-        } }
-        """
-        let resp = try await graphqlDecoded(q, as: PRResponse.self)
+    public static func fetchOpenPRs() async throws -> [OpenPR] {
+        let resp = try await graphqlDecoded("prs", withRepo: true, as: PRResponse.self)
         return resp.data.repository.pullRequests.nodes.map { n in
             OpenPR(
                 number: n.number,
@@ -179,21 +195,8 @@ enum API {
         }
     }
 
-    static func fetchOpenIssues() async throws -> [OpenIssue] {
-        let q = """
-        { repository(owner: "\(GH.owner)", name: "\(GH.repo)") {
-            issues(states: OPEN, first: 100, orderBy: {field: CREATED_AT, direction: DESC}) {
-              nodes {
-                number title url createdAt updatedAt authorAssociation
-                author { login }
-                assignees(first: 10) { nodes { login } }
-                labels(first: 20) { nodes { name } }
-                comments(first: 100) { totalCount nodes { authorAssociation } }
-              }
-            }
-        } }
-        """
-        let resp = try await graphqlDecoded(q, as: IssueResponse.self)
+    public static func fetchOpenIssues() async throws -> [OpenIssue] {
+        let resp = try await graphqlDecoded("issues", withRepo: true, as: IssueResponse.self)
         return resp.data.repository.issues.nodes.map { n in
             OpenIssue(
                 number: n.number,
@@ -212,13 +215,13 @@ enum API {
     }
 
     /// Run a GraphQL query and decode it, retrying once on failure. GitHub
-    /// intermittently times these heavier queries out ("Something went wrong…"),
-    /// so a single retry turns a transient blip into a non-event.
-    private static func graphqlDecoded<T: Decodable>(_ query: String, as: T.Type) async throws -> T {
+    /// intermittently times these heavier queries out, so a single retry turns a
+    /// transient blip into a non-event.
+    private static func graphqlDecoded<T: Decodable>(_ queryName: String, withRepo: Bool, as: T.Type) async throws -> T {
         var lastError: Error?
         for attempt in 0..<2 {
             do {
-                let data = try await GH.graphql(query)
+                let data = try await GH.graphql(queryName, withRepo: withRepo)
                 try checkGraphQLErrors(data)
                 return try makeDecoder().decode(T.self, from: data)
             } catch {
