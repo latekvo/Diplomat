@@ -35,10 +35,12 @@ from .widgets import (
     hline,
     tint_bg,
 )
+from .conflictwizardview import ConflictWizardView
 from .wizardview import WizardView
 from .models import Fmt
 
 _REVIEW_TINT = "#FF2D78"
+_CONFLICT_TINT = "#32ADE6"
 
 
 def _clear_layout(layout) -> None:
@@ -72,7 +74,7 @@ class Panel(QWidget):
         super().__init__()
         self.store = store
         self._show_settings = False
-        self._show_wizard = False
+        self._active_action: str | None = None  # None | "review" | "conflicts"
 
         self.setWindowFlags(
             Qt.WindowType.Tool
@@ -223,6 +225,13 @@ class Panel(QWidget):
         wizard_scroll.setWidget(self.wizard)
         self.results.addWidget(wizard_scroll)  # index 3
 
+        self.conflict_wizard = ConflictWizardView(self.store)
+        conflict_scroll = QScrollArea()
+        conflict_scroll.setWidgetResizable(True)
+        conflict_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        conflict_scroll.setWidget(self.conflict_wizard)
+        self.results.addWidget(conflict_scroll)  # index 4
+
     # MARK: grid
 
     def _rebuild_grid(self) -> None:
@@ -237,7 +246,7 @@ class Panel(QWidget):
                 subtitle=tool.subtitle,
                 hex_color=self.store.tint(tool.id),
                 count=self.store.count(tool.id) if loaded else None,
-                selected=(self.store.selected == tool.id and not self._show_wizard),
+                selected=(self.store.selected == tool.id and self._active_action is None),
             )
             card.clicked.connect(lambda tid=tool.id: self._select_tool(tid))
             self.grid.addWidget(card, rowi, col)
@@ -246,26 +255,40 @@ class Panel(QWidget):
                 col = 0
                 rowi += 1
 
-        action = ActionCard(
+        review_card = ActionCard(
             emoji="✅",
             title="Review PRs",
             subtitle="spawn a review agent",
             hex_color=_REVIEW_TINT,
-            selected=self._show_wizard,
+            selected=self._active_action == "review",
         )
-        action.clicked.connect(self._open_wizard)
-        self.grid.addWidget(action, rowi, col)
+        review_card.clicked.connect(lambda: self._open_action("review"))
+        self.grid.addWidget(review_card, rowi, col)
+        col += 1
+        if col == 2:
+            col = 0
+            rowi += 1
+
+        conflict_card = ActionCard(
+            emoji="🔀",
+            title="Resolve conflicts",
+            subtitle="merge main, fix conflicts",
+            hex_color=_CONFLICT_TINT,
+            selected=self._active_action == "conflicts",
+        )
+        conflict_card.clicked.connect(lambda: self._open_action("conflicts"))
+        self.grid.addWidget(conflict_card, rowi, col)
 
     # MARK: navigation
 
     def _select_tool(self, tool_id: str) -> None:
-        self._show_wizard = False
+        self._active_action = None
         self.store.selected = tool_id
         self._rebuild_grid()
         self._update_results()
 
-    def _open_wizard(self) -> None:
-        self._show_wizard = True
+    def _open_action(self, name: str) -> None:
+        self._active_action = name
         self._rebuild_grid()
         self._update_results()
 
@@ -288,8 +311,11 @@ class Panel(QWidget):
 
     def _update_results(self) -> None:
         trimmed = self.search.text().strip()
-        if self._show_wizard:
+        if self._active_action == "review":
             self.results.setCurrentIndex(3)
+            return
+        if self._active_action == "conflicts":
+            self.results.setCurrentIndex(4)
             return
         if trimmed and trimmed.isdigit():
             self._rebuild_lookup(int(trimmed))
@@ -429,6 +455,7 @@ class Panel(QWidget):
             self.error_banner.setText(self.store.error)
         self._rebuild_grid()
         self.wizard.refresh_identity()
+        self.conflict_wizard.refresh_identity()
         if not self._show_settings:
             self._update_results()
 

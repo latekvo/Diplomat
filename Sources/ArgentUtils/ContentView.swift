@@ -6,8 +6,12 @@ struct ContentView: View {
     @EnvironmentObject var store: Store
     @State private var query = ""
     @State private var showingSettings = false
-    @State private var showingReviewWizard = false
+    /// Which action wizard (if any) replaces the tool lists in the results pane.
+    @State private var activeAction: ActionPanel?
     @FocusState private var searchFocused: Bool
+
+    /// The action cards in the grid that open a wizard instead of selecting a tool.
+    private enum ActionPanel: Hashable { case review, conflicts }
 
     var body: some View {
         VStack(spacing: 8) {
@@ -110,18 +114,26 @@ struct ContentView: View {
                     kind: kind,
                     tint: store.tint(for: kind),
                     count: store.hasLoaded ? store.count(for: kind) : nil,
-                    selected: store.selected == kind && !showingReviewWizard
+                    selected: store.selected == kind && activeAction == nil
                 )
-                .onTapGesture { showingReviewWizard = false; store.selected = kind }
+                .onTapGesture { activeAction = nil; store.selected = kind }
             }
             ActionCard(
                 systemImage: "checklist",
                 title: "Review PRs",
                 subtitle: "spawn a review agent",
                 tint: .pink,
-                selected: showingReviewWizard
+                selected: activeAction == .review
             )
-            .onTapGesture { showingReviewWizard = true }
+            .onTapGesture { activeAction = .review }
+            ActionCard(
+                systemImage: "arrow.triangle.merge",
+                title: "Resolve conflicts",
+                subtitle: "merge main, fix conflicts",
+                tint: .cyan,
+                selected: activeAction == .conflicts
+            )
+            .onTapGesture { activeAction = .conflicts }
         }
     }
 
@@ -130,8 +142,11 @@ struct ContentView: View {
     @ViewBuilder
     private var resultsPane: some View {
         let trimmed = query.trimmingCharacters(in: .whitespaces)
-        if showingReviewWizard {
-            ReviewWizardView()
+        if let activeAction {
+            switch activeAction {
+            case .review:    ReviewWizardView()
+            case .conflicts: ConflictWizardView()
+            }
         } else if !trimmed.isEmpty, let n = Int(trimmed) {
             ScrollView { lookupView(n) }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

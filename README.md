@@ -1,8 +1,9 @@
 # Argent Utils
 
 A tiny **menu-bar / system-tray applet** — a personal dashboard of Argent-repo
-triage tools. Click the wrench, get a dense panel with six utilities. Hacky on
-purpose, optimized for *me*, not the public.
+triage tools. Click the wrench, get a dense panel with six utilities plus two
+spawn-an-agent actions (Review PRs, Resolve conflicts). Hacky on purpose,
+optimized for *me*, not the public.
 
 Targets `software-mansion/argent` and shells out to the authenticated `gh` CLI.
 
@@ -62,6 +63,26 @@ change the target/scope, so the prompt only ever offers what makes sense.
 > Preview the exact assembled prompt without launching anything:
 > ```bash
 > ARGENT_UTILS_PRINT_PROMPT=mine swift run ArgentUtils   # also: =user (someone else's), =single (one PR)
+> ```
+
+## Actions — Resolve conflicts
+
+A second grid card, **Resolve conflicts**, spawns a detached agent the same way (fresh
+terminal, `claude "<prompt>"` in `~/dev/argent`) but for keeping branches merge-able. A
+single three-way selector picks *whose* PRs to sweep:
+
+- **Mine** — every currently-open PR authored by the resolved handle (see Settings).
+- **Someone else's** — a handle field lights up; sweep that user's open PRs.
+- **Specific PR** — a PR-number field lights up; do just that one.
+
+For each PR it merges the latest `origin/main` into the branch. **Clean merges are left
+untouched** — only where the merge *conflicts* does it resolve every conflict and push the
+merge commit back to the PR's remote branch. The contextual field (handle / PR number)
+appears only for the target it applies to.
+
+> Preview the assembled prompt without launching anything:
+> ```bash
+> ARGENT_UTILS_PRINT_PROMPT=conflicts-mine swift run ArgentUtils   # also: =conflicts-user, =conflicts-single
 > ```
 
 ## Settings
@@ -163,8 +184,9 @@ within a session (no `KeepAlive`) — it just returns next login.
 ARGENT_UTILS_DUMP=1 swift run ArgentUtils            # real fetch+filter pipeline, prints all 6 tools, exits
 ARGENT_UTILS_LOOKUP=337 swift run ArgentUtils        # reverse-lookup one number through the real Store
 ARGENT_UTILS_PRINT_PROMPT=mine swift run ArgentUtils # assemble + print a Review-PRs prompt (mine|user|single)
+                                                     #   conflicts-mine|conflicts-user|conflicts-single → Resolve-conflicts prompt
 ARGENT_UTILS_SETTINGS_DUMP=1 ./ArgentUtils.app/Contents/MacOS/ArgentUtils  # resolved persisted settings
-ARGENT_UTILS_RENDER=settings ./ArgentUtils.app/Contents/MacOS/ArgentUtils  # snapshot a screen to PNG (settings|wizard|panel)
+ARGENT_UTILS_RENDER=settings ./ArgentUtils.app/Contents/MacOS/ArgentUtils  # snapshot a screen to PNG (settings|wizard|conflicts|panel)
 
 # The shared core itself is independently buildable & testable (also on Linux):
 swift run ArgentUtilsCoreSmoke                        # loads core/, runs filters + prompt assertions
@@ -183,8 +205,8 @@ The `SETTINGS_DUMP` / `RENDER` checks read UserDefaults, so run them through the
 ## Architecture
 
 The triage logic is single-sourced in [`core/`](core/README.md) — language-neutral
-GraphQL queries, the tool catalog, filter constants, and the review-prompt
-fragments. Both front-ends load it and only differ in rendering:
+GraphQL queries, the tool catalog, filter constants, and the review/resolve-conflicts
+prompt fragments. Both front-ends load it and only differ in rendering:
 
 ```
 core/                          ← shared source of truth (see core/README.md)
@@ -194,11 +216,13 @@ Sources/
     GH.swift                     gh CLI shell-out (GraphQL via core/graphql)
     Models.swift                 domain models, Filters, Fmt, API
     Review.swift                 ReviewDepth + ReviewConfig prompt builder (from core/review.json)
+    Conflict.swift               ConflictConfig prompt builder (from core/conflicts.json)
     ToolKind.swift               tool catalog enum + DisplayItem/LookupResult + pure ToolData engine
   ArgentUtils/                 ← macOS SwiftUI app — thin UI over the core
     ArgentUtilsApp.swift         @main app + MenuBarExtra + headless dump/prompt/render modes
-    ContentView.swift            SwiftUI panel (tool + Review-PRs grid, result rows)
-    ReviewWizard.swift           Review-PRs wizard (SwiftUI) + iTerm/Terminal spawner
+    ContentView.swift            SwiftUI panel (tool grid + Review/Resolve-conflicts cards, result rows)
+    ReviewWizard.swift           Review-PRs wizard (SwiftUI) + shared SPAWN button + iTerm/Terminal spawner
+    ConflictWizard.swift         Resolve-conflicts wizard (SwiftUI)
     SettingsView.swift           settings screen (username, tool color/visibility, terminal)
     Store.swift                  ObservableObject; tints + settings; delegates logic to ToolData
     Color+Hex.swift              Color ↔ "#RRGGBB" for persisted tint overrides

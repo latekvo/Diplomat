@@ -59,7 +59,9 @@ def run(what: str, out: str) -> int:
         panel.search.setText("389")
         panel._update_results()
     elif what == "wizard":
-        panel._open_wizard()
+        panel._open_action("review")
+    elif what == "conflicts":
+        panel._open_action("conflicts")
     elif what == "settings":
         panel._toggle_settings()
     else:  # panel

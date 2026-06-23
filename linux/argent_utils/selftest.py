@@ -91,6 +91,8 @@ def run_lookup(n: int) -> int:
 
 def run_print_prompt(mode: str) -> int:
     m = mode.lower()
+    if m.startswith("conflict"):
+        return _run_conflict_prompt(m)
     is_user = m.startswith("user")
     is_single = m.startswith("single")
     cfg = ReviewConfig(
@@ -109,6 +111,30 @@ def run_print_prompt(mode: str) -> int:
     label = "single PR #337" if is_single else ("someone else's PRs" if is_user else "my PRs")
 
     print(f"== ReviewConfig: {label} · depth={review.depth_by_id(cfg.depth)['title']} ==\n")
+    print("----- PROMPT -----")
+    print(cfg.build_prompt())
+    print("\n----- SHELL COMMAND -----")
+    file = review.write_prompt(cfg.build_prompt())
+    print(review.shell_command(file))
+    return 0
+
+
+def _run_conflict_prompt(m: str) -> int:
+    """Resolve-conflicts variant: conflicts-user / conflicts-single / conflicts(-mine)."""
+    from .conflicts import ConflictConfig, Target
+
+    is_user = "user" in m
+    is_single = "single" in m
+    target = Target.SPECIFIC if is_single else (Target.SOMEONE if is_user else Target.MINE)
+    cfg = ConflictConfig(
+        target=target,
+        username="someuser" if is_user else "",
+        me="latekvo",
+        specific_pr="337" if is_single else "",
+    )
+    label = "single PR #337" if is_single else ("someone else's PRs" if is_user else "my PRs")
+
+    print(f"== ConflictConfig: {label} ==\n")
     print("----- PROMPT -----")
     print(cfg.build_prompt())
     print("\n----- SHELL COMMAND -----")

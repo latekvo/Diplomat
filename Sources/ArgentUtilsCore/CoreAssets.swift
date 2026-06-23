@@ -54,6 +54,11 @@ public enum CoreAssets {
         public let blocks: [String: String]
     }
 
+    public struct Conflicts: Decodable {
+        public let scope: [String: String]
+        public let blocks: [String: String]
+    }
+
     // MARK: - Directory resolution
 
     /// Candidate locations for `core/`, in priority order: an explicit override,
@@ -114,6 +119,7 @@ public enum CoreAssets {
     private static let _catalog = try? loadJSON("catalog.json", as: CatalogFile.self)
     private static let _filters = try? loadJSON("filters.json", as: Filters.self)
     private static let _review = try? loadJSON("review.json", as: Review.self)
+    private static let _conflicts = try? loadJSON("conflicts.json", as: Conflicts.self)
 
     public static func config() throws -> Config {
         guard let c = _config else { return try loadJSON("config.json", as: Config.self) }
@@ -133,6 +139,11 @@ public enum CoreAssets {
     public static func review() throws -> Review {
         guard let r = _review else { return try loadJSON("review.json", as: Review.self) }
         return r
+    }
+
+    public static func conflicts() throws -> Conflicts {
+        guard let c = _conflicts else { return try loadJSON("conflicts.json", as: Conflicts.self) }
+        return c
     }
 
     public static func graphql(_ name: String) throws -> String {

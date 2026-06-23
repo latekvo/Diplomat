@@ -73,3 +73,8 @@ def filters() -> dict:
 @functools.lru_cache(maxsize=1)
 def review() -> dict:
     return _read_json("review.json")
+
+
+@functools.lru_cache(maxsize=1)
+def conflicts() -> dict:
+    return _read_json("conflicts.json")

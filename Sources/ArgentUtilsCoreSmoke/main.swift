@@ -63,6 +63,20 @@ assert(single.buildPrompt().hasPrefix("Review PR #337 in \(cfg.owner)/\(cfg.repo
 assert(mine.buildPrompt().contains("No AI attribution"))
 print("prompt assembly assertions passed")
 
+section("conflict prompts")
+let cMine = ConflictConfig(me: me)
+let cOther = ConflictConfig(target: .someone, username: "someuser")
+let cSingle = ConflictConfig(target: .specific, specificPR: "337")
+print("mine valid=\(cMine.isValid) | other valid=\(cOther.isValid) | single valid=\(cSingle.isValid)")
+assert(cMine.isValid && cOther.isValid && cSingle.isValid)
+assert(!ConflictConfig(target: .specific, specificPR: "nope").isValid)
+assert(cMine.buildPrompt().contains("authored by @\(me)"))
+assert(cMine.buildPrompt().contains("For each, merge the latest `origin/main`"))
+assert(cSingle.buildPrompt().hasPrefix("Take PR #337 in \(cfg.owner)/\(cfg.repo)."))
+assert(cSingle.buildPrompt().contains("Merge the latest `origin/main`"))
+assert(cMine.buildPrompt().contains("No AI attribution"))
+print("conflict prompt assertions passed")
+
 if ProcessInfo.processInfo.environment["ARGENT_UTILS_DUMP"] == "1" {
     section("live gh dump (cross-check vs Python)")
     let viewer = try await API.fetchViewerLogin()

@@ -140,6 +140,38 @@ enum AgentSpawner {
     }
 }
 
+// MARK: - Shared SPAWN AGENT button
+
+/// The tinted "SPAWN AGENT" button shared by the Review and Resolve-conflicts
+/// wizards: full-width, coloured when the config is valid and grey when not, with
+/// a help string naming the terminal it will open.
+struct SpawnAgentButton: View {
+    let isValid: Bool
+    let tint: Color
+    let terminalTitle: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: "play.fill")
+                Text("SPAWN AGENT").bold().kerning(0.5)
+                Spacer()
+                Image(systemName: "terminal.fill").font(.caption2).opacity(0.8)
+            }
+            .foregroundStyle(.white)
+            .padding(.vertical, 8)
+            .padding(.horizontal, 10)
+            .frame(maxWidth: .infinity)
+            .background(RoundedRectangle(cornerRadius: 7).fill(isValid ? tint : Color.gray))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!isValid)
+        .help("Open a new \(terminalTitle) window running claude with this prompt.")
+    }
+}
+
 // MARK: - Review wizard (shown in the results area)
 
 /// The Review-PRs wizard: target, scope, depth and action toggles, then SPAWN.
@@ -344,23 +376,10 @@ struct ReviewWizardView: View {
     }
 
     private var spawnButton: some View {
-        Button { spawn() } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "play.fill")
-                Text("SPAWN AGENT").bold().kerning(0.5)
-                Spacer()
-                Image(systemName: "terminal.fill").font(.caption2).opacity(0.8)
-            }
-            .foregroundStyle(.white)
-            .padding(.vertical, 8)
-            .padding(.horizontal, 10)
-            .frame(maxWidth: .infinity)
-            .background(RoundedRectangle(cornerRadius: 7).fill(config.isValid ? tint : Color.gray))
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .disabled(!config.isValid)
-        .help("Open a new \(AgentSpawner.resolved(store.terminal).title) window running claude with this review prompt.")
+        SpawnAgentButton(isValid: config.isValid,
+                         tint: tint,
+                         terminalTitle: AgentSpawner.resolved(store.terminal).title,
+                         action: spawn)
     }
 
     private func statusLine(_ msg: String) -> some View {

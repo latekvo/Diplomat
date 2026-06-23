@@ -2,7 +2,7 @@
 
 The Linux port of the macOS menu-bar wrench: a **system-tray applet** with the
 same dense panel of six `software-mansion/argent` triage tools, reverse lookup,
-the Review-PRs wizard, and settings. It's a thin UI renderer over the shared
+the Review-PRs and Resolve-conflicts wizards, and settings. It's a thin UI renderer over the shared
 [`core/`](../core) assets — the triage logic is identical to the macOS app.
 
 Universal across desktops via Qt6's `QSystemTrayIcon` (StatusNotifierItem /
@@ -54,10 +54,11 @@ Override the agent's working directory with `ARGENT_UTILS_REPO` (default `~/dev/
 ARGENT_UTILS_DUMP=1        python -m argent_utils   # real fetch+filter, prints all 6 tools
 ARGENT_UTILS_LOOKUP=337    python -m argent_utils   # reverse-lookup one number
 ARGENT_UTILS_PRINT_PROMPT=mine python -m argent_utils  # assemble a Review prompt (mine|user|single)
+                                                       #   conflicts-mine|conflicts-user|conflicts-single → Resolve-conflicts prompt
 
 # Snapshot a panel state to PNG (no real display required):
 ARGENT_UTILS_RENDER=panel ARGENT_UTILS_RENDER_OUT=/tmp/p.png \
-    QT_QPA_PLATFORM=offscreen python -m argent_utils   # panel|lookup|wizard|settings
+    QT_QPA_PLATFORM=offscreen python -m argent_utils   # panel|lookup|wizard|conflicts|settings
 ARGENT_UTILS_REFRESH_SECS=30 ./argent-utils            # faster auto-refresh, for tuning
 ```
 
@@ -76,10 +77,12 @@ linux/argent_utils/
   models.py       domain models, Filters, Fmt, API (from core/)
   store.py        state, QSettings, tool catalog, row mapping, lookup
   review.py       ReviewConfig + prompt builder (from core/), terminal spawner
+  conflicts.py    ConflictConfig + prompt builder (from core/)
   widgets.py      cards, chips, rows
   panel.py        the popup panel (header, search, grid, results)
   settingsview.py settings screen
   wizardview.py   Review-PRs wizard
+  conflictwizardview.py  Resolve-conflicts wizard
   singleton.py    newest-wins pidfile
   render.py       headless PNG snapshots (UI checks)
   app.py          QSystemTrayIcon + lifecycle

@@ -200,8 +200,10 @@ enum Dump {
     /// Exercises the prompt builder + spawn-command assembly without any UI or
     /// network. `mode` is "user" to preview the someone-else's-PRs variant,
     /// anything else previews my-PRs. Mirrors the wizard's default toggle state.
+    /// Modes prefixed "conflict…" route to the Resolve-conflicts prompt instead.
     static func printPrompt(mode: String) {
         let m = mode.lowercased()
+        if m.hasPrefix("conflict") { printConflictPrompt(mode: m); return }
         let isUser = m.hasPrefix("user")
         let isSingle = m.hasPrefix("single")
         let cfg = ReviewConfig(
@@ -218,6 +220,32 @@ enum Dump {
             finalPass: m.contains("final"))
         let label = isSingle ? "single PR #337" : (isUser ? "someone else's PRs" : "my PRs")
         print("== ReviewConfig: \(label) · depth=\(ReviewCatalog.depth(id: cfg.depth).title) ==\n")
+        print("----- PROMPT -----")
+        print(cfg.buildPrompt())
+        if let file = try? AgentSpawner.writePrompt(cfg.buildPrompt()) {
+            let cmd = AgentSpawner.shellCommand(promptFile: file)
+            print("\n----- SHELL COMMAND -----")
+            print(cmd)
+            print("\n----- APPLESCRIPT (\(AgentSpawner.resolved(.iterm).title)) -----")
+            print(AgentSpawner.appleScript(for: AgentSpawner.resolved(.iterm), shellCommand: cmd))
+            try? FileManager.default.removeItem(at: file)
+        }
+    }
+
+    /// Same as `printPrompt`, but for the Resolve-conflicts wizard. `mode` selects
+    /// the variant: "conflicts-user" (someone else's), "conflicts-single" (one PR),
+    /// anything else (e.g. "conflicts" / "conflicts-mine") = my PRs.
+    static func printConflictPrompt(mode: String) {
+        let isUser = mode.contains("user")
+        let isSingle = mode.contains("single")
+        let target: ConflictConfig.Target = isSingle ? .specific : (isUser ? .someone : .mine)
+        let cfg = ConflictConfig(
+            target: target,
+            username: isUser ? "someuser" : "",
+            me: "latekvo",
+            specificPR: isSingle ? "337" : "")
+        let label = isSingle ? "single PR #337" : (isUser ? "someone else's PRs" : "my PRs")
+        print("== ConflictConfig: \(label) ==\n")
         print("----- PROMPT -----")
         print(cfg.buildPrompt())
         if let file = try? AgentSpawner.writePrompt(cfg.buildPrompt()) {

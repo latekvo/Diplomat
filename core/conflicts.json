@@ -1,0 +1,15 @@
+{
+  "_comment": "The Resolve-conflicts prompt model: scope templates + the action text blocks the wizard assembles into the agent prompt. Single source for both front-ends; the assembly order/conditions live as a tiny glue layer in each (see Conflict.swift / conflicts.py).",
+  "scope": {
+    "single": "Take PR #{pr} in {owner}/{repo}. Use the `gh` CLI to fetch it and check out its branch.",
+    "multi": "Find {scope} in {owner}/{repo}. Use the `gh` CLI to enumerate them, then go through EACH one.",
+    "scopeMine": "every currently-open PR of mine (authored by @{handle})",
+    "scopeOther": "every currently-open PR authored by @{handle}"
+  },
+  "blocks": {
+    "merge": "{lead} the latest `origin/main` into the PR's branch (e.g. `git merge --no-commit --no-ff origin/main` so you can inspect before committing). If it merges with NO conflicts there's nothing to resolve here — abort/undo the merge and leave that PR untouched. If there ARE conflicts, resolve EVERY one properly: understand both sides and produce a correct, coherent result that preserves the intent of the PR and of main — never a blind pick-one-side. Then complete the merge and push the merge commit to the PR's remote branch so the PR updates.",
+    "bar": "Treat a resolution as done only when it's actually right: the merged code must still build and make sense. Re-read each conflicted file end to end, and where the project has a fast check (build/typecheck/tests) run it before you push. Hold to the bar in my CLAUDE.md — prove the merge is sound, don't report a PR fixed on belief.",
+    "summary": "At the end give me a summary: which PRs had conflicts you resolved and pushed, which merged clean (left untouched), and any you couldn't safely resolve and why.",
+    "trailer": "No AI attribution anywhere in git/GitHub — merge commits authored as me, no Co-Authored-By, no \"Generated with\" taglines."
+  }
+}

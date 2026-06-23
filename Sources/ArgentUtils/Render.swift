@@ -40,6 +40,8 @@ enum Render {
             SettingsView(isPresented: .constant(true)).frame(height: 560)
         case "wizard":
             ReviewWizardView(scrolls: false).frame(height: 560)
+        case "conflicts":
+            ConflictWizardView(scrolls: false).frame(height: 560)
         default: // "panel" — the whole content view
             ContentView().frame(height: 580)
         }

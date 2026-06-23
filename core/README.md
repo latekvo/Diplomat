@@ -19,6 +19,7 @@ it up.
 | `catalog.json` | the six tools: id, title, subtitle, icon (`sfSymbol` for macOS, `emoji` for Linux), colour (`color` name for macOS, `colorHex` for Linux), in display order |
 | `filters.json` | filter constants: skill-file suffix, installer path prefixes, team/org associations, stale-ready day threshold, the `APPROVED` sentinel |
 | `review.json` | the Review-PRs prompt model: depth levels + scope/action text blocks the wizard assembles |
+| `conflicts.json` | the Resolve-conflicts prompt model: scope templates + the merge/resolve action blocks the wizard assembles |
 
 ## Contract notes
 
