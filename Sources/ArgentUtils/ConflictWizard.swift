@@ -93,11 +93,26 @@ struct ConflictWizardView: View {
             inputField(icon: "at", placeholder: "github username", text: $username)
                 .transition(rowTransition)
         case .specific:
-            inputField(icon: "number", placeholder: "PR # to update", text: $specificPR)
-                .transition(rowTransition)
+            VStack(alignment: .leading, spacing: 3) {
+                inputField(icon: "number", placeholder: "PR # or URL", text: $specificPR)
+                    .help("Update just this one PR — paste its number or GitHub URL.")
+                if let warning = prWarning {
+                    Text(warning)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.red.opacity(0.85))
+                }
+            }
+            .transition(rowTransition)
         case .mine:
             EmptyView()
         }
+    }
+
+    /// A hint under the PR field when a pasted URL points at a different repo.
+    private var prWarning: String? {
+        guard config.prRef.repoMismatch else { return nil }
+        let (owner, repo) = config.targetRepo
+        return "That PR isn't in \(owner)/\(repo)."
     }
 
     private func inputField(icon: String, placeholder: String, text: Binding<String>) -> some View {

@@ -14,6 +14,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from argent_utils import review  # noqa: E402
 from argent_utils.models import Filters, OpenIssue, OpenPR, ReviewThread  # noqa: E402
+from argent_utils.prref import parse_pr_ref  # noqa: E402
+from argent_utils.prtarget import PRTarget  # noqa: E402
 from argent_utils.store import Store  # noqa: E402
 
 NOW = datetime.now(timezone.utc)
@@ -70,23 +72,93 @@ def test_store_lookup():
 
 
 def test_review_prompt_blocks_by_target():
-    # My PRs: markReady + reply blocks, no formal-review block.
+    # My PRs: markReady + reply blocks, no formal-review block. We commit here,
+    # so no review-only guard and the commit-attribution rule stays in.
     mine = review.ReviewConfig(me="latekvo").build_prompt()
     assert "mark it ready for review" in mine
     assert 'replying "Fixed in <commit_hash>"' in mine
     assert "POST a pull-request review" not in mine
+    assert "ABSOLUTELY DO NOT touch their branch" not in mine
 
-    # Someone else's PRs: formal-review block only.
-    other = review.ReviewConfig(target_is_mine=False, username="someuser").build_prompt()
+    # Someone else's PRs: formal-review block only, plus a hard no-commit guard.
+    # We never touch their branch, so the commit-attribution rule is dropped.
+    other = review.ReviewConfig(
+        target=PRTarget.SOMEONE, username="someuser"
+    ).build_prompt()
     assert "POST a pull-request review" in other
     assert "mark it ready for review" not in other
+    assert "ABSOLUTELY DO NOT touch their branch" in other
+    assert "No AI attribution" not in other
 
-    # Single-PR mode (both scope boxes off): fetch one PR by number.
+    # Single-PR mode (Specific PR target): fetch one PR by number.
     single = review.ReviewConfig(
-        include_drafts=False, include_ready=False, specific_pr="337", me="latekvo"
+        target=PRTarget.SPECIFIC, specific_pr="337", me="latekvo"
     )
     assert single.is_single_pr and single.is_valid
     assert single.build_prompt().startswith("Review PR #337 in software-mansion/argent.")
+
+    # A whose-PRs sweep with no PR-state box ticked is invalid (would review nothing).
+    assert not review.ReviewConfig(
+        target=PRTarget.MINE, me="latekvo", include_drafts=False, include_ready=False
+    ).is_valid
+
+
+def test_pr_ref_parsing():
+    owner, repo = "software-mansion", "argent"
+
+    # Bare number, with or without a leading '#'.
+    assert parse_pr_ref("337", owner, repo).number == 337
+    assert parse_pr_ref("  #42 ", owner, repo).number == 42
+
+    # A full GitHub PR URL (trailing path allowed) for the target repo.
+    url = parse_pr_ref(f"https://github.com/{owner}/{repo}/pull/337/files", owner, repo)
+    assert url.number == 337 and url.is_valid and not url.repo_mismatch
+    assert parse_pr_ref(f"github.com/{owner}/{repo}/pull/9", owner, repo).number == 9
+
+    # The owner/repo#n shorthand, case-insensitive on the repo.
+    short = parse_pr_ref(f"{owner.upper()}/{repo}#12", owner, repo)
+    assert short.number == 12 and short.is_valid
+
+    # A URL for a different repo extracts the number but is flagged + invalid.
+    other = parse_pr_ref("https://github.com/other/proj/pull/5", owner, repo)
+    assert other.number == 5 and other.repo_mismatch and not other.is_valid
+
+    # Junk has no number.
+    assert parse_pr_ref("not a pr", owner, repo).number is None
+    assert parse_pr_ref("", owner, repo).number is None
+
+
+def test_review_single_pr_accepts_url():
+    # A pasted URL for the target repo resolves to the same single-PR prompt.
+    cfg = review.ReviewConfig(
+        target=PRTarget.SPECIFIC,
+        specific_pr="https://github.com/software-mansion/argent/pull/337",
+        me="latekvo",
+    )
+    assert cfg.is_valid
+    assert cfg.build_prompt().startswith("Review PR #337 in software-mansion/argent.")
+
+    # A URL for a different repo is rejected (SPAWN stays disabled).
+    wrong = review.ReviewConfig(
+        target=PRTarget.SPECIFIC,
+        specific_pr="https://github.com/other/proj/pull/9",
+        me="latekvo",
+    )
+    assert not wrong.is_valid and wrong.pr_ref.repo_mismatch
+
+
+def test_conflict_single_pr_accepts_url():
+    from argent_utils.conflicts import ConflictConfig, Target
+
+    ok = ConflictConfig(
+        target=Target.SPECIFIC,
+        specific_pr="https://github.com/software-mansion/argent/pull/337",
+    )
+    assert ok.is_valid
+    assert ok.build_prompt().startswith("Take PR #337 in software-mansion/argent.")
+
+    wrong = ConflictConfig(target=Target.SPECIFIC, specific_pr="https://github.com/x/y/pull/1")
+    assert not wrong.is_valid and wrong.pr_ref.repo_mismatch
 
 
 def test_review_prompt_trailer_has_no_ai_attribution():

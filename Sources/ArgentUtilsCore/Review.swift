@@ -6,12 +6,16 @@ public struct ReviewDepth: Identifiable {
     public let title: String
     public let blurb: String
     public let fragment: String
+    /// The "fix it on the branch" disposition for this depth, appended only when
+    /// we may actually commit. `nil` for flag-only depths / never used review-only.
+    public let onBranch: String?
 
-    public init(id: String, title: String, blurb: String, fragment: String) {
+    public init(id: String, title: String, blurb: String, fragment: String, onBranch: String? = nil) {
         self.id = id
         self.title = title
         self.blurb = blurb
         self.fragment = fragment
+        self.onBranch = onBranch
     }
 }
 
@@ -19,7 +23,7 @@ public struct ReviewDepth: Identifiable {
 public enum ReviewCatalog {
     public static func depths() -> [ReviewDepth] {
         guard let r = try? CoreAssets.review() else { return [] }
-        return r.depths.map { ReviewDepth(id: $0.id, title: $0.title, blurb: $0.blurb, fragment: $0.fragment) }
+        return r.depths.map { ReviewDepth(id: $0.id, title: $0.title, blurb: $0.blurb, fragment: $0.fragment, onBranch: $0.onBranch) }
     }
     public static func defaultDepthID() -> String {
         (try? CoreAssets.review())?.defaultDepth ?? depths().first?.id ?? ""
@@ -37,15 +41,18 @@ public enum ReviewCatalog {
 /// text comes from `core/review.json`; only the assembly order/conditions live
 /// here, shared verbatim with the Linux front-end.
 public struct ReviewConfig {
+    /// Whose PRs we review — the same axis the Resolve-conflicts wizard uses.
+    public typealias Target = PRTarget
+
     public var depth: String          // depth id; "" -> default
-    public var targetIsMine: Bool
+    public var target: Target
     public var username: String
     /// The authenticated viewer login (from the Store), used as the @handle for "mine".
     public var me: String
 
     public var markReady: Bool        // mark perfectly-clean PRs ready for review
-    public var leaveReviews: Bool     // effective only when reviewing OTHER people's PRs
-    public var replyToReviews: Bool   // effective only when reviewing MY PRs
+    public var leaveReviews: Bool     // formal review — for OTHERS' PRs (and a specific PR)
+    public var replyToReviews: Bool   // reply to others' threads — on MY PRs (and a specific PR)
 
     public var includeDrafts: Bool
     public var includeReady: Bool
@@ -54,12 +61,12 @@ public struct ReviewConfig {
     /// The "final pass" escalation: a culminating full-E2E verdict pass. Off by default.
     public var finalPass: Bool
 
-    public init(depth: String = "", targetIsMine: Bool = true, username: String = "",
+    public init(depth: String = "", target: Target = .mine, username: String = "",
                 me: String = "", markReady: Bool = true, leaveReviews: Bool = true,
                 replyToReviews: Bool = true, includeDrafts: Bool = true,
                 includeReady: Bool = true, specificPR: String = "", finalPass: Bool = false) {
         self.depth = depth.isEmpty ? ReviewCatalog.defaultDepthID() : depth
-        self.targetIsMine = targetIsMine
+        self.target = target
         self.username = username
         self.me = me
         self.markReady = markReady
@@ -71,27 +78,53 @@ public struct ReviewConfig {
         self.finalPass = finalPass
     }
 
-    /// The @handle whose PRs we go through.
+    /// The @handle whose PRs we go through (empty in single-PR mode).
     public var authorHandle: String {
-        if targetIsMine { return me.isEmpty ? "me" : me }
-        let u = username.trimmingCharacters(in: .whitespaces)
-        return u.isEmpty ? "" : u
+        switch target {
+        case .mine:
+            return me.isEmpty ? "me" : me
+        case .someone:
+            let u = username.trimmingCharacters(in: .whitespaces)
+            return u.isEmpty ? "" : u
+        case .specific:
+            return ""
+        }
     }
 
-    public var canMarkReady: Bool { targetIsMine }
-    public var canLeaveReviews: Bool { !targetIsMine }
-    public var canReplyToReviews: Bool { targetIsMine }
+    // A specific PR may be mine or someone's, so all three actions are offered.
+    public var canMarkReady: Bool { target != .someone }
+    public var canLeaveReviews: Bool { target != .mine }
+    public var canReplyToReviews: Bool { target != .someone }
     public var effMarkReady: Bool { markReady && canMarkReady }
     public var effLeaveReviews: Bool { leaveReviews && canLeaveReviews }
     public var effReplyToReviews: Bool { replyToReviews && canReplyToReviews }
 
-    /// With neither PR-state box ticked, we review one PR by number instead.
-    public var isSinglePR: Bool { !includeDrafts && !includeReady }
-    public var trimmedPR: String { specificPR.trimmingCharacters(in: .whitespaces) }
+    /// Review exactly one PR by number/URL instead of a whose-PRs sweep.
+    public var isSinglePR: Bool { target == .specific }
+
+    /// Reviewing someone else's PRs: a hard look-don't-touch mode. We never
+    /// commit or push to their branch, so the no-commit guard goes in and the
+    /// commit-authoring guidance stays out. (A specific PR may be mine, so it is
+    /// deliberately NOT review-only.)
+    public var isReviewOnly: Bool { target == .someone }
+
+    /// The configured target repo (owner, repo), from the shared core config.
+    public var targetRepo: (owner: String, repo: String) {
+        let cfg = try? CoreAssets.config()
+        return (cfg?.owner ?? "software-mansion", cfg?.repo ?? "argent")
+    }
+
+    /// The single-PR field parsed as a number / URL / `owner/repo#n` shorthand,
+    /// checked against the target repo.
+    public var prRef: PRRef {
+        let (owner, repo) = targetRepo
+        return PRRef.parse(specificPR, owner: owner, repo: repo)
+    }
 
     public var isValid: Bool {
-        if isSinglePR { return Int(trimmedPR) != nil }
-        return !authorHandle.isEmpty
+        if isSinglePR { return prRef.isValid }
+        // A whose-PRs sweep needs a handle and at least one PR-state box ticked.
+        return !authorHandle.isEmpty && (includeDrafts || includeReady)
     }
 
     private func prKind(_ scope: [String: String]) -> String {
@@ -114,11 +147,11 @@ public struct ReviewConfig {
 
         if isSinglePR {
             out.append((scope["single"] ?? "")
-                .replacingOccurrences(of: "{pr}", with: trimmedPR)
+                .replacingOccurrences(of: "{pr}", with: prRef.numberString)
                 .replacingOccurrences(of: "{owner}", with: owner)
                 .replacingOccurrences(of: "{repo}", with: repo))
         } else {
-            let tmpl = targetIsMine ? (scope["scopeMine"] ?? "") : (scope["scopeOther"] ?? "")
+            let tmpl = target == .mine ? (scope["scopeMine"] ?? "") : (scope["scopeOther"] ?? "")
             let scopeText = tmpl
                 .replacingOccurrences(of: "{prKind}", with: prKind(scope))
                 .replacingOccurrences(of: "{handle}", with: authorHandle)
@@ -128,12 +161,21 @@ public struct ReviewConfig {
                 .replacingOccurrences(of: "{repo}", with: repo))
         }
 
-        out.append(ReviewCatalog.depth(id: depth).fragment)
+        // For someone else's PRs, frame the whole task as look-don't-touch up front.
+        if isReviewOnly, let b = blocks["reviewOnly"] { out.append(b) }
+        let chosen = ReviewCatalog.depth(id: depth)
+        out.append(chosen.fragment)
+        // The depth's on-branch fix step only when we may actually commit — never
+        // for someone else's branch, which we don't touch.
+        if !isReviewOnly, let ob = chosen.onBranch, !ob.isEmpty { out.append(ob) }
         if let bar = blocks["bar"] { out.append(bar) }
         if effMarkReady, let b = blocks["markReady"] { out.append(b) }
         if effLeaveReviews, let b = blocks["leaveReviews"] { out.append(b) }
         if effReplyToReviews, let b = blocks["reply"] { out.append(b) }
         if let trailer = blocks["trailer"] { out.append(trailer) }
+        // Commit-authoring guidance only when we might actually commit — never
+        // for someone else's branch, which we don't touch.
+        if !isReviewOnly, let b = blocks["noAttribution"] { out.append(b) }
         if finalPass, let b = blocks["finalPass"] { out.append(b) }
 
         return out.joined(separator: "\n\n")

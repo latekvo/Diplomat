@@ -20,6 +20,8 @@ import uuid
 from dataclasses import dataclass
 
 from . import core
+from .prref import PRRef, parse_pr_ref
+from .prtarget import PRTarget
 
 
 # MARK: - Review depth
@@ -55,7 +57,7 @@ def default_depth_id() -> str:
 @dataclass
 class ReviewConfig:
     depth: str = ""  # depth id; "" -> default
-    target_is_mine: bool = True
+    target: PRTarget = PRTarget.MINE
     username: str = ""
     me: str = ""  # authenticated viewer login, used as the @handle for "mine"
 
@@ -73,24 +75,27 @@ class ReviewConfig:
         if not self.depth:
             self.depth = default_depth_id()
 
-    # The @handle whose PRs we go through.
+    # The @handle whose PRs we go through (empty in single-PR mode).
     @property
     def author_handle(self) -> str:
-        if self.target_is_mine:
+        if self.target == PRTarget.MINE:
             return self.me or "me"
-        return self.username.strip()
+        if self.target == PRTarget.SOMEONE:
+            return self.username.strip()
+        return ""
 
+    # A specific PR may be mine or someone's, so all three actions are offered.
     @property
     def can_mark_ready(self) -> bool:
-        return self.target_is_mine
+        return self.target != PRTarget.SOMEONE
 
     @property
     def can_leave_reviews(self) -> bool:
-        return not self.target_is_mine
+        return self.target != PRTarget.MINE
 
     @property
     def can_reply_to_reviews(self) -> bool:
-        return self.target_is_mine
+        return self.target != PRTarget.SOMEONE
 
     @property
     def eff_mark_ready(self) -> bool:
@@ -104,20 +109,38 @@ class ReviewConfig:
     def eff_reply_to_reviews(self) -> bool:
         return self.reply_to_reviews and self.can_reply_to_reviews
 
-    # With neither PR-state box ticked, we review one PR by number instead.
+    # Review exactly one PR by number/URL instead of a whose-PRs sweep.
     @property
     def is_single_pr(self) -> bool:
-        return not self.include_drafts and not self.include_ready
+        return self.target == PRTarget.SPECIFIC
+
+    # Reviewing someone else's PRs: a hard look-don't-touch mode. We never commit
+    # or push to their branch, so the no-commit guard goes in and the
+    # commit-authoring guidance stays out. (A specific PR may be mine, so it is
+    # deliberately NOT review-only.)
+    @property
+    def is_review_only(self) -> bool:
+        return self.target == PRTarget.SOMEONE
 
     @property
-    def trimmed_pr(self) -> str:
-        return self.specific_pr.strip()
+    def target_repo(self) -> tuple[str, str]:
+        """The configured target repo (owner, repo), from the shared core config."""
+        cfg = core.config()
+        return cfg["owner"], cfg["repo"]
+
+    @property
+    def pr_ref(self) -> PRRef:
+        """The single-PR field parsed as a number / URL / ``owner/repo#n`` shorthand,
+        checked against the target repo."""
+        owner, repo = self.target_repo
+        return parse_pr_ref(self.specific_pr, owner, repo)
 
     @property
     def is_valid(self) -> bool:
         if self.is_single_pr:
-            return self.trimmed_pr.isdigit()
-        return bool(self.author_handle)
+            return self.pr_ref.is_valid
+        # A whose-PRs sweep needs a handle and at least one PR-state box ticked.
+        return bool(self.author_handle) and (self.include_drafts or self.include_ready)
 
     @property
     def _pr_kind(self) -> str:
@@ -137,14 +160,24 @@ class ReviewConfig:
 
         if self.is_single_pr:
             blocks.append(
-                s["single"].format(pr=self.trimmed_pr, owner=owner, repo=repo)
+                s["single"].format(pr=self.pr_ref.number_string, owner=owner, repo=repo)
             )
         else:
-            tmpl = s["scopeMine"] if self.target_is_mine else s["scopeOther"]
+            tmpl = s["scopeMine"] if self.target == PRTarget.MINE else s["scopeOther"]
             scope = tmpl.format(prKind=self._pr_kind, handle=self.author_handle)
             blocks.append(s["multi"].format(scope=scope, owner=owner, repo=repo))
 
-        blocks.append(depth_by_id(self.depth)["fragment"])
+        # For someone else's PRs, frame the whole task as look-don't-touch up front.
+        if self.is_review_only:
+            blocks.append(blocks_src["reviewOnly"])
+
+        depth = depth_by_id(self.depth)
+        blocks.append(depth["fragment"])
+        # The depth's on-branch fix step only when we may actually commit — never
+        # for someone else's branch, which we don't touch.
+        on_branch = depth.get("onBranch")
+        if on_branch and not self.is_review_only:
+            blocks.append(on_branch)
         blocks.append(blocks_src["bar"])
 
         if self.eff_mark_ready:
@@ -155,6 +188,10 @@ class ReviewConfig:
             blocks.append(blocks_src["reply"])
 
         blocks.append(blocks_src["trailer"])
+        # Commit-authoring guidance only when we might actually commit — never
+        # for someone else's branch, which we don't touch.
+        if not self.is_review_only:
+            blocks.append(blocks_src["noAttribution"])
         if self.final_pass:
             blocks.append(blocks_src["finalPass"])
         return "\n\n".join(blocks)

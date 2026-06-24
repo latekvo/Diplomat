@@ -188,10 +188,22 @@ struct ReviewWizardView: View {
     /// `scrolls: false` (headless render only) drops the ScrollView so the
     /// snapshot isn't blank (ImageRenderer can't render ScrollView content).
     private let scrolls: Bool
-    init(scrolls: Bool = true) { self.scrolls = scrolls }
+
+    /// Default init for the live app. The optional `seed*` params let the headless
+    /// renderer snapshot specific states (e.g. single-PR mode) without driving the
+    /// UI; they default to nil, leaving each `@State`'s declared value.
+    init(scrolls: Bool = true,
+         seedTarget: PRTarget? = nil,
+         seedSpecificPR: String? = nil,
+         seedUsername: String? = nil) {
+        self.scrolls = scrolls
+        if let v = seedTarget { _target = State(initialValue: v) }
+        if let v = seedSpecificPR { _specificPR = State(initialValue: v) }
+        if let v = seedUsername { _username = State(initialValue: v) }
+    }
 
     @State private var depthValue: Double = ReviewWizardView.defaultDepthValue()
-    @State private var targetIsMine = true
+    @State private var target: PRTarget = .mine
     @State private var username = ""
     @State private var markReady = true
     @State private var leaveReviews = true
@@ -223,7 +235,7 @@ struct ReviewWizardView: View {
     private var config: ReviewConfig {
         ReviewConfig(
             depth: depth.id,
-            targetIsMine: targetIsMine,
+            target: target,
             username: username,
             me: store.effectiveMe,
             markReady: markReady,
@@ -246,7 +258,9 @@ struct ReviewWizardView: View {
         VStack(alignment: .leading, spacing: 10) {
             titleRow
             targetRow
-            scopeRow
+            contextRow
+            // Draft/ready scope applies to a whose-PRs sweep, not a single PR.
+            if target != .specific { scopeRow }
             depthRow
             checkboxes
             finalPassRow
@@ -255,9 +269,20 @@ struct ReviewWizardView: View {
         }
         .padding(.trailing, 2)
         // Animate contextual rows reflowing as the target/scope change.
-        .animation(.easeInOut(duration: 0.22), value: targetIsMine)
+        .animation(.easeInOut(duration: 0.22), value: target)
         .animation(.easeInOut(duration: 0.22), value: includeDrafts)
         .animation(.easeInOut(duration: 0.22), value: includeReady)
+    }
+
+    /// Whether the shared contextual field acts as a github-username box (someone
+    /// else's), a single-PR box (specific PR), or is hidden (mine).
+    private enum ContextRole { case none, username, pr }
+    private var contextRole: ContextRole {
+        switch target {
+        case .specific: return .pr
+        case .someone:  return .username
+        case .mine:     return .none
+        }
     }
 
     private var titleRow: some View {
@@ -270,49 +295,69 @@ struct ReviewWizardView: View {
 
     private var targetRow: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Picker("", selection: $targetIsMine) {
-                Text(store.effectiveMe.isEmpty ? "My PRs" : "My PRs (@\(store.effectiveMe))").tag(true)
-                Text("Someone else's").tag(false)
+            Picker("", selection: $target) {
+                ForEach(PRTarget.allCases) { t in
+                    Text(t.title).tag(t)
+                }
             }
             .labelsHidden()
             .pickerStyle(.segmented)
 
-            if !targetIsMine {
-                HStack(spacing: 6) {
-                    Image(systemName: "at").font(.caption2).foregroundStyle(.secondary)
-                    TextField("github username", text: $username)
-                        .textFieldStyle(.plain)
-                        .font(.callout)
-                }
-                .padding(6)
-                .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.1)))
-                .transition(rowTransition)
+            if target == .mine, !store.effectiveMe.isEmpty {
+                Text("PRs authored by @\(store.effectiveMe)")
+                    .font(.caption2).foregroundStyle(.secondary)
             }
         }
     }
 
+    /// One field, one slot — the github-username box and the single-PR box share a
+    /// place and never show together (see `contextRole`).
+    @ViewBuilder
+    private var contextRow: some View {
+        switch contextRole {
+        case .username:
+            contextField(icon: "at", placeholder: "github username", text: $username)
+                .transition(rowTransition)
+        case .pr:
+            VStack(alignment: .leading, spacing: 3) {
+                contextField(icon: "number", placeholder: "PR # or URL", text: $specificPR)
+                    .help("Review just this one PR — paste its number or GitHub URL.")
+                if let warning = prWarning {
+                    Text(warning)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.red.opacity(0.85))
+                }
+            }
+            .transition(rowTransition)
+        case .none:
+            EmptyView()
+        }
+    }
+
+    private func contextField(icon: String, placeholder: String, text: Binding<String>) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon).font(.caption2).foregroundStyle(.secondary)
+            TextField(placeholder, text: text)
+                .textFieldStyle(.plain)
+                .font(.callout)
+        }
+        .padding(6)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.1)))
+    }
+
+    /// A hint under the PR field when a pasted URL points at a different repo.
+    private var prWarning: String? {
+        guard config.prRef.repoMismatch else { return nil }
+        let (owner, repo) = config.targetRepo
+        return "That PR isn't in \(owner)/\(repo)."
+    }
+
     private var scopeRow: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Group {
-                Toggle(isOn: $includeDrafts) { Text("Review draft PRs").font(.caption) }
-                Toggle(isOn: $includeReady) { Text("Review ready-for-review PRs").font(.caption) }
-            }
-            .toggleStyle(.checkbox)
-
-            // With neither box ticked, review exactly one PR by number.
-            if config.isSinglePR {
-                HStack(spacing: 6) {
-                    Image(systemName: "number").font(.caption2).foregroundStyle(.secondary)
-                    TextField("PR # to review", text: $specificPR)
-                        .textFieldStyle(.plain)
-                        .font(.callout)
-                }
-                .padding(6)
-                .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.1)))
-                .help("Review just this one PR.")
-                .transition(rowTransition)
-            }
+            Toggle(isOn: $includeDrafts) { Text("Review draft PRs").font(.caption) }
+            Toggle(isOn: $includeReady) { Text("Review ready-for-review PRs").font(.caption) }
         }
+        .toggleStyle(.checkbox)
     }
 
     private var depthRow: some View {

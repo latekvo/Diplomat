@@ -7,8 +7,10 @@ cd "$(dirname "$0")/.."
 LABEL="com.ignacy.argent-utils"
 APP="ArgentUtils.app"
 
-# Build the bundle if needed.
-[ -d "$APP" ] || ./scripts/build-app.sh
+# Always rebuild the bundle so the install reflects the current source. (A stale
+# pre-existing ArgentUtils.app must NOT be deployed as-is — that silently ships old
+# code.) build-app.sh rm -rf's and rebuilds, so this is idempotent.
+./scripts/build-app.sh
 
 # Install to /Applications (fall back to ~/Applications if not writable).
 if [ -w /Applications ]; then

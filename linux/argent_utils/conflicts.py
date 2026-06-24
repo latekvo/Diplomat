@@ -9,25 +9,14 @@ terminal spawner is shared with :mod:`review` (``review.spawn`` / ``review.resol
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import IntEnum
 
 from . import core
+from .prref import PRRef, parse_pr_ref
+from .prtarget import PRTarget
 
-
-class Target(IntEnum):
-    """Whose PRs we sweep for merge conflicts (mirrors ConflictConfig.Target)."""
-
-    MINE = 0
-    SOMEONE = 1
-    SPECIFIC = 2
-
-    @property
-    def title(self) -> str:
-        return {
-            Target.MINE: "Mine",
-            Target.SOMEONE: "Someone else's",
-            Target.SPECIFIC: "Specific PR",
-        }[self]
+# Whose PRs we sweep — the same axis the Review wizard uses. Kept as ``Target`` here
+# (and re-exported) so existing call sites stay unchanged.
+Target = PRTarget
 
 
 @dataclass
@@ -47,17 +36,26 @@ class ConflictConfig:
         return ""
 
     @property
-    def trimmed_pr(self) -> str:
-        return self.specific_pr.strip()
-
-    @property
     def is_single_pr(self) -> bool:
         return self.target == Target.SPECIFIC
 
     @property
+    def target_repo(self) -> tuple[str, str]:
+        """The configured target repo (owner, repo), from the shared core config."""
+        cfg = core.config()
+        return cfg["owner"], cfg["repo"]
+
+    @property
+    def pr_ref(self) -> PRRef:
+        """The single-PR field parsed as a number / URL / ``owner/repo#n`` shorthand,
+        checked against the target repo."""
+        owner, repo = self.target_repo
+        return parse_pr_ref(self.specific_pr, owner, repo)
+
+    @property
     def is_valid(self) -> bool:
         if self.is_single_pr:
-            return self.trimmed_pr.isdigit()
+            return self.pr_ref.is_valid
         return bool(self.author_handle)
 
     def build_prompt(self) -> str:
@@ -69,7 +67,7 @@ class ConflictConfig:
         blocks: list[str] = []
 
         if self.is_single_pr:
-            blocks.append(s["single"].format(pr=self.trimmed_pr, owner=owner, repo=repo))
+            blocks.append(s["single"].format(pr=self.pr_ref.number_string, owner=owner, repo=repo))
         else:
             tmpl = s["scopeMine"] if self.target == Target.MINE else s["scopeOther"]
             scope = tmpl.format(handle=self.author_handle)

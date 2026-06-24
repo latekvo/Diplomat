@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from . import review
 from .models import API, Filters, Fmt
+from .prtarget import PRTarget
 from .review import ReviewConfig
 from .store import Store, tool_by_id
 
@@ -95,16 +96,17 @@ def run_print_prompt(mode: str) -> int:
         return _run_conflict_prompt(m)
     is_user = m.startswith("user")
     is_single = m.startswith("single")
+    target = (
+        PRTarget.SPECIFIC if is_single else (PRTarget.SOMEONE if is_user else PRTarget.MINE)
+    )
     cfg = ReviewConfig(
         depth="max",
-        target_is_mine=not is_user,
+        target=target,
         username="someuser" if is_user else "",
         me="latekvo",
         mark_ready=True,
         leave_reviews=True,
         reply_to_reviews=True,
-        include_drafts=not is_single,
-        include_ready=not is_single,
         specific_pr="337" if is_single else "",
         final_pass="final" in m,
     )

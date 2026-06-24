@@ -6,18 +6,8 @@ import Foundation
 /// live here, shared verbatim with the Linux front-end.
 public struct ConflictConfig {
     /// Whose PRs we sweep for merge conflicts: my own, another user's, or one
-    /// specific PR by number.
-    public enum Target: Int, CaseIterable, Identifiable {
-        case mine, someone, specific
-        public var id: Int { rawValue }
-        public var title: String {
-            switch self {
-            case .mine:     return "Mine"
-            case .someone:  return "Someone else's"
-            case .specific: return "Specific PR"
-            }
-        }
-    }
+    /// specific PR. The same axis the Review wizard uses — see `PRTarget`.
+    public typealias Target = PRTarget
 
     public var target: Target
     public var username: String
@@ -46,13 +36,25 @@ public struct ConflictConfig {
         }
     }
 
-    public var trimmedPR: String { specificPR.trimmingCharacters(in: .whitespaces) }
     public var isSinglePR: Bool { target == .specific }
 
-    /// SPAWN is only meaningful once we know what to sweep: a valid PR number in
+    /// The configured target repo (owner, repo), from the shared core config.
+    public var targetRepo: (owner: String, repo: String) {
+        let cfg = try? CoreAssets.config()
+        return (cfg?.owner ?? "software-mansion", cfg?.repo ?? "argent")
+    }
+
+    /// The single-PR field parsed as a number / URL / `owner/repo#n` shorthand,
+    /// checked against the target repo.
+    public var prRef: PRRef {
+        let (owner, repo) = targetRepo
+        return PRRef.parse(specificPR, owner: owner, repo: repo)
+    }
+
+    /// SPAWN is only meaningful once we know what to sweep: a usable PR reference in
     /// single-PR mode, or a non-empty author handle otherwise.
     public var isValid: Bool {
-        isSinglePR ? Int(trimmedPR) != nil : !authorHandle.isEmpty
+        isSinglePR ? prRef.isValid : !authorHandle.isEmpty
     }
 
     public func buildPrompt() -> String {
@@ -67,7 +69,7 @@ public struct ConflictConfig {
 
         if isSinglePR {
             out.append((scope["single"] ?? "")
-                .replacingOccurrences(of: "{pr}", with: trimmedPR)
+                .replacingOccurrences(of: "{pr}", with: prRef.numberString)
                 .replacingOccurrences(of: "{owner}", with: owner)
                 .replacingOccurrences(of: "{repo}", with: repo))
         } else {

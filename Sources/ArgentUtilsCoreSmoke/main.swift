@@ -51,15 +51,40 @@ for kind in ToolKind.allCases {
 let look = ToolData.lookup(101, prs: prs, issues: issues, me: me, visible: ToolKind.allCases)
 print("lookup #101 on: \(look.onLists.map { $0.rawValue }) — \(look.presence)")
 
+section("PR-reference parsing")
+func single(_ pr: String) -> ReviewConfig {
+    ReviewConfig(depth: "max", target: .specific, me: me, specificPR: pr)
+}
+let urlRef = PRRef.parse("https://github.com/\(cfg.owner)/\(cfg.repo)/pull/337/files",
+                         owner: cfg.owner, repo: cfg.repo)
+assert(urlRef.number == 337 && urlRef.isValid && !urlRef.repoMismatch)
+assert(PRRef.parse("#42", owner: cfg.owner, repo: cfg.repo).number == 42)
+assert(PRRef.parse("\(cfg.owner)/\(cfg.repo)#9", owner: cfg.owner, repo: cfg.repo).number == 9)
+let wrongRepo = PRRef.parse("https://github.com/other/proj/pull/5", owner: cfg.owner, repo: cfg.repo)
+assert(wrongRepo.number == 5 && wrongRepo.repoMismatch && !wrongRepo.isValid)
+assert(PRRef.parse("not-a-pr", owner: cfg.owner, repo: cfg.repo).number == nil)
+print("PR-reference assertions passed")
+
 section("review prompts")
 let mine = ReviewConfig(depth: "max", me: me)
-let other = ReviewConfig(depth: "max", targetIsMine: false, username: "someuser")
-let single = ReviewConfig(depth: "max", me: me, includeDrafts: false, includeReady: false, specificPR: "337")
-print("mine valid=\(mine.valid()) | other valid=\(other.valid()) | single valid=\(single.valid())")
+let other = ReviewConfig(depth: "max", target: .someone, username: "someuser")
+print("mine valid=\(mine.valid()) | other valid=\(other.valid()) | single valid=\(single("337").valid())")
 assert(mine.buildPrompt().contains("mark it ready for review"))
 assert(!mine.buildPrompt().contains("POST a pull-request review"))
 assert(other.buildPrompt().contains("POST a pull-request review"))
-assert(single.buildPrompt().hasPrefix("Review PR #337 in \(cfg.owner)/\(cfg.repo)."))
+// Someone else's PRs are review-only: a hard no-commit guard, and the
+// commit-authoring guidance is dropped (we never touch their branch).
+assert(other.buildPrompt().contains("ABSOLUTELY DO NOT touch their branch"))
+assert(!other.buildPrompt().contains("No AI attribution"))
+// My PRs do commit, so no review-only guard and the attribution rule stays.
+assert(!mine.buildPrompt().contains("ABSOLUTELY DO NOT touch their branch"))
+assert(single("337").buildPrompt().hasPrefix("Review PR #337 in \(cfg.owner)/\(cfg.repo)."))
+// A pasted URL for the target repo resolves to the same single-PR prompt.
+assert(single("https://github.com/\(cfg.owner)/\(cfg.repo)/pull/337").valid())
+assert(single("https://github.com/\(cfg.owner)/\(cfg.repo)/pull/337").buildPrompt()
+    .hasPrefix("Review PR #337 in \(cfg.owner)/\(cfg.repo)."))
+// A URL for a different repo is rejected.
+assert(!single("https://github.com/other/proj/pull/9").valid())
 assert(mine.buildPrompt().contains("No AI attribution"))
 print("prompt assembly assertions passed")
 
@@ -70,6 +95,10 @@ let cSingle = ConflictConfig(target: .specific, specificPR: "337")
 print("mine valid=\(cMine.isValid) | other valid=\(cOther.isValid) | single valid=\(cSingle.isValid)")
 assert(cMine.isValid && cOther.isValid && cSingle.isValid)
 assert(!ConflictConfig(target: .specific, specificPR: "nope").isValid)
+// The single-PR field accepts a URL for the target repo, rejects other repos.
+assert(ConflictConfig(target: .specific,
+                      specificPR: "https://github.com/\(cfg.owner)/\(cfg.repo)/pull/337").isValid)
+assert(!ConflictConfig(target: .specific, specificPR: "https://github.com/x/y/pull/1").isValid)
 assert(cMine.buildPrompt().contains("authored by @\(me)"))
 assert(cMine.buildPrompt().contains("For each, merge the latest `origin/main`"))
 assert(cSingle.buildPrompt().hasPrefix("Take PR #337 in \(cfg.owner)/\(cfg.repo)."))

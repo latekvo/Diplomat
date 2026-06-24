@@ -12,19 +12,22 @@
       "id": "standard",
       "title": "Standard swarm",
       "blurb": "Swarm per PR across the review lenses; verify findings.",
-      "fragment": "For each PR, dispatch a swarm of review agents (3–8) covering the standard lenses — correctness, scope/simplification, edge cases (nulls, boundaries, errors, concurrency) and ripple effects on callers/docs/tests. Treat every finding as a lead, not a verdict: verify it against the actual code before acting, then fix the real ones directly on the PR's branch."
+      "fragment": "For each PR, dispatch a swarm of review agents (3–8) covering the standard lenses — correctness, scope/simplification, edge cases (nulls, boundaries, errors, concurrency) and ripple effects on callers/docs/tests. Treat every finding as a lead, not a verdict: verify it against the actual code before acting on it.",
+      "onBranch": "Fix the real findings directly on the PR's branch."
     },
     {
       "id": "deep",
       "title": "Deep · hard repro",
       "blurb": "Swarm + concrete repro before & after every on-branch fix.",
-      "fragment": "For each PR, dispatch swarms of agents across the review lenses. For EVERY suspected issue, build a concrete, hard reproduction that proves it real BEFORE touching anything; then fix it directly on the PR's branch and re-run the same reproduction to confirm the fix lands. Keep dispatching fresh swarms at each PR until a full pass turns up nothing left to fix."
+      "fragment": "For each PR, dispatch swarms of agents across the review lenses. For EVERY suspected issue, build a concrete, hard reproduction that proves it real BEFORE touching anything. Keep dispatching fresh swarms at each PR until a full pass turns up nothing left to flag.",
+      "onBranch": "For each confirmed issue, fix it directly on the PR's branch and re-run the same reproduction to confirm the fix lands."
     },
     {
       "id": "max",
       "title": "Full E2E ×2",
       "blurb": "Run each PR E2E; second independent pass; repro-verified.",
-      "fragment": "Maximum rigor. For each PR: run it END-TO-END through its real entry point and confirm observable behaviour — not just that it compiles. Dispatch swarms across every review lens; every finding gets a concrete hard reproduction before the fix and the SAME repro re-run after to prove the fix lands. Then do a SECOND, independent verification pass over the PR to catch anything the first missed. Fix directly on the branches, and keep dispatching swarms until TWO consecutive passes come back completely clean."
+      "fragment": "Maximum rigor. For each PR: run it END-TO-END through its real entry point and confirm observable behaviour — not just that it compiles. Dispatch swarms across every review lens; every finding gets a concrete hard reproduction that proves it real. Then do a SECOND, independent verification pass over the PR to catch anything the first missed. Keep dispatching swarms until TWO consecutive passes come back completely clean.",
+      "onBranch": "Fix every confirmed finding directly on the PR's branch, with the SAME reproduction re-run after each fix to prove it lands."
     }
   ],
   "scope": {
@@ -38,10 +41,12 @@
   },
   "blocks": {
     "bar": "Hold to the bar in my CLAUDE.md throughout: prove every issue beyond reasonable doubt with a concrete reproduction before you act on it, scale the swarm to the work, and never report something fixed without re-running the repro to confirm it landed.",
+    "reviewOnly": "These PRs are SOMEONE ELSE'S — not your code to change. UNDER NO CIRCUMSTANCES may you commit, push, or otherwise modify their branch: ABSOLUTELY DO NOT touch their branch in any way. Your one and only deliverable is the code review itself — every finding goes into the review, never into a commit or push on their branch.",
     "markReady": "If a PR turns out perfectly clean — no issues, regressions or bad practices left — mark it ready for review and report its number to me. List every PR you cleared at the end.",
     "leaveReviews": "Leave a formal GitHub review on each PR (POST a pull-request review, not a top-level comment), following the review-comment rules in my CLAUDE.md: one inline per-line comment per finding anchored to the exact line(s), describe the problem and its concrete impact only (never propose the fix), strip every internal severity/category marking from the text, and never leave an LGTM / \"no issues\" comment.",
     "reply": "For review threads that OTHERS have left on these PRs: address each one, and never mark a thread resolved without first replying \"Fixed in <commit_hash>\" with the real commit hash.",
-    "trailer": "Keep dispatching swarms until every PR you go through comes back clean. No AI attribution anywhere in git/GitHub — commits authored as me, no Co-Authored-By, no \"Generated with\" taglines.",
+    "trailer": "Keep dispatching swarms until every PR you go through comes back clean.",
+    "noAttribution": "No AI attribution anywhere in git/GitHub — commits authored as me, no Co-Authored-By, no \"Generated with\" taglines.",
     "finalPass": "Then, one last FULL E2E pass on the real built binaries with massive swarms of code-analysis agents. Provide super-concrete reproductions for any finding you manage to surface. Deliver a verdict on each PR:\n• If it turns out perfect — confirm every previously-raised issue is resolved, and if so, APPROVE it.\n• If there are only a few nitpicks — point them out and ask for them to be resolved, but still APPROVE.\n• If there are major blockers — leave the review as \"changes requested\"."
   }
 }

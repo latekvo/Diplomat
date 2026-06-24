@@ -208,14 +208,14 @@ enum Dump {
         let isSingle = m.hasPrefix("single")
         let cfg = ReviewConfig(
             depth: "max",
-            targetIsMine: !isUser,
+            target: isSingle ? .specific : (isUser ? .someone : .mine),
             username: isUser ? "someuser" : "",
             me: "latekvo",
             markReady: true,
             leaveReviews: true,
             replyToReviews: true,
-            includeDrafts: !isSingle,
-            includeReady: !isSingle,
+            includeDrafts: true,
+            includeReady: true,
             specificPR: isSingle ? "337" : "",
             finalPass: m.contains("final"))
         let label = isSingle ? "single PR #337" : (isUser ? "someone else's PRs" : "my PRs")

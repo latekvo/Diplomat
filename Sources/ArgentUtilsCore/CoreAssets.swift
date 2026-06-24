@@ -47,6 +47,10 @@ public enum CoreAssets {
             public let title: String
             public let blurb: String
             public let fragment: String
+            // The "fix it on the branch" disposition for this depth. Only emitted
+            // when we may actually commit (our own PRs / a specific PR); absent
+            // for flag-only depths and never used for someone else's PRs.
+            public let onBranch: String?
         }
         public let defaultDepth: String
         public let depths: [Depth]

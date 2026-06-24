@@ -52,9 +52,14 @@ class ConflictWizardView(QWidget):
         root.addWidget(self.username)
 
         self.specific_pr = QLineEdit()
-        self.specific_pr.setPlaceholderText("PR # to update")
+        self.specific_pr.setPlaceholderText("PR # or URL")
         self.specific_pr.textChanged.connect(self._sync)
         root.addWidget(self.specific_pr)
+
+        self.pr_warning = QLabel("")
+        self.pr_warning.setWordWrap(True)
+        self.pr_warning.setStyleSheet("color: #e0563f; font-size: 10px;")
+        root.addWidget(self.pr_warning)
 
         blurb = QLabel(
             "Merges the latest main into each PR; where that conflicts, resolves it "
@@ -89,7 +94,16 @@ class ConflictWizardView(QWidget):
         cfg = self._config()
         # Show only the field that applies to the current target.
         self.username.setVisible(cfg.target == Target.SOMEONE)
-        self.specific_pr.setVisible(cfg.target == Target.SPECIFIC)
+        show_pr = cfg.target == Target.SPECIFIC
+        self.specific_pr.setVisible(show_pr)
+
+        ref = cfg.pr_ref
+        if show_pr and ref.repo_mismatch:
+            owner, repo = cfg.target_repo
+            self.pr_warning.setText(f"That PR isn't in {owner}/{repo}.")
+            self.pr_warning.setVisible(True)
+        else:
+            self.pr_warning.setVisible(False)
 
         self.spawn_btn.setEnabled(cfg.is_valid)
         tint = _TINT if cfg.is_valid else "#888888"

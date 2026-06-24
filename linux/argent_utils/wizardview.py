@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import review
+from .prtarget import PRTarget
 from .store import Store
 
 _TINT = "#FF2D78"  # pink, matching the macOS Review card
@@ -40,16 +41,33 @@ class WizardView(QWidget):
         title.setStyleSheet("font-weight: 700; font-size: 13px;")
         root.addWidget(title)
 
-        # Target
+        # Target: mine / someone else's / a specific PR (matches the Merge wizard).
         self.target = QComboBox()
-        self._refresh_target_labels()
+        for t in (PRTarget.MINE, PRTarget.SOMEONE, PRTarget.SPECIFIC):
+            self.target.addItem(t.title, t)
         self.target.currentIndexChanged.connect(self._sync)
         root.addWidget(self.target)
 
+        self.mine_caption = QLabel("")
+        self.mine_caption.setStyleSheet("color: palette(mid); font-size: 10px;")
+        root.addWidget(self.mine_caption)
+
+        # The username field (someone else's) and the single-PR field share this
+        # slot; only the one matching the current target shows (see _sync).
         self.username = QLineEdit()
         self.username.setPlaceholderText("github username")
         self.username.textChanged.connect(self._sync)
         root.addWidget(self.username)
+
+        self.specific_pr = QLineEdit()
+        self.specific_pr.setPlaceholderText("PR # or URL")
+        self.specific_pr.textChanged.connect(self._sync)
+        root.addWidget(self.specific_pr)
+
+        self.pr_warning = QLabel("")
+        self.pr_warning.setWordWrap(True)
+        self.pr_warning.setStyleSheet("color: #e0563f; font-size: 10px;")
+        root.addWidget(self.pr_warning)
 
         # Scope
         self.drafts = QCheckBox("Review draft PRs")
@@ -60,11 +78,6 @@ class WizardView(QWidget):
         self.ready.toggled.connect(self._sync)
         root.addWidget(self.drafts)
         root.addWidget(self.ready)
-
-        self.specific_pr = QLineEdit()
-        self.specific_pr.setPlaceholderText("PR # to review (when neither box above)")
-        self.specific_pr.textChanged.connect(self._sync)
-        root.addWidget(self.specific_pr)
 
         # Depth
         depth_header = QHBoxLayout()
@@ -138,21 +151,10 @@ class WizardView(QWidget):
         except ValueError:
             return 0
 
-    def _refresh_target_labels(self) -> None:
-        me = self.store.effective_me
-        mine = f"My PRs (@{me})" if me else "My PRs"
-        prev = self.target.currentIndex() if self.target.count() else 0
-        self.target.blockSignals(True)
-        self.target.clear()
-        self.target.addItem(mine, True)
-        self.target.addItem("Someone else's", False)
-        self.target.setCurrentIndex(prev)
-        self.target.blockSignals(False)
-
     def _config(self) -> review.ReviewConfig:
         return review.ReviewConfig(
             depth=review.depth_ids()[self.slider.value()],
-            target_is_mine=bool(self.target.currentData()),
+            target=self.target.currentData(),
             username=self.username.text(),
             me=self.store.effective_me,
             mark_ready=self.mark_ready.isChecked(),
@@ -170,8 +172,26 @@ class WizardView(QWidget):
         self.depth_title.setText(depth["title"])
         self.depth_blurb.setText(depth["blurb"])
 
-        self.username.setVisible(not cfg.target_is_mine)
-        self.specific_pr.setEnabled(cfg.is_single_pr)
+        # The context field follows the target; only one shows. Specific PR also
+        # hides the draft/ready scope, which only applies to a whose-PRs sweep.
+        is_mine = cfg.target == PRTarget.MINE
+        is_specific = cfg.target == PRTarget.SPECIFIC
+        self.username.setVisible(cfg.target == PRTarget.SOMEONE)
+        self.specific_pr.setVisible(is_specific)
+        self.drafts.setVisible(not is_specific)
+        self.ready.setVisible(not is_specific)
+
+        me = self.store.effective_me
+        self.mine_caption.setText(f"PRs authored by @{me}" if (is_mine and me) else "")
+        self.mine_caption.setVisible(bool(is_mine and me))
+
+        ref = cfg.pr_ref
+        if is_specific and ref.repo_mismatch:
+            owner, repo = cfg.target_repo
+            self.pr_warning.setText(f"That PR isn't in {owner}/{repo}.")
+            self.pr_warning.setVisible(True)
+        else:
+            self.pr_warning.setVisible(False)
 
         self.mark_ready.setEnabled(cfg.can_mark_ready)
         self.leave_reviews.setEnabled(cfg.can_leave_reviews)
@@ -185,8 +205,7 @@ class WizardView(QWidget):
         )
 
     def refresh_identity(self) -> None:
-        """Re-label the target picker after the viewer login resolves."""
-        self._refresh_target_labels()
+        """Refresh the @handle caption after the viewer login resolves."""
         self._sync()
 
     def _spawn(self) -> None:
