@@ -1,5 +1,7 @@
 # Argent Utils
 
+<img width="1306" height="981" alt="image" src="https://github.com/user-attachments/assets/9ada1b70-a34f-4ad5-aebc-5700407e5586" />
+
 A tiny **menu-bar / system-tray applet** — a personal dashboard of Argent-repo
 triage tools. Click the wrench, get a dense panel with six utilities plus two
 spawn-an-agent actions (Review PRs, Resolve conflicts). Hacky on purpose,
