@@ -15,7 +15,7 @@ enum Render {
         let body = view(for: what, store: store)
         let content = body
             .environmentObject(store)
-            .frame(width: 470)
+            .frame(width: PopoverRoot.width)
             .padding(10)
             .background(Color(nsColor: .windowBackgroundColor))
 
@@ -64,6 +64,13 @@ enum Render {
                             seedFixIssues: s.contains("issues") || s.contains("all"),
                             seedOpenPRs: s.contains("prs") || s.contains("all"))
                 .frame(height: 560)
+        case let s where s.hasPrefix("devices"):
+            // Seed a synthetic device pool (and optionally sessions) so the Devices
+            // section can be eyeballed: an allocated iOS sim, a booting Android, a
+            // device under repair, and a free one. Natural height — no clipping.
+            let _ = seedProcessesIfNeeded(s, store: store)
+            let _ = seedDeviceState(store)
+            ContentView()
         case let s where s.hasPrefix("natural"):
             // No forced height — the rendered PNG's height IS ContentView's natural
             // height, proving the content sizes to its content (what PopoverRoot caps).
@@ -95,5 +102,31 @@ enum Render {
                            createdAt: Date(), done: true, merged: true),
         ]
         return true
+    }
+
+    /// Synthetic device-allocator state for `ARGENT_UTILS_RENDER=devices`.
+    @MainActor
+    private static func seedDeviceState(_ store: Store) {
+        store.deviceState = DeviceState(devices: [
+            DeviceAllocation(
+                key: "ios:99AD", platform: "ios", name: "iPhone 16 Pro Max", version: "18.5",
+                apiVersion: "18", handle: "99AD1D87-DA5F", status: "ready",
+                owner: DeviceOwner(agentName: "bluesky e2e", ownerPid: 4242),
+                allocatedAt: nil, idleMs: 240_000, brokenReason: nil, repairLog: nil),
+            DeviceAllocation(
+                key: "android:Pixel_6_API_34", platform: "android", name: "Pixel_6_API_34",
+                version: "14", apiVersion: "34", handle: "emulator-5554", status: "booting",
+                owner: DeviceOwner(agentName: "checkout flow", ownerPid: 4310),
+                allocatedAt: nil, idleMs: nil, brokenReason: nil, repairLog: nil),
+            DeviceAllocation(
+                key: "android:Pixel_3a_API_34", platform: "android", name: "Pixel_3a_API_34",
+                version: "14", apiVersion: "34", handle: nil, status: "repairing",
+                owner: DeviceOwner(agentName: "repair", ownerPid: nil),
+                allocatedAt: nil, idleMs: nil, brokenReason: "boot timeout", repairLog: "/tmp/r.log"),
+            DeviceAllocation(
+                key: "ios:FREE1", platform: "ios", name: "iPhone 15", version: "17.5",
+                apiVersion: "17", handle: nil, status: "free",
+                owner: nil, allocatedAt: nil, idleMs: nil, brokenReason: nil, repairLog: nil),
+        ])
     }
 }

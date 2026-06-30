@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import review
+from . import deviceallocator, review
 from .store import Store, tools
 from .widgets import IconChip
 
@@ -48,7 +48,12 @@ class SettingsView(QWidget):
         root.addLayout(self._identity_section())
         root.addLayout(self._tools_section())
         root.addLayout(self._terminal_section())
+        root.addLayout(self._allocator_section())
         root.addStretch(1)
+
+        store.allocator_changed.connect(self._refresh_allocator_ui)
+        self._refresh_allocator_ui()
+        store.refresh_allocator_install_async()
 
     # MARK: header
 
@@ -153,6 +158,86 @@ class SettingsView(QWidget):
                 chip.setStyleSheet(
                     f"background-color: {hex_color}; border-radius: 6px; font-size: 11px;"
                 )
+
+    # MARK: device allocator (MCP server + skill + rule)
+
+    def _allocator_section(self) -> QVBoxLayout:
+        col = QVBoxLayout()
+        col.setSpacing(6)
+        col.addWidget(_section_label("DEVICE ALLOCATOR (MCP)"))
+
+        status_row = QHBoxLayout()
+        status_row.setSpacing(8)
+        self._alloc_status = QLabel("Checking…")
+        self._alloc_status.setStyleSheet("font-weight: 700; font-size: 11px;")
+        status_row.addWidget(self._alloc_status)
+        status_row.addStretch(1)
+        self._alloc_daemon = QLabel("⚡ daemon")
+        self._alloc_daemon.setStyleSheet("color: #34C759; font-size: 9px;")
+        self._alloc_daemon.setVisible(False)
+        status_row.addWidget(self._alloc_daemon)
+        col.addLayout(status_row)
+
+        self._alloc_detail = QLabel("querying the installer…")
+        self._alloc_detail.setStyleSheet("color: palette(mid); font-family: monospace; font-size: 9px;")
+        col.addWidget(self._alloc_detail)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+        self._alloc_install = QPushButton("Install")
+        self._alloc_install.setStyleSheet("font-weight: 700;")
+        self._alloc_install.setEnabled(deviceallocator.package_available())
+        self._alloc_install.clicked.connect(self.store.install_allocator_async)
+        btn_row.addWidget(self._alloc_install)
+        self._alloc_uninstall = QPushButton("Uninstall")
+        self._alloc_uninstall.setVisible(False)
+        self._alloc_uninstall.clicked.connect(self.store.uninstall_allocator_async)
+        btn_row.addWidget(self._alloc_uninstall)
+        recheck = QPushButton("⟲")
+        recheck.setFixedWidth(34)
+        recheck.setToolTip("Re-check status")
+        recheck.clicked.connect(self.store.refresh_allocator_install_async)
+        btn_row.addWidget(recheck)
+        btn_row.addStretch(1)
+        col.addLayout(btn_row)
+
+        avail = deviceallocator.package_available()
+        hint = QLabel(
+            "Forces every local agent to reserve an emulator/simulator before using it "
+            "(MCP server + skill + always-on rule), so agents never collide on a shared "
+            "device. Reclaims a device when its agent dies or it sits idle for 1h."
+            if avail else
+            f"Package not found at {deviceallocator.package_dir()}. "
+            "Set ARGENT_DEVICE_ALLOCATOR_DIR to point at it."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet(
+            f"color: {'palette(mid)' if avail else '#FF9500'}; font-size: 10px;"
+        )
+        col.addWidget(hint)
+        return col
+
+    def _refresh_allocator_ui(self) -> None:
+        s = self.store.allocator_install
+        if s is None:
+            self._alloc_status.setText("Checking…")
+            self._alloc_detail.setText("querying the installer…")
+            self._alloc_uninstall.setVisible(False)
+            self._alloc_daemon.setVisible(False)
+            return
+        installed = bool(s.get("installed"))
+
+        def mark(b: object) -> str:
+            return "✓" if b else "✗"
+
+        self._alloc_status.setText("Installed" if installed else "Not installed")
+        self._alloc_detail.setText(
+            f"MCP {mark(s.get('mcpRegistered'))} · skill {mark(s.get('skillInstalled'))}"
+            f" · rule {mark(s.get('ruleInstalled'))} · CLAUDE.md {mark(s.get('claudeMdInjected'))}"
+        )
+        self._alloc_install.setText("Reinstall" if installed else "Install")
+        self._alloc_uninstall.setVisible(installed)
+        self._alloc_daemon.setVisible(bool(s.get("daemonRunning")))
 
     # MARK: terminal
 

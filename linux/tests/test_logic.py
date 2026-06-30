@@ -226,6 +226,32 @@ def test_audit_prompt_toggles_gate_blocks():
     assert "OPEN ISSUES" in both and "focused pull request" in both
 
 
+def test_device_allocator_state_helpers():
+    from argent_utils import deviceallocator as da
+
+    state = {"devices": [
+        {"status": "ready", "owner": {"agentName": "a", "ownerPid": 1}},
+        {"status": "booting", "owner": {"agentName": "b", "ownerPid": 2}},
+        # A device under repair is out of the pool even though no live owner holds it.
+        {"status": "repairing", "owner": {"agentName": "repair", "ownerPid": None},
+         "brokenReason": "boot timeout"},
+        {"status": "free", "owner": None},
+        {"status": "running-free", "owner": None},
+    ]}
+    assert da.is_allocated(state["devices"][0]) is True
+    assert da.is_allocated(state["devices"][1]) is True
+    assert da.is_allocated(state["devices"][2]) is True   # repairing = not available
+    assert da.is_allocated(state["devices"][3]) is False
+    assert da.is_allocated(state["devices"][4]) is False
+    assert da.allocated_count(state) == 3
+    assert da.free_count(state) == 2
+
+    # The bridge resolves a usable node + the package, and never raises on a missing
+    # state file (the common "daemon never started" case just yields None).
+    assert da.package_dir().endswith("device-allocator")
+    assert da.read_state() is None or isinstance(da.read_state(), dict)
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

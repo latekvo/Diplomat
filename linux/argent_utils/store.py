@@ -13,7 +13,9 @@ from datetime import datetime
 
 from PySide6.QtCore import QObject, QSettings, Signal
 
-from . import core, review
+import threading
+
+from . import core, deviceallocator, review
 from .models import API, Filters, Fmt, OpenIssue, OpenPR
 
 
@@ -78,6 +80,10 @@ class Store(QObject):
     changed = Signal()
     # Emitted with the loading flag when a refresh starts/ends.
     loading_changed = Signal(bool)
+    # Emitted when the device-allocator pool snapshot changes (light, not a full
+    # data refresh) and when its install status is re-checked.
+    devices_changed = Signal()
+    allocator_changed = Signal()
 
     _ORG = "argent-utils"
     _APP = "argent-utils"
@@ -92,6 +98,10 @@ class Store(QObject):
         self.selected: str = tools()[0].id
         self.has_loaded = False
         self.me = ""
+
+        # Live device-allocator state (pool + holders) and install status.
+        self.device_state: dict | None = None
+        self.allocator_install: dict | None = None
 
         self._settings = QSettings(self._ORG, self._APP)
 
@@ -212,6 +222,43 @@ class Store(QObject):
             self.is_loading = False
             self.loading_changed.emit(False)
             self.changed.emit()
+
+    # MARK: device allocator
+
+    def refresh_device_state(self) -> None:
+        """Re-read the daemon's public state file (cheap) and signal on change.
+
+        Compares only the `devices` list, not the whole snapshot: the daemon stamps
+        a fresh `updatedAt` every poll, which would otherwise force a needless
+        rebuild of the device rows every 8s.
+        """
+        new = deviceallocator.read_state()
+        new_devices = (new or {}).get("devices")
+        old_devices = (self.device_state or {}).get("devices")
+        if new_devices != old_devices:
+            self.device_state = new
+            self.devices_changed.emit()
+
+    def refresh_allocator_install_async(self) -> None:
+        """Shell the installer's --check off the UI thread; signal when done."""
+        def work() -> None:
+            self.allocator_install = deviceallocator.check()
+            self.allocator_changed.emit()
+        threading.Thread(target=work, daemon=True).start()
+
+    def install_allocator_async(self) -> None:
+        def work() -> None:
+            self.allocator_install = deviceallocator.install()
+            self.allocator_changed.emit()
+            self.refresh_device_state()
+        threading.Thread(target=work, daemon=True).start()
+
+    def uninstall_allocator_async(self) -> None:
+        def work() -> None:
+            self.allocator_install = deviceallocator.uninstall()
+            self.allocator_changed.emit()
+            self.refresh_device_state()
+        threading.Thread(target=work, daemon=True).start()
 
     def count(self, tool_id: str) -> int:
         return len(self.items_for(tool_id))

@@ -68,3 +68,24 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: pytest linux/tests -q
+
+  # The device-allocator MCP server + daemon. Self-contained Node tests that drive
+  # the allocator over its unix socket against a synthetic device pool (DA_FAKE_DEVICES),
+  # so they need no real simulators/emulators and run on Linux.
+  node-device-allocator:
+    name: Node (device allocator) · daemon + MCP tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: device-allocator
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install dependencies
+        run: npm ci || npm install
+      - name: Allocation logic (request/change/broken/reap/idle)
+        run: node test/integration.mjs
+      - name: MCP protocol (handshake/tools/alwaysLoad/allocate)
+        run: node test/mcp-protocol.mjs

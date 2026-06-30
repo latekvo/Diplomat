@@ -8,7 +8,7 @@ when the Store changes, so typing is never interrupted by a refresh.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QGridLayout,
@@ -68,6 +68,31 @@ def _icon_button(glyph: str, tooltip: str) -> QToolButton:
     return btn
 
 
+def _device_badge(dev: dict, allocated: bool) -> tuple[str, str]:
+    status = dev.get("status", "free")
+    if status == "ready":
+        return ("in use", "#34C759") if allocated else ("free", "gray")
+    if status == "booting":
+        return ("booting", "#FF9500")
+    if status == "repairing":
+        return ("repairing", "#AF52DE")
+    if status == "error":
+        return ("error", "#FF3B30")
+    return ("free", "gray")
+
+
+def _device_detail(dev: dict, allocated: bool) -> str:
+    if dev.get("status") == "repairing":
+        reason = dev.get("brokenReason")
+        return f"repair: {reason}" if reason else "repair dispatched"
+    owner = dev.get("owner") or {}
+    if allocated and owner.get("agentName"):
+        idle = dev.get("idleMs")
+        idle_txt = f" · idle {int(idle / 60000)}m" if idle and idle > 60000 else ""
+        return f"{owner['agentName']}{idle_txt}"
+    return dev.get("handle") or "available"
+
+
 class Panel(QWidget):
     refresh_requested = Signal()
     quit_requested = Signal()
@@ -83,7 +108,9 @@ class Panel(QWidget):
             | Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
         )
-        self.setFixedSize(470, 600)
+        # Widened from 470 to give the Devices section room for a name, holder,
+        # and status badge on one line.
+        self.setFixedSize(560, 600)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(10, 10, 10, 10)
@@ -110,8 +137,16 @@ class Panel(QWidget):
 
         store.changed.connect(self._on_data_changed)
         store.loading_changed.connect(self._on_loading)
+        store.devices_changed.connect(self._rebuild_devices)
+
+        # Poll the device-allocator's state file on a light cadence (cheap file read).
+        self._device_timer = QTimer(self)
+        self._device_timer.timeout.connect(self.store.refresh_device_state)
+        self._device_timer.start(8000)
+        self.store.refresh_device_state()
 
         self._rebuild_grid()
+        self._rebuild_devices()
         self._update_results()
 
     # MARK: header
@@ -158,6 +193,18 @@ class Panel(QWidget):
         layout = QVBoxLayout(self.main_page)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
+
+        # Device-allocator pool (the shared simulators/emulators + who holds what).
+        # Rebuilt in place from the daemon's state file; hidden when the pool is empty.
+        self.devices_host = QWidget()
+        self.devices_col = QVBoxLayout(self.devices_host)
+        self.devices_col.setContentsMargins(7, 7, 7, 7)
+        self.devices_col.setSpacing(4)
+        self.devices_host.setStyleSheet(
+            "background-color: rgba(128,128,128,0.07); border-radius: 8px;"
+        )
+        self.devices_host.setVisible(False)
+        layout.addWidget(self.devices_host)
 
         # Search (reverse lookup)
         search_box = QWidget()
@@ -301,6 +348,94 @@ class Panel(QWidget):
         )
         audit_card.clicked.connect(lambda: self._open_action("audit"))
         self.grid.addWidget(audit_card, rowi, col)
+
+    # MARK: device-allocator pool
+
+    def _rebuild_devices(self) -> None:
+        _clear_layout(self.devices_col)
+        state = self.store.device_state
+        devices = (state or {}).get("devices", [])
+        if not devices:
+            self.devices_host.setVisible(False)
+            return
+        self.devices_host.setVisible(True)
+
+        from . import deviceallocator
+
+        allocated = deviceallocator.allocated_count(state)
+        free = deviceallocator.free_count(state)
+        head = QHBoxLayout()
+        title = QLabel("📱 Devices")
+        title.setStyleSheet("color: palette(mid); font-weight: 700; font-size: 10px;")
+        head.addWidget(title)
+        counts = QLabel(f"{allocated} in use · {free} free")
+        counts.setStyleSheet("color: palette(mid); font-family: monospace; font-size: 10px;")
+        head.addWidget(counts)
+        head.addStretch(1)
+        self.devices_col.addLayout(head)
+
+        # Busy devices first, then by platform + name.
+        def sort_key(d: dict):
+            return (not deviceallocator.is_allocated(d), d.get("platform", ""), d.get("name") or "")
+
+        for dev in sorted(devices, key=sort_key):
+            self.devices_col.addWidget(self._device_row(dev))
+
+    def _device_row(self, dev: dict) -> QWidget:
+        from . import deviceallocator
+
+        allocated = deviceallocator.is_allocated(dev)
+        platform = dev.get("platform", "")
+        emoji = "🍎" if platform == "ios" else "🤖"
+        tint = "#0A84FF" if platform == "ios" else "#34C759"
+        status = dev.get("status", "free")
+        badge_text, badge_color = _device_badge(dev, allocated)
+
+        row = QWidget()
+        rl = QHBoxLayout(row)
+        rl.setContentsMargins(6, 6, 6, 6)
+        rl.setSpacing(8)
+
+        chip = QLabel(emoji)
+        chip.setFixedSize(22, 22)
+        chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        chip.setStyleSheet(
+            f"background-color: {tint if allocated else 'rgba(128,128,128,0.4)'};"
+            " border-radius: 5px; font-size: 11px;"
+        )
+        rl.addWidget(chip)
+
+        text = QVBoxLayout()
+        text.setSpacing(1)
+        name_row = QHBoxLayout()
+        name_row.setSpacing(4)
+        name = QLabel(dev.get("name") or dev.get("handle") or dev.get("key", "?"))
+        name.setStyleSheet("font-size: 11px;")
+        name_row.addWidget(name)
+        if dev.get("version"):
+            ver = QLabel(str(dev["version"]))
+            ver.setStyleSheet("color: palette(mid); font-size: 9px;")
+            name_row.addWidget(ver)
+        name_row.addStretch(1)
+        text.addLayout(name_row)
+
+        detail = QLabel(_device_detail(dev, allocated))
+        detail.setStyleSheet(
+            f"font-size: 9px; color: {'#AF52DE' if status == 'repairing' else (tint if allocated else 'palette(mid)')};"
+        )
+        text.addWidget(detail)
+        rl.addLayout(text, 1)
+
+        badge = QLabel(badge_text)
+        badge.setStyleSheet(
+            f"color: {badge_color}; font-weight: 700; font-size: 9px;"
+            f" background-color: {tint_bg(badge_color, 0.14)}; border-radius: 7px;"
+            " padding: 2px 6px;"
+        )
+        rl.addWidget(badge)
+
+        row.setStyleSheet("background-color: rgba(128,128,128,0.06); border-radius: 6px;")
+        return row
 
     # MARK: navigation
 

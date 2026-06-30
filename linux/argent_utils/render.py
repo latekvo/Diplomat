@@ -46,6 +46,27 @@ def _fixture(store: Store) -> None:
     store.has_loaded = True
 
 
+def _device_fixture(store: Store) -> None:
+    """Synthetic device-allocator pool so the Devices section can be eyeballed."""
+    store.device_state = {
+        "updatedAt": "now",
+        "daemonPid": 4242,
+        "devices": [
+            {"key": "ios:99AD", "platform": "ios", "name": "iPhone 16 Pro Max",
+             "version": "18.5", "handle": "99AD1D87-DA5F", "status": "ready",
+             "owner": {"agentName": "bluesky e2e", "ownerPid": 4242}, "idleMs": 240000},
+            {"key": "android:Pixel_6_API_34", "platform": "android", "name": "Pixel_6_API_34",
+             "version": "14", "handle": "emulator-5554", "status": "booting",
+             "owner": {"agentName": "checkout flow", "ownerPid": 4310}},
+            {"key": "android:Pixel_3a_API_34", "platform": "android", "name": "Pixel_3a_API_34",
+             "version": "14", "handle": None, "status": "repairing",
+             "owner": {"agentName": "repair", "ownerPid": None}, "brokenReason": "boot timeout"},
+            {"key": "ios:FREE1", "platform": "ios", "name": "iPhone 15", "version": "17.5",
+             "handle": None, "status": "free", "owner": None},
+        ],
+    }
+
+
 def run(what: str, out: str) -> int:
     app = QApplication.instance() or QApplication([])
     store = Store()
@@ -64,6 +85,10 @@ def run(what: str, out: str) -> int:
         panel._open_action("conflicts")
     elif what == "settings":
         panel._toggle_settings()
+    elif what == "devices":
+        _device_fixture(store)
+        panel._rebuild_devices()
+        panel._update_results()
     else:  # panel
         panel._rebuild_grid()
         panel._update_results()

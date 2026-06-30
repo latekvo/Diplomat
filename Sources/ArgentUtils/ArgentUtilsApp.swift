@@ -25,6 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             || env["ARGENT_UTILS_SETTINGS_DUMP"] == "1"
             || env["ARGENT_UTILS_RENDER"] != nil
             || env["ARGENT_UTILS_TRACK_TEST"] == "1"
+            || env["ARGENT_UTILS_DEVICE_DUMP"] == "1"
 
         // Singleton, newest-wins: a freshly launched GUI instance kills any older
         // ones so there's never more than one wrench. Skipped in headless self-test
@@ -79,6 +80,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // liveness, focus, completion). Drives a real throwaway terminal window.
         if env["ARGENT_UTILS_TRACK_TEST"] == "1" {
             Task { await TrackTest.run(); exit(0) }
+        }
+        // Device-allocator self-test: exercise the exact paths the live panel uses —
+        // resolve node, shell the installer's --check, and Codable-decode the daemon's
+        // real state.json — and print them. Works headless (e.g. with a locked screen).
+        if env["ARGENT_UTILS_DEVICE_DUMP"] == "1" {
+            Dump.deviceAllocator(); exit(0)
         }
     }
 }
@@ -283,6 +290,27 @@ enum Dump {
             print("\n----- APPLESCRIPT (\(AgentSpawner.resolved(.iterm).title)) -----")
             print(AgentSpawner.appleScript(for: AgentSpawner.resolved(.iterm), shellCommand: cmd))
             try? FileManager.default.removeItem(at: file)
+        }
+    }
+
+    /// Exercises the device-allocator bridge the live panel relies on: the installer
+    /// `--check` (node resolution + Process + JSON decode of `AllocatorInstall`) and a
+    /// decode of the daemon's public `state.json` into `DeviceState`/`DeviceAllocation`.
+    static func deviceAllocator() {
+        let s = DeviceAllocator.check()
+        print("install: mcp=\(s.mcpRegistered) skill=\(s.skillInstalled) rule=\(s.ruleInstalled) "
+            + "claudeMd=\(s.claudeMdInjected) daemon=\(s.daemonRunning) installed=\(s.installed)")
+        print("packageDir: \(DeviceAllocator.packageDir)")
+        print("node: \(DeviceAllocator.resolveNode() ?? "(not found)")")
+        if let st = DeviceAllocator.readState() {
+            print("state: devices=\(st.devices.count) "
+                + "· \(st.allocatedCount) in use · \(st.freeCount) free")
+            for d in st.devices {
+                print("  [\(d.platform)] \(d.name ?? d.key) v\(d.version ?? "?") "
+                    + "status=\(d.status) owner=\(d.owner?.agentName ?? "—") handle=\(d.handle ?? "—")")
+            }
+        } else {
+            print("state: (no state.json yet — daemon hasn't run)")
         }
     }
 

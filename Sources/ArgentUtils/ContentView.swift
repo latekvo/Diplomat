@@ -7,6 +7,10 @@ import ArgentUtilsCore
 /// content lays out at its natural height; once that would exceed the cap the popover
 /// stops growing and the content scrolls instead of running off-screen.
 struct PopoverRoot: View {
+    /// Fixed popover width. Widened from the original 470 to give the Devices section
+    /// room for a device name, its holder, and a status badge on one line.
+    static let width: CGFloat = 560
+
     /// The content's measured natural height. Seeded with a sane default so the very
     /// first frame isn't zero-height; corrected on the first layout pass.
     @State private var contentHeight: CGFloat = 600
@@ -29,7 +33,7 @@ struct PopoverRoot: View {
                 )
         }
         .scrollDisabled(contentHeight <= cap)
-        .frame(width: 470, height: min(contentHeight, cap))
+        .frame(width: PopoverRoot.width, height: min(contentHeight, cap))
         .onPreferenceChange(ContentHeightKey.self) { h in
             if h > 1, abs(h - contentHeight) > 0.5 { contentHeight = h }
         }
@@ -64,6 +68,8 @@ struct ContentView: View {
             // Ongoing agent sessions live at the very top, above everything else,
             // and vanish entirely when there are none.
             if !store.processes.isEmpty { processList }
+            // The shared device pool + who holds what, just below the sessions.
+            if let ds = store.deviceState, !ds.devices.isEmpty { devicesList(ds) }
             if showingSettings {
                 SettingsView(isPresented: $showingSettings)
             } else {
@@ -157,6 +163,36 @@ struct ContentView: View {
             if await store.activate(proc) == .lost {
                 lostProcessIDs.insert(proc.id)
             }
+        }
+    }
+
+    // MARK: device allocator pool
+
+    private func devicesList(_ ds: DeviceState) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 5) {
+                Image(systemName: "iphone")
+                    .font(.system(size: 9)).foregroundStyle(.secondary)
+                Text("Devices").font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.secondary)
+                Text("\(ds.allocatedCount) in use · \(ds.freeCount) free")
+                    .font(.system(size: 10).monospacedDigit()).foregroundStyle(.secondary)
+                Spacer()
+            }
+            ForEach(sortedDevices(ds.devices)) { dev in
+                DeviceRow(dev: dev)
+            }
+        }
+        .padding(7)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.gray.opacity(0.07)))
+    }
+
+    /// Busy devices first (what's in use is what you care about), then by platform+name.
+    private func sortedDevices(_ d: [DeviceAllocation]) -> [DeviceAllocation] {
+        d.sorted { a, b in
+            if a.isAllocated != b.isAllocated { return a.isAllocated }
+            if a.platform != b.platform { return a.platform < b.platform }
+            return (a.name ?? "") < (b.name ?? "")
         }
     }
 
@@ -503,6 +539,84 @@ private struct ProcessRow: View {
         HStack(spacing: 3) {
             Image(systemName: symbol).font(.system(size: 8))
             Text(text).font(.system(size: 9))
+        }
+        .foregroundStyle(color)
+    }
+}
+
+// MARK: - Device-allocator row
+
+private struct DeviceRow: View {
+    let dev: DeviceAllocation
+
+    private var platformIcon: String { dev.platform == "ios" ? "apple.logo" : "candybarphone" }
+    private var platformTint: Color { dev.platform == "ios" ? .blue : .green }
+
+    private var statusBadge: (text: String, color: Color) {
+        switch dev.status {
+        case "ready":     return dev.isAllocated ? ("in use", .green) : ("free", .secondary)
+        case "booting":   return ("booting", .orange)
+        case "repairing": return ("repairing", .purple)
+        case "error":     return ("error", .red)
+        case "running-free": return ("free", .secondary)
+        default:          return ("free", .secondary)
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: platformIcon)
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 22, height: 22)
+                .background(dev.isAllocated ? platformTint : Color.gray.opacity(0.4))
+                .clipShape(RoundedRectangle(cornerRadius: 5))
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 4) {
+                    Text(dev.name ?? dev.handle ?? dev.key).font(.caption).lineLimit(1)
+                    if let v = dev.version { Text(v).font(.system(size: 9)).foregroundStyle(.secondary) }
+                }
+                detailLine
+            }
+            Spacer(minLength: 4)
+            Text(statusBadge.text)
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(statusBadge.color)
+                .padding(.horizontal, 6).padding(.vertical, 2)
+                .background(Capsule().fill(statusBadge.color.opacity(0.14)))
+        }
+        .padding(6)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.06)))
+    }
+
+    @ViewBuilder
+    private var detailLine: some View {
+        if dev.status == "repairing" {
+            label(dev.brokenReason.map { "repair: \($0)" } ?? "repair dispatched",
+                  "wrench.and.screwdriver", .purple)
+        } else if dev.isAllocated, let owner = dev.owner?.agentName {
+            HStack(spacing: 4) {
+                label(owner, "person.fill", platformTint)
+                if let idle = idleText {
+                    Text(idle).font(.system(size: 9)).foregroundStyle(.secondary)
+                }
+            }
+        } else {
+            Text(dev.handle ?? "available")
+                .font(.system(size: 9, design: .monospaced))
+                .foregroundStyle(.secondary).lineLimit(1)
+        }
+    }
+
+    private var idleText: String? {
+        guard let ms = dev.idleMs, ms > 60_000 else { return nil }
+        return "· idle \(Int(ms / 60_000))m"
+    }
+
+    private func label(_ text: String, _ symbol: String, _ color: Color) -> some View {
+        HStack(spacing: 3) {
+            Image(systemName: symbol).font(.system(size: 8))
+            Text(text).font(.system(size: 9)).lineLimit(1)
         }
         .foregroundStyle(color)
     }

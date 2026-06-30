@@ -14,8 +14,10 @@ struct SettingsView: View {
             identitySection
             toolsSection
             terminalSection
+            allocatorSection
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
+        .task { await store.refreshAllocatorInstall() }
     }
 
     private var headerRow: some View {
@@ -118,6 +120,74 @@ struct SettingsView: View {
                 .font(.caption2).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    // MARK: Device allocator (MCP server + skill + rule)
+
+    @ViewBuilder
+    private var allocatorSection: some View {
+        let s = store.allocatorInstall
+        VStack(alignment: .leading, spacing: 6) {
+            sectionLabel("DEVICE ALLOCATOR (MCP)")
+            HStack(spacing: 8) {
+                Image(systemName: (s?.installed ?? false) ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                    .foregroundStyle((s?.installed ?? false) ? .green : .orange)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(s == nil ? "Checking…" : ((s?.installed ?? false) ? "Installed" : "Not installed"))
+                        .font(.caption.bold())
+                    Text(statusDetail(s)).font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                if s?.daemonRunning ?? false {
+                    HStack(spacing: 3) {
+                        Image(systemName: "bolt.fill").font(.system(size: 8))
+                        Text("daemon").font(.system(size: 9))
+                    }.foregroundStyle(.green)
+                }
+            }
+            HStack(spacing: 8) {
+                Button { Task { await store.installAllocator() } } label: {
+                    Text((s?.installed ?? false) ? "Reinstall" : "Install").bold()
+                }
+                .buttonStyle(.borderedProminent).controlSize(.small)
+                .disabled(!DeviceAllocator.packageAvailable || !DeviceAllocator.nodeAvailable)
+                if s?.installed ?? false {
+                    Button { Task { await store.uninstallAllocator() } } label: { Text("Uninstall") }
+                        .buttonStyle(.bordered).controlSize(.small)
+                }
+                Button { Task { await store.refreshAllocatorInstall() } } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.borderless).controlSize(.small).help("Re-check status")
+            }
+            Text(allocatorHint)
+                .font(.caption2)
+                .foregroundStyle(allocatorReady ? Color.secondary : Color.orange)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var allocatorReady: Bool {
+        DeviceAllocator.packageAvailable && DeviceAllocator.nodeAvailable
+    }
+
+    private var allocatorHint: String {
+        if !DeviceAllocator.packageAvailable {
+            return "Package not found at \(DeviceAllocator.packageDir). Set ARGENT_DEVICE_ALLOCATOR_DIR to point at it."
+        }
+        if !DeviceAllocator.nodeAvailable {
+            return "Node.js not found. Install Node (or set ARGENT_NODE) — the allocator's MCP server and daemon need it to run."
+        }
+        return "Forces every local agent to reserve an emulator/simulator before using it (MCP server + skill + always-on rule), so agents never collide on a shared device. Reclaims a device when its agent dies or it sits idle for 1h."
+    }
+
+    private func statusDetail(_ s: AllocatorInstall?) -> String {
+        guard let s else { return "querying the installer…" }
+        func mark(_ b: Bool) -> String { b ? "✓" : "✗" }
+        return "MCP \(mark(s.mcpRegistered)) · skill \(mark(s.skillInstalled)) · "
+            + "rule \(mark(s.ruleInstalled)) · CLAUDE.md \(mark(s.claudeMdInjected))"
     }
 
     private func sectionLabel(_ text: String) -> some View {

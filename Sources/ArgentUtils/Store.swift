@@ -33,6 +33,13 @@ final class Store: ObservableObject {
     /// The authenticated user's login, used to scope the "my PRs" tools.
     @Published var me = ""
 
+    /// Live device-allocator state (the shared pool + who holds what), read from the
+    /// daemon's public state file. Nil until the daemon has run at least once.
+    @Published var deviceState: DeviceState?
+    /// Whether the device-allocator MCP server + skill + rule are installed.
+    /// Nil until the first `--check` completes (so the UI can show "checking…").
+    @Published var allocatorInstall: AllocatorInstall?
+
     // MARK: persisted settings
 
     @Published var usernameOverride: String {
@@ -112,12 +119,48 @@ final class Store: ObservableObject {
         }
 
         let env = ProcessInfo.processInfo.environment
-        let headless = env["ARGENT_UTILS_DUMP"] == "1" || env["ARGENT_UTILS_LOOKUP"] != nil
+        // Match the app's full headless set (ArgentUtilsApp) so self-test modes
+        // (render, dumps, track-test) don't start polls or shell `node` for the
+        // allocator status during a one-shot check.
+        let headless = env["ARGENT_UTILS_DUMP"] == "1"
+            || env["ARGENT_UTILS_LOOKUP"] != nil
+            || env["ARGENT_UTILS_RENDER"] != nil
+            || env["ARGENT_UTILS_PRINT_PROMPT"] != nil
+            || env["ARGENT_UTILS_SETTINGS_DUMP"] == "1"
+            || env["ARGENT_UTILS_TRACK_TEST"] == "1"
+            || env["ARGENT_UTILS_DEVICE_DUMP"] == "1"
         if !headless {
             startAutoRefresh()
             startProcessPoll()
             Task { await fetchMe() }
+            Task { await refreshDeviceState() }
+            Task { await refreshAllocatorInstall() }
         }
+    }
+
+    // MARK: device allocator
+
+    /// Re-read the device-allocator's public state file (cheap) so the Devices
+    /// section stays live. Off-main read; publish only on change to avoid redraws.
+    func refreshDeviceState() async {
+        let next = await Task.detached(priority: .utility) { DeviceAllocator.readState() }.value
+        if next != deviceState { deviceState = next }
+    }
+
+    /// Shell the installer's `--check` (Node startup, ~100-300ms) off-main and
+    /// publish the result. Called at startup, when Settings opens, and post-install.
+    func refreshAllocatorInstall() async {
+        allocatorInstall = await Task.detached(priority: .utility) { DeviceAllocator.check() }.value
+    }
+
+    func installAllocator() async {
+        allocatorInstall = await Task.detached(priority: .utility) { DeviceAllocator.install() }.value
+        await refreshDeviceState()
+    }
+
+    func uninstallAllocator() async {
+        allocatorInstall = await Task.detached(priority: .utility) { DeviceAllocator.uninstall() }.value
+        await refreshDeviceState()
     }
 
     func fetchMe() async {
@@ -231,6 +274,7 @@ final class Store: ObservableObject {
         processPollTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.refreshProcessStatuses()
+                await self?.refreshDeviceState()
                 let ns = UInt64(Store.processPollInterval * 1_000_000_000)
                 try? await Task.sleep(nanoseconds: ns)
             }
