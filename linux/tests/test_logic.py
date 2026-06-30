@@ -95,7 +95,26 @@ def test_review_prompt_blocks_by_target():
         target=PRTarget.SPECIFIC, specific_pr="337", me="latekvo"
     )
     assert single.is_single_pr and single.is_valid
-    assert single.build_prompt().startswith("Review PR #337 in software-mansion/argent.")
+    single_prompt = single.build_prompt()
+    assert single_prompt.startswith("Review PR #337 in software-mansion/argent.")
+    # A specific PR may be mine OR someone else's, so the prompt is author-gated:
+    # poll the author, then CASE A (mine -> fix on branch, mark ready) / CASE B
+    # (theirs -> review only, never touch the branch, DO NOT mark ready).
+    assert "WHO AUTHORED IT" in single_prompt
+    assert "CASE A" in single_prompt and "CASE B" in single_prompt
+    assert "on the PR's branch" in single_prompt  # depth onBranch fix step
+    assert "mark it ready for review" in single_prompt  # CASE A
+    assert "ABSOLUTELY DO NOT touch their branch" in single_prompt  # CASE B guard
+    assert "isn't yours to advance" in single_prompt  # CASE B: don't mark ready
+    assert "No AI attribution" in single_prompt  # CASE A commit guidance
+
+    # Mark-ready off gates only CASE A: the mark-ready block drops, the
+    # do-not-advance guard stays.
+    single_no_ready = review.ReviewConfig(
+        target=PRTarget.SPECIFIC, specific_pr="337", me="latekvo", mark_ready=False
+    ).build_prompt()
+    assert "mark it ready for review" not in single_no_ready
+    assert "isn't yours to advance" in single_no_ready
 
     # A whose-PRs sweep with no PR-state box ticked is invalid (would review nothing).
     assert not review.ReviewConfig(
@@ -164,6 +183,47 @@ def test_conflict_single_pr_accepts_url():
 def test_review_prompt_trailer_has_no_ai_attribution():
     p = review.ReviewConfig(me="latekvo").build_prompt()
     assert "No AI attribution" in p
+
+
+def test_audit_prompt_toggles_gate_blocks():
+    from argent_utils.audit import AuditConfig
+
+    # The whole-repo audit needs no input and the hard-repro bar is always present.
+    base = AuditConfig(me="latekvo").build_prompt()
+    assert AuditConfig().is_valid
+    assert "100% CERTAINTY" in base
+    assert base.startswith("Run a FULL end-to-end test of the ENTIRE software-mansion/argent")
+    # Reproduction must be driven on a real simulator/emulator; severity (H/M/L) is
+    # classified for every finding — both always present, even in the read-only default.
+    assert "SIMULATOR / EMULATOR" in base
+    assert "HIGH" in base and "LOW" in base
+    # Default (find-only): read-only, no issue-handling, no PRs (so no 20-LOC PR gate).
+    assert "READ-ONLY audit" in base
+    assert "OPEN ISSUES" not in base
+    assert "focused pull request" not in base
+    assert "20 lines" not in base
+
+    # fix_issues adds the bug-issue block (and is explicit about skipping features).
+    issues = AuditConfig(fix_issues=True).build_prompt()
+    assert "OPEN ISSUES" in issues
+    assert "SKIP every feature request" in issues
+    assert "READ-ONLY audit" in issues  # still read-only until open_prs is set
+
+    # open_prs swaps the read-only guard for the open-a-PR block + no-attribution,
+    # and every opened PR must be a draft.
+    prs = AuditConfig(open_prs=True).build_prompt()
+    assert "focused pull request" in prs
+    assert "DRAFT" in prs
+    # Dedup against existing PRs by actual code, not titles.
+    assert "DUPLICATE" in prs and "gh pr diff" in prs
+    # Low/nitpick fixes only earn a PR when the diff is under 20 lines.
+    assert "20 lines" in prs
+    assert "No AI attribution" in prs
+    assert "READ-ONLY audit" not in prs
+
+    # Both on: issue-handling + PRs together.
+    both = AuditConfig(fix_issues=True, open_prs=True).build_prompt()
+    assert "OPEN ISSUES" in both and "focused pull request" in both
 
 
 if __name__ == "__main__":

@@ -143,23 +143,24 @@ public struct ReviewConfig {
         let owner = cfg?.owner ?? "software-mansion"
         let repo = cfg?.repo ?? "argent"
 
+        // A specific PR may be mine OR someone else's — which decides whether the
+        // agent is allowed to touch the branch. We can't know the author up front,
+        // so we hand the agent an author-gated prompt instead of guessing.
+        if isSinglePR {
+            return buildSpecificPrompt(review: review, scope: scope, blocks: blocks,
+                                       owner: owner, repo: repo)
+        }
+
         var out: [String] = []
 
-        if isSinglePR {
-            out.append((scope["single"] ?? "")
-                .replacingOccurrences(of: "{pr}", with: prRef.numberString)
-                .replacingOccurrences(of: "{owner}", with: owner)
-                .replacingOccurrences(of: "{repo}", with: repo))
-        } else {
-            let tmpl = target == .mine ? (scope["scopeMine"] ?? "") : (scope["scopeOther"] ?? "")
-            let scopeText = tmpl
-                .replacingOccurrences(of: "{prKind}", with: prKind(scope))
-                .replacingOccurrences(of: "{handle}", with: authorHandle)
-            out.append((scope["multi"] ?? "")
-                .replacingOccurrences(of: "{scope}", with: scopeText)
-                .replacingOccurrences(of: "{owner}", with: owner)
-                .replacingOccurrences(of: "{repo}", with: repo))
-        }
+        let tmpl = target == .mine ? (scope["scopeMine"] ?? "") : (scope["scopeOther"] ?? "")
+        let scopeText = tmpl
+            .replacingOccurrences(of: "{prKind}", with: prKind(scope))
+            .replacingOccurrences(of: "{handle}", with: authorHandle)
+        out.append((scope["multi"] ?? "")
+            .replacingOccurrences(of: "{scope}", with: scopeText)
+            .replacingOccurrences(of: "{owner}", with: owner)
+            .replacingOccurrences(of: "{repo}", with: repo))
 
         // For someone else's PRs, frame the whole task as look-don't-touch up front.
         if isReviewOnly, let b = blocks["reviewOnly"] { out.append(b) }
@@ -179,5 +180,52 @@ public struct ReviewConfig {
         if finalPass, let b = blocks["finalPass"] { out.append(b) }
 
         return out.joined(separator: "\n\n")
+    }
+
+    /// The single-PR (Specific PR) prompt. Because the PR may be mine or someone
+    /// else's — and that decides whether the branch may be touched — this prompt
+    /// tells the agent to poll the author first, then split into two mutually
+    /// exclusive cases: CASE A (mine → fix on the branch, mark clean ready, reply,
+    /// no AI attribution) and CASE B (theirs → review only, never touch the branch,
+    /// leave a formal review, and explicitly DO NOT mark it ready). The action
+    /// sub-blocks are gated by the same toggles the wizard exposes.
+    private func buildSpecificPrompt(review: CoreAssets.Review?, scope: [String: String],
+                                     blocks: [String: String], owner: String, repo: String) -> String {
+        let specific = review?.specific ?? [:]
+        let chosen = ReviewCatalog.depth(id: depth)
+        let pr = prRef.numberString
+        let handle = me.isEmpty ? "me" : me
+        func fill(_ s: String) -> String {
+            s.replacingOccurrences(of: "{pr}", with: pr)
+                .replacingOccurrences(of: "{owner}", with: owner)
+                .replacingOccurrences(of: "{repo}", with: repo)
+                .replacingOccurrences(of: "{me}", with: handle)
+        }
+
+        var out: [String] = []
+        out.append(fill(scope["single"] ?? ""))
+        out.append(fill(specific["determineAuthor"] ?? ""))
+        // The review work itself is the same regardless of author; only the
+        // disposition differs, so the approach + bar come before the split.
+        out.append(chosen.fragment)
+        if let bar = blocks["bar"] { out.append(bar) }
+
+        // CASE A — it's mine: fix it on the branch.
+        out.append(fill(specific["mineHeader"] ?? ""))
+        if let ob = chosen.onBranch, !ob.isEmpty { out.append(ob) }
+        if markReady, let b = blocks["markReady"] { out.append(b) }
+        if replyToReviews, let b = blocks["reply"] { out.append(b) }
+        if let b = blocks["noAttribution"] { out.append(b) }
+
+        // CASE B — it's someone else's: review only, hands off the branch.
+        out.append(fill(specific["otherHeader"] ?? ""))
+        if let b = blocks["reviewOnly"] { out.append(b) }
+        if leaveReviews, let b = blocks["leaveReviews"] { out.append(b) }
+        out.append(fill(specific["otherNoMarkReady"] ?? ""))
+
+        if let trailer = blocks["trailer"] { out.append(trailer) }
+        if finalPass, let b = blocks["finalPass"] { out.append(b) }
+
+        return out.filter { !$0.isEmpty }.joined(separator: "\n\n")
     }
 }

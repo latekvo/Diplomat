@@ -195,6 +195,19 @@ public enum API {
         }
     }
 
+    /// The lifecycle state of a single PR — "OPEN", "CLOSED", or "MERGED". Used to
+    /// mark a tracked agent session's PR as merged once it lands. One cheap
+    /// `gh pr view` per tracked PR; the repo coordinates come from the shared config.
+    public static func fetchPRState(number: Int) async throws -> String {
+        let cfg = try? CoreAssets.config()
+        let owner = cfg?.owner ?? "software-mansion"
+        let repo = cfg?.repo ?? "argent"
+        let data = try await GH.run(
+            ["pr", "view", "\(number)", "--repo", "\(owner)/\(repo)", "--json", "state"])
+        struct StateResponse: Decodable { let state: String }
+        return try JSONDecoder().decode(StateResponse.self, from: data).state
+    }
+
     public static func fetchOpenIssues() async throws -> [OpenIssue] {
         let resp = try await graphqlDecoded("issues", withRepo: true, as: IssueResponse.self)
         return resp.data.repository.issues.nodes.map { n in

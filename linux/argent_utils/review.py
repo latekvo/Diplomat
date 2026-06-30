@@ -156,16 +156,17 @@ class ReviewConfig:
         owner, repo = cfg["owner"], cfg["repo"]
         s = core.review()["scope"]
         blocks_src = core.review()["blocks"]
-        blocks: list[str] = []
 
+        # A specific PR may be mine OR someone else's — which decides whether the
+        # agent is allowed to touch the branch. We can't know the author up front,
+        # so we hand the agent an author-gated prompt instead of guessing.
         if self.is_single_pr:
-            blocks.append(
-                s["single"].format(pr=self.pr_ref.number_string, owner=owner, repo=repo)
-            )
-        else:
-            tmpl = s["scopeMine"] if self.target == PRTarget.MINE else s["scopeOther"]
-            scope = tmpl.format(prKind=self._pr_kind, handle=self.author_handle)
-            blocks.append(s["multi"].format(scope=scope, owner=owner, repo=repo))
+            return self._build_specific_prompt(owner, repo)
+
+        blocks: list[str] = []
+        tmpl = s["scopeMine"] if self.target == PRTarget.MINE else s["scopeOther"]
+        scope = tmpl.format(prKind=self._pr_kind, handle=self.author_handle)
+        blocks.append(s["multi"].format(scope=scope, owner=owner, repo=repo))
 
         # For someone else's PRs, frame the whole task as look-don't-touch up front.
         if self.is_review_only:
@@ -195,6 +196,56 @@ class ReviewConfig:
         if self.final_pass:
             blocks.append(blocks_src["finalPass"])
         return "\n\n".join(blocks)
+
+    def _build_specific_prompt(self, owner: str, repo: str) -> str:
+        """The single-PR (Specific PR) prompt. Because the PR may be mine or someone
+        else's — and that decides whether the branch may be touched — this tells the
+        agent to poll the author first, then split into two mutually exclusive cases:
+        CASE A (mine -> fix on the branch, mark clean ready, reply, no AI attribution)
+        and CASE B (theirs -> review only, never touch the branch, leave a formal
+        review, and explicitly DO NOT mark it ready). The action sub-blocks are gated
+        by the same toggles the wizard exposes. Identical to Review.swift's
+        ``buildSpecificPrompt``.
+        """
+        s = core.review()["scope"]
+        blocks_src = core.review()["blocks"]
+        specific = core.review()["specific"]
+        depth = depth_by_id(self.depth)
+        handle = self.me or "me"
+
+        def fill(text: str) -> str:
+            return text.format(
+                pr=self.pr_ref.number_string, owner=owner, repo=repo, me=handle
+            )
+
+        blocks: list[str] = [fill(s["single"]), fill(specific["determineAuthor"])]
+        # The review work itself is the same regardless of author; only the
+        # disposition differs, so the approach + bar come before the split.
+        blocks.append(depth["fragment"])
+        blocks.append(blocks_src["bar"])
+
+        # CASE A — it's mine: fix it on the branch.
+        blocks.append(fill(specific["mineHeader"]))
+        on_branch = depth.get("onBranch")
+        if on_branch:
+            blocks.append(on_branch)
+        if self.mark_ready:
+            blocks.append(blocks_src["markReady"])
+        if self.reply_to_reviews:
+            blocks.append(blocks_src["reply"])
+        blocks.append(blocks_src["noAttribution"])
+
+        # CASE B — it's someone else's: review only, hands off the branch.
+        blocks.append(fill(specific["otherHeader"]))
+        blocks.append(blocks_src["reviewOnly"])
+        if self.leave_reviews:
+            blocks.append(blocks_src["leaveReviews"])
+        blocks.append(fill(specific["otherNoMarkReady"]))
+
+        blocks.append(blocks_src["trailer"])
+        if self.final_pass:
+            blocks.append(blocks_src["finalPass"])
+        return "\n\n".join(b for b in blocks if b)
 
 
 # MARK: - Terminal choice + spawning

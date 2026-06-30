@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import ArgentUtilsCore
 
 /// macOS UI mapping for a tool's tint. The catalog (`core/catalog.json`) carries
@@ -47,11 +48,19 @@ final class Store: ObservableObject {
         didSet { UserDefaults.standard.set(terminalChoice, forKey: Keys.terminalChoice) }
     }
 
+    /// The dispatched agent sessions shown in the ongoing-processes list. Persisted
+    /// so the list survives an applet restart — the tty/window/sentinel handles are
+    /// OS-level and outlive this process.
+    @Published var processes: [TrackedProcess] {
+        didSet { persistProcesses() }
+    }
+
     private enum Keys {
         static let usernameOverride = "usernameOverride"
         static let hiddenTools = "hiddenTools"
         static let colorOverrides = "colorOverrides"
         static let terminalChoice = "terminalChoice"
+        static let processes = "trackedProcesses"
     }
 
     /// The handle to treat as "me": the user's override if set, else the gh login.
@@ -96,6 +105,7 @@ final class Store: ObservableObject {
         colorOverrides = (defaults.dictionary(forKey: Keys.colorOverrides) as? [String: String]) ?? [:]
         terminalChoice = defaults.string(forKey: Keys.terminalChoice)
             ?? (SpawnTerminal.iterm.isInstalled ? SpawnTerminal.iterm.rawValue : SpawnTerminal.terminal.rawValue)
+        processes = Store.loadProcesses()
         if hiddenTools.contains(selected.rawValue),
            let first = ToolKind.allCases.first(where: { !hiddenTools.contains($0.rawValue) }) {
             selected = first
@@ -105,6 +115,7 @@ final class Store: ObservableObject {
         let headless = env["ARGENT_UTILS_DUMP"] == "1" || env["ARGENT_UTILS_LOOKUP"] != nil
         if !headless {
             startAutoRefresh()
+            startProcessPoll()
             Task { await fetchMe() }
         }
     }
@@ -143,6 +154,123 @@ final class Store: ObservableObject {
             self.error = (error as? LocalizedError)?.errorDescription ?? "\(error)"
         }
         isLoading = false
+        // A full refresh is also where we re-check whether any tracked session's PR
+        // has since been merged. Best-effort and after the main load so a PR-state
+        // hiccup never blocks the tool data or clobbers its error.
+        await refreshMergedStatuses()
+    }
+
+    /// Re-check, off the back of an Update, whether any tracked session's PR has been
+    /// merged on GitHub, and flip its `merged` flag. Best-effort: a failed probe just
+    /// leaves that row unchanged. Only sessions tied to a PR that isn't already known
+    /// merged are queried, so the cost is one `gh pr view` per still-open tracked PR.
+    func refreshMergedStatuses() async {
+        let targets = processes.filter { !$0.merged && $0.prNumber != nil }
+        guard !targets.isEmpty else { return }
+        var nowMerged: Set<UUID> = []
+        for p in targets {
+            guard let n = p.prNumber else { continue }
+            if let state = try? await API.fetchPRState(number: n), state == "MERGED" {
+                nowMerged.insert(p.id)
+            }
+        }
+        guard !nowMerged.isEmpty else { return }
+        var next = processes
+        var changed = false
+        for i in next.indices where nowMerged.contains(next[i].id) && !next[i].merged {
+            next[i].merged = true
+            changed = true
+        }
+        if changed { processes = next }
+    }
+
+    // MARK: tracked agent sessions
+
+    /// Outcome of clicking a tracked process row.
+    enum FocusOutcome { case focused, openedPR, lost }
+
+    /// How often the ongoing-processes list re-checks liveness. Default 8s; override
+    /// with `ARGENT_UTILS_PROC_POLL_SECS` (clamped ≥2s) for tuning/testing.
+    static var processPollInterval: TimeInterval {
+        let secs = ProcessInfo.processInfo.environment["ARGENT_UTILS_PROC_POLL_SECS"].flatMap(Double.init)
+        return max(2, secs ?? 8)
+    }
+    private var processPollTask: Task<Void, Never>?
+
+    private func persistProcesses() {
+        // A headless render shares the live app's defaults domain; never let seeded
+        // preview rows overwrite the user's real tracked-process list.
+        if ProcessInfo.processInfo.environment["ARGENT_UTILS_RENDER"] != nil { return }
+        if let data = try? JSONEncoder().encode(processes) {
+            UserDefaults.standard.set(data, forKey: Keys.processes)
+        }
+    }
+    private static func loadProcesses() -> [TrackedProcess] {
+        guard let data = UserDefaults.standard.data(forKey: Keys.processes),
+              let decoded = try? JSONDecoder().decode([TrackedProcess].self, from: data)
+        else { return [] }
+        return decoded
+    }
+
+    /// Register a freshly spawned agent session for tracking.
+    func track(kind: String, label: String, prURL: String?, result: AgentSpawner.SpawnResult) {
+        let p = TrackedProcess(kind: kind, label: label,
+                               terminal: result.terminal.rawValue,
+                               windowID: result.windowID, sessionID: result.sessionID,
+                               tty: result.tty, donePath: result.donePath, prURL: prURL)
+        processes.append(p)
+    }
+
+    /// Remove one tracked session from the list (the row's ✕ button).
+    func removeProcess(_ id: UUID) {
+        processes.removeAll { $0.id == id }
+    }
+
+    private func startProcessPoll() {
+        guard processPollTask == nil else { return }
+        processPollTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.refreshProcessStatuses()
+                let ns = UInt64(Store.processPollInterval * 1_000_000_000)
+                try? await Task.sleep(nanoseconds: ns)
+            }
+        }
+    }
+
+    /// Re-derive each session's `done` flag off the main thread (one `ps` call),
+    /// then merge the flags back by id so a concurrent add/remove isn't clobbered.
+    func refreshProcessStatuses() async {
+        let snapshot = processes
+        guard !snapshot.isEmpty else { return }
+        let refreshed = await Task.detached(priority: .utility) {
+            ProcessMonitor.refreshed(snapshot)
+        }.value
+        var doneByID: [UUID: Bool] = [:]
+        for p in refreshed { doneByID[p.id] = p.done }
+        var next = processes
+        var changed = false
+        for i in next.indices {
+            if let d = doneByID[next[i].id], next[i].done != d {
+                next[i].done = d
+                changed = true
+            }
+        }
+        if changed { processes = next }
+    }
+
+    /// Click a tracked row: focus its terminal window; if that's not possible open
+    /// the PR; if there's no PR either, report that tracking is lost. The osascript
+    /// focus runs off the main thread so the popover never hitches.
+    func activate(_ p: TrackedProcess) async -> FocusOutcome {
+        let focused = await Task.detached(priority: .userInitiated) {
+            ProcessMonitor.focus(p)
+        }.value
+        if focused { return .focused }
+        if let s = p.prURL, let u = URL(string: s) {
+            NSWorkspace.shared.open(u)
+            return .openedPR
+        }
+        return .lost
     }
 
     // MARK: tool data (delegated to the shared core engine)

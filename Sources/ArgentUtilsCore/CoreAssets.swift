@@ -56,10 +56,17 @@ public enum CoreAssets {
         public let depths: [Depth]
         public let scope: [String: String]
         public let blocks: [String: String]
+        /// The author-conditional sub-blocks used only by the single-PR (Specific
+        /// PR) path, where the PR may be mine or someone else's. See `_specificComment`.
+        public let specific: [String: String]
     }
 
     public struct Conflicts: Decodable {
         public let scope: [String: String]
+        public let blocks: [String: String]
+    }
+
+    public struct Audit: Decodable {
         public let blocks: [String: String]
     }
 
@@ -124,6 +131,7 @@ public enum CoreAssets {
     private static let _filters = try? loadJSON("filters.json", as: Filters.self)
     private static let _review = try? loadJSON("review.json", as: Review.self)
     private static let _conflicts = try? loadJSON("conflicts.json", as: Conflicts.self)
+    private static let _audit = try? loadJSON("audit.json", as: Audit.self)
 
     public static func config() throws -> Config {
         guard let c = _config else { return try loadJSON("config.json", as: Config.self) }
@@ -148,6 +156,11 @@ public enum CoreAssets {
     public static func conflicts() throws -> Conflicts {
         guard let c = _conflicts else { return try loadJSON("conflicts.json", as: Conflicts.self) }
         return c
+    }
+
+    public static func audit() throws -> Audit {
+        guard let a = _audit else { return try loadJSON("audit.json", as: Audit.self) }
+        return a
     }
 
     public static func graphql(_ name: String) throws -> String {

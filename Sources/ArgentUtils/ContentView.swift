@@ -2,20 +2,68 @@ import SwiftUI
 import AppKit
 import ArgentUtilsCore
 
+/// Sizes the menu-bar popover to its content, capped at the screen's safe area so it
+/// never spills past the menu bar (top) or the Dock — the "bottom bar" (bottom). The
+/// content lays out at its natural height; once that would exceed the cap the popover
+/// stops growing and the content scrolls instead of running off-screen.
+struct PopoverRoot: View {
+    /// The content's measured natural height. Seeded with a sane default so the very
+    /// first frame isn't zero-height; corrected on the first layout pass.
+    @State private var contentHeight: CGFloat = 600
+
+    /// Usable vertical space on the menu-bar screen. `visibleFrame` already excludes
+    /// the menu bar and the Dock, so capping here keeps the popover off both; a small
+    /// margin stops it from kissing either edge. Falls back to a safe default.
+    private var cap: CGFloat {
+        let visible = NSScreen.main?.visibleFrame.height ?? 800
+        return max(320, visible - 12)
+    }
+
+    var body: some View {
+        ScrollView {
+            ContentView()
+                .background(
+                    GeometryReader { geo in
+                        Color.clear.preference(key: ContentHeightKey.self, value: geo.size.height)
+                    }
+                )
+        }
+        .scrollDisabled(contentHeight <= cap)
+        .frame(width: 470, height: min(contentHeight, cap))
+        .onPreferenceChange(ContentHeightKey.self) { h in
+            if h > 1, abs(h - contentHeight) > 0.5 { contentHeight = h }
+        }
+    }
+}
+
+/// Carries the content's natural height up from a background GeometryReader so
+/// `PopoverRoot` can size the window to it.
+private struct ContentHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 struct ContentView: View {
     @EnvironmentObject var store: Store
     @State private var query = ""
     @State private var showingSettings = false
     /// Which action wizard (if any) replaces the tool lists in the results pane.
     @State private var activeAction: ActionPanel?
+    /// Rows whose last click couldn't be focused or opened — show "tracking lost".
+    @State private var lostProcessIDs: Set<UUID> = []
     @FocusState private var searchFocused: Bool
 
     /// The action cards in the grid that open a wizard instead of selecting a tool.
-    private enum ActionPanel: Hashable { case review, conflicts }
+    private enum ActionPanel: Hashable { case review, conflicts, audit }
 
     var body: some View {
         VStack(spacing: 8) {
             header
+            // Ongoing agent sessions live at the very top, above everything else,
+            // and vanish entirely when there are none.
+            if !store.processes.isEmpty { processList }
             if showingSettings {
                 SettingsView(isPresented: $showingSettings)
             } else {
@@ -28,6 +76,7 @@ struct ContentView: View {
         }
         .padding(10)
         .background(cmdFCatcher)
+        .animation(.easeInOut(duration: 0.18), value: store.processes)
         .task {
             // Optional: launch pre-focused on a specific number (also used for headless UI checks).
             if query.isEmpty, let pre = ProcessInfo.processInfo.environment["ARGENT_UTILS_PREFILL"], !pre.isEmpty {
@@ -60,6 +109,54 @@ struct ContentView: View {
             Button { QuitFlow.confirm() } label: {
                 Image(systemName: "power")
             }.buttonStyle(.borderless).help("Quit")
+        }
+    }
+
+    // MARK: ongoing agent sessions
+
+    private var processList: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 5) {
+                Image(systemName: "antenna.radiowaves.left.and.right")
+                    .font(.system(size: 9)).foregroundStyle(.secondary)
+                Text("Agent sessions").font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.secondary)
+                Text("\(store.processes.count)")
+                    .font(.system(size: 10).monospacedDigit()).foregroundStyle(.secondary)
+                Spacer()
+            }
+            ForEach(store.processes) { proc in
+                ProcessRow(
+                    proc: proc,
+                    tint: processTint(proc),
+                    lost: lostProcessIDs.contains(proc.id),
+                    onTap: { activate(proc) },
+                    onRemove: {
+                        lostProcessIDs.remove(proc.id)
+                        store.removeProcess(proc.id)
+                    }
+                )
+            }
+        }
+        .padding(7)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.gray.opacity(0.07)))
+    }
+
+    private func processTint(_ proc: TrackedProcess) -> Color {
+        switch proc.kind {
+        case "conflicts": return .cyan
+        case "audit":     return .indigo
+        default:          return .pink
+        }
+    }
+
+    /// Click a tracked row: focus its window → else open its PR → else mark it lost.
+    private func activate(_ proc: TrackedProcess) {
+        lostProcessIDs.remove(proc.id)
+        Task {
+            if await store.activate(proc) == .lost {
+                lostProcessIDs.insert(proc.id)
+            }
         }
     }
 
@@ -134,6 +231,14 @@ struct ContentView: View {
                 selected: activeAction == .conflicts
             )
             .onTapGesture { activeAction = .conflicts }
+            ActionCard(
+                systemImage: "ladybug.fill",
+                title: "Full E2E test",
+                subtitle: "swarm-test the whole repo",
+                tint: .indigo,
+                selected: activeAction == .audit
+            )
+            .onTapGesture { activeAction = .audit }
         }
     }
 
@@ -143,17 +248,21 @@ struct ContentView: View {
     private var resultsPane: some View {
         let trimmed = query.trimmingCharacters(in: .whitespaces)
         if let activeAction {
+            // The wizards size to their own content (scrolls: false); PopoverRoot's
+            // outer scroll view handles any overflow, so they never nest a scroller.
             switch activeAction {
-            case .review:    ReviewWizardView()
-            case .conflicts: ConflictWizardView()
+            case .review:    ReviewWizardView(scrolls: false)
+            case .conflicts: ConflictWizardView(scrolls: false)
+            case .audit:     AuditWizardView(scrolls: false)
             }
         } else if !trimmed.isEmpty, let n = Int(trimmed) {
-            ScrollView { lookupView(n) }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            lookupView(n)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
         } else if !trimmed.isEmpty {
             Text("Type a PR or issue number.")
                 .font(.caption).foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 12)
         } else {
             toolResults
         }
@@ -223,25 +332,25 @@ struct ContentView: View {
                 if items.isEmpty {
                     Text(store.isLoading ? "Loading…" : "Nothing here.")
                         .font(.caption).foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 12)
                 } else {
-                    ScrollView {
-                        VStack(spacing: 4) {
-                            ForEach(items) { item in
-                                ResultRow(item: item, tint: tint)
-                            }
+                    VStack(spacing: 4) {
+                        ForEach(items) { item in
+                            ResultRow(item: item, tint: tint)
                         }
                     }
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         } else {
             VStack(spacing: 6) {
                 Image(systemName: "eye.slash").font(.title3).foregroundStyle(.secondary)
                 Text("All tools hidden").font(.caption.bold()).foregroundStyle(.secondary)
                 Text("Re-enable some under ⚙︎ Settings.").font(.caption2).foregroundStyle(.secondary)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 16)
         }
     }
 }
@@ -320,6 +429,82 @@ private struct ActionCard: View {
                 .stroke(selected ? tint : .clear, lineWidth: 1.2)
         )
         .contentShape(Rectangle())
+    }
+}
+
+// MARK: - Ongoing agent-session row
+
+private struct ProcessRow: View {
+    let proc: TrackedProcess
+    let tint: Color
+    let lost: Bool
+    let onTap: () -> Void
+    let onRemove: () -> Void
+
+    /// The leading glyph, matched to the action that spawned the session.
+    private var kindIcon: String {
+        switch proc.kind {
+        case "conflicts": return "arrow.triangle.merge"
+        case "audit":     return "ladybug.fill"
+        default:          return "checklist"
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Button(action: onTap) {
+                HStack(spacing: 8) {
+                    Image(systemName: kindIcon)
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 22, height: 22)
+                        .background(tint)
+                        .clipShape(RoundedRectangle(cornerRadius: 5))
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(proc.label).font(.caption).lineLimit(1)
+                        statusLine
+                    }
+                    Spacer(minLength: 4)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(lost ? "Tracking lost — the window and PR couldn't be reached."
+                       : "Bring this session's window to the front.")
+
+            Button(action: onRemove) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.borderless)
+            .help("Stop tracking — remove from the list.")
+        }
+        .padding(6)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.06)))
+    }
+
+    @ViewBuilder
+    private var statusLine: some View {
+        // "merged" is the definitive outcome — it outranks both "done" (the local
+        // claude process merely exited) and a transient click-time "tracking lost".
+        if proc.merged {
+            label("merged", "arrow.triangle.merge", .purple)
+        } else if lost {
+            label("tracking lost", "questionmark.circle", .orange)
+        } else if proc.done {
+            label("done", "checkmark.circle.fill", .green)
+        } else {
+            label("running", "circle.fill", .blue)
+        }
+    }
+
+    private func label(_ text: String, _ symbol: String, _ color: Color) -> some View {
+        HStack(spacing: 3) {
+            Image(systemName: symbol).font(.system(size: 8))
+            Text(text).font(.system(size: 9))
+        }
+        .foregroundStyle(color)
     }
 }
 

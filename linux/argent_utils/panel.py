@@ -36,11 +36,13 @@ from .widgets import (
     tint_bg,
 )
 from .conflictwizardview import ConflictWizardView
+from .auditwizardview import AuditWizardView
 from .wizardview import WizardView
 from .models import Fmt
 
 _REVIEW_TINT = "#FF2D78"
 _CONFLICT_TINT = "#32ADE6"
+_AUDIT_TINT = "#5856D6"
 
 
 def _clear_layout(layout) -> None:
@@ -74,7 +76,7 @@ class Panel(QWidget):
         super().__init__()
         self.store = store
         self._show_settings = False
-        self._active_action: str | None = None  # None | "review" | "conflicts"
+        self._active_action: str | None = None  # None | "review" | "conflicts" | "audit"
 
         self.setWindowFlags(
             Qt.WindowType.Tool
@@ -232,6 +234,13 @@ class Panel(QWidget):
         conflict_scroll.setWidget(self.conflict_wizard)
         self.results.addWidget(conflict_scroll)  # index 4
 
+        self.audit_wizard = AuditWizardView(self.store)
+        audit_scroll = QScrollArea()
+        audit_scroll.setWidgetResizable(True)
+        audit_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        audit_scroll.setWidget(self.audit_wizard)
+        self.results.addWidget(audit_scroll)  # index 5
+
     # MARK: grid
 
     def _rebuild_grid(self) -> None:
@@ -278,6 +287,20 @@ class Panel(QWidget):
         )
         conflict_card.clicked.connect(lambda: self._open_action("conflicts"))
         self.grid.addWidget(conflict_card, rowi, col)
+        col += 1
+        if col == 2:
+            col = 0
+            rowi += 1
+
+        audit_card = ActionCard(
+            emoji="🐞",
+            title="Full E2E test",
+            subtitle="swarm-test the whole repo",
+            hex_color=_AUDIT_TINT,
+            selected=self._active_action == "audit",
+        )
+        audit_card.clicked.connect(lambda: self._open_action("audit"))
+        self.grid.addWidget(audit_card, rowi, col)
 
     # MARK: navigation
 
@@ -316,6 +339,9 @@ class Panel(QWidget):
             return
         if self._active_action == "conflicts":
             self.results.setCurrentIndex(4)
+            return
+        if self._active_action == "audit":
+            self.results.setCurrentIndex(5)
             return
         if trimmed and trimmed.isdigit():
             self._rebuild_lookup(int(trimmed))
@@ -456,6 +482,7 @@ class Panel(QWidget):
         self._rebuild_grid()
         self.wizard.refresh_identity()
         self.conflict_wizard.refresh_identity()
+        self.audit_wizard.refresh_identity()
         if not self._show_settings:
             self._update_results()
 

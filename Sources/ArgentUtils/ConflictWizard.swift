@@ -42,7 +42,7 @@ struct ConflictWizardView: View {
         Group {
             if scrolls { ScrollView { content } } else { content }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     private var content: some View {
@@ -147,15 +147,41 @@ struct ConflictWizardView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    /// A short label for the ongoing-processes list, e.g. "Resolve · #337".
+    private var trackingLabel: String {
+        switch target {
+        case .mine: return "Resolve · my PRs"
+        case .someone:
+            let u = username.trimmingCharacters(in: .whitespaces)
+            return "Resolve · @\(u.isEmpty ? "user" : u)"
+        case .specific:
+            let n = config.prRef.number.map { "#\($0)" } ?? "PR"
+            return "Resolve · \(n)"
+        }
+    }
+
+    /// The one PR this run concerns (single-PR mode only) — the open-in-browser
+    /// fallback when its window can't be focused.
+    private var trackingPRURL: String? {
+        guard target == .specific, let n = config.prRef.number else { return nil }
+        let (owner, repo) = config.targetRepo
+        return "https://github.com/\(owner)/\(repo)/pull/\(n)"
+    }
+
     private func spawn() {
         let cfg = config
         let preferred = store.terminal
         let term = AgentSpawner.resolved(preferred)
+        let label = trackingLabel
+        let prURL = trackingPRURL
         status = "Launching \(term.title)…"
         Task.detached {
             do {
-                _ = try AgentSpawner.spawn(cfg.buildPrompt(), terminal: preferred)
-                await MainActor.run { status = "Launched \(term.title) · \(Fmt.clock(Date()))" }
+                let result = try AgentSpawner.spawn(cfg.buildPrompt(), terminal: preferred)
+                await MainActor.run {
+                    store.track(kind: "conflicts", label: label, prURL: prURL, result: result)
+                    status = "Launched \(term.title) · \(Fmt.clock(Date()))"
+                }
             } catch {
                 let msg = (error as? LocalizedError)?.errorDescription ?? "\(error)"
                 await MainActor.run { status = "Failed: \(msg)" }

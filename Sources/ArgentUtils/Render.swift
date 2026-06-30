@@ -57,8 +57,43 @@ enum Render {
                 .frame(height: 560)
         case "conflicts":
             ConflictWizardView(scrolls: false).frame(height: 560)
-        default: // "panel" — the whole content view
+        case let s where s.hasPrefix("audit"):
+            // Suffix-driven toggles: "-issues" pre-checks fix-open-issues, "-prs"
+            // pre-checks open-PRs, "-all" both — so each state can be eyeballed.
+            AuditWizardView(scrolls: false,
+                            seedFixIssues: s.contains("issues") || s.contains("all"),
+                            seedOpenPRs: s.contains("prs") || s.contains("all"))
+                .frame(height: 560)
+        case let s where s.hasPrefix("natural"):
+            // No forced height — the rendered PNG's height IS ContentView's natural
+            // height, proving the content sizes to its content (what PopoverRoot caps).
+            let _ = seedProcessesIfNeeded(s, store: store)
+            ContentView()
+        default: // "panel" — the whole content view; "panel-procs" seeds the
+                 // ongoing-sessions list (persist is suppressed in render mode).
+            let _ = seedProcessesIfNeeded(what, store: store)
             ContentView().frame(height: 580)
         }
+    }
+
+    /// For `ARGENT_UTILS_RENDER=panel-procs`, inject a couple of fake tracked
+    /// sessions so the ongoing-sessions list can be eyeballed. No-op otherwise.
+    @MainActor
+    private static func seedProcessesIfNeeded(_ what: String, store: Store) -> Bool {
+        guard what.lowercased().contains("proc") else { return false }
+        store.processes = [
+            TrackedProcess(kind: "review", label: "Review · #337 · Deep", terminal: "iterm",
+                           windowID: "1", sessionID: "a", tty: "/dev/ttys991", donePath: "",
+                           prURL: "https://github.com/software-mansion/argent/pull/337",
+                           createdAt: Date(), done: false),
+            TrackedProcess(kind: "conflicts", label: "Resolve · my PRs", terminal: "iterm",
+                           windowID: "2", sessionID: "b", tty: "/dev/ttys992", donePath: "",
+                           prURL: nil, createdAt: Date(), done: true),
+            TrackedProcess(kind: "review", label: "Review · #312 · Standard", terminal: "iterm",
+                           windowID: "3", sessionID: "c", tty: "/dev/ttys993", donePath: "",
+                           prURL: "https://github.com/software-mansion/argent/pull/312",
+                           createdAt: Date(), done: true, merged: true),
+        ]
+        return true
     }
 }

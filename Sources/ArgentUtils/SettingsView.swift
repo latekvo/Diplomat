@@ -14,9 +14,8 @@ struct SettingsView: View {
             identitySection
             toolsSection
             terminalSection
-            Spacer(minLength: 0)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     private var headerRow: some View {

@@ -86,6 +86,26 @@ assert(single("https://github.com/\(cfg.owner)/\(cfg.repo)/pull/337").buildPromp
 // A URL for a different repo is rejected.
 assert(!single("https://github.com/other/proj/pull/9").valid())
 assert(mine.buildPrompt().contains("No AI attribution"))
+
+// A specific PR may be mine OR someone else's, so its prompt is author-gated: it
+// polls the author, then splits into CASE A (mine → fix on branch, mark ready) and
+// CASE B (theirs → review-only, never touch the branch, and DO NOT mark ready).
+let singlePrompt = single("337").buildPrompt()
+assert(singlePrompt.contains("WHO AUTHORED IT"))
+assert(singlePrompt.contains("CASE A") && singlePrompt.contains("CASE B"))
+// CASE A keeps the fix-on-branch + mark-ready + attribution behaviour…
+assert(singlePrompt.contains("on the PR's branch"))   // depth onBranch fix step
+assert(singlePrompt.contains("mark it ready for review"))
+assert(singlePrompt.contains("No AI attribution"))
+// …CASE B is the hard look-don't-touch guard, with an explicit do-not-advance line.
+assert(singlePrompt.contains("ABSOLUTELY DO NOT touch their branch"))
+assert(singlePrompt.contains("isn't yours to advance"))
+// With mark-ready off, neither the mark-ready block nor (since target≠someone) the
+// generic sweep markReady survives — proving the toggle gates only CASE A.
+let singleNoReady = ReviewConfig(depth: "max", target: .specific, me: me,
+                                 markReady: false, specificPR: "337").buildPrompt()
+assert(!singleNoReady.contains("mark it ready for review"))
+assert(singleNoReady.contains("isn't yours to advance"))
 print("prompt assembly assertions passed")
 
 section("conflict prompts")
@@ -105,6 +125,41 @@ assert(cSingle.buildPrompt().hasPrefix("Take PR #337 in \(cfg.owner)/\(cfg.repo)
 assert(cSingle.buildPrompt().contains("Merge the latest `origin/main`"))
 assert(cMine.buildPrompt().contains("No AI attribution"))
 print("conflict prompt assertions passed")
+
+section("audit prompts")
+// A whole-repo E2E audit needs no input (always valid), and the hard-repro bar is
+// present in every variant. The two toggles independently gate the optional blocks.
+let aBase = AuditConfig(me: me)
+print("audit valid=\(aBase.isValid)")
+assert(aBase.isValid && AuditConfig().isValid)
+assert(aBase.buildPrompt().contains("100% CERTAINTY"))
+assert(aBase.buildPrompt().hasPrefix("Run a FULL end-to-end test of the ENTIRE \(cfg.owner)/\(cfg.repo)"))
+// Reproduction must be driven on a real simulator/emulator (always present, in bar).
+assert(aBase.buildPrompt().contains("SIMULATOR / EMULATOR"))
+// Severity classification (H/M/L) is always present, even in the read-only default.
+assert(aBase.buildPrompt().contains("HIGH") && aBase.buildPrompt().contains("LOW"))
+// Default (find-only): read-only, no issue-handling, no PRs (so no 20-LOC PR gate).
+assert(aBase.buildPrompt().contains("READ-ONLY audit"))
+assert(!aBase.buildPrompt().contains("OPEN ISSUES"))
+assert(!aBase.buildPrompt().contains("focused pull request"))
+assert(!aBase.buildPrompt().contains("20 lines"))
+// fixIssues adds the bug-issue block, explicit about skipping feature requests.
+let aIssues = AuditConfig(me: me, fixIssues: true)
+assert(aIssues.buildPrompt().contains("OPEN ISSUES"))
+assert(aIssues.buildPrompt().contains("SKIP every feature request"))
+assert(aIssues.buildPrompt().contains("READ-ONLY audit"))   // still read-only
+// openPRs swaps the read-only guard for the open-a-PR block + no-attribution.
+let aPRs = AuditConfig(me: me, openPRs: true)
+assert(aPRs.buildPrompt().contains("focused pull request"))
+assert(aPRs.buildPrompt().contains("DRAFT"))   // every opened PR must be a draft
+assert(aPRs.buildPrompt().contains("DUPLICATE") && aPRs.buildPrompt().contains("gh pr diff"))
+assert(aPRs.buildPrompt().contains("20 lines"))   // Low/nitpick PRs only when fix < 20 LOC
+assert(aPRs.buildPrompt().contains("No AI attribution"))
+assert(!aPRs.buildPrompt().contains("READ-ONLY audit"))
+// Both on: issue-handling + PRs together.
+let aBoth = AuditConfig(me: me, fixIssues: true, openPRs: true)
+assert(aBoth.buildPrompt().contains("OPEN ISSUES") && aBoth.buildPrompt().contains("focused pull request"))
+print("audit prompt assertions passed")
 
 if ProcessInfo.processInfo.environment["ARGENT_UTILS_DUMP"] == "1" {
     section("live gh dump (cross-check vs Python)")

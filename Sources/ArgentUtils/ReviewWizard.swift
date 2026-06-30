@@ -69,13 +69,37 @@ enum AgentSpawner {
         }
     }
 
-    /// Stage the prompt, open the terminal, run claude. Returns the prompt file URL.
+    /// What a spawn produced: the staged prompt file plus the OS-level handles the
+    /// applet keeps so it can later focus the window and detect completion.
+    struct SpawnResult {
+        let promptFile: URL
+        let donePath: String
+        let terminal: SpawnTerminal
+        let windowID: String
+        let sessionID: String
+        let tty: String
+    }
+
+    /// Stage the prompt, open the terminal, run claude. The AppleScript reports the
+    /// new window/session/tty back on stdout, which we capture so the spawned
+    /// session can be tracked (focused + polled for completion) afterwards.
     @discardableResult
-    static func spawn(_ prompt: String, terminal preferred: SpawnTerminal) throws -> URL {
+    static func spawn(_ prompt: String, terminal preferred: SpawnTerminal) throws -> SpawnResult {
         let term = resolved(preferred)
         let file = try writePrompt(prompt)
-        try runOsascript(appleScript(for: term, shellCommand: shellCommand(promptFile: file)))
-        return file
+        let donePath = doneFilePath()
+        let cmd = shellCommand(promptFile: file, donePath: donePath)
+        let (wid, sid, tty) = try runSpawn(command: cmd, terminal: term)
+        return SpawnResult(promptFile: file, donePath: donePath, terminal: term,
+                           windowID: wid, sessionID: sid, tty: tty)
+    }
+
+    /// Open a new terminal window running `command`, returning the captured
+    /// (windowID, sessionID, tty). The execution path shared by the real spawn and
+    /// the tracking self-test (`ARGENT_UTILS_TRACK_TEST`).
+    static func runSpawn(command: String, terminal term: SpawnTerminal) throws -> (String, String, String) {
+        let captured = try runOsascriptCapturing(appleScript(for: term, shellCommand: command))
+        return parseCapture(captured)
     }
 
     static func writePrompt(_ prompt: String) throws -> URL {
@@ -86,13 +110,24 @@ enum AgentSpawner {
         return url
     }
 
-    /// `cd '<repo>' 2>/dev/null; claude "$(cat '<promptfile>')"`
-    static func shellCommand(promptFile: URL) -> String {
-        "cd \(shq(repoPath)) 2>/dev/null; claude \"$(cat \(shq(promptFile.path)))\""
+    /// A fresh path for the per-spawn completion sentinel (not created until the
+    /// spawned shell writes it).
+    static func doneFilePath() -> String {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("argent-utils-done-\(UUID().uuidString).txt").path
     }
 
-    /// Wrap the shell command in an "open a new window and run this" script for
-    /// the given terminal.
+    /// `cd '<repo>' 2>/dev/null; claude "$(cat '<promptfile>')"; printf %s $? > '<done>'`
+    ///
+    /// The trailing `printf … > done` writes a sentinel the moment `claude` returns,
+    /// so the applet can mark the session complete even while its window stays open.
+    static func shellCommand(promptFile: URL, donePath: String) -> String {
+        "cd \(shq(repoPath)) 2>/dev/null; claude \"$(cat \(shq(promptFile.path)))\"; printf %s $? > \(shq(donePath))"
+    }
+
+    /// Wrap the shell command in an "open a new window, run this, and report the
+    /// window id / session id / tty" script for the given terminal. The trailing
+    /// `return …` line makes osascript print `wid|sid|tty` on stdout.
     static func appleScript(for term: SpawnTerminal, shellCommand cmd: String) -> String {
         let esc = cmd
             .replacingOccurrences(of: "\\", with: "\\\\")
@@ -103,19 +138,38 @@ enum AgentSpawner {
             tell application "iTerm"
                 activate
                 set w to (create window with default profile)
+                set _sid to ""
+                set _tty to ""
                 tell current session of w
                     write text "\(esc)"
+                    set _tty to tty
+                    set _sid to id
                 end tell
+                set _wid to (id of w) as string
             end tell
+            return _wid & "|" & _sid & "|" & _tty
             """
         case .terminal:
             return """
             tell application "Terminal"
                 activate
-                do script "\(esc)"
+                set _tab to do script "\(esc)"
+                set _tty to tty of _tab
+                set _wid to (id of front window) as string
             end tell
+            return _wid & "||" & _tty
             """
         }
+    }
+
+    /// Split osascript's `wid|sid|tty` line. Empty middle field is expected for
+    /// Terminal.app (no stable session id). Missing fields degrade to "".
+    static func parseCapture(_ s: String) -> (String, String, String) {
+        let parts = s.trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+        return (parts.count > 0 ? parts[0] : "",
+                parts.count > 1 ? parts[1] : "",
+                parts.count > 2 ? parts[2] : "")
     }
 
     /// POSIX single-quote a path for safe embedding in the shell command.
@@ -123,20 +177,26 @@ enum AgentSpawner {
         "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
-    private static func runOsascript(_ script: String) throws {
+    /// Run an AppleScript, returning its stdout. Throws on a non-zero exit.
+    @discardableResult
+    private static func runOsascriptCapturing(_ script: String) throws -> String {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         proc.arguments = ["-e", script]
+        let outPipe = Pipe()
         let errPipe = Pipe()
+        proc.standardOutput = outPipe
         proc.standardError = errPipe
         do { try proc.run() }
         catch { throw SpawnError.osascript(code: -1, stderr: "\(error)") }
+        let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
         proc.waitUntilExit()
         if proc.terminationStatus != 0 {
             let err = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(),
                              encoding: .utf8) ?? ""
             throw SpawnError.osascript(code: proc.terminationStatus, stderr: err)
         }
+        return String(data: outData, encoding: .utf8) ?? ""
     }
 }
 
@@ -251,7 +311,7 @@ struct ReviewWizardView: View {
         Group {
             if scrolls { ScrollView { content } } else { content }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     private var content: some View {
@@ -434,15 +494,42 @@ struct ReviewWizardView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    /// A short label for the ongoing-processes list, e.g. "Review · #337 · Deep".
+    private var trackingLabel: String {
+        let d = depth.title
+        switch target {
+        case .mine: return "Review · my PRs · \(d)"
+        case .someone:
+            let u = username.trimmingCharacters(in: .whitespaces)
+            return "Review · @\(u.isEmpty ? "user" : u) · \(d)"
+        case .specific:
+            let n = config.prRef.number.map { "#\($0)" } ?? "PR"
+            return "Review · \(n) · \(d)"
+        }
+    }
+
+    /// The one PR this run concerns (single-PR mode only) — the open-in-browser
+    /// fallback when its window can't be focused.
+    private var trackingPRURL: String? {
+        guard target == .specific, let n = config.prRef.number else { return nil }
+        let (owner, repo) = config.targetRepo
+        return "https://github.com/\(owner)/\(repo)/pull/\(n)"
+    }
+
     private func spawn() {
         let cfg = config
         let preferred = store.terminal
         let term = AgentSpawner.resolved(preferred)
+        let label = trackingLabel
+        let prURL = trackingPRURL
         status = "Launching \(term.title)…"
         Task.detached {
             do {
-                _ = try AgentSpawner.spawn(cfg.buildPrompt(), terminal: preferred)
-                await MainActor.run { status = "Launched \(term.title) · \(Fmt.clock(Date()))" }
+                let result = try AgentSpawner.spawn(cfg.buildPrompt(), terminal: preferred)
+                await MainActor.run {
+                    store.track(kind: "review", label: label, prURL: prURL, result: result)
+                    status = "Launched \(term.title) · \(Fmt.clock(Date()))"
+                }
             } catch {
                 let msg = (error as? LocalizedError)?.errorDescription ?? "\(error)"
                 await MainActor.run { status = "Failed: \(msg)" }

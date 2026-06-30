@@ -9,9 +9,8 @@ struct ArgentUtilsApp: App {
 
     var body: some Scene {
         MenuBarExtra("Argent Utils", systemImage: "wrench.and.screwdriver") {
-            ContentView()
+            PopoverRoot()
                 .environmentObject(store)
-                .frame(width: 470, height: 600)
         }
         .menuBarExtraStyle(.window)
     }
@@ -25,6 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             || env["ARGENT_UTILS_PRINT_PROMPT"] != nil
             || env["ARGENT_UTILS_SETTINGS_DUMP"] == "1"
             || env["ARGENT_UTILS_RENDER"] != nil
+            || env["ARGENT_UTILS_TRACK_TEST"] == "1"
 
         // Singleton, newest-wins: a freshly launched GUI instance kills any older
         // ones so there's never more than one wrench. Skipped in headless self-test
@@ -74,6 +74,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Headless UI render: snapshot a view to PNG and exit.
         if let what = env["ARGENT_UTILS_RENDER"] {
             Task { @MainActor in Render.run(what, store: Store()); exit(0) }
+        }
+        // End-to-end self-test of the agent-session tracking path (capture, status,
+        // liveness, focus, completion). Drives a real throwaway terminal window.
+        if env["ARGENT_UTILS_TRACK_TEST"] == "1" {
+            Task { await TrackTest.run(); exit(0) }
         }
     }
 }
@@ -204,6 +209,7 @@ enum Dump {
     static func printPrompt(mode: String) {
         let m = mode.lowercased()
         if m.hasPrefix("conflict") { printConflictPrompt(mode: m); return }
+        if m.hasPrefix("audit") { printAuditPrompt(mode: m); return }
         let isUser = m.hasPrefix("user")
         let isSingle = m.hasPrefix("single")
         let cfg = ReviewConfig(
@@ -223,7 +229,7 @@ enum Dump {
         print("----- PROMPT -----")
         print(cfg.buildPrompt())
         if let file = try? AgentSpawner.writePrompt(cfg.buildPrompt()) {
-            let cmd = AgentSpawner.shellCommand(promptFile: file)
+            let cmd = AgentSpawner.shellCommand(promptFile: file, donePath: AgentSpawner.doneFilePath())
             print("\n----- SHELL COMMAND -----")
             print(cmd)
             print("\n----- APPLESCRIPT (\(AgentSpawner.resolved(.iterm).title)) -----")
@@ -249,7 +255,29 @@ enum Dump {
         print("----- PROMPT -----")
         print(cfg.buildPrompt())
         if let file = try? AgentSpawner.writePrompt(cfg.buildPrompt()) {
-            let cmd = AgentSpawner.shellCommand(promptFile: file)
+            let cmd = AgentSpawner.shellCommand(promptFile: file, donePath: AgentSpawner.doneFilePath())
+            print("\n----- SHELL COMMAND -----")
+            print(cmd)
+            print("\n----- APPLESCRIPT (\(AgentSpawner.resolved(.iterm).title)) -----")
+            print(AgentSpawner.appleScript(for: AgentSpawner.resolved(.iterm), shellCommand: cmd))
+            try? FileManager.default.removeItem(at: file)
+        }
+    }
+
+    /// Same as `printPrompt`, but for the Full-E2E-test action. `mode` selects the
+    /// toggle state: "audit" (find-only), "audit-issues" (+fix open bug issues),
+    /// "audit-prs" (+open PRs), "audit-all" (both).
+    static func printAuditPrompt(mode: String) {
+        let cfg = AuditConfig(
+            me: "latekvo",
+            fixIssues: mode.contains("issues") || mode.contains("all"),
+            openPRs: mode.contains("prs") || mode.contains("all"))
+        let flags = "fixIssues=\(cfg.fixIssues) openPRs=\(cfg.openPRs)"
+        print("== AuditConfig: full-repo E2E test · \(flags) ==\n")
+        print("----- PROMPT -----")
+        print(cfg.buildPrompt())
+        if let file = try? AgentSpawner.writePrompt(cfg.buildPrompt()) {
+            let cmd = AgentSpawner.shellCommand(promptFile: file, donePath: AgentSpawner.doneFilePath())
             print("\n----- SHELL COMMAND -----")
             print(cmd)
             print("\n----- APPLESCRIPT (\(AgentSpawner.resolved(.iterm).title)) -----")

@@ -39,6 +39,13 @@
     "prKindDrafts": "currently-open DRAFT PR",
     "prKindReady": "currently-open ready-for-review (non-draft) PR"
   },
+  "_specificComment": "A specific PR may be mine OR someone else's, and that decides whether the agent may touch the branch — so the prompt is branched on the polled author. CASE A = mine (fix it); CASE B = theirs (review only, hands off). The wizard only injects each case's action sub-blocks when its toggle is on.",
+  "specific": {
+    "determineAuthor": "Before doing anything else, fetch this PR and find out WHO AUTHORED IT: `gh pr view {pr} --repo {owner}/{repo} --json author,isDraft,headRefName`. Everything below depends on the answer — handle the PR as exactly ONE of the two cases that follow, never both.",
+    "mineHeader": "▸ CASE A — @{me} authored this PR (it's MINE). Treat it like my own work: fix what you find directly on its branch. Do everything in this case:",
+    "otherHeader": "▸ CASE B — someone OTHER than @{me} authored this PR (it's THEIRS). This is strictly look-don't-touch — your only deliverable is the review. Do everything in this case instead:",
+    "otherNoMarkReady": "Do NOT mark this PR ready for review and do NOT change its draft/ready state in any way — it isn't yours to advance; only its author decides that."
+  },
   "blocks": {
     "bar": "Hold to the bar in my CLAUDE.md throughout: prove every issue beyond reasonable doubt with a concrete reproduction before you act on it, scale the swarm to the work, and never report something fixed without re-running the repro to confirm it landed.",
     "reviewOnly": "These PRs are SOMEONE ELSE'S — not your code to change. UNDER NO CIRCUMSTANCES may you commit, push, or otherwise modify their branch: ABSOLUTELY DO NOT touch their branch in any way. Your one and only deliverable is the code review itself — every finding goes into the review, never into a commit or push on their branch.",
