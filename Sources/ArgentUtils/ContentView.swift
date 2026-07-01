@@ -549,8 +549,24 @@ private struct ProcessRow: View {
 private struct DeviceRow: View {
     let dev: DeviceAllocation
 
-    private var platformIcon: String { dev.platform == "ios" ? "apple.logo" : "candybarphone" }
-    private var platformTint: Color { dev.platform == "ios" ? .blue : .green }
+    private var platformIcon: String {
+        switch dev.platform {
+        case "ios":        return "apple.logo"
+        case "apple-tv":   return "appletv"
+        case "android":    return "candybarphone"
+        case "android-tv": return "tv"
+        case "vega":       return "flame"
+        default:           return "square.dashed"
+        }
+    }
+    private var platformTint: Color {
+        switch dev.platform {
+        case "ios", "apple-tv":     return .blue
+        case "android", "android-tv": return .green
+        case "vega":                return .orange
+        default:                    return .gray
+        }
+    }
 
     private var statusBadge: (text: String, color: Color) {
         switch dev.status {
@@ -575,6 +591,7 @@ private struct DeviceRow: View {
                 HStack(spacing: 4) {
                     Text(dev.name ?? dev.handle ?? dev.key).font(.caption).lineLimit(1)
                     if let v = dev.version { Text(v).font(.system(size: 9)).foregroundStyle(.secondary) }
+                    if let f = dev.format { Text(f).font(.system(size: 9)).foregroundStyle(.tertiary) }
                 }
                 detailLine
             }

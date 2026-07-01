@@ -112,21 +112,21 @@ enum Render {
                 key: "ios:99AD", platform: "ios", name: "iPhone 16 Pro Max", version: "18.5",
                 apiVersion: "18", handle: "99AD1D87-DA5F", status: "ready",
                 owner: DeviceOwner(agentName: "bluesky e2e", ownerPid: 4242),
-                allocatedAt: nil, idleMs: 240_000, brokenReason: nil, repairLog: nil),
+                allocatedAt: nil, idleMs: 240_000, brokenReason: nil, repairLog: nil, format: "phone"),
             DeviceAllocation(
                 key: "android:Pixel_6_API_34", platform: "android", name: "Pixel_6_API_34",
                 version: "14", apiVersion: "34", handle: "emulator-5554", status: "booting",
                 owner: DeviceOwner(agentName: "checkout flow", ownerPid: 4310),
-                allocatedAt: nil, idleMs: nil, brokenReason: nil, repairLog: nil),
+                allocatedAt: nil, idleMs: nil, brokenReason: nil, repairLog: nil, format: "phone"),
             DeviceAllocation(
-                key: "android:Pixel_3a_API_34", platform: "android", name: "Pixel_3a_API_34",
-                version: "14", apiVersion: "34", handle: nil, status: "repairing",
+                key: "appletv:ATV1", platform: "apple-tv", name: "Apple TV 4K", version: "17.5",
+                apiVersion: "17", handle: nil, status: "repairing",
                 owner: DeviceOwner(agentName: "repair", ownerPid: nil),
-                allocatedAt: nil, idleMs: nil, brokenReason: "boot timeout", repairLog: "/tmp/r.log"),
+                allocatedAt: nil, idleMs: nil, brokenReason: "boot timeout", repairLog: "/tmp/r.log", format: nil),
             DeviceAllocation(
-                key: "ios:FREE1", platform: "ios", name: "iPhone 15", version: "17.5",
-                apiVersion: "17", handle: nil, status: "free",
-                owner: nil, allocatedAt: nil, idleMs: nil, brokenReason: nil, repairLog: nil),
+                key: "ios:FREE1", platform: "ios", name: "iPad Pro", version: "18.5",
+                apiVersion: "18", handle: nil, status: "free",
+                owner: nil, allocatedAt: nil, idleMs: nil, brokenReason: nil, repairLog: nil, format: "tablet"),
         ])
     }
 }

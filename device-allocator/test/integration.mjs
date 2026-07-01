@@ -20,10 +20,10 @@ const SOCKET = path.join(BASE, 'daemon.sock');
 const FAKE = path.join(BASE, 'fake.json');
 
 fs.writeFileSync(FAKE, JSON.stringify([
-  { key: 'ios:A', platform: 'ios', handle: 'A', udid: 'A', name: 'iPhone 16', version: '18.5', apiVersion: '18', state: 'shutdown' },
-  { key: 'ios:B', platform: 'ios', handle: 'B', udid: 'B', name: 'iPhone 15', version: '17.5', apiVersion: '17', state: 'booted' },
-  { key: 'ios:C', platform: 'ios', handle: 'C', udid: 'C', name: 'iPhone 16 Pro', version: '18.5', apiVersion: '18', state: 'shutdown' },
-  { key: 'android:Pixel_6_API_34', platform: 'android', avd: 'Pixel_6_API_34', name: 'Pixel_6_API_34', version: '14', apiVersion: '34', serial: null, state: 'shutdown' },
+  { key: 'ios:A', platform: 'ios', handle: 'A', udid: 'A', name: 'iPhone 16', version: '18.5', apiVersion: '18', format: 'phone', state: 'shutdown' },
+  { key: 'ios:B', platform: 'ios', handle: 'B', udid: 'B', name: 'iPhone 15', version: '17.5', apiVersion: '17', format: 'phone', state: 'booted' },
+  { key: 'ios:C', platform: 'ios', handle: 'C', udid: 'C', name: 'iPad Pro', version: '18.5', apiVersion: '18', format: 'tablet', state: 'shutdown' },
+  { key: 'android:Pixel_6_API_34', platform: 'android', avd: 'Pixel_6_API_34', name: 'Pixel_6_API_34', version: '14', apiVersion: '34', format: 'phone', serial: null, state: 'shutdown' },
 ]));
 
 const ME = process.pid; // an alive owner the reaper must never free
@@ -98,10 +98,12 @@ async function phase1() {
     assert.equal(byKey['ios:A'].status, 'free'); // A released back to pool
     pass('change frees old (A) and hands a different device (C)');
 
-    // exhaustion: B and C held, A free, request 2 ios -> 1 ok (A), next 409
+    // exhaustion: B and C held, A free, request 2 ios -> 1 ok (A), next has no
+    // match under quota -> needs-create (there is no fixed pool; agent creates one).
     await call('POST', '/request', { ownerPid: ME, platform: 'ios' }); // takes A
-    await expect409(call('POST', '/request', { ownerPid: ME, platform: 'ios' }));
-    pass('no free device -> 409');
+    const nc = await call('POST', '/request', { ownerPid: ME, platform: 'ios' });
+    assert.equal(nc.outcome, 'needs-create');
+    pass('no matching free device (under quota) -> needs-create');
 
     // broken: quarantine C, hand back a *different* device that still satisfies the
     // original requirements. C was allocated as iOS 18, so free a matching 18.x
@@ -182,10 +184,68 @@ async function phase3() {
   stop(c);
 }
 
+async function phase4() {
+  console.log('phase 4: format matching + needs-create + deviceId claim');
+  const d = startDaemon({});
+  await waitHealth();
+  try {
+    // format tablet -> the iPad (C); phone -> an iPhone (not the iPad).
+    const tablet = await call('POST', '/request', { ownerPid: ME, platform: 'ios', format: 'tablet' });
+    assert.equal(tablet.deviceId, 'C');
+    assert.equal(tablet.format, 'tablet');
+    pass('request ios/tablet -> the iPad (C)');
+    const phone = await call('POST', '/request', { ownerPid: ME, platform: 'ios', format: 'phone' });
+    assert.ok(phone.deviceId === 'A' || phone.deviceId === 'B', `expected an iPhone, got ${phone.deviceId}`);
+    assert.equal(phone.format, 'phone');
+    pass('request ios/phone -> an iPhone, never the iPad');
+
+    // A platform with no device in the pool -> needs-create (no fixed pool).
+    const nc = await call('POST', '/request', { ownerPid: ME, platform: 'android-tv' });
+    assert.equal(nc.outcome, 'needs-create');
+    assert.equal(nc.requirements.platform, 'android-tv');
+    pass('request android-tv (none exist) -> needs-create');
+
+    // deviceId claim: grab the remaining iPhone by id, then a repeat claim 409s.
+    const remaining = phone.deviceId === 'A' ? 'B' : 'A';
+    const claimed = await call('POST', '/request', { ownerPid: ME, platform: 'ios', deviceId: remaining });
+    assert.equal(claimed.deviceId, remaining);
+    pass('request with deviceId claims that specific device (the create+re-request path)');
+    await expect409(call('POST', '/request', { ownerPid: ME, platform: 'ios', deviceId: remaining }));
+    pass('claiming an already-allocated device -> 409');
+  } finally { stop(d); await delay(300); }
+}
+
+async function phase5() {
+  console.log('phase 5: quota (concurrency cap) + await-device');
+  const d = startDaemon({ DA_QUOTA: '2', DA_AWAIT_TIMEOUT_MS: '10000' });
+  await waitHealth();
+  try {
+    const a1 = await call('POST', '/request', { ownerPid: ME, platform: 'ios' });
+    const a2 = await call('POST', '/request', { ownerPid: ME, platform: 'ios' });
+    assert.equal(a1.outcome, 'allocated');
+    assert.equal(a2.outcome, 'allocated');
+    // Third concurrent request hits the quota — exhausted, NOT a new device.
+    const ex = await call('POST', '/request', { ownerPid: ME, platform: 'ios' });
+    assert.equal(ex.outcome, 'exhausted');
+    assert.equal(ex.quota, 2);
+    pass('3rd concurrent request past quota=2 -> exhausted (call await-device)');
+
+    // await-device blocks until a slot frees; freeing one unblocks it.
+    const awaitP = call('POST', '/await', { ownerPid: ME }, 20000);
+    await delay(500);
+    await call('POST', '/release', { ownerPid: ME, deviceId: a1.deviceId });
+    const av = await awaitP;
+    assert.equal(av.outcome, 'slot-available');
+    pass('await-device unblocks when a slot frees');
+  } finally { stop(d); await delay(300); }
+}
+
 try {
   await phase1();
   await phase2();
   await phase3();
+  await phase4();
+  await phase5();
   console.log(`\nINTEGRATION OK — ${ok} assertions passed`);
 } catch (e) {
   console.error('\nINTEGRATION FAILED:', e.message);

@@ -32,3 +32,8 @@ export const REAP_INTERVAL_MS = Number(process.env.DA_REAP_INTERVAL_MS) || 10 * 
 export const IDLE_INTERVAL_MS = Number(process.env.DA_IDLE_INTERVAL_MS) || 5 * 60 * 1000;
 export const POOL_INTERVAL_MS = Number(process.env.DA_POOL_INTERVAL_MS) || 8 * 1000;
 export const ALLOC_GRACE_MS = Number(process.env.DA_ALLOC_GRACE_MS) || 20 * 1000;
+
+// Max concurrent devices held across all agents. The device *pool* is unbounded
+// (agents create devices on demand), so this caps concurrency, not inventory.
+export const QUOTA = Number(process.env.DA_QUOTA) || 5;
+export const AWAIT_TIMEOUT_MS = Number(process.env.DA_AWAIT_TIMEOUT_MS) || 15 * 60 * 1000;

@@ -386,8 +386,10 @@ class Panel(QWidget):
 
         allocated = deviceallocator.is_allocated(dev)
         platform = dev.get("platform", "")
-        emoji = "🍎" if platform == "ios" else "🤖"
-        tint = "#0A84FF" if platform == "ios" else "#34C759"
+        emoji = {"ios": "🍎", "apple-tv": "📺", "android": "🤖",
+                 "android-tv": "📺", "vega": "🔥"}.get(platform, "📱")
+        tint = {"ios": "#0A84FF", "apple-tv": "#0A84FF", "android": "#34C759",
+                "android-tv": "#34C759", "vega": "#FF9500"}.get(platform, "#8E8E93")
         status = dev.get("status", "free")
         badge_text, badge_color = _device_badge(dev, allocated)
 
@@ -416,6 +418,10 @@ class Panel(QWidget):
             ver = QLabel(str(dev["version"]))
             ver.setStyleSheet("color: palette(mid); font-size: 9px;")
             name_row.addWidget(ver)
+        if dev.get("format"):
+            fmt = QLabel(str(dev["format"]))
+            fmt.setStyleSheet("color: palette(mid); font-size: 9px;")
+            name_row.addWidget(fmt)
         name_row.addStretch(1)
         text.addLayout(name_row)
 

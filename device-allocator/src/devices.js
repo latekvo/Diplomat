@@ -49,11 +49,28 @@ function fakeDevices() {
 }
 const FAKE = () => process.env.DA_FAKE_DEVICES != null;
 
+// ---- platform helpers -----------------------------------------------------
+
+// Apple-family platforms are driven by simctl (UDID); android-family by adb/avd
+// (serial). Vega (Fire TV) has no local enumeration CLI — it's create-only.
+export const isApplePlatform = (p) => p === 'ios' || p === 'apple-tv';
+export const isAndroidPlatform = (p) => p === 'android' || p === 'android-tv';
+
+// The canonical platform/format catalogue the tools advertise.
+export const PLATFORMS = ['ios', 'android', 'apple-tv', 'android-tv', 'vega'];
+export const FORMATS = ['phone', 'tablet']; // only meaningful for ios / android
+
+function iosFormat(name = '') {
+  return /ipad/i.test(name) ? 'tablet' : 'phone';
+}
+
 // ---- enumeration ----------------------------------------------------------
 
-export async function listIOS() {
+// Everything simctl exposes: iOS (phone/tablet) + tvOS (apple-tv). One pass over
+// `simctl list devices --json`, classified by runtime + device name.
+export async function listApple() {
   const fake = fakeDevices();
-  if (fake) return fake.filter((d) => d.platform === 'ios');
+  if (fake) return fake.filter((d) => isApplePlatform(d.platform));
 
   const r = await run('xcrun', ['simctl', 'list', 'devices', '--json']);
   if (!r.ok) return [];
@@ -61,14 +78,18 @@ export async function listIOS() {
   try { parsed = JSON.parse(r.stdout); } catch { return []; }
   const out = [];
   for (const [runtime, devs] of Object.entries(parsed.devices || {})) {
-    const m = /SimRuntime\.iOS-(\d+)-(\d+)/.exec(runtime);
-    if (!m) continue; // iOS runtimes only (skip tvOS/watchOS)
+    const ios = /SimRuntime\.iOS-(\d+)-(\d+)/.exec(runtime);
+    const tv = /SimRuntime\.tvOS-(\d+)-(\d+)/.exec(runtime);
+    const m = ios || tv;
+    if (!m) continue; // skip watchOS / visionOS
+    const platform = ios ? 'ios' : 'apple-tv';
     const version = `${m[1]}.${m[2]}`;
     for (const d of devs || []) {
       if (d.isAvailable === false) continue;
       out.push({
-        key: `ios:${d.udid}`, platform: 'ios', handle: d.udid, udid: d.udid,
+        key: `${platform}:${d.udid}`, platform, handle: d.udid, udid: d.udid,
         name: d.name, version, apiVersion: m[1],
+        format: platform === 'ios' ? iosFormat(d.name) : null,
         state: d.state === 'Booted' ? 'booted' : 'shutdown',
       });
     }
@@ -76,9 +97,12 @@ export async function listIOS() {
   return out;
 }
 
+// Back-compat alias (older callers / proofs).
+export const listIOS = listApple;
+
 export async function listAndroid() {
   const fake = fakeDevices();
-  if (fake) return fake.filter((d) => d.platform === 'android');
+  if (fake) return fake.filter((d) => isAndroidPlatform(d.platform));
 
   const r = await run(EMULATOR_BIN, ['-list-avds']);
   if (!r.ok) return [];
@@ -87,12 +111,32 @@ export async function listAndroid() {
   return avds.map((avd) => {
     const api = (/API[_-]?(\d+)/i.exec(avd) || [])[1] || null;
     const serial = running[avd] || null;
+    const { platform, format } = androidClass(avd);
     return {
-      key: `android:${avd}`, platform: 'android', handle: serial, avd,
+      key: `${platform}:${avd}`, platform, avd, handle: serial,
       name: avd, version: api ? androidRelease(api) : null, apiVersion: api,
-      serial, state: serial ? 'booted' : 'shutdown',
+      format, serial, state: serial ? 'booted' : 'shutdown',
     };
   });
+}
+
+// Classify an AVD as android-tv vs android, and phone vs tablet, from its
+// config.ini (tag.id / hw.device.name), falling back to the AVD name.
+function androidClass(avd) {
+  let tag = '';
+  let device = '';
+  try {
+    const cfg = fs.readFileSync(
+      path.join(os.homedir(), '.android', 'avd', `${avd}.avd`, 'config.ini'), 'utf8');
+    tag = (/tag\.id\s*=\s*(.+)/.exec(cfg) || [])[1]?.trim().toLowerCase() || '';
+    device = (/hw\.device\.name\s*=\s*(.+)/.exec(cfg) || [])[1]?.trim().toLowerCase() || '';
+  } catch {}
+  const hay = `${tag} ${device} ${avd}`.toLowerCase();
+  if (tag.includes('tv') || tag.includes('atv') || /\btv\b|television/.test(hay)) {
+    return { platform: 'android-tv', format: null };
+  }
+  const format = /tablet|\bpad\b|\bwsvga\b/.test(hay) ? 'tablet' : 'phone';
+  return { platform: 'android', format };
 }
 
 async function androidRunningMap() {
@@ -124,6 +168,13 @@ function androidRelease(api) { return ANDROID_RELEASE[Number(api)] || String(api
 export function matchesRequirements(dev, req) {
   const plat = (req.platform || 'any').toLowerCase();
   if (plat !== 'any' && dev.platform !== plat) return false;
+  // Format (phone/tablet) only constrains iOS/Android; ignored for TV platforms.
+  const fmt = (req.format || '').toLowerCase();
+  if (fmt && (fmt === 'phone' || fmt === 'tablet')
+      && (dev.platform === 'ios' || dev.platform === 'android')
+      && dev.format && dev.format !== fmt) {
+    return false;
+  }
   const v = req.version;
   if (v && String(v).toLowerCase() !== 'any') {
     const want = String(v).trim();
@@ -219,7 +270,7 @@ export async function motionHash(dev) {
     return 'frozen'; // constant ⇒ counts as idle once the window elapses
   }
   try {
-    if (dev.platform === 'ios') {
+    if (isApplePlatform(dev.platform)) {
       const tmp = path.join(os.tmpdir(), `da-shot-${dev.udid}.png`);
       const r = await run('xcrun', ['simctl', 'io', dev.udid, 'screenshot', tmp], { timeout: 20000 });
       if (!r.ok) return null;
@@ -227,7 +278,7 @@ export async function motionHash(dev) {
       try { fs.unlinkSync(tmp); } catch {}
       return sha(buf);
     }
-    if (dev.platform === 'android' && dev.serial) {
+    if (isAndroidPlatform(dev.platform) && dev.serial) {
       const r = await runBuf(ADB_BIN, ['-s', dev.serial, 'exec-out', 'screencap', '-p'], { timeout: 20000 });
       if (!r.ok || !r.buf?.length) return null;
       return sha(r.buf);

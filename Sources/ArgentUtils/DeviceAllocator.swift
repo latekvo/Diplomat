@@ -31,6 +31,7 @@ struct DeviceAllocation: Decodable, Identifiable, Equatable {
     let idleMs: Double?
     let brokenReason: String?
     let repairLog: String?
+    let format: String?
 
     var id: String { key }
     var isAllocated: Bool { owner?.ownerPid != nil || status == "repairing" }

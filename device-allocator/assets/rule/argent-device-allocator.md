@@ -5,22 +5,36 @@ alwaysApply: true
 
 # Device allocation is mandatory
 
-This machine's iOS simulators and Android emulators are a **shared, arbitrated
-pool**. Two agents on one device corrupt each other's session (interleaved taps,
-random navigation, wasted debugging). To prevent that:
+> **If you can see this rule (or the `argent-device-allocator` MCP server), there are
+> — or may at any moment be — MULTIPLE agents running on this machine. You are NEVER
+> the only one.** Never assume a simulator/emulator is yours or free.
 
-**Before you boot, run, install onto, screenshot, or otherwise interact with ANY
-iOS simulator or Android emulator, you MUST first call `request-device`** (from the
+This machine's simulators and emulators are a **shared, arbitrated pool**. Two agents
+on one device corrupt each other's session (interleaved taps, random navigation,
+wasted debugging). To prevent that:
+
+**Before you boot, run, install onto, screenshot, create, or otherwise interact with
+ANY simulator or emulator, you MUST first call `request-device`** (from the
 `argent-device-allocator` MCP server) and then use **only** the device id it returns.
 
-- Never select, boot, or touch a simulator/emulator you were not allocated.
-- `request-device` → get an exclusive device (UDID for iOS, adb serial for Android).
+- Ask for what you need: `platform` (`ios`, `android`, `apple-tv`, `android-tv`,
+  `vega`), optionally `format` (`phone`/`tablet`, iOS/Android only). Set `version`
+  **only when a specific OS version is genuinely required** — otherwise omit it and
+  take whatever is available.
+- `request-device` → an exclusive device (UDID for Apple, adb serial for Android).
+- **Pool exhausted** (quota reached, every slot held by other agents)? `request-device`
+  tells you so — call **`await-device`** and wait for a slot to free, then request
+  again. Do **not** spin up your own device to dodge the quota.
+- **No matching device exists?** `request-device` tells you to create one — create it
+  to spec (`xcrun simctl create`, `avdmanager create avd`, or an argent setup skill),
+  then call `request-device` **again** with `deviceId` set to the new device's id to
+  claim it. Even a device you created must be allocated here before you use it.
 - `free-device` → release it (and shut it down) the moment you are done.
-- `change-device` → swap for a different platform/version in one step.
+- `change-device` → swap for a different platform/format/version in one step.
 - `report-device-broken` → if it won't boot or misbehaves; you get a replacement and
   a repair is dispatched automatically. Do not keep fighting a broken device.
 
 This is not optional and applies to every device interaction, every time. If you are
-about to type `xcrun simctl boot`, `adb -s …`, `open -a Simulator`, or launch an app
-on a device and you have **not** been allocated that exact device id, stop and call
+about to type `xcrun simctl boot/create`, `adb -s …`, `open -a Simulator`, or launch an
+app on a device and you have **not** been allocated that exact device id, stop and call
 `request-device` first.

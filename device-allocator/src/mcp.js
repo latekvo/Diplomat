@@ -32,28 +32,55 @@ const OWNER_PID = process.pid;
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const COERCION =
-  'Device allocation is MANDATORY. Before you boot, run, install onto, screenshot, ' +
-  'or otherwise interact with ANY iOS simulator or Android emulator, you MUST first call ' +
-  'request-device to be allocated one, and then use ONLY the device id it returns. Never ' +
-  'select or touch a simulator/emulator you were not allocated — another agent may be using ' +
-  'it. Call free-device when done, change-device to switch, and report-device-broken if it ' +
-  'will not boot. This applies every time, without exception.';
+  'IF YOU CAN SEE THIS MCP SERVER, THERE ARE (OR MAY AT ANY MOMENT BE) MULTIPLE AGENTS ' +
+  'RUNNING ON THIS MACHINE — you are NEVER the only one, so never assume a device is yours ' +
+  'or free. Device allocation is MANDATORY: before you boot, run, install onto, screenshot, ' +
+  'create, or otherwise interact with ANY simulator or emulator, you MUST first call ' +
+  'request-device and then use ONLY the device id it returns. Never select, boot, or squat a ' +
+  'device you were not allocated. If request-device says the pool is exhausted (quota reached), ' +
+  'call await-device and wait — do NOT spin up your own device to get around it. If it says no ' +
+  'matching device exists, create one to spec and then call request-device again to claim it. ' +
+  'Call free-device when done, change-device to switch, report-device-broken if it will not ' +
+  'boot. This applies every time, without exception.';
+
+// Platforms the allocator understands. Format (phone/tablet) applies only to
+// ios/android; TV platforms have no format.
+const PLATFORMS = ['ios', 'android', 'apple-tv', 'android-tv', 'vega', 'any'];
 
 const TOOLS = [
   {
     name: 'request-device',
     description:
-      'Reserve an Android emulator or iOS simulator for your EXCLUSIVE use, booting one if ' +
-      'needed. You MUST call this before booting, launching apps on, or interacting with ANY ' +
-      'device — never touch a device you were not allocated here, or you will collide with ' +
-      'another agent. Returns a device id (UDID for iOS, adb serial for Android) that is yours ' +
-      'alone until you free it.',
+      'Reserve a device for your EXCLUSIVE use, booting one if needed. You MUST call this before ' +
+      'booting, launching apps on, creating, or interacting with ANY simulator/emulator — never ' +
+      'touch a device you were not allocated here, or you will collide with another agent (there ' +
+      'are always potentially several running). Returns a device id (UDID for Apple platforms, ' +
+      'adb serial for Android). If the pool is exhausted it tells you to call await-device; if no ' +
+      'matching device exists it tells you to create one and call again with its id in deviceId.',
     inputSchema: {
       type: 'object',
       properties: {
-        platform: { type: 'string', enum: ['android', 'ios', 'any'], description: "Platform you need; 'any' if you don't care." },
-        version: { type: 'string', description: "Optional OS version: '18'/'18.5' for iOS, '14' or API level '34' for Android. Omit for any." },
+        platform: { type: 'string', enum: PLATFORMS, description: "What you need: ios, android, apple-tv, android-tv, vega, or 'any'." },
+        format: { type: 'string', enum: ['phone', 'tablet'], description: 'Form factor — only for ios/android. Omit unless you specifically need a phone vs a tablet.' },
+        version: { type: 'string', description: 'OPTIONAL and DISCOURAGED — only set an OS version (e.g. "18.5", or "34" API level) when a specific version is genuinely required; otherwise omit and take whatever is available.' },
+        deviceId: { type: 'string', description: 'Claim a specific device by UDID/serial — use this to claim a device you just created after a needs-create response.' },
         agentName: { type: 'string', description: 'Short label for you, shown in the Argent Utils panel (e.g. your task or window title).' },
+      },
+      required: [],
+    },
+    _meta: { 'anthropic/alwaysLoad': true },
+  },
+  {
+    name: 'await-device',
+    description:
+      'Wait for a device slot to free when request-device reported the pool EXHAUSTED (the ' +
+      'concurrency quota is reached and other agents hold every slot). Blocks until a slot opens, ' +
+      'then tells you to call request-device again. Do NOT create your own device to bypass the ' +
+      'quota — call this and wait.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agentName: { type: 'string', description: 'Short label for you (optional).' },
       },
       required: [],
     },
@@ -70,13 +97,14 @@ const TOOLS = [
   },
   {
     name: 'change-device',
-    description: 'Release your current device and request a different one in a single step (e.g. you now need a different platform or version).',
+    description: 'Release your current device and request a different one in a single step (e.g. you now need a different platform, format, or version).',
     inputSchema: {
       type: 'object',
       properties: {
         deviceId: { type: 'string', description: 'Device id to release (optional if you only hold one).' },
-        platform: { type: 'string', enum: ['android', 'ios', 'any'] },
-        version: { type: 'string' },
+        platform: { type: 'string', enum: PLATFORMS },
+        format: { type: 'string', enum: ['phone', 'tablet'] },
+        version: { type: 'string', description: 'Optional and discouraged — omit unless a specific version is required.' },
       },
       required: [],
     },
@@ -127,20 +155,44 @@ function parentTty() {
 
 // ---- result formatting ----------------------------------------------------
 
+function labelReq(req) {
+  if (!req) return 'your requirements';
+  const parts = [req.platform, req.format, req.version && req.version !== 'any' ? req.version : null].filter(Boolean);
+  return parts.join(' / ') || 'your requirements';
+}
+function deviceDesc(r) {
+  return [r.platform, r.format, r.version].filter(Boolean).join(' ');
+}
+
 function formatResult(name, r) {
   let human;
-  if (name === 'request-device' || name === 'change-device') {
+  // Outcome-driven responses take priority over the tool name (request / change /
+  // report-broken all share the allocate outcomes).
+  if (r && r.outcome === 'exhausted') {
+    human = `The device pool is EXHAUSTED: all ${r.quota} concurrent slots are held by OTHER agents `
+      + `(${r.active}/${r.quota} in use) — you are NOT the only agent on this machine. Do NOT create or `
+      + `squat your own device to get around this. Call await-device to wait for a slot to free, then call `
+      + `request-device again.`;
+  } else if (r && r.outcome === 'needs-create') {
+    human = `No available device matches ${labelReq(r.requirements)}, and there is no fixed pool. `
+      + `Create a device to that spec yourself (e.g. \`xcrun simctl create\` for Apple platforms, `
+      + `\`avdmanager create avd\` for Android, or the relevant argent setup skill), THEN call request-device `
+      + `again with deviceId set to the new device's id to claim it. Never use a device without allocating it here.`;
+  } else if (r && r.outcome === 'slot-available') {
+    human = `A device slot has freed up (${r.active}/${r.quota} now in use). Call request-device again to claim one.`;
+  } else if (r && r.outcome === 'await-timeout') {
+    human = `Still exhausted after waiting (${r.active}/${r.quota} in use). Call await-device again to keep waiting, `
+      + `or open the Argent Utils panel to see who holds the devices.`;
+  } else if (name === 'request-device' || name === 'change-device') {
     human = r.deviceId
-      ? `Allocated ${r.name} (${r.platform}${r.version ? ` ${r.version}` : ''}). ` +
-        `Device id: ${r.deviceId} (status: ${r.status}). It is yours EXCLUSIVELY — use only this id. ` +
-        `Call free-device when finished.`
+      ? `Allocated ${r.name} (${deviceDesc(r)}). Device id: ${r.deviceId} (status: ${r.status}). `
+        + `It is yours EXCLUSIVELY — use only this id. Call free-device when finished.`
       : 'No device was allocated.';
   } else if (name === 'free-device') {
     human = r.released ? `Released ${r.released} device(s) and shut them down.` : 'You held no device to release.';
   } else if (name === 'report-device-broken') {
     human = r.deviceId
-      ? `Reported broken; a repair was dispatched. You have been reallocated ${r.name} ` +
-        `(${r.platform}${r.version ? ` ${r.version}` : ''}) — device id: ${r.deviceId}.`
+      ? `Reported broken; a repair was dispatched. You have been reallocated ${r.name} (${deviceDesc(r)}) — device id: ${r.deviceId}.`
       : 'Reported broken; no replacement device was available.';
   } else {
     human = 'Done.';
@@ -169,11 +221,16 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const BOOT = { timeout: 300000 };
     let r;
     if (name === 'request-device') {
-      r = await callDaemon('POST', '/request', { ...base, platform: args.platform, version: args.version }, BOOT);
+      r = await callDaemon('POST', '/request',
+        { ...base, platform: args.platform, format: args.format, version: args.version, deviceId: args.deviceId }, BOOT);
+    } else if (name === 'await-device') {
+      // Long-poll: block until a slot frees (the daemon caps the wait ~15min).
+      r = await callDaemon('POST', '/await', { ...base }, { timeout: 16 * 60 * 1000 });
     } else if (name === 'free-device') {
       r = await callDaemon('POST', '/release', { ownerPid: OWNER_PID, deviceId: args.deviceId });
     } else if (name === 'change-device') {
-      r = await callDaemon('POST', '/change', { ...base, deviceId: args.deviceId, platform: args.platform, version: args.version }, BOOT);
+      r = await callDaemon('POST', '/change',
+        { ...base, deviceId: args.deviceId, platform: args.platform, format: args.format, version: args.version }, BOOT);
     } else if (name === 'report-device-broken') {
       r = await callDaemon('POST', '/broken', { ...base, deviceId: args.deviceId, reason: args.reason }, BOOT);
     } else {

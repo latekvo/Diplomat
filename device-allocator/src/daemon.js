@@ -23,6 +23,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import {
   SOCKET_PATH, DISCOVERY_PATH, REPAIRS_DIR,
   IDLE_LIMIT_MS, REAP_INTERVAL_MS, IDLE_INTERVAL_MS, POOL_INTERVAL_MS, ALLOC_GRACE_MS,
+  QUOTA, AWAIT_TIMEOUT_MS,
 } from './paths.js';
 import { writeDiscovery, writeState, pidAlive, ensureDirs } from './state.js';
 import { log } from './log.js';
@@ -42,11 +43,16 @@ function withLock(fn) {
 }
 
 function httpError(code, message) { return Object.assign(new Error(message), { statusCode: code }); }
+const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ---- selection ------------------------------------------------------------
 
+async function currentPool() {
+  return [...await dev.listApple(), ...await dev.listAndroid()];
+}
+
 async function selectDevice(req, exclude = new Set()) {
-  const all = [...await dev.listIOS(), ...await dev.listAndroid()];
+  const all = await currentPool();
   const free = all.filter(
     (d) => !allocations.has(d.key) && !exclude.has(d.key) && dev.matchesRequirements(d, req),
   );
@@ -56,12 +62,55 @@ async function selectDevice(req, exclude = new Set()) {
   return free[0];
 }
 
+// A specific device the agent named (e.g. one it just created) — for claiming it.
+async function findPoolDevice(deviceId) {
+  const all = await currentPool();
+  return all.find(
+    (d) => d.handle === deviceId || d.udid === deviceId || d.serial === deviceId
+      || d.key === deviceId || d.avd === deviceId,
+  ) || null;
+}
+
+function allocatedByHandle(deviceId) {
+  return [...allocations.values()].find(
+    (a) => a.handle === deviceId || a.udid === deviceId || a.serial === deviceId
+      || a.key === deviceId || a.avd === deviceId);
+}
+
+// Devices currently held by a live agent — these count toward the quota.
+function activeCount() {
+  return [...allocations.values()].filter((a) => a.ownerPid != null).length;
+}
+
+function reqOf(p) {
+  return {
+    platform: (p.platform || 'any').toLowerCase(),
+    format: p.format ? String(p.format).toLowerCase() : undefined,
+    version: p.version && String(p.version).toLowerCase() !== 'any' ? String(p.version) : 'any',
+  };
+}
 function publicAlloc(a) {
   return {
-    deviceId: a.handle, key: a.key, platform: a.platform, name: a.name,
-    version: a.version, apiVersion: a.apiVersion, status: a.status,
-    agentName: a.agentName, allocatedAt: a.allocatedAt,
+    outcome: 'allocated', deviceId: a.handle, key: a.key, platform: a.platform,
+    format: a.format || null, name: a.name, version: a.version, apiVersion: a.apiVersion,
+    status: a.status, agentName: a.agentName, allocatedAt: a.allocatedAt,
   };
+}
+
+function reserve(chosen, p, req) {
+  const wasBooted = chosen.state === 'booted';
+  const alloc = {
+    key: chosen.key, platform: chosen.platform, name: chosen.name, version: chosen.version,
+    apiVersion: chosen.apiVersion, format: chosen.format || null,
+    handle: chosen.handle, udid: chosen.udid, avd: chosen.avd, serial: chosen.serial,
+    ownerPid: p.ownerPid || null, ownerTty: p.tty || null,
+    agentName: p.agentName || `pid:${p.ownerPid}`, requirements: req,
+    status: 'booting', bootedByUs: !wasBooted,
+    allocatedAt: Date.now(), lastMotionAt: Date.now(), motionHash: null,
+  };
+  allocations.set(chosen.key, alloc);
+  publish();
+  return alloc;
 }
 
 function findOwned(ownerPid, deviceId) {
@@ -74,24 +123,31 @@ function findOwned(ownerPid, deviceId) {
 // ---- handlers -------------------------------------------------------------
 
 async function handleRequest(p, exclude = new Set()) {
+  const req = reqOf(p);
   const reserved = await withLock(async () => {
     reapDeadOwners();
-    const req = { platform: p.platform || 'any', version: p.version || 'any' };
+    // Quota gate first. The pool is effectively unbounded (agents create devices
+    // on demand), so we cap CONCURRENCY, not inventory. Exhausted -> the agent is
+    // told to await a free slot; it is NOT free to squat a device on its own.
+    if (activeCount() >= QUOTA) {
+      return { outcome: 'exhausted', quota: QUOTA, active: activeCount(), requirements: req };
+    }
+    // Claim a specific device the agent created and named.
+    if (p.deviceId) {
+      if (allocatedByHandle(p.deviceId)) throw httpError(409, `device ${p.deviceId} is already allocated`);
+      const specific = await findPoolDevice(p.deviceId);
+      if (specific && !exclude.has(specific.key)) return reserve(specific, p, req);
+      // named device not visible yet — fall through to create guidance
+    }
     const chosen = await selectDevice(req, exclude);
-    if (!chosen) throw httpError(409, `no free device matches platform=${req.platform} version=${req.version}`);
-    const wasBooted = chosen.state === 'booted';
-    const alloc = {
-      key: chosen.key, platform: chosen.platform, name: chosen.name, version: chosen.version,
-      apiVersion: chosen.apiVersion, handle: chosen.handle, udid: chosen.udid, avd: chosen.avd,
-      serial: chosen.serial, ownerPid: p.ownerPid || null, ownerTty: p.tty || null,
-      agentName: p.agentName || `pid:${p.ownerPid}`, requirements: req,
-      status: 'booting', bootedByUs: !wasBooted,
-      allocatedAt: Date.now(), lastMotionAt: Date.now(), motionHash: null,
-    };
-    allocations.set(chosen.key, alloc);
-    publish();
-    return alloc;
+    if (!chosen) {
+      // Under quota but nothing matches -> the agent must create a device to spec
+      // (there is NO fixed pool) and then call request-device again.
+      return { outcome: 'needs-create', requirements: req };
+    }
+    return reserve(chosen, p, req);
   });
+  if (reserved.outcome) return reserved; // exhausted / needs-create: nothing to boot
   await bootAlloc(reserved); // outside the lock
   if (reserved.status === 'error') {
     // Don't pin a device that failed to boot — return it to the pool and report,
@@ -104,9 +160,24 @@ async function handleRequest(p, exclude = new Set()) {
   return publicAlloc(reserved);
 }
 
+// Wait for a concurrency slot to free (called by an agent after 'exhausted').
+async function handleAwait(p) {
+  const deadline = Date.now() + AWAIT_TIMEOUT_MS;
+  for (;;) {
+    await withLock(async () => { reapDeadOwners(); });
+    if (activeCount() < QUOTA) {
+      return { outcome: 'slot-available', active: activeCount(), quota: QUOTA };
+    }
+    if (Date.now() > deadline) {
+      return { outcome: 'await-timeout', active: activeCount(), quota: QUOTA };
+    }
+    await delay(2000);
+  }
+}
+
 async function bootAlloc(alloc) {
   try {
-    if (alloc.platform === 'ios') {
+    if (dev.isApplePlatform(alloc.platform)) {
       const r = await dev.bootIOS(alloc.udid);
       alloc.handle = r.handle || alloc.udid;
       alloc.status = r.ok ? 'ready' : 'error';
@@ -143,6 +214,7 @@ async function handleChange(p) {
     ownerPid: p.ownerPid,
     agentName: p.agentName || old?.agentName,
     platform: p.platform || old?.requirements?.platform,
+    format: p.format || old?.requirements?.format,
     version: p.version || old?.requirements?.version,
     tty: p.tty || old?.ownerTty,
   }, exclude);
@@ -167,6 +239,7 @@ async function handleBroken(p) {
     ownerPid: p.ownerPid,
     agentName: p.agentName,
     platform: old?.requirements?.platform || p.platform,
+    format: old?.requirements?.format || p.format,
     version: old?.requirements?.version || p.version,
     tty: p.tty || old?.ownerTty,
   }, exclude);
@@ -301,7 +374,7 @@ async function idleSweep() {
 
 function shutdownAlloc(a) {
   try {
-    if (a.platform === 'ios') dev.shutdownIOS(a.udid);
+    if (dev.isApplePlatform(a.platform)) dev.shutdownIOS(a.udid);
     else dev.shutdownAndroid(a.serial);
   } catch (e) { log('shutdown error', a.key, String(e)); }
 }
@@ -318,7 +391,8 @@ function publish() {
   const devices = lastPool.map((d) => {
     const a = allocations.get(d.key);
     return {
-      key: d.key, platform: d.platform, name: d.name, version: d.version, apiVersion: d.apiVersion,
+      key: d.key, platform: d.platform, format: d.format || null,
+      name: d.name, version: d.version, apiVersion: d.apiVersion,
       handle: a?.handle || d.handle || null,
       status: a ? a.status : (d.state === 'booted' ? 'running-free' : 'free'),
       owner: a ? { agentName: a.agentName, ownerPid: a.ownerPid } : null,
@@ -334,7 +408,8 @@ function publish() {
   for (const [key, a] of allocations) {
     if (!devices.find((d) => d.key === key)) {
       devices.push({
-        key, platform: a.platform, name: a.name, version: a.version, apiVersion: a.apiVersion,
+        key, platform: a.platform, format: a.format || null,
+        name: a.name, version: a.version, apiVersion: a.apiVersion,
         handle: a.handle || null, status: a.status,
         owner: { agentName: a.agentName, ownerPid: a.ownerPid }, allocatedAt: a.allocatedAt,
         idleMs: null, brokenReason: a.brokenReason || null, repairLog: a.repairLog || null,
@@ -369,6 +444,7 @@ const server = http.createServer((req, res) => {
       let result;
       switch (req.url) {
         case '/request': result = await handleRequest(p); break;
+        case '/await': result = await handleAwait(p); break;
         case '/release': result = await handleRelease(p); break;
         case '/change': result = await handleChange(p); break;
         case '/broken': result = await handleBroken(p); break;
@@ -402,9 +478,9 @@ function shutdownBootedSync() {
   for (const a of allocations.values()) {
     if (!a.bootedByUs) continue;
     try {
-      if (a.platform === 'ios' && a.udid) {
+      if (dev.isApplePlatform(a.platform) && a.udid) {
         execFileSync('xcrun', ['simctl', 'shutdown', a.udid], { timeout: 15000, stdio: 'ignore' });
-      } else if (a.platform === 'android' && a.serial) {
+      } else if (dev.isAndroidPlatform(a.platform) && a.serial) {
         execFileSync('adb', ['-s', a.serial, 'emu', 'kill'], { timeout: 15000, stdio: 'ignore' });
       }
     } catch {}

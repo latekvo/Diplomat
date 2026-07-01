@@ -17,7 +17,7 @@ const MCP = path.join(__dirname, '..', 'src', 'mcp.js');
 const BASE = fs.mkdtempSync(path.join(os.tmpdir(), 'da-mtest-'));
 const FAKE = path.join(BASE, 'fake.json');
 fs.writeFileSync(FAKE, JSON.stringify([
-  { key: 'ios:UDID-1', platform: 'ios', handle: 'UDID-1', udid: 'UDID-1', name: 'iPhone 16', version: '18.5', apiVersion: '18', state: 'booted' },
+  { key: 'ios:UDID-1', platform: 'ios', handle: 'UDID-1', udid: 'UDID-1', name: 'iPhone 16', version: '18.5', apiVersion: '18', format: 'phone', state: 'booted' },
 ]));
 
 const child = spawn(process.execPath, [MCP], {
@@ -63,14 +63,22 @@ try {
 
   const list = await rpc('tools/list', {});
   const names = list.tools.map((t) => t.name);
-  for (const n of ['request-device', 'free-device', 'change-device', 'report-device-broken']) {
+  for (const n of ['request-device', 'await-device', 'free-device', 'change-device', 'report-device-broken']) {
     assert.ok(names.includes(n), `tool ${n} missing`);
   }
-  pass(`tools/list advertises all 4 tools: ${names.join(', ')}`);
+  pass(`tools/list advertises all 5 tools: ${names.join(', ')}`);
 
   const reqTool = list.tools.find((t) => t.name === 'request-device');
   assert.equal(reqTool._meta?.['anthropic/alwaysLoad'], true, 'request-device must be alwaysLoad');
-  pass('request-device is marked alwaysLoad (always in the tool list)');
+  const awaitTool = list.tools.find((t) => t.name === 'await-device');
+  assert.equal(awaitTool._meta?.['anthropic/alwaysLoad'], true, 'await-device must be alwaysLoad');
+  pass('request-device and await-device are alwaysLoad (always in the tool list)');
+
+  // request-device advertises platform (incl. tv/vega), format, optional version.
+  const platforms = reqTool.inputSchema.properties.platform.enum;
+  assert.ok(platforms.includes('apple-tv') && platforms.includes('vega'), 'platform enum should include tv/vega');
+  assert.ok(reqTool.inputSchema.properties.format, 'request-device should offer a format param');
+  pass('request-device schema: expanded platforms + format + optional version');
 
   const called = await rpc('tools/call', { name: 'request-device', arguments: { platform: 'ios', agentName: 'mtest' } });
   const text = called.content?.[0]?.text || '';
