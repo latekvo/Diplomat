@@ -53,6 +53,25 @@ def test_filters_select_expected_numbers():
     assert [p.number for p in Filters.my_unaddressed_review_prs(prs, "latekvo")] == [105]
 
 
+def test_autofix_is_live_only_on_fresh_heartbeat():
+    # The honesty guarantee: "active" requires a recent heartbeat, never just a flag.
+    from datetime import datetime, timedelta, timezone
+
+    from argent_utils import autofix
+
+    def stamp(dt):
+        return {"updatedAt": dt.strftime("%Y-%m-%dT%H:%M:%SZ")}
+
+    now = datetime.now(timezone.utc)
+    assert autofix.is_live(stamp(now)) is True
+    assert autofix.is_live(stamp(now - timedelta(minutes=5))) is True
+    assert autofix.is_live(stamp(now - timedelta(hours=1))) is False
+    assert autofix.is_live(None) is False
+    assert autofix.is_live({}) is False
+    assert autofix.is_live({"updatedAt": "garbage"}) is False
+    assert autofix.total_fixed({"conflictsResolved": 3, "reviewsAddressed": 2}) == 5
+
+
 def test_fmt_duration_held_time():
     # The in-use "held" label: sub-minute rounds to "just now", then m / h m / d h.
     assert Fmt.duration(0) == "just now"

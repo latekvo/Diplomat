@@ -84,6 +84,8 @@ class Store(QObject):
     # data refresh) and when its install status is re-checked.
     devices_changed = Signal()
     allocator_changed = Signal()
+    # Emitted when the PR auto-fix monitor's heartbeat changes.
+    autofix_changed = Signal()
 
     _ORG = "argent-utils"
     _APP = "argent-utils"
@@ -102,6 +104,8 @@ class Store(QObject):
         # Live device-allocator state (pool + holders) and install status.
         self.device_state: dict | None = None
         self.allocator_install: dict | None = None
+        # Latest heartbeat from the external PR auto-fix monitor (None until read).
+        self.autofix_status: dict | None = None
 
         self._settings = QSettings(self._ORG, self._APP)
 
@@ -146,6 +150,20 @@ class Store(QObject):
     @terminal_choice.setter
     def terminal_choice(self, value: str) -> None:
         self._settings.setValue("terminalChoice", value)
+
+    @property
+    def pr_autofix_enabled(self) -> bool:
+        # Default ON; the pill only lights up on a live heartbeat, so defaulting on
+        # can't falsely claim "active" when no monitor is running.
+        return self._settings.value("prAutofixEnabled", True, bool)
+
+    @pr_autofix_enabled.setter
+    def pr_autofix_enabled(self, value: bool) -> None:
+        from . import autofix
+
+        self._settings.setValue("prAutofixEnabled", bool(value))
+        autofix.write_enabled(bool(value))
+        self.autofix_changed.emit()
 
     # MARK: derived settings
 
@@ -238,6 +256,15 @@ class Store(QObject):
         if new_devices != old_devices:
             self.device_state = new
             self.devices_changed.emit()
+
+    def refresh_autofix_status(self) -> None:
+        """Re-read the auto-fix monitor's heartbeat (cheap local read); signal on change."""
+        from . import autofix
+
+        new = autofix.read_status()
+        if new != self.autofix_status:
+            self.autofix_status = new
+            self.autofix_changed.emit()
 
     def refresh_allocator_install_async(self) -> None:
         """Shell the installer's --check off the UI thread; signal when done."""

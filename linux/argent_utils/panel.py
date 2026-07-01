@@ -150,12 +150,16 @@ class Panel(QWidget):
         store.changed.connect(self._on_data_changed)
         store.loading_changed.connect(self._on_loading)
         store.devices_changed.connect(self._rebuild_devices)
+        store.autofix_changed.connect(self._rebuild_autofix)
 
-        # Poll the device-allocator's state file on a light cadence (cheap file read).
+        # Poll the device-allocator's state file + auto-fix heartbeat on a light
+        # cadence (cheap file reads).
         self._device_timer = QTimer(self)
         self._device_timer.timeout.connect(self.store.refresh_device_state)
+        self._device_timer.timeout.connect(self.store.refresh_autofix_status)
         self._device_timer.start(8000)
         self.store.refresh_device_state()
+        self.store.refresh_autofix_status()
 
         # Advance the "held" durations on in-use devices even when the pool itself
         # hasn't changed (allocatedAt is fixed; the elapsed time is not).
@@ -165,6 +169,7 @@ class Panel(QWidget):
 
         self._rebuild_grid()
         self._rebuild_devices()
+        self._rebuild_autofix()
         self._update_results()
 
     # MARK: header
@@ -211,6 +216,15 @@ class Panel(QWidget):
         layout = QVBoxLayout(self.main_page)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
+
+        # PR auto-fix status pill — top of the panel. Clicking it opens Settings, where
+        # the toggle lives. Text/colour reflect whether the monitor is actually live.
+        self.autofix_pill = QToolButton()
+        self.autofix_pill.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.autofix_pill.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        self.autofix_pill.clicked.connect(self._toggle_settings)
+        self.autofix_pill.setVisible(False)
+        layout.addWidget(self.autofix_pill)
 
         # Device-allocator pool (the shared simulators/emulators + who holds what).
         # Rebuilt in place from the daemon's state file; hidden when the pool is empty.
@@ -366,6 +380,41 @@ class Panel(QWidget):
         )
         audit_card.clicked.connect(lambda: self._open_action("audit"))
         self.grid.addWidget(audit_card, rowi, col)
+
+    # MARK: PR auto-fix status pill
+
+    def _rebuild_autofix(self) -> None:
+        from . import autofix
+
+        if not self.store.pr_autofix_enabled:
+            self.autofix_pill.setVisible(False)
+            return
+        self.autofix_pill.setVisible(True)
+        status = self.store.autofix_status
+        live = autofix.is_live(status)
+        accent = "#34C759" if live else "#FF9500"
+        if live:
+            watching = (status or {}).get("watching", 0)
+            fixed = autofix.total_fixed(status)
+            extra = f"   watching {watching}" + (f" · fixed {fixed}" if fixed else "")
+            self.autofix_pill.setText(f"⚡  Auto-fixing PRs  ·  active{extra}")
+            self.autofix_pill.setToolTip(
+                "A monitor is watching your open PRs and auto-fixing conflicts & new "
+                "reviews. Click to manage in Settings."
+            )
+        else:
+            self.autofix_pill.setText("⚡  Auto-fix enabled  ·  agent offline")
+            self.autofix_pill.setToolTip(
+                "Auto-fix is enabled but no monitor is running right now. Click to "
+                "manage in Settings."
+            )
+        self.autofix_pill.setStyleSheet(
+            "QToolButton { text-align: left; padding: 6px 9px; border-radius: 7px;"
+            f" font-size: 11px; font-weight: 600; color: palette(text);"
+            f" background-color: {tint_bg(accent, 0.12)};"
+            f" border: 1px solid {tint_bg(accent, 0.35)}; }}"
+            f" QToolButton:hover {{ background-color: {tint_bg(accent, 0.2)}; }}"
+        )
 
     # MARK: device-allocator pool
 

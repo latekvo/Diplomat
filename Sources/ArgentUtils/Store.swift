@@ -54,6 +54,18 @@ final class Store: ObservableObject {
     @Published var terminalChoice: String {
         didSet { UserDefaults.standard.set(terminalChoice, forKey: Keys.terminalChoice) }
     }
+    /// User intent for the external PR auto-fix monitor. Persisted, and mirrored to the
+    /// monitor's control file so toggling it off actually pauses agent dispatch.
+    @Published var prAutofixEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(prAutofixEnabled, forKey: Keys.prAutofixEnabled)
+            Autofix.writeEnabled(prAutofixEnabled)
+        }
+    }
+
+    /// Latest heartbeat from the auto-fix monitor (nil until one is read). Drives the
+    /// top-of-panel status pill; freshness (`isLive`) decides active vs. offline.
+    @Published var autofixStatus: AutofixStatus?
 
     /// The dispatched agent sessions shown in the ongoing-processes list. Persisted
     /// so the list survives an applet restart — the tty/window/sentinel handles are
@@ -68,6 +80,7 @@ final class Store: ObservableObject {
         static let colorOverrides = "colorOverrides"
         static let terminalChoice = "terminalChoice"
         static let processes = "trackedProcesses"
+        static let prAutofixEnabled = "prAutofixEnabled"
     }
 
     /// The handle to treat as "me": the user's override if set, else the gh login.
@@ -112,6 +125,9 @@ final class Store: ObservableObject {
         colorOverrides = (defaults.dictionary(forKey: Keys.colorOverrides) as? [String: String]) ?? [:]
         terminalChoice = defaults.string(forKey: Keys.terminalChoice)
             ?? (SpawnTerminal.iterm.isInstalled ? SpawnTerminal.iterm.rawValue : SpawnTerminal.terminal.rawValue)
+        // Default ON (absent key ⇒ true): the pill only lights up on a live heartbeat,
+        // so defaulting on can't falsely claim "active" when no monitor is running.
+        prAutofixEnabled = defaults.object(forKey: Keys.prAutofixEnabled) as? Bool ?? true
         processes = Store.loadProcesses()
         if hiddenTools.contains(selected.rawValue),
            let first = ToolKind.allCases.first(where: { !hiddenTools.contains($0.rawValue) }) {
@@ -135,7 +151,15 @@ final class Store: ObservableObject {
             Task { await fetchMe() }
             Task { await refreshDeviceState() }
             Task { await refreshAllocatorInstall() }
+            refreshAutofixStatus()
         }
+    }
+
+    /// Re-read the auto-fix monitor's heartbeat file (cheap local read). Publishes
+    /// only on change to avoid needless redraws.
+    func refreshAutofixStatus() {
+        let next = Autofix.readStatus()
+        if next != autofixStatus { autofixStatus = next }
     }
 
     // MARK: device allocator
@@ -275,6 +299,7 @@ final class Store: ObservableObject {
             while !Task.isCancelled {
                 await self?.refreshProcessStatuses()
                 await self?.refreshDeviceState()
+                self?.refreshAutofixStatus()
                 let ns = UInt64(Store.processPollInterval * 1_000_000_000)
                 try? await Task.sleep(nanoseconds: ns)
             }

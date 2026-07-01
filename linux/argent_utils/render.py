@@ -72,6 +72,13 @@ def _device_fixture(store: Store) -> None:
              "version": "15", "handle": None, "status": "free", "owner": None},
         ],
     }
+    # A LIVE auto-fix heartbeat so the top-of-panel status pill renders "active".
+    from datetime import datetime, timezone
+
+    store.autofix_status = {
+        "updatedAt": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "enabled": True, "watching": 28, "conflictsResolved": 3, "reviewsAddressed": 2,
+    }
 
 
 def run(what: str, out: str) -> int:
@@ -95,6 +102,7 @@ def run(what: str, out: str) -> int:
     elif what == "devices":
         _device_fixture(store)
         panel._rebuild_devices()
+        panel._rebuild_autofix()
         panel._update_results()
     else:  # panel
         panel._rebuild_grid()

@@ -74,6 +74,9 @@ struct ContentView: View {
             if showingSettings {
                 SettingsView(isPresented: $showingSettings)
             } else {
+                // The auto-fix monitor status pill sits at the very top of the main
+                // view (hidden in Settings, and when the feature is toggled off).
+                autofixBanner
                 // Ongoing agent sessions and the device pool belong to the main view
                 // only — they are hidden while Settings is open. Each also vanishes
                 // when empty.
@@ -123,6 +126,53 @@ struct ContentView: View {
             Button { QuitFlow.confirm() } label: {
                 Image(systemName: "power")
             }.buttonStyle(.borderless).help("Quit")
+        }
+    }
+
+    // MARK: auto-fix monitor status pill
+
+    /// Top-of-panel indicator that the external PR auto-fix monitor is running. Green
+    /// "active" ONLY on a fresh heartbeat (so it never lies); amber "agent offline"
+    /// when enabled but nothing is running; hidden when the feature is toggled off.
+    /// Tapping it jumps to Settings, where the toggle lives.
+    @ViewBuilder
+    private var autofixBanner: some View {
+        if store.prAutofixEnabled {
+            let live = store.autofixStatus?.isLive == true
+            let accent = live ? Color.green : Color.orange
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) { showingSettings = true }
+            } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: live ? "bolt.fill" : "bolt.slash.fill")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(accent)
+                    Text(live ? "Auto-fixing PRs" : "Auto-fix enabled")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.primary)
+                    if live {
+                        Text("active").font(.system(size: 9, weight: .bold)).foregroundStyle(accent)
+                    } else {
+                        Text("· agent offline").font(.system(size: 9)).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 4)
+                    if live, let s = store.autofixStatus {
+                        Text("watching \(s.watching)\(s.totalFixed > 0 ? " · fixed \(s.totalFixed)" : "")")
+                            .font(.system(size: 9).monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                    Image(systemName: "gearshape").font(.system(size: 9)).foregroundStyle(.secondary.opacity(0.7))
+                }
+                .padding(.horizontal, 9).padding(.vertical, 6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 7).fill(accent.opacity(0.12)))
+                .overlay(RoundedRectangle(cornerRadius: 7).stroke(accent.opacity(0.35), lineWidth: 1))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(live
+                  ? "A monitor is watching your open PRs and auto-fixing conflicts & new reviews. Click to manage in Settings."
+                  : "Auto-fix is enabled but no monitor is currently running. Click to manage in Settings.")
         }
     }
 

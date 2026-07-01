@@ -93,6 +93,7 @@ enum Render {
         default: // "panel" — the whole content view; "panel-procs" seeds the
                  // ongoing-sessions list (persist is suppressed in render mode).
             let _ = seedProcessesIfNeeded(what, store: store)
+            let _ = seedAutofix(store)
             ContentView().frame(height: 580)
         }
     }
@@ -118,11 +119,21 @@ enum Render {
         return true
     }
 
+    /// A LIVE auto-fix heartbeat so the top-of-panel status pill renders "active".
+    @MainActor
+    private static func seedAutofix(_ store: Store) {
+        store.prAutofixEnabled = true
+        store.autofixStatus = AutofixStatus(
+            updatedAt: Date(), enabled: true, watching: 28,
+            conflictsResolved: 3, reviewsAddressed: 2)
+    }
+
     /// Synthetic device-allocator state for `ARGENT_UTILS_RENDER=devices`.
     /// In-use devices get an `allocatedAt` in the recent past so the "held" duration
     /// renders; free devices populate the (collapsed-by-default) Free section.
     @MainActor
     private static func seedDeviceState(_ store: Store) {
+        seedAutofix(store)
         let nowMs = Date().timeIntervalSince1970 * 1000
         func ago(_ minutes: Double) -> Double { nowMs - minutes * 60_000 }
         store.deviceState = DeviceState(devices: [

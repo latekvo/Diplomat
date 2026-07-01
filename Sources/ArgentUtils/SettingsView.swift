@@ -12,12 +12,49 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 16) {
             headerRow
             identitySection
+            autofixSection
             toolsSection
             terminalSection
             allocatorSection
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
-        .task { await store.refreshAllocatorInstall() }
+        .task {
+            await store.refreshAllocatorInstall()
+            store.refreshAutofixStatus()
+        }
+    }
+
+    // MARK: PR auto-fix monitor
+
+    private var autofixSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            sectionLabel("PR AUTO-FIX")
+            Toggle(isOn: $store.prAutofixEnabled) {
+                Text("Auto-fix my PRs (conflicts + reviews)").font(.caption)
+            }
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            autofixDetail
+        }
+    }
+
+    @ViewBuilder
+    private var autofixDetail: some View {
+        if store.prAutofixEnabled {
+            let live = store.autofixStatus?.isLive == true
+            let n = store.autofixStatus?.watching ?? 0
+            HStack(spacing: 5) {
+                Image(systemName: live ? "bolt.fill" : "bolt.slash.fill")
+                    .font(.system(size: 9)).foregroundStyle(live ? Color.green : Color.orange)
+                Text(live
+                     ? "Active — a monitor is watching \(n) open PR\(n == 1 ? "" : "s")."
+                     : "Enabled, but no monitor is running right now.")
+                    .font(.caption2).foregroundStyle(live ? Color.green : Color.orange)
+            }
+        }
+        Text("When on, an agent watches your open PRs and automatically resolves merge conflicts and addresses new review threads. Turning it off pauses agent dispatch.")
+            .font(.caption2).foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     private var headerRow: some View {

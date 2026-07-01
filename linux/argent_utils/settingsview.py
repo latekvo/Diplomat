@@ -46,6 +46,7 @@ class SettingsView(QWidget):
 
         root.addLayout(self._header_row())
         root.addLayout(self._identity_section())
+        root.addLayout(self._autofix_section())
         root.addLayout(self._tools_section())
         root.addLayout(self._terminal_section())
         root.addLayout(self._allocator_section())
@@ -54,6 +55,43 @@ class SettingsView(QWidget):
         store.allocator_changed.connect(self._refresh_allocator_ui)
         self._refresh_allocator_ui()
         store.refresh_allocator_install_async()
+
+    # MARK: PR auto-fix
+
+    def _autofix_section(self) -> QVBoxLayout:
+        from . import autofix
+
+        col = QVBoxLayout()
+        col.setSpacing(6)
+        col.addWidget(_section_label("PR AUTO-FIX"))
+
+        toggle = QCheckBox("Auto-fix my PRs (conflicts + reviews)")
+        toggle.setChecked(self.store.pr_autofix_enabled)
+        toggle.toggled.connect(self._set_autofix_enabled)
+        col.addWidget(toggle)
+
+        status = self.store.autofix_status
+        if self.store.pr_autofix_enabled:
+            live = autofix.is_live(status)
+            n = (status or {}).get("watching", 0)
+            msg = (f"⚡ Active — a monitor is watching {n} open PR{'' if n == 1 else 's'}."
+                   if live else "⚡ Enabled, but no monitor is running right now.")
+            detail = QLabel(msg)
+            detail.setStyleSheet(
+                f"color: {'#34C759' if live else '#FF9500'}; font-size: 11px;")
+            col.addWidget(detail)
+
+        blurb = QLabel(
+            "When on, an agent watches your open PRs and automatically resolves merge "
+            "conflicts and addresses new review threads. Turning it off pauses agent "
+            "dispatch.")
+        blurb.setWordWrap(True)
+        blurb.setStyleSheet("color: palette(mid); font-size: 11px;")
+        col.addWidget(blurb)
+        return col
+
+    def _set_autofix_enabled(self, on: bool) -> None:
+        self.store.pr_autofix_enabled = on
 
     # MARK: header
 
