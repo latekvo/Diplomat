@@ -52,7 +52,13 @@ private struct ContentHeightKey: PreferenceKey {
 struct ContentView: View {
     @EnvironmentObject var store: Store
     @State private var query = ""
-    @State private var showingSettings = false
+    @State private var showingSettings: Bool
+
+    /// `showSettings` seeds the initial settings state — used by the headless render
+    /// to snapshot the Settings screen in context. Defaults to the main view.
+    init(showSettings: Bool = false) {
+        _showingSettings = State(initialValue: showSettings)
+    }
     /// Which action wizard (if any) replaces the tool lists in the results pane.
     @State private var activeAction: ActionPanel?
     /// Rows whose last click couldn't be focused or opened — show "tracking lost".
@@ -65,14 +71,14 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 8) {
             header
-            // Ongoing agent sessions live at the very top, above everything else,
-            // and vanish entirely when there are none.
-            if !store.processes.isEmpty { processList }
-            // The shared device pool + who holds what, just below the sessions.
-            if let ds = store.deviceState, !ds.devices.isEmpty { devicesList(ds) }
             if showingSettings {
                 SettingsView(isPresented: $showingSettings)
             } else {
+                // Ongoing agent sessions and the device pool belong to the main view
+                // only — they are hidden while Settings is open. Each also vanishes
+                // when empty.
+                if !store.processes.isEmpty { processList }
+                if let ds = store.deviceState, !ds.devices.isEmpty { devicesList(ds) }
                 searchBar
                 if let err = store.error { errorBanner(err) }
                 toolGrid

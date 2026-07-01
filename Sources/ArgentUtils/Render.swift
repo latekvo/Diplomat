@@ -38,6 +38,12 @@ enum Render {
     private static func view(for what: String, store: Store) -> some View {
         let w = what.lowercased()
         switch w {
+        case "settings-live":
+            // The whole panel with Settings open AND sessions + devices seeded —
+            // proves both are hidden while Settings is shown (regression guard).
+            let _ = seedProcessesIfNeeded("procs", store: store)
+            let _ = seedDeviceState(store)
+            ContentView(showSettings: true)
         case "settings":
             SettingsView(isPresented: .constant(true)).frame(height: 560)
         case let s where s.hasPrefix("wizard"):
