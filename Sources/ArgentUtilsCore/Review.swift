@@ -61,10 +61,16 @@ public struct ReviewConfig {
     /// The "final pass" escalation: a culminating full-E2E verdict pass. Off by default.
     public var finalPass: Bool
 
+    /// The caller already knows this specific PR is MINE (e.g. the auto-fix monitor,
+    /// which only ever polls my own PRs). Skips the author-poll + CASE A/B branching and
+    /// emits the mine-only (fix-on-branch) prompt directly. Ignored unless single-PR.
+    public var knownMine: Bool
+
     public init(depth: String = "", target: Target = .mine, username: String = "",
                 me: String = "", markReady: Bool = true, leaveReviews: Bool = true,
                 replyToReviews: Bool = true, includeDrafts: Bool = true,
-                includeReady: Bool = true, specificPR: String = "", finalPass: Bool = false) {
+                includeReady: Bool = true, specificPR: String = "", finalPass: Bool = false,
+                knownMine: Bool = false) {
         self.depth = depth.isEmpty ? ReviewCatalog.defaultDepthID() : depth
         self.target = target
         self.username = username
@@ -76,6 +82,7 @@ public struct ReviewConfig {
         self.includeReady = includeReady
         self.specificPR = specificPR
         self.finalPass = finalPass
+        self.knownMine = knownMine
     }
 
     /// The @handle whose PRs we go through (empty in single-PR mode).
@@ -144,11 +151,14 @@ public struct ReviewConfig {
         let repo = cfg?.repo ?? "argent"
 
         // A specific PR may be mine OR someone else's — which decides whether the
-        // agent is allowed to touch the branch. We can't know the author up front,
-        // so we hand the agent an author-gated prompt instead of guessing.
+        // agent is allowed to touch the branch. Normally we can't know the author up
+        // front, so we hand the agent an author-gated prompt. But when the caller
+        // already knows it's mine (the auto-fix monitor only polls my PRs), skip the
+        // poll + CASE A/B and emit the mine-only prompt directly.
         if isSinglePR {
-            return buildSpecificPrompt(review: review, scope: scope, blocks: blocks,
-                                       owner: owner, repo: repo)
+            return knownMine
+                ? buildKnownMinePrompt(review: review, scope: scope, blocks: blocks, owner: owner, repo: repo)
+                : buildSpecificPrompt(review: review, scope: scope, blocks: blocks, owner: owner, repo: repo)
         }
 
         var out: [String] = []
@@ -180,6 +190,35 @@ public struct ReviewConfig {
         if finalPass, let b = blocks["finalPass"] { out.append(b) }
 
         return out.joined(separator: "\n\n")
+    }
+
+    /// The single-PR prompt for a PR we ALREADY know is mine: no author poll, no
+    /// CASE A/B — just the mine-only disposition (review approach + bar + fix-on-branch,
+    /// with reply/mark-ready gated by their toggles). Used by the auto-fix monitor.
+    private func buildKnownMinePrompt(review: CoreAssets.Review?, scope: [String: String],
+                                      blocks: [String: String], owner: String, repo: String) -> String {
+        let specific = review?.specific ?? [:]
+        let chosen = ReviewCatalog.depth(id: depth)
+        let pr = prRef.numberString
+        let handle = me.isEmpty ? "me" : me
+        func fill(_ s: String) -> String {
+            s.replacingOccurrences(of: "{pr}", with: pr)
+                .replacingOccurrences(of: "{owner}", with: owner)
+                .replacingOccurrences(of: "{repo}", with: repo)
+                .replacingOccurrences(of: "{me}", with: handle)
+        }
+        var out: [String] = []
+        out.append(fill(scope["single"] ?? ""))
+        out.append(fill(specific["mineOnly"] ?? ""))
+        out.append(chosen.fragment)
+        if let bar = blocks["bar"] { out.append(bar) }
+        if let ob = chosen.onBranch, !ob.isEmpty { out.append(ob) }
+        if markReady, let b = blocks["markReady"] { out.append(b) }
+        if replyToReviews, let b = blocks["reply"] { out.append(b) }
+        if let b = blocks["noAttribution"] { out.append(b) }
+        if let trailer = blocks["trailer"] { out.append(trailer) }
+        if finalPass, let b = blocks["finalPass"] { out.append(b) }
+        return out.filter { !$0.isEmpty }.joined(separator: "\n\n")
     }
 
     /// The single-PR (Specific PR) prompt. Because the PR may be mine or someone

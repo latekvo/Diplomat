@@ -364,7 +364,7 @@ final class Store: ObservableObject {
             kind = "review"; snap = s
             prompt = ReviewConfig(depth: "deep", target: .specific, me: effectiveMe,
                                   markReady: false, leaveReviews: false, replyToReviews: true,
-                                  specificPR: String(s.number)).buildPrompt()
+                                  specificPR: String(s.number), knownMine: true).buildPrompt()
             label = "Auto · Review · #\(s.number)"
         }
         // Never pile a second agent on a PR that already has one running.

@@ -189,6 +189,27 @@ let u = AutofixDiff.compute(prior: unk, now: [snap(1, mergeable: "UNKNOWN")])
 assert(u.events.isEmpty && u.fingerprints[1]?.mergeable == "MERGEABLE", "UNKNOWN carries prior forward")
 print("autofix diff assertions passed")
 
+// ---- known-mine single-PR review prompt (auto-fix monitor) ----
+section("known-mine review prompt")
+let km = ReviewConfig(depth: "deep", target: .specific, me: "latekvo",
+                      markReady: false, leaveReviews: false, replyToReviews: true,
+                      specificPR: "440", knownMine: true).buildPrompt()
+// No author poll, no CASE A/B branching — we already know it's ours.
+assert(!km.contains("WHO AUTHORED IT"), "known-mine skips the author poll")
+assert(!km.contains("CASE A") && !km.contains("CASE B"), "known-mine has no case branching")
+assert(!km.contains("SOMEONE ELSE'S"), "known-mine has no review-only block")
+// But it IS the fix-on-branch, reply, no-attribution disposition on the right PR.
+assert(km.contains("Review PR #440"))
+assert(km.contains("MINE") && km.contains("full authority"))
+assert(km.contains("fix it directly on the PR's branch"))
+assert(km.contains(#"replying "Fixed in <commit_hash>""#))
+assert(km.contains("No AI attribution"))
+assert(!km.contains("mark it ready for review"), "markReady=false omits the block")
+// The gated (author-unknown) path still branches, for the manual Specific-PR wizard.
+let gated = ReviewConfig(depth: "deep", target: .specific, me: "latekvo", specificPR: "440").buildPrompt()
+assert(gated.contains("WHO AUTHORED IT") && gated.contains("CASE A") && gated.contains("CASE B"))
+print("known-mine review prompt assertions passed")
+
 // ---- Claude API-error detection (terminal auto-continue) ----
 section("api-error match")
 assert(ApiErrorMatch.looksLikeApiError("⏺ API Error: 529 Overloaded. If it persists, check https://status.claude.com."))

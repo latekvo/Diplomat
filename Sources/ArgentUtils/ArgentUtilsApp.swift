@@ -356,10 +356,10 @@ enum Dump {
 
                 print("\n----- CONFLICT prompt it would spawn (#\(s.number)) -----")
                 print(ConflictConfig(target: .specific, me: me, specificPR: String(s.number)).buildPrompt())
-                print("\n----- REVIEW prompt it would spawn (#\(s.number), Deep · flags off/off/on) -----")
+                print("\n----- REVIEW prompt it would spawn (#\(s.number), Deep · known-mine · flags off/off/on) -----")
                 print(ReviewConfig(depth: "deep", target: .specific, me: me,
                                    markReady: false, leaveReviews: false, replyToReviews: true,
-                                   specificPR: String(s.number)).buildPrompt())
+                                   specificPR: String(s.number), knownMine: true).buildPrompt())
             }
         } catch {
             print("AUTOFIX POLL ERROR: \((error as? LocalizedError)?.errorDescription ?? "\(error)")")
