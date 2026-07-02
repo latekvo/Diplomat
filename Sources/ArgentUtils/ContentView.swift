@@ -56,8 +56,10 @@ struct ContentView: View {
 
     /// `showSettings` seeds the initial settings state — used by the headless render
     /// to snapshot the Settings screen in context. Defaults to the main view.
-    init(showSettings: Bool = false) {
+    /// `seedPendingUnban` seeds the inline un-ban confirmation for a login (render only).
+    init(showSettings: Bool = false, seedPendingUnban: String? = nil) {
         _showingSettings = State(initialValue: showSettings)
+        _pendingUnban = State(initialValue: seedPendingUnban)
     }
     /// Which action wizard (if any) replaces the tool lists in the results pane.
     @State private var activeAction: ActionPanel?
@@ -65,6 +67,9 @@ struct ContentView: View {
     @State private var lostProcessIDs: Set<UUID> = []
     /// Whether the prompt-injection ban list (above the sessions) is expanded.
     @State private var bannedExpanded = true
+    /// The login whose un-ban is awaiting inline confirmation (nil = none). Kept inline
+    /// in the popover rather than an NSAlert, which would open behind the menu-bar window.
+    @State private var pendingUnban: String?
     @FocusState private var searchFocused: Bool
 
     /// The action cards in the grid that open a wizard instead of selecting a tool.
@@ -210,7 +215,13 @@ struct ContentView: View {
             .buttonStyle(.plain)
             if bannedExpanded {
                 ForEach(bans) { ban in
-                    BanRow(ban: ban, onUnban: { confirmUnban(ban.login) })
+                    if pendingUnban == ban.login {
+                        unbanConfirmRow(ban).transition(.opacity)
+                    } else {
+                        BanRow(ban: ban, onUnban: {
+                            withAnimation(.easeInOut(duration: 0.15)) { pendingUnban = ban.login }
+                        })
+                    }
                 }
             }
         }
@@ -218,20 +229,37 @@ struct ContentView: View {
         .background(RoundedRectangle(cornerRadius: 8).fill(Color.red.opacity(0.06)))
     }
 
-    /// Confirm before lifting a ban — a real AppKit alert (SwiftUI `.alert` is flaky
-    /// inside a MenuBarExtra), so a stray ✕ click can't silently un-ban.
-    private func confirmUnban(_ login: String) {
-        NSApp.activate(ignoringOtherApps: true)
-        let alert = NSAlert()
-        alert.messageText = "Unban @\(login)?"
-        alert.informativeText = "@\(login) was banned for a prompt-injection attempt. "
-            + "Un-banning lets their PRs receive automated reviews from you again."
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Cancel")   // default — Return cancels
-        alert.addButton(withTitle: "Unban")
-        if alert.runModal() == .alertSecondButtonReturn {
-            store.unban(login)
+    /// Inline "Unban @X?" confirmation shown in place of the ban row when its ✕ is
+    /// clicked — kept inside the popover so it can't open behind the menu-bar window.
+    private func unbanConfirmRow(_ ban: BannedAuthor) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "questionmark.circle.fill")
+                .font(.system(size: 11, weight: .bold)).foregroundStyle(.white)
+                .frame(width: 22, height: 22)
+                .background(Color.orange.opacity(0.85))
+                .clipShape(RoundedRectangle(cornerRadius: 5))
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Unban @\(ban.login)?").font(.caption.bold())
+                Text("Their PRs will receive automated reviews again.")
+                    .font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer(minLength: 4)
+            Button("Cancel") {
+                withAnimation(.easeInOut(duration: 0.15)) { pendingUnban = nil }
+            }
+            .buttonStyle(.plain).font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+            .padding(.horizontal, 9).padding(.vertical, 4)
+            .background(Capsule().fill(Color.gray.opacity(0.18)))
+            Button("Unban") {
+                store.unban(ban.login)
+                withAnimation(.easeInOut(duration: 0.15)) { pendingUnban = nil }
+            }
+            .buttonStyle(.plain).font(.system(size: 10, weight: .bold)).foregroundStyle(.white)
+            .padding(.horizontal, 9).padding(.vertical, 4)
+            .background(Capsule().fill(Color.red.opacity(0.85)))
         }
+        .padding(6)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color.orange.opacity(0.12)))
     }
 
     // MARK: ongoing agent sessions

@@ -46,6 +46,12 @@ enum Render {
             ContentView(showSettings: true)
         case "settings":
             SettingsView(isPresented: .constant(true)).frame(height: 560)
+        case "unban-confirm":
+            // Seed the ban list and open the inline "Unban @X?" confirmation on a row —
+            // proving it renders inside the panel (not as a separate NSAlert window).
+            let _ = seedProcessesIfNeeded("procs", store: store)
+            let _ = seedDeviceState(store)
+            ContentView(seedPendingUnban: "evil-intern")
         case let s where s.hasPrefix("wizard"):
             // Suffix-driven states: "wizard" (mine), "-other" (someone else's →
             // handle field), "-specific" (specific PR → PR field), "-wrong"
