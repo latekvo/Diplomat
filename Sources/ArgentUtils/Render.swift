@@ -51,21 +51,25 @@ enum Render {
             // handle field), "-specific" (specific PR → PR field), "-wrong"
             // (specific PR with a URL pointing at another repo → warning).
             let wrong = s.contains("wrong")
-            let specific = wrong || s.contains("specific") || s.contains("single")
+            let banned = s.contains("banned")
+            let specific = wrong || banned || s.contains("specific") || s.contains("single")
             let other = s.contains("other")
             let target: PRTarget = specific ? .specific : (other ? .someone : .mine)
             let pr = wrong ? "https://github.com/some-org/other-repo/pull/42"
-                           : "https://github.com/software-mansion/argent/pull/337"
+                           : "https://github.com/software-mansion/argent/pull/455"
             // "-specific-mine" / "-specific-theirs" seed the polled author so the
-            // toggle-hiding can be eyeballed without a live gh call.
+            // toggle-hiding can be eyeballed; "-banned" seeds a @foobar ban + a specific
+            // PR authored by them, to show the flashing banned-author warning.
             let seedAuthor: SpecificAuthor? = specific
-                ? (s.contains("theirs") ? .theirs : (s.contains("mine") ? .mine : nil))
+                ? (banned || s.contains("theirs") ? .theirs : (s.contains("mine") ? .mine : nil))
                 : nil
+            if banned { let _ = seedFoobarBan(store) }
             ReviewWizardView(scrolls: false,
                              seedTarget: target,
                              seedSpecificPR: specific ? pr : nil,
                              seedUsername: other ? "octocat" : nil,
-                             seedSpecificAuthor: seedAuthor)
+                             seedSpecificAuthor: seedAuthor,
+                             seedSpecificAuthorLogin: banned ? "foobar" : nil)
                 .frame(height: 560)
         case "conflicts":
             ConflictWizardView(scrolls: false).frame(height: 560)
@@ -131,6 +135,17 @@ enum Render {
         store.prAutofixEnabled = true
         store.autofixStatus = AutofixStatus(
             updatedAt: Date(), watching: 28, conflictsHandled: 3, reviewsHandled: 2)
+    }
+
+    /// A single @foobar ban so the wizard's flashing "banned author" warning can be
+    /// eyeballed (ARGENT_UTILS_RENDER=wizard-banned).
+    @MainActor
+    private static func seedFoobarBan(_ store: Store) {
+        store.bannedAuthors = [
+            BannedAuthor(login: "foobar", reason: "prompt injection",
+                         pr: "software-mansion/argent#455", evidence: nil, evidenceDir: nil,
+                         reportedBy: nil, at: nil, firstAt: nil, screenshot: true, ghCaptured: true),
+        ]
     }
 
     /// Synthetic device-allocator state for `ARGENT_UTILS_RENDER=devices`.

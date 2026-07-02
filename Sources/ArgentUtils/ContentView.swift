@@ -210,12 +210,28 @@ struct ContentView: View {
             .buttonStyle(.plain)
             if bannedExpanded {
                 ForEach(bans) { ban in
-                    BanRow(ban: ban, onUnban: { store.unban(ban.login) })
+                    BanRow(ban: ban, onUnban: { confirmUnban(ban.login) })
                 }
             }
         }
         .padding(7)
         .background(RoundedRectangle(cornerRadius: 8).fill(Color.red.opacity(0.06)))
+    }
+
+    /// Confirm before lifting a ban — a real AppKit alert (SwiftUI `.alert` is flaky
+    /// inside a MenuBarExtra), so a stray ✕ click can't silently un-ban.
+    private func confirmUnban(_ login: String) {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "Unban @\(login)?"
+        alert.informativeText = "@\(login) was banned for a prompt-injection attempt. "
+            + "Un-banning lets their PRs receive automated reviews from you again."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Cancel")   // default — Return cancels
+        alert.addButton(withTitle: "Unban")
+        if alert.runModal() == .alertSecondButtonReturn {
+            store.unban(login)
+        }
     }
 
     // MARK: ongoing agent sessions

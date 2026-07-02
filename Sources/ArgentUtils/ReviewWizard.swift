@@ -256,12 +256,14 @@ struct ReviewWizardView: View {
          seedTarget: PRTarget? = nil,
          seedSpecificPR: String? = nil,
          seedUsername: String? = nil,
-         seedSpecificAuthor: SpecificAuthor? = nil) {
+         seedSpecificAuthor: SpecificAuthor? = nil,
+         seedSpecificAuthorLogin: String? = nil) {
         self.scrolls = scrolls
         if let v = seedTarget { _target = State(initialValue: v) }
         if let v = seedSpecificPR { _specificPR = State(initialValue: v) }
         if let v = seedUsername { _username = State(initialValue: v) }
         if let v = seedSpecificAuthor { _specificAuthor = State(initialValue: v) }
+        if let v = seedSpecificAuthorLogin { _specificAuthorLogin = State(initialValue: v) }
     }
 
     @State private var depthValue: Double = ReviewWizardView.defaultDepthValue()
@@ -279,6 +281,8 @@ struct ReviewWizardView: View {
     /// which action toggles show. `.unknown` while we determine it (offers all, gated).
     @State private var specificAuthor: SpecificAuthor = .unknown
     @State private var authorLoading = false
+    /// The polled author login (for a specific PR) — used to check the ban list.
+    @State private var specificAuthorLogin: String?
 
     /// The review-depth levels, loaded once from the shared core.
     private var depths: [ReviewDepth] { ReviewCatalog.depths() }
@@ -324,6 +328,7 @@ struct ReviewWizardView: View {
     private var content: some View {
         VStack(alignment: .leading, spacing: 10) {
             titleRow
+            if let banned = bannedTargetLogin { bannedWarning(banned) }
             targetRow
             contextRow
             if target == .specific { authorHint }
@@ -345,6 +350,47 @@ struct ReviewWizardView: View {
         .animation(.easeInOut(duration: 0.22), value: includeReady)
         .onChange(of: specificPR) { _ in refreshAuthor() }
         .onChange(of: target) { _ in refreshAuthor() }
+    }
+
+    /// The author being reviewed IF they're banned for prompt injection — nil otherwise.
+    /// For "someone else's PRs" it's the handle; for a specific PR it's the polled author.
+    /// (My own PRs are never banned.)
+    private var bannedTargetLogin: String? {
+        let bans = store.bannedAuthors
+        switch target {
+        case .mine:
+            return nil
+        case .someone:
+            let u = username.trimmingCharacters(in: .whitespaces)
+            return BanList.isBanned(u, in: bans) ? u : nil
+        case .specific:
+            if let login = specificAuthorLogin, BanList.isBanned(login, in: bans) { return login }
+            return nil
+        }
+    }
+
+    /// A flashing red warning shown while the targeted author is banned for prompt
+    /// injection — reviewing their PRs is discouraged. Flashes for as long as the ban
+    /// stands (it clears the instant they're un-banned).
+    private func bannedWarning(_ login: String) -> some View {
+        TimelineView(.periodic(from: Date(), by: 0.5)) { ctx in
+            let on = Int(ctx.date.timeIntervalSince1970 * 2) % 2 == 0
+            HStack(spacing: 7) {
+                Image(systemName: "exclamationmark.octagon.fill")
+                    .font(.system(size: 13)).foregroundStyle(.white)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("@\(login) is BANNED for prompt injection")
+                        .font(.caption.bold()).foregroundStyle(.white)
+                    Text("Reviewing their PRs is strongly discouraged while the ban stands.")
+                        .font(.system(size: 10)).foregroundStyle(.white.opacity(0.92))
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(9)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color.red.opacity(on ? 0.95 : 0.5)))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.red, lineWidth: on ? 2.5 : 0.5))
+        }
     }
 
     /// A one-line note under the single-PR field: whose PR it is once polled, so the
@@ -552,15 +598,16 @@ struct ReviewWizardView: View {
     /// don't apply and pick the right mine/theirs prompt — no author-guessing left to
     /// the spawned agent.
     private func refreshAuthor() {
-        guard target == .specific else { specificAuthor = .unknown; authorLoading = false; return }
+        guard target == .specific else { specificAuthor = .unknown; specificAuthorLogin = nil; authorLoading = false; return }
         let ref = config.prRef
         guard ref.isValid, let num = ref.number else {
-            specificAuthor = .unknown; authorLoading = false; return
+            specificAuthor = .unknown; specificAuthorLogin = nil; authorLoading = false; return
         }
         let (owner, repo) = config.targetRepo
         let me = store.effectiveMe
         let pending = specificPR
         specificAuthor = .unknown        // offer all toggles while we determine
+        specificAuthorLogin = nil
         authorLoading = true
         Task {
             try? await Task.sleep(nanoseconds: 400_000_000)   // debounce keystrokes
@@ -568,6 +615,7 @@ struct ReviewWizardView: View {
             let login = await Self.fetchAuthor(owner: owner, repo: repo, number: num)
             guard specificPR == pending, target == .specific else { return }
             authorLoading = false
+            specificAuthorLogin = login
             if let login, !me.isEmpty {
                 specificAuthor = login.lowercased() == me.lowercased() ? .mine : .theirs
             } else {
