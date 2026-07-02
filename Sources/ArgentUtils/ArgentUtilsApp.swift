@@ -361,6 +361,17 @@ enum Dump {
                                    markReady: false, leaveReviews: false, replyToReviews: true,
                                    specificPR: String(s.number), knownMine: true).buildPrompt())
             }
+
+            // Review-request feed: PRs where someone asked for MY review.
+            let reqs = try await AutofixMonitor.fetchSnapshots(owner: owner, repo: repo, me: me,
+                                                               role: .reviewRequested)
+            print("\n== review-requested-of-me: \(reqs.count) open PR(s) ==")
+            for r in reqs { print("  #\(r.number)  \(r.title.prefix(55))") }
+            let sample = reqs.first?.number ?? 999
+            print("\n----- COMPREHENSIVE REVIEW prompt (review-requested #\(sample), max + finalPass, leave comments) -----")
+            print(ReviewConfig(depth: "max", target: .specific, me: me,
+                               markReady: false, leaveReviews: true, replyToReviews: false,
+                               specificPR: String(sample), finalPass: true, knownTheirs: true).buildPrompt())
         } catch {
             print("AUTOFIX POLL ERROR: \((error as? LocalizedError)?.errorDescription ?? "\(error)")")
         }

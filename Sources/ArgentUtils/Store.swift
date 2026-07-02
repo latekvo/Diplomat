@@ -63,6 +63,16 @@ final class Store: ObservableObject {
         }
     }
 
+    /// Whether to auto-dispatch a full-E2E review when someone requests my review on a
+    /// PR (someone else's PR → review-only, leave comments). Persisted; kicks a poll on
+    /// enable. Independent of `prAutofixEnabled`.
+    @Published var reviewRequestsEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(reviewRequestsEnabled, forKey: Keys.reviewRequestsEnabled)
+            if reviewRequestsEnabled && !oldValue { Task { await runAutofixPollOnce() } }
+        }
+    }
+
     /// Latest state from the auto-fix monitor's own poll (nil until the first). Drives
     /// the top-of-panel status pill; freshness (`isLive`) decides active vs. offline.
     @Published var autofixStatus: AutofixStatus?
@@ -93,6 +103,9 @@ final class Store: ObservableObject {
         static let autofixFingerprints = "autofixFingerprints"
         static let autofixConflicts = "autofixConflictsHandled"
         static let autofixReviews = "autofixReviewsHandled"
+        static let reviewRequestsEnabled = "reviewRequestsEnabled"
+        static let reviewRequestedSeen = "reviewRequestedSeen"
+        static let reviewRequestsHandled = "reviewRequestsHandled"
         static let apiWatchEnabled = "apiWatchEnabled"
         static let apiWatchContinues = "apiWatchContinues"
     }
@@ -142,6 +155,7 @@ final class Store: ObservableObject {
         // Default ON (absent key ⇒ true): the pill only lights up on a live heartbeat,
         // so defaulting on can't falsely claim "active" when no monitor is running.
         prAutofixEnabled = defaults.object(forKey: Keys.prAutofixEnabled) as? Bool ?? true
+        reviewRequestsEnabled = defaults.object(forKey: Keys.reviewRequestsEnabled) as? Bool ?? true
         apiWatchEnabled = defaults.object(forKey: Keys.apiWatchEnabled) as? Bool ?? true
         processes = Store.loadProcesses()
         if hiddenTools.contains(selected.rawValue),
@@ -328,13 +342,19 @@ final class Store: ObservableObject {
     /// agent for each PR that just gained a conflict or new review work. No-op when
     /// the feature is off or our login isn't known yet.
     func runAutofixPollOnce() async {
-        guard prAutofixEnabled else { return }
         if me.isEmpty { await fetchMe() }
         guard !effectiveMe.isEmpty else { return }
         let (owner, repo) = coreRepo
+        if prAutofixEnabled { await pollMyPRs(owner: owner, repo: repo) }
+        if reviewRequestsEnabled { await pollReviewRequests(owner: owner, repo: repo) }
+    }
+
+    /// My own PRs: dispatch on new conflicts / new review work (edge-triggered).
+    private func pollMyPRs(owner: String, repo: String) async {
         let snaps: [PRSnapshot]
         do {
-            snaps = try await AutofixMonitor.fetchSnapshots(owner: owner, repo: repo, me: effectiveMe)
+            snaps = try await AutofixMonitor.fetchSnapshots(owner: owner, repo: repo,
+                                                            me: effectiveMe, role: .author)
         } catch {
             return   // transient gh/network error — leave state as-is, retry next tick
         }
@@ -344,6 +364,62 @@ final class Store: ObservableObject {
         autofixStatus = AutofixStatus(
             updatedAt: Date(), watching: snaps.count,
             conflictsHandled: autofixConflictsHandled, reviewsHandled: autofixReviewsHandled)
+    }
+
+    /// PRs that request MY review: when one NEWLY enters the requested set, dispatch the
+    /// most comprehensive review of it (someone else's PR → review-only, leave comments).
+    /// First run seeds the set silently so outstanding requests aren't retro-swarmed.
+    private func pollReviewRequests(owner: String, repo: String) async {
+        let snaps: [PRSnapshot]
+        do {
+            snaps = try await AutofixMonitor.fetchSnapshots(owner: owner, repo: repo,
+                                                            me: effectiveMe, role: .reviewRequested)
+        } catch {
+            return
+        }
+        let current = Set(snaps.map { $0.number })
+        guard let prior = loadReviewRequestedSeen() else {
+            saveReviewRequestedSeen(current)   // first run — baseline, no dispatch
+            return
+        }
+        for snap in snaps where !prior.contains(snap.number) {
+            await dispatchReviewRequest(snap)
+        }
+        saveReviewRequestedSeen(current)
+    }
+
+    /// Spawn the most-comprehensive Review action (Full E2E ×2 + final verdict, leaving
+    /// formal per-line comments) on a PR someone asked me to review — hands off the branch.
+    private func dispatchReviewRequest(_ snap: PRSnapshot) async {
+        if processes.contains(where: { $0.prURL == snap.url && !$0.done }) { return }
+        let prompt = ReviewConfig(depth: "max", target: .specific, me: effectiveMe,
+                                  markReady: false, leaveReviews: true, replyToReviews: false,
+                                  specificPR: String(snap.number), finalPass: true,
+                                  knownTheirs: true).buildPrompt()
+        let preferred = terminal
+        do {
+            let result = try await Task.detached(priority: .userInitiated) {
+                try AgentSpawner.spawn(prompt, terminal: preferred)
+            }.value
+            track(kind: "review", label: "Auto · Review-req · #\(snap.number)",
+                  prURL: snap.url, result: result)
+            reviewRequestsHandled += 1
+        } catch { }
+    }
+
+    var reviewRequestsHandled: Int {
+        get { UserDefaults.standard.integer(forKey: Keys.reviewRequestsHandled) }
+        set { UserDefaults.standard.set(newValue, forKey: Keys.reviewRequestsHandled) }
+    }
+    /// nil ⇒ never polled (first run); a set (possibly empty) ⇒ the last poll's requests.
+    private func loadReviewRequestedSeen() -> Set<Int>? {
+        guard let arr = UserDefaults.standard.array(forKey: Keys.reviewRequestedSeen) as? [Int] else {
+            return nil
+        }
+        return Set(arr)
+    }
+    private func saveReviewRequestedSeen(_ set: Set<Int>) {
+        UserDefaults.standard.set(Array(set), forKey: Keys.reviewRequestedSeen)
     }
 
     /// Spawn the appropriate action-button agent for a detected transition and track

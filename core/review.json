@@ -43,6 +43,7 @@
   "specific": {
     "determineAuthor": "Before doing anything else, fetch this PR and find out WHO AUTHORED IT: `gh pr view {pr} --repo {owner}/{repo} --json author,isDraft,headRefName`. Everything below depends on the answer — handle the PR as exactly ONE of the two cases that follow, never both.",
     "mineOnly": "This PR is MINE (@{me}) — treat it as my own work: fix what you find directly on its branch and push. You have full authority over it.",
+    "theirsOnly": "This PR is SOMEONE ELSE'S — they requested my review (@{me} is not the author). This is strictly look-don't-touch: your ONE deliverable is the code review itself, never a change to their branch.",
     "mineHeader": "▸ CASE A — @{me} authored this PR (it's MINE). Treat it like my own work: fix what you find directly on its branch. Do everything in this case:",
     "otherHeader": "▸ CASE B — someone OTHER than @{me} authored this PR (it's THEIRS). This is strictly look-don't-touch — your only deliverable is the review. Do everything in this case instead:",
     "otherNoMarkReady": "Do NOT mark this PR ready for review and do NOT change its draft/ready state in any way — it isn't yours to advance; only its author decides that."

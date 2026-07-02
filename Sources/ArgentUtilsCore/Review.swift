@@ -66,11 +66,16 @@ public struct ReviewConfig {
     /// emits the mine-only (fix-on-branch) prompt directly. Ignored unless single-PR.
     public var knownMine: Bool
 
+    /// The caller already knows this specific PR is SOMEONE ELSE'S (e.g. a review the
+    /// monitor saw requested from me — I can't be asked to review my own PR). Skips the
+    /// poll + branching and emits the review-only (hands-off) prompt directly.
+    public var knownTheirs: Bool
+
     public init(depth: String = "", target: Target = .mine, username: String = "",
                 me: String = "", markReady: Bool = true, leaveReviews: Bool = true,
                 replyToReviews: Bool = true, includeDrafts: Bool = true,
                 includeReady: Bool = true, specificPR: String = "", finalPass: Bool = false,
-                knownMine: Bool = false) {
+                knownMine: Bool = false, knownTheirs: Bool = false) {
         self.depth = depth.isEmpty ? ReviewCatalog.defaultDepthID() : depth
         self.target = target
         self.username = username
@@ -83,6 +88,7 @@ public struct ReviewConfig {
         self.specificPR = specificPR
         self.finalPass = finalPass
         self.knownMine = knownMine
+        self.knownTheirs = knownTheirs
     }
 
     /// The @handle whose PRs we go through (empty in single-PR mode).
@@ -156,9 +162,13 @@ public struct ReviewConfig {
         // already knows it's mine (the auto-fix monitor only polls my PRs), skip the
         // poll + CASE A/B and emit the mine-only prompt directly.
         if isSinglePR {
-            return knownMine
-                ? buildKnownMinePrompt(review: review, scope: scope, blocks: blocks, owner: owner, repo: repo)
-                : buildSpecificPrompt(review: review, scope: scope, blocks: blocks, owner: owner, repo: repo)
+            if knownMine {
+                return buildKnownMinePrompt(review: review, scope: scope, blocks: blocks, owner: owner, repo: repo)
+            }
+            if knownTheirs {
+                return buildKnownTheirsPrompt(review: review, scope: scope, blocks: blocks, owner: owner, repo: repo)
+            }
+            return buildSpecificPrompt(review: review, scope: scope, blocks: blocks, owner: owner, repo: repo)
         }
 
         var out: [String] = []
@@ -216,6 +226,35 @@ public struct ReviewConfig {
         if markReady, let b = blocks["markReady"] { out.append(b) }
         if replyToReviews, let b = blocks["reply"] { out.append(b) }
         if let b = blocks["noAttribution"] { out.append(b) }
+        if let trailer = blocks["trailer"] { out.append(trailer) }
+        if finalPass, let b = blocks["finalPass"] { out.append(b) }
+        return out.filter { !$0.isEmpty }.joined(separator: "\n\n")
+    }
+
+    /// The single-PR prompt for a PR we ALREADY know is someone else's (a review
+    /// requested from me): no author poll, no CASE A/B — the review-only, hands-off
+    /// disposition directly (leave a formal review if the toggle is on, never touch the
+    /// branch). Used by the review-request monitor.
+    private func buildKnownTheirsPrompt(review: CoreAssets.Review?, scope: [String: String],
+                                        blocks: [String: String], owner: String, repo: String) -> String {
+        let specific = review?.specific ?? [:]
+        let chosen = ReviewCatalog.depth(id: depth)
+        let pr = prRef.numberString
+        let handle = me.isEmpty ? "me" : me
+        func fill(_ s: String) -> String {
+            s.replacingOccurrences(of: "{pr}", with: pr)
+                .replacingOccurrences(of: "{owner}", with: owner)
+                .replacingOccurrences(of: "{repo}", with: repo)
+                .replacingOccurrences(of: "{me}", with: handle)
+        }
+        var out: [String] = []
+        out.append(fill(scope["single"] ?? ""))
+        out.append(fill(specific["theirsOnly"] ?? ""))
+        out.append(chosen.fragment)
+        if let bar = blocks["bar"] { out.append(bar) }
+        if let b = blocks["reviewOnly"] { out.append(b) }
+        if leaveReviews, let b = blocks["leaveReviews"] { out.append(b) }
+        out.append(fill(specific["otherNoMarkReady"] ?? ""))
         if let trailer = blocks["trailer"] { out.append(trailer) }
         if finalPass, let b = blocks["finalPass"] { out.append(b) }
         return out.filter { !$0.isEmpty }.joined(separator: "\n\n")

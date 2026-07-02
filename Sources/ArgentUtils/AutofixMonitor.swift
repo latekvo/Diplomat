@@ -6,11 +6,24 @@ import ArgentUtilsCore
 // diffing lives in ArgentUtilsCore; the spawn/track happens in Store. This file is
 // just the GitHub read.
 enum AutofixMonitor {
-    /// One GraphQL search over my open PRs in the target repo, with each PR's
-    /// mergeability, review verdict, and review-thread resolution — everything the
+    /// Which open PRs to fetch: the ones I authored (auto-fix), or the ones that have
+    /// requested my review (auto-review).
+    enum Role {
+        case author, reviewRequested
+        func qualifier(_ me: String) -> String {
+            switch self {
+            case .author: return "author:\(me)"
+            case .reviewRequested: return "review-requested:\(me)"
+            }
+        }
+    }
+
+    /// One GraphQL search over my open PRs in the target repo (by `role`), with each
+    /// PR's mergeability, review verdict, and review-thread resolution — everything the
     /// diff needs, in a single request.
-    static func fetchSnapshots(owner: String, repo: String, me: String) async throws -> [PRSnapshot] {
-        let q = "repo:\(owner)/\(repo) author:\(me) is:pr is:open"
+    static func fetchSnapshots(owner: String, repo: String, me: String,
+                               role: Role = .author) async throws -> [PRSnapshot] {
+        let q = "repo:\(owner)/\(repo) \(role.qualifier(me)) is:pr is:open"
         let query = """
         query($q: String!) {
           search(query: $q, type: ISSUE, first: 100) {

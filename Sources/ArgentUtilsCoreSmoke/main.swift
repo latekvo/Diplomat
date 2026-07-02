@@ -210,6 +210,23 @@ let gated = ReviewConfig(depth: "deep", target: .specific, me: "latekvo", specif
 assert(gated.contains("WHO AUTHORED IT") && gated.contains("CASE A") && gated.contains("CASE B"))
 print("known-mine review prompt assertions passed")
 
+// ---- known-theirs comprehensive review (review-request monitor) ----
+section("known-theirs review prompt")
+let kt = ReviewConfig(depth: "max", target: .specific, me: "latekvo",
+                      markReady: false, leaveReviews: true, replyToReviews: false,
+                      specificPR: "500", finalPass: true, knownTheirs: true).buildPrompt()
+assert(!kt.contains("WHO AUTHORED IT"), "known-theirs skips the author poll")
+assert(!kt.contains("CASE A") && !kt.contains("CASE B"), "no case branching")
+assert(kt.contains("SOMEONE ELSE'S"), "review-only framing")
+assert(kt.contains("ABSOLUTELY DO NOT touch their branch"), "reviewOnly block present")
+assert(kt.contains("POST a pull-request review"), "leaveReviews block present")
+assert(kt.contains("Do NOT mark this PR ready"), "otherNoMarkReady present")
+assert(kt.contains("SECOND, independent verification"), "max-depth fragment present")
+assert(kt.contains("APPROVE"), "finalPass verdict present")
+assert(!kt.contains("fix it directly on the PR's branch"), "never fixes someone else's branch")
+assert(!kt.contains("No AI attribution"), "no commits ⇒ no attribution block")
+print("known-theirs review prompt assertions passed")
+
 // ---- Claude API-error detection (terminal auto-continue) ----
 section("api-error match")
 assert(ApiErrorMatch.looksLikeApiError("⏺ API Error: 529 Overloaded. If it persists, check https://status.claude.com."))
