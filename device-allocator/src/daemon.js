@@ -23,9 +23,9 @@ import { spawn, execFileSync } from 'node:child_process';
 import {
   SOCKET_PATH, DISCOVERY_PATH, REPAIRS_DIR,
   IDLE_LIMIT_MS, REAP_INTERVAL_MS, IDLE_INTERVAL_MS, POOL_INTERVAL_MS, ALLOC_GRACE_MS,
-  QUOTA, AWAIT_TIMEOUT_MS,
+  QUOTA, AWAIT_TIMEOUT_MS, BAN_DIR, BANNED_PATH, INJECTIONS_DIR,
 } from './paths.js';
-import { writeDiscovery, writeState, pidAlive, ensureDirs } from './state.js';
+import { writeDiscovery, writeState, pidAlive, ensureDirs, atomicWrite } from './state.js';
 import { log } from './log.js';
 import * as dev from './devices.js';
 
@@ -424,6 +424,107 @@ function publish() {
   writeState(lastState);
 }
 
+// ---- prompt-injection reports ---------------------------------------------
+
+// `gh`/browser live outside the launch-agent PATH; augment it when we shell them.
+function toolEnv() {
+  const extra = '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin';
+  return { ...process.env, PATH: process.env.PATH ? `${process.env.PATH}:${extra}` : extra };
+}
+function resolveGh() {
+  for (const c of ['gh', '/opt/homebrew/bin/gh', '/usr/local/bin/gh', '/usr/bin/gh']) {
+    try { execFileSync(c, ['--version'], { timeout: 5000, stdio: 'ignore', env: toolEnv() }); return c; } catch {}
+  }
+  return null;
+}
+// "owner/repo#123", a PR URL, or a bare number → {owner, repo, number} (owner/repo may be null).
+function parsePrRef(ref) {
+  if (!ref) return null;
+  const s = String(ref).trim();
+  let m = s.match(/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/i);
+  if (m) return { owner: m[1], repo: m[2], number: Number(m[3]) };
+  m = s.match(/^([^/\s]+)\/([^/#\s]+)#(\d+)$/);
+  if (m) return { owner: m[1], repo: m[2], number: Number(m[3]) };
+  m = s.match(/(\d+)/);
+  if (m) return { owner: null, repo: null, number: Number(m[1]) };
+  return null;
+}
+function captureScreenshot(url, outPath) {
+  const browsers = [
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    '/Applications/Chromium.app/Contents/MacOS/Chromium',
+    '/opt/homebrew/bin/chromium', 'chromium', 'google-chrome-stable',
+  ];
+  for (const b of browsers) {
+    try {
+      execFileSync(b, ['--headless=new', '--disable-gpu', '--hide-scrollbars',
+        '--window-size=1400,3200', `--screenshot=${outPath}`, url],
+        { timeout: 30000, stdio: 'ignore', env: toolEnv() });
+      if (fs.existsSync(outPath)) return true;
+    } catch {}
+  }
+  return false;
+}
+// Log the exact triggering content: the PR's gh JSON + human view, and a best-effort
+// page screenshot (a private repo will screenshot a login page — gh content is the
+// authoritative record, per spec).
+function captureEvidence(dir, ref, gh) {
+  const out = { ghCaptured: false, screenshotCaptured: false, url: null };
+  if (!ref || ref.owner == null || !gh) return out;
+  const nwo = `${ref.owner}/${ref.repo}`;
+  try {
+    const json = execFileSync(gh, ['pr', 'view', String(ref.number), '--repo', nwo, '--json',
+      'number,title,author,url,body,createdAt,headRefName,comments,reviews'],
+      { encoding: 'utf8', timeout: 30000, env: toolEnv() });
+    fs.writeFileSync(path.join(dir, 'pr.json'), json);
+    try { out.url = JSON.parse(json).url; } catch {}
+    out.ghCaptured = true;
+  } catch (e) { log('injection evidence: gh json failed', String(e)); }
+  try {
+    const text = execFileSync(gh, ['pr', 'view', String(ref.number), '--repo', nwo, '--comments'],
+      { encoding: 'utf8', timeout: 30000, env: toolEnv() });
+    fs.writeFileSync(path.join(dir, 'pr.txt'), text);
+  } catch {}
+  if (out.url) out.screenshotCaptured = captureScreenshot(out.url, path.join(dir, 'screenshot.png'));
+  return out;
+}
+
+async function handleReportInjection(p) {
+  const login = String(p.person || '').trim().replace(/^@/, '');
+  if (!login) { const e = new Error('person (the offending PR author login) is required'); e.statusCode = 400; throw e; }
+  const at = new Date().toISOString();
+  const ref = parsePrRef(p.pr);
+  const gh = process.env.DA_FAKE_DEVICES != null ? null : resolveGh(); // tests: skip real gh/browser
+  const slug = `${at.replace(/[:.]/g, '-')}-${login.replace(/[^A-Za-z0-9_-]/g, '_')}`;
+  const dir = path.join(INJECTIONS_DIR, slug);
+  try { fs.mkdirSync(dir, { recursive: true }); } catch {}
+  try { fs.writeFileSync(path.join(dir, 'evidence.txt'), String(p.evidence || '')); } catch {}
+  const cap = captureEvidence(dir, ref, gh);
+  const incident = {
+    login, pr: p.pr || null, prRef: ref, evidence: p.evidence || '', reportedBy: p.agentName || null,
+    at, ghCaptured: cap.ghCaptured, screenshotCaptured: cap.screenshotCaptured, url: cap.url,
+  };
+  try { fs.writeFileSync(path.join(dir, 'report.json'), JSON.stringify(incident, null, 2)); } catch {}
+
+  return withLock(async () => {
+    let data = { banned: [] };
+    try { data = JSON.parse(fs.readFileSync(BANNED_PATH, 'utf8')); } catch {}
+    if (!Array.isArray(data.banned)) data.banned = [];
+    const entry = {
+      login, reason: 'prompt injection', pr: p.pr || null, evidence: (p.evidence || '').slice(0, 800),
+      evidenceDir: dir, reportedBy: p.agentName || null, at,
+      screenshot: cap.screenshotCaptured, ghCaptured: cap.ghCaptured,
+    };
+    const existing = data.banned.find((b) => (b.login || '').toLowerCase() === login.toLowerCase());
+    if (existing) Object.assign(existing, entry, { firstAt: existing.firstAt || existing.at });
+    else data.banned.push({ ...entry, firstAt: at });
+    atomicWrite(BANNED_PATH, data);
+    log('prompt-injection reported; banned', login, 'pr', p.pr || '?', 'gh', cap.ghCaptured, 'shot', cap.screenshotCaptured, 'dir', dir);
+    return { banned: true, login, total: data.banned.length, evidenceDir: dir,
+             ghCaptured: cap.ghCaptured, screenshotCaptured: cap.screenshotCaptured, url: cap.url };
+  });
+}
+
 // ---- http server ----------------------------------------------------------
 
 const server = http.createServer((req, res) => {
@@ -448,6 +549,7 @@ const server = http.createServer((req, res) => {
         case '/release': result = await handleRelease(p); break;
         case '/change': result = await handleChange(p); break;
         case '/broken': result = await handleBroken(p); break;
+        case '/report-injection': result = await handleReportInjection(p); break;
         default: return send(404, { error: `unknown route ${req.url}` });
       }
       send(200, result);

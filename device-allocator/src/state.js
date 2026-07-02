@@ -2,12 +2,13 @@
 // the public state snapshot the applet polls, and PID/daemon liveness checks.
 
 import fs from 'node:fs';
+import path from 'node:path';
 import { BASE_DIR, DISCOVERY_PATH, STATE_PATH, SOCKET_PATH } from './paths.js';
 
 export function ensureDirs() { fs.mkdirSync(BASE_DIR, { recursive: true }); }
 
 export function atomicWrite(file, obj, mode = 0o644) {
-  ensureDirs();
+  fs.mkdirSync(path.dirname(file), { recursive: true }); // handles files outside BASE_DIR
   const tmp = `${file}.tmp.${process.pid}`;
   fs.writeFileSync(tmp, `${JSON.stringify(obj, null, 2)}\n`, { mode });
   fs.renameSync(tmp, file);

@@ -77,6 +77,10 @@ final class Store: ObservableObject {
     /// the top-of-panel status pill; freshness (`isLive`) decides active vs. offline.
     @Published var autofixStatus: AutofixStatus?
 
+    /// Authors banned for prompt injection (read from the daemon's banned.json). They
+    /// receive no automated reviews, and appear in the "Banned" list above the sessions.
+    @Published var bannedAuthors: [BannedAuthor] = []
+
     /// Whether the Claude-API-error terminal watcher is on: it nudges any agent that
     /// stalls on a transient server error to continue. Persisted; kicks a scan on enable.
     @Published var apiWatchEnabled: Bool {
@@ -181,6 +185,7 @@ final class Store: ObservableObject {
             startProcessPoll()
             startAutofixMonitor()
             startApiErrorWatcher()
+            refreshBanList()
             Task { await fetchMe() }
             Task { await refreshDeviceState() }
             Task { await refreshAllocatorInstall() }
@@ -382,10 +387,24 @@ final class Store: ObservableObject {
             saveReviewRequestedSeen(current)   // first run — baseline, no dispatch
             return
         }
+        let banned = BanList.read()
         for snap in snaps where !prior.contains(snap.number) {
+            // A prompt-injection-banned author gets no automated review from me.
+            if BanList.isBanned(snap.author, in: banned) { continue }
             await dispatchReviewRequest(snap)
         }
-        saveReviewRequestedSeen(current)
+        saveReviewRequestedSeen(current)   // seen (incl. banned) so it won't retro-fire
+    }
+
+    /// Re-read the prompt-injection ban list (cheap local file). Publishes on change.
+    func refreshBanList() {
+        let next = BanList.read()
+        if next != bannedAuthors { bannedAuthors = next }
+    }
+    /// Remove a ban (the UI's un-ban button) and refresh.
+    func unban(_ login: String) {
+        BanList.unban(login)
+        refreshBanList()
     }
 
     /// Spawn the most-comprehensive Review action (Full E2E ×2 + final verdict, leaving
@@ -542,6 +561,7 @@ final class Store: ObservableObject {
             while !Task.isCancelled {
                 await self?.refreshProcessStatuses()
                 await self?.refreshDeviceState()
+                self?.refreshBanList()
                 let ns = UInt64(Store.processPollInterval * 1_000_000_000)
                 try? await Task.sleep(nanoseconds: ns)
             }

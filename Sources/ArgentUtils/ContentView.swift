@@ -63,6 +63,8 @@ struct ContentView: View {
     @State private var activeAction: ActionPanel?
     /// Rows whose last click couldn't be focused or opened — show "tracking lost".
     @State private var lostProcessIDs: Set<UUID> = []
+    /// Whether the prompt-injection ban list (above the sessions) is expanded.
+    @State private var bannedExpanded = true
     @FocusState private var searchFocused: Bool
 
     /// The action cards in the grid that open a wizard instead of selecting a tool.
@@ -77,6 +79,8 @@ struct ContentView: View {
                 // The auto-fix monitor status pill sits at the very top of the main
                 // view (hidden in Settings, and when the feature is toggled off).
                 autofixBanner
+                // The prompt-injection ban list sits right above the agent sessions.
+                if !store.bannedAuthors.isEmpty { bannedList(store.bannedAuthors) }
                 // Ongoing agent sessions and the device pool belong to the main view
                 // only — they are hidden while Settings is open. Each also vanishes
                 // when empty.
@@ -174,6 +178,43 @@ struct ContentView: View {
                   ? "A monitor is watching your open PRs and auto-fixing conflicts & new reviews. Click to manage in Settings."
                   : "Auto-fix is enabled but no monitor is currently running. Click to manage in Settings.")
         }
+    }
+
+    // MARK: prompt-injection ban list
+
+    /// Collapsible list of authors banned for prompt injection — they get no automated
+    /// reviews. Each row links to the captured evidence and can be un-banned.
+    @ViewBuilder
+    private func bannedList(_ bans: [BannedAuthor]) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.16)) { bannedExpanded.toggle() }
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: bannedExpanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 8, weight: .bold)).foregroundStyle(.secondary).frame(width: 9)
+                    Image(systemName: "hand.raised.fill").font(.system(size: 9)).foregroundStyle(.red)
+                    Text("BANNED").font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.secondary).kerning(0.5)
+                    Text("\(bans.count)").font(.system(size: 9).monospacedDigit())
+                        .foregroundStyle(.red)
+                        .padding(.horizontal, 5).padding(.vertical, 1)
+                        .background(Capsule().fill(Color.red.opacity(0.15)))
+                    Text("prompt injection · no auto-reviews")
+                        .font(.system(size: 9)).foregroundStyle(.secondary)
+                    Spacer()
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if bannedExpanded {
+                ForEach(bans) { ban in
+                    BanRow(ban: ban, onUnban: { store.unban(ban.login) })
+                }
+            }
+        }
+        .padding(7)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.red.opacity(0.06)))
     }
 
     // MARK: ongoing agent sessions
@@ -768,6 +809,49 @@ private struct DeviceRow: View {
             Text(text).font(.system(size: 9)).lineLimit(1)
         }
         .foregroundStyle(color)
+    }
+}
+
+// MARK: - Banned-author row
+
+private struct BanRow: View {
+    let ban: BannedAuthor
+    let onUnban: () -> Void
+
+    private var evidenceLine: String {
+        let e = (ban.evidence ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return e.isEmpty ? (ban.reason ?? "prompt injection") : e
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "hand.raised.slash.fill")
+                .font(.system(size: 11, weight: .bold)).foregroundStyle(.white)
+                .frame(width: 22, height: 22)
+                .background(Color.red.opacity(0.7))
+                .clipShape(RoundedRectangle(cornerRadius: 5))
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 4) {
+                    Text("@\(ban.login)").font(.caption).lineLimit(1)
+                    if let pr = ban.pr, !pr.isEmpty {
+                        Text(pr).font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                }
+                Text(evidenceLine).font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(2)
+            }
+            Spacer(minLength: 4)
+            if let dir = ban.evidenceDir, !dir.isEmpty {
+                Button { NSWorkspace.shared.open(URL(fileURLWithPath: dir)) } label: {
+                    Image(systemName: "doc.text.magnifyingglass")
+                }
+                .buttonStyle(.borderless).foregroundStyle(.secondary)
+                .help("Open the captured evidence (gh content\(ban.screenshot == true ? " + screenshot" : ""))")
+            }
+            Button(action: onUnban) { Image(systemName: "xmark.circle.fill") }
+                .buttonStyle(.borderless).foregroundStyle(.secondary).help("Un-ban @\(ban.login)")
+        }
+        .padding(6)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.06)))
     }
 }
 

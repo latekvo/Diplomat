@@ -17,6 +17,14 @@ export const STATE_PATH = path.join(BASE_DIR, 'state.json'); // public snapshot 
 export const LOG_PATH = path.join(BASE_DIR, 'daemon.log');
 export const REPAIRS_DIR = path.join(BASE_DIR, 'repairs');
 
+// Prompt-injection ban list + captured evidence. Lives under the pr-monitor dir
+// (a sibling of device-allocator) because the applet's PR-review monitor reads it
+// to skip banned authors. Overridable with DA_BAN_DIR for tests.
+export const BAN_DIR =
+  process.env.DA_BAN_DIR || path.join(os.homedir(), '.argent', 'pr-monitor');
+export const BANNED_PATH = path.join(BAN_DIR, 'banned.json'); // the applet reads this
+export const INJECTIONS_DIR = path.join(BAN_DIR, 'injections'); // per-incident evidence
+
 // Android SDK lives outside PATH on this machine, so resolve binaries by absolute
 // path from the SDK root (adb itself is usually on PATH via Homebrew).
 export const ANDROID_HOME =

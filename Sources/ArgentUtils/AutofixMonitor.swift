@@ -33,6 +33,7 @@ enum AutofixMonitor {
                 title
                 url
                 isDraft
+                author { login }
                 mergeable
                 reviewDecision
                 headRefName
@@ -58,11 +59,13 @@ enum AutofixMonitor {
                 let title: String?
                 let url: String?
                 let isDraft: Bool?
+                let author: Author?
                 let mergeable: String?
                 let reviewDecision: String?
                 let headRefName: String?
                 let reviewThreads: Threads?
             }
+            struct Author: Decodable { let login: String? }
             struct Threads: Decodable { let nodes: [Thread] }
             struct Thread: Decodable { let isResolved: Bool }
         }
@@ -76,6 +79,7 @@ enum AutofixMonitor {
                 url: n.url ?? "",
                 headRef: n.headRefName ?? "",
                 isDraft: n.isDraft ?? false,
+                author: n.author?.login ?? "",
                 mergeable: n.mergeable ?? "UNKNOWN",
                 reviewDecision: n.reviewDecision ?? "",
                 threadsUnresolved: unresolved)

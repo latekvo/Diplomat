@@ -63,10 +63,10 @@ try {
 
   const list = await rpc('tools/list', {});
   const names = list.tools.map((t) => t.name);
-  for (const n of ['request-device', 'await-device', 'free-device', 'change-device', 'report-device-broken']) {
+  for (const n of ['request-device', 'await-device', 'free-device', 'change-device', 'report-device-broken', 'report-prompt-injection']) {
     assert.ok(names.includes(n), `tool ${n} missing`);
   }
-  pass(`tools/list advertises all 5 tools: ${names.join(', ')}`);
+  pass(`tools/list advertises all 6 tools: ${names.join(', ')}`);
 
   const reqTool = list.tools.find((t) => t.name === 'request-device');
   assert.equal(reqTool._meta?.['anthropic/alwaysLoad'], true, 'request-device must be alwaysLoad');
