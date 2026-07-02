@@ -34,10 +34,11 @@ export const ANDROID_HOME =
 export const EMULATOR_BIN = path.join(ANDROID_HOME, 'emulator', 'emulator');
 export const ADB_BIN = process.env.ADB_PATH || 'adb';
 
-// Tunables (overridable for tests). The 1h idle reclaim is the spec default.
-export const IDLE_LIMIT_MS = Number(process.env.DA_IDLE_LIMIT_MS) || 60 * 60 * 1000;
+// Tunables (overridable for tests). A device with zero screen motion for 15 min is
+// reclaimed; the sweep runs every 2 min so reclamation lands close to the threshold.
+export const IDLE_LIMIT_MS = Number(process.env.DA_IDLE_LIMIT_MS) || 15 * 60 * 1000;
 export const REAP_INTERVAL_MS = Number(process.env.DA_REAP_INTERVAL_MS) || 10 * 1000;
-export const IDLE_INTERVAL_MS = Number(process.env.DA_IDLE_INTERVAL_MS) || 5 * 60 * 1000;
+export const IDLE_INTERVAL_MS = Number(process.env.DA_IDLE_INTERVAL_MS) || 2 * 60 * 1000;
 export const POOL_INTERVAL_MS = Number(process.env.DA_POOL_INTERVAL_MS) || 8 * 1000;
 export const ALLOC_GRACE_MS = Number(process.env.DA_ALLOC_GRACE_MS) || 20 * 1000;
 

@@ -379,6 +379,41 @@ function shutdownAlloc(a) {
   } catch (e) { log('shutdown error', a.key, String(e)); }
 }
 
+// Force-kill a device by key regardless of owner: free any allocation and shut the
+// sim/emulator down. Backs the panel's per-device X button. Also stops a free-but-
+// running (booted, unallocated) device. Idempotent-ish: a device that's already off
+// returns { killed, was: 'already-off' }.
+async function handleKill(p) {
+  return withLock(async () => {
+    // Match by deviceId ONLY when one was given — otherwise `undefined === undefined`
+    // would match the first device whose serial/udid is undefined (a real footgun).
+    const byId = (x) => p.deviceId && (x.handle === p.deviceId || x.udid === p.deviceId || x.serial === p.deviceId);
+    const a = p.key ? allocations.get(p.key) : [...allocations.values()].find(byId);
+    if (a) {
+      allocations.delete(a.key);
+      shutdownAlloc(a);   // force shutdown even if we didn't boot it — the user asked to kill it
+      publish();
+      log('killed (was allocated)', a.key, 'owner', a.agentName || a.ownerPid || '—');
+      return { killed: a.key, was: 'allocated' };
+    }
+    const d = lastPool.find((x) => (p.key && x.key === p.key) || byId(x));
+    if (d) {
+      let was = 'already-off';
+      if (d.state === 'booted') {
+        was = 'running-free';
+        try {
+          if (dev.isApplePlatform(d.platform)) dev.shutdownIOS(d.udid || d.handle);
+          else dev.shutdownAndroid(d.serial || d.handle);
+        } catch (e) { log('kill shutdown error', d.key, String(e)); }
+      }
+      publish();
+      log('killed', d.key, was);
+      return { killed: d.key, was };
+    }
+    const e = new Error(`no such device to kill: ${p.key || p.deviceId}`); e.statusCode = 404; throw e;
+  });
+}
+
 // ---- public snapshot ------------------------------------------------------
 
 async function refreshPool() {
@@ -550,6 +585,7 @@ const server = http.createServer((req, res) => {
         case '/change': result = await handleChange(p); break;
         case '/broken': result = await handleBroken(p); break;
         case '/report-injection': result = await handleReportInjection(p); break;
+        case '/kill': result = await handleKill(p); break;
         default: return send(404, { error: `unknown route ${req.url}` });
       }
       send(200, result);

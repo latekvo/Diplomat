@@ -86,7 +86,8 @@ struct ContentView: View {
                 // when empty.
                 if !store.processes.isEmpty { processList }
                 if let ds = store.deviceState, !ds.devices.isEmpty {
-                    DevicesView(ds: ds, tracked: store.processes)
+                    DevicesView(ds: ds, tracked: store.processes,
+                                onKill: { key in Task { await store.killDevice(key) } })
                 }
                 searchBar
                 if let err = store.error { errorBanner(err) }
@@ -624,15 +625,18 @@ private struct ProcessRow: View {
 struct DevicesView: View {
     let ds: DeviceState
     let tracked: [TrackedProcess]
+    /// Kill a device by key (the per-row X). No-op default so the renderer can omit it.
+    var onKill: (String) -> Void = { _ in }
 
     @State private var inUseExpanded: Bool
     @State private var freeExpanded: Bool
 
     /// The seed params let the headless renderer snapshot either collapse state.
-    init(ds: DeviceState, tracked: [TrackedProcess],
+    init(ds: DeviceState, tracked: [TrackedProcess], onKill: @escaping (String) -> Void = { _ in },
          seedInUseExpanded: Bool = true, seedFreeExpanded: Bool = false) {
         self.ds = ds
         self.tracked = tracked
+        self.onKill = onKill
         _inUseExpanded = State(initialValue: seedInUseExpanded)
         _freeExpanded = State(initialValue: seedFreeExpanded)
     }
@@ -692,7 +696,7 @@ struct DevicesView: View {
             .buttonStyle(.plain)
             if expanded.wrappedValue {
                 ForEach(devices) { dev in
-                    DeviceRow(dev: dev, tracked: tracked)
+                    DeviceRow(dev: dev, tracked: tracked, onKill: onKill)
                 }
             }
         }
@@ -702,10 +706,14 @@ struct DevicesView: View {
 private struct DeviceRow: View {
     let dev: DeviceAllocation
     var tracked: [TrackedProcess] = []
+    var onKill: ((String) -> Void)? = nil
 
     /// Clickable when an owner PID exists to resolve a terminal for. The actual
     /// (possibly-failing) tty lookup runs on click, never during layout.
     private var focusable: Bool { dev.owner?.ownerPid != nil }
+    /// Killable when the device is actually running (allocated or booted-but-free);
+    /// a shut-down "free" device has nothing to kill.
+    private var killable: Bool { onKill != nil && dev.status != "free" }
 
     private var platformIcon: String {
         switch dev.platform {
@@ -764,6 +772,13 @@ private struct DeviceRow: View {
                 .foregroundStyle(statusBadge.color)
                 .padding(.horizontal, 6).padding(.vertical, 2)
                 .background(Capsule().fill(statusBadge.color.opacity(0.14)))
+            if killable {
+                Button { onKill?(dev.key) } label: {
+                    Image(systemName: "xmark.circle.fill").font(.system(size: 12))
+                }
+                .buttonStyle(.borderless).foregroundStyle(.red.opacity(0.7))
+                .help("Kill this device — free it and shut the simulator/emulator down.")
+            }
         }
         .padding(6)
         .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.06)))
@@ -787,8 +802,9 @@ private struct DeviceRow: View {
                               "clock", .secondary)
                     }
                 }
-                if let idle = idleText {
-                    Text(idle).font(.system(size: 9)).foregroundStyle(.secondary)
+                // Idle time, colouring toward red as it nears the 15-min auto-reclaim.
+                if let m = idleMinutes {
+                    Text("· idle \(m)m").font(.system(size: 9)).foregroundStyle(idleColor(m))
                 }
             }
         } else {
@@ -798,9 +814,15 @@ private struct DeviceRow: View {
         }
     }
 
-    private var idleText: String? {
-        guard let ms = dev.idleMs, ms > 60_000 else { return nil }
-        return "· idle \(Int(ms / 60_000))m"
+    /// Whole minutes idle (nil under a minute). The daemon floors idleMs to minutes.
+    private var idleMinutes: Int? {
+        guard let ms = dev.idleMs, ms >= 60_000 else { return nil }
+        return Int(ms / 60_000)
+    }
+    private func idleColor(_ minutes: Int) -> Color {
+        if minutes >= 14 { return .red }        // reclaim at 15m — imminent
+        if minutes >= 10 { return .orange }
+        return .secondary
     }
 
     private func label(_ text: String, _ symbol: String, _ color: Color) -> some View {

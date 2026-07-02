@@ -201,6 +201,13 @@ final class Store: ObservableObject {
         if next != deviceState { deviceState = next }
     }
 
+    /// Force-kill a device (the panel's per-device X): free it + shut it down, then
+    /// refresh so the row updates.
+    func killDevice(_ key: String) async {
+        _ = await Task.detached(priority: .userInitiated) { DeviceAllocator.killDevice(key: key) }.value
+        await refreshDeviceState()
+    }
+
     /// Shell the installer's `--check` (Node startup, ~100-300ms) off-main and
     /// publish the result. Called at startup, when Settings opens, and post-install.
     func refreshAllocatorInstall() async {

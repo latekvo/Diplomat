@@ -164,7 +164,7 @@ enum Render {
                 key: "ios:99AD", platform: "ios", name: "iPhone 16 Pro Max", version: "18.5",
                 apiVersion: "18", handle: "99AD1D87-DA5F", status: "ready",
                 owner: DeviceOwner(agentName: "bluesky e2e", ownerPid: 4242),
-                allocatedAt: ago(12), idleMs: 240_000, brokenReason: nil, repairLog: nil, format: "phone"),
+                allocatedAt: ago(18), idleMs: 840_000, brokenReason: nil, repairLog: nil, format: "phone"),
             DeviceAllocation(
                 key: "android:Pixel_6_API_34", platform: "android", name: "Pixel_6_API_34",
                 version: "14", apiVersion: "34", handle: "emulator-5554", status: "booting",

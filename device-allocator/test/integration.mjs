@@ -280,6 +280,32 @@ async function phase6() {
   } finally { stop(d); await delay(300); }
 }
 
+async function phase7() {
+  console.log('phase 7: kill a device (panel X)');
+  const d = startDaemon({});
+  await waitHealth();
+  try {
+    const a = await call('POST', '/request', { ownerPid: ME, platform: 'ios' });
+    assert.equal(a.outcome, 'allocated');
+    assert.ok((await stateByKey())[a.key].owner, 'allocated before kill');
+    const k = await call('POST', '/kill', { key: a.key });
+    assert.equal(k.killed, a.key);
+    assert.equal(k.was, 'allocated');
+    assert.ok(!(await stateByKey())[a.key].owner, 'freed after kill');
+    pass('kill by key frees + shuts down an allocated device');
+
+    // Killing the now-unallocated device again still succeeds (idempotent-ish).
+    const k2 = await call('POST', '/kill', { key: a.key });
+    assert.equal(k2.killed, a.key);
+    pass('kill on an unallocated device is a success no-op');
+
+    let got404 = false;
+    try { await call('POST', '/kill', { key: 'ios:NOPE' }); } catch (e) { got404 = e.statusCode === 404; }
+    assert.ok(got404, 'unknown device -> 404');
+    pass('kill unknown device -> 404');
+  } finally { stop(d); await delay(300); }
+}
+
 try {
   await phase1();
   await phase2();
@@ -287,6 +313,7 @@ try {
   await phase4();
   await phase5();
   await phase6();
+  await phase7();
   console.log(`\nINTEGRATION OK — ${ok} assertions passed`);
 } catch (e) {
   console.error('\nINTEGRATION FAILED:', e.message);

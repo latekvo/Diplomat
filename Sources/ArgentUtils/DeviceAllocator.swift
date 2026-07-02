@@ -95,6 +95,29 @@ enum DeviceAllocator {
     static var stateURL: URL {
         home.appendingPathComponent(".argent/device-allocator/state.json")
     }
+    static var socketPath: String {
+        home.appendingPathComponent(".argent/device-allocator/daemon.sock").path
+    }
+
+    /// Ask the daemon to force-kill a device by key (free any allocation + shut the
+    /// sim/emulator down). Backs the panel's per-device X. Uses curl over the daemon's
+    /// unix socket. Best-effort; returns whether the request succeeded.
+    @discardableResult
+    static func killDevice(key: String) -> Bool {
+        guard FileManager.default.fileExists(atPath: socketPath) else { return false }
+        let payload = (try? JSONSerialization.data(withJSONObject: ["key": key]))
+            .flatMap { String(data: $0, encoding: .utf8) } ?? "{\"key\":\"\(key)\"}"
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
+        p.arguments = ["-s", "--max-time", "25", "--unix-socket", socketPath,
+                       "-X", "POST", "http://localhost/kill",
+                       "-H", "content-type: application/json", "-d", payload]
+        p.standardOutput = Pipe()
+        p.standardError = Pipe()
+        do { try p.run() } catch { return false }
+        p.waitUntilExit()
+        return p.terminationStatus == 0
+    }
 
     /// True when the package is actually present on disk (so the UI can offer install).
     static var packageAvailable: Bool {
