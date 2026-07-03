@@ -591,18 +591,26 @@ final class Store: ObservableObject {
         }
     }
 
-    /// Re-derive each session's `done` flag off the main thread (one `ps` call),
-    /// then merge the flags back by id so a concurrent add/remove isn't clobbered.
+    /// Re-derive each session's `done` flag off the main thread (one `ps` call), drop
+    /// any whose terminal window/tab was closed, then merge the rest back by id so a
+    /// concurrent add/remove isn't clobbered.
     func refreshProcessStatuses() async {
         let snapshot = processes
         guard !snapshot.isEmpty else { return }
-        let refreshed = await Task.detached(priority: .utility) {
-            ProcessMonitor.refreshed(snapshot)
+        let sweep = await Task.detached(priority: .utility) {
+            ProcessMonitor.sweep(snapshot)
         }.value
         var doneByID: [UUID: Bool] = [:]
-        for p in refreshed { doneByID[p.id] = p.done }
+        for p in sweep.refreshed { doneByID[p.id] = p.done }
         var next = processes
         var changed = false
+        // The terminal was closed → the session is no longer something we can monitor;
+        // remove it from the list instead of leaving a dead "done" row.
+        if !sweep.closedIDs.isEmpty {
+            let before = next.count
+            next.removeAll { sweep.closedIDs.contains($0.id) }
+            if next.count != before { changed = true }
+        }
         for i in next.indices {
             if let d = doneByID[next[i].id], next[i].done != d {
                 next[i].done = d

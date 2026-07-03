@@ -31,16 +31,24 @@ enum TrackTest {
             TrackedProcess(kind: "review", label: "x", terminal: "iterm", windowID: "1",
                            sessionID: "", tty: tty, donePath: done, prURL: nil, createdAt: at)
         }
-        let r = ProcessMonitor.refreshed([
+        let procs = [
             proc(tty: "/dev/ttysZZZ", done: sentinel, at: old),  // sentinel exists
             proc(tty: "/dev/ttysZZZ", done: "", at: old),        // bogus tty, past grace
             proc(tty: "", done: "", at: old),                    // untrackable
             proc(tty: "/dev/ttysZZZ", done: "", at: Date()),     // fresh, within grace
-        ])
+        ]
+        let r = ProcessMonitor.refreshed(procs)
         check("sentinel present → done", r[0].done)
         check("window gone (bogus tty, past grace) → done", r[1].done)
         check("no tty → not done (untrackable)", !r[2].done)
         check("fresh within grace → not done", !r[3].done)
+
+        // 2b. Terminal-closed classification: a gone tty (past grace) is reported for
+        // removal; an untrackable (no tty) or still-in-grace session never is.
+        let sw = ProcessMonitor.sweep(procs)
+        check("terminal closed (tty gone, past grace) → removed", sw.closedIDs.contains(procs[1].id))
+        check("no tty → never auto-removed (untrackable)", !sw.closedIDs.contains(procs[2].id))
+        check("fresh within grace → not yet removed", !sw.closedIDs.contains(procs[3].id))
         try? FileManager.default.removeItem(atPath: sentinel)
 
         // 3. Persistence round-trip (the exact path Store uses for UserDefaults).
@@ -104,6 +112,14 @@ enum TrackTest {
         check("live session auto-completes (sentinel lands)", completed)
 
         closeWindow(term: term, windowID: wid)   // tidy up the throwaway window
+        // Once the window closes, its tty leaves `ps`; the sweep should classify the
+        // session as terminal-closed (→ auto-removed from the list) within a poll or two.
+        var removed = false
+        for _ in 0..<10 {
+            if ProcessMonitor.sweep([p]).closedIDs.contains(p.id) { removed = true; break }
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+        }
+        check("closed window → session flagged for auto-removal", removed)
         try? FileManager.default.removeItem(atPath: done)
     }
 

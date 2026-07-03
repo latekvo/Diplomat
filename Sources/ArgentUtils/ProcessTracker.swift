@@ -126,23 +126,42 @@ enum ProcessMonitor {
         return set
     }
 
-    /// Recompute the `done` flag of each process against a single `ps` snapshot.
-    /// done == the `claude` sentinel exists, or its window/tty has gone away.
-    static func refreshed(_ procs: [TrackedProcess], now: Date = Date()) -> [TrackedProcess] {
-        guard !procs.isEmpty else { return procs }
+    /// The result of one liveness sweep: the same sessions with `done` recomputed,
+    /// plus the ids whose terminal window/tab has been *closed* (their tty is gone)
+    /// — those get dropped from the list entirely rather than lingering as "done".
+    struct Sweep {
+        var refreshed: [TrackedProcess]
+        var closedIDs: Set<UUID>
+    }
+
+    /// Recompute liveness of each process against a single `ps` snapshot.
+    /// A session is `done` when the `claude` sentinel exists OR its terminal is gone;
+    /// it is *terminal-closed* (returned in `closedIDs`) specifically when its tty has
+    /// disappeared past the grace window — i.e. the user closed that window/tab.
+    static func sweep(_ procs: [TrackedProcess], now: Date = Date()) -> Sweep {
+        guard !procs.isEmpty else { return Sweep(refreshed: procs, closedIDs: []) }
         let alive = aliveTTYs()
         let fm = FileManager.default
-        return procs.map { p in
+        var closed = Set<UUID>()
+        let out = procs.map { p -> TrackedProcess in
             var p = p
             let sentinel = !p.donePath.isEmpty && fm.fileExists(atPath: p.donePath)
-            // No tty captured → we can't prove it ended; leave it as-is (running)
+            // No tty captured → we can't prove the terminal closed; leave it running
             // and rely on the sentinel / manual removal.
-            let ttyGone = !p.tty.isEmpty
+            let terminalClosed = !p.tty.isEmpty
                 && !alive.contains(p.shortTTY)
                 && now.timeIntervalSince(p.createdAt) > graceInterval
-            p.done = sentinel || ttyGone
+            if terminalClosed { closed.insert(p.id) }
+            p.done = sentinel || terminalClosed
             return p
         }
+        return Sweep(refreshed: out, closedIDs: closed)
+    }
+
+    /// Back-compat convenience: just the `done`-recomputed sessions (drops the
+    /// terminal-closed classification). Used by the self-test.
+    static func refreshed(_ procs: [TrackedProcess], now: Date = Date()) -> [TrackedProcess] {
+        sweep(procs, now: now).refreshed
     }
 
     /// True when the session's tty is still backed by a live process — i.e. its
