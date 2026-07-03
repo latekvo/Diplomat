@@ -11,6 +11,11 @@ import ArgentUtilsCore
 enum ApiErrorWatcher {
     static let continueMessage = "Go on, there was a Claude API error, continue as normal"
 
+    /// How many non-empty visible lines from the bottom we scan for the error. A tall
+    /// prompt/status box under the error line can push it ~17 lines up, so 30 keeps it in
+    /// view while still staying out of older scrollback.
+    static let scannedTailLines = 30
+
     struct Session { let tty: String; let tail: String }
 
     /// The last visible lines of every session/tab, keyed by tty. Only queries an app
@@ -44,13 +49,13 @@ enum ApiErrorWatcher {
             guard let r = rec.range(of: unitSep) else { return nil }
             let tty = String(rec[rec.startIndex..<r.lowerBound])
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            let tail = lastLines(String(rec[r.upperBound...]), 10)
+            let tail = lastLines(String(rec[r.upperBound...]), scannedTailLines)
             return tty.isEmpty ? nil : Session(tty: tty, tail: tail)
         }
     }
 
-    /// The last `n` non-empty visible lines — enough to catch a stall's error line +
-    /// prompt box, without matching the phrase in older scrollback.
+    /// The last `n` non-empty visible lines — enough to catch a stall's error line even
+    /// under a tall prompt/status box, without matching the phrase in older scrollback.
     private static func lastLines(_ text: String, _ n: Int) -> String {
         let lines = text.split(whereSeparator: \.isNewline).filter {
             !$0.trimmingCharacters(in: .whitespaces).isEmpty
