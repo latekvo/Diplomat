@@ -251,8 +251,14 @@ section("api-error match")
 assert(ApiErrorMatch.looksLikeApiError("⏺ API Error: 529 Overloaded. If it persists, check https://status.claude.com."))
 assert(ApiErrorMatch.looksLikeApiError("API Error: 500 Internal Server Error"))
 assert(ApiErrorMatch.looksLikeApiError("something API error, see status.claude.com for details"))
+// Codeless connectivity failures (network out / DNS / timeout) must also match.
+assert(ApiErrorMatch.looksLikeApiError("⏺ API Error: Unable to connect to API"))
+assert(ApiErrorMatch.looksLikeApiError("API Error: Connection error."))
+assert(ApiErrorMatch.looksLikeApiError("API Error: getaddrinfo ENOTFOUND api.anthropic.com"))
 assert(!ApiErrorMatch.looksLikeApiError("● Running tests… 47 passed"))
 assert(!ApiErrorMatch.looksLikeApiError("git push origin main"))
+// "unable to connect" alone (no "api error") must NOT trip it — e.g. app logs.
+assert(!ApiErrorMatch.looksLikeApiError("curl: unable to connect to localhost:8080"))
 assert(!ApiErrorMatch.looksLikeApiError(""))
 print("api-error match assertions passed")
 
