@@ -297,7 +297,7 @@ final class Store: ObservableObject {
     // MARK: tracked agent sessions
 
     /// Outcome of clicking a tracked process row.
-    enum FocusOutcome { case focused, openedPR, lost }
+    enum FocusOutcome { case focused, dismissed }
 
     /// How often the ongoing-processes list re-checks liveness. Default 8s; override
     /// with `ARGENT_UTILS_PROC_POLL_SECS` (clamped ≥2s) for tuning/testing.
@@ -620,19 +620,17 @@ final class Store: ObservableObject {
         if changed { processes = next }
     }
 
-    /// Click a tracked row: focus its terminal window; if that's not possible open
-    /// the PR; if there's no PR either, report that tracking is lost. The osascript
-    /// focus runs off the main thread so the popover never hitches.
+    /// Click a tracked row: bring its terminal window to the front. If that fails the
+    /// window is gone, so re-run the sweep to dismiss the dead row immediately rather
+    /// than leaving it to linger (or falling back to opening the browser). The
+    /// osascript focus runs off the main thread so the popover never hitches.
     func activate(_ p: TrackedProcess) async -> FocusOutcome {
         let focused = await Task.detached(priority: .userInitiated) {
             ProcessMonitor.focus(p)
         }.value
         if focused { return .focused }
-        if let s = p.prURL, let u = URL(string: s) {
-            NSWorkspace.shared.open(u)
-            return .openedPR
-        }
-        return .lost
+        await refreshProcessStatuses()
+        return .dismissed
     }
 
     // MARK: tool data (delegated to the shared core engine)

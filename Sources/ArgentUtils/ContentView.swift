@@ -67,7 +67,6 @@ struct ContentView: View {
     /// Which action wizard (if any) replaces the tool lists in the results pane.
     @State private var activeAction: ActionPanel?
     /// Rows whose last click couldn't be focused or opened — show "tracking lost".
-    @State private var lostProcessIDs: Set<UUID> = []
     /// Whether the prompt-injection ban list (above the sessions) is expanded.
     @State private var bannedExpanded = true
     /// Whether the activity/audit log is expanded.
@@ -306,12 +305,8 @@ struct ContentView: View {
                 ProcessRow(
                     proc: proc,
                     tint: processTint(proc),
-                    lost: lostProcessIDs.contains(proc.id),
                     onTap: { activate(proc) },
-                    onRemove: {
-                        lostProcessIDs.remove(proc.id)
-                        store.removeProcess(proc.id)
-                    }
+                    onRemove: { store.removeProcess(proc.id) }
                 )
             }
         }
@@ -327,14 +322,10 @@ struct ContentView: View {
         }
     }
 
-    /// Click a tracked row: focus its window → else open its PR → else mark it lost.
+    /// Click a tracked row: focus its window. If focus fails the window is gone and
+    /// the session is dismissed by the store — nothing more to do here.
     private func activate(_ proc: TrackedProcess) {
-        lostProcessIDs.remove(proc.id)
-        Task {
-            if await store.activate(proc) == .lost {
-                lostProcessIDs.insert(proc.id)
-            }
-        }
+        Task { _ = await store.activate(proc) }
     }
 
     // MARK: search (reverse lookup)
@@ -654,7 +645,6 @@ private struct ActionCard: View {
 private struct ProcessRow: View {
     let proc: TrackedProcess
     let tint: Color
-    let lost: Bool
     let onTap: () -> Void
     let onRemove: () -> Void
 
@@ -686,8 +676,7 @@ private struct ProcessRow: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help(lost ? "Tracking lost — the window and PR couldn't be reached."
-                       : "Bring this session's window to the front.")
+            .help("Bring this session's window to the front.")
 
             Button(action: onRemove) {
                 Image(systemName: "xmark.circle.fill")
@@ -703,12 +692,10 @@ private struct ProcessRow: View {
 
     @ViewBuilder
     private var statusLine: some View {
-        // "merged" is the definitive outcome — it outranks both "done" (the local
-        // claude process merely exited) and a transient click-time "tracking lost".
+        // "merged" is the definitive outcome — it outranks "done" (the local claude
+        // process merely exited; the PR may still be open).
         if proc.merged {
             label("merged", "arrow.triangle.merge", .purple)
-        } else if lost {
-            label("tracking lost", "questionmark.circle", .orange)
         } else if proc.done {
             label("done", "checkmark.circle.fill", .green)
         } else {

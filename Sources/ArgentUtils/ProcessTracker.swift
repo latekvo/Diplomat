@@ -134,32 +134,83 @@ enum ProcessMonitor {
         var closedIDs: Set<UUID>
     }
 
-    /// Recompute liveness of each process against a single `ps` snapshot.
-    /// A session is `done` when the `claude` sentinel exists OR its terminal is gone;
-    /// it is *terminal-closed* (returned in `closedIDs`) specifically when its tty has
-    /// disappeared past the grace window — i.e. the user closed that window/tab.
-    static func sweep(_ procs: [TrackedProcess], now: Date = Date()) -> Sweep {
+    /// The open window ids of a terminal app, or nil when we can't tell (osascript
+    /// errored — e.g. automation permission not yet granted). Each agent is spawned
+    /// into its OWN window, so a window id maps 1:1 to a session; membership is the
+    /// authoritative "is this session's terminal still open?" test — the same handle
+    /// `focus` targets, so liveness and focus can never disagree. `is running` is a
+    /// no-launch predicate, so polling never resurrects a quit terminal; a running app
+    /// with no windows returns an empty set (all its sessions are gone).
+    static func openWindowIDs(term: SpawnTerminal) -> Set<String>? {
+        let app = term.appName
+        let script = """
+        if application "\(app)" is running then
+            tell application "\(app)"
+                set _ids to {}
+                repeat with w in windows
+                    set end of _ids to (id of w as string)
+                end repeat
+                set AppleScript's text item delimiters to linefeed
+                return _ids as text
+            end tell
+        end if
+        return ""
+        """
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        proc.arguments = ["-e", script]
+        let out = Pipe()
+        proc.standardOutput = out
+        proc.standardError = Pipe()
+        do { try proc.run() } catch { return nil }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        proc.waitUntilExit()
+        guard proc.terminationStatus == 0 else { return nil } // couldn't query → unknown
+        let s = String(data: data, encoding: .utf8) ?? ""
+        var set = Set<String>()
+        for line in s.split(separator: "\n") {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if !t.isEmpty { set.insert(t) }
+        }
+        return set
+    }
+
+    /// Recompute liveness of each session against the set of open terminal windows.
+    /// A session is `done` when the `claude` sentinel exists OR its window is gone; it
+    /// is *terminal-closed* (returned in `closedIDs`, to be dropped from the list)
+    /// specifically when its bound window is gone past the grace window. When a
+    /// terminal app can't be queried (resolver returns nil) its sessions are left
+    /// alone — we never dismiss on an inconclusive probe. `openWindows` is injectable
+    /// for deterministic tests; it defaults to the live `openWindowIDs`.
+    static func sweep(_ procs: [TrackedProcess], now: Date = Date(),
+                      openWindows: ((SpawnTerminal) -> Set<String>?)? = nil) -> Sweep {
         guard !procs.isEmpty else { return Sweep(refreshed: procs, closedIDs: []) }
-        let alive = aliveTTYs()
+        let resolve = openWindows ?? { openWindowIDs(term: $0) }
         let fm = FileManager.default
+        // One window-id query per distinct terminal app (nil = couldn't determine).
+        var openByTerm: [String: Set<String>?] = [:]
+        for t in Set(procs.map { $0.terminal }) {
+            openByTerm[t] = resolve(SpawnTerminal(rawValue: t) ?? .iterm)
+        }
         var closed = Set<UUID>()
         let out = procs.map { p -> TrackedProcess in
             var p = p
             let sentinel = !p.donePath.isEmpty && fm.fileExists(atPath: p.donePath)
-            // No tty captured → we can't prove the terminal closed; leave it running
-            // and rely on the sentinel / manual removal.
-            let terminalClosed = !p.tty.isEmpty
-                && !alive.contains(p.shortTTY)
-                && now.timeIntervalSince(p.createdAt) > graceInterval
-            if terminalClosed { closed.insert(p.id) }
-            p.done = sentinel || terminalClosed
+            var windowClosed = false
+            if !p.windowID.isEmpty,
+               now.timeIntervalSince(p.createdAt) > graceInterval,
+               let open = openByTerm[p.terminal] ?? nil {
+                windowClosed = !open.contains(p.windowID)
+            }
+            if windowClosed { closed.insert(p.id) }
+            p.done = sentinel || windowClosed
             return p
         }
         return Sweep(refreshed: out, closedIDs: closed)
     }
 
     /// Back-compat convenience: just the `done`-recomputed sessions (drops the
-    /// terminal-closed classification). Used by the self-test.
+    /// terminal-closed classification). Used by the self-test's live cycle.
     static func refreshed(_ procs: [TrackedProcess], now: Date = Date()) -> [TrackedProcess] {
         sweep(procs, now: now).refreshed
     }

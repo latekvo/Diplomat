@@ -23,36 +23,42 @@ enum TrackTest {
         let c2 = AgentSpawner.parseCapture("44||\n")
         check("parseCapture Terminal empty sid", c2 == ("44", "", ""))
 
-        // 2. Status logic: sentinel present, window gone, untrackable, within-grace.
+        // 2. Liveness + terminal-closed logic, driven by an injected open-window set so
+        //    it's deterministic (no live terminal needed). A session is `done` when its
+        //    sentinel exists OR its window is gone; it is *terminal-closed* (removable)
+        //    only when its window is gone past the grace window and the app was
+        //    actually queryable.
         let old = Date().addingTimeInterval(-60)
         let sentinel = NSTemporaryDirectory() + "argent-tracktest-\(UUID().uuidString)"
         try? "0".write(toFile: sentinel, atomically: true, encoding: .utf8)
-        func proc(tty: String, done: String, at: Date) -> TrackedProcess {
-            TrackedProcess(kind: "review", label: "x", terminal: "iterm", windowID: "1",
-                           sessionID: "", tty: tty, donePath: done, prURL: nil, createdAt: at)
+        func proc(wid: String = "OPEN", term: String = "iterm", done: String = "",
+                  at: Date) -> TrackedProcess {
+            TrackedProcess(kind: "review", label: "x", terminal: term, windowID: wid,
+                           sessionID: "", tty: "", donePath: done, prURL: nil, createdAt: at)
         }
-        let procs = [
-            proc(tty: "/dev/ttysZZZ", done: sentinel, at: old),  // sentinel exists
-            proc(tty: "/dev/ttysZZZ", done: "", at: old),        // bogus tty, past grace
-            proc(tty: "", done: "", at: old),                    // untrackable
-            proc(tty: "/dev/ttysZZZ", done: "", at: Date()),     // fresh, within grace
-        ]
-        let r = ProcessMonitor.refreshed(procs)
-        check("sentinel present → done", r[0].done)
-        check("window gone (bogus tty, past grace) → done", r[1].done)
-        check("no tty → not done (untrackable)", !r[2].done)
-        check("fresh within grace → not done", !r[3].done)
-
-        // 2b. Terminal-closed classification: a gone tty (past grace) is reported for
-        // removal; an untrackable (no tty) or still-in-grace session never is.
-        let sw = ProcessMonitor.sweep(procs)
-        check("terminal closed (tty gone, past grace) → removed", sw.closedIDs.contains(procs[1].id))
-        check("no tty → never auto-removed (untrackable)", !sw.closedIDs.contains(procs[2].id))
-        check("fresh within grace → not yet removed", !sw.closedIDs.contains(procs[3].id))
+        // iTerm reports one open window "OPEN"; Terminal is unqueryable (nil).
+        let windows: (SpawnTerminal) -> Set<String>? = { $0 == .iterm ? ["OPEN"] : nil }
+        let a = proc(wid: "OPEN", done: sentinel, at: old)  // sentinel + window open
+        let b = proc(wid: "GONE", at: old)                  // window gone, past grace
+        let c = proc(wid: "OPEN", at: old)                  // window open, running
+        let d = proc(wid: "GONE", at: Date())               // window gone, within grace
+        let e = proc(wid: "GONE", term: "terminal", at: old) // app unqueryable (nil)
+        let sw = ProcessMonitor.sweep([a, b, c, d, e], openWindows: windows)
+        var done: [UUID: Bool] = [:]
+        for p in sw.refreshed { done[p.id] = p.done }
+        check("sentinel + window open → done, not removed",
+              done[a.id] == true && !sw.closedIDs.contains(a.id))
+        check("window gone past grace → done + removed",
+              done[b.id] == true && sw.closedIDs.contains(b.id))
+        check("window open, no sentinel → running, not removed",
+              done[c.id] == false && !sw.closedIDs.contains(c.id))
+        check("window gone within grace → not yet removed", !sw.closedIDs.contains(d.id))
+        check("terminal app unqueryable → never auto-removed (fail-safe)",
+              !sw.closedIDs.contains(e.id))
         try? FileManager.default.removeItem(atPath: sentinel)
 
         // 3. Persistence round-trip (the exact path Store uses for UserDefaults).
-        let sample = proc(tty: "/dev/ttys9", done: "", at: old)
+        let sample = proc(wid: "9", at: old)
         let roundTrip = (try? JSONEncoder().encode([sample]))
             .flatMap { try? JSONDecoder().decode([TrackedProcess].self, from: $0) }
         check("persistence round-trip preserves the record", roundTrip?.first == sample)
