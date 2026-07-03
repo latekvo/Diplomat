@@ -2,7 +2,7 @@ query($owner: String!, $name: String!) {
   repository(owner: $owner, name: $name) {
     pullRequests(states: OPEN, first: 100, orderBy: {field: CREATED_AT, direction: DESC}) {
       nodes {
-        number title url isDraft createdAt reviewDecision
+        number title url isDraft createdAt reviewDecision mergeable
         author { login }
         files(first: 100) { nodes { path } }
         timelineItems(itemTypes: [READY_FOR_REVIEW_EVENT], last: 1) {

@@ -424,24 +424,23 @@ struct ContentView: View {
                             onKill: { key in Task { await store.killDevice(key) } })
             }
             if !store.auditEntries.isEmpty { auditList(store.auditEntries) }
-            if activeAction == nil {
-                Divider().padding(.vertical, 1)
-                listResultsPane
-            }
             Spacer(minLength: 0)
         }
     }
 
-    /// Right column: the reverse-lookup search, the tool grid, and — when an action card
-    /// is selected — its wizard.
+    /// Right column: every interactive surface — the reverse-lookup search, the tool
+    /// grid, and whatever a card opens: an action wizard, or the selected tool's
+    /// info/result list. Both always render here (never in the left list column).
     private var rightColumn: some View {
         VStack(alignment: .leading, spacing: 8) {
             searchBar
             if let err = store.error { errorBanner(err) }
             toolGrid
+            Divider().padding(.vertical, 1)
             if activeAction != nil {
-                Divider().padding(.vertical, 1)
                 wizardPane
+            } else {
+                listResultsPane
             }
             Spacer(minLength: 0)
         }
@@ -545,7 +544,19 @@ struct ContentView: View {
                 } else {
                     VStack(spacing: 4) {
                         ForEach(items) { item in
-                            ResultRow(item: item, tint: tint)
+                            if kind == .myApproved,
+                               let pr = store.prs.first(where: { $0.number == item.id }) {
+                                HStack(spacing: 6) {
+                                    ResultRow(item: item, tint: tint)
+                                    MergeButton(
+                                        conflicts: pr.hasConflicts,
+                                        busy: store.mergingPRs.contains(pr.number),
+                                        onMerge: { Task { await store.mergePR(pr.number) } },
+                                        onResolve: { Task { await store.resolveConflicts(for: pr.number) } })
+                                }
+                            } else {
+                                ResultRow(item: item, tint: tint)
+                            }
                         }
                     }
                 }
@@ -1019,6 +1030,39 @@ private struct BanRow: View {
 }
 
 // MARK: - Result row
+
+/// The per-row action on an Approved PR: green "Merge" normally, or blue "Resolve
+/// conflicts" when the PR conflicts with its base. Merge shows a spinner while in flight.
+private struct MergeButton: View {
+    let conflicts: Bool
+    let busy: Bool
+    let onMerge: () -> Void
+    let onResolve: () -> Void
+
+    var body: some View {
+        Button(action: conflicts ? onResolve : onMerge) {
+            HStack(spacing: 4) {
+                if busy {
+                    ProgressView().controlSize(.mini).tint(.white)
+                } else {
+                    Image(systemName: conflicts ? "arrow.triangle.merge" : "checkmark.circle.fill")
+                        .font(.system(size: 10, weight: .bold))
+                }
+                Text(conflicts ? "Resolve conflicts" : "Merge")
+                    .font(.system(size: 10, weight: .semibold))
+            }
+            .foregroundStyle(.white)
+            .padding(.vertical, 6)
+            .padding(.horizontal, 9)
+            .background(RoundedRectangle(cornerRadius: 6).fill(conflicts ? Color.blue : Color.green))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(busy)
+        .help(conflicts ? "Merge main into this PR and resolve the conflicts."
+                        : "Squash-merge this PR from here.")
+    }
+}
 
 private struct ResultRow: View {
     let item: DisplayItem

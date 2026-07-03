@@ -16,15 +16,20 @@ public struct OpenPR: Identifiable {
     /// GitHub's aggregate review state: "APPROVED" / "CHANGES_REQUESTED" /
     /// "REVIEW_REQUIRED", or nil when no review is required.
     public let reviewDecision: String?
+    /// GitHub's mergeability: "MERGEABLE" / "CONFLICTING" / "UNKNOWN" (still computing).
+    public let mergeable: String
     public let reviewThreads: [ReviewThread]
 
     public var id: Int { number }
     /// Best-effort "has been ready since" timestamp.
     public var readyAt: Date { readyForReviewAt ?? createdAt }
+    /// The PR has merge conflicts with its base branch.
+    public var hasConflicts: Bool { mergeable == "CONFLICTING" }
 
     public init(number: Int, title: String, url: String, isDraft: Bool, author: String,
                 createdAt: Date, readyForReviewAt: Date?, files: [String],
-                reviewDecision: String?, reviewThreads: [ReviewThread]) {
+                reviewDecision: String?, mergeable: String = "UNKNOWN",
+                reviewThreads: [ReviewThread]) {
         self.number = number
         self.title = title
         self.url = url
@@ -34,6 +39,7 @@ public struct OpenPR: Identifiable {
         self.readyForReviewAt = readyForReviewAt
         self.files = files
         self.reviewDecision = reviewDecision
+        self.mergeable = mergeable
         self.reviewThreads = reviewThreads
     }
 
@@ -196,6 +202,7 @@ public enum API {
                 readyForReviewAt: n.timelineItems.nodes.compactMap { $0.createdAt }.first,
                 files: n.files.nodes.map { $0.path },
                 reviewDecision: n.reviewDecision,
+                mergeable: n.mergeable ?? "UNKNOWN",
                 reviewThreads: n.reviewThreads.nodes.map { t in
                     ReviewThread(
                         isResolved: t.isResolved,
@@ -296,6 +303,7 @@ private struct PRResponse: Decodable {
         let isDraft: Bool
         let createdAt: Date
         let reviewDecision: String?
+        let mergeable: String?
         let author: Author?
         let files: Files
         let timelineItems: Timeline

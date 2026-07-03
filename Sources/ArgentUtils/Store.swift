@@ -507,6 +507,50 @@ final class Store: ObservableObject {
         return (cfg?.owner ?? "software-mansion", cfg?.repo ?? "argent")
     }
 
+    // MARK: - Approved-PR actions (merge / resolve conflicts from the panel)
+
+    /// PRs currently being merged (drives the row button's spinner + guards double-taps).
+    @Published var mergingPRs: Set<Int> = []
+
+    /// Merge an approved PR straight from the applet — squash, matching the repo's
+    /// convention — instead of opening the website. Refreshes on success so the PR
+    /// drops off the Approved list; surfaces any error (e.g. checks still pending).
+    func mergePR(_ number: Int) async {
+        guard !mergingPRs.contains(number) else { return }
+        let (owner, repo) = coreRepo
+        mergingPRs.insert(number)
+        defer { mergingPRs.remove(number) }
+        do {
+            _ = try await GH.run(["pr", "merge", "\(number)", "--repo", "\(owner)/\(repo)", "--squash"])
+            AuditLog.log("panel", "merge", "Merged #\(number)")
+            refreshAudit()
+            await refresh()
+        } catch {
+            self.error = "Merge #\(number) failed: "
+                + ((error as? LocalizedError)?.errorDescription ?? "\(error)")
+        }
+    }
+
+    /// Dispatch a Resolve-conflicts agent for one PR (the blue button shown when a PR
+    /// conflicts) — the same single-PR conflict run the wizard spawns.
+    func resolveConflicts(for number: Int) async {
+        let (owner, repo) = coreRepo
+        let url = "https://github.com/\(owner)/\(repo)/pull/\(number)"
+        if processes.contains(where: { $0.prURL == url && !$0.done }) { return } // already running
+        let prompt = ConflictConfig(target: .specific, me: effectiveMe,
+                                    specificPR: String(number)).buildPrompt()
+        let preferred = terminal
+        do {
+            let result = try await Task.detached(priority: .userInitiated) {
+                try AgentSpawner.spawn(prompt, terminal: preferred)
+            }.value
+            track(kind: "conflicts", label: "Resolve · #\(number)", prURL: url, result: result)
+        } catch {
+            self.error = "Resolve #\(number) failed: "
+                + ((error as? LocalizedError)?.errorDescription ?? "\(error)")
+        }
+    }
+
     // Persisted so restarts don't re-dispatch, and the pill's counts survive.
     private var autofixConflictsHandled: Int {
         get { UserDefaults.standard.integer(forKey: Keys.autofixConflicts) }

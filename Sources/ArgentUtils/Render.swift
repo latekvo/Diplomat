@@ -38,6 +38,15 @@ enum Render {
     private static func view(for what: String, store: Store) -> some View {
         let w = what.lowercased()
         switch w {
+        case "approved":
+            // Seed two approved PRs — one clean, one conflicting — and select the
+            // "My Approved PRs" tool, so the per-row Merge / Resolve-conflicts buttons
+            // render in the RIGHT column (task: info tabs live on the right). Also seed
+            // the left-column lists to prove the full split holds.
+            let _ = seedProcessesIfNeeded("procs", store: store)
+            let _ = seedDeviceState(store)
+            let _ = seedApproved(store)
+            ContentView()
         case "settings-live":
             // The whole panel with Settings open AND sessions + devices seeded —
             // proves both are hidden while Settings is shown (regression guard).
@@ -133,6 +142,26 @@ enum Render {
                            createdAt: Date(), done: true, merged: true),
         ]
         return true
+    }
+
+    /// Seed two approved PRs (one conflicting) + select the My-Approved tool so the
+    /// per-row Merge / Resolve-conflicts buttons can be eyeballed.
+    @MainActor
+    private static func seedApproved(_ store: Store) {
+        store.me = "latekvo"
+        store.hasLoaded = true
+        store.selected = .myApproved
+        let now = Date()
+        store.prs = [
+            OpenPR(number: 512, title: "Add streaming simulator server", url: "https://github.com/software-mansion/argent/pull/512",
+                   isDraft: false, author: "latekvo", createdAt: now.addingTimeInterval(-86_400 * 2),
+                   readyForReviewAt: nil, files: ["server.ts"], reviewDecision: "APPROVED",
+                   mergeable: "MERGEABLE", reviewThreads: []),
+            OpenPR(number: 508, title: "Refactor device pool allocation", url: "https://github.com/software-mansion/argent/pull/508",
+                   isDraft: false, author: "latekvo", createdAt: now.addingTimeInterval(-86_400 * 5),
+                   readyForReviewAt: nil, files: ["pool.ts"], reviewDecision: "APPROVED",
+                   mergeable: "CONFLICTING", reviewThreads: []),
+        ]
     }
 
     /// A LIVE auto-fix heartbeat so the top-of-panel status pill renders "active".
