@@ -18,13 +18,16 @@ struct PopoverRoot: View {
     /// first frame isn't zero-height; corrected on the first layout pass.
     @State private var contentHeight: CGFloat = 600
 
-    /// Usable vertical space on the menu-bar screen. `visibleFrame` already excludes
-    /// the menu bar and the Dock, so capping here keeps the popover off both; a small
-    /// margin stops it from kissing either edge. Falls back to a safe default.
-    private var cap: CGFloat {
-        let visible = NSScreen.main?.visibleFrame.height ?? 800
-        return max(320, visible - 12)
-    }
+    /// Usable height of the display the popover currently sits on (`visibleFrame` already
+    /// excludes the menu bar + Dock). Reported by `WindowCenterer` from the window's ACTUAL
+    /// screen — not `NSScreen.main`, which tracks the key-window's screen and can point at
+    /// a taller display than the one the popover opens on, letting the content grow past
+    /// what fits and spill off the bottom.
+    @State private var displayVisibleHeight: CGFloat = NSScreen.main?.visibleFrame.height ?? 800
+
+    /// Cap the popover at the display's usable height, less a small margin so it never
+    /// kisses the menu bar or the Dock. Content beyond this scrolls.
+    private var cap: CGFloat { max(320, displayVisibleHeight - 12) }
 
     var body: some View {
         ScrollView {
@@ -40,7 +43,9 @@ struct PopoverRoot: View {
         .onPreferenceChange(ContentHeightKey.self) { h in
             if h > 1, abs(h - contentHeight) > 0.5 { contentHeight = h }
         }
-        .background(WindowCenterer())
+        .background(WindowCenterer(onDisplayVisibleHeight: { h in
+            if abs(h - displayVisibleHeight) > 0.5 { displayVisibleHeight = h }
+        }))
     }
 }
 
@@ -54,15 +59,24 @@ struct PopoverRoot: View {
 /// fire on every show (become-key / occlusion) and on the content-driven resize — keeping
 /// the vertical anchor below the menu bar and only ever moving the x.
 private struct WindowCenterer: NSViewRepresentable {
+    /// Reports the usable height of the display the popover is on, so `PopoverRoot` caps
+    /// its content to what actually fits there.
+    var onDisplayVisibleHeight: (CGFloat) -> Void = { _ in }
+
     func makeCoordinator() -> Coordinator { Coordinator() }
     func makeNSView(context: Context) -> NSView {
+        context.coordinator.onDisplayVisibleHeight = onDisplayVisibleHeight
         let v = NSView(frame: .zero)
         context.coordinator.attach(to: v)
         return v
     }
-    func updateNSView(_ nsView: NSView, context: Context) { context.coordinator.center() }
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.onDisplayVisibleHeight = onDisplayVisibleHeight
+        context.coordinator.center()
+    }
 
     final class Coordinator {
+        var onDisplayVisibleHeight: (CGFloat) -> Void = { _ in }
         private weak var view: NSView?
         private weak var observed: NSWindow?
         private var tokens: [NSObjectProtocol] = []
@@ -102,8 +116,11 @@ private struct WindowCenterer: NSViewRepresentable {
         func center() {
             // Defer so we run AFTER the system has re-anchored + sized the window on show.
             DispatchQueue.main.async { [weak self] in
-                guard let window = self?.observed ?? self?.view?.window,
+                guard let self,
+                      let window = self.observed ?? self.view?.window,
                       let screen = window.screen ?? NSScreen.main else { return }
+                // Report the display's usable height so the content caps to what fits here.
+                self.onDisplayVisibleHeight(screen.visibleFrame.height)
                 let targetX = PopoverPlacement.centeredX(screen: screen.frame, windowWidth: window.frame.width)
                 if abs(window.frame.origin.x - targetX) > 0.5 {
                     window.setFrameOrigin(NSPoint(x: targetX, y: window.frame.origin.y))
