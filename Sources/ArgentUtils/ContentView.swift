@@ -47,26 +47,71 @@ struct PopoverRoot: View {
 /// Horizontally centers the MenuBarExtra popover on the display it opens on. The system
 /// anchors the window under the status item (the wrench), which for this wide (1120px)
 /// popover lands far off to one side on displays where the wrench isn't near the middle.
-/// We keep the vertical anchor (just below the menu bar) and only recentre the x —
-/// re-asserted on every layout pass so a content-driven resize can't knock it off-centre.
+///
+/// MenuBarExtra reuses one window and re-anchors it on every open WITHOUT re-running the
+/// SwiftUI view body, so a plain update-driven recentre only fires on the first open.
+/// Instead we grab the hosting window once and re-centre it off AppKit notifications that
+/// fire on every show (become-key / occlusion) and on the content-driven resize — keeping
+/// the vertical anchor below the menu bar and only ever moving the x.
 private struct WindowCenterer: NSViewRepresentable {
+    func makeCoordinator() -> Coordinator { Coordinator() }
     func makeNSView(context: Context) -> NSView {
         let v = NSView(frame: .zero)
-        recenter(v)
+        context.coordinator.attach(to: v)
         return v
     }
-    func updateNSView(_ nsView: NSView, context: Context) { recenter(nsView) }
+    func updateNSView(_ nsView: NSView, context: Context) { context.coordinator.center() }
 
-    private func recenter(_ view: NSView) {
-        // Defer to the next runloop turn so the window exists and the system has already
-        // placed + sized it; only then do we know the final width and which screen it's on.
-        DispatchQueue.main.async {
-            guard let window = view.window, let screen = window.screen ?? NSScreen.main else { return }
-            let targetX = PopoverPlacement.centeredX(screen: screen.frame, windowWidth: window.frame.width)
-            if abs(window.frame.origin.x - targetX) > 0.5 {
-                window.setFrameOrigin(NSPoint(x: targetX, y: window.frame.origin.y))
+    final class Coordinator {
+        private weak var view: NSView?
+        private weak var observed: NSWindow?
+        private var tokens: [NSObjectProtocol] = []
+
+        func attach(to view: NSView) {
+            self.view = view
+            hookWindow(retries: 40)
+        }
+
+        /// Wait (a few runloop turns) for the view to land in its window, then observe it.
+        private func hookWindow(retries: Int) {
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                guard let window = self.view?.window else {
+                    if retries > 0 { self.hookWindow(retries: retries - 1) }
+                    return
+                }
+                if self.observed !== window {
+                    self.tokens.forEach(NotificationCenter.default.removeObserver)
+                    self.tokens.removeAll()
+                    self.observed = window
+                    let nc = NotificationCenter.default
+                    for name: NSNotification.Name in [
+                        NSWindow.didBecomeKeyNotification,          // each open (popover takes key)
+                        NSWindow.didChangeOcclusionStateNotification, // each show/hide
+                        NSWindow.didResizeNotification,             // content-height correction
+                    ] {
+                        self.tokens.append(nc.addObserver(forName: name, object: window, queue: .main) {
+                            [weak self] _ in self?.center()
+                        })
+                    }
+                }
+                self.center()
             }
         }
+
+        func center() {
+            // Defer so we run AFTER the system has re-anchored + sized the window on show.
+            DispatchQueue.main.async { [weak self] in
+                guard let window = self?.observed ?? self?.view?.window,
+                      let screen = window.screen ?? NSScreen.main else { return }
+                let targetX = PopoverPlacement.centeredX(screen: screen.frame, windowWidth: window.frame.width)
+                if abs(window.frame.origin.x - targetX) > 0.5 {
+                    window.setFrameOrigin(NSPoint(x: targetX, y: window.frame.origin.y))
+                }
+            }
+        }
+
+        deinit { tokens.forEach(NotificationCenter.default.removeObserver) }
     }
 }
 
