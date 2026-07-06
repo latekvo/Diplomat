@@ -40,6 +40,42 @@ struct PopoverRoot: View {
         .onPreferenceChange(ContentHeightKey.self) { h in
             if h > 1, abs(h - contentHeight) > 0.5 { contentHeight = h }
         }
+        .background(WindowCenterer())
+    }
+}
+
+/// Horizontally centers the MenuBarExtra popover on the display it opens on. The system
+/// anchors the window under the status item (the wrench), which for this wide (1120px)
+/// popover lands far off to one side on displays where the wrench isn't near the middle.
+/// We keep the vertical anchor (just below the menu bar) and only recentre the x —
+/// re-asserted on every layout pass so a content-driven resize can't knock it off-centre.
+private struct WindowCenterer: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let v = NSView(frame: .zero)
+        recenter(v)
+        return v
+    }
+    func updateNSView(_ nsView: NSView, context: Context) { recenter(nsView) }
+
+    private func recenter(_ view: NSView) {
+        // Defer to the next runloop turn so the window exists and the system has already
+        // placed + sized it; only then do we know the final width and which screen it's on.
+        DispatchQueue.main.async {
+            guard let window = view.window, let screen = window.screen ?? NSScreen.main else { return }
+            let targetX = PopoverPlacement.centeredX(screen: screen.frame, windowWidth: window.frame.width)
+            if abs(window.frame.origin.x - targetX) > 0.5 {
+                window.setFrameOrigin(NSPoint(x: targetX, y: window.frame.origin.y))
+            }
+        }
+    }
+}
+
+/// The horizontal placement math, factored out so it's testable without a live window.
+enum PopoverPlacement {
+    /// The x-origin that horizontally centers a `windowWidth`-wide window on `screen`
+    /// (both in global/screen coordinates).
+    static func centeredX(screen: CGRect, windowWidth: CGFloat) -> CGFloat {
+        screen.midX - windowWidth / 2
     }
 }
 
