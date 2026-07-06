@@ -77,8 +77,8 @@ private struct PopoverWindowController: NSViewRepresentable {
     }
 
     final class Coordinator {
-        /// Fade-in / fade-out duration.
-        static let fadeDuration = 0.2
+        /// Fade-in duration. (Fade-out is driven by `PopoverFadeOut` on the window itself.)
+        static let fadeInDuration = 0.1
 
         var onDisplayVisibleHeight: (CGFloat) -> Void = { _ in }
         private weak var view: NSView?
@@ -119,10 +119,6 @@ private struct PopoverWindowController: NSViewRepresentable {
                         nc.addObserver(forName: NSWindow.didResizeNotification, object: window, queue: .main) {
                             [weak self] _ in self?.center()
                         },
-                        // Dismiss (click-outside / escape / toggle): fade out.
-                        nc.addObserver(forName: NSWindow.didResignKeyNotification, object: window, queue: .main) {
-                            [weak self] _ in self?.fadeOut()
-                        },
                     ]
                 }
                 self.onShow()
@@ -146,16 +142,8 @@ private struct PopoverWindowController: NSViewRepresentable {
         private func fadeIn() {
             guard let w = observed, w.alphaValue < 0.99 else { return }
             NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = Coordinator.fadeDuration
+                ctx.duration = Coordinator.fadeInDuration
                 w.animator().alphaValue = 1
-            }
-        }
-
-        private func fadeOut() {
-            guard let w = observed, w.isVisible, w.alphaValue > 0.01 else { return }
-            NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = Coordinator.fadeDuration
-                w.animator().alphaValue = 0
             }
         }
 
