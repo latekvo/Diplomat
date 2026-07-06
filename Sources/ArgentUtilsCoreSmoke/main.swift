@@ -246,6 +246,34 @@ assert(ktv.contains("still APPROVE"), "trusted author ⇒ finalPass APPROVE-verd
 assert(!ktv.contains("Do NOT submit an APPROVE"), "trusted author ⇒ no no-verdict block")
 print("known-theirs (trusted author) review prompt assertions passed")
 
+// ---- Auto-review verdict policy (skill / installer / community suppressors) ----
+section("verdict policy")
+let cleanFiles = ["packages/argent-core/src/foo.ts", "README.md"]
+let skillFiles = ["src/skills/argent-x/SKILL.md"]
+let installerFiles = ["packages/argent-installer/index.ts"]
+let allOn = VerdictPolicy()   // every suppressor on — the default policy
+// Trusted author, nothing sensitive touched → verdict allowed.
+assert(allOn.allowsVerdict(files: cleanFiles, authorAssociation: "MEMBER"))
+assert(allOn.allowsVerdict(files: cleanFiles, authorAssociation: "CONTRIBUTOR"))
+// Each suppressor independently withholds the verdict.
+assert(!allOn.allowsVerdict(files: skillFiles, authorAssociation: "MEMBER"), "skill ⇒ no verdict")
+assert(!allOn.allowsVerdict(files: installerFiles, authorAssociation: "OWNER"), "installer ⇒ no verdict")
+assert(!allOn.allowsVerdict(files: cleanFiles, authorAssociation: "NONE"), "community ⇒ no verdict")
+// The exact association GitHub returns for an outside contributor.
+assert(!allOn.allowsVerdict(files: cleanFiles, authorAssociation: "FIRST_TIME_CONTRIBUTOR"), "outside author ⇒ no verdict")
+// Reasons are reported, in order, and can stack.
+assert(allOn.withholdReasons(files: skillFiles, authorAssociation: "NONE")
+        == ["touches a SKILL", "community PR"], "stacked reasons in order")
+assert(allOn.withholdReasons(files: cleanFiles, authorAssociation: "MEMBER").isEmpty, "no reasons ⇒ verdict")
+// Turning one suppressor off re-enables the verdict for only that class.
+let skillOff = VerdictPolicy(withholdOnSkill: false)
+assert(skillOff.allowsVerdict(files: skillFiles, authorAssociation: "MEMBER"), "skill off ⇒ skill PR gets verdict")
+assert(!skillOff.allowsVerdict(files: installerFiles, authorAssociation: "MEMBER"), "installer still withheld")
+// Everything off ⇒ always a verdict, regardless of files/author.
+let allOff = VerdictPolicy(withholdOnSkill: false, withholdOnInstaller: false, withholdOnCommunity: false)
+assert(allOff.allowsVerdict(files: skillFiles + installerFiles, authorAssociation: "NONE"), "all off ⇒ always verdict")
+print("verdict policy assertions passed")
+
 // ---- Claude API-error detection (terminal auto-continue) ----
 section("api-error match")
 assert(ApiErrorMatch.looksLikeApiError("⏺ API Error: 529 Overloaded. If it persists, check https://status.claude.com."))

@@ -334,3 +334,54 @@ public struct ReviewConfig {
         return out.filter { !$0.isEmpty }.joined(separator: "\n\n")
     }
 }
+
+/// Decides whether an auto-dispatched review of a review-requested PR may carry the
+/// "final pass + verdict" escalation, or must stay comments-only. Pure & data-light so
+/// it's unit-testable and shared verbatim with any front-end. Each flag independently
+/// withholds the verdict for one class of PR; every flag defaults ON, matching the
+/// intended policy: SKILL / installer / community PRs get comments only, all else a verdict.
+public struct VerdictPolicy: Equatable {
+    /// Withhold the verdict when the PR changes a SKILL file.
+    public var withholdOnSkill: Bool
+    /// Withhold the verdict when the PR changes the installer/CLI.
+    public var withholdOnInstaller: Bool
+    /// Withhold the verdict when the PR's author is outside the org (a community PR).
+    public var withholdOnCommunity: Bool
+
+    public init(withholdOnSkill: Bool = true, withholdOnInstaller: Bool = true,
+                withholdOnCommunity: Bool = true) {
+        self.withholdOnSkill = withholdOnSkill
+        self.withholdOnInstaller = withholdOnInstaller
+        self.withholdOnCommunity = withholdOnCommunity
+    }
+
+    /// Author associations trusted enough for an auto-verdict; anything else is "community".
+    /// Matches the long-standing gate (org members, maintainers, established contributors).
+    public static let trustedAssociations: Set<String> =
+        ["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR"]
+
+    public static func isCommunity(_ authorAssociation: String) -> Bool {
+        !trustedAssociations.contains(authorAssociation.uppercased())
+    }
+
+    /// Human-readable reasons the verdict is withheld for this PR under this policy.
+    /// Empty ⇒ the verdict is allowed.
+    public func withholdReasons(files: [String], authorAssociation: String) -> [String] {
+        var reasons: [String] = []
+        if withholdOnSkill, files.contains(where: Filters.isSkillFile) {
+            reasons.append("touches a SKILL")
+        }
+        if withholdOnInstaller, files.contains(where: Filters.isInstallerFile) {
+            reasons.append("touches the installer")
+        }
+        if withholdOnCommunity, VerdictPolicy.isCommunity(authorAssociation) {
+            reasons.append("community PR")
+        }
+        return reasons
+    }
+
+    /// The final-pass verdict is allowed only when no enabled suppressor matches.
+    public func allowsVerdict(files: [String], authorAssociation: String) -> Bool {
+        withholdReasons(files: files, authorAssociation: authorAssociation).isEmpty
+    }
+}

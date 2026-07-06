@@ -365,17 +365,22 @@ enum Dump {
             // Review-request feed: PRs where someone asked for MY review, with the
             // owe-a-review decision (request newer than my last review).
             let reqs = try await AutofixMonitor.fetchReviewRequests(owner: owner, repo: repo, me: me)
+            let policy = VerdictPolicy()   // default (all suppressors on) for the dump
             print("\n== review-requested-of-me: \(reqs.count) open PR(s) ==")
             for r in reqs {
+                let reasons = policy.withholdReasons(files: r.files, authorAssociation: r.authorAssociation)
+                let decision = reasons.isEmpty ? "VERDICT" : "comments (\(reasons.joined(separator: ", ")))"
                 print("  #\(r.number)  owe=\(r.oweReview ? "YES → dispatch" : "no")  "
-                    + "author=@\(r.author)[\(r.authorAssociation)]→\(r.verdictAllowed ? "VERDICT" : "comments")  "
+                    + "author=@\(r.author)[\(r.authorAssociation)]→\(decision)  files=\(r.files.count)  "
                     + "reqAt=\(r.requestedAt ?? "-")  myReview=\(r.myLastReviewAt ?? "-")  \(r.title.prefix(40))")
             }
             let sampleReq = reqs.first
             let sample = sampleReq?.number ?? 999
-            let sampleVerdict = sampleReq?.verdictAllowed ?? false
+            let sampleVerdict = sampleReq.map {
+                policy.allowsVerdict(files: $0.files, authorAssociation: $0.authorAssociation)
+            } ?? false
             print("\n----- COMPREHENSIVE REVIEW prompt (review-requested #\(sample), max · leave comments · "
-                + "\(sampleVerdict ? "trusted author → VERDICT" : "untrusted author → NO verdict")) -----")
+                + "\(sampleVerdict ? "→ VERDICT" : "→ NO verdict")) -----")
             print(ReviewConfig(depth: "max", target: .specific, me: me,
                                markReady: false, leaveReviews: true, replyToReviews: false,
                                specificPR: String(sample), finalPass: sampleVerdict,

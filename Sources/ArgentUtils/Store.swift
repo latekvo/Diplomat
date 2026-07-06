@@ -85,6 +85,27 @@ final class Store: ObservableObject {
     /// unified activity feed shown in the panel.
     @Published var auditEntries: [AuditEntry] = []
 
+    /// Auto-review verdict policy: each flag independently withholds the "final pass +
+    /// verdict" escalation for one class of review-requested PR (SKILL / installer /
+    /// community). All default ON. Persisted; no poll kick needed (only affects the next
+    /// dispatch). Combined into a `VerdictPolicy` via `verdictPolicy`.
+    @Published var verdictWithholdSkill: Bool {
+        didSet { UserDefaults.standard.set(verdictWithholdSkill, forKey: Keys.verdictWithholdSkill) }
+    }
+    @Published var verdictWithholdInstaller: Bool {
+        didSet { UserDefaults.standard.set(verdictWithholdInstaller, forKey: Keys.verdictWithholdInstaller) }
+    }
+    @Published var verdictWithholdCommunity: Bool {
+        didSet { UserDefaults.standard.set(verdictWithholdCommunity, forKey: Keys.verdictWithholdCommunity) }
+    }
+
+    /// The verdict policy assembled from the three settings toggles.
+    var verdictPolicy: VerdictPolicy {
+        VerdictPolicy(withholdOnSkill: verdictWithholdSkill,
+                      withholdOnInstaller: verdictWithholdInstaller,
+                      withholdOnCommunity: verdictWithholdCommunity)
+    }
+
     /// Whether the Claude-API-error terminal watcher is on: it nudges any agent that
     /// stalls on a transient server error to continue. Persisted; kicks a scan on enable.
     @Published var apiWatchEnabled: Bool {
@@ -114,6 +135,9 @@ final class Store: ObservableObject {
         static let reviewRequestsEnabled = "reviewRequestsEnabled"
         static let reviewReqDispatched = "reviewReqDispatched"
         static let reviewRequestsHandled = "reviewRequestsHandled"
+        static let verdictWithholdSkill = "verdictWithholdSkill"
+        static let verdictWithholdInstaller = "verdictWithholdInstaller"
+        static let verdictWithholdCommunity = "verdictWithholdCommunity"
         static let apiWatchEnabled = "apiWatchEnabled"
         static let apiWatchContinues = "apiWatchContinues"
     }
@@ -164,6 +188,9 @@ final class Store: ObservableObject {
         // so defaulting on can't falsely claim "active" when no monitor is running.
         prAutofixEnabled = defaults.object(forKey: Keys.prAutofixEnabled) as? Bool ?? true
         reviewRequestsEnabled = defaults.object(forKey: Keys.reviewRequestsEnabled) as? Bool ?? true
+        verdictWithholdSkill = defaults.object(forKey: Keys.verdictWithholdSkill) as? Bool ?? true
+        verdictWithholdInstaller = defaults.object(forKey: Keys.verdictWithholdInstaller) as? Bool ?? true
+        verdictWithholdCommunity = defaults.object(forKey: Keys.verdictWithholdCommunity) as? Bool ?? true
         apiWatchEnabled = defaults.object(forKey: Keys.apiWatchEnabled) as? Bool ?? true
         processes = Store.loadProcesses()
         if hiddenTools.contains(selected.rawValue),
@@ -434,9 +461,11 @@ final class Store: ObservableObject {
     /// Spawn the most-comprehensive Review action (Full E2E ×2, formal per-line comments,
     /// no auto-verdict) on a PR someone asked me to review — hands off the branch.
     private func dispatchReviewRequest(_ r: AutofixMonitor.ReviewRequest) async {
-        // Trusted authors (member/maintainer/established contributor) get the final
-        // APPROVE/changes-requested verdict; unknown/first-time authors get comments only.
-        let verdict = r.verdictAllowed
+        // The "final pass + verdict" escalation is allowed unless a configured suppressor
+        // matches (SKILL / installer / community PR). Otherwise the review is comments-only
+        // and the final call stays with me.
+        let reasons = verdictPolicy.withholdReasons(files: r.files, authorAssociation: r.authorAssociation)
+        let verdict = reasons.isEmpty
         let prompt = ReviewConfig(depth: "max", target: .specific, me: effectiveMe,
                                   markReady: false, leaveReviews: true, replyToReviews: false,
                                   specificPR: String(r.number), finalPass: verdict,
@@ -446,7 +475,7 @@ final class Store: ObservableObject {
             let result = try await Task.detached(priority: .userInitiated) {
                 try AgentSpawner.spawn(prompt, terminal: preferred)
             }.value
-            let tag = verdict ? " +verdict" : ""
+            let tag = verdict ? " +verdict" : " −verdict (\(reasons.joined(separator: ", ")))"
             track(kind: "review", label: "Auto · Review-req · #\(r.number) (@\(r.author))\(tag)",
                   prURL: r.url, result: result, source: "auto")
             reviewRequestsHandled += 1

@@ -43,12 +43,36 @@ struct SettingsView: View {
             .toggleStyle(.switch)
             .controlSize(.small)
             Text("When someone requests my review on a PR, spawns the most thorough review "
-                 + "(Full E2E ×2, leaving inline comments) — read-only, never touches their branch. "
-                 + "It won't approve or request changes; that final call stays with you."
+                 + "(Full E2E ×2, leaving inline comments) — read-only, never touches their branch."
                  + (store.reviewRequestsHandled > 0 ? "  Reviewed \(store.reviewRequestsHandled) so far." : ""))
                 .font(.caption2).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+
+            if store.reviewRequestsEnabled { verdictPolicyBlock }
         }
+    }
+
+    /// The three configurable suppressors for the auto-review's "final pass + verdict".
+    /// A PR matching any enabled row gets comments only; otherwise it gets a verdict.
+    private var verdictPolicyBlock: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("WITHHOLD THE FINAL VERDICT WHEN THE PR…")
+                .font(.system(size: 9, weight: .bold)).foregroundStyle(.secondary).kerning(0.5)
+                .padding(.top, 4)
+            verdictToggle("…touches a SKILL", isOn: $store.verdictWithholdSkill)
+            verdictToggle("…touches the installer", isOn: $store.verdictWithholdInstaller)
+            verdictToggle("…is a community PR (author outside the org)", isOn: $store.verdictWithholdCommunity)
+            Text("Off for all three ⇒ every auto-review may approve or request changes. "
+                 + "On ⇒ that class gets inline comments only; the final call stays with you.")
+                .font(.caption2).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.leading, 10)
+    }
+
+    private func verdictToggle(_ label: String, isOn: Binding<Bool>) -> some View {
+        Toggle(isOn: isOn) { Text(label).font(.caption) }
+            .toggleStyle(.switch).controlSize(.mini)
     }
 
     @ViewBuilder
