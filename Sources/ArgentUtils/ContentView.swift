@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import ArgentUtilsCore
+import ObjectiveC
 
 /// Sizes the menu-bar popover to its content, capped at the screen's safe area so it
 /// never spills past the menu bar (top) or the Dock — the "bottom bar" (bottom). The
@@ -101,10 +102,11 @@ private struct PopoverWindowController: NSViewRepresentable {
                 if self.observed !== window {
                     self.tokens.forEach(NotificationCenter.default.removeObserver)
                     self.observed = window
-                    // Take over the show/hide look ourselves and start transparent so the
-                    // first appearance fades in rather than popping.
+                    // Own the show/hide look: start transparent so the first appearance fades
+                    // in, and delay the window's own instant hide so we can fade it OUT.
                     window.animationBehavior = .none
                     window.alphaValue = 0
+                    PopoverFadeOut.enable(on: window)
                     let nc = NotificationCenter.default
                     self.tokens = [
                         // Each open: the popover takes key focus.
@@ -174,6 +176,67 @@ enum PopoverPlacement {
     /// (both in global/screen coordinates).
     static func centeredX(screen: CGRect, windowWidth: CGFloat) -> CGFloat {
         screen.midX - windowWidth / 2
+    }
+}
+
+/// Gives the MenuBarExtra popover a fade-OUT. The system hides the window via `orderOut:`,
+/// instantly, so there's nothing to animate. We swap that method's IMPLEMENTATION (method
+/// swizzle — crucially NOT a class change, so the window's KVO isa stays intact and it can't
+/// crash the way an `object_setClass` reclass does) with one that first animates `alphaValue`
+/// to 0, THEN calls the original `orderOut:`. A per-window flag means only our popover fades;
+/// any other window sharing the class hides normally.
+enum PopoverFadeOut {
+    static let duration: TimeInterval = 0.1
+    /// `NSWindowOrderingMode.out` — the hide case of `orderWindow:relativeTo:`.
+    private static let orderOut = 0
+    private static var swizzled = Set<ObjectIdentifier>()
+    private static var isPopoverKey: UInt8 = 0
+    private static var isFadingKey: UInt8 = 0
+
+    static func enable(on window: NSWindow) {
+        // Tag this exact window; the swizzled method only fades tagged windows.
+        objc_setAssociatedObject(window, &isPopoverKey, true, .OBJC_ASSOCIATION_RETAIN)
+
+        guard let cls: AnyClass = object_getClass(window) else { return }
+        let id = ObjectIdentifier(cls)
+        guard !swizzled.contains(id) else { return }   // one swap per class is enough
+        swizzled.insert(id)
+
+        // MenuBarExtra shows/hides the popover through `orderWindow:relativeTo:` (never
+        // `orderOut:`). `.above` (1) is the show, `.out` (0) the hide — and at hide time the
+        // window is still visible at full alpha, so we fade it to 0 there, then let it order
+        // out. Method swizzle (no `object_setClass`), so the window's KVO isa is untouched.
+        let sel = #selector(NSWindow.order(_:relativeTo:))
+        guard let method = class_getInstanceMethod(cls, sel),
+              let types = method_getTypeEncoding(method) else { return }
+        let originalIMP = method_getImplementation(method)
+        typealias OrderWindow = @convention(c) (NSObject, Selector, Int, Int) -> Void
+        let callOriginal: (NSWindow, Int, Int) -> Void = { win, place, relativeTo in
+            unsafeBitCast(originalIMP, to: OrderWindow.self)(win, sel, place, relativeTo)
+        }
+
+        let block: @convention(block) (NSWindow, Int, Int) -> Void = { win, place, relativeTo in
+            let ours = (objc_getAssociatedObject(win, &isPopoverKey) as? Bool) ?? false
+            let fading = (objc_getAssociatedObject(win, &isFadingKey) as? Bool) ?? false
+            // Only intercept OUR popover's hide, once, while it's actually visible.
+            guard place == orderOut, ours, !fading, win.isVisible, win.alphaValue > 0.01 else {
+                callOriginal(win, place, relativeTo)
+                return
+            }
+            objc_setAssociatedObject(win, &isFadingKey, true, .OBJC_ASSOCIATION_RETAIN)
+            NSAnimationContext.runAnimationGroup({ ctx in
+                ctx.duration = duration
+                win.animator().alphaValue = 0
+            }, completionHandler: {
+                objc_setAssociatedObject(win, &isFadingKey, false, .OBJC_ASSOCIATION_RETAIN)
+                callOriginal(win, place, relativeTo)   // now actually order it out
+            })
+        }
+        let newIMP = imp_implementationWithBlock(block)
+        // Add an override on THIS class only; if it already defines the method, replace it.
+        if !class_addMethod(cls, sel, newIMP, types) {
+            method_setImplementation(class_getInstanceMethod(cls, sel)!, newIMP)
+        }
     }
 }
 
