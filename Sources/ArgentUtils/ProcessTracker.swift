@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import ArgentUtilsCore
 
 // Tracking for the detached `claude` sessions the Review / Resolve-conflicts
 // wizards spawn. A spawn opens a fully detached terminal window, so there is no
@@ -43,11 +44,16 @@ struct TrackedProcess: Identifiable, Codable, Equatable {
     /// (which only means the local `claude` process exited). Persisted as a cache;
     /// the next refresh corrects it. Always false for sessions with no PR.
     var merged: Bool
+    /// Recomputed by the poller from the session's terminal buffer: true when the agent
+    /// has finished its turn and is idling at the prompt (no "esc to interrupt" hint on
+    /// the live status bar) rather than actively working. Meaningful only while `!done`;
+    /// persisted only as a cache, the next poll corrects it.
+    var awaitingInput: Bool
 
     init(id: UUID = UUID(), kind: String, label: String, terminal: String,
          windowID: String, sessionID: String, tty: String, donePath: String,
          prURL: String?, createdAt: Date = Date(), done: Bool = false,
-         merged: Bool = false) {
+         merged: Bool = false, awaitingInput: Bool = false) {
         self.id = id
         self.kind = kind
         self.label = label
@@ -60,6 +66,7 @@ struct TrackedProcess: Identifiable, Codable, Equatable {
         self.createdAt = createdAt
         self.done = done
         self.merged = merged
+        self.awaitingInput = awaitingInput
     }
 
     /// Tolerant decode: the recomputed cache flags (`done`, `merged`) may be absent
@@ -79,6 +86,7 @@ struct TrackedProcess: Identifiable, Codable, Equatable {
         createdAt = try c.decode(Date.self, forKey: .createdAt)
         done = try c.decodeIfPresent(Bool.self, forKey: .done) ?? false
         merged = try c.decodeIfPresent(Bool.self, forKey: .merged) ?? false
+        awaitingInput = try c.decodeIfPresent(Bool.self, forKey: .awaitingInput) ?? false
     }
 
     /// The tty as `ps` reports it (no `/dev/` prefix), or "" when untracked.
@@ -182,8 +190,12 @@ enum ProcessMonitor {
     /// terminal app can't be queried (resolver returns nil) its sessions are left
     /// alone — we never dismiss on an inconclusive probe. `openWindows` is injectable
     /// for deterministic tests; it defaults to the live `openWindowIDs`.
+    /// `sessionTails` (tty → the session's visible terminal buffer) drives the
+    /// running-vs-awaiting-input classification of live sessions; pass `nil` to skip it
+    /// (leaves `awaitingInput` untouched). Injectable for deterministic tests.
     static func sweep(_ procs: [TrackedProcess], now: Date = Date(),
-                      openWindows: ((SpawnTerminal) -> Set<String>?)? = nil) -> Sweep {
+                      openWindows: ((SpawnTerminal) -> Set<String>?)? = nil,
+                      sessionTails: [String: String]? = nil) -> Sweep {
         guard !procs.isEmpty else { return Sweep(refreshed: procs, closedIDs: []) }
         let resolve = openWindows ?? { openWindowIDs(term: $0) }
         let fm = FileManager.default
@@ -204,6 +216,18 @@ enum ProcessMonitor {
             }
             if windowClosed { closed.insert(p.id) }
             p.done = sentinel || windowClosed
+            // A still-live session is "awaiting input" when its terminal shows the CLI back
+            // at the prompt (no interrupt hint). Only assert it when we actually captured
+            // that session's buffer — absent evidence, leave it reading as running.
+            if let tails = sessionTails {
+                if p.done {
+                    p.awaitingInput = false
+                } else if let tail = tails[p.tty] {
+                    p.awaitingInput = !AgentActivity.looksBusy(tail)
+                } else {
+                    p.awaitingInput = false
+                }
+            }
             return p
         }
         return Sweep(refreshed: out, closedIDs: closed)

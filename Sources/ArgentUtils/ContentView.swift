@@ -901,11 +901,15 @@ private struct ProcessRow: View {
     @ViewBuilder
     private var statusLine: some View {
         // "merged" is the definitive outcome — it outranks "done" (the local claude
-        // process merely exited; the PR may still be open).
+        // process merely exited; the PR may still be open). A live session that has
+        // finished its turn and is idling at the prompt reads "awaiting input" (amber,
+        // it needs you) rather than "running".
         if proc.merged {
             label("merged", "arrow.triangle.merge", .purple)
         } else if proc.done {
             label("done", "checkmark.circle.fill", .green)
+        } else if proc.awaitingInput {
+            label("awaiting input", "ellipsis.circle.fill", .orange)
         } else {
             label("running", "circle.fill", .blue)
         }

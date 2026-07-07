@@ -1,4 +1,5 @@
 import Foundation
+import ArgentUtilsCore
 
 /// Headless end-to-end self-test for the agent-session tracking path, driven by
 /// `ARGENT_UTILS_TRACK_TEST=1`. It exercises the *real* code the applet uses —
@@ -56,6 +57,38 @@ enum TrackTest {
         check("terminal app unqueryable → never auto-removed (fail-safe)",
               !sw.closedIDs.contains(e.id))
         try? FileManager.default.removeItem(atPath: sentinel)
+
+        // 2c. Activity classification through the real sweep: a live session's terminal
+        //     buffer decides running vs awaiting-input, a done session never reads
+        //     awaiting-input (done-gating wins over an idle buffer), and a session whose
+        //     buffer we couldn't capture conservatively stays "running".
+        let busyBuf = "✻ Reticulating…\n──\n❯\n──\n  ⏵⏵ bypass permissions on · esc to interrupt · ← for agents"
+        let idleBuf = "✻ Cooked for 3s\n──\n❯ mark threads resolved\n──\n  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents"
+        func liveProc(wid: String, tty: String) -> TrackedProcess {
+            TrackedProcess(kind: "review", label: "x", terminal: "iterm", windowID: wid,
+                           sessionID: "", tty: tty, donePath: "", prURL: nil, createdAt: old)
+        }
+        let pBusy = liveProc(wid: "OPEN", tty: "/dev/ttysA")     // alive, working
+        let pIdle = liveProc(wid: "OPEN", tty: "/dev/ttysB")     // alive, at the prompt
+        let pGone = liveProc(wid: "GONE", tty: "/dev/ttysB")     // window closed → done, idle buffer ignored
+        let pNoTail = liveProc(wid: "OPEN", tty: "/dev/ttysZ")   // alive but buffer not captured
+        let actTails = ["/dev/ttysA": busyBuf, "/dev/ttysB": idleBuf]
+        let actSweep = ProcessMonitor.sweep([pBusy, pIdle, pGone, pNoTail],
+                                            openWindows: windows, sessionTails: actTails)
+        var awaiting: [UUID: Bool] = [:]
+        for p in actSweep.refreshed { awaiting[p.id] = p.awaitingInput }
+        check("busy buffer → running (awaitingInput false)", awaiting[pBusy.id] == false)
+        check("idle buffer → awaiting input (awaitingInput true)", awaiting[pIdle.id] == true)
+        check("done session never reads awaiting-input", awaiting[pGone.id] == false)
+        check("no captured buffer → stays running (conservative)", awaiting[pNoTail.id] == false)
+
+        // 2d. Live classification (informational): the REAL production dump + predicate
+        //     against whatever terminals are open right now, for eyeballing.
+        let liveSessions = ApiErrorWatcher.dumpSessions()
+            .filter { $0.tail.lowercased().contains("bypass permissions") }
+        let liveBusy = liveSessions.filter { AgentActivity.looksBusy($0.tail) }.count
+        print("live: \(liveSessions.count) claude session(s) — \(liveBusy) running, "
+            + "\(liveSessions.count - liveBusy) awaiting input")
 
         // 3. Persistence round-trip (the exact path Store uses for UserDefaults).
         let sample = proc(wid: "9", at: old)

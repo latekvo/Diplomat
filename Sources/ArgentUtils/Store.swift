@@ -735,10 +735,14 @@ final class Store: ObservableObject {
         let snapshot = processes
         guard !snapshot.isEmpty else { return }
         let sweep = await Task.detached(priority: .utility) {
-            ProcessMonitor.sweep(snapshot)
+            // One osascript dump of every session's visible buffer (tty → tail) lets the
+            // sweep tell a working agent from one idling at the prompt (awaiting input).
+            let tails = Dictionary(ApiErrorWatcher.dumpSessions().map { ($0.tty, $0.tail) },
+                                   uniquingKeysWith: { first, _ in first })
+            return ProcessMonitor.sweep(snapshot, sessionTails: tails)
         }.value
-        var doneByID: [UUID: Bool] = [:]
-        for p in sweep.refreshed { doneByID[p.id] = p.done }
+        var stateByID: [UUID: (done: Bool, awaiting: Bool)] = [:]
+        for p in sweep.refreshed { stateByID[p.id] = (p.done, p.awaitingInput) }
         var next = processes
         var changed = false
         // The terminal was closed → the session is no longer something we can monitor;
@@ -749,10 +753,9 @@ final class Store: ObservableObject {
             if next.count != before { changed = true }
         }
         for i in next.indices {
-            if let d = doneByID[next[i].id], next[i].done != d {
-                next[i].done = d
-                changed = true
-            }
+            guard let s = stateByID[next[i].id] else { continue }
+            if next[i].done != s.done { next[i].done = s.done; changed = true }
+            if next[i].awaitingInput != s.awaiting { next[i].awaitingInput = s.awaiting; changed = true }
         }
         if changed { processes = next }
     }

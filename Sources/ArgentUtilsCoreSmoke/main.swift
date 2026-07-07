@@ -302,6 +302,44 @@ assert(ReviewReconcile.decide(prior: a1, stamp: "newer-stamp", inFlight: false, 
         == .dispatch(attemptNumber: 1), "newer request ⇒ fresh dispatch")
 print("review reconcile assertions passed")
 
+// ---- Agent activity (running vs awaiting input) ----
+section("agent activity")
+// A working session: the CLI's live status bar carries the interrupt hint (real capture).
+let busyTail = """
+✻ Reticulating… (2m 54s · ↓ 10.6k tokens)
+                                                       55301 tokens
+──────────────────────────────────────────────────────────────────
+❯
+──────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ← for agents · ↓ to manage
+"""
+assert(AgentActivity.looksBusy(busyTail), "interrupt hint on the status bar ⇒ busy")
+// A finished turn idling at the prompt: same layout, but no interrupt hint (real capture).
+let idleTail = """
+✻ Sautéed for 22m 22s
+                                             new task? /clear to save 240.5k tokens
+──────────────────────────────────────────────────────────────────
+❯ Reply to hubgan summarizing the reset-semantics issues
+──────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
+"""
+assert(!AgentActivity.looksBusy(idleTail), "no interrupt hint ⇒ awaiting input")
+// Scrollback trap: an earlier turn's interrupt hint sits high in the buffer, but the
+// live bottom is the idle prompt — scanning only the tail must NOT read busy.
+let staleTail = """
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ← for agents
+⏺ Done. Ran the tests — 47 passed.
+✻ Baked for 4m 39s
+                                                                  99% context left
+──────────────────────────────────────────────────────────────────
+❯
+──────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
+"""
+assert(!AgentActivity.looksBusy(staleTail), "stale hint in scrollback must not read busy")
+assert(!AgentActivity.looksBusy(""), "empty buffer ⇒ not busy")
+print("agent activity assertions passed")
+
 // ---- Claude API-error detection (terminal auto-continue) ----
 section("api-error match")
 assert(ApiErrorMatch.looksLikeApiError("⏺ API Error: 529 Overloaded. If it persists, check https://status.claude.com."))
