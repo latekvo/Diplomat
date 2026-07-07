@@ -336,12 +336,25 @@ enum Dump {
             for s in snaps.sorted(by: { $0.number > $1.number }) {
                 print("  #\(s.number)  \(s.mergeable)  "
                     + "decision=\(s.reviewDecision.isEmpty ? "-" : s.reviewDecision)  "
-                    + "unresolved=\(s.threadsUnresolved)  \(s.isDraft ? "draft" : "ready")")
+                    + "unresolved=\(s.threadsUnresolved) iOwe=\(s.threadsIOwe)  \(s.isDraft ? "draft" : "ready")")
             }
 
             // First-run: baseline seeds, nothing dispatched.
             let (baseEvents, fps) = AutofixDiff.compute(prior: [:], now: snaps)
             print("\nfirst-run diff: \(baseEvents.count) events (expect 0 — baseline seeds \(fps.count) PRs)")
+
+            // Level-triggered reconcile: any of my PRs already carrying unresolved review
+            // threads on first sight — exactly what the edge-trigger baselines and misses —
+            // is an unaddressed review the reconciler will (re)dispatch a fix agent for.
+            let owed = snaps.filter { $0.threadsIOwe > 0 }
+            print("my PRs with unaddressed reviews I owe (reconcile → dispatch): \(owed.count)")
+            for s in owed {
+                let d = ReviewReconcile.decide(prior: nil, stamp: "unresolved",
+                                               inFlight: false, banned: false, now: Date())
+                let act: String
+                if case .dispatch(let n) = d { act = "dispatch#\(n)" } else { act = "\(d)" }
+                print("  #\(s.number)  iOwe=\(s.threadsIOwe) (of \(s.threadsUnresolved) unresolved)  → \(act)")
+            }
 
             // Detection proof: against that baseline, flip the first PR to CONFLICTING.
             if let s = snaps.first {

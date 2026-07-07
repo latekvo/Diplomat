@@ -111,6 +111,26 @@ enum TrackTest {
               pn("https://github.com/software-mansion/argent/pull/42/files") == 42)
         check("prNumber nil when no PR url", pn(nil) == nil)
 
+        // 4c. Snapshot parse computes "threads I owe" (the offline-review reconcile signal):
+        //     unresolved + I-can-resolve + last comment isn't mine. Threads I already
+        //     replied to (last comment == me), resolved threads, and ones I can't resolve
+        //     are excluded — so we don't auto-fix a PR whose ball is with the reviewer.
+        let parseJSON = """
+        {"data":{"search":{"nodes":[
+          {"number":100,"title":"t","url":"u/100","isDraft":false,"author":{"login":"me"},
+           "mergeable":"MERGEABLE","reviewDecision":"CHANGES_REQUESTED","headRefName":"b",
+           "reviewThreads":{"nodes":[
+             {"isResolved":false,"viewerCanResolve":true,"comments":{"nodes":[{"author":{"login":"reviewer"}}]}},
+             {"isResolved":false,"viewerCanResolve":true,"comments":{"nodes":[{"author":{"login":"me"}}]}},
+             {"isResolved":true,"viewerCanResolve":true,"comments":{"nodes":[{"author":{"login":"reviewer"}}]}},
+             {"isResolved":false,"viewerCanResolve":false,"comments":{"nodes":[{"author":{"login":"reviewer"}}]}}
+           ]}}
+        ]}}}
+        """
+        let parsed = (try? AutofixMonitor.parse(Data(parseJSON.utf8), me: "me"))?.first
+        check("parse counts all unresolved threads", parsed?.threadsUnresolved == 3)
+        check("parse counts only threads I owe a reply on", parsed?.threadsIOwe == 1)
+
         // 5. Live cycle against a real, self-closing terminal window.
         await liveCycle(check: check)
 

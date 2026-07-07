@@ -37,14 +37,20 @@ enum AutofixMonitor {
                 mergeable
                 reviewDecision
                 headRefName
-                reviewThreads(first: 100) { nodes { isResolved } }
+                reviewThreads(first: 100) {
+                  nodes {
+                    isResolved
+                    viewerCanResolve
+                    comments(last: 1) { nodes { author { login } } }
+                  }
+                }
               }
             }
           }
         }
         """
         let data = try await GH.run(["api", "graphql", "-f", "query=\(query)", "-f", "q=\(q)"])
-        return try parse(data)
+        return try parse(data, me: me)
     }
 
     /// A PR that has requested my review, with the timestamps needed to decide whether I
@@ -146,8 +152,9 @@ enum AutofixMonitor {
     }
 
     /// Decode the GraphQL search response into snapshots. Non-PR search nodes (no
-    /// `number`) are skipped.
-    static func parse(_ data: Data) throws -> [PRSnapshot] {
+    /// `number`) are skipped. `me` distinguishes threads I still owe a reply on (last
+    /// comment isn't mine) from ones waiting on the reviewer.
+    static func parse(_ data: Data, me: String = "") throws -> [PRSnapshot] {
         struct Resp: Decodable {
             let data: DataField
             struct DataField: Decodable { let search: Search }
@@ -165,12 +172,27 @@ enum AutofixMonitor {
             }
             struct Author: Decodable { let login: String? }
             struct Threads: Decodable { let nodes: [Thread] }
-            struct Thread: Decodable { let isResolved: Bool }
+            struct Thread: Decodable {
+                let isResolved: Bool
+                let viewerCanResolve: Bool?
+                let comments: Comments?
+                struct Comments: Decodable { let nodes: [Comment] }
+                struct Comment: Decodable { let author: Author? }
+            }
         }
         let r = try JSONDecoder().decode(Resp.self, from: data)
+        let lowerMe = me.lowercased()
         return r.data.search.nodes.compactMap { n in
             guard let number = n.number else { return nil }
-            let unresolved = (n.reviewThreads?.nodes ?? []).filter { !$0.isResolved }.count
+            let threads = n.reviewThreads?.nodes ?? []
+            let unresolved = threads.filter { !$0.isResolved }.count
+            // Threads I owe a reply on: unresolved, I can resolve them, and the latest
+            // comment isn't mine (so the reviewer is waiting on me, not the other way).
+            let iOwe = threads.filter { t in
+                guard !t.isResolved, t.viewerCanResolve ?? true else { return false }
+                let last = t.comments?.nodes.last?.author?.login?.lowercased()
+                return last != lowerMe
+            }.count
             return PRSnapshot(
                 number: number,
                 title: n.title ?? "",
@@ -180,7 +202,8 @@ enum AutofixMonitor {
                 author: n.author?.login ?? "",
                 mergeable: n.mergeable ?? "UNKNOWN",
                 reviewDecision: n.reviewDecision ?? "",
-                threadsUnresolved: unresolved)
+                threadsUnresolved: unresolved,
+                threadsIOwe: iOwe)
         }
     }
 }

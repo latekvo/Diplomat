@@ -139,6 +139,7 @@ final class Store: ObservableObject {
         static let autofixReviews = "autofixReviewsHandled"
         static let reviewRequestsEnabled = "reviewRequestsEnabled"
         static let reviewReqAttempts = "reviewReqAttempts"
+        static let myReviewAttempts = "myReviewAttempts"
         static let reviewRequestsHandled = "reviewRequestsHandled"
         static let verdictWithholdSkill = "verdictWithholdSkill"
         static let verdictWithholdInstaller = "verdictWithholdInstaller"
@@ -373,12 +374,14 @@ final class Store: ObservableObject {
 
     // MARK: PR auto-fix monitor
 
-    /// How often the monitor polls GitHub. 3 min by default; override for testing.
+    /// How often the monitor polls GitHub. 1 min by default so a review requested of me is
+    /// picked up within a minute, not left waiting; override for testing.
     static var autofixPollInterval: TimeInterval {
         let secs = ProcessInfo.processInfo.environment["ARGENT_UTILS_AUTOFIX_SECS"].flatMap(Double.init)
-        return max(30, secs ?? 3 * 60)
+        return max(15, secs ?? 60)
     }
     private var autofixMonitorTask: Task<Void, Never>?
+    private var wakeObserver: NSObjectProtocol?
 
     private func startAutofixMonitor() {
         guard autofixMonitorTask == nil else { return }
@@ -387,6 +390,16 @@ final class Store: ObservableObject {
                 await self?.runAutofixPollOnce()
                 let ns = UInt64(Store.autofixPollInterval * 1_000_000_000)
                 try? await Task.sleep(nanoseconds: ns)
+            }
+        }
+        // The poll loop's sleep is suspended while the Mac sleeps, so a review that arrives
+        // overnight would otherwise wait until the next tick after wake (once cost #462 an
+        // hour). Poll immediately on wake so we catch up the moment we're back.
+        if wakeObserver == nil {
+            wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+                forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+            ) { [weak self] _ in
+                Task { await self?.runAutofixPollOnce() }
             }
         }
     }
@@ -402,7 +415,10 @@ final class Store: ObservableObject {
         if reviewRequestsEnabled { await pollReviewRequests(owner: owner, repo: repo) }
     }
 
-    /// My own PRs: dispatch on new conflicts / new review work (edge-triggered).
+    /// My own PRs: dispatch on new conflicts / new review work. Edge-triggered for the
+    /// real-time case (a transition observed live), plus a level-triggered reconcile pass
+    /// so a review that landed while we were offline — and so was already present the first
+    /// time we saw the PR (which the edge-trigger silently baselines) — still gets an agent.
     private func pollMyPRs(owner: String, repo: String) async {
         let snaps: [PRSnapshot]
         do {
@@ -414,9 +430,37 @@ final class Store: ObservableObject {
         let (events, fingerprints) = AutofixDiff.compute(prior: loadAutofixFingerprints(), now: snaps)
         for event in events { await dispatchAutofix(event) }
         saveAutofixFingerprints(fingerprints)
+        await reconcileMyReviews(snaps: snaps, now: Date())
         autofixStatus = AutofixStatus(
             updatedAt: Date(), watching: snaps.count,
             conflictsHandled: autofixConflictsHandled, reviewsHandled: autofixReviewsHandled)
+    }
+
+    /// Level-triggered safety net for reviews received on MY PRs: any PR of mine that
+    /// currently carries unresolved review threads but has no agent on it is an unaddressed
+    /// review — (re)dispatch a fix agent as soon as it's possible, deduped by in-flight +
+    /// retry backoff (`ReviewReconcile`) so it never loops. This catches exactly what the
+    /// edge-trigger misses: a review already present when we first saw the PR (landed while
+    /// offline / a PR opened before the monitor was watching / a spawn that failed). When
+    /// the threads get resolved the PR drops out and its record is pruned.
+    private func reconcileMyReviews(snaps: [PRSnapshot], now: Date) async {
+        var attempts = loadMyReviewAttempts()
+        let owed = snaps.filter { $0.threadsIOwe > 0 }
+        for s in owed {
+            let key = String(s.number)
+            let inFlight = processes.contains(where: { $0.prURL == s.url && !$0.done })
+            let decision = ReviewReconcile.decide(prior: attempts[key], stamp: "unresolved",
+                                                  inFlight: inFlight, banned: false, now: now)
+            if case .dispatch(let attemptNumber) = decision {
+                if await dispatchMyReview(s, attemptNumber: attemptNumber) {
+                    attempts[key] = ReviewAttempt(requestedAt: "unresolved",
+                                                  lastDispatchedAt: now, attempts: attemptNumber)
+                }
+            }
+        }
+        let owedKeys = Set(owed.map { String($0.number) })
+        attempts = attempts.filter { owedKeys.contains($0.key) }
+        saveMyReviewAttempts(attempts)
     }
 
     /// PRs that request MY review: dispatch the most-comprehensive review whenever I OWE
@@ -455,9 +499,13 @@ final class Store: ObservableObject {
             case .skipBanned, .skipInFlight, .skipCoolingDown:
                 continue
             case .dispatch(let attemptNumber):
-                await dispatchReviewRequest(r, attemptNumber: attemptNumber)
-                attempts[key] = ReviewAttempt(requestedAt: stamp, lastDispatchedAt: now,
-                                              attempts: attemptNumber)
+                // Record the attempt (start the retry backoff) only if an agent actually
+                // launched — a transient spawn failure should retry next tick, not sit out
+                // a 5m–3h cooldown while the review stays unanswered.
+                if await dispatchReviewRequest(r, attemptNumber: attemptNumber) {
+                    attempts[key] = ReviewAttempt(requestedAt: stamp, lastDispatchedAt: now,
+                                                  attempts: attemptNumber)
+                }
             }
         }
         // Drop records for PRs I no longer owe (review landed, PR closed, request withdrawn)
@@ -492,7 +540,8 @@ final class Store: ObservableObject {
     /// no auto-verdict) on a PR someone asked me to review — hands off the branch.
     /// `attemptNumber` ≥2 means this is a retry of a review a previous agent left
     /// unaddressed; it's surfaced in the label/audit so the re-dispatch is visible.
-    private func dispatchReviewRequest(_ r: AutofixMonitor.ReviewRequest, attemptNumber: Int = 1) async {
+    @discardableResult
+    private func dispatchReviewRequest(_ r: AutofixMonitor.ReviewRequest, attemptNumber: Int = 1) async -> Bool {
         // The "final pass + verdict" escalation is allowed unless a configured suppressor
         // matches (SKILL / installer / community PR). Otherwise the review is comments-only
         // and the final call stays with me.
@@ -512,7 +561,8 @@ final class Store: ObservableObject {
             track(kind: "review", label: "Auto · Review-req · #\(r.number) (@\(r.author))\(tag)\(retry)",
                   prURL: r.url, result: result, source: "auto")
             reviewRequestsHandled += 1
-        } catch { }
+            return true
+        } catch { return false }
     }
 
     var reviewRequestsHandled: Int {
@@ -537,36 +587,68 @@ final class Store: ObservableObject {
     /// it, mirroring exactly what the Resolve-conflicts / Review wizards do (Deep depth,
     /// don't-mark-ready / no-formal-review / reply-"Fixed in <hash>").
     private func dispatchAutofix(_ event: AutofixEvent) async {
-        let kind: String
-        let snap: PRSnapshot
-        let prompt: String
-        let label: String
         switch event {
-        case .conflict(let s):
-            kind = "conflicts"; snap = s
-            prompt = ConflictConfig(target: .specific, me: effectiveMe,
-                                    specificPR: String(s.number)).buildPrompt()
-            label = "Auto · Resolve · #\(s.number)"
         case .review(let s):
-            kind = "review"; snap = s
-            prompt = ReviewConfig(depth: "deep", target: .specific, me: effectiveMe,
+            _ = await dispatchMyReview(s)   // shared with the offline-review reconciler
+            return
+        case .conflict(let s):
+            // Never pile a second agent on a PR that already has one running.
+            if processes.contains(where: { $0.prURL == s.url && !$0.done }) { return }
+            let prompt = ConflictConfig(target: .specific, me: effectiveMe,
+                                        specificPR: String(s.number)).buildPrompt()
+            let preferred = terminal
+            do {
+                let result = try await Task.detached(priority: .userInitiated) {
+                    try AgentSpawner.spawn(prompt, terminal: preferred)
+                }.value
+                track(kind: "conflicts", label: "Auto · Resolve · #\(s.number)",
+                      prURL: s.url, result: result, source: "auto")
+                autofixConflictsHandled += 1
+            } catch {
+                // Spawn failed (e.g. terminal-automation permission not granted). Skip; the
+                // fingerprint is still recorded, so it won't loop — the user can trigger the
+                // action card manually.
+            }
+        }
+    }
+
+    /// Spawn the Deep, fix-on-branch review agent for one of MY PRs (reply "Fixed in
+    /// <hash>", don't mark ready, no formal review) and track it. Returns whether the spawn
+    /// succeeded — so the reconciler only starts its retry backoff once an agent actually
+    /// launched. `attemptNumber` ≥2 (a reconcile retry) is surfaced in the label/audit.
+    @discardableResult
+    private func dispatchMyReview(_ s: PRSnapshot, attemptNumber: Int = 1) async -> Bool {
+        // Never pile a second agent on a PR that already has one running.
+        if processes.contains(where: { $0.prURL == s.url && !$0.done }) { return false }
+        let prompt = ReviewConfig(depth: "deep", target: .specific, me: effectiveMe,
                                   markReady: false, leaveReviews: false, replyToReviews: true,
                                   specificPR: String(s.number), specificAuthor: .mine).buildPrompt()
-            label = "Auto · Review · #\(s.number)"
-        }
-        // Never pile a second agent on a PR that already has one running.
-        if processes.contains(where: { $0.prURL == snap.url && !$0.done }) { return }
         let preferred = terminal
         do {
             let result = try await Task.detached(priority: .userInitiated) {
                 try AgentSpawner.spawn(prompt, terminal: preferred)
             }.value
-            track(kind: kind, label: label, prURL: snap.url, result: result, source: "auto")
-            if case .conflict = event { autofixConflictsHandled += 1 } else { autofixReviewsHandled += 1 }
+            let retry = attemptNumber > 1 ? " · retry \(attemptNumber)" : ""
+            track(kind: "review", label: "Auto · Review · #\(s.number)\(retry)",
+                  prURL: s.url, result: result, source: "auto")
+            autofixReviewsHandled += 1
+            return true
         } catch {
-            // Spawn failed (e.g. terminal-automation permission not granted). Skip; the
-            // fingerprint is still recorded, so it won't loop — the user can trigger the
-            // action card manually.
+            return false
+        }
+    }
+
+    /// prNumber(String) -> our attempt record for reviews received on my own PRs (unresolved
+    /// threads). Persisted as JSON so the retry backoff survives an applet restart.
+    private func loadMyReviewAttempts() -> [String: ReviewAttempt] {
+        guard let data = UserDefaults.standard.data(forKey: Keys.myReviewAttempts),
+              let decoded = try? JSONDecoder().decode([String: ReviewAttempt].self, from: data)
+        else { return [:] }
+        return decoded
+    }
+    private func saveMyReviewAttempts(_ map: [String: ReviewAttempt]) {
+        if let data = try? JSONEncoder().encode(map) {
+            UserDefaults.standard.set(data, forKey: Keys.myReviewAttempts)
         }
     }
 
