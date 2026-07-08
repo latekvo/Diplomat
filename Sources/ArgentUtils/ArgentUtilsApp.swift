@@ -282,7 +282,6 @@ enum Dump {
     /// "audit-prs" (+open PRs), "audit-all" (both).
     static func printAuditPrompt(mode: String) {
         let cfg = AuditConfig(
-            me: "latekvo",
             fixIssues: mode.contains("issues") || mode.contains("all"),
             openPRs: mode.contains("prs") || mode.contains("all"))
         let flags = "fixIssues=\(cfg.fixIssues) openPRs=\(cfg.openPRs)"

@@ -229,12 +229,7 @@ struct SettingsView: View {
             sectionLabel("TOOLS — COLOR & VISIBILITY")
             ForEach(ToolKind.allCases) { kind in
                 HStack(spacing: 8) {
-                    Image(systemName: kind.systemImage)
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(.white)
-                        .frame(width: 22, height: 22)
-                        .background(store.tint(for: kind))
-                        .clipShape(RoundedRectangle(cornerRadius: 5))
+                    IconBadge(symbol: kind.systemImage, tint: store.tint(for: kind))
                     VStack(alignment: .leading, spacing: 1) {
                         Text(kind.title).font(.caption.bold())
                         Text(kind.subtitle).font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1)
@@ -335,7 +330,7 @@ struct SettingsView: View {
         if !DeviceAllocator.nodeAvailable {
             return "Node.js not found. Install Node (or set ARGENT_NODE) — the allocator's MCP server and daemon need it to run."
         }
-        return "Forces every local agent to reserve an emulator/simulator before using it (MCP server + skill + always-on rule), so agents never collide on a shared device. Reclaims a device when its agent dies or it sits idle for 1h."
+        return "Forces every local agent to reserve an emulator/simulator before using it (MCP server + skill + always-on rule), so agents never collide on a shared device. Reclaims a device when its agent dies or it sits idle for 15 minutes."
     }
 
     private func statusDetail(_ s: AllocatorInstall?) -> String {

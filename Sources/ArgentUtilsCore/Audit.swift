@@ -12,15 +12,12 @@ import Foundation
 ///   - `openPRs`   — open a focused PR for every confirmed finding / fix. When off
 ///     the run is a read-only audit that only reports its hard-reproduced findings.
 public struct AuditConfig {
-    /// The authenticated viewer login, used as the @handle for commit / PR authoring.
-    public var me: String
     /// Also reproduce + fix the repo's open BUG issues (feature requests excluded).
     public var fixIssues: Bool
     /// Open a PR for every confirmed finding / fix. Off ⇒ read-only audit.
     public var openPRs: Bool
 
-    public init(me: String = "", fixIssues: Bool = false, openPRs: Bool = false) {
-        self.me = me
+    public init(fixIssues: Bool = false, openPRs: Bool = false) {
         self.fixIssues = fixIssues
         self.openPRs = openPRs
     }

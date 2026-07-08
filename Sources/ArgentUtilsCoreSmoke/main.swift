@@ -182,7 +182,7 @@ print("conflict prompt assertions passed")
 section("audit prompts")
 // A whole-repo E2E audit needs no input (always valid), and the hard-repro bar is
 // present in every variant. The two toggles independently gate the optional blocks.
-let aBase = AuditConfig(me: me)
+let aBase = AuditConfig()
 print("audit valid=\(aBase.isValid)")
 check(aBase.isValid && AuditConfig().isValid)
 check(aBase.buildPrompt().contains("100% CERTAINTY"))
@@ -197,12 +197,12 @@ check(!aBase.buildPrompt().contains("OPEN ISSUES"))
 check(!aBase.buildPrompt().contains("focused pull request"))
 check(!aBase.buildPrompt().contains("20 lines"))
 // fixIssues adds the bug-issue block, explicit about skipping feature requests.
-let aIssues = AuditConfig(me: me, fixIssues: true)
+let aIssues = AuditConfig(fixIssues: true)
 check(aIssues.buildPrompt().contains("OPEN ISSUES"))
 check(aIssues.buildPrompt().contains("SKIP every feature request"))
 check(aIssues.buildPrompt().contains("READ-ONLY audit"))   // still read-only
 // openPRs swaps the read-only guard for the open-a-PR block + no-attribution.
-let aPRs = AuditConfig(me: me, openPRs: true)
+let aPRs = AuditConfig(openPRs: true)
 check(aPRs.buildPrompt().contains("focused pull request"))
 check(aPRs.buildPrompt().contains("DRAFT"))   // every opened PR must be a draft
 check(aPRs.buildPrompt().contains("DUPLICATE") && aPRs.buildPrompt().contains("gh pr diff"))
@@ -210,7 +210,7 @@ check(aPRs.buildPrompt().contains("20 lines"))   // Low/nitpick PRs only when fi
 check(aPRs.buildPrompt().contains("No AI attribution"))
 check(!aPRs.buildPrompt().contains("READ-ONLY audit"))
 // Both on: issue-handling + PRs together.
-let aBoth = AuditConfig(me: me, fixIssues: true, openPRs: true)
+let aBoth = AuditConfig(fixIssues: true, openPRs: true)
 check(aBoth.buildPrompt().contains("OPEN ISSUES") && aBoth.buildPrompt().contains("focused pull request"))
 print("audit prompt assertions passed")
 
@@ -434,10 +434,10 @@ let goldenModes: [(String, String)] = [
                                       me: goldenMe).buildPrompt()),
     ("conflicts-single", ConflictConfig(target: .specific, me: goldenMe,
                                         specificPR: "337").buildPrompt()),
-    ("audit", AuditConfig(me: goldenMe).buildPrompt()),
-    ("audit-issues", AuditConfig(me: goldenMe, fixIssues: true).buildPrompt()),
-    ("audit-prs", AuditConfig(me: goldenMe, openPRs: true).buildPrompt()),
-    ("audit-all", AuditConfig(me: goldenMe, fixIssues: true, openPRs: true).buildPrompt()),
+    ("audit", AuditConfig().buildPrompt()),
+    ("audit-issues", AuditConfig(fixIssues: true).buildPrompt()),
+    ("audit-prs", AuditConfig(openPRs: true).buildPrompt()),
+    ("audit-all", AuditConfig(fixIssues: true, openPRs: true).buildPrompt()),
 ]
 let goldenDir = try CoreAssets.coreDir().appendingPathComponent("golden-prompts")
 if ProcessInfo.processInfo.environment["ARGENT_GOLDEN_WRITE"] == "1" {

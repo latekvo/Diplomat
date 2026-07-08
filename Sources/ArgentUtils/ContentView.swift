@@ -8,12 +8,14 @@ import ObjectiveC
 /// content lays out at its natural height; once that would exceed the cap the popover
 /// stops growing and the content scrolls instead of running off-screen.
 struct PopoverRoot: View {
-    /// Fixed popover width. Two-column layout: the left column holds the lists (status,
-    /// bans, sessions, devices, activity, results), the right the interactive controls
-    /// (search, tool grid, action wizards).
+    /// Fixed popover width. Two-column layout: the left column holds the monitoring
+    /// lists (status, bans, sessions, devices, activity), the right every interactive
+    /// surface (search, tool grid, results/lookup, action wizards).
     static let width: CGFloat = 1120
-    /// Width of each of the two columns (minus the inter-column gap + outer padding).
-    static let columnWidth: CGFloat = 536
+    /// Width of each of the two columns: (width − 12pt column gap − 2×10pt outer
+    /// padding) / 2. The old 536 left 16pt of slack, so the columns sat inset from
+    /// the header's edges.
+    static let columnWidth: CGFloat = (width - 12 - 20) / 2
 
     /// The content's measured natural height. Seeded with a sane default so the very
     /// first frame isn't zero-height; corrected on the first layout pass.
@@ -293,6 +295,14 @@ struct ContentView: View {
         .padding(10)
         .background(cmdFCatcher)
         .animation(.easeInOut(duration: 0.18), value: store.processes)
+        .onChange(of: store.bannedAuthors) { bans in
+            // The pending "Unban @X?" confirmation must not outlive the ban itself
+            // (un-banned elsewhere / list rewritten) — a stale login would open the
+            // confirm unprompted if that author were ever re-banned.
+            if let p = pendingUnban, !bans.contains(where: { $0.login == p }) {
+                pendingUnban = nil
+            }
+        }
         .task {
             // Optional: launch pre-focused on a specific number (also used for headless UI checks).
             if query.isEmpty, let pre = ProcessInfo.processInfo.environment["ARGENT_UTILS_PREFILL"], !pre.isEmpty {
@@ -306,10 +316,11 @@ struct ContentView: View {
     // MARK: header
 
     private var header: some View {
-        HStack(spacing: 6) {
+        let (owner, repo) = CoreAssets.repoCoordinates()
+        return HStack(spacing: 6) {
             Image(systemName: "wrench.and.screwdriver.fill").foregroundStyle(.blue)
             Text("Argent Utils").font(.headline)
-            Text("software-mansion/argent").font(.caption2).foregroundStyle(.secondary)
+            Text("\(owner)/\(repo)").font(.caption2).foregroundStyle(.secondary)
             Spacer()
             if store.isLoading {
                 ProgressView().controlSize(.small)
@@ -382,26 +393,9 @@ struct ContentView: View {
     @ViewBuilder
     private func bannedList(_ bans: [BannedAuthor]) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.16)) { bannedExpanded.toggle() }
-            } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: bannedExpanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 8, weight: .bold)).foregroundStyle(.secondary).frame(width: 9)
-                    Image(systemName: "hand.raised.fill").font(.system(size: 9)).foregroundStyle(.red)
-                    Text("BANNED").font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(.secondary).kerning(0.5)
-                    Text("\(bans.count)").font(.system(size: 9).monospacedDigit())
-                        .foregroundStyle(.red)
-                        .padding(.horizontal, 5).padding(.vertical, 1)
-                        .background(Capsule().fill(Color.red.opacity(0.15)))
-                    Text("prompt injection · no auto-reviews")
-                        .font(.system(size: 9)).foregroundStyle(.secondary)
-                    Spacer()
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
+            SectionHeader(title: "BANNED", count: bans.count, expanded: $bannedExpanded,
+                          countTint: .red, icon: "hand.raised.fill", iconTint: .red,
+                          caption: "prompt injection · no auto-reviews")
             if bannedExpanded {
                 ForEach(bans) { ban in
                     if pendingUnban == ban.login {
@@ -422,11 +416,7 @@ struct ContentView: View {
     /// clicked — kept inside the popover so it can't open behind the menu-bar window.
     private func unbanConfirmRow(_ ban: BannedAuthor) -> some View {
         HStack(spacing: 8) {
-            Image(systemName: "questionmark.circle.fill")
-                .font(.system(size: 11, weight: .bold)).foregroundStyle(.white)
-                .frame(width: 22, height: 22)
-                .background(Color.orange.opacity(0.85))
-                .clipShape(RoundedRectangle(cornerRadius: 5))
+            IconBadge(symbol: "questionmark.circle.fill", tint: Color.orange.opacity(0.85))
             VStack(alignment: .leading, spacing: 1) {
                 Text("Unban @\(ban.login)?").font(.caption.bold())
                 Text("Their PRs will receive automated reviews again.")
@@ -458,24 +448,8 @@ struct ContentView: View {
     @ViewBuilder
     private func auditList(_ entries: [AuditEntry]) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.16)) { auditExpanded.toggle() }
-            } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: auditExpanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 8, weight: .bold)).foregroundStyle(.secondary).frame(width: 9)
-                    Image(systemName: "list.bullet.rectangle").font(.system(size: 9)).foregroundStyle(.secondary)
-                    Text("ACTIVITY").font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(.secondary).kerning(0.5)
-                    Text("\(entries.count)").font(.system(size: 9).monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 5).padding(.vertical, 1)
-                        .background(Capsule().fill(Color.gray.opacity(0.15)))
-                    Spacer()
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
+            SectionHeader(title: "ACTIVITY", count: entries.count, expanded: $auditExpanded,
+                          icon: "list.bullet.rectangle")
             if auditExpanded {
                 ForEach(entries.prefix(30)) { entry in AuditRow(entry: entry) }
             }
@@ -571,45 +545,38 @@ struct ContentView: View {
     private var toolGrid: some View {
         LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
             ForEach(store.visibleTools) { kind in
-                ToolCard(
-                    kind: kind,
-                    tint: store.tint(for: kind),
-                    count: store.hasLoaded ? store.count(for: kind) : nil,
-                    selected: store.selected == kind && activeAction == nil
-                )
-                .onTapGesture { activeAction = nil; store.selected = kind }
+                let tint = store.tint(for: kind)
+                GridCard(systemImage: kind.systemImage, title: kind.title,
+                         subtitle: kind.subtitle, tint: tint,
+                         selected: store.selected == kind && activeAction == nil,
+                         action: { activeAction = nil; store.selected = kind }) {
+                    Text(store.hasLoaded ? String(store.count(for: kind)) : "…")
+                        .font(.callout.bold().monospacedDigit())
+                        .foregroundStyle(tint)
+                }
             }
-            ActionCard(
-                systemImage: "checklist",
-                title: "Review PRs",
-                subtitle: "spawn a review agent",
-                tint: .pink,
-                selected: activeAction == .review
-            )
-            .onTapGesture { activeAction = .review }
-            ActionCard(
-                systemImage: "arrow.triangle.merge",
-                title: "Resolve conflicts",
-                subtitle: "merge main, fix conflicts",
-                tint: .cyan,
-                selected: activeAction == .conflicts
-            )
-            .onTapGesture { activeAction = .conflicts }
-            ActionCard(
-                systemImage: "ladybug.fill",
-                title: "Full E2E test",
-                subtitle: "swarm-test the whole repo",
-                tint: .indigo,
-                selected: activeAction == .audit
-            )
-            .onTapGesture { activeAction = .audit }
+            actionCard("checklist", "Review PRs", "spawn a review agent", .pink, .review)
+            actionCard("arrow.triangle.merge", "Resolve conflicts", "merge main, fix conflicts",
+                       .cyan, .conflicts)
+            actionCard("ladybug.fill", "Full E2E test", "swarm-test the whole repo",
+                       .indigo, .audit)
+        }
+    }
+
+    private func actionCard(_ symbol: String, _ title: String, _ subtitle: String,
+                            _ tint: Color, _ panel: ActionPanel) -> some View {
+        GridCard(systemImage: symbol, title: title, subtitle: subtitle, tint: tint,
+                 selected: activeAction == panel, action: { activeAction = panel }) {
+            Image(systemName: "chevron.right")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(activeAction == panel ? tint : .secondary)
         }
     }
 
     // MARK: two columns — lists on the left, interactive controls on the right
 
-    /// Left column: status pill, ban list, agent sessions, devices, activity log, and —
-    /// when no action wizard is open — the selected tool's result list / lookup.
+    /// Left column: the monitoring lists — status pill, ban list, agent sessions,
+    /// devices, activity log. (Results/lookup live in the right column.)
     private var leftColumn: some View {
         VStack(alignment: .leading, spacing: 8) {
             autofixBanner
@@ -654,7 +621,7 @@ struct ContentView: View {
         }
     }
 
-    /// The lookup / tool-result LIST (left column) shown when no wizard is open.
+    /// The lookup / tool-result list (right column) shown when no wizard is open.
     @ViewBuilder
     private var listResultsPane: some View {
         let trimmed = query.trimmingCharacters(in: .whitespaces)
@@ -673,8 +640,8 @@ struct ContentView: View {
 
     private func lookupView(_ n: Int) -> some View {
         let r = store.lookup(n)
-        let cfg = try? CoreAssets.config()
-        let link = r.url ?? "https://github.com/\(cfg?.owner ?? "software-mansion")/\(cfg?.repo ?? "argent")/issues/\(n)"
+        let (owner, repo) = CoreAssets.repoCoordinates()
+        let link = r.url ?? "https://github.com/\(owner)/\(repo)/issues/\(n)"
         return VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text("#\(n)").font(.title3.bold().monospaced())
@@ -700,12 +667,7 @@ struct ContentView: View {
     private func checkRow(_ kind: ToolKind, on: Bool) -> some View {
         let tint = store.tint(for: kind)
         return HStack(spacing: 8) {
-            Image(systemName: kind.systemImage)
-                .font(.system(size: 11, weight: .bold))
-                .foregroundStyle(.white)
-                .frame(width: 22, height: 22)
-                .background(on ? tint : Color.gray.opacity(0.35))
-                .clipShape(RoundedRectangle(cornerRadius: 5))
+            IconBadge(symbol: kind.systemImage, tint: on ? tint : Color.gray.opacity(0.35))
             Text(kind.title).font(.caption).foregroundStyle(on ? .primary : .secondary)
             Spacer()
             Image(systemName: on ? "checkmark.circle.fill" : "minus")
@@ -774,83 +736,6 @@ struct ContentView: View {
     }
 }
 
-// MARK: - Tool card
-
-private struct ToolCard: View {
-    let kind: ToolKind
-    let tint: Color
-    let count: Int?
-    let selected: Bool
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: kind.systemImage)
-                .font(.system(size: 13, weight: .bold))
-                .foregroundStyle(.white)
-                .frame(width: 26, height: 26)
-                .background(tint)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-            VStack(alignment: .leading, spacing: 1) {
-                Text(kind.title).font(.caption.bold()).lineLimit(1)
-                Text(kind.subtitle).font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(2)
-            }
-            Spacer(minLength: 2)
-            Text(count.map(String.init) ?? "…")
-                .font(.callout.bold().monospacedDigit())
-                .foregroundStyle(tint)
-        }
-        .padding(7)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(selected ? tint.opacity(0.16) : Color.gray.opacity(0.08))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(selected ? tint : .clear, lineWidth: 1.2)
-        )
-        .contentShape(Rectangle())
-    }
-}
-
-// MARK: - Action card (grid entry that opens an action pane, e.g. Review PRs)
-
-private struct ActionCard: View {
-    let systemImage: String
-    let title: String
-    let subtitle: String
-    let tint: Color
-    let selected: Bool
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: systemImage)
-                .font(.system(size: 13, weight: .bold))
-                .foregroundStyle(.white)
-                .frame(width: 26, height: 26)
-                .background(tint)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title).font(.caption.bold()).lineLimit(1)
-                Text(subtitle).font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(2)
-            }
-            Spacer(minLength: 2)
-            Image(systemName: "chevron.right")
-                .font(.system(size: 11, weight: .bold))
-                .foregroundStyle(selected ? tint : .secondary)
-        }
-        .padding(7)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(selected ? tint.opacity(0.16) : Color.gray.opacity(0.08))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(selected ? tint : .clear, lineWidth: 1.2)
-        )
-        .contentShape(Rectangle())
-    }
-}
-
 // MARK: - Ongoing agent-session row
 
 private struct ProcessRow: View {
@@ -872,12 +757,7 @@ private struct ProcessRow: View {
         HStack(spacing: 6) {
             Button(action: onTap) {
                 HStack(spacing: 8) {
-                    Image(systemName: kindIcon)
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(.white)
-                        .frame(width: 22, height: 22)
-                        .background(tint)
-                        .clipShape(RoundedRectangle(cornerRadius: 5))
+                    IconBadge(symbol: kindIcon, tint: tint)
                     VStack(alignment: .leading, spacing: 1) {
                         Text(proc.label).font(.caption).lineLimit(1)
                         statusLine
@@ -983,30 +863,14 @@ struct DevicesView: View {
         .background(RoundedRectangle(cornerRadius: 8).fill(Color.gray.opacity(0.07)))
     }
 
-    /// One collapsible group: a tappable header (chevron + title + count pill) and,
-    /// when expanded, its device rows.
+    /// One collapsible group: the shared section header and, when expanded, its
+    /// device rows.
     @ViewBuilder
     private func section(_ title: String, color: Color, expanded: Binding<Bool>,
                          devices: [DeviceAllocation]) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.16)) { expanded.wrappedValue.toggle() }
-            } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: expanded.wrappedValue ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 8, weight: .bold))
-                        .foregroundStyle(.secondary).frame(width: 9)
-                    Text(title.uppercased()).font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(.secondary).kerning(0.5)
-                    Text("\(devices.count)").font(.system(size: 9).monospacedDigit())
-                        .foregroundStyle(color == .secondary ? Color.secondary : color)
-                        .padding(.horizontal, 5).padding(.vertical, 1)
-                        .background(Capsule().fill((color == .secondary ? Color.gray : color).opacity(0.15)))
-                    Spacer()
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
+            SectionHeader(title: title.uppercased(), count: devices.count,
+                          expanded: expanded, countTint: color)
             if expanded.wrappedValue {
                 ForEach(devices) { dev in
                     DeviceRow(dev: dev, tracked: tracked, onKill: onKill)
@@ -1060,12 +924,8 @@ private struct DeviceRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: platformIcon)
-                .font(.system(size: 11, weight: .bold))
-                .foregroundStyle(.white)
-                .frame(width: 22, height: 22)
-                .background(dev.isAllocated ? platformTint : Color.gray.opacity(0.4))
-                .clipShape(RoundedRectangle(cornerRadius: 5))
+            IconBadge(symbol: platformIcon,
+                      tint: dev.isAllocated ? platformTint : Color.gray.opacity(0.4))
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 4) {
                     Text(dev.name ?? dev.handle ?? dev.key).font(.caption).lineLimit(1)
@@ -1173,9 +1033,15 @@ private struct AuditRow: View {
         case "conflicts":            return "arrow.triangle.merge"
         case "audit":                return "ladybug.fill"
         case "nudge":                return "bolt.fill"
+        case "merge":                return "checkmark.seal.fill"
         case "kill-device":          return "xmark.circle.fill"
         case "unban":                return "hand.raised.slash.fill"
         case "ban":                  return "hand.raised.fill"
+        case "repair-done":          return "wrench.and.screwdriver"
+        case "allocator-install", "allocator-uninstall": return "shippingbox.fill"
+        case "merge-failed", "spawn-failed", "poll-failed", "warn":
+            return "exclamationmark.triangle.fill"
+        case "poll-recovered":       return "checkmark.circle.fill"
         default:                     return "circle.fill"
         }
     }
@@ -1210,11 +1076,7 @@ private struct BanRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: "hand.raised.slash.fill")
-                .font(.system(size: 11, weight: .bold)).foregroundStyle(.white)
-                .frame(width: 22, height: 22)
-                .background(Color.red.opacity(0.7))
-                .clipShape(RoundedRectangle(cornerRadius: 5))
+            IconBadge(symbol: "hand.raised.slash.fill", tint: Color.red.opacity(0.7))
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 4) {
                     Text("@\(ban.login)").font(.caption).lineLimit(1)

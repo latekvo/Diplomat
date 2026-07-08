@@ -21,13 +21,21 @@ struct ConflictWizardView: View {
     private let rowTransition: AnyTransition = .opacity.combined(with: .move(edge: .top))
 
     /// `scrolls: false` (headless render only) drops the ScrollView so the snapshot
-    /// isn't blank (ImageRenderer can't render ScrollView content).
+    /// isn't blank (ImageRenderer can't render ScrollView content). The seed params
+    /// let the renderer snapshot every wizard state (target, PR field, username
+    /// field, repo-mismatch warning) — same pattern as ReviewWizardView.
     private let scrolls: Bool
-    init(scrolls: Bool = true) { self.scrolls = scrolls }
+    init(scrolls: Bool = true, seedTarget: ConflictConfig.Target? = nil,
+         seedSpecificPR: String? = nil, seedUsername: String? = nil) {
+        self.scrolls = scrolls
+        _target = State(initialValue: seedTarget ?? .mine)
+        _specificPR = State(initialValue: seedSpecificPR ?? "")
+        _username = State(initialValue: seedUsername ?? "")
+    }
 
-    @State private var target: ConflictConfig.Target = .mine
-    @State private var username = ""
-    @State private var specificPR = ""
+    @State private var target: ConflictConfig.Target
+    @State private var username: String
+    @State private var specificPR: String
     @State private var status: String?
 
     private var config: ConflictConfig {

@@ -32,7 +32,7 @@ struct AuditWizardView: View {
     @State private var status: String?
 
     private var config: AuditConfig {
-        AuditConfig(me: store.effectiveMe, fixIssues: fixIssues, openPRs: openPRs)
+        AuditConfig(fixIssues: fixIssues, openPRs: openPRs)
     }
 
     var body: some View {

@@ -55,9 +55,11 @@ enum Render {
             ContentView(showSettings: true)
         case "settings":
             // Seed an outstanding review count so the "N unaddressed reviews — retrying"
-            // row renders under the review-requests toggle.
+            // row renders under the review-requests toggle. The frame must fit the WHOLE
+            // form — a short frame centers the content and crops both ends out of the
+            // snapshot, gutting its regression-guard value.
             let _ = seedSettings(store)
-            SettingsView(isPresented: .constant(true)).frame(height: 560)
+            SettingsView(isPresented: .constant(true)).frame(height: 1150)
         case "unban-confirm":
             // Seed the ban list and open the inline "Unban @X?" confirmation on a row —
             // proving it renders inside the panel (not as a separate NSAlert window).
@@ -89,8 +91,19 @@ enum Render {
                              seedSpecificAuthor: seedAuthor,
                              seedSpecificAuthorLogin: banned ? "foobar" : nil)
                 .frame(height: 560)
-        case "conflicts":
-            ConflictWizardView(scrolls: false).frame(height: 560)
+        case let s where s.hasPrefix("conflicts"):
+            // Same suffix states as the review wizard: "-other" (someone else's →
+            // handle field), "-specific" (PR field), "-wrong" (repo-mismatch warning).
+            let wrong = s.contains("wrong")
+            let specific = wrong || s.contains("specific") || s.contains("single")
+            let other = s.contains("other")
+            let pr = wrong ? "https://github.com/some-org/other-repo/pull/42"
+                           : "https://github.com/software-mansion/argent/pull/455"
+            ConflictWizardView(scrolls: false,
+                               seedTarget: specific ? .specific : (other ? .someone : .mine),
+                               seedSpecificPR: specific ? pr : nil,
+                               seedUsername: other ? "octocat" : nil)
+                .frame(height: 560)
         case let s where s.hasPrefix("audit"):
             // Suffix-driven toggles: "-issues" pre-checks fix-open-issues, "-prs"
             // pre-checks open-PRs, "-all" both — so each state can be eyeballed.
@@ -152,11 +165,14 @@ enum Render {
     }
 
     /// Seed two approved PRs (one conflicting) + select the My-Approved tool so the
-    /// per-row Merge / Resolve-conflicts buttons can be eyeballed.
+    /// per-row Merge / Resolve-conflicts buttons can be eyeballed. Clears hiddenTools
+    /// (in-memory only — persistence is render-guarded) so the snapshot can't silently
+    /// fall back to a different tool when the live defaults hide My Approved.
     @MainActor
     private static func seedApproved(_ store: Store) {
         store.me = "latekvo"
         store.hasLoaded = true
+        store.hiddenTools = []
         store.selected = .myApproved
         let now = Date()
         store.prs = [
@@ -200,9 +216,6 @@ enum Render {
         ]
     }
 
-    /// Synthetic device-allocator state for `ARGENT_UTILS_RENDER=devices`.
-    /// In-use devices get an `allocatedAt` in the recent past so the "held" duration
-    /// renders; free devices populate the (collapsed-by-default) Free section.
     /// Synthetic prompt-injection ban list so the Banned section can be eyeballed.
     @MainActor
     private static func seedBans(_ store: Store) {
@@ -239,6 +252,10 @@ enum Render {
         ]
     }
 
+    /// Synthetic device-allocator state for `ARGENT_UTILS_RENDER=devices`.
+    /// In-use devices get an `allocatedAt` in the recent past so the "held" duration
+    /// renders; free devices populate the (collapsed-by-default) Free section. Also
+    /// seeds the pill/bans/audit so the whole left column renders.
     @MainActor
     private static func seedDeviceState(_ store: Store) {
         seedAutofix(store)
