@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 
 // Best-effort "click an in-use device → focus the terminal running the agent that
 // holds it". The device pool only knows the owner by its MCP-forwarder PID, so we
@@ -40,20 +41,19 @@ enum DeviceFocus {
         return focusByTTY(t)
     }
 
-    /// Whether a focus attempt would even have a target: an owner PID whose process is
-    /// still alive on some tty. Drives the row's affordance (clickable + tooltip).
-    static func canFocus(_ dev: DeviceAllocation) -> Bool {
-        guard let pid = dev.owner?.ownerPid else { return false }
-        return tty(forPid: pid) != nil
-    }
-
     // MARK: tty → window
+
+    /// Only queries an app that is ALREADY running — a bare `tell application` would
+    /// LAUNCH iTerm/Terminal just to be told the tty isn't there (every sibling
+    /// watcher guards this way; DeviceFocus was the one that skipped it).
+    private static func isRunning(_ bundleID: String) -> Bool {
+        !NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).isEmpty
+    }
 
     private static func focusByTTY(_ tty: String) -> Bool {
         let devPath = "/dev/\(tty)"
-        for script in [itermByTTY(devPath), terminalByTTY(devPath)] {
-            if runSilently(script) { return true }
-        }
+        if isRunning("com.googlecode.iterm2"), runSilently(itermByTTY(devPath)) { return true }
+        if isRunning("com.apple.Terminal"), runSilently(terminalByTTY(devPath)) { return true }
         return false
     }
 

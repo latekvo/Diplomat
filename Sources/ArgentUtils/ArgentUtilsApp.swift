@@ -72,8 +72,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // End-to-end self-test of the agent-session tracking path (capture, status,
         // liveness, focus, completion). Drives a real throwaway terminal window.
+        // Exit code reflects the outcome so scripts/hooks can gate on it.
         if env["ARGENT_UTILS_TRACK_TEST"] == "1" {
-            Task { await TrackTest.run(); exit(0) }
+            Task { let ok = await TrackTest.run(); exit(ok ? 0 : 1) }
         }
         // Device-allocator self-test: exercise the exact paths the live panel uses —
         // resolve node, shell the installer's --check, and Codable-decode the daemon's
@@ -301,7 +302,10 @@ enum Dump {
     /// API-error watcher dry-run: read every terminal session's last visible lines,
     /// print which the watcher would nudge, and send NOTHING. Safe to run anytime.
     static func apiWatchScan() {
-        let sessions = ApiErrorWatcher.dumpSessions()
+        guard let sessions = ApiErrorWatcher.dumpSessions() else {
+            print("== api-error scan: DUMP FAILED (automation permission? AppleEvent timeout?) ==")
+            return
+        }
         print("== api-error scan: \(sessions.count) terminal session(s) ==\n")
         for s in sessions {
             let hit = ApiErrorMatch.looksLikeApiError(s.tail)

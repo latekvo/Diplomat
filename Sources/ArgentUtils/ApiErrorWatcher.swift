@@ -19,20 +19,60 @@ enum ApiErrorWatcher {
     struct Session { let tty: String; let tail: String }
 
     /// The last visible lines of every session/tab, keyed by tty. Only queries an app
-    /// that is ALREADY running — never launches iTerm/Terminal.
-    static func dumpSessions() -> [Session] {
+    /// that is ALREADY running — never launches iTerm/Terminal. Returns nil when any
+    /// dump script FAILED (automation permission revoked, AppleEvent timeout…) —
+    /// callers must treat that as "unknown", not "no sessions": acting on a silent
+    /// empty result used to make the watcher inert with no signal, and would wrongly
+    /// reset every backoff/liveness decision keyed on the session list.
+    static func dumpSessions() -> [Session]? {
         var out: [Session] = []
-        if isRunning("com.googlecode.iterm2") { out += parse(run(itermDumpScript)) }
-        if isRunning("com.apple.Terminal") { out += parse(run(terminalDumpScript)) }
+        if isRunning("com.googlecode.iterm2") {
+            guard let dump = run(itermDumpScript) else { return nil }
+            out += parse(dump)
+        }
+        if isRunning("com.apple.Terminal") {
+            guard let dump = run(terminalDumpScript) else { return nil }
+            out += parse(dump)
+        }
         return out
+    }
+
+    /// A short-lived cache over `dumpSessions`: the 8s process sweep and the 20s
+    /// API-error scan each dumped EVERY session's full visible buffer over AppleEvents;
+    /// sharing one dump between near-simultaneous callers halves that traffic.
+    private static let cacheLock = NSLock()
+    private static var cachedDump: (at: Date, sessions: [Session]?)?
+
+    static func dumpSessionsCached(maxAge: TimeInterval = 5) -> [Session]? {
+        cacheLock.lock()
+        if let c = cachedDump, Date().timeIntervalSince(c.at) < maxAge {
+            let s = c.sessions
+            cacheLock.unlock()
+            return s
+        }
+        cacheLock.unlock()
+        let fresh = dumpSessions()
+        cacheLock.lock()
+        cachedDump = (Date(), fresh)
+        cacheLock.unlock()
+        return fresh
     }
 
     /// Send the continue nudge to whichever session/tab owns `tty` (submits it as the
     /// next line of input — iTerm `write text` / Terminal `do script … in tab`).
-    static func sendContinue(tty: String) {
+    /// Returns whether a session with that tty was actually found and written to —
+    /// the caller must not count/audit a nudge that never landed.
+    @discardableResult
+    static func sendContinue(tty: String) -> Bool {
         let msg = escape(continueMessage)
-        if isRunning("com.googlecode.iterm2") { _ = run(itermSendScript(tty: tty, msg: msg)) }
-        if isRunning("com.apple.Terminal") { _ = run(terminalSendScript(tty: tty, msg: msg)) }
+        var sent = false
+        if isRunning("com.googlecode.iterm2"), run(itermSendScript(tty: tty, msg: msg)) != nil {
+            sent = true
+        }
+        if !sent, isRunning("com.apple.Terminal"), run(terminalSendScript(tty: tty, msg: msg)) != nil {
+            sent = true
+        }
+        return sent
     }
 
     // MARK: helpers
@@ -68,17 +108,20 @@ enum ApiErrorWatcher {
             .replacingOccurrences(of: "\"", with: "\\\"")
     }
 
-    @discardableResult
-    private static func run(_ script: String) -> String {
+    /// Runs an AppleScript; nil on ANY failure (launch, non-zero exit). A failure used
+    /// to come back as "" — indistinguishable from "no sessions", hiding a revoked
+    /// automation permission forever.
+    private static func run(_ script: String) -> String? {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         p.arguments = ["-e", script]
         let outPipe = Pipe()
         p.standardOutput = outPipe
         p.standardError = Pipe()
-        do { try p.run() } catch { return "" }
+        do { try p.run() } catch { return nil }
         let data = outPipe.fileHandleForReading.readDataToEndOfFile()
         p.waitUntilExit()
+        guard p.terminationStatus == 0 else { return nil }
         return String(data: data, encoding: .utf8) ?? ""
     }
 
@@ -126,18 +169,23 @@ enum ApiErrorWatcher {
         """
     }
 
+    // Both send scripts error when no session owns the tty, so the caller can tell
+    // "nudge delivered" from "tty not found / window closed" via the exit status.
     private static func itermSendScript(tty: String, msg: String) -> String {
         """
         tell application "iTerm"
+          set _hit to false
           repeat with w in windows
             repeat with t in tabs of w
               repeat with s in sessions of t
                 if (tty of s) is "\(tty)" then
                   tell s to write text "\(msg)"
+                  set _hit to true
                 end if
               end repeat
             end repeat
           end repeat
+          if not _hit then error "tty not found"
         end tell
         """
     }
@@ -145,13 +193,16 @@ enum ApiErrorWatcher {
     private static func terminalSendScript(tty: String, msg: String) -> String {
         """
         tell application "Terminal"
+          set _hit to false
           repeat with w in windows
             repeat with t in tabs of w
               if (tty of t) is "\(tty)" then
                 do script "\(msg)" in t
+                set _hit to true
               end if
             end repeat
           end repeat
+          if not _hit then error "tty not found"
         end tell
         """
     }

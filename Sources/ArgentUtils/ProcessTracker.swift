@@ -7,8 +7,9 @@ import ArgentUtilsCore
 // child process to wait on; instead we capture three OS-level handles at spawn
 // time — the terminal window id, the session id, and the controlling tty — plus a
 // sentinel "done" file the shell touches when `claude` returns. From those we can
-// (a) tell whether the session is still alive (poll the tty + the sentinel) and
-// (b) bring its window back to the front on demand (AppleScript by window id).
+// (a) tell whether the session finished (the sentinel) and whether its window
+// still exists (AppleScript window-id query — a closed window dismisses the row),
+// and (b) bring its window back to the front on demand (AppleScript by window id).
 
 // MARK: - Tracked process model
 
@@ -32,8 +33,8 @@ struct TrackedProcess: Identifiable, Codable, Equatable {
     var tty: String
     /// Sentinel file the shell writes when `claude` returns (`…; printf … > done`).
     var donePath: String
-    /// The single PR this session concerns, if any — the open-in-browser fallback
-    /// when its window can't be focused.
+    /// The single PR this session concerns, if any — dedups agents per PR (the
+    /// in-flight checks) and drives the merged-status probe.
     var prURL: String?
     var createdAt: Date
     /// Recomputed by the poller: true once `claude` has returned (sentinel present)
@@ -248,7 +249,7 @@ enum ProcessMonitor {
 
     /// Bring the session's terminal window to the front. Returns false when the
     /// window no longer exists (closed) or AppleScript errors — the caller then
-    /// falls back to opening the PR, then to a "tracking lost" notice.
+    /// re-sweeps and dismisses the dead row.
     @discardableResult
     static func focus(_ p: TrackedProcess) -> Bool {
         guard !p.windowID.isEmpty else { return false }

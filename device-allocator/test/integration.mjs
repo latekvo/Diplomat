@@ -283,6 +283,20 @@ async function phase6() {
     catch (e) { got400 = e.statusCode === 400; }
     assert.ok(got400, 'missing person -> 400');
     pass('missing person -> 400');
+
+    // /unban (the applet's panel routes through the daemon so ban/unban writes are
+    // serialized in one process): removes exactly one login, is case-insensitive,
+    // and a second call is a clean no-op.
+    const ub = await call('POST', '/unban', { login: '@BadUser' });
+    assert.equal(ub.removed, 1);
+    assert.equal(ub.total, 1); // otherbad remains
+    const left = JSON.parse(fs.readFileSync(banFile, 'utf8')).banned;
+    assert.equal(left.length, 1);
+    assert.equal(left[0].login, 'otherbad');
+    pass('/unban removes one login (case-insensitive, @ stripped)');
+    const ub2 = await call('POST', '/unban', { login: 'baduser' });
+    assert.equal(ub2.removed, 0);
+    pass('/unban on a non-banned login is a no-op');
   } finally { stop(d); await delay(300); }
 }
 

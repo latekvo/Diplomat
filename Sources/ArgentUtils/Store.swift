@@ -644,15 +644,21 @@ final class Store: ObservableObject {
         let next = BanList.read()
         if next != bannedAuthors { bannedAuthors = next }
     }
-    /// Re-read the audit log (cheap local file). Publishes on change.
+    /// Re-read the audit log's tail. The file IO runs off-main (the log grows without
+    /// bound, and this fires on the 8s panel poll); publishes on change.
     func refreshAudit() {
-        let next = AuditLog.read()
-        if next != auditEntries { auditEntries = next }
+        Task { [weak self] in
+            let next = await Task.detached(priority: .utility) { AuditLog.read() }.value
+            guard let self else { return }
+            if next != self.auditEntries { self.auditEntries = next }
+        }
     }
-    /// Remove a ban (the UI's un-ban button) and refresh.
+    /// Remove a ban (the UI's un-ban button) and refresh. When the daemon handled the
+    /// unban it also wrote the audit entry — don't double-log.
     func unban(_ login: String) {
-        BanList.unban(login)
-        AuditLog.log("panel", "unban", "Un-banned @\(login)")
+        let viaDaemon = BanList.unban(login)
+        if !viaDaemon { AuditLog.log("panel", "unban", "Un-banned @\(login)") }
+        refreshAudit()
         refreshBanList()
     }
 
@@ -925,11 +931,21 @@ final class Store: ObservableObject {
         }
     }
 
+    /// Serializes overlapping scans (same shape as the autofix poll guard: the backoff
+    /// map is read before and written after detached awaits).
+    private var apiScanInFlight = false
+
     /// One scan: read every terminal's last visible lines and, for any showing a Claude
     /// API error (outside its cooldown), send the continue nudge to that exact session.
     func runApiErrorScanOnce() async {
-        guard apiWatchEnabled else { return }
-        let sessions = await Task.detached(priority: .utility) { ApiErrorWatcher.dumpSessions() }.value
+        guard apiWatchEnabled, !apiScanInFlight else { return }
+        apiScanInFlight = true
+        defer { apiScanInFlight = false }
+        // nil = the dump itself failed (automation permission revoked, AppleEvent
+        // timeout) — skip the whole scan rather than treating it as "no sessions",
+        // which would wrongly clear every backoff and hide the breakage.
+        let dump = await Task.detached(priority: .utility) { ApiErrorWatcher.dumpSessionsCached() }.value
+        guard let sessions = dump else { return }
         let now = Date()
         var erroring = Set<String>()
         for s in sessions where ApiErrorMatch.looksLikeApiError(s.tail) {
@@ -937,7 +953,12 @@ final class Store: ObservableObject {
             // Still inside this session's current backoff window — hold off.
             if let b = apiErrorBackoff[s.tty], now < b.nextAllowed { continue }
             let tty = s.tty
-            await Task.detached(priority: .userInitiated) { ApiErrorWatcher.sendContinue(tty: tty) }.value
+            let sent = await Task.detached(priority: .userInitiated) {
+                ApiErrorWatcher.sendContinue(tty: tty)
+            }.value
+            // Only count/audit a nudge that actually landed — the send scripts now
+            // report whether any session owned the tty.
+            guard sent else { continue }
             apiWatchContinues += 1
             // Schedule the next retry: double the prior interval (base on first hit),
             // capped at the 3h ceiling.
@@ -947,11 +968,11 @@ final class Store: ObservableObject {
             AuditLog.log("auto", "nudge",
                 "Continued a stalled agent (API error) on \(tty); next retry in ≥ \(Store.humanInterval(next))")
         }
-        // A session that's on screen but no longer erroring has recovered — drop its
-        // backoff so a fresh error later starts back at the base interval.
-        for tty in sessions.map(\.tty) where !erroring.contains(tty) {
-            apiErrorBackoff.removeValue(forKey: tty)
-        }
+        // Keep backoff ONLY for currently-erroring ttys: an on-screen session that
+        // stopped erroring has recovered (reset to base), and a CLOSED session's entry
+        // must not linger — macOS recycles tty numbers, so a stale 3h window would
+        // suppress nudges to an unrelated new session on the same tty.
+        apiErrorBackoff = apiErrorBackoff.filter { erroring.contains($0.key) }
     }
 
     private func startProcessPoll() {
@@ -977,7 +998,10 @@ final class Store: ObservableObject {
         let sweep = await Task.detached(priority: .utility) {
             // One osascript dump of every session's visible buffer (tty → tail) lets the
             // sweep tell a working agent from one idling at the prompt (awaiting input).
-            let tails = Dictionary(ApiErrorWatcher.dumpSessions().map { ($0.tty, $0.tail) },
+            // Cached/shared with the API-error scan; nil (dump failed) degrades to "no
+            // tails" — the sweep then can't compute awaiting-input but still sweeps.
+            let sessions = ApiErrorWatcher.dumpSessionsCached() ?? []
+            let tails = Dictionary(sessions.map { ($0.tty, $0.tail) },
                                    uniquingKeysWith: { first, _ in first })
             return ProcessMonitor.sweep(snapshot, sessionTails: tails)
         }.value

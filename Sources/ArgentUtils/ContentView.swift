@@ -263,7 +263,6 @@ struct ContentView: View {
     }
     /// Which action wizard (if any) replaces the tool lists in the results pane.
     @State private var activeAction: ActionPanel?
-    /// Rows whose last click couldn't be focused or opened — show "tracking lost".
     /// Whether the prompt-injection ban list (above the sessions) is expanded.
     @State private var bannedExpanded = true
     /// Whether the activity/audit log is expanded.
@@ -1097,7 +1096,14 @@ private struct DeviceRow: View {
         .padding(6)
         .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.06)))
         .contentShape(Rectangle())
-        .onTapGesture { if focusable { DeviceFocus.focus(dev, tracked: tracked) } }
+        .onTapGesture {
+            // Off-main: the focus path is one `ps` + up to two synchronous osascript
+            // round-trips — running it in the gesture handler froze the popover
+            // (its tracked-row sibling has always detached for the same reason).
+            guard focusable else { return }
+            let d = dev, t = tracked
+            Task.detached(priority: .userInitiated) { DeviceFocus.focus(d, tracked: t) }
+        }
     }
 
     @ViewBuilder

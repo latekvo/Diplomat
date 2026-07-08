@@ -11,7 +11,10 @@ import ArgentUtilsCore
 /// "control <terminal>" automation permission:
 ///   ARGENT_UTILS_TRACK_TEST=1 /Applications/ArgentUtils.app/Contents/MacOS/ArgentUtils
 enum TrackTest {
-    static func run() async {
+    /// Returns overall pass/fail so the launcher can exit non-zero — a FAIL that
+    /// still exits 0 can't gate anything.
+    @discardableResult
+    static func run() async -> Bool {
         var pass = true
         func check(_ name: String, _ ok: Bool) {
             print("\(ok ? "PASS" : "FAIL") — \(name)")
@@ -84,7 +87,7 @@ enum TrackTest {
 
         // 2d. Live classification (informational): the REAL production dump + predicate
         //     against whatever terminals are open right now, for eyeballing.
-        let liveSessions = ApiErrorWatcher.dumpSessions()
+        let liveSessions = (ApiErrorWatcher.dumpSessions() ?? [])
             .filter { $0.tail.lowercased().contains("bypass permissions") }
         let liveBusy = liveSessions.filter { AgentActivity.looksBusy($0.tail) }.count
         print("live: \(liveSessions.count) claude session(s) — \(liveBusy) running, "
@@ -135,6 +138,7 @@ enum TrackTest {
         await liveCycle(check: check)
 
         print(pass ? "\nTRACK_TEST OK" : "\nTRACK_TEST FAILED")
+        return pass
     }
 
     private static func liveCycle(check: (String, Bool) -> Void) async {
