@@ -28,6 +28,15 @@ jobs:
         run: swift build
       - name: Run shared-core smoke test
         run: swift run ArgentUtilsCoreSmoke
+      # Headless UI snapshot: renders the real two-column panel (seeded sessions,
+      # devices, bans, audit feed) through ImageRenderer — a cheap whole-UI crash
+      # guard that needs no gh auth and no display. Render mode never persists
+      # (settings writes are render-guarded), so it can't touch any defaults.
+      - name: Headless panel render
+        run: |
+          ARGENT_UTILS_RENDER=devices ARGENT_UTILS_RENDER_OUT="$RUNNER_TEMP/panel.png" \
+            swift run ArgentUtils
+          test -s "$RUNNER_TEMP/panel.png"
 
   # The shared core advertises "compiles on macOS *and* Linux". This guards that
   # invariant by building + running only the platform-agnostic core/smoke targets
@@ -80,11 +89,15 @@ jobs:
         working-directory: device-allocator
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: '24'
+          cache: npm
+          cache-dependency-path: device-allocator/package-lock.json
+      # Strict `npm ci` only: the old `|| npm install` fallback silently degraded a
+      # broken/stale lockfile into a non-reproducible install.
       - name: Install dependencies
-        run: npm ci || npm install
+        run: npm ci
       - name: Allocation logic (request/change/broken/reap/idle)
         run: node test/integration.mjs
       - name: MCP protocol (handshake/tools/alwaysLoad/allocate)

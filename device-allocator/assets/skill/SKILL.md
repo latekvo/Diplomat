@@ -30,7 +30,8 @@ Never pick, boot, create, or squat a device you were not allocated.
     device's id to claim it.
 - **`await-device`** — blocks until a device slot frees when the pool was exhausted, then
   tells you to call `request-device` again.
-- **`free-device`** — you're done; releases + shuts down the device. Call it as soon as
+- **`free-device`** — you're done; releases the device (and shuts it down if the
+  allocator booted it). Call it as soon as
   you finish.
 - **`change-device`** — release your current device and get a different one (platform /
   format / version) in one step.

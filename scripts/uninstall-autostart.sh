@@ -5,4 +5,4 @@ LABEL="com.ignacy.argent-utils"
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 rm -f "$HOME/Library/LaunchAgents/$LABEL.plist"
 pkill -x ArgentUtils 2>/dev/null || true
-echo "Autostart removed and app stopped. (Delete /Applications/ArgentUtils.app to fully uninstall.)"
+echo "Autostart removed and app stopped. (Delete ArgentUtils.app from /Applications - or ~/Applications if the install fell back there - to fully uninstall.)"

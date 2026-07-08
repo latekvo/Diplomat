@@ -29,7 +29,8 @@ ANY simulator or emulator, you MUST first call `request-device`** (from the
   to spec (`xcrun simctl create`, `avdmanager create avd`, or an argent setup skill),
   then call `request-device` **again** with `deviceId` set to the new device's id to
   claim it. Even a device you created must be allocated here before you use it.
-- `free-device` → release it (and shut it down) the moment you are done.
+- `free-device` → release it the moment you are done (it is also shut down if the
+  allocator booted it for you).
 - `change-device` → swap for a different platform/format/version in one step.
 - `report-device-broken` → if it won't boot or misbehaves; you get a replacement and
   a repair is dispatched automatically. Do not keep fighting a broken device.

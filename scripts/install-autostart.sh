@@ -36,7 +36,9 @@ cat > "$PLIST" <<PL
   <array><string>$BIN</string></array>
   <key>RunAtLoad</key><true/>
   <key>ProcessType</key><string>Interactive</string>
-  <key>StandardErrorPath</key><string>/tmp/argent-utils.err.log</string>
+  <!-- ~/Library/Logs, not /tmp: a predictable name in the shared, sticky /tmp can
+       be pre-created by another user (breaking logging) and is purged periodically. -->
+  <key>StandardErrorPath</key><string>$HOME/Library/Logs/argent-utils.err.log</string>
 </dict>
 </plist>
 PL

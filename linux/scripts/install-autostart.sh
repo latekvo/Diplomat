@@ -26,5 +26,7 @@ EOF
 
 echo "Installed autostart entry: ${DESKTOP}"
 echo "Starting Argent Utils now…"
-nohup "$LAUNCHER" >/tmp/argent-utils.log 2>&1 &
-echo "Started (log: /tmp/argent-utils.log). Quit from the tray ⏻ button."
+LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/argent-utils"
+mkdir -p "$LOG_DIR"
+nohup "$LAUNCHER" >"$LOG_DIR/argent-utils.log" 2>&1 &
+echo "Started (log: $LOG_DIR/argent-utils.log). Quit from the tray ⏻ button."
