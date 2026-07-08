@@ -1,6 +1,16 @@
 # Argent Utils
 
-<img width="1306" height="981" alt="image" src="https://github.com/user-attachments/assets/9ada1b70-a34f-4ad5-aebc-5700407e5586" />
+<img width="1187" height="932" alt="image" src="https://github.com/user-attachments/assets/39fd52dc-8d12-4e50-bd45-3d0d8bf10783" />
+
+## TL;DR:
+
+- Auto reviews PRs which have you listed as reviewer
+- Auto fix your own PRs once they get a review
+- Auto resolve all conflicts on your PRs
+- Enforces one device per agent
+- Manually review all PRs of the given person
+
+## Details
 
 A tiny **menu-bar / system-tray applet** - a personal dashboard of Argent-repo
 triage tools. Click the wrench, get a dense two-column panel with six utilities,
