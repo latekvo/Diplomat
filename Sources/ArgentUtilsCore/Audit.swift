@@ -27,8 +27,7 @@ public struct AuditConfig {
 
     /// The configured target repo (owner, repo), from the shared core config.
     public var targetRepo: (owner: String, repo: String) {
-        let cfg = try? CoreAssets.config()
-        return (cfg?.owner ?? "software-mansion", cfg?.repo ?? "argent")
+        CoreAssets.repoCoordinates()
     }
 
     /// A whole-repo audit needs no user input, so it is always spawnable.

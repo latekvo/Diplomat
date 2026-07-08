@@ -17,9 +17,7 @@ public struct PRSnapshot: Equatable {
     public let number: Int
     public let title: String
     public let url: String
-    public let headRef: String
     public let isDraft: Bool
-    public let author: String           // PR author login ("" if unknown)
     public let mergeable: String        // "MERGEABLE" / "CONFLICTING" / "UNKNOWN"
     public let reviewDecision: String   // "" / "CHANGES_REQUESTED" / "APPROVED" / …
     public let threadsUnresolved: Int
@@ -29,15 +27,13 @@ public struct PRSnapshot: Equatable {
     /// reviewer. `threadsUnresolved` (raw count) still drives the edge-trigger.
     public let threadsIOwe: Int
 
-    public init(number: Int, title: String, url: String, headRef: String, isDraft: Bool,
-                author: String = "", mergeable: String, reviewDecision: String,
+    public init(number: Int, title: String, url: String, isDraft: Bool,
+                mergeable: String, reviewDecision: String,
                 threadsUnresolved: Int, threadsIOwe: Int = 0) {
         self.number = number
         self.title = title
         self.url = url
-        self.headRef = headRef
         self.isDraft = isDraft
-        self.author = author
         self.mergeable = mergeable
         self.reviewDecision = reviewDecision
         self.threadsUnresolved = threadsUnresolved

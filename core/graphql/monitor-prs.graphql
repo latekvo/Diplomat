@@ -1,0 +1,28 @@
+# The PR auto-fix monitor's snapshot of my open PRs (search by author qualifier in
+# $q), with each PR's mergeability, review verdict, and per-thread resolvability —
+# everything the AutofixDiff / reconcilers need, in one request.
+#
+# Keep the `first:` caps tight: GraphQL rate-limit cost multiplies nested
+# connections (search x reviewThreads x comments), so oversized limits burn the
+# 5000 pt/hr budget fast. 30 open PRs / 40 threads covers realistic worst cases.
+query ($q: String!) {
+  search(query: $q, type: ISSUE, first: 30) {
+    nodes {
+      ... on PullRequest {
+        number
+        title
+        url
+        isDraft
+        mergeable
+        reviewDecision
+        reviewThreads(first: 40) {
+          nodes {
+            isResolved
+            viewerCanResolve
+            comments(last: 1) { nodes { author { login } } }
+          }
+        }
+      }
+    }
+  }
+}

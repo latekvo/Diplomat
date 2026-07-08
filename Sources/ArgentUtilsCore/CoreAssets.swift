@@ -39,6 +39,9 @@ public enum CoreAssets {
         public let orgAssociations: [String]
         public let staleReadyDays: Int
         public let approvedDecision: String
+        /// Author associations trusted enough for an auto-review verdict; absent in
+        /// older files (optional so they still decode) — `VerdictPolicy` falls back.
+        public let trustedAssociations: [String]?
     }
 
     public struct Review: Decodable {
@@ -136,6 +139,14 @@ public enum CoreAssets {
     public static func config() throws -> Config {
         guard let c = _config else { return try loadJSON("config.json", as: Config.self) }
         return c
+    }
+
+    /// Repo coordinates from `config.json`, with the ONE hardcoded fallback the whole
+    /// codebase shares. Every consumer must come through here — six call sites used to
+    /// each carry their own copy of the fallback pair, so a retarget could half-apply.
+    public static func repoCoordinates() -> (owner: String, repo: String) {
+        let cfg = try? config()
+        return (cfg?.owner ?? "software-mansion", cfg?.repo ?? "argent")
     }
 
     public static func catalog() throws -> [CatalogEntry] {

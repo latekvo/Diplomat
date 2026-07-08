@@ -747,7 +747,11 @@ struct ContentView: View {
                                     ResultRow(item: item, tint: tint)
                                     MergeButton(
                                         conflicts: pr.hasConflicts,
-                                        busy: store.mergingPRs.contains(pr.number),
+                                        // Busy while merging OR while a Resolve spawn is in
+                                        // flight — the Resolve variant used to have no busy
+                                        // state at all, so a double-click raced two agents.
+                                        busy: store.mergingPRs.contains(pr.number)
+                                            || store.resolvingPRs.contains(pr.number),
                                         onMerge: { Task { await store.mergePR(pr.number) } },
                                         onResolve: { Task { await store.resolveConflicts(for: pr.number) } })
                                 }

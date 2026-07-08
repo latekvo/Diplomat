@@ -1,0 +1,15 @@
+Go through each currently-open PR (draft or ready-for-review) of mine (authored by @testuser) in software-mansion/argent. Use the `gh` CLI to enumerate them.
+
+Maximum rigor. For each PR: run it END-TO-END through its real entry point and confirm observable behaviour — not just that it compiles. Dispatch swarms across every review lens; every finding gets a concrete hard reproduction that proves it real. Then do a SECOND, independent verification pass over the PR to catch anything the first missed. Keep dispatching swarms until TWO consecutive passes come back completely clean.
+
+Fix every confirmed finding directly on the PR's branch, with the SAME reproduction re-run after each fix to prove it lands.
+
+Hold to the bar in my CLAUDE.md throughout: prove every issue beyond reasonable doubt with a concrete reproduction before you act on it, scale the swarm to the work, and never report something fixed without re-running the repro to confirm it landed.
+
+If a PR turns out perfectly clean — no issues, regressions or bad practices left — mark it ready for review and report its number to me. List every PR you cleared at the end.
+
+For review threads that OTHERS have left on these PRs: address each one, and never mark a thread resolved without first replying "Fixed in <commit_hash>" with the real commit hash.
+
+Keep dispatching swarms until every PR you go through comes back clean.
+
+No AI attribution anywhere in git/GitHub — commits authored as me, no Co-Authored-By, no "Generated with" taglines.

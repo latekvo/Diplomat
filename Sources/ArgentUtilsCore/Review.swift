@@ -139,8 +139,7 @@ public struct ReviewConfig {
 
     /// The configured target repo (owner, repo), from the shared core config.
     public var targetRepo: (owner: String, repo: String) {
-        let cfg = try? CoreAssets.config()
-        return (cfg?.owner ?? "software-mansion", cfg?.repo ?? "argent")
+        CoreAssets.repoCoordinates()
     }
 
     /// The single-PR field parsed as a number / URL / `owner/repo#n` shorthand,
@@ -168,9 +167,7 @@ public struct ReviewConfig {
         let review = try? CoreAssets.review()
         let scope = review?.scope ?? [:]
         let blocks = review?.blocks ?? [:]
-        let cfg = try? CoreAssets.config()
-        let owner = cfg?.owner ?? "software-mansion"
-        let repo = cfg?.repo ?? "argent"
+        let (owner, repo) = CoreAssets.repoCoordinates()
 
         // A specific PR may be mine OR someone else's — which decides whether the agent
         // may touch the branch. When we know the author (the wizard polled it, or a
@@ -356,9 +353,15 @@ public struct VerdictPolicy: Equatable {
     }
 
     /// Author associations trusted enough for an auto-verdict; anything else is "community".
-    /// Matches the long-standing gate (org members, maintainers, established contributors).
-    public static let trustedAssociations: Set<String> =
-        ["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR"]
+    /// Data-driven from `core/filters.json` (shared with every front-end, like the other
+    /// filter constants); the fallback matches the long-standing gate (org members,
+    /// maintainers, established contributors).
+    public static let trustedAssociations: Set<String> = {
+        if let list = (try? CoreAssets.filters())?.trustedAssociations, !list.isEmpty {
+            return Set(list.map { $0.uppercased() })
+        }
+        return ["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR"]
+    }()
 
     public static func isCommunity(_ authorAssociation: String) -> Bool {
         !trustedAssociations.contains(authorAssociation.uppercased())

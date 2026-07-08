@@ -46,7 +46,25 @@ public struct OpenPR: Identifiable {
     /// Review threads on *my* PR that I still owe a response on: resolvable, not
     /// resolved, and whose most-recent comment isn't mine.
     public func unaddressedThreads(me: String) -> [ReviewThread] {
-        reviewThreads.filter { $0.viewerCanResolve && !$0.isResolved && $0.lastCommentAuthor != me }
+        reviewThreads.filter {
+            ThreadTriage.owed(isResolved: $0.isResolved, viewerCanResolve: $0.viewerCanResolve,
+                              lastCommentAuthor: $0.lastCommentAuthor, me: me)
+        }
+    }
+}
+
+/// THE definition of "a review thread I still owe a reply on" — shared by the Tool 6
+/// list and the auto-fix monitor's reconcile signal, which used to implement it twice
+/// with divergent semantics (one case-sensitive, one not) so the panel and the
+/// automation could disagree about the same thread.
+public enum ThreadTriage {
+    /// Owed = unresolved, resolvable by me, and the latest comment isn't mine (so the
+    /// reviewer is waiting on me). Login comparison is case-insensitive — GitHub logins
+    /// are — and a missing `viewerCanResolve` defaults to owed.
+    public static func owed(isResolved: Bool, viewerCanResolve: Bool?,
+                            lastCommentAuthor: String?, me: String) -> Bool {
+        guard !isResolved, viewerCanResolve ?? true else { return false }
+        return lastCommentAuthor?.lowercased() != me.lowercased()
     }
 }
 
@@ -105,7 +123,11 @@ public enum Filters {
 
     public static func isSkillFile(_ path: String) -> Bool {
         guard let suffix = cfg?.skillSuffix else { return false }
-        return path.lowercased().hasSuffix(suffix)
+        // Match the FILENAME, not a raw suffix: a raw `hasSuffix("skill.md")` also
+        // matched e.g. "docs/reskill.md", feeding false positives into the
+        // verdict-withhold gate.
+        let name = path.lowercased().split(separator: "/").last.map(String.init) ?? ""
+        return name == suffix || name.hasSuffix(".\(suffix)")
     }
     public static var installerPrefixes: [String] { cfg?.installerPrefixes ?? [] }
     public static func isInstallerFile(_ path: String) -> Bool {
@@ -218,9 +240,7 @@ public enum API {
     /// mark a tracked agent session's PR as merged once it lands. One cheap
     /// `gh pr view` per tracked PR; the repo coordinates come from the shared config.
     public static func fetchPRState(number: Int) async throws -> String {
-        let cfg = try? CoreAssets.config()
-        let owner = cfg?.owner ?? "software-mansion"
-        let repo = cfg?.repo ?? "argent"
+        let (owner, repo) = CoreAssets.repoCoordinates()
         let data = try await GH.run(
             ["pr", "view", "\(number)", "--repo", "\(owner)/\(repo)", "--json", "state"])
         struct StateResponse: Decodable { let state: String }

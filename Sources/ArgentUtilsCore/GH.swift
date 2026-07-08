@@ -26,20 +26,20 @@ public enum GHError: LocalizedError {
 /// repo coordinates supplied as `$owner`/`$name` variables, so the query text
 /// itself stays repo-agnostic.
 public enum GH {
-    private static var cachedPath: String?
-
-    private static func ghPath() throws -> String {
-        if let p = cachedPath { return p }
+    /// Resolved once, thread-safely (Swift static-let initialization) — the old
+    /// `var cachedPath` was read/written from concurrent async `run()` calls, a
+    /// data race by the Swift memory model.
+    private static let resolvedPath: String? = {
         let candidates = ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"]
         for c in candidates where FileManager.default.isExecutableFile(atPath: c) {
-            cachedPath = c
             return c
         }
-        if let found = loginShellWhichGH() {
-            cachedPath = found
-            return found
-        }
-        throw GHError.ghNotFound
+        return loginShellWhichGH()
+    }()
+
+    private static func ghPath() throws -> String {
+        guard let p = resolvedPath else { throw GHError.ghNotFound }
+        return p
     }
 
     /// Last resort: ask a login shell where gh lives (covers exotic installs).

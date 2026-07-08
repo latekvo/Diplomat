@@ -19,20 +19,12 @@ struct ArgentUtilsApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         let env = ProcessInfo.processInfo.environment
-        let headless = env["ARGENT_UTILS_DUMP"] == "1"
-            || env["ARGENT_UTILS_LOOKUP"] != nil
-            || env["ARGENT_UTILS_PRINT_PROMPT"] != nil
-            || env["ARGENT_UTILS_SETTINGS_DUMP"] == "1"
-            || env["ARGENT_UTILS_RENDER"] != nil
-            || env["ARGENT_UTILS_TRACK_TEST"] == "1"
-            || env["ARGENT_UTILS_DEVICE_DUMP"] == "1"
-            || env["ARGENT_UTILS_AUTOFIX_POLL"] == "1"
-            || env["ARGENT_UTILS_APIWATCH_SCAN"] == "1"
 
         // Singleton, newest-wins: a freshly launched GUI instance kills any older
         // ones so there's never more than one wrench. Skipped in headless self-test
-        // mode so a dump/lookup run can't kill the live menu-bar app.
-        if !headless {
+        // mode (see `Headless` for the single env-var list shared with Store) so a
+        // dump/lookup run can't kill the live menu-bar app.
+        if !Headless.active {
             SingleInstance.terminateOthers()
 
             // First run from a terminal (`swift run`): offer to install as a login
@@ -47,7 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let defaults = UserDefaults.standard
             if !defaults.bool(forKey: "didTriggerTerminalAutomation") {
                 defaults.set(true, forKey: "didTriggerTerminalAutomation")
-                let preferred = SpawnTerminal(rawValue: defaults.string(forKey: "terminalChoice") ?? "") ?? .iterm
+                let preferred = SpawnTerminal(rawValue: Store.storedTerminalChoice ?? "") ?? .iterm
                 AgentSpawner.triggerAutomationPrompt(preferred: preferred)
             }
         }
@@ -328,9 +320,7 @@ enum Dump {
     static func autofixPoll() async {
         do {
             let me = try await API.fetchViewerLogin()
-            let cfg = try? CoreAssets.config()
-            let owner = cfg?.owner ?? "software-mansion"
-            let repo = cfg?.repo ?? "argent"
+            let (owner, repo) = CoreAssets.repoCoordinates()
             let snaps = try await AutofixMonitor.fetchSnapshots(owner: owner, repo: repo, me: me)
             print("== autofix poll: @\(me) · \(owner)/\(repo) · \(snaps.count) open PRs ==\n")
             for s in snaps.sorted(by: { $0.number > $1.number }) {
@@ -359,7 +349,7 @@ enum Dump {
             // Detection proof: against that baseline, flip the first PR to CONFLICTING.
             if let s = snaps.first {
                 let conflicted = PRSnapshot(number: s.number, title: s.title, url: s.url,
-                    headRef: s.headRef, isDraft: s.isDraft, mergeable: "CONFLICTING",
+                    isDraft: s.isDraft, mergeable: "CONFLICTING",
                     reviewDecision: s.reviewDecision, threadsUnresolved: s.threadsUnresolved)
                 var others = snaps.filter { $0.number != s.number }
                 others.append(conflicted)

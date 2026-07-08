@@ -20,8 +20,11 @@ struct SettingsView: View {
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .task {
+            // Freshen the allocator status only. This used to also fire a full GitHub
+            // poll on EVERY Settings open — two GraphQL searches against the shared
+            // 5000 pt/hr budget (and potential agent dispatch) from a view-appear
+            // hook; the monitor's own cadence + wake trigger keep the rows fresh.
             await store.refreshAllocatorInstall()
-            await store.runAutofixPollOnce()
         }
     }
 
@@ -36,6 +39,7 @@ struct SettingsView: View {
             .toggleStyle(.switch)
             .controlSize(.small)
             autofixDetail
+            pollErrorRow
 
             Toggle(isOn: $store.reviewRequestsEnabled) {
                 Text("Full-E2E review PRs that request my review").font(.caption)
@@ -77,6 +81,23 @@ struct SettingsView: View {
             + "automatically until it lands."
         let handled = store.reviewRequestsHandled > 0 ? "  Reviewed \(store.reviewRequestsHandled) so far." : ""
         return base + handled
+    }
+
+    /// Shown while the monitor's polls are failing (gh auth expired, network, GraphQL
+    /// errors) — previously this failure mode was completely silent: the toggles said
+    /// "on", the counts froze stale, and nothing dispatched.
+    @ViewBuilder
+    private var pollErrorRow: some View {
+        if let err = store.autofixPollError {
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 9)).foregroundStyle(Color.red)
+                Text("Polls failing since \(Fmt.clock(store.autofixPollErrorAt)) — \(err)")
+                    .font(.caption2).foregroundStyle(Color.red)
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
     }
 
     /// Shown while any review I owe has no agent on it — the reconciler is retrying them.

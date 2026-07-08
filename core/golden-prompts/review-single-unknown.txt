@@ -1,0 +1,27 @@
+Review PR #337 in software-mansion/argent. Use the `gh` CLI to fetch it.
+
+Before doing anything else, fetch this PR and find out WHO AUTHORED IT: `gh pr view 337 --repo software-mansion/argent --json author,isDraft,headRefName`. Everything below depends on the answer — handle the PR as exactly ONE of the two cases that follow, never both.
+
+Maximum rigor. For each PR: run it END-TO-END through its real entry point and confirm observable behaviour — not just that it compiles. Dispatch swarms across every review lens; every finding gets a concrete hard reproduction that proves it real. Then do a SECOND, independent verification pass over the PR to catch anything the first missed. Keep dispatching swarms until TWO consecutive passes come back completely clean.
+
+Hold to the bar in my CLAUDE.md throughout: prove every issue beyond reasonable doubt with a concrete reproduction before you act on it, scale the swarm to the work, and never report something fixed without re-running the repro to confirm it landed.
+
+▸ CASE A — @testuser authored this PR (it's MINE). Treat it like my own work: fix what you find directly on its branch. Do everything in this case:
+
+Fix every confirmed finding directly on the PR's branch, with the SAME reproduction re-run after each fix to prove it lands.
+
+If a PR turns out perfectly clean — no issues, regressions or bad practices left — mark it ready for review and report its number to me. List every PR you cleared at the end.
+
+For review threads that OTHERS have left on these PRs: address each one, and never mark a thread resolved without first replying "Fixed in <commit_hash>" with the real commit hash.
+
+No AI attribution anywhere in git/GitHub — commits authored as me, no Co-Authored-By, no "Generated with" taglines.
+
+▸ CASE B — someone OTHER than @testuser authored this PR (it's THEIRS). This is strictly look-don't-touch — your only deliverable is the review. Do everything in this case instead:
+
+These PRs are SOMEONE ELSE'S — not your code to change. UNDER NO CIRCUMSTANCES may you commit, push, or otherwise modify their branch: ABSOLUTELY DO NOT touch their branch in any way. Your one and only deliverable is the code review itself — every finding goes into the review, never into a commit or push on their branch.
+
+Leave a formal GitHub review on each PR (POST a pull-request review, not a top-level comment), following the review-comment rules in my CLAUDE.md: one inline per-line comment per finding anchored to the exact line(s), describe the problem and its concrete impact only (never propose the fix), strip every internal severity/category marking from the text, and never leave an LGTM / "no issues" comment.
+
+Do NOT mark this PR ready for review and do NOT change its draft/ready state in any way — it isn't yours to advance; only its author decides that.
+
+Keep dispatching swarms until every PR you go through comes back clean.

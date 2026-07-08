@@ -4,54 +4,15 @@ import ArgentUtilsCore
 // macOS side of the PR auto-fix monitor: fetch a snapshot of my open PRs (one GraphQL
 // call via the `gh` CLI) so the shared AutofixDiff can decide what changed. The
 // diffing lives in ArgentUtilsCore; the spawn/track happens in Store. This file is
-// just the GitHub read.
+// just the GitHub read. The queries themselves live in `core/graphql/` with the other
+// shared queries (single source of truth; a future Linux monitor reuses them as-is).
 enum AutofixMonitor {
-    /// Which open PRs to fetch: the ones I authored (auto-fix), or the ones that have
-    /// requested my review (auto-review).
-    enum Role {
-        case author, reviewRequested
-        func qualifier(_ me: String) -> String {
-            switch self {
-            case .author: return "author:\(me)"
-            case .reviewRequested: return "review-requested:\(me)"
-            }
-        }
-    }
-
-    /// One GraphQL search over my open PRs in the target repo (by `role`), with each
+    /// One GraphQL search over my open, authored PRs in the target repo, with each
     /// PR's mergeability, review verdict, and review-thread resolution — everything the
-    /// diff needs, in a single request.
-    static func fetchSnapshots(owner: String, repo: String, me: String,
-                               role: Role = .author) async throws -> [PRSnapshot] {
-        let q = "repo:\(owner)/\(repo) \(role.qualifier(me)) is:pr is:open"
-        // Keep the `first:` caps tight: GraphQL rate-limit cost multiplies nested
-        // connections (search × reviewThreads × comments), so oversized limits burn the
-        // 5000 pt/hr budget fast. 30 open PRs / 40 threads covers realistic worst cases.
-        let query = """
-        query($q: String!) {
-          search(query: $q, type: ISSUE, first: 30) {
-            nodes {
-              ... on PullRequest {
-                number
-                title
-                url
-                isDraft
-                author { login }
-                mergeable
-                reviewDecision
-                headRefName
-                reviewThreads(first: 40) {
-                  nodes {
-                    isResolved
-                    viewerCanResolve
-                    comments(last: 1) { nodes { author { login } } }
-                  }
-                }
-              }
-            }
-          }
-        }
-        """
+    /// diff and the reconcilers need, in a single request (`core/graphql/monitor-prs`).
+    static func fetchSnapshots(owner: String, repo: String, me: String) async throws -> [PRSnapshot] {
+        let q = "repo:\(owner)/\(repo) author:\(me) is:pr is:open"
+        let query = try CoreAssets.graphql("monitor-prs")
         let data = try await GH.run(["api", "graphql", "-f", "query=\(query)", "-f", "q=\(q)"])
         return try parse(data, me: me)
     }
@@ -63,7 +24,6 @@ enum AutofixMonitor {
         let number: Int
         let title: String
         let url: String
-        let headRef: String
         let author: String
         let authorAssociation: String // OWNER / MEMBER / COLLABORATOR / CONTRIBUTOR / NONE / …
         let files: [String]         // changed file paths (for skill/installer verdict gating)
@@ -78,47 +38,19 @@ enum AutofixMonitor {
             guard let m = myLastReviewAt else { return true }
             return r > m
         }
-
-        var touchesSkill: Bool { files.contains(where: Filters.isSkillFile) }
-        var touchesInstaller: Bool { files.contains(where: Filters.isInstallerFile) }
-        /// Authored from outside the org (unknown/first-time/outside author).
-        var isCommunity: Bool { VerdictPolicy.isCommunity(authorAssociation) }
     }
 
-    /// PRs that request MY review, with request/last-review timestamps (one GraphQL call).
-    /// `includeFiles` pulls each PR's changed paths for the verdict-withhold gate — a big
-    /// chunk of the query's rate-limit cost, and pointless unless auto-approvals are on
-    /// (verdicts are off by default), so the caller passes `false` then and we skip it.
-    /// The `first:` caps are kept tight for the same rate-limit reason.
+    /// PRs that request MY review, with request/last-review timestamps (one GraphQL
+    /// call, `core/graphql/review-requests`). `includeFiles` pulls each PR's changed
+    /// paths for the verdict-withhold gate — a big chunk of the query's rate-limit
+    /// cost, and pointless unless auto-approvals are on (verdicts are off by default),
+    /// so the caller passes `false` then and the `@include` directive skips it.
     static func fetchReviewRequests(owner: String, repo: String, me: String,
                                     includeFiles: Bool = false) async throws -> [ReviewRequest] {
         let q = "repo:\(owner)/\(repo) review-requested:\(me) is:pr is:open"
-        let filesBlock = includeFiles ? "files(first: 60) { nodes { path } }" : ""
-        let query = """
-        query($q: String!) {
-          search(query: $q, type: ISSUE, first: 30) {
-            nodes {
-              ... on PullRequest {
-                number
-                title
-                url
-                headRefName
-                author { login }
-                authorAssociation
-                \(filesBlock)
-                timelineItems(itemTypes: [REVIEW_REQUESTED_EVENT], last: 15) {
-                  nodes { ... on ReviewRequestedEvent {
-                    createdAt
-                    requestedReviewer { __typename ... on User { login } }
-                  } }
-                }
-                reviews(last: 15) { nodes { author { login } submittedAt } }
-              }
-            }
-          }
-        }
-        """
-        let data = try await GH.run(["api", "graphql", "-f", "query=\(query)", "-f", "q=\(q)"])
+        let query = try CoreAssets.graphql("review-requests")
+        let data = try await GH.run(["api", "graphql", "-f", "query=\(query)", "-f", "q=\(q)",
+                                     "-F", "withFiles=\(includeFiles)"])
         struct Resp: Decodable {
             let data: D
             struct D: Decodable { let search: S }
@@ -127,7 +59,6 @@ enum AutofixMonitor {
                 let number: Int?
                 let title: String?
                 let url: String?
-                let headRefName: String?
                 let author: Login?
                 let authorAssociation: String?
                 let files: FilesConn?
@@ -153,7 +84,7 @@ enum AutofixMonitor {
                 .filter { $0.author?.login?.lowercased() == lower }
                 .compactMap { $0.submittedAt }.max()
             return ReviewRequest(number: number, title: n.title ?? "", url: n.url ?? "",
-                                 headRef: n.headRefName ?? "", author: n.author?.login ?? "",
+                                 author: n.author?.login ?? "",
                                  authorAssociation: n.authorAssociation ?? "NONE",
                                  files: (n.files?.nodes ?? []).compactMap { $0.path },
                                  requestedAt: reqAt, myLastReviewAt: myReviewAt)
@@ -162,7 +93,8 @@ enum AutofixMonitor {
 
     /// Decode the GraphQL search response into snapshots. Non-PR search nodes (no
     /// `number`) are skipped. `me` distinguishes threads I still owe a reply on (last
-    /// comment isn't mine) from ones waiting on the reviewer.
+    /// comment isn't mine) from ones waiting on the reviewer — via the shared
+    /// `ThreadTriage.owed` rule (same one the Tool 6 list uses).
     static func parse(_ data: Data, me: String = "") throws -> [PRSnapshot] {
         struct Resp: Decodable {
             let data: DataField
@@ -173,10 +105,8 @@ enum AutofixMonitor {
                 let title: String?
                 let url: String?
                 let isDraft: Bool?
-                let author: Author?
                 let mergeable: String?
                 let reviewDecision: String?
-                let headRefName: String?
                 let reviewThreads: Threads?
             }
             struct Author: Decodable { let login: String? }
@@ -190,25 +120,19 @@ enum AutofixMonitor {
             }
         }
         let r = try JSONDecoder().decode(Resp.self, from: data)
-        let lowerMe = me.lowercased()
         return r.data.search.nodes.compactMap { n in
             guard let number = n.number else { return nil }
             let threads = n.reviewThreads?.nodes ?? []
             let unresolved = threads.filter { !$0.isResolved }.count
-            // Threads I owe a reply on: unresolved, I can resolve them, and the latest
-            // comment isn't mine (so the reviewer is waiting on me, not the other way).
             let iOwe = threads.filter { t in
-                guard !t.isResolved, t.viewerCanResolve ?? true else { return false }
-                let last = t.comments?.nodes.last?.author?.login?.lowercased()
-                return last != lowerMe
+                ThreadTriage.owed(isResolved: t.isResolved, viewerCanResolve: t.viewerCanResolve,
+                                  lastCommentAuthor: t.comments?.nodes.last?.author?.login, me: me)
             }.count
             return PRSnapshot(
                 number: number,
                 title: n.title ?? "",
                 url: n.url ?? "",
-                headRef: n.headRefName ?? "",
                 isDraft: n.isDraft ?? false,
-                author: n.author?.login ?? "",
                 mergeable: n.mergeable ?? "UNKNOWN",
                 reviewDecision: n.reviewDecision ?? "",
                 threadsUnresolved: unresolved,

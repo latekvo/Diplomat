@@ -40,8 +40,7 @@ public struct ConflictConfig {
 
     /// The configured target repo (owner, repo), from the shared core config.
     public var targetRepo: (owner: String, repo: String) {
-        let cfg = try? CoreAssets.config()
-        return (cfg?.owner ?? "software-mansion", cfg?.repo ?? "argent")
+        CoreAssets.repoCoordinates()
     }
 
     /// The single-PR field parsed as a number / URL / `owner/repo#n` shorthand,
@@ -61,9 +60,7 @@ public struct ConflictConfig {
         let conflicts = try? CoreAssets.conflicts()
         let scope = conflicts?.scope ?? [:]
         let blocks = conflicts?.blocks ?? [:]
-        let cfg = try? CoreAssets.config()
-        let owner = cfg?.owner ?? "software-mansion"
-        let repo = cfg?.repo ?? "argent"
+        let (owner, repo) = CoreAssets.repoCoordinates()
 
         var out: [String] = []
 

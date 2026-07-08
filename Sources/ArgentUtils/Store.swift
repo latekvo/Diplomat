@@ -42,24 +42,34 @@ final class Store: ObservableObject {
 
     // MARK: persisted settings
 
+    /// Persist a settings value — EXCEPT in render mode. A headless render seeds this
+    /// Store with preview values through the same persisted properties the GUI uses,
+    /// and it shares the live app's defaults domain: an unguarded write would silently
+    /// flip the user's real settings (a past render turned the auto-approve opt-in ON).
+    /// Every settings didSet must go through here.
+    private func persist(_ value: Any?, forKey key: String) {
+        guard !Headless.isRender else { return }
+        UserDefaults.standard.set(value, forKey: key)
+    }
+
     @Published var usernameOverride: String {
-        didSet { UserDefaults.standard.set(usernameOverride, forKey: Keys.usernameOverride) }
+        didSet { persist(usernameOverride, forKey: Keys.usernameOverride) }
     }
     @Published var hiddenTools: Set<String> {
-        didSet { UserDefaults.standard.set(Array(hiddenTools), forKey: Keys.hiddenTools) }
+        didSet { persist(Array(hiddenTools), forKey: Keys.hiddenTools) }
     }
     @Published var colorOverrides: [String: String] {
-        didSet { UserDefaults.standard.set(colorOverrides, forKey: Keys.colorOverrides) }
+        didSet { persist(colorOverrides, forKey: Keys.colorOverrides) }
     }
     @Published var terminalChoice: String {
-        didSet { UserDefaults.standard.set(terminalChoice, forKey: Keys.terminalChoice) }
+        didSet { persist(terminalChoice, forKey: Keys.terminalChoice) }
     }
     /// Whether the in-process PR auto-fix monitor is on. Persisted; when turned on we
     /// kick an immediate poll rather than waiting for the next tick.
     @Published var prAutofixEnabled: Bool {
         didSet {
-            UserDefaults.standard.set(prAutofixEnabled, forKey: Keys.prAutofixEnabled)
-            if prAutofixEnabled && !oldValue { Task { await runAutofixPollOnce() } }
+            persist(prAutofixEnabled, forKey: Keys.prAutofixEnabled)
+            if prAutofixEnabled && !oldValue && !Headless.isRender { Task { await runAutofixPollOnce() } }
         }
     }
 
@@ -68,8 +78,8 @@ final class Store: ObservableObject {
     /// enable. Independent of `prAutofixEnabled`.
     @Published var reviewRequestsEnabled: Bool {
         didSet {
-            UserDefaults.standard.set(reviewRequestsEnabled, forKey: Keys.reviewRequestsEnabled)
-            if reviewRequestsEnabled && !oldValue { Task { await runAutofixPollOnce() } }
+            persist(reviewRequestsEnabled, forKey: Keys.reviewRequestsEnabled)
+            if reviewRequestsEnabled && !oldValue && !Headless.isRender { Task { await runAutofixPollOnce() } }
         }
     }
 
@@ -95,7 +105,7 @@ final class Store: ObservableObject {
     /// leaves comments only and the final call stays with me until I opt in. The per-class
     /// withhold flags below only matter when this is on.
     @Published var autoApproveEnabled: Bool {
-        didSet { UserDefaults.standard.set(autoApproveEnabled, forKey: Keys.autoApproveEnabled) }
+        didSet { persist(autoApproveEnabled, forKey: Keys.autoApproveEnabled) }
     }
 
     /// Auto-review verdict policy: each flag independently withholds the "final pass +
@@ -104,13 +114,13 @@ final class Store: ObservableObject {
     /// dispatch). Combined into a `VerdictPolicy` via `verdictPolicy`. Only consulted when
     /// `autoApproveEnabled` is on.
     @Published var verdictWithholdSkill: Bool {
-        didSet { UserDefaults.standard.set(verdictWithholdSkill, forKey: Keys.verdictWithholdSkill) }
+        didSet { persist(verdictWithholdSkill, forKey: Keys.verdictWithholdSkill) }
     }
     @Published var verdictWithholdInstaller: Bool {
-        didSet { UserDefaults.standard.set(verdictWithholdInstaller, forKey: Keys.verdictWithholdInstaller) }
+        didSet { persist(verdictWithholdInstaller, forKey: Keys.verdictWithholdInstaller) }
     }
     @Published var verdictWithholdCommunity: Bool {
-        didSet { UserDefaults.standard.set(verdictWithholdCommunity, forKey: Keys.verdictWithholdCommunity) }
+        didSet { persist(verdictWithholdCommunity, forKey: Keys.verdictWithholdCommunity) }
     }
 
     /// The verdict policy assembled from the three settings toggles.
@@ -124,8 +134,8 @@ final class Store: ObservableObject {
     /// stalls on a transient server error to continue. Persisted; kicks a scan on enable.
     @Published var apiWatchEnabled: Bool {
         didSet {
-            UserDefaults.standard.set(apiWatchEnabled, forKey: Keys.apiWatchEnabled)
-            if apiWatchEnabled && !oldValue { Task { await runApiErrorScanOnce() } }
+            persist(apiWatchEnabled, forKey: Keys.apiWatchEnabled)
+            if apiWatchEnabled && !oldValue && !Headless.isRender { Task { await runApiErrorScanOnce() } }
         }
     }
 
@@ -156,6 +166,13 @@ final class Store: ObservableObject {
         static let verdictWithholdCommunity = "verdictWithholdCommunity"
         static let apiWatchEnabled = "apiWatchEnabled"
         static let apiWatchContinues = "apiWatchContinues"
+        static let myConflictAttempts = "myConflictAttempts"
+    }
+
+    /// The persisted terminal choice, readable before a Store exists (the AppDelegate's
+    /// first-launch automation prompt) — single-sourced so a key rename can't desync it.
+    static var storedTerminalChoice: String? {
+        UserDefaults.standard.string(forKey: Keys.terminalChoice)
     }
 
     /// The handle to treat as "me": the user's override if set, else the gh login.
@@ -217,20 +234,10 @@ final class Store: ObservableObject {
             selected = first
         }
 
-        let env = ProcessInfo.processInfo.environment
-        // Match the app's full headless set (ArgentUtilsApp) so self-test modes
-        // (render, dumps, track-test) don't start polls or shell `node` for the
-        // allocator status during a one-shot check.
-        let headless = env["ARGENT_UTILS_DUMP"] == "1"
-            || env["ARGENT_UTILS_LOOKUP"] != nil
-            || env["ARGENT_UTILS_RENDER"] != nil
-            || env["ARGENT_UTILS_PRINT_PROMPT"] != nil
-            || env["ARGENT_UTILS_SETTINGS_DUMP"] == "1"
-            || env["ARGENT_UTILS_TRACK_TEST"] == "1"
-            || env["ARGENT_UTILS_DEVICE_DUMP"] == "1"
-            || env["ARGENT_UTILS_AUTOFIX_POLL"] == "1"
-            || env["ARGENT_UTILS_APIWATCH_SCAN"] == "1"
-        if !headless {
+        // One-shot self-test modes (render, dumps, track-test) must not start polls
+        // or shell `node` for the allocator status — see `Headless` for the single
+        // env-var list shared with the AppDelegate.
+        if !Headless.active {
             startAutoRefresh()
             startProcessPoll()
             startAutofixMonitor()
@@ -255,8 +262,10 @@ final class Store: ObservableObject {
     /// Force-kill a device (the panel's per-device X): free it + shut it down, then
     /// refresh so the row updates.
     func killDevice(_ key: String) async {
-        _ = await Task.detached(priority: .userInitiated) { DeviceAllocator.killDevice(key: key) }.value
-        AuditLog.log("panel", "kill-device", "Killed device \(key)")
+        let ok = await Task.detached(priority: .userInitiated) { DeviceAllocator.killDevice(key: key) }.value
+        // Log AFTER the call, with the real outcome — the audit feed must not
+        // assert a kill that actually failed.
+        AuditLog.log("panel", "kill-device", ok ? "Killed device \(key)" : "Kill FAILED for device \(key)")
         await refreshDeviceState()
     }
 
@@ -268,11 +277,16 @@ final class Store: ObservableObject {
 
     func installAllocator() async {
         allocatorInstall = await Task.detached(priority: .utility) { DeviceAllocator.install() }.value
+        AuditLog.log("panel", "allocator-install",
+                     "Installed device allocator (ok: \(allocatorInstall?.installed == true))")
+        refreshAudit()
         await refreshDeviceState()
     }
 
     func uninstallAllocator() async {
         allocatorInstall = await Task.detached(priority: .utility) { DeviceAllocator.uninstall() }.value
+        AuditLog.log("panel", "allocator-uninstall", "Uninstalled device allocator")
+        refreshAudit()
         await refreshDeviceState()
     }
 
@@ -356,7 +370,7 @@ final class Store: ObservableObject {
     private func persistProcesses() {
         // A headless render shares the live app's defaults domain; never let seeded
         // preview rows overwrite the user's real tracked-process list.
-        if ProcessInfo.processInfo.environment["ARGENT_UTILS_RENDER"] != nil { return }
+        guard !Headless.isRender else { return }
         if let data = try? JSONEncoder().encode(processes) {
             UserDefaults.standard.set(data, forKey: Keys.processes)
         }
@@ -419,15 +433,55 @@ final class Store: ObservableObject {
         }
     }
 
+    /// Guards `runAutofixPollOnce` against overlap. The poll suspends at every gh
+    /// fetch and agent spawn, and its dedup state (in-flight processes, attempt
+    /// records, fingerprints) is only committed after those suspensions — so two
+    /// interleaved polls (timer tick + wake + Settings-open + toggle-enable all kick
+    /// one) could each see "no agent on #N" and double-dispatch. @MainActor makes
+    /// this flag race-free.
+    private var autofixPollInFlight = false
+
+    /// Set when the last monitor poll cycle failed (gh/auth/network), so persistent
+    /// breakage is visible in Settings instead of silently freezing stale counts.
+    /// Cleared by the next fully-successful cycle.
+    @Published var autofixPollError: String?
+    @Published var autofixPollErrorAt: Date?
+    /// Failure recorded by the sub-polls during the current cycle; evaluated once at
+    /// the end of `runAutofixPollOnce` (so one failing sub-poll can't be masked — or
+    /// re-audit-logged every tick — by the other succeeding).
+    private var pollErrorThisCycle: String?
+
+    private func notePollFailure(_ error: Error) {
+        pollErrorThisCycle = (error as? LocalizedError)?.errorDescription ?? "\(error)"
+    }
+
     /// One poll: fetch my open PRs, diff against saved fingerprints, and dispatch an
     /// agent for each PR that just gained a conflict or new review work. No-op when
     /// the feature is off or our login isn't known yet.
     func runAutofixPollOnce() async {
+        guard !autofixPollInFlight else { return }
+        autofixPollInFlight = true
+        defer { autofixPollInFlight = false }
         if me.isEmpty { await fetchMe() }
         guard !effectiveMe.isEmpty else { return }
         let (owner, repo) = coreRepo
+        pollErrorThisCycle = nil
         if prAutofixEnabled { await pollMyPRs(owner: owner, repo: repo) }
         if reviewRequestsEnabled { await pollReviewRequests(owner: owner, repo: repo) }
+        if let e = pollErrorThisCycle {
+            // Audit only the transition into failure, not every 3-minute tick.
+            if autofixPollError == nil {
+                AuditLog.log("auto", "poll-failed", "Monitor poll failing: \(e.prefix(120))")
+                refreshAudit()
+            }
+            autofixPollError = e
+            autofixPollErrorAt = Date()
+        } else if autofixPollError != nil {
+            AuditLog.log("auto", "poll-recovered", "Monitor polls succeeding again")
+            refreshAudit()
+            autofixPollError = nil
+            autofixPollErrorAt = nil
+        }
     }
 
     /// My own PRs: dispatch on new conflicts / new review work. Edge-triggered for the
@@ -437,15 +491,16 @@ final class Store: ObservableObject {
     private func pollMyPRs(owner: String, repo: String) async {
         let snaps: [PRSnapshot]
         do {
-            snaps = try await AutofixMonitor.fetchSnapshots(owner: owner, repo: repo,
-                                                            me: effectiveMe, role: .author)
+            snaps = try await AutofixMonitor.fetchSnapshots(owner: owner, repo: repo, me: effectiveMe)
         } catch {
-            return   // transient gh/network error — leave state as-is, retry next tick
+            notePollFailure(error)   // leave state as-is, retry next tick
+            return
         }
         let (events, fingerprints) = AutofixDiff.compute(prior: loadAutofixFingerprints(), now: snaps)
         for event in events { await dispatchAutofix(event) }
         saveAutofixFingerprints(fingerprints)
         await reconcileMyReviews(snaps: snaps, now: Date())
+        await reconcileMyConflicts(snaps: snaps, now: Date())
         autofixStatus = AutofixStatus(
             updatedAt: Date(), watching: snaps.count,
             conflictsHandled: autofixConflictsHandled, reviewsHandled: autofixReviewsHandled)
@@ -478,6 +533,47 @@ final class Store: ObservableObject {
         saveMyReviewAttempts(attempts)
     }
 
+    /// Level-triggered reconcile for conflicts on MY PRs, mirroring `reconcileMyReviews`:
+    /// any PR of mine that GitHub currently reports CONFLICTING and that has no agent on
+    /// it gets a Resolve-conflicts agent — with `ReviewReconcile` retry backoff, so a
+    /// spawn that failed (e.g. terminal-automation permission revoked) is retried instead
+    /// of being silently consumed forever, and a conflict that already existed when the
+    /// monitor first saw the PR (which the edge-trigger baselines) still gets an agent.
+    /// The record is pruned once the PR stops conflicting.
+    private func reconcileMyConflicts(snaps: [PRSnapshot], now: Date) async {
+        var attempts = loadMyConflictAttempts()
+        let conflicted = snaps.filter { $0.mergeable == "CONFLICTING" }
+        for s in conflicted {
+            let key = String(s.number)
+            let inFlight = processes.contains(where: { $0.prURL == s.url && !$0.done })
+            let decision = ReviewReconcile.decide(prior: attempts[key], stamp: "conflicting",
+                                                  inFlight: inFlight, banned: false, now: now)
+            if case .dispatch(let attemptNumber) = decision {
+                if await dispatchConflictFix(number: s.number, url: s.url,
+                                             attemptNumber: attemptNumber, source: "auto") {
+                    attempts[key] = ReviewAttempt(requestedAt: "conflicting",
+                                                  lastDispatchedAt: now, attempts: attemptNumber)
+                }
+            }
+        }
+        let keys = Set(conflicted.map { String($0.number) })
+        attempts = attempts.filter { keys.contains($0.key) }
+        saveMyConflictAttempts(attempts)
+    }
+
+    private func loadMyConflictAttempts() -> [String: ReviewAttempt] {
+        guard let data = UserDefaults.standard.data(forKey: Keys.myConflictAttempts),
+              let decoded = try? JSONDecoder().decode([String: ReviewAttempt].self, from: data)
+        else { return [:] }
+        return decoded
+    }
+    private func saveMyConflictAttempts(_ map: [String: ReviewAttempt]) {
+        guard !Headless.isRender else { return }
+        if let data = try? JSONEncoder().encode(map) {
+            UserDefaults.standard.set(data, forKey: Keys.myConflictAttempts)
+        }
+    }
+
     /// PRs that request MY review: dispatch the most-comprehensive review whenever I OWE
     /// one — i.e. the latest "review requested from me" is newer than my last review of
     /// that PR. Robust to re-requests (a fresh request re-qualifies even after I reviewed
@@ -499,6 +595,7 @@ final class Store: ObservableObject {
                                                                 me: effectiveMe,
                                                                 includeFiles: autoApproveEnabled)
         } catch {
+            notePollFailure(error)
             return
         }
         let banned = BanList.read()
@@ -590,14 +687,21 @@ final class Store: ObservableObject {
             let retry = attemptNumber > 1 ? " · retry \(attemptNumber)" : ""
             track(kind: "review", label: "Auto · Review-req · #\(r.number) (@\(r.author))\(tag)\(retry)",
                   prURL: r.url, result: result, source: "auto")
-            reviewRequestsHandled += 1
+            // Retries of the same review are re-dispatches, not new reviews handled —
+            // count each review once or the Settings tally overclaims.
+            if attemptNumber == 1 { reviewRequestsHandled += 1 }
             return true
-        } catch { return false }
+        } catch {
+            AuditLog.log("auto", "spawn-failed",
+                         "Review-req #\(r.number) failed to spawn: \((error as? LocalizedError)?.errorDescription ?? "\(error)")")
+            refreshAudit()
+            return false
+        }
     }
 
     var reviewRequestsHandled: Int {
         get { UserDefaults.standard.integer(forKey: Keys.reviewRequestsHandled) }
-        set { UserDefaults.standard.set(newValue, forKey: Keys.reviewRequestsHandled) }
+        set { persist(newValue, forKey: Keys.reviewRequestsHandled) }
     }
     /// prNumber(String) -> our attempt record (request stamp, last dispatch, attempt count).
     /// Persisted as JSON so the retry backoff survives an applet restart.
@@ -608,6 +712,7 @@ final class Store: ObservableObject {
         return decoded
     }
     private func saveReviewReqAttempts(_ map: [String: ReviewAttempt]) {
+        guard !Headless.isRender else { return }
         if let data = try? JSONEncoder().encode(map) {
             UserDefaults.standard.set(data, forKey: Keys.reviewReqAttempts)
         }
@@ -620,25 +725,46 @@ final class Store: ObservableObject {
         switch event {
         case .review(let s):
             _ = await dispatchMyReview(s)   // shared with the offline-review reconciler
-            return
-        case .conflict(let s):
-            // Never pile a second agent on a PR that already has one running.
-            if processes.contains(where: { $0.prURL == s.url && !$0.done }) { return }
-            let prompt = ConflictConfig(target: .specific, me: effectiveMe,
-                                        specificPR: String(s.number)).buildPrompt()
-            let preferred = terminal
-            do {
-                let result = try await Task.detached(priority: .userInitiated) {
-                    try AgentSpawner.spawn(prompt, terminal: preferred)
-                }.value
-                track(kind: "conflicts", label: "Auto · Resolve · #\(s.number)",
-                      prURL: s.url, result: result, source: "auto")
-                autofixConflictsHandled += 1
-            } catch {
-                // Spawn failed (e.g. terminal-automation permission not granted). Skip; the
-                // fingerprint is still recorded, so it won't loop — the user can trigger the
-                // action card manually.
-            }
+        case .conflict:
+            // Conflicts are handled by the level-triggered `reconcileMyConflicts` (same
+            // poll sees the CONFLICTING state, so nothing is slower) — which also covers
+            // conflicts that predate the baseline and retries failed spawns with backoff.
+            break
+        }
+    }
+
+    /// Spawn a Resolve-conflicts agent for one PR — shared by the conflicts reconciler
+    /// ("auto") and the panel's per-row button ("panel"). `resolvingPRs` is inserted
+    /// BEFORE the (seconds-long) spawn await, so a double-click or an overlapping poll
+    /// can't launch two agents on the same PR; the in-flight process check dedups
+    /// against agents that are already tracked. Returns whether an agent launched.
+    @discardableResult
+    private func dispatchConflictFix(number: Int, url: String,
+                                     attemptNumber: Int = 1, source: String) async -> Bool {
+        if resolvingPRs.contains(number) { return false }
+        if processes.contains(where: { $0.prURL == url && !$0.done }) { return false }
+        resolvingPRs.insert(number)
+        defer { resolvingPRs.remove(number) }
+        let prompt = ConflictConfig(target: .specific, me: effectiveMe,
+                                    specificPR: String(number)).buildPrompt()
+        let preferred = terminal
+        do {
+            let result = try await Task.detached(priority: .userInitiated) {
+                try AgentSpawner.spawn(prompt, terminal: preferred)
+            }.value
+            let retry = attemptNumber > 1 ? " · retry \(attemptNumber)" : ""
+            let label = source == "auto" ? "Auto · Resolve · #\(number)\(retry)" : "Resolve · #\(number)"
+            track(kind: "conflicts", label: label, prURL: url, result: result, source: source)
+            if attemptNumber == 1 { autofixConflictsHandled += 1 }
+            return true
+        } catch {
+            // Spawn failed (e.g. terminal-automation permission revoked). Audit it —
+            // this used to be completely silent — and let the reconciler retry with
+            // backoff.
+            AuditLog.log(source, "spawn-failed",
+                         "Resolve #\(number) failed to spawn: \((error as? LocalizedError)?.errorDescription ?? "\(error)")")
+            refreshAudit()
+            return false
         }
     }
 
@@ -661,9 +787,12 @@ final class Store: ObservableObject {
             let retry = attemptNumber > 1 ? " · retry \(attemptNumber)" : ""
             track(kind: "review", label: "Auto · Review · #\(s.number)\(retry)",
                   prURL: s.url, result: result, source: "auto")
-            autofixReviewsHandled += 1
+            if attemptNumber == 1 { autofixReviewsHandled += 1 }
             return true
         } catch {
+            AuditLog.log("auto", "spawn-failed",
+                         "Review #\(s.number) failed to spawn: \((error as? LocalizedError)?.errorDescription ?? "\(error)")")
+            refreshAudit()
             return false
         }
     }
@@ -677,20 +806,24 @@ final class Store: ObservableObject {
         return decoded
     }
     private func saveMyReviewAttempts(_ map: [String: ReviewAttempt]) {
+        guard !Headless.isRender else { return }
         if let data = try? JSONEncoder().encode(map) {
             UserDefaults.standard.set(data, forKey: Keys.myReviewAttempts)
         }
     }
 
     private var coreRepo: (owner: String, repo: String) {
-        let cfg = try? CoreAssets.config()
-        return (cfg?.owner ?? "software-mansion", cfg?.repo ?? "argent")
+        CoreAssets.repoCoordinates()
     }
 
     // MARK: - Approved-PR actions (merge / resolve conflicts from the panel)
 
     /// PRs currently being merged (drives the row button's spinner + guards double-taps).
     @Published var mergingPRs: Set<Int> = []
+    /// PRs with a Resolve-conflicts spawn in flight — same double-tap guard as
+    /// `mergingPRs`, inserted before the seconds-long spawn await (see
+    /// `dispatchConflictFix`).
+    @Published var resolvingPRs: Set<Int> = []
 
     /// Merge an approved PR straight from the applet — squash, matching the repo's
     /// convention — instead of opening the website. Refreshes on success so the PR
@@ -706,39 +839,33 @@ final class Store: ObservableObject {
             refreshAudit()
             await refresh()
         } catch {
-            self.error = "Merge #\(number) failed: "
-                + ((error as? LocalizedError)?.errorDescription ?? "\(error)")
+            let msg = (error as? LocalizedError)?.errorDescription ?? "\(error)"
+            self.error = "Merge #\(number) failed: \(msg)"
+            AuditLog.log("panel", "merge-failed", "Merge #\(number) failed: \(msg.prefix(120))")
+            refreshAudit()
         }
     }
 
     /// Dispatch a Resolve-conflicts agent for one PR (the blue button shown when a PR
-    /// conflicts) — the same single-PR conflict run the wizard spawns.
+    /// conflicts) — the same single-PR conflict run the reconciler dispatches.
     func resolveConflicts(for number: Int) async {
         let (owner, repo) = coreRepo
         let url = "https://github.com/\(owner)/\(repo)/pull/\(number)"
-        if processes.contains(where: { $0.prURL == url && !$0.done }) { return } // already running
-        let prompt = ConflictConfig(target: .specific, me: effectiveMe,
-                                    specificPR: String(number)).buildPrompt()
-        let preferred = terminal
-        do {
-            let result = try await Task.detached(priority: .userInitiated) {
-                try AgentSpawner.spawn(prompt, terminal: preferred)
-            }.value
-            track(kind: "conflicts", label: "Resolve · #\(number)", prURL: url, result: result)
-        } catch {
-            self.error = "Resolve #\(number) failed: "
-                + ((error as? LocalizedError)?.errorDescription ?? "\(error)")
+        if await dispatchConflictFix(number: number, url: url, source: "panel") == false,
+           !resolvingPRs.contains(number),
+           !processes.contains(where: { $0.prURL == url && !$0.done }) {
+            self.error = "Resolve #\(number) failed to spawn — see the activity log."
         }
     }
 
     // Persisted so restarts don't re-dispatch, and the pill's counts survive.
     private var autofixConflictsHandled: Int {
         get { UserDefaults.standard.integer(forKey: Keys.autofixConflicts) }
-        set { UserDefaults.standard.set(newValue, forKey: Keys.autofixConflicts) }
+        set { persist(newValue, forKey: Keys.autofixConflicts) }
     }
     private var autofixReviewsHandled: Int {
         get { UserDefaults.standard.integer(forKey: Keys.autofixReviews) }
-        set { UserDefaults.standard.set(newValue, forKey: Keys.autofixReviews) }
+        set { persist(newValue, forKey: Keys.autofixReviews) }
     }
     private func loadAutofixFingerprints() -> [Int: PRFingerprint] {
         guard let data = UserDefaults.standard.data(forKey: Keys.autofixFingerprints),
@@ -747,6 +874,7 @@ final class Store: ObservableObject {
         return Dictionary(uniqueKeysWithValues: decoded.compactMap { k, v in Int(k).map { ($0, v) } })
     }
     private func saveAutofixFingerprints(_ fps: [Int: PRFingerprint]) {
+        guard !Headless.isRender else { return }
         let keyed = Dictionary(uniqueKeysWithValues: fps.map { (String($0.key), $0.value) })
         if let data = try? JSONEncoder().encode(keyed) {
             UserDefaults.standard.set(data, forKey: Keys.autofixFingerprints)
@@ -783,7 +911,7 @@ final class Store: ObservableObject {
     /// Count of nudges sent, for the Settings display.
     var apiWatchContinues: Int {
         get { UserDefaults.standard.integer(forKey: Keys.apiWatchContinues) }
-        set { UserDefaults.standard.set(newValue, forKey: Keys.apiWatchContinues) }
+        set { persist(newValue, forKey: Keys.apiWatchContinues) }
     }
 
     private func startApiErrorWatcher() {
