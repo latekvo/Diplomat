@@ -67,12 +67,15 @@ enum AuditLog {
         let size = (try? h.seekToEnd()) ?? 0
         let start = size > tailBytes ? size - tailBytes : 0
         try? h.seek(toOffset: start)
-        guard let data = try? h.readToEnd(), var text = String(data: data, encoding: .utf8)
-        else { return [] }
-        // A mid-file start lands mid-line; drop the partial first line.
-        if start > 0, let nl = text.firstIndex(of: "\n") {
-            text = String(text[text.index(after: nl)...])
+        guard var data = try? h.readToEnd() else { return [] }
+        // A mid-file start lands mid-line — and possibly mid-UTF-8-character, which
+        // strict String decoding rejects WHOLESALE (the audit lines are full of
+        // multibyte "·"/"≥"). Drop up to the first newline on the raw BYTES, before
+        // decoding, so a partial leading sequence can't blank the entire feed.
+        if start > 0, let nl = data.firstIndex(of: UInt8(ascii: "\n")) {
+            data = data.subdata(in: data.index(after: nl)..<data.endIndex)
         }
+        guard let text = String(data: data, encoding: .utf8) else { return [] }
         let dec = JSONDecoder()
         let entries = text.split(whereSeparator: \.isNewline)
             .suffix(limit)

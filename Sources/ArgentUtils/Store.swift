@@ -460,14 +460,23 @@ final class Store: ObservableObject {
     /// the feature is off or our login isn't known yet.
     func runAutofixPollOnce() async {
         guard !autofixPollInFlight else { return }
+        // Both features off ⇒ nothing polls; don't touch the error state either
+        // (a lingering error must not "recover" without a poll having run).
+        guard prAutofixEnabled || reviewRequestsEnabled else { return }
         autofixPollInFlight = true
         defer { autofixPollInFlight = false }
-        if me.isEmpty { await fetchMe() }
-        guard !effectiveMe.isEmpty else { return }
-        let (owner, repo) = coreRepo
         pollErrorThisCycle = nil
-        if prAutofixEnabled { await pollMyPRs(owner: owner, repo: repo) }
-        if reviewRequestsEnabled { await pollReviewRequests(owner: owner, repo: repo) }
+        if me.isEmpty { await fetchMe() }
+        if effectiveMe.isEmpty {
+            // The most common total-breakage mode (gh missing/unauthenticated) used to
+            // bail before the failure surfacing — the toggles said "on" and nothing
+            // ever polled, silently.
+            pollErrorThisCycle = "GitHub login unknown — is `gh` installed and authenticated?"
+        } else {
+            let (owner, repo) = coreRepo
+            if prAutofixEnabled { await pollMyPRs(owner: owner, repo: repo) }
+            if reviewRequestsEnabled { await pollReviewRequests(owner: owner, repo: repo) }
+        }
         if let e = pollErrorThisCycle {
             // Audit only the transition into failure, not every 3-minute tick.
             if autofixPollError == nil {
@@ -535,11 +544,13 @@ final class Store: ObservableObject {
 
     /// Level-triggered reconcile for conflicts on MY PRs, mirroring `reconcileMyReviews`:
     /// any PR of mine that GitHub currently reports CONFLICTING and that has no agent on
-    /// it gets a Resolve-conflicts agent — with `ReviewReconcile` retry backoff, so a
-    /// spawn that failed (e.g. terminal-automation permission revoked) is retried instead
-    /// of being silently consumed forever, and a conflict that already existed when the
-    /// monitor first saw the PR (which the edge-trigger baselines) still gets an agent.
-    /// The record is pruned once the PR stops conflicting.
+    /// it gets a Resolve-conflicts agent. A spawn that failed (e.g. terminal-automation
+    /// permission revoked) leaves no attempt record, so it retries on every poll tick
+    /// until an agent launches (and is audit-logged each time); the `ReviewReconcile`
+    /// backoff then paces re-dispatches of a conflict a launched agent didn't clear. A
+    /// conflict that already existed when the monitor first saw the PR (which the
+    /// edge-trigger baselines) still gets an agent. The record is pruned once the PR is
+    /// known mergeable again.
     private func reconcileMyConflicts(snaps: [PRSnapshot], now: Date) async {
         var attempts = loadMyConflictAttempts()
         let conflicted = snaps.filter { $0.mergeable == "CONFLICTING" }
@@ -556,8 +567,12 @@ final class Store: ObservableObject {
                 }
             }
         }
-        let keys = Set(conflicted.map { String($0.number) })
-        attempts = attempts.filter { keys.contains($0.key) }
+        // Prune only when the PR is known NOT conflicting. GitHub transiently reports
+        // UNKNOWN while recomputing mergeability (after any push to main) — pruning on
+        // that flap would reset the backoff and double-count the same conflict when it
+        // comes back as CONFLICTING a poll later.
+        let keepKeys = Set(snaps.filter { $0.mergeable != "MERGEABLE" }.map { String($0.number) })
+        attempts = attempts.filter { keepKeys.contains($0.key) }
         saveMyConflictAttempts(attempts)
     }
 
@@ -653,13 +668,20 @@ final class Store: ObservableObject {
             if next != self.auditEntries { self.auditEntries = next }
         }
     }
-    /// Remove a ban (the UI's un-ban button) and refresh. When the daemon handled the
-    /// unban it also wrote the audit entry — don't double-log.
+    /// Remove a ban (the UI's un-ban button) and refresh. The daemon round-trip
+    /// (curl over the unix socket, up to 5s against a wedged daemon) runs off-main
+    /// so the popover can't freeze. When the daemon handled the unban it also wrote
+    /// the audit entry — don't double-log.
     func unban(_ login: String) {
-        let viaDaemon = BanList.unban(login)
-        if !viaDaemon { AuditLog.log("panel", "unban", "Un-banned @\(login)") }
-        refreshAudit()
-        refreshBanList()
+        Task { [weak self] in
+            let viaDaemon = await Task.detached(priority: .userInitiated) {
+                BanList.unban(login)
+            }.value
+            guard let self else { return }
+            if !viaDaemon { AuditLog.log("panel", "unban", "Un-banned @\(login)") }
+            self.refreshAudit()
+            self.refreshBanList()
+        }
     }
 
     /// Spawn the most-comprehensive Review action (Full E2E ×2, formal per-line comments,
@@ -761,7 +783,9 @@ final class Store: ObservableObject {
             let retry = attemptNumber > 1 ? " · retry \(attemptNumber)" : ""
             let label = source == "auto" ? "Auto · Resolve · #\(number)\(retry)" : "Resolve · #\(number)"
             track(kind: "conflicts", label: label, prURL: url, result: result, source: source)
-            if attemptNumber == 1 { autofixConflictsHandled += 1 }
+            // Count only what the MONITOR handled — a manual panel resolve is not an
+            // auto-fixed conflict, and this feeds the pill's "fixed N".
+            if attemptNumber == 1 && source == "auto" { autofixConflictsHandled += 1 }
             return true
         } catch {
             // Spawn failed (e.g. terminal-automation permission revoked). Audit it —

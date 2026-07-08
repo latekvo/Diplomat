@@ -29,8 +29,7 @@ GOLDEN_DIR = Path(__file__).resolve().parents[2] / "core" / "golden-prompts"
 ME = "testuser"
 
 # Mirrors main.swift's goldenModes list — same constructors, same arguments.
-# (Swift's AuditConfig takes `me:`; its builder never uses it and the Python
-# port dropped the field, so the prompts are identical without it.)
+# (AuditConfig dropped its dead `me` field on BOTH platforms.)
 GOLDEN_MODES: dict[str, object] = {
     "review-mine-max": lambda: ReviewConfig(depth="max", me=ME),
     "review-user-max": lambda: ReviewConfig(

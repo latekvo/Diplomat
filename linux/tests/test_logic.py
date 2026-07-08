@@ -207,8 +207,9 @@ def test_pr_ref_parsing():
     assert parse_pr_ref("not a pr", owner, repo).number is None
     assert parse_pr_ref("", owner, repo).number is None
 
-    # ASCII digits only, like Swift's Int(_:): non-ASCII digits ("٣٣٧".isdigit()
-    # is True in Python) and an explicit '+' sign are both rejected.
+    # ASCII digits only, matching Swift's PRRef (which guards Int(_:) the same way):
+    # non-ASCII digits ("٣٣٧".isdigit() is True in Python) and an explicit '+' sign
+    # are both rejected on both sides.
     assert parse_pr_ref("٣٣٧", owner, repo).number is None
     assert parse_pr_ref("#٣٣٧", owner, repo).number is None
     assert parse_pr_ref("+337", owner, repo).number is None
@@ -323,8 +324,25 @@ def test_device_allocator_state_helpers():
 
 
 if __name__ == "__main__":
+    # Standalone (no-pytest) mode bypasses conftest.py, so replicate its QSettings
+    # isolation here — otherwise these tests would read (and one would WRITE) the
+    # user's real settings, the exact bug class the isolation exists to prevent.
+    import inspect
+    import tempfile
+    from pathlib import Path
+
+    from PySide6.QtCore import QSettings
+
+    QSettings.setDefaultFormat(QSettings.Format.IniFormat)
+
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:
-        fn()
+        # Fresh isolated dir per test, exactly like conftest's autouse fixture —
+        # it doubles as the `tmp_path` fixture for tests that take one (the
+        # isolation test asserts settings land in ITS tmp_path).
+        fresh = Path(tempfile.mkdtemp(prefix="argent-utils-test-"))
+        QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(fresh))
+        kwargs = {"tmp_path": fresh} if "tmp_path" in inspect.signature(fn).parameters else {}
+        fn(**kwargs)
         print(f"PASS {fn.__name__}")
     print(f"\n{len(fns)} tests passed")

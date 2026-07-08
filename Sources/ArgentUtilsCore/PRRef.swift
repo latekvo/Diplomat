@@ -31,16 +31,20 @@ public struct PRRef: Equatable {
         if s.isEmpty { return PRRef(number: nil, repoMismatch: false) }
 
         // A GitHub PR URL anywhere in the input: github.com/OWNER/REPO/pull/N.
-        if let g = firstMatch(s, #"(?:https?://)?(?:www\.)?github\.com/([\w.-]+)/([\w.-]+)/pull/(\d+)"#) {
+        // [0-9], not \d: ICU's \d matches non-ASCII digits, which Int() then rejects —
+        // and the Python port matches ASCII only, so the two sides would disagree.
+        if let g = firstMatch(s, #"(?:https?://)?(?:www\.)?github\.com/([\w.-]+)/([\w.-]+)/pull/([0-9]+)"#) {
             return named(owner: g[1], repo: g[2], number: g[3], wantOwner: owner, wantRepo: repo)
         }
         // The OWNER/REPO#N shorthand (the whole string).
-        if let g = firstMatch(s, #"^([\w.-]+)/([\w.-]+)#(\d+)$"#) {
+        if let g = firstMatch(s, #"^([\w.-]+)/([\w.-]+)#([0-9]+)$"#) {
             return named(owner: g[1], repo: g[2], number: g[3], wantOwner: owner, wantRepo: repo)
         }
-        // A bare number, with an optional leading '#'.
+        // A bare number, with an optional leading '#'. ASCII digits only — Int() alone
+        // also accepts "+337", which the Python port rejects.
         let bare = s.hasPrefix("#") ? String(s.dropFirst()) : s
-        if let n = Int(bare), n > 0 { return PRRef(number: n, repoMismatch: false) }
+        if !bare.isEmpty, bare.allSatisfy({ $0.isASCII && $0.isNumber }),
+           let n = Int(bare), n > 0 { return PRRef(number: n, repoMismatch: false) }
 
         return PRRef(number: nil, repoMismatch: false)
     }

@@ -26,20 +26,26 @@ public enum GHError: LocalizedError {
 /// repo coordinates supplied as `$owner`/`$name` variables, so the query text
 /// itself stays repo-agnostic.
 public enum GH {
-    /// Resolved once, thread-safely (Swift static-let initialization) — the old
-    /// `var cachedPath` was read/written from concurrent async `run()` calls, a
-    /// data race by the Swift memory model.
-    private static let resolvedPath: String? = {
-        let candidates = ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"]
-        for c in candidates where FileManager.default.isExecutableFile(atPath: c) {
-            return c
-        }
-        return loginShellWhichGH()
-    }()
+    // Lock-protected cache (the old bare `var` was read/written from concurrent
+    // async `run()` calls — a data race). Caches only on SUCCESS, so gh installed
+    // after launch is picked up by the next call instead of requiring a restart.
+    private static let pathLock = NSLock()
+    private static var cachedPath: String?
 
     private static func ghPath() throws -> String {
-        guard let p = resolvedPath else { throw GHError.ghNotFound }
-        return p
+        pathLock.lock()
+        defer { pathLock.unlock() }
+        if let p = cachedPath { return p }
+        let candidates = ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"]
+        for c in candidates where FileManager.default.isExecutableFile(atPath: c) {
+            cachedPath = c
+            return c
+        }
+        if let found = loginShellWhichGH() {
+            cachedPath = found
+            return found
+        }
+        throw GHError.ghNotFound
     }
 
     /// Last resort: ask a login shell where gh lives (covers exotic installs).

@@ -208,10 +208,16 @@ function formatResult(name, r) {
       + `squat your own device to get around this. Call await-device to wait for a slot to free, then call `
       + `request-device again.`;
   } else if (r && r.outcome === 'needs-create') {
-    human = `No available device matches ${labelReq(r.requirements)}, and there is no fixed pool. `
-      + `Create a device to that spec yourself (e.g. \`xcrun simctl create\` for Apple platforms, `
-      + `\`avdmanager create avd\` for Android, or the relevant argent setup skill), THEN call request-device `
-      + `again with deviceId set to the new device's id to claim it. Never use a device without allocating it here.`;
+    human = r.missingDeviceId
+      ? `The device id you passed (${r.missingDeviceId}) was not found, and no other device is `
+        + `handed out in its place. Check the id; if you just created the device, wait a moment and `
+        + `retry. For Vega (which has no enumeration CLI) you MUST pass platform: 'vega' together `
+        + `with deviceId to claim it.`
+      : `No available device matches ${labelReq(r.requirements)}, and there is no fixed pool. `
+        + `Create a device to that spec yourself (e.g. \`xcrun simctl create\` for Apple platforms, `
+        + `\`avdmanager create avd\` for Android, or the relevant argent setup skill), THEN call request-device `
+        + `again with deviceId set to the new device's id — and the same platform — to claim it. `
+        + `Never use a device without allocating it here.`;
   } else if (r && r.outcome === 'slot-available') {
     human = `A device slot has freed up (${r.active}/${r.quota} now in use). Call request-device again to claim one.`;
   } else if (r && r.outcome === 'await-timeout') {

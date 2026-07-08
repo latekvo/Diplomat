@@ -116,6 +116,11 @@ check(PRRef.parse("\(cfg.owner)/\(cfg.repo)#9", owner: cfg.owner, repo: cfg.repo
 let wrongRepo = PRRef.parse("https://github.com/other/proj/pull/5", owner: cfg.owner, repo: cfg.repo)
 check(wrongRepo.number == 5 && wrongRepo.repoMismatch && !wrongRepo.isValid)
 check(PRRef.parse("not-a-pr", owner: cfg.owner, repo: cfg.repo).number == nil)
+// ASCII digits only, matching the Python port: a leading '+' (which Int() alone
+// accepts) and non-ASCII digits are rejected on both sides.
+check(PRRef.parse("+337", owner: cfg.owner, repo: cfg.repo).number == nil)
+check(PRRef.parse("#+337", owner: cfg.owner, repo: cfg.repo).number == nil)
+check(PRRef.parse("٣٣٧", owner: cfg.owner, repo: cfg.repo).number == nil)
 print("PR-reference assertions passed")
 
 section("review prompts")

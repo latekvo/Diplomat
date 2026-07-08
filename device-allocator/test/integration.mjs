@@ -58,8 +58,13 @@ async function waitHealth() {
   for (let i = 0; i < 60; i++) { try { await call('GET', '/health'); return; } catch { await delay(150); } }
   throw new Error('daemon never became healthy');
 }
-function stop(child) {
+async function stop(child) {
+  // Wait for the daemon to actually exit before cleaning its files: a due timer
+  // tick between our unlink and the SIGTERM handler would rewrite leases.json
+  // and leak this phase's leases into the next daemon's rehydration.
+  const exited = new Promise((r) => { child.once('exit', r); setTimeout(r, 2000); });
   try { child.kill('SIGTERM'); } catch {}
+  await exited;
   try { fs.unlinkSync(SOCKET); } catch {}
   // Leases deliberately survive daemon restarts now; between test phases we want
   // a clean slate (phase 8 covers rehydration explicitly, bypassing stop()).
@@ -136,7 +141,7 @@ async function phase1() {
     }
     assert.ok(reaped, 'dead-owner device was not reaped');
     pass('dead-owner allocation is reaped and device freed');
-  } finally { stop(d); await delay(300); }
+  } finally { await stop(d); await delay(300); }
 }
 
 async function phase2() {
@@ -157,7 +162,7 @@ async function phase2() {
     }
     assert.ok(reclaimed, 'idle device was not reclaimed');
     pass('device with zero motion past the idle limit is reclaimed (owner still alive)');
-  } finally { stop(d); }
+  } finally { await stop(d); }
 }
 
 function readDisc() { return JSON.parse(fs.readFileSync(path.join(BASE, 'daemon.json'), 'utf8')); }
@@ -188,7 +193,7 @@ async function phase3() {
   assert.equal(readDisc().pid, c.pid, 'a fresh daemon takes over a stale socket');
   assert.ok((await call('GET', '/health')).ok, 'the recovered daemon serves health');
   pass('a fresh daemon recovers a stale socket left by a crashed one');
-  stop(c);
+  await stop(c);
 }
 
 async function phase4() {
@@ -219,7 +224,7 @@ async function phase4() {
     pass('request with deviceId claims that specific device (the create+re-request path)');
     await expect409(call('POST', '/request', { ownerPid: ME, platform: 'ios', deviceId: remaining }));
     pass('claiming an already-allocated device -> 409');
-  } finally { stop(d); await delay(300); }
+  } finally { await stop(d); await delay(300); }
 }
 
 async function phase5() {
@@ -244,7 +249,7 @@ async function phase5() {
     const av = await awaitP;
     assert.equal(av.outcome, 'slot-available');
     pass('await-device unblocks when a slot frees');
-  } finally { stop(d); await delay(300); }
+  } finally { await stop(d); await delay(300); }
 }
 
 async function phase6() {
@@ -297,7 +302,7 @@ async function phase6() {
     const ub2 = await call('POST', '/unban', { login: 'baduser' });
     assert.equal(ub2.removed, 0);
     pass('/unban on a non-banned login is a no-op');
-  } finally { stop(d); await delay(300); }
+  } finally { await stop(d); await delay(300); }
 }
 
 async function phase7() {
@@ -323,7 +328,7 @@ async function phase7() {
     try { await call('POST', '/kill', { key: 'ios:NOPE' }); } catch (e) { got404 = e.statusCode === 404; }
     assert.ok(got404, 'unknown device -> 404');
     pass('kill unknown device -> 404');
-  } finally { stop(d); await delay(300); }
+  } finally { await stop(d); await delay(300); }
 }
 
 async function phase8() {
@@ -348,7 +353,7 @@ async function phase8() {
       assert.notEqual(other.deviceId, alloc.deviceId, 'rehydrated device re-handed out!');
     }
     pass('rehydrated device is never re-allocated');
-  } finally { stop(b); await delay(300); }
+  } finally { await stop(b); await delay(300); }
 }
 
 async function phase9() {
@@ -378,7 +383,7 @@ async function phase9() {
     }
     assert.ok(freed, 'repair TTL never freed the device');
     pass('an un-notified repair is returned to the pool after the TTL');
-  } finally { stop(d); await delay(300); }
+  } finally { await stop(d); await delay(300); }
 }
 
 async function phase10() {
@@ -397,7 +402,7 @@ async function phase10() {
     assert.equal(ch.keptDevice, a.deviceId);
     assert.equal((await stateByKey())[a.key]?.owner?.ownerPid, ME, 'old device must be kept');
     pass('change-device with no matching replacement keeps the old device');
-  } finally { stop(d); await delay(300); }
+  } finally { await stop(d); await delay(300); }
 }
 
 async function phase11() {
@@ -408,6 +413,13 @@ async function phase11() {
     const nc = await call('POST', '/request', { ownerPid: ME, platform: 'vega' });
     assert.equal(nc.outcome, 'needs-create');
     pass('vega with no deviceId -> needs-create (create it yourself)');
+    // A deviceId that is NOT in the pool must never be silently swapped for a
+    // different free device (that stranded vega claims made without platform:'vega'
+    // and left the named device driven unallocated).
+    const ghost = await call('POST', '/request', { ownerPid: ME, deviceId: 'GHOST-123' });
+    assert.equal(ghost.outcome, 'needs-create');
+    assert.equal(ghost.missingDeviceId, 'GHOST-123');
+    pass('unknown deviceId -> needs-create (never a different device)');
     const v = await call('POST', '/request', { ownerPid: ME, platform: 'vega', deviceId: 'vega-sim-1' });
     assert.equal(v.outcome, 'allocated');
     assert.equal(v.status, 'ready');
@@ -416,7 +428,7 @@ async function phase11() {
     const f = await call('POST', '/release', { ownerPid: ME, deviceId: 'vega-sim-1' });
     assert.equal(f.released, 1);
     pass('vega release frees the claim');
-  } finally { stop(d); await delay(300); }
+  } finally { await stop(d); await delay(300); }
 }
 
 try {

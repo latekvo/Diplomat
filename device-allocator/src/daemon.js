@@ -158,7 +158,11 @@ async function handleRequest(p, exclude = new Set()) {
           format: null, state: 'booted', // agent boots it itself; never shut it down
         }, p, req);
       }
-      // named device not visible yet — fall through to create guidance
+      // The agent named a SPECIFIC device and it isn't visible: never silently hand
+      // out a DIFFERENT one (falling through to selectDevice used to do exactly that
+      // — e.g. a vega claim without platform:'vega' got a random free iPhone while
+      // the agent went on driving its vega box unallocated).
+      return { outcome: 'needs-create', requirements: req, missingDeviceId: p.deviceId };
     }
     const chosen = await selectDevice(req, exclude);
     if (!chosen) {
@@ -170,6 +174,12 @@ async function handleRequest(p, exclude = new Set()) {
   });
   if (reserved.outcome) return reserved; // exhausted / needs-create: nothing to boot
   await bootAlloc(reserved); // outside the lock
+  // Released/killed while we were booting (bootAlloc already cleaned up): telling
+  // the agent "allocated, yours exclusively" for a freed — possibly already shut
+  // down, possibly re-allocated — device would be a lie.
+  if (allocations.get(reserved.key) !== reserved) {
+    throw httpError(409, `device ${reserved.name || reserved.key} was released during boot`);
+  }
   if (reserved.status === 'error') {
     // Don't pin a device that failed to boot — return it to the pool and report,
     // so the agent can retry or report-device-broken rather than hold a zombie.
@@ -221,8 +231,11 @@ async function bootAlloc(alloc) {
   alloc.lastMotionAt = Date.now();
   // Released mid-boot (free-device / kill while we were waiting): the record is
   // gone from the table, so nobody will ever shut this device down — do it now.
+  // But ONLY if nobody else claimed the device meanwhile: identity alone conflates
+  // "freed" with "freed then re-allocated", and shutting it down in the second
+  // case would kill the new owner's session.
   if (allocations.get(alloc.key) !== alloc) {
-    if (alloc.bootedByUs) shutdownAlloc(alloc);
+    if (alloc.bootedByUs && !allocations.has(alloc.key)) shutdownAlloc(alloc);
     return;
   }
   refreshPool();
@@ -248,8 +261,14 @@ async function handleChange(p) {
   // a needs-create/exhausted outcome must not leave the agent with nothing, its
   // old device already torn down.
   if (old) await handleRelease({ ownerPid: p.ownerPid, deviceId: old.handle }, { shutdown: false });
+  // Returns whether old was actually put back — the freed (booted!) device is
+  // exactly what a concurrent /request prefers, so it may already belong to
+  // someone else by the time we try. NOTE: when that happens the quota can
+  // transiently read one over (restore + the winner) — bounded, self-correcting,
+  // and better than stranding the agent with nothing.
   const restoreOld = () => withLock(async () => {
-    if (old && !allocations.has(old.key)) { allocations.set(old.key, old); publish(); }
+    if (old && !allocations.has(old.key)) { allocations.set(old.key, old); publish(); return true; }
+    return false;
   });
   let result;
   try {
@@ -262,10 +281,15 @@ async function handleChange(p) {
     }, exclude);
   } catch (e) { await restoreOld(); throw e; }
   if (result.outcome !== 'allocated') {
-    await restoreOld();
-    return old ? { ...result, keptDevice: old.handle } : result;
+    // Only claim keptDevice if the restore actually landed — reporting it when a
+    // concurrent request took the device would have two agents "owning" it.
+    const kept = await restoreOld();
+    return kept ? { ...result, keptDevice: old.handle } : result;
   }
-  if (old && old.bootedByUs) shutdownAlloc(old);
+  // Shut the old device down ONLY if it's still unallocated: during our (possibly
+  // minutes-long) boot, the freed old device sat in the pool as booted-and-free —
+  // the first thing selectDevice hands to the next requester.
+  if (old && old.bootedByUs && !allocations.has(old.key)) shutdownAlloc(old);
   return result;
 }
 
@@ -377,18 +401,27 @@ function spawnRepairAgent(alloc) {
 }
 
 function repairPrompt(alloc) {
-  const what = alloc.platform === 'ios'
-    ? `iOS simulator "${alloc.name}" (UDID ${alloc.udid})`
-    : `Android emulator AVD "${alloc.avd}"`;
+  const what = dev.isApplePlatform(alloc.platform)
+    ? `Apple simulator "${alloc.name}" (UDID ${alloc.udid})`
+    : alloc.platform === 'vega'
+      ? `Vega device "${alloc.name}" (unmanaged — the allocator does not boot/shut down vega)`
+      : `Android emulator AVD "${alloc.avd}"`;
+  const how = dev.isApplePlatform(alloc.platform)
+    ? `Try: \`xcrun simctl shutdown ${alloc.udid}\`, then \`xcrun simctl erase ${alloc.udid}\`, then \`xcrun simctl boot ${alloc.udid}\` and confirm it reaches the home screen. If a specific app is the culprit, uninstall it with \`xcrun simctl uninstall\`.`
+    : alloc.platform === 'vega'
+      ? `Use the Vega tooling to reset/reboot it and confirm it comes up healthy.`
+      : `Try: \`adb -s <serial> emu kill\` if running, then cold-boot clean with \`${'$ANDROID_HOME'}/emulator/emulator -avd ${alloc.avd} -wipe-data\`, wait for \`getprop sys.boot_completed\` = 1, and confirm the home screen. Recreate the AVD with avdmanager only if wiping does not help.`;
+  // The key is agent-supplied for vega claims — JSON-encode + shell-quote it, never
+  // interpolate it raw into the command the repair agent is told to execute.
+  const repairedCmd = `curl -s --unix-socket ${shq(SOCKET_PATH)} -X POST http://localhost/repaired`
+    + ` -H 'content-type: application/json' -d ${shq(JSON.stringify({ key: alloc.key }))}`;
   return [
     `A device managed by the local device-allocator was reported BROKEN and taken out of the pool: ${what}.`,
     alloc.brokenReason ? `The reporting agent said: "${alloc.brokenReason}".` : '',
     `Diagnose and fix THIS device only — do NOT request a device from the allocator; you are the repair worker assigned to it directly.`,
-    alloc.platform === 'ios'
-      ? `Try: \`xcrun simctl shutdown ${alloc.udid}\`, then \`xcrun simctl erase ${alloc.udid}\`, then \`xcrun simctl boot ${alloc.udid}\` and confirm it reaches the home screen. If a specific app is the culprit, uninstall it with \`xcrun simctl uninstall\`.`
-      : `Try: \`adb -s <serial> emu kill\` if running, then cold-boot clean with \`${'$ANDROID_HOME'}/emulator/emulator -avd ${alloc.avd} -wipe-data\`, wait for \`getprop sys.boot_completed\` = 1, and confirm the home screen. Recreate the AVD with avdmanager only if wiping does not help.`,
+    how,
     `When it boots cleanly, it is healthy again. Return it to the allocator pool by running:`,
-    `\`curl -s --unix-socket ${shq(SOCKET_PATH)} -X POST http://localhost/repaired -H 'content-type: application/json' -d '{"key":"${alloc.key}"}'\`.`,
+    `\`${repairedCmd}\`.`,
     `Then report exactly what was wrong and what you did to fix it.`,
   ].filter(Boolean).join(' ');
 }
