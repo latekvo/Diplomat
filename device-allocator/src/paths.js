@@ -5,6 +5,7 @@
 // but can be redirected with DA_BASE_DIR (used by the test harness so it never
 // touches the real allocation state).
 
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -14,6 +15,7 @@ export const BASE_DIR =
 export const SOCKET_PATH = path.join(BASE_DIR, 'daemon.sock');
 export const DISCOVERY_PATH = path.join(BASE_DIR, 'daemon.json'); // {pid, startedAt, socket}
 export const STATE_PATH = path.join(BASE_DIR, 'state.json'); // public snapshot the applet reads
+export const LEASES_PATH = path.join(BASE_DIR, 'leases.json'); // full allocation records, for restart rehydration
 export const LOG_PATH = path.join(BASE_DIR, 'daemon.log');
 export const REPAIRS_DIR = path.join(BASE_DIR, 'repairs');
 
@@ -27,13 +29,16 @@ export const INJECTIONS_DIR = path.join(BAN_DIR, 'injections'); // per-incident 
 export const AUDIT_PATH = path.join(BAN_DIR, 'audit.jsonl'); // shared action log the applet shows
 
 // Android SDK lives outside PATH on this machine, so resolve binaries by absolute
-// path from the SDK root (adb itself is usually on PATH via Homebrew).
+// path from the SDK root. adb too: the daemon may be launched from launchd or the
+// applet, whose PATH lacks Homebrew/SDK dirs — a bare 'adb' would silently make
+// every Android device invisible (run() maps ENOENT to {ok:false} -> empty list).
 export const ANDROID_HOME =
   process.env.ANDROID_HOME ||
   process.env.ANDROID_SDK_ROOT ||
   path.join(os.homedir(), 'Library', 'Android', 'sdk');
 export const EMULATOR_BIN = path.join(ANDROID_HOME, 'emulator', 'emulator');
-export const ADB_BIN = process.env.ADB_PATH || 'adb';
+const SDK_ADB = path.join(ANDROID_HOME, 'platform-tools', 'adb');
+export const ADB_BIN = process.env.ADB_PATH || (fs.existsSync(SDK_ADB) ? SDK_ADB : 'adb');
 
 // Tunables (overridable for tests). A device with zero screen motion for 15 min is
 // reclaimed; the sweep runs every 2 min so reclamation lands close to the threshold.
@@ -47,3 +52,8 @@ export const ALLOC_GRACE_MS = Number(process.env.DA_ALLOC_GRACE_MS) || 20 * 1000
 // (agents create devices on demand), so this caps concurrency, not inventory.
 export const QUOTA = Number(process.env.DA_QUOTA) || 5;
 export const AWAIT_TIMEOUT_MS = Number(process.env.DA_AWAIT_TIMEOUT_MS) || 15 * 60 * 1000;
+
+// How long a quarantined ('repairing') device may sit before the reaper returns it
+// to the pool anyway. The repair agent is told to notify /repaired when done, but
+// it can die or forget — without a TTL a broken report shrinks the pool forever.
+export const REPAIR_TTL_MS = Number(process.env.DA_REPAIR_TTL_MS) || 2 * 60 * 60 * 1000;

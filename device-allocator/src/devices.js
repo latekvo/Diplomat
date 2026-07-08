@@ -224,8 +224,11 @@ export async function bootAndroid(avd, { wipe = false } = {}) {
   if (wipe) args.push('-wipe-data');
   const child = spawn(EMULATOR_BIN, args, { detached: true, stdio: 'ignore' });
   child.unref();
-  const serial = await waitForAndroidBoot(avd, 180000);
-  return { ok: !!serial, handle: serial, serial };
+  // ok must mean BOOTED, not merely "registered with adb": a slow/hung AVD that
+  // never reaches sys.boot_completed=1 must not be handed to an agent as ready.
+  // The serial is still returned on failure so the caller can shut the zombie down.
+  const { serial, booted } = await waitForAndroidBoot(avd, 180000);
+  return { ok: booted, handle: serial, serial };
 }
 
 async function waitForAndroidBoot(avd, timeoutMs) {
@@ -236,11 +239,11 @@ async function waitForAndroidBoot(avd, timeoutMs) {
     if (map[avd]) {
       serial = map[avd];
       const b = await run(ADB_BIN, ['-s', serial, 'shell', 'getprop', 'sys.boot_completed']);
-      if (b.ok && b.stdout.trim() === '1') return serial;
+      if (b.ok && b.stdout.trim() === '1') return { serial, booted: true };
     }
     await delay(3000);
   }
-  return serial;
+  return { serial, booted: false };
 }
 
 export async function shutdownAndroid(serial) {

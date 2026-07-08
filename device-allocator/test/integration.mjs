@@ -58,7 +58,13 @@ async function waitHealth() {
   for (let i = 0; i < 60; i++) { try { await call('GET', '/health'); return; } catch { await delay(150); } }
   throw new Error('daemon never became healthy');
 }
-function stop(child) { try { child.kill('SIGTERM'); } catch {} try { fs.unlinkSync(SOCKET); } catch {} }
+function stop(child) {
+  try { child.kill('SIGTERM'); } catch {}
+  try { fs.unlinkSync(SOCKET); } catch {}
+  // Leases deliberately survive daemon restarts now; between test phases we want
+  // a clean slate (phase 8 covers rehydration explicitly, bypassing stop()).
+  try { fs.unlinkSync(path.join(BASE, 'leases.json')); } catch {}
+}
 
 async function stateByKey() {
   const s = await call('GET', '/state');
@@ -306,6 +312,99 @@ async function phase7() {
   } finally { stop(d); await delay(300); }
 }
 
+async function phase8() {
+  console.log('phase 8: lease rehydration across a daemon crash (no double-allocation)');
+  const a = startDaemon({});
+  await waitHealth();
+  const alloc = await call('POST', '/request', { ownerPid: ME, platform: 'ios', agentName: 'survivor' });
+  assert.equal(alloc.outcome, 'allocated');
+  // Hard-kill the daemon (leases.json survives; the in-memory table dies).
+  process.kill(readDisc().pid, 'SIGKILL');
+  for (let i = 0; i < 25; i++) { try { await call('GET', '/health'); await delay(150); } catch { break; } }
+  const b = startDaemon({});
+  await waitHealth();
+  try {
+    const bk = await stateByKey();
+    assert.equal(bk[alloc.key]?.owner?.ownerPid, ME, 'lease must survive the restart');
+    pass('a live-owner lease is rehydrated after a daemon crash');
+    // The restarted daemon must not hand the survivor's device to someone else.
+    for (let i = 0; i < 5; i++) {
+      const other = await call('POST', '/request', { ownerPid: ME, platform: 'ios' });
+      if (other.outcome !== 'allocated') break;
+      assert.notEqual(other.deviceId, alloc.deviceId, 'rehydrated device re-handed out!');
+    }
+    pass('rehydrated device is never re-allocated');
+  } finally { stop(b); await delay(300); }
+}
+
+async function phase9() {
+  console.log('phase 9: /repaired ends quarantine; repair TTL is a fallback');
+  const d = startDaemon({ DA_REPAIR_TTL_MS: '600' });
+  await waitHealth();
+  try {
+    const a = await call('POST', '/request', { ownerPid: ME, platform: 'ios', format: 'tablet' });
+    await call('POST', '/broken', { ownerPid: ME, deviceId: a.deviceId, reason: 'test' });
+    assert.equal((await stateByKey())[a.key].status, 'repairing');
+    const r = await call('POST', '/repaired', { key: a.key });
+    assert.equal(r.repaired, a.key);
+    assert.notEqual((await stateByKey())[a.key]?.status, 'repairing');
+    pass('/repaired returns a quarantined device to the pool');
+    let got404 = false;
+    try { await call('POST', '/repaired', { key: a.key }); } catch (e) { got404 = e.statusCode === 404; }
+    assert.ok(got404, 'repairing a non-quarantined device -> 404');
+    pass('/repaired on a non-quarantined device -> 404');
+
+    // TTL fallback: quarantine again, never notify — the reaper returns it.
+    const b = await call('POST', '/request', { ownerPid: ME, platform: 'ios', format: 'tablet' });
+    await call('POST', '/broken', { ownerPid: ME, deviceId: b.deviceId, reason: 'ttl test' });
+    let freed = false;
+    for (let i = 0; i < 30; i++) {
+      if ((await stateByKey())[b.key]?.status !== 'repairing') { freed = true; break; }
+      await delay(200);
+    }
+    assert.ok(freed, 'repair TTL never freed the device');
+    pass('an un-notified repair is returned to the pool after the TTL');
+  } finally { stop(d); await delay(300); }
+}
+
+async function phase10() {
+  console.log('phase 10: request hygiene (ownerPid required) + change keeps old on failure');
+  const d = startDaemon({});
+  await waitHealth();
+  try {
+    let got400 = false;
+    try { await call('POST', '/request', { platform: 'ios' }); } catch (e) { got400 = e.statusCode === 400; }
+    assert.ok(got400, 'ownerPid-less request must 400');
+    pass('request without ownerPid -> 400 (no unreclaimable leases)');
+
+    const a = await call('POST', '/request', { ownerPid: ME, platform: 'ios' });
+    const ch = await call('POST', '/change', { ownerPid: ME, deviceId: a.deviceId, platform: 'android-tv' });
+    assert.equal(ch.outcome, 'needs-create');
+    assert.equal(ch.keptDevice, a.deviceId);
+    assert.equal((await stateByKey())[a.key]?.owner?.ownerPid, ME, 'old device must be kept');
+    pass('change-device with no matching replacement keeps the old device');
+  } finally { stop(d); await delay(300); }
+}
+
+async function phase11() {
+  console.log('phase 11: vega claim-by-deviceId (create-only platform)');
+  const d = startDaemon({});
+  await waitHealth();
+  try {
+    const nc = await call('POST', '/request', { ownerPid: ME, platform: 'vega' });
+    assert.equal(nc.outcome, 'needs-create');
+    pass('vega with no deviceId -> needs-create (create it yourself)');
+    const v = await call('POST', '/request', { ownerPid: ME, platform: 'vega', deviceId: 'vega-sim-1' });
+    assert.equal(v.outcome, 'allocated');
+    assert.equal(v.status, 'ready');
+    assert.equal(v.deviceId, 'vega-sim-1');
+    pass('vega claim by deviceId allocates (tracked, unmanaged)');
+    const f = await call('POST', '/release', { ownerPid: ME, deviceId: 'vega-sim-1' });
+    assert.equal(f.released, 1);
+    pass('vega release frees the claim');
+  } finally { stop(d); await delay(300); }
+}
+
 try {
   await phase1();
   await phase2();
@@ -314,6 +413,10 @@ try {
   await phase5();
   await phase6();
   await phase7();
+  await phase8();
+  await phase9();
+  await phase10();
+  await phase11();
   console.log(`\nINTEGRATION OK — ${ok} assertions passed`);
 } catch (e) {
   console.error('\nINTEGRATION FAILED:', e.message);

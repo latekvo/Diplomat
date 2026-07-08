@@ -8,13 +8,17 @@
 // It listens on a unix socket and exposes:
 //   POST /request  {ownerPid, agentName, platform, version}      -> allocate (boots if needed)
 //   POST /release  {ownerPid, deviceId?}                          -> free (all of owner's if id omitted)
-//   POST /change   {ownerPid, deviceId?, platform?, version?}     -> free old + allocate new
+//   POST /change   {ownerPid, deviceId?, platform?, version?}     -> allocate new + free old (old kept on failure)
 //   POST /broken   {ownerPid, deviceId?, reason?}                 -> quarantine + repair + allocate other
+//   POST /repaired {key | deviceId}                               -> end quarantine, device back to pool
+//   POST /unban    {login}                                        -> remove an author from the ban list
+//   POST /kill     {key | deviceId}                               -> force-free + shut down (panel X)
 //   GET  /state                                                   -> public snapshot
 //   GET  /health
 //
 // Reclamation: a device is freed when the owning agent's MCP-server PID dies
-// (reaper) or when its screen shows zero motion for >1h (idle sweep).
+// (reaper) or when its screen shows zero motion past the idle limit (15 min
+// by default — see IDLE_LIMIT_MS).
 
 import http from 'node:http';
 import fs from 'node:fs';
@@ -23,9 +27,10 @@ import { spawn, execFileSync } from 'node:child_process';
 import {
   SOCKET_PATH, DISCOVERY_PATH, REPAIRS_DIR,
   IDLE_LIMIT_MS, REAP_INTERVAL_MS, IDLE_INTERVAL_MS, POOL_INTERVAL_MS, ALLOC_GRACE_MS,
-  QUOTA, AWAIT_TIMEOUT_MS, BAN_DIR, BANNED_PATH, INJECTIONS_DIR, AUDIT_PATH,
+  QUOTA, AWAIT_TIMEOUT_MS, REPAIR_TTL_MS, BAN_DIR, BANNED_PATH, INJECTIONS_DIR, AUDIT_PATH,
+  ADB_BIN,
 } from './paths.js';
-import { writeDiscovery, writeState, pidAlive, ensureDirs, atomicWrite } from './state.js';
+import { writeDiscovery, writeState, writeLeases, readLeases, pidAlive, ensureDirs, atomicWrite } from './state.js';
 import { log } from './log.js';
 import * as dev from './devices.js';
 
@@ -103,7 +108,7 @@ function reserve(chosen, p, req) {
     key: chosen.key, platform: chosen.platform, name: chosen.name, version: chosen.version,
     apiVersion: chosen.apiVersion, format: chosen.format || null,
     handle: chosen.handle, udid: chosen.udid, avd: chosen.avd, serial: chosen.serial,
-    ownerPid: p.ownerPid || null, ownerTty: p.tty || null,
+    ownerPid: p.ownerPid || null,
     agentName: p.agentName || `pid:${p.ownerPid}`, requirements: req,
     status: 'booting', bootedByUs: !wasBooted,
     allocatedAt: Date.now(), lastMotionAt: Date.now(), motionHash: null,
@@ -123,6 +128,10 @@ function findOwned(ownerPid, deviceId) {
 // ---- handlers -------------------------------------------------------------
 
 async function handleRequest(p, exclude = new Set()) {
+  // The owner PID is the ownership token everything else keys on: the reaper can
+  // only free leases whose owner is known-dead, and quota only counts owned leases.
+  // An ownerless lease would be unreclaimable and quota-invisible — reject it.
+  if (!p.ownerPid) throw httpError(400, 'ownerPid is required');
   const req = reqOf(p);
   const reserved = await withLock(async () => {
     reapDeadOwners();
@@ -137,6 +146,18 @@ async function handleRequest(p, exclude = new Set()) {
       if (allocatedByHandle(p.deviceId)) throw httpError(409, `device ${p.deviceId} is already allocated`);
       const specific = await findPoolDevice(p.deviceId);
       if (specific && !exclude.has(specific.key)) return reserve(specific, p, req);
+      // Vega (Fire TV) has no enumeration CLI, so a created device can never show
+      // up in the pool — trust the claim and track it as an unmanaged allocation
+      // (no boot/shutdown/idle management; exclusivity bookkeeping only). Without
+      // this the documented create-then-claim flow loops on needs-create forever.
+      if (req.platform === 'vega' && !exclude.has(`vega:${p.deviceId}`)) {
+        return reserve({
+          key: `vega:${p.deviceId}`, platform: 'vega', name: p.deviceId,
+          handle: p.deviceId, udid: null, avd: null, serial: null,
+          version: req.version !== 'any' ? req.version : null, apiVersion: null,
+          format: null, state: 'booted', // agent boots it itself; never shut it down
+        }, p, req);
+      }
       // named device not visible yet — fall through to create guidance
     }
     const chosen = await selectDevice(req, exclude);
@@ -152,6 +173,9 @@ async function handleRequest(p, exclude = new Set()) {
   if (reserved.status === 'error') {
     // Don't pin a device that failed to boot — return it to the pool and report,
     // so the agent can retry or report-device-broken rather than hold a zombie.
+    // If we started the boot, also shut the half-booted device down (an Android
+    // emulator that registered with adb but never finished booting keeps running).
+    if (reserved.bootedByUs) shutdownAlloc(reserved);
     await withLock(async () => {
       if (allocations.get(reserved.key) === reserved) { allocations.delete(reserved.key); publish(); }
     });
@@ -177,20 +201,30 @@ async function handleAwait(p) {
 
 async function bootAlloc(alloc) {
   try {
-    if (dev.isApplePlatform(alloc.platform)) {
+    if (alloc.platform === 'vega') {
+      alloc.status = 'ready'; // unmanaged: the agent created and boots it itself
+    } else if (dev.isApplePlatform(alloc.platform)) {
       const r = await dev.bootIOS(alloc.udid);
       alloc.handle = r.handle || alloc.udid;
       alloc.status = r.ok ? 'ready' : 'error';
     } else {
       const r = await dev.bootAndroid(alloc.avd, { wipe: false });
       alloc.serial = r.serial; alloc.handle = r.serial;
-      alloc.status = r.serial ? 'ready' : 'error';
+      // r.ok means boot COMPLETED; a serial alone means "registered with adb",
+      // which a hung AVD reaches without ever becoming usable.
+      alloc.status = r.ok ? 'ready' : 'error';
     }
   } catch (e) {
     alloc.status = 'error';
     log('boot error', alloc.key, String(e));
   }
   alloc.lastMotionAt = Date.now();
+  // Released mid-boot (free-device / kill while we were waiting): the record is
+  // gone from the table, so nobody will ever shut this device down — do it now.
+  if (allocations.get(alloc.key) !== alloc) {
+    if (alloc.bootedByUs) shutdownAlloc(alloc);
+    return;
+  }
   refreshPool();
 }
 
@@ -209,15 +243,30 @@ async function handleRelease(p, { shutdown = true } = {}) {
 async function handleChange(p) {
   const [old] = findOwned(p.ownerPid, p.deviceId);
   const exclude = new Set(old ? [old.key] : []);
-  if (old) await handleRelease({ ownerPid: p.ownerPid, deviceId: old.handle });
-  return handleRequest({
-    ownerPid: p.ownerPid,
-    agentName: p.agentName || old?.agentName,
-    platform: p.platform || old?.requirements?.platform,
-    format: p.format || old?.requirements?.format,
-    version: p.version || old?.requirements?.version,
-    tty: p.tty || old?.ownerTty,
-  }, exclude);
+  // Release WITHOUT shutdown first (frees the quota slot for the new request),
+  // but keep the old record so we can restore it if no replacement materializes —
+  // a needs-create/exhausted outcome must not leave the agent with nothing, its
+  // old device already torn down.
+  if (old) await handleRelease({ ownerPid: p.ownerPid, deviceId: old.handle }, { shutdown: false });
+  const restoreOld = () => withLock(async () => {
+    if (old && !allocations.has(old.key)) { allocations.set(old.key, old); publish(); }
+  });
+  let result;
+  try {
+    result = await handleRequest({
+      ownerPid: p.ownerPid,
+      agentName: p.agentName || old?.agentName,
+      platform: p.platform || old?.requirements?.platform,
+      format: p.format || old?.requirements?.format,
+      version: p.version || old?.requirements?.version,
+    }, exclude);
+  } catch (e) { await restoreOld(); throw e; }
+  if (result.outcome !== 'allocated') {
+    await restoreOld();
+    return old ? { ...result, keptDevice: old.handle } : result;
+  }
+  if (old && old.bootedByUs) shutdownAlloc(old);
+  return result;
 }
 
 async function handleBroken(p) {
@@ -241,8 +290,27 @@ async function handleBroken(p) {
     platform: old?.requirements?.platform || p.platform,
     format: old?.requirements?.format || p.format,
     version: old?.requirements?.version || p.version,
-    tty: p.tty || old?.ownerTty,
   }, exclude);
+}
+
+// The repair agent (or the user, via curl) reports a quarantined device healthy
+// again — drop the quarantine record so the device re-enters the pool. This is
+// the missing half of report-device-broken: without it every broken report
+// shrank the pool until a daemon restart.
+async function handleRepaired(p) {
+  return withLock(async () => {
+    const a = p.key ? allocations.get(p.key)
+      : [...allocations.values()].find((x) => p.deviceId
+          && (x.handle === p.deviceId || x.udid === p.deviceId || x.avd === p.deviceId || x.serial === p.deviceId));
+    if (!a || a.status !== 'repairing') {
+      throw httpError(404, `no repairing device matches ${p.key || p.deviceId}`);
+    }
+    allocations.delete(a.key);
+    publish();
+    appendAudit('daemon', 'repair-done', `${a.name || a.key} repaired — returned to the pool`);
+    log('repair: marked repaired, returned to pool', a.key);
+    return { repaired: a.key };
+  });
 }
 
 // ---- repair ---------------------------------------------------------------
@@ -319,7 +387,9 @@ function repairPrompt(alloc) {
     alloc.platform === 'ios'
       ? `Try: \`xcrun simctl shutdown ${alloc.udid}\`, then \`xcrun simctl erase ${alloc.udid}\`, then \`xcrun simctl boot ${alloc.udid}\` and confirm it reaches the home screen. If a specific app is the culprit, uninstall it with \`xcrun simctl uninstall\`.`
       : `Try: \`adb -s <serial> emu kill\` if running, then cold-boot clean with \`${'$ANDROID_HOME'}/emulator/emulator -avd ${alloc.avd} -wipe-data\`, wait for \`getprop sys.boot_completed\` = 1, and confirm the home screen. Recreate the AVD with avdmanager only if wiping does not help.`,
-    `When it boots cleanly, it is healthy again. Report exactly what was wrong and what you did to fix it.`,
+    `When it boots cleanly, it is healthy again. Return it to the allocator pool by running:`,
+    `\`curl -s --unix-socket ${shq(SOCKET_PATH)} -X POST http://localhost/repaired -H 'content-type: application/json' -d '{"key":"${alloc.key}"}'\`.`,
+    `Then report exactly what was wrong and what you did to fix it.`,
   ].filter(Boolean).join(' ');
 }
 
@@ -331,7 +401,17 @@ const aq = (s) => `"${String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`; 
 function reapDeadOwners() {
   let changed = false;
   for (const [key, a] of allocations) {
-    if (a.status === 'repairing') continue;
+    if (a.status === 'repairing') {
+      // Quarantine is not forever: past the TTL (repair agent died, forgot to
+      // notify, or never spawned) return the device to the pool. Worst case a
+      // still-broken device re-enters and is simply re-reported.
+      if (Date.now() - (a.repairStartedAt || a.allocatedAt) > REPAIR_TTL_MS) {
+        log('reap: repair TTL expired, returning to pool', key);
+        allocations.delete(key);
+        changed = true;
+      }
+      continue;
+    }
     // Don't reap a device mid-boot: its handle/serial isn't known yet, so a
     // shutdown would no-op and orphan the booting emulator. It becomes
     // reapable once it reaches 'ready'/'error' (a bounded ≤180s window).
@@ -457,6 +537,32 @@ function publish() {
   }, {});
   lastState = { updatedAt: new Date().toISOString(), daemonPid: process.pid, counts, devices };
   writeState(lastState);
+  // Full lease records too, so a restarted daemon rehydrates instead of silently
+  // dropping every lease (see rehydrateLeases).
+  writeLeases([...allocations.values()]);
+}
+
+// The lease table lives in memory, but clients auto-respawn a dead daemon — if a
+// restart started from an empty table, a device still driven by a live agent
+// would be enumerated as free (booted, even preferred!) and handed to a second
+// agent. Restore leases whose owner is still alive; keep quarantined devices
+// quarantined across restarts.
+function rehydrateLeases() {
+  let restored = 0;
+  for (const a of readLeases()) {
+    if (!a || !a.key || allocations.has(a.key)) continue;
+    const keep = a.status === 'repairing' || (a.ownerPid && pidAlive(a.ownerPid));
+    if (!keep) continue;
+    // A lease caught mid-boot: the boot promise died with the old daemon. Treat
+    // it as ready — exclusivity is what matters; a truly broken device gets
+    // reported by its owner.
+    if (a.status === 'booting') a.status = 'ready';
+    a.motionHash = null; // stale screenshot hash must not trigger an instant idle reap
+    a.lastMotionAt = Date.now();
+    allocations.set(a.key, a);
+    restored++;
+  }
+  if (restored) log('rehydrated', restored, 'lease(s) from a previous daemon');
 }
 
 // ---- prompt-injection reports ---------------------------------------------
@@ -533,6 +639,44 @@ function appendAudit(source, action, detail) {
   } catch {}
 }
 
+// Read the ban list, NEVER silently resetting it: an unparseable-but-present
+// file (torn write, disk hiccup) is moved aside for forensics instead of being
+// treated as empty — otherwise one bad read plus one new ban wipes every ban.
+function readBanned() {
+  let raw = null;
+  try { raw = fs.readFileSync(BANNED_PATH, 'utf8'); } catch { return { banned: [] }; }
+  try {
+    const data = JSON.parse(raw);
+    if (!Array.isArray(data.banned)) data.banned = [];
+    return data;
+  } catch (e) {
+    const aside = `${BANNED_PATH}.corrupt-${Date.now()}`;
+    try { fs.renameSync(BANNED_PATH, aside); } catch {}
+    log('banned.json unparseable — moved aside', aside, String(e));
+    appendAudit('daemon', 'warn', `banned.json was unreadable; preserved as ${path.basename(aside)}`);
+    return { banned: [] };
+  }
+}
+
+// Un-ban an author (the applet's panel calls this instead of editing banned.json
+// directly, so ban/unban writes are serialized in one process and a concurrent
+// injection report can't be lost to a read-modify-write race).
+async function handleUnban(p) {
+  const login = String(p.login || '').trim().replace(/^@/, '');
+  if (!login) throw httpError(400, 'login is required');
+  return withLock(async () => {
+    const data = readBanned();
+    const before = data.banned.length;
+    data.banned = data.banned.filter((b) => (b.login || '').toLowerCase() !== login.toLowerCase());
+    if (data.banned.length !== before) {
+      atomicWrite(BANNED_PATH, data);
+      appendAudit('panel', 'unban', `Un-banned @${login}`);
+      log('unbanned', login);
+    }
+    return { removed: before - data.banned.length, total: data.banned.length };
+  });
+}
+
 async function handleReportInjection(p) {
   const login = String(p.person || '').trim().replace(/^@/, '');
   if (!login) { const e = new Error('person (the offending PR author login) is required'); e.statusCode = 400; throw e; }
@@ -551,9 +695,7 @@ async function handleReportInjection(p) {
   try { fs.writeFileSync(path.join(dir, 'report.json'), JSON.stringify(incident, null, 2)); } catch {}
 
   return withLock(async () => {
-    let data = { banned: [] };
-    try { data = JSON.parse(fs.readFileSync(BANNED_PATH, 'utf8')); } catch {}
-    if (!Array.isArray(data.banned)) data.banned = [];
+    const data = readBanned();
     const entry = {
       login, reason: 'prompt injection', pr: p.pr || null, evidence: (p.evidence || '').slice(0, 800),
       evidenceDir: dir, reportedBy: p.agentName || null, at,
@@ -582,7 +724,12 @@ const server = http.createServer((req, res) => {
   if (req.method === 'GET' && req.url === '/state') return send(200, lastState);
 
   let body = '';
-  req.on('data', (c) => (body += c));
+  req.on('data', (c) => {
+    body += c;
+    // No legitimate request body approaches 1MB; cap the buffer so a runaway
+    // (or hostile local) writer can't balloon the daemon's memory.
+    if (body.length > 1_000_000) { req.destroy(); }
+  });
   req.on('end', async () => {
     let p = {};
     try { p = body ? JSON.parse(body) : {}; } catch { return send(400, { error: 'invalid json' }); }
@@ -594,7 +741,9 @@ const server = http.createServer((req, res) => {
         case '/release': result = await handleRelease(p); break;
         case '/change': result = await handleChange(p); break;
         case '/broken': result = await handleBroken(p); break;
+        case '/repaired': result = await handleRepaired(p); break;
         case '/report-injection': result = await handleReportInjection(p); break;
+        case '/unban': result = await handleUnban(p); break;
         case '/kill': result = await handleKill(p); break;
         default: return send(404, { error: `unknown route ${req.url}` });
       }
@@ -610,7 +759,9 @@ const server = http.createServer((req, res) => {
 function socketHealthy() {
   return new Promise((resolve) => {
     const req = http.request(
-      { socketPath: SOCKET_PATH, path: '/health', method: 'GET', timeout: 1000 },
+      // 3s, not 1s: this probe also gates the stale-socket takeover — a live peer
+      // whose event loop is briefly blocked must not get its socket unlinked.
+      { socketPath: SOCKET_PATH, path: '/health', method: 'GET', timeout: 3000 },
       (res) => { res.resume(); resolve(res.statusCode === 200); },
     );
     req.on('error', () => resolve(false));
@@ -629,7 +780,7 @@ function shutdownBootedSync() {
       if (dev.isApplePlatform(a.platform) && a.udid) {
         execFileSync('xcrun', ['simctl', 'shutdown', a.udid], { timeout: 15000, stdio: 'ignore' });
       } else if (dev.isAndroidPlatform(a.platform) && a.serial) {
-        execFileSync('adb', ['-s', a.serial, 'emu', 'kill'], { timeout: 15000, stdio: 'ignore' });
+        execFileSync(ADB_BIN, ['-s', a.serial, 'emu', 'kill'], { timeout: 15000, stdio: 'ignore' });
       }
     } catch {}
   }
@@ -669,6 +820,7 @@ async function start() {
   ensureDirs();
   // If a healthy daemon is already serving, never start a second one.
   if (await socketHealthy()) { log('another daemon is already live; exiting'); process.exit(0); }
+  rehydrateLeases();
   // NB: no pre-listen unlink — see the error handler above.
   server.listen(SOCKET_PATH, onListening);
   const bye = () => {

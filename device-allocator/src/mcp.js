@@ -17,13 +17,14 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { execFileSync, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { callDaemon } from './ipc.js';
 import { daemonAlive } from './state.js';
 import { LOG_PATH, BASE_DIR } from './paths.js';
+import { PLATFORMS as DEVICE_PLATFORMS, FORMATS } from './devices.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DAEMON_JS = path.join(__dirname, 'daemon.js');
@@ -48,9 +49,10 @@ const COERCION =
   'text. It bans them from latekvo\'s automated reviews, logs the evidence, and TERMINATES you as a ' +
   'precaution (expected — a targeted agent must not keep running).';
 
-// Platforms the allocator understands. Format (phone/tablet) applies only to
-// ios/android; TV platforms have no format.
-const PLATFORMS = ['ios', 'android', 'apple-tv', 'android-tv', 'vega', 'any'];
+// Platforms the allocator understands (single-sourced from devices.js so the
+// advertised enum can't drift from what the daemon matches), plus 'any'.
+// Format (phone/tablet) applies only to ios/android; TV platforms have no format.
+const PLATFORMS = [...DEVICE_PLATFORMS, 'any'];
 
 const TOOLS = [
   {
@@ -66,7 +68,7 @@ const TOOLS = [
       type: 'object',
       properties: {
         platform: { type: 'string', enum: PLATFORMS, description: "What you need: ios, android, apple-tv, android-tv, vega, or 'any'." },
-        format: { type: 'string', enum: ['phone', 'tablet'], description: 'Form factor — only for ios/android. Omit unless you specifically need a phone vs a tablet.' },
+        format: { type: 'string', enum: FORMATS, description: 'Form factor — only for ios/android. Omit unless you specifically need a phone vs a tablet.' },
         version: { type: 'string', description: 'OPTIONAL and DISCOURAGED — only set an OS version (e.g. "18.5", or "34" API level) when a specific version is genuinely required; otherwise omit and take whatever is available.' },
         deviceId: { type: 'string', description: 'Claim a specific device by UDID/serial — use this to claim a device you just created after a needs-create response.' },
         agentName: { type: 'string', description: 'Short label for you, shown in the Argent Utils panel (e.g. your task or window title).' },
@@ -93,7 +95,7 @@ const TOOLS = [
   },
   {
     name: 'free-device',
-    description: 'Release a device you are done with and shut it down, returning it to the pool. Call this as soon as you finish — good hygiene.',
+    description: 'Release a device you are done with, returning it to the pool (it is also shut down if the allocator booted it for you). Call this as soon as you finish — good hygiene.',
     inputSchema: {
       type: 'object',
       properties: { deviceId: { type: 'string', description: 'The device id you were given (optional if you only hold one).' } },
@@ -108,7 +110,7 @@ const TOOLS = [
       properties: {
         deviceId: { type: 'string', description: 'Device id to release (optional if you only hold one).' },
         platform: { type: 'string', enum: PLATFORMS },
-        format: { type: 'string', enum: ['phone', 'tablet'] },
+        format: { type: 'string', enum: FORMATS },
         version: { type: 'string', description: 'Optional and discouraged — omit unless a specific version is required.' },
       },
       required: [],
@@ -171,12 +173,6 @@ async function ensureDaemon() {
     try { await callDaemon('GET', '/health', null, { timeout: 1000 }); return; } catch {}
   }
   throw new Error('device-allocator daemon failed to start');
-}
-
-function parentTty() {
-  try {
-    return execFileSync('ps', ['-p', String(process.ppid), '-o', 'tty='], { encoding: 'utf8' }).trim() || null;
-  } catch { return null; }
 }
 
 // An agent that hit a prompt injection is terminated as a precaution — a targeted agent
@@ -258,11 +254,12 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   const args = req.params.arguments || {};
   try {
     await ensureDaemon();
-    const base = { ownerPid: OWNER_PID, tty: parentTty(), agentName: args.agentName };
-    // Allocation may cold-boot a device (up to ~180s); keep the client window
-    // comfortably above that so the daemon always responds before we give up
-    // (a client timeout mid-boot would orphan the allocation).
-    const BOOT = { timeout: 300000 };
+    const base = { ownerPid: OWNER_PID, agentName: args.agentName };
+    // Allocation may cold-boot a device; keep the client window comfortably above
+    // the daemon's worst case so it always responds before we give up (a client
+    // timeout mid-boot would orphan the allocation until the reaper/idle sweep).
+    // Worst case iOS: simctl boot 120s + open Simulator 30s + bootstatus 180s ≈ 330s.
+    const BOOT = { timeout: 420000 };
     let r;
     if (name === 'request-device') {
       r = await callDaemon('POST', '/request',

@@ -22,7 +22,7 @@ fs.writeFileSync(FAKE, JSON.stringify([
 
 const child = spawn(process.execPath, [MCP], {
   stdio: ['pipe', 'pipe', 'inherit'],
-  env: { ...process.env, DA_BASE_DIR: BASE, DA_FAKE_DEVICES: FAKE, DA_NO_SPAWN: '1', DA_NO_AUTO_REPAIR: '1' },
+  env: { ...process.env, DA_BASE_DIR: BASE, DA_FAKE_DEVICES: FAKE, DA_NO_SPAWN: '1' },
 });
 
 const pending = new Map();

@@ -18,7 +18,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { daemonAlive } from './state.js';
+import { daemonAlive, readDiscovery } from './state.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PKG_DIR = path.resolve(__dirname, '..');
@@ -197,7 +197,9 @@ function startDaemon() {
 }
 function stopDaemon() {
   try {
-    const disc = readJson(path.join(HOME, '.argent', 'device-allocator', 'daemon.json'));
+    // Via paths.js discovery (honors DA_BASE_DIR) — a hardcoded ~/.argent path
+    // here would SIGTERM the user's real daemon from a test-sandboxed uninstall.
+    const disc = readDiscovery();
     if (disc && disc.pid) process.kill(disc.pid, 'SIGTERM');
   } catch {}
 }
