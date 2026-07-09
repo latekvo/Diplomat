@@ -413,10 +413,22 @@ check(ApiErrorMatch.looksLikeApiError("something API error, see status.claude.co
 check(ApiErrorMatch.looksLikeApiError("⏺ API Error: Unable to connect to API"))
 check(ApiErrorMatch.looksLikeApiError("API Error: Connection error."))
 check(ApiErrorMatch.looksLikeApiError("API Error: getaddrinfo ENOTFOUND api.anthropic.com"))
+// Out-of-token-quota banners (no "API Error" prefix) are handled the same way:
+// every format the CLI has used for the limit message must match, so the nudge
+// backoff can resume the agent once the quota window resets.
+check(ApiErrorMatch.looksLikeApiError("Claude usage limit reached. Your limit will reset at 4pm (Europe/Warsaw)."))
+check(ApiErrorMatch.looksLikeApiError("5-hour limit reached ∙ resets 6pm"))
+check(ApiErrorMatch.looksLikeApiError("Weekly limit reached ∙ resets Oct 14"))
+check(ApiErrorMatch.looksLikeApiError("Session limit reached ∙ resets 3am"))
+check(ApiErrorMatch.looksLikeApiError("You are out of tokens for this period."))
+check(ApiErrorMatch.looksLikeApiError("API Error: 429 rate_limit_error"))
 check(!ApiErrorMatch.looksLikeApiError("● Running tests… 47 passed"))
 check(!ApiErrorMatch.looksLikeApiError("git push origin main"))
 // "unable to connect" alone (no "api error") must NOT trip it — e.g. app logs.
 check(!ApiErrorMatch.looksLikeApiError("curl: unable to connect to localhost:8080"))
+// Ordinary prose about limits (rate limiter code, config talk) must NOT trip it.
+check(!ApiErrorMatch.looksLikeApiError("bump the rate limit in config.yaml"))
+check(!ApiErrorMatch.looksLikeApiError("the retry limit was reached, giving up"))
 check(!ApiErrorMatch.looksLikeApiError(""))
 print("api-error match assertions passed")
 

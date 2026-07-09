@@ -19,6 +19,23 @@ public enum ApiErrorMatch {
         "fetch failed", "econnrefused", "enotfound", "etimedout", "getaddrinfo",
     ]
 
+    /// Out-of-token-quota banners. The CLI prints these WITHOUT any "API Error"
+    /// prefix — e.g.
+    ///   "Claude usage limit reached. Your limit will reset at 4pm (Europe/Warsaw)."
+    ///   "5-hour limit reached ∙ resets 6pm"
+    ///   "Weekly limit reached ∙ resets Oct 14"
+    /// A stalled-on-quota agent is handled exactly like any other API error: the
+    /// nudge is sent on the same exponential backoff (2m→3h), so once the quota
+    /// window resets a retry resumes the session instead of it idling forever.
+    private static let quotaPhrases = [
+        "usage limit reached",
+        "hour limit reached",     // "5-hour limit reached ∙ resets …"
+        "weekly limit reached",
+        "session limit reached",
+        "limit will reset at",    // "Your limit will reset at 4pm (…)"
+        "out of tokens",
+    ]
+
     public static func looksLikeApiError(_ text: String) -> Bool {
         // "API Error: <3-digit code>" — the exact CLI format (529/500/503/429/…).
         if text.range(of: #"API Error:?\s*[0-9]{3}"#, options: .regularExpression) != nil {
@@ -27,6 +44,10 @@ public enum ApiErrorMatch {
         let lower = text.lowercased()
         // Or any API error that points at the status page (user's broader ask).
         if lower.contains("api error") && lower.contains("status.claude.com") {
+            return true
+        }
+        // Or a token-quota banner (no "API Error" prefix in the CLI's output).
+        if quotaPhrases.contains(where: lower.contains) {
             return true
         }
         // Or a codeless API connectivity error (network out, DNS, timeout, …).
