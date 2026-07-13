@@ -447,10 +447,14 @@ check(AuditCategory.of(action: "review-reply") == .reply, "my-PR review response
 check(AuditCategory.of(action: "conflicts") == .conflicts)
 check(AuditCategory.of(action: "audit") == .audit)
 check(AuditCategory.of(action: "nudge") == .apiRestart, "API-error nudge is the API-restart type")
+// Out-of-quota stalls are their own type (the auto-resume itself is disabled, but the
+// historical `quota-stall` rows still get their own chip, not lumped into System).
+check(AuditCategory.of(action: "quota-stall") == .quota, "quota stalls are the Out-of-quota type")
+check(AuditCategory.of(action: "quota-resume") == .quota)
 check(AuditCategory.of(action: "merge") == .merge)
 check(AuditCategory.of(action: "merge-failed") == .merge)
-check(AuditCategory.of(action: "ban") == .moderation)
-check(AuditCategory.of(action: "unban") == .moderation)
+check(AuditCategory.of(action: "ban") == .bans, "bans are their own category")
+check(AuditCategory.of(action: "unban") == .bans)
 // Device / health / anything unmapped falls through to System so no row is uncategorized.
 check(AuditCategory.of(action: "kill-device") == .system)
 check(AuditCategory.of(action: "repair-done") == .system)

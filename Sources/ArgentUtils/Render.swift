@@ -257,6 +257,8 @@ enum Render {
                        detail: "Auto · Resolve · #436"),
             AuditEntry(at: "2026-07-03T08:30:00Z", source: "auto", action: "nudge",
                        detail: "Continued a stalled agent (API error) on ttys012"),
+            AuditEntry(at: "2026-07-03T08:28:00Z", source: "auto", action: "quota-stall",
+                       detail: "Out-of-quota agent on ttys003 — left alone until reset"),
             AuditEntry(at: "2026-07-03T08:25:00Z", source: "panel", action: "merge",
                        detail: "Merged #431"),
             AuditEntry(at: "2026-07-03T08:20:00Z", source: "panel", action: "kill-device",

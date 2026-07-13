@@ -16,10 +16,15 @@ public enum AuditCategory: String, CaseIterable, Sendable {
     case audit
     /// The API-error watcher nudging a stalled agent back to work.
     case apiRestart
+    /// Out-of-quota stall handling. The auto-resume itself is currently disabled (a
+    /// quota-limited agent can't progress until its window resets, so it's left alone),
+    /// but its historical `quota-stall` entries — and any future re-enablement — get
+    /// their own type rather than being lumped in with System.
+    case quota
     /// Merging a PR (and merge failures).
     case merge
     /// Prompt-injection bans / un-bans.
-    case moderation
+    case bans
     /// Everything else: device kills/repairs, allocator install, poll + spawn health.
     case system
 
@@ -31,8 +36,9 @@ public enum AuditCategory: String, CaseIterable, Sendable {
         case .conflicts:  return "Conflicts"
         case .audit:      return "Audit"
         case .apiRestart: return "API restart"
+        case .quota:      return "Out of quota"
         case .merge:      return "Merges"
-        case .moderation: return "Moderation"
+        case .bans:       return "Bans"
         case .system:     return "System"
         }
     }
@@ -45,8 +51,9 @@ public enum AuditCategory: String, CaseIterable, Sendable {
         case .conflicts:  return "arrow.triangle.merge"
         case .audit:      return "ladybug.fill"
         case .apiRestart: return "bolt.fill"
+        case .quota:      return "hourglass"
         case .merge:      return "checkmark.seal.fill"
-        case .moderation: return "hand.raised.fill"
+        case .bans:       return "hand.raised.fill"
         case .system:     return "gearshape.fill"
         }
     }
@@ -68,10 +75,12 @@ public enum AuditCategory: String, CaseIterable, Sendable {
             return .audit
         case "nudge":
             return .apiRestart
+        case "quota-stall", "quota-resume":
+            return .quota
         case "merge", "merge-failed":
             return .merge
         case "ban", "unban":
-            return .moderation
+            return .bans
         default:
             return .system
         }

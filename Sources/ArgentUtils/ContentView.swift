@@ -513,8 +513,9 @@ struct ContentView: View {
         case .conflicts:  return .cyan
         case .audit:      return .indigo
         case .apiRestart: return .orange
+        case .quota:      return .yellow
         case .merge:      return .green
-        case .moderation: return .red
+        case .bans:       return .red
         case .system:     return .gray
         }
     }
@@ -1095,6 +1096,7 @@ private struct AuditRow: View {
         case "conflicts":            return "arrow.triangle.merge"
         case "audit":                return "ladybug.fill"
         case "nudge":                return "bolt.fill"
+        case "quota-stall":          return "hourglass"
         case "merge":                return "checkmark.seal.fill"
         case "kill-device":          return "xmark.circle.fill"
         case "unban":                return "hand.raised.slash.fill"
