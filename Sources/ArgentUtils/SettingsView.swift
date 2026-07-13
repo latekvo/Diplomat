@@ -11,12 +11,23 @@ struct SettingsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             headerRow
-            identitySection
-            autofixSection
-            apiWatchSection
-            toolsSection
-            terminalSection
-            allocatorSection
+            // Two columns, same layout as the main panel: identity + automation
+            // behaviour on the left, appearance + environment on the right.
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 16) {
+                    identitySection
+                    autofixSection
+                    apiWatchSection
+                }
+                .frame(width: PopoverRoot.columnWidth, alignment: .topLeading)
+
+                VStack(alignment: .leading, spacing: 16) {
+                    toolsSection
+                    terminalSection
+                    allocatorSection
+                }
+                .frame(width: PopoverRoot.columnWidth, alignment: .topLeading)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .task {

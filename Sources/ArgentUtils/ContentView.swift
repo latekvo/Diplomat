@@ -281,9 +281,8 @@ struct ContentView: View {
         VStack(spacing: 8) {
             header
             if showingSettings {
-                // A form reads badly stretched to the full 2-column width; cap it.
+                // Settings uses the same two-column layout as the main panel below.
                 SettingsView(isPresented: $showingSettings)
-                    .frame(maxWidth: 640, alignment: .leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else {
                 HStack(alignment: .top, spacing: 12) {

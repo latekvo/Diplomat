@@ -55,11 +55,11 @@ enum Render {
             ContentView(showSettings: true)
         case "settings":
             // Seed an outstanding review count so the "N unaddressed reviews — retrying"
-            // row renders under the review-requests toggle. The frame must fit the WHOLE
-            // form — a short frame centers the content and crops both ends out of the
-            // snapshot, gutting its regression-guard value.
+            // row renders under the review-requests toggle. No fixed height: the
+            // two-column form sizes to its natural content (a fixed frame taller than
+            // the content centers it and pads the snapshot with dead whitespace).
             let _ = seedSettings(store)
-            SettingsView(isPresented: .constant(true)).frame(height: 1150)
+            SettingsView(isPresented: .constant(true))
         case "unban-confirm":
             // Seed the ban list and open the inline "Unban @X?" confirmation on a row —
             // proving it renders inside the panel (not as a separate NSAlert window).
