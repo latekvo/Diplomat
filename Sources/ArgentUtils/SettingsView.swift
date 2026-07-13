@@ -172,8 +172,9 @@ struct SettingsView: View {
     private var apiWatchBlurb: String {
         let base = "Watches every iTerm/Terminal session; when a Claude API error shows up "
             + "(e.g. \u{201C}529 Overloaded\u{201D}), it sends \u{201C}\(ApiErrorWatcher.continueMessage)\u{201D} "
-            + "so a stalled agent resumes on its own. An out-of-quota stall "
-            + "(\u{201C}You've hit your weekly limit\u{201D}) is nudged only after the limit provably resets."
+            + "so a stalled agent resumes on its own. Out-of-quota stalls "
+            + "(\u{201C}You've hit your weekly limit\u{201D}) are left alone — nudging can't help "
+            + "until the limit resets."
         let count = store.apiWatchContinues > 0 ? "  Continued \(store.apiWatchContinues)× so far." : ""
         return base + count
     }

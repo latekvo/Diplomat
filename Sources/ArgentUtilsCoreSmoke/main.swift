@@ -413,18 +413,22 @@ check(ApiErrorMatch.looksLikeApiError("something API error, see status.claude.co
 check(ApiErrorMatch.looksLikeApiError("⏺ API Error: Unable to connect to API"))
 check(ApiErrorMatch.looksLikeApiError("API Error: Connection error."))
 check(ApiErrorMatch.looksLikeApiError("API Error: getaddrinfo ENOTFOUND api.anthropic.com"))
-// Out-of-token-quota banners (no "API Error" prefix) classify as .quota — they are
-// nudged only once the limit provably reset, unlike .transient errors which retry
-// on the backoff. Every format the CLI has used for the limit message must match.
-check(ApiErrorMatch.classify("You've hit your weekly limit.") == .quota)
-check(ApiErrorMatch.classify("You've hit your usage limit.") == .quota)
-check(ApiErrorMatch.classify("Claude usage limit reached. Your limit will reset at 4pm (Europe/Warsaw).") == .quota)
-check(ApiErrorMatch.classify("5-hour limit reached ∙ resets 6pm") == .quota)
-check(ApiErrorMatch.classify("Weekly limit reached ∙ resets Oct 14") == .quota)
-check(ApiErrorMatch.classify("Session limit reached ∙ resets 3am") == .quota)
-check(ApiErrorMatch.classify("You are out of tokens for this period.") == .quota)
-check(ApiErrorMatch.classify("API Error: 429 rate_limit_error") == .transient)
-check(ApiErrorMatch.classify("⏺ API Error: 529 Overloaded") == .transient)
+// Out-of-token-quota banners (no "API Error" prefix) are intentionally IGNORED — an
+// out-of-quota agent can't progress until its window resets, so nudging just churns.
+// Every format the CLI has used for the limit message must return false.
+check(!ApiErrorMatch.looksLikeApiError("You've hit your weekly limit."))
+check(!ApiErrorMatch.looksLikeApiError("You've hit your usage limit."))
+check(!ApiErrorMatch.looksLikeApiError("Claude usage limit reached. Your limit will reset at 4pm (Europe/Warsaw)."))
+check(!ApiErrorMatch.looksLikeApiError("5-hour limit reached ∙ resets 6pm"))
+check(!ApiErrorMatch.looksLikeApiError("Weekly limit reached ∙ resets Oct 14"))
+check(!ApiErrorMatch.looksLikeApiError("Session limit reached ∙ resets 3am"))
+check(!ApiErrorMatch.looksLikeApiError("You are out of tokens for this period."))
+// A quota banner SUPPRESSES a co-occurring API error in the same tail — the session
+// idles on the limit, not the error, so we must not nudge it.
+check(!ApiErrorMatch.looksLikeApiError("API Error: 529 Overloaded\nYou've hit your weekly limit."))
+// Genuine transient errors still match.
+check(ApiErrorMatch.looksLikeApiError("API Error: 429 rate_limit_error"))
+check(ApiErrorMatch.looksLikeApiError("⏺ API Error: 529 Overloaded"))
 check(!ApiErrorMatch.looksLikeApiError("● Running tests… 47 passed"))
 check(!ApiErrorMatch.looksLikeApiError("git push origin main"))
 // "unable to connect" alone (no "api error") must NOT trip it — e.g. app logs.
@@ -434,42 +438,6 @@ check(!ApiErrorMatch.looksLikeApiError("bump the rate limit in config.yaml"))
 check(!ApiErrorMatch.looksLikeApiError("the retry limit was reached, giving up"))
 check(!ApiErrorMatch.looksLikeApiError(""))
 print("api-error match assertions passed")
-
-section("quota reset-time parsing")
-// Deterministic: fixed UTC reference instants, explicit UTC fallback timezone.
-let utc = TimeZone(identifier: "UTC")!
-var utcCal = Calendar(identifier: .gregorian)
-utcCal.timeZone = utc
-func utcDate(_ y: Int, _ mo: Int, _ d: Int, _ h: Int, _ mi: Int) -> Date {
-    utcCal.date(from: DateComponents(year: y, month: mo, day: d, hour: h, minute: mi))!
-}
-func reset(_ text: String, after ref: Date) -> Date? {
-    ApiErrorMatch.quotaResetDate(in: text, after: ref, timeZone: utc)
-}
-// Time-of-day, before/after the stated time: "resets 6pm" seen at 5pm is TODAY 6pm;
-// seen at 7pm it's TOMORROW 6pm (the banner's time was future when it appeared).
-check(reset("5-hour limit reached ∙ resets 6pm", after: utcDate(2026, 7, 10, 17, 0))
-      == utcDate(2026, 7, 10, 18, 0))
-check(reset("5-hour limit reached ∙ resets 6pm", after: utcDate(2026, 7, 10, 19, 0))
-      == utcDate(2026, 7, 11, 18, 0))
-check(reset("resets 6:30pm", after: utcDate(2026, 7, 10, 12, 0)) == utcDate(2026, 7, 10, 18, 30))
-check(reset("resets 12am", after: utcDate(2026, 7, 10, 12, 0)) == utcDate(2026, 7, 11, 0, 0))
-check(reset("resets 12pm", after: utcDate(2026, 7, 10, 9, 0)) == utcDate(2026, 7, 10, 12, 0))
-check(reset("resets 18:30", after: utcDate(2026, 7, 10, 12, 0)) == utcDate(2026, 7, 10, 18, 30))
-// Explicit timezone in the banner wins over the fallback: 4pm Warsaw (UTC+2 in July) = 14:00 UTC.
-check(reset("Your limit will reset at 4pm (Europe/Warsaw).", after: utcDate(2026, 7, 10, 10, 0))
-      == utcDate(2026, 7, 10, 14, 0))
-// Weekly date with no time: only the START OF THE NEXT DAY is provably past the reset.
-check(reset("You've hit your weekly limit ∙ resets Oct 14", after: utcDate(2026, 7, 10, 12, 0))
-      == utcDate(2026, 10, 15, 0, 0))
-// Date already passed this year → next year's occurrence.
-check(reset("resets Oct 14", after: utcDate(2026, 11, 1, 12, 0)) == utcDate(2027, 10, 15, 0, 0))
-// Date WITH a time is exact.
-check(reset("resets Oct 14 at 3am", after: utcDate(2026, 7, 10, 12, 0))
-      == utcDate(2026, 10, 14, 3, 0))
-// No parseable time → nil: the watcher must NOT nudge (can't know the limit is fresh).
-check(reset("You've hit your weekly limit.", after: utcDate(2026, 7, 10, 12, 0)) == nil)
-print("quota reset-time assertions passed")
 
 // ---- Golden prompts (cross-platform parity) ----
 // Every prompt mode both front-ends can assemble is compared byte-for-byte against a

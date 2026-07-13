@@ -931,22 +931,6 @@ final class Store: ObservableObject {
     private struct ApiBackoff { var nextAllowed: Date; var interval: TimeInterval }
     private var apiErrorBackoff: [String: ApiBackoff] = [:]
 
-    /// Per-tty out-of-quota state: when the banner was first observed (the anchor the
-    /// banner's relative reset time is resolved against) and the parsed reset moment.
-    /// A quota-stalled session is nudged ONLY once `resetAt` has passed — sending
-    /// "go on" into a still-limited session does nothing — and never when the reset
-    /// time can't be parsed (we must KNOW the limit is fresh). Cleared when the
-    /// session recovers or its terminal closes.
-    private struct QuotaStall { var firstSeen: Date; var resetAt: Date? }
-    private var quotaStalls: [String: QuotaStall] = [:]
-
-    /// "Oct 14 06:00" for the audit line announcing when a quota nudge will fire.
-    private static let resetStampFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "MMM d HH:mm"
-        return f
-    }()
-
     /// Compact "2m" / "45m" / "3h" for the audit line.
     static func humanInterval(_ s: TimeInterval) -> String {
         if s >= 3600 { return "\(Int((s / 3600).rounded()))h" }
@@ -989,28 +973,11 @@ final class Store: ObservableObject {
         let now = Date()
         var erroring = Set<String>()
         for s in sessions {
-            guard let kind = ApiErrorMatch.classify(s.tail) else { continue }
+            // Out-of-quota banners return false here (looksLikeApiError ignores them):
+            // a quota-limited agent can't progress until its window resets, so nudging
+            // it is pointless — only transient server/connectivity errors are nudged.
+            guard ApiErrorMatch.looksLikeApiError(s.tail) else { continue }
             erroring.insert(s.tty)
-            if kind == .quota {
-                // Out of token quota: nudging does nothing until the limit window
-                // resets, so gate on the reset moment parsed from the banner —
-                // anchored to when WE first saw the stall (that resolves "resets
-                // 6pm" seen at 7pm to tomorrow, not today).
-                var stall = quotaStalls[s.tty] ?? QuotaStall(firstSeen: now, resetAt: nil)
-                if stall.resetAt == nil {
-                    stall.resetAt = ApiErrorMatch.quotaResetDate(in: s.tail, after: stall.firstSeen)
-                }
-                if quotaStalls[s.tty] == nil {   // first sighting → audit the plan once
-                    let plan = stall.resetAt.map {
-                        "nudging after the limit resets (\(Store.resetStampFormatter.string(from: $0)))"
-                    } ?? "reset time unparseable — NOT nudging"
-                    AuditLog.log("auto", "quota-stall", "Out-of-quota agent on \(s.tty); \(plan)")
-                    refreshAudit()
-                }
-                quotaStalls[s.tty] = stall
-                // Only past a KNOWN reset is the limit provably fresh.
-                guard let reset = stall.resetAt, now >= reset else { continue }
-            }
             // Still inside this session's current backoff window — hold off.
             if let b = apiErrorBackoff[s.tty], now < b.nextAllowed { continue }
             let tty = s.tty
@@ -1027,15 +994,14 @@ final class Store: ObservableObject {
                 ?? Store.apiWatchCooldown
             apiErrorBackoff[s.tty] = ApiBackoff(nextAllowed: now.addingTimeInterval(next), interval: next)
             AuditLog.log("auto", "nudge",
-                "Continued a stalled agent (\(kind == .quota ? "quota reset" : "API error")) on \(tty); "
+                "Continued a stalled agent (API error) on \(tty); "
                 + "next retry in ≥ \(Store.humanInterval(next))")
         }
-        // Keep backoff/quota state ONLY for currently-erroring ttys: an on-screen
-        // session that stopped erroring has recovered (reset to base), and a CLOSED
-        // session's entry must not linger — macOS recycles tty numbers, so stale
-        // state would misgate an unrelated new session on the same tty.
+        // Keep backoff state ONLY for currently-erroring ttys: an on-screen session
+        // that stopped erroring has recovered (reset to base), and a CLOSED session's
+        // entry must not linger — macOS recycles tty numbers, so stale state would
+        // misgate an unrelated new session on the same tty.
         apiErrorBackoff = apiErrorBackoff.filter { erroring.contains($0.key) }
-        quotaStalls = quotaStalls.filter { erroring.contains($0.key) }
     }
 
     private func startProcessPoll() {
