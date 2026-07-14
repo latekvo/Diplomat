@@ -43,10 +43,17 @@ from .widgets import (
 from .conflictwizardview import ConflictWizardView
 from .auditwizardview import AuditWizardView
 from .wizardview import WizardView
+from .meshview import MeshView
 
 _REVIEW_TINT = "#FF2D78"
 _CONFLICT_TINT = "#32ADE6"
 _AUDIT_TINT = "#5856D6"
+
+# Panel width: the two-pane body is 1080; the collapsible mesh column adds its
+# expanded width on the far left when open, or a slim strip when collapsed.
+_BASE_WIDTH = 1080
+_MESH_WIDTH = 300
+_MESH_STRIP = 26
 
 
 def _clear_layout(layout) -> None:
@@ -118,6 +125,10 @@ class Panel(QWidget):
         # Left-pane telemetry sections (both expanded by default).
         self._activity_expanded = True
         self._bans_expanded = True
+        # Far-left mesh column: expanded when the user opted into the mesh, else a
+        # slim collapsed strip. Persisted on the instance so a poll-driven rebuild
+        # doesn't reset the user's collapse choice.
+        self._mesh_expanded = store.mesh_enabled
 
         self.setWindowFlags(
             Qt.WindowType.Tool
@@ -128,7 +139,7 @@ class Panel(QWidget):
         # (devices · activity · bans) beside the right interactive column (search ·
         # tool grid · results). Widened to give both panes room; height tracks the
         # screen's safe area (availableGeometry excludes the taskbar/panel).
-        self.setFixedWidth(1080)
+        self.setFixedWidth(_BASE_WIDTH + (_MESH_WIDTH if self._mesh_expanded else _MESH_STRIP))
         self.setFixedHeight(self._screen_high())
 
         outer = QVBoxLayout(self)
@@ -173,6 +184,13 @@ class Panel(QWidget):
         self._duration_timer = QTimer(self)
         self._duration_timer.timeout.connect(self._rebuild_devices)
         self._duration_timer.start(30000)
+
+        # Mesh should feel live: poll the topology snapshot on a tight 2s cadence,
+        # but only while the panel is visible AND the mesh is enabled (the tick
+        # guards both, so a hidden panel or an opted-out user costs nothing).
+        self._mesh_timer = QTimer(self)
+        self._mesh_timer.timeout.connect(self._mesh_tick)
+        self._mesh_timer.start(2000)
 
         self._rebuild_grid()
         self._rebuild_devices()
@@ -233,8 +251,71 @@ class Panel(QWidget):
         layout = QHBoxLayout(self.main_page)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
+        layout.addWidget(self._build_mesh_column(), 0)
         layout.addWidget(self._build_left_pane(), 1)
         layout.addWidget(self._build_right_pane(), 1)
+
+    # MARK: mesh column (far left, collapsible)
+
+    def _build_mesh_column(self) -> QWidget:
+        """The Argent Mesh topology column. Collapsed → a slim vertical strip that
+        expands on click; expanded → the MeshView in a fixed-width scroll area.
+        A QStackedWidget flips between the two so the width is stable per state."""
+        self.mesh_stack = QStackedWidget()
+        self.mesh_stack.setSizePolicy(
+            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding
+        )
+
+        # Collapsed strip: a tall 🕸 toggle with a chevron hint.
+        strip = QToolButton()
+        strip.setText("🕸\n›")
+        strip.setToolTip("Show the Argent Mesh topology")
+        strip.setCursor(Qt.CursorShape.PointingHandCursor)
+        strip.setFixedWidth(_MESH_STRIP)
+        strip.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        strip.setStyleSheet(
+            "QToolButton { border: none; background-color: rgba(128,128,128,0.07);"
+            " border-radius: 8px; font-size: 13px; color: palette(mid); }"
+            "QToolButton:hover { color: palette(text);"
+            " background-color: rgba(128,128,128,0.13); }"
+        )
+        strip.clicked.connect(self._toggle_mesh)
+        self.mesh_stack.addWidget(strip)  # index 0 — collapsed
+
+        # Expanded: MeshView in a scroll area, plus a collapse chevron on top.
+        expanded = QWidget()
+        ecol = QVBoxLayout(expanded)
+        ecol.setContentsMargins(0, 0, 0, 0)
+        ecol.setSpacing(4)
+
+        collapse_row = QHBoxLayout()
+        collapse_row.addStretch(1)
+        collapse = _icon_button("‹", "Collapse the mesh column")
+        collapse.clicked.connect(self._toggle_mesh)
+        collapse_row.addWidget(collapse)
+        ecol.addLayout(collapse_row)
+
+        self.mesh_view = MeshView(self.store)
+        mesh_scroll = QScrollArea()
+        mesh_scroll.setWidgetResizable(True)
+        mesh_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        mesh_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        mesh_scroll.setWidget(self.mesh_view)
+        ecol.addWidget(mesh_scroll, 1)
+        expanded.setFixedWidth(_MESH_WIDTH)
+        self.mesh_stack.addWidget(expanded)  # index 1 — expanded
+
+        self.mesh_stack.setCurrentIndex(1 if self._mesh_expanded else 0)
+        return self.mesh_stack
+
+    def _toggle_mesh(self) -> None:
+        self._mesh_expanded = not self._mesh_expanded
+        self.mesh_stack.setCurrentIndex(1 if self._mesh_expanded else 0)
+        self.setFixedWidth(
+            _BASE_WIDTH + (_MESH_WIDTH if self._mesh_expanded else _MESH_STRIP)
+        )
+        if self._mesh_expanded:
+            self.store.refresh_mesh_state()
 
     def _build_left_pane(self) -> QWidget:
         """Telemetry column: device-allocator pool, activity feed, ban list. Each
@@ -827,6 +908,21 @@ class Panel(QWidget):
 
     def _on_loading(self, loading: bool) -> None:
         self.spinner.setVisible(loading)
+
+    # MARK: mesh poll
+
+    def _mesh_tick(self) -> None:
+        """2s poll of the mesh topology — cheap file read, gated so it's free when
+        the panel is hidden or the user hasn't opted into the mesh."""
+        if self.isVisible() and self.store.mesh_enabled:
+            self.store.refresh_mesh_state()
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        # One immediate mesh refresh on show so the column isn't a poll-cycle
+        # stale when the panel pops open.
+        if self.store.mesh_enabled:
+            self.store.refresh_mesh_state()
+        super().showEvent(event)
 
     # MARK: window behaviour
 

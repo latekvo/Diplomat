@@ -67,7 +67,7 @@ ARGENT_UTILS_PRINT_PROMPT=mine python -m argent_utils  # assemble a Review promp
 
 # Snapshot a panel state to PNG (no real display required):
 ARGENT_UTILS_RENDER=panel ARGENT_UTILS_RENDER_OUT=/tmp/p.png \
-    QT_QPA_PLATFORM=offscreen python -m argent_utils   # panel|lookup|wizard|conflicts|settings|devices
+    QT_QPA_PLATFORM=offscreen python -m argent_utils   # panel|lookup|wizard|conflicts|settings|devices|mesh
 ARGENT_UTILS_REFRESH_SECS=30 ./argent-utils            # faster auto-refresh, for tuning
 ```
 

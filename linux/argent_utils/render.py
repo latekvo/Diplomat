@@ -6,8 +6,9 @@ a real display by grabbing the widget's own pixels:
     ARGENT_UTILS_RENDER=panel ARGENT_UTILS_RENDER_OUT=/tmp/p.png \
         QT_QPA_PLATFORM=offscreen python -m argent_utils
 
-what ∈ {panel, lookup, wizard, settings}. With ARGENT_UTILS_RENDER_LIVE=1 it
-fetches real data first; otherwise it uses a small synthetic fixture.
+what ∈ {panel, lookup, wizard, conflicts, settings, devices, mesh}. With
+ARGENT_UTILS_RENDER_LIVE=1 it fetches real data first; otherwise it uses a small
+synthetic fixture.
 """
 
 from __future__ import annotations
@@ -101,6 +102,46 @@ def _telemetry_fixture(store: Store) -> None:
     ]
 
 
+def _mesh_fixture(store: Store) -> None:
+    """Synthetic mesh topology so the 🕸️ column can be eyeballed: a Linux self
+    node, one strong healthy macOS peer, one weak dead macOS peer, and the three
+    duties with one platform shortfall. Enables the mesh via the render-only
+    override (never persisting to real QSettings, never starting a node)."""
+    self_id = "n-self-linux"
+    peer_ok = "n-mbp-strong"
+    peer_dead = "n-mbp-weak"
+    store._mesh_enabled_override = True
+    store.mesh_state = {
+        # os.getpid() → node_running() sees a live pid, so the column reads "live".
+        "updatedAt": "now",
+        "pid": os.getpid(),
+        "tcpPort": 40878,
+        "self": {
+            "id": self_id, "name": "softoobox", "platform": "linux",
+            "tier": 4, "tokens": "ok", "tcpPort": 40878, "epoch": 1, "seq": 12,
+            "sees": [peer_ok], "dutiesEnabled": {}, "v": 1,
+        },
+        "peers": [
+            {"id": peer_ok, "name": "mbp-strong", "platform": "macos",
+             "tier": 1, "tokens": "ok", "tcpPort": 40879, "epoch": 1, "seq": 20,
+             "sees": [self_id], "dutiesEnabled": {}, "v": 1,
+             "link": "up", "addr": "192.168.1.21", "lastSeenSecsAgo": 1.2},
+            {"id": peer_dead, "name": "mbp-weak", "platform": "macos",
+             "tier": 5, "tokens": "low", "tcpPort": 40880, "epoch": 1, "seq": 8,
+             "sees": [], "dutiesEnabled": {}, "v": 1,
+             "link": "down", "addr": "192.168.1.37", "lastSeenSecsAgo": 42},
+        ],
+        "assignments": {
+            "review": {"duty": "review", "assigned": [peer_ok], "shortfall": []},
+            "conflicts": {"duty": "conflicts", "assigned": [self_id], "shortfall": []},
+            "audit": {"duty": "audit", "assigned": [self_id],
+                      "shortfall": [{"platform": "macos", "missing": 1}]},
+        },
+        "overrides": {"rev": 0, "updatedBy": "", "duties": {}},
+        "v": 1,
+    }
+
+
 def run(what: str, out: str) -> int:
     app = QApplication.instance() or QApplication([])
     store = Store()
@@ -108,6 +149,11 @@ def run(what: str, out: str) -> int:
         store.refresh()
     else:
         _fixture(store)
+
+    # The mesh fixture must land before Panel() — the panel reads mesh_enabled to
+    # decide whether its 🕸️ column starts expanded.
+    if what in ("mesh", "panel", "settings"):
+        _mesh_fixture(store)
 
     panel = Panel(store)
     if what == "lookup":
@@ -123,12 +169,17 @@ def run(what: str, out: str) -> int:
         _device_fixture(store)
         panel._rebuild_devices()
         panel._update_results()
+    elif what == "mesh":
+        # Fixture already applied above; refresh the column from it.
+        store.mesh_changed.emit()
+        panel._update_results()
     else:  # panel
         _device_fixture(store)
         _telemetry_fixture(store)
         panel._rebuild_grid()
         panel._rebuild_devices()
         panel._rebuild_telemetry()
+        store.mesh_changed.emit()
         panel._update_results()
 
     panel.show()

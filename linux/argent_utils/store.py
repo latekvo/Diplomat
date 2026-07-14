@@ -86,6 +86,10 @@ class Store(QObject):
     allocator_changed = Signal()
     # Emitted when the activity feed (audit.jsonl) or ban list snapshot changes.
     activity_changed = Signal()
+    # Emitted when the mesh topology snapshot (state.json) meaningfully changes.
+    # Live-ish (a 2s poll drives it), so it fires far more often than `changed`;
+    # the MeshView rebuilds in place from it, so the rebuild stays cheap.
+    mesh_changed = Signal()
 
     _ORG = "argent-utils"
     _APP = "argent-utils"
@@ -108,6 +112,13 @@ class Store(QObject):
         # Live telemetry read from the shared ~/.argent files (activity feed + bans).
         self.audit_entries: list = []
         self.banned_authors: list = []
+
+        # Live mesh topology (state.json snapshot; None until a node has run here)
+        # and the last control-edit error surfaced to the MeshView as a red line.
+        self.mesh_state: dict | None = None
+        self.mesh_error: str | None = None
+        # Render-only: force mesh_enabled on without persisting to real QSettings.
+        self._mesh_enabled_override: bool | None = None
 
         # Honor the process-wide default format (NativeFormat unless overridden):
         # the two-arg QSettings(org, app) constructor is hardwired to NativeFormat,
@@ -170,6 +181,22 @@ class Store(QObject):
     @allocator_setup_done.setter
     def allocator_setup_done(self, value: bool) -> None:
         self._settings.setValue("allocatorSetupDone", bool(value))
+
+    @property
+    def mesh_enabled(self) -> bool:
+        """Opt-in: whether this machine joins the LAN P2P mesh. Off by default so
+        Argent Utils never opens a UDP/TCP node on the network unasked; the app
+        auto-starts a node only once the user enables it in Settings.
+
+        ``_mesh_enabled_override`` lets the headless render force it on without
+        writing (and persisting) to the real user QSettings."""
+        if self._mesh_enabled_override is not None:
+            return self._mesh_enabled_override
+        return self._settings.value("meshEnabled", False, bool)
+
+    @mesh_enabled.setter
+    def mesh_enabled(self, value: bool) -> None:
+        self._settings.setValue("meshEnabled", bool(value))
 
     # MARK: derived settings
 
@@ -326,6 +353,136 @@ class Store(QObject):
             self.allocator_setup_done = True
             self.allocator_changed.emit()
             self.refresh_device_state()
+        threading.Thread(target=work, daemon=True).start()
+
+    # MARK: mesh (LAN P2P topology)
+
+    def refresh_mesh_state(self) -> None:
+        """Re-read the local node's public topology snapshot (state.json) and
+        signal on a *meaningful* change. Cheap file read — driven by the panel's
+        2s poll while it's visible. Never spawns a node.
+
+        `updatedAt` is stamped every write, so comparing whole snapshots would
+        fire every poll; we compare everything *but* `updatedAt`, then also allow
+        link-freshness drift (a peer's `lastSeenSecsAgo` creeping up) to trigger a
+        rebuild so the badges stay honest.
+        """
+        # Render mode pins a synthetic topology via the override — never let a
+        # poll read (or clobber it with) the real ~/.argent/mesh/state.json.
+        if self._mesh_enabled_override is not None:
+            return
+
+        from .mesh import statefile
+
+        new = statefile.read_state()
+        if self._mesh_meaningfully_changed(self.mesh_state, new):
+            self.mesh_state = new
+            self.mesh_changed.emit()
+
+    @staticmethod
+    def _mesh_meaningfully_changed(old: dict | None, new: dict | None) -> bool:
+        if old is None or new is None:
+            return old is not new  # None→dict or dict→None is always meaningful
+
+        def strip(snap: dict) -> dict:
+            # Ignore the always-changing wall-clock stamp; keep the topology/link
+            # fields (link state, lastSeenSecsAgo, assignments, overrides, attrs).
+            return {k: v for k, v in snap.items() if k != "updatedAt"}
+
+        return strip(old) != strip(new)
+
+    def ensure_mesh_running_async(self) -> None:
+        """Start a background mesh node iff the user enabled the mesh and none is
+        already alive. No-ops when disabled, so it's safe to call blindly on app
+        start. Never runs in a headless render/test (guarded by mesh_enabled,
+        which those paths leave off / stub)."""
+        from .mesh import statefile
+
+        if not self.mesh_enabled or statefile.node_running():
+            self.refresh_mesh_state()
+            return
+
+        def work() -> None:
+            import os
+            import subprocess
+            import sys
+
+            linux_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            try:
+                subprocess.Popen(  # noqa: S603 — relaunch ourselves as a node
+                    [sys.executable, "-m", "argent_utils.mesh", "--daemon"],
+                    cwd=linux_dir,
+                    start_new_session=True,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            except OSError as exc:  # noqa: BLE001
+                self.mesh_error = f"could not start mesh node: {exc}"
+            self.refresh_mesh_state()
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def stop_mesh_async(self) -> None:
+        """Ask the local node to stop (used when the user disables the mesh)."""
+        from .mesh import ctl
+
+        def work() -> None:
+            try:
+                ctl.stop()
+            except ctl.CtlError:
+                pass  # already down — nothing to stop
+            self.refresh_mesh_state()
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def mesh_set_attr(self, node_id: str, attrs: dict) -> None:
+        """Edit a node's attributes (self or a peer, forwarded over the mesh).
+        Runs on a daemon thread; a CtlError lands in `mesh_error` for the view."""
+        from .mesh import ctl
+
+        def work() -> None:
+            try:
+                ctl.set_attr(node_id, attrs)
+                self.mesh_error = None
+            except ctl.CtlError as exc:
+                self.mesh_error = str(exc)
+            self.refresh_mesh_state()
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def mesh_set_overrides(self, duty: str, placement: dict) -> None:
+        """Edit one duty's mesh-wide placement (gossiped last-writer-wins)."""
+        from .mesh import ctl
+
+        def work() -> None:
+            try:
+                ctl.set_overrides(duty, placement)
+                self.mesh_error = None
+            except ctl.CtlError as exc:
+                self.mesh_error = str(exc)
+            self.refresh_mesh_state()
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def mesh_dispatch(self, duty: str, prompt: str, done_callback=None) -> None:
+        """Route a job through the mesh; `done_callback(results, error)` fires on
+        the worker thread (callers marshal back to the UI thread themselves)."""
+        from .mesh import ctl
+
+        def work() -> None:
+            results: list = []
+            err: str | None = None
+            try:
+                results = ctl.dispatch(duty, prompt)
+                self.mesh_error = None
+            except ctl.CtlError as exc:
+                err = str(exc)
+                self.mesh_error = err
+            self.refresh_mesh_state()
+            if done_callback is not None:
+                done_callback(results, err)
+
         threading.Thread(target=work, daemon=True).start()
 
     def count(self, tool_id: str) -> int:

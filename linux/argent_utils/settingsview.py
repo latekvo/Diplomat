@@ -49,11 +49,15 @@ class SettingsView(QWidget):
         root.addLayout(self._tools_section())
         root.addLayout(self._terminal_section())
         root.addLayout(self._allocator_section())
+        root.addLayout(self._mesh_section())
         root.addStretch(1)
 
         store.allocator_changed.connect(self._refresh_allocator_ui)
+        store.mesh_changed.connect(self._refresh_mesh_ui)
         self._refresh_allocator_ui()
+        self._refresh_mesh_ui()
         store.refresh_allocator_install_async()
+        store.refresh_mesh_state()
 
     # MARK: header
 
@@ -238,6 +242,67 @@ class SettingsView(QWidget):
         self._alloc_install.setText("Reinstall" if installed else "Install")
         self._alloc_uninstall.setVisible(installed)
         self._alloc_daemon.setVisible(bool(s.get("daemonRunning")))
+
+    # MARK: mesh (LAN P2P duty coordination)
+
+    def _mesh_section(self) -> QVBoxLayout:
+        col = QVBoxLayout()
+        col.setSpacing(6)
+        col.addWidget(_section_label("MESH (LAN P2P)"))
+
+        toggle = QCheckBox("Coordinate duties with other machines on this LAN")
+        toggle.setChecked(self.store.mesh_enabled)
+        toggle.toggled.connect(self._on_mesh_toggled)
+        col.addWidget(toggle)
+
+        self._mesh_status = QLabel("")
+        self._mesh_status.setStyleSheet("font-weight: 700; font-size: 11px;")
+        col.addWidget(self._mesh_status)
+
+        hint = QLabel(
+            "Runs a small peer-to-peer node that discovers the other Argent Utils "
+            "machines on your LAN (UDP beacons) and routes duty work — reviews, "
+            "conflict fixes, the full E2E audit — to whichever node fits the "
+            "placement policy (weakest-first by default, token- and platform-aware). "
+            "Configure the whole mesh from the 🕸️ column on the left of the panel. "
+            "Off by default; no node opens on the network until you enable it here."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: palette(mid); font-size: 10px;")
+        col.addWidget(hint)
+        return col
+
+    def _on_mesh_toggled(self, on: bool) -> None:
+        self.store.mesh_enabled = on
+        if on:
+            self.store.ensure_mesh_running_async()
+        else:
+            self.store.stop_mesh_async()
+        self._refresh_mesh_ui()
+
+    def _refresh_mesh_ui(self) -> None:
+        from .mesh import statefile
+
+        state = self.store.mesh_state
+        if not self.store.mesh_enabled:
+            self._mesh_status.setText("Off")
+            self._mesh_status.setStyleSheet(
+                "font-weight: 700; font-size: 11px; color: palette(mid);"
+            )
+            return
+        if statefile.node_running(state):
+            peers = len((state or {}).get("peers", []))
+            plural = "" if peers == 1 else "s"
+            self._mesh_status.setText(f"Node running · {peers} peer{plural}")
+            self._mesh_status.setStyleSheet(
+                "font-weight: 700; font-size: 11px; color: #34C759;"
+            )
+        else:
+            self._mesh_status.setText("Starting node…" if state is None
+                                      else "Node not running")
+            self._mesh_status.setStyleSheet(
+                "font-weight: 700; font-size: 11px; color: #FF9500;"
+            )
 
     # MARK: terminal
 

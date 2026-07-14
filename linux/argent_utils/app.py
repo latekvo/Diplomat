@@ -95,6 +95,10 @@ class ArgentUtilsApp:
         # uninstall (see Store.ensure_allocator_installed_async).
         self.store.ensure_allocator_installed_async()
 
+        # Join the LAN mesh if the user opted in (no-ops when disabled). Starts a
+        # background node so duty coordination is live the moment the panel opens.
+        self.store.ensure_mesh_running_async()
+
         # Optional prefill (also used for manual UI checks).
         prefill = os.environ.get("ARGENT_UTILS_PREFILL")
         if prefill:
