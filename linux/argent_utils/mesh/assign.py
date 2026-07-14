@@ -125,25 +125,6 @@ def assign_all(
     }
 
 
-def dispatch_candidates(
-    duty_id: str,
-    nodes: list[NodeInfo],
-    overrides: PlacementOverrides | None = None,
-    local_id: str = "",
-) -> list[str]:
-    """The failover order for actually running a job: the assigned node(s)
-    first, then every remaining eligible node by rank — so a dispatch survives
-    the owner dropping between gossip rounds."""
-    placement = config.placement_for(duty_id, overrides)
-    a = assign_duty(duty_id, nodes, overrides, local_id)
-    rest = [
-        n.id
-        for n in _ranked(_eligible(nodes, duty_id, placement), placement.strategy, local_id)
-        if n.id not in a.assigned
-    ]
-    return list(a.assigned) + rest
-
-
 def slot_candidates(
     duty_id: str,
     nodes: list[NodeInfo],

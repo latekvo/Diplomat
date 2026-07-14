@@ -39,6 +39,10 @@ from .protocol import Job, NodeInfo
 # How long a dead peer stays in the snapshot (link "down") before it's dropped.
 _DOWN_RETENTION_SECS = 300.0
 
+# A sane home/office LAN has a handful of machines; this only bounds a beacon
+# flood of spoofed ids from ballooning the peers table + snapshot, not real use.
+_MAX_PEERS = 256
+
 
 class Peer:
     """One known remote node: its gossiped info + the (single) live link."""
@@ -77,12 +81,17 @@ class MeshNode:
         self._tasks: list[asyncio.Task] = []
         self._server: asyncio.base_events.Server | None = None
         self._udp_send: socket.socket | None = None
+        self._udp_recv: socket.socket | None = None
         self._stopping = asyncio.Event()
         # In-flight remote dispatches awaiting a job-status answer, by job id.
         self._job_futures: dict[str, asyncio.Future] = {}
         # Peers we're currently dialing — beacons repeat faster than a handshake
         # completes, and the peers map only learns the link at hello time.
         self._dialing: set[str] = set()
+        # Strong refs to fire-and-forget dial coroutines, so the loop can't GC a
+        # task mid-handshake (the asyncio create_task footgun).
+        self._dial_tasks: set[asyncio.Task] = set()
+        self._warned_id_clone = False
 
     # MARK: - identity / gossip source of truth
 
@@ -142,6 +151,9 @@ class MeshNode:
             with contextlib.suppress(asyncio.CancelledError):
                 await t
         self._tasks = []
+        for t in list(self._dial_tasks):
+            t.cancel()
+        self._dial_tasks.clear()
         for p in self.peers.values():
             self._close_link(p)
         if self._server:
@@ -149,6 +161,14 @@ class MeshNode:
             with contextlib.suppress(Exception):
                 await self._server.wait_closed()
             self._server = None
+        # Unregister the UDP reader and close both datagram sockets (the recv
+        # socket also drops its multicast membership on close).
+        if self._udp_recv is not None:
+            loop = asyncio.get_running_loop()
+            with contextlib.suppress(Exception):
+                loop.remove_reader(self._udp_recv)
+            self._udp_recv.close()
+            self._udp_recv = None
         if self._udp_send:
             self._udp_send.close()
             self._udp_send = None
@@ -235,7 +255,18 @@ class MeshNode:
 
     def _on_beacon(self, msg: dict, host: str) -> None:
         peer_id = str(msg.get("id", ""))
-        if not peer_id or peer_id == self.local.id:
+        if not peer_id:
+            return
+        if peer_id == self.local.id:
+            # A beacon carrying OUR id from another host means two machines
+            # share a cloned node.json — they'd never link (each ignores the
+            # other's beacon) and a third node would flip-flop between them.
+            # Warn once so the collision is diagnosable instead of silent.
+            if host not in ("127.0.0.1", "::1") and not self._warned_id_clone:
+                self._warned_id_clone = True
+                activity.log("mesh", "warn",
+                             f"Mesh: another host ({host}) advertises our node id — "
+                             f"duplicate node.json? give each machine its own.")
             return
         tcp_port = msg.get("tcpPort")
         if not isinstance(tcp_port, int) or tcp_port <= 0:
@@ -251,11 +282,18 @@ class MeshNode:
                     self._drop_peer(peer_id, reason="restarted")
                 else:
                     return
+        elif len(self.peers) >= _MAX_PEERS:
+            # Backstop against a beacon flood (spoofed random ids): once the
+            # table is full, ignore ids we've never linked rather than dialing
+            # and gossiping an unbounded set.
+            return
         # Smaller id dials: exactly one connection per pair, no dial races.
         if self.local.id < peer_id:
-            asyncio.get_running_loop().create_task(
+            task = asyncio.get_running_loop().create_task(
                 self._dial(peer_id, host, tcp_port), name=f"mesh-dial-{peer_id[:6]}"
             )
+            self._dial_tasks.add(task)
+            task.add_done_callback(self._dial_tasks.discard)
 
     async def _dial(self, peer_id: str, host: str, port: int) -> None:
         peer = self.peers.get(peer_id)
@@ -280,7 +318,9 @@ class MeshNode:
             except (ConnectionError, OSError):
                 writer.close()
                 return
-            await self._run_link(reader, writer, host)
+            # Dialed link: we reached whoever answered a beacon (spoofable), so
+            # nothing is trusted until their first message is a valid hello.
+            await self._run_link(reader, writer, host, authenticated=False)
         finally:
             self._dialing.discard(peer_id)
 
@@ -315,16 +355,25 @@ class MeshNode:
             with contextlib.suppress(ConnectionError, OSError):
                 await writer.drain()
             self._on_message(first, host, writer)
-            await self._run_link(reader, writer, host)
+            await self._run_link(reader, writer, host, authenticated=True)
             return
         writer.close()
 
     async def _run_link(
-        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, host: str
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, host: str,
+        authenticated: bool,
     ) -> None:
-        """Pump one peer link until EOF/error. The peer is identified by the
-        hello that either arrived first (inbound) or arrives as the reply to
-        ours (outbound); every message refreshes its liveness."""
+        """Pump one peer link until EOF/error.
+
+        ``authenticated`` is the join fence: an *inbound* link had its opening
+        hello secret-checked in ``_on_tcp_connection`` (True), but an *outbound*
+        dialed link (False) is talking to whoever answered a beacon — which the
+        attacker can spoof. So an unauthenticated link accepts *nothing* until
+        its first message is a valid hello with the matching secret; any other
+        first message (a naked ``dispatch``/``set-attr``/``overrides``) tears
+        the link down. Without this gate, a spoofed beacon that makes us dial an
+        attacker would let unauthenticated dispatches spawn agents on this box.
+        """
         peer_id: str | None = None
         try:
             while True:
@@ -334,6 +383,10 @@ class MeshNode:
                 msg = protocol.decode(line)
                 if not msg:
                     continue
+                if not authenticated:
+                    if msg.get("t") != "hello":
+                        raise ValueError("first link message was not a hello")
+                    authenticated = True  # _on_message re-checks the secret
                 got = self._on_message(msg, host, writer)
                 if got and peer_id is None:
                     peer_id = got

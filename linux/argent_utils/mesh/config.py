@@ -84,10 +84,6 @@ def duty_by_id(duty_id: str) -> dict | None:
     return next((d for d in core.mesh()["duties"] if d["id"] == duty_id), None)
 
 
-def strategy_ids() -> list[str]:
-    return [s["id"] for s in core.mesh()["strategies"]]
-
-
 def tier_bounds() -> tuple[int, int, int]:
     """(min, max, default) machine tier from the shared model."""
     t = core.mesh()["tiers"]

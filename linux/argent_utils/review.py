@@ -19,7 +19,6 @@ import shlex
 import shutil
 import subprocess
 import tempfile
-import uuid
 from dataclasses import dataclass
 
 from . import core
@@ -214,11 +213,12 @@ class SpawnError(RuntimeError):
 
 
 def write_prompt(prompt: str) -> str:
-    path = os.path.join(
-        tempfile.gettempdir(), f"argent-utils-review-{uuid.uuid4().hex}.txt"
-    )
+    # 0600 via mkstemp: /tmp is world-readable and multi-user, and a mesh
+    # dispatch stages the prompt here too — don't leave it readable to other
+    # local users (nor world-readable by umask).
     try:
-        with open(path, "w", encoding="utf-8") as fh:
+        fd, path = tempfile.mkstemp(prefix="argent-utils-review-", suffix=".txt")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(prompt)
     except OSError as exc:
         raise SpawnError(f"Couldn't stage prompt: {exc}") from exc

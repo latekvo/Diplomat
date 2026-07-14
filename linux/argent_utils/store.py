@@ -385,9 +385,19 @@ class Store(QObject):
             return old is not new  # None→dict or dict→None is always meaningful
 
         def strip(snap: dict) -> dict:
-            # Ignore the always-changing wall-clock stamp; keep the topology/link
-            # fields (link state, lastSeenSecsAgo, assignments, overrides, attrs).
-            return {k: v for k, v in snap.items() if k != "updatedAt"}
+            # Drop the fields that tick every write on their own — the wall-clock
+            # stamp and each peer's "seen N.Ns ago" — so an idle mesh doesn't fire
+            # a rebuild (which would tear down an open combo the user is editing)
+            # twice a second. The *link state* (up/stale/down) still lives in the
+            # peer dict, so a genuine liveness transition still repaints.
+            out = {k: v for k, v in snap.items() if k not in ("updatedAt", "pid")}
+            peers = out.get("peers")
+            if isinstance(peers, list):
+                out["peers"] = [
+                    {k: v for k, v in p.items() if k != "lastSeenSecsAgo"}
+                    for p in peers
+                ]
+            return out
 
         return strip(old) != strip(new)
 

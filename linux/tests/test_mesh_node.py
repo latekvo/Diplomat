@@ -26,6 +26,43 @@ import pytest
 
 LINUX_DIR = Path(__file__).resolve().parents[1]
 
+
+def _loopback_multicast_works() -> bool:
+    """Probe once whether a node can actually discover itself over loopback
+    multicast. On a hardened/network-namespaced CI container multicast may be
+    unavailable — there we skip these real-socket tests rather than let every
+    ``_wait_for`` burn its 15s deadline. GitHub's ubuntu-latest passes this."""
+    import socket
+    import struct
+
+    group, port = "239.83.77.9", 40899
+    rx = tx = None
+    try:
+        rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        rx.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        rx.bind(("", port))
+        mreq = struct.pack("4s4s", socket.inet_aton(group), socket.inet_aton("127.0.0.1"))
+        rx.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+        rx.settimeout(1.0)
+        tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        tx.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, 1)
+        tx.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton("127.0.0.1"))
+        tx.sendto(b"probe", (group, port))
+        rx.recvfrom(64)
+        return True
+    except OSError:
+        return False
+    finally:
+        for s in (rx, tx):
+            if s is not None:
+                s.close()
+
+
+pytestmark = pytest.mark.skipif(
+    not _loopback_multicast_works(),
+    reason="loopback multicast unavailable (hardened/namespaced container?)",
+)
+
 # Unique-ish ports per run so parallel/leftover runs can't collide.
 _PORT_BASE = 42000 + (os.getpid() % 400) * 20
 
@@ -142,6 +179,17 @@ def _assignments(state: dict) -> dict:
             for k, v in (state.get("assignments") or {}).items()}
 
 
+def _wait_file(path: Path, expect: str, timeout: float = 8.0) -> None:
+    """A dispatch spawns fire-and-forget (Popen), so its stub file appears
+    asynchronously — poll for it rather than reading immediately (racy under
+    load)."""
+    _wait_for(
+        lambda: path.exists() and path.read_text() == expect,
+        timeout=timeout,
+        what=f"{path.name} to hold {expect!r}",
+    )
+
+
 def test_mesh_discovery_assignment_failover_and_dispatch(fleet):
     """One flow, one fleet: cheaper than a fleet per assertion, and closer to
     the real lifecycle (a mesh lives through all of these in sequence)."""
@@ -170,8 +218,8 @@ def test_mesh_discovery_assignment_failover_and_dispatch(fleet):
     r = fleet.cli("aaaa", "--dispatch", "audit", "--prompt", "bundle e2e please")
     assert r.returncode == 0, r.stdout + r.stderr
     spawned = fleet.root / "spawned"
-    assert (spawned / "lin.txt").read_text() == "bundle e2e please"
-    assert (spawned / "mac-weak.txt").read_text() == "bundle e2e please"
+    _wait_file(spawned / "lin.txt", "bundle e2e please")
+    _wait_file(spawned / "mac-weak.txt", "bundle e2e please")
     assert not (spawned / "mac-strong.txt").exists()
 
     # 4. Token failover at dispatch time: the weak mac runs out of tokens →
@@ -184,7 +232,7 @@ def test_mesh_discovery_assignment_failover_and_dispatch(fleet):
     )
     r = fleet.cli("aaaa", "--dispatch", "audit", "--prompt", "second run")
     assert r.returncode == 0, r.stdout + r.stderr
-    assert (spawned / "mac-strong.txt").read_text() == "second run"
+    _wait_file(spawned / "mac-strong.txt", "second run")
 
     # 5. LWW override gossip: flip review to strongest-first on ONE node; every
     #    node converges on the same new owner.
@@ -247,6 +295,87 @@ def test_secret_fences_peers_and_control(fleet):
     assert "not answering" in (r.stdout + r.stderr)
     r = fleet.cli("aaaa", "--set", "tokens=low", secret="hunter2")
     assert r.returncode == 0
+
+
+def test_outbound_dial_fence_rejects_naked_dispatch(fleet, tmp_path):
+    """Regression for the outbound-dial fence bypass: a spoofed beacon makes the
+    victim dial an attacker, who then sends a `dispatch` WITHOUT ever presenting
+    a hello/secret. The victim must run nothing and never link the attacker.
+    (Before the fix, `_run_link` processed that dispatch and spawned an agent.)"""
+    import socket
+    import struct
+    import threading
+
+    proto = _proto_env()
+    group = "239.83.77.7"  # the real default group; loopback multicast delivers it
+    mport = int(proto["ARGENT_MESH_MCAST_PORT"])
+    # The bypass "wins" if the victim SPAWNS at all: its own ARGENT_MESH_SPAWN
+    # stub (set by Fleet.start) copies the staged prompt here. The attacker
+    # controls the prompt content, not the command — so the tell is that the
+    # stub fired, not what it ran.
+    landed = fleet.root / "spawned" / "victim.txt"
+
+    # Victim node with a LOW id so it dials the (high-id) attacker, and a secret
+    # set so we also prove the fence isn't the only thing standing in the way.
+    fleet.start("0000victim", "victim", "linux", tier=4, secret="s3cr3t")
+    victim_dir = fleet.dirs["0000victim"]
+    _wait_for(lambda: (victim_dir / "state.json").exists(), what="victim to boot")
+
+    attacker_id = "ffffffffffffffffffffffffffffffff"
+    listen = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listen.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listen.bind(("127.0.0.1", 0))
+    listen.listen(4)
+    attacker_port = listen.getsockname()[1]
+    stop = threading.Event()
+
+    def serve() -> None:
+        listen.settimeout(0.5)
+        while not stop.is_set():
+            try:
+                conn, _ = listen.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            # The victim dials in and sends its hello; we ignore it and shove a
+            # naked dispatch (no hello, no secret) — the bypass we're guarding.
+            with conn:
+                conn.recv(65536)
+                job = {"t": "dispatch", "v": 1, "job": {
+                    "id": "evil", "duty": "review", "requestedBy": attacker_id,
+                    "requestedAt": 0, "prompt": "attacker-controlled payload"}}
+                try:
+                    conn.sendall((json.dumps(job) + "\n").encode())
+                    conn.recv(4096)  # let the victim answer/close
+                except OSError:
+                    pass
+
+    threading.Thread(target=serve, daemon=True).start()
+
+    beacon = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    beacon.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, 1)
+    beacon.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton("127.0.0.1"))
+    payload = json.dumps({"t": "beacon", "v": 1, "id": attacker_id, "name": "evil",
+                          "platform": "linux", "tcpPort": attacker_port,
+                          "epoch": 1}).encode()
+    try:
+        # Beacon at the victim for ~4s; if the bypass existed the dispatch would
+        # land near-immediately on the first dial.
+        for _ in range(16):
+            beacon.sendto(payload, (group, mport))
+            if landed.exists():
+                break
+            time.sleep(0.25)
+        assert not landed.exists(), "attacker dispatch executed — fence bypassed!"
+        # And the attacker never became a live peer.
+        peers = fleet.state("0000victim").get("peers", [])
+        assert not any(p.get("id") == attacker_id and p.get("link") == "up"
+                       for p in peers)
+    finally:
+        stop.set()
+        beacon.close()
+        listen.close()
 
 
 def test_node_restart_is_a_new_incarnation(fleet):

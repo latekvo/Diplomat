@@ -181,6 +181,16 @@ Model + constants live in [`core/mesh.json`](core/mesh.json); node state in
 `~/.argent/mesh/` (`node.json` identity, `state.json` topology snapshot — the
 device-allocator pattern).
 
+**Trust model.** The mesh is meant for a LAN you control (IPv4; discovery is
+multicast + subnet broadcast). By default it's open — any machine on the network
+that speaks the protocol can join and receive dispatched jobs. On a shared
+office network, set the same `ARGENT_MESH_SECRET=<token>` on every machine (and
+in the applet's environment): a node with a secret refuses peers, control
+sessions, and dispatches that don't present the matching token. It's a join
+fence, not cryptography — the token rides plaintext on the LAN — so it keeps a
+stray machine or a colleague's mesh from joining yours; it does not defend
+against a hostile network.
+
 ## Autonomous monitors (macOS)
 
 The macOS applet doesn't just render lists - it acts on them. Three background

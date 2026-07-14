@@ -57,7 +57,12 @@ class SettingsView(QWidget):
         self._refresh_allocator_ui()
         self._refresh_mesh_ui()
         store.refresh_allocator_install_async()
-        store.refresh_mesh_state()
+        if store.mesh_enabled:
+            # Only touch the mesh state file when the user actually uses the mesh;
+            # otherwise this is a needless real-HOME read on every Settings open
+            # (and in non-mesh render/test paths). The Panel's own poll keeps
+            # mesh_state fresh while a node is live.
+            store.refresh_mesh_state()
 
     # MARK: header
 

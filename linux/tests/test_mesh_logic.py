@@ -112,13 +112,10 @@ def test_assignment_is_permutation_invariant():
 def test_slot_candidates_provide_per_platform_failover():
     slots = assign.slot_candidates("audit", FLEET)
     assert slots == [("linux", ["a"]), ("macos", ["c", "b"])]
-    # No-spread duties get a single slot over every eligible node, ranked.
+    # No-spread duties get a single slot over every eligible node, ranked:
+    # the assignee first, then the failover order behind it.
     slots = assign.slot_candidates("review", FLEET)
     assert slots == [("any", ["a", "c", "b"])]
-
-
-def test_dispatch_candidates_extend_past_the_assignee():
-    assert assign.dispatch_candidates("review", FLEET) == ["a", "c", "b"]
 
 
 def test_assign_all_covers_every_duty():

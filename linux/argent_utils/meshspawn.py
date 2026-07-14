@@ -85,9 +85,12 @@ class MeshSpawnRow(QWidget):
         me = (state.get("self") or {}).get("id")
         names = {p.get("id"): p.get("name") for p in state.get("peers", [])}
         names[me] = f"{(state.get('self') or {}).get('name', 'this machine')} (here)"
+        from .meshview import _platform_meta
+
         parts = [names.get(nid, nid[:8]) for nid in a.get("assigned", [])]
         for miss in a.get("shortfall", []):
-            parts.append(f"⚠ missing {miss.get('missing')}×{miss.get('platform')}")
+            emoji, _ = _platform_meta(miss.get("platform", ""))
+            parts.append(f"⚠ missing {miss.get('missing')}×{emoji}")
         return " + ".join(parts) if parts else "∅ no eligible node"
 
     # MARK: - dispatch

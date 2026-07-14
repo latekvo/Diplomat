@@ -15,7 +15,7 @@ Message types (``t``):
 - ``overrides`` (TCP)  gossiped LWW placement overrides
 - ``set-attr``  (TCP)  edit a node's local attrs (from a peer's panel or the CLI)
 - ``dispatch``  (TCP)  run a job on the receiving node
-- ``job-status``(TCP)  dispatch outcome: accepted | rejected | spawned | failed
+- ``job-status``(TCP)  dispatch outcome: ``spawned`` | ``failed`` (+ reason)
 - ``status``    (TCP)  ctl request: reply with one ``state`` message (the snapshot)
 """
 

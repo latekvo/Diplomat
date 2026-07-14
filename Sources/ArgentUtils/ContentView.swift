@@ -516,6 +516,7 @@ struct ContentView: View {
         case .quota:      return .yellow
         case .merge:      return .green
         case .bans:       return .red
+        case .mesh:       return .teal
         case .system:     return .gray
         }
     }

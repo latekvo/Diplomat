@@ -166,6 +166,12 @@ def test_applet_meshes_and_dispatches(tmp_path, monkeypatch):
         assert "✓ applet-linux (here)" in wizard.status.text().replace("  ", " ") or \
                "✓ applet-linux" in wizard.status.text()
         assert "✓ fake-mac" in wizard.status.text()
+        # The stub spawn (Popen `cp`) lands the staged prompt asynchronously.
+        pump_until(
+            lambda: (tmp_path / "spawned-self.txt").exists()
+            and (tmp_path / "spawned-peer.txt").exists(),
+            timeout=10.0, what="both machines to stage the dispatched prompt",
+        )
         prompt = (tmp_path / "spawned-self.txt").read_text()
         assert prompt == (tmp_path / "spawned-peer.txt").read_text()
         assert "end-to-end" in prompt.lower() or len(prompt) > 100  # a real audit prompt

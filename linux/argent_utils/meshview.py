@@ -74,7 +74,9 @@ class TopologyGraph(QWidget):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setFixedHeight(122)
+        # Tall enough that the ring radius leaves room for a node disc AND its
+        # name label without either colliding with the self disc at the centre.
+        self.setFixedHeight(150)
         self._self: dict = {}
         self._peers: list[dict] = []
 
@@ -92,7 +94,7 @@ class TopologyGraph(QWidget):
         cx, cy = w / 2.0, h / 2.0
         # Ring radius: bounded by width, but also by height minus room for the
         # node disc + its name label, so ring nodes never clip the widget edge.
-        radius = min(w * 0.32, (h / 2.0) - 26)
+        radius = min(w * 0.33, (h / 2.0) - 30)
         peers = self._peers
         pts: list[tuple[float, float]] = []
         n = len(peers)
@@ -172,7 +174,10 @@ class TopologyGraph(QWidget):
         painter.drawText(int(x - r), int(y - r), int(r * 2), int(r * 2),
                          int(Qt.AlignmentFlag.AlignCenter), emoji)
 
-        # name label under the node, elided to a sane width
+        # Name label, elided to a sane width. Placed on the OUTSIDE of the disc
+        # relative to centre — above the disc for nodes in the top half, below
+        # otherwise — so a ring node's label never crosses the central self disc
+        # (which a fixed "always below" placement does for any peer near the top).
         name = node.get("name", "?")
         f2 = painter.font()
         f2.setPixelSize(9)
@@ -181,8 +186,13 @@ class TopologyGraph(QWidget):
         fm = painter.fontMetrics()
         label = fm.elidedText(name, Qt.TextElideMode.ElideRight, 74)
         painter.setPen(QColor(230, 230, 230) if is_self else QColor(165, 165, 165))
-        painter.drawText(int(x - 40), int(y + r + 2), 80, 12,
-                         int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop),
+        cy = self.height() / 2.0
+        above = (not is_self) and y < cy - 1  # self label stays below its disc
+        label_y = int(y - r - 2 - 12) if above else int(y + r + 2)
+        painter.drawText(int(x - 40), label_y, 80, 12,
+                         int(Qt.AlignmentFlag.AlignHCenter
+                             | (Qt.AlignmentFlag.AlignBottom if above
+                                else Qt.AlignmentFlag.AlignTop)),
                          label)
 
 
