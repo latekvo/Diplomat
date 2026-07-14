@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 
 from . import conflicts, review
 from .conflicts import Target
+from .meshspawn import MeshSpawnRow
 from .store import Store
 
 _TINT = "#32ADE6"  # cyan, matching the macOS Resolve-conflicts card
@@ -68,6 +69,11 @@ class ConflictWizardView(QWidget):
         blurb.setWordWrap(True)
         blurb.setStyleSheet("color: palette(mid); font-size: 10px;")
         root.addWidget(blurb)
+
+        # Mesh routing (visible only while the LAN mesh is enabled + running).
+        self.mesh_row = MeshSpawnRow(store, "conflicts")
+        self.mesh_row.dispatched.connect(self._mesh_done)
+        root.addWidget(self.mesh_row)
 
         self.spawn_btn = QPushButton("▶  SPAWN AGENT")
         self.spawn_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -120,12 +126,24 @@ class ConflictWizardView(QWidget):
         from . import activity
 
         cfg = self._config()
+        scope = cfg.specific_pr.strip() or "main"
+        if self.mesh_row.use_mesh():
+            self.spawn_btn.setEnabled(False)
+            self.status.setText("Dispatching over the mesh…")
+            activity.log("panel", "conflicts", f"Resolve conflicts · {scope} · via mesh")
+            self.mesh_row.dispatch(cfg.build_prompt())
+            return
         term = review.resolved(self.store.terminal)
         try:
             review.spawn(cfg.build_prompt(), self.store.terminal)
             self.status.setText(f"Launched {term.title}")
-            scope = cfg.specific_pr.strip() or "main"
             activity.log("panel", "conflicts", f"Resolve conflicts · {scope}")
             self.store.refresh_activity()
         except Exception as exc:  # noqa: BLE001
             self.status.setText(f"Failed: {exc}")
+
+    def _mesh_done(self, results: list, err: str) -> None:
+        self.spawn_btn.setEnabled(True)
+        self.status.setText(MeshSpawnRow.summarize(results, err))
+        self.store.refresh_activity()
+        self._sync()  # spawn_btn styling tracks validity

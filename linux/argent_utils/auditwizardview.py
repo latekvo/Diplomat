@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import audit, review
+from .meshspawn import MeshSpawnRow
 from .store import Store
 
 _TINT = "#5856D6"  # indigo, matching the macOS Full-E2E-test card
@@ -75,6 +76,12 @@ class AuditWizardView(QWidget):
         self._style_toggle(self.fix_issues)
         root.addWidget(self.fix_issues)
 
+        # Mesh routing — the audit's spread means one Linux AND one macOS node
+        # each run the bundle E2E (visible only while the mesh is enabled + running).
+        self.mesh_row = MeshSpawnRow(store, "audit")
+        self.mesh_row.dispatched.connect(self._mesh_done)
+        root.addWidget(self.mesh_row)
+
         self.spawn_btn = QPushButton("▶  SPAWN AGENT")
         self.spawn_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.spawn_btn.clicked.connect(self._spawn)
@@ -113,14 +120,26 @@ class AuditWizardView(QWidget):
         from . import activity
 
         cfg = self._config()
+        extra = " · ".join(
+            x for x in (["issues"] if cfg.fix_issues else []) + (["open PRs"] if cfg.open_prs else []) if x
+        )
+        if self.mesh_row.use_mesh():
+            self.spawn_btn.setEnabled(False)
+            self.status.setText("Dispatching over the mesh…")
+            activity.log("panel", "audit",
+                         f"Full E2E audit{(' · ' + extra) if extra else ''} · via mesh")
+            self.mesh_row.dispatch(cfg.build_prompt())
+            return
         term = review.resolved(self.store.terminal)
         try:
             review.spawn(cfg.build_prompt(), self.store.terminal)
             self.status.setText(f"Launched {term.title}")
-            extra = " · ".join(
-                x for x in (["issues"] if cfg.fix_issues else []) + (["open PRs"] if cfg.open_prs else []) if x
-            )
             activity.log("panel", "audit", f"Full E2E audit{(' · ' + extra) if extra else ''}")
             self.store.refresh_activity()
         except Exception as exc:  # noqa: BLE001
             self.status.setText(f"Failed: {exc}")
+
+    def _mesh_done(self, results: list, err: str) -> None:
+        self.spawn_btn.setEnabled(True)
+        self.status.setText(MeshSpawnRow.summarize(results, err))
+        self.store.refresh_activity()

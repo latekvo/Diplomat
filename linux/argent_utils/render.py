@@ -151,8 +151,9 @@ def run(what: str, out: str) -> int:
         _fixture(store)
 
     # The mesh fixture must land before Panel() — the panel reads mesh_enabled to
-    # decide whether its 🕸️ column starts expanded.
-    if what in ("mesh", "panel", "settings"):
+    # decide whether its 🕸️ column starts expanded. The wizard modes get it too,
+    # so their "🕸 Run on mesh" row (+ destination preview) is visible.
+    if what in ("mesh", "panel", "settings", "wizard", "conflicts", "audit"):
         _mesh_fixture(store)
 
     panel = Panel(store)
@@ -163,6 +164,8 @@ def run(what: str, out: str) -> int:
         panel._open_action("review")
     elif what == "conflicts":
         panel._open_action("conflicts")
+    elif what == "audit":
+        panel._open_action("audit")
     elif what == "settings":
         panel._toggle_settings()
     elif what == "devices":

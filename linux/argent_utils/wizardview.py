@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import review
+from .meshspawn import MeshSpawnRow
 from .prtarget import PRTarget
 from .store import Store
 
@@ -128,6 +129,11 @@ class WizardView(QWidget):
         )
         root.addWidget(self.final_pass)
 
+        # Mesh routing (visible only while the LAN mesh is enabled + running).
+        self.mesh_row = MeshSpawnRow(store, "review")
+        self.mesh_row.dispatched.connect(self._mesh_done)
+        root.addWidget(self.mesh_row)
+
         # Spawn
         self.spawn_btn = QPushButton("▶  SPAWN AGENT")
         self.spawn_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -215,12 +221,24 @@ class WizardView(QWidget):
         from . import activity
 
         cfg = self._config()
+        scope = cfg.specific_pr.strip() or "PRs"
+        if self.mesh_row.use_mesh():
+            self.spawn_btn.setEnabled(False)
+            self.status.setText("Dispatching over the mesh…")
+            activity.log("panel", "review", f"Review · {scope} · {cfg.depth} · via mesh")
+            self.mesh_row.dispatch(cfg.build_prompt())
+            return
         term = review.resolved(self.store.terminal)
         try:
             review.spawn(cfg.build_prompt(), self.store.terminal)
             self.status.setText(f"Launched {term.title}")
-            scope = cfg.specific_pr.strip() or "PRs"
             activity.log("panel", "review", f"Review · {scope} · {cfg.depth}")
             self.store.refresh_activity()
         except Exception as exc:  # noqa: BLE001
             self.status.setText(f"Failed: {exc}")
+
+    def _mesh_done(self, results: list, err: str) -> None:
+        self.spawn_btn.setEnabled(True)
+        self.status.setText(MeshSpawnRow.summarize(results, err))
+        self.store.refresh_activity()
+        self._sync()  # spawn_btn styling tracks validity
