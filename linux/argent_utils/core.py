@@ -86,6 +86,16 @@ def audit() -> dict:
 
 
 @functools.lru_cache(maxsize=1)
+def mesh() -> dict:
+    """The shared mesh model (protocol constants, duty catalog, strategies).
+
+    See core/mesh.json; consumed by the LAN P2P mesh node
+    (``argent_utils.mesh``) and the topology panel.
+    """
+    return _read_json("mesh.json")
+
+
+@functools.lru_cache(maxsize=1)
 def audit_categories() -> dict:
     """The shared audit/activity taxonomy (categories + action→category map).
 

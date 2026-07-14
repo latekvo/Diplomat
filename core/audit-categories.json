@@ -9,6 +9,7 @@
     { "id": "quota", "title": "Out of quota", "sfSymbol": "hourglass", "emoji": "⏳", "color": "yellow", "colorHex": "#FFCC00" },
     { "id": "merge", "title": "Merges", "sfSymbol": "checkmark.seal.fill", "emoji": "✅", "color": "green", "colorHex": "#34C759" },
     { "id": "bans", "title": "Bans", "sfSymbol": "hand.raised.fill", "emoji": "🚫", "color": "red", "colorHex": "#FF3B30" },
+    { "id": "mesh", "title": "Mesh", "sfSymbol": "point.3.connected.trianglepath.dotted", "emoji": "🕸️", "color": "teal", "colorHex": "#30B0C7" },
     { "id": "system", "title": "System", "sfSymbol": "gearshape.fill", "emoji": "⚙️", "color": "gray", "colorHex": "#8E8E93" }
   ],
   "actions": {
@@ -23,7 +24,14 @@
     "merge": "merge",
     "merge-failed": "merge",
     "ban": "bans",
-    "unban": "bans"
+    "unban": "bans",
+    "mesh-up": "mesh",
+    "mesh-peer-up": "mesh",
+    "mesh-peer-down": "mesh",
+    "mesh-takeover": "mesh",
+    "mesh-dispatch": "mesh",
+    "mesh-dispatch-failed": "mesh",
+    "mesh-spawn": "mesh"
   },
   "fallback": "system"
 }

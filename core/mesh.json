@@ -1,0 +1,87 @@
+{
+  "_comment": "Argent Mesh — LAN P2P coordination between the machines running Argent Utils. Protocol constants, the duty catalog (which job classes the mesh routes), and the placement strategies. Consumed by the Python mesh node (linux/argent_utils/mesh) today; a future Swift node reads the same file. Node-local attributes (tier, token state) live in ~/.argent/mesh/node.json on each machine; mesh-wide placement overrides are gossiped last-writer-wins and start from the defaults here.",
+
+  "protocol": {
+    "_comment": "Discovery is UDP (multicast + subnet broadcast, receivers dedupe — Wi-Fi APs commonly drop multicast); links are TCP with NDJSON messages. A node is 'stale' after missing heartbeats for peerStaleSecs and 'down' (duties reassigned) after peerTimeoutSecs.",
+    "version": 1,
+    "multicastGroup": "239.83.77.7",
+    "multicastPort": 40877,
+    "tcpPortBase": 40878,
+    "tcpPortSpan": 10,
+    "beaconIntervalSecs": 2.0,
+    "heartbeatIntervalSecs": 2.0,
+    "peerStaleSecs": 5.0,
+    "peerTimeoutSecs": 10.0,
+    "dispatchAckTimeoutSecs": 8.0,
+    "stateWriteIntervalSecs": 2.0
+  },
+
+  "platforms": [
+    { "id": "linux", "title": "Linux", "emoji": "🐧", "colorHex": "#FF9500" },
+    { "id": "macos", "title": "macOS", "emoji": "🍎", "colorHex": "#0A84FF" }
+  ],
+
+  "tokens": [
+    { "id": "ok", "title": "tokens OK", "emoji": "🟢", "colorHex": "#34C759" },
+    { "id": "low", "title": "tokens low", "emoji": "🟡", "colorHex": "#FF9500" },
+    { "id": "out", "title": "out of tokens", "emoji": "🔴", "colorHex": "#FF3B30" }
+  ],
+
+  "tiers": {
+    "_comment": "Machine strength, 1 = strongest. 'weakest-first' keeps the strong machine free for interactive work by routing grunt jobs to the weakest eligible node.",
+    "min": 1,
+    "max": 5,
+    "default": 3
+  },
+
+  "strategies": [
+    {
+      "id": "weakest-first",
+      "title": "Weakest first",
+      "detail": "route to the weakest eligible machine — keeps the strong ones free"
+    },
+    {
+      "id": "strongest-first",
+      "title": "Strongest first",
+      "detail": "route to the strongest eligible machine — fastest wall-clock"
+    },
+    {
+      "id": "local-first",
+      "title": "Local first",
+      "detail": "run on the dispatching machine when eligible, else weakest-first"
+    }
+  ],
+  "defaultStrategy": "weakest-first",
+
+  "duties": [
+    {
+      "id": "review",
+      "title": "Review PRs",
+      "emoji": "✅",
+      "colorHex": "#FF2D78",
+      "placement": { "strategy": "weakest-first", "tokenAware": true, "spread": [] }
+    },
+    {
+      "id": "conflicts",
+      "title": "Resolve conflicts",
+      "emoji": "🔀",
+      "colorHex": "#32ADE6",
+      "placement": { "strategy": "weakest-first", "tokenAware": true, "spread": [] }
+    },
+    {
+      "id": "audit",
+      "title": "Full E2E test",
+      "emoji": "🐞",
+      "colorHex": "#5856D6",
+      "placement": {
+        "_comment": "The bundle E2E runs on one Linux AND one macOS node — platform coverage beats machine preference here. An empty spread means 'any one node'.",
+        "strategy": "weakest-first",
+        "tokenAware": true,
+        "spread": [
+          { "platform": "linux", "count": 1 },
+          { "platform": "macos", "count": 1 }
+        ]
+      }
+    }
+  ]
+}

@@ -95,6 +95,9 @@ _ACTION_GLYPH: dict[str, str] = {
     "allocator-install": "📦", "allocator-uninstall": "📦",
     "merge-failed": "⚠️", "spawn-failed": "⚠️", "poll-failed": "⚠️", "warn": "⚠️",
     "poll-recovered": "✅",
+    "mesh-up": "🕸️", "mesh-peer-up": "🔗", "mesh-peer-down": "💔",
+    "mesh-takeover": "🔁", "mesh-dispatch": "📤", "mesh-dispatch-failed": "⚠️",
+    "mesh-spawn": "📥",
 }
 
 

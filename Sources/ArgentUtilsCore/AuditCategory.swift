@@ -25,6 +25,8 @@ public enum AuditCategory: String, CaseIterable, Sendable {
     case merge
     /// Prompt-injection bans / un-bans.
     case bans
+    /// LAN mesh coordination: peers appearing/vanishing, duty takeovers, dispatches.
+    case mesh
     /// Everything else: device kills/repairs, allocator install, poll + spawn health.
     case system
 
@@ -39,6 +41,7 @@ public enum AuditCategory: String, CaseIterable, Sendable {
         case .quota:      return "Out of quota"
         case .merge:      return "Merges"
         case .bans:       return "Bans"
+        case .mesh:       return "Mesh"
         case .system:     return "System"
         }
     }
@@ -54,6 +57,7 @@ public enum AuditCategory: String, CaseIterable, Sendable {
         case .quota:      return "hourglass"
         case .merge:      return "checkmark.seal.fill"
         case .bans:       return "hand.raised.fill"
+        case .mesh:       return "point.3.connected.trianglepath.dotted"
         case .system:     return "gearshape.fill"
         }
     }
@@ -81,6 +85,9 @@ public enum AuditCategory: String, CaseIterable, Sendable {
             return .merge
         case "ban", "unban":
             return .bans
+        case "mesh-up", "mesh-peer-up", "mesh-peer-down", "mesh-takeover",
+             "mesh-dispatch", "mesh-dispatch-failed", "mesh-spawn":
+            return .mesh
         default:
             return .system
         }
