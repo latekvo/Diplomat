@@ -171,6 +171,66 @@ def test_final_pass_never_applies_to_my_own_prs():
     ).build_prompt()
 
 
+def test_specific_pr_disposition_drives_toggles_and_prompt():
+    # A specific PR's polled author (mine / theirs / unknown) picks the disposition,
+    # which decides both the visible action toggles and the argent-core prompt -
+    # mirroring ReviewConfig.disposition / canX in ArgentUtilsCore/Review.swift.
+    from argent_utils.review import SpecificAuthor
+
+    def cfg(author: SpecificAuthor) -> review.ReviewConfig:
+        return review.ReviewConfig(
+            target=PRTarget.SPECIFIC, specific_pr="337", me="latekvo",
+            specific_author=author,
+        )
+
+    # MINE -> fix on branch: mark-ready + reply on, formal-review + final-verdict off.
+    mine = cfg(SpecificAuthor.MINE)
+    assert mine.disposition == SpecificAuthor.MINE
+    assert (mine.can_mark_ready, mine.can_leave_reviews,
+            mine.can_reply_to_reviews, mine.can_final_pass) == (True, False, True, False)
+    mine_p = mine.build_prompt()
+    assert "This PR is MINE" in mine_p
+    assert "CASE A" not in mine_p  # a known-author prompt, not the author-gated split
+    assert "No AI attribution" in mine_p  # we commit on my branch
+
+    # THEIRS -> review only: formal-review + final-verdict on, mark-ready + reply off.
+    theirs = cfg(SpecificAuthor.THEIRS)
+    assert theirs.disposition == SpecificAuthor.THEIRS
+    assert (theirs.can_mark_ready, theirs.can_leave_reviews,
+            theirs.can_reply_to_reviews, theirs.can_final_pass) == (False, True, False, True)
+    theirs_p = theirs.build_prompt()
+    assert "someone else" in theirs_p.lower()
+    assert "ABSOLUTELY DO NOT touch their branch" in theirs_p
+    assert "No AI attribution" not in theirs_p  # never touch their branch
+
+    # UNKNOWN (author still pending / poll failed) -> every toggle offered, and the
+    # author-gated CASE A/B prompt (the agent resolves the author itself).
+    unknown = cfg(SpecificAuthor.UNKNOWN)
+    assert unknown.disposition == SpecificAuthor.UNKNOWN
+    assert (unknown.can_mark_ready, unknown.can_leave_reviews,
+            unknown.can_reply_to_reviews, unknown.can_final_pass) == (True, True, True, True)
+    unknown_p = unknown.build_prompt()
+    assert "CASE A" in unknown_p and "CASE B" in unknown_p
+
+    # UNKNOWN is the default for a specific PR (back-compat with pre-detection config).
+    assert review.ReviewConfig(
+        target=PRTarget.SPECIFIC, specific_pr="337", me="latekvo"
+    ).disposition == SpecificAuthor.UNKNOWN
+
+
+def test_sweep_disposition_follows_target_not_specific_author():
+    # For a whose-PRs sweep the disposition follows the target regardless of any
+    # stale specific_author value (which only applies to a single PR).
+    from argent_utils.review import SpecificAuthor
+
+    mine = review.ReviewConfig(me="latekvo", specific_author=SpecificAuthor.THEIRS)
+    assert mine.disposition == SpecificAuthor.MINE
+    other = review.ReviewConfig(
+        target=PRTarget.SOMEONE, username="u", specific_author=SpecificAuthor.MINE
+    )
+    assert other.disposition == SpecificAuthor.THEIRS
+
+
 def test_openpr_mergeable_and_has_conflicts():
     # mergeable defaults to UNKNOWN (fixtures/older payloads) and only the exact
     # CONFLICTING state reads as a conflict — mirrors OpenPR in Models.swift.

@@ -7,7 +7,9 @@ running ``claude`` with it. Persistent widget (state survives data refreshes).
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+import threading
+
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -22,16 +24,30 @@ from PySide6.QtWidgets import (
 
 from . import review
 from .prtarget import PRTarget
+from .review import SpecificAuthor
 from .store import Store
 
 _TINT = "#FF2D78"  # pink, matching the macOS Review card
 
 
 class WizardView(QWidget):
+    # Emitted (queued to the main thread) when a background author poll resolves.
+    # Carries (pending_pr_text, author_login_or_empty) so the slot can ignore a
+    # result superseded by newer keystrokes - mirrors the macOS `pending` guard.
+    _author_resolved = Signal(str, str)
+
     def __init__(self, store: Store) -> None:
         super().__init__()
         self.store = store
         self._depths = review.depths()
+
+        # Specific-PR author disposition (mine / theirs / unknown) + loading flag,
+        # resolved off the UI thread - mirrors ReviewWizardView's @State in Swift.
+        self._specific_author = SpecificAuthor.UNKNOWN
+        self._author_loading = False
+        # The PR text the in-flight poll was launched for (debounce/supersede guard).
+        self._author_pending: str | None = None
+        self._author_resolved.connect(self._on_author_resolved)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -68,6 +84,13 @@ class WizardView(QWidget):
         self.pr_warning.setWordWrap(True)
         self.pr_warning.setStyleSheet("color: #e0563f; font-size: 10px;")
         root.addWidget(self.pr_warning)
+
+        # A one-line note under the single-PR field: whose PR it is once polled, so
+        # the user knows why some toggles disappeared (mirrors macOS `authorHint`).
+        self.author_hint = QLabel("")
+        self.author_hint.setWordWrap(True)
+        self.author_hint.setStyleSheet("font-size: 10px;")
+        root.addWidget(self.author_hint)
 
         # Scope
         self.drafts = QCheckBox("Review draft PRs")
@@ -164,9 +187,14 @@ class WizardView(QWidget):
             include_ready=self.ready.isChecked(),
             specific_pr=self.specific_pr.text(),
             final_pass=self.final_pass.isChecked(),
+            specific_author=self._specific_author,
         )
 
     def _sync(self) -> None:
+        # Kick off / reset the specific-PR author poll BEFORE reading the config, so
+        # a target/PR change that flips us back to UNKNOWN is reflected this pass.
+        self._refresh_author()
+
         cfg = self._config()
         depth = review.depth_by_id(cfg.depth)
         self.depth_title.setText(depth["title"])
@@ -193,11 +221,15 @@ class WizardView(QWidget):
         else:
             self.pr_warning.setVisible(False)
 
-        self.mark_ready.setEnabled(cfg.can_mark_ready)
-        self.leave_reviews.setEnabled(cfg.can_leave_reviews)
-        self.reply.setEnabled(cfg.can_reply_to_reviews)
-        # The final verdict never applies to my own PRs; hide the row entirely,
-        # matching the macOS wizard (`if config.canFinalPass { finalPassRow }`).
+        self._update_author_hint(is_specific)
+
+        # Which action toggles apply follows the disposition (mine / theirs / unknown).
+        # macOS wraps each toggle in `if config.canX`, hiding it entirely - mirror that
+        # with setVisible so a specific PR resolving to mine/theirs hides the toggles
+        # that don't apply, exactly like the macOS wizard.
+        self.mark_ready.setVisible(cfg.can_mark_ready)
+        self.leave_reviews.setVisible(cfg.can_leave_reviews)
+        self.reply.setVisible(cfg.can_reply_to_reviews)
         self.final_pass.setVisible(cfg.can_final_pass)
 
         self.spawn_btn.setEnabled(cfg.is_valid)
@@ -207,8 +239,97 @@ class WizardView(QWidget):
             f" padding: 8px; border-radius: 7px; }}"
         )
 
+    def _update_author_hint(self, is_specific: bool) -> None:
+        """The whose-PR-is-it note under the single-PR field. Only shown for a
+        specific PR; mirrors macOS `authorHint` wording + colours."""
+        if not is_specific:
+            self.author_hint.setVisible(False)
+            return
+        if self._author_loading:
+            icon, text, color = "⏳", "Checking who authored this PR...", "palette(mid)"
+        elif self._specific_author == SpecificAuthor.MINE:
+            icon, text, color = "👤", "Your PR - fix-on-branch review.", "#2e9e4f"
+        elif self._specific_author == SpecificAuthor.THEIRS:
+            icon, text, color = "👥", "Someone else's PR - review only, hands off.", "#e08a2f"
+        else:
+            icon, text, color = "❔", "Enter a PR to detect whether it's yours.", "palette(mid)"
+        self.author_hint.setText(f"{icon}  {text}")
+        self.author_hint.setStyleSheet(f"font-size: 10px; color: {color};")
+        self.author_hint.setVisible(True)
+
+    def _refresh_author(self) -> None:
+        """Poll the specific PR's author (debounced, off the UI thread) so the wizard
+        can hide the toggles that don't apply and pick the right mine/theirs prompt -
+        no author-guessing left to the spawned agent. Mirrors ReviewWizardView.refreshAuthor.
+        """
+        cfg = self._config()
+        if cfg.target != PRTarget.SPECIFIC:
+            # Not a specific PR: reset to a clean unknown state, cancel any in-flight poll.
+            self._author_pending = None
+            self._author_loading = False
+            if self._specific_author != SpecificAuthor.UNKNOWN:
+                self._specific_author = SpecificAuthor.UNKNOWN
+            return
+
+        pending = self.specific_pr.text()
+        if pending == self._author_pending:
+            return  # already resolving / resolved this exact input
+
+        ref = cfg.pr_ref
+        if not ref.is_valid or ref.number is None:
+            # No usable PR ref yet: unknown, nothing to poll.
+            self._author_pending = None
+            self._author_loading = False
+            self._specific_author = SpecificAuthor.UNKNOWN
+            return
+
+        owner, repo = cfg.target_repo
+        number = ref.number
+        self._author_pending = pending
+        self._author_loading = True
+        self._specific_author = SpecificAuthor.UNKNOWN  # offer all toggles while resolving
+
+        def work() -> None:
+            # Debounce keystrokes: pause, then bail if newer input already superseded
+            # this poll (mirrors the 400ms Task.sleep in macOS refreshAuthor). The
+            # _author_pending read is a best-effort guard - the main-thread slot
+            # re-checks it authoritatively before applying the result.
+            import time
+
+            time.sleep(0.4)
+            if self._author_pending != pending:
+                return
+            login = review.fetch_specific_author(owner, repo, number)
+            # Emit back to the main thread; the slot re-checks the guard + computes
+            # mine-vs-theirs against the (possibly changed) viewer login there.
+            self._author_resolved.emit(pending, login or "")
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_author_resolved(self, pending: str, login: str) -> None:
+        """Main-thread slot: fold a resolved author login into the disposition,
+        unless newer input superseded it. Mirrors the tail of macOS refreshAuthor."""
+        # Superseded by newer input, or the user left the specific-PR target.
+        if pending != self._author_pending:
+            return
+        if self.target.currentData() != PRTarget.SPECIFIC:
+            return
+        self._author_loading = False
+        me = self.store.effective_me
+        if login and me:
+            self._specific_author = (
+                SpecificAuthor.MINE if login.lower() == me.lower() else SpecificAuthor.THEIRS
+            )
+        else:
+            self._specific_author = SpecificAuthor.UNKNOWN
+        self._sync()
+
     def refresh_identity(self) -> None:
-        """Refresh the @handle caption after the viewer login resolves."""
+        """Refresh the @handle caption after the viewer login resolves. The viewer
+        login also decides mine-vs-theirs for a specific PR, so re-poll it."""
+        # A newly resolved viewer login can change the disposition of the current PR;
+        # drop the pending guard so _sync re-polls instead of short-circuiting.
+        self._author_pending = None
         self._sync()
 
     def _spawn(self) -> None:

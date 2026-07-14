@@ -1,11 +1,11 @@
 """Review-PRs config + prompt builder, and the Linux terminal spawner.
 
 The prompt text (depth fragments, scope templates, action blocks) all comes from
-the shared ``core/review.json``; only the *assembly* order/conditions live here
-as a thin glue layer, mirroring ReviewConfig's ``buildPrompt`` in
-ArgentUtilsCore/Review.swift (this port covers the sweep and author-unknown
-single-PR paths; the known-mine/known-theirs single-PR prompts back macOS-only
-monitors and are not ported).
+the shared ``core/review.json``; the *assembly* order/conditions live in Swift
+(ArgentUtilsCore/Review.swift) and are reached by shelling out to the
+``argent-core`` CLI, so the two front-ends can't drift. ``ReviewConfig`` mirrors
+the Swift struct's inputs and derived toggles, including the specific-PR author
+disposition (mine / theirs / unknown), which the wizard resolves via ``gh``.
 
 The terminal spawner is the Linux analogue of the macOS AppleScript/iTerm path:
 it opens a new terminal-emulator window running ``claude "<prompt>"`` detached
@@ -14,6 +14,7 @@ from the applet.
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import shutil
@@ -21,10 +22,46 @@ import subprocess
 import tempfile
 import uuid
 from dataclasses import dataclass
+from enum import Enum
 
 from . import core
 from .prref import PRRef, parse_pr_ref
 from .prtarget import PRTarget
+
+
+# MARK: - Specific-PR author disposition
+
+
+class SpecificAuthor(Enum):
+    """Who authored a specific PR under review, when known (mirrors the Swift
+    ``SpecificAuthor`` enum in ArgentUtilsCore/Review.swift). Selects the prompt
+    (fix-on-branch vs review-only vs author-gated) and which action toggles apply.
+    """
+
+    UNKNOWN = "unknown"  # specific PR, author not polled yet / poll failed - offer everything
+    MINE = "mine"        # fix on the branch (CASE A)
+    THEIRS = "theirs"    # review only (CASE B)
+
+
+def fetch_specific_author(owner: str, repo: str, number: int) -> str | None:
+    """One ``gh pr view ... --json author`` -> the author login, or ``None`` on
+    failure. Mirrors ``ReviewWizardView.fetchAuthor`` in ReviewWizard.swift. Runs
+    the gh shell-out synchronously; call it OFF the UI thread (the wizard does).
+    """
+    from . import gh
+
+    try:
+        data = gh.run(
+            ["pr", "view", str(number), "--repo", f"{owner}/{repo}", "--json", "author"]
+        )
+    except Exception:  # noqa: BLE001 - best-effort author resolution, None on any failure
+        return None
+    try:
+        author = json.loads(data).get("author") or {}
+        login = author.get("login")
+        return login or None
+    except (ValueError, AttributeError):
+        return None
 
 
 # MARK: - Review depth
@@ -74,6 +111,10 @@ class ReviewConfig:
     # The "final pass" escalation: a culminating full-E2E verdict pass. Off by default.
     final_pass: bool = False
 
+    # For a specific PR: whether it's mine, someone else's, or not yet determined.
+    # The wizard polls the PR's author and sets this. Ignored unless single-PR.
+    specific_author: SpecificAuthor = SpecificAuthor.UNKNOWN
+
     def __post_init__(self) -> None:
         if not self.depth:
             self.depth = default_depth_id()
@@ -87,26 +128,39 @@ class ReviewConfig:
             return self.username.strip()
         return ""
 
-    # A specific PR may be mine or someone's, so all three actions are offered.
+    # The review disposition: mine (fix on branch) or theirs (review only). For a
+    # whose-PRs sweep it follows the target; for a specific PR it's the polled author
+    # (UNKNOWN while pending - offers every toggle, gated prompt). Mirrors Swift's
+    # ReviewConfig.disposition.
+    @property
+    def disposition(self) -> SpecificAuthor:
+        if self.target == PRTarget.MINE:
+            return SpecificAuthor.MINE
+        if self.target == PRTarget.SOMEONE:
+            return SpecificAuthor.THEIRS
+        return self.specific_author
+
+    # Which action toggles apply. Mine-only toggles (mark-ready, reply-to-threads)
+    # hide for theirs; theirs-only toggles (formal review, final verdict) hide for
+    # mine. UNKNOWN (author pending) leaves all four visible. Mirrors the Swift
+    # disposition-based gates verbatim.
     @property
     def can_mark_ready(self) -> bool:
-        return self.target != PRTarget.SOMEONE
+        return self.disposition != SpecificAuthor.THEIRS
 
     @property
     def can_leave_reviews(self) -> bool:
-        return self.target != PRTarget.MINE
+        return self.disposition != SpecificAuthor.MINE
 
     @property
     def can_reply_to_reviews(self) -> bool:
-        return self.target != PRTarget.SOMEONE
+        return self.disposition != SpecificAuthor.THEIRS
 
     # The final approve/changes-requested verdict is a reviewer's call, so it never
-    # applies to my own PRs (Swift: canFinalPass = disposition != .mine). A specific
-    # PR's author is unknown here (the Linux port only has the author-gated prompt,
-    # Swift's `.unknown` disposition), which leaves the toggle available.
+    # applies to my own PRs (Swift: canFinalPass = disposition != .mine).
     @property
     def can_final_pass(self) -> bool:
-        return self.target != PRTarget.MINE
+        return self.disposition != SpecificAuthor.MINE
 
     # Review exactly one PR by number/URL instead of a whose-PRs sweep.
     @property
@@ -151,6 +205,7 @@ class ReviewConfig:
             "includeReady": self.include_ready,
             "specificPR": self.specific_pr,
             "finalPass": self.final_pass,
+            "specificAuthor": self.disposition.value,
         })
 
 
