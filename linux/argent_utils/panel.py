@@ -8,7 +8,7 @@ when the Store changes, so typing is never interrupted by a refresh.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, Qt, QTimer, Signal
 from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QGridLayout,
@@ -829,6 +829,20 @@ class Panel(QWidget):
         self.spinner.setVisible(loading)
 
     # MARK: window behaviour
+
+    def event(self, event) -> bool:  # noqa: N802
+        # Transient dismissal, matching the macOS MenuBarExtra(.window): hide when
+        # the user clicks/focuses outside the whole panel. We only act when focus
+        # has left this application entirely (activeWindow() is None). Our own child
+        # popups — a QComboBox dropdown, the tray context menu, the Quit dialog —
+        # either don't deactivate the panel at all (popups) or leave activeWindow()
+        # pointing at an app-owned window, so an inside interaction never hides us.
+        if event.type() == QEvent.Type.WindowDeactivate:
+            from PySide6.QtWidgets import QApplication
+
+            if QApplication.activeWindow() is None:
+                self.hide()
+        return super().event(event)
 
     def keyPressEvent(self, event) -> None:  # noqa: N802
         if event.key() == Qt.Key.Key_Escape:
