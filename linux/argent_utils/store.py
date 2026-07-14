@@ -153,6 +153,18 @@ class Store(QObject):
     def terminal_choice(self, value: str) -> None:
         self._settings.setValue("terminalChoice", value)
 
+    @property
+    def allocator_setup_done(self) -> bool:
+        """True once the one-time automatic device-allocator install has been
+        settled — either it succeeded, or the user made an explicit choice in
+        Settings. Gates the auto-install so it never re-installs after an
+        intentional uninstall."""
+        return self._settings.value("allocatorSetupDone", False, bool)
+
+    @allocator_setup_done.setter
+    def allocator_setup_done(self, value: bool) -> None:
+        self._settings.setValue("allocatorSetupDone", bool(value))
+
     # MARK: derived settings
 
     @property
@@ -252,9 +264,37 @@ class Store(QObject):
             self.allocator_changed.emit()
         threading.Thread(target=work, daemon=True).start()
 
+    def ensure_allocator_installed_async(self) -> None:
+        """One-time automatic install of the device-allocator MCP when Argent
+        Utils is first set up. Skips when the package/node isn't available or the
+        user has already settled it (installed or uninstalled in Settings). Only
+        marks itself done once the install actually lands, so a transient failure
+        (e.g. node missing) simply retries on a later launch."""
+        if self.allocator_setup_done or not deviceallocator.package_available():
+            return
+
+        def work() -> None:
+            status = deviceallocator.check()
+            if status and status.get("installed"):
+                self.allocator_install = status
+                self.allocator_setup_done = True
+                self.allocator_changed.emit()
+                return
+            # Not installed yet: pull the MCP server's runtime deps, then register.
+            deviceallocator.ensure_deps()
+            result = deviceallocator.install()
+            self.allocator_install = result
+            if result and result.get("installed"):
+                self.allocator_setup_done = True
+            self.allocator_changed.emit()
+            self.refresh_device_state()
+        threading.Thread(target=work, daemon=True).start()
+
     def install_allocator_async(self) -> None:
         def work() -> None:
+            deviceallocator.ensure_deps()
             self.allocator_install = deviceallocator.install()
+            self.allocator_setup_done = True
             self.allocator_changed.emit()
             self.refresh_device_state()
         threading.Thread(target=work, daemon=True).start()
@@ -262,6 +302,8 @@ class Store(QObject):
     def uninstall_allocator_async(self) -> None:
         def work() -> None:
             self.allocator_install = deviceallocator.uninstall()
+            # An explicit uninstall is a settled choice — don't auto-reinstall.
+            self.allocator_setup_done = True
             self.allocator_changed.emit()
             self.refresh_device_state()
         threading.Thread(target=work, daemon=True).start()

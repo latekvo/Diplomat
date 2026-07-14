@@ -90,6 +90,11 @@ class ArgentUtilsApp:
         threading.Thread(target=self.store.fetch_me, daemon=True).start()
         self.trigger_refresh()
 
+        # First-run: auto-install the device-allocator MCP so every local agent is
+        # forced to reserve simulators/emulators. One-shot and respects an explicit
+        # uninstall (see Store.ensure_allocator_installed_async).
+        self.store.ensure_allocator_installed_async()
+
         # Optional prefill (also used for manual UI checks).
         prefill = os.environ.get("ARGENT_UTILS_PREFILL")
         if prefill:

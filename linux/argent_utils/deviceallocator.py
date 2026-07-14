@@ -24,11 +24,30 @@ def package_dir() -> str:
     env = os.environ.get("ARGENT_DEVICE_ALLOCATOR_DIR")
     if env:
         return env
+    # Sibling of the linux/ front-end in this same checkout — resolved from our
+    # own path so it works wherever (and however cased) the repo is cloned. This
+    # file is <repo>/linux/argent_utils/deviceallocator.py, so parents[2] = <repo>.
+    sibling = Path(__file__).resolve().parents[2] / "device-allocator"
+    if sibling.exists():
+        return str(sibling)
     return str(_home() / "dev" / "argent-utils-applet" / "device-allocator")
 
 
 def install_js() -> str:
     return os.path.join(package_dir(), "src", "install.js")
+
+
+def node_modules_dir() -> str:
+    return os.path.join(package_dir(), "node_modules")
+
+
+def deps_installed() -> bool:
+    """True once the MCP server's one runtime dependency is present. The daemon
+    needs no deps, but ``mcp.js`` imports ``@modelcontextprotocol/sdk``, so the
+    server Claude Code spawns is dead without it."""
+    return os.path.isdir(
+        os.path.join(node_modules_dir(), "@modelcontextprotocol", "sdk")
+    )
 
 
 def state_path() -> Path:
@@ -68,6 +87,46 @@ def resolve_node() -> str | None:
         if os.path.exists(p):
             return p
     return None
+
+
+def resolve_npm() -> str | None:
+    """Find npm the same way we find node; npm normally sits beside it."""
+    env = os.environ.get("ARGENT_NPM")
+    if env and os.path.exists(env):
+        return env
+    node = resolve_node()
+    if node:
+        cand = os.path.join(os.path.dirname(node), "npm")
+        if os.path.exists(cand):
+            return cand
+    return shutil.which("npm")
+
+
+def ensure_deps() -> bool:
+    """Ensure the package's node_modules exist (``npm install``) so the MCP
+    server can start. No-op when already present. Returns True on success."""
+    if not package_available():
+        return False
+    if deps_installed():
+        return True
+    npm = resolve_npm()
+    node = resolve_node()
+    if not npm:
+        return False
+    # npm's own shebang is `env node`; a minimal tray PATH may lack node, so
+    # prepend node's directory before shelling out.
+    child_env = dict(os.environ)
+    if node:
+        child_env["PATH"] = os.path.dirname(node) + os.pathsep + child_env.get("PATH", "")
+    try:
+        subprocess.run(
+            [npm, "install", "--omit=dev", "--no-audit", "--no-fund"],
+            cwd=package_dir(), env=child_env,
+            capture_output=True, text=True, timeout=300,
+        )
+    except Exception:  # noqa: BLE001
+        return False
+    return deps_installed()
 
 
 def read_state() -> dict | None:
