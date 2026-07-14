@@ -119,8 +119,12 @@ class Panel(QWidget):
             | Qt.WindowType.WindowStaysOnTopHint
         )
         # Widened from 470 to give the Devices section room for a name, holder,
-        # and status badge on one line.
-        self.setFixedSize(560, 600)
+        # and status badge on one line. Height tracks the screen (matching the
+        # macOS popover, which grows to content capped at the screen's safe area):
+        # availableGeometry already excludes the taskbar/panel, so the wrench panel
+        # runs nearly full-height and the results list gets the room.
+        self.setFixedWidth(560)
+        self.setFixedHeight(self._screen_high())
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(10, 10, 10, 10)
@@ -164,6 +168,16 @@ class Panel(QWidget):
         self._rebuild_grid()
         self._rebuild_devices()
         self._update_results()
+
+    @staticmethod
+    def _screen_high() -> int:
+        """Panel height: the primary screen's usable height (minus a small margin
+        so it doesn't kiss the edges), floored so it's never uselessly short."""
+        from PySide6.QtWidgets import QApplication
+
+        screen = QApplication.primaryScreen()
+        avail = screen.availableGeometry().height() if screen else 800
+        return max(560, avail - 16)
 
     # MARK: header
 
