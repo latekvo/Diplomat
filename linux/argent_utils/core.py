@@ -83,3 +83,13 @@ def conflicts() -> dict:
 @functools.lru_cache(maxsize=1)
 def audit() -> dict:
     return _read_json("audit.json")
+
+
+@functools.lru_cache(maxsize=1)
+def audit_categories() -> dict:
+    """The shared audit/activity taxonomy (categories + action→category map).
+
+    Mirrors Sources/ArgentUtilsCore/AuditCategory.swift; see
+    core/audit-categories.json.
+    """
+    return _read_json("audit-categories.json")
