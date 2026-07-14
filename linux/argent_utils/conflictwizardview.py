@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import conflicts, review
+from . import conflicts, glyphs, review
 from .conflicts import Target
 from .store import Store
 
@@ -35,7 +35,7 @@ class ConflictWizardView(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(10)
 
-        title = QLabel("🔀  Resolve conflicts")
+        title = QLabel(f"{glyphs.G_CONFLICT}  Resolve conflicts")
         title.setStyleSheet("font-weight: 700; font-size: 13px;")
         root.addWidget(title)
 

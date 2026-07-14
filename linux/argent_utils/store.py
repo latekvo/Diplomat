@@ -40,6 +40,7 @@ class Tool:
     title: str
     subtitle: str
     emoji: str
+    glyph: str
     color_hex: str
 
 
@@ -62,6 +63,7 @@ def tools() -> list[Tool]:
             title=t["title"],
             subtitle=t["subtitle"],
             emoji=t["emoji"],
+            glyph=t.get("linuxGlyph", t["emoji"]),
             color_hex=t["colorHex"],
         )
         for t in core.catalog()

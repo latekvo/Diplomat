@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import review
+from . import glyphs, review
 from .prtarget import PRTarget
 from .review import SpecificAuthor
 from .store import Store
@@ -53,7 +53,7 @@ class WizardView(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(10)
 
-        title = QLabel("✅  Review PRs")
+        title = QLabel(f"{glyphs.G_REVIEW}  Review PRs")
         title.setStyleSheet("font-weight: 700; font-size: 13px;")
         root.addWidget(title)
 
@@ -139,7 +139,7 @@ class WizardView(QWidget):
 
         # The "final pass" escalation — off by default, visually highlighted (amber)
         # so it reads as the special "go all the way" option.
-        self.final_pass = QCheckBox("✨  Final E2E pass + verdict")
+        self.final_pass = QCheckBox(f"{glyphs.G_FINAL}  Final E2E pass + verdict")
         self.final_pass.setChecked(False)
         self.final_pass.setStyleSheet(
             "QCheckBox { font-weight: 600; padding: 6px; border: 1px solid #d8a200;"
@@ -246,13 +246,13 @@ class WizardView(QWidget):
             self.author_hint.setVisible(False)
             return
         if self._author_loading:
-            icon, text, color = "⏳", "Checking who authored this PR...", "palette(mid)"
+            icon, text, color = "⧗", "Checking who authored this PR...", "palette(mid)"
         elif self._specific_author == SpecificAuthor.MINE:
-            icon, text, color = "👤", "Your PR - fix-on-branch review.", "#2e9e4f"
+            icon, text, color = "●", "Your PR - fix-on-branch review.", "#2e9e4f"
         elif self._specific_author == SpecificAuthor.THEIRS:
-            icon, text, color = "👥", "Someone else's PR - review only, hands off.", "#e08a2f"
+            icon, text, color = "◑", "Someone else's PR - review only, hands off.", "#e08a2f"
         else:
-            icon, text, color = "❔", "Enter a PR to detect whether it's yours.", "palette(mid)"
+            icon, text, color = "?", "Enter a PR to detect whether it's yours.", "palette(mid)"
         self.author_hint.setText(f"{icon}  {text}")
         self.author_hint.setStyleSheet(f"font-size: 10px; color: {color};")
         self.author_hint.setVisible(True)

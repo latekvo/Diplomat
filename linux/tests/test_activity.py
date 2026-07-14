@@ -54,10 +54,10 @@ def test_taxonomy_has_nine_categories_in_order() -> None:
     assert activity.category_of("ban") in ids
 
 
-def test_glyph_falls_back_to_category_emoji() -> None:
-    # a verb with no per-action glyph uses its category's emoji, never blank
-    assert activity.glyph_for("quota-resume")  # category "quota" -> ⏳
-    assert activity.glyph_for("ban") == "🚫"
+def test_glyph_falls_back_to_category_glyph() -> None:
+    # a verb with no per-action glyph uses its category's mono glyph, never blank
+    assert activity.glyph_for("quota-resume")  # category "quota" -> ⧗
+    assert activity.glyph_for("ban") == "⊘"  # monochrome, never colour-emoji
 
 
 def test_read_absent_file_is_empty(tmp_path, monkeypatch) -> None:

@@ -1,15 +1,15 @@
 {
-  "_comment": "Shared audit/activity taxonomy: groups raw audit action verbs into the handful of activity types the panel filters by. Canonical mirror of Sources/ArgentUtilsCore/AuditCategory.swift (the Swift enum stays the source of truth for the exhaustive switch; this file lets the Linux front-end read the same taxonomy instead of re-hardcoding it). displayOrder = array order. title is shared; sfSymbol is the macOS icon, emoji the Linux icon; color is the macOS SwiftUI semantic name, colorHex the Linux/override default. actions maps each verb to a category id; unknown verbs fall through to `fallback`.",
+  "_comment": "Shared audit/activity taxonomy: groups raw audit action verbs into the handful of activity types the panel filters by. Canonical mirror of Sources/ArgentUtilsCore/AuditCategory.swift (the Swift enum stays the source of truth for the exhaustive switch; this file lets the Linux front-end read the same taxonomy instead of re-hardcoding it). displayOrder = array order. title is shared; sfSymbol is the macOS icon, emoji the (legacy) Linux colour-emoji, linuxGlyph the monochrome text glyph the Linux applet renders (tinted, to match macOS SF Symbols); color is the macOS SwiftUI semantic name, colorHex the Linux/override default. actions maps each verb to a category id; unknown verbs fall through to `fallback`.",
   "categories": [
-    { "id": "review", "title": "Reviews", "sfSymbol": "checklist", "emoji": "📋", "color": "pink", "colorHex": "#FF2D78" },
-    { "id": "reply", "title": "Replies", "sfSymbol": "arrowshape.turn.up.left.fill", "emoji": "↩️", "color": "purple", "colorHex": "#AF52DE" },
-    { "id": "conflicts", "title": "Conflicts", "sfSymbol": "arrow.triangle.merge", "emoji": "🔀", "color": "cyan", "colorHex": "#32ADE6" },
-    { "id": "audit", "title": "Audit", "sfSymbol": "ladybug.fill", "emoji": "🐞", "color": "indigo", "colorHex": "#5856D6" },
-    { "id": "apiRestart", "title": "API restart", "sfSymbol": "bolt.fill", "emoji": "⚡", "color": "orange", "colorHex": "#FF9500" },
-    { "id": "quota", "title": "Out of quota", "sfSymbol": "hourglass", "emoji": "⏳", "color": "yellow", "colorHex": "#FFCC00" },
-    { "id": "merge", "title": "Merges", "sfSymbol": "checkmark.seal.fill", "emoji": "✅", "color": "green", "colorHex": "#34C759" },
-    { "id": "bans", "title": "Bans", "sfSymbol": "hand.raised.fill", "emoji": "🚫", "color": "red", "colorHex": "#FF3B30" },
-    { "id": "system", "title": "System", "sfSymbol": "gearshape.fill", "emoji": "⚙️", "color": "gray", "colorHex": "#8E8E93" }
+    { "id": "review", "title": "Reviews", "sfSymbol": "checklist", "emoji": "📋", "linuxGlyph": "☑", "color": "pink", "colorHex": "#FF2D78" },
+    { "id": "reply", "title": "Replies", "sfSymbol": "arrowshape.turn.up.left.fill", "emoji": "↩️", "linuxGlyph": "↩", "color": "purple", "colorHex": "#AF52DE" },
+    { "id": "conflicts", "title": "Conflicts", "sfSymbol": "arrow.triangle.merge", "emoji": "🔀", "linuxGlyph": "⋔", "color": "cyan", "colorHex": "#32ADE6" },
+    { "id": "audit", "title": "Audit", "sfSymbol": "ladybug.fill", "emoji": "🐞", "linuxGlyph": "◉", "color": "indigo", "colorHex": "#5856D6" },
+    { "id": "apiRestart", "title": "API restart", "sfSymbol": "bolt.fill", "emoji": "⚡", "linuxGlyph": "ϟ", "color": "orange", "colorHex": "#FF9500" },
+    { "id": "quota", "title": "Out of quota", "sfSymbol": "hourglass", "emoji": "⏳", "linuxGlyph": "⧗", "color": "yellow", "colorHex": "#FFCC00" },
+    { "id": "merge", "title": "Merges", "sfSymbol": "checkmark.seal.fill", "emoji": "✅", "linuxGlyph": "✓", "color": "green", "colorHex": "#34C759" },
+    { "id": "bans", "title": "Bans", "sfSymbol": "hand.raised.fill", "emoji": "🚫", "linuxGlyph": "⊘", "color": "red", "colorHex": "#FF3B30" },
+    { "id": "system", "title": "System", "sfSymbol": "gearshape.fill", "emoji": "⚙️", "linuxGlyph": "⚙", "color": "gray", "colorHex": "#8E8E93" }
   ],
   "actions": {
     "review": "review",

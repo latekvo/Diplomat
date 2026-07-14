@@ -26,7 +26,7 @@ from PySide6.QtCore import QUrl
 
 import time
 
-from . import activity, bans, core
+from . import activity, bans, core, glyphs
 from .models import Fmt
 from .settingsview import SettingsView
 from .store import Store, tool_by_id
@@ -34,6 +34,8 @@ from .widgets import (
     ActionCard,
     ActivityRow,
     BanRow,
+    GlyphLabel,
+    IconChip,
     ResultRow,
     SectionHeader,
     ToolCard,
@@ -194,9 +196,7 @@ class Panel(QWidget):
     def _build_header(self) -> QHBoxLayout:
         row = QHBoxLayout()
         row.setSpacing(6)
-        wrench = QLabel("🔧")
-        wrench.setStyleSheet("font-size: 15px;")
-        row.addWidget(wrench)
+        row.addWidget(GlyphLabel(glyphs.G_APP, 18, "#0A84FF", font_px=16))
         name = QLabel("Argent Utils")
         name.setStyleSheet("font-weight: 700; font-size: 14px;")
         row.addWidget(name)
@@ -315,9 +315,7 @@ class Panel(QWidget):
         sb = QHBoxLayout(search_box)
         sb.setContentsMargins(6, 2, 6, 2)
         sb.setSpacing(6)
-        mag = QLabel("🔍")
-        mag.setStyleSheet("font-size: 11px;")
-        sb.addWidget(mag)
+        sb.addWidget(GlyphLabel(glyphs.G_SEARCH, 16, "#9aa0a6", font_px=15))
         self.search = QLineEdit()
         self.search.setPlaceholderText("PR / issue #  (Ctrl+F)")
         self.search.setFrame(False)
@@ -403,7 +401,7 @@ class Panel(QWidget):
         rowi = 0
         for tool in self.store.visible_tools:
             card = ToolCard(
-                emoji=tool.emoji,
+                emoji=tool.glyph,
                 title=tool.title,
                 subtitle=tool.subtitle,
                 hex_color=self.store.tint(tool.id),
@@ -418,7 +416,7 @@ class Panel(QWidget):
                 rowi += 1
 
         review_card = ActionCard(
-            emoji="✅",
+            emoji=glyphs.G_REVIEW,
             title="Review PRs",
             subtitle="spawn a review agent",
             hex_color=_REVIEW_TINT,
@@ -432,7 +430,7 @@ class Panel(QWidget):
             rowi += 1
 
         conflict_card = ActionCard(
-            emoji="🔀",
+            emoji=glyphs.G_CONFLICT,
             title="Resolve conflicts",
             subtitle="merge main, fix conflicts",
             hex_color=_CONFLICT_TINT,
@@ -446,7 +444,7 @@ class Panel(QWidget):
             rowi += 1
 
         audit_card = ActionCard(
-            emoji="🐞",
+            emoji=glyphs.G_AUDIT,
             title="Full E2E test",
             subtitle="swarm-test the whole repo",
             hex_color=_AUDIT_TINT,
@@ -470,7 +468,9 @@ class Panel(QWidget):
         from . import deviceallocator
 
         head = QHBoxLayout()
-        title = QLabel("📱 Devices")
+        head.setSpacing(6)
+        head.addWidget(GlyphLabel(glyphs.G_DEVICES, 14, "#9aa0a6", font_px=12))
+        title = QLabel("Devices")
         title.setStyleSheet("color: palette(mid); font-weight: 700; font-size: 10px;")
         head.addWidget(title)
         head.addStretch(1)
@@ -523,7 +523,8 @@ class Panel(QWidget):
             return
         self.activity_host.setVisible(True)
 
-        header = SectionHeader(glyph="📜", title="Activity", count=len(entries),
+        header = SectionHeader(glyph=glyphs.G_ACTIVITY, title="Activity",
+                               count=len(entries),
                                expanded=self._activity_expanded)
         header.clicked.connect(self._toggle_activity)
         self.activity_col.addWidget(header)
@@ -532,6 +533,7 @@ class Panel(QWidget):
             for e in entries[:30]:
                 self.activity_col.addWidget(ActivityRow(
                     glyph=activity.glyph_for(e.action),
+                    glyph_color=activity.color_for(e.action),
                     detail=e.detail,
                     source=e.source,
                     source_color=activity.source_color(e.source),
@@ -550,7 +552,8 @@ class Panel(QWidget):
             return
         self.bans_host.setVisible(True)
 
-        header = SectionHeader(glyph="🚫", title="Banned", count=len(banned),
+        header = SectionHeader(glyph=glyphs.G_BAN, title="Banned",
+                               count=len(banned), glyph_color="#FF3B30",
                                caption="prompt injection · no auto-reviews",
                                expanded=self._bans_expanded)
         header.clicked.connect(self._toggle_bans)
@@ -584,8 +587,7 @@ class Panel(QWidget):
 
         allocated = deviceallocator.is_allocated(dev)
         platform = dev.get("platform", "")
-        emoji = {"ios": "🍎", "apple-tv": "📺", "android": "🤖",
-                 "android-tv": "📺", "vega": "🔥"}.get(platform, "📱")
+        glyph = glyphs.PLATFORM_GLYPH.get(platform, glyphs.G_PHONE)
         tint = {"ios": "#0A84FF", "apple-tv": "#0A84FF", "android": "#34C759",
                 "android-tv": "#34C759", "vega": "#FF9500"}.get(platform, "#8E8E93")
         status = dev.get("status", "free")
@@ -596,14 +598,7 @@ class Panel(QWidget):
         rl.setContentsMargins(6, 6, 6, 6)
         rl.setSpacing(8)
 
-        chip = QLabel(emoji)
-        chip.setFixedSize(22, 22)
-        chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        chip.setStyleSheet(
-            f"background-color: {tint if allocated else 'rgba(128,128,128,0.4)'};"
-            " border-radius: 5px; font-size: 11px;"
-        )
-        rl.addWidget(chip)
+        rl.addWidget(IconChip(glyph, tint, 22, active=allocated))
 
         text = QVBoxLayout()
         text.setSpacing(1)

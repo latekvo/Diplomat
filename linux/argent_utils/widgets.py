@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtGui import QColor, QFont, QFontMetricsF, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -12,10 +12,69 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from . import glyphs
+
 
 def tint_bg(hex_color: str, alpha: float) -> str:
     c = QColor(hex_color)
     return f"rgba({c.red()},{c.green()},{c.blue()},{alpha:.3f})"
+
+
+def _draw_glyph(painter: QPainter, box: QRectF, glyph: str, color: str,
+                font_px: int) -> None:
+    """Paint a text glyph centred on its *ink* bounding box within ``box``.
+
+    Qt's own centring uses the font line-box (full ascent/descent), so glyphs
+    from different Unicode blocks land at visibly different heights. Centring on
+    the tight ink rectangle instead makes an arbitrary glyph set line up like a
+    real icon set.
+    """
+    font = QFont(painter.font())
+    font.setPixelSize(font_px)
+    painter.setFont(font)
+    painter.setPen(QColor(color))
+    ink = QFontMetricsF(font).tightBoundingRect(glyph)
+    baseline_x = box.center().x() - (ink.x() + ink.width() / 2)
+    baseline_y = box.center().y() - (ink.y() + ink.height() / 2)
+    painter.drawText(QPointF(baseline_x, baseline_y), glyph)
+
+
+def glyph_icon(glyph: str, px: int, color: str) -> QIcon:
+    """A QIcon of a single glyph, ink-centred - for icon buttons/tray whose raw
+    text glyphs would otherwise render at inconsistent sizes/positions."""
+    pm = QPixmap(px, px)
+    pm.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pm)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+    _draw_glyph(painter, QRectF(0, 0, px, px), glyph, color, int(px * 0.72))
+    painter.end()
+    return QIcon(pm)
+
+
+class GlyphLabel(QLabel):
+    """A bare (no background) monochrome glyph, ink-centred at a fixed size."""
+
+    def __init__(self, glyph: str, size: int, color: str,
+                 font_px: int | None = None) -> None:
+        super().__init__()
+        self._glyph = glyph
+        self._color = color
+        self._font_px = font_px if font_px is not None else int(size * 0.85)
+        self.setFixedSize(size, size)
+
+    def set_glyph(self, glyph: str, color: str) -> None:
+        self._glyph = glyph
+        self._color = color
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        _draw_glyph(painter, QRectF(self.rect()), self._glyph, self._color,
+                    self._font_px)
+        painter.end()
 
 
 class ElidedLabel(QLabel):
@@ -57,15 +116,39 @@ def _elided_label(text: str) -> ElidedLabel:
 
 
 class IconChip(QLabel):
-    """A rounded, tinted square showing the tool's emoji glyph."""
+    """A rounded, tinted square holding a monochrome glyph, macOS-SF-Symbol style.
 
-    def __init__(self, emoji: str, hex_color: str, size: int = 26) -> None:
-        super().__init__(emoji)
+    Fully custom-painted: the glyph is ink-centred (see :func:`_draw_glyph`) at a
+    fixed optical size so every tool's icon lines up, and drawn white on the solid
+    tint. ``active=False`` renders the muted "off" state (neutral fill, grey
+    glyph) used by the device pool and reverse-lookup rows.
+    """
+
+    def __init__(self, glyph: str, hex_color: str, size: int = 26,
+                 *, active: bool = True) -> None:
+        super().__init__()
+        self._glyph = glyph
+        self._tint = hex_color
+        self._active = active
+        self._size = size
         self.setFixedSize(size, size)
-        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setStyleSheet(
-            f"background-color: {hex_color}; border-radius: 6px; font-size: {int(size*0.5)}px;"
-        )
+
+    def set_tint(self, hex_color: str) -> None:
+        self._tint = hex_color
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        box = QRectF(self.rect())
+        fill = QColor(self._tint) if self._active else QColor(glyphs.CHIP_OFF)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(fill)
+        painter.drawRoundedRect(box, 6, 6)
+        glyph_color = "white" if self._active else glyphs.MUTED
+        _draw_glyph(painter, box, self._glyph, glyph_color, int(self._size * 0.6))
+        painter.end()
 
 
 class ClickableFrame(QFrame):
@@ -204,15 +287,14 @@ class SectionHeader(ClickableFrame):
     """
 
     def __init__(self, *, glyph: str, title: str, count: int | None = None,
-                 caption: str | None = None, expanded: bool = True) -> None:
+                 caption: str | None = None, expanded: bool = True,
+                 glyph_color: str = glyphs.MUTED) -> None:
         super().__init__()
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         row = QHBoxLayout(self)
         row.setContentsMargins(2, 0, 2, 0)
         row.setSpacing(6)
-        g = QLabel(glyph)
-        g.setStyleSheet("font-size: 11px;")
-        row.addWidget(g)
+        row.addWidget(GlyphLabel(glyph, 14, glyph_color, font_px=12))
         t = QLabel(title.upper())
         t.setStyleSheet(
             "color: palette(mid); font-weight: 700; font-size: 10px;"
@@ -239,7 +321,8 @@ class ActivityRow(QFrame):
     """One line in the activity feed: action glyph + detail + source badge + time."""
 
     def __init__(self, *, glyph: str, detail: str, source: str,
-                 source_color: str, clock: str | None) -> None:
+                 source_color: str, clock: str | None,
+                 glyph_color: str = glyphs.MUTED) -> None:
         super().__init__()
         self.setStyleSheet(
             "ActivityRow { background-color: rgba(128,128,128,0.05); border-radius: 6px; }"
@@ -247,11 +330,8 @@ class ActivityRow(QFrame):
         row = QHBoxLayout(self)
         row.setContentsMargins(6, 6, 6, 6)
         row.setSpacing(8)
-        g = QLabel(glyph)
-        g.setFixedWidth(18)
-        g.setStyleSheet("font-size: 12px;")
-        g.setAlignment(Qt.AlignmentFlag.AlignTop)
-        row.addWidget(g)
+        row.addWidget(GlyphLabel(glyph, 18, glyph_color, font_px=13),
+                      0, Qt.AlignmentFlag.AlignTop)
         d = QLabel(detail)
         d.setWordWrap(True)
         d.setStyleSheet("font-size: 10px;")
@@ -280,10 +360,8 @@ class BanRow(QFrame):
         row = QHBoxLayout(self)
         row.setContentsMargins(6, 6, 6, 6)
         row.setSpacing(8)
-        g = QLabel("🚫")
-        g.setFixedWidth(18)
-        g.setStyleSheet("font-size: 12px;")
-        row.addWidget(g, 0, Qt.AlignmentFlag.AlignTop)
+        row.addWidget(GlyphLabel(glyphs.G_BAN, 16, "#FF3B30", font_px=14),
+                      0, Qt.AlignmentFlag.AlignTop)
         col = QVBoxLayout()
         col.setSpacing(1)
         t = QLabel(f"@{login}")

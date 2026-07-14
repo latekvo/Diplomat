@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import audit, review
+from . import audit, glyphs, review
 from .store import Store
 
 _TINT = "#5856D6"  # indigo, matching the macOS Full-E2E-test card
@@ -34,7 +34,7 @@ class AuditWizardView(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(10)
 
-        title = QLabel("🐞  Full E2E test")
+        title = QLabel(f"{glyphs.G_AUDIT}  Full E2E test")
         title.setStyleSheet("font-weight: 700; font-size: 13px;")
         root.addWidget(title)
 

@@ -1,5 +1,5 @@
 {
-  "_comment": "Canonical tool library, in display order. title/subtitle/order are shared by every front-end. sfSymbol is the macOS icon, emoji the Linux icon (inherently per-platform assets). color is the macOS SwiftUI semantic name; colorHex is the Linux/override default.",
+  "_comment": "Canonical tool library, in display order. title/subtitle/order are shared by every front-end. sfSymbol is the macOS icon, emoji the (legacy) Linux colour-emoji, linuxGlyph the monochrome text glyph the Linux applet actually renders (tinted, to match macOS SF Symbols). color is the macOS SwiftUI semantic name; colorHex is the Linux/override default.",
   "tools": [
     {
       "id": "skillPRs",
@@ -7,6 +7,7 @@
       "subtitle": "open PRs editing a SKILL.md",
       "sfSymbol": "book.closed.fill",
       "emoji": "📕",
+      "linuxGlyph": "▤",
       "color": "purple",
       "colorHex": "#AF52DE"
     },
@@ -16,6 +17,7 @@
       "subtitle": "open PRs in argent-installer / argent-cli",
       "sfSymbol": "shippingbox.fill",
       "emoji": "📦",
+      "linuxGlyph": "⧉",
       "color": "orange",
       "colorHex": "#FF9500"
     },
@@ -25,6 +27,7 @@
       "subtitle": "non-draft, ready >10 days",
       "sfSymbol": "hourglass.tophalf.filled",
       "emoji": "⏳",
+      "linuxGlyph": "⧗",
       "color": "red",
       "colorHex": "#FF3B30"
     },
@@ -34,6 +37,7 @@
       "subtitle": "external, no team reply/assignee",
       "sfSymbol": "exclamationmark.bubble.fill",
       "emoji": "💬",
+      "linuxGlyph": "◌",
       "color": "teal",
       "colorHex": "#30B0C7"
     },
@@ -43,6 +47,7 @@
       "subtitle": "my PRs that got an approval",
       "sfSymbol": "checkmark.seal.fill",
       "emoji": "✅",
+      "linuxGlyph": "☑",
       "color": "green",
       "colorHex": "#34C759"
     },
@@ -52,6 +57,7 @@
       "subtitle": "my PRs w/ an open thread I owe a reply",
       "sfSymbol": "arrow.uturn.left.circle.fill",
       "emoji": "↩️",
+      "linuxGlyph": "↩",
       "color": "indigo",
       "colorHex": "#5856D6"
     }

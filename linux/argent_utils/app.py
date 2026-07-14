@@ -13,8 +13,8 @@ import signal
 import sys
 import threading
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QAction, QColor, QCursor, QFont, QIcon, QPainter, QPixmap
+from PySide6.QtCore import QTimer
+from PySide6.QtGui import QAction, QCursor, QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QMenu,
@@ -22,37 +22,17 @@ from PySide6.QtWidgets import (
     QSystemTrayIcon,
 )
 
+from . import glyphs
 from .panel import Panel
 from .store import Store
 from .singleton import SingleInstance
+from .widgets import glyph_icon
 
 
 def _wrench_icon() -> QIcon:
-    pix = QPixmap(64, 64)
-    pix.fill(QColor(0, 0, 0, 0))
-    painter = QPainter(pix)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    font = QFont()
-    font.setPixelSize(46)
-    painter.setFont(font)
-    painter.drawText(pix.rect(), Qt.AlignmentFlag.AlignCenter, "🔧")
-    painter.end()
-    # If the emoji rendered blank (no colour-emoji font), fall back to a glyph.
-    if pix.toImage().allGray():
-        pix.fill(QColor(0, 0, 0, 0))
-        painter = QPainter(pix)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setBrush(QColor("#2563EB"))
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawRoundedRect(6, 6, 52, 52, 12, 12)
-        painter.setPen(QColor("white"))
-        f2 = QFont()
-        f2.setPixelSize(30)
-        f2.setBold(True)
-        painter.setFont(f2)
-        painter.drawText(pix.rect(), Qt.AlignmentFlag.AlignCenter, "Ar")
-        painter.end()
-    return QIcon(pix)
+    """The tray icon: a monochrome wrench glyph, ink-centred and tinted to match
+    the panel header (matching the macOS SF-Symbol look, never a colour-emoji)."""
+    return glyph_icon(glyphs.G_APP, 64, "#0A84FF")
 
 
 def auto_refresh_secs() -> float:
