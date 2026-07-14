@@ -76,10 +76,15 @@ class OpenPR:
     def unaddressed_threads(self, me: str) -> list[ReviewThread]:
         """Threads on *my* PR I still owe a response on: resolvable, unresolved,
         and whose most-recent comment isn't mine."""
+        # Mirrors ThreadTriage.owed in Models.swift: login compare is
+        # case-insensitive (GitHub logins are), and a missing viewer_can_resolve
+        # defaults to owed.
         return [
             t
             for t in self.review_threads
-            if t.viewer_can_resolve and not t.is_resolved and t.last_comment_author != me
+            if (t.viewer_can_resolve if t.viewer_can_resolve is not None else True)
+            and not t.is_resolved
+            and (t.last_comment_author or "").lower() != me.lower()
         ]
 
 
@@ -120,7 +125,12 @@ class Filters:
 
     @staticmethod
     def is_skill_file(path: str) -> bool:
-        return path.lower().endswith(Filters._cfg()["skillSuffix"])
+        # Match the FILENAME, not a raw suffix: a bare endswith("skill.md") also
+        # matched e.g. "docs/reskill.md" (a false positive into the verdict gate).
+        # Mirrors Filters.isSkillFile in Models.swift.
+        suffix = Filters._cfg()["skillSuffix"]
+        name = path.lower().rsplit("/", 1)[-1]
+        return name == suffix or name.endswith("." + suffix)
 
     @staticmethod
     def is_installer_file(path: str) -> bool:

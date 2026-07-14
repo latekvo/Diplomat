@@ -323,6 +323,27 @@ def test_device_allocator_state_helpers():
     assert da.read_state() is None or isinstance(da.read_state(), dict)
 
 
+def test_is_skill_file_matches_filename_not_bare_suffix():
+    # Regression: a bare endswith("skill.md") also matched "docs/reskill.md".
+    # Mirrors Filters.isSkillFile in Models.swift (filename match).
+    assert Filters.is_skill_file("skills/foo/SKILL.md") is True
+    assert Filters.is_skill_file("a/my.skill.md") is True
+    assert Filters.is_skill_file("docs/reskill.md") is False
+    assert Filters.is_skill_file("SKILL.md") is True
+
+
+def test_unaddressed_threads_login_compare_is_case_insensitive():
+    # GitHub logins are case-insensitive; a thread last-touched by "Alice" is NOT
+    # owed by "alice". Mirrors ThreadTriage.owed in Models.swift.
+    t = ReviewThread(is_resolved=False, viewer_can_resolve=True, last_comment_author="Alice")
+    pr = OpenPR(1, "t", "u", False, "bob", NOW, None, [], None, [t])
+    assert pr.unaddressed_threads("alice") == []
+    # a thread last-touched by someone else IS owed
+    t2 = ReviewThread(is_resolved=False, viewer_can_resolve=True, last_comment_author="bob")
+    pr2 = OpenPR(1, "t", "u", False, "bob", NOW, None, [], None, [t2])
+    assert len(pr2.unaddressed_threads("alice")) == 1
+
+
 if __name__ == "__main__":
     # Standalone (no-pytest) mode bypasses conftest.py, so replicate its QSettings
     # isolation here — otherwise these tests would read (and one would WRITE) the
