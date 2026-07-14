@@ -91,22 +91,33 @@ enum AgentSpawner {
     /// Stage the prompt, open the terminal, run claude. The AppleScript reports the
     /// new window/session/tty back on stdout, which we capture so the spawned
     /// session can be tracked (focused + polled for completion) afterwards.
+    ///
+    /// `restoreFocusTo` (a bundle id) makes the spawn NON-focus-stealing: the window
+    /// opens without activating the terminal, and focus bounces straight back to that
+    /// app. The auto-fix monitor passes the frontmost app so its background spawns
+    /// don't yank the user off whatever they're doing; a user-driven SPAWN passes nil
+    /// so the terminal comes forward as before.
     @discardableResult
-    static func spawn(_ prompt: String, terminal preferred: SpawnTerminal) throws -> SpawnResult {
+    static func spawn(_ prompt: String, terminal preferred: SpawnTerminal,
+                      restoreFocusTo restoreBID: String? = nil) throws -> SpawnResult {
         let term = resolved(preferred)
         let file = try writePrompt(prompt)
         let donePath = doneFilePath()
         let cmd = shellCommand(promptFile: file, donePath: donePath)
-        let (wid, sid, tty) = try runSpawn(command: cmd, terminal: term)
+        let (wid, sid, tty) = try runSpawn(command: cmd, terminal: term, restoreFocusTo: restoreBID)
         return SpawnResult(promptFile: file, donePath: donePath, terminal: term,
                            windowID: wid, sessionID: sid, tty: tty)
     }
 
     /// Open a new terminal window running `command`, returning the captured
     /// (windowID, sessionID, tty). The execution path shared by the real spawn and
-    /// the tracking self-test (`ARGENT_UTILS_TRACK_TEST`).
-    static func runSpawn(command: String, terminal term: SpawnTerminal) throws -> (String, String, String) {
-        let captured = try runOsascriptCapturing(appleScript(for: term, shellCommand: command))
+    /// the tracking self-test (`ARGENT_UTILS_TRACK_TEST`). `restoreFocusTo` bounces
+    /// focus back to that bundle id (background spawns) instead of activating the
+    /// terminal.
+    static func runSpawn(command: String, terminal term: SpawnTerminal,
+                         restoreFocusTo restoreBID: String? = nil) throws -> (String, String, String) {
+        let captured = try runOsascriptCapturing(
+            appleScript(for: term, shellCommand: command, restoreFocusTo: restoreBID))
         return parseCapture(captured)
     }
 
@@ -143,15 +154,46 @@ enum AgentSpawner {
     /// `return …` line makes osascript print `wid|sid|tty` on stdout. Both variants
     /// open the window FIRST, capture the handles, `delay` for `inputSettleDelay`,
     /// and only then type the command (see the constant's doc for why).
-    static func appleScript(for term: SpawnTerminal, shellCommand cmd: String) -> String {
+    ///
+    /// When `restoreBID` is nil (a user pressing SPAWN AGENT) the script `activate`s
+    /// the terminal so the user lands in the new window. When it's a bundle id (the
+    /// auto-fix monitor) the script instead opens the window WITHOUT activating and
+    /// bounces focus straight back to that app the instant the window exists — so a
+    /// background spawn never steals focus. Creating an iTerm window activates iTerm
+    /// on its own (there is no "open in background" flag), which is why the restore is
+    /// wedged between window creation and the input-settle `delay`: focus is gone for
+    /// a blink, not for the whole 5s settle. The captured handles are script-globals,
+    /// so they survive leaving and re-entering the terminal's `tell` block.
+    static func appleScript(for term: SpawnTerminal, shellCommand cmd: String,
+                            restoreFocusTo restoreBID: String? = nil) -> String {
         let esc = cmd
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
+        let bid = (restoreBID?.isEmpty ?? true) ? nil : restoreBID
         switch term {
         case .iterm:
+            guard let bid else {
+                return """
+                tell application "iTerm"
+                    activate
+                    set w to (create window with default profile)
+                    set _sid to ""
+                    set _tty to ""
+                    tell current session of w
+                        set _tty to tty
+                        set _sid to id
+                    end tell
+                    set _wid to (id of w) as string
+                    delay \(inputSettleDelay)
+                    tell current session of w
+                        write text "\(esc)"
+                    end tell
+                end tell
+                return _wid & "|" & _sid & "|" & _tty
+                """
+            }
             return """
             tell application "iTerm"
-                activate
                 set w to (create window with default profile)
                 set _sid to ""
                 set _tty to ""
@@ -160,6 +202,9 @@ enum AgentSpawner {
                     set _sid to id
                 end tell
                 set _wid to (id of w) as string
+            end tell
+            tell application id "\(escBundleID(bid))" to activate
+            tell application "iTerm"
                 delay \(inputSettleDelay)
                 tell current session of w
                     write text "\(esc)"
@@ -168,18 +213,40 @@ enum AgentSpawner {
             return _wid & "|" & _sid & "|" & _tty
             """
         case .terminal:
+            guard let bid else {
+                return """
+                tell application "Terminal"
+                    activate
+                    set _tab to do script ""
+                    set _tty to tty of _tab
+                    set _wid to (id of front window) as string
+                    delay \(inputSettleDelay)
+                    do script "\(esc)" in _tab
+                end tell
+                return _wid & "||" & _tty
+                """
+            }
             return """
             tell application "Terminal"
-                activate
                 set _tab to do script ""
                 set _tty to tty of _tab
                 set _wid to (id of front window) as string
+            end tell
+            tell application id "\(escBundleID(bid))" to activate
+            tell application "Terminal"
                 delay \(inputSettleDelay)
                 do script "\(esc)" in _tab
             end tell
             return _wid & "||" & _tty
             """
         }
+    }
+
+    /// AppleScript-string-escape a bundle id for embedding in `tell application id "…"`.
+    /// Bundle ids are dotted reverse-DNS (no quotes in practice), but escape defensively.
+    private static func escBundleID(_ bid: String) -> String {
+        bid.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
     }
 
     /// Split osascript's `wid|sid|tty` line. Empty middle field is expected for

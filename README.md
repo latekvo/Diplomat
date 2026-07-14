@@ -142,7 +142,11 @@ fix; off = a strictly read-only audit).
 The macOS applet doesn't just render lists - it acts on them. Three background
 monitors ship **ON by default** (opt out in Settings). Know what that means
 before running it: they **spawn real terminal windows** running `claude` agents,
-and the auto-fix agents **push to your PR branches**.
+and the auto-fix agents **push to your PR branches**. Those background windows
+open **without stealing focus** - a monitor spawn (and the API-error nudge) opens
+the terminal behind whatever you're working in and bounces focus straight back;
+only a spawn *you* trigger (SPAWN AGENT, a panel button) brings the terminal
+forward.
 
 - **PR auto-fix** - polls my open PRs every 3 minutes, plus immediately on wake
   from sleep and on toggle-enable. A PR that turns CONFLICTING gets a

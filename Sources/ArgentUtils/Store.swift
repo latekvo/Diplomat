@@ -689,6 +689,14 @@ final class Store: ObservableObject {
         }
     }
 
+    /// The app the user is currently working in, so a background (auto-fix) spawn can
+    /// bounce focus straight back to it instead of yanking them into a new terminal
+    /// window. Read on the main actor (Store is @MainActor). nil when there is no
+    /// resolvable frontmost app — the spawn then behaves like a foreground one.
+    private var frontmostAppBundleID: String? {
+        NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+    }
+
     /// Spawn the most-comprehensive Review action (Full E2E ×2, formal per-line comments,
     /// no auto-verdict) on a PR someone asked me to review — hands off the branch.
     /// `attemptNumber` ≥2 means this is a retry of a review a previous agent left
@@ -705,9 +713,11 @@ final class Store: ObservableObject {
                                   specificPR: String(r.number), finalPass: verdict,
                                   specificAuthor: .theirs).buildPrompt()
         let preferred = terminal
+        // Auto-dispatch: open the terminal in the background, keeping the user's focus.
+        let restoreBID = frontmostAppBundleID
         do {
             let result = try await Task.detached(priority: .userInitiated) {
-                try AgentSpawner.spawn(prompt, terminal: preferred)
+                try AgentSpawner.spawn(prompt, terminal: preferred, restoreFocusTo: restoreBID)
             }.value
             let tag: String
             if verdict {
@@ -781,9 +791,12 @@ final class Store: ObservableObject {
         let prompt = ConflictConfig(target: .specific, me: effectiveMe,
                                     specificPR: String(number)).buildPrompt()
         let preferred = terminal
+        // The monitor's "auto" spawns open in the background (keep the user's focus); a
+        // panel-button "panel" spawn is a deliberate user action, so it comes forward.
+        let restoreBID = source == "auto" ? frontmostAppBundleID : nil
         do {
             let result = try await Task.detached(priority: .userInitiated) {
-                try AgentSpawner.spawn(prompt, terminal: preferred)
+                try AgentSpawner.spawn(prompt, terminal: preferred, restoreFocusTo: restoreBID)
             }.value
             let retry = attemptNumber > 1 ? " · retry \(attemptNumber)" : ""
             let label = source == "auto" ? "Auto · Resolve · #\(number)\(retry)" : "Resolve · #\(number)"
@@ -815,9 +828,11 @@ final class Store: ObservableObject {
                                   markReady: false, leaveReviews: false, replyToReviews: true,
                                   specificPR: String(s.number), specificAuthor: .mine).buildPrompt()
         let preferred = terminal
+        // Auto-dispatch: open the terminal in the background, keeping the user's focus.
+        let restoreBID = frontmostAppBundleID
         do {
             let result = try await Task.detached(priority: .userInitiated) {
-                try AgentSpawner.spawn(prompt, terminal: preferred)
+                try AgentSpawner.spawn(prompt, terminal: preferred, restoreFocusTo: restoreBID)
             }.value
             let retry = attemptNumber > 1 ? " · retry \(attemptNumber)" : ""
             track(kind: "review", label: "Auto · Review · #\(s.number)\(retry)",

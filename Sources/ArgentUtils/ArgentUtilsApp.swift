@@ -93,6 +93,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if env["ARGENT_UTILS_APIWATCH_SCAN"] == "1" {
             Dump.apiWatchScan(); exit(0)
         }
+        // Spawn focus self-test: prove a background (auto-fix) spawn keeps the user's
+        // focus while a foreground (user SPAWN) spawn still brings the terminal forward.
+        // Drives two throwaway terminal windows it closes itself. Exit code = pass/fail.
+        if env["ARGENT_UTILS_SPAWN_FOCUS_TEST"] == "1" {
+            Task { @MainActor in exit(Dump.spawnFocusTest() ? 0 : 1) }
+        }
     }
 }
 
@@ -245,8 +251,11 @@ enum Dump {
             let cmd = AgentSpawner.shellCommand(promptFile: file, donePath: AgentSpawner.doneFilePath())
             print("\n----- SHELL COMMAND -----")
             print(cmd)
-            print("\n----- APPLESCRIPT (\(AgentSpawner.resolved(.iterm).title)) -----")
-            print(AgentSpawner.appleScript(for: AgentSpawner.resolved(.iterm), shellCommand: cmd))
+            let term = AgentSpawner.resolved(.iterm)
+            print("\n----- APPLESCRIPT · foreground (user SPAWN, activates terminal) -----")
+            print(AgentSpawner.appleScript(for: term, shellCommand: cmd))
+            print("\n----- APPLESCRIPT · background (auto-fix, restores focus to Finder) -----")
+            print(AgentSpawner.appleScript(for: term, shellCommand: cmd, restoreFocusTo: "com.apple.finder"))
             try? FileManager.default.removeItem(at: file)
         }
     }
@@ -315,6 +324,107 @@ enum Dump {
         print("\n\(matches.count) session(s) would receive: "
             + "\"\(ApiErrorWatcher.continueMessage)\"  (dry-run — nothing sent; "
             + "out-of-quota stalls are ignored, never nudged)")
+    }
+
+    /// Spawn focus self-test: exercise the REAL `AgentSpawner` spawn path twice against
+    /// throwaway terminal windows and assert the focus contract —
+    ///   • background spawn (auto-fix monitor, `restoreFocusTo` set) must KEEP the user's
+    ///     focus (Finder here) while still creating + driving the window; and
+    ///   • foreground spawn (a user pressing SPAWN AGENT, `restoreFocusTo` nil) must still
+    ///     create + drive a window.
+    /// The FOREGROUND case only asserts the window is created, not that the terminal came
+    /// forward: macOS focus-stealing PREVENTION suppresses cross-app `activate` requests
+    /// from a process that isn't itself frontmost (this backgrounded self-test), so a live
+    /// activation check here is unreliable. The user path activates fine because the
+    /// menu-bar popover IS frontmost at click time, and its generated AppleScript is
+    /// unchanged from before this fix (see ARGENT_UTILS_PRINT_PROMPT) — that identity is
+    /// the real regression guard; the foreground focus result below is informational only.
+    /// Returns overall pass/fail so a hook/script can gate on the exit code. Drives the
+    /// terminal the panel is configured for (falls back to iTerm).
+    @MainActor static func spawnFocusTest() -> Bool {
+        func osa(_ script: String) -> String {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+            p.arguments = ["-e", script]
+            let out = Pipe(); p.standardOutput = out; p.standardError = Pipe()
+            do { try p.run() } catch { return "" }
+            let d = out.fileHandleForReading.readDataToEndOfFile()
+            p.waitUntilExit()
+            return String(data: d, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        }
+        func frontmost() -> String {
+            osa("tell application \"System Events\" to get name of first process whose frontmost is true")
+        }
+        // Finder is the neutral baseline: if it stays frontmost the spawn kept focus, if
+        // it's replaced by the terminal the spawn stole it.
+        func neutral() { _ = osa("tell application \"Finder\" to activate"); usleep(500_000) }
+        func closeWindow(_ term: SpawnTerminal, _ wid: String) {
+            guard !wid.isEmpty else { return }
+            _ = osa("""
+            tell application "\(term.appName)"
+                repeat with w in windows
+                    if (id of w as string) is "\(wid)" then
+                        try
+                            close w
+                        end try
+                    end if
+                end repeat
+            end tell
+            """)
+        }
+
+        let term = AgentSpawner.resolved(SpawnTerminal(rawValue: Store.storedTerminalChoice ?? "") ?? .iterm)
+        print("== spawn focus self-test · terminal: \(term.title) ==\n")
+
+        // 1. BACKGROUND spawn — must not steal focus off Finder.
+        neutral()
+        let before = frontmost()
+        let done1 = AgentSpawner.doneFilePath()
+        let cmd1 = "echo 'argent bg focus self-test — closes itself'; sleep 2; printf %s $? > '\(done1)'"
+        let cap1 = try? AgentSpawner.runSpawn(command: cmd1, terminal: term,
+                                              restoreFocusTo: "com.apple.finder")
+        usleep(800_000)
+        let afterBG = frontmost()
+        let bgWid = cap1?.0 ?? ""
+        let bgOpened = !bgWid.isEmpty
+        // The real contract: the background spawn must not leave ITS OWN terminal frontmost.
+        // (This machine is busy — Chrome/Slack/other agents can grab focus during the
+        // input-settle delay; that's not our steal. Asserting exact return-to-Finder would
+        // flap on that unrelated activity, so assert only "the terminal isn't left on top".)
+        let termProc = term == .iterm ? "iTerm2" : "Terminal"
+        let bgKept = afterBG != termProc
+        let exactly = afterBG == before ? " (exactly restored)" : " (another app took focus after restore — not our steal)"
+        print("BACKGROUND spawn (restore → Finder):")
+        print("  window created : \(bgOpened ? "yes (\(bgWid))" : "NO")")
+        print("  focus          : before=\(before) after=\(afterBG) → \(bgKept ? "PASS (terminal not left frontmost)\(afterBG == before ? "" : exactly)" : "FAIL (left \(termProc) frontmost)")")
+        closeWindow(term, bgWid)
+        try? FileManager.default.removeItem(atPath: done1)
+
+        // 2. FOREGROUND spawn — the user SPAWN path; SHOULD bring the terminal forward.
+        neutral()
+        let before2 = frontmost()
+        let done2 = AgentSpawner.doneFilePath()
+        let cmd2 = "echo 'argent fg focus self-test — closes itself'; sleep 2; printf %s $? > '\(done2)'"
+        let cap2 = try? AgentSpawner.runSpawn(command: cmd2, terminal: term, restoreFocusTo: nil)
+        usleep(800_000)
+        let afterFG = frontmost()
+        let fgWid = cap2?.0 ?? ""
+        let fgOpened = !fgWid.isEmpty
+        let fgActivated = afterFG != before2   // focus left Finder → the terminal came forward
+        print("\nFOREGROUND spawn (user SPAWN, restore → nil):")
+        print("  window created : \(fgOpened ? "yes (\(fgWid))" : "NO")")
+        print("  focus (info)   : before=\(before2) after=\(afterFG) → "
+            + "\(fgActivated ? "terminal activated" : "not activated (OS suppresses activation from a backgrounded test — expected here)")")
+        closeWindow(term, fgWid)
+        try? FileManager.default.removeItem(atPath: done2)
+
+        // Hard assertions: the background spawn kept focus AND both paths still open a
+        // trackable window. Foreground activation is informational (see the doc comment).
+        let ok = bgOpened && bgKept && fgOpened
+        print("\nSPAWN_FOCUS_TEST \(ok ? "OK" : "FAILED")"
+            + (ok ? "" : "  [bgOpened=\(bgOpened) bgKept=\(bgKept) fgOpened=\(fgOpened)]"))
+        return ok
     }
 
     /// Auto-fix monitor self-test: fetch my open PRs in the target repo (real gh),

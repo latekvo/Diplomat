@@ -20,6 +20,7 @@ enum Headless {
             || env["ARGENT_UTILS_DEVICE_DUMP"] == "1"
             || env["ARGENT_UTILS_AUTOFIX_POLL"] == "1"
             || env["ARGENT_UTILS_APIWATCH_SCAN"] == "1"
+            || env["ARGENT_UTILS_SPAWN_FOCUS_TEST"] == "1"
     }()
 
     /// Specifically the ARGENT_UTILS_RENDER snapshot mode. Renders seed a real
