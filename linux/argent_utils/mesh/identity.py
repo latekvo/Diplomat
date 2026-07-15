@@ -57,42 +57,18 @@ class LocalNode:
     tier: int
     tokens: str  # "ok" | "low" | "out"
     duties_enabled: dict  # duty id -> bool (absent = enabled)
-    # Trust domain: a stable id for whoever owns this node (the human/fleet).
-    # Nodes sharing an owner are "personal" to each other; a different owner is
-    # "foreign". Empty (the default) means unset — every peer is personal, so a
-    # mesh with no owners set behaves exactly like v1 full-trust.
-    owner: str = ""
 
     def to_dict(self) -> dict:
-        d = {
+        return {
             "id": self.id,
             "name": self.name,
             "tier": self.tier,
             "tokens": self.tokens,
             "dutiesEnabled": self.duties_enabled,
         }
-        if self.owner:
-            d["owner"] = self.owner
-        return d
 
     def duty_enabled(self, duty_id: str) -> bool:
         return bool(self.duties_enabled.get(duty_id, True))
-
-
-def trust_of(peer_owner: str, my_owner: str) -> str:
-    """Classify a peer from its advertised ``owner`` against ours.
-
-    ``"personal"`` — one of my own devices (same owner), or trust can't be
-    decided because either side hasn't set an owner (the v1-compatible default:
-    unknown owner ⇒ trusted). A personal peer's SzpontRequests run directly.
-
-    ``"foreign"`` — a device owned by someone else (both owners set, and
-    different). Its requests are declined in v1; the zero-trust path (run foreign
-    compute, route social actions back through a personal node) is future work.
-    """
-    if not my_owner or not peer_owner:
-        return config.trust_default()
-    return "personal" if peer_owner == my_owner else "foreign"
 
 
 def _clamped_tier(raw: object) -> int:
@@ -118,9 +94,6 @@ def load() -> LocalNode:
         tier=_clamped_tier(raw.get("tier", default_tier)),
         tokens=raw.get("tokens") if raw.get("tokens") in TOKEN_STATES else "ok",
         duties_enabled=dict(raw.get("dutiesEnabled", {})),
-        # ARGENT_MESH_OWNER lets a fleet stamp the same owner on every machine
-        # without editing each node.json; the file value wins if both are set.
-        owner=str(raw.get("owner") or os.environ.get("ARGENT_MESH_OWNER", "")),
     )
     if raw.get("id") != node.id:  # first run (or a corrupt file): persist the minted id
         save(node)
@@ -149,8 +122,6 @@ def apply_attrs(node: LocalNode, attrs: dict) -> LocalNode:
         out = replace(out, tier=_clamped_tier(attrs["tier"]))
     if attrs.get("tokens") in TOKEN_STATES:
         out = replace(out, tokens=attrs["tokens"])
-    if isinstance(attrs.get("owner"), str):
-        out = replace(out, owner=attrs["owner"].strip()[:64])
     if isinstance(attrs.get("dutiesEnabled"), dict):
         merged = dict(out.duties_enabled)
         for k, v in attrs["dutiesEnabled"].items():

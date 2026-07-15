@@ -76,12 +76,6 @@ def secret() -> str:
     return os.environ.get("ARGENT_MESH_SECRET", "")
 
 
-def trust_default() -> str:
-    """The trust level assumed when it can't be decided (either side's owner is
-    unset) — ``personal`` by default, so an owner-less mesh stays fully trusting."""
-    return str(core.mesh().get("trust", {}).get("default", "personal"))
-
-
 def accounts() -> dict:
     """The subscription-plan + accounting knobs (plan weights, capacity, quota
     window, usage time-constant) behind per-node load balancing."""

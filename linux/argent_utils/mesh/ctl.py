@@ -77,5 +77,15 @@ def dispatch(duty: str, prompt: str, target: str | None = None,
     return list(reply.get("results", []))
 
 
+def trust_device(fingerprint: str, label: str = "", timeout: float = 5.0) -> None:
+    """Add a device fingerprint to the local trusted allowlist (personal)."""
+    request({"t": "trust", "fingerprint": fingerprint, "label": label}, timeout=timeout)
+
+
+def untrust_device(fingerprint: str, timeout: float = 5.0) -> None:
+    """Remove a device fingerprint from the local trusted allowlist."""
+    request({"t": "untrust", "fingerprint": fingerprint}, timeout=timeout)
+
+
 def stop(timeout: float = 5.0) -> None:
     request({"t": "stop"}, timeout=timeout)

@@ -12,7 +12,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from argent_utils.mesh import assign, config, identity, protocol, stats  # noqa: E402
+from argent_utils.mesh import assign, config, crypto, identity, protocol, stats, trust  # noqa: E402
 from argent_utils.mesh.config import Placement, PlacementOverrides  # noqa: E402
 from argent_utils.mesh.protocol import NodeInfo  # noqa: E402
 
@@ -221,30 +221,53 @@ def test_apply_attrs_clamps_and_ignores_junk(tmp_path, monkeypatch):
     assert not n.duty_enabled("audit") and n.duty_enabled("review")
 
 
-# MARK: trust levels (personal vs foreign)
+# MARK: trust - device keys + the local allowlist
 
 
-def test_trust_classification():
-    # Same owner = my own device; different owner = someone else's.
-    assert identity.trust_of("alice", "alice") == "personal"
-    assert identity.trust_of("bob", "alice") == "foreign"
-    # Either side unset ⇒ can't decide ⇒ personal (v1 full-trust default): a
-    # mesh with no owners configured behaves exactly as before.
-    assert identity.trust_of("", "alice") == "personal"
-    assert identity.trust_of("bob", "") == "personal"
-    assert identity.trust_of("", "") == "personal"
+def test_trust_allowlist_classifies():
+    # Trust keys on a VERIFIED fingerprint against a LOCAL allowlist - never on
+    # anything a peer advertises.
+    assert trust.classify("abc", {}) == "personal"        # empty allowlist = full trust
+    assert trust.classify("abc", {"abc": "mine"}) == "personal"   # listed
+    assert trust.classify("xyz", {"abc": "mine"}) == "foreign"    # unlisted
+    assert trust.classify("", {"abc": "mine"}) == "foreign"       # unverified (no fp)
 
 
-def test_owner_persists_and_applies(tmp_path, monkeypatch):
+def test_trust_allowlist_persists(tmp_path, monkeypatch):
     monkeypatch.setenv("ARGENT_MESH_DIR", str(tmp_path))
-    n = identity.load()
-    assert n.owner == ""  # unset by default → fully trusting
-    n = identity.apply_attrs(n, {"owner": "  my-fleet  "})
-    assert n.owner == "my-fleet"  # trimmed
-    assert "owner" in n.to_dict()
-    # An empty owner is omitted from node.json so v1 files stay unchanged.
-    assert "owner" not in identity.apply_attrs(n, {"owner": ""}).to_dict() or \
-        identity.apply_attrs(n, {"owner": ""}).owner == ""
+    trust.save({"fp1": "mbp", "fp2": ""})
+    loaded = trust.load()
+    assert loaded == {"fp1": "mbp", "fp2": ""}
+    assert trust.classify("fp1", loaded) == "personal"
+    assert trust.classify("nope", loaded) == "foreign"
+
+
+def test_device_key_proof_of_possession(tmp_path, monkeypatch):
+    if not crypto.AVAILABLE:  # dependency-free run without `cryptography`
+        return
+    monkeypatch.setenv("ARGENT_MESH_DIR", str(tmp_path))
+    k = crypto.load_or_create()
+    assert crypto.fingerprint_of(k.public_b64) == k.fingerprint
+    nonce = b"per-connection-nonce"
+    sig = k.sign(nonce)
+    assert crypto.verify(k.public_b64, nonce, sig)          # holder verifies
+    assert not crypto.verify(k.public_b64, b"other", sig)   # wrong challenge fails
+    # The whole point: an attacker who copies the advertised pubkey but signs the
+    # challenge with a DIFFERENT key cannot be verified as that identity.
+    other = crypto.load_or_create.__globals__  # noqa: F841 - keep import side effects
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    forged = crypto.DeviceKey(Ed25519PrivateKey.generate()).sign(nonce)
+    assert not crypto.verify(k.public_b64, nonce, forged)   # spoof rejected
+
+
+def test_device_key_is_stable_across_loads(tmp_path, monkeypatch):
+    if not crypto.AVAILABLE:
+        return
+    monkeypatch.setenv("ARGENT_MESH_DIR", str(tmp_path))
+    a = crypto.load_or_create()
+    b = crypto.load_or_create()
+    assert a.fingerprint == b.fingerprint  # minted once, persisted
+    assert len(a.fingerprint) == 64        # sha256 hex
 
 
 # MARK: per-node stats (usage EMA + quota) and account types
@@ -327,19 +350,20 @@ def _snode(id: str, plan: str = "max-5x", quota: float | None = None,
                            "usageAvg": usage})
 
 
-def test_nodeinfo_owner_and_stats_roundtrip():
+def test_nodeinfo_pubkey_and_stats_roundtrip():
     n = NodeInfo(id="a", name="a", platform="linux", tier=3, tokens="ok",
-                 owner="alice",
+                 pubkey="QUJDRA==",
                  stats={"plan": "max-20x", "quotaLeft": 18.0, "usageAvg": 2.0})
     d = n.to_dict()
-    assert d["owner"] == "alice" and d["stats"]["plan"] == "max-20x"
+    assert d["pubkey"] == "QUJDRA==" and d["stats"]["plan"] == "max-20x"
     assert NodeInfo.from_dict(d) == n
     assert abs(NodeInfo.from_dict(d).surplus() - 16.0) < 1e-9
     # A bare node omits the additive fields entirely (v1 wire-compat) and still
-    # roundtrips; its surplus is a neutral 0.
+    # roundtrips; its surplus is a neutral 0. Advertising a pubkey grants nothing
+    # on its own - trust needs proof of possession + a local allowlist entry.
     bare = NodeInfo(id="b", name="b", platform="linux", tier=3, tokens="ok")
     bd = bare.to_dict()
-    assert "owner" not in bd and "stats" not in bd
+    assert "pubkey" not in bd and "stats" not in bd
     assert NodeInfo.from_dict(bd) == bare and bare.surplus() == 0.0
 
 

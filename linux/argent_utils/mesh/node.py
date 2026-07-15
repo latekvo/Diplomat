@@ -26,13 +26,16 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import secrets
 import socket
 import struct
 import time
 import uuid
 
 from .. import activity
-from . import assign, config, identity, protocol, spawnjob, statefile, stats
+from . import (
+    assign, config, crypto, identity, protocol, spawnjob, statefile, stats, trust,
+)
 from .config import PlacementOverrides
 from .protocol import Job, NodeInfo
 
@@ -77,6 +80,10 @@ class Peer:
         self.last_seen = time.monotonic()
         self.writer: asyncio.StreamWriter | None = None
         self.down_since: float | None = None
+        # Fingerprint of the key this peer PROVED it holds on the link (signed our
+        # challenge). None until verified. Trust keys on this, never on info.pubkey
+        # alone - a peer can advertise any pubkey but only sign for its own.
+        self.verified_fp: str | None = None
 
     @property
     def linked(self) -> bool:
@@ -96,6 +103,8 @@ class MeshNode:
         self.proto = config.protocol()
         self.local = identity.load()
         self.stats = stats.load()  # per-node usage/quota accounting for load balancing
+        self.key = crypto.load_or_create()  # this device's Ed25519 trust identity
+        self._trusted = trust.load()  # local allowlist of trusted fingerprints
         self.platform = identity.detect_platform()
         self.epoch = time.time()
         self.tcp_port = 0  # bound in start()
@@ -120,6 +129,9 @@ class MeshNode:
         # This machine's own addresses, so a self-beacon looping back (source =
         # loopback OR the real LAN IP) isn't mistaken for a cloned-id peer.
         self._local_addrs = _own_addresses()
+        # The trust challenge nonce THIS node issued on each link, keyed by writer,
+        # so an inbound `auth` can be verified against the nonce we chose.
+        self._issued_nonce: dict[asyncio.StreamWriter, str] = {}
 
     # MARK: - identity / gossip source of truth
 
@@ -136,9 +148,13 @@ class MeshNode:
             seq=self._seq,
             sees=tuple(sorted(pid for pid, p in self.peers.items() if p.linked)),
             duties_enabled=self.local.duties_enabled,
-            owner=self.local.owner,
+            pubkey=self.key.public_b64 if self.key else "",
             stats=self.stats.advertise(),
         )
+
+    @property
+    def fingerprint(self) -> str:
+        return self.key.fingerprint if self.key else ""
 
     def _alive_nodes(self) -> list[NodeInfo]:
         """The assignment input: self + every peer whose link is up or stale.
@@ -328,6 +344,14 @@ class MeshNode:
             self._dial_tasks.add(task)
             task.add_done_callback(self._dial_tasks.discard)
 
+    def _send_hello(self, writer: asyncio.StreamWriter) -> None:
+        """Send our hello carrying a fresh trust-challenge nonce, remembering the
+        nonce so the peer's later `auth` (a signature over it) can be checked."""
+        nonce = secrets.token_hex(16)
+        self._issued_nonce[writer] = nonce
+        writer.write(protocol.encode(
+            protocol.hello(self.info, self.overrides.to_dict(), config.secret(), nonce)))
+
     async def _dial(self, peer_id: str, host: str, port: int) -> None:
         peer = self.peers.get(peer_id)
         if (peer is not None and peer.linked) or peer_id in self._dialing:
@@ -343,12 +367,11 @@ class MeshNode:
                 )
             except (OSError, asyncio.TimeoutError):
                 return  # next beacon retries
-            writer.write(protocol.encode(
-                protocol.hello(self.info, self.overrides.to_dict(), config.secret())
-            ))
+            self._send_hello(writer)
             try:
                 await writer.drain()
             except (ConnectionError, OSError):
+                self._issued_nonce.pop(writer, None)
                 writer.close()
                 return
             # Dialed link: we reached whoever answered a beacon (spoofable), so
@@ -381,10 +404,10 @@ class MeshNode:
             await self._run_ctl(reader, writer)
             return
         if first.get("t") == "hello":
-            # Answer with our own hello, then treat like any link.
-            writer.write(protocol.encode(
-                protocol.hello(self.info, self.overrides.to_dict(), config.secret())
-            ))
+            # Answer with our own hello (+ challenge nonce), then treat like any
+            # link. Our hello goes first so our nonce is in flight before we
+            # process theirs and answer their challenge.
+            self._send_hello(writer)
             with contextlib.suppress(ConnectionError, OSError):
                 await writer.drain()
             self._on_message(first, host, writer)
@@ -426,6 +449,7 @@ class MeshNode:
         except (ConnectionError, OSError, asyncio.LimitOverrunError, ValueError):
             pass
         finally:
+            self._issued_nonce.pop(writer, None)
             writer.close()
             # Only tear down the peer if THIS writer is still its live link
             # (a reconnect may already have replaced it).
@@ -454,7 +478,12 @@ class MeshNode:
             self._learn_node(info, host, writer if t == "hello" else None)
             if t == "hello":
                 self._merge_overrides(msg.get("overrides"))
+                self._answer_challenge(msg, writer)  # prove we hold our own key
             return info.id
+        if t == "auth":
+            self._verify_auth(msg, writer)
+            peer = self._peer_by_writer(writer)
+            return peer.info.id if peer else None
         if t == "heartbeat":
             peer = self._peer_by_writer(writer)
             if peer:
@@ -480,6 +509,41 @@ class MeshNode:
 
     def _peer_by_writer(self, writer: asyncio.StreamWriter) -> Peer | None:
         return next((p for p in self.peers.values() if p.writer is writer), None)
+
+    # MARK: - trust handshake (proof of possession)
+
+    def _answer_challenge(self, msg: dict, writer: asyncio.StreamWriter) -> None:
+        """The peer's hello carried a challenge nonce; sign it with our private
+        key so the peer can bind our advertised pubkey to a key we actually hold."""
+        nonce = msg.get("nonce")
+        if isinstance(nonce, str) and nonce and self.key is not None:
+            with contextlib.suppress(ConnectionError, OSError):
+                writer.write(protocol.encode(protocol.auth(self.key.sign(nonce.encode()))))
+
+    def _verify_auth(self, msg: dict, writer: asyncio.StreamWriter) -> None:
+        """The peer answered OUR challenge. If the signature checks out against the
+        pubkey it advertised, we now believe it holds that key: record the verified
+        fingerprint (what trust keys on). A bad/absent signature leaves the peer
+        unverified, so it stays foreign under any configured allowlist."""
+        peer = self._peer_by_writer(writer)
+        my_nonce = self._issued_nonce.get(writer)
+        if peer is None or not my_nonce:
+            return
+        sig = str(msg.get("sig", ""))
+        if crypto.verify(peer.info.pubkey, my_nonce.encode(), sig):
+            fp = crypto.fingerprint_of(peer.info.pubkey)
+            if fp and peer.verified_fp != fp:
+                peer.verified_fp = fp
+                level = trust.classify(fp, self._trusted)
+                activity.log("mesh", "mesh-peer-up",
+                             f"Mesh: verified {peer.info.name} device {fp[:16]} ({level})")
+
+    def _peer_trust(self, peer: Peer | None) -> str:
+        """personal vs foreign for a peer, from its VERIFIED fingerprint against
+        the local allowlist (an unverified peer has no fingerprint -> foreign
+        whenever an allowlist is configured)."""
+        fp = peer.verified_fp if peer else None
+        return trust.classify(fp or "", self._trusted)
 
     def _learn_node(
         self, info: NodeInfo, host: str, link_writer: asyncio.StreamWriter | None
@@ -682,7 +746,7 @@ class MeshNode:
         job = Job(id=uuid.uuid4().hex, duty=duty_id, prompt=prompt,
                   requested_by=self.local.id, requested_at=time.time())
         if node_id == self.local.id:
-            return self._run_local_request(job)
+            return self._run_local_request(job, "personal")  # dispatching to myself
         peer = self.peers.get(node_id)
         if peer is None or not peer.linked:
             return "failed", "no link"
@@ -703,40 +767,33 @@ class MeshNode:
         if fut is not None and not fut.done():
             fut.set_result(msg)
 
-    def _trust_of(self, node_id: str) -> str:
-        """Personal (my own device) vs foreign (someone else's), from the
-        requester's advertised owner. The local node is always personal."""
-        if node_id == self.local.id:
-            return "personal"
-        peer = self.peers.get(node_id)
-        peer_owner = peer.info.owner if peer else ""
-        return identity.trust_of(peer_owner, self.local.owner)
-
-    def _admit(self, job: Job) -> tuple[bool, str]:
+    def _admit(self, job: Job, trust_level: str) -> tuple[bool, str]:
         """Refusal policy — the receiving node's own call, no consensus needed.
         A declined job fails the dispatcher's slot over exactly like a dead one.
 
-        v1 refuses when:
-        - the requester is **foreign** (a different owner). The zero-trust path
-          — run the compute here but route any social action back through a
-          personal node — is not built yet, so we decline rather than act on a
-          stranger's behalf.
+        ``trust_level`` is the requester's classification from the **verified
+        link** ([_peer_trust]) — never from anything in the job, which is
+        spoofable. v1 refuses when:
+        - the requester's device is **foreign** (its proven key isn't in our
+          allowlist, or it proved no key). The zero-trust path — run the compute
+          but route any social action back through a personal node — is not built
+          yet, so we decline rather than act on a stranger's behalf.
         - we have this duty **disabled** locally (opted out of the class of work).
         - we are **out of tokens** (can't serve — this is Bob refusing the job
           Alice sent anyway, which the protocol expressly allows).
         """
-        if self._trust_of(job.requested_by) == "foreign":
-            return False, "foreign requester (zero-trust path not implemented)"
+        if trust_level == "foreign":
+            return False, "foreign device (zero-trust path not implemented)"
         if not self.local.duty_enabled(job.duty):
             return False, f"duty {job.duty} disabled here"
         if self.local.tokens == "out":
             return False, "out of tokens"
         return True, ""
 
-    def _run_local_request(self, job: Job) -> tuple[str, str]:
+    def _run_local_request(self, job: Job, trust_level: str) -> tuple[str, str]:
         """Admit-or-decline, then run locally. Shared by the remote-receive path
         (``_take_job``) and a local/self dispatch, so both apply the same policy."""
-        admit, reason = self._admit(job)
+        admit, reason = self._admit(job, trust_level)
         if not admit:
             activity.log("mesh", "mesh-dispatch-failed",
                          f"Mesh: declined {job.duty} from "
@@ -745,9 +802,11 @@ class MeshNode:
         return self._spawn_local(job)
 
     def _take_job(self, job: Job, writer: asyncio.StreamWriter) -> None:
-        """A peer asked us to run a SzpontRequest. Admit-or-decline, and either
-        way answer with the outcome so the dispatcher can act on it."""
-        status, out_reason = self._run_local_request(job)
+        """A peer asked us to run a SzpontRequest. Classify the requester from the
+        VERIFIED link (not the job's self-reported requestedBy), admit-or-decline,
+        and answer with the outcome so the dispatcher can act on it."""
+        trust_level = self._peer_trust(self._peer_by_writer(writer))
+        status, out_reason = self._run_local_request(job, trust_level)
         with contextlib.suppress(ConnectionError, OSError):
             writer.write(protocol.encode(
                 protocol.job_status(job.id, status, out_reason, self.local.id)
@@ -814,10 +873,33 @@ class MeshNode:
             target = str(target) if target else None
             results = await self.dispatch(duty, str(msg.get("prompt", "")), target)
             return {"t": "dispatch-result", "duty": duty, "results": results}
+        if t == "trust":
+            fp = str(msg.get("fingerprint", "")).strip()
+            if not fp:
+                return {"t": "error", "reason": "trust needs a fingerprint"}
+            self.add_trusted(fp, str(msg.get("label", "")))
+            return {"t": "ok"}
+        if t == "untrust":
+            self.remove_trusted(str(msg.get("fingerprint", "")).strip())
+            return {"t": "ok"}
         if t == "stop":
             self.request_stop()
             return {"t": "ok"}
         return {"t": "error", "reason": f"unknown command {t!r}"}
+
+    # MARK: - trust allowlist (operator-managed, local, never gossiped)
+
+    def add_trusted(self, fingerprint: str, label: str = "") -> None:
+        self._trusted[fingerprint] = label
+        trust.save(self._trusted)
+        activity.log("mesh", "mesh-up",
+                     f"Mesh: trusting device {fingerprint[:16]}"
+                     f"{' (' + label + ')' if label else ''}")
+
+    def remove_trusted(self, fingerprint: str) -> None:
+        if self._trusted.pop(fingerprint, None) is not None:
+            trust.save(self._trusted)
+            activity.log("mesh", "mesh-up", f"Mesh: untrusting device {fingerprint[:16]}")
 
     # MARK: - snapshot
 
@@ -830,15 +912,22 @@ class MeshNode:
             d["link"] = p.link_state(stale, timeout)
             d["addr"] = p.addr
             d["lastSeenSecsAgo"] = round(now - p.last_seen, 1)
-            # Decorate with this node's view of the peer: is it one of mine
-            # (personal) or someone else's (foreign), and its dispatch surplus.
-            d["trust"] = identity.trust_of(p.info.owner, self.local.owner)
+            # This node's view of the peer: whether it PROVED a key (verified), the
+            # fingerprint it proved (or merely claims, if unverified), its trust
+            # classification against the local allowlist, and its dispatch surplus.
+            d["verified"] = p.verified_fp is not None
+            d["fingerprint"] = p.verified_fp or crypto.fingerprint_of(p.info.pubkey)
+            d["trust"] = self._peer_trust(p)
             d["surplus"] = round(p.info.surplus(), 3)
             peers.append(d)
+        me = self.info.to_dict()
+        me["fingerprint"] = self.fingerprint
         return {
             "tcpPort": self.tcp_port,
-            "self": self.info.to_dict(),
+            "self": me,
             "peers": peers,
+            "trusted": [{"fingerprint": fp, "label": lbl}
+                        for fp, lbl in sorted(self._trusted.items())],
             "assignments": {k: a.to_dict() for k, a in self._assignments.items()},
             "overrides": self.overrides.to_dict(),
         }

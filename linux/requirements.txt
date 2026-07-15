@@ -1,3 +1,8 @@
 # Linux Argent Utils applet — the only third-party dependency is Qt6 bindings.
 # PySide6 is the official Qt for Python (LGPL). Tested with 6.11.
 PySide6>=6.5
+
+# SzpontNet per-device trust identity: Ed25519 keypairs prove a peer really is
+# one of your own devices (a signed per-connection challenge), so trust never
+# rests on a spoofable advertised field. See docs/szpontnet/11-trust-and-balancing.md.
+cryptography>=41

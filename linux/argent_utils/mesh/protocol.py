@@ -7,7 +7,10 @@ one); a message that doesn't parse is dropped, never fatal.
 Message types (``t``):
 
 - ``beacon``    (UDP)  presence advert: id, name, platform, tcpPort, epoch
-- ``hello``     (TCP)  first message on a peer link, both directions: NodeInfo + overrides
+- ``hello``     (TCP)  first message on a peer link, both directions: NodeInfo +
+                       overrides + a per-connection ``nonce`` (the trust challenge)
+- ``auth``      (TCP)  proof of possession: a signature over the peer's hello nonce,
+                       so trust binds to a key the peer can't fake, not a claimed field
 - ``ctl``       (TCP)  first message on a *control* connection (the panel / CLI
                        talking to its local node) — not a peer
 - ``heartbeat`` (TCP)  link liveness
@@ -47,11 +50,12 @@ class NodeInfo:
     seq: int = 0  # per-node update counter; receivers keep the highest
     sees: tuple[str, ...] = ()  # peer ids this node currently holds links to
     duties_enabled: dict = field(default_factory=dict)
-    # Trust domain: a stable id for whoever OWNS this node (the human/fleet). A
-    # peer sharing our owner is "personal" (its requests run directly); a
-    # different owner is "foreign". Empty = unset → treated as personal, so a v1
-    # mesh with no owners configured stays fully trusting (see identity.trust_of).
-    owner: str = ""
+    # The node's advertised Ed25519 public key (base64). It is the node's *claimed*
+    # trust identity - but advertising it grants NOTHING: a peer is only believed
+    # to hold this key once it signs a fresh per-connection nonce with the matching
+    # private key ([crypto]/[node] handshake). Trust then keys on this key's
+    # fingerprint against a LOCAL allowlist ([trust]), never on any claimed field.
+    pubkey: str = ""
     # Load-balancing accounting, additive: {"plan", "usageAvg", "quotaLeft"}.
     # Empty when a node advertises no stats — its dispatch surplus is then 0
     # (neutral), so surplus-first ranking degrades to weakest-first. See stats.py.
@@ -74,8 +78,8 @@ class NodeInfo:
         }
         # Omit the additive fields when empty so v1 advertisements stay
         # byte-identical to before (and interop traces don't churn).
-        if self.owner:
-            d["owner"] = self.owner
+        if self.pubkey:
+            d["pubkey"] = self.pubkey
         if self.stats:
             d["stats"] = self.stats
         return d
@@ -94,7 +98,7 @@ class NodeInfo:
                 seq=int(d.get("seq", 0)),
                 sees=tuple(str(s) for s in d.get("sees", [])),
                 duties_enabled=dict(d.get("dutiesEnabled", {})),
-                owner=str(d.get("owner", "")),
+                pubkey=str(d.get("pubkey", "")),
                 stats=dict(d.get("stats", {})) if isinstance(d.get("stats"), dict) else {},
                 version=int(d.get("v", PROTOCOL_VERSION)),
             )
@@ -197,11 +201,22 @@ def beacon(info: NodeInfo) -> dict:
     }
 
 
-def hello(info: NodeInfo, overrides_dict: dict, secret: str = "") -> dict:
+def hello(info: NodeInfo, overrides_dict: dict, secret: str = "",
+          nonce: str = "") -> dict:
     msg = {"t": "hello", "node": info.to_dict(), "overrides": overrides_dict}
     if secret:
         msg["secret"] = secret
+    if nonce:
+        # The trust challenge: whoever receives this hello must sign `nonce` with
+        # the private key for the advertised `pubkey` to be believed (proof of
+        # possession, bound to this connection so it can't be replayed elsewhere).
+        msg["nonce"] = nonce
     return msg
+
+
+def auth(sig_b64: str) -> dict:
+    """Proof of possession: a signature over the peer's hello `nonce`."""
+    return {"t": "auth", "sig": sig_b64}
 
 
 def ctl_hello(secret: str = "") -> dict:

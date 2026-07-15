@@ -91,16 +91,13 @@ class Fleet:
         self.dirs: dict[str, Path] = {}
 
     def start(self, node_id: str, name: str, platform: str, tier: int,
-              tokens: str = "ok", secret: str = "", owner: str = "") -> None:
+              tokens: str = "ok", secret: str = "") -> None:
         d = self.root / node_id
         d.mkdir(parents=True, exist_ok=True)
-        node_json = {
+        (d / "node.json").write_text(json.dumps({
             "id": node_id, "name": name, "tier": tier,
             "tokens": tokens, "dutiesEnabled": {},
-        }
-        if owner:
-            node_json["owner"] = owner  # trust domain: same owner = personal
-        (d / "node.json").write_text(json.dumps(node_json))
+        }))
         (self.root / "spawned").mkdir(exist_ok=True)
         env = dict(os.environ)
         env.update(_proto_env())
@@ -381,28 +378,39 @@ def test_outbound_dial_fence_rejects_naked_dispatch(fleet, tmp_path):
         listen.close()
 
 
-def test_foreign_requester_is_declined_personal_is_run(fleet):
-    """Trust routing over real links: a request from a FOREIGN node (different
-    owner) is declined; once the two share an owner (personal), it runs. The
-    decision is the executor's, made from the requester's advertised owner."""
-    fleet.start("aaaa", "alice", "linux", tier=4, owner="alice")
-    fleet.start("bbbb", "bob", "macos", tier=1, owner="bob")
+def test_foreign_device_declined_until_its_key_is_trusted(fleet):
+    """Trust binds to a PROVEN device key against a LOCAL allowlist, never to an
+    advertised field. Alice's request to Bob is declined while Alice's key isn't
+    in Bob's allowlist, and runs once Bob trusts that exact fingerprint - so a
+    spoofed advertisement could never have promoted Alice to personal."""
+    fleet.start("aaaa", "alice", "linux", tier=4)
+    fleet.start("bbbb", "bob", "macos", tier=1)
     for nid in ("aaaa", "bbbb"):
         _wait_for(lambda nid=nid: _links_up(fleet.state(nid), 1), what=f"{nid} link")
     spawned = fleet.root / "spawned"
 
-    # Foreign: alice targets bob directly, but bob (owner=bob) sees a stranger.
+    # Wait until Bob has cryptographically VERIFIED Alice's device on the link.
+    def alice_seen_by_bob():
+        return next((p for p in fleet.state("bbbb").get("peers", [])
+                     if p.get("id") == "aaaa" and p.get("verified")), None)
+    alice_peer = _wait_for(alice_seen_by_bob, what="Bob to verify Alice's device key")
+    alice_fp = alice_peer["fingerprint"]
+    assert len(alice_fp) == 64
+
+    # Turn ON Bob's trust boundary WITHOUT trusting Alice: Bob trusts only itself.
+    # (Any non-empty allowlist enables the boundary; Alice, unlisted, is foreign.)
+    bob_fp = fleet.state("bbbb")["self"]["fingerprint"]
+    assert fleet.cli("bbbb", "--trust", bob_fp, "--label", "self").returncode == 0
+
+    # Foreign: Alice's proven key isn't in Bob's allowlist -> declined, nothing runs.
     r = fleet.cli("aaaa", "--dispatch", "review", "--prompt", "foreign",
                   "--target", "bbbb")
-    assert r.returncode == 1, r.stdout + r.stderr
-    assert "declined" in r.stdout, r.stdout
+    assert r.returncode == 1 and "declined" in r.stdout, r.stdout + r.stderr
     time.sleep(0.5)
     assert not (spawned / "bob.txt").exists()
 
-    # Make bob one of alice's own devices (remote edit from alice), then retry.
-    assert fleet.cli("aaaa", "--set", "owner=alice", "--node", "bbbb").returncode == 0
-    _wait_for(lambda: fleet.state("bbbb").get("self", {}).get("owner") == "alice",
-              what="bob to adopt owner=alice")
+    # Now Bob trusts Alice's device fingerprint -> personal -> the request runs.
+    assert fleet.cli("bbbb", "--trust", alice_fp, "--label", "alice").returncode == 0
     r = fleet.cli("aaaa", "--dispatch", "review", "--prompt", "personal",
                   "--target", "bbbb")
     assert r.returncode == 0, r.stdout + r.stderr

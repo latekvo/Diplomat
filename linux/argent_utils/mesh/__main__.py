@@ -5,9 +5,11 @@
     python -m argent_utils.mesh --status         # print the live topology
     python -m argent_utils.mesh --stop           # stop the running node
     python -m argent_utils.mesh --set tokens=out tier=2 name=mbp-old
-    python -m argent_utils.mesh --set owner=me plan=max-20x            # trust + account
-    python -m argent_utils.mesh --set quotaLeft=12 usage=1            # inject accounting
+    python -m argent_utils.mesh --set plan=max-20x quotaLeft=12 usage=1  # accounting
     python -m argent_utils.mesh --set tokens=ok --node <peer-id>   # edit a REMOTE node
+    python -m argent_utils.mesh --fingerprint                      # print this device's key fp
+    python -m argent_utils.mesh --trust <fp> --label mbp           # trust a device (personal)
+    python -m argent_utils.mesh --untrust <fp>                     # revoke trust
     python -m argent_utils.mesh --dispatch audit --prompt "…"      # route a request
     python -m argent_utils.mesh --dispatch review --prompt-file /tmp/p.txt
     python -m argent_utils.mesh --dispatch review --prompt "…" --target <node-id>
@@ -84,11 +86,17 @@ def _print_status() -> int:
     print(f"self  {me.get('name')}  {me.get('platform')}  tier {me.get('tier')}"
           f"  tokens {me.get('tokens')}{_acct(me)}"
           f"  :{state.get('tcpPort')}  id {me.get('id','')[:8]}"
-          + (f"  owner {me.get('owner')}" if me.get('owner') else ""))
+          f"  fp {me.get('fingerprint','')[:16] or '(keyless)'}")
     for p in state.get("peers", []):
+        vmark = "✓" if p.get("verified") else "?"
         print(f"peer  {p.get('name')}  {p.get('platform')}  tier {p.get('tier')}"
-              f"  tokens {p.get('tokens')}{_acct(p)}  {p.get('trust', 'personal')}"
-              f"  link {p.get('link')}  {p.get('addr')}  id {p.get('id','')[:8]}")
+              f"  tokens {p.get('tokens')}{_acct(p)}  {p.get('trust', 'personal')}{vmark}"
+              f"  link {p.get('link')}  {p.get('addr')}  fp {p.get('fingerprint','')[:16]}")
+    trusted = state.get("trusted", [])
+    if trusted:
+        print("trusted  " + ", ".join(
+            f"{e.get('fingerprint','')[:16]}{'(' + e['label'] + ')' if e.get('label') else ''}"
+            for e in trusted))
     for duty, a in (state.get("assignments") or {}).items():
         names = []
         for nid in a.get("assigned", []):
@@ -114,8 +122,6 @@ def _parse_attrs(pairs: list[str]) -> dict:
             attrs["tokens"] = value
         elif key == "name":
             attrs["name"] = value
-        elif key == "owner":  # trust domain: same owner = personal, else foreign
-            attrs["owner"] = value
         elif key in ("plan", "quotaLeft", "usageAvg", "usage"):  # accounting (stats.py)
             attrs[key] = value
         elif key.startswith("duty."):  # duty.audit=off disables a duty on the node
@@ -141,10 +147,22 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--prompt-file", help="read the --dispatch prompt from a file")
     ap.add_argument("--target", metavar="ID", help="dispatch to one node directly "
                     "(the dispatcher's own pick, no failover)")
+    ap.add_argument("--fingerprint", action="store_true",
+                    help="print this device's trust-key fingerprint and exit")
+    ap.add_argument("--trust", metavar="FP",
+                    help="add a device fingerprint to the local trusted allowlist")
+    ap.add_argument("--untrust", metavar="FP",
+                    help="remove a device fingerprint from the trusted allowlist")
+    ap.add_argument("--label", default="", help="friendly label for --trust")
     args = ap.parse_args(argv)
 
     if args.daemon:
         return _daemonize()
+    if args.fingerprint:
+        from . import crypto
+        key = crypto.load_or_create()
+        print(key.fingerprint if key else "(keyless: cryptography not installed)")
+        return 0
     if args.status:
         return _print_status()
 
@@ -154,6 +172,14 @@ def main(argv: list[str] | None = None) -> int:
         if args.stop:
             ctl.stop()
             print("stop requested")
+            return 0
+        if args.trust:
+            ctl.trust_device(args.trust, args.label)
+            print(f"trusting {args.trust[:16]}{' (' + args.label + ')' if args.label else ''}")
+            return 0
+        if args.untrust:
+            ctl.untrust_device(args.untrust)
+            print(f"untrusting {args.untrust[:16]}")
             return 0
         if args.set_attrs:
             attrs = _parse_attrs(args.set_attrs)
