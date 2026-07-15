@@ -345,15 +345,9 @@ private struct TopologyGraph: View {
     var body: some View {
         Canvas { ctx, size in
             guard let selfNode else { return }
-            let cx = size.width / 2, cy = size.height / 2
-            let radius = min(size.width * 0.33, size.height / 2 - 30)
-            var points: [CGPoint] = []
-            let n = max(peers.count, 1)
-            for i in 0..<peers.count {
-                let ang = -Double.pi / 2 + (2 * Double.pi * Double(i) / Double(n))
-                points.append(CGPoint(x: cx + radius * cos(ang), y: cy + radius * sin(ang)))
-            }
-            var idToPoint: [String: CGPoint] = [selfNode.id: CGPoint(x: cx, y: cy)]
+            let center = CGPoint(x: size.width / 2, y: size.height / 2)
+            let points = Self.ringPoints(count: peers.count, in: size)
+            var idToPoint: [String: CGPoint] = [selfNode.id: center]
             for (peer, pt) in zip(peers, points) { idToPoint[peer.id] = pt }
 
             // peer↔peer edges first (behind), gray; brighter when the sighting is mutual.
@@ -373,7 +367,7 @@ private struct TopologyGraph: View {
             // self→peer links, coloured by link state.
             for (peer, pt) in zip(peers, points) {
                 var path = Path()
-                path.move(to: CGPoint(x: cx, y: cy))
+                path.move(to: center)
                 path.addLine(to: pt)
                 let color = linkColor(peer.link)
                 let style = StrokeStyle(lineWidth: peer.link == "up" ? 2 : 1.6,
@@ -381,13 +375,31 @@ private struct TopologyGraph: View {
                 ctx.stroke(path, with: .color(color), style: style)
             }
             // nodes on top.
-            drawNode(ctx, at: CGPoint(x: cx, y: cy), node: selfNode.platform, name: selfNode.name,
+            drawNode(ctx, at: center, node: selfNode.platform, name: selfNode.name,
                      isSelf: true, height: size.height)
             for (peer, pt) in zip(peers, points) {
                 drawNode(ctx, at: pt, node: peer.platform, name: peer.name, isSelf: false,
                          height: size.height)
             }
         }
+    }
+
+    /// Peer positions on a ring around the centre. A plain function with explicit
+    /// `CGFloat` types — kept OUT of the `Canvas` ViewBuilder closure so the mixed
+    /// CGFloat/Double trig doesn't blow up the SwiftUI type-checker.
+    private static func ringPoints(count: Int, in size: CGSize) -> [CGPoint] {
+        guard count > 0 else { return [] }
+        let cx: CGFloat = size.width / 2
+        let cy: CGFloat = size.height / 2
+        let radius: CGFloat = min(size.width * 0.33, size.height / 2 - 30)
+        var points: [CGPoint] = []
+        for i in 0..<count {
+            let ang: Double = -Double.pi / 2 + (2 * Double.pi * Double(i) / Double(count))
+            let x: CGFloat = cx + radius * CGFloat(cos(ang))
+            let y: CGFloat = cy + radius * CGFloat(sin(ang))
+            points.append(CGPoint(x: x, y: y))
+        }
+        return points
     }
 
     private func drawNode(_ ctx: GraphicsContext, at p: CGPoint, node platform: String,

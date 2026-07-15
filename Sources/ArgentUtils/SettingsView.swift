@@ -46,6 +46,17 @@ struct SettingsView: View {
 
     // MARK: mesh (LAN P2P duty coordination)
 
+    /// Precomputed as a `String` (not concatenated inside the ViewBuilder) so the Settings
+    /// column stays within the SwiftUI type-checker's reach — same pattern as `apiWatchBlurb`.
+    private var meshBlurb: String {
+        "Runs a small peer-to-peer node that discovers the other Argent Utils machines on "
+            + "your LAN (UDP beacons) and routes duty work — reviews, conflict fixes, the full "
+            + "E2E audit — to whichever node fits the placement policy (weakest-first by default, "
+            + "token- and platform-aware). Configure the whole mesh from the ⬡ Mesh screen (the "
+            + "⬡ button in the panel header). Off by default; no node opens on the network until "
+            + "you enable it here."
+    }
+
     private var meshSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             sectionLabel("MESH (LAN P2P)")
@@ -54,12 +65,7 @@ struct SettingsView: View {
             }
             .toggleStyle(.switch).controlSize(.small)
             meshStatusRow
-            Text("Runs a small peer-to-peer node that discovers the other Argent Utils "
-                 + "machines on your LAN (UDP beacons) and routes duty work — reviews, "
-                 + "conflict fixes, the full E2E audit — to whichever node fits the placement "
-                 + "policy (weakest-first by default, token- and platform-aware). Configure the "
-                 + "whole mesh from the ⬡ Mesh screen (the ⬡ button in the panel header). Off "
-                 + "by default; no node opens on the network until you enable it here.")
+            Text(meshBlurb)
                 .font(.caption2).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -96,11 +102,15 @@ struct SettingsView: View {
                 }
                 .buttonStyle(.borderless).controlSize(.small).help("Re-check for updates")
             }
-            Text("Pulls the latest applet from GitHub, rebuilds the argent-core prompt "
-                 + "engine and the app bundle, and relaunches it in place.")
+            Text(updateBlurb)
                 .font(.caption2).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    private var updateBlurb: String {
+        "Pulls the latest applet from GitHub, rebuilds the argent-core prompt engine and the "
+            + "app bundle, and relaunches it in place."
     }
 
     @ViewBuilder
