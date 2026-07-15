@@ -12,9 +12,19 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DEST_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/argent-utils"
 DEST="$DEST_DIR/argent-core"
 
+# Local library shims first, when present (unsupported-distro setups — e.g.
+# Arch, whose ncurses/libxml2 sonames differ from what the toolchain links —
+# keep compat symlinks + LD_LIBRARY_PATH in this env; it sources swiftly too).
+# Matters when the applet's Update button runs this from a minimal session env.
+export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
+if [ -f "$HOME/.local/swift-compat/env.sh" ]; then
+    . "$HOME/.local/swift-compat/env.sh"
+fi
 # Pick up a swiftly-managed toolchain if swift isn't already on PATH.
 if ! command -v swift >/dev/null 2>&1; then
-    [ -f "$HOME/.local/share/swiftly/env.sh" ] && . "$HOME/.local/share/swiftly/env.sh"
+    if [ -f "$HOME/.local/share/swiftly/env.sh" ]; then
+        . "$HOME/.local/share/swiftly/env.sh"
+    fi
 fi
 if ! command -v swift >/dev/null 2>&1; then
     echo "error: no 'swift' toolchain found. Install one from https://swift.org/install" >&2
