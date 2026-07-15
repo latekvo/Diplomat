@@ -254,18 +254,28 @@ private struct ContentHeightKey: PreferenceKey {
 struct ContentView: View {
     @EnvironmentObject var store: Store
     @State private var query = ""
-    @State private var showingSettings: Bool
+    /// Which of the three screens the body shows: Actions ("main"), Settings, or Mesh.
+    @State private var screen: PanelScreen
 
-    /// `showSettings` seeds the initial settings state — used by the headless render
+    /// The panel's three interchangeable body screens.
+    enum PanelScreen { case main, settings, mesh }
+
+    /// `showSettings` seeds the initial screen — used by the headless render
     /// to snapshot the Settings screen in context. Defaults to the main view.
     /// `seedPendingUnban` seeds the inline un-ban confirmation for a login (render only).
     /// `seedMutedAudit` pre-mutes Activity filter categories so the filtered feed can be
     /// snapshotted (render only).
     init(showSettings: Bool = false, seedPendingUnban: String? = nil,
          seedMutedAudit: Set<AuditCategory> = []) {
-        _showingSettings = State(initialValue: showSettings)
+        _screen = State(initialValue: showSettings ? .settings : .main)
         _pendingUnban = State(initialValue: seedPendingUnban)
         _mutedAuditCategories = State(initialValue: seedMutedAudit)
+    }
+
+    /// Binding that reads true while a given screen is up and returns to main when it's
+    /// dismissed — bridges the child screens' `isPresented: Binding<Bool>` to `screen`.
+    private func presenting(_ s: PanelScreen) -> Binding<Bool> {
+        Binding(get: { screen == s }, set: { if !$0 { screen = .main } })
     }
     /// Which action wizard (if any) replaces the tool lists in the results pane.
     @State private var activeAction: ActionPanel?
@@ -288,11 +298,15 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 8) {
             header
-            if showingSettings {
+            switch screen {
+            case .settings:
                 // Settings uses the same two-column layout as the main panel below.
-                SettingsView(isPresented: $showingSettings)
+                SettingsView(isPresented: presenting(.settings))
                     .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
+            case .mesh:
+                MeshView(isPresented: presenting(.mesh))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            case .main:
                 HStack(alignment: .top, spacing: 12) {
                     leftColumn.frame(width: PopoverRoot.columnWidth, alignment: .top)
                     rightColumn.frame(width: PopoverRoot.columnWidth, alignment: .top)
@@ -336,9 +350,13 @@ struct ContentView: View {
             Button { Task { await store.refresh() } } label: {
                 Image(systemName: "arrow.clockwise")
             }.buttonStyle(.borderless).help("Refresh")
-            Button { withAnimation(.easeInOut(duration: 0.15)) { showingSettings.toggle() } } label: {
-                Image(systemName: showingSettings ? "gearshape.fill" : "gearshape")
-                    .foregroundStyle(showingSettings ? Color.accentColor : .primary)
+            Button { withAnimation(.easeInOut(duration: 0.15)) { screen = screen == .mesh ? .main : .mesh } } label: {
+                Image(systemName: screen == .mesh ? "hexagon.fill" : "hexagon")
+                    .foregroundStyle(screen == .mesh ? Color.accentColor : .primary)
+            }.buttonStyle(.borderless).help("Mesh management")
+            Button { withAnimation(.easeInOut(duration: 0.15)) { screen = screen == .settings ? .main : .settings } } label: {
+                Image(systemName: screen == .settings ? "gearshape.fill" : "gearshape")
+                    .foregroundStyle(screen == .settings ? Color.accentColor : .primary)
             }.buttonStyle(.borderless).help("Settings")
             Button { QuitFlow.confirm() } label: {
                 Image(systemName: "power")
@@ -358,7 +376,7 @@ struct ContentView: View {
             let live = store.autofixStatus?.isLive == true
             let accent = live ? Color.green : Color.orange
             Button {
-                withAnimation(.easeInOut(duration: 0.15)) { showingSettings = true }
+                withAnimation(.easeInOut(duration: 0.15)) { screen = .settings }
             } label: {
                 HStack(spacing: 7) {
                     Image(systemName: live ? "bolt.fill" : "bolt.slash.fill")

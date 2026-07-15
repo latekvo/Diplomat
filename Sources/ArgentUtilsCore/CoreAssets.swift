@@ -130,6 +130,7 @@ public enum CoreAssets {
     }
 
     private static let _config = try? loadJSON("config.json", as: Config.self)
+    private static let _mesh = try? loadJSON("mesh.json", as: MeshCatalog.self)
     private static let _catalog = try? loadJSON("catalog.json", as: CatalogFile.self)
     private static let _filters = try? loadJSON("filters.json", as: Filters.self)
     private static let _review = try? loadJSON("review.json", as: Review.self)
@@ -152,6 +153,13 @@ public enum CoreAssets {
     public static func catalog() throws -> [CatalogEntry] {
         guard let c = _catalog else { return try loadJSON("catalog.json", as: CatalogFile.self).tools }
         return c.tools
+    }
+
+    /// The Argent Mesh model (duty catalog, placement strategies, tier/token vocabulary)
+    /// from `mesh.json`, shared verbatim with the Python mesh node + Linux front-end.
+    public static func mesh() throws -> MeshCatalog {
+        guard let m = _mesh else { return try loadJSON("mesh.json", as: MeshCatalog.self) }
+        return m
     }
 
     public static func filters() throws -> Filters {

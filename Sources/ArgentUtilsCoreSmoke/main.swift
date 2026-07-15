@@ -123,6 +123,61 @@ check(PRRef.parse("#+337", owner: cfg.owner, repo: cfg.repo).number == nil)
 check(PRRef.parse("٣٣٧", owner: cfg.owner, repo: cfg.repo).number == nil)
 print("PR-reference assertions passed")
 
+section("mesh model + snapshot decode")
+let mesh = try CoreAssets.mesh()
+print("mesh: platforms=\(mesh.platforms.map { $0.id }) tokens=\(mesh.tokens.map { $0.id }) "
+    + "strategies=\(mesh.strategies.map { $0.id }) duties=\(mesh.duties.map { $0.id })")
+// The duty catalog + placement strategies the panel edits — assert the shape the UI
+// depends on, so a mesh.json edit that drops a field fails here (like catalog.json above).
+check(mesh.duties.map { $0.id } == ["review", "conflicts", "audit"], "mesh duty ids")
+check(mesh.tokens.map { $0.id } == ["ok", "low", "out"], "mesh token ids")
+check(mesh.tierBounds == (1, 5, 3), "mesh tier bounds")
+check(mesh.strategies.contains { $0.id == mesh.defaultStrategy }, "defaultStrategy is a real strategy")
+// Placement resolution: the audit duty carries a linux+macos spread; review/conflicts don't.
+let auditPlacement = mesh.placement(for: "audit", overrides: nil)
+check(auditPlacement.spread.map { $0.platform } == ["linux", "macos"], "audit spread platforms")
+check(auditPlacement.spread.allSatisfy { $0.count == 1 }, "audit spread counts")
+check(mesh.placement(for: "review", overrides: nil).spread.isEmpty, "review has no spread")
+check(mesh.placement(for: "review", overrides: nil).tokenAware, "review is token-aware by default")
+// A gossiped override wins over the catalog default (mirrors config.placement_for).
+let overrideJSON = """
+{"rev":3,"updatedBy":"nodeA","duties":{"review":{"strategy":"strongest-first","tokenAware":false}}}
+""".data(using: .utf8)!
+let overrides = try JSONDecoder().decode(MeshOverrides.self, from: overrideJSON)
+check(overrides.rev == 3 && overrides.updatedBy == "nodeA", "overrides header")
+let overridden = mesh.placement(for: "review", overrides: overrides)
+check(overridden.strategy == "strongest-first" && !overridden.tokenAware, "override wins over default")
+check(mesh.placement(for: "conflicts", overrides: overrides).strategy == mesh.defaultStrategy,
+      "an un-overridden duty keeps its catalog default")
+// The topology snapshot the UI renders (self + peers + assignments), decoded from a
+// synthetic state.json shaped exactly like the node writes.
+let snapJSON = """
+{"pid":4242,"tcpPort":40878,"v":1,
+ "self":{"id":"aaa","name":"here","platform":"macos","tier":2,"tokens":"ok"},
+ "peers":[{"id":"bbb","name":"lin","platform":"linux","tier":4,"tokens":"low",
+           "link":"up","addr":"192.168.1.9:40878","lastSeenSecsAgo":1.4,"sees":["aaa"]}],
+ "assignments":{"audit":{"assigned":["aaa"],"shortfall":[{"missing":1,"platform":"linux"}]}}}
+""".data(using: .utf8)!
+check(MeshSnapshot.decode(snapJSON) != nil, "snapshot decodes")
+let snap = MeshSnapshot.decode(snapJSON)!
+check(snap.pid == 4242 && snap.tcpPort == 40878, "snapshot header")
+check(snap.selfNode?.platform == "macos" && snap.selfNode?.tier == 2, "self node")
+check(snap.peers.count == 1 && snap.peers[0].link == "up" && snap.peers[0].sees == ["aaa"], "peer decode")
+check(snap.assignments["audit"]?.assigned == ["aaa"], "assignment decode")
+check(snap.assignments["audit"]?.shortfall.first?.platform == "linux", "shortfall decode")
+// `lastSeenSecsAgo` is intentionally excluded from peer equality (it ticks every write),
+// so two snapshots that differ only in it compare equal — the change-detecting poll relies
+// on this to not fire twice a second on an idle mesh.
+let snap2 = MeshSnapshot.decode("""
+{"pid":4242,"tcpPort":40878,
+ "self":{"id":"aaa","name":"here","platform":"macos","tier":2,"tokens":"ok"},
+ "peers":[{"id":"bbb","name":"lin","platform":"linux","tier":4,"tokens":"low",
+           "link":"up","addr":"192.168.1.9:40878","lastSeenSecsAgo":9.9,"sees":["aaa"]}],
+ "assignments":{"audit":{"assigned":["aaa"],"shortfall":[{"missing":1,"platform":"linux"}]}}}
+""".data(using: .utf8)!)
+check(snap == snap2, "snapshot equality ignores lastSeenSecsAgo drift")
+print("mesh assertions passed")
+
 section("review prompts")
 let mine = ReviewConfig(depth: "max", me: me)
 let other = ReviewConfig(depth: "max", target: .someone, username: "someuser")

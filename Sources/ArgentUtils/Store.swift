@@ -100,6 +100,27 @@ final class Store: ObservableObject {
     /// unified activity feed shown in the panel.
     @Published var auditEntries: [AuditEntry] = []
 
+    /// Live Argent Mesh topology (the local node's `state.json` snapshot; nil until a node
+    /// has run here) and the last control-edit error surfaced to the Mesh screen. Polled on
+    /// a tight cadence while the mesh is enabled, so it fires far more often than the data
+    /// refresh — `MeshSnapshot`'s equality ignores per-write liveness drift so an idle mesh
+    /// doesn't churn.
+    @Published var meshState: MeshSnapshot?
+    @Published var meshError: String?
+
+    /// Whether this machine joins the LAN P2P mesh. Opt-in and OFF by default — the app
+    /// never opens a node on the network unasked; enabling it in Settings auto-starts one.
+    @Published var meshEnabled: Bool {
+        didSet {
+            persist(meshEnabled, forKey: Keys.meshEnabled)
+            guard !Headless.isRender, meshEnabled != oldValue else { return }
+            if meshEnabled { ensureMeshRunning() } else { stopMesh() }
+        }
+    }
+
+    /// Self-update progress for the Settings "UPDATE" section. Nil until the first check.
+    @Published var updateState: AppUpdateState?
+
     /// Master switch for auto-approvals: whether an auto-dispatched review may EVER submit
     /// a verdict (APPROVE / request changes) on my behalf. Default OFF — every auto-review
     /// leaves comments only and the final call stays with me until I opt in. The per-class
@@ -167,6 +188,7 @@ final class Store: ObservableObject {
         static let apiWatchEnabled = "apiWatchEnabled"
         static let apiWatchContinues = "apiWatchContinues"
         static let myConflictAttempts = "myConflictAttempts"
+        static let meshEnabled = "meshEnabled"
     }
 
     /// The persisted terminal choice, readable before a Store exists (the AppDelegate's
@@ -228,6 +250,9 @@ final class Store: ObservableObject {
         verdictWithholdInstaller = defaults.object(forKey: Keys.verdictWithholdInstaller) as? Bool ?? true
         verdictWithholdCommunity = defaults.object(forKey: Keys.verdictWithholdCommunity) as? Bool ?? true
         apiWatchEnabled = defaults.object(forKey: Keys.apiWatchEnabled) as? Bool ?? true
+        // Mesh is opt-in and OFF by default (absent key ⇒ false): no node opens on the
+        // network until the user enables it in Settings.
+        meshEnabled = defaults.object(forKey: Keys.meshEnabled) as? Bool ?? false
         processes = Store.loadProcesses()
         if hiddenTools.contains(selected.rawValue),
            let first = ToolKind.allCases.first(where: { !hiddenTools.contains($0.rawValue) }) {
@@ -242,11 +267,15 @@ final class Store: ObservableObject {
             startProcessPoll()
             startAutofixMonitor()
             startApiErrorWatcher()
+            startMeshPoll()
             refreshBanList()
             refreshAudit()
             Task { await fetchMe() }
             Task { await refreshDeviceState() }
             Task { await refreshAllocatorInstall() }
+            // Auto-start a node on launch if the user has previously opted into the mesh
+            // (mirrors the Linux applet's ensure-running-on-start).
+            if meshEnabled { ensureMeshRunning() }
         }
     }
 
@@ -1086,6 +1115,131 @@ final class Store: ObservableObject {
         return .dismissed
     }
 
+    // MARK: - Argent Mesh (LAN P2P topology)
+
+    /// How often the mesh topology snapshot is re-read while enabled. 2s by default so the
+    /// screen feels live; the read is a cheap file decode and the poll no-ops when the mesh
+    /// is off. Env-overridable for tests.
+    static var meshPollInterval: TimeInterval {
+        let secs = ProcessInfo.processInfo.environment["ARGENT_UTILS_MESH_POLL_SECS"].flatMap(Double.init)
+        return max(1, secs ?? 2)
+    }
+    private var meshPollTask: Task<Void, Never>?
+
+    private func startMeshPoll() {
+        guard meshPollTask == nil else { return }
+        meshPollTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.meshTick()
+                let ns = UInt64(Store.meshPollInterval * 1_000_000_000)
+                try? await Task.sleep(nanoseconds: ns)
+            }
+        }
+    }
+
+    /// Re-read the local node's public topology snapshot and publish on a meaningful
+    /// change. No-ops (and costs nothing) when the mesh is disabled.
+    func meshTick() async {
+        guard meshEnabled else { return }
+        let next = await Task.detached(priority: .utility) { MeshBridge.readState() }.value
+        if next != meshState { meshState = next }
+    }
+
+    /// Start a background mesh node if none is alive (the Mesh screen's "Start" button and
+    /// the Settings toggle both call this). A spawn failure lands in `meshError`.
+    func ensureMeshRunning() {
+        Task { [weak self] in
+            let err = await Task.detached(priority: .utility) { MeshBridge.ensureRunning() }.value
+            guard let self else { return }
+            if let err { self.meshError = err }
+            await self.meshTick()
+        }
+    }
+
+    /// Ask the local node to stop and drop the topology (used when the user disables the
+    /// mesh). Best-effort — an already-dead node is fine.
+    func stopMesh() {
+        let port = meshState?.tcpPort ?? 0
+        Task { [weak self] in
+            _ = await Task.detached(priority: .utility) { () -> Bool in
+                if port > 0 { try? MeshBridge.stop(port: port) }
+                return true
+            }.value
+            guard let self else { return }
+            self.meshState = nil
+            self.meshError = nil
+        }
+    }
+
+    /// Edit a node's attributes (self or a peer, forwarded over the mesh). Runs the control
+    /// round-trip off-main; a `MeshCtlError` lands in `meshError` for the screen.
+    func meshSetAttr(nodeID: String, attrs: [String: Any]) {
+        let port = meshState?.tcpPort ?? 0
+        Task { [weak self] in
+            let err: String? = await Task.detached(priority: .userInitiated) {
+                do { try MeshBridge.setAttr(target: nodeID, attrs: attrs, port: port); return nil }
+                catch { return (error as? LocalizedError)?.errorDescription ?? "\(error)" }
+            }.value
+            guard let self else { return }
+            self.meshError = err
+            await self.meshTick()
+        }
+    }
+
+    /// Edit one duty's mesh-wide placement (gossiped last-writer-wins).
+    func meshSetOverrides(duty: String, placement: MeshPlacement) {
+        let port = meshState?.tcpPort ?? 0
+        let obj = placement.jsonObject()
+        Task { [weak self] in
+            let err: String? = await Task.detached(priority: .userInitiated) {
+                do { try MeshBridge.setOverrides(duty: duty, placement: obj, port: port); return nil }
+                catch { return (error as? LocalizedError)?.errorDescription ?? "\(error)" }
+            }.value
+            guard let self else { return }
+            self.meshError = err
+            await self.meshTick()
+        }
+    }
+
+    // MARK: - self-update
+
+    /// Fetch origin and compare HEAD to upstream, off the UI thread. Guards against
+    /// re-entry while an update is already in flight.
+    func refreshUpdateStatus() {
+        switch updateState {
+        case .checking, .updating, .restarting: return
+        default: break
+        }
+        updateState = .checking
+        Task { [weak self] in
+            let result = await Task.detached(priority: .utility) { SelfUpdate.check() }.value
+            self?.updateState = .idle(result)
+        }
+    }
+
+    /// Pull the checkout, rebuild `ArgentUtils.app`, relaunch it. The relaunched instance
+    /// terminates this one (newest-wins singleton), so a successful run ends in `.restarting`
+    /// with this process about to be replaced; only a failure leaves state to interact with.
+    func updateApp() {
+        switch updateState {
+        case .updating, .restarting: return
+        default: break
+        }
+        updateState = .updating(step: "pulling from origin…")
+        Task { [weak self] in
+            do {
+                let commit = try await Task.detached(priority: .userInitiated) { try SelfUpdate.pull() }.value
+                self?.updateState = .updating(step: "building the app at \(commit)…")
+                try await Task.detached(priority: .userInitiated) { try SelfUpdate.rebuild() }.value
+                self?.updateState = .updating(step: "relaunching…")
+                try await Task.detached(priority: .userInitiated) { try SelfUpdate.relaunch() }.value
+                self?.updateState = .restarting(commit: commit)
+            } catch {
+                self?.updateState = .failed((error as? LocalizedError)?.errorDescription ?? "\(error)")
+            }
+        }
+    }
+
     // MARK: tool data (delegated to the shared core engine)
 
     func count(for kind: ToolKind) -> Int {
@@ -1096,5 +1250,23 @@ final class Store: ObservableObject {
     }
     func lookup(_ number: Int) -> LookupResult {
         ToolData.lookup(number, prs: prs, issues: issues, me: effectiveMe, visible: visibleTools)
+    }
+}
+
+/// The self-update flow's UI state, mirroring the phases of the Linux front-end's
+/// `update_state` dict: checking → idle(result) → updating(step) → restarting, or failed.
+enum AppUpdateState: Equatable {
+    case checking
+    case idle(SelfUpdate.CheckResult)
+    case updating(step: String)
+    case restarting(commit: String)
+    case failed(String)
+
+    /// True while a check or an update is in flight — the Update button is disabled then.
+    var isBusy: Bool {
+        switch self {
+        case .checking, .updating, .restarting: return true
+        case .idle, .failed: return false
+        }
     }
 }

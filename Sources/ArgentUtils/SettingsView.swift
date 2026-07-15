@@ -25,6 +25,8 @@ struct SettingsView: View {
                     toolsSection
                     terminalSection
                     allocatorSection
+                    meshSection
+                    updateSection
                 }
                 .frame(width: PopoverRoot.columnWidth, alignment: .topLeading)
             }
@@ -36,6 +38,102 @@ struct SettingsView: View {
             // 5000 pt/hr budget (and potential agent dispatch) from a view-appear
             // hook; the monitor's own cadence + wake trigger keep the rows fresh.
             await store.refreshAllocatorInstall()
+            // Cheap local git fetch/compare — off the UI thread inside the Store.
+            store.refreshUpdateStatus()
+            if store.meshEnabled { await store.meshTick() }
+        }
+    }
+
+    // MARK: mesh (LAN P2P duty coordination)
+
+    private var meshSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            sectionLabel("MESH (LAN P2P)")
+            Toggle(isOn: $store.meshEnabled) {
+                Text("Coordinate duties with other machines on this LAN").font(.caption)
+            }
+            .toggleStyle(.switch).controlSize(.small)
+            meshStatusRow
+            Text("Runs a small peer-to-peer node that discovers the other Argent Utils "
+                 + "machines on your LAN (UDP beacons) and routes duty work — reviews, "
+                 + "conflict fixes, the full E2E audit — to whichever node fits the placement "
+                 + "policy (weakest-first by default, token- and platform-aware). Configure the "
+                 + "whole mesh from the ⬡ Mesh screen (the ⬡ button in the panel header). Off "
+                 + "by default; no node opens on the network until you enable it here.")
+                .font(.caption2).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    @ViewBuilder
+    private var meshStatusRow: some View {
+        if store.meshEnabled {
+            let running = MeshBridge.nodeRunning(store.meshState)
+            let peers = store.meshState?.peers.count ?? 0
+            HStack(spacing: 5) {
+                Image(systemName: running ? "bolt.fill" : "bolt.slash.fill")
+                    .font(.system(size: 9)).foregroundStyle(running ? .green : .orange)
+                Text(running
+                     ? "Node running · \(peers) peer\(peers == 1 ? "" : "s")"
+                     : (store.meshState == nil ? "Starting node…" : "Node not running"))
+                    .font(.caption2).foregroundStyle(running ? .green : .orange)
+            }
+        }
+    }
+
+    // MARK: applet update
+
+    private var updateSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            sectionLabel("UPDATE")
+            updateStatusRow
+            HStack(spacing: 8) {
+                Button { store.updateApp() } label: { Text("Update").bold() }
+                    .buttonStyle(.borderedProminent).controlSize(.small)
+                    .disabled(!(store.updateState.map { !$0.isBusy } ?? false))
+                Button { store.refreshUpdateStatus() } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.borderless).controlSize(.small).help("Re-check for updates")
+            }
+            Text("Pulls the latest applet from GitHub, rebuilds the argent-core prompt "
+                 + "engine and the app bundle, and relaunches it in place.")
+                .font(.caption2).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    @ViewBuilder
+    private var updateStatusRow: some View {
+        // nil (before the first check) reads as "checking", matching the Linux front-end.
+        switch store.updateState ?? .checking {
+        case .checking:
+            updateStatus("Checking…", .secondary, detail: "comparing with origin…")
+        case .updating(let step):
+            updateStatus("Updating…", .orange, detail: step)
+        case .restarting(let commit):
+            updateStatus("Restarting…", .green,
+                         detail: "relaunched at \(commit) — this instance is handing over")
+        case .failed(let err):
+            updateStatus("Update failed", .red, detail: err)
+        case .idle(let r):
+            if let e = r.error {
+                updateStatus("Check failed", .orange, detail: e)
+            } else if let behind = r.behind, behind > 0 {
+                updateStatus("Update available · \(behind) commit\(behind == 1 ? "" : "s") behind", .blue,
+                             detail: "\(r.commit ?? "?") on \(r.branch ?? "?") · upstream \(r.upstream ?? "?")")
+            } else {
+                updateStatus("Up to date", .primary,
+                             detail: "\(r.commit ?? "?") on \(r.branch ?? "?") · upstream \(r.upstream ?? "?")")
+            }
+        }
+    }
+
+    private func updateStatus(_ text: String, _ color: Color, detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(text).font(.caption.bold()).foregroundStyle(color)
+            Text(detail).font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 

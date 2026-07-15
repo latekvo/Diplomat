@@ -168,11 +168,14 @@ SPAWN AGENT (dispatches are the `📤/📥 mesh` rows in the activity feed). If 
 first target declines — gone, or out of tokens — the dispatch fails over to the
 next candidate by rank.
 
-The Linux applet grows a collapsible **topology column**: the live node graph
-(link states), per-node tier/token editors (editing a *remote* node forwards
-over the mesh, so one panel configures the whole fleet), and per-duty strategy
-+ token-awareness controls (gossiped last-writer-wins). The mesh node itself is
-stdlib-only Python — the MacBooks run it headless until a Swift port exists:
+Both front-ends grow a **Mesh screen** (the ⬡ button in the panel header, beside
+Settings): the live node graph (link states), per-node tier/token editors (editing
+a *remote* node forwards over the mesh, so one panel configures the whole fleet),
+and per-duty strategy + token-awareness controls (gossiped last-writer-wins). The
+mesh node itself is stdlib-only Python that runs on any OS — both the macOS app and
+the Linux applet drive that same node (a Swift node is future work), so enabling the
+mesh on macOS needs the source checkout on disk (`ARGENT_UTILS_SELF_REPO` if it
+isn't at the default `~/dev/argent-utils-applet`):
 
 ```bash
 cd linux
@@ -247,7 +250,8 @@ classes stay comments-only even with approvals enabled.
 
 ## Settings
 
-The header **⚙︎** button (next to ↻ and ⏻) swaps the panel to a settings screen:
+The header **⚙︎** button (next to ↻, the **⬡** mesh button, and ⏻) swaps the panel
+to a settings screen:
 
 - **GitHub username** - override the handle used by the "My …" tools, the wizards
   and the monitors. Blank = the `gh`-authenticated user (`viewer.login`), resolved
@@ -265,6 +269,13 @@ The header **⚙︎** button (next to ↻ and ⏻) swaps the panel to a settings
   (iTerm is the default when installed, Terminal the always-present fallback).
 - **Device allocator (MCP)** - install/uninstall the bundled allocator daemon +
   MCP server (see `device-allocator/`), with install and daemon status.
+- **Mesh (LAN P2P)** - opt into [Argent Mesh](#argent-mesh-experimental--lan-p2p-duty-coordination):
+  a toggle that starts/stops the local node (off by default), with live node/peer
+  status. The mesh itself is managed from the **⬡ Mesh screen**.
+- **Update** - pull the checkout, rebuild, and relaunch in place. Shows how many
+  commits behind upstream the checkout is; the button pulls (`--ff-only`), runs
+  `scripts/build-app.sh`, and reopens the rebuilt app (the newest-wins singleton
+  hands over). Needs the source checkout on disk (`ARGENT_UTILS_SELF_REPO`).
 
 All of it persists across launches (UserDefaults, `com.ignacy.argent-utils`).
 
