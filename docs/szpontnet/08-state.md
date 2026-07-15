@@ -48,9 +48,15 @@ If two machines start from a *copied* `node.json` they share an `id`. This is a
 misconfiguration: each ignores the other's beacon (a beacon whose `id` equals the
 local id is treated as self), so they never link, and a third node keyed by `id`
 flip-flops between them. A node **SHOULD** detect a beacon carrying its own `id`
-arriving from a **different host** (a non-loopback source address) and warn the
-operator, exactly once, rather than failing silently. Give each machine its own
-`node.json`.
+arriving from a **different machine** and warn the operator, exactly once, rather
+than failing silently. Give each machine its own `node.json`.
+
+> Detecting "a different machine" correctly requires care: a node's own
+> multicast/broadcast beacon **loops back**, and off the real interface its source
+> address is the machine's own **LAN IP**, not `127.0.0.1`. A node MUST therefore
+> compare the beacon's source against the set of *its own* addresses (loopback
+> **and** its real interface addresses) — not merely against loopback — or a lone
+> node on a real LAN will falsely warn about itself.
 
 ## `state.json` — the snapshot
 

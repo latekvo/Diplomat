@@ -44,6 +44,30 @@ _DOWN_RETENTION_SECS = 300.0
 _MAX_PEERS = 256
 
 
+def _own_addresses() -> set[str]:
+    """This machine's own IP addresses (loopback + LAN), so a node can tell its
+    own looped-back beacon from a genuine peer sharing its id. Best-effort; an
+    address we miss only risks a spurious one-time clone warning, never a
+    functional failure."""
+    addrs = {"127.0.0.1", "::1"}
+    try:
+        host = socket.gethostname()
+        for info in socket.getaddrinfo(host, None):
+            addrs.add(info[4][0])
+    except OSError:
+        pass
+    # The primary outbound IP — getaddrinfo(hostname) often misses the DHCP LAN
+    # address, but this UDP-connect trick resolves it without sending a packet.
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        addrs.add(s.getsockname()[0])
+        s.close()
+    except OSError:
+        pass
+    return addrs
+
+
 class Peer:
     """One known remote node: its gossiped info + the (single) live link."""
 
@@ -92,6 +116,9 @@ class MeshNode:
         # task mid-handshake (the asyncio create_task footgun).
         self._dial_tasks: set[asyncio.Task] = set()
         self._warned_id_clone = False
+        # This machine's own addresses, so a self-beacon looping back (source =
+        # loopback OR the real LAN IP) isn't mistaken for a cloned-id peer.
+        self._local_addrs = _own_addresses()
 
     # MARK: - identity / gossip source of truth
 
@@ -258,11 +285,14 @@ class MeshNode:
         if not peer_id:
             return
         if peer_id == self.local.id:
-            # A beacon carrying OUR id from another host means two machines
+            # A beacon carrying OUR id from a DIFFERENT machine means two machines
             # share a cloned node.json — they'd never link (each ignores the
-            # other's beacon) and a third node would flip-flop between them.
-            # Warn once so the collision is diagnosable instead of silent.
-            if host not in ("127.0.0.1", "::1") and not self._warned_id_clone:
+            # other's beacon) and a third node would flip-flop between them. Warn
+            # once so the collision is diagnosable instead of silent. But our own
+            # multicast/broadcast beacon loops back with the source set to one of
+            # THIS machine's own addresses (loopback OR its real LAN IP off the
+            # real interface), which is not a clone — suppress those.
+            if host not in self._local_addrs and not self._warned_id_clone:
                 self._warned_id_clone = True
                 activity.log("mesh", "warn",
                              f"Mesh: another host ({host}) advertises our node id — "
