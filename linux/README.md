@@ -54,6 +54,9 @@ Persist via `QSettings` (`~/.config/argent-utils/…`):
 - **Device allocator (MCP)** - install/uninstall the bundled allocator daemon +
   MCP server (drives the Node installer in `../device-allocator/`), with status.
 - **Spawn terminal** — which terminal SPAWN AGENT opens.
+- **Update** — fast-forward this checkout to the latest GitHub commit, rebuild
+  the `argent-core` binary, and relaunch the tray app in place (the fresh
+  instance replaces the running one, newest-wins).
 
 Override the agent's working directory with `ARGENT_UTILS_REPO` (default `~/dev/argent`).
 

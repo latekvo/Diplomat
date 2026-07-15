@@ -92,6 +92,8 @@ class Store(QObject):
     # Live-ish (a 2s poll drives it), so it fires far more often than `changed`;
     # the MeshView rebuilds in place from it, so the rebuild stays cheap.
     mesh_changed = Signal()
+    # Emitted when the self-update status/progress changes.
+    update_changed = Signal()
 
     _ORG = "argent-utils"
     _APP = "argent-utils"
@@ -114,6 +116,12 @@ class Store(QObject):
         # Live telemetry read from the shared ~/.argent files (activity feed + bans).
         self.audit_entries: list = []
         self.banned_authors: list = []
+
+        # Self-update progress for the Settings UPDATE section. None until the
+        # first check; then {"phase": "checking"|"idle"|"updating"|"restarting"
+        # |"error", ...} — "idle" carries the selfupdate.check() result,
+        # "updating" a human-readable "step", "error" the failure reason.
+        self.update_state: dict | None = None
 
         # Live mesh topology (state.json snapshot; None until a node has run here)
         # and the last control-edit error surfaced to the MeshView as a red line.
@@ -355,6 +363,58 @@ class Store(QObject):
             self.allocator_setup_done = True
             self.allocator_changed.emit()
             self.refresh_device_state()
+        threading.Thread(target=work, daemon=True).start()
+
+    # MARK: self-update
+
+    def refresh_update_status_async(self) -> None:
+        """Fetch origin and compare HEAD to upstream, off the UI thread."""
+        if (self.update_state or {}).get("phase") in ("checking", "updating", "restarting"):
+            return
+
+        def work() -> None:
+            from . import selfupdate
+
+            self.update_state = {"phase": "idle", **selfupdate.check()}
+            self.update_changed.emit()
+
+        self.update_state = {"phase": "checking"}
+        self.update_changed.emit()
+        threading.Thread(target=work, daemon=True).start()
+
+    def update_applet_async(self) -> None:
+        """Pull the checkout, rebuild argent-core, relaunch the applet.
+
+        The relaunched instance terminates this one (newest-wins singleton), so
+        a successful run ends in the "restarting" phase with this process about
+        to be replaced; only a failure leaves state to interact with.
+        """
+        if (self.update_state or {}).get("phase") in ("updating", "restarting"):
+            return
+
+        def work() -> None:
+            from . import selfupdate
+
+            def step(text: str) -> None:
+                self.update_state = {"phase": "updating", "step": text}
+                self.update_changed.emit()
+
+            try:
+                step("pulling from origin…")
+                commit = selfupdate.pull()
+                step(f"building argent-core at {commit}…")
+                selfupdate.build_core()
+                step("relaunching…")
+                selfupdate.relaunch()
+                self.update_state = {"phase": "restarting", "commit": commit}
+            except selfupdate.UpdateError as exc:
+                self.update_state = {"phase": "error", "error": str(exc)}
+            self.update_changed.emit()
+
+        # Claim the phase before the thread runs so a double-click can't
+        # start two updates.
+        self.update_state = {"phase": "updating", "step": "starting…"}
+        self.update_changed.emit()
         threading.Thread(target=work, daemon=True).start()
 
     # MARK: mesh (LAN P2P topology)

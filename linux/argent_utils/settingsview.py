@@ -50,13 +50,17 @@ class SettingsView(QWidget):
         root.addLayout(self._terminal_section())
         root.addLayout(self._allocator_section())
         root.addLayout(self._mesh_section())
+        root.addLayout(self._update_section())
         root.addStretch(1)
 
         store.allocator_changed.connect(self._refresh_allocator_ui)
         store.mesh_changed.connect(self._refresh_mesh_ui)
+        store.update_changed.connect(self._refresh_update_ui)
         self._refresh_allocator_ui()
         self._refresh_mesh_ui()
+        self._refresh_update_ui()
         store.refresh_allocator_install_async()
+        store.refresh_update_status_async()
         if store.mesh_enabled:
             # Only touch the mesh state file when the user actually uses the mesh;
             # otherwise this is a needless real-HOME read on every Settings open
@@ -308,6 +312,93 @@ class SettingsView(QWidget):
             self._mesh_status.setStyleSheet(
                 "font-weight: 700; font-size: 11px; color: #FF9500;"
             )
+
+    # MARK: applet update
+
+    def _update_section(self) -> QVBoxLayout:
+        col = QVBoxLayout()
+        col.setSpacing(6)
+        col.addWidget(_section_label("UPDATE"))
+
+        self._update_status = QLabel("Checking…")
+        self._update_status.setStyleSheet("font-weight: 700; font-size: 11px;")
+        col.addWidget(self._update_status)
+
+        self._update_detail = QLabel("comparing with origin…")
+        self._update_detail.setWordWrap(True)
+        self._update_detail.setStyleSheet(
+            "color: palette(mid); font-family: monospace; font-size: 9px;"
+        )
+        col.addWidget(self._update_detail)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+        self._update_btn = QPushButton("Update")
+        self._update_btn.setStyleSheet("font-weight: 700;")
+        self._update_btn.setEnabled(False)
+        self._update_btn.clicked.connect(self.store.update_applet_async)
+        btn_row.addWidget(self._update_btn)
+        recheck = QPushButton("⟲")
+        recheck.setFixedWidth(34)
+        recheck.setToolTip("Re-check for updates")
+        recheck.clicked.connect(self.store.refresh_update_status_async)
+        btn_row.addWidget(recheck)
+        btn_row.addStretch(1)
+        col.addLayout(btn_row)
+
+        hint = QLabel(
+            "Pulls the latest applet from GitHub, rebuilds the argent-core "
+            "prompt engine, and relaunches the tray app in place."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: palette(mid); font-size: 10px;")
+        col.addWidget(hint)
+        return col
+
+    def _refresh_update_ui(self) -> None:
+        s = self.store.update_state or {"phase": "checking"}
+        phase = s.get("phase")
+
+        def status(text: str, color: str | None = None) -> None:
+            suffix = f" color: {color};" if color else ""
+            self._update_status.setText(text)
+            self._update_status.setStyleSheet(
+                f"font-weight: 700; font-size: 11px;{suffix}"
+            )
+
+        if phase == "checking":
+            status("Checking…")
+            self._update_detail.setText("comparing with origin…")
+            self._update_btn.setEnabled(False)
+        elif phase == "updating":
+            status("Updating…", "#FF9500")
+            self._update_detail.setText(s.get("step") or "")
+            self._update_btn.setEnabled(False)
+        elif phase == "restarting":
+            status("Restarting…", "#34C759")
+            self._update_detail.setText(
+                f"relaunched at {s.get('commit')} — this instance is handing over"
+            )
+            self._update_btn.setEnabled(False)
+        elif phase == "error":
+            status("Update failed", "#FF3B30")
+            self._update_detail.setText(s.get("error") or "unknown error")
+            self._update_btn.setEnabled(True)
+        elif s.get("error"):
+            status("Check failed", "#FF9500")
+            self._update_detail.setText(s["error"])
+            self._update_btn.setEnabled(True)
+        else:
+            behind = s.get("behind") or 0
+            if behind:
+                plural = "" if behind == 1 else "s"
+                status(f"Update available · {behind} commit{plural} behind", "#0A84FF")
+            else:
+                status("Up to date")
+            self._update_detail.setText(
+                f"{s.get('commit')} on {s.get('branch')} · upstream {s.get('upstream')}"
+            )
+            self._update_btn.setEnabled(True)
 
     # MARK: terminal
 
