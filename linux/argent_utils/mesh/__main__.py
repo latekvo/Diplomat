@@ -5,9 +5,12 @@
     python -m argent_utils.mesh --status         # print the live topology
     python -m argent_utils.mesh --stop           # stop the running node
     python -m argent_utils.mesh --set tokens=out tier=2 name=mbp-old
+    python -m argent_utils.mesh --set owner=me plan=max-20x            # trust + account
+    python -m argent_utils.mesh --set quotaLeft=12 usage=1            # inject accounting
     python -m argent_utils.mesh --set tokens=ok --node <peer-id>   # edit a REMOTE node
-    python -m argent_utils.mesh --dispatch audit --prompt "…"      # route a job
+    python -m argent_utils.mesh --dispatch audit --prompt "…"      # route a request
     python -m argent_utils.mesh --dispatch review --prompt-file /tmp/p.txt
+    python -m argent_utils.mesh --dispatch review --prompt "…" --target <node-id>
 """
 
 from __future__ import annotations
@@ -70,13 +73,22 @@ def _print_status() -> int:
             return 1
         running = statefile.node_running(state)
         print(f"node not answering; last snapshot ({'live pid' if running else 'DEAD'}):")
+    def _acct(info: dict) -> str:
+        st = info.get("stats") or {}
+        if not st:
+            return ""
+        surplus = round(float(st.get("quotaLeft", 0)) - float(st.get("usageAvg", 0)), 2)
+        return f"  {st.get('plan', '?')}  surplus {surplus}"
+
     me = state.get("self", {})
     print(f"self  {me.get('name')}  {me.get('platform')}  tier {me.get('tier')}"
-          f"  tokens {me.get('tokens')}  :{state.get('tcpPort')}  id {me.get('id','')[:8]}")
+          f"  tokens {me.get('tokens')}{_acct(me)}"
+          f"  :{state.get('tcpPort')}  id {me.get('id','')[:8]}"
+          + (f"  owner {me.get('owner')}" if me.get('owner') else ""))
     for p in state.get("peers", []):
         print(f"peer  {p.get('name')}  {p.get('platform')}  tier {p.get('tier')}"
-              f"  tokens {p.get('tokens')}  link {p.get('link')}"
-              f"  {p.get('addr')}  id {p.get('id','')[:8]}")
+              f"  tokens {p.get('tokens')}{_acct(p)}  {p.get('trust', 'personal')}"
+              f"  link {p.get('link')}  {p.get('addr')}  id {p.get('id','')[:8]}")
     for duty, a in (state.get("assignments") or {}).items():
         names = []
         for nid in a.get("assigned", []):
@@ -102,6 +114,10 @@ def _parse_attrs(pairs: list[str]) -> dict:
             attrs["tokens"] = value
         elif key == "name":
             attrs["name"] = value
+        elif key == "owner":  # trust domain: same owner = personal, else foreign
+            attrs["owner"] = value
+        elif key in ("plan", "quotaLeft", "usageAvg", "usage"):  # accounting (stats.py)
+            attrs[key] = value
         elif key.startswith("duty."):  # duty.audit=off disables a duty on the node
             attrs.setdefault("dutiesEnabled", {})[key[5:]] = value not in ("off", "0", "false")
         else:
@@ -120,9 +136,11 @@ def main(argv: list[str] | None = None) -> int:
                     help="edit node attrs: tier=N tokens=ok|low|out name=X duty.<id>=on|off")
     ap.add_argument("--node", default="self", metavar="ID",
                     help="target node id for --set (default: this machine)")
-    ap.add_argument("--dispatch", metavar="DUTY", help="route a job through the mesh")
+    ap.add_argument("--dispatch", metavar="DUTY", help="route a request through the mesh")
     ap.add_argument("--prompt", default="", help="inline prompt for --dispatch")
     ap.add_argument("--prompt-file", help="read the --dispatch prompt from a file")
+    ap.add_argument("--target", metavar="ID", help="dispatch to one node directly "
+                    "(the dispatcher's own pick, no failover)")
     args = ap.parse_args(argv)
 
     if args.daemon:
@@ -152,7 +170,7 @@ def main(argv: list[str] | None = None) -> int:
             if not prompt:
                 print("--dispatch needs --prompt or --prompt-file", file=sys.stderr)
                 return 2
-            results = ctl.dispatch(args.dispatch, prompt)
+            results = ctl.dispatch(args.dispatch, prompt, args.target)
             ok = all(r.get("status") == "spawned" for r in results)
             for r in results:
                 mark = "✓" if r.get("status") == "spawned" else "✗"

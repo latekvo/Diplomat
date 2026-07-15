@@ -27,6 +27,29 @@
     { "id": "out", "title": "out of tokens", "emoji": "🔴", "linuxGlyph": "○", "colorHex": "#FF3B30" }
   ],
 
+  "trust": {
+    "_comment": "How much a node trusts a PEER, decided from the peer's advertised 'owner' (a trust-domain id, e.g. the human who runs it). 'personal' = one of my own devices, same owner → a received SzpontRequest runs directly, as if I'd triggered it locally. 'foreign' = someone else's device → its requests are declined in v1 (the zero-trust path — running foreign compute but routing social actions like a PR submit back through a personal node — is future work). Unknown/absent owner defaults to 'personal' so a v1 mesh (no owners set) stays fully trusting, exactly as before.",
+    "levels": [
+      { "id": "personal", "title": "Personal (my device)", "linuxGlyph": "◈", "colorHex": "#34C759" },
+      { "id": "foreign", "title": "Foreign (other owner)", "linuxGlyph": "◇", "colorHex": "#8E8E93" }
+    ],
+    "default": "personal"
+  },
+
+  "accounts": {
+    "_comment": "Subscription plans and the accounting knobs behind per-node load balancing. A plan's 'weight' is its quota capacity RELATIVE to Pro (Max 5× → 5, Max 20× → 20); capacity units = weight × capacityPerWeight. Absolute token quotas are intentionally NOT hard-coded — Anthropic's limits are dynamic rolling windows — so surplus is compared in these relative units. usageAvg is an exponential rolling average of consumption with a ~21-day time constant; quotaLeft is remaining capacity in the current window. A node's dispatch surplus = quotaLeft − usageAvg (see dispatchStrategy).",
+    "plans": [
+      { "id": "pro", "title": "Claude Pro", "weight": 1 },
+      { "id": "max-5x", "title": "Claude Max 5×", "weight": 5 },
+      { "id": "max-20x", "title": "Claude Max 20×", "weight": 20 }
+    ],
+    "defaultPlan": "max-5x",
+    "capacityPerWeight": 1.0,
+    "jobCostUnits": 1.0,
+    "quotaWindowDays": 7.0,
+    "usageTimeConstantDays": 21.0
+  },
+
   "tiers": {
     "_comment": "Machine strength, 1 = strongest. 'weakest-first' keeps the strong machine free for interactive work by routing grunt jobs to the weakest eligible node.",
     "min": 1,
@@ -49,9 +72,17 @@
       "id": "local-first",
       "title": "Local first",
       "detail": "run on the dispatching machine when eligible, else weakest-first"
+    },
+    {
+      "id": "surplus-first",
+      "title": "Most surplus first",
+      "detail": "route to the node with the most spare quota (quotaLeft − usageAvg), account-type aware; ties fall back to weakest-first"
     }
   ],
   "defaultStrategy": "weakest-first",
+
+  "_dispatchStrategyComment": "The ranking a DISPATCHER uses to pick a target when it dispatches a SzpontRequest — the load-balancing decision, made unilaterally by the dispatching node from its own gossiped view (no consensus). Separate from a duty's placement 'strategy', which drives the stable displayed ownership. Defaults to surplus-first so requests flow to whoever has the most spare quota.",
+  "dispatchStrategy": "surplus-first",
 
   "duties": [
     {

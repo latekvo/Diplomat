@@ -12,7 +12,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from argent_utils.mesh import assign, config, identity, protocol  # noqa: E402
+from argent_utils.mesh import assign, config, identity, protocol, stats  # noqa: E402
 from argent_utils.mesh.config import Placement, PlacementOverrides  # noqa: E402
 from argent_utils.mesh.protocol import NodeInfo  # noqa: E402
 
@@ -219,6 +219,157 @@ def test_apply_attrs_clamps_and_ignores_junk(tmp_path, monkeypatch):
                                  "dutiesEnabled": {"audit": False}, "junk": 1})
     assert n.tier == lo and n.tokens == "out" and n.name == "box"
     assert not n.duty_enabled("audit") and n.duty_enabled("review")
+
+
+# MARK: trust levels (personal vs foreign)
+
+
+def test_trust_classification():
+    # Same owner = my own device; different owner = someone else's.
+    assert identity.trust_of("alice", "alice") == "personal"
+    assert identity.trust_of("bob", "alice") == "foreign"
+    # Either side unset ⇒ can't decide ⇒ personal (v1 full-trust default): a
+    # mesh with no owners configured behaves exactly as before.
+    assert identity.trust_of("", "alice") == "personal"
+    assert identity.trust_of("bob", "") == "personal"
+    assert identity.trust_of("", "") == "personal"
+
+
+def test_owner_persists_and_applies(tmp_path, monkeypatch):
+    monkeypatch.setenv("ARGENT_MESH_DIR", str(tmp_path))
+    n = identity.load()
+    assert n.owner == ""  # unset by default → fully trusting
+    n = identity.apply_attrs(n, {"owner": "  my-fleet  "})
+    assert n.owner == "my-fleet"  # trimmed
+    assert "owner" in n.to_dict()
+    # An empty owner is omitted from node.json so v1 files stay unchanged.
+    assert "owner" not in identity.apply_attrs(n, {"owner": ""}).to_dict() or \
+        identity.apply_attrs(n, {"owner": ""}).owner == ""
+
+
+# MARK: per-node stats (usage EMA + quota) and account types
+
+
+def test_dispatch_strategy_and_plan_weights():
+    assert config.dispatch_strategy() == "surplus-first"
+    assert config.plan_weight("pro") == 1.0
+    assert config.plan_weight("max-5x") == 5.0
+    assert config.plan_weight("max-20x") == 20.0
+    assert config.plan_weight("nonexistent") == 1.0  # unknown → Pro-equivalent, safe
+
+
+def test_stats_ema_decays_over_time_constant(tmp_path, monkeypatch):
+    import math
+
+    monkeypatch.setenv("ARGENT_MESH_DIR", str(tmp_path))
+    now, day = 1_000_000.0, 86_400.0
+    st = stats.load(now=now)
+    assert st.plan  # a default plan (from the model)
+    st = stats.record(st, 3.0, now=now)
+    # usageAvg is the reservoir over the ~21-day time constant.
+    assert abs(st.usage_avg() - 3.0 / 21.0) < 1e-9
+    # After one time constant of idle, the average decays by 1/e.
+    aged = st.decayed(now + 21 * day)
+    assert abs(aged.usage_avg() - st.usage_avg() * math.exp(-1)) < 1e-9
+
+
+def test_stats_quota_is_account_type_aware_and_windowed(tmp_path, monkeypatch):
+    monkeypatch.setenv("ARGENT_MESH_DIR", str(tmp_path))
+    now, day = 1_000_000.0, 86_400.0
+    st = stats.load(now=now)
+    st = stats.apply_stat_attrs(st, {"plan": "max-20x"}, now=now)
+    assert st.capacity() == 20.0  # Max 20× has 4× the room of Max 5×
+    st = stats.record(st, 3.0, now=now)
+    assert abs(st.quota_left() - 17.0) < 1e-9
+    # The quota window (7 d default) rolls forward and resets what's been used.
+    rolled = st.decayed(now + 8 * day)
+    assert rolled.quota_used == 0.0 and rolled.quota_left() == 20.0
+
+
+def test_stats_apply_attrs_edits_and_surplus(tmp_path, monkeypatch):
+    monkeypatch.setenv("ARGENT_MESH_DIR", str(tmp_path))
+    now = 1_000_000.0
+    st = stats.apply_stat_attrs(stats.load(now=now),
+                                {"plan": "max-20x", "quotaLeft": 12.0, "usageAvg": 2.0},
+                                now=now)
+    assert st.plan == "max-20x"
+    assert abs(st.quota_left() - 12.0) < 1e-9
+    assert abs(st.usage_avg() - 2.0) < 1e-9
+    assert abs(st.surplus() - 10.0) < 1e-9  # quotaLeft − usageAvg
+    # A 'usage' delta books against the quota.
+    st2 = stats.apply_stat_attrs(st, {"usage": 1.0}, now=now)
+    assert st2.quota_left() < st.quota_left()
+    # quotaLeft can't exceed the plan capacity (set-too-high clamps).
+    st3 = stats.apply_stat_attrs(st, {"quotaLeft": 999.0}, now=now)
+    assert st3.quota_left() == st3.capacity() == 20.0
+
+
+def test_stats_persist_roundtrip(tmp_path, monkeypatch):
+    monkeypatch.setenv("ARGENT_MESH_DIR", str(tmp_path))
+    now = 1_000_000.0
+    st = stats.record(stats.load(now=now), 2.0, now=now)
+    stats.save(st)
+    again = stats.load(now=now)
+    assert again.plan == st.plan
+    assert abs(again.usage_avg() - st.usage_avg()) < 1e-9
+    assert abs(again.quota_left() - st.quota_left()) < 1e-9
+
+
+# MARK: surplus-first load balancing
+
+
+def _snode(id: str, plan: str = "max-5x", quota: float | None = None,
+           usage: float = 0.0, tier: int = 3, platform: str = "linux",
+           tokens: str = "ok") -> NodeInfo:
+    weight = {"pro": 1.0, "max-5x": 5.0, "max-20x": 20.0}[plan]
+    return NodeInfo(id=id, name=id, platform=platform, tier=tier, tokens=tokens,
+                    stats={"plan": plan, "quotaLeft": weight if quota is None else quota,
+                           "usageAvg": usage})
+
+
+def test_nodeinfo_owner_and_stats_roundtrip():
+    n = NodeInfo(id="a", name="a", platform="linux", tier=3, tokens="ok",
+                 owner="alice",
+                 stats={"plan": "max-20x", "quotaLeft": 18.0, "usageAvg": 2.0})
+    d = n.to_dict()
+    assert d["owner"] == "alice" and d["stats"]["plan"] == "max-20x"
+    assert NodeInfo.from_dict(d) == n
+    assert abs(NodeInfo.from_dict(d).surplus() - 16.0) < 1e-9
+    # A bare node omits the additive fields entirely (v1 wire-compat) and still
+    # roundtrips; its surplus is a neutral 0.
+    bare = NodeInfo(id="b", name="b", platform="linux", tier=3, tokens="ok")
+    bd = bare.to_dict()
+    assert "owner" not in bd and "stats" not in bd
+    assert NodeInfo.from_dict(bd) == bare and bare.surplus() == 0.0
+
+
+def test_surplus_first_ranks_by_spare_quota():
+    a = _snode("a", "max-5x", quota=4.0, usage=1.0)    # surplus 3
+    b = _snode("b", "max-20x", quota=18.0, usage=2.0)  # surplus 16
+    c = _snode("c", "max-5x", quota=5.0, usage=4.5)    # surplus 0.5
+    # Through the public assign path (an override naming the strategy)…
+    o = PlacementOverrides().with_duty("review", Placement("surplus-first", True), by="x")
+    assert assign.assign_duty("review", [a, b, c], o).assigned == ("b",)
+    # …and through the dispatch-time ranking override.
+    slots = assign.slot_candidates("review", [a, b, c], strategy="surplus-first")
+    assert slots == [("any", ["b", "a", "c"])]
+
+
+def test_surplus_first_is_account_type_aware():
+    # Two idle nodes: the bigger plan has more room, so it wins.
+    big = _snode("big", "max-20x")
+    small = _snode("small", "max-5x")
+    slots = assign.slot_candidates("review", [small, big], strategy="surplus-first")
+    assert slots[0][1][0] == "big"
+
+
+def test_surplus_first_neutral_stats_fall_back_to_weakest_first():
+    # No stats advertised ⇒ surplus 0 for all ⇒ ranking degrades to weakest-first
+    # (highest tier number), preserving today's behavior for v1 nodes.
+    hi = NodeInfo(id="hi", name="hi", platform="linux", tier=1, tokens="ok")
+    lo = NodeInfo(id="lo", name="lo", platform="linux", tier=4, tokens="ok")
+    slots = assign.slot_candidates("review", [hi, lo], strategy="surplus-first")
+    assert slots == [("any", ["lo", "hi"])]
 
 
 if __name__ == "__main__":  # dependency-free smoke run

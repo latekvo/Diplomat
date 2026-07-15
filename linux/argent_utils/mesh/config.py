@@ -76,6 +76,45 @@ def secret() -> str:
     return os.environ.get("ARGENT_MESH_SECRET", "")
 
 
+def trust_default() -> str:
+    """The trust level assumed when it can't be decided (either side's owner is
+    unset) — ``personal`` by default, so an owner-less mesh stays fully trusting."""
+    return str(core.mesh().get("trust", {}).get("default", "personal"))
+
+
+def accounts() -> dict:
+    """The subscription-plan + accounting knobs (plan weights, capacity, quota
+    window, usage time-constant) behind per-node load balancing."""
+    return core.mesh().get("accounts", {})
+
+
+def plan_weight(plan_id: str) -> float:
+    """Quota capacity of a plan relative to Pro (Max 5× → 5, Max 20× → 20).
+    An unknown plan weighs 1.0 (Pro-equivalent) — safe, never an error."""
+    for p in accounts().get("plans", []):
+        if p.get("id") == plan_id:
+            try:
+                return float(p.get("weight", 1.0))
+            except (TypeError, ValueError):
+                return 1.0
+    return 1.0
+
+
+def job_cost_units() -> float:
+    """How much quota one spawned SzpontRequest books, in capacity units."""
+    try:
+        return float(accounts().get("jobCostUnits", 1.0))
+    except (TypeError, ValueError):
+        return 1.0
+
+
+def dispatch_strategy() -> str:
+    """The ranking a dispatcher uses to pick a target — the load-balancing
+    decision, made unilaterally from its own view (no consensus). Defaults to
+    surplus-first so requests flow to whoever has the most spare quota."""
+    return str(core.mesh().get("dispatchStrategy", "surplus-first"))
+
+
 def duty_ids() -> list[str]:
     return [d["id"] for d in core.mesh()["duties"]]
 

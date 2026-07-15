@@ -17,6 +17,10 @@ Strategies (ranking among eligible nodes):
 - ``weakest-first``    highest tier number first (tier 1 = strongest machine)
 - ``strongest-first``  lowest tier number first
 - ``local-first``      the given local node first, the rest weakest-first
+- ``surplus-first``    most spare quota first (``quotaLeft − usageAvg``,
+  account-type aware); ties fall back to weakest-first. This is the load
+  balancer: dispatchers rank targets by it (see ``config.dispatch_strategy``),
+  while the displayed duty ownership keeps its stable per-duty strategy.
 """
 
 from __future__ import annotations
@@ -67,6 +71,11 @@ def _ranked(nodes: list[NodeInfo], strategy: str, local_id: str) -> list[NodeInf
             return (tok, n.tier, n.id)
         if strategy == "local-first":
             return (tok, n.id != local_id, -n.tier, n.id)
+        if strategy == "surplus-first":
+            # Most spare quota first. Surplus leads; token rank then tier break
+            # ties (and make neutral-stats nodes fall back to weakest-first).
+            # Round so tiny float noise can't reorder otherwise-equal nodes.
+            return (round(-n.surplus(), 6), tok, -n.tier, n.id)
         # weakest-first (and any unknown strategy from a newer peer)
         return (tok, -n.tier, n.id)
 
@@ -130,6 +139,7 @@ def slot_candidates(
     nodes: list[NodeInfo],
     overrides: PlacementOverrides | None = None,
     local_id: str = "",
+    strategy: str | None = None,
 ) -> list[tuple[str, list[str]]]:
     """Per-slot failover lists for executing a dispatch.
 
@@ -138,9 +148,15 @@ def slot_candidates(
     target falls over to the next machine *of the required platform*. The
     executor is responsible for not landing two slots on one node. A no-spread
     duty is a single ``("any", ranked)`` slot.
+
+    ``strategy`` overrides only the *ranking* (not eligibility or spread) — the
+    dispatcher passes ``config.dispatch_strategy()`` here so target selection is
+    the load-balancing decision (surplus-first by default), independent of the
+    duty's displayed placement strategy.
     """
     placement = config.placement_for(duty_id, overrides)
-    pool = _ranked(_eligible(nodes, duty_id, placement), placement.strategy, local_id)
+    rank_strategy = strategy or placement.strategy
+    pool = _ranked(_eligible(nodes, duty_id, placement), rank_strategy, local_id)
     if not placement.spread:
         return [("any", [n.id for n in pool])]
     slots: list[tuple[str, list[str]]] = []

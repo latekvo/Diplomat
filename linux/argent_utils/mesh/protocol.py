@@ -15,7 +15,7 @@ Message types (``t``):
 - ``overrides`` (TCP)  gossiped LWW placement overrides
 - ``set-attr``  (TCP)  edit a node's local attrs (from a peer's panel or the CLI)
 - ``dispatch``  (TCP)  run a job on the receiving node
-- ``job-status``(TCP)  dispatch outcome: ``spawned`` | ``failed`` (+ reason)
+- ``job-status``(TCP)  dispatch outcome: ``spawned`` | ``declined`` | ``failed`` (+ reason)
 - ``status``    (TCP)  ctl request: reply with one ``state`` message (the snapshot)
 """
 
@@ -47,10 +47,19 @@ class NodeInfo:
     seq: int = 0  # per-node update counter; receivers keep the highest
     sees: tuple[str, ...] = ()  # peer ids this node currently holds links to
     duties_enabled: dict = field(default_factory=dict)
+    # Trust domain: a stable id for whoever OWNS this node (the human/fleet). A
+    # peer sharing our owner is "personal" (its requests run directly); a
+    # different owner is "foreign". Empty = unset → treated as personal, so a v1
+    # mesh with no owners configured stays fully trusting (see identity.trust_of).
+    owner: str = ""
+    # Load-balancing accounting, additive: {"plan", "usageAvg", "quotaLeft"}.
+    # Empty when a node advertises no stats — its dispatch surplus is then 0
+    # (neutral), so surplus-first ranking degrades to weakest-first. See stats.py.
+    stats: dict = field(default_factory=dict)
     version: int = PROTOCOL_VERSION
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "id": self.id,
             "name": self.name,
             "platform": self.platform,
@@ -63,6 +72,13 @@ class NodeInfo:
             "dutiesEnabled": self.duties_enabled,
             "v": self.version,
         }
+        # Omit the additive fields when empty so v1 advertisements stay
+        # byte-identical to before (and interop traces don't churn).
+        if self.owner:
+            d["owner"] = self.owner
+        if self.stats:
+            d["stats"] = self.stats
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "NodeInfo | None":
@@ -78,10 +94,24 @@ class NodeInfo:
                 seq=int(d.get("seq", 0)),
                 sees=tuple(str(s) for s in d.get("sees", [])),
                 duties_enabled=dict(d.get("dutiesEnabled", {})),
+                owner=str(d.get("owner", "")),
+                stats=dict(d.get("stats", {})) if isinstance(d.get("stats"), dict) else {},
                 version=int(d.get("v", PROTOCOL_VERSION)),
             )
         except (KeyError, TypeError, ValueError):
             return None
+
+    def surplus(self) -> float:
+        """Spare quota this node advertises for load balancing:
+        ``quotaLeft − usageAvg`` in plan-relative capacity units. 0.0 when the
+        node advertises no stats (neutral — ranks like today's weakest-first)."""
+        if not self.stats:
+            return 0.0
+        try:
+            return float(self.stats.get("quotaLeft", 0.0)) - float(
+                self.stats.get("usageAvg", 0.0))
+        except (TypeError, ValueError):
+            return 0.0
 
     def newer_than(self, other: "NodeInfo") -> bool:
         """Freshness for gossip merges: a new incarnation always wins, then the

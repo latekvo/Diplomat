@@ -32,7 +32,7 @@ import time
 import uuid
 
 from .. import activity
-from . import assign, config, identity, protocol, spawnjob, statefile
+from . import assign, config, identity, protocol, spawnjob, statefile, stats
 from .config import PlacementOverrides
 from .protocol import Job, NodeInfo
 
@@ -95,6 +95,7 @@ class MeshNode:
     def __init__(self) -> None:
         self.proto = config.protocol()
         self.local = identity.load()
+        self.stats = stats.load()  # per-node usage/quota accounting for load balancing
         self.platform = identity.detect_platform()
         self.epoch = time.time()
         self.tcp_port = 0  # bound in start()
@@ -135,6 +136,8 @@ class MeshNode:
             seq=self._seq,
             sees=tuple(sorted(pid for pid, p in self.peers.items() if p.linked)),
             duties_enabled=self.local.duties_enabled,
+            owner=self.local.owner,
+            stats=self.stats.advertise(),
         )
 
     def _alive_nodes(self) -> list[NodeInfo]:
@@ -580,10 +583,17 @@ class MeshNode:
         self._recompute("overrides edited")
 
     def apply_local_attrs(self, attrs: dict) -> None:
+        changed = False
         new = identity.apply_attrs(self.local, attrs)
         if new != self.local:
             self.local = new
             identity.save(new)
+            changed = True
+        if stats.touches_stats(attrs):  # plan / quotaLeft / usageAvg / usage edits
+            self.stats = stats.apply_stat_attrs(self.stats, attrs)
+            stats.save(self.stats)
+            changed = True
+        if changed:
             self._bump_and_gossip()
             self._recompute("attrs")
 
@@ -621,11 +631,26 @@ class MeshNode:
 
     # MARK: - dispatch
 
-    async def dispatch(self, duty_id: str, prompt: str) -> list[dict]:
-        """Run a job under a duty's placement: one spawn per slot, failing over
-        within each slot's candidate list. Returns one result dict per slot."""
+    async def dispatch(self, duty_id: str, prompt: str,
+                       target: str | None = None) -> list[dict]:
+        """Run a SzpontRequest under a duty's placement: one spawn per slot,
+        failing over within each slot's candidate list. Returns one result dict
+        per slot.
+
+        Target selection is the dispatcher's own load-balancing call (no
+        consensus): candidates are ranked ``surplus-first`` by default
+        (``config.dispatch_strategy``), so work flows to whoever has the most
+        spare quota. ``target`` overrides that entirely — the client names one
+        node and the request goes there with no failover; if that node declines
+        (foreign, over quota, …) the decline is reported as-is. This is the
+        "Alice may forward everything to Bob, and Bob may refuse" case.
+        """
         nodes = self._alive_nodes()
-        slots = assign.slot_candidates(duty_id, nodes, self.overrides, self.local.id)
+        if target is not None:
+            slots = [("target", [target])]
+        else:
+            slots = assign.slot_candidates(duty_id, nodes, self.overrides,
+                                           self.local.id, config.dispatch_strategy())
         used: set[str] = set()
         results: list[dict] = []
         for slot_platform, candidates in slots:
@@ -643,7 +668,7 @@ class MeshNode:
                     break
                 outcome = {"slot": slot_platform, "node": node_id,
                            "nodeName": self._node_name(node_id),
-                           "status": "failed", "reason": reason}
+                           "status": status, "reason": reason}
             results.append(outcome)
         detail = ", ".join(
             f"{r['slot']}→{r['nodeName'] or '∅'}({r['status']})" for r in results
@@ -657,7 +682,7 @@ class MeshNode:
         job = Job(id=uuid.uuid4().hex, duty=duty_id, prompt=prompt,
                   requested_by=self.local.id, requested_at=time.time())
         if node_id == self.local.id:
-            return self._spawn_local(job)
+            return self._run_local_request(job)
         peer = self.peers.get(node_id)
         if peer is None or not peer.linked:
             return "failed", "no link"
@@ -678,13 +703,62 @@ class MeshNode:
         if fut is not None and not fut.done():
             fut.set_result(msg)
 
+    def _trust_of(self, node_id: str) -> str:
+        """Personal (my own device) vs foreign (someone else's), from the
+        requester's advertised owner. The local node is always personal."""
+        if node_id == self.local.id:
+            return "personal"
+        peer = self.peers.get(node_id)
+        peer_owner = peer.info.owner if peer else ""
+        return identity.trust_of(peer_owner, self.local.owner)
+
+    def _admit(self, job: Job) -> tuple[bool, str]:
+        """Refusal policy — the receiving node's own call, no consensus needed.
+        A declined job fails the dispatcher's slot over exactly like a dead one.
+
+        v1 refuses when:
+        - the requester is **foreign** (a different owner). The zero-trust path
+          — run the compute here but route any social action back through a
+          personal node — is not built yet, so we decline rather than act on a
+          stranger's behalf.
+        - we have this duty **disabled** locally (opted out of the class of work).
+        - we are **out of tokens** (can't serve — this is Bob refusing the job
+          Alice sent anyway, which the protocol expressly allows).
+        """
+        if self._trust_of(job.requested_by) == "foreign":
+            return False, "foreign requester (zero-trust path not implemented)"
+        if not self.local.duty_enabled(job.duty):
+            return False, f"duty {job.duty} disabled here"
+        if self.local.tokens == "out":
+            return False, "out of tokens"
+        return True, ""
+
+    def _run_local_request(self, job: Job) -> tuple[str, str]:
+        """Admit-or-decline, then run locally. Shared by the remote-receive path
+        (``_take_job``) and a local/self dispatch, so both apply the same policy."""
+        admit, reason = self._admit(job)
+        if not admit:
+            activity.log("mesh", "mesh-dispatch-failed",
+                         f"Mesh: declined {job.duty} from "
+                         f"{self._node_name(job.requested_by)} — {reason}")
+            return "declined", reason
+        return self._spawn_local(job)
+
     def _take_job(self, job: Job, writer: asyncio.StreamWriter) -> None:
-        """A peer asked us to run a job. Spawn and answer with the outcome."""
-        status, reason = self._spawn_local(job)
+        """A peer asked us to run a SzpontRequest. Admit-or-decline, and either
+        way answer with the outcome so the dispatcher can act on it."""
+        status, out_reason = self._run_local_request(job)
         with contextlib.suppress(ConnectionError, OSError):
             writer.write(protocol.encode(
-                protocol.job_status(job.id, status, reason, self.local.id)
+                protocol.job_status(job.id, status, out_reason, self.local.id)
             ))
+
+    def _record_usage(self, units: float) -> None:
+        """Book quota against this node's accounting and re-advertise the fresher
+        surplus so the mesh's load balancing tracks real consumption."""
+        self.stats = stats.record(self.stats, units)
+        stats.save(self.stats)
+        self._bump_and_gossip()
 
     def _spawn_local(self, job: Job) -> tuple[str, str]:
         try:
@@ -692,6 +766,7 @@ class MeshNode:
         except spawnjob.JobSpawnError as exc:
             activity.log("mesh", "spawn-failed", f"Mesh job {job.duty} failed here: {exc}")
             return "failed", str(exc)
+        self._record_usage(config.job_cost_units())
         activity.log("mesh", "mesh-spawn",
                      f"Mesh: running {job.duty} (from {self._node_name(job.requested_by)})")
         return "spawned", ""
@@ -735,7 +810,9 @@ class MeshNode:
             duty = str(msg.get("duty", ""))
             if duty not in config.duty_ids():
                 return {"t": "error", "reason": f"unknown duty {duty!r}"}
-            results = await self.dispatch(duty, str(msg.get("prompt", "")))
+            target = msg.get("target")
+            target = str(target) if target else None
+            results = await self.dispatch(duty, str(msg.get("prompt", "")), target)
             return {"t": "dispatch-result", "duty": duty, "results": results}
         if t == "stop":
             self.request_stop()
@@ -753,6 +830,10 @@ class MeshNode:
             d["link"] = p.link_state(stale, timeout)
             d["addr"] = p.addr
             d["lastSeenSecsAgo"] = round(now - p.last_seen, 1)
+            # Decorate with this node's view of the peer: is it one of mine
+            # (personal) or someone else's (foreign), and its dispatch surplus.
+            d["trust"] = identity.trust_of(p.info.owner, self.local.owner)
+            d["surplus"] = round(p.info.surplus(), 3)
             peers.append(d)
         return {
             "tcpPort": self.tcp_port,
@@ -764,5 +845,8 @@ class MeshNode:
 
     async def _snapshot_loop(self) -> None:
         while True:
+            # Age the local accounting so the displayed usageAvg/quota decay even
+            # while idle (local only — no gossip churn; peers hear on real change).
+            self.stats = self.stats.decayed(time.time())
             statefile.write_state(self.snapshot())
             await asyncio.sleep(self.proto["stateWriteIntervalSecs"])

@@ -65,10 +65,15 @@ def set_overrides(duty: str, placement: dict, timeout: float = 5.0) -> None:
     request({"t": "set-overrides", "duty": duty, "placement": placement}, timeout=timeout)
 
 
-def dispatch(duty: str, prompt: str, timeout: float = 60.0) -> list[dict]:
-    """Route a job through the mesh; returns the per-slot outcomes. Generous
-    timeout: the node may walk several failover candidates."""
-    reply = request({"t": "dispatch", "duty": duty, "prompt": prompt}, timeout=timeout)
+def dispatch(duty: str, prompt: str, target: str | None = None,
+             timeout: float = 60.0) -> list[dict]:
+    """Route a SzpontRequest through the mesh; returns the per-slot outcomes.
+    Generous timeout: the node may walk several failover candidates. ``target``
+    names one node directly (the dispatcher's unilateral pick, no failover)."""
+    msg = {"t": "dispatch", "duty": duty, "prompt": prompt}
+    if target:
+        msg["target"] = target
+    reply = request(msg, timeout=timeout)
     return list(reply.get("results", []))
 
 

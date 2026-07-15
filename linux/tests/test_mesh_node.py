@@ -91,13 +91,16 @@ class Fleet:
         self.dirs: dict[str, Path] = {}
 
     def start(self, node_id: str, name: str, platform: str, tier: int,
-              tokens: str = "ok", secret: str = "") -> None:
+              tokens: str = "ok", secret: str = "", owner: str = "") -> None:
         d = self.root / node_id
         d.mkdir(parents=True, exist_ok=True)
-        (d / "node.json").write_text(json.dumps({
+        node_json = {
             "id": node_id, "name": name, "tier": tier,
             "tokens": tokens, "dutiesEnabled": {},
-        }))
+        }
+        if owner:
+            node_json["owner"] = owner  # trust domain: same owner = personal
+        (d / "node.json").write_text(json.dumps(node_json))
         (self.root / "spawned").mkdir(exist_ok=True)
         env = dict(os.environ)
         env.update(_proto_env())
@@ -376,6 +379,79 @@ def test_outbound_dial_fence_rejects_naked_dispatch(fleet, tmp_path):
         stop.set()
         beacon.close()
         listen.close()
+
+
+def test_foreign_requester_is_declined_personal_is_run(fleet):
+    """Trust routing over real links: a request from a FOREIGN node (different
+    owner) is declined; once the two share an owner (personal), it runs. The
+    decision is the executor's, made from the requester's advertised owner."""
+    fleet.start("aaaa", "alice", "linux", tier=4, owner="alice")
+    fleet.start("bbbb", "bob", "macos", tier=1, owner="bob")
+    for nid in ("aaaa", "bbbb"):
+        _wait_for(lambda nid=nid: _links_up(fleet.state(nid), 1), what=f"{nid} link")
+    spawned = fleet.root / "spawned"
+
+    # Foreign: alice targets bob directly, but bob (owner=bob) sees a stranger.
+    r = fleet.cli("aaaa", "--dispatch", "review", "--prompt", "foreign",
+                  "--target", "bbbb")
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "declined" in r.stdout, r.stdout
+    time.sleep(0.5)
+    assert not (spawned / "bob.txt").exists()
+
+    # Make bob one of alice's own devices (remote edit from alice), then retry.
+    assert fleet.cli("aaaa", "--set", "owner=alice", "--node", "bbbb").returncode == 0
+    _wait_for(lambda: fleet.state("bbbb").get("self", {}).get("owner") == "alice",
+              what="bob to adopt owner=alice")
+    r = fleet.cli("aaaa", "--dispatch", "review", "--prompt", "personal",
+                  "--target", "bbbb")
+    assert r.returncode == 0, r.stdout + r.stderr
+    _wait_file(spawned / "bob.txt", "personal")
+
+
+def test_out_of_tokens_node_refuses_even_a_direct_target(fleet):
+    """Refusals are first-class: a dispatcher may forward to whoever it likes,
+    and the receiver may refuse. Bob is out of tokens and declines the request
+    Alice sends him anyway (both owner-less → personal, so trust isn't the gate)."""
+    fleet.start("aaaa", "alice", "linux", tier=4)
+    fleet.start("bbbb", "bob", "macos", tier=1, tokens="out")
+    for nid in ("aaaa", "bbbb"):
+        _wait_for(lambda nid=nid: _links_up(fleet.state(nid), 1), what=f"{nid} link")
+    r = fleet.cli("aaaa", "--dispatch", "review", "--prompt", "x", "--target", "bbbb")
+    assert r.returncode == 1 and "declined" in r.stdout, r.stdout + r.stderr
+    time.sleep(0.5)
+    assert not (fleet.root / "spawned" / "bob.txt").exists()
+
+
+def test_surplus_first_dispatch_picks_the_node_with_most_spare_quota(fleet):
+    """Load balancing over real gossip: with no explicit target, the dispatcher
+    ranks candidates surplus-first, so a request lands on whoever advertises the
+    most spare quota — here the Max-20× machine, not the local or weakest node."""
+    fleet.start("aaaa", "lin", "linux", tier=4)
+    fleet.start("bbbb", "mac-big", "macos", tier=1)
+    fleet.start("cccc", "mac-small", "macos", tier=4)
+    for nid in ("aaaa", "bbbb", "cccc"):
+        _wait_for(lambda nid=nid: _links_up(fleet.state(nid), 2),
+                  what=f"{nid} to link 2 peers")
+
+    # Give mac-big the fattest account + full quota (one set: plan applies before
+    # quotaLeft, so the 20 isn't clamped to the old 5x capacity).
+    assert fleet.cli("aaaa", "--set", "plan=max-20x", "quotaLeft=20",
+                     "--node", "bbbb").returncode == 0
+    _wait_for(
+        lambda: next((p for p in fleet.state("aaaa").get("peers", [])
+                      if p["id"] == "bbbb"), {}).get("stats", {}).get("plan") == "max-20x",
+        what="mac-big's stats to gossip to the dispatcher",
+    )
+
+    r = fleet.cli("aaaa", "--dispatch", "review", "--prompt", "balance")
+    assert r.returncode == 0, r.stdout + r.stderr
+    spawned = fleet.root / "spawned"
+    _wait_file(spawned / "mac-big.txt", "balance")
+    # Surplus-first ignores locality and tier: neither the dispatcher nor the
+    # weak mac (both max-5x, surplus 5) should have run it.
+    assert not (spawned / "lin.txt").exists()
+    assert not (spawned / "mac-small.txt").exists()
 
 
 def test_node_restart_is_a_new_incarnation(fleet):
