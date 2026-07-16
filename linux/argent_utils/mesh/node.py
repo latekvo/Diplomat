@@ -43,6 +43,11 @@ from .protocol import Job, NodeInfo
 # How long a dead peer stays in the snapshot (link "down") before it's dropped.
 _DOWN_RETENTION_SECS = 300.0
 
+# How often the node re-measures real token usage from the local logs. The budget
+# doesn't move second-to-second, and scanning ~/.claude costs real file I/O, so this
+# is decoupled from the (fast) snapshot cadence rather than run every write.
+_TOKEN_REFRESH_SECS = 30.0
+
 # A sane home/office LAN has a handful of machines; this only bounds a beacon
 # flood of spoofed ids from ballooning the peers table + snapshot, not real use.
 _MAX_PEERS = 256
@@ -113,10 +118,12 @@ class MeshNode:
         self._trusted = trust.load()  # local allowlist of trusted fingerprints
         self.platform = identity.detect_platform()
         self.epoch = time.time()
-        # Cached automatic token-budget read (refreshed on the snapshot tick, so the
-        # hot `info` path never touches the filesystem). See _refresh_tokens.
+        # Cached automatic token-budget read (refreshed on a throttle, so neither the
+        # hot `info` path nor the 2s snapshot tick touches the filesystem). See
+        # _refresh_tokens / _TOKEN_REFRESH_SECS.
         self._token_state = "ok"
         self._token_frac = 1.0
+        self._last_token_refresh = 0.0  # monotonic; 0 => refresh on the first tick
         self.tcp_port = 0  # bound in start()
         self.peers: dict[str, Peer] = {}
         self.overrides = PlacementOverrides()
@@ -220,6 +227,7 @@ class MeshNode:
             loop.create_task(self._snapshot_loop(), name="mesh-snapshot"),
         ]
         self._refresh_tokens()  # seed the auto token state before the first advert
+        self._last_token_refresh = time.monotonic()
         self._recompute("start")
         activity.log("mesh", "mesh-up",
                      f"Mesh node up: {self.local.name} ({self.platform}) :{self.tcp_port}")
@@ -982,10 +990,13 @@ class MeshNode:
             # Age the local accounting so the displayed usageAvg/quota decay even
             # while idle (local only — no gossip churn; peers hear on real change).
             self.stats = self.stats.decayed(time.time())
-            # Re-read real usage; if the auto token state flipped (e.g. we crossed
-            # into 'low'), tell peers so their load balancing routes accordingly.
-            if self._refresh_tokens():
-                self._bump_and_gossip()
-                self._recompute("token state")
+            # Re-read real usage on a throttle (not every 2s write); if the auto token
+            # state flipped (e.g. we crossed into 'low'), tell peers so their load
+            # balancing routes accordingly.
+            if time.monotonic() - self._last_token_refresh >= _TOKEN_REFRESH_SECS:
+                self._last_token_refresh = time.monotonic()
+                if self._refresh_tokens():
+                    self._bump_and_gossip()
+                    self._recompute("token state")
             statefile.write_state(self.snapshot())
             await asyncio.sleep(self.proto["stateWriteIntervalSecs"])
