@@ -625,6 +625,83 @@ def test_reapable_covers_downed_and_gossip_only_phantoms(tmp_path, monkeypatch):
     assert node._reapable(peer, now + node_mod._DOWN_RETENTION_SECS + 1)
 
 
+# MARK: - authenticated gossip (self-signed adverts + overrides)
+
+
+def _mk_key():
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    return crypto.DeviceKey(Ed25519PrivateKey.generate())
+
+
+def _signed_advert(key, node_id: str, seq: int = 1, **fields) -> dict:
+    info = NodeInfo(id=node_id, name="p", platform="linux", tier=3, tokens="ok",
+                    epoch=1.0, seq=seq, pubkey=key.public_b64, **fields)
+    d = info.to_dict()
+    d["sig"] = key.sign(protocol.advert_signing_bytes(d))
+    return d
+
+
+def test_advert_signature_rejects_forgery_and_tamper(tmp_path, monkeypatch):
+    if not crypto.AVAILABLE:  # dependency-free run without `cryptography`
+        return
+    node = _fresh_node(tmp_path, monkeypatch)
+    k = _mk_key()
+    assert node._advert_authentic(_signed_advert(k, "peerX"))            # valid self-signature
+    # A keyless advert has nothing to verify — accepted (stays unauthenticated).
+    assert node._advert_authentic(
+        NodeInfo(id="peerY", name="p", platform="linux", tier=3, tokens="ok").to_dict())
+    # Keyed but unsigned → rejected.
+    unsigned = _signed_advert(k, "peerX")
+    del unsigned["sig"]
+    assert not node._advert_authentic(unsigned)
+    # Tampered after signing (a field changed in relay) → rejected.
+    tampered = _signed_advert(k, "peerX")
+    tampered["tier"] = 1
+    assert not node._advert_authentic(tampered)
+    # Signed by a DIFFERENT key than the advertised pubkey → rejected.
+    forged = _signed_advert(k, "peerX")
+    forged["pubkey"] = _mk_key().public_b64
+    assert not node._advert_authentic(forged)
+
+
+def test_gossip_cannot_hijack_a_pinned_node_id(tmp_path, monkeypatch):
+    if not crypto.AVAILABLE:
+        return
+    node = _fresh_node(tmp_path, monkeypatch)
+    k = _mk_key()
+    a1 = _signed_advert(k, "peerX", seq=1)
+    node._learn_node(NodeInfo.from_dict(a1), "1.2.3.4", None, raw=a1)  # pin peerX → key k
+    assert node.peers["peerX"].info.pubkey == k.public_b64
+    # A third party self-signs an advert for peerX with ITS OWN key and a higher seq.
+    # The signature is valid (self-consistent), so the PIN is what must reject it.
+    a2 = _signed_advert(_mk_key(), "peerX", seq=999)
+    assert node._advert_authentic(a2)
+    node._learn_node(NodeInfo.from_dict(a2), "9.9.9.9", None, raw=a2)
+    assert node.peers["peerX"].info.pubkey == k.public_b64  # unchanged — id hijack blocked
+
+
+def test_overrides_signature_required_from_a_known_editor(tmp_path, monkeypatch):
+    if not crypto.AVAILABLE:
+        return
+    node = _fresh_node(tmp_path, monkeypatch)
+    k = _mk_key()
+    ed = _signed_advert(k, "editor", seq=1)
+    node._learn_node(NodeInfo.from_dict(ed), "1.2.3.4", None, raw=ed)  # pin editor's key
+    ov = {"rev": 5, "updatedBy": "editor",
+          "duties": {"review": {"strategy": "strongest-first", "tokenAware": True, "spread": []}}}
+    assert not node._overrides_authentic(ov)  # unsigned, but editor key known → required
+    signed = dict(ov)
+    signed["sig"] = k.sign(protocol.overrides_signing_bytes(ov))
+    assert node._overrides_authentic(signed)  # correctly signed by the editor
+    tampered = dict(signed)
+    tampered["rev"] = 99  # a relay bumps rev to win LWW → signature no longer covers it
+    assert not node._overrides_authentic(tampered)
+    # The default (rev 0) override needs no signature; an unknown/keyless editor can't
+    # be required to sign (legacy path).
+    assert node._overrides_authentic({"rev": 0, "updatedBy": "", "duties": {}})
+    assert node._overrides_authentic({"rev": 3, "updatedBy": "stranger", "duties": {}})
+
+
 if __name__ == "__main__":  # dependency-free smoke run
     import inspect
     import tempfile

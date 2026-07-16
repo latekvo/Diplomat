@@ -14,7 +14,7 @@ Layers, weakest to strongest:
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from .. import core
 
@@ -218,6 +218,10 @@ class PlacementOverrides:
     rev: int = 0
     updated_by: str = ""
     duties: dict = field(default_factory=dict)
+    # Base64 Ed25519 signature by the ``updated_by`` node over this override's
+    # canonical form, so a relay can't forge or tamper with a mesh-wide placement
+    # edit. Empty for a legacy/keyless editor (then unauthenticated). See node.py.
+    sig: str = ""
 
     @classmethod
     def from_dict(cls, d: dict | None) -> "PlacementOverrides":
@@ -226,10 +230,14 @@ class PlacementOverrides:
             rev=int(d.get("rev", 0)),
             updated_by=str(d.get("updatedBy", "")),
             duties=dict(d.get("duties", {})),
+            sig=str(d.get("sig", "")),
         )
 
     def to_dict(self) -> dict:
-        return {"rev": self.rev, "updatedBy": self.updated_by, "duties": self.duties}
+        d = {"rev": self.rev, "updatedBy": self.updated_by, "duties": self.duties}
+        if self.sig:
+            d["sig"] = self.sig
+        return d
 
     def wins_over(self, other: "PlacementOverrides") -> bool:
         return (self.rev, self.updated_by) > (other.rev, other.updated_by)
@@ -238,6 +246,9 @@ class PlacementOverrides:
         duties = dict(self.duties)
         duties[duty_id] = placement.to_dict()
         return PlacementOverrides(rev=self.rev + 1, updated_by=by, duties=duties)
+
+    def signed(self, sig: str) -> "PlacementOverrides":
+        return replace(self, sig=sig)
 
 
 def placement_for(duty_id: str, overrides: PlacementOverrides | None = None) -> Placement:

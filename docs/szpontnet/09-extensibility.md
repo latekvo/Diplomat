@@ -181,15 +181,17 @@ caps. No flag day, no `v` bump required for the common cases - exactly the
   declared side effects). So today a foreign request is refused outright, and any
   future revision that runs foreign compute MUST satisfy that contract before it
   does — the model forbids unsandboxed foreign code, it doesn't merely defer it.
-- **Transport encryption / confidentiality.** **Authenticated device identity has
-  landed**: each node holds a per-device [Ed25519 key](08-state.md#devicekey),
-  proves possession on every link (a signature over the peer's fresh hello nonce),
-  and trust is keyed on the resulting verified fingerprint - so identity
-  authentication for the trust boundary is now implemented. What remains future work
-  is **encrypting the link traffic** itself: mutual TLS or an encrypted transport for
-  confidentiality/integrity of the bytes on the wire. The
-  [join fence](03-transport.md#the-join-fence) is still a **plaintext gate** (a
-  shared-secret admission check, not a confidential channel).
+- **Transport encryption / confidentiality.** **Authentication has landed, both at
+  the link and across gossip.** Each node holds a per-device
+  [Ed25519 key](08-state.md#devicekey), proves possession on every link (a signature
+  over the peer's fresh hello nonce), and **signs every gossiped advertisement and
+  override** so a relay can neither forge nor tamper with another node's gossip
+  ([11 - authenticated gossip](11-trust-and-balancing.md#authenticated-gossip)) - so
+  identity and integrity are covered. What remains future work is **encrypting the
+  traffic** for *confidentiality*: mutual TLS or an encrypted transport for the bytes
+  on the wire. The [join fence](03-transport.md#the-join-fence) is still a **plaintext
+  gate** (a shared-secret admission check, not a confidential channel), and a signed
+  advertisement is authenticated but not secret.
 - **Exactly-once dispatch / completion tracking.** v1 tracks hand-off, not
   completion, and does not deduplicate ([07](07-dispatch.md#idempotency--duplicates)).
 - **IPv6.** v1 discovery and links are IPv4. IPv6 is additive future work.

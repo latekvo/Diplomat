@@ -88,6 +88,15 @@ the peer re-advertises a different `pubkey` on its own link (never from third-pa
 gossip). See
 [11](11-trust-and-balancing.md#trust-is-never-derived-from-an-advertisement).
 
+**Authenticated-gossip construction.** A gossiped advertisement / override carries a
+`sig` field: an Ed25519 signature over `<tag> || canonical(payload)`, where
+`canonical(x)` = JSON of `x` **with its `sig` removed, keys sorted, compact
+separators** (`,`/`:`), and the tags are `szpontnet-nodeinfo-v1:` (advertisements)
+and `szpontnet-overrides-v1:` (overrides). An advertisement is signed by its own
+device key and verified against its own `pubkey`; an override is signed by its
+`updatedBy` node and verified against that node's pinned key. `sig` is omitted when
+empty (keyless). See [11 - authenticated gossip](11-trust-and-balancing.md#authenticated-gossip).
+
 ## Server & API key (v1 vocabulary)
 
 | Constant | Value | Meaning |

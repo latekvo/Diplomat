@@ -173,6 +173,92 @@ subject to this check. As everywhere, an **empty allowlist means personal**, so 
 unconfigured mesh keeps letting any peer retune any node exactly as the pre-trust
 core did.
 
+## Authenticated gossip
+
+The proof-of-possession handshake authenticates a **direct link**, but an
+advertisement travels further than one hop: a node's [`node`](04-messages.md#node)
+update and its [`overrides`](04-messages.md#overrides) are **relayed** across the
+mesh ([gossip fan-out](03-transport.md#gossip-fan-out)), and a relay is just
+another peer. Without protection, a relay could **forge** an advertisement for a
+node it isn't (spoof peer P's id with attacker-chosen tier/tokens/stats and an
+inflated `seq`) or **tamper** with one in flight — poisoning placement and load
+balancing mesh-wide, unrecoverable until the victim restarts. So every gossiped
+payload is **self-signed by its originator**, and receivers verify it before
+adopting or relaying.
+
+### Signed advertisements
+
+A node **signs its own advertisement** with its device key. The
+[NodeInfo](04-messages.md#nodeinfo) carries a `sig` field: an Ed25519 signature over
+the **canonical bytes** of the advertisement:
+
+```
+sig = Ed25519_sign( device_privkey, "szpontnet-nodeinfo-v1:" || canonical(nodeinfo_without_sig) )
+```
+
+where `canonical(x)` is the JSON encoding of `x` with **its `sig` field removed**,
+**sorted keys**, and **compact separators** (`,`/`:`) — so every implementation
+signs and verifies byte-identical input, and the signature covers *every* field
+(including `pubkey`, so the key can't be swapped without breaking it). Canonical
+bytes are taken over the **raw received dict**, never a re-parse, so a field a
+newer signer included is still covered on an older verifier — and this is why a
+relay MUST forward the advertisement verbatim (below).
+
+> **Cross-implementation caveat.** Two implementations must serialize *numbers*
+> identically for the canonical bytes to match (the classic JSON-signing pitfall).
+> The reference uses Python's `json` (which round-trips floats via `repr`); a
+> second implementation must reproduce that number formatting, or — cleaner for a
+> future revision — the signed fields should avoid floats. Within one implementation
+> (and between the reference and its conformance tester, both Python) this is exact.
+
+On receiving a `hello`/`node` advertisement, a node **MUST**:
+
+- if it carries a `pubkey`, **verify** `sig` against that `pubkey` and **drop the
+  advertisement if `sig` is absent or invalid** — a forged or tampered keyed advert
+  is never adopted or relayed;
+- if it carries **no `pubkey`** (a keyless/legacy node), accept it *unauthenticated*
+  — there is nothing to verify, so it can never be *verified* and stays **foreign**
+  under any allowlist (the same degradation as before);
+- **pin id → key**: once an id is known with a `pubkey`, a **gossiped** advert
+  claiming a *different* `pubkey` (even one self-signed by that other key) is a
+  third party trying to hijack the id and **MUST be rejected**. Only the node's
+  **own link** (a fresh [`hello`](04-messages.md#hello)) may re-key it (which then
+  re-runs proof of possession). This is what stops a relay from replacing a known
+  node's key — and thus its identity and trust — or downgrading it to keyless.
+
+A relay **MUST forward an advertisement verbatim** (the exact bytes/among fields it
+received), so the originator's signature survives the hop; re-serializing from a
+partial parse would drop unknown fields and break the signature downstream.
+
+### Signed overrides
+
+A mesh-wide [placement override](06-coordination.md#placement-overrides) is signed
+the same way, by its **`updatedBy`** editor:
+
+```
+sig = Ed25519_sign( editor_privkey, "szpontnet-overrides-v1:" || canonical(overrides_without_sig) )
+```
+
+A receiver **MUST** verify a non-default (`rev > 0`) override's `sig` against the
+**editor's pinned key** and drop it on mismatch — so a relay can neither forge an
+edit under a known node's name nor tamper with a real one to win the
+last-writer-wins race. The default (`rev 0`) override needs no signature, and when
+the editor's key is unknown or keyless the receiver cannot require one (the legacy
+path). Because every node's key is learned from its own signed advertisement, a
+receiver almost always holds the editor's key by the time its override arrives.
+
+### What this closes, and what it doesn't
+
+Authenticated gossip binds every relayed advertisement and override to the key of
+the node it claims to describe, so **no relay can forge or mutate another node's
+gossip**. Combined with proof of possession (direct links) and the personal-only
+`set-attr` rule, **every message that changes mesh state is authenticated in some
+way** - by the verified link it arrives on, or by a signature over its content.
+What remains, by construction, is that a **keyless** node's gossip is
+unauthenticated (it has no key to sign with) - which is exactly why a keyless node
+is never trusted (foreign under any allowlist). Encrypting the gossip bytes for
+*confidentiality* is still separate [future work](09-extensibility.md#non-goals-for-v1-explicitly-deferred).
+
 ## Server nodes & API-key authentication
 
 The core is peer-to-peer and symmetric: every node both offers and dispatches
@@ -348,6 +434,12 @@ An implementation of this chapter:
   gossip relay (which would enable a trust-DoS).
 - **MUST** ignore a **peer-link** `set-attr` from a **foreign** device (mutation is
   a personal-only action); a control-session `set-attr` is a first-party action.
+- **MUST** [authenticate gossip](#authenticated-gossip): sign its own advertisement
+  (and any override it edits) over the domain-separated canonical bytes; **verify**
+  a keyed advertisement's/override's signature and **drop** it on absent/invalid
+  signature; **pin** id→key so a gossiped key-swap is rejected (only the node's own
+  link may re-key); and **relay advertisements verbatim** so signatures survive. A
+  keyless advert is accepted unauthenticated (hence foreign).
 - **MUST**, if it ever *executes* (rather than declines) a **foreign**
   SzpontRequest, enforce the [foreign execution security
   contract](#the-foreign-execution-security-contract-normative): sandboxed compute,

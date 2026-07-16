@@ -145,3 +145,9 @@ peer (a `node`/`overrides` message). Peers merge by freshness
 and re-propagate genuinely newer information, so a change reaches the whole mesh in
 O(diameter) hops. A node **MUST NOT** re-propagate information that is not newer
 than what it already holds, or gossip will not converge.
+
+Because a relay is just another peer, a gossiped advertisement/override is
+**self-signed by its originator** and **verified before it is adopted or
+re-propagated**, and a relay forwards it **verbatim** so the signature survives the
+hop — a relay can neither forge nor tamper with another node's gossip. This is
+specified in [11 - authenticated gossip](11-trust-and-balancing.md#authenticated-gossip).

@@ -34,6 +34,33 @@ PROTOCOL_VERSION = 1
 # a dispatch carries a whole review prompt (tens of KB).
 MAX_LINE_BYTES = 512 * 1024
 
+# Domain-separation tags for the two gossiped, self-signed payloads. A signature
+# always covers <tag> || <canonical JSON of the payload without its own `sig`>, so
+# a signature is meaningless outside its exact context and can't be lifted from one
+# payload type to another. Canonical = sorted keys + compact separators, so every
+# implementation signs and verifies byte-identical input.
+_ADVERT_CONTEXT = b"szpontnet-nodeinfo-v1:"
+_OVERRIDES_CONTEXT = b"szpontnet-overrides-v1:"
+
+
+def _canonical(payload: dict) -> bytes:
+    """Deterministic JSON of a payload with its `sig` field removed — the bytes a
+    signature is computed/verified over. Sorted keys + compact so it is identical
+    across implementations, and taken over the RAW received dict (never a re-parse)
+    so any unknown future field the signer covered is covered here too."""
+    body = {k: v for k, v in payload.items() if k != "sig"}
+    return json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def advert_signing_bytes(node_dict: dict) -> bytes:
+    """The exact bytes a NodeInfo advertisement's `sig` covers."""
+    return _ADVERT_CONTEXT + _canonical(node_dict)
+
+
+def overrides_signing_bytes(overrides_dict: dict) -> bytes:
+    """The exact bytes a placement-overrides `sig` covers (signed by `updatedBy`)."""
+    return _OVERRIDES_CONTEXT + _canonical(overrides_dict)
+
 
 # MARK: - NodeInfo (the gossiped view of one node)
 
@@ -67,6 +94,12 @@ class NodeInfo:
     # Empty when a node advertises no stats — its dispatch surplus is then 0
     # (neutral), so surplus-first ranking degrades to weakest-first. See stats.py.
     stats: dict = field(default_factory=dict)
+    # Base64 Ed25519 signature by THIS node's device key over the canonical form of
+    # this advertisement ([advert_signing_bytes]). It authenticates the advert end
+    # to end: any relay can forward it, but none can forge or tamper with it without
+    # the private key. Empty for a keyless node (no `pubkey`), which is then
+    # unauthenticated and treated as foreign under any allowlist. See node.py.
+    sig: str = ""
     version: int = PROTOCOL_VERSION
 
     def to_dict(self) -> dict:
@@ -92,6 +125,8 @@ class NodeInfo:
             d["pubkey"] = self.pubkey
         if self.stats:
             d["stats"] = self.stats
+        if self.sig:
+            d["sig"] = self.sig
         return d
 
     @classmethod
@@ -113,6 +148,7 @@ class NodeInfo:
                 duties_enabled=dict(d.get("dutiesEnabled", {})),
                 pubkey=str(d.get("pubkey", "")),
                 stats=dict(d.get("stats", {})) if isinstance(d.get("stats"), dict) else {},
+                sig=str(d.get("sig", "")),
                 version=int(d.get("v", PROTOCOL_VERSION)),
             )
         except (KeyError, TypeError, ValueError):
@@ -249,6 +285,14 @@ def heartbeat() -> dict:
 
 def node_update(info: NodeInfo) -> dict:
     return {"t": "node", "node": info.to_dict()}
+
+
+def node_update_raw(node_dict: dict) -> dict:
+    """Relay a peer's advertisement **verbatim** — the exact dict as received, so
+    its signature (which covers the canonical bytes of that dict) survives the hop
+    unchanged. Re-serializing via ``node_update(from_dict(...))`` would drop any
+    unknown future field the originator signed over and break the signature."""
+    return {"t": "node", "node": node_dict}
 
 
 def overrides_update(overrides_dict: dict) -> dict:

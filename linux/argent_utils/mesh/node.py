@@ -31,6 +31,7 @@ import socket
 import struct
 import time
 import uuid
+from dataclasses import replace
 
 from .. import activity
 from . import (
@@ -169,7 +170,7 @@ class MeshNode:
 
     @property
     def info(self) -> NodeInfo:
-        return NodeInfo(
+        info = NodeInfo(
             id=self.local.id,
             name=self.local.name,
             platform=self.platform,
@@ -186,6 +187,19 @@ class MeshNode:
             pubkey=self.key.public_b64 if self.key else "",
             stats=self.stats.advertise(),
         )
+        return self._sign_advert(info)
+
+    def _sign_advert(self, info: NodeInfo) -> NodeInfo:
+        """Attach our Ed25519 signature over the advert's canonical form. This
+        authenticates the advertisement end to end: any peer may relay it, but none
+        can forge or tamper with it without our private key (the receiver verifies
+        the `sig` against the advert's own `pubkey`). A keyless node returns the
+        advert unsigned — it can never be verified, hence foreign under any
+        allowlist, exactly as before."""
+        if self.key is None:
+            return info
+        sig = self.key.sign(protocol.advert_signing_bytes(info.to_dict()))
+        return replace(info, sig=sig)
 
     # MARK: - automatic token budget
 
@@ -549,10 +563,20 @@ class MeshNode:
             # ours — tear the link down (ValueError ends _run_link's pump).
             raise ValueError("mesh secret mismatch")
         if t in ("hello", "node"):
-            info = NodeInfo.from_dict(msg.get("node") or {})
+            raw = msg.get("node")
+            if not isinstance(raw, dict):
+                return None
+            # Authenticate the advertisement END TO END: a relay may forward it, but
+            # only the holder of the advert's key could have produced its signature,
+            # so a forged or tampered keyed advert is dropped (never adopted). A
+            # keyless advert has nothing to verify — accepted, but stays unverified
+            # (foreign under any allowlist), exactly as before.
+            if not self._advert_authentic(raw):
+                return None
+            info = NodeInfo.from_dict(raw)
             if info is None or info.id == self.local.id:
                 return None
-            self._learn_node(info, host, writer if t == "hello" else None)
+            self._learn_node(info, host, writer if t == "hello" else None, raw=raw)
             if t == "hello":
                 self._merge_overrides(msg.get("overrides"))
                 self._answer_challenge(msg, writer)  # prove we hold our own key
@@ -616,6 +640,31 @@ class MeshNode:
         key = config.api_key()
         return not key or str(msg.get("apiKey", "")) == key
 
+    # MARK: - gossip authentication (self-signed adverts + overrides)
+
+    def _advert_authentic(self, raw: dict) -> bool:
+        """Whether a received advertisement is authentic. A **keyed** advert (it
+        carries a `pubkey`) MUST carry a `sig` that verifies against that `pubkey`
+        over the advert's canonical bytes — otherwise it is a forgery or was
+        tampered with in relay, and is dropped. A **keyless** advert (no `pubkey`)
+        has nothing to verify: it is accepted but can never be verified, so it stays
+        foreign under any allowlist — identical to the pre-signing degradation."""
+        pubkey = str(raw.get("pubkey", ""))
+        if not pubkey:
+            return True
+        sig = str(raw.get("sig", ""))
+        return bool(sig) and crypto.verify(
+            pubkey, protocol.advert_signing_bytes(raw), sig)
+
+    def _pinned_pubkey(self, node_id: str) -> str:
+        """The advertised pubkey we currently hold for ``node_id`` (our own, or a
+        known peer's), or ``""`` if unknown/keyless. Used to verify an `overrides`
+        signature against the editor's key."""
+        if node_id == self.local.id:
+            return self.key.public_b64 if self.key else ""
+        peer = self.peers.get(node_id)
+        return peer.info.pubkey if peer else ""
+
     # MARK: - trust handshake (proof of possession)
 
     def _answer_challenge(self, msg: dict, writer: asyncio.StreamWriter) -> None:
@@ -653,7 +702,8 @@ class MeshNode:
         return trust.classify(fp or "", self._trusted)
 
     def _learn_node(
-        self, info: NodeInfo, host: str, link_writer: asyncio.StreamWriter | None
+        self, info: NodeInfo, host: str, link_writer: asyncio.StreamWriter | None,
+        raw: dict | None = None,
     ) -> None:
         peer = self.peers.get(info.id)
         if peer is None and len(self.peers) >= _MAX_PEERS:
@@ -662,6 +712,15 @@ class MeshNode:
             # gossip with spoofed ids (or an accepter opening many hellos) would
             # otherwise balloon the table, snapshot, and gossip fan-out unbounded.
             # Past the cap we refuse to learn ids we've never seen.
+            return
+        # id → key pinning. Once we know a peer's `pubkey`, a fresher **gossiped**
+        # advert claiming a DIFFERENT key (even one self-signed by that other key)
+        # is a third party trying to hijack the id — reject it. Only the peer's OWN
+        # link (a hello, ``link_writer`` set) may re-key. This is what stops a relay
+        # from replacing a known node's key (and thus its identity/trust) or
+        # downgrading it to keyless.
+        if (peer is not None and link_writer is None and peer.info.pubkey
+                and info.pubkey != peer.info.pubkey):
             return
         fresh = peer is None or info.newer_than(peer.info)
         if peer is None:
@@ -706,7 +765,12 @@ class MeshNode:
             # from looping. A hello-learned peer is directly connected, so its info
             # is broadcast by the normal channels — only gossip needs the relay.
             if link_writer is None:
-                self._broadcast(protocol.node_update(info))
+                # Relay the advert VERBATIM (the exact received dict) so its
+                # signature — which covers that dict's canonical bytes — survives
+                # the hop. Re-serializing from the parsed NodeInfo would drop any
+                # field this node doesn't know and break the signature downstream.
+                self._broadcast(protocol.node_update_raw(raw) if raw is not None
+                                else protocol.node_update(info))
             self._recompute("gossip")
 
     def _drop_peer(self, peer_id: str, reason: str) -> None:
@@ -777,19 +841,42 @@ class MeshNode:
                 with contextlib.suppress(ConnectionError, OSError):
                     peer.writer.write(payload)
 
+    def _overrides_authentic(self, raw: dict) -> bool:
+        """Whether a gossiped placement-override is authentic. The default (empty,
+        ``rev`` 0) override needs no signature. Otherwise it must be signed by its
+        ``updatedBy`` editor: if we know that editor's key, the `sig` MUST verify
+        against it (so a relay can neither forge an edit under a known node's name
+        nor tamper with a real one); if the editor's key is unknown or keyless, we
+        can't require a signature and accept it unauthenticated (legacy)."""
+        if int(raw.get("rev", 0)) <= 0:
+            return True
+        editor = str(raw.get("updatedBy", ""))
+        pin = self._pinned_pubkey(editor)
+        if not pin:
+            return True  # editor key unknown/keyless — can't verify (legacy path)
+        sig = str(raw.get("sig", ""))
+        return bool(sig) and crypto.verify(
+            pin, protocol.overrides_signing_bytes(raw), sig)
+
     def _merge_overrides(self, raw: object) -> None:
         if not isinstance(raw, dict):
             return
+        if not self._overrides_authentic(raw):
+            return  # forged/tampered mesh-wide placement edit — drop it
         incoming = PlacementOverrides.from_dict(raw)
         if incoming.wins_over(self.overrides):
             self.overrides = incoming
+            # Relay verbatim so the editor's signature survives the hop.
             self._broadcast(protocol.overrides_update(self.overrides.to_dict()))
             self._recompute("overrides")
 
     def set_overrides_duty(self, duty_id: str, placement_dict: dict) -> None:
-        """A local edit (panel/CLI): bump the LWW rev and gossip."""
+        """A local edit (panel/CLI): bump the LWW rev, sign it, and gossip."""
         placement = config.Placement.from_dict(placement_dict)
-        self.overrides = self.overrides.with_duty(duty_id, placement, by=self.local.id)
+        ov = self.overrides.with_duty(duty_id, placement, by=self.local.id)
+        if self.key is not None:
+            ov = ov.signed(self.key.sign(protocol.overrides_signing_bytes(ov.to_dict())))
+        self.overrides = ov
         self._broadcast(protocol.overrides_update(self.overrides.to_dict()))
         self._recompute("overrides edited")
 

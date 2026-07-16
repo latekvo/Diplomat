@@ -77,10 +77,11 @@ The resource advertisement for one node. Appears inside `hello` and `node`, and
 | `dutiesEnabled` | object<string,bool> | no (`{}`) | per-duty opt-out; a duty absent from the map is **enabled** by default. |
 | `pubkey` | string | no | the node's advertised base64 Ed25519 public key. Advertising it grants **nothing** - a peer must prove possession by signing the [`hello`](#hello)/[`auth`](#auth) challenge before it is believed to hold this key. Trust then keys on its fingerprint `sha256(pubkey)` against a local allowlist. See [11-trust-and-balancing](11-trust-and-balancing.md). |
 | `stats` | object | no (`{}`) | load-balancing accounting: `{"plan", "usageAvg", "quotaLeft"}` in plan-relative units. See [05-resources](05-resources.md#per-node-stats-account-aware-load-balancing) and [11](11-trust-and-balancing.md). |
+| `sig` | string | no | base64 Ed25519 signature by this node's device key over the advert's canonical bytes, authenticating it end to end across relays. A **keyed** advert (one with a `pubkey`) MUST carry a valid `sig` or be dropped; a keyless advert carries none. See [11 - authenticated gossip](11-trust-and-balancing.md#authenticated-gossip). |
 | `v` | int | no (`1`) | protocol version of this advertisement. |
 
-`pubkey` and `stats` are **additive and optional**: both are **omitted from the
-wire form when empty**, so a v1 advertisement that sets neither is byte-identical
+`pubkey`, `stats`, and `sig` are **additive and optional**: all are **omitted from
+the wire form when empty**, so a v1 advertisement that sets none is byte-identical
 to before. The `stats` sub-keys are `plan` (string, account-type id, e.g.
 `max-20x`), `usageAvg` (float, 21-day rolling average of usage per day), and
 `quotaLeft` (float, remaining capacity in the current window).
@@ -219,22 +220,30 @@ fresher NodeInfo across the mesh.
 {"t": "node", "node": { …NodeInfo… }, "v": 1}
 ```
 
-Receiver merges the `node` by [freshness](#nodeinfo): adopt it only if newer than
-what is held for that `id`; if adopted, re-propagate to other peers and recompute
-assignments. A `node` for the receiver's own `id` is ignored.
+Receiver first **authenticates** the advertisement — a keyed NodeInfo with an
+absent/invalid `sig`, or one that tries to change a known id's `pubkey` via gossip,
+is **dropped** ([11 - authenticated gossip](11-trust-and-balancing.md#authenticated-gossip)).
+It then merges by [freshness](#nodeinfo): adopt only if newer than what is held for
+that `id`; if adopted, re-propagate **verbatim** (the exact received `node` dict, so
+the originator's signature survives the hop) and recompute assignments. A `node` for
+the receiver's own `id` is ignored.
 
 ### `overrides`
 
 A gossiped [placement-overrides](06-coordination.md#placement-overrides) update.
 
 ```json
-{"t": "overrides", "overrides": {"rev": 3, "updatedBy": "3236…", "duties": { … }}, "v": 1}
+{"t": "overrides", "overrides": {"rev": 3, "updatedBy": "3236…", "duties": { … },
+                                 "sig": "…base64…"}, "v": 1}
 ```
 
-Receiver adopts it only if it **wins** the last-writer-wins comparison against the
-overrides it currently holds (higher `rev`, ties broken by `updatedBy`); if
-adopted, re-propagate and recompute. See
-[06-coordination](06-coordination.md#placement-overrides).
+The `overrides` object carries an optional `sig`: an Ed25519 signature by the
+`updatedBy` node over the override's canonical bytes. A receiver **authenticates** a
+non-default (`rev > 0`) override against the editor's pinned key and **drops** it on
+a bad/absent signature ([11](11-trust-and-balancing.md#signed-overrides)); it then
+adopts it only if it **wins** the last-writer-wins comparison against the overrides
+it holds (higher `rev`, ties broken by `updatedBy`); if adopted, re-propagate and
+recompute. See [06-coordination](06-coordination.md#placement-overrides).
 
 ### `heartbeat`
 
