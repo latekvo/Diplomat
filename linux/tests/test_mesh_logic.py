@@ -696,10 +696,13 @@ def test_overrides_signature_required_from_a_known_editor(tmp_path, monkeypatch)
     tampered = dict(signed)
     tampered["rev"] = 99  # a relay bumps rev to win LWW → signature no longer covers it
     assert not node._overrides_authentic(tampered)
-    # The default (rev 0) override needs no signature; an unknown/keyless editor can't
-    # be required to sign (legacy path).
+    # The default (rev 0) override needs no signature.
     assert node._overrides_authentic({"rev": 0, "updatedBy": "", "duties": {}})
-    assert node._overrides_authentic({"rev": 3, "updatedBy": "stranger", "duties": {}})
+    # A real (rev>0) edit from an UNKNOWN editor is unauthenticatable → rejected, so a
+    # forged huge-rev override under an unknown name can't mask real signed edits.
+    assert not node._overrides_authentic({"rev": 3, "updatedBy": "stranger", "duties": {}})
+    assert not node._overrides_authentic(
+        {"rev": 2 ** 62, "updatedBy": "stranger", "duties": {}})
 
 
 if __name__ == "__main__":  # dependency-free smoke run

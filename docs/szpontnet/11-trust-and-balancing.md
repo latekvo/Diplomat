@@ -241,11 +241,18 @@ sig = Ed25519_sign( editor_privkey, "szpontnet-overrides-v1:" || canonical(overr
 
 A receiver **MUST** verify a non-default (`rev > 0`) override's `sig` against the
 **editor's pinned key** and drop it on mismatch — so a relay can neither forge an
-edit under a known node's name nor tamper with a real one to win the
-last-writer-wins race. The default (`rev 0`) override needs no signature, and when
-the editor's key is unknown or keyless the receiver cannot require one (the legacy
-path). Because every node's key is learned from its own signed advertisement, a
-receiver almost always holds the editor's key by the time its override arrives.
+edit nor tamper with a real one to win the last-writer-wins race. An edit whose
+`updatedBy` editor the receiver has **no key for** is **rejected** as
+unauthenticatable — otherwise a forged edit under an *unknown* id with an
+astronomically high `rev` could permanently mask every real edit. Such an edit
+re-propagates and is adopted once the receiver learns that editor's signed
+advertisement (in a full mesh it already holds every node's key from the direct
+hellos; in a large partial mesh a placement edit may take an extra gossip round or
+a reconnect to reach a node that hadn't yet learned the editor — a rare, self-
+healing delay for a rarely-used operator action). The default (`rev 0`) override
+needs no signature. A node **without a crypto library** can verify nothing and
+stays in the legacy accept-everything mode — it is itself keyless, hence foreign to
+everyone.
 
 ### What this closes, and what it doesn't
 

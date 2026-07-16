@@ -843,17 +843,23 @@ class MeshNode:
 
     def _overrides_authentic(self, raw: dict) -> bool:
         """Whether a gossiped placement-override is authentic. The default (empty,
-        ``rev`` 0) override needs no signature. Otherwise it must be signed by its
-        ``updatedBy`` editor: if we know that editor's key, the `sig` MUST verify
-        against it (so a relay can neither forge an edit under a known node's name
-        nor tamper with a real one); if the editor's key is unknown or keyless, we
-        can't require a signature and accept it unauthenticated (legacy)."""
+        ``rev`` 0) override needs no signature. Any real (``rev > 0``) edit MUST be
+        signed by its ``updatedBy`` editor and verify against that editor's pinned
+        key — so a relay can neither forge an edit (even under an *unknown* id, which
+        would otherwise let a huge forged ``rev`` permanently mask real edits) nor
+        tamper with a real one. An edit whose editor we don't know a key for is
+        **rejected** as unauthenticatable; it re-propagates and is adopted once we
+        learn that editor's signed advertisement. The one exception is a node
+        without a crypto library at all: it can verify nothing, so it stays in the
+        legacy accept-everything mode (it is itself keyless → foreign to everyone)."""
         if int(raw.get("rev", 0)) <= 0:
             return True
+        if not crypto.AVAILABLE:
+            return True  # no crypto here — can't verify anything (keyless legacy node)
         editor = str(raw.get("updatedBy", ""))
         pin = self._pinned_pubkey(editor)
         if not pin:
-            return True  # editor key unknown/keyless — can't verify (legacy path)
+            return False  # a real edit from an unknown/keyless editor is unauthenticatable
         sig = str(raw.get("sig", ""))
         return bool(sig) and crypto.verify(
             pin, protocol.overrides_signing_bytes(raw), sig)
