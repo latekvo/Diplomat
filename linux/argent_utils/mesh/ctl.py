@@ -67,16 +67,20 @@ def set_overrides(duty: str, placement: dict, timeout: float = 5.0) -> None:
 
 
 def dispatch(duty: str, prompt: str, target: str | None = None,
-             api_key: str = "", timeout: float = 60.0) -> list[dict]:
+             api_key: str = "", work_key: str = "", timeout: float = 60.0) -> list[dict]:
     """Route a SzpontRequest through the mesh; returns the per-slot outcomes.
     Generous timeout: the node may walk several failover candidates. ``target``
     names one node directly (the dispatcher's unilateral pick, no failover).
-    ``api_key`` is the credential forwarded to an API-key-gated (server) target."""
+    ``api_key`` is the credential forwarded to an API-key-gated (server) target.
+    ``work_key`` opts into origination dedup: the node claims it first and, if a
+    peer already owns the work, returns a single ``suppressed`` slot."""
     msg = {"t": "dispatch", "duty": duty, "prompt": prompt}
     if target:
         msg["target"] = target
     if api_key:
         msg["apiKey"] = api_key
+    if work_key:
+        msg["workKey"] = work_key
     reply = request(msg, timeout=timeout)
     return list(reply.get("results", []))
 

@@ -1,6 +1,6 @@
 # SzpontNet - a LAN peer-to-peer resource-sharing protocol
 
-**Version 1 (`v: 1`).** This directory is the normative specification for
+**Specification v0.2.0** (wire `v: 1`). This directory is the normative specification for
 **SzpontNet**: a small, leaderless protocol that lets the machines on a local
 network find each other, **advertise the resources they have available**, and
 hand work to whichever machine is the best fit - with no central coordinator and
@@ -113,6 +113,26 @@ peers.
 
 ---
 
+## Versioning
+
+The **specification** is versioned with [zerover](https://0ver.org/) (`0.MINOR.PATCH`)
+while the protocol stabilizes: every substantive change **bumps the minor**
+(`v0.1.0` → `v0.2.0` → …), and the patch digit is reserved for editorial fixes that
+don't change behavior. The major stays `0` until the protocol is declared stable.
+
+| Spec version | Adds |
+|--------------|------|
+| **v0.1.0** | discovery, links, gossip, deterministic placement, dispatch/failover, the personal/foreign trust model, server + API key, and authenticated gossip (signed advertisements + overrides). |
+| **v0.2.0** *(this revision)* | [work-claims](12-work-claims.md) — leaderless origination-dedup leases. |
+
+This is **separate from the wire `v` field**, which every message carries
+([04](04-messages.md)). That field is the **wire-compatibility version**, a single
+integer used by the [compatibility contract](09-extensibility.md#the-compatibility-contract)
+to gate breaking changes; it is still **`1`** and does not move for a
+backward-compatible, additive spec revision (work-claims are additive, so `v` stays
+`1`). Where the prose below says "v1," it means that wire generation — the behavior a
+`v: 1` node implements — not the spec's own version number.
+
 ## How to read this spec
 
 The chapters are ordered so you can implement bottom-up:
@@ -131,6 +151,7 @@ The chapters are ordered so you can implement bottom-up:
 | 09 | [Extensibility & future work](09-extensibility.md) | the compatibility rules + the altruism-limits roadmap |
 | 10 | [Conformance](10-conformance.md) | MUST/SHOULD/MAY, a minimal-node checklist, interop vectors |
 | 11 | [Trust & load balancing](11-trust-and-balancing.md) | personal/foreign trust, per-node quota stats, surplus-first dispatch, refusals |
+| 12 | [Work claims](12-work-claims.md) | leaderless origination dedup: who runs externally-triggered work, and failover when the owner dies |
 | A | [Appendix A - annotated trace](appendix-a-trace.md) | a full two-node session, message by message |
 | B | [Appendix B - constants](appendix-b-constants.md) | every default value in one table |
 

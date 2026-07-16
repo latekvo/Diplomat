@@ -166,6 +166,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--prompt-file", help="read the --dispatch prompt from a file")
     ap.add_argument("--target", metavar="ID", help="dispatch to one node directly "
                     "(the dispatcher's own pick, no failover)")
+    ap.add_argument("--work-key", default="", metavar="KEY", dest="work_key",
+                    help="origination-dedup key: claim it first, and stand down "
+                    "with a 'suppressed' result if a peer already owns the work")
     ap.add_argument("--api-key", default="", metavar="KEY", dest="api_key",
                     help="API key to present to an API-key-gated (server) target")
     ap.add_argument("--fingerprint", action="store_true",
@@ -217,10 +220,14 @@ def main(argv: list[str] | None = None) -> int:
             if not prompt:
                 print("--dispatch needs --prompt or --prompt-file", file=sys.stderr)
                 return 2
-            results = ctl.dispatch(args.dispatch, prompt, args.target, args.api_key)
-            ok = all(r.get("status") == "spawned" for r in results)
+            results = ctl.dispatch(args.dispatch, prompt, args.target, args.api_key,
+                                   args.work_key)
+            # `suppressed` is a success, not a failure: a peer already owns the
+            # work, which is exactly what --work-key asks for.
+            ok = all(r.get("status") in ("spawned", "suppressed") for r in results)
+            marks = {"spawned": "✓", "suppressed": "◦"}
             for r in results:
-                mark = "✓" if r.get("status") == "spawned" else "✗"
+                mark = marks.get(r.get("status"), "✗")
                 print(f"{mark} [{r.get('slot')}] {r.get('nodeName') or '∅'}"
                       f" {r.get('status')}{': ' + r['reason'] if r.get('reason') else ''}")
             return 0 if ok else 1

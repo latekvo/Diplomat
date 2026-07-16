@@ -188,3 +188,11 @@ SzpontNet does not deduplicate jobs: a `dispatch` is a fire-once request, and jo
 operators, or a retried dispatch), two jobs run. A dispatcher SHOULD avoid
 re-dispatching the same work; a receiver treats every `dispatch` it accepts as new.
 Exactly-once semantics are out of scope for v1.
+
+> **Origination dedup exists one level up.** The common cause of a double-run is not
+> a retried `dispatch` but two nodes *independently observing the same external
+> event* and each originating. [Work-claims](12-work-claims.md) deduplicate exactly
+> that: a node claims a `workKey` before originating and stands down if a peer
+> already owns it (a `"suppressed"` [dispatch result](04-messages.md#dispatch-result)).
+> That is an origination-time gate, not job-level exactly-once — which remains out of
+> scope — but it removes the case where it actually bites.

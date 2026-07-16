@@ -695,3 +695,48 @@ def test_redial_from_memory_relinks_without_beacons(fleet):
               .get("aa", {}).get("addr") == "127.0.0.1"
               if (fleet.dirs["bb"] / "peers.json").exists() else False,
               what="bb persisted aa's last-known address")
+
+
+def test_work_claim_dedupes_origination_and_frees_on_owner_death(fleet):
+    """End-to-end origination dedup across two real nodes, and the liveness lease.
+
+    Two personal machines (empty allowlist ⇒ full trust) both dispatch the SAME
+    workKey. The lower-id node claims it first and runs the work; the higher-id
+    node, hearing that claim, STANDS DOWN with a `suppressed` result instead of
+    double-running. Then the owner is killed: its lease lapses on timeout, and the
+    survivor's next dispatch of the same key is no longer suppressed — it takes the
+    work over. This is the whole point of work-claims, proven over sockets."""
+    wk = "review:github.com/acme/app#123@abc123"
+    fleet.start("aaaa", "low", "linux", tier=3)   # lower id → wins the claim race
+    fleet.start("bbbb", "high", "linux", tier=3)  # higher id → stands down
+    for nid in ("aaaa", "bbbb"):
+        _wait_for(lambda nid=nid: _links_up(fleet.state(nid), 1),
+                  what=f"{nid} to link its peer")
+
+    spawned = fleet.root / "spawned"
+
+    # 1. The lower-id node claims the key and runs the work (review lands on it).
+    r = fleet.cli("aaaa", "--dispatch", "review", "--prompt", "first", "--work-key", wk)
+    assert r.returncode == 0, r.stdout + r.stderr
+    _wait_file(spawned / "low.txt", "first")
+
+    # 2. The claim propagates: the higher-id node observes aaaa owns the key.
+    _wait_for(lambda: fleet.state("bbbb").get("claims", {}).get(wk) == "aaaa",
+              what="bbbb to observe aaaa's work-claim")
+
+    # 3. The higher-id node dispatches the SAME key → suppressed, nothing re-runs.
+    r = fleet.cli("bbbb", "--dispatch", "review", "--prompt", "second", "--work-key", wk)
+    assert r.returncode == 0, r.stdout + r.stderr          # suppressed counts as success
+    assert "suppressed" in r.stdout, r.stdout
+    assert "low" in r.stdout, r.stdout                     # names the owner
+    time.sleep(1.0)
+    assert (spawned / "low.txt").read_text() == "first"    # not overwritten by "second"
+    assert not (spawned / "high.txt").exists()             # bbbb never ran it
+
+    # 4. The owner dies → its lease lapses → the survivor takes the work over.
+    fleet.kill("aaaa")
+    _wait_for(lambda: fleet.state("bbbb").get("claims", {}).get(wk) is None,
+              what="aaaa's lease to lapse on bbbb after it went down")
+    r = fleet.cli("bbbb", "--dispatch", "review", "--prompt", "third", "--work-key", wk)
+    assert r.returncode == 0, r.stdout + r.stderr
+    _wait_file(spawned / "high.txt", "third")              # bbbb now runs it

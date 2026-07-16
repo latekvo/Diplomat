@@ -193,5 +193,9 @@ caps. No flag day, no `v` bump required for the common cases - exactly the
   gate** (a shared-secret admission check, not a confidential channel), and a signed
   advertisement is authenticated but not secret.
 - **Exactly-once dispatch / completion tracking.** v1 tracks hand-off, not
-  completion, and does not deduplicate ([07](07-dispatch.md#idempotency--duplicates)).
+  completion, and does not deduplicate *jobs*
+  ([07](07-dispatch.md#idempotency--duplicates)). **Origination** dedup — stopping
+  two nodes that see the same external event from both starting the work — **has
+  landed** as [work-claims](12-work-claims.md); job-level exactly-once and completion
+  tracking remain future work.
 - **IPv6.** v1 discovery and links are IPv4. IPv6 is additive future work.

@@ -96,6 +96,16 @@ uninterpreted string). Dispatch routes the job to the node(s) the placement pick
 one **slot** at a time, failing over within a slot if a candidate can't take it.
 See [07-dispatch](07-dispatch.md).
 
+## Work key and work claim
+
+A **work key** is a deterministic, client-derived string naming a unit of
+*external* work (e.g. a specific PR at a specific commit). A **work claim** is a
+gossiped, self-signed lease on a work key: nodes that independently notice the same
+work each claim it, a leaderless rule elects one owner, and the rest stand down — so
+the work is originated once, not once per observer. A claim lasts only while its
+claimant is alive, so a dead owner's work is freed for a survivor. This is an
+optional layer on top of dispatch; see [12-work-claims](12-work-claims.md).
+
 ## Link and peer
 
 A **peer** is another node this node knows about. A **link** is the single TCP

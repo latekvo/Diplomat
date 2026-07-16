@@ -788,6 +788,171 @@ def test_overrides_signature_required_from_a_known_editor(tmp_path, monkeypatch)
         {"rev": 2 ** 62, "updatedBy": "stranger", "duties": {}})
 
 
+# MARK: - work claims (leaderless origination leases)
+
+
+_WK = "review:github.com/acme/app#123@abc123"
+
+
+def _signed_claim(key, work_key, node_id, seq=0, state="active", epoch=1.0) -> dict:
+    rec = protocol.ClaimRecord(work_key=work_key, node=node_id, pubkey=key.public_b64,
+                               epoch=epoch, seq=seq, state=state)
+    d = rec.to_dict()
+    d["sig"] = key.sign(protocol.claim_signing_bytes(d))
+    return d
+
+
+def _claim_node(tmp_path, monkeypatch, local_id="m-local"):
+    """A fresh node whose id is fixed to `local_id`, so a test controls whether a
+    peer sorts below (wins races) or above it."""
+    from dataclasses import replace
+    node = _fresh_node(tmp_path, monkeypatch)
+    node.local = replace(node.local, id=local_id)
+    node.epoch = 1.0
+    return node
+
+
+def _link_personal_claimant(node, node_id, key):
+    """Learn `node_id` as a LIVE (linked), pinned, verified peer holding `key` — a
+    valid authoritative claimant (personal under the empty default allowlist)."""
+    node._learn_node(_peer_info(node_id, 1, pubkey=key.public_b64), "1.2.3.4",
+                     _FakeWriter(), raw=_signed_advert(key, node_id))
+    node.peers[node_id].verified_fp = key.fingerprint
+    return node.peers[node_id]
+
+
+def test_work_claim_signature_rejects_forgery_and_tamper(tmp_path, monkeypatch):
+    if not crypto.AVAILABLE:
+        return
+    node = _claim_node(tmp_path, monkeypatch)
+    k = _mk_key()
+    assert node._claim_authentic(_signed_claim(k, _WK, "aaa"))          # valid self-signature
+    # A keyless claim has nothing to verify — accepted (stays non-authoritative).
+    assert node._claim_authentic({"workKey": _WK, "node": "aaa", "state": "active"})
+    unsigned = _signed_claim(k, _WK, "aaa"); del unsigned["sig"]
+    assert not node._claim_authentic(unsigned)                          # keyed but unsigned
+    tampered = _signed_claim(k, _WK, "aaa"); tampered["workKey"] = _WK + "EVIL"
+    assert not node._claim_authentic(tampered)                          # tampered after signing
+    forged = _signed_claim(k, _WK, "aaa"); forged["pubkey"] = _mk_key().public_b64
+    assert not node._claim_authentic(forged)                            # signed by a different key
+
+
+def test_claim_owner_is_lowest_id_live_personal_claimant(tmp_path, monkeypatch):
+    if not crypto.AVAILABLE:
+        return
+    node = _claim_node(tmp_path, monkeypatch, local_id="m-local")
+    lo, hi = _mk_key(), _mk_key()
+    _link_personal_claimant(node, "aaa-low", lo)
+    _link_personal_claimant(node, "zzz-high", hi)
+    node._on_work_claim(protocol.work_claim(_signed_claim(hi, _WK, "zzz-high")))
+    assert node._claim_holder(_WK) == "zzz-high"                        # only claimant so far
+    node._on_work_claim(protocol.work_claim(_signed_claim(lo, _WK, "aaa-low")))
+    assert node._claim_holder(_WK) == "aaa-low"                         # lowest id wins
+
+
+def test_claim_gate_stands_down_below_and_proceeds_above(tmp_path, monkeypatch):
+    if not crypto.AVAILABLE:
+        return
+    # A lower-id peer already owns it → we (higher id) stand down.
+    node = _claim_node(tmp_path, monkeypatch, local_id="z-local")
+    lo = _mk_key(); _link_personal_claimant(node, "a-peer", lo)
+    node._on_work_claim(protocol.work_claim(_signed_claim(lo, _WK, "a-peer")))
+    assert node.claim(_WK) is False
+    assert node._own_claim(_WK) is None                                 # never even claimed
+
+    # A higher-id peer owns it → we (lower id) take over and proceed.
+    node2 = _claim_node(tmp_path, monkeypatch, local_id="a-local")
+    hi = _mk_key(); _link_personal_claimant(node2, "z-peer", hi)
+    node2._on_work_claim(protocol.work_claim(_signed_claim(hi, _WK, "z-peer")))
+    assert node2.claim(_WK) is True
+    assert node2._claim_holder(_WK) == "a-local"
+
+
+def test_claim_yields_to_lower_id_on_race(tmp_path, monkeypatch):
+    if not crypto.AVAILABLE:
+        return
+    node = _claim_node(tmp_path, monkeypatch, local_id="z-local")
+    lost = []
+    node.on_claim_lost = lambda wk: lost.append(wk)
+    assert node.claim(_WK) is True                                      # we announce first
+    assert node._claim_holder(_WK) == "z-local"
+    lo = _mk_key(); _link_personal_claimant(node, "a-peer", lo)
+    node._on_work_claim(protocol.work_claim(_signed_claim(lo, _WK, "a-peer")))
+    assert node._own_claim(_WK).state == "released"                     # we withdrew
+    assert node._claim_holder(_WK) == "a-peer"                          # they own it now
+    assert lost == [_WK]                                                # loss hook fired
+
+
+def test_dead_claimant_lease_lapses_and_frees_work(tmp_path, monkeypatch):
+    if not crypto.AVAILABLE:
+        return
+    import time as _time
+    node = _claim_node(tmp_path, monkeypatch, local_id="z-local")
+    lo = _mk_key(); peer = _link_personal_claimant(node, "a-peer", lo)
+    node._on_work_claim(protocol.work_claim(_signed_claim(lo, _WK, "a-peer")))
+    assert node._claim_holder(_WK) == "a-peer"
+    peer.last_seen = _time.monotonic() - 999                           # link times out → down
+    assert node._claim_holder(_WK) is None                             # dead lease lapses
+    assert node.claim(_WK) is True                                     # we take the freed key
+
+
+def test_foreign_claimant_cannot_suppress_work(tmp_path, monkeypatch):
+    if not crypto.AVAILABLE:
+        return
+    node = _claim_node(tmp_path, monkeypatch, local_id="z-local")
+    node._trusted = {"some-other-fingerprint": "x"}                     # non-empty allowlist
+    lo = _mk_key(); _link_personal_claimant(node, "a-peer", lo)         # verified but not listed
+    assert node._peer_trust(node.peers["a-peer"]) == "foreign"
+    node._on_work_claim(protocol.work_claim(_signed_claim(lo, _WK, "a-peer")))
+    assert node._claim_holder(_WK) is None                             # foreign never owns
+    assert node.claim(_WK) is True                                     # anti-starvation guard
+
+
+def test_work_claim_cannot_hijack_a_pinned_node_id(tmp_path, monkeypatch):
+    if not crypto.AVAILABLE:
+        return
+    node = _claim_node(tmp_path, monkeypatch, local_id="z-local")
+    k = _mk_key(); _link_personal_claimant(node, "a-peer", k)          # pin a-peer → key k
+    # A claim for a-peer self-signed by a DIFFERENT key (valid self-signature) must
+    # be dropped by the pin, exactly like an advert id-hijack.
+    hijack = _signed_claim(_mk_key(), _WK, "a-peer")
+    assert node._claim_authentic(hijack)                              # self-consistent sig
+    node._on_work_claim(protocol.work_claim(hijack))
+    assert node._claim_holder(_WK) is None                            # pin rejected it
+
+
+def test_claim_book_is_bounded(tmp_path, monkeypatch):
+    if not crypto.AVAILABLE:
+        return
+    from argent_utils.mesh import node as node_mod
+    node = _claim_node(tmp_path, monkeypatch)
+    k = _mk_key(); _link_personal_claimant(node, "a-peer", k)
+    for i in range(node_mod._MAX_CLAIMS + 25):                        # a flood of spoofed keys
+        node._on_work_claim(protocol.work_claim(
+            _signed_claim(k, f"wk-{i:05d}", "a-peer")))
+    total = sum(len(b) for b in node._claims.values())
+    assert total <= node_mod._MAX_CLAIMS                              # capped, not unbounded
+
+
+def test_release_frees_key_and_forget_drops_reaped_leases(tmp_path, monkeypatch):
+    if not crypto.AVAILABLE:
+        return
+    node = _claim_node(tmp_path, monkeypatch, local_id="m-local")
+    assert node.claim(_WK) is True and node._claim_holder(_WK) == "m-local"
+    assert node.claim(_WK) is True                                    # re-claim is idempotent
+    node.release(_WK)
+    assert node._claim_holder(_WK) is None                            # released → unowned
+    # A reaped claimant's leases are forgotten wholesale (on a distinct key, so our
+    # own lingering released record for _WK doesn't confuse the assertion).
+    wk2 = "audit:github.com/acme/app#9@def456"
+    k = _mk_key(); _link_personal_claimant(node, "a-peer", k)
+    node._on_work_claim(protocol.work_claim(_signed_claim(k, wk2, "a-peer")))
+    assert node._claim_holder(wk2) == "a-peer"
+    node._forget_claims("a-peer")
+    assert node._claim_holder(wk2) is None
+    assert all("a-peer" not in book for book in node._claims.values())
+
+
 # MARK: - redial from memory (peer-address cache + beacon-outage surfacing)
 
 
@@ -887,6 +1052,11 @@ if __name__ == "__main__":  # dependency-free smoke run
 
                             def delenv(self, k, raising=True):
                                 os.environ.pop(k, None)
+
+                            def setattr(self, obj, name, value):
+                                self._undo = getattr(self, "_undo", [])
+                                self._undo.append((obj, name, getattr(obj, name)))
+                                setattr(obj, name, value)
                         kwargs = {}
                         if "tmp_path" in params:
                             from pathlib import Path

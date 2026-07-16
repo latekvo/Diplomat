@@ -20,6 +20,13 @@ A node fills one or more roles. Requirements scale with the roles claimed.
   originates a dispatch to a peer (a request it is asked to route runs locally),
   and MAY require an [API key](11-trust-and-balancing.md#the-api-key) on inbound
   control and dispatch. A dedicated shared box that takes work but never pushes it.
+- **Originator-with-dedup** (optional): a Dispatcher that also implements
+  [work-claims](12-work-claims.md#conformance) — it claims a `workKey` before
+  originating externally-triggered work and stands down when a peer already owns it,
+  so two nodes watching the same source don't both run the work. A node that omits
+  the role MUST still drop the `work-claim` message and keep the link ([09
+  rule 2](09-extensibility.md#the-compatibility-contract)); the two interoperate,
+  they just don't deduplicate against each other.
 
 ## Minimal node
 
@@ -163,6 +170,22 @@ Booting three real nodes on loopback:
   [authentication-ordering rule](03-transport.md#the-join-fence) rejects it. (The
   reference test `test_outbound_dial_fence_rejects_naked_dispatch` drives exactly
   this and fails if the gate is removed.)
+
+### V6 - work-claims (real sockets, optional role)
+
+For the [Originator-with-dedup](#roles) role, over two live nodes:
+
+- the lower-id node dispatches a `workKey`, claims it, and runs the work; the
+  higher-id node dispatching the **same** `workKey` gets a `"suppressed"` result and
+  runs **nothing** (origination dedup);
+- a **forged** claim (bad `sig`) is dropped, so it does not suppress a later
+  dispatch of that key;
+- a **keyless** or **foreign** claimant never suppresses (anti-starvation);
+- when the **owner is killed**, its lease lapses within `peerTimeoutSecs` and the
+  survivor's next dispatch of that key is no longer suppressed - it takes the work
+  over. (The reference asserts the live path in
+  `test_work_claim_dedupes_origination_and_frees_on_owner_death` and the logic in
+  `test_mesh_logic.py`'s work-claims section.)
 
 ## Interop checklist (quick)
 
