@@ -389,7 +389,10 @@ class MeshNode:
             # (the dead process's socket closes, or heartbeats simply stop), so we
             # only act on the restart hint once the link is no longer fresh — and
             # we do NOT let a beacon rewrite a live peer's address at all.
-            epoch = float(msg.get("epoch", 0.0))
+            try:
+                epoch = float(msg.get("epoch", 0.0))
+            except (TypeError, ValueError):
+                return  # a malformed beacon epoch must never raise out of the reader
             quiet = (time.monotonic() - peer.last_seen) > self.proto["peerStaleSecs"]
             if epoch > peer.info.epoch and quiet:
                 peer.addr = host
@@ -667,14 +670,18 @@ class MeshNode:
             activity.log("mesh", "mesh-peer-up",
                          f"Mesh: discovered {info.name} ({info.platform}, tier {info.tier})")
         if fresh:
-            # A verified fingerprint is bound to the exact pubkey the peer PROVED
-            # it holds. If a fresher advertisement carries a DIFFERENT pubkey, that
-            # proof no longer applies — drop the verification so the peer is treated
-            # as unverified (hence foreign under any allowlist) until it re-proves
-            # possession of the new key on a fresh link. Without this, a peer could
-            # prove key K (become personal), then gossip a NodeInfo advertising a
-            # key K' it doesn't hold while keeping its personal classification.
-            if (peer.verified_fp is not None
+            # A verified fingerprint is bound to the exact pubkey the peer PROVED it
+            # holds. If the peer re-advertises a DIFFERENT pubkey **on its own link**
+            # (a fresh hello, ``link_writer`` set), the proof no longer applies —
+            # drop the verification so it must re-prove possession of the new key
+            # (the accompanying `auth` re-establishes it). We MUST NOT clear it from
+            # a THIRD-PARTY gossip relay (``link_writer is None``): an authenticated
+            # peer could otherwise relay a spoofed `node` for a personal peer P
+            # (bogus pubkey, inflated seq) to force P personal→foreign, and the
+            # inflated seq would outrank P's honest gossip and block recovery until P
+            # restarts — a persistent trust-DoS. Trust keys on the proven fingerprint,
+            # so an advertised-but-unproven pubkey drift is harmless to the decision.
+            if (link_writer is not None and peer.verified_fp is not None
                     and crypto.fingerprint_of(info.pubkey) != peer.verified_fp):
                 peer.verified_fp = None
             peer.info = info

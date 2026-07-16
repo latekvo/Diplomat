@@ -552,21 +552,53 @@ def _peer_info(node_id: str, seq: int, pubkey: str = "") -> NodeInfo:
                     epoch=1.0, seq=seq, pubkey=pubkey)
 
 
-def test_verified_fp_cleared_when_advertised_pubkey_changes(tmp_path, monkeypatch):
+class _FakeWriter:
+    """A stand-in StreamWriter for driving `_learn_node` as if a hello arrived on
+    the peer's own link (no real socket)."""
+    def write(self, *a):
+        pass
+
+    def close(self, *a):
+        pass
+
+
+def test_verified_fp_rekey_only_via_own_link_not_third_party_gossip(tmp_path, monkeypatch):
     node = _fresh_node(tmp_path, monkeypatch)
     node._learn_node(_peer_info("peer1", 1, pubkey="QUJDRA=="), "1.2.3.4", None)
     peer = node.peers["peer1"]
     peer.verified_fp = crypto.fingerprint_of("QUJDRA==")  # pretend it proved this key
 
-    # A fresher advertisement with a DIFFERENT pubkey drops the verification: the
-    # proof no longer applies to the key now advertised.
-    node._learn_node(_peer_info("peer1", 2, pubkey="RUZHSA=="), "1.2.3.4", None)
+    # A THIRD-PARTY gossip relay (link_writer=None) advertising a DIFFERENT pubkey
+    # with an inflated seq must NOT clear the verification — otherwise a relayed
+    # spoof could force a personal peer to foreign and (via the inflated seq) block
+    # its recovery. Trust keys on the proven fingerprint, so the drift is harmless.
+    node._learn_node(_peer_info("peer1", 999, pubkey="RUZHSA=="), "1.2.3.4", None)
+    assert node.peers["peer1"].verified_fp == crypto.fingerprint_of("QUJDRA==")
+
+    # A re-key the peer advertises ON ITS OWN LINK (a hello, link_writer set) DOES
+    # drop the verification, forcing re-proof of the new key.
+    w = _FakeWriter()
+    node._learn_node(_peer_info("peer1", 1000, pubkey="SUpLTA=="), "1.2.3.4", w)
     assert node.peers["peer1"].verified_fp is None
 
-    # A same-pubkey fresher advertisement keeps the verification intact.
-    peer.verified_fp = crypto.fingerprint_of("RUZHSA==")
-    node._learn_node(_peer_info("peer1", 3, pubkey="RUZHSA=="), "1.2.3.4", None)
-    assert node.peers["peer1"].verified_fp == crypto.fingerprint_of("RUZHSA==")
+    # A same-pubkey fresher advertisement on its own link keeps the verification.
+    node.peers["peer1"].verified_fp = crypto.fingerprint_of("SUpLTA==")
+    node._learn_node(_peer_info("peer1", 1001, pubkey="SUpLTA=="), "1.2.3.4", w)
+    assert node.peers["peer1"].verified_fp == crypto.fingerprint_of("SUpLTA==")
+
+
+def test_malformed_beacon_epoch_is_ignored_not_fatal(tmp_path, monkeypatch):
+    node = _fresh_node(tmp_path, monkeypatch)
+    node._learn_node(_peer_info("peer1", 1), "1.2.3.4", _FakeWriter())  # linked peer
+    assert node.peers["peer1"].linked
+    # A beacon carrying a non-numeric epoch for a linked peer must be dropped, never
+    # raise out of the UDP reader callback.
+    node._on_beacon({"t": "beacon", "id": "peer1", "tcpPort": 5, "epoch": "pwn"},
+                    "9.9.9.9")
+    node._on_beacon({"t": "beacon", "id": "peer1", "tcpPort": 5, "epoch": {"x": 1}},
+                    "9.9.9.9")
+    # The live link and its address survived (a malformed beacon changed nothing).
+    assert node.peers["peer1"].linked and node.peers["peer1"].addr == "1.2.3.4"
 
 
 def test_peer_table_is_bounded_on_gossip(tmp_path, monkeypatch):

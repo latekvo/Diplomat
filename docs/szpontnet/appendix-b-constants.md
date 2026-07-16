@@ -83,8 +83,9 @@ is `sha256(public key)` as 64 hex chars. The trusted allowlist lives at
 **Auth proof-of-possession construction.** The `auth` signature is over the
 domain-separated bytes `"szpontnet-auth-v1:" || <nonce as UTF-8>` (ASCII tag
 `szpontnet-auth-v1:` + the hello nonce), verified against the peer's advertised
-`pubkey`. A verified fingerprint is bound to that exact key and discarded if the
-peer later advertises a different `pubkey`. See
+`pubkey`. A verified fingerprint is bound to that exact key and discarded only if
+the peer re-advertises a different `pubkey` on its own link (never from third-party
+gossip). See
 [11](11-trust-and-balancing.md#trust-is-never-derived-from-an-advertisement).
 
 ## Server & API key (v1 vocabulary)

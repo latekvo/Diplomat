@@ -205,9 +205,10 @@ own `nonce`) and answer the other's challenge with an `auth`. A receiver verifie
 the `sig` against the domain-separated form of the nonce **it** issued and the
 peer's advertised `pubkey`; on success it records the peer's **verified
 fingerprint** (`sha256(pubkey)` - what trust keys on), bound to that exact key and
-**discarded if the peer later advertises a different `pubkey`**. A bad or absent
-signature leaves the peer **unverified**, hence *foreign* under any configured
-allowlist. See [11-trust-and-balancing](11-trust-and-balancing.md).
+**discarded only if the peer re-advertises a different `pubkey` on its own link**
+(never from third-party gossip - see [11](11-trust-and-balancing.md#trust-is-never-derived-from-an-advertisement)).
+A bad or absent signature leaves the peer **unverified**, hence *foreign* under any
+configured allowlist. See [11-trust-and-balancing](11-trust-and-balancing.md).
 
 ### `node`
 

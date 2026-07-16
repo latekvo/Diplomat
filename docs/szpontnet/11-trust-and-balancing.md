@@ -57,12 +57,18 @@ beacon any of them. Trust therefore rests on two things a stranger cannot forge:
    the bare nonce) MUST NOT verify.
 
    **A verified fingerprint is bound to the key that was proven.** The recorded
-   fingerprint names the *specific* `pubkey` the peer signed for. If a later
-   advertisement (a gossiped `node` update) changes the peer's advertised `pubkey`,
-   the node **MUST** discard the verification (the peer reverts to *unverified*,
-   hence foreign under any allowlist) until it re-proves possession of the new key
-   on a fresh link. Otherwise a peer could prove key K, become personal, then
-   advertise a key K' it does not hold while keeping its personal classification.
+   fingerprint names the *specific* `pubkey` the peer signed for. If the peer
+   re-advertises a **different** `pubkey` **on its own link** (a fresh
+   [`hello`](04-messages.md#hello)), the node **MUST** discard the verification and
+   require re-proof of the new key (the accompanying `auth` re-establishes it). A
+   pubkey change seen only via a **third-party gossip relay** (a `node` message that
+   did not arrive on that peer's own link) **MUST NOT** clear the verification:
+   otherwise any member could relay a spoofed advertisement for a personal peer P
+   (a bogus `pubkey` with an inflated `seq`) to force P *personal→foreign*, and the
+   inflated `seq` would outrank P's honest gossip and block recovery until P
+   restarts — a persistent trust-DoS. This is safe because **trust keys on the
+   *proven* fingerprint**, so an advertised-but-unproven pubkey drift never changes
+   a trust decision; the classification stays on the key P actually proved.
 2. **A local allowlist.** Trust is **set manually by the operator and stored only
    on this machine** ([`trusted.json`](08-state.md#trustedjson), never gossiped): a
    set of fingerprints marked as "my devices."
@@ -337,8 +343,9 @@ An implementation of this chapter:
   challenge** (`"szpontnet-auth-v1:" || nonce`, [above](#trust-is-never-derived-from-an-advertisement))
   for *our* fresh per-connection `nonce` must validate against the `pubkey` it
   advertised. It **MUST** classify the requester from that verified link identity,
-  never from `requestedBy`, and **MUST** discard a verification once the peer's
-  advertised `pubkey` changes.
+  never from `requestedBy`, and **MUST** discard a verification only when the peer
+  re-advertises a different `pubkey` **on its own link** — never from a third-party
+  gossip relay (which would enable a trust-DoS).
 - **MUST** ignore a **peer-link** `set-attr` from a **foreign** device (mutation is
   a personal-only action); a control-session `set-attr` is a first-party action.
 - **MUST**, if it ever *executes* (rather than declines) a **foreign**
