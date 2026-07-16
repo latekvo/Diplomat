@@ -9,6 +9,7 @@
     "tcpPortBase": 40878,
     "tcpPortSpan": 10,
     "beaconIntervalSecs": 2.0,
+    "redialIntervalSecs": 10.0,
     "heartbeatIntervalSecs": 2.0,
     "peerStaleSecs": 5.0,
     "peerTimeoutSecs": 10.0,

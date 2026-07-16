@@ -7,6 +7,10 @@ One asyncio event loop drives everything:
 - a UDP listener learns peers from their beacons and **dials** the ones whose
   id sorts above ours (the deterministic smaller-id-dials rule, so exactly one
   TCP link exists per pair);
+- a **redial** task re-dials known-but-unlinked peers from their last
+  authenticated address (persisted in ``peers.json``), so a mesh whose beacon
+  channel died (AP multicast filtering, an OS privacy gate) still heals over
+  unicast;
 - each TCP **link** exchanges ``hello`` (full NodeInfo + LWW overrides), then
   heartbeats and gossip; a peer missing heartbeats past the timeout is marked
   down, its links closed, and duties recomputed — the takeover is logged to
@@ -35,8 +39,8 @@ from dataclasses import replace
 
 from .. import activity
 from . import (
-    assign, config, crypto, identity, protocol, spawnjob, statefile, stats,
-    trust, usage,
+    assign, config, crypto, identity, peercache, protocol, spawnjob, statefile,
+    stats, trust, usage,
 )
 from .config import PlacementOverrides
 from .protocol import Job, NodeInfo
@@ -162,6 +166,13 @@ class MeshNode:
         # This machine's own addresses, so a self-beacon looping back (source =
         # loopback OR the real LAN IP) isn't mistaken for a cloned-id peer.
         self._local_addrs = _own_addresses()
+        # Last-known dialable addresses of authenticated peers (persisted), so a
+        # dropped link can be redialed even while the beacon channel is dead.
+        self._peer_cache = peercache.load()
+        # Whether the last beacon tick failed EVERY send — the node is then
+        # undiscoverable and says so (activity feed + snapshot) instead of failing
+        # silently. Flips back on the first successful send. See _note_beacon_sends.
+        self._beacon_blocked = False
         # The trust challenge nonce THIS node issued on each link, keyed by writer,
         # so an inbound `auth` can be verified against the nonce we chose.
         self._issued_nonce: dict[asyncio.StreamWriter, str] = {}
@@ -252,6 +263,7 @@ class MeshNode:
         self._start_udp(loop)
         self._tasks = [
             loop.create_task(self._beacon_loop(), name="mesh-beacon"),
+            loop.create_task(self._redial_loop(), name="mesh-redial"),
             loop.create_task(self._heartbeat_loop(), name="mesh-heartbeat"),
             loop.create_task(self._snapshot_loop(), name="mesh-snapshot"),
         ]
@@ -349,12 +361,43 @@ class MeshNode:
         group, port = self.proto["multicastGroup"], self.proto["multicastPort"]
         while True:
             payload = protocol.encode(protocol.beacon(self.info))
-            with contextlib.suppress(OSError):
+            sent, err = 0, None
+            try:
                 self._udp_send.sendto(payload, (group, port))
+                sent += 1
+            except OSError as exc:
+                err = exc
             if not config.loopback_only():
-                with contextlib.suppress(OSError):
+                try:
                     self._udp_send.sendto(payload, ("255.255.255.255", port))
+                    sent += 1
+                except OSError as exc:
+                    err = exc
+            self._note_beacon_sends(sent, err)
             await asyncio.sleep(self.proto["beaconIntervalSecs"])
+
+    def _note_beacon_sends(self, sent: int, err: OSError | None) -> None:
+        """Track whether beacons reach the network at all, and surface a TOTAL
+        send outage to the operator instead of swallowing it. A node whose every
+        beacon send fails is undiscoverable — peers will never (re)dial it — which
+        reads as "the mesh silently broke" with no visible cause. The classic
+        trigger is not a network fault but an OS privacy gate (macOS 15's Local
+        Network permission fails LAN sends with EHOSTUNREACH) while unicast links
+        still work, so the node otherwise looks healthy. Logged only on the
+        blocked/unblocked transition, never per tick."""
+        blocked = sent == 0
+        if blocked == self._beacon_blocked:
+            return
+        self._beacon_blocked = blocked
+        if blocked:
+            hint = (" On macOS check System Settings → Privacy & Security → "
+                    "Local Network (Python must be allowed)."
+                    if self.platform == "macos" else "")
+            activity.log("mesh", "warn",
+                         f"Mesh: every beacon send is failing ({err}) — this node "
+                         f"is undiscoverable until sends recover.{hint}")
+        else:
+            activity.log("mesh", "mesh-up", "Mesh: beacon sending recovered")
 
     def _on_udp_readable(self, sock: socket.socket) -> None:
         # Drain everything queued; each datagram is one beacon line.
@@ -464,6 +507,57 @@ class MeshNode:
             await self._run_link(reader, writer, host, authenticated=False)
         finally:
             self._dialing.discard(peer_id)
+
+    # MARK: - redial from memory (survives a dead beacon channel)
+
+    def _remember_peer(self, peer_id: str, addr: str, tcp_port: int) -> None:
+        """Persist a peer's last-known dialable address, learned from an
+        authenticated hello on its own link (never from a spoofable beacon), so
+        redial-from-memory survives both a link drop and a node restart. Written
+        only on change — a steady link costs no I/O."""
+        if not addr or tcp_port <= 0:
+            return
+        entry = (addr, tcp_port)
+        if self._peer_cache.get(peer_id) == entry:
+            return
+        self._peer_cache[peer_id] = entry
+        peercache.save(self._peer_cache)
+
+    def _redial_targets(self) -> list[tuple[str, str, int]]:
+        """Cached peers this node should be dialing right now: an address is
+        remembered, the id is ours to dial (smaller id dials, 02-discovery), and
+        the peer is neither linked nor already mid-dial."""
+        out = []
+        for peer_id, (addr, port) in self._peer_cache.items():
+            if not self.local.id < peer_id:
+                continue
+            peer = self.peers.get(peer_id)
+            if (peer is not None and peer.linked) or peer_id in self._dialing:
+                continue
+            out.append((peer_id, addr, port))
+        return out
+
+    async def _redial_loop(self) -> None:
+        """Dial known-but-unlinked peers from the last-known-address cache.
+
+        Beacons are the normal (re)dial trigger, but they ride multicast/
+        broadcast, which can die under a live mesh while unicast still works
+        (AP multicast filtering; an OS privacy gate such as macOS 15's Local
+        Network permission). Without this loop, a node that loses a link during
+        such an outage never gets it back — nothing re-triggers the dial. The
+        dial rule is unchanged (only the smaller id dials) and ``_dial``'s
+        hello fence still authenticates whoever answers, so a stale or poisoned
+        cache entry costs one failed dial per interval, nothing more."""
+        interval = float(self.proto.get("redialIntervalSecs", 10.0))
+        while True:
+            await asyncio.sleep(interval)
+            for peer_id, addr, port in self._redial_targets():
+                task = asyncio.get_running_loop().create_task(
+                    self._dial(peer_id, addr, port),
+                    name=f"mesh-redial-{peer_id[:6]}",
+                )
+                self._dial_tasks.add(task)
+                task.add_done_callback(self._dial_tasks.discard)
 
     # MARK: - TCP links + control sessions
 
@@ -756,6 +850,9 @@ class MeshNode:
             if peer.linked_since is None:
                 peer.linked_since = time.monotonic()  # link came up: start the uptime clock
             peer.writer = link_writer
+            # A hello on the peer's own link is the one authenticated source of a
+            # dialable address (source IP + the listen port it advertises).
+            self._remember_peer(info.id, host, info.tcp_port)
             self._bump_and_gossip()  # our `sees` changed
         if fresh:
             # Relay a genuinely-newer advertisement learned via GOSSIP onward, so a
@@ -1223,6 +1320,10 @@ class MeshNode:
             # How many peers are mid-handshake right now — drives the "scanning the
             # LAN" affordance so a slow first link isn't a silent 20s of nothing.
             "linking": len(self._dialing),
+            # True while every beacon send fails (the node is undiscoverable —
+            # e.g. an OS privacy gate); lets a UI say so instead of showing an
+            # inexplicably empty mesh.
+            "beaconBlocked": self._beacon_blocked,
             "trusted": [{"fingerprint": fp, "label": lbl}
                         for fp, lbl in sorted(self._trusted.items())],
             "assignments": {k: a.to_dict() for k, a in self._assignments.items()},

@@ -151,6 +151,7 @@ client can get it live or from disk.
   "pid": 12345,
   "tcpPort": 40878,
   "linking": 0,
+  "beaconBlocked": false,
   "self": { …NodeInfo…, "fingerprint": "3d2a…f1", "uptimeSecs": 934.0 },
   "peers": [
     { …NodeInfo…, "link": "up", "addr": "192.168.1.21", "lastSeenSecsAgo": 1.2,
@@ -179,6 +180,7 @@ pinned, else the usage-derived state), not the raw override.
 | `pid` | int | the node process id - a liveness check (is a local node actually running?). |
 | `tcpPort` | int | the node's control/link port - how a local client finds the control endpoint. |
 | `linking` | int | peers currently mid-handshake - lets a UI show a "linking to N…" / "scanning" affordance while the mesh forms. |
+| `beaconBlocked` | bool | true while *every* beacon send fails (the node is undiscoverable - e.g. an OS privacy gate denying LAN sends; [02](02-discovery.md#redial-from-memory)) - lets a UI say so instead of showing an inexplicably empty mesh. |
 | `self` | NodeInfo | this node's own advertisement, plus its own `fingerprint` (`sha256` of its advertised `pubkey`, 64 hex — *not* the pubkey itself) and `uptimeSecs` (seconds this node has been running). |
 | `peers` | array | each known peer's NodeInfo plus link decoration: `link` (`up`/`stale`/`down`), `addr` (last-seen source IP), `lastSeenSecsAgo` (float), `uptimeSecs` (float, seconds the current link has been up - `null` while down), plus **this node's local view** of the peer: `verified` (bool - whether the peer *proved possession* of its key on the link), `fingerprint` (the fingerprint it proved, or merely claims if unverified), `trust` (`personal`/`foreign`, [11](11-trust-and-balancing.md)) and `surplus` (float - its spare-quota rank score). |
 | `trusted` | array | this node's local allowlist as `[{fingerprint, label}]` - a read-only mirror of [`trusted.json`](#trustedjson). Like the per-peer trust fields it is this node's own view; `trusted.json` and `device.key` are themselves **never gossiped**. |

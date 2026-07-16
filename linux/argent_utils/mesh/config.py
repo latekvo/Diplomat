@@ -26,6 +26,7 @@ _ENV_KEYS = {
     "ARGENT_MESH_TCP_BASE": "tcpPortBase",
     "ARGENT_MESH_TCP_SPAN": "tcpPortSpan",
     "ARGENT_MESH_BEACON_SECS": "beaconIntervalSecs",
+    "ARGENT_MESH_REDIAL_SECS": "redialIntervalSecs",
     "ARGENT_MESH_HEARTBEAT_SECS": "heartbeatIntervalSecs",
     "ARGENT_MESH_STALE_SECS": "peerStaleSecs",
     "ARGENT_MESH_TIMEOUT_SECS": "peerTimeoutSecs",

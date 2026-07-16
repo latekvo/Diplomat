@@ -17,6 +17,7 @@ may place work differently ([09](09-extensibility.md#vocabulary-skew)).
 | `tcpPortBase` | `40878` | [transport binding](03-transport.md#binding) |
 | `tcpPortSpan` | `10` (ports `40878`-`40887`) | [transport binding](03-transport.md#binding) |
 | `beaconIntervalSecs` | `2.0` | [beacons](02-discovery.md#beacons) |
+| `redialIntervalSecs` | `10.0` | [redial from memory](02-discovery.md#redial-from-memory) |
 | `heartbeatIntervalSecs` | `2.0` | [heartbeats](03-transport.md#link-state) |
 | `peerStaleSecs` | `5.0` | [link state → `stale`](03-transport.md#link-state) |
 | `peerTimeoutSecs` | `10.0` | [link state → `down`](03-transport.md#link-state) |

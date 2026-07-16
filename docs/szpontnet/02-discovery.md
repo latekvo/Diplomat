@@ -44,12 +44,18 @@ heard. A receiver **MUST** treat multicast and broadcast copies of the same
 beacon as one (dedupe by `id`); receiving the same beacon twice **MUST NOT**
 create two peers or two links.
 
-> **Interop note.** If your network turns out to block *both* multicast and
-> client-to-client broadcast (some "client isolation" Wi-Fi configurations do),
-> discovery cannot work and neither can the TCP links — SzpontNet needs a LAN that
-> permits client-to-client traffic. This is a network requirement, not something
-> the protocol can route around. A wired switch or an AP with client isolation
-> disabled is the fix.
+> **Interop note.** If your network blocks *all* client-to-client traffic (some
+> "client isolation" Wi-Fi configurations do), neither discovery nor the TCP links
+> can work — SzpontNet needs a LAN that permits client-to-client traffic. A wired
+> switch or an AP with client isolation disabled is the fix. If only the
+> *beacon channel* is blocked (multicast/broadcast filtered while unicast still
+> flows — also seen when an OS privacy gate such as macOS 15's Local Network
+> permission fails every LAN `sendto` with `EHOSTUNREACH`), first-contact
+> discovery still cannot work, but peers that have met before recover via
+> [redial from memory](#redial-from-memory). A node **SHOULD** detect that every
+> beacon send is failing and surface it to the operator
+> ([08-state](08-state.md#the-statejson-snapshot) `beaconBlocked`) rather than
+> fail silently — the node is undiscoverable while it lasts.
 
 ## Receiving
 
@@ -94,6 +100,31 @@ A node **SHOULD** re-dial when a beacon indicates the peer **restarted** — i.e
 the beacon's `epoch` is greater than the epoch of the currently-linked
 incarnation — by dropping the stale link and dialing the new incarnation. See
 [08-state](08-state.md#liveness--incarnations).
+
+## Redial from memory
+
+Beacons are the *normal* (re)dial trigger, but they ride multicast/broadcast — a
+channel that can silently die under a live mesh while unicast keeps working:
+consumer APs filter multicast between wireless clients, and OS privacy gates can
+start failing every LAN send on one node (macOS 15's Local Network permission
+denies them with `EHOSTUNREACH`). A mesh that has already formed then loses a
+dropped link *forever*: nothing ever re-triggers the dial.
+
+To heal this, a node **SHOULD** remember the last address each peer was actually
+reached at — the source IP of an authenticated `hello` received on the peer's own
+link plus the TCP port that hello advertised, **never** a beacon's contents (a
+beacon is unauthenticated and would poison the cache) — persist it across
+restarts (the reference implementation keeps `peers.json` next to `node.json`),
+and periodically attempt a direct dial of every remembered peer that is currently
+unlinked, every `redialIntervalSecs` (default **10.0 s**;
+[appendix B](appendix-b-constants.md)).
+
+Redial obeys the same rules as a beacon-triggered dial: only the smaller id
+dials, the in-progress dial guard applies, and the [hello
+fence](03-transport.md#outbound-the-dialer) authenticates whoever answers. A
+stale or wrong cache entry therefore costs one failed (or fenced) dial per
+interval and nothing else; a peer whose address changed is re-learned from its
+next authenticated hello (or its beacons, where those still flow).
 
 ## Several nodes on one host
 

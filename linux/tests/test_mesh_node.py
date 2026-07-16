@@ -92,7 +92,7 @@ class Fleet:
 
     def start(self, node_id: str, name: str, platform: str, tier: int,
               tokens: str = "ok", secret: str = "", server: bool = False,
-              api_key: str = "") -> None:
+              api_key: str = "", extra_env: dict | None = None) -> None:
         d = self.root / node_id
         d.mkdir(parents=True, exist_ok=True)
         (d / "node.json").write_text(json.dumps({
@@ -115,6 +115,9 @@ class Fleet:
         # Each fake node logs to the fleet dir, and must not scribble on the
         # real ~/.argent activity feed.
         env["HOME"] = str(d)
+        # Last so a test can override anything above (e.g. isolate a node's
+        # beacon channel on its own multicast port).
+        env.update(extra_env or {})
         self.procs[node_id] = subprocess.Popen(
             [sys.executable, "-m", "argent_utils.mesh"],
             cwd=LINUX_DIR, env=env,
@@ -628,3 +631,37 @@ def test_spoofed_higher_epoch_beacon_does_not_evict_a_live_link(fleet):
     assert bob["link"] == "up"
     feed = (fleet.dirs["aaaa"] / ".argent" / "pr-monitor" / "audit.jsonl").read_text()
     assert "restarted" not in feed, "spoofed epoch beacon evicted a live link"
+
+
+def test_redial_from_memory_relinks_without_beacons(fleet):
+    """Two nodes whose beacon channels are fully ISOLATED (each multicasts on its
+    own port, so neither ever hears the other) still link: the smaller-id node
+    redials the bigger one from its persisted last-known-address cache. This is
+    the recovery path for a mesh whose multicast/broadcast died under it (AP
+    filtering, an OS privacy gate such as macOS Local Network) while unicast
+    still works — before redial-from-memory, one dropped link meant the pair
+    never re-formed."""
+    bb_tcp = _PORT_BASE + 14
+    # Seed aa's address cache with bb BEFORE the node starts (a survivor's
+    # persisted memory of a peer it met earlier).
+    aa_dir = fleet.root / "aa"
+    aa_dir.mkdir(parents=True, exist_ok=True)
+    (aa_dir / "peers.json").write_text(json.dumps(
+        {"bb": {"addr": "127.0.0.1", "tcpPort": bb_tcp}}))
+    fleet.start("bb", "bee", "linux", tier=3, extra_env={
+        "ARGENT_MESH_MCAST_PORT": str(_PORT_BASE + 16),
+        "ARGENT_MESH_TCP_BASE": str(bb_tcp), "ARGENT_MESH_TCP_SPAN": "1",
+    })
+    fleet.start("aa", "aye", "macos", tier=2, extra_env={
+        "ARGENT_MESH_MCAST_PORT": str(_PORT_BASE + 17),
+        "ARGENT_MESH_TCP_BASE": str(_PORT_BASE + 15), "ARGENT_MESH_TCP_SPAN": "1",
+        "ARGENT_MESH_REDIAL_SECS": "0.5",
+    })
+    _wait_for(lambda: _links_up(fleet.state("aa"), 1) and _links_up(fleet.state("bb"), 1),
+              what="aa↔bb linked via redial-from-memory with beacons isolated")
+    # And the link taught bb (which started with no cache) aa's dialable address
+    # from the authenticated hello — persisted for ITS future redials.
+    _wait_for(lambda: json.loads((fleet.dirs["bb"] / "peers.json").read_text())
+              .get("aa", {}).get("addr") == "127.0.0.1"
+              if (fleet.dirs["bb"] / "peers.json").exists() else False,
+              what="bb persisted aa's last-known address")

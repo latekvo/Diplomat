@@ -705,6 +705,84 @@ def test_overrides_signature_required_from_a_known_editor(tmp_path, monkeypatch)
         {"rev": 2 ** 62, "updatedBy": "stranger", "duties": {}})
 
 
+# MARK: - redial from memory (peer-address cache + beacon-outage surfacing)
+
+
+def test_peer_cache_round_trip_and_malformed_entries(tmp_path, monkeypatch):
+    import json
+    monkeypatch.setenv("ARGENT_MESH_DIR", str(tmp_path))
+    from argent_utils.mesh import peercache
+    assert peercache.load() == {}  # no file yet
+    peercache.save({"bb": ("192.168.1.7", 40878), "cc": ("10.0.0.9", 40880)})
+    assert peercache.load() == {"bb": ("192.168.1.7", 40878),
+                                "cc": ("10.0.0.9", 40880)}
+    # Malformed entries are dropped, never fatal; a corrupt file loads empty.
+    peercache.path().write_text(json.dumps({
+        "ok": {"addr": "1.2.3.4", "tcpPort": 5},
+        "noport": {"addr": "1.2.3.4"},
+        "zeroport": {"addr": "1.2.3.4", "tcpPort": 0},
+        "badshape": ["1.2.3.4", 5],
+    }))
+    assert peercache.load() == {"ok": ("1.2.3.4", 5)}
+    peercache.path().write_text("not json")
+    assert peercache.load() == {}
+
+
+def test_hello_on_own_link_remembers_dialable_address(tmp_path, monkeypatch):
+    from argent_utils.mesh import peercache
+    node = _fresh_node(tmp_path, monkeypatch)
+    info = NodeInfo(id="peerR", name="p", platform="linux", tier=3, tokens="ok",
+                    epoch=1.0, seq=1, tcp_port=41000)
+    # Gossip-learned (no link) must NOT be remembered — a relayed advert's source
+    # address is the relay, not the peer, and would poison the redial cache.
+    node._learn_node(info, "9.9.9.9", None)
+    assert "peerR" not in peercache.load()
+    # A hello on the peer's own link is authoritative: source IP + the listen
+    # port the hello advertises.
+    node._learn_node(info, "192.168.1.30", _FakeWriter())
+    assert peercache.load()["peerR"] == ("192.168.1.30", 41000)
+
+
+def test_redial_targets_respect_dial_rule_link_state_and_inflight(tmp_path, monkeypatch):
+    from argent_utils.mesh.node import Peer
+    node = _fresh_node(tmp_path, monkeypatch)
+    lo, linked, dialing, free = "0", "zz-linked", "zz-dialing", "zz-free"
+    # "0" sorts below any hex id and "zz…" above ("z" > "f"), regardless of the
+    # random local id this fresh node minted.
+    node._peer_cache = {
+        lo: ("10.0.0.1", 40878),       # sorts below us — theirs to dial, not ours
+        linked: ("10.0.0.2", 40878),   # link is up — nothing to redial
+        dialing: ("10.0.0.3", 40878),  # a dial is already in flight
+        free: ("10.0.0.4", 40878),     # unlinked, not dialing → the one target
+    }
+    up = Peer(_peer_info(linked, 1), "10.0.0.2")
+    up.writer = _FakeWriter()
+    node.peers[linked] = up
+    node._dialing.add(dialing)
+    assert node._redial_targets() == [(free, "10.0.0.4", 40878)]
+
+
+def test_beacon_outage_surfaced_once_and_recovery_logged(tmp_path, monkeypatch):
+    from argent_utils import activity
+    node = _fresh_node(tmp_path, monkeypatch)
+
+    def beacon_lines() -> list[str]:
+        try:
+            text = activity.audit_path().read_text()
+        except OSError:
+            return []
+        return [ln for ln in text.splitlines() if "beacon" in ln]
+
+    node._note_beacon_sends(0, OSError(65, "No route to host"))
+    node._note_beacon_sends(0, OSError(65, "No route to host"))  # no re-log
+    assert node._beacon_blocked
+    assert len(beacon_lines()) == 1  # surfaced exactly once, not per tick
+    node._note_beacon_sends(1, None)
+    node._note_beacon_sends(2, None)  # steady state — no re-log either
+    assert not node._beacon_blocked
+    assert len(beacon_lines()) == 2  # the outage line + the recovery line
+
+
 if __name__ == "__main__":  # dependency-free smoke run
     import inspect
     import tempfile
