@@ -1033,12 +1033,14 @@ class MeshNode:
             return {"t": "state", "state": statefile.stamp(self.snapshot())}
         if t == "set-attr":
             self._on_set_attr(msg)
+            self._flush_state()
             return {"t": "ok"}
         if t == "set-overrides":
             duty = str(msg.get("duty", ""))
             placement = msg.get("placement")
             if duty in config.duty_ids() and isinstance(placement, dict):
                 self.set_overrides_duty(duty, placement)
+                self._flush_state()
                 return {"t": "ok"}
             return {"t": "error", "reason": f"unknown duty {duty!r}"}
         if t == "dispatch":
@@ -1059,9 +1061,11 @@ class MeshNode:
             if not fp:
                 return {"t": "error", "reason": "trust needs a fingerprint"}
             self.add_trusted(fp, str(msg.get("label", "")))
+            self._flush_state()
             return {"t": "ok"}
         if t == "untrust":
             self.remove_trusted(str(msg.get("fingerprint", "")).strip())
+            self._flush_state()
             return {"t": "ok"}
         if t == "stop":
             self.request_stop()
@@ -1083,6 +1087,17 @@ class MeshNode:
             activity.log("mesh", "mesh-up", f"Mesh: untrusting device {fingerprint[:16]}")
 
     # MARK: - snapshot
+
+    def _flush_state(self) -> None:
+        """Persist the snapshot to the statefile NOW.
+
+        A control-channel edit (set-attr / set-overrides / trust) is applied to
+        memory synchronously, but the UI only ever sees state via the statefile.
+        Without an immediate flush the change wouldn't land on disk until the
+        next `_snapshot_loop` write (up to stateWriteIntervalSecs away), so the
+        panel's post-reply re-read would show stale values. Flushing here makes a
+        local edit visible the instant the ctl reply returns."""
+        statefile.write_state(self.snapshot())
 
     def snapshot(self) -> dict:
         stale, timeout = self.proto["peerStaleSecs"], self.proto["peerTimeoutSecs"]
