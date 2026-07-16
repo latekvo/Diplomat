@@ -746,9 +746,7 @@ class Panel(QWidget):
         items = self.store.items_for(selected)
 
         header = QHBoxLayout()
-        em = QLabel(tool.emoji)
-        em.setStyleSheet("font-size: 13px;")
-        header.addWidget(em)
+        header.addWidget(IconChip(tool.glyph, tint, 20))
         title = QLabel(tool.title)
         title.setStyleSheet("font-weight: 700; font-size: 12px;")
         header.addWidget(title)
@@ -817,14 +815,7 @@ class Panel(QWidget):
             rl = QHBoxLayout(roww)
             rl.setContentsMargins(7, 7, 7, 7)
             rl.setSpacing(8)
-            chip = QLabel(tool.emoji)
-            chip.setFixedSize(22, 22)
-            chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            chip.setStyleSheet(
-                f"background-color: {tint if is_on else 'rgba(128,128,128,0.35)'};"
-                f" border-radius: 5px; font-size: 11px;"
-            )
-            rl.addWidget(chip)
+            rl.addWidget(IconChip(tool.glyph, tint, 22, active=is_on))
             name = QLabel(tool.title)
             name.setStyleSheet(
                 f"font-size: 11px; color: {'palette(text)' if is_on else 'palette(mid)'};"
