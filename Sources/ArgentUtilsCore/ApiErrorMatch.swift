@@ -61,6 +61,16 @@ public enum ApiErrorMatch {
         if text.range(of: #"API Error:?\s*[0-9]{3}"#, options: .regularExpression) != nil {
             return true
         }
+        // A bare "429 Rate limited" banner. Newer CLI builds print a rate-limit error
+        // WITHOUT the "API Error:" prefix, so the 3-digit rule above misses it. A 429 is a
+        // transient RPM/TPM rate limit (the window resets in seconds, unlike a weekly/usage
+        // quota cap), so nudge past it like any other server error. Requiring the 429 code
+        // keeps ordinary prose about rate limits ("bump the rate limit in config.yaml")
+        // from tripping it, and the quota check above already excluded the usage caps.
+        if lower.range(of: #"\b429\b"#, options: .regularExpression) != nil
+            && (lower.contains("rate limit") || lower.contains("too many requests")) {
+            return true
+        }
         // Or any API error that points at the status page (user's broader ask).
         if lower.contains("api error") && lower.contains("status.claude.com") {
             return true
@@ -70,5 +80,19 @@ public enum ApiErrorMatch {
             return true
         }
         return false
+    }
+
+    /// Idle-confirmation gate for the terminal watcher. A session is treated as genuinely
+    /// STALLED on an API error — and so eligible for a "continue" nudge — only when its
+    /// erroring tail is UNCHANGED since the previous scan. An actively-working session
+    /// changes between scans and must not be nudged: e.g. one that merely prints or
+    /// discusses an API-error string (like the session developing this very feature), one
+    /// that already recovered and moved on while the error line is still on screen, or a
+    /// CLI mid auto-retry with a live countdown. `previousTail` is nil the first scan a
+    /// tty is seen erroring, which is never a confirmed stall — a second matching,
+    /// identical scan is required. Returns false unless the current tail still looks like
+    /// an API error, so a session that stopped erroring can't be nudged on stale state.
+    public static func isConfirmedStall(previousTail: String?, currentTail: String) -> Bool {
+        looksLikeApiError(currentTail) && previousTail == currentTail
     }
 }

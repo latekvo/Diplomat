@@ -484,6 +484,15 @@ check(!ApiErrorMatch.looksLikeApiError("API Error: 529 Overloaded\nYou've hit yo
 // Genuine transient errors still match.
 check(ApiErrorMatch.looksLikeApiError("API Error: 429 rate_limit_error"))
 check(ApiErrorMatch.looksLikeApiError("⏺ API Error: 529 Overloaded"))
+// A bare "429 Rate limited" banner (no "API Error:" prefix) is a transient rate limit —
+// the window resets in seconds — so it must nudge like any other server error.
+check(ApiErrorMatch.looksLikeApiError("429 Rate limited"))
+check(ApiErrorMatch.looksLikeApiError("✗ 429 Rate limited · retrying in 34s"))
+check(ApiErrorMatch.looksLikeApiError("429 Too Many Requests"))
+// But a 429 rate-limit co-occurring with a quota banner still idles on the quota.
+check(!ApiErrorMatch.looksLikeApiError("429 Rate limited\nYou've hit your weekly limit."))
+// And a bare 429 without a rate-limit phrase (e.g. a line count) must NOT trip it.
+check(!ApiErrorMatch.looksLikeApiError("Deleted 429 stale entries"))
 check(!ApiErrorMatch.looksLikeApiError("● Running tests… 47 passed"))
 check(!ApiErrorMatch.looksLikeApiError("git push origin main"))
 // "unable to connect" alone (no "api error") must NOT trip it — e.g. app logs.
@@ -493,6 +502,27 @@ check(!ApiErrorMatch.looksLikeApiError("bump the rate limit in config.yaml"))
 check(!ApiErrorMatch.looksLikeApiError("the retry limit was reached, giving up"))
 check(!ApiErrorMatch.looksLikeApiError(""))
 print("api-error match assertions passed")
+
+// ---- Idle-confirmation gate (nudge only a session stalled across two scans) ----
+section("api-error idle-confirmation")
+let errTail = "⏺ API Error: 529 Overloaded. check https://status.claude.com"
+// First scan a tty is seen erroring (no prior tail) is NOT a confirmed stall — we wait
+// for a second, identical scan before nudging.
+check(!ApiErrorMatch.isConfirmedStall(previousTail: nil, currentTail: errTail))
+// Two identical erroring scans ⇒ the session is static (genuinely stuck) ⇒ nudge.
+check(ApiErrorMatch.isConfirmedStall(previousTail: errTail, currentTail: errTail))
+// An actively-working session whose tail CHANGED between scans must NOT be nudged, even
+// though both tails match — it's producing output, not stalled. Covers the CLI mid
+// auto-retry (live countdown) and a session merely printing error strings while it works.
+check(!ApiErrorMatch.isConfirmedStall(previousTail: "API Error: 429 rate limited · retry in 34s",
+                                      currentTail: "API Error: 429 rate limited · retry in 12s"))
+check(!ApiErrorMatch.isConfirmedStall(previousTail: "line one\n⏺ 429 Rate limited",
+                                      currentTail: "line one\n⏺ 429 Rate limited\n⏺ Reading file.swift"))
+// A stable tail that ISN'T an API error is never a stall (ordinary idle prompt sitting
+// there unchanged must not be nudged just because it stopped moving).
+check(!ApiErrorMatch.isConfirmedStall(previousTail: "$ git status\nnothing to commit",
+                                      currentTail: "$ git status\nnothing to commit"))
+print("api-error idle-confirmation assertions passed")
 
 // ---- Activity-feed category taxonomy (panel filter chips) ----
 section("audit category")

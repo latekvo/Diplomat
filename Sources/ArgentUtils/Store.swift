@@ -980,6 +980,14 @@ final class Store: ObservableObject {
     private struct ApiBackoff { var nextAllowed: Date; var interval: TimeInterval }
     private var apiErrorBackoff: [String: ApiBackoff] = [:]
 
+    /// Per-tty last erroring tail — the idle-confirmation gate. A session is nudged only
+    /// once its erroring tail has stopped changing between two consecutive scans, i.e. it
+    /// is genuinely stalled rather than actively producing output that merely mentions an
+    /// API error (e.g. a session developing/logging error strings, or one that already
+    /// recovered and moved on while the error line is still on screen). Pruned alongside
+    /// `apiErrorBackoff` to currently-erroring ttys.
+    private var apiErrorSeenTail: [String: String] = [:]
+
     /// Compact "2m" / "45m" / "3h" for the audit line.
     static func humanInterval(_ s: TimeInterval) -> String {
         if s >= 3600 { return "\(Int((s / 3600).rounded()))h" }
@@ -1027,6 +1035,17 @@ final class Store: ObservableObject {
             // it is pointless — only transient server/connectivity errors are nudged.
             guard ApiErrorMatch.looksLikeApiError(s.tail) else { continue }
             erroring.insert(s.tty)
+            // Idle-confirmation (ApiErrorMatch.isConfirmedStall): only nudge a session
+            // whose erroring tail is UNCHANGED since the previous scan. An actively-working
+            // session (output still scrolling — one merely printing/discussing an API-error
+            // string, or a CLI mid auto-retry with a live countdown) changes between scans
+            // and must not be treated as stalled; a genuinely stuck session's tail is
+            // static. Costs one extra scan (~apiWatchInterval) of latency on a real stall —
+            // nothing against a feature meant for overnight overload stalls.
+            let stalled = ApiErrorMatch.isConfirmedStall(previousTail: apiErrorSeenTail[s.tty],
+                                                         currentTail: s.tail)
+            apiErrorSeenTail[s.tty] = s.tail
+            guard stalled else { continue }
             // Still inside this session's current backoff window — hold off.
             if let b = apiErrorBackoff[s.tty], now < b.nextAllowed { continue }
             let tty = s.tty
@@ -1051,6 +1070,10 @@ final class Store: ObservableObject {
         // entry must not linger — macOS recycles tty numbers, so stale state would
         // misgate an unrelated new session on the same tty.
         apiErrorBackoff = apiErrorBackoff.filter { erroring.contains($0.key) }
+        // Same pruning for the idle-confirmation tails: a tty that stopped erroring (or
+        // closed — macOS recycles tty numbers) must start fresh, needing a new two-scan
+        // confirmation before it can be nudged again.
+        apiErrorSeenTail = apiErrorSeenTail.filter { erroring.contains($0.key) }
     }
 
     private func startProcessPoll() {
