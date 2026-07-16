@@ -136,6 +136,19 @@ enum MeshBridge {
         _ = try request(["t": "untrust", "fingerprint": fingerprint], port: port)
     }
 
+    /// Hand a duty job to the mesh: the local node picks the target (per the dispatch
+    /// strategy, with failover) unless `target` pins a node id, and the chosen executor
+    /// spawns the agent. Returns the per-node result dicts (`status`: spawned / declined /
+    /// failed + `reason`). Mirrors `ctl.dispatch`. A remote spawn can take a while to
+    /// ack, hence the generous timeout.
+    static func dispatch(duty: String, prompt: String, target: String? = nil, port: Int,
+                         timeout: TimeInterval = 60) throws -> [[String: Any]] {
+        var msg: [String: Any] = ["t": "dispatch", "duty": duty, "prompt": prompt]
+        if let target { msg["target"] = target }
+        let reply = try request(msg, port: port, timeout: timeout)
+        return (reply["results"] as? [[String: Any]]) ?? []
+    }
+
     /// One command, one reply, over a fresh loopback TCP connection to the node's control
     /// port — the Swift port of `mesh.ctl.request`. Blocking; throws `MeshCtlError` when
     /// the node is unreachable, silent, or answers with an error.

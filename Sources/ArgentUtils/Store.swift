@@ -1161,9 +1161,10 @@ final class Store: ObservableObject {
     }
 
     /// Re-read the local node's public topology snapshot and publish on a meaningful
-    /// change. No-ops (and costs nothing) when the mesh is disabled.
+    /// change. No-ops (and costs nothing) when the mesh is disabled — and in render
+    /// mode, where it would clobber a seeded mesh fixture with the real state.json.
     func meshTick() async {
-        guard meshEnabled else { return }
+        guard meshEnabled, !Headless.isRender else { return }
         let next = await Task.detached(priority: .utility) { MeshBridge.readState() }.value
         if next != meshState { meshState = next }
     }
@@ -1223,6 +1224,26 @@ final class Store: ObservableObject {
             }.value
             guard let self else { return }
             self.meshError = err
+            await self.meshTick()
+        }
+    }
+
+    /// Hand a duty job to the mesh — the wizards' "Run on mesh" path (mirrors the Linux
+    /// store's `mesh_dispatch`). The local node picks the executor per the dispatch
+    /// strategy and walks failover candidates; the per-slot result dicts (or a transport
+    /// error) land in `completion` on the main actor, and the activity feed re-reads so
+    /// the node's mesh-dispatch entries appear immediately.
+    func meshDispatch(duty: String, prompt: String,
+                      completion: @escaping ([[String: Any]], String?) -> Void) {
+        let port = meshState?.tcpPort ?? 0
+        Task { [weak self] in
+            let outcome: ([[String: Any]], String?) = await Task.detached(priority: .userInitiated) {
+                do { return (try MeshBridge.dispatch(duty: duty, prompt: prompt, port: port), nil) }
+                catch { return ([], (error as? LocalizedError)?.errorDescription ?? "\(error)") }
+            }.value
+            guard let self else { return }
+            completion(outcome.0, outcome.1)
+            self.refreshAudit()
             await self.meshTick()
         }
     }

@@ -30,6 +30,9 @@ struct AuditWizardView: View {
     @State private var fixIssues = false
     @State private var openPRs = false
     @State private var status: String?
+    /// "Run on mesh" (effective only while the row is live) — checked by default,
+    /// like the Linux wizards.
+    @State private var useMesh = true
 
     private var config: AuditConfig {
         AuditConfig(fixIssues: fixIssues, openPRs: openPRs)
@@ -121,10 +124,13 @@ struct AuditWizardView: View {
     }
 
     private var spawnButton: some View {
-        SpawnAgentButton(isValid: config.isValid,
-                         tint: tint,
-                         terminalTitle: AgentSpawner.resolved(store.terminal).title,
-                         action: spawn)
+        VStack(spacing: 6) {
+            MeshSpawnRow(duty: "audit", useMesh: $useMesh)
+            SpawnAgentButton(isValid: config.isValid,
+                             tint: tint,
+                             terminalTitle: AgentSpawner.resolved(store.terminal).title,
+                             action: spawn)
+        }
     }
 
     private func statusLine(_ msg: String) -> some View {
@@ -144,6 +150,16 @@ struct AuditWizardView: View {
 
     private func spawn() {
         let cfg = config
+        // Mesh path: hand the job to the local node (it picks the executor per the
+        // audit duty's linux+macos spread, with failover) instead of spawning here.
+        if MeshSpawnRow.isLive(store), useMesh {
+            status = "Dispatching over the mesh…"
+            AuditLog.log("panel", "audit", "\(trackingLabel) · via mesh")
+            store.meshDispatch(duty: "audit", prompt: cfg.buildPrompt()) { results, err in
+                status = MeshSpawn.summarize(results, error: err)
+            }
+            return
+        }
         let preferred = store.terminal
         let term = AgentSpawner.resolved(preferred)
         let label = trackingLabel

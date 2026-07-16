@@ -66,9 +66,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if env["ARGENT_UTILS_SETTINGS_DUMP"] == "1" {
             Task { @MainActor in Dump.settings(); exit(0) }
         }
-        // Headless UI render: snapshot a view to PNG and exit.
+        // Headless UI render: snapshot a view to PNG and exit. `run` returns false
+        // for the window-hosted `popover` mode, which needs the app runloop to lay
+        // out first — it exits by itself once the snapshot is written.
         if let what = env["ARGENT_UTILS_RENDER"] {
-            Task { @MainActor in Render.run(what, store: Store()); exit(0) }
+            Task { @MainActor in if Render.run(what, store: Store()) { exit(0) } }
         }
         // End-to-end self-test of the agent-session tracking path (capture, status,
         // liveness, focus, completion). Drives a real throwaway terminal window.

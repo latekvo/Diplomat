@@ -172,6 +172,26 @@ public struct MeshOverrides: Decodable, Equatable {
 
 // MARK: - Topology snapshot (~/.argent/mesh/state.json)
 
+/// A node's advertised quota accounting (`NodeInfo.stats` in the Python node): the
+/// plan it runs on and the derived load figures the `surplus-first` dispatch strategy
+/// ranks by. Absent entirely for nodes that haven't recorded any usage.
+public struct MeshStats: Decodable, Equatable {
+    public let plan: String
+    public let usageAvg: Double
+    public let quotaLeft: Double
+
+    enum CodingKeys: String, CodingKey { case plan, usageAvg, quotaLeft }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        plan = (try? c.decode(String.self, forKey: .plan)) ?? ""
+        usageAvg = (try? c.decode(Double.self, forKey: .usageAvg)) ?? 0
+        quotaLeft = (try? c.decode(Double.self, forKey: .quotaLeft)) ?? 0
+    }
+    public init(plan: String, usageAvg: Double, quotaLeft: Double) {
+        self.plan = plan; self.usageAvg = usageAvg; self.quotaLeft = quotaLeft
+    }
+}
+
 /// One node's gossiped attributes, common to `self` and each peer.
 public struct MeshNode: Decodable, Equatable {
     public let id: String
@@ -187,12 +207,15 @@ public struct MeshNode: Decodable, Equatable {
     public let tokensPct: Double
     /// Seconds this node has been running (self view) — nil when absent.
     public let uptimeSecs: Double?
-    /// This node's device-key fingerprint (self view).
+    /// This node's device-key fingerprint (sha256 of the raw Ed25519 pubkey, hex);
+    /// `""` when the node runs keyless (`cryptography` not installed).
     public let fingerprint: String
+    /// Advertised quota accounting; nil until the node has stats to gossip.
+    public let stats: MeshStats?
 
     enum CodingKeys: String, CodingKey {
         case id, name, platform, tier, tokens, strengthAuto, tokensAuto, tokensPct,
-             uptimeSecs, fingerprint
+             uptimeSecs, fingerprint, stats
     }
 
     public init(from decoder: Decoder) throws {
@@ -207,29 +230,35 @@ public struct MeshNode: Decodable, Equatable {
         tokensPct = (try? c.decode(Double.self, forKey: .tokensPct)) ?? 1.0
         uptimeSecs = try? c.decode(Double.self, forKey: .uptimeSecs)
         fingerprint = (try? c.decode(String.self, forKey: .fingerprint)) ?? ""
+        stats = try? c.decode(MeshStats.self, forKey: .stats)
     }
 
     public init(id: String, name: String, platform: String, tier: Int, tokens: String,
                 strengthAuto: Bool = true, tokensAuto: Bool = true, tokensPct: Double = 1.0,
-                uptimeSecs: Double? = nil, fingerprint: String = "") {
+                uptimeSecs: Double? = nil, fingerprint: String = "", stats: MeshStats? = nil) {
         self.id = id; self.name = name; self.platform = platform
         self.tier = tier; self.tokens = tokens
         self.strengthAuto = strengthAuto; self.tokensAuto = tokensAuto
         self.tokensPct = tokensPct; self.uptimeSecs = uptimeSecs; self.fingerprint = fingerprint
+        self.stats = stats
     }
 
-    /// `uptimeSecs` ticks and `tokensPct` drifts on every snapshot write, so both are
-    /// excluded from equality — otherwise the change-detecting poll (see `Store`) would
-    /// fire twice a second on self's own uptime. Mirrors `MeshPeer.==`.
+    /// `uptimeSecs` ticks, and `tokensPct`/`stats` drift with real usage, so all three
+    /// are excluded from equality — otherwise the change-detecting poll (see `Store`)
+    /// would fire twice a second on self's own uptime. Mirrors `MeshPeer.==`.
     public static func == (a: MeshNode, b: MeshNode) -> Bool {
         a.id == b.id && a.name == b.name && a.platform == b.platform && a.tier == b.tier
             && a.tokens == b.tokens && a.strengthAuto == b.strengthAuto
             && a.tokensAuto == b.tokensAuto && a.fingerprint == b.fingerprint
     }
+
+    /// `quotaLeft − usageAvg`, the figure `surplus-first` ranks by; 0 (neutral) with
+    /// no stats — mirrors `NodeInfo.surplus()`.
+    public var surplus: Double { stats.map { $0.quotaLeft - $0.usageAvg } ?? 0 }
 }
 
 /// A peer as seen from the local node: its node attributes plus the link state, remote
-/// address, and liveness the local node observes.
+/// address, liveness, and the trust the local node derived for it.
 public struct MeshPeer: Decodable, Equatable {
     public let id: String
     public let name: String
@@ -247,16 +276,24 @@ public struct MeshPeer: Decodable, Equatable {
     public let tokensPct: Double
     /// Seconds the current link has been up ("up 3m") — nil while down.
     public let uptimeSecs: Double?
-    /// This node's classification of the peer: "personal" | "foreign".
+    /// "personal" | "foreign" — the local allowlist's verdict on the VERIFIED key
+    /// (an empty allowlist classes everyone personal, preserving pre-trust behavior).
     public let trust: String
-    /// The peer's device-key fingerprint (proven if `verified`, else merely claimed).
+    /// The peer's device-key fingerprint (proven if `verified`, else merely claimed;
+    /// `""` for keyless peers).
     public let fingerprint: String
-    /// Whether the peer proved possession of its advertised key on the link.
+    /// True once the peer has proven possession of its device key on this link
+    /// (Ed25519 fresh-nonce signature) — advertised identity alone never sets this.
     public let verified: Bool
+    /// The peer's advertised `quotaLeft − usageAvg` (3dp), used by `surplus-first`.
+    public let surplus: Double
+    /// Advertised quota accounting; nil until the peer gossips stats.
+    public let stats: MeshStats?
 
     enum CodingKeys: String, CodingKey {
         case id, name, platform, tier, tokens, link, addr, lastSeenSecsAgo, sees,
-             strengthAuto, tokensAuto, tokensPct, uptimeSecs, trust, fingerprint, verified
+             strengthAuto, tokensAuto, tokensPct, uptimeSecs, trust, fingerprint, verified,
+             surplus, stats
     }
 
     public init(from decoder: Decoder) throws {
@@ -277,6 +314,8 @@ public struct MeshPeer: Decodable, Equatable {
         trust = (try? c.decode(String.self, forKey: .trust)) ?? "personal"
         fingerprint = (try? c.decode(String.self, forKey: .fingerprint)) ?? ""
         verified = (try? c.decode(Bool.self, forKey: .verified)) ?? false
+        surplus = (try? c.decode(Double.self, forKey: .surplus)) ?? 0
+        stats = try? c.decode(MeshStats.self, forKey: .stats)
     }
 
     /// `lastSeenSecsAgo`/`uptimeSecs` tick on every snapshot write, so they're excluded
@@ -287,7 +326,21 @@ public struct MeshPeer: Decodable, Equatable {
         a.id == b.id && a.name == b.name && a.platform == b.platform && a.tier == b.tier
             && a.tokens == b.tokens && a.link == b.link && a.addr == b.addr && a.sees == b.sees
             && a.strengthAuto == b.strengthAuto && a.tokensAuto == b.tokensAuto
-            && a.trust == b.trust && a.verified == b.verified
+            && a.trust == b.trust && a.verified == b.verified && a.fingerprint == b.fingerprint
+    }
+}
+
+/// One local-allowlist entry as published in the snapshot's `trusted` list — the
+/// operator-managed device-key allowlist (`~/.argent/mesh/trusted.json`).
+public struct MeshTrustedEntry: Decodable, Equatable {
+    public let fingerprint: String
+    public let label: String
+
+    enum CodingKeys: String, CodingKey { case fingerprint, label }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        fingerprint = (try? c.decode(String.self, forKey: .fingerprint)) ?? ""
+        label = (try? c.decode(String.self, forKey: .label)) ?? ""
     }
 }
 
@@ -327,13 +380,16 @@ public struct MeshSnapshot: Decodable, Equatable {
     /// This machine's own node info (`self` in the JSON).
     public let selfNode: MeshNode?
     public let peers: [MeshPeer]
+    /// The local device-key allowlist, as `[{fingerprint, label}]` — published so
+    /// front-ends can render the trust boundary without touching `trusted.json`.
+    public let trusted: [MeshTrustedEntry]
     public let assignments: [String: MeshAssignment]
     public let overrides: MeshOverrides?
     /// Peers mid-handshake right now — drives the "linking to N…" scanning banner.
     public let linking: Int
 
     enum CodingKeys: String, CodingKey {
-        case pid, tcpPort, selfNode = "self", peers, assignments, overrides, linking
+        case pid, tcpPort, selfNode = "self", peers, trusted, assignments, overrides, linking
     }
 
     public init(from decoder: Decoder) throws {
@@ -342,6 +398,7 @@ public struct MeshSnapshot: Decodable, Equatable {
         tcpPort = try? c.decode(Int.self, forKey: .tcpPort)
         selfNode = try? c.decode(MeshNode.self, forKey: .selfNode)
         peers = (try? c.decode([MeshPeer].self, forKey: .peers)) ?? []
+        trusted = (try? c.decode([MeshTrustedEntry].self, forKey: .trusted)) ?? []
         assignments = (try? c.decode([String: MeshAssignment].self, forKey: .assignments)) ?? [:]
         overrides = try? c.decode(MeshOverrides.self, forKey: .overrides)
         linking = (try? c.decode(Int.self, forKey: .linking)) ?? 0

@@ -166,7 +166,10 @@ Dispatching routes a staged prompt to the chosen node over the mesh; the
 receiving machine opens its own terminal running `claude` exactly like a local
 SPAWN AGENT (dispatches are the `📤/📥 mesh` rows in the activity feed). If the
 first target declines — gone, or out of tokens — the dispatch fails over to the
-next candidate by rank.
+next candidate by rank. While the mesh is live, the three wizards grow a
+**⬡ Run on mesh** row (checked by default, with a preview of where the duty
+currently routes): SPAWN AGENT then hands the job to the node instead of always
+opening a local terminal — on both front-ends.
 
 Both front-ends grow a **Mesh screen** (the ⬡ button in the panel header, beside
 Settings): the live node graph (link states), per-node tier/token editors (editing
@@ -190,14 +193,29 @@ Model + constants live in [`core/mesh.json`](core/mesh.json); node state in
 device-allocator pattern).
 
 **Trust model.** The mesh is meant for a LAN you control (IPv4; discovery is
-multicast + subnet broadcast). By default it's open — any machine on the network
-that speaks the protocol can join and receive dispatched jobs. On a shared
-office network, set the same `ARGENT_MESH_SECRET=<token>` on every machine (and
-in the applet's environment): a node with a secret refuses peers, control
-sessions, and dispatches that don't present the matching token. It's a join
-fence, not cryptography — the token rides plaintext on the LAN — so it keeps a
-stray machine or a colleague's mesh from joining yours; it does not defend
-against a hostile network.
+multicast + subnet broadcast). Two independent fences:
+
+- **Join fence** — set the same `ARGENT_MESH_SECRET=<token>` on every machine
+  (and in the applet's environment): a node with a secret refuses peers, control
+  sessions, and dispatches that don't present the matching token. The token rides
+  plaintext on the LAN, so it keeps a stray machine or a colleague's mesh from
+  joining yours; it does not defend against a hostile network.
+- **Authenticated device keys** — every node mints an Ed25519 keypair on first
+  run (`~/.argent/mesh/device.key`, requires the `cryptography` package; without
+  it the node runs *keyless* and can never be verified). A peer must prove
+  possession of its key on each link (fresh-nonce signature) before its identity
+  counts; advertised names/ids grant nothing. Trust is then a **local allowlist**
+  of proven key fingerprints (`~/.argent/mesh/trusted.json`, never gossiped):
+  empty = every peer is `personal` (a boundary you haven't configured); non-empty
+  = only listed, verified keys are `personal`, everyone else is `foreign` and
+  their dispatch requests are declined. Manage it with
+  `python3 -m argent_utils.mesh --fingerprint` (print this machine's),
+  `--trust <FP> [--label <name>]`, `--untrust <FP>`.
+
+Nodes also gossip **per-node quota accounting** (plan, decayed usage average,
+quota left — see `accounts` in `core/mesh.json`): the default `surplus-first`
+dispatch ranking sends work to the machine with the most spare quota, and each
+executed job books usage on the executor.
 
 ## Autonomous monitors (macOS)
 
@@ -381,6 +399,10 @@ ARGENT_UTILS_RENDER=panel    ./ArgentUtils.app/Contents/MacOS/ArgentUtils  # sna
                                                      #   natural|settings|settings-live|approved|unban-confirm
                                                      #   wizard[-other|-specific|-wrong|-banned]|devices[-open]
                                                      #   conflicts[-other|-specific|-wrong]|audit[-issues|-prs|-all]
+                                                     #   mesh (⬡ screen over a synthetic topology)
+                                                     #   popover (REAL NSWindow snapshot incl. the legacy
+                                                     #   scroller — pair with ARGENT_UTILS_POPOVER_CAP=400
+                                                     #   to force the scrolling state)
 ARGENT_UTILS_TRACK_TEST=1    ...                     # E2E of session tracking via a real throwaway terminal
                                                      #   window; exits non-zero on failure
 ARGENT_UTILS_DEVICE_DUMP=1   ...                     # device-allocator paths + daemon state, printed

@@ -28,9 +28,29 @@ struct PopoverRoot: View {
     /// what fits and spill off the bottom.
     @State private var displayVisibleHeight: CGFloat = NSScreen.main?.visibleFrame.height ?? 800
 
+    /// The user's scroller preference ("Show scroll bars: Always" ⇒ `.legacy`), tracked
+    /// live because it can be flipped in System Settings while we run.
+    @State private var scrollerStyle = NSScroller.preferredScrollerStyle
+
     /// Cap the popover at the display's usable height, less a small margin so it never
     /// kisses the menu bar or the Dock. Content beyond this scrolls.
-    private var cap: CGFloat { max(320, displayVisibleHeight - 12) }
+    /// `ARGENT_UTILS_POPOVER_CAP` forces a small cap so the scrolling state is
+    /// reproducible in the `popover` render self-test.
+    private var cap: CGFloat {
+        if let s = ProcessInfo.processInfo.environment["ARGENT_UTILS_POPOVER_CAP"],
+           let v = Double(s) { return CGFloat(v) }
+        return max(320, displayVisibleHeight - 12)
+    }
+
+    /// Legacy (always-on) scroll bars sit INSIDE the window and steal width from the
+    /// viewport: the fixed 1120pt content then gets centre-clipped ~8pt per side and the
+    /// panel visually loses its left margin. When the content actually scrolls under a
+    /// legacy scroller, widen the window by the scroller's width so the content keeps
+    /// its full lane and the scroller gets its own.
+    private var scrollerInset: CGFloat {
+        guard contentHeight > cap, scrollerStyle == .legacy else { return 0 }
+        return NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy)
+    }
 
     var body: some View {
         ScrollView {
@@ -42,9 +62,17 @@ struct PopoverRoot: View {
                 )
         }
         .scrollDisabled(contentHeight <= cap)
-        .frame(width: PopoverRoot.width, height: min(contentHeight, cap))
+        .frame(width: PopoverRoot.width + scrollerInset, height: min(contentHeight, cap))
         .onPreferenceChange(ContentHeightKey.self) { h in
             if h > 1, abs(h - contentHeight) > 0.5 { contentHeight = h }
+            // Re-read alongside the height: the init-time read can predate AppKit
+            // having the real preference (it reports .overlay very early in launch).
+            let style = NSScroller.preferredScrollerStyle
+            if style != scrollerStyle { scrollerStyle = style }
+        }
+        .onReceive(NotificationCenter.default.publisher(
+            for: NSScroller.preferredScrollerStyleDidChangeNotification)) { _ in
+            scrollerStyle = NSScroller.preferredScrollerStyle
         }
         .background(PopoverWindowController(onDisplayVisibleHeight: { h in
             if abs(h - displayVisibleHeight) > 0.5 { displayVisibleHeight = h }

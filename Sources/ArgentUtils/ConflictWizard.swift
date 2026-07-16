@@ -37,6 +37,9 @@ struct ConflictWizardView: View {
     @State private var username: String
     @State private var specificPR: String
     @State private var status: String?
+    /// "Run on mesh" (effective only while the row is live) — checked by default,
+    /// like the Linux wizards.
+    @State private var useMesh = true
 
     private var config: ConflictConfig {
         ConflictConfig(
@@ -142,10 +145,13 @@ struct ConflictWizardView: View {
     }
 
     private var spawnButton: some View {
-        SpawnAgentButton(isValid: config.isValid,
-                         tint: tint,
-                         terminalTitle: AgentSpawner.resolved(store.terminal).title,
-                         action: spawn)
+        VStack(spacing: 6) {
+            MeshSpawnRow(duty: "conflicts", useMesh: $useMesh)
+            SpawnAgentButton(isValid: config.isValid,
+                             tint: tint,
+                             terminalTitle: AgentSpawner.resolved(store.terminal).title,
+                             action: spawn)
+        }
     }
 
     private func statusLine(_ msg: String) -> some View {
@@ -178,6 +184,16 @@ struct ConflictWizardView: View {
 
     private func spawn() {
         let cfg = config
+        // Mesh path: hand the job to the local node (it picks the executor, with
+        // failover) instead of opening a terminal here — mirrors the Linux wizards.
+        if MeshSpawnRow.isLive(store), useMesh {
+            status = "Dispatching over the mesh…"
+            AuditLog.log("panel", "conflicts", "\(trackingLabel) · via mesh")
+            store.meshDispatch(duty: "conflicts", prompt: cfg.buildPrompt()) { results, err in
+                status = MeshSpawn.summarize(results, error: err)
+            }
+            return
+        }
         let preferred = store.terminal
         let term = AgentSpawner.resolved(preferred)
         let label = trackingLabel

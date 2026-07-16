@@ -191,6 +191,46 @@ let snap2 = MeshSnapshot.decode("""
  "assignments":{"audit":{"assigned":["aaa"],"shortfall":[{"missing":1,"platform":"linux"}]}}}
 """.data(using: .utf8)!)
 check(snap == snap2, "snapshot equality ignores lastSeenSecsAgo/uptime drift")
+// Trust + accounting fields (device-key fingerprints, personal/foreign verdicts,
+// advertised stats, the published allowlist) — shaped exactly like the node writes
+// them since the trust/load-balancing layer landed.
+let trustJSONText = """
+{"pid":4242,"tcpPort":40878,"v":1,
+ "self":{"id":"aaa","name":"here","platform":"macos","tier":2,"tokens":"ok",
+         "fingerprint":"f00d","stats":{"plan":"max-5x","usageAvg":0.8,"quotaLeft":4.2}},
+ "peers":[{"id":"bbb","name":"lin","platform":"linux","tier":4,"tokens":"low",
+           "link":"up","addr":"192.168.1.9:40878","lastSeenSecsAgo":1.4,"sees":["aaa"],
+           "verified":true,"fingerprint":"beef","trust":"foreign","surplus":1.25,
+           "stats":{"plan":"pro","usageAvg":0.25,"quotaLeft":1.5}}],
+ "trusted":[{"fingerprint":"beef","label":"linux box"}],
+ "assignments":{}}
+"""
+let trustSnap = MeshSnapshot.decode(trustJSONText.data(using: .utf8)!)!
+check(trustSnap.selfNode?.fingerprint == "f00d", "self fingerprint decode")
+check(trustSnap.selfNode?.stats?.plan == "max-5x", "self stats decode")
+check(abs((trustSnap.selfNode?.surplus ?? 0) - 3.4) < 0.0001, "self surplus = quotaLeft − usageAvg")
+check(trustSnap.peers[0].verified && trustSnap.peers[0].trust == "foreign", "peer trust decode")
+check(trustSnap.peers[0].fingerprint == "beef" && trustSnap.peers[0].surplus == 1.25, "peer key + surplus")
+check(trustSnap.trusted.first?.label == "linux box", "published allowlist decode")
+// Legacy snapshots (pre-trust, pre-console) default to unverified/personal with
+// neutral surplus and no stats.
+let legacySnap = MeshSnapshot.decode("""
+{"pid":4242,"tcpPort":40878,
+ "self":{"id":"aaa","name":"here","platform":"macos","tier":2,"tokens":"ok"},
+ "peers":[{"id":"bbb","name":"lin","platform":"linux","tier":4,"tokens":"low",
+           "link":"up","sees":["aaa"]}],
+ "assignments":{}}
+""".data(using: .utf8)!)!
+check(!legacySnap.peers[0].verified && legacySnap.peers[0].trust == "personal"
+      && legacySnap.peers[0].surplus == 0, "pre-trust peer defaults")
+check(legacySnap.selfNode?.surplus == 0 && legacySnap.selfNode?.stats == nil,
+      "no stats ⇒ neutral surplus")
+check(legacySnap.trusted.isEmpty, "no published allowlist ⇒ empty")
+// A trust flip IS a meaningful change (unlike lastSeenSecsAgo/uptime drift) — the
+// poll must republish when a peer's verdict moves.
+let trustSnap2 = MeshSnapshot.decode(
+    trustJSONText.replacingOccurrences(of: "\"foreign\"", with: "\"personal\"").data(using: .utf8)!)!
+check(trustSnap != trustSnap2, "trust flip is a meaningful change")
 print("mesh assertions passed")
 
 section("review prompts")

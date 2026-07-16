@@ -8,9 +8,16 @@ import ArgentUtilsCore
 /// `ARGENT_UTILS_RENDER_OUT=<path>` (defaults under the temp dir).
 @MainActor
 enum Render {
-    static func run(_ what: String, store: Store) {
+    /// Returns true when the snapshot is done and the caller should exit; the `popover`
+    /// mode returns false and exits by itself after the app runloop has laid it out.
+    static func run(_ what: String, store: Store) -> Bool {
         let out = ProcessInfo.processInfo.environment["ARGENT_UTILS_RENDER_OUT"]
             ?? FileManager.default.temporaryDirectory.appendingPathComponent("argent-utils-\(what).png").path
+
+        if what.lowercased() == "popover" {
+            runWindow(out: out, store: store)
+            return false
+        }
 
         let body = view(for: what, store: store)
         let content = body
@@ -21,16 +28,58 @@ enum Render {
 
         let renderer = ImageRenderer(content: content)
         renderer.scale = 2
-        guard let cg = renderer.cgImage else { print("RENDER ERROR: nil cgImage"); return }
+        guard let cg = renderer.cgImage else { print("RENDER ERROR: nil cgImage"); return true }
         let rep = NSBitmapImageRep(cgImage: cg)
         guard let data = rep.representation(using: .png, properties: [:]) else {
-            print("RENDER ERROR: PNG encode failed"); return
+            print("RENDER ERROR: PNG encode failed"); return true
         }
         do {
             try data.write(to: URL(fileURLWithPath: out))
             print("rendered \(what) -> \(out)  (\(cg.width)x\(cg.height))")
         } catch {
             print("RENDER ERROR: \(error)")
+        }
+        return true
+    }
+
+    /// `ARGENT_UTILS_RENDER=popover` — snapshot the REAL popover root in a live NSWindow
+    /// (via `cacheDisplay`, no screen-recording permission needed) instead of
+    /// `ImageRenderer`. This is the only mode that draws window-level AppKit chrome —
+    /// notably the legacy ("Show scroll bars: Always") vertical scroller, which lives
+    /// INSIDE the window and once clipped the fixed-width content's outer margins.
+    /// Pair with `ARGENT_UTILS_POPOVER_CAP` (e.g. 400) to force the scrolling state.
+    /// The snapshot must show the content's 10pt left margin intact WITH the scroller.
+    private static func runWindow(out: String, store: Store) {
+        let _ = seedProcessesIfNeeded("procs", store: store)
+        let _ = seedAutofix(store)
+        let hosting = NSHostingController(rootView: PopoverRoot().environmentObject(store))
+        let window = NSWindow(contentViewController: hosting)
+        // Ordered (so AppKit lays out + commits) but parked far off-screen so nothing
+        // flashes on the user's display. `PopoverWindowController.center()` only
+        // corrects x, never y, so the window stays out of sight. `cacheDisplay` draws
+        // the view hierarchy directly — on-screen visibility isn't needed.
+        window.setFrameOrigin(NSPoint(x: -4000, y: -4000))
+        window.orderFrontRegardless()
+        // Snapshot after the app runloop has run the layout passes (content-height
+        // preference + scroller-inset width correction), then exit ourselves — the
+        // caller has already returned without exiting.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            guard let view = window.contentView,
+                  let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
+                print("RENDER ERROR: no contentView"); exit(1)
+            }
+            view.cacheDisplay(in: view.bounds, to: rep)
+            guard let data = rep.representation(using: .png, properties: [:]) else {
+                print("RENDER ERROR: PNG encode failed"); exit(1)
+            }
+            do {
+                try data.write(to: URL(fileURLWithPath: out))
+                print("rendered popover -> \(out)  (\(rep.pixelsWide)x\(rep.pixelsHigh), "
+                      + "scroller: \(NSScroller.preferredScrollerStyle == .legacy ? "legacy" : "overlay"))")
+            } catch {
+                print("RENDER ERROR: \(error)")
+            }
+            exit(0)
         }
     }
 
@@ -68,6 +117,14 @@ enum Render {
             // the content centers it and pads the snapshot with dead whitespace).
             let _ = seedSettings(store)
             SettingsView(isPresented: .constant(true))
+        case "mesh":
+            // The ⬡ Mesh screen over a synthetic topology (the macOS analogue of the
+            // Linux render.py `mesh` fixture): a macOS self node, one strong healthy
+            // Linux peer, one weak dead peer, the three duties with one platform
+            // shortfall — plus the trust/accounting fields the node gossips since the
+            // trust layer landed. Render mode never persists nor starts a node.
+            let _ = seedMesh(store)
+            MeshView(isPresented: .constant(true))
         case "unban-confirm":
             // Seed the ban list and open the inline "Unban @X?" confirmation on a row —
             // proving it renders inside the panel (not as a separate NSAlert window).
@@ -92,6 +149,9 @@ enum Render {
                 ? (banned || s.contains("theirs") ? .theirs : (s.contains("mine") ? .mine : nil))
                 : nil
             if banned { let _ = seedFoobarBan(store) }
+            // The mesh fixture makes the "⬡ Run on mesh" row + destination preview
+            // visible in wizard snapshots (parity with the Linux render fixtures).
+            let _ = seedMesh(store)
             ReviewWizardView(scrolls: false,
                              seedTarget: target,
                              seedSpecificPR: specific ? pr : nil,
@@ -107,6 +167,7 @@ enum Render {
             let other = s.contains("other")
             let pr = wrong ? "https://github.com/some-org/other-repo/pull/42"
                            : "https://github.com/software-mansion/argent/pull/455"
+            let _ = seedMesh(store)
             ConflictWizardView(scrolls: false,
                                seedTarget: specific ? .specific : (other ? .someone : .mine),
                                seedSpecificPR: specific ? pr : nil,
@@ -115,6 +176,7 @@ enum Render {
         case let s where s.hasPrefix("audit"):
             // Suffix-driven toggles: "-issues" pre-checks fix-open-issues, "-prs"
             // pre-checks open-PRs, "-all" both — so each state can be eyeballed.
+            let _ = seedMesh(store)
             AuditWizardView(scrolls: false,
                             seedFixIssues: s.contains("issues") || s.contains("all"),
                             seedOpenPRs: s.contains("prs") || s.contains("all"))
@@ -145,6 +207,44 @@ enum Render {
             let _ = seedAutofix(store)
             ContentView().frame(height: 580)
         }
+    }
+
+    /// Synthetic mesh topology (the macOS analogue of the Linux render.py
+    /// `_mesh_fixture`): a macOS self node, one strong healthy Linux peer, one weak
+    /// dead peer, and the three duties with one platform shortfall — including the
+    /// trust/accounting fields the node gossips since the trust layer landed. Our own
+    /// pid makes `nodeRunning` read "live". Render mode never persists the enable nor
+    /// starts a node (`Headless.isRender` guards in the Store).
+    @discardableResult
+    private static func seedMesh(_ store: Store) -> Bool {
+        let selfID = "n-self-mbp", peerOK = "n-soft-strong", peerDead = "n-soft-weak"
+        let json = """
+        {"pid": \(getpid()), "tcpPort": 40878, "v": 1,
+         "self": {"id": "\(selfID)", "name": "mbp", "platform": "macos", "tier": 2,
+                  "tokens": "ok", "sees": ["\(peerOK)"],
+                  "fingerprint": "aa11bb22cc33dd44",
+                  "stats": {"plan": "max-5x", "usageAvg": 0.6, "quotaLeft": 4.4}},
+         "peers": [
+           {"id": "\(peerOK)", "name": "softoobox", "platform": "linux", "tier": 4,
+            "tokens": "ok", "link": "up", "addr": "192.168.1.21", "lastSeenSecsAgo": 1.2,
+            "sees": ["\(selfID)"], "verified": true, "fingerprint": "ee55ff66aa77bb88",
+            "trust": "personal", "surplus": 0.75,
+            "stats": {"plan": "pro", "usageAvg": 0.25, "quotaLeft": 1.0}},
+           {"id": "\(peerDead)", "name": "soft-weak", "platform": "linux", "tier": 5,
+            "tokens": "low", "link": "down", "addr": "192.168.1.37", "lastSeenSecsAgo": 42,
+            "sees": [], "verified": false, "fingerprint": "", "trust": "foreign",
+            "surplus": 0}],
+         "trusted": [{"fingerprint": "ee55ff66aa77bb88", "label": "softoobox"}],
+         "assignments": {
+           "review": {"duty": "review", "assigned": ["\(peerOK)"], "shortfall": []},
+           "conflicts": {"duty": "conflicts", "assigned": ["\(selfID)"], "shortfall": []},
+           "audit": {"duty": "audit", "assigned": ["\(selfID)"],
+                     "shortfall": [{"platform": "linux", "missing": 1}]}},
+         "overrides": {"rev": 0, "updatedBy": "", "duties": {}}}
+        """
+        store.meshEnabled = true  // render-guarded: persists nothing, starts nothing
+        store.meshState = MeshSnapshot.decode(json.data(using: .utf8)!)
+        return true
     }
 
     /// For `ARGENT_UTILS_RENDER=panel-procs`, inject a couple of fake tracked

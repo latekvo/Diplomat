@@ -364,6 +364,9 @@ struct ReviewWizardView: View {
     @State private var specificPR = ""
     @State private var finalPass = false
     @State private var status: String?
+    /// "Run on mesh" (effective only while the row is live) — checked by default,
+    /// like the Linux wizards.
+    @State private var useMesh = true
     /// For a specific PR: the polled author disposition (mine / theirs / not-yet). Drives
     /// which action toggles show. `.unknown` while we determine it (offers all, gated).
     @State private var specificAuthor: SpecificAuthor = .unknown
@@ -646,10 +649,13 @@ struct ReviewWizardView: View {
     }
 
     private var spawnButton: some View {
-        SpawnAgentButton(isValid: config.isValid,
-                         tint: tint,
-                         terminalTitle: AgentSpawner.resolved(store.terminal).title,
-                         action: spawn)
+        VStack(spacing: 6) {
+            MeshSpawnRow(duty: "review", useMesh: $useMesh)
+            SpawnAgentButton(isValid: config.isValid,
+                             tint: tint,
+                             terminalTitle: AgentSpawner.resolved(store.terminal).title,
+                             action: spawn)
+        }
     }
 
     private func statusLine(_ msg: String) -> some View {
@@ -722,6 +728,16 @@ struct ReviewWizardView: View {
 
     private func spawn() {
         let cfg = config
+        // Mesh path: hand the job to the local node (it picks the executor, with
+        // failover) instead of opening a terminal here — mirrors the Linux wizards.
+        if MeshSpawnRow.isLive(store), useMesh {
+            status = "Dispatching over the mesh…"
+            AuditLog.log("panel", "review", "\(trackingLabel) · via mesh")
+            store.meshDispatch(duty: "review", prompt: cfg.buildPrompt()) { results, err in
+                status = MeshSpawn.summarize(results, error: err)
+            }
+            return
+        }
         let preferred = store.terminal
         let term = AgentSpawner.resolved(preferred)
         let label = trackingLabel
