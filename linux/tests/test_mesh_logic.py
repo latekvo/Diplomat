@@ -984,9 +984,34 @@ def test_inflated_epoch_forgery_cannot_block_the_real_owner(tmp_path, monkeypatc
     node._on_work_claim(protocol.work_claim(
         {"workKey": _WK, "node": "a-peer", "state": "active", "epoch": 1e18, "seq": 10**9}))
     # It was rejected (pin), so the real owner's later signed claim adopts cleanly
-    # and wins — the forgery never blocked it.
+    # and wins — the forgery never blocked it. Assert the *real signed* record is
+    # what owns (not merely that some a-peer record exists).
     node._on_work_claim(protocol.work_claim(_signed_claim(k, _WK, "a-peer", epoch=1.0)))
     assert node._claim_holder(_WK) == "a-peer"
+    assert node._claims[_WK]["a-peer"].pubkey == k.public_b64
+
+
+def test_coldjoin_forgery_is_purged_when_the_real_key_is_learned(tmp_path, monkeypatch):
+    """The cold-join residual: a forged keyless high-epoch claim that arrives BEFORE
+    the claimant's advert (nothing to pin against yet) is stored but inert. It must
+    not out-fresh the real owner's claim forever — learning the claimant's real key
+    purges it, so dedup for that key recovers."""
+    if not crypto.AVAILABLE:
+        return
+    node = _claim_node(tmp_path, monkeypatch, local_id="z-local")
+    k = _mk_key()
+    # Forgery lands first (a-peer is unknown, so the pin can't reject it): stored.
+    node._on_work_claim(protocol.work_claim(
+        {"workKey": _WK, "node": "a-peer", "state": "active", "epoch": 1e18, "seq": 10**9}))
+    assert node._claims.get(_WK, {}).get("a-peer") is not None       # inert but present
+    assert node._claim_holder(_WK) is None                           # unbound → not owner
+    # Learning a-peer's real advertisement pins its key and purges the forgery.
+    _link_personal_claimant(node, "a-peer", k)
+    assert "a-peer" not in node._claims.get(_WK, {})                 # cold-join poison evicted
+    # a-peer's real signed claim now stores and owns — the huge forged epoch is gone.
+    node._on_work_claim(protocol.work_claim(_signed_claim(k, _WK, "a-peer", epoch=1.0)))
+    assert node._claim_holder(_WK) == "a-peer"
+    assert node._claims[_WK]["a-peer"].pubkey == k.public_b64
 
 
 def test_keyless_peer_cannot_suppress_even_under_empty_allowlist(tmp_path, monkeypatch):

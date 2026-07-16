@@ -857,6 +857,7 @@ class MeshNode:
                 and info.pubkey != peer.info.pubkey):
             return
         fresh = peer is None or info.newer_than(peer.info)
+        prev_pubkey = "" if peer is None else peer.info.pubkey
         if peer is None:
             peer = Peer(info, host)
             self.peers[info.id] = peer
@@ -878,6 +879,16 @@ class MeshNode:
                     and crypto.fingerprint_of(info.pubkey) != peer.verified_fp):
                 peer.verified_fp = None
             peer.info = info
+            # When this node's key first becomes known (or changes), purge any
+            # work-claim record under its id that doesn't carry that key. An attacker
+            # who reaches us before the real advert can plant a keyless/wrong-key
+            # claim `{node: P}` (the id→key pin has nothing to match yet) with a
+            # spoofed-high (epoch, seq); it is inert (never authoritative — the
+            # ownership binding rejects it), but left in place it would out-fresh P's
+            # real signed claim forever and defeat dedup for that key. Purging on the
+            # key we now trust closes that cold-join window. See _forget_claims.
+            if info.pubkey and info.pubkey != prev_pubkey:
+                self._evict_unbound_claims(info.id, info.pubkey)
         peer.addr = host or peer.addr
         peer.last_seen = time.monotonic()
         peer.down_since = None
@@ -1232,6 +1243,20 @@ class MeshNode:
         for book in self._claims.values():
             book.pop(node_id, None)
         self._claims = {k: v for k, v in self._claims.items() if v}
+
+    def _evict_unbound_claims(self, node_id: str, pubkey: str) -> None:
+        """Drop any claim record under ``node_id`` whose key doesn't match its now-
+        known ``pubkey`` — a keyless or wrong-key record a third party planted before
+        we learned this node's advertisement (cold join), which would otherwise
+        out-fresh the node's real signed claim indefinitely. Only records that are
+        already non-authoritative (unbound) are removed, so a genuine claim is never
+        touched. Runs only when the key first appears or changes, not per refresh."""
+        for work_key, book in list(self._claims.items()):
+            rec = book.get(node_id)
+            if rec is not None and rec.pubkey != pubkey:
+                del book[node_id]
+                if not book:
+                    del self._claims[work_key]
 
     # MARK: - assignments
 

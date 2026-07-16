@@ -389,7 +389,14 @@ other.
   arise; closing it in a sparse topology is future work alongside a transitive-trust
   or PKI story ([11](11-trust-and-balancing.md)).
 - **Cold-join ordering.** If a claim outraces its claimant's first advertisement to
-  a third node, the id→key pin has nothing to pin against yet; the claim still
-  verifies against its inline `pubkey`, but the claimant isn't a known live peer, so
-  it isn't authoritative until its advertisement arrives. This is a transient of
-  initial convergence, not a steady-state gap.
+  a third node, the id→key pin has nothing to pin against yet, so a claim naming a
+  not-yet-known node is stored unpinned; it is never authoritative (the claimant is
+  not a known live peer, and — being unbound — fails the ownership binding). A
+  receiver **MUST**, on learning a node's key (its advertisement), **purge any
+  stored claim under that id whose key doesn't match** — otherwise a forged
+  keyless/wrong-key claim planted in this window, with a spoofed-high `(epoch, seq)`,
+  would out-fresh the claimant's real signed claim indefinitely and defeat dedup for
+  that key (it can never *suppress*, being unbound, only cause a redundant
+  double-run). With that purge (the reference does it in `_learn_node`), the window
+  closes the instant the real advertisement arrives, leaving only a brief transient
+  before the claimant is known.
