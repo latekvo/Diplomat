@@ -125,13 +125,13 @@ class SettingsView(QWidget):
         col.setSpacing(8)
         col.addWidget(_section_label("TOOLS — COLOR & VISIBILITY"))
         for tool in tools():
-            col.addLayout(self._tool_row(tool.id, tool.title, tool.subtitle, tool.emoji))
+            col.addLayout(self._tool_row(tool.id, tool.title, tool.subtitle, tool.glyph))
         return col
 
-    def _tool_row(self, tool_id: str, title: str, subtitle: str, emoji: str) -> QHBoxLayout:
+    def _tool_row(self, tool_id: str, title: str, subtitle: str, glyph: str) -> QHBoxLayout:
         row = QHBoxLayout()
         row.setSpacing(8)
-        chip = IconChip(emoji, self.store.tint(tool_id), size=22)
+        chip = IconChip(glyph, self.store.tint(tool_id), size=22)
         self._chips[tool_id] = chip
         row.addWidget(chip)
 

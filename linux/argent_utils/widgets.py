@@ -20,17 +20,35 @@ def tint_bg(hex_color: str, alpha: float) -> str:
     return f"rgba({c.red()},{c.green()},{c.blue()},{alpha:.3f})"
 
 
-def _draw_glyph(painter: QPainter, box: QRectF, glyph: str, color: str,
-                font_px: int) -> None:
-    """Paint a text glyph centred on its *ink* bounding box within ``box``.
+# Reference size at which we measure a glyph's intrinsic ink extent before
+# scaling it to the target. Large enough that tightBoundingRect is precise.
+_MEASURE_PX = 128
 
-    Qt's own centring uses the font line-box (full ascent/descent), so glyphs
-    from different Unicode blocks land at visibly different heights. Centring on
-    the tight ink rectangle instead makes an arbitrary glyph set line up like a
-    real icon set.
+
+def _draw_glyph(painter: QPainter, box: QRectF, glyph: str, color: str,
+                target_px: int) -> None:
+    """Paint a glyph normalised to a uniform optical size, ink-centred in ``box``.
+
+    Two problems make a raw text glyph a poor icon:
+
+    * **Position** — Qt centres on the font line-box (full ascent/descent), so
+      glyphs from different Unicode blocks land at visibly different heights.
+    * **Size** — at one fixed point size, a full-height block like ``▤`` dwarfs a
+      small mark like ``↩``; the set reads as a jumble, not an icon row.
+
+    So we normalise both. ``target_px`` is the desired *optical* size: we measure
+    the glyph's intrinsic ink box at a fixed reference size, pick the pixel size
+    that scales its larger dimension to ``target_px`` (fit-to-square, so nothing
+    overflows), then ink-centre it. Every glyph then occupies the same footprint
+    and lines up like a real, uniform icon set — the point of the tinted set.
     """
     font = QFont(painter.font())
-    font.setPixelSize(font_px)
+    font.setPixelSize(_MEASURE_PX)
+    intrinsic = QFontMetricsF(font).tightBoundingRect(glyph)
+    extent = max(intrinsic.width(), intrinsic.height()) or float(_MEASURE_PX)
+    px = max(1, round(_MEASURE_PX * (target_px / extent)))
+
+    font.setPixelSize(px)
     painter.setFont(font)
     painter.setPen(QColor(color))
     ink = QFontMetricsF(font).tightBoundingRect(glyph)
@@ -40,14 +58,15 @@ def _draw_glyph(painter: QPainter, box: QRectF, glyph: str, color: str,
 
 
 def glyph_icon(glyph: str, px: int, color: str) -> QIcon:
-    """A QIcon of a single glyph, ink-centred - for icon buttons/tray whose raw
-    text glyphs would otherwise render at inconsistent sizes/positions."""
+    """A QIcon of a single glyph, size-normalised and ink-centred - for icon
+    buttons/tray whose raw text glyphs would otherwise render at inconsistent
+    sizes/positions."""
     pm = QPixmap(px, px)
     pm.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pm)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
     painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
-    _draw_glyph(painter, QRectF(0, 0, px, px), glyph, color, int(px * 0.72))
+    _draw_glyph(painter, QRectF(0, 0, px, px), glyph, color, int(px * 0.78))
     painter.end()
     return QIcon(pm)
 
@@ -118,10 +137,11 @@ def _elided_label(text: str) -> ElidedLabel:
 class IconChip(QLabel):
     """A rounded, tinted square holding a monochrome glyph, macOS-SF-Symbol style.
 
-    Fully custom-painted: the glyph is ink-centred (see :func:`_draw_glyph`) at a
-    fixed optical size so every tool's icon lines up, and drawn white on the solid
-    tint. ``active=False`` renders the muted "off" state (neutral fill, grey
-    glyph) used by the device pool and reverse-lookup rows.
+    Fully custom-painted: the glyph is size-normalised and ink-centred (see
+    :func:`_draw_glyph`) to a uniform optical size so every tool's icon lines up,
+    and drawn white on the solid tint. ``active=False`` renders the muted "off"
+    state (neutral fill, grey glyph) used by the device pool and reverse-lookup
+    rows.
     """
 
     def __init__(self, glyph: str, hex_color: str, size: int = 26,
@@ -147,7 +167,7 @@ class IconChip(QLabel):
         painter.setBrush(fill)
         painter.drawRoundedRect(box, 6, 6)
         glyph_color = "white" if self._active else glyphs.MUTED
-        _draw_glyph(painter, box, self._glyph, glyph_color, int(self._size * 0.6))
+        _draw_glyph(painter, box, self._glyph, glyph_color, int(self._size * 0.64))
         painter.end()
 
 
