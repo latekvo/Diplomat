@@ -32,9 +32,16 @@ def contract_env(
     *, work_dir: Path, proto: dict, loopback: bool, secret: str,
     node_id: str, name: str, platform: str, tier: int, tokens: str,
     duties_enabled: dict, spawn_cmd: str,
+    server: bool = False, api_key: str = "", stats: dict | None = None,
 ) -> dict:
-    """The SZPONTNET_* environment a candidate (or its adapter) must honor."""
-    return {
+    """The SZPONTNET_* environment a candidate (or its adapter) must honor.
+
+    Chapter-11 knobs are optional and default off, so a plain (ch 01-10) run is
+    byte-identical to before: ``SZPONTNET_SERVER`` puts the candidate in the
+    accept-only server role, ``SZPONTNET_API_KEY`` gates inbound ctl/dispatch,
+    and ``SZPONTNET_STATS`` seeds the node's advertised load-balancing stats.
+    """
+    env = {
         "SZPONTNET_LOOPBACK": "1" if loopback else "0",
         "SZPONTNET_MCAST_GROUP": str(proto["multicastGroup"]),
         "SZPONTNET_MCAST_PORT": str(proto["multicastPort"]),
@@ -56,6 +63,13 @@ def contract_env(
         "SZPONTNET_DUTIES": json.dumps(duties_enabled or {}),
         "SZPONTNET_SPAWN": spawn_cmd,
     }
+    if server:
+        env["SZPONTNET_SERVER"] = "1"
+    if api_key:
+        env["SZPONTNET_API_KEY"] = api_key
+    if stats:
+        env["SZPONTNET_STATS"] = json.dumps(stats)
+    return env
 
 
 class CtlSession:
@@ -80,11 +94,15 @@ class CtlSession:
 class Candidate:
     """A launched candidate node process, plus its observation channels."""
 
-    def __init__(self, cmd: list[str], env: dict, work_dir: Path, secret: str = "") -> None:
+    def __init__(self, cmd: list[str], env: dict, work_dir: Path, secret: str = "",
+                 api_key: str = "") -> None:
         self.cmd = cmd
         self.env = env
         self.work_dir = work_dir
         self.secret = secret
+        # The API key the tester presents on ctl sessions when the candidate is an
+        # API-key server (11); empty for a plain node.
+        self.api_key = api_key
         self.node_id = env["SZPONTNET_NODE_ID"]
         self.proc: subprocess.Popen | None = None
         self.tcp_port: int | None = None   # filled once discovered (beacon/state.json)
@@ -138,7 +156,7 @@ class Candidate:
             raise OSError("candidate TCP port unknown")
         sock = net.connect_tcp("127.0.0.1", self.tcp_port, timeout=timeout)
         sess = CtlSession(sock)
-        sock.sendall(codec.encode(codec.ctl_hello(self.secret)))
+        sock.sendall(codec.encode(codec.ctl_hello(self.secret, self.api_key)))
         return sess
 
     # MARK: - lifecycle

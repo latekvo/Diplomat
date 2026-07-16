@@ -40,6 +40,9 @@ _MAP = {
     "SZPONTNET_SECRET": "ARGENT_MESH_SECRET",
     "SZPONTNET_PLATFORM": "ARGENT_MESH_PLATFORM",
     "SZPONTNET_SPAWN": "ARGENT_MESH_SPAWN",
+    # Chapter-11 role knobs (11-trust-and-balancing).
+    "SZPONTNET_SERVER": "ARGENT_MESH_SERVER",     # accept-only server role
+    "SZPONTNET_API_KEY": "ARGENT_MESH_API_KEY",   # inbound ctl/dispatch gate
 }
 
 
@@ -60,6 +63,27 @@ def main() -> None:
         "tokens": os.environ.get("SZPONTNET_TOKENS", "ok"),
         "dutiesEnabled": duties,
     }))
+
+    # Optional ch-11 stat seed: the tester passes {"plan","quotaLeft","usageAvg"}
+    # (the advertised view); translate it into the reference's persisted
+    # stats.json (plan + a decaying reservoir acc = usageAvg·τ and quotaUsed =
+    # capacity − quotaLeft) so the node advertises exactly those figures on boot.
+    stats_env = os.environ.get("SZPONTNET_STATS")
+    if stats_env:
+        try:
+            st = json.loads(stats_env)
+            plan = str(st.get("plan", "max-5x"))
+            weight = {"pro": 1.0, "max-5x": 5.0, "max-20x": 20.0}.get(plan, 1.0)
+            tau, now = 21.0, __import__("time").time()
+            (work_dir / "stats.json").write_text(json.dumps({
+                "plan": plan,
+                "acc": float(st.get("usageAvg", 0.0)) * tau,
+                "quotaUsed": max(0.0, weight - float(st.get("quotaLeft", weight))),
+                "windowStart": now,
+                "updatedAt": now,
+            }))
+        except (ValueError, TypeError):
+            pass
 
     env = dict(os.environ)
     for src, dst in _MAP.items():

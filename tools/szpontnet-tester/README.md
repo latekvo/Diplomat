@@ -10,11 +10,18 @@ byte-for-byte with any other implementation that also passes it.
 
 It speaks only the wire protocol from `docs/szpontnet/`; nothing here depends on
 the reference node's source. Every check names the MUST/SHOULD requirement and
-the spec section it enforces.
+the spec section it enforces. Coverage spans the core protocol (chapters 01–10)
+**and chapter 11** — the trust / load-balancing layer and the server / API-key
+role: Ed25519 proof-of-possession, `surplus-first` dispatch, per-node `stats`,
+the `declined` job-status, server mode, and API-key gating.
 
 ## Requirements
 
-- Python 3.9+ (standard library only — no dependencies).
+- Python 3.9+. The tester itself is standard-library only; the `cryptography`
+  package is an **optional** extra used by the chapter-11 trust probes to sign the
+  proof-of-possession challenge. Without it those probes degrade to *keyless*
+  (they can never be verified — which is itself a valid state to test), so the
+  trust suite still runs but exercises only the keyless/foreign paths.
 - A host where **loopback multicast** works (Linux, macOS; most CI runners).
   The tester runs a self-contained mesh on `127.0.0.1`.
 
@@ -78,6 +85,12 @@ wrapping it in a tiny launcher like [`adapters/reference.py`](adapters/reference
 | `SZPONTNET_NODE_ID` | the id this node must use (so the tester controls the fleet). |
 | `SZPONTNET_NODE_NAME`, `SZPONTNET_TIER`, `SZPONTNET_TOKENS`, `SZPONTNET_DUTIES` | advertised attributes (`SZPONTNET_DUTIES` is a JSON `{duty: bool}` map). |
 | `SZPONTNET_SPAWN` | command template a dispatch executes, with `{prompt_file}` substituted — how the tester observes that a job actually ran. |
+| `SZPONTNET_SERVER` | `1` → the accept-only [server role](../../docs/szpontnet/11-trust-and-balancing.md#the-server-role): the node runs work but never originates a dispatch to a peer (ch 11). |
+| `SZPONTNET_API_KEY` | per-node [API key](../../docs/szpontnet/11-trust-and-balancing.md#the-api-key): when set, inbound `ctl` and `dispatch` MUST present a matching `apiKey` (ch 11). |
+| `SZPONTNET_STATS` | JSON `{plan, quotaLeft, usageAvg}` seed for the node's advertised load-balancing stats, so `surplus-first` picks are meaningful (ch 11). |
+
+The three chapter-11 variables are optional and default off, so a node that
+implements only chapters 01–10 sees the exact same contract as before.
 
 **Snapshot readout.** To check placement (a Participant MUST), the tester must
 read your node's computed assignments. It tries, in order: a control session
@@ -101,6 +114,8 @@ resource-offering-only node is judged only on what it promises.
 | **F** | V2 codec | every message the candidate emits is one compact UTF-8 NDJSON line with a valid schema. |
 | **G** | state | the `state.json` / `state` snapshot matches the chapter-08 schema. |
 | **H** | V3 LWW | placement overrides converge last-writer-wins (higher rev adopted + re-gossiped, lower rev ignored). |
+| **I** | ch 11 trust + LB | empty-allowlist full trust, Ed25519 **proof of possession** over the domain-separated challenge (`"szpontnet-auth-v1:" ‖ nonce`), a keyless peer is foreign, requester classified from the **verified link** not `requestedBy`, `declined`-failover, `surplus-first` picks the most-surplus node, and `pubkey`/`stats` omit-when-empty byte-compat. |
+| **J** | ch 11 server / key | server mode never dispatches to a peer (and refuses an explicit peer target), the **API key** gates inbound dispatch (declined without, spawned with) and the control session. |
 
 ## Writing an adapter for your implementation
 
@@ -118,11 +133,11 @@ szpont/
   codec.py      clean-room NDJSON codec + strict message validators
   assign.py     independent placement oracle (06-coordination)
   net.py        multicast + TCP socket helpers
-  probe.py      the probe mesh: multi-identity fake peers + an adversary hook
+  probe.py      the probe mesh: multi-identity trust-capable fake peers + an adversary hook
   candidate.py  launch + observe the candidate (ctl session / state.json)
   harness.py    per-scenario isolation (ports, timings, work dir)
-  suites.py     the conformance cases, grouped A–H
-  selftest.py   pure oracle/codec self-tests (V1–V3 without a node)
+  suites.py     the conformance cases, grouped A–J (I/J = ch 11 trust + server/API-key)
+  selftest.py   pure oracle/codec self-tests (V1–V3 + ch-11 codec/oracle, without a node)
   report.py     per-check reporting, MUST/SHOULD verdict, exit code
 adapters/
   reference.py  candidate adapter for linux/argent_utils/mesh

@@ -70,6 +70,7 @@ class Scenario:
         tokens: str = "ok", duties: dict | None = None, secret: str = "",
         mesh_secret: str | None = None, loopback: bool = True,
         spawn_marker: Path | None = None, work_root: Path | None = None,
+        server: bool = False, api_key: str = "", stats: dict | None = None,
     ) -> None:
         self.node_cmd = shlex.split(node_cmd)
         self.model = model
@@ -80,6 +81,10 @@ class Scenario:
         self.tokens = tokens
         self.duties = duties or {}
         self.secret = secret
+        # Chapter-11 role knobs (default off → a plain ch 01-10 scenario).
+        self.server = server
+        self.api_key = api_key
+        self.stats = stats
         # The secret the PROBE peers/clients present. Defaults to the candidate's,
         # but a fence test can set a *wrong* one to prove the candidate refuses it.
         self.mesh_secret = secret if mesh_secret is None else mesh_secret
@@ -107,8 +112,10 @@ class Scenario:
             secret=self.secret, node_id=self.candidate_id, name=self.name,
             platform=self.platform, tier=self.tier, tokens=self.tokens,
             duties_enabled=self.duties, spawn_cmd=self.spawn_template(),
+            server=self.server, api_key=self.api_key, stats=self.stats,
         )
-        self.candidate = candmod.Candidate(self.node_cmd, env, self.work_dir, secret=self.secret)
+        self.candidate = candmod.Candidate(
+            self.node_cmd, env, self.work_dir, secret=self.secret, api_key=self.api_key)
         self.mesh = probe.ProbeMesh(
             self.model, self.proto, self.candidate_id, self.loopback, self.mesh_secret)
         for spec in self._peer_specs:

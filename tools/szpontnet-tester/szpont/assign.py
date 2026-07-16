@@ -12,6 +12,11 @@ The tester uses it two ways:
 
 Every ranking key ends in the node ``id`` so the total order has no ties, which
 is what makes two conformant nodes agree byte-for-byte.
+
+Beyond the core strategies (weakest-first, strongest-first, local-first) this
+oracle also implements chapter 11's ``surplus-first`` — ranking by descending
+dispatch surplus (``quotaLeft − usageAvg``) with a weakest-first tie-break — so
+the tester can judge a load-balanced dispatch placement.
 """
 
 from __future__ import annotations
@@ -52,6 +57,12 @@ def ranked(nodes: list[NodeInfo], strategy: str, local_id: str) -> list[NodeInfo
             return (tok, n.tier, n.id)
         if strategy == "local-first":
             return (tok, n.id != local_id, -n.tier, n.id)
+        if strategy == "surplus-first":
+            # Most spare quota first (11 load balancing). Surplus leads; token
+            # rank then tier break ties (and make neutral-stats nodes fall back
+            # to weakest-first). Round so tiny float noise can't reorder
+            # otherwise-equal nodes — the exact reference key.
+            return (round(-n.surplus(), 6), tok, -n.tier, n.id)
         # weakest-first, and any UNKNOWN strategy falls back here (06 ranking)
         return (tok, -n.tier, n.id)
 
@@ -97,9 +108,15 @@ def assign_all(
 def slot_candidates(
     model: Model, duty_id: str, nodes: list[NodeInfo],
     overrides: dict | None = None, local_id: str = "",
+    strategy: str | None = None,
 ) -> list[tuple[str, list[str]]]:
+    """Per-slot failover lists for executing a dispatch. ``strategy`` overrides
+    only the *ranking* (not eligibility or spread): the dispatcher passes
+    ``surplus-first`` here so target selection is the load-balancing decision,
+    independent of the duty's displayed placement strategy (07/11)."""
     policy = placement(model, duty_id, overrides)
-    pool = ranked(eligible(nodes, duty_id, policy), policy.get("strategy", DEFAULT_STRATEGY), local_id)
+    rank_strategy = strategy or policy.get("strategy", DEFAULT_STRATEGY)
+    pool = ranked(eligible(nodes, duty_id, policy), rank_strategy, local_id)
     spread = _spread_of(policy)
     if not spread:
         return [("any", [n.id for n in pool])]

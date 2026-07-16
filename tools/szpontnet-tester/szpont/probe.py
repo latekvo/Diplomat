@@ -6,6 +6,15 @@ runs one or more ``ProbePeer`` identities — each a spec-correct SzpontNet node
 (beacon, hello handshake, heartbeats, gossip, dispatch executor) — over real
 sockets, so from the candidate's point of view it is talking to genuine peers.
 
+Each peer is also a chapter-11 **trust peer**: it carries an Ed25519 keypair,
+advertises its ``pubkey``, issues a challenge nonce in its own hello, and answers
+the candidate's challenge with an ``auth`` signature over the domain-separated
+bytes (``"szpontnet-auth-v1:" ‖ nonce``) — so the candidate can verify it and a
+trust suite can assert the proof-of-possession round-trip. A peer built with
+``trust_peer=False`` (or on a host without ``cryptography``) stays keyless, so
+the foreign / unverifiable paths are testable too. A peer may also advertise
+``stats`` to drive ``surplus-first`` dispatch.
+
 Each peer also *records* everything it receives and exposes hooks
 (``send``, ``gossip_self``, ``raw_accept_handler``) so a test can drive precise
 scenarios: retune an advertisement, inject an override, or play the adversary in
@@ -14,7 +23,9 @@ the outbound-dial fence test.
 
 from __future__ import annotations
 
+import base64
 import contextlib
+import hashlib
 import socket
 import threading
 import time
@@ -22,6 +33,41 @@ from dataclasses import replace
 
 from . import codec, net
 from .codec import Job, NodeInfo
+
+try:  # the one third-party dep; a probe degrades to keyless if it's missing
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    _CRYPTO = True
+except Exception:  # pragma: no cover - only where cryptography is absent
+    _CRYPTO = False
+
+
+class ProbeKey:
+    """A probe peer's Ed25519 trust identity: advertises a base64 public key and
+    signs the domain-separated challenge to PROVE possession (11). A keyless
+    probe (no ``cryptography``) advertises nothing and can never be verified —
+    exactly the reference's keyless degradation."""
+
+    def __init__(self) -> None:
+        self._priv = Ed25519PrivateKey.generate()
+        raw = self._priv.public_key().public_bytes(
+            serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+        self.public_b64 = base64.b64encode(raw).decode("ascii")
+        self.fingerprint = hashlib.sha256(raw).hexdigest()
+
+    def sign(self, data: bytes) -> str:
+        return base64.b64encode(self._priv.sign(data)).decode("ascii")
+
+
+def fingerprint_of(pubkey_b64: str) -> str:
+    """sha256 of the raw 32-byte public key, hex — what the trust allowlist
+    matches on (11). Empty for an empty/malformed key."""
+    if not pubkey_b64:
+        return ""
+    try:
+        return hashlib.sha256(base64.b64decode(pubkey_b64, validate=True)).hexdigest()
+    except (ValueError, TypeError):
+        return ""
 
 
 def wait_until(predicate, timeout: float, interval: float = 0.1):
@@ -43,12 +89,26 @@ class ProbePeer:
         self, mesh: "ProbeMesh", id: str, name: str, platform: str, tier: int,
         tokens: str = "ok", duties_enabled: dict | None = None,
         dispatch_reply: str = "spawned", dial_mode: str = "auto",
-        raw_accept_handler=None,
+        raw_accept_handler=None, trust_peer: bool = True,
+        stats: dict | None = None,
     ) -> None:
         self.mesh = mesh
         self.dispatch_reply = dispatch_reply  # "spawned" | "failed" | "silent"
         self.dial_mode = dial_mode            # "auto" (id rule) | "always" | "never"
         self.raw_accept_handler = raw_accept_handler  # callable(conn, peer) for adversary tests
+
+        # This probe's Ed25519 trust identity (11). ``trust_peer=True`` (the
+        # default) advertises a pubkey and answers the candidate's auth challenge
+        # so it can be verified; ``trust_peer=False`` (or a missing crypto lib)
+        # leaves the probe keyless — foreign under any non-empty allowlist.
+        self.key: ProbeKey | None = ProbeKey() if (trust_peer and _CRYPTO) else None
+        self.pubkey = self.key.public_b64 if self.key else ""
+        self.fingerprint = self.key.fingerprint if self.key else ""
+        # Trust bookkeeping so a suite can assert the exchange happened.
+        self.auth_sent = 0        # auth signatures WE sent (proving our key)
+        self.auth_received = 0    # auth signatures the candidate sent us
+        self.candidate_verified_ok = False  # candidate's auth verified against its pubkey
+        self.candidate_pubkey = ""          # pubkey the candidate advertised in its hello
 
         # Listen socket the candidate dials when candidate.id < peer.id.
         host = "127.0.0.1" if mesh.loopback else "0.0.0.0"
@@ -62,7 +122,7 @@ class ProbePeer:
         self.info = NodeInfo(
             id=id, name=name, platform=platform, tier=tier, tokens=tokens,
             tcp_port=self.tcp_port, duties_enabled=duties_enabled or {},
-            epoch=mesh.epoch, seq=0,
+            epoch=mesh.epoch, seq=0, pubkey=self.pubkey, stats=dict(stats or {}),
         )
 
         self._lock = threading.Lock()          # guards socket sends + info mutation
@@ -73,6 +133,7 @@ class ProbePeer:
         self.raw_received: list[bytes] = []    # raw frames, for framing checks
         self.jobs: list[Job] = []              # dispatch jobs the candidate sent us
         self.overrides: dict = {"rev": 0, "updatedBy": "", "duties": {}}
+        self._nonce = ""       # the challenge THIS probe issues in its own hello
         self._stop = False
         self._dialing = False
         self._frozen = False   # simulate a silent death (stop sending heartbeats)
@@ -106,6 +167,16 @@ class ProbePeer:
             with contextlib.suppress(OSError):
                 conn.close()
 
+    def _hello_bytes(self) -> bytes:
+        """Our hello, carrying a fresh per-connection trust-challenge nonce (11)
+        so the candidate proves possession of its advertised key back to us."""
+        import secrets
+        with self._lock:
+            self._nonce = secrets.token_hex(16)
+            info = self.info
+            nonce = self._nonce
+        return codec.encode(codec.hello(info, self.overrides, self.mesh.secret, nonce))
+
     def _serve_accepted(self, conn: socket.socket) -> None:
         """Candidate dialed us: it sends its hello first; we reply with ours."""
         reader = net.LineReader(conn)
@@ -118,8 +189,14 @@ class ProbePeer:
             conn.close()
             return
         self._record(first, msg)
-        self._send_raw(conn, codec.encode(
-            codec.hello(self.info, self.overrides, self.mesh.secret)))
+        node = msg.get("node") or {}
+        if isinstance(node, dict) and isinstance(node.get("pubkey"), str):
+            with self._lock:
+                self.candidate_pubkey = node["pubkey"]
+        self._send_raw(conn, self._hello_bytes())
+        # The candidate's opening hello may already carry its challenge nonce;
+        # answer it (prove OUR key) before pumping the link.
+        self._maybe_answer_challenge(conn, msg)
         self._run_link(conn, reader)
 
     def _dial_candidate(self) -> None:
@@ -135,8 +212,7 @@ class ProbePeer:
                 conn = net.connect_tcp(cand["addr"], cand["tcp_port"], timeout=5.0)
             except OSError:
                 return
-            self._send_raw(conn, codec.encode(               # dialer sends hello first
-                codec.hello(self.info, self.overrides, self.mesh.secret)))
+            self._send_raw(conn, self._hello_bytes())        # dialer sends hello first
             self._run_link(conn, net.LineReader(conn))
         finally:
             with self._lock:
@@ -199,10 +275,54 @@ class ProbePeer:
             reason = "" if self.dispatch_reply == "spawned" else "probe declined (test)"
             self._send_raw(conn, codec.encode(codec.job_status(
                 job.id, self.dispatch_reply, reason, self.info.id)))
+        elif t == "hello":
+            # A candidate that dials us sends its hello on the pumped link; it may
+            # carry a challenge nonce we must answer (prove OUR key). Also learn
+            # the candidate's advertised pubkey so we can verify its own auth.
+            node = msg.get("node") or {}
+            if isinstance(node, dict) and isinstance(node.get("pubkey"), str):
+                with self._lock:
+                    self.candidate_pubkey = node["pubkey"]
+            self._maybe_answer_challenge(conn, msg)
+        elif t == "auth":
+            self._verify_candidate_auth(msg)
         elif t == "overrides":
             raw = msg.get("overrides")
             if isinstance(raw, dict):
                 self.overrides = raw
+
+    def _maybe_answer_challenge(self, conn: socket.socket, hello_msg: dict) -> None:
+        """The candidate's hello carried a nonce → sign the domain-separated
+        challenge with our private key to prove possession (11). A keyless probe
+        stays silent (never verified → foreign under any allowlist)."""
+        nonce = hello_msg.get("nonce")
+        if not (isinstance(nonce, str) and nonce and self.key is not None):
+            return
+        sig = self.key.sign(codec.auth_challenge(nonce))
+        with contextlib.suppress(OSError):
+            self._send_raw(conn, codec.encode(codec.auth(sig)))
+            with self._lock:
+                self.auth_sent += 1
+
+    def _verify_candidate_auth(self, msg: dict) -> None:
+        """The candidate answered OUR challenge with an auth. Verify its signature
+        over ``AUTH_CONTEXT || our-nonce`` against the pubkey it advertised, so a
+        suite can assert the candidate proved possession of its key."""
+        with self._lock:
+            self.auth_received += 1
+            nonce, pub = self._nonce, self.candidate_pubkey
+        sig = msg.get("sig")
+        if not (isinstance(sig, str) and sig and nonce and pub and _CRYPTO):
+            return
+        try:
+            from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+            Ed25519PublicKey.from_public_bytes(
+                base64.b64decode(pub, validate=True)).verify(
+                base64.b64decode(sig, validate=True), codec.auth_challenge(nonce))
+            with self._lock:
+                self.candidate_verified_ok = True
+        except Exception:
+            pass
 
     # MARK: - test-driver hooks
 

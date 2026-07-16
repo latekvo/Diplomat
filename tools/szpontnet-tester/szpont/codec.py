@@ -1,8 +1,12 @@
 """The SzpontNet wire codec — a clean-room, spec-faithful NDJSON encoder/decoder.
 
 This is the tester's own reference implementation of chapter 04's message
-catalog and chapter 03's framing. It is written from the specification so the
-tester can (a) *speak* the protocol correctly as a peer / control client /
+catalog and chapter 03's framing, extended with the chapter-11 additions: the
+optional ``pubkey``/``stats`` NodeInfo fields (omitted when empty), the trust
+``nonce``/``auth`` proof-of-possession exchange over a domain-separated
+challenge, the ``apiKey`` credential on ``ctl``/``dispatch``, and the
+``trust``/``untrust`` control commands. It is written from the specification so
+the tester can (a) *speak* the protocol correctly as a peer / control client /
 adversary and (b) *validate* every message a candidate emits against a strict
 schema. Where this codec and a candidate disagree, one of them violates the
 spec — which is exactly what the tester is for.
@@ -32,10 +36,18 @@ class NodeInfo:
     seq: int = 0
     sees: tuple[str, ...] = ()
     duties_enabled: dict = field(default_factory=dict)
+    # Chapter 11 additive fields. ``pubkey`` is the node's advertised Ed25519
+    # public key (base64) — its *claimed* trust identity, believed only once the
+    # node proves possession with an ``auth`` signature. ``stats`` is the
+    # load-balancing view ({"plan","usageAvg","quotaLeft"}). BOTH are omitted from
+    # to_dict() when empty so a node that uses neither is byte-identical to a
+    # core-v1 advertisement (11-trust-and-balancing conformance MUST).
+    pubkey: str = ""
+    stats: dict = field(default_factory=dict)
     version: int = PROTOCOL_VERSION
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "id": self.id,
             "name": self.name,
             "platform": self.platform,
@@ -48,11 +60,19 @@ class NodeInfo:
             "dutiesEnabled": self.duties_enabled,
             "v": self.version,
         }
+        # Omit the additive ch-11 fields when empty (byte-compat with core v1).
+        if self.pubkey:
+            d["pubkey"] = self.pubkey
+        if self.stats:
+            d["stats"] = self.stats
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "NodeInfo | None":
         """Parse a NodeInfo the way a conformant receiver must: a missing ``id``
-        or an unparseable numeric field invalidates the whole object (04)."""
+        or an unparseable numeric field invalidates the whole object (04). The
+        additive ``pubkey``/``stats`` (11) are optional and tolerant: a malformed
+        ``stats`` degrades to empty rather than invalidating the whole object."""
         if not isinstance(d, dict) or "id" not in d:
             return None
         try:
@@ -67,10 +87,25 @@ class NodeInfo:
                 seq=int(d.get("seq", 0)),
                 sees=tuple(str(s) for s in d.get("sees", [])),
                 duties_enabled=dict(d.get("dutiesEnabled", {})),
+                pubkey=str(d.get("pubkey", "")),
+                stats=dict(d.get("stats", {})) if isinstance(d.get("stats"), dict) else {},
                 version=int(d.get("v", PROTOCOL_VERSION)),
             )
         except (KeyError, TypeError, ValueError):
             return None
+
+    def surplus(self) -> float:
+        """Spare quota this node advertises for load balancing:
+        ``quotaLeft − usageAvg`` in plan-relative units. 0.0 when the node
+        advertises no stats (neutral — surplus-first ranking then degrades to
+        weakest-first). Mirrors the reference NodeInfo.surplus() (11)."""
+        if not self.stats:
+            return 0.0
+        try:
+            return float(self.stats.get("quotaLeft", 0.0)) - float(
+                self.stats.get("usageAvg", 0.0))
+        except (TypeError, ValueError):
+            return 0.0
 
     def newer_than(self, other: "NodeInfo") -> bool:
         return (self.epoch, self.seq) > (other.epoch, other.seq)
@@ -157,17 +192,45 @@ def beacon(info: NodeInfo) -> dict:
     }
 
 
-def hello(info: NodeInfo, overrides: dict, secret: str = "") -> dict:
+# Domain-separation prefix for the trust proof-of-possession signature (11). The
+# peer signs this tag + the challenge nonce, NEVER the bare nonce — so a captured
+# signature is meaningless outside SzpontNet's auth exchange. Must match the
+# reference's ``_AUTH_CONTEXT`` byte-for-byte.
+AUTH_CONTEXT = b"szpontnet-auth-v1:"
+
+
+def auth_challenge(nonce: str) -> bytes:
+    """The exact bytes signed/verified for a proof-of-possession ``auth``: the
+    domain tag followed by the UTF-8 challenge nonce (11-trust-and-balancing)."""
+    return AUTH_CONTEXT + nonce.encode()
+
+
+def hello(info: NodeInfo, overrides: dict, secret: str = "", nonce: str = "") -> dict:
     msg = {"t": "hello", "node": info.to_dict(), "overrides": overrides}
     if secret:
         msg["secret"] = secret
+    if nonce:
+        # The trust challenge (11): whoever receives this hello must sign the
+        # domain-separated ``nonce`` with the private key for the advertised
+        # ``pubkey`` to be believed (proof of possession, bound to this link).
+        msg["nonce"] = nonce
     return msg
 
 
-def ctl_hello(secret: str = "") -> dict:
+def auth(sig_b64: str) -> dict:
+    """Proof of possession (11): a base64 signature over the peer's hello nonce,
+    domain-separated (:func:`auth_challenge`)."""
+    return {"t": "auth", "sig": sig_b64}
+
+
+def ctl_hello(secret: str = "", api_key: str = "") -> dict:
     msg: dict = {"t": "ctl"}
     if secret:
         msg["secret"] = secret
+    if api_key:
+        # Optional per-server credential (11): a node configured with an API key
+        # requires it to open a control session. Independent of the join secret.
+        msg["apiKey"] = api_key
     return msg
 
 
@@ -187,12 +250,35 @@ def set_attr(target_id: str, attrs: dict) -> dict:
     return {"t": "set-attr", "target": target_id, "attrs": attrs}
 
 
-def dispatch_job(job: Job) -> dict:
-    return {"t": "dispatch", "job": job.to_dict()}
+def dispatch_job(job: Job, api_key: str = "") -> dict:
+    msg = {"t": "dispatch", "job": job.to_dict()}
+    if api_key:
+        # A dispatcher presents the target server's API key (if any) so an
+        # API-key-gated server accepts the request. Omitted when unset (11).
+        msg["apiKey"] = api_key
+    return msg
 
 
-def dispatch_route(duty: str, prompt: str) -> dict:
-    return {"t": "dispatch", "duty": duty, "prompt": prompt}
+def dispatch_route(duty: str, prompt: str, target: str = "", api_key: str = "") -> dict:
+    msg: dict = {"t": "dispatch", "duty": duty, "prompt": prompt}
+    if target:
+        # Name one node directly — the dispatcher's unilateral pick, no failover.
+        msg["target"] = target
+    if api_key:
+        # The credential forwarded to an API-key-gated (server) target (11).
+        msg["apiKey"] = api_key
+    return msg
+
+
+def trust(fingerprint: str, label: str = "") -> dict:
+    """Control command (11): add a device fingerprint to the local trusted
+    allowlist so its verified requests classify as *personal*."""
+    return {"t": "trust", "fingerprint": fingerprint, "label": label}
+
+
+def untrust(fingerprint: str) -> dict:
+    """Control command (11): remove a device fingerprint from the allowlist."""
+    return {"t": "untrust", "fingerprint": fingerprint}
 
 
 def job_status(job_id: str, status: str, reason: str = "", node_id: str = "") -> dict:
@@ -257,6 +343,30 @@ def validate_nodeinfo(d: dict) -> list[str]:
         problems.append("NodeInfo.sees not an array")
     if "dutiesEnabled" in d and not isinstance(d["dutiesEnabled"], dict):
         problems.append("NodeInfo.dutiesEnabled not an object")
+    # Chapter-11 additive fields: present-and-non-empty means they must be
+    # well-shaped, but they are always optional (never required, never fatal to
+    # a receiver — a candidate that emits neither is a valid core-v1 node).
+    if "pubkey" in d and not isinstance(d["pubkey"], str):
+        problems.append("NodeInfo.pubkey not a string")
+    if "stats" in d:
+        st = d["stats"]
+        if not isinstance(st, dict):
+            problems.append("NodeInfo.stats not an object")
+        else:
+            if "plan" in st and not isinstance(st["plan"], str):
+                problems.append("NodeInfo.stats.plan not a string")
+            for k in ("usageAvg", "quotaLeft"):
+                if k in st and not _is_num(st[k]):
+                    problems.append(f"NodeInfo.stats.{k} not a number")
+    return problems
+
+
+def validate_auth(msg: dict) -> list[str]:
+    problems = validate_envelope(msg)
+    if msg.get("t") != "auth":
+        problems.append(f"expected t=auth, got {msg.get('t')!r}")
+    if not isinstance(msg.get("sig"), str) or not msg.get("sig"):
+        problems.append("auth.sig missing or not a non-empty string")
     return problems
 
 

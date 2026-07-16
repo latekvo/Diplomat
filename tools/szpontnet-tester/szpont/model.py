@@ -40,8 +40,21 @@ TIER_MIN, TIER_MAX, TIER_DEFAULT = 1, 5, 3
 TOKEN_RANK = {"ok": 0, "low": 1, "out": 2}
 TOKEN_STATES = ("ok", "low", "out")
 PLATFORMS = ("linux", "macos")
-STRATEGIES = ("weakest-first", "strongest-first", "local-first")
+# Ranking strategies (06/11). ``local-first`` is a real reference strategy;
+# ``surplus-first`` (11) ranks by descending dispatch surplus with a
+# weakest-first tie-break — the default a dispatcher applies to target selection.
+STRATEGIES = ("weakest-first", "strongest-first", "local-first", "surplus-first")
 DEFAULT_STRATEGY = "weakest-first"
+# The default target ranking a dispatcher applies (config.dispatchStrategy in the
+# reference / appendix-b). Distinct from a duty's displayed placement strategy.
+DEFAULT_DISPATCH_STRATEGY = "surplus-first"
+
+# Plan quota weights relative to Pro (Max 5× → 5, Max 20× → 20), matching
+# core/mesh.json "accounts" / appendix-b. The tester's oracle ranks on the
+# already-advertised surplus so it needs no capacity math, but these are the
+# canonical constants a scenario uses to build meaningful stats.
+PLAN_WEIGHTS = {"pro": 1.0, "max-5x": 5.0, "max-20x": 20.0}
+DEFAULT_PLAN = "max-5x"
 
 # The v1 duty catalog with default placement policies (appendix B / 05-resources).
 DEFAULT_DUTIES = {

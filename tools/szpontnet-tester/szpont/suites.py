@@ -1,9 +1,12 @@
 """The conformance suites: concrete TCP/UDP scenarios that check a candidate.
 
 Every case maps to the interop vectors in ``docs/szpontnet/10-conformance.md``
-and the MUST/SHOULD requirements of the chapters. Each drives the candidate over
-real sockets via the probe mesh, observes it (snapshot + wire captures), and
-records per-requirement checks with the spec section that mandates them.
+and the MUST/SHOULD requirements of the chapters — the core protocol (01–10) in
+categories A–H, and **chapter 11** (the trust / load-balancing layer and the
+server / API-key role) in categories **I** (trust & load balancing) and **J**
+(server role & API key). Each drives the candidate over real sockets via the
+probe mesh, observes it (snapshot + wire captures), and records per-requirement
+checks with the spec section that mandates them.
 
 Cases skip cleanly (rather than fail) when the candidate does not claim a role
 the case needs — e.g. dispatch cases skip a pure Participant that serves no
@@ -704,6 +707,437 @@ def case_h_overrides_lww(rep: Reporter, ctx: Context) -> None:
                   f"review={_assignments(scn.candidate.snapshot()).get('review')}")
 
 
+# MARK: - I. Trust & load balancing (ch 11)
+
+
+def _peer_snap(snap: dict | None, peer_id: str) -> dict:
+    for p in (snap or {}).get("peers", []):
+        if p.get("id") == peer_id:
+            return p
+    return {}
+
+
+def _dispatch_status(peer, job, timeout: float = 6.0):
+    """Send a dispatch job from a probe to the candidate; return the job-status."""
+    peer.send(codec.dispatch_job(job))
+    return wait_until(lambda: next((m for m in peer.messages("job-status")
+                                    if m.get("id") == job.id), None), timeout)
+
+
+def case_i_empty_allowlist_trust(rep: Reporter, ctx: Context) -> None:
+    rep.begin_case("I1", "Empty allowlist = full trust; a verified peer's dispatch runs (11)")
+    scn = Scenario(ctx.node_cmd, ctx.model, candidate_id=ID_A, platform="linux", tier=4,
+                   loopback=ctx.loopback)
+    scn.add_peer(id=ID_B, name="peer", platform="macos", tier=1, trust_peer=True)
+    with scn:
+        if not _need_port(rep, scn):
+            return
+        peer = scn.mesh.peers[0]
+        if not wait_until(lambda: peer.linked, 8.0):
+            rep.skip_case("peer never linked")
+            return
+        verified = wait_until(lambda: _peer_snap(scn.candidate.snapshot(), ID_B).get("verified"), 6.0)
+        rep.check("candidate verifies the peer's proof of possession (auth over the nonce)",
+                  bool(verified), "MUST", "11-trust-and-balancing#conformance",
+                  "the candidate must sign & verify the domain-separated challenge")
+        psnap = _peer_snap(scn.candidate.snapshot(), ID_B)
+        rep.check("candidate records the peer's proven fingerprint",
+                  psnap.get("fingerprint") == peer.fingerprint, "MUST",
+                  "11-trust-and-balancing#the-fingerprint",
+                  f"snap={psnap.get('fingerprint','')[:16]} probe={peer.fingerprint[:16]}")
+        rep.check("candidate proved possession of ITS key back to the peer",
+                  bool(wait_until(lambda: peer.candidate_verified_ok, 4.0)), "MUST",
+                  "11-trust-and-balancing#conformance")
+        rep.check("empty allowlist classifies the verified peer as personal",
+                  psnap.get("trust") == "personal", "MUST",
+                  "11-trust-and-balancing#the-empty-allowlist")
+        job = Job(id="i1-run", duty="review", prompt="run me", requested_by=ID_B,
+                  requested_at=time.time())
+        reply = _dispatch_status(peer, job)
+        rep.check("a personal (verified, full-trust) peer's dispatch is spawned",
+                  reply is not None and reply.get("status") == "spawned", "MUST",
+                  "11-trust-and-balancing#conformance",
+                  f"status={reply.get('status') if reply else None}")
+
+
+def case_i_proof_of_possession(rep: Reporter, ctx: Context) -> None:
+    rep.begin_case("I2", "Proof of possession: foreign until the operator trusts the proven key (11)")
+    scn = Scenario(ctx.node_cmd, ctx.model, candidate_id=ID_A, platform="linux", tier=4,
+                   loopback=ctx.loopback)
+    scn.add_peer(id=ID_B, name="peer", platform="macos", tier=1, trust_peer=True)
+    with scn:
+        if not _need_port(rep, scn):
+            return
+        peer = scn.mesh.peers[0]
+        if not wait_until(lambda: peer.linked, 8.0):
+            rep.skip_case("peer never linked")
+            return
+        snap = wait_until(lambda: (scn.candidate.snapshot() if
+                                   (scn.candidate.snapshot() or {}).get("self", {}).get("fingerprint")
+                                   else None), 6.0)
+        if not snap or scn.candidate.ctl_status() is None:
+            rep.skip_case("candidate exposes no fingerprint / control session — not trust-capable")
+            return
+        self_fp = snap["self"]["fingerprint"]
+        wait_until(lambda: _peer_snap(scn.candidate.snapshot(), ID_B).get("verified"), 6.0)
+        # Enable the allowlist by trusting ONLY the candidate itself → the verified
+        # peer, though it proved a key, is now unlisted and therefore foreign.
+        try:
+            sess = scn.candidate.open_ctl()
+            ok = sess.command(codec.trust(self_fp, "self"))
+            sess.close()
+        except OSError:
+            rep.skip_case("could not drive trust control command")
+            return
+        rep.check("`trust` control command is accepted",
+                  ok is not None and ok.get("t") == "ok", "MUST", "04-messages#ctl",
+                  f"reply={ok}")
+        became_foreign = wait_until(
+            lambda: _peer_snap(scn.candidate.snapshot(), ID_B).get("trust") == "foreign", 4.0)
+        rep.check("with a non-empty allowlist, an unlisted (though verified) peer is foreign",
+                  bool(became_foreign), "MUST",
+                  "11-trust-and-balancing#conformance",
+                  f"trust={_peer_snap(scn.candidate.snapshot(), ID_B).get('trust')}")
+        job = Job(id="i2-foreign", duty="review", prompt="x", requested_by=ID_B,
+                  requested_at=time.time())
+        reply = _dispatch_status(peer, job)
+        rep.check("a foreign device's dispatch is declined (not spawned)",
+                  reply is not None and reply.get("status") == "declined", "MUST",
+                  "11-trust-and-balancing#conformance",
+                  f"status={reply.get('status') if reply else None} reason={reply.get('reason') if reply else ''}")
+        # Now trust the peer's PROVEN fingerprint → it becomes personal and runs.
+        try:
+            sess = scn.candidate.open_ctl()
+            sess.command(codec.trust(peer.fingerprint, "peer"))
+            sess.close()
+        except OSError:
+            rep.skip_case("could not trust the peer fingerprint")
+            return
+        became_personal = wait_until(
+            lambda: _peer_snap(scn.candidate.snapshot(), ID_B).get("trust") == "personal", 4.0)
+        rep.check("trusting the peer's proven fingerprint promotes it to personal",
+                  bool(became_personal), "MUST",
+                  "11-trust-and-balancing#trust-is-never-derived-from-an-advertisement")
+        job2 = Job(id="i2-personal", duty="review", prompt="y", requested_by=ID_B,
+                   requested_at=time.time())
+        reply2 = _dispatch_status(peer, job2)
+        rep.check("once trusted, the same peer's dispatch is spawned",
+                  reply2 is not None and reply2.get("status") == "spawned", "MUST",
+                  "11-trust-and-balancing#conformance",
+                  f"status={reply2.get('status') if reply2 else None}")
+
+
+def case_i_keyless_foreign(rep: Reporter, ctx: Context) -> None:
+    rep.begin_case("I3", "A keyless peer proves nothing → foreign under any allowlist (11)")
+    scn = Scenario(ctx.node_cmd, ctx.model, candidate_id=ID_A, platform="linux", tier=4,
+                   loopback=ctx.loopback)
+    # A keyless probe: advertises no pubkey, answers no challenge — can never be
+    # verified, so it has no fingerprint and is foreign the moment trust is on.
+    scn.add_peer(id=ID_B, name="keyless", platform="macos", tier=1, trust_peer=False)
+    with scn:
+        if not _need_port(rep, scn):
+            return
+        peer = scn.mesh.peers[0]
+        if not wait_until(lambda: peer.linked, 8.0):
+            rep.skip_case("peer never linked")
+            return
+        snap = wait_until(lambda: (scn.candidate.snapshot() if
+                                   (scn.candidate.snapshot() or {}).get("self", {}).get("fingerprint")
+                                   else None), 6.0)
+        if not snap or scn.candidate.ctl_status() is None:
+            rep.skip_case("candidate exposes no fingerprint / control session")
+            return
+        time.sleep(1.0)
+        rep.check("a keyless peer is never verified",
+                  _peer_snap(scn.candidate.snapshot(), ID_B).get("verified") is False, "MUST",
+                  "11-trust-and-balancing#conformance")
+        self_fp = snap["self"]["fingerprint"]
+        try:
+            sess = scn.candidate.open_ctl()
+            sess.command(codec.trust(self_fp, "self"))
+            sess.close()
+        except OSError:
+            rep.skip_case("could not drive trust control command")
+            return
+        foreign = wait_until(
+            lambda: _peer_snap(scn.candidate.snapshot(), ID_B).get("trust") == "foreign", 4.0)
+        rep.check("keyless peer is foreign under a non-empty allowlist", bool(foreign), "MUST",
+                  "11-trust-and-balancing#conformance")
+        job = Job(id="i3-foreign", duty="review", prompt="x", requested_by=ID_B,
+                  requested_at=time.time())
+        reply = _dispatch_status(peer, job)
+        rep.check("a keyless (unverifiable) peer's dispatch is declined",
+                  reply is not None and reply.get("status") == "declined", "MUST",
+                  "11-trust-and-balancing#conformance",
+                  f"status={reply.get('status') if reply else None}")
+
+
+def case_i_requester_from_link(rep: Reporter, ctx: Context) -> None:
+    rep.begin_case("I4", "Requester classified from the verified link, not `requestedBy` (11)")
+    scn = Scenario(ctx.node_cmd, ctx.model, candidate_id=ID_A, platform="linux", tier=4,
+                   loopback=ctx.loopback)
+    scn.add_peer(id=ID_B, name="peer", platform="macos", tier=1, trust_peer=True)
+    with scn:
+        if not _need_port(rep, scn):
+            return
+        peer = scn.mesh.peers[0]
+        if not wait_until(lambda: peer.linked, 8.0):
+            rep.skip_case("peer never linked")
+            return
+        snap = wait_until(lambda: (scn.candidate.snapshot() if
+                                   (scn.candidate.snapshot() or {}).get("self", {}).get("fingerprint")
+                                   else None), 6.0)
+        if not snap or scn.candidate.ctl_status() is None:
+            rep.skip_case("candidate exposes no fingerprint / control session")
+            return
+        self_fp = snap["self"]["fingerprint"]
+        wait_until(lambda: _peer_snap(scn.candidate.snapshot(), ID_B).get("verified"), 6.0)
+        # Turn on the allowlist (trust self only) so the peer is foreign on its link.
+        try:
+            sess = scn.candidate.open_ctl()
+            sess.command(codec.trust(self_fp, "self"))
+            sess.close()
+        except OSError:
+            rep.skip_case("could not drive trust control command")
+            return
+        wait_until(lambda: _peer_snap(scn.candidate.snapshot(), ID_B).get("trust") == "foreign", 4.0)
+        # The foreign peer LIES: it claims requestedBy = the candidate's own id (a
+        # trusted-looking value). Classification must ignore this and stay foreign.
+        job = Job(id="i4-spoof", duty="review", prompt="x", requested_by=ID_A,
+                  requested_at=time.time())
+        reply = _dispatch_status(peer, job)
+        rep.check("a spoofed requestedBy does NOT grant trust (link identity wins)",
+                  reply is not None and reply.get("status") == "declined", "MUST",
+                  "11-trust-and-balancing#conformance",
+                  f"status={reply.get('status') if reply else None} — requestedBy was spoofed to a "
+                  "trusted id but the request rides a foreign link")
+
+
+def case_i_declined_failover(rep: Reporter, ctx: Context) -> None:
+    rep.begin_case("I5", "`declined` job-status fails a slot over, like `failed` (11)")
+    scn = Scenario(ctx.node_cmd, ctx.model, candidate_id=ID_A, name="cand",
+                   platform="linux", tier=4, loopback=ctx.loopback)
+    # C (t4) ranks before B (t1) weakest-first for the macos slot; C DECLINES →
+    # the dispatcher must advance to B exactly as it would for a `failed`.
+    scn.add_peer(id=ID_C, name="mac-weak", platform="macos", tier=4, dispatch_reply="declined")
+    scn.add_peer(id=ID_B, name="mac-strong", platform="macos", tier=1, dispatch_reply="spawned")
+    with scn:
+        if not _need_port(rep, scn):
+            return
+        if scn.candidate.ctl_status() is None:
+            rep.skip_case("candidate serves no control session — not a Dispatcher")
+            return
+        if _wait_snapshot(scn, lambda s: len(_up_peer_ids(s)) >= 2, 12.0) is None:
+            rep.skip_case("fleet never fully linked")
+            return
+        _wait_snapshot(scn, lambda s: _assignments(s).get("audit") == (ID_A, ID_C), 8.0)
+        try:
+            sess = scn.candidate.open_ctl()
+            res = sess.command(codec.dispatch_route("audit", "e2e"), timeout=12.0)
+            sess.close()
+        except OSError:
+            rep.skip_case("control session failed")
+            return
+        macos = {r.get("slot"): r for r in (res or {}).get("results", [])}.get("macos", {})
+        rep.check("a `declined` reply fails the macos slot over from C to B",
+                  macos.get("node") == ID_B and macos.get("status") == "spawned", "MUST",
+                  "11-trust-and-balancing#conformance",
+                  f"macos slot outcome={macos} (C declined, must advance to B)")
+        rep.check("the declining node C actually received (and declined) the job",
+                  any(j.duty == "audit" for j in scn.mesh.peers[0].jobs), "MUST",
+                  "07-dispatch#routing-a-job")
+
+
+def case_i_surplus_first(rep: Reporter, ctx: Context) -> None:
+    rep.begin_case("I6", "surplus-first dispatch picks the most-surplus node (11)")
+    # Candidate has the LEAST surplus; two peers advertise more. The default
+    # dispatch strategy is surplus-first, so `review` (no spread, single slot)
+    # must route to the highest-surplus node — here peer C (surplus 18).
+    scn = Scenario(ctx.node_cmd, ctx.model, candidate_id=ID_A, platform="linux", tier=4,
+                   loopback=ctx.loopback,
+                   stats={"plan": "pro", "usageAvg": 0.0, "quotaLeft": 0.5})   # surplus 0.5
+    scn.add_peer(id=ID_B, name="mid", platform="macos", tier=1,
+                 stats={"plan": "max-5x", "usageAvg": 1.0, "quotaLeft": 6.0})   # surplus 5
+    scn.add_peer(id=ID_C, name="hi", platform="macos", tier=4,
+                 stats={"plan": "max-20x", "usageAvg": 2.0, "quotaLeft": 20.0})  # surplus 18
+    with scn:
+        if not _need_port(rep, scn):
+            return
+        if scn.candidate.ctl_status() is None:
+            rep.skip_case("candidate serves no control session — not a Dispatcher")
+            return
+        if _wait_snapshot(scn, lambda s: len(_up_peer_ids(s)) >= 2, 12.0) is None:
+            rep.skip_case("fleet never fully linked")
+            return
+        # Confirm the candidate actually ingested the peers' advertised surplus,
+        # else the dispatch pick would be meaningless.
+        surplus_seen = wait_until(
+            lambda: _peer_snap(scn.candidate.snapshot(), ID_C).get("surplus") == 18.0, 6.0)
+        rep.check("candidate ingests a peer's advertised stats (surplus)",
+                  bool(surplus_seen), "MUST", "11-trust-and-balancing#stats",
+                  f"peer C surplus in snapshot={_peer_snap(scn.candidate.snapshot(), ID_C).get('surplus')}")
+        try:
+            sess = scn.candidate.open_ctl()
+            res = sess.command(codec.dispatch_route("review", "load"), timeout=10.0)
+            sess.close()
+        except OSError:
+            rep.skip_case("control session failed")
+            return
+        if not res or res.get("t") != "dispatch-result":
+            rep.skip_case(f"no dispatch-result (got {res.get('t') if res else None})")
+            return
+        outcome = {r.get("slot"): r for r in res.get("results", [])}.get("any", {})
+        rep.check("surplus-first routes `review` to the highest-surplus node (C)",
+                  outcome.get("node") == ID_C and outcome.get("status") == "spawned", "MUST",
+                  "11-trust-and-balancing#conformance",
+                  f"picked={outcome.get('node','')[:6]} status={outcome.get('status')} "
+                  f"(expected C={ID_C[:6]}, surplus 18)")
+
+
+def case_i_omit_when_empty(rep: Reporter, ctx: Context) -> None:
+    rep.begin_case("I7", "Byte-compat: emitted advert omits pubkey/stats when unused (11)")
+    scn = Scenario(ctx.node_cmd, ctx.model, candidate_id=ID_A, loopback=ctx.loopback)
+    scn.add_peer(id=ID_B, name="peer", platform="macos", tier=1)
+    with scn:
+        if not _need_port(rep, scn):
+            return
+        peer = scn.mesh.peers[0]
+        wait_until(lambda: peer.linked and peer.messages("hello"), 8.0)
+        time.sleep(0.5)
+        adverts = [m.get("node", {}) for m in peer.messages("hello") + peer.messages("node")]
+        if not adverts:
+            rep.skip_case("no hello/node advertisement observed")
+            return
+        # Every emitted NodeInfo stays schema-valid, and the additive fields obey
+        # the omit-when-empty rule: if `stats`/`pubkey` are present they must be
+        # non-empty (a node that carries neither is byte-identical to core v1).
+        node_probs = []
+        for node in adverts:
+            node_probs += codec.validate_nodeinfo(node)
+        rep.check("emitted NodeInfos remain schema-valid with the ch-11 fields",
+                  not node_probs, "MUST", "04-messages#nodeinfo",
+                  "; ".join(sorted(set(node_probs))))
+        empty_field = any(
+            ("pubkey" in n and n["pubkey"] == "") or ("stats" in n and n["stats"] == {})
+            for n in adverts)
+        rep.check("pubkey/stats are OMITTED when empty (never present-but-empty)",
+                  not empty_field, "MUST", "11-trust-and-balancing#conformance",
+                  "an empty pubkey/stats key on the wire breaks byte-compat with core v1")
+
+
+# MARK: - J. Server role & API key (ch 11)
+
+
+def case_j_server_no_dispatch(rep: Reporter, ctx: Context) -> None:
+    rep.begin_case("J1", "Server mode never originates a dispatch to a peer (11)")
+    scn = Scenario(ctx.node_cmd, ctx.model, candidate_id=ID_A, name="srv",
+                   platform="linux", tier=4, loopback=ctx.loopback, server=True)
+    scn.add_peer(id=ID_B, name="mac", platform="macos", tier=1)
+    with scn:
+        if not _need_port(rep, scn):
+            return
+        if scn.candidate.ctl_status() is None:
+            rep.skip_case("candidate serves no control session — cannot exercise server routing")
+            return
+        peer = scn.mesh.peers[0]
+        if not wait_until(lambda: peer.linked, 8.0):
+            rep.skip_case("peer never linked")
+            return
+        _wait_snapshot(scn, lambda s: ID_B in _up_peer_ids(s), 8.0)
+        # An unqualified dispatch (no target) must run on the server ITSELF, never
+        # fan out to the linked macos peer.
+        try:
+            sess = scn.candidate.open_ctl()
+            res = sess.command(codec.dispatch_route("audit", "e2e"), timeout=10.0)
+            sess.close()
+        except OSError:
+            rep.skip_case("control session failed")
+            return
+        if not res or res.get("t") != "dispatch-result":
+            rep.skip_case(f"no dispatch-result (got {res.get('t') if res else None})")
+            return
+        results = res.get("results", [])
+        all_self = bool(results) and all(
+            r.get("node") in (ID_A, None) and r.get("node") != ID_B for r in results)
+        rep.check("a routed request runs on the server itself, never on a peer",
+                  all_self, "MUST", "11-trust-and-balancing#the-server-role",
+                  f"results={[(r.get('slot'), (r.get('node') or '')[:6], r.get('status')) for r in results]}")
+        time.sleep(1.0)
+        rep.check("the peer received NO dispatch from the server node",
+                  not peer.jobs, "MUST", "11-trust-and-balancing#the-server-role",
+                  f"peer.jobs={len(peer.jobs)}")
+        # An explicit peer target is refused rather than dispatched.
+        try:
+            sess = scn.candidate.open_ctl()
+            res2 = sess.command(codec.dispatch_route("review", "e2e", target=ID_B), timeout=10.0)
+            sess.close()
+        except OSError:
+            res2 = None
+        if res2 and res2.get("t") == "dispatch-result":
+            refused = all(r.get("status") != "spawned" for r in res2.get("results", []))
+            rep.check("an explicit peer target is refused (server never pushes work out)",
+                      refused, "MUST", "11-trust-and-balancing#the-server-role",
+                      f"results={[(r.get('status'), r.get('reason')) for r in res2.get('results', [])]}")
+
+
+def case_j_api_key_dispatch(rep: Reporter, ctx: Context) -> None:
+    rep.begin_case("J2", "API key gates inbound dispatch: declined without, spawned with (11)")
+    scn = Scenario(ctx.node_cmd, ctx.model, candidate_id=ID_A, platform="linux", tier=4,
+                   loopback=ctx.loopback, api_key="sekret-key")
+    scn.add_peer(id=ID_B, name="peer", platform="macos", tier=1, trust_peer=True)
+    with scn:
+        if not _need_port(rep, scn):
+            return
+        peer = scn.mesh.peers[0]
+        if not wait_until(lambda: peer.linked, 8.0):
+            rep.skip_case("peer never linked (api-key gate applies only to dispatch, not join)")
+            return
+        # No apiKey on the dispatch → refused as declined, reason names the key.
+        job = Job(id="j2-nokey", duty="review", prompt="x", requested_by=ID_B,
+                  requested_at=time.time())
+        no_key = _dispatch_status(peer, job)
+        rep.check("inbound dispatch WITHOUT the API key is declined",
+                  no_key is not None and no_key.get("status") == "declined", "MUST",
+                  "11-trust-and-balancing#the-api-key",
+                  f"status={no_key.get('status') if no_key else None} "
+                  f"reason={no_key.get('reason') if no_key else ''}")
+        # Correct apiKey → the request runs.
+        job2 = Job(id="j2-withkey", duty="review", prompt="y", requested_by=ID_B,
+                   requested_at=time.time())
+        peer.send(codec.dispatch_job(job2, api_key="sekret-key"))
+        with_key = wait_until(lambda: next((m for m in peer.messages("job-status")
+                                            if m.get("id") == job2.id), None), 6.0)
+        rep.check("inbound dispatch WITH the matching API key is spawned",
+                  with_key is not None and with_key.get("status") == "spawned", "MUST",
+                  "11-trust-and-balancing#the-api-key",
+                  f"status={with_key.get('status') if with_key else None}")
+
+
+def case_j_api_key_ctl(rep: Reporter, ctx: Context) -> None:
+    rep.begin_case("J3", "API key gates the control session: wrong/absent key is refused (11)")
+    scn = Scenario(ctx.node_cmd, ctx.model, candidate_id=ID_A, platform="linux", tier=4,
+                   loopback=ctx.loopback, api_key="sekret-key")
+    with scn:
+        if not _need_port(rep, scn):
+            return
+        # The Scenario wires the correct key into the candidate's ctl helper.
+        right = scn.candidate.ctl_status(timeout=4.0)
+        if right is None:
+            rep.skip_case("candidate serves no control session to gate")
+            return
+        rep.check("correct API key opens a control session", right is not None, "MUST",
+                  "11-trust-and-balancing#the-api-key")
+        scn.candidate.api_key = "wrong-key"
+        wrong = scn.candidate.ctl_status(timeout=4.0)
+        scn.candidate.api_key = ""
+        absent = scn.candidate.ctl_status(timeout=4.0)
+        scn.candidate.api_key = "sekret-key"
+        rep.check("a wrong API key is refused (no snapshot returned)", wrong is None, "MUST",
+                  "11-trust-and-balancing#the-api-key")
+        rep.check("an absent API key is refused on an API-key server", absent is None, "MUST",
+                  "11-trust-and-balancing#the-api-key")
+
+
 # MARK: - registry
 
 
@@ -717,6 +1151,10 @@ SUITES = {
     "F": [case_f_emitted],
     "G": [case_g_snapshot],
     "H": [case_h_overrides_lww],
+    "I": [case_i_empty_allowlist_trust, case_i_proof_of_possession, case_i_keyless_foreign,
+          case_i_requester_from_link, case_i_declined_failover, case_i_surplus_first,
+          case_i_omit_when_empty],
+    "J": [case_j_server_no_dispatch, case_j_api_key_dispatch, case_j_api_key_ctl],
 }
 
 CATEGORY_TITLES = {
@@ -728,4 +1166,6 @@ CATEGORY_TITLES = {
     "F": "Codec conformance on emitted messages (V2)",
     "G": "State snapshot shape",
     "H": "Overrides last-writer-wins (V3)",
+    "I": "Trust & load balancing (ch 11)",
+    "J": "Server role & API key (ch 11)",
 }
