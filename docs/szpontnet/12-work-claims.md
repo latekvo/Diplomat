@@ -115,21 +115,27 @@ MUST:
 1. **Verify a keyed claim.** If the claim carries a `pubkey`, it MUST carry a `sig`
    that verifies against that `pubkey` over the signed bytes above; otherwise the
    claim is a forgery or was tampered with in relay and MUST be **dropped**. A
-   **keyless** claim (no `pubkey`) has nothing to verify - it is accepted, but can
-   never be [authoritative](#the-liveness-lease) (its claimant is never
-   trusted-`personal`), so it can never suppress work. This is the same safe
-   degradation as a keyless advertisement.
+   **keyless** claim (no `pubkey`) has nothing to verify - it is accepted and
+   relayed, but it can never be [authoritative](#ownership): ownership requires a
+   claim actually **signed by the node it names** (next rule + the
+   [binding](#ownership)), and a keyless claim proves nothing about who minted it.
+   This is the same safe degradation as a keyless advertisement.
 
 2. **Pin the claimant's key.** If the receiver already knows a `pubkey` for `node`
-   (from that node's advertisement), a claim carrying a **different** `pubkey` MUST
-   be dropped - a relay is trying to forge a lease under a known node's identity
-   with a key it controls. This mirrors the advertisement
+   (from that node's advertisement), a claim whose `pubkey` **differs from** that
+   pin MUST be dropped - **including a keyless claim** (an *absent* key differs from
+   the pin). Otherwise a third party could mint `{node: P}` with a *different* key
+   (a re-key attack) **or with no key at all** and have it believed as trusted peer
+   P's lease - suppressing work P never claimed. The guard is therefore
+   unconditional once a key is pinned: the claim MUST carry P's exact key. This
+   mirrors, and is as strict as, the advertisement
    [id→key pin](11-trust-and-balancing.md#authenticated-gossip).
 
-Because the claimant's `pubkey` travels **inside** the claim, a claim is
+Because the claimant's `pubkey` travels **inside** the claim, a keyed claim is
 self-authenticating and can be verified and relayed even by a node that has not yet
-seen the claimant's advertisement - but see the [ownership](#ownership) rule for why
-verification alone does not grant a claim any power.
+seen the claimant's advertisement - but see the [ownership binding](#ownership) for
+why verification alone does not grant a claim any power: it must also be signed by a
+key that the claimant is trusted to hold.
 
 ## The claim book
 
@@ -158,19 +164,25 @@ The **owner** of a work key is a pure, deterministic function of the claim book 
 the live set - every node computes the same owner, leaderlessly:
 
 ```
-function claim_owner(work_key, book, self_id, live, trust):
+function claim_owner(work_key, book, self_id, live, trust, pinned_key):
     active = [ node for (node, rec) in book[work_key]
                if rec.state == "active"
-               and is_authoritative(node, self_id, live, trust) ]
+               and is_authoritative(rec, self_id, live, trust, pinned_key) ]
     return min(active) if active else None      # lowest node id wins
 
-function is_authoritative(node, self_id, live, trust):
+function is_authoritative(rec, self_id, live, trust, pinned_key):
+    node = rec.node
     if node == self_id:            return true          # self always counts
     if node not in live:           return false         # dead lease lapses
-    return trust(node) == "personal"                    # foreign never counts
+    if trust(node) != "personal":  return false         # foreign never counts
+    # The BINDING: the claim must be signed by the node it names — its key must be
+    # non-empty and equal the key that node is pinned to (its sig was already
+    # verified under that key). This is what stops a third party minting a claim
+    # under a trusted peer's id (keyless, or with a key it controls).
+    return rec.pubkey != "" and rec.pubkey == pinned_key(node)
 ```
 
-Three rules, each load-bearing:
+Four rules, each load-bearing:
 
 - **Lowest id wins.** The tie-break among competing active claims is the smallest
   `node` id. It is deterministic, needs no clock (wall-clock is
@@ -193,6 +205,15 @@ Three rules, each load-bearing:
   the work. With an **empty allowlist** every verified peer is `personal`
   ([the full-trust default](11-trust-and-balancing.md)), so a home mesh dedupes
   across all its nodes with no configuration.
+
+- **The claim must be signed by the claimant.** Trusting the *name* on a claim is
+  not enough - a third party could put a trusted peer's id in the `node` field. So
+  ownership additionally requires the record to carry that peer's **pinned key**
+  (its signature having been verified under it): the claim is authoritative only if
+  it was provably minted by the node it names. A **keyless** claim (no key to bind
+  to) is therefore never authoritative under *any* trust configuration - not even
+  the empty-allowlist full-trust default - and a keyless node participates without
+  the power to suppress, exactly like a keyless advertiser is never `personal`.
 
 ## The liveness lease
 
@@ -309,9 +330,10 @@ not implement them; if it does, it MUST:
    `(epoch, seq)`, never overwrite newer with older, and re-propagate an adopted
    claim **verbatim**. Bound the book against a spoofed-`workKey` flood.
 4. **Elect deterministically.** Compute `claim_owner` as the lowest-id **active**
-   claimant that is **live** and **`personal`** (self always; a keyless/foreign/dead
-   claimant never). Two conformant nodes with the same book and live set MUST
-   compute the same owner.
+   claimant that is **live**, **`personal`**, **and bound** — its claim carries the
+   claimant's pinned key (self always; a keyless, wrong-key, foreign, or dead
+   claimant never, in *any* trust configuration). Two conformant nodes with the same
+   book and live set MUST compute the same owner.
 5. **Lease to liveness.** Treat a claim as authoritative only while its claimant is
    `up`/`stale`; free it on `down`; drop a reaped claimant's records.
 6. **Gate and yield.** Stand down when a lower-id owner holds the key; announce
@@ -328,14 +350,21 @@ other.
 
 ## Security properties
 
-- **No forgery or tampering.** A keyed claim is bound to its claimant's key; a relay
-  can neither invent a claim under someone else's identity (the [id→key
-  pin](#authentication)) nor alter one in flight (the signature). A keyless claim can
-  never own anything.
-- **No starvation.** Only a **`personal`** claimant can suppress work, so a foreign
-  node cannot deny you work by claiming keys it never runs. An empty allowlist keeps
-  the home-mesh default (everyone `personal`) while a configured allowlist makes the
-  suppression set exactly your trusted devices.
+- **No forgery or tampering.** Ownership requires a claim **signed by the node it
+  names** ([the binding](#ownership)): a relay can neither invent a claim under
+  someone else's identity — not with a key it controls (dropped by the [id→key
+  pin](#authentication)) and not by omitting the key (a keyless claim is never
+  authoritative) — nor alter one in flight (the signature). Trusting the *name* on a
+  claim is never sufficient; the *key* must check out.
+- **No starvation *by an untrusted party*.** Only a claimant that is **both**
+  `personal` **and** proven to hold the key it claims under can suppress work, so a
+  foreign or keyless node can never deny you work by claiming keys it won't run. The
+  residual is a *trusted* peer griefing: with a **configured allowlist** the
+  suppression set is exactly the devices you chose to trust; with the
+  **empty-allowlist full-trust default** you have declared every joined, **keyed**
+  device trusted, so fence the mesh (a [join secret](03-transport.md#the-join-fence)
+  or an allowlist) if you don't trust everyone who can reach the LAN. A keyless
+  intruder is powerless regardless.
 - **No amplification.** Verifying a claim is one signature check; the book is
   size-bounded; a stale or duplicate claim is dropped by the freshness gate, so a
   claim flood cannot be turned into unbounded work or memory.

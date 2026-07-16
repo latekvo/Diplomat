@@ -953,6 +953,61 @@ def test_release_frees_key_and_forget_drops_reaped_leases(tmp_path, monkeypatch)
     assert all("a-peer" not in book for book in node._claims.values())
 
 
+def test_keyless_claim_under_a_keyed_peers_id_cannot_suppress(tmp_path, monkeypatch):
+    """A third party mustn't forge a lease under a trusted peer's id by omitting the
+    key: authority requires the claim be SIGNED by the peer it names, not merely to
+    bear that peer's (trusted) name. A keyless claim naming a keyed peer is dropped
+    at the pin and, even if it slipped through, is not authoritative."""
+    if not crypto.AVAILABLE:
+        return
+    node = _claim_node(tmp_path, monkeypatch, local_id="z-local")
+    k = _mk_key(); _link_personal_claimant(node, "a-peer", k)          # a-peer's key pinned
+    # A forged KEYLESS claim naming the lower-id personal peer (no pubkey, no sig).
+    forged = {"workKey": _WK, "node": "a-peer", "state": "active", "epoch": 1.0, "seq": 0}
+    node._on_work_claim(protocol.work_claim(forged))
+    assert node._claim_holder(_WK) is None                            # forgery is powerless
+    assert node.claim(_WK) is True                                    # we still originate
+    # And a claim that carries a *different* key than the peer's pin is likewise
+    # never authoritative even if self-consistently signed (covered structurally
+    # by the pin; asserted here at the authority layer for the keyless case).
+    assert "a-peer" not in node._claims.get(_WK, {})                  # never even stored
+
+
+def test_inflated_epoch_forgery_cannot_block_the_real_owner(tmp_path, monkeypatch):
+    """The prior-bug analogue: a forged keyless claim with a huge epoch must not
+    poison the freshness slot and lock out the true owner's real, signed claim."""
+    if not crypto.AVAILABLE:
+        return
+    node = _claim_node(tmp_path, monkeypatch, local_id="z-local")
+    k = _mk_key(); _link_personal_claimant(node, "a-peer", k)
+    # Attacker forges a keyless claim for (WK, a-peer) with an enormous epoch.
+    node._on_work_claim(protocol.work_claim(
+        {"workKey": _WK, "node": "a-peer", "state": "active", "epoch": 1e18, "seq": 10**9}))
+    # It was rejected (pin), so the real owner's later signed claim adopts cleanly
+    # and wins — the forgery never blocked it.
+    node._on_work_claim(protocol.work_claim(_signed_claim(k, _WK, "a-peer", epoch=1.0)))
+    assert node._claim_holder(_WK) == "a-peer"
+
+
+def test_keyless_peer_cannot_suppress_even_under_empty_allowlist(tmp_path, monkeypatch):
+    """The empty allowlist means full trust (every verified peer personal), but a
+    peer that proved NO key is not a trusted device — its claim isn't bound to any
+    key, so it must not own work even in full-trust mode. Otherwise a keyless node
+    (which may not even run the work) could starve origination by default."""
+    if not crypto.AVAILABLE:
+        return
+    node = _claim_node(tmp_path, monkeypatch, local_id="z-local")
+    assert node._trusted == {}                                        # default: full trust
+    # A genuinely keyless linked peer (no pubkey, never verified).
+    node._learn_node(_peer_info("a-peer", 1), "1.2.3.4", _FakeWriter())
+    assert node.peers["a-peer"].info.pubkey == "" and node.peers["a-peer"].verified_fp is None
+    assert node._peer_trust(node.peers["a-peer"]) == "personal"       # full-trust default
+    node._on_work_claim(protocol.work_claim(
+        {"workKey": _WK, "node": "a-peer", "state": "active", "epoch": 1.0, "seq": 0}))
+    assert node._claim_holder(_WK) is None                            # unbound → not authoritative
+    assert node.claim(_WK) is True                                    # we still originate
+
+
 # MARK: - redial from memory (peer-address cache + beacon-outage surfacing)
 
 

@@ -165,6 +165,7 @@ client can get it live or from disk.
     "audit":     {"duty": "audit",     "assigned": ["3236…"], "shortfall": [{"platform": "macos", "missing": 1}]}
   },
   "overrides": {"rev": 0, "updatedBy": "", "duties": {}},
+  "claims": {},
   "v": 1
 }
 ```
@@ -186,6 +187,7 @@ pinned, else the usage-derived state), not the raw override.
 | `trusted` | array | this node's local allowlist as `[{fingerprint, label}]` - a read-only mirror of [`trusted.json`](#trustedjson). Like the per-peer trust fields it is this node's own view; `trusted.json` and `device.key` are themselves **never gossiped**. |
 | `assignments` | object | `{duty: {duty, assigned:[node_id], shortfall:[{platform, missing}]}}` - the computed placement ([06](06-coordination.md)). |
 | `overrides` | object | the effective [placement overrides](06-coordination.md#placement-overrides). |
+| `claims` | object | `{workKey: ownerNodeId}` for every currently-owned [work-claim](12-work-claims.md) this node observes (unowned keys omitted); lets a UI show what work is already spoken for. `{}` on a node that implements no work-claims. |
 | `v` | int | snapshot/protocol version. |
 
 **Liveness of the snapshot itself.** A reader can tell a live node from a dead one

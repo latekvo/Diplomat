@@ -1126,11 +1126,16 @@ class MeshNode:
             # Our own claim echoed back has nothing to teach us — we are its source
             # of truth (and re-storing it can't beat our own seq anyway).
             return
-        # id→key pinning: a claim's embedded pubkey must match the claimant's known
-        # advertised key. A relay can't forge a lease under a known node's id with a
-        # different key (mirrors the advert id-hijack guard in _learn_node).
+        # id→key pinning: a claim naming a node whose key we know MUST carry that
+        # exact key. This rejects both a *different* key (a relay re-keying the id)
+        # and — critically — a **keyless** claim minted under a keyed peer's id: a
+        # third party could otherwise assert `{node: P}` with no key at all, which
+        # (P being a real trusted peer) would be believed as P's lease and suppress
+        # work P never claimed. So the guard fires whenever the embedded key differs
+        # from the pin, empty included (mirrors the advert id-hijack guard, which is
+        # likewise unconditional once a key is pinned).
         pinned = self._pinned_pubkey(rec.node)
-        if pinned and rec.pubkey and rec.pubkey != pinned:
+        if pinned and rec.pubkey != pinned:
             return
         if not self._store_claim(rec):
             return  # stale (older than what we hold) or the book is capped
@@ -1155,11 +1160,16 @@ class MeshNode:
         book[rec.node] = rec
         return True
 
-    def _claim_authoritative(self, node_id: str) -> bool:
-        """Whether ``node_id``'s claim counts toward ownership: self always; a peer
-        only while its link is **live** (up or stale, never down) **and** it is
-        **trusted-personal**. So a dead owner's lease lapses (self-healing) and a
-        foreign/unverified node can never suppress work by claiming it (anti-DoS)."""
+    def _claim_authoritative(self, node_id: str, rec: protocol.ClaimRecord) -> bool:
+        """Whether ``node_id``'s claim ``rec`` counts toward ownership: self always;
+        a peer only while its link is **live** (up or stale, never down), it is
+        **trusted-personal**, AND the claim is **cryptographically bound to that
+        peer** — it carries the peer's pinned key (so its signature was already
+        verified under that key at ingestion). A dead owner's lease lapses
+        (self-healing), a foreign/unverified node can never suppress (anti-DoS), and
+        a **keyless or wrong-key claim minted under a trusted peer's id by a third
+        party is never authoritative** — ownership requires proof the named peer
+        actually signed the lease, not merely that the name it bears is trusted."""
         if node_id == self.local.id:
             return True
         peer = self.peers.get(node_id)
@@ -1168,7 +1178,13 @@ class MeshNode:
         stale, timeout = self.proto["peerStaleSecs"], self.proto["peerTimeoutSecs"]
         if peer.link_state(stale, timeout) == "down":
             return False
-        return self._peer_trust(peer) == "personal"
+        if self._peer_trust(peer) != "personal":
+            return False
+        # The binding: an authoritative claim MUST be signed by the peer it names.
+        # `_claim_authentic` verified rec.sig under rec.pubkey; requiring
+        # rec.pubkey == the peer's advertised (pinned) key closes the loop, so only
+        # the holder of that peer's private key could have produced this record.
+        return bool(rec.pubkey) and rec.pubkey == peer.info.pubkey
 
     def _claim_holder(self, work_key: str) -> str | None:
         """The node that currently owns ``work_key``: the lowest-id claimant among
@@ -1179,7 +1195,7 @@ class MeshNode:
         if not book:
             return None
         owners = [node for node, rec in book.items()
-                  if rec.active and self._claim_authoritative(node)]
+                  if rec.active and self._claim_authoritative(node, rec)]
         return min(owners) if owners else None
 
     def _claim_owners(self) -> dict[str, str]:
