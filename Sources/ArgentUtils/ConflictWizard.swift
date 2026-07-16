@@ -40,6 +40,9 @@ struct ConflictWizardView: View {
     /// "Run on mesh" (effective only while the row is live) — checked by default,
     /// like the Linux wizards.
     @State private var useMesh = true
+    /// A mesh dispatch is in flight — disables SPAWN so a second click can't
+    /// double-dispatch (the Qt wizards disable the button the same way).
+    @State private var meshDispatching = false
 
     private var config: ConflictConfig {
         ConflictConfig(
@@ -147,7 +150,7 @@ struct ConflictWizardView: View {
     private var spawnButton: some View {
         VStack(spacing: 6) {
             MeshSpawnRow(duty: "conflicts", useMesh: $useMesh)
-            SpawnAgentButton(isValid: config.isValid,
+            SpawnAgentButton(isValid: config.isValid && !meshDispatching,
                              tint: tint,
                              terminalTitle: AgentSpawner.resolved(store.terminal).title,
                              action: spawn)
@@ -187,9 +190,11 @@ struct ConflictWizardView: View {
         // Mesh path: hand the job to the local node (it picks the executor, with
         // failover) instead of opening a terminal here — mirrors the Linux wizards.
         if MeshSpawnRow.isLive(store), useMesh {
+            meshDispatching = true
             status = "Dispatching over the mesh…"
             AuditLog.log("panel", "conflicts", "\(trackingLabel) · via mesh")
             store.meshDispatch(duty: "conflicts", prompt: cfg.buildPrompt()) { results, err in
+                meshDispatching = false
                 status = MeshSpawn.summarize(results, error: err)
             }
             return
