@@ -25,7 +25,8 @@ restart.
   "id": "3236817363144d8dbd842ec2973506c2",
   "name": "softoobox",
   "tier": 4,
-  "tokens": "ok",
+  "strengthAuto": true,
+  "tokens": "auto",
   "dutiesEnabled": {"audit": false}
 }
 ```
@@ -34,8 +35,9 @@ restart.
 |-------|-------|
 | `id` | minted once (reference: 32-hex UUID) on first run; **stable forever** after. |
 | `name` | defaults to the hostname's first label. |
-| `tier` | clamped to the model's `[min, max]` on load. |
-| `tokens` | one of `"ok"`/`"low"`/`"out"`; anything else resets to `"ok"`. |
+| `tier` | clamped to the model's `[min, max]` on load; **auto-detected from specs** when `strengthAuto` is set ([05](05-resources.md#tier)). |
+| `strengthAuto` | bool; whether `tier` is still auto-detected (true) or pinned by an edit (false). Absent + an explicit `tier` is treated as a pin (back-compat). |
+| `tokens` | the manual **override**: `"auto"` (default - derive the state from real usage) or a pinned `"ok"`/`"low"`/`"out"` ([05](05-resources.md#tokens)); anything else resets to `"auto"`. |
 | `dutiesEnabled` | per-duty opt-out map. |
 
 Trust is **not** persisted here: a node's identity is its Ed25519 key
@@ -148,10 +150,12 @@ client can get it live or from disk.
   "updatedAt": "2026-07-15T04:31:02.517Z",
   "pid": 12345,
   "tcpPort": 40878,
-  "self": { …NodeInfo…, "fingerprint": "3d2a…f1" },
+  "linking": 0,
+  "self": { …NodeInfo…, "fingerprint": "3d2a…f1", "uptimeSecs": 934.0 },
   "peers": [
     { …NodeInfo…, "link": "up", "addr": "192.168.1.21", "lastSeenSecsAgo": 1.2,
-      "verified": true, "fingerprint": "9c1f…a7", "trust": "personal", "surplus": 1.75 }
+      "uptimeSecs": 187.0, "verified": true, "fingerprint": "9c1f…a7",
+      "trust": "personal", "surplus": 1.75 }
   ],
   "trusted": [{"fingerprint": "9c1f…a7", "label": "mbp"}],
   "assignments": {
@@ -164,13 +168,19 @@ client can get it live or from disk.
 }
 ```
 
+Each NodeInfo also carries the display-hint fields from [05](05-resources.md):
+`strengthAuto`, `tokensAuto`, and `tokensPct` (fraction of the token ceiling
+remaining). `tokens` in the snapshot is the **effective** state (the override when
+pinned, else the usage-derived state), not the raw override.
+
 | Field | Type | Meaning |
 |-------|------|---------|
-| `updatedAt` | string | ISO-8601 UTC write time. Advances every write; readers detecting "meaningful change" SHOULD ignore it (and `pid`, and per-peer `lastSeenSecsAgo`) so an idle mesh doesn't churn the UI. |
+| `updatedAt` | string | ISO-8601 UTC write time. Advances every write; readers detecting "meaningful change" SHOULD ignore it (and `pid`, `linking`, and the per-node ticking numbers `lastSeenSecsAgo`/`uptimeSecs`/`tokensPct`) so an idle mesh doesn't churn the UI. |
 | `pid` | int | the node process id - a liveness check (is a local node actually running?). |
 | `tcpPort` | int | the node's control/link port - how a local client finds the control endpoint. |
-| `self` | NodeInfo | this node's own advertisement, plus its own `fingerprint` (hex of its advertised `pubkey`). |
-| `peers` | array | each known peer's NodeInfo plus link decoration: `link` (`up`/`stale`/`down`), `addr` (last-seen source IP), `lastSeenSecsAgo` (float), plus **this node's local view** of the peer: `verified` (bool - whether the peer *proved possession* of its key on the link), `fingerprint` (the fingerprint it proved, or merely claims if unverified), `trust` (`personal`/`foreign`, [11](11-trust-and-balancing.md)) and `surplus` (float - its spare-quota rank score). |
+| `linking` | int | peers currently mid-handshake - lets a UI show a "linking to N…" / "scanning" affordance while the mesh forms. |
+| `self` | NodeInfo | this node's own advertisement, plus its own `fingerprint` and `uptimeSecs` (seconds this node has been running). |
+| `peers` | array | each known peer's NodeInfo plus link decoration: `link` (`up`/`stale`/`down`), `addr` (last-seen source IP), `lastSeenSecsAgo` (float), `uptimeSecs` (float, seconds the current link has been up - `null` while down), plus **this node's local view** of the peer: `verified` (bool - whether the peer *proved possession* of its key on the link), `fingerprint` (the fingerprint it proved, or merely claims if unverified), `trust` (`personal`/`foreign`, [11](11-trust-and-balancing.md)) and `surplus` (float - its spare-quota rank score). |
 | `trusted` | array | this node's local allowlist as `[{fingerprint, label}]` - a read-only mirror of [`trusted.json`](#trustedjson). Like the per-peer trust fields it is this node's own view; `trusted.json` and `device.key` are themselves **never gossiped**. |
 | `assignments` | object | `{duty: {duty, assigned:[node_id], shortfall:[{platform, missing}]}}` - the computed placement ([06](06-coordination.md)). |
 | `overrides` | object | the effective [placement overrides](06-coordination.md#placement-overrides). |

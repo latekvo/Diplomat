@@ -66,7 +66,10 @@ The resource advertisement for one node. Appears inside `hello` and `node`, and
 | `name` | string | no (`"?"`) | human label; presentation only, never used for identity or placement. |
 | `platform` | string | no (`"unknown"`) | machine kind (`"linux"`, `"macos"`, …); a *resource* - see [05](05-resources.md#platform). |
 | `tier` | int | no (`3`) | machine strength, 1 = strongest - see [05](05-resources.md#tier). |
-| `tokens` | string | no (`"ok"`) | budget availability: `"ok"`/`"low"`/`"out"` - see [05](05-resources.md#tokens). |
+| `strengthAuto` | bool | no (`true`) | whether `tier` is auto-detected from specs (vs pinned). Display hint - see [05](05-resources.md#tier). |
+| `tokens` | string | no (`"ok"`) | **effective** budget state: `"ok"`/`"low"`/`"out"` - see [05](05-resources.md#tokens). |
+| `tokensAuto` | bool | no (`true`) | whether `tokens` is auto-derived from real usage (vs a manual pin). Display hint. |
+| `tokensPct` | float | no (`1.0`) | fraction of the heuristic token ceiling remaining (`0.0`-`1.0`), for a live "NN%" readout. |
 | `tcpPort` | int | no (`0`) | the node's TCP listen port. |
 | `epoch` | float | no (`0`) | incarnation stamp; increases each process (re)start. |
 | `seq` | int | no (`0`) | per-incarnation update counter. |
@@ -260,8 +263,9 @@ be a newer or older peer).
 | `attrs` key | Type | Effect |
 |-------------|------|--------|
 | `name` | string | set the node's name (trimmed; non-empty; reference caps length at 64). |
-| `tier` | int | set the tier, **clamped** to the model's `[min, max]` ([05](05-resources.md#tier)). |
-| `tokens` | string | set token state; ignored unless one of `"ok"`/`"low"`/`"out"`. |
+| `tier` | int | set the tier, **clamped** to the model's `[min, max]`; **pins** strength (`strengthAuto` → false) ([05](05-resources.md#tier)). |
+| `strengthAuto` | bool | re-enable (`true`) or disable auto-detection; enabling immediately re-detects the tier from specs. |
+| `tokens` | string | set the token **override**; ignored unless one of `"auto"`/`"ok"`/`"low"`/`"out"`. `"auto"` returns the node to real-usage derivation. |
 | `dutiesEnabled` | object<string,bool> | merge per-duty enable flags. |
 
 If `target` names a **peer** (not self), the receiver **forwards** the `set-attr`

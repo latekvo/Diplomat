@@ -40,8 +40,10 @@ may place work differently ([09](09-extensibility.md#vocabulary-skew)).
 | `tiers.min` | `1` (strongest) |
 | `tiers.max` | `5` (weakest) |
 | `tiers.default` | `3` |
+| `tiers.labels` | `1`→"Very strong" … `5`→"Very light" (UI words, optional) |
 
-Tier is clamped to `[min, max]` on apply ([04](04-messages.md#set-attr)).
+Tier is clamped to `[min, max]` on apply ([04](04-messages.md#set-attr)) and
+**auto-detected from specs** on first run ([05](05-resources.md#tier)).
 
 ## Tokens
 
@@ -51,6 +53,15 @@ Tier is clamped to `[min, max]` on apply ([04](04-messages.md#set-attr)).
 | `low` | `1` | eligible, de-prioritized behind `ok` |
 | `out` | `2` | excluded from token-aware duties |
 | (any other) | `1` | treated like `low` - never excluded ([09 rule 3](09-extensibility.md#the-compatibility-contract)) |
+
+The state is **auto-derived from real usage** by default (the `tokens` node.json
+override is `"auto"`); these constants set the heuristic ceiling it's measured against:
+
+| Constant | Value | Meaning |
+|----------|-------|---------|
+| `accounts.tokensPerWeight` | `2000000` | tokens per unit of plan weight over the window - the per-plan ceiling is `plan.weight × this`. |
+| `accounts.usageWindowHours` | `5.0` | trailing window over which local token consumption is summed. |
+| `accounts.lowThreshold` | `0.34` | remaining-fraction boundary below which the state drops to `low` (`≤ 0` → `out`). |
 
 ## Trust (v1 vocabulary)
 

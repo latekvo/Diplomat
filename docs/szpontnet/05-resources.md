@@ -34,10 +34,16 @@ the strongest**. Tier is the knob that lets the mesh route *on purpose*:
   weaker machines (`weakest-first` strategy - the default).
 - Or get the fastest wall-clock by preferring the strongest (`strongest-first`).
 
-Tier is set by the operator (it reflects a human judgement about the machine, not a
-measured benchmark) and is `[min, max]`-clamped on apply
-([04](04-messages.md#set-attr)). The bounds live in the model (`tiers.min`,
-`tiers.max`, `tiers.default`).
+**Auto-detection.** Tier is **auto-detected on first run** from the machine's specs
+(total RAM, logical CPU count, presence of a discrete/Apple-Silicon GPU), mapped to
+the `[min, max]` scale by a small scoring function (a strong box scores low = strong).
+A node advertises `strengthAuto` (bool) alongside `tier` to say whether the value is
+still auto-derived; an operator edit to `tier` **pins** it (`strengthAuto` → false) so
+detection stops overriding the choice, and setting `strengthAuto` back to true
+re-detects. Bounds live in the model (`tiers.min`, `tiers.max`, `tiers.default`); the
+optional `tiers.labels` map gives UIs human words per level. `tier` is `[min, max]`-
+clamped on apply ([04](04-messages.md#set-attr)). An implementation that cannot probe
+specs MUST fall back to `tiers.default` rather than fail.
 
 ### Tokens
 
@@ -55,6 +61,19 @@ respect. Semantics:
 Tokens is the one resource a node is expected to update *frequently* as its budget
 changes; a node MAY flip itself to `"out"` when it hits a limit and back to `"ok"`
 when the budget resets, and the mesh reacts within a gossip round.
+
+**Auto-derivation.** There is no provider API for remaining quota, so a node derives
+this state from its **own measured consumption**: it sums the tokens spent over a
+trailing window (`accounts.usageWindowHours`, default 5h - matching the provider's
+rolling-limit cadence) from the local agent's usage logs, and compares that to a
+heuristic per-plan ceiling `plan.weight × accounts.tokensPerWeight`. The fraction
+remaining `1 − used/ceiling` maps to the state: `≥ accounts.lowThreshold` → `"ok"`,
+`> 0` → `"low"`, `≤ 0` → `"out"`. A node advertises `tokensAuto` (bool, whether the
+state is auto-derived vs pinned) and `tokensPct` (the fraction remaining, `0.0`-`1.0`)
+so UIs can show a live "NN%". An operator MAY still **pin** the state (a "pause this
+node" escape); a pin sets `tokensAuto` false and wins over the measurement. The ceiling
+constants are deliberately rough - real limits are dynamic and account-specific - and
+are model-tunable.
 
 ### Per-node stats (account-aware load balancing)
 
