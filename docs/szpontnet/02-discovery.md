@@ -55,7 +55,10 @@ create two peers or two links.
 > [redial from memory](#redial-from-memory). A node **SHOULD** detect that every
 > beacon send is failing and surface it to the operator
 > ([08-state](08-state.md#the-statejson-snapshot) `beaconBlocked`) rather than
-> fail silently — the node is undiscoverable while it lasts.
+> fail silently — the node is undiscoverable while it lasts. Such gates pin the
+> verdict to the *socket* at creation, so a node **SHOULD** rebuild its send
+> socket while blocked (and its receive socket once sends recover) — a restored
+> permission then takes effect within one beacon interval, no restart needed.
 
 ## Receiving
 

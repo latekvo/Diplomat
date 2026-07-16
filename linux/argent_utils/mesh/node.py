@@ -360,12 +360,16 @@ class MeshNode:
         raise RuntimeError(f"no free mesh TCP port in {base}..{base + span - 1}: {last_err}")
 
     def _start_udp(self, loop: asyncio.AbstractEventLoop) -> None:
-        group, port = self.proto["multicastGroup"], self.proto["multicastPort"]
-        lo = config.loopback_only()
-        iface_ip = "127.0.0.1" if lo else "0.0.0.0"
+        recv = self._make_udp_recv()
+        loop.add_reader(recv, self._on_udp_readable, recv)
+        self._udp_recv = recv
+        self._udp_send = self._make_udp_send()
 
-        # Receive: all nodes (across hosts AND within one host, via SO_REUSEPORT)
-        # bind the shared discovery port and join the group.
+    def _make_udp_recv(self) -> socket.socket:
+        """Receive socket: all nodes (across hosts AND within one host, via
+        SO_REUSEPORT) bind the shared discovery port and join the group."""
+        group, port = self.proto["multicastGroup"], self.proto["multicastPort"]
+        iface_ip = "127.0.0.1" if config.loopback_only() else "0.0.0.0"
         recv = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         recv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         if hasattr(socket, "SO_REUSEPORT"):
@@ -374,10 +378,13 @@ class MeshNode:
         mreq = struct.pack("4s4s", socket.inet_aton(group), socket.inet_aton(iface_ip))
         recv.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
         recv.setblocking(False)
-        loop.add_reader(recv, self._on_udp_readable, recv)
-        self._udp_recv = recv
+        return recv
 
-        # Send: multicast (+ broadcast off-loopback, for APs that drop multicast).
+    def _make_udp_send(self) -> socket.socket:
+        """Send socket: multicast (+ broadcast off-loopback, for APs that drop
+        multicast)."""
+        lo = config.loopback_only()
+        iface_ip = "127.0.0.1" if lo else "0.0.0.0"
         send = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         send.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
         send.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, 1)
@@ -387,13 +394,55 @@ class MeshNode:
         if not lo:
             send.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         send.setblocking(False)
+        return send
+
+    def _rebuild_udp_send(self) -> None:
+        """Swap in a fresh send socket. macOS pins the Local Network verdict to a
+        socket when it is created, so a socket built while the permission was
+        denied keeps failing FOREVER — even after the user re-allows the app in
+        System Settings. Recovering therefore requires a new socket; rebuilding
+        while still denied just fails the same way (cheap and harmless). The new
+        socket is built before the old one is closed so a failed rebuild never
+        leaves the node with no send socket at all."""
+        try:
+            send = self._make_udp_send()
+        except OSError:
+            return
+        if self._udp_send is not None:
+            with contextlib.suppress(OSError):
+                self._udp_send.close()
         self._udp_send = send
+
+    def _rebuild_udp_recv(self) -> None:
+        """Swap in a fresh receive socket, same reason as ``_rebuild_udp_send``:
+        one created under a denial stays deaf after the grant returns. Called on
+        the blocked→recovered transition (from the beacon task, so the loop is
+        running). Build-first ordering keeps the old socket on a failed rebuild."""
+        loop = asyncio.get_running_loop()
+        try:
+            recv = self._make_udp_recv()
+        except OSError:
+            return
+        if self._udp_recv is not None:
+            with contextlib.suppress(Exception):
+                loop.remove_reader(self._udp_recv)
+            with contextlib.suppress(OSError):
+                self._udp_recv.close()
+        loop.add_reader(recv, self._on_udp_readable, recv)
+        self._udp_recv = recv
 
     # MARK: - discovery
 
     async def _beacon_loop(self) -> None:
         group, port = self.proto["multicastGroup"], self.proto["multicastPort"]
         while True:
+            # While blocked, try a FRESH send socket each tick: the OS pins the
+            # Local Network verdict to the socket at creation, so only a new
+            # socket can observe a restored permission. This makes recovery
+            # automatic (within one beacon interval) instead of needing a node
+            # restart after the user flips the setting back on.
+            if self._beacon_blocked:
+                self._rebuild_udp_send()
             payload = protocol.encode(protocol.beacon(self.info))
             sent, err = 0, None
             try:
@@ -407,7 +456,13 @@ class MeshNode:
                     sent += 1
                 except OSError as exc:
                     err = exc
+            was_blocked = self._beacon_blocked
             self._note_beacon_sends(sent, err)
+            if was_blocked and not self._beacon_blocked:
+                # Sends recovered — the recv socket may hold the same pinned
+                # denial (deaf to inbound beacons); rebuild it too so discovery
+                # resumes in both directions.
+                self._rebuild_udp_recv()
             await asyncio.sleep(self.proto["beaconIntervalSecs"])
 
     def _note_beacon_sends(self, sent: int, err: OSError | None) -> None:

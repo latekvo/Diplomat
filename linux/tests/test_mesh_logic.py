@@ -1090,6 +1090,32 @@ def test_redial_targets_respect_dial_rule_link_state_and_inflight(tmp_path, monk
     assert node._redial_targets() == [(free, "10.0.0.4", 40878)]
 
 
+def test_rebuild_udp_sockets_swap_in_fresh_ones(tmp_path, monkeypatch):
+    """Recovery from an OS Local Network denial requires NEW sockets (the OS pins
+    the verdict at socket creation), so the rebuilders must produce a fresh socket
+    and close the old one — never leave the node socketless."""
+    import asyncio
+    monkeypatch.setenv("ARGENT_MESH_LOOPBACK", "1")
+    monkeypatch.setenv("ARGENT_MESH_MCAST_PORT", str(44300 + os.getpid() % 400))
+    node = _fresh_node(tmp_path, monkeypatch)
+    node._rebuild_udp_send()  # no socket yet — builds the first one
+    first = node._udp_send
+    node._rebuild_udp_send()
+    assert node._udp_send is not first
+    assert first.fileno() == -1  # the replaced socket was closed
+
+    async def go():
+        node._rebuild_udp_recv()
+        first_recv = node._udp_recv
+        node._rebuild_udp_recv()
+        assert node._udp_recv is not first_recv
+        assert first_recv.fileno() == -1
+        asyncio.get_running_loop().remove_reader(node._udp_recv)
+    asyncio.run(go())
+    node._udp_send.close()
+    node._udp_recv.close()
+
+
 def test_beacon_outage_surfaced_once_and_recovery_logged(tmp_path, monkeypatch):
     from argent_utils import activity
     node = _fresh_node(tmp_path, monkeypatch)
@@ -1127,6 +1153,9 @@ if __name__ == "__main__":  # dependency-free smoke run
                     mp = unittest.mock.patch.dict(os.environ, {"ARGENT_MESH_DIR": td})
                     with mp:
                         class _MP:  # minimal monkeypatch stand-in
+                            def __init__(self):
+                                self._saved = []  # (obj, name, old) undo stack
+
                             def setenv(self, k, v):
                                 os.environ[k] = v
 
@@ -1134,16 +1163,25 @@ if __name__ == "__main__":  # dependency-free smoke run
                                 os.environ.pop(k, None)
 
                             def setattr(self, obj, name, value):
-                                self._undo = getattr(self, "_undo", [])
-                                self._undo.append((obj, name, getattr(obj, name)))
+                                self._saved.append((obj, name, getattr(obj, name)))
                                 setattr(obj, name, value)
+
+                            def undo(self):
+                                for obj, name, old in reversed(self._saved):
+                                    setattr(obj, name, old)
                         kwargs = {}
                         if "tmp_path" in params:
                             from pathlib import Path
                             kwargs["tmp_path"] = Path(td)
                         if "monkeypatch" in params:
                             kwargs["monkeypatch"] = _MP()
-                        fn(**kwargs)
+                        try:
+                            fn(**kwargs)
+                        finally:
+                            # Undo attribute patches so one test's stubs never
+                            # leak into the next (env undo is `mp`'s job).
+                            if "monkeypatch" in kwargs:
+                                kwargs["monkeypatch"].undo()
             else:
                 fn()
             print(f"ok   {name}")
