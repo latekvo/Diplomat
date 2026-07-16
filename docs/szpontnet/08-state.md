@@ -179,7 +179,7 @@ pinned, else the usage-derived state), not the raw override.
 | `pid` | int | the node process id - a liveness check (is a local node actually running?). |
 | `tcpPort` | int | the node's control/link port - how a local client finds the control endpoint. |
 | `linking` | int | peers currently mid-handshake - lets a UI show a "linking to N…" / "scanning" affordance while the mesh forms. |
-| `self` | NodeInfo | this node's own advertisement, plus its own `fingerprint` and `uptimeSecs` (seconds this node has been running). |
+| `self` | NodeInfo | this node's own advertisement, plus its own `fingerprint` (`sha256` of its advertised `pubkey`, 64 hex — *not* the pubkey itself) and `uptimeSecs` (seconds this node has been running). |
 | `peers` | array | each known peer's NodeInfo plus link decoration: `link` (`up`/`stale`/`down`), `addr` (last-seen source IP), `lastSeenSecsAgo` (float), `uptimeSecs` (float, seconds the current link has been up - `null` while down), plus **this node's local view** of the peer: `verified` (bool - whether the peer *proved possession* of its key on the link), `fingerprint` (the fingerprint it proved, or merely claims if unverified), `trust` (`personal`/`foreign`, [11](11-trust-and-balancing.md)) and `surplus` (float - its spare-quota rank score). |
 | `trusted` | array | this node's local allowlist as `[{fingerprint, label}]` - a read-only mirror of [`trusted.json`](#trustedjson). Like the per-peer trust fields it is this node's own view; `trusted.json` and `device.key` are themselves **never gossiped**. |
 | `assignments` | object | `{duty: {duty, assigned:[node_id], shortfall:[{platform, missing}]}}` - the computed placement ([06](06-coordination.md)). |
@@ -221,3 +221,12 @@ When a peer goes `down`, a node SHOULD keep it in the snapshot marked `"link":
 so observers see *what* went away rather than a list that silently shrinks. After
 the window, the peer is removed from `peers` (and from the assignment input, which
 already excluded it the moment it went `down`).
+
+The same retention applies to a **gossip-only phantom** — a node learned purely via
+multi-hop [`node` relay](03-transport.md#gossip-fan-out) that this node never linked
+to directly. Such a peer never transitions through `down` (it had no link to lose),
+so a node SHOULD reap it once its **last gossip** is older than the retention
+window; otherwise a phantom that stops being gossiped lingers forever as a zombie.
+Relatedly, the peer-table bound ([10](10-conformance.md#should--may)) MUST cover
+this gossip-learned growth, not only the beacon path, so a peer relaying a flood of
+spoofed ids cannot balloon the table.

@@ -99,6 +99,18 @@ forward everything to one peer, and that peer may **refuse** (a first-class
 classes, cost accounting - stay reserved as additive extension points in
 [09-extensibility](09-extensibility.md#the-altruism-limits-roadmap).
 
+**Who this is for, and the two shapes it takes.** SzpontNet's point is to let you
+**defer your routine duties to a peer** when local execution isn't the best fit -
+because a peer has a stronger machine, more quota left, or a platform you're missing
+for a test. Participation is **100% voluntary and altruistic**: among a group of
+work colleagues, everyone offers spare capacity and no one is obliged, which
+**smooths out each person's quota spikes** across the group. Two deployments are
+supported: the default **peer-to-peer** mesh where every node both offers and
+dispatches, and a **dedicated server** ([11](11-trust-and-balancing.md#server-nodes--api-key-authentication)) -
+one machine that *accepts* work but *never dispatches*, optionally gated by an
+**API key** on inbound requests. Both interoperate on the same mesh with plain
+peers.
+
 ---
 
 ## How to read this spec

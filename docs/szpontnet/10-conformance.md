@@ -16,6 +16,10 @@ A node fills one or more roles. Requirements scale with the roles claimed.
 - **Dispatcher** (to originate work): additionally routes jobs with slot failover.
 - **Controllable** (to be driven by a UI/CLI): additionally serves a control
   session.
+- **Server** (an accept-only executor): an Executor + Controllable that **never**
+  originates a dispatch to a peer (a request it is asked to route runs locally),
+  and MAY require an [API key](11-trust-and-balancing.md#the-api-key) on inbound
+  control and dispatch. A dedicated shared box that takes work but never pushes it.
 
 ## Minimal node
 
@@ -58,10 +62,14 @@ understand - as a failover trigger, never an error.
 
 An Executor that implements the trust layer additionally **MUST**: verify a peer's
 **proof of possession** - an [`auth`](04-messages.md#auth) signature over the
-executor's own fresh hello nonce, validated against the peer's advertised `pubkey` -
-before treating that peer as `personal`; **classify the requester from that verified
-link identity**, never from the job's `requestedBy` (which is spoofable); and treat
-an **empty allowlist as full trust** (every verified peer `personal`). See
+**domain-separated** form of the executor's own fresh hello nonce, validated against
+the peer's advertised `pubkey` - before treating that peer as `personal`; **classify
+the requester from that verified link identity**, never from the job's `requestedBy`
+(which is spoofable); **ignore a peer-link `set-attr` from a foreign device**
+(mutation is a personal-only action); and treat an **empty allowlist as full trust**
+(every verified peer `personal`). A **Server** with an API key **MUST** require a
+matching `apiKey` on inbound `ctl`/`dispatch`, and in server mode **MUST NOT**
+originate a dispatch to a peer. See
 [11-trust-and-balancing](11-trust-and-balancing.md) for the full conformance list.
 
 A **Dispatcher** additionally **MUST** route a job via
@@ -75,11 +83,18 @@ session (fenced by the secret) and handle `status`, `set-attr`, `set-overrides`,
 ## SHOULD / MAY
 
 - A node **SHOULD** emit a startup beacon immediately (don't wait a full interval).
-- A node **SHOULD** re-dial a peer that beacons a higher `epoch` (restart).
+- A node **SHOULD** re-dial a peer that beacons a higher `epoch` (restart), subject
+  to the live-link guard below.
 - A node **SHOULD** retain a `down` peer in its snapshot for the retention window.
 - A node **SHOULD** warn (once) on a [cloned identity](08-state.md#cloned-identity).
-- A node **SHOULD** bound its peer table against a beacon flood (the reference caps
-  it and stops dialing new ids past the cap).
+- A node **SHOULD** bound its peer table against growth from **both** a beacon
+  flood and a gossip flood — the cap must apply to peers created by relayed `node`
+  gossip, not only the beacon/dial path (the reference caps both and stops learning
+  new ids past the cap).
+- A node **SHOULD** not let an unauthenticated beacon evict a live, verified link:
+  honor a higher-`epoch` restart hint only once the link has actually gone quiet,
+  and never let a beacon overwrite a live peer's address (a spoofed beacon must not
+  hijack a healthy link).
 - A node **MAY** persist a `state.json` snapshot and expose a control endpoint even
   if it isn't otherwise Controllable (useful for local tooling).
 - A node **MAY** offer a loopback-only mode and timing overrides for testing.

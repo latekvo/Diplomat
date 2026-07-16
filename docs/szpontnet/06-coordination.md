@@ -53,8 +53,13 @@ it is only de-prioritized in the ranking.)
 
 Eligible nodes are sorted by a **total order** - a tuple whose final element is the
 node `id`, so the order is fully deterministic with no ties. Let
-`tok_rank(tokens)` = `0` for `"ok"`, `1` for `"low"`, `2` for anything else. Then
-the sort key per node `n`, given the local node id `L`, is:
+`tok_rank(tokens)` = `0` for `"ok"`, `2` for `"out"`, and `1` for `"low"` **or any
+other (unknown) value** — an unrecognized token string ranks *with* `low`, never
+excluded (matching [09 rule 3](09-extensibility.md#the-compatibility-contract) and
+[appendix B](appendix-b-constants.md#tokens); a token-aware duty has already
+removed `out` nodes in [eligibility](#eligibility), so `out`'s rank only orders
+them when token-awareness is off). Then the sort key per node `n`, given the local
+node id `L`, is:
 
 | Strategy | Sort key (ascending) |
 |----------|----------------------|
@@ -205,6 +210,19 @@ has the most spare quota *without* churning the displayed owner, which stays put
 its stable placement strategy. See [07-dispatch](07-dispatch.md) for how a chosen
 target is executed and [11-trust-and-balancing](11-trust-and-balancing.md) for the
 accounting the surplus ranking reads.
+
+> **`surplus-first` is a *dispatch* strategy, not a placement one.** Consensus
+> assignment MUST be a pure function of *gossiped* advertisements ([determinism
+> requirements](#determinism-requirements-normative)); but a node's `stats` **decay
+> continuously and locally** and are re-gossiped only on a real change
+> ([11](11-trust-and-balancing.md#surplus)), so a node's own live surplus differs
+> from the last value its peers hold. Ranking the **consensus** assignment by
+> surplus would therefore let two nodes compute different owners — breaking
+> determinism. So `surplus-first` is defined for **dispatch** target selection
+> only; an implementation **SHOULD NOT** configure it as a duty's placement
+> `strategy`, and one that receives it as a placement override MAY treat it as
+> `weakest-first` for the *displayed* assignment. (It stays fully valid, and is the
+> default, for `dispatchStrategy`.)
 
 ## Why leaderless works, briefly
 

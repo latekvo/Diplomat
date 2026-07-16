@@ -55,6 +55,12 @@ on where work lands. By default candidates are ranked **surplus-first** (config
 `dispatchStrategy`), so work flows to the node with the most spare quota
 ([11](11-trust-and-balancing.md)).
 
+> A node in [server mode](11-trust-and-balancing.md#the-server-role) is the
+> exception to origination: it **never** routes to peers. A request it is asked to
+> dispatch runs on itself (a single `"server"` slot), and a request explicitly
+> targeted at another node is refused — the server accepts work but is never a
+> source of it.
+
 To dispatch a duty, a node:
 
 1. computes `slot_candidates` over the current live set;
@@ -106,8 +112,11 @@ receiver's [refusal policy](#execution) still applies.
   the slot outcome; a timeout or link error is a `failed` outcome
   (`reason: "peer did not answer"`) and the slot fails over.
 
-  A dispatcher correlates the reply to the request by Job `id`; it MUST tolerate
-  (drop) a `job-status` for an unknown id.
+  A dispatcher correlates the reply to the request by Job `id` **and by
+  responder**: it MUST tolerate (drop) a `job-status` for an unknown id, and MUST
+  accept a reply only from the peer it dispatched that job to — a `job-status`
+  arriving on any other link is dropped, so a third peer that learns a live job id
+  can't resolve someone else's dispatch.
 
 ## Execution
 
@@ -130,9 +139,15 @@ status) rather than running when any of:
 - the requester is a **foreign** device - one whose proven key isn't in this node's
   local [trust allowlist](11-trust-and-balancing.md#trust-is-never-derived-from-an-advertisement)
   (classified from the *verified* link, never from the job's `requestedBy`). The
-  zero-trust path - run the compute here but route any social action back through a
-  *personal* node - is not built yet, so a stranger's request is declined rather than
-  acted on on their behalf;
+  zero-trust path - run the compute here (sandboxed) but route any social action
+  back through a *personal* node - is not built yet, so a stranger's request is
+  declined rather than acted on on their behalf. Any implementation that *does*
+  execute foreign work MUST honor the [foreign execution security
+  contract](11-trust-and-balancing.md#the-foreign-execution-security-contract-normative)
+  (sandboxed, no host-identity action, response-only);
+- the request lacks a required **API key** - a
+  [server](11-trust-and-balancing.md#the-api-key) configured with one refuses a
+  request that doesn't present a matching `apiKey`;
 - the duty is **disabled** locally (the node opted out of that class of work);
 - the node is **out of tokens** (this is Bob refusing the job Alice sent anyway,
   which the protocol expressly allows).

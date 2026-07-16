@@ -40,27 +40,45 @@ so N-B does **not** dial — it waits.)
 
 ## 2. Link handshake (hello exchange)
 
-N-A opens TCP to `192.168.1.21:40878` and immediately sends its hello (with its
-full advertisement + current overrides; no secret configured here):
+N-A opens TCP to `192.168.1.21:40878` and immediately sends its hello (its full
+advertisement — including its advertised `pubkey` — its current overrides, and a
+fresh per-connection challenge `nonce`; no secret configured here):
 
 **N-A → N-B (TCP):**
 ```json
 {"t":"hello",
  "node":{"id":"aaaa…","name":"softoobox","platform":"linux","tier":4,"tokens":"ok",
-         "tcpPort":40878,"epoch":1000,"seq":0,"sees":[],"dutiesEnabled":{},"v":1},
- "overrides":{"rev":0,"updatedBy":"","duties":{}},"v":1}
+         "tcpPort":40878,"epoch":1000,"seq":0,"sees":[],"dutiesEnabled":{},
+         "pubkey":"kA0f…A-base64-key…=","v":1},
+ "overrides":{"rev":0,"updatedBy":"","duties":{}},"nonce":"9f3c…A-hex-nonce…","v":1}
 ```
 
 N-B accepts, sees the first message is a `hello` (a peer link), replies with its own
-hello, then processes N-A's:
+hello (its own `pubkey` and its own fresh `nonce`), then processes N-A's:
 
 **N-B → N-A (TCP):**
 ```json
 {"t":"hello",
  "node":{"id":"bbbb…","name":"mbp","platform":"macos","tier":1,"tokens":"ok",
-         "tcpPort":40878,"epoch":1000,"seq":0,"sees":[],"dutiesEnabled":{},"v":1},
- "overrides":{"rev":0,"updatedBy":"","duties":{}},"v":1}
+         "tcpPort":40878,"epoch":1000,"seq":0,"sees":[],"dutiesEnabled":{},
+         "pubkey":"3Zx1…B-base64-key…=","v":1},
+ "overrides":{"rev":0,"updatedBy":"","duties":{}},"nonce":"b71e…B-hex-nonce…","v":1}
 ```
+
+**Proof of possession.** Each side now answers the *other's* challenge with an
+`auth` — a signature over the domain-separated bytes `"szpontnet-auth-v1:" ||
+nonce` for the nonce it received, proving it holds the private key for the `pubkey`
+it advertised:
+
+**N-A → N-B (TCP):** `{"t":"auth","sig":"…A signs B's nonce…","v":1}`
+**N-B → N-A (TCP):** `{"t":"auth","sig":"…B signs A's nonce…","v":1}`
+
+Each verifies the signature against the nonce **it** issued and the peer's
+advertised `pubkey`, records the peer's **verified fingerprint**
+(`sha256(pubkey)`), and classifies it. Neither has configured a trust allowlist
+here, so both peers are **personal** (the empty-allowlist full-trust default —
+[11](11-trust-and-balancing.md)); once either operator `--trust`s a first
+fingerprint, an unlisted peer would become foreign.
 
 The link is now **authenticated** on both sides. Each learns the other's NodeInfo,
 binds this connection as that peer's link, and recomputes assignments. Each node's
@@ -142,7 +160,9 @@ is back to `tokens: ok` so both slots can fill.)
 ```
 
 N-A computes `slot_candidates("audit")` = `[("linux",[aaaa…]), ("macos",[bbbb…])]`
-([07](07-dispatch.md#slots)) and places one job per slot:
+([07](07-dispatch.md#slots)) — ranked `surplus-first`, but neither node advertises
+`stats`, so all surpluses are `0` and the ranking degrades exactly to
+weakest-first. It places one job per slot:
 
 - **linux slot → N-A itself** (local): N-A runs the job and gets `spawned`.
 - **macos slot → N-B** (remote): N-A sends a dispatch on the link and waits (≤ 8 s):

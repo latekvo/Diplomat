@@ -184,8 +184,8 @@ anything other than a hello.
 ### `auth`
 
 Proof of possession, sent in reply to the `nonce` in a peer's [`hello`](#hello). It
-carries a signature over the *peer's* hello `nonce`, proving the sender holds the
-private key for the `pubkey` it advertised.
+carries a signature proving the sender holds the private key for the `pubkey` it
+advertised.
 
 ```json
 {"t": "auth", "sig": "…base64-Ed25519-signature…", "v": 1}
@@ -193,15 +193,21 @@ private key for the `pubkey` it advertised.
 
 | Field | Type | Req? | Meaning |
 |-------|------|------|---------|
-| `sig` | string | **yes** | base64 Ed25519 signature over the peer's hello `nonce`. |
+| `sig` | string | **yes** | base64 Ed25519 signature over the domain-separated challenge (below). |
+
+**The signed message is domain-separated** — not the bare nonce, but the bytes
+`"szpontnet-auth-v1:" || <nonce as UTF-8>` (so the device key can't double as a
+generic signing oracle). The exact construction is normative in
+[11](11-trust-and-balancing.md#trust-is-never-derived-from-an-advertisement).
 
 The handshake is **symmetric**: both link directions send a `hello` (each with its
 own `nonce`) and answer the other's challenge with an `auth`. A receiver verifies
-the `sig` against the nonce **it** issued and the peer's advertised `pubkey`; on
-success it records the peer's **verified fingerprint** (`sha256(pubkey)` - what
-trust keys on). A bad or absent signature leaves the peer **unverified**, hence
-*foreign* under any configured allowlist. See
-[11-trust-and-balancing](11-trust-and-balancing.md).
+the `sig` against the domain-separated form of the nonce **it** issued and the
+peer's advertised `pubkey`; on success it records the peer's **verified
+fingerprint** (`sha256(pubkey)` - what trust keys on), bound to that exact key and
+**discarded if the peer later advertises a different `pubkey`**. A bad or absent
+signature leaves the peer **unverified**, hence *foreign* under any configured
+allowlist. See [11-trust-and-balancing](11-trust-and-balancing.md).
 
 ### `node`
 
@@ -267,11 +273,29 @@ be a newer or older peer).
 | `strengthAuto` | bool | re-enable (`true`) or disable auto-detection; enabling immediately re-detects the tier from specs. |
 | `tokens` | string | set the token **override**; ignored unless one of `"auto"`/`"ok"`/`"low"`/`"out"`. `"auto"` returns the node to real-usage derivation. |
 | `dutiesEnabled` | object<string,bool> | merge per-duty enable flags. |
+| `plan` | string | switch the accounting plan ([11](11-trust-and-balancing.md#quotaleft---account-type-aware)). |
+| `quotaLeft` | number | set remaining quota directly (clamped to plan capacity). |
+| `usageAvg` | number | set the rolling usage average directly. |
+| `usage` | number | book a usage delta against the quota window. |
+
+The last four are the **accounting** keys (chapter 11); they update the node's
+[`stats`](05-resources.md#per-node-stats-account-aware-load-balancing), not its
+core NodeInfo fields. Like the others, an unrecognized key or invalid value is
+ignored.
 
 If `target` names a **peer** (not self), the receiver **forwards** the `set-attr`
 over that peer's link (it does not apply it locally). A node that applies a change
 MUST bump its `seq`, persist the new attributes, gossip the new NodeInfo, and
 recompute assignments.
+
+> **`set-attr` is a personal-only action.** Because a `set-attr` rewrites
+> placement- and balancing-affecting attributes and is forwarded across the mesh,
+> a receiver MUST classify the sender of a **peer-link** `set-attr` from its
+> verified link and act only for a **personal** device — a `set-attr` from a
+> **foreign** device MUST be ignored. A control-session `set-attr` (the local
+> operator) is a first-party action and is exempt. See
+> [11 — mutating a node](11-trust-and-balancing.md#mutating-a-node-is-a-personal-only-action).
+> (Empty allowlist = personal, so an unconfigured mesh is unaffected.)
 
 ### `dispatch`
 
@@ -282,12 +306,16 @@ receivers:
 **On a peer link** - a fully-formed [Job](#job) to run *on the receiving node*:
 
 ```json
-{"t": "dispatch", "job": { …Job… }, "v": 1}
+{"t": "dispatch", "job": { …Job… }, "apiKey": "optional-server-key", "v": 1}
 ```
 
 The receiver runs the job locally ([07-dispatch](07-dispatch.md#execution)) and
 replies with a [`job-status`](#job-status). On an unauthenticated link a bare
 `dispatch` MUST be rejected per [the fence ordering rule](03-transport.md#the-join-fence).
+The optional `apiKey` field carries the credential a
+[server](11-trust-and-balancing.md#the-api-key) with an API key configured
+requires; it is omitted when unset (so a core v1 node never sends one), and a
+server that requires it and doesn't receive a match replies `declined`.
 
 **On a [control session](#control-messages)** - a request to *route* a job through
 the mesh, carrying the `duty` and `prompt` as **top-level** fields (the node mints
@@ -302,7 +330,9 @@ outcomes), not a `job-status`. An unknown `duty` yields an [`error`](#ok--error)
 
 An optional `target` field (a node id) names one node to run the request on
 directly - the dispatcher's unilateral pick, with **no failover**. When `target`
-is absent the node ranks candidates itself (surplus-first). The peer-link shape is
+is absent the node ranks candidates itself (surplus-first). An optional `apiKey`
+field carries the credential to forward to an API-key-gated
+[server](11-trust-and-balancing.md#the-api-key) target. The peer-link shape is
 unchanged (it carries a `job`, never a `target`).
 
 > The two shapes exist because a peer link dispatches *one job to this node*, while
@@ -324,11 +354,17 @@ The outcome of a `dispatch`, sent back to the dispatcher.
 | `reason` | string | human-readable detail when `status` = `"declined"` or `"failed"`; else `""`. |
 | `node` | string | the id of the node reporting (the executor). |
 
+A dispatcher **MUST** correlate a `job-status` to its request by Job `id` **and**
+accept it only from the peer it dispatched that job to; a `job-status` for an
+unknown id, or one arriving from any other link, MUST be dropped (so a third peer
+that learns a live job id cannot resolve someone else's dispatch).
+
 > v1 defines three statuses: `spawned`, `declined`, and `failed`. `spawned` means
 > the node *accepted and started* the work, not that the work *completed* -
 > SzpontNet tracks placement and hand-off, not job completion. `declined` means the
-> receiver **refused for policy** - a foreign requester, a locally-disabled duty, or
-> being out of tokens - with the `reason` explaining it.
+> receiver **refused for policy** - a foreign requester, a required API key that was
+> missing, a locally-disabled duty, or being out of tokens - with the `reason`
+> explaining it.
 >
 > The dispatcher treats any non-`spawned` status (both `failed` and `declined`) as
 > "this candidate didn't take it - fail over to the next." The sole exception is an
@@ -346,14 +382,16 @@ with exactly one reply line.
 ### `ctl`
 
 Opens a control session. If a [join fence](03-transport.md#the-join-fence) is
-configured, MUST carry the matching `secret`.
+configured, MUST carry the matching `secret`; if the node is an
+[API-key server](11-trust-and-balancing.md#the-api-key), MUST also carry the
+matching `apiKey`.
 
 ```json
-{"t": "ctl", "secret": "optional-shared-secret", "v": 1}
+{"t": "ctl", "secret": "optional-shared-secret", "apiKey": "optional-server-key", "v": 1}
 ```
 
-The node validates the secret and then reads commands until the client
-disconnects.
+The node validates the secret (and, if configured, the API key) and then reads
+commands until the client disconnects. Both fields are omitted when unset.
 
 ### `status`
 
@@ -373,22 +411,29 @@ topology as this node sees it.
 
 ```json
 {"t": "state", "state": {
+   "updatedAt": "2026-07-16T04:31:02.517Z",
+   "pid": 12345,
    "tcpPort": 40878,
    "self": { …NodeInfo…, "fingerprint": "…64-hex…" },
    "peers": [ { …NodeInfo…, "link": "up", "addr": "192.168.1.21", "lastSeenSecsAgo": 1.2,
-               "verified": true, "fingerprint": "…64-hex…", "trust": "personal" } ],
+               "verified": true, "fingerprint": "…64-hex…", "trust": "personal", "surplus": 1.75 } ],
    "trusted": [ {"fingerprint": "…64-hex…", "label": "mbp"} ],
    "assignments": {"review": {"duty": "review", "assigned": ["…"], "shortfall": []}},
-   "overrides": {"rev": 0, "updatedBy": "", "duties": {}}
+   "overrides": {"rev": 0, "updatedBy": "", "duties": {}},
+   "v": 1
 }, "v": 1}
 ```
 
-Alongside the existing link/addr/surplus decoration, the snapshot carries the
-trust view: `self` gains its own `fingerprint`; each peer entry gains `verified`
-(bool - whether the peer proved a key on this link), `fingerprint` (its **verified**
-fingerprint, or the fingerprint of its advertised `pubkey` when not yet verified),
-and `trust` (`personal`/`foreign` against the local allowlist); and a top-level
-`trusted` array lists the local allowlist as `{fingerprint, label}` entries.
+The `state` reply is the **same object** as the on-disk
+[`state.json`](08-state.md#the-statejson-snapshot), including its `updatedAt`/`pid`/`v`
+envelope — a client gets the identical snapshot live or from disk. Alongside the
+link/addr decoration, the snapshot carries the trust + balancing view: `self` gains
+its own `fingerprint`; each peer entry gains `verified` (bool - whether the peer
+proved a key on this link), `fingerprint` (its **verified** fingerprint, or the
+fingerprint of its advertised `pubkey` when not yet verified), `trust`
+(`personal`/`foreign` against the local allowlist), and `surplus` (float - its
+spare-quota rank score); and a top-level `trusted` array lists the local allowlist
+as `{fingerprint, label}` entries.
 
 See [08-state](08-state.md#the-statejson-snapshot) for the full snapshot schema.
 
@@ -454,8 +499,11 @@ routing the job through the mesh.
 ], "v": 1}
 ```
 
-Each entry reports one [slot](07-dispatch.md#slots): which platform slot it was
-(`"any"` for a no-spread duty), which node took it (`node`/`nodeName`), and the
+Each entry reports one [slot](07-dispatch.md#slots): which slot it was — a
+`platform` for a spread duty, `"any"` for a no-spread duty, `"target"` for an
+explicit [target](#dispatch), or `"server"` for a
+[server node](11-trust-and-balancing.md#the-server-role) running the request
+locally — which node took it (`node`/`nodeName`, `null` if none did), and the
 `status`/`reason`. See [07-dispatch](07-dispatch.md).
 
 ---

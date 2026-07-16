@@ -37,10 +37,32 @@ beacon any of them. Trust therefore rests on two things a stranger cannot forge:
    *advertising it grants nothing*. On every link the peer must **prove possession**
    of the matching private key: our [`hello`](04-messages.md#hello) carries a fresh
    random `nonce`, and the peer must return an [`auth`](04-messages.md#auth)
-   message signing that nonce. Only a peer holding the private key can produce a
-   valid signature, and the nonce is per-connection so a captured signature can't
-   be replayed. A peer that copies someone else's advertised `pubkey` cannot sign
-   our challenge for it, so it is never *verified* as that identity.
+   message signing it. Only a peer holding the private key can produce a valid
+   signature, and the nonce is per-connection so a captured signature can't be
+   replayed. A peer that copies someone else's advertised `pubkey` cannot sign our
+   challenge for it, so it is never *verified* as that identity.
+
+   **The signed message (normative).** To keep the device key from doubling as a
+   generic signing oracle over attacker-chosen bytes, the signature is **not** over
+   the bare nonce but over a domain-separated construction: the peer signs the
+   bytes
+
+   ```
+   "szpontnet-auth-v1:" || <nonce as UTF-8>
+   ```
+
+   (the ASCII tag `szpontnet-auth-v1:` immediately followed by the nonce string),
+   and the verifier checks the signature against exactly those bytes and the
+   peer's advertised `pubkey`. A signature over any other construction (including
+   the bare nonce) MUST NOT verify.
+
+   **A verified fingerprint is bound to the key that was proven.** The recorded
+   fingerprint names the *specific* `pubkey` the peer signed for. If a later
+   advertisement (a gossiped `node` update) changes the peer's advertised `pubkey`,
+   the node **MUST** discard the verification (the peer reverts to *unverified*,
+   hence foreign under any allowlist) until it re-proves possession of the new key
+   on a fresh link. Otherwise a peer could prove key K, become personal, then
+   advertise a key K' it does not hold while keeping its personal classification.
 2. **A local allowlist.** Trust is **set manually by the operator and stored only
    on this machine** ([`trusted.json`](08-state.md#trustedjson), never gossiped): a
    set of fingerprints marked as "my devices."
@@ -84,14 +106,118 @@ The foreign path is **deliberately unimplemented in v1.** A node that receives a
 SzpontRequest from a foreign device **declines** it (a [`declined`](#refusals-are-first-class)
 `job-status`, reason `"foreign device (zero-trust path not implemented)"`).
 
-The intended future design (reserved, not yet normative): a foreign node MAY run
-the *compute* half of a SzpontRequest, but any **social action** - submitting a
-pull request, commenting on GitHub, anything that acts under an identity - MUST be
-sent **back to a personal node of the requester** to perform, rather than executed
-locally. That keeps a stranger's machine from ever acting as you. Until that
-routing exists, declining is the safe behavior, and it costs nothing: the
-dispatcher's [failover](07-dispatch.md#routing-a-job) already handles a declined
-candidate like any other, so a foreign node simply falls out of consideration.
+The intended future design (the *execution* is reserved/not-yet-built, but the
+**security contract below is normative now** so that any implementation that ever
+runs foreign work does so safely): a foreign node MAY run the *compute* half of a
+SzpontRequest, but any **social action** - submitting a pull request, commenting
+on GitHub, anything that acts under an identity - MUST be sent **back to a personal
+node of the requester** to perform, rather than executed locally. That keeps a
+stranger's machine from ever acting as you. Until that routing exists, declining
+is the safe behavior, and it costs nothing: the dispatcher's
+[failover](07-dispatch.md#routing-a-job) already handles a declined candidate like
+any other, so a foreign node simply falls out of consideration.
+
+#### The foreign execution security contract (normative)
+
+A **personal** SzpontRequest runs with full trust - directly, as if you had
+triggered it locally (the [personal path](#the-personal-path-v1)). A **foreign**
+SzpontRequest is the opposite: **zero trust**. *How* a node sandboxes foreign work
+is the implementation's choice, but the boundaries it MUST enforce are not. An
+implementation that executes a foreign SzpontRequest (rather than declining it, as
+v1 does) **MUST** guarantee all of:
+
+1. **No arbitrary on-device code execution.** A foreign request MUST NOT be able to
+   run code of its choosing on the host outside a sandbox. Its `prompt` is
+   untrusted input to a **confined** runner (a container, VM, jailed process, or
+   equivalent), never a command the host executes with its own privileges. A
+   *personal* request, by contrast, MAY run directly on the host.
+2. **No action under the host's identity.** A foreign request MUST NOT take any
+   **social or identity-bearing action** - opening or commenting on a PR, pushing a
+   commit, calling an authenticated API, touching the operator's credentials or
+   secrets. Any such action MUST be **routed back to a personal node of the
+   requester** to perform there. The foreign node's own reach is confined to
+   producing a **response**.
+3. **Request in, response out.** The permitted shape of a foreign SzpontRequest is
+   exactly that: receive a request, compute, return a result. **Declared side
+   effects that are inherent to the duty and confined to the executor's own
+   resources are allowed** and are the client's call - e.g. launching an emulator
+   or simulator, spawning a build, allocating a device - because they act only on
+   the foreign machine's own hardware, not under the requester's identity. What is
+   forbidden is *un*confined effect: escaping the sandbox or acting *as* the
+   requester.
+
+These are the boundaries that make "zero trust for foreign, absolute trust for
+personal" real rather than advisory. v1 satisfies the contract trivially by
+**declining** every foreign request ([refusals](#refusals-are-first-class)); a
+future revision that lets foreign compute run MUST satisfy points 1-3 before it
+does.
+
+### Mutating a node is a personal-only action
+
+Trust gates more than *executing* a job - it gates **changing a node**. A
+[`set-attr`](04-messages.md#set-attr) rewrites a node's advertised
+tier/tokens/duties/accounting, which reshapes placement and load balancing across
+the whole mesh, and it is even *forwarded* to a named peer. A receiver **MUST**
+therefore classify the sender of a **peer-link** `set-attr` from the verified link
+(exactly as for a dispatch) and apply (or forward) it only for a **personal**
+device; a `set-attr` from a **foreign** device MUST be ignored. A control-session
+`set-attr` (the local operator, already fenced by the [join
+secret](03-transport.md#the-join-fence)) is a first-party action and is not
+subject to this check. As everywhere, an **empty allowlist means personal**, so an
+unconfigured mesh keeps letting any peer retune any node exactly as the pre-trust
+core did.
+
+## Server nodes & API-key authentication
+
+The core is peer-to-peer and symmetric: every node both offers and dispatches
+work. Two deployments want an **asymmetric** node instead, and SzpontNet supports
+both **additively** (a plain v1 node needs no change to interoperate with them):
+
+- an **altruistic pool of professionals** smoothing each other's quota spikes -
+  everyone volunteers spare capacity, no one is obliged (the
+  [full-altruism model](README.md#the-trust-model-personal-vs-foreign));
+- a **dedicated server**: one strong machine (a build box, a device farm) that
+  **accepts** work from others but **never dispatches** work of its own.
+
+### The server role
+
+A node MAY run in **server mode** (the reference keys it off
+`ARGENT_MESH_SERVER=1`). A server:
+
+- **never originates a dispatch to a peer.** A request it is asked to route (via a
+  control client or its CLI) runs on **itself**; a request explicitly
+  [targeted](07-dispatch.md#explicit-target) at another node is refused. The server
+  is a **sink** for work, never a source. It still beacons, links, gossips, and is
+  a normal placement/dispatch *target* for other nodes - only its own origination
+  is disabled.
+- is otherwise an ordinary [Executor](10-conformance.md#roles) + Controllable node.
+
+### The API key
+
+Independently, a node MAY require an **API key** on inbound requests (the reference
+reads `ARGENT_MESH_API_KEY`). This is the *"accepts requests authenticated with an
+optional API key"* credential, and it is **orthogonal to both the join secret and
+device trust**:
+
+- the [join `secret`](03-transport.md#the-join-fence) fences *who may join the
+  mesh*;
+- **device trust** (personal/foreign) decides *whose requests run with full
+  privilege*;
+- the **API key** authenticates *who may submit work to this node*, without
+  granting mesh membership or personal trust.
+
+When an API key is configured, the node **MUST** require a matching **`apiKey`**
+field on an opening [`ctl`](04-messages.md#ctl) session and on every inbound
+[`dispatch`](04-messages.md#dispatch); a control session that lacks it is closed,
+and a dispatch that lacks it is **declined** (reason `"invalid or missing API
+key"`) - which the dispatcher's [failover](07-dispatch.md#routing-a-job) handles
+like any other decline. A dispatcher presents the key by carrying `apiKey` on the
+`dispatch` it forwards (the reference lets a client set it per request, e.g.
+`--api-key`). The `apiKey` field is **optional and additive**: omitted when unset,
+so a node with no key is byte-compatible with a core v1 node, which simply never
+sends one. This is a **plaintext credential** on the LAN, with the same threat
+model as the join secret ([03](03-transport.md#the-join-fence)): a fence and an
+authenticator, not a confidential channel.
 
 ## Per-node stats: account-aware load balancing
 
@@ -183,6 +309,8 @@ from `failed`) when it refuses a SzpontRequest for policy. The v1 reference decl
 when:
 
 - the requester is **foreign** (the zero-trust path above);
+- the request lacks a required **API key** (a [server](#the-api-key) with a key
+  configured);
 - the duty is **disabled** locally (`dutiesEnabled[duty] == false` - the node opted
   out of that class of work);
 - the node is **out of tokens** (`tokens == "out"` - it cannot serve; *this is Bob
@@ -205,9 +333,22 @@ An implementation of this chapter:
   proved a key as having no fingerprint, hence `foreign` under any non-empty
   allowlist.
 - **MUST** verify proof of possession before treating a peer as `personal`: the
-  peer's [`auth`](04-messages.md#auth) signature over *our* fresh per-connection
-  `nonce` must validate against the `pubkey` it advertised. It **MUST** classify
-  the requester from that verified link identity, never from `requestedBy`.
+  peer's [`auth`](04-messages.md#auth) signature over the **domain-separated
+  challenge** (`"szpontnet-auth-v1:" || nonce`, [above](#trust-is-never-derived-from-an-advertisement))
+  for *our* fresh per-connection `nonce` must validate against the `pubkey` it
+  advertised. It **MUST** classify the requester from that verified link identity,
+  never from `requestedBy`, and **MUST** discard a verification once the peer's
+  advertised `pubkey` changes.
+- **MUST** ignore a **peer-link** `set-attr` from a **foreign** device (mutation is
+  a personal-only action); a control-session `set-attr` is a first-party action.
+- **MUST**, if it ever *executes* (rather than declines) a **foreign**
+  SzpontRequest, enforce the [foreign execution security
+  contract](#the-foreign-execution-security-contract-normative): sandboxed compute,
+  no host-identity/social action, response-only with confined declared side
+  effects.
+- **MUST**, if configured as an API-key [server](#the-api-key), require a matching
+  `apiKey` on inbound `ctl` and `dispatch` and refuse those without it; and, if in
+  [server mode](#the-server-role), never originate a dispatch to a peer.
 - **MUST** omit `pubkey` and `stats` from an advertisement when they are empty, so
   a node that uses neither is byte-compatible with a core v1 advertisement.
 - **MUST** treat a `declined` `job-status` as a non-`spawned` outcome (fail the
@@ -220,6 +361,6 @@ An implementation of this chapter:
   by the core strategies, never as an error.
 
 Everything here rides `v: 1` and the [compatibility contract](09-extensibility.md#the-compatibility-contract):
-new optional fields (`pubkey`, `stats`), new message types (`auth`), a new enum
-value (`declined`), a new strategy id (`surplus-first`), all safe to add without a
-version bump.
+new optional fields (`pubkey`, `stats`, `apiKey`), new message types (`auth`), a
+new enum value (`declined`), a new strategy id (`surplus-first`), all safe to add
+without a version bump.

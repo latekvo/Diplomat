@@ -80,6 +80,23 @@ devices set stays fully trusting until the operator trusts a first fingerprint. 
 is `sha256(public key)` as 64 hex chars. The trusted allowlist lives at
 `~/.argent/mesh/trusted.json` (operator-managed, machine-local, never gossiped).
 
+**Auth proof-of-possession construction.** The `auth` signature is over the
+domain-separated bytes `"szpontnet-auth-v1:" || <nonce as UTF-8>` (ASCII tag
+`szpontnet-auth-v1:` + the hello nonce), verified against the peer's advertised
+`pubkey`. A verified fingerprint is bound to that exact key and discarded if the
+peer later advertises a different `pubkey`. See
+[11](11-trust-and-balancing.md#trust-is-never-derived-from-an-advertisement).
+
+## Server & API key (v1 vocabulary)
+
+| Constant | Value | Meaning |
+|----------|-------|---------|
+| server mode via | `ARGENT_MESH_SERVER=1` | node accepts work but never dispatches to peers ([11](11-trust-and-balancing.md#the-server-role)). |
+| API key via | `ARGENT_MESH_API_KEY` | required `apiKey` on inbound `ctl`/`dispatch` ([11](11-trust-and-balancing.md#the-api-key)); empty = no gate. |
+
+The `apiKey` field is optional and additive (omitted when empty), and is
+orthogonal to the join `secret` and to device trust.
+
 ## Accounts (v1 vocabulary)
 
 | Constant | Value | Meaning |
@@ -127,16 +144,17 @@ in [06-coordination](06-coordination.md#ranking).
 
 ## Message types
 
-`beacon`, `hello`, `node`, `overrides`, `heartbeat`, `set-attr`, `dispatch`,
-`job-status`, `ctl`, `status`, `state`, `set-overrides`, `stop`, `ok`, `error`,
-`dispatch-result`. Full reference: [04-messages](04-messages.md).
+`beacon`, `hello`, `auth`, `node`, `overrides`, `heartbeat`, `set-attr`,
+`dispatch`, `job-status`, `ctl`, `status`, `state`, `set-overrides`, `trust`,
+`untrust`, `stop`, `ok`, `error`, `dispatch-result`. Full reference:
+[04-messages](04-messages.md).
 
 ## Job statuses
 
 | Value | Meaning |
 |-------|---------|
 | `spawned` | node accepted and started the work |
-| `declined` | node refused for policy - foreign requester, disabled duty, or out of tokens (dispatcher fails the slot over) |
+| `declined` | node refused for policy - foreign requester, missing API key, disabled duty, or out of tokens (dispatcher fails the slot over) |
 | `failed` | node could not start it (dispatcher fails the slot over) |
 
 (`completed`, … are [reserved extensions](09-extensibility.md#adding-a-job-status).)
@@ -146,6 +164,10 @@ in [06-coordination](06-coordination.md#ranking).
 | Path | Contents |
 |------|----------|
 | `~/.argent/mesh/node.json` | persisted identity + attributes ([08](08-state.md#nodejson)) |
+| `~/.argent/mesh/device.key` | this device's Ed25519 private key (`0600`, never gossiped, [08](08-state.md#devicekey)) |
+| `~/.argent/mesh/trusted.json` | local trusted-device allowlist (never gossiped, [08](08-state.md#trustedjson)) |
+| `~/.argent/mesh/stats.json` | local load-balancing accounting (never gossiped, [08](08-state.md#statsjson)) |
 | `~/.argent/mesh/state.json` | public topology snapshot ([08](08-state.md#the-statejson-snapshot)) |
 | overridable via | `ARGENT_MESH_DIR` |
 | join secret via | `ARGENT_MESH_SECRET` ([03](03-transport.md#the-join-fence)) |
+| server mode / API key via | `ARGENT_MESH_SERVER` / `ARGENT_MESH_API_KEY` ([11](11-trust-and-balancing.md#server-nodes--api-key-authentication)) |

@@ -173,10 +173,14 @@ caps. No flag day, no `v` bump required for the common cases - exactly the
 - **Foreign zero-trust execution.** The two-level trust model (`personal`/`foreign`,
   keyed on a peer's **verified device fingerprint** against a local allowlist
   ([11](11-trust-and-balancing.md))) **has landed**, and a foreign requester is
-  [declined](07-dispatch.md#refusal-policy). The full zero-trust path - *running*
-  foreign compute while routing any social action back through a personal node -
-  remains future work; today a foreign request is refused outright rather than
-  sandboxed.
+  [declined](07-dispatch.md#refusal-policy). What is deferred is only the
+  *implementation* of foreign **execution**; the **security contract it must obey**
+  is already normative — the [foreign execution security
+  contract](11-trust-and-balancing.md#the-foreign-execution-security-contract-normative)
+  (sandboxed compute, no host-identity/social action, response-only with confined
+  declared side effects). So today a foreign request is refused outright, and any
+  future revision that runs foreign compute MUST satisfy that contract before it
+  does — the model forbids unsandboxed foreign code, it doesn't merely defer it.
 - **Transport encryption / confidentiality.** **Authenticated device identity has
   landed**: each node holds a per-device [Ed25519 key](08-state.md#devicekey),
   proves possession on every link (a signature over the peer's fresh hello nonce),
