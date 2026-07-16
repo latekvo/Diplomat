@@ -12,6 +12,7 @@ enum Headless {
     static let active: Bool = {
         let env = ProcessInfo.processInfo.environment
         return env["ARGENT_UTILS_DUMP"] == "1"
+            || env["ARGENT_UTILS_SELF_UPDATE"] == "1"
             || env["ARGENT_UTILS_LOOKUP"] != nil
             || env["ARGENT_UTILS_PRINT_PROMPT"] != nil
             || env["ARGENT_UTILS_SETTINGS_DUMP"] == "1"

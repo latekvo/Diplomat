@@ -78,6 +78,9 @@ def repos(tmp_path, monkeypatch):
     monkeypatch.setenv("ARGENT_UTILS_SELF_REPO", str(clone))
     monkeypatch.setenv("MARKER_DIR", str(marker))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    # Isolate the singleton pidfile so running_pid() can't see a real tray.
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
+    (tmp_path / "run").mkdir()
     # Keep the E2E hermetic: SettingsView also fires the allocator check on
     # open; point it at nothing so no real Node installer runs.
     monkeypatch.setenv("ARGENT_DEVICE_ALLOCATOR_DIR", str(tmp_path / "no-allocator"))
@@ -122,6 +125,84 @@ def test_check_surfaces_unreachable_remote(repos, tmp_path):
     s = selfupdate.check()
     assert s["error"]
     assert s["commit"]  # local facts still reported
+
+
+def test_check_reports_ahead_when_diverged(repos):
+    origin, clone, _ = repos
+    (clone / "LOCAL.txt").write_text("mine\n")
+    _commit_all(clone, "local work")
+    _advance_origin(origin)
+    s = selfupdate.check()
+    assert s["ahead"] == 1
+    assert s["behind"] == 1
+
+
+def test_pull_merges_diverged_local_commit(repos):
+    """A local commit origin doesn't have no longer blocks the update — it merges.
+
+    This is the exact case that made the button 'fail' under the old --ff-only.
+    """
+    origin, clone, _ = repos
+    (clone / "LOCAL.txt").write_text("mine\n")  # touches a different file → no conflict
+    _commit_all(clone, "local work")
+    _advance_origin(origin)
+
+    new = selfupdate.pull()
+
+    # Both sides survive: upstream's change and the local commit.
+    assert (clone / "VERSION").read_text() == "2\n"
+    assert (clone / "LOCAL.txt").read_text() == "mine\n"
+    # HEAD is a real merge commit (two parents), not a fast-forward.
+    parents = _git(clone, "rev-list", "--parents", "-n", "1", "HEAD").split()
+    assert len(parents) == 3  # commit + 2 parents
+    assert new == _git(clone, "rev-parse", "--short", "HEAD")
+
+
+def test_pull_aborts_on_conflict_and_leaves_checkout_untouched(repos):
+    """A real conflict is never auto-resolved: abort clean, keep the checkout."""
+    origin, clone, _ = repos
+    (clone / "VERSION").write_text("local-3\n")  # same file as upstream will change
+    _commit_all(clone, "local bump")
+    _advance_origin(origin)  # origin sets VERSION to "2\n" → conflicts
+    before = _git(clone, "rev-parse", "HEAD")
+
+    with pytest.raises(selfupdate.UpdateError, match="conflict"):
+        selfupdate.pull()
+
+    assert _git(clone, "rev-parse", "HEAD") == before  # HEAD unmoved
+    assert (clone / "VERSION").read_text() == "local-3\n"  # our content intact
+    assert _git(clone, "status", "--porcelain") == ""  # nothing half-merged
+
+
+def test_run_scheduled_noop_when_current(repos):
+    _origin, _clone, marker = repos
+    assert selfupdate.run_scheduled() == 0
+    assert not (marker / "built").exists()  # already current → no rebuild
+
+
+def test_run_scheduled_updates_in_place_when_tray_not_running(repos):
+    origin, clone, marker = repos
+    _advance_origin(origin)
+    assert selfupdate.run_scheduled() == 0
+    assert _git(clone, "rev-parse", "HEAD") == _git(origin, "rev-parse", "HEAD")
+    assert (marker / "built").exists()
+    assert not (marker / "relaunched").exists()  # no GUI spawned on a dead session
+
+
+def test_run_scheduled_relaunches_a_running_tray(repos):
+    origin, clone, marker = repos
+    _advance_origin(origin)
+    # Pretend a tray is live: claim the singleton pidfile with this process' PID.
+    from argent_utils.singleton import _pidfile
+
+    _pidfile().write_text(str(os.getpid()))
+
+    assert selfupdate.run_scheduled() == 0
+    assert (marker / "built").exists()
+    deadline = time.monotonic() + 10  # relaunch is detached; let the stub run
+    while not (marker / "relaunched").exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert (marker / "relaunched").exists()
 
 
 def test_update_button_pulls_builds_and_relaunches(repos):

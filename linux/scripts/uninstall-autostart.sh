@@ -2,7 +2,11 @@
 # Remove the XDG autostart entry and stop any running applet instance.
 set -euo pipefail
 
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DESKTOP="${XDG_CONFIG_HOME:-$HOME/.config}/autostart/argent-utils.desktop"
+
+# Tear down the daily auto-update timer too (best-effort).
+"${HERE}/uninstall-autoupdate.sh" || true
 
 if [[ -f "$DESKTOP" ]]; then
   rm -f "$DESKTOP"

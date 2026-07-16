@@ -66,6 +66,7 @@ def check() -> dict:
         "branch": None,
         "upstream": None,
         "behind": None,
+        "ahead": None,
         "error": None,
     }
     try:
@@ -74,23 +75,73 @@ def check() -> dict:
         _git(root, "fetch", "--quiet", "origin")
         up = _upstream(root)
         out["upstream"] = up
-        out["behind"] = int(_git(root, "rev-list", "--count", f"HEAD..{up}"))
+        # left = commits only on HEAD (ahead), right = only on upstream (behind).
+        ahead, behind = _git(
+            root, "rev-list", "--left-right", "--count", f"HEAD...{up}"
+        ).split()
+        out["ahead"] = int(ahead)
+        out["behind"] = int(behind)
     except (UpdateError, OSError, subprocess.TimeoutExpired, ValueError) as exc:
         out["error"] = str(exc)
     return out
 
 
-def pull() -> str:
-    """Fast-forward the checkout to its upstream; returns the new short SHA.
+def _has_git_identity(root: Path) -> bool:
+    """Whether a committer name+email is configured (a merge commit needs one)."""
+    for key in ("user.name", "user.email"):
+        proc = subprocess.run(  # noqa: S603 — fixed argv, no shell
+            ["git", "-C", str(root), "config", "--get", key],
+            capture_output=True, text=True, timeout=30,
+        )
+        if proc.returncode != 0 or not proc.stdout.strip():
+            return False
+    return True
 
-    Refuses on local changes or a diverged branch (``--ff-only``) — an update
-    must never discard work in the checkout it runs from.
+
+def pull() -> str:
+    """Integrate the checkout's upstream; returns the resulting short SHA.
+
+    Fast-forwards when the checkout is strictly behind, and creates a merge
+    commit when it has diverged (local commits origin doesn't have) — so an
+    update still lands when you're *ahead*, which ``--ff-only`` refused to do.
+
+    A *real* conflict is never resolved unattended: the merge is aborted, the
+    checkout is left byte-for-byte as it was, and a readable ``UpdateError``
+    says it needs a manual merge. Uncommitted local changes still block the
+    merge outright — an update must never clobber work in flight.
     """
     root = repo_root()
     if _git(root, "status", "--porcelain", "--untracked-files=no"):
         raise UpdateError("checkout has local changes — commit or stash them first")
     _git(root, "fetch", "--quiet", "origin")
-    _git(root, "merge", "--ff-only", _upstream(root))
+    up = _upstream(root)
+
+    # A diverged checkout needs a merge commit; give the auto-merge a committer
+    # identity if the environment has none (a stripped 6AM service env might),
+    # but never override the user's own identity when it's configured.
+    ident: list[str] = []
+    if not _has_git_identity(root):
+        ident = ["-c", "user.name=Argent Utils updater",
+                 "-c", "user.email=argent-utils@localhost"]
+    merge = subprocess.run(  # noqa: S603 — fixed argv, no shell
+        ["git", "-C", str(root), *ident, "merge", "--no-edit", up],
+        capture_output=True, text=True, timeout=120,
+    )
+    if merge.returncode != 0:
+        blob = "\n".join(p for p in (merge.stdout, merge.stderr) if p).strip()
+        # Leave nothing half-merged behind, whatever went wrong. Harmless
+        # (just errors) if no merge was actually started.
+        subprocess.run(  # noqa: S603 — fixed argv, no shell
+            ["git", "-C", str(root), "merge", "--abort"],
+            capture_output=True, text=True, timeout=120,
+        )
+        if "conflict" in blob.lower():
+            raise UpdateError(
+                "update conflicts with your local commits — merge origin by hand "
+                "in the checkout, then update again"
+            )
+        last = blob.splitlines()[-1] if blob else f"exit {merge.returncode}"
+        raise UpdateError(f"git merge: {last}")
     return _git(root, "rev-parse", "--short", "HEAD")
 
 
@@ -117,18 +168,29 @@ def build_core() -> None:
         )
 
 
-def relaunch() -> None:
+def _state_dir() -> Path:
+    return (
+        Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
+        / "argent-utils"
+    )
+
+
+def relaunch(extra_env: dict[str, str] | None = None) -> None:
     """Start the updated launcher detached, logging where autostart logs.
 
     The new instance's newest-wins singleton terminates this process once it's
     up, so the caller only reports "restarting…" and waits to be replaced.
+
+    ``extra_env`` is merged over the current environment for the child — the 6AM
+    updater uses it to hand the relaunched GUI the display env (DISPLAY / Wayland
+    / D-Bus) of the tray it's replacing, which a bare systemd service env lacks.
     """
     root = repo_root()
     launcher = root / "linux" / "argent-utils"
-    log_dir = (
-        Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
-        / "argent-utils"
-    )
+    log_dir = _state_dir()
+    env = dict(os.environ)
+    if extra_env:
+        env.update(extra_env)
     try:
         log_dir.mkdir(parents=True, exist_ok=True)
         with (log_dir / "argent-utils.log").open("ab") as log:
@@ -139,6 +201,95 @@ def relaunch() -> None:
                 stdin=subprocess.DEVNULL,
                 stdout=log,
                 stderr=subprocess.STDOUT,
+                env=env,
             )
     except OSError as exc:
         raise UpdateError(f"could not relaunch the applet: {exc}") from exc
+
+
+# MARK: unattended (6AM timer) path
+
+# The display/session vars a relaunched GUI needs but a systemd/launchd service
+# env doesn't carry; we lift them off the running tray's process environment.
+_DISPLAY_ENV_KEYS = (
+    "DISPLAY",
+    "WAYLAND_DISPLAY",
+    "XAUTHORITY",
+    "DBUS_SESSION_BUS_ADDRESS",
+    "XDG_RUNTIME_DIR",
+    "XDG_SESSION_TYPE",
+    "XDG_CURRENT_DESKTOP",
+)
+
+
+def _display_env_of(pid: int) -> dict[str, str]:
+    """The display/session env of a running process (via ``/proc/<pid>/environ``)."""
+    out: dict[str, str] = {}
+    try:
+        raw = Path(f"/proc/{pid}/environ").read_bytes()
+    except OSError:
+        return out
+    for entry in raw.split(b"\0"):
+        key, sep, val = entry.partition(b"=")
+        if sep and key.decode("utf-8", "replace") in _DISPLAY_ENV_KEYS:
+            out[key.decode("utf-8", "replace")] = val.decode("utf-8", "replace")
+    return out
+
+
+def _sched_log(message: str) -> None:
+    """Append a timestamped line to the auto-update log (best-effort)."""
+    from datetime import datetime
+
+    line = f"{datetime.now().isoformat(timespec='seconds')} {message}\n"
+    try:
+        d = _state_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        with (d / "autoupdate.log").open("a") as fh:
+            fh.write(line)
+    except OSError:
+        pass
+
+
+def run_scheduled() -> int:
+    """Headless daily update for the 6AM timer. Never raises; returns an exit code.
+
+    Fetches, and if the checkout is behind, merges upstream and rebuilds
+    argent-core — then relaunches the tray only if one is actually running (so it
+    never pops a GUI on a session that has none). Quiet no-op when already
+    current; a conflict or an unreachable origin is logged and left for a human
+    rather than retried destructively.
+    """
+    st = check()
+    if st["error"]:
+        _sched_log(f"skip: cannot reach origin ({st['error']})")
+        return 0
+    if not st["behind"]:
+        extra = f" ({st['ahead']} local ahead)" if st.get("ahead") else ""
+        _sched_log(f"up to date at {st['commit']}{extra}")
+        return 0
+
+    _sched_log(f"{st['behind']} behind at {st['commit']} — merging {st['upstream']}")
+    try:
+        commit = pull()
+    except UpdateError as exc:
+        # A conflict/dirty tree is not a transient failure to hammer on; wait
+        # for the user to sort it, then the next 6AM tick picks it up.
+        _sched_log(f"skip: {exc}")
+        return 0
+
+    _sched_log(f"merged to {commit} — rebuilding argent-core")
+    try:
+        build_core()
+    except UpdateError as exc:
+        _sched_log(f"build failed: {exc}")
+        return 1
+
+    from .singleton import SingleInstance
+
+    pid = SingleInstance.running_pid()
+    if pid:
+        relaunch(_display_env_of(pid))
+        _sched_log(f"relaunched running tray (was pid {pid}) onto {commit}")
+    else:
+        _sched_log(f"updated to {commit} in place (tray not running)")
+    return 0

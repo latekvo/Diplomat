@@ -52,6 +52,21 @@ class SingleInstance:
             pass
 
     @staticmethod
+    def running_pid() -> int:
+        """PID of the live tray instance, or 0 if none is running.
+
+        Lets the headless 6AM updater decide whether to relaunch (swap a running
+        tray onto the new build) or just leave the checkout updated in place —
+        it must never spawn a GUI on a session that isn't already showing one.
+        """
+        pf = _pidfile()
+        try:
+            pid = int(pf.read_text().strip())
+        except (OSError, ValueError):
+            return 0
+        return pid if pid and _alive(pid) else 0
+
+    @staticmethod
     def release() -> None:
         pf = _pidfile()
         try:

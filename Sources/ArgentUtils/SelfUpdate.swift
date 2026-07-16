@@ -22,6 +22,7 @@ enum SelfUpdate {
         var branch: String?
         var upstream: String?
         var behind: Int?
+        var ahead: Int?
         var error: String?
     }
 
@@ -80,7 +81,13 @@ enum SelfUpdate {
             try git(["fetch", "--quiet", "origin"])
             let up = upstream()
             out.upstream = up
-            out.behind = Int(try git(["rev-list", "--count", "HEAD..\(up)"]))
+            // left = commits only on HEAD (ahead), right = only on upstream (behind).
+            let counts = try git(["rev-list", "--left-right", "--count", "HEAD...\(up)"])
+                .split(whereSeparator: \.isWhitespace)
+            if counts.count == 2 {
+                out.ahead = Int(counts[0])
+                out.behind = Int(counts[1])
+            }
         } catch let e as UpdateError {
             out.error = e.message
         } catch {
@@ -89,16 +96,44 @@ enum SelfUpdate {
         return out
     }
 
-    /// Fast-forward the checkout to its upstream; returns the new short SHA. Refuses on
-    /// local changes or a diverged branch (`--ff-only`) — an update must never discard
-    /// work in the checkout it runs from. Mirrors `selfupdate.pull`.
+    /// Whether a committer name+email is configured (a merge commit needs one).
+    private static func hasGitIdentity() -> Bool {
+        for key in ["user.name", "user.email"] {
+            let v = (try? git(["config", "--get", key])) ?? ""
+            if v.isEmpty { return false }
+        }
+        return true
+    }
+
+    /// Integrate the checkout's upstream; returns the resulting short SHA. Fast-forwards
+    /// when strictly behind, and creates a merge commit when the checkout has diverged
+    /// (local commits origin doesn't have) — so an update still lands when you're *ahead*,
+    /// which `--ff-only` refused to do. A real conflict is never resolved unattended: the
+    /// merge is aborted, the checkout left as it was, and a readable error says it needs a
+    /// manual merge. Uncommitted local changes still block outright. Mirrors `selfupdate.pull`.
     static func pull() throws -> String {
         let dirty = try git(["status", "--porcelain", "--untracked-files=no"])
         if !dirty.isEmpty {
             throw UpdateError(message: "checkout has local changes — commit or stash them first")
         }
         try git(["fetch", "--quiet", "origin"])
-        try git(["merge", "--ff-only", upstream()])
+        let up = upstream()
+        // Give the auto-merge a committer identity if the environment has none (a stripped
+        // launchd service env might), but never override the user's own when it's set.
+        let ident = hasGitIdentity()
+            ? []
+            : ["-c", "user.name=Argent Utils updater", "-c", "user.email=argent-utils@localhost"]
+        do {
+            try git(ident + ["merge", "--no-edit", up])
+        } catch let e as UpdateError {
+            // Leave nothing half-merged behind, whatever went wrong.
+            _ = try? git(["merge", "--abort"])
+            if e.message.lowercased().contains("conflict") {
+                throw UpdateError(message: "update conflicts with your local commits — merge origin "
+                    + "by hand in the checkout, then update again")
+            }
+            throw e
+        }
         return try git(["rev-parse", "--short", "HEAD"])
     }
 
@@ -154,5 +189,68 @@ enum SelfUpdate {
 
     private static func shellQuote(_ s: String) -> String {
         "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    // MARK: - unattended (6AM launchd) path
+
+    /// Headless daily update for the launchd 6AM job. Never throws; returns an exit code.
+    ///
+    /// Fetches, and if behind, merges upstream and rebuilds — then relaunches the app only
+    /// if one is actually running (so it never pops a menu-bar app onto a login session that
+    /// isn't showing one). Quiet no-op when already current; a conflict or unreachable origin
+    /// is logged and left for a human rather than retried destructively. Mirrors
+    /// `selfupdate.run_scheduled`.
+    static func runScheduled() -> Int32 {
+        let st = check()
+        if let e = st.error { schedLog("skip: cannot reach origin (\(e))"); return 0 }
+        guard let behind = st.behind, behind > 0 else {
+            let extra = (st.ahead ?? 0) > 0 ? " (\(st.ahead!) local ahead)" : ""
+            schedLog("up to date at \(st.commit ?? "?")\(extra)")
+            return 0
+        }
+        schedLog("\(behind) behind at \(st.commit ?? "?") — merging \(st.upstream ?? "origin/main")")
+        let commit: String
+        do {
+            commit = try pull()
+        } catch {
+            schedLog("skip: \((error as? LocalizedError)?.errorDescription ?? "\(error)")")
+            return 0
+        }
+        schedLog("merged to \(commit) — rebuilding the app")
+        do {
+            try rebuild()
+        } catch {
+            schedLog("build failed: \((error as? LocalizedError)?.errorDescription ?? "\(error)")")
+            return 1
+        }
+        if SingleInstance.isRunning() {
+            do {
+                try relaunch()
+                schedLog("relaunched running app onto \(commit)")
+            } catch {
+                schedLog("relaunch failed: \((error as? LocalizedError)?.errorDescription ?? "\(error)")")
+                return 1
+            }
+        } else {
+            schedLog("updated to \(commit) in place (app not running)")
+        }
+        return 0
+    }
+
+    /// Append a timestamped line to the auto-update log (best-effort).
+    private static func schedLog(_ message: String) {
+        let dir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Logs")
+        let url = dir.appendingPathComponent("argent-utils-autoupdate.log")
+        let line = "\(ISO8601DateFormatter().string(from: Date())) \(message)\n"
+        guard let data = line.data(using: .utf8) else { return }
+        if let fh = try? FileHandle(forWritingTo: url) {
+            defer { try? fh.close() }
+            _ = try? fh.seekToEnd()
+            try? fh.write(contentsOf: data)
+        } else {
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try? data.write(to: url)
+        }
     }
 }

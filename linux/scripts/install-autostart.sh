@@ -34,6 +34,14 @@ X-GNOME-Autostart-enabled=true
 EOF
 
 echo "Installed autostart entry: ${DESKTOP}"
+
+# Also schedule the daily 6AM self-update (soft-fail: the tray and the manual
+# Update button work without it; only the unattended schedule needs systemd).
+if ! "${LINUX_DIR}/scripts/install-autoupdate.sh"; then
+    echo "warning: daily auto-update timer not installed — update manually from" >&2
+    echo "         the Settings ▸ UPDATE button, or install a systemd user timer." >&2
+fi
+
 echo "Starting Argent Utils now…"
 LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/argent-utils"
 mkdir -p "$LOG_DIR"

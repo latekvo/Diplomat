@@ -130,11 +130,14 @@ struct SettingsView: View {
             if let e = r.error {
                 updateStatus("Check failed", .orange, detail: e)
             } else if let behind = r.behind, behind > 0 {
+                // A diverged checkout still updates — via a merge, not a discard.
+                let aheadNote = (r.ahead ?? 0) > 0 ? " · \(r.ahead!) local ahead (will merge)" : ""
                 updateStatus("Update available · \(behind) commit\(behind == 1 ? "" : "s") behind", .blue,
-                             detail: "\(r.commit ?? "?") on \(r.branch ?? "?") · upstream \(r.upstream ?? "?")")
+                             detail: "\(r.commit ?? "?") on \(r.branch ?? "?") · upstream \(r.upstream ?? "?")\(aheadNote)")
             } else {
+                let aheadNote = (r.ahead ?? 0) > 0 ? " · \(r.ahead!) local ahead" : ""
                 updateStatus("Up to date", .primary,
-                             detail: "\(r.commit ?? "?") on \(r.branch ?? "?") · upstream \(r.upstream ?? "?")")
+                             detail: "\(r.commit ?? "?") on \(r.branch ?? "?") · upstream \(r.upstream ?? "?")\(aheadNote)")
             }
         }
     }

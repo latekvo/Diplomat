@@ -391,14 +391,17 @@ class SettingsView(QWidget):
             self._update_btn.setEnabled(True)
         else:
             behind = s.get("behind") or 0
+            ahead = s.get("ahead") or 0
             if behind:
                 plural = "" if behind == 1 else "s"
                 status(f"Update available · {behind} commit{plural} behind", "#0A84FF")
             else:
                 status("Up to date")
-            self._update_detail.setText(
-                f"{s.get('commit')} on {s.get('branch')} · upstream {s.get('upstream')}"
-            )
+            detail = f"{s.get('commit')} on {s.get('branch')} · upstream {s.get('upstream')}"
+            if ahead:
+                # A diverged checkout still updates — via a merge, not a discard.
+                detail += f" · {ahead} local ahead (will merge)"
+            self._update_detail.setText(detail)
             self._update_btn.setEnabled(True)
 
     # MARK: terminal

@@ -4,6 +4,7 @@
     ARGENT_UTILS_DUMP=1 python -m argent_utils  # headless pipeline dump
     ARGENT_UTILS_LOOKUP=337 python -m argent_utils
     ARGENT_UTILS_PRINT_PROMPT=mine python -m argent_utils   # mine|user|single
+    ARGENT_UTILS_SELF_UPDATE=1 python -m argent_utils       # headless 6AM update
 """
 
 from __future__ import annotations
@@ -14,6 +15,11 @@ import sys
 
 def main() -> int:
     env = os.environ
+
+    if env.get("ARGENT_UTILS_SELF_UPDATE") == "1":
+        from .selfupdate import run_scheduled
+
+        return run_scheduled()
 
     if env.get("ARGENT_UTILS_DUMP") == "1":
         from .selftest import run_dump

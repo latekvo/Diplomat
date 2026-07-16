@@ -47,6 +47,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Menu-bar-only: no Dock icon.
         NSApp.setActivationPolicy(.accessory)
 
+        // Unattended 6AM self-update (launchd StartCalendarInterval): merge upstream if
+        // behind, rebuild, relaunch if the app was running, then exit. Runs off the main
+        // thread — the git/build work is blocking.
+        if env["ARGENT_UTILS_SELF_UPDATE"] == "1" {
+            Task.detached { exit(SelfUpdate.runScheduled()) }
+        }
+
         // Headless self-tests: run the real pipeline, print, exit.
         if env["ARGENT_UTILS_DUMP"] == "1" {
             Task { await Dump.run(); exit(0) }
@@ -125,6 +132,17 @@ enum QuitFlow {
 enum SingleInstance {
     static let bundleID = "com.ignacy.argent-utils"
     static let execName = "ArgentUtils"
+
+    /// Whether another live instance exists — the 6AM updater relaunches only if so,
+    /// never spawning a menu-bar app onto a session that isn't showing one.
+    static func isRunning() -> Bool {
+        let myPid = ProcessInfo.processInfo.processIdentifier
+        return NSWorkspace.shared.runningApplications.contains { app in
+            app.processIdentifier != myPid
+                && (app.bundleIdentifier == bundleID
+                    || app.executableURL?.lastPathComponent == execName)
+        }
+    }
 
     static func terminateOthers() {
         func others() -> [NSRunningApplication] {

@@ -50,3 +50,9 @@ pkill -x ArgentUtils 2>/dev/null || true
 sleep 1
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
 echo "Loaded. Autostarts on login and is running now (look for the wrench in your menu bar)."
+
+# Also schedule the daily 6AM self-update (soft-fail: the manual Update button still
+# works without it; only the unattended schedule needs this agent).
+if ! ./scripts/install-autoupdate.sh "$BIN"; then
+  echo "warning: daily auto-update agent not installed — update manually from Settings ▸ UPDATE." >&2
+fi
