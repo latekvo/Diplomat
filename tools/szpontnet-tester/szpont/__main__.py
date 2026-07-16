@@ -6,8 +6,8 @@
     # run the full suite against a candidate launcher command:
     python -m szpont --node-cmd "python adapters/reference.py"
 
-    # a subset, verbosely (categories A–J; I/J = chapter-11 trust + server/API-key):
-    python -m szpont --node-cmd "…" --only A,C,E,I,J --verbose
+    # a subset, verbosely (categories A–K; I/J/K = chapter-11 trust + server/API-key + auth gossip):
+    python -m szpont --node-cmd "…" --only A,C,E,I,J,K --verbose
 
 The ``--node-cmd`` is any command that starts ONE node configured from the
 ``SZPONTNET_*`` environment (the candidate contract — see the README). The
@@ -45,7 +45,7 @@ def main(argv: list[str] | None = None) -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--node-cmd", help="command that launches one candidate node "
                     "(configured via the SZPONTNET_* environment)")
-    ap.add_argument("--only", help="comma-separated categories to run (A-J); default all")
+    ap.add_argument("--only", help="comma-separated categories to run (A-K); default all")
     ap.add_argument("--selftest", action="store_true",
                     help="run the tester's own pure codec/oracle self-tests and exit")
     ap.add_argument("--list", action="store_true", help="list categories and cases, then exit")

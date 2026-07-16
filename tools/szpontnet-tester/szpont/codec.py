@@ -4,8 +4,11 @@ This is the tester's own reference implementation of chapter 04's message
 catalog and chapter 03's framing, extended with the chapter-11 additions: the
 optional ``pubkey``/``stats`` NodeInfo fields (omitted when empty), the trust
 ``nonce``/``auth`` proof-of-possession exchange over a domain-separated
-challenge, the ``apiKey`` credential on ``ctl``/``dispatch``, and the
-``trust``/``untrust`` control commands. It is written from the specification so
+challenge, the ``apiKey`` credential on ``ctl``/``dispatch``, the
+``trust``/``untrust`` control commands, and **authenticated gossip**: a self-
+signed advert ``sig`` and a self-signed override ``sig``, each covering the
+domain-separated canonical bytes (:func:`advert_signing_bytes` /
+:func:`overrides_signing_bytes`). It is written from the specification so
 the tester can (a) *speak* the protocol correctly as a peer / control client /
 adversary and (b) *validate* every message a candidate emits against a strict
 schema. Where this codec and a candidate disagree, one of them violates the
@@ -19,6 +22,41 @@ import time
 from dataclasses import dataclass, field, replace
 
 from .model import MAX_LINE_BYTES, PROTOCOL_VERSION
+
+
+# MARK: - Authenticated-gossip signing bytes (11 — self-signed adverts + overrides)
+#
+# The two gossiped, self-signed payloads (a NodeInfo advertisement, and a
+# placement-overrides edit) are each authenticated by a base64 Ed25519 signature
+# over ``<domain tag> ‖ <canonical JSON of the payload without its own `sig`>``.
+# A signature is therefore meaningless outside its exact context and cannot be
+# lifted from one payload type to the other. The canonical form (sorted keys +
+# compact separators, taken over the RAW dict with `sig` removed) MUST be
+# byte-identical to the reference (``protocol._canonical`` /
+# ``advert_signing_bytes`` / ``overrides_signing_bytes``) so both sides sign and
+# verify the exact same bytes; where they disagree, one violates the spec.
+ADVERT_CONTEXT = b"szpontnet-nodeinfo-v1:"
+OVERRIDES_CONTEXT = b"szpontnet-overrides-v1:"
+
+
+def _canonical(payload: dict) -> bytes:
+    """Deterministic JSON of a payload with its ``sig`` field removed — the exact
+    bytes a signature is computed/verified over. Sorted keys + compact separators
+    so it is identical across implementations, and taken over the raw dict so any
+    unknown extra field the signer covered is covered here too."""
+    body = {k: v for k, v in payload.items() if k != "sig"}
+    return json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def advert_signing_bytes(node_dict: dict) -> bytes:
+    """The exact bytes a NodeInfo advertisement's ``sig`` covers (11)."""
+    return ADVERT_CONTEXT + _canonical(node_dict)
+
+
+def overrides_signing_bytes(overrides_dict: dict) -> bytes:
+    """The exact bytes a placement-overrides ``sig`` covers, signed by the
+    ``updatedBy`` editor (11)."""
+    return OVERRIDES_CONTEXT + _canonical(overrides_dict)
 
 
 # MARK: - NodeInfo (04-messages.md#nodeinfo)
@@ -44,6 +82,14 @@ class NodeInfo:
     # core-v1 advertisement (11-trust-and-balancing conformance MUST).
     pubkey: str = ""
     stats: dict = field(default_factory=dict)
+    # Base64 Ed25519 signature by THIS node's device key over the advert's
+    # canonical form (:func:`advert_signing_bytes`). It authenticates the
+    # advertisement end to end: any relay may forward it, but none can forge or
+    # tamper with it without the private key (the receiver verifies ``sig`` against
+    # the advert's own ``pubkey``). Empty for a keyless node — then unauthenticated
+    # and foreign under any allowlist. Omitted from to_dict() when empty so an
+    # unsigned advert stays byte-identical to a core-v1 one (11 MUST).
+    sig: str = ""
     version: int = PROTOCOL_VERSION
 
     def to_dict(self) -> dict:
@@ -65,6 +111,8 @@ class NodeInfo:
             d["pubkey"] = self.pubkey
         if self.stats:
             d["stats"] = self.stats
+        if self.sig:
+            d["sig"] = self.sig
         return d
 
     @classmethod
@@ -89,6 +137,7 @@ class NodeInfo:
                 duties_enabled=dict(d.get("dutiesEnabled", {})),
                 pubkey=str(d.get("pubkey", "")),
                 stats=dict(d.get("stats", {})) if isinstance(d.get("stats"), dict) else {},
+                sig=str(d.get("sig", "")),
                 version=int(d.get("v", PROTOCOL_VERSION)),
             )
         except (KeyError, TypeError, ValueError):
@@ -348,6 +397,8 @@ def validate_nodeinfo(d: dict) -> list[str]:
     # a receiver — a candidate that emits neither is a valid core-v1 node).
     if "pubkey" in d and not isinstance(d["pubkey"], str):
         problems.append("NodeInfo.pubkey not a string")
+    if "sig" in d and not isinstance(d["sig"], str):
+        problems.append("NodeInfo.sig not a string")
     if "stats" in d:
         st = d["stats"]
         if not isinstance(st, dict):

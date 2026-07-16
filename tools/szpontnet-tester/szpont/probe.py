@@ -7,10 +7,14 @@ runs one or more ``ProbePeer`` identities — each a spec-correct SzpontNet node
 sockets, so from the candidate's point of view it is talking to genuine peers.
 
 Each peer is also a chapter-11 **trust peer**: it carries an Ed25519 keypair,
-advertises its ``pubkey``, issues a challenge nonce in its own hello, and answers
-the candidate's challenge with an ``auth`` signature over the domain-separated
-bytes (``"szpontnet-auth-v1:" ‖ nonce``) — so the candidate can verify it and a
-trust suite can assert the proof-of-possession round-trip. A peer built with
+advertises its ``pubkey``, **self-signs every advertisement** it sends (an advert
+``sig`` over ``"szpontnet-nodeinfo-v1:" ‖ canonical(NodeInfo)``, re-signed on
+every ``gossip_self``/``set_info`` change), issues a challenge nonce in its own
+hello, and answers the candidate's challenge with an ``auth`` signature over the
+domain-separated bytes (``"szpontnet-auth-v1:" ‖ nonce``) — so the candidate
+accepts, verifies and pins its adverts, and a trust suite can assert the
+proof-of-possession round-trip. It can also sign an ``overrides`` edit it emits
+on its own behalf (:meth:`signed_override`). A peer built with
 ``trust_peer=False`` (or on a host without ``cryptography``) stays keyless, so
 the foreign / unverifiable paths are testable too. A peer may also advertise
 ``stats`` to drive ``surplus-first`` dispatch.
@@ -124,6 +128,12 @@ class ProbePeer:
             tcp_port=self.tcp_port, duties_enabled=duties_enabled or {},
             epoch=mesh.epoch, seq=0, pubkey=self.pubkey, stats=dict(stats or {}),
         )
+        # A keyed probe SELF-SIGNS its advertisement (11 authenticated gossip): the
+        # reference now DROPS a keyed advert (one carrying a ``pubkey``) whose
+        # ``sig`` is missing or doesn't verify, so an unsigned keyed advert would
+        # never link/verify. A keyless probe (no key) leaves ``sig`` empty and stays
+        # unauthenticated, exactly as before.
+        self.info = self._signed(self.info)
 
         self._lock = threading.Lock()          # guards socket sends + info mutation
         self._conn: socket.socket | None = None
@@ -336,16 +346,57 @@ class ProbePeer:
         except OSError:
             return False
 
+    def _signed(self, info: NodeInfo) -> NodeInfo:
+        """Attach our Ed25519 signature over this advert's canonical form so a
+        keyed advert verifies at the receiver (11). Byte-for-byte identical to the
+        reference: sign ``ADVERT_CONTEXT ‖ canonical(to_dict() without sig)``. A
+        keyless probe returns the advert unsigned (never verifiable)."""
+        if self.key is None:
+            return info
+        sig = self.key.sign(codec.advert_signing_bytes(info.to_dict()))
+        return replace(info, sig=sig)
+
     def gossip_self(self, **changes) -> bool:
-        """Bump our advertisement (seq+1, applying ``changes``) and gossip it."""
+        """Bump our advertisement (seq+1, applying ``changes``), RE-SIGN it (the
+        signed bytes changed), and gossip it."""
         with self._lock:
-            self.info = self.info.bumped(**changes)
+            self.info = self._signed(self.info.bumped(**changes))
             info = self.info
         return self.send(codec.node_update(info))
 
     def set_info(self, **changes) -> None:
         with self._lock:
-            self.info = replace(self.info, **changes)
+            self.info = self._signed(replace(self.info, **changes))
+
+    def sign_node_dict(self, node_dict: dict) -> dict:
+        """Self-sign an arbitrary raw NodeInfo dict with this probe's key, over the
+        FINAL dict (so any extra/unknown fields it carries are covered, exactly as a
+        real originator that added them would sign — the reference's canonical form
+        covers every field but ``sig``). Stamps our ``pubkey`` if absent so the sig
+        verifies against it. A keyless probe returns the dict unsigned. Use for
+        adverts hand-built for id/epoch/seq control (freshness, tolerance tests)."""
+        d = dict(node_dict)
+        if self.key is None:
+            return d
+        d.setdefault("pubkey", self.pubkey)
+        d.pop("sig", None)
+        d["sig"] = self.key.sign(codec.advert_signing_bytes(d))
+        return d
+
+    def signed_override(self, overrides: dict) -> dict:
+        """Sign a placement-overrides edit as if THIS probe were the editor: set
+        ``updatedBy`` to our id and attach a ``sig`` over the canonical override
+        bytes (11). The reference requires a valid signature for a non-default
+        (rev>0) override from a KNOWN editor, so a probe sending an override on its
+        own behalf must sign it or the edit is dropped. A keyless probe returns the
+        override unsigned (the reference then can't verify it and accepts it as
+        legacy)."""
+        ov = dict(overrides)
+        ov["updatedBy"] = self.info.id
+        ov.pop("sig", None)
+        if self.key is not None:
+            ov["sig"] = self.key.sign(codec.overrides_signing_bytes(ov))
+        return ov
 
     def _send_raw(self, conn: socket.socket, data: bytes) -> None:
         with self._lock:

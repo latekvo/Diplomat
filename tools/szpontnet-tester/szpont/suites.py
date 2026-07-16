@@ -3,8 +3,10 @@
 Every case maps to the interop vectors in ``docs/szpontnet/10-conformance.md``
 and the MUST/SHOULD requirements of the chapters — the core protocol (01–10) in
 categories A–H, and **chapter 11** (the trust / load-balancing layer and the
-server / API-key role) in categories **I** (trust & load balancing) and **J**
-(server role & API key). Each drives the candidate over real sockets via the
+server / API-key role) in categories **I** (trust & load balancing), **J**
+(server role & API key), and **K** (authenticated gossip: self-signed adverts
+and overrides — forged/tampered/relayed-hijack payloads are rejected). Each
+drives the candidate over real sockets via the
 probe mesh, observes it (snapshot + wire captures), and records per-requirement
 checks with the spec section that mandates them.
 
@@ -27,7 +29,7 @@ from . import assign, codec
 from .codec import Job, NodeInfo
 from .harness import ID_A, ID_B, ID_C, Scenario
 from .model import Model
-from .probe import wait_until
+from .probe import ProbeKey, wait_until
 from .report import Reporter
 
 ZERO_ID = "0" * 32  # sorts below ID_A ("a"*32): a peer the candidate must NOT dial
@@ -202,9 +204,13 @@ def case_b_tolerance(rep: Reporter, ctx: Context) -> None:
         for junk in (b"{not json\n", b"[1,2,3]\n", b'{"no":"type"}\n',
                      b'{"t":"zzz-unknown"}\n', b'{"t":123}\n'):
             peer._send_raw(conn, junk)
-        # Then a VALID gossip carrying unknown extra fields (must be ignored, msg adopted).
+        # Then a VALID gossip carrying unknown extra fields (must be ignored, msg
+        # adopted). The unknown NodeInfo field is added BEFORE signing so the advert
+        # stays authentic — the reference's canonical form covers every field but
+        # `sig`, so a real originator that added a forward-compat field signs over it.
         node_msg = codec.node_update(peer.info.bumped(tokens="out"))
         node_msg["node"]["futureField"] = {"anything": 1}
+        node_msg["node"] = peer.sign_node_dict(node_msg["node"])
         node_msg["extraTopLevel"] = "ignore me"
         peer.send(node_msg)
         moved = _wait_snapshot(scn, lambda s: ID_B not in _assignments(s).get("audit", ()), 6.0)
@@ -263,19 +269,22 @@ def case_b_freshness(rep: Reporter, ctx: Context) -> None:
         e = peer.info.epoch
 
         def macos_ok(**kw):
-            return NodeInfo(id=ID_B, name="peer", platform="macos", tier=1,
+            # Self-signed by the probe's own key (its pubkey is pinned from the
+            # linked hello, so a keyed advert MUST be signed to be accepted — 11).
+            info = NodeInfo(id=ID_B, name="peer", platform="macos", tier=1,
                             tcp_port=peer.tcp_port, **kw)
-        peer.send(codec.node_update(macos_ok(tokens="out", epoch=e, seq=5)))
+            return {"t": "node", "node": peer.sign_node_dict(info.to_dict())}
+        peer.send(macos_ok(tokens="out", epoch=e, seq=5))
         rep.check("newer NodeInfo (higher seq) is adopted",
                   _wait_snapshot(scn, lambda s: ID_B not in _assignments(s).get("audit", ()), 6.0)
                   is not None, "MUST", "04-messages#nodeinfo")
-        peer.send(codec.node_update(macos_ok(tokens="ok", epoch=e, seq=2)))
+        peer.send(macos_ok(tokens="ok", epoch=e, seq=2))
         time.sleep(2.0)
         rep.check("older NodeInfo (lower seq) does NOT overwrite the newer one",
                   ID_B not in _assignments(scn.candidate.snapshot()).get("audit", ()), "MUST",
                   "04-messages#nodeinfo",
                   "a stale seq=2 tokens=ok must not resurrect the peer into the audit slot")
-        peer.send(codec.node_update(macos_ok(tokens="ok", epoch=e + 100.0, seq=0)))
+        peer.send(macos_ok(tokens="ok", epoch=e + 100.0, seq=0))
         rep.check("a higher epoch supersedes regardless of seq",
                   _wait_snapshot(scn, lambda s: ID_B in _assignments(s).get("audit", ()), 6.0)
                   is not None, "MUST", "08-state#liveness--incarnations")
@@ -327,9 +336,13 @@ def case_c_override(rep: Reporter, ctx: Context) -> None:
         if _wait_snapshot(scn, lambda s: len(_up_peer_ids(s)) >= 2, 12.0) is None:
             rep.skip_case("fleet never fully linked")
             return
-        scn.mesh.peers[0].send(codec.overrides_update({
-            "rev": 1, "updatedBy": ID_B,
-            "duties": {"review": {"strategy": "strongest-first", "tokenAware": True, "spread": []}}}))
+        peer_b = scn.mesh.peers[0]
+        # The override MUST be signed by its editor (updatedBy) now that the
+        # reference knows the editor's pubkey — an unsigned non-default override
+        # from a known editor is rejected as a forgery (11 authenticated gossip).
+        peer_b.send(codec.overrides_update(peer_b.signed_override({
+            "rev": 1,
+            "duties": {"review": {"strategy": "strongest-first", "tokenAware": True, "spread": []}}})))
         rep.check("review → [B] after a strongest-first override is gossiped in",
                   _wait_snapshot(scn, lambda s: _assignments(s).get("review") == (ID_B,), 8.0)
                   is not None, "MUST", "06-coordination#placement-overrides",
@@ -687,9 +700,11 @@ def case_h_overrides_lww(rep: Reporter, ctx: Context) -> None:
             rep.skip_case("fleet never fully linked")
             return
         peer_b, peer_c = scn.mesh.peers[0], scn.mesh.peers[1]
-        peer_b.send(codec.overrides_update({
-            "rev": 2, "updatedBy": ID_B,
-            "duties": {"review": {"strategy": "strongest-first", "tokenAware": True, "spread": []}}}))
+        # Both edits are signed by their editor B (the reference knows B's key and
+        # requires a valid signature for a non-default override — 11).
+        peer_b.send(codec.overrides_update(peer_b.signed_override({
+            "rev": 2,
+            "duties": {"review": {"strategy": "strongest-first", "tokenAware": True, "spread": []}}})))
         rep.check("higher-rev override is adopted",
                   _wait_snapshot(scn, lambda s: _assignments(s).get("review") == (ID_B,), 8.0)
                   is not None, "MUST", "06-coordination#placement-overrides")
@@ -697,9 +712,9 @@ def case_h_overrides_lww(rep: Reporter, ctx: Context) -> None:
                   bool(wait_until(lambda: any(m.get("overrides", {}).get("rev") == 2
                                               for m in peer_c.messages("overrides")), 6.0)),
                   "MUST", "03-transport#gossip-fan-out")
-        peer_b.send(codec.overrides_update({
-            "rev": 1, "updatedBy": ID_B,
-            "duties": {"review": {"strategy": "weakest-first", "tokenAware": True, "spread": []}}}))
+        peer_b.send(codec.overrides_update(peer_b.signed_override({
+            "rev": 1,
+            "duties": {"review": {"strategy": "weakest-first", "tokenAware": True, "spread": []}}})))
         time.sleep(2.0)
         rep.check("a lower-rev override is ignored",
                   _assignments(scn.candidate.snapshot()).get("review") == (ID_B,), "MUST",
@@ -1138,6 +1153,221 @@ def case_j_api_key_ctl(rep: Reporter, ctx: Context) -> None:
                   "11-trust-and-balancing#the-api-key")
 
 
+# MARK: - K. Authenticated gossip (ch 11 — self-signed adverts + overrides)
+#
+# Every NodeInfo advertisement and every non-default placement override is now
+# self-signed by its originator. A relay may forward a payload but cannot forge or
+# tamper with it: a receiver DROPS a keyed advert whose `sig` is missing, stale
+# (a field changed after signing), or made by a key other than the advertised
+# `pubkey`; it PINS id→key so a third party cannot hijack another node's advert;
+# and it requires a valid `sig` for a non-default override from a known editor.
+# These cases play the adversary (a linked, verified probe relaying poisoned
+# gossip) and assert the candidate rejects the forgeries while still adopting the
+# authentic ones — with a correctly-signed third-party advert as the positive
+# control, so a "drop" can never be mistaken for "gossip relay unsupported".
+
+
+def _peer_ids(snap: dict | None) -> set[str]:
+    return {p.get("id") for p in (snap or {}).get("peers", [])}
+
+
+def _signed_advert(key: "ProbeKey | None", node_id: str, *, name: str = "adv",
+                   platform: str = "macos", tier: int = 1, tokens: str = "ok",
+                   tcp_port: int = 59999, epoch: float = 1000.0, seq: int = 1,
+                   sign: bool = True, tamper: dict | None = None,
+                   sign_with: "ProbeKey | None" = None) -> dict:
+    """Build a raw `node` advert dict for an arbitrary identity, self-signed over
+    its canonical bytes exactly as an originator would. ``sign=False`` yields a
+    keyed-but-unsigned advert; ``sign_with`` signs with a DIFFERENT key than the
+    advertised ``pubkey`` (a key-mismatch forgery); ``tamper`` mutates fields
+    AFTER signing so the stored ``sig`` is stale."""
+    info = NodeInfo(id=node_id, name=name, platform=platform, tier=tier,
+                    tokens=tokens, tcp_port=tcp_port, epoch=epoch, seq=seq,
+                    pubkey=key.public_b64 if key else "")
+    d = info.to_dict()
+    if key is not None and sign:
+        signer = sign_with or key
+        d["sig"] = signer.sign(codec.advert_signing_bytes(d))
+    if tamper:
+        d.update(tamper)  # change fields after signing → sig no longer covers them
+    return d
+
+
+def _linked_relay(rep: Reporter, scn, timeout: float = 10.0):
+    """Wait for the (single) probe relay to link + be verified; return it or None
+    after recording a skip."""
+    peer = scn.mesh.peers[0]
+    if not wait_until(lambda: peer.linked, timeout):
+        rep.skip_case("relay peer never linked")
+        return None
+    return peer
+
+
+def case_k_unsigned_keyed_dropped(rep: Reporter, ctx: Context) -> None:
+    rep.begin_case("K1", "A keyed advert relayed with NO sig is dropped; a signed one is learned (11)")
+    scn = Scenario(ctx.node_cmd, ctx.model, candidate_id=ID_A, platform="linux", tier=4,
+                   loopback=ctx.loopback)
+    scn.add_peer(id=ID_B, name="relay", platform="macos", tier=1, trust_peer=True)
+    with scn:
+        if not _need_port(rep, scn):
+            return
+        relay = _linked_relay(rep, scn)
+        if relay is None:
+            return
+        time.sleep(1.0)
+        good_id, bad_id = "d" * 32, "e" * 32
+        # Positive control: a correctly-signed advert for a fresh id, relayed via
+        # gossip, MUST be learned (proves the relay-learn path works at all).
+        relay.send(codec.node_update(NodeInfo.from_dict(
+            _signed_advert(ProbeKey(), good_id, name="ok"))))
+        # The adversarial case: a keyed advert (carries a pubkey) with NO sig.
+        relay.send({"t": "node", "node": _signed_advert(ProbeKey(), bad_id,
+                                                         name="nosig", sign=False)})
+        learned = wait_until(lambda: good_id in _peer_ids(scn.candidate.snapshot()), 6.0)
+        rep.check("a correctly self-signed third-party advert is learned via relay",
+                  bool(learned), "MUST", "11-trust-and-balancing#conformance",
+                  "positive control: the gossip relay-learn path must work so a drop "
+                  "below is attributable to the bad signature, not missing relay support")
+        time.sleep(1.5)
+        rep.check("a keyed advert with a MISSING sig is dropped (never learned)",
+                  bad_id not in _peer_ids(scn.candidate.snapshot()), "MUST",
+                  "11-trust-and-balancing#conformance",
+                  f"peers={sorted(i[:6] for i in _peer_ids(scn.candidate.snapshot()))}")
+
+
+def case_k_tampered_dropped(rep: Reporter, ctx: Context) -> None:
+    rep.begin_case("K2", "A keyed advert tampered after signing (stale sig) is dropped (11)")
+    scn = Scenario(ctx.node_cmd, ctx.model, candidate_id=ID_A, platform="linux", tier=4,
+                   loopback=ctx.loopback)
+    scn.add_peer(id=ID_B, name="relay", platform="macos", tier=1, trust_peer=True)
+    with scn:
+        if not _need_port(rep, scn):
+            return
+        relay = _linked_relay(rep, scn)
+        if relay is None:
+            return
+        time.sleep(1.0)
+        tamp_id = "1" * 32
+        # Signed correctly, then a field (name) is changed → the sig is now stale.
+        relay.send({"t": "node", "node": _signed_advert(
+            ProbeKey(), tamp_id, name="orig", tamper={"name": "TAMPERED"})})
+        time.sleep(2.0)
+        rep.check("a keyed advert whose signed bytes were tampered is dropped",
+                  tamp_id not in _peer_ids(scn.candidate.snapshot()), "MUST",
+                  "11-trust-and-balancing#conformance",
+                  "changing any covered field after signing must invalidate the advert")
+
+
+def case_k_wrong_key_dropped(rep: Reporter, ctx: Context) -> None:
+    rep.begin_case("K3", "An advert signed by a key other than its pubkey is dropped (11)")
+    scn = Scenario(ctx.node_cmd, ctx.model, candidate_id=ID_A, platform="linux", tier=4,
+                   loopback=ctx.loopback)
+    scn.add_peer(id=ID_B, name="relay", platform="macos", tier=1, trust_peer=True)
+    with scn:
+        if not _need_port(rep, scn):
+            return
+        relay = _linked_relay(rep, scn)
+        if relay is None:
+            return
+        time.sleep(1.0)
+        wk_id = "2" * 32
+        advertised, other = ProbeKey(), ProbeKey()
+        # pubkey = `advertised`, but the sig is produced by `other` → verifies
+        # against neither the advertised key nor anything the candidate trusts.
+        relay.send({"t": "node", "node": _signed_advert(
+            advertised, wk_id, name="wrongkey", sign_with=other)})
+        time.sleep(2.0)
+        rep.check("an advert whose sig doesn't match its own pubkey is dropped",
+                  wk_id not in _peer_ids(scn.candidate.snapshot()), "MUST",
+                  "11-trust-and-balancing#conformance",
+                  "the sig MUST verify against the advert's advertised pubkey, not any key")
+
+
+def case_k_advert_hijack_blocked(rep: Reporter, ctx: Context) -> None:
+    rep.begin_case("K4", "A third node cannot hijack another peer's advertisement (11 id→key pin)")
+    scn = Scenario(ctx.node_cmd, ctx.model, candidate_id=ID_A, platform="linux", tier=4,
+                   loopback=ctx.loopback)
+    # P is the victim (linked, real key, its advert pinned); Q is the attacker that
+    # relays a spoofed `node` for P's id.
+    scn.add_peer(id=ID_B, name="victim-P", platform="macos", tier=1, tokens="ok", trust_peer=True)
+    scn.add_peer(id=ID_C, name="attacker-Q", platform="macos", tier=1, trust_peer=True)
+    with scn:
+        if not _need_port(rep, scn):
+            return
+        peer_p, peer_q = scn.mesh.peers[0], scn.mesh.peers[1]
+        if not wait_until(lambda: peer_p.linked and peer_q.linked, 12.0):
+            rep.skip_case("fleet never fully linked")
+            return
+        verified = wait_until(
+            lambda: _peer_snap(scn.candidate.snapshot(), ID_B).get("verified"), 8.0)
+        if not verified:
+            rep.skip_case("candidate never verified the victim peer — not trust-capable")
+            return
+        real = _peer_snap(scn.candidate.snapshot(), ID_B)
+        real_fp, real_pub, real_name = real.get("fingerprint"), real.get("pubkey"), real.get("name")
+        # Attacker Q relays a spoofed advert for P's id: a DIFFERENT (forged) key,
+        # inflated seq (would outrank P's honest gossip), self-signed by the forged
+        # key so its OWN sig verifies — but the key differs from P's pinned one.
+        forged = ProbeKey()
+        spoof = _signed_advert(forged, ID_B, name="HIJACKED", tokens="out",
+                               tcp_port=peer_p.tcp_port, epoch=peer_p.info.epoch,
+                               seq=peer_p.info.seq + 500)
+        peer_q.send({"t": "node", "node": spoof})
+        time.sleep(2.5)
+        after = _peer_snap(scn.candidate.snapshot(), ID_B)
+        rep.check("the pinned peer keeps its proven fingerprint (id→key pin holds)",
+                  after.get("fingerprint") == real_fp, "MUST",
+                  "11-trust-and-balancing#conformance",
+                  f"fp before={real_fp[:16] if real_fp else None} after="
+                  f"{(after.get('fingerprint') or '')[:16]}")
+        rep.check("the spoofed advert does NOT rewrite the peer's key or identity",
+                  after.get("pubkey") == real_pub and after.get("name") == real_name
+                  and after.get("name") != "HIJACKED", "MUST",
+                  "11-trust-and-balancing#conformance",
+                  f"name after={after.get('name')} pubkey-changed={after.get('pubkey') != real_pub}")
+
+
+def case_k_override_authentic(rep: Reporter, ctx: Context) -> None:
+    rep.begin_case("K5", "A signed override from a known editor is adopted; forged/tampered is not (11)")
+    with _std_fleet(ctx) as scn:
+        if not _need_port(rep, scn):
+            return
+        if _wait_snapshot(scn, lambda s: len(_up_peer_ids(s)) >= 2, 12.0) is None:
+            rep.skip_case("fleet never fully linked")
+            return
+        peer_b, peer_c = scn.mesh.peers[0], scn.mesh.peers[1]
+        if peer_b.key is None or peer_c.key is None:
+            rep.skip_case("probes are keyless (no cryptography) — cannot sign overrides")
+            return
+        duties = {"review": {"strategy": "strongest-first", "tokenAware": True, "spread": []}}
+        # TAMPERED: sign at rev 1, then bump rev to 5 after signing → stale sig.
+        tampered = {"rev": 1, "updatedBy": ID_B, "duties": duties}
+        tampered["sig"] = peer_b.key.sign(codec.overrides_signing_bytes(tampered))
+        tampered["rev"] = 5
+        peer_b.send(codec.overrides_update(tampered))
+        time.sleep(2.0)
+        rep.check("a tampered override (rev changed after signing) is rejected",
+                  _assignments(scn.candidate.snapshot()).get("review") != (ID_B,), "MUST",
+                  "11-trust-and-balancing#conformance",
+                  f"review={_assignments(scn.candidate.snapshot()).get('review')} (must not be [B])")
+        # FORGED: updatedBy claims B, but the sig is made by C (the wrong editor).
+        forged = {"rev": 6, "updatedBy": ID_B, "duties": duties}
+        forged["sig"] = peer_c.key.sign(codec.overrides_signing_bytes(forged))
+        peer_b.send(codec.overrides_update(forged))
+        time.sleep(2.0)
+        rep.check("an override signed by a node other than its updatedBy editor is rejected",
+                  _assignments(scn.candidate.snapshot()).get("review") != (ID_B,), "MUST",
+                  "11-trust-and-balancing#conformance",
+                  f"review={_assignments(scn.candidate.snapshot()).get('review')} (must not be [B])")
+        # AUTHENTIC: a valid signature by the known editor B → adopted.
+        peer_b.send(codec.overrides_update(peer_b.signed_override({
+            "rev": 7, "duties": duties})))
+        adopted = _wait_snapshot(scn, lambda s: _assignments(s).get("review") == (ID_B,), 6.0)
+        rep.check("a validly-signed override from the known editor IS adopted",
+                  adopted is not None, "MUST", "11-trust-and-balancing#conformance",
+                  f"review={_assignments(scn.candidate.snapshot()).get('review')} (expected [B])")
+
+
 # MARK: - registry
 
 
@@ -1155,6 +1385,8 @@ SUITES = {
           case_i_requester_from_link, case_i_declined_failover, case_i_surplus_first,
           case_i_omit_when_empty],
     "J": [case_j_server_no_dispatch, case_j_api_key_dispatch, case_j_api_key_ctl],
+    "K": [case_k_unsigned_keyed_dropped, case_k_tampered_dropped, case_k_wrong_key_dropped,
+          case_k_advert_hijack_blocked, case_k_override_authentic],
 }
 
 CATEGORY_TITLES = {
@@ -1168,4 +1400,5 @@ CATEGORY_TITLES = {
     "H": "Overrides last-writer-wins (V3)",
     "I": "Trust & load balancing (ch 11)",
     "J": "Server role & API key (ch 11)",
+    "K": "Authenticated gossip (ch 11)",
 }

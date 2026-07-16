@@ -128,7 +128,7 @@ def _permutation_invariance(rep: Reporter, model) -> None:
 
 
 def _trust_codec(rep: Reporter) -> None:
-    rep.begin_case("S6", "Trust/stats codec: omit-when-empty + domain-separated auth (11)")
+    rep.begin_case("S6", "Trust/stats codec: omit-when-empty + domain-separated auth + signed gossip (11)")
     # pubkey/stats are omitted from the wire when empty (byte-compat with core v1).
     plain = NodeInfo(id="a" * 32, name="n", platform="linux", tier=4)
     d = plain.to_dict()
@@ -162,6 +162,29 @@ def _trust_codec(rep: Reporter) -> None:
     rep.check("auth builder shape {t:auth, sig}",
               codec.auth("Zg==") == {"t": "auth", "sig": "Zg=="}, "MUST",
               "04-messages#auth")
+    # Authenticated gossip (11): the two signing-byte constructions are the
+    # domain tag || canonical JSON (sorted keys, compact, `sig` stripped).
+    d = {"id": "a" * 32, "pubkey": "AAAA", "tier": 4, "sig": "STALE"}
+    rep.check("advert_signing_bytes = tag || canonical(dict w/o sig)",
+              codec.advert_signing_bytes(d) ==
+              b'szpontnet-nodeinfo-v1:{"id":"' + b"a" * 32 +
+              b'","pubkey":"AAAA","tier":4}', "MUST",
+              "11-trust-and-balancing#conformance")
+    ov = {"rev": 2, "updatedBy": "b" * 32, "duties": {}, "sig": "X"}
+    rep.check("overrides_signing_bytes = tag || canonical(dict w/o sig)",
+              codec.overrides_signing_bytes(ov) ==
+              b'szpontnet-overrides-v1:{"duties":{},"rev":2,"updatedBy":"' +
+              b"b" * 32 + b'"}', "MUST", "11-trust-and-balancing#conformance")
+    rep.check("canonical form is independent of the sig field (strips it)",
+              codec._canonical(d) == codec._canonical({k: v for k, v in d.items()
+                                                       if k != "sig"}), "MUST",
+              "11-trust-and-balancing#conformance")
+    # A populated advert's sig round-trips (dataclass field + omit-when-empty).
+    signed = NodeInfo(id="a" * 32, pubkey="AAAA", sig="c2ln")
+    rep.check("advert sig round-trips and is omitted when empty",
+              NodeInfo.from_dict(signed.to_dict()) == signed
+              and "sig" not in NodeInfo(id="a" * 32).to_dict(), "MUST",
+              "11-trust-and-balancing#conformance")
 
 
 def _surplus_first_oracle(rep: Reporter, model) -> None:
