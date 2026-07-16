@@ -76,6 +76,26 @@ def secret() -> str:
     return os.environ.get("ARGENT_MESH_SECRET", "")
 
 
+def server_mode() -> bool:
+    """ARGENT_MESH_SERVER=1 makes this node a dedicated **server**: it accepts and
+    runs requests but NEVER originates a dispatch to peers. A request it is asked
+    to route (via a control session or the CLI) runs on **itself** instead of
+    being fanned out. Combined with :func:`api_key` this is the spec's
+    accept-only, optionally API-key-authenticated server role — a beefy shared
+    box that takes work but never pushes work onto anyone else."""
+    return os.environ.get("ARGENT_MESH_SERVER") == "1"
+
+
+def api_key() -> str:
+    """Optional per-node API key (ARGENT_MESH_API_KEY). When set, this node
+    requires a matching ``apiKey`` field on inbound control sessions and inbound
+    dispatch requests, refusing any that lack it. It is **independent of** the
+    mesh-wide join :func:`secret`: the secret fences who may *join* the mesh; the
+    API key authenticates who may submit *work* to this (typically server) node,
+    without granting mesh membership or device trust. Empty = no API-key gate."""
+    return os.environ.get("ARGENT_MESH_API_KEY", "")
+
+
 def accounts() -> dict:
     """The subscription-plan + accounting knobs (plan weights, capacity, quota
     window, usage time-constant) behind per-node load balancing."""

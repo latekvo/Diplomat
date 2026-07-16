@@ -36,11 +36,20 @@ def state_path() -> Path:
     return identity.mesh_dir() / "state.json"
 
 
-def write_state(snapshot: dict) -> None:
-    """Atomic write (tmp + rename); best-effort, never raises into the node."""
+def stamp(snapshot: dict) -> dict:
+    """Add the envelope fields every published snapshot carries — ``updatedAt``
+    (ISO-8601 write time), ``pid`` (liveness), and ``v`` (version). Applied both
+    when writing ``state.json`` and when a node answers a control-session
+    ``status`` live, so the two channels are the same object (08-state)."""
     snapshot["updatedAt"] = datetime.now(timezone.utc).isoformat()
     snapshot["pid"] = os.getpid()
     snapshot["v"] = PROTOCOL_VERSION
+    return snapshot
+
+
+def write_state(snapshot: dict) -> None:
+    """Atomic write (tmp + rename); best-effort, never raises into the node."""
+    stamp(snapshot)
     path = state_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)

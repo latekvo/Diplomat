@@ -91,7 +91,8 @@ class Fleet:
         self.dirs: dict[str, Path] = {}
 
     def start(self, node_id: str, name: str, platform: str, tier: int,
-              tokens: str = "ok", secret: str = "") -> None:
+              tokens: str = "ok", secret: str = "", server: bool = False,
+              api_key: str = "") -> None:
         d = self.root / node_id
         d.mkdir(parents=True, exist_ok=True)
         (d / "node.json").write_text(json.dumps({
@@ -105,6 +106,11 @@ class Fleet:
         env["ARGENT_MESH_PLATFORM"] = platform
         env["ARGENT_MESH_SPAWN"] = f"cp {{prompt_file}} {self.root}/spawned/{name}.txt"
         env["ARGENT_MESH_SECRET"] = secret
+        # A dedicated server never dispatches to peers; an API key (when set) gates
+        # inbound control + dispatch. Both off by default so ordinary nodes are
+        # unaffected.
+        env["ARGENT_MESH_SERVER"] = "1" if server else ""
+        env["ARGENT_MESH_API_KEY"] = api_key
         (d / "secret").write_text(secret)  # remembered for this node's CLI calls
         # Each fake node logs to the fleet dir, and must not scribble on the
         # real ~/.argent activity feed.
@@ -525,3 +531,100 @@ def test_auto_token_state_reflects_real_usage(fleet):
     assert me["tokensAuto"] is True        # derived, not pinned
     assert me["tokens"] == "out"           # 20M > 10M ceiling
     assert me["tokensPct"] == 0.0
+
+
+def test_server_mode_runs_locally_and_never_dispatches_to_peers(fleet):
+    """A dedicated server (ARGENT_MESH_SERVER=1) runs a request ITSELF and never
+    fans it out — even to a weaker worker that weakest-first would otherwise pick."""
+    fleet.start("aaaa", "server", "linux", tier=1, server=True)
+    fleet.start("bbbb", "worker", "linux", tier=4)  # weaker → the default pick
+    for nid in ("aaaa", "bbbb"):
+        _wait_for(lambda nid=nid: _links_up(fleet.state(nid), 1), what=f"{nid} link")
+    r = fleet.cli("aaaa", "--dispatch", "review", "--prompt", "srv")
+    assert r.returncode == 0, r.stdout + r.stderr
+    spawned = fleet.root / "spawned"
+    _wait_file(spawned / "server.txt", "srv")
+    time.sleep(0.5)
+    assert not (spawned / "worker.txt").exists(), "a server must not dispatch to peers"
+    # Explicitly aiming a server at a peer is refused, not fanned out.
+    r = fleet.cli("aaaa", "--dispatch", "review", "--prompt", "x", "--target", "bbbb")
+    assert r.returncode == 1 and "declined" in r.stdout, r.stdout + r.stderr
+
+
+def test_api_key_gates_requests_to_a_server(fleet):
+    """A server with an API key declines a request that doesn't present it and runs
+    one that does — the optional per-request server credential."""
+    fleet.start("aaaa", "client", "linux", tier=4)
+    fleet.start("bbbb", "server", "macos", tier=1, server=True, api_key="k3y")
+    for nid in ("aaaa", "bbbb"):
+        _wait_for(lambda nid=nid: _links_up(fleet.state(nid), 1), what=f"{nid} link")
+    spawned = fleet.root / "spawned"
+    # No key → declined, nothing runs on the server.
+    r = fleet.cli("aaaa", "--dispatch", "review", "--prompt", "nokey", "--target", "bbbb")
+    assert r.returncode == 1 and "declined" in r.stdout, r.stdout + r.stderr
+    time.sleep(0.5)
+    assert not (spawned / "server.txt").exists()
+    # Correct key → accepted and run.
+    r = fleet.cli("aaaa", "--dispatch", "review", "--prompt", "withkey",
+                  "--target", "bbbb", "--api-key", "k3y")
+    assert r.returncode == 0, r.stdout + r.stderr
+    _wait_file(spawned / "server.txt", "withkey")
+
+
+def test_foreign_device_cannot_mutate_our_attrs_via_set_attr(fleet):
+    """A set-attr from a FOREIGN device must be ignored — otherwise a stranger
+    could flip our tokens/tier/duties and reshape placement mesh-wide. Trust binds
+    to a proven key against a local allowlist, exactly like dispatch admission."""
+    fleet.start("aaaa", "alice", "linux", tier=4)
+    fleet.start("bbbb", "bob", "macos", tier=1)
+    for nid in ("aaaa", "bbbb"):
+        _wait_for(lambda nid=nid: _links_up(fleet.state(nid), 1), what=f"{nid} link")
+
+    # Bob verifies Alice's device on the link, then turns his boundary ON trusting
+    # only himself — so Alice is foreign.
+    def alice_verified():
+        return next((p for p in fleet.state("bbbb").get("peers", [])
+                     if p.get("id") == "aaaa" and p.get("verified")), None)
+    _wait_for(alice_verified, what="Bob to verify Alice's key")
+    bob_fp = fleet.state("bbbb")["self"]["fingerprint"]
+    assert fleet.cli("bbbb", "--trust", bob_fp, "--label", "self").returncode == 0
+
+    # Alice (foreign) forwards a set-attr to flip Bob to tokens=out. Bob ignores it.
+    assert fleet.cli("aaaa", "--set", "tokens=out", "--node", "bbbb").returncode == 0
+    time.sleep(1.0)
+    assert fleet.state("bbbb")["self"]["tokens"] == "ok", \
+        "a foreign device must not be able to mutate our attributes"
+
+
+def test_spoofed_higher_epoch_beacon_does_not_evict_a_live_link(fleet):
+    """An UNAUTHENTICATED beacon carrying a linked peer's id and a huge epoch must
+    NOT tear down the healthy, verified link (a spoofed-restart hijack/DoS). The
+    restart hint is only honored once the link has actually gone quiet."""
+    import socket
+
+    fleet.start("aaaa", "a", "linux", tier=4)
+    fleet.start("bbbb", "b", "macos", tier=1)
+    for nid in ("aaaa", "bbbb"):
+        _wait_for(lambda nid=nid: _links_up(fleet.state(nid), 1), what=f"{nid} link")
+
+    proto = _proto_env()
+    group = "239.83.77.7"
+    mport = int(proto["ARGENT_MESH_MCAST_PORT"])
+    tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    tx.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, 1)
+    tx.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton("127.0.0.1"))
+    payload = json.dumps({"t": "beacon", "v": 1, "id": "bbbb", "name": "evil",
+                          "platform": "macos", "tcpPort": 59999, "epoch": 9.9e17}).encode()
+    try:
+        for _ in range(12):  # keep beaconing across several link-liveness windows
+            tx.sendto(payload, (group, mport))
+            time.sleep(0.25)
+    finally:
+        tx.close()
+
+    # The real link survived, and the victim never treated it as a restart.
+    assert _links_up(fleet.state("aaaa"), 1)
+    bob = next(p for p in fleet.state("aaaa")["peers"] if p["id"] == "bbbb")
+    assert bob["link"] == "up"
+    feed = (fleet.dirs["aaaa"] / ".argent" / "pr-monitor" / "audit.jsonl").read_text()
+    assert "restarted" not in feed, "spoofed epoch beacon evicted a live link"

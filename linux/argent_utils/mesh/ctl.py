@@ -35,7 +35,8 @@ def request(msg: dict, timeout: float = 10.0) -> dict:
         with socket.create_connection((host, port), timeout=timeout) as sock:
             sock.settimeout(timeout)
             f = sock.makefile("rwb")
-            f.write(protocol.encode(protocol.ctl_hello(config.secret())))
+            f.write(protocol.encode(
+                protocol.ctl_hello(config.secret(), config.api_key())))
             f.write(protocol.encode(msg))
             f.flush()
             line = f.readline(protocol.MAX_LINE_BYTES)
@@ -66,13 +67,16 @@ def set_overrides(duty: str, placement: dict, timeout: float = 5.0) -> None:
 
 
 def dispatch(duty: str, prompt: str, target: str | None = None,
-             timeout: float = 60.0) -> list[dict]:
+             api_key: str = "", timeout: float = 60.0) -> list[dict]:
     """Route a SzpontRequest through the mesh; returns the per-slot outcomes.
     Generous timeout: the node may walk several failover candidates. ``target``
-    names one node directly (the dispatcher's unilateral pick, no failover)."""
+    names one node directly (the dispatcher's unilateral pick, no failover).
+    ``api_key`` is the credential forwarded to an API-key-gated (server) target."""
     msg = {"t": "dispatch", "duty": duty, "prompt": prompt}
     if target:
         msg["target"] = target
+    if api_key:
+        msg["apiKey"] = api_key
     reply = request(msg, timeout=timeout)
     return list(reply.get("results", []))
 

@@ -52,6 +52,19 @@ _TOKEN_REFRESH_SECS = 30.0
 # flood of spoofed ids from ballooning the peers table + snapshot, not real use.
 _MAX_PEERS = 256
 
+# Domain-separation prefix for the trust proof-of-possession signature. The peer
+# signs this tag + the challenge nonce, never the bare nonce — so a captured
+# signature is meaningless outside SzpontNet's auth exchange and the device key
+# can't be coaxed into acting as a general signing oracle over attacker-chosen
+# bytes. The exact byte construction is normative (see docs/szpontnet/11).
+_AUTH_CONTEXT = b"szpontnet-auth-v1:"
+
+
+def _auth_challenge(nonce: str) -> bytes:
+    """The exact bytes signed/verified for a proof-of-possession `auth`:
+    the domain tag followed by the UTF-8 challenge nonce."""
+    return _AUTH_CONTEXT + nonce.encode()
+
 
 def _own_addresses() -> set[str]:
     """This machine's own IP addresses (loopback + LAN), so a node can tell its
@@ -135,7 +148,9 @@ class MeshNode:
         self._udp_recv: socket.socket | None = None
         self._stopping = asyncio.Event()
         # In-flight remote dispatches awaiting a job-status answer, by job id.
-        self._job_futures: dict[str, asyncio.Future] = {}
+        # Each entry is (future, target_node_id) so a job-status is only honored
+        # from the peer we actually dispatched to (not any other linked peer).
+        self._job_futures: dict[str, tuple[asyncio.Future, str]] = {}
         # Peers we're currently dialing — beacons repeat faster than a handshake
         # completes, and the peers map only learns the link at hello time.
         self._dialing: set[str] = set()
@@ -363,16 +378,27 @@ class MeshNode:
         if not isinstance(tcp_port, int) or tcp_port <= 0:
             return
         peer = self.peers.get(peer_id)
-        if peer is not None:
-            peer.addr = host
-            if peer.linked:
-                # A higher epoch in the beacon means the peer restarted behind
-                # our back — drop the dead link so redial happens below.
-                epoch = float(msg.get("epoch", 0.0))
-                if epoch > peer.info.epoch:
-                    self._drop_peer(peer_id, reason="restarted")
-                else:
-                    return
+        if peer is not None and peer.linked:
+            # A higher epoch means the peer *may* have restarted behind our back.
+            # But a beacon is UNAUTHENTICATED — anything on the LAN can forge one
+            # carrying a peer's id, a bogus tcpPort, and a huge epoch. Honoring it
+            # against a HEALTHY link would let an attacker evict a live,
+            # cryptographically-verified link and redirect our redial to the
+            # attacker's advertised address (a link-hijack / persistent DoS).
+            # A genuine restart makes the old link go quiet within peerStaleSecs
+            # (the dead process's socket closes, or heartbeats simply stop), so we
+            # only act on the restart hint once the link is no longer fresh — and
+            # we do NOT let a beacon rewrite a live peer's address at all.
+            epoch = float(msg.get("epoch", 0.0))
+            quiet = (time.monotonic() - peer.last_seen) > self.proto["peerStaleSecs"]
+            if epoch > peer.info.epoch and quiet:
+                peer.addr = host
+                self._drop_peer(peer_id, reason="restarted")
+                # fall through to redial the new incarnation
+            else:
+                return
+        elif peer is not None:
+            peer.addr = host  # known but unlinked: refresh for the (re)dial below
         elif len(self.peers) >= _MAX_PEERS:
             # Backstop against a beacon flood (spoofed random ids): once the
             # table is full, ignore ids we've never linked rather than dialing
@@ -443,6 +469,12 @@ class MeshNode:
             writer.close()
             return
         if first.get("t") == "ctl":
+            # A server configured with an API key requires it on the opening ctl,
+            # on top of the join secret: the secret admits mesh members, the key
+            # authenticates who may drive/submit work to this node.
+            if config.api_key() and str(first.get("apiKey", "")) != config.api_key():
+                writer.close()
+                return
             await self._run_ctl(reader, writer)
             return
         if first.get("t") == "hello":
@@ -537,20 +569,49 @@ class MeshNode:
             peer = self._peer_by_writer(writer)
             return peer.info.id if peer else None
         if t == "set-attr":
-            self._on_set_attr(msg)
+            # A set-attr MUTATES advertised identity/attrs (tier/tokens/duties/
+            # plan/quota) — reshaping placement and load balancing mesh-wide, and
+            # it is even FORWARDED to a named peer. That is strictly more powerful
+            # than a dispatch, which is already trust-gated. So classify the sender
+            # from its VERIFIED link (never the message) and act only for a
+            # personal device; a foreign one is ignored. A control-session set-attr
+            # (the local operator, already secret-fenced) calls _on_set_attr
+            # directly and is unaffected. Empty allowlist = full trust, so an
+            # unconfigured mesh behaves exactly as before.
+            if self._peer_trust(self._peer_by_writer(writer)) == "personal":
+                self._on_set_attr(msg)
+            else:
+                activity.log("mesh", "warn",
+                             "Mesh: ignored set-attr from a foreign device")
             return None
         if t == "dispatch":
             job = Job.from_dict(msg.get("job") or {})
-            if job:
-                self._take_job(job, writer)
+            if job is None:
+                return None
+            if not self._api_key_ok(msg):
+                # A server with an API key configured refuses a request that
+                # doesn't present it — reported as a decline so the dispatcher
+                # fails the slot over exactly like any other refusal.
+                with contextlib.suppress(ConnectionError, OSError):
+                    writer.write(protocol.encode(protocol.job_status(
+                        job.id, "declined", "invalid or missing API key",
+                        self.local.id)))
+                return None
+            self._take_job(job, writer)
             return None
         if t == "job-status":
-            self._resolve_job_future(msg)
+            self._resolve_job_future(msg, writer)
             return None
         return None
 
     def _peer_by_writer(self, writer: asyncio.StreamWriter) -> Peer | None:
         return next((p for p in self.peers.values() if p.writer is writer), None)
+
+    def _api_key_ok(self, msg: dict) -> bool:
+        """True unless this node has an API key configured and the message fails
+        to present a matching ``apiKey`` (the server request-authentication gate)."""
+        key = config.api_key()
+        return not key or str(msg.get("apiKey", "")) == key
 
     # MARK: - trust handshake (proof of possession)
 
@@ -560,7 +621,8 @@ class MeshNode:
         nonce = msg.get("nonce")
         if isinstance(nonce, str) and nonce and self.key is not None:
             with contextlib.suppress(ConnectionError, OSError):
-                writer.write(protocol.encode(protocol.auth(self.key.sign(nonce.encode()))))
+                writer.write(protocol.encode(
+                    protocol.auth(self.key.sign(_auth_challenge(nonce)))))
 
     def _verify_auth(self, msg: dict, writer: asyncio.StreamWriter) -> None:
         """The peer answered OUR challenge. If the signature checks out against the
@@ -572,7 +634,7 @@ class MeshNode:
         if peer is None or not my_nonce:
             return
         sig = str(msg.get("sig", ""))
-        if crypto.verify(peer.info.pubkey, my_nonce.encode(), sig):
+        if crypto.verify(peer.info.pubkey, _auth_challenge(my_nonce), sig):
             fp = crypto.fingerprint_of(peer.info.pubkey)
             if fp and peer.verified_fp != fp:
                 peer.verified_fp = fp
@@ -591,6 +653,13 @@ class MeshNode:
         self, info: NodeInfo, host: str, link_writer: asyncio.StreamWriter | None
     ) -> None:
         peer = self.peers.get(info.id)
+        if peer is None and len(self.peers) >= _MAX_PEERS:
+            # The peer-table bound applies to EVERY path that grows the table, not
+            # just the beacon path: a single linked peer relaying a flood of `node`
+            # gossip with spoofed ids (or an accepter opening many hellos) would
+            # otherwise balloon the table, snapshot, and gossip fan-out unbounded.
+            # Past the cap we refuse to learn ids we've never seen.
+            return
         fresh = peer is None or info.newer_than(peer.info)
         if peer is None:
             peer = Peer(info, host)
@@ -598,6 +667,16 @@ class MeshNode:
             activity.log("mesh", "mesh-peer-up",
                          f"Mesh: discovered {info.name} ({info.platform}, tier {info.tier})")
         if fresh:
+            # A verified fingerprint is bound to the exact pubkey the peer PROVED
+            # it holds. If a fresher advertisement carries a DIFFERENT pubkey, that
+            # proof no longer applies — drop the verification so the peer is treated
+            # as unverified (hence foreign under any allowlist) until it re-proves
+            # possession of the new key on a fresh link. Without this, a peer could
+            # prove key K (become personal), then gossip a NodeInfo advertising a
+            # key K' it doesn't hold while keeping its personal classification.
+            if (peer.verified_fp is not None
+                    and crypto.fingerprint_of(info.pubkey) != peer.verified_fp):
+                peer.verified_fp = None
             peer.info = info
         peer.addr = host or peer.addr
         peer.last_seen = time.monotonic()
@@ -653,13 +732,29 @@ class MeshNode:
             for pid, peer in list(self.peers.items()):
                 if peer.linked:
                     peer.writer.write(beat)
-                    with contextlib.suppress(ConnectionError, OSError):
-                        await peer.writer.drain()
+                    # Bound the drain: a peer that stops READING (a full/zero-window
+                    # TCP buffer, alive but wedged) would otherwise block this loop
+                    # and defer liveness detection for EVERY other peer. Cap the wait
+                    # at one interval; the timeout check below then reaps it anyway.
+                    with contextlib.suppress(ConnectionError, OSError,
+                                             asyncio.TimeoutError):
+                        await asyncio.wait_for(
+                            peer.writer.drain(),
+                            timeout=self.proto["heartbeatIntervalSecs"])
                     if now - peer.last_seen > timeout:
                         self._drop_peer(pid, reason="heartbeat timeout")
-                elif (peer.down_since is not None
-                      and now - peer.down_since > _DOWN_RETENTION_SECS):
-                    del self.peers[pid]  # long dead — drop from the snapshot too
+                elif self._reapable(peer, now):
+                    del self.peers[pid]  # long dead / stale phantom — drop it
+
+    def _reapable(self, peer: "Peer", now: float) -> bool:
+        """Whether an *unlinked* peer should be dropped from the snapshot: a peer
+        that went down past the retention window, OR a gossip-only phantom (learned
+        via multi-hop `node` relay, never linked, so ``down_since`` was never
+        stamped) whose last gossip is that old. Without the phantom case such a
+        peer would linger forever as a zombie if it stopped being gossiped.
+        (``now`` is monotonic, matching ``last_seen``/``down_since``.)"""
+        ref = peer.down_since if peer.down_since is not None else peer.last_seen
+        return now - ref > _DOWN_RETENTION_SECS
 
     # MARK: - gossip
 
@@ -741,7 +836,8 @@ class MeshNode:
     # MARK: - dispatch
 
     async def dispatch(self, duty_id: str, prompt: str,
-                       target: str | None = None) -> list[dict]:
+                       target: str | None = None,
+                       api_key: str | None = None) -> list[dict]:
         """Run a SzpontRequest under a duty's placement: one spawn per slot,
         failing over within each slot's candidate list. Returns one result dict
         per slot.
@@ -754,8 +850,21 @@ class MeshNode:
         (foreign, over quota, …) the decline is reported as-is. This is the
         "Alice may forward everything to Bob, and Bob may refuse" case.
         """
+        # The credential presented to an API-key-gated target: the per-request key
+        # (from a control client / CLI) when given, else this node's own env key.
+        req_key = api_key if api_key is not None else config.api_key()
         nodes = self._alive_nodes()
-        if target is not None:
+        if config.server_mode():
+            # A dedicated server never routes work to peers: a request it is asked
+            # to dispatch runs on ITSELF, or is refused if aimed explicitly
+            # elsewhere. This realizes the 'accepts requests, never dispatches'
+            # role — the server is a sink for work, never a source.
+            if target is not None and target != self.local.id:
+                return [{"slot": "server", "node": None, "nodeName": None,
+                         "status": "declined",
+                         "reason": "server node does not dispatch to peers"}]
+            slots = [("server", [self.local.id])]
+        elif target is not None:
             slots = [("target", [target])]
         else:
             slots = assign.slot_candidates(duty_id, nodes, self.overrides,
@@ -768,7 +877,7 @@ class MeshNode:
             for node_id in candidates:
                 if node_id in used:
                     continue
-                status, reason = await self._dispatch_to(node_id, duty_id, prompt)
+                status, reason = await self._dispatch_to(node_id, duty_id, prompt, req_key)
                 if status == "spawned":
                     used.add(node_id)
                     outcome = {"slot": slot_platform, "node": node_id,
@@ -787,7 +896,8 @@ class MeshNode:
         activity.log("mesh", action, f"Mesh dispatch {duty_id}: {detail}")
         return results
 
-    async def _dispatch_to(self, node_id: str, duty_id: str, prompt: str) -> tuple[str, str]:
+    async def _dispatch_to(self, node_id: str, duty_id: str, prompt: str,
+                           api_key: str = "") -> tuple[str, str]:
         job = Job(id=uuid.uuid4().hex, duty=duty_id, prompt=prompt,
                   requested_by=self.local.id, requested_at=time.time())
         if node_id == self.local.id:
@@ -796,9 +906,9 @@ class MeshNode:
         if peer is None or not peer.linked:
             return "failed", "no link"
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
-        self._job_futures[job.id] = fut
+        self._job_futures[job.id] = (fut, node_id)
         try:
-            peer.writer.write(protocol.encode(protocol.dispatch(job)))
+            peer.writer.write(protocol.encode(protocol.dispatch(job, api_key)))
             await peer.writer.drain()
             msg = await asyncio.wait_for(fut, timeout=self.proto["dispatchAckTimeoutSecs"])
             return str(msg.get("status", "failed")), str(msg.get("reason", ""))
@@ -807,10 +917,21 @@ class MeshNode:
         finally:
             self._job_futures.pop(job.id, None)
 
-    def _resolve_job_future(self, msg: dict) -> None:
-        fut = self._job_futures.get(str(msg.get("id", "")))
-        if fut is not None and not fut.done():
-            fut.set_result(msg)
+    def _resolve_job_future(self, msg: dict, writer: asyncio.StreamWriter) -> None:
+        entry = self._job_futures.get(str(msg.get("id", "")))
+        if entry is None:
+            return
+        fut, target_id = entry
+        if fut.done():
+            return
+        # Only the peer we dispatched this job to may report its outcome. Job ids
+        # are 128-bit random and not gossiped, so guessing is infeasible, but a
+        # peer that legitimately shares the link mustn't be able to resolve a
+        # dispatch aimed at someone else — verify the responder is the target.
+        peer = self._peer_by_writer(writer)
+        if peer is None or peer.info.id != target_id:
+            return
+        fut.set_result(msg)
 
     def _admit(self, job: Job, trust_level: str) -> tuple[bool, str]:
         """Refusal policy — the receiving node's own call, no consensus needed.
@@ -899,7 +1020,10 @@ class MeshNode:
     async def _ctl_command(self, msg: dict) -> dict:
         t = msg.get("t")
         if t == "status":
-            return {"t": "state", "state": self.snapshot()}
+            # Stamp the live snapshot with the same updatedAt/pid/v envelope the
+            # on-disk state.json carries, so the control reply is byte-identical to
+            # what a disk reader sees (08-state promises the two are one object).
+            return {"t": "state", "state": statefile.stamp(self.snapshot())}
         if t == "set-attr":
             self._on_set_attr(msg)
             return {"t": "ok"}
@@ -916,7 +1040,12 @@ class MeshNode:
                 return {"t": "error", "reason": f"unknown duty {duty!r}"}
             target = msg.get("target")
             target = str(target) if target else None
-            results = await self.dispatch(duty, str(msg.get("prompt", "")), target)
+            # A control client may present the target server's API key per request
+            # (forwarded on the outbound dispatch); absent, the node's own env key
+            # is used.
+            api_key = str(msg.get("apiKey", "")) or None
+            results = await self.dispatch(duty, str(msg.get("prompt", "")),
+                                          target, api_key)
             return {"t": "dispatch-result", "duty": duty, "results": results}
         if t == "trust":
             fp = str(msg.get("fingerprint", "")).strip()

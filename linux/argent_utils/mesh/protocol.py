@@ -232,10 +232,14 @@ def auth(sig_b64: str) -> dict:
     return {"t": "auth", "sig": sig_b64}
 
 
-def ctl_hello(secret: str = "") -> dict:
+def ctl_hello(secret: str = "", api_key: str = "") -> dict:
     msg: dict = {"t": "ctl"}
     if secret:
         msg["secret"] = secret
+    if api_key:
+        # Optional per-server credential: a node configured with an API key
+        # requires it to open a control session. Independent of the join secret.
+        msg["apiKey"] = api_key
     return msg
 
 
@@ -255,8 +259,13 @@ def set_attr(target_id: str, attrs: dict) -> dict:
     return {"t": "set-attr", "target": target_id, "attrs": attrs}
 
 
-def dispatch(job: Job) -> dict:
-    return {"t": "dispatch", "job": job.to_dict()}
+def dispatch(job: Job, api_key: str = "") -> dict:
+    msg = {"t": "dispatch", "job": job.to_dict()}
+    if api_key:
+        # A dispatcher presents the target server's API key (if any) so an
+        # API-key-gated server accepts the request. Omitted when unset.
+        msg["apiKey"] = api_key
+    return msg
 
 
 def job_status(job_id: str, status: str, reason: str = "", node_id: str = "") -> dict:

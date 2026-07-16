@@ -160,6 +160,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--prompt-file", help="read the --dispatch prompt from a file")
     ap.add_argument("--target", metavar="ID", help="dispatch to one node directly "
                     "(the dispatcher's own pick, no failover)")
+    ap.add_argument("--api-key", default="", metavar="KEY", dest="api_key",
+                    help="API key to present to an API-key-gated (server) target")
     ap.add_argument("--fingerprint", action="store_true",
                     help="print this device's trust-key fingerprint and exit")
     ap.add_argument("--trust", metavar="FP",
@@ -209,7 +211,7 @@ def main(argv: list[str] | None = None) -> int:
             if not prompt:
                 print("--dispatch needs --prompt or --prompt-file", file=sys.stderr)
                 return 2
-            results = ctl.dispatch(args.dispatch, prompt, args.target)
+            results = ctl.dispatch(args.dispatch, prompt, args.target, args.api_key)
             ok = all(r.get("status") == "spawned" for r in results)
             for r in results:
                 mark = "✓" if r.get("status") == "spawned" else "✗"

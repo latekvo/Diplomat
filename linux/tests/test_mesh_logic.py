@@ -497,6 +497,102 @@ def test_identity_explicit_tier_in_file_is_a_pin(tmp_path, monkeypatch):
     assert n.tier == 5 and not n.strength_auto  # explicit tier wins, auto off
 
 
+# MARK: - server mode + API key (config + wire)
+
+
+def test_server_mode_and_api_key_config(monkeypatch):
+    monkeypatch.delenv("ARGENT_MESH_SERVER", raising=False)
+    monkeypatch.delenv("ARGENT_MESH_API_KEY", raising=False)
+    assert config.server_mode() is False
+    assert config.api_key() == ""
+    monkeypatch.setenv("ARGENT_MESH_SERVER", "1")
+    monkeypatch.setenv("ARGENT_MESH_API_KEY", "sekret")
+    assert config.server_mode() is True
+    assert config.api_key() == "sekret"
+
+
+def test_dispatch_and_ctl_carry_api_key_only_when_set():
+    j = protocol.Job(id="j", duty="review", prompt="p", requested_by="a", requested_at=0.0)
+    assert "apiKey" not in protocol.dispatch(j)          # omitted when empty (v1 compat)
+    assert protocol.dispatch(j, "k")["apiKey"] == "k"
+    assert "apiKey" not in protocol.ctl_hello("")
+    assert protocol.ctl_hello("s", "k")["apiKey"] == "k"
+
+
+# MARK: - trust hardening (auth domain separation, verified-fp binding, bounds)
+
+
+def test_auth_signature_is_domain_separated(tmp_path, monkeypatch):
+    if not crypto.AVAILABLE:  # dependency-free run without `cryptography`
+        return
+    monkeypatch.setenv("ARGENT_MESH_DIR", str(tmp_path))
+    from argent_utils.mesh import node as node_mod
+
+    k = crypto.load_or_create()
+    nonce = "a1b2c3d4e5f60718"
+    assert node_mod._auth_challenge(nonce).startswith(b"szpontnet-auth-v1:")
+    good = k.sign(node_mod._auth_challenge(nonce))
+    assert crypto.verify(k.public_b64, node_mod._auth_challenge(nonce), good)
+    # A signature over the BARE nonce must NOT verify against the domain-tagged
+    # construction — this is what stops the device key being usable as a generic
+    # signing oracle over attacker-chosen bytes.
+    bare = k.sign(nonce.encode())
+    assert not crypto.verify(k.public_b64, node_mod._auth_challenge(nonce), bare)
+
+
+def _fresh_node(tmp_path, monkeypatch):
+    monkeypatch.setenv("ARGENT_MESH_DIR", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    from argent_utils.mesh.node import MeshNode
+    return MeshNode()
+
+
+def _peer_info(node_id: str, seq: int, pubkey: str = "") -> NodeInfo:
+    return NodeInfo(id=node_id, name="p", platform="linux", tier=3, tokens="ok",
+                    epoch=1.0, seq=seq, pubkey=pubkey)
+
+
+def test_verified_fp_cleared_when_advertised_pubkey_changes(tmp_path, monkeypatch):
+    node = _fresh_node(tmp_path, monkeypatch)
+    node._learn_node(_peer_info("peer1", 1, pubkey="QUJDRA=="), "1.2.3.4", None)
+    peer = node.peers["peer1"]
+    peer.verified_fp = crypto.fingerprint_of("QUJDRA==")  # pretend it proved this key
+
+    # A fresher advertisement with a DIFFERENT pubkey drops the verification: the
+    # proof no longer applies to the key now advertised.
+    node._learn_node(_peer_info("peer1", 2, pubkey="RUZHSA=="), "1.2.3.4", None)
+    assert node.peers["peer1"].verified_fp is None
+
+    # A same-pubkey fresher advertisement keeps the verification intact.
+    peer.verified_fp = crypto.fingerprint_of("RUZHSA==")
+    node._learn_node(_peer_info("peer1", 3, pubkey="RUZHSA=="), "1.2.3.4", None)
+    assert node.peers["peer1"].verified_fp == crypto.fingerprint_of("RUZHSA==")
+
+
+def test_peer_table_is_bounded_on_gossip(tmp_path, monkeypatch):
+    from argent_utils.mesh import node as node_mod
+    node = _fresh_node(tmp_path, monkeypatch)
+    for i in range(node_mod._MAX_PEERS + 25):  # a gossip flood of spoofed ids
+        node._learn_node(_peer_info(f"p{i:05d}", 1), "1.2.3.4", None)
+    assert len(node.peers) == node_mod._MAX_PEERS  # capped, not unbounded
+
+
+def test_reapable_covers_downed_and_gossip_only_phantoms(tmp_path, monkeypatch):
+    import time as _time
+    from argent_utils.mesh import node as node_mod
+    node = _fresh_node(tmp_path, monkeypatch)
+    node._learn_node(_peer_info("phantom", 1), "1.2.3.4", None)  # gossip-only, never linked
+    peer = node.peers["phantom"]
+    now = _time.monotonic()
+    assert not node._reapable(peer, now)  # fresh phantom stays
+    # A phantom whose last gossip is older than the retention window is reaped even
+    # though it never went through _drop_peer (down_since is None).
+    assert node._reapable(peer, now + node_mod._DOWN_RETENTION_SECS + 1)
+    peer.down_since = now  # a normally-downed peer uses down_since as the reference
+    assert not node._reapable(peer, now)
+    assert node._reapable(peer, now + node_mod._DOWN_RETENTION_SECS + 1)
+
+
 if __name__ == "__main__":  # dependency-free smoke run
     import inspect
     import tempfile
@@ -515,6 +611,9 @@ if __name__ == "__main__":  # dependency-free smoke run
                         class _MP:  # minimal monkeypatch stand-in
                             def setenv(self, k, v):
                                 os.environ[k] = v
+
+                            def delenv(self, k, raising=True):
+                                os.environ.pop(k, None)
                         kwargs = {}
                         if "tmp_path" in params:
                             from pathlib import Path
