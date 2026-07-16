@@ -80,7 +80,13 @@ An implementation that runs (rather than declines) a foreign request **MUST**:
    host; a foreign one MUST NOT.
 2. **Withhold host identity.** The confined runner MUST NOT be able to take any
    social or identity-bearing action or reach the operator's credentials/secrets.
-   In particular it MUST NOT inherit host credentials into its environment.
+   In particular it MUST NOT inherit host credentials into its environment **or via
+   the filesystem** — the sandbox MUST isolate the interior's environment *and* its
+   view of `HOME`/dotfiles (`~/.ssh`, `~/.netrc`, `~/.aws`, `~/.config/gh`, …). A
+   node MAY scrub obvious app-secret variables before launching the runner as a
+   backstop, but that is defence in depth, **not** the boundary: a container/VM that
+   starts the interior with a fresh env and filesystem is what actually enforces
+   this. Do not treat a scrubbed launcher environment as sufficient isolation.
 3. **Return, don't act.** The runner's only sanctioned output is the **result** it
    returns. Declared side effects confined to the executor's *own* resources
    (spawning a build, launching an emulator, allocating a device) are permitted;

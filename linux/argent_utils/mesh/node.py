@@ -366,6 +366,12 @@ class MeshNode:
         for t in list(self._dial_tasks):
             t.cancel()
         self._dial_tasks.clear()
+        # Confined-result watcher tasks live in their own set (created per foreign
+        # job); cancel them too or they outlive the node — waking to touch links we
+        # just closed and leaving "Task was destroyed but is pending" noise.
+        for t in list(self._result_tasks):
+            t.cancel()
+        self._result_tasks.clear()
         for p in self.peers.values():
             self._close_link(p)
         if self._server:
@@ -1638,7 +1644,7 @@ class MeshNode:
         task = asyncio.get_running_loop().create_task(
             self._await_confined_result(job, requester_id, result_path))
         self._result_tasks.add(task)
-        task.add_done_callback(self._result_tasks.discard)
+        task.add_done_callback(self._result_task_done)
         activity.log("mesh", "mesh-spawn",
                      f"Mesh: running {job.duty} CONFINED for foreign "
                      f"{self._node_name(requester_id)} (result routes back)")
@@ -1670,6 +1676,17 @@ class MeshNode:
         self._emit_result(job.id, requester_id, {
             "ok": False, "duty": job.duty, "output": "",
             "error": "confined execution timed out"})
+
+    def _result_task_done(self, task: asyncio.Task) -> None:
+        """Reap a finished watcher task, surfacing a crash instead of letting it
+        vanish into asyncio's default 'exception never retrieved' at GC time — a
+        silent watcher death would strand the foreign requester."""
+        self._result_tasks.discard(task)
+        if not task.cancelled():
+            exc = task.exception()
+            if exc is not None:
+                activity.log("mesh", "mesh-dispatch-failed",
+                             f"Mesh: confined result watcher crashed: {exc!r}")
 
     @staticmethod
     def _read_result_file(path) -> str:
@@ -1846,8 +1863,14 @@ class MeshNode:
         confined compute budget plus the delivery window to arrive, so its TTL spans
         both; an acted-on id only needs to outlive the executor's retry window."""
         now = time.monotonic()
+        # The awaited entry must outlive the executor's whole worst case: the full
+        # confined compute budget, then the retry-until-give-up delivery window —
+        # PLUS a margin, so a result delivered right at the executor's give-up edge
+        # isn't reaped the same tick and dropped as unsolicited (a zero-margin TTL
+        # races the last legitimate re-send).
         await_ttl = (float(self.proto["foreignJobTimeoutSecs"])
-                     + float(self.proto["foreignResultMaxSecs"]))
+                     + float(self.proto["foreignResultMaxSecs"])
+                     + float(self.proto["peerTimeoutSecs"]))
         acted_ttl = float(self.proto["foreignResultMaxSecs"])
         self._awaiting_result = {k: v for k, v in self._awaiting_result.items()
                                  if now - v[2] < await_ttl}

@@ -1262,6 +1262,28 @@ def test_foreign_result_dropped_from_wrong_link_or_when_forged(tmp_path, monkeyp
     assert not bw.of("job-ack") and not acted
 
 
+def test_stop_cancels_inflight_confined_watchers(tmp_path, monkeypatch):
+    """A confined job's result-watcher task lives in its own set; shutting the node
+    down must cancel it (not leak it past the node's life to touch closed links)."""
+    import asyncio as _aio
+
+    node = _fresh_node(tmp_path, monkeypatch)
+
+    async def scenario():
+        t = _aio.get_running_loop().create_task(_aio.sleep(3600))
+        node._result_tasks.add(t)
+        t.add_done_callback(node._result_task_done)
+        await node.stop()
+        try:
+            await t
+        except _aio.CancelledError:
+            pass
+        return t
+
+    t = _aio.run(scenario())
+    assert t.cancelled() and node._result_tasks == set()
+
+
 def test_oversized_result_is_truncated_to_fit_the_wire(tmp_path, monkeypatch):
     """A confined artifact larger than the wire line limit is truncated (not dropped
     by the receiver): the emitted job-result stays under MAX_LINE_BYTES, the executor

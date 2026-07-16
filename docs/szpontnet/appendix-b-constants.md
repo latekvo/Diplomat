@@ -72,7 +72,7 @@ override is `"auto"`); these constants set the heuristic ceiling it's measured a
 | id | notes |
 |----|-------|
 | `personal` | the peer's **verified** fingerprint is in my local allowlist; a received SzpontRequest runs directly. |
-| `foreign` | any other device - unlisted, or it proved no key; its requests are declined in v1. |
+| `foreign` | any other device - unlisted, or it proved no key; its requests are declined by default, or run [confined and response-only](13-foreign-execution.md) when a confinement runner is configured. |
 
 `trust.default` = `personal` - the classification when the local allowlist is
 **empty** (the trust boundary isn't configured), so a v1 mesh with no trusted

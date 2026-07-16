@@ -33,14 +33,24 @@ class JobSpawnError(RuntimeError):
     pass
 
 
-# Env-var name fragments that name a credential/secret. The **confined** child's
-# environment is scrubbed of every var whose (upper-cased) name contains one of
-# these, so the host's GitHub/cloud/mesh credentials never enter a foreign runner —
-# defence in depth behind the sandbox itself. The operator's own sandbox template
-# re-injects whatever it legitimately needs *inside* the jail.
+# Env-var name fragments that name an application-level credential/secret. The
+# **confined** child's environment is scrubbed of every var whose (upper-cased) name
+# contains one of these.
+#
+# This is DEFENCE IN DEPTH, NOT the credential boundary — the sandbox is
+# ([config.foreign_spawn], docs/szpontnet/13). It deliberately strips app secrets
+# (API tokens, passwords, the mesh secret/API key) that no sandbox *launcher* ever
+# needs, while INTENTIONALLY leaving infrastructure-access vars a launcher may
+# require — `DOCKER_HOST` (reach the daemon), `SSH_AUTH_SOCK` (an `ssh sandbox-host`
+# launcher), `KUBECONFIG`, `AWS_PROFILE` — because stripping them would break the
+# very sandbox meant to run the job, and a proper sandbox (a container/VM) does not
+# forward the launcher's env into its interior anyway. It also does NOT relocate
+# `HOME`, so host dotfiles (`~/.ssh`, `~/.netrc`, `~/.aws`, `~/.config/gh`) stay on
+# disk. Therefore the operator's runner MUST isolate the confined interior's
+# environment AND filesystem itself; do not treat a clean env here as sufficient.
 _CREDENTIAL_FRAGMENTS = (
     "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL", "API_KEY", "APIKEY",
-    "ACCESS_KEY", "PRIVATE_KEY", "SSH_KEY", "SESSION_TOKEN", "GH_", "GITHUB_",
+    "ACCESS_KEY", "PRIVATE_KEY", "SSH_KEY", "SESSION_TOKEN", "NETRC", "GH_", "GITHUB_",
 )
 
 # Prepended to a foreign prompt so the confined agent knows the rules of the road:
