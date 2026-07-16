@@ -405,21 +405,52 @@ def test_surplus_first_neutral_stats_fall_back_to_weakest_first():
 # MARK: machine-strength auto-detection (hardware.py)
 
 
+def test_cpu_class_buckets_apple_silicon_and_boost_clocks():
+    from argent_utils.mesh import hardware
+    # Apple Silicon tops the scale; Pro/Max/Ultra bins above the base part.
+    assert hardware.cpu_class("Apple M4 Pro", None) == 4
+    assert hardware.cpu_class("Apple M3 Max", None) == 4
+    assert hardware.cpu_class("Apple M2 Ultra", None) == 4
+    assert hardware.cpu_class("Apple M1", None) == 3
+    # Non-Apple parts bucket by boost clock; unreadable clocks score neutral.
+    assert hardware.cpu_class(None, 5.7) == 2
+    assert hardware.cpu_class(None, 4.4) == 1
+    assert hardware.cpu_class(None, 3.5) == 0
+    assert hardware.cpu_class(None, None) == 0
+
+
 def test_strength_score_ranks_stronger_boxes_higher():
     from argent_utils.mesh import hardware
     weak = hardware.strength_score(ram_gb=8, cores=4, dgpu=False)
-    strong = hardware.strength_score(ram_gb=64, cores=16, dgpu=True)
+    strong = hardware.strength_score(ram_gb=64, cores=16, dgpu=True,
+                                     cpu=hardware.cpu_class(None, 5.7))
     assert strong > weak
-    # A maxed box scores at the top of the 0..6 range; a tiny one at the bottom.
-    assert hardware.strength_score(128, 32, True) == 6
+    # A maxed box scores at the top of the 0..8 range; a tiny one at the bottom.
+    assert hardware.strength_score(128, 16, True, cpu=4) == 8
     assert hardware.strength_score(4, 2, False) == 0
+
+
+def test_strength_score_apple_silicon_outranks_big_ram_smt_laptop():
+    """Regression: an M-series Pro box (24 GB unified, 14 real cores, no dGPU)
+    must outrank a 64 GB SMT laptop with a dGPU — RAM gigabytes and logical
+    threads used to dominate and invert the ranking."""
+    from argent_utils.mesh import hardware
+    lo, hi, _ = config.tier_bounds()
+    m_pro = hardware.strength_score(
+        ram_gb=24, cores=14, dgpu=False, cpu=hardware.cpu_class("Apple M4 Pro", None))
+    laptop = hardware.strength_score(
+        ram_gb=64, cores=8, dgpu=True, cpu=hardware.cpu_class(None, 5.0))
+    assert m_pro > laptop
+    assert hardware._score_to_tier(m_pro, lo, hi) == lo  # "Very strong"
+    assert hardware._score_to_tier(laptop, lo, hi) > lo
 
 
 def test_strength_score_maps_to_tier_bounds_inverted():
     from argent_utils.mesh import hardware
     lo, hi, _ = config.tier_bounds()
     # 1 = strongest, so the strongest box lands on `lo` and the weakest on `hi`.
-    assert hardware._score_to_tier(6, lo, hi) == lo
+    assert hardware._score_to_tier(8, lo, hi) == lo
+    assert hardware._score_to_tier(4, lo, hi) == 3
     assert hardware._score_to_tier(0, lo, hi) == hi
 
 

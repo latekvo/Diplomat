@@ -57,7 +57,7 @@
   },
 
   "tiers": {
-    "_comment": "Machine strength, 1 = strongest. 'weakest-first' keeps the strong machine free for interactive work by routing grunt jobs to the weakest eligible node. Auto-detected from RAM/CPU/GPU on first run (see mesh/hardware.py); a manual edit in the panel pins it. 'labels' give the UIs human words instead of a bare number.",
+    "_comment": "Machine strength, 1 = strongest. 'weakest-first' keeps the strong machine free for interactive work by routing grunt jobs to the weakest eligible node. Auto-detected CPU-quality-first (Apple-Silicon variant / boost clock, then physical cores, RAM, dGPU — see mesh/hardware.py); a manual edit in the panel pins it. 'labels' give the UIs human words instead of a bare number.",
     "min": 1,
     "max": 5,
     "default": 3,
