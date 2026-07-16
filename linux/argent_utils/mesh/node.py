@@ -1552,7 +1552,7 @@ class MeshNode:
         if trust_level == "foreign":
             if config.foreign_spawn():
                 return "confined", ""
-            return "decline", "foreign device (zero-trust path not implemented)"
+            return "decline", "foreign device (no confinement runner configured)"
         return "run", ""
 
     def _run_local_request(self, job: Job, trust_level: str,

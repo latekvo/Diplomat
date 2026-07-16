@@ -113,7 +113,7 @@ chosen by whether it has a [confinement runner](13-foreign-execution.md#confinem
 configured:
 
 - **No runner (the default):** it **declines** (a [`declined`](#refusals-are-first-class)
-  `job-status`, reason `"foreign device (zero-trust path not implemented)"`). The
+  `job-status`, reason `"foreign device (no confinement runner configured)"`). The
   dispatcher's [failover](07-dispatch.md#routing-a-job) handles a declined candidate
   like any other, so a foreign node simply falls out of consideration — it costs
   nothing.

@@ -225,7 +225,7 @@ requester classification and local policy:
   response-only** (this chapter); reply `spawned`; the result follows as a
   `job-result`.
 - **foreign**, and **no** confinement runner is configured → **decline** (the safe
-  default: reason `"foreign device (zero-trust path not implemented)"`).
+  default: reason `"foreign device (no confinement runner configured)"`).
 
 A **disabled duty** or being **out of tokens** declines regardless of trust - a node
 that cannot serve the work refuses it outright rather than sandboxing it. A confined
