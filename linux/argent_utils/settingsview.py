@@ -47,13 +47,32 @@ class SettingsView(QWidget):
         root.setSpacing(14)
 
         root.addLayout(self._header_row())
-        root.addLayout(self._identity_section())
-        root.addLayout(self._autofix_section())
-        root.addLayout(self._tools_section())
-        root.addLayout(self._terminal_section())
-        root.addLayout(self._allocator_section())
-        root.addLayout(self._mesh_section())
-        root.addLayout(self._update_section())
+
+        # Two columns, matching the macOS SettingsView and the main panel: identity +
+        # automation behaviour on the left, appearance + environment on the right. Each
+        # column pushes its sections up with a bottom stretch so the two stay top-aligned
+        # regardless of differing heights.
+        body = QHBoxLayout()
+        body.setSpacing(12)
+
+        left = QVBoxLayout()
+        left.setSpacing(14)
+        left.addLayout(self._identity_section())
+        left.addLayout(self._autofix_section())
+        left.addStretch(1)
+
+        right = QVBoxLayout()
+        right.setSpacing(14)
+        right.addLayout(self._tools_section())
+        right.addLayout(self._terminal_section())
+        right.addLayout(self._allocator_section())
+        right.addLayout(self._mesh_section())
+        right.addLayout(self._update_section())
+        right.addStretch(1)
+
+        body.addLayout(left, 1)
+        body.addLayout(right, 1)
+        root.addLayout(body)
         root.addStretch(1)
 
         store.allocator_changed.connect(self._refresh_allocator_ui)
