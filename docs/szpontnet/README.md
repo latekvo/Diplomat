@@ -1,6 +1,6 @@
 # SzpontNet - a LAN peer-to-peer resource-sharing protocol
 
-**Specification v0.3.0** (wire `v: 1`). This directory is the normative specification for
+**Specification v0.4.0** (wire `v: 1`). This directory is the normative specification for
 **SzpontNet**: a small, leaderless protocol that lets the machines on a local
 network find each other, **advertise the resources they have available**, and
 hand work to whichever machine is the best fit - with no central coordinator and
@@ -127,7 +127,8 @@ don't change behavior. The major stays `0` until the protocol is declared stable
 |--------------|------|
 | **v0.1.0** | discovery, links, gossip, deterministic placement, dispatch/failover, the personal/foreign trust model, server + API key, and authenticated gossip (signed advertisements + overrides). |
 | **v0.2.0** | [work-claims](12-work-claims.md) — leaderless origination-dedup leases. |
-| **v0.3.0** *(this revision)* | [foreign zero-trust execution](13-foreign-execution.md) — confined compute for a foreign request, with the result returned (`job-result`/`job-ack`) for the originator to act on. |
+| **v0.3.0** | [foreign zero-trust execution](13-foreign-execution.md) — confined compute for a foreign request, with the result returned (`job-result`/`job-ack`) for the originator to act on. |
+| **v0.4.0** *(this revision)* | [foreign accountability](13-foreign-execution.md#accountability-deadline-reminder-ban) — a foreign executor that accepts a SzpontRequest owes its result within a completion deadline (6 h floor); past it the originator asks "is this ready?" (`job-reminder`), an agent judges any "still working" plea (`job-progress`), and a device that goes silent or fails to deliver is **banned** (machine-local, marked for the operator; trust level `banned`, `ban`/`unban` commands). |
 
 This is **separate from the wire `v` field**, which every message carries
 ([04](04-messages.md)). That field is the **wire-compatibility version**, a single
@@ -156,7 +157,7 @@ The chapters are ordered so you can implement bottom-up:
 | 10 | [Conformance](10-conformance.md) | MUST/SHOULD/MAY, a minimal-node checklist, interop vectors |
 | 11 | [Trust & load balancing](11-trust-and-balancing.md) | personal/foreign trust, per-node quota stats, surplus-first dispatch, refusals |
 | 12 | [Work claims](12-work-claims.md) | leaderless origination dedup: who runs externally-triggered work, and failover when the owner dies |
-| 13 | [Foreign execution](13-foreign-execution.md) | zero-trust: run a foreign request's compute confined, return the result for the originator to act on |
+| 13 | [Foreign execution](13-foreign-execution.md) | zero-trust: run a foreign request's compute confined, return the result for the originator to act on; accountability: the completion deadline, the readiness reminder, and the ban |
 | A | [Appendix A - annotated trace](appendix-a-trace.md) | a full two-node session, message by message |
 | B | [Appendix B - constants](appendix-b-constants.md) | every default value in one table |
 

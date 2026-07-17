@@ -22,6 +22,8 @@ peer TCP link; **ctl** = sent on a control session (client↔node).
 | [`job-status`](#job-status) | link | reply | outcome of a dispatch (`spawned` / `declined` / `failed`) |
 | [`job-result`](#job-result) | link | executor→originator | the computed artifact a **foreign** request returns; the originator then acts on it ([13](13-foreign-execution.md)) |
 | [`job-ack`](#job-ack) | link | originator→executor | acknowledges a `job-result` (reliable delivery) ([13](13-foreign-execution.md)) |
+| [`job-reminder`](#job-reminder) | link | originator→executor | "is this ready?" - an accepted foreign SzpontRequest passed its completion deadline ([13](13-foreign-execution.md#accountability-deadline-reminder-ban)) |
+| [`job-progress`](#job-progress) | link | executor→originator | reply to a `job-reminder` when the work is still running - the executor's case for an extension ([13](13-foreign-execution.md#accountability-deadline-reminder-ban)) |
 | [`work-claim`](#work-claim) | link | gossip | a self-signed origination lease on a unit of work ([12](12-work-claims.md)) |
 | [`ctl`](#ctl) | ctl | client→node, first message | opens a control session |
 | [`status`](#status) | ctl | client→node | request the state snapshot |
@@ -29,6 +31,8 @@ peer TCP link; **ctl** = sent on a control session (client↔node).
 | [`set-overrides`](#set-overrides) | ctl | client→node | edit a duty's placement policy |
 | [`trust`](#trust--untrust) | ctl | client→node | add a fingerprint to the local allowlist |
 | [`untrust`](#trust--untrust) | ctl | client→node | remove a fingerprint from the local allowlist |
+| [`ban`](#ban--unban) | ctl | client→node | add a device to the local ban list ([13](13-foreign-execution.md#the-ban)) |
+| [`unban`](#ban--unban) | ctl | client→node | remove a device from the local ban list |
 | [`stop`](#stop) | ctl | client→node | ask the node to shut down |
 | [`ok` / `error`](#ok--error) | ctl | node→client | generic command results |
 | [`dispatch-result`](#dispatch-result) | ctl | node→client | per-slot dispatch outcomes |
@@ -369,6 +373,7 @@ The outcome of a `dispatch`, sent back to the dispatcher.
 | `status` | string | `"spawned"` (the node started the work), `"declined"` (refused for policy), or `"failed"`. |
 | `reason` | string | human-readable detail when `status` = `"declined"` or `"failed"`; else `""`. |
 | `node` | string | the id of the node reporting (the executor). |
+| `direct` | bool | optional, additive (v0.4.0; omitted when false): the executor ran this `spawned` job on the [personal path](11-trust-and-balancing.md#the-personal-path-v1), so **no `job-result` will follow**. An originator MUST NOT arm a [completion deadline](13-foreign-execution.md#the-completion-deadline) for it. |
 
 A dispatcher **MUST** correlate a `job-status` to its request by Job `id` **and**
 accept it only from the peer it dispatched that job to; a `job-status` for an
@@ -432,6 +437,57 @@ Stops the executor's retry loop — reliable delivery, not fire-and-forget.
 An executor **MUST** accept a `job-ack` only from the node it owes that result to.
 The originator **MUST** ack every recognized result — a duplicate included — and act
 on it **at most once**. See [13-foreign-execution](13-foreign-execution.md).
+
+### `job-reminder`
+
+The originator's **"is this ready?"** - sent when a **foreign** executor's
+accepted SzpontRequest passes its completion deadline without a result
+([13 - accountability](13-foreign-execution.md#accountability-deadline-reminder-ban)).
+Correlated by Job `id`, sent on the executor's link.
+
+```json
+{"t": "job-reminder", "id": "b1c2…", "node": "3236…", "v": 1}
+```
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `id` | string | the Job `id` being asked about. |
+| `node` | string | the asking (originator) node id. |
+
+An executor **MUST** accept a `job-reminder` only from the requester it received
+that Job from (the same responder-link gate as everywhere), and MUST answer a
+recognized one truthfully: with the [`job-result`](#job-result) if the compute
+finished (re-arming its delivery retries), or with a
+[`job-progress`](#job-progress) if the work is still running. A reminder for an
+unrecognized Job id is dropped. What the originator does with the answer - or
+its absence - is specified in
+[13](13-foreign-execution.md#resolution-fulfilled-extended-or-banned).
+
+### `job-progress`
+
+The executor's reply to a [`job-reminder`](#job-reminder) when the work is
+**not** ready: a status note that is the executor's case for a deadline
+extension. The originator judges it (by its configured
+[extension decision](13-foreign-execution.md#the-extension-decision) - an agent's
+call, not a rule); an unpersuasive or unjudgeable note leads to a
+[ban](13-foreign-execution.md#the-ban).
+
+```json
+{"t": "job-progress", "id": "b1c2…", "node": "bd4eaf…",
+ "note": "review 70% done, large diff - need ~1h more", "v": 1}
+```
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `id` | string | the Job `id` this reports on. |
+| `node` | string | the reporting (executor) node id. |
+| `note` | string | human-readable status + justification; truncated by the receiver at 4 KiB. |
+
+An originator **MUST** accept a `job-progress` only from the peer it dispatched
+that Job `id` to, and only while a reminder for it is outstanding; anything else
+is dropped. Like `job-status` (and unlike `job-result`), it is **unsigned**: it
+is gated by the responder link alone, since it influences only the originator's
+local extension decision, never a social action.
 
 ### `work-claim`
 
@@ -512,6 +568,8 @@ topology as this node sees it.
    "peers": [ { …NodeInfo…, "link": "up", "addr": "192.168.1.21", "lastSeenSecsAgo": 1.2,
                "verified": true, "fingerprint": "…64-hex…", "trust": "personal", "surplus": 1.75 } ],
    "trusted": [ {"fingerprint": "…64-hex…", "label": "mbp"} ],
+   "banned": [ {"fingerprint": "…64-hex…", "node": "bd4e…", "label": "flaky-box",
+                "reason": "accepted SzpontRequest b1c2… and failed to deliver", "bannedAt": 1784057240.5} ],
    "assignments": {"review": {"duty": "review", "assigned": ["…"], "shortfall": []}},
    "overrides": {"rev": 0, "updatedBy": "", "duties": {}},
    "v": 1
@@ -525,9 +583,11 @@ link/addr decoration, the snapshot carries the trust + balancing view: `self` ga
 its own `fingerprint`; each peer entry gains `verified` (bool - whether the peer
 proved a key on this link), `fingerprint` (its **verified** fingerprint, or the
 fingerprint of its advertised `pubkey` when not yet verified), `trust`
-(`personal`/`foreign` against the local allowlist), and `surplus` (float - its
-spare-quota rank score); and a top-level `trusted` array lists the local allowlist
-as `{fingerprint, label}` entries.
+(`personal`/`foreign`/`banned` against the local allowlist and ban list), and
+`surplus` (float - its spare-quota rank score); a top-level `trusted` array lists
+the local allowlist as `{fingerprint, label}` entries; and a top-level `banned`
+array mirrors the local [ban list](08-state.md#bannedjson) as
+`{fingerprint, node, label, reason, bannedAt}` entries.
 
 See [08-state](08-state.md#the-statejson-snapshot) for the full snapshot schema.
 
@@ -563,6 +623,33 @@ Both reply [`ok`](#ok--error) (or [`error`](#ok--error) when `fingerprint` is
 missing). This edits **machine-local** state (`~/.argent/mesh/trusted.json`) and is
 **never gossiped** - trust is each operator's own call. See
 [11-trust-and-balancing](11-trust-and-balancing.md).
+
+### `ban` / `unban`
+
+Edit this node's **local** ban list
+([13 - the ban](13-foreign-execution.md#the-ban)). `ban` marks a device banned
+(the manual counterpart of the automatic accountability ban); `unban` reverses a
+ban - the operator's recovery path.
+
+```json
+{"t": "ban", "fingerprint": "a1b2…64-hex…", "node": "bd4e…", "label": "flaky-box",
+ "reason": "manual", "v": 1}
+{"t": "unban", "fingerprint": "a1b2…64-hex…", "v": 1}
+```
+
+| Field | Type | Req? | Meaning |
+|-------|------|------|---------|
+| `fingerprint` | string | one of these two | the device fingerprint (`sha256(pubkey)`, 64 hex) to ban/unban. |
+| `node` | string | one of these two | node id, for a keyless device that has no fingerprint (best-effort mark). |
+| `label` | string | no | human label stored alongside (`ban` only). |
+| `reason` | string | no | why (`ban` only; defaults to `"manual"`). |
+
+Both reply [`ok`](#ok--error) (or [`error`](#ok--error) when neither
+`fingerprint` nor `node` is given). A manual `ban` of a fingerprint currently on
+the trusted allowlist also **removes it from the allowlist** (the two states are
+mutually exclusive, and the operator's newest word wins). This edits
+**machine-local** state (`~/.argent/mesh/banned.json`) and is **never
+gossiped** - a ban is each operator's own mark.
 
 ### `stop`
 

@@ -24,6 +24,14 @@ is one of two levels:
 |-------|---------|-----------------------------------|
 | **personal** | a device *you have explicitly trusted* | run **directly**, as if you had triggered the work from your own panel |
 | **foreign** | any other device | **declined** by default; or, with a [confinement runner](13-foreign-execution.md) configured, run **confined and response-only** (see [the foreign path](#the-foreign-path-zero-trust)) |
+| **banned** | a foreign device that **accepted a SzpontRequest of yours and failed to deliver it** ([13 - accountability](13-foreign-execution.md#accountability-deadline-reminder-ban)), or one you banned manually | **declined** outright (`"banned device"`), runner or not; and the device is never picked as a dispatch target |
+
+The first two are the trust *levels* proper; **banned** is a machine-local mark
+layered on top (its own store, [`banned.json`](08-state.md#bannedjson), like the
+allowlist never gossiped) that overrides the foreign classification with a harder
+refusal. A banned device is never personal by definition - an explicit promotion
+([`trust`](04-messages.md#trust--untrust)) is contradictory with a ban, so the
+newest operator action wins ([13 - the ban](13-foreign-execution.md#the-ban)).
 
 ### Trust is never derived from an advertisement
 
@@ -424,6 +432,8 @@ from `failed`) when it refuses a SzpontRequest for policy. The v1 reference decl
 when:
 
 - the requester is **foreign** (the zero-trust path above);
+- the requester is **banned** ([13 - the ban](13-foreign-execution.md#the-ban) -
+  reason `"banned device"`, confinement runner or not);
 - the request lacks a required **API key** (a [server](#the-api-key) with a key
   configured);
 - the duty is **disabled** locally (`dutiesEnabled[duty] == false` - the node opted
@@ -469,6 +479,10 @@ An implementation of this chapter:
   no host-identity/social action, response-only with confined declared side effects —
   returning the result as a [`job-result`](04-messages.md#job-result) for the
   requester to act on, per [13-foreign-execution](13-foreign-execution.md).
+- **MUST**, if it keeps a [ban list](13-foreign-execution.md#the-ban), decline
+  every SzpontRequest from a banned device (runner or not), exclude banned devices
+  from dispatch-candidate ranking, and auto-ban only a device it classifies
+  **foreign** at that moment - never a personal one.
 - **MUST**, if configured as an API-key [server](#the-api-key), require a matching
   `apiKey` on inbound `ctl` and `dispatch` and refuse those without it; and, if in
   [server mode](#the-server-role), never originate a dispatch to a peer.

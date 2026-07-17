@@ -1152,6 +1152,22 @@ class Store(QObject):
 
         threading.Thread(target=work, daemon=True).start()
 
+    def mesh_unban(self, fingerprint: str, node_id: str = "") -> None:
+        """Lift a ban on a peer's device (it was marked banned after accepting a
+        SzpontRequest and failing to deliver it — or manually). It returns to
+        Foreign; promote it via the trust toggle if it is actually yours."""
+        from .mesh import ctl
+
+        def work() -> None:
+            try:
+                ctl.unban_device(fingerprint, node_id)
+                self.mesh_error = None
+            except ctl.CtlError as exc:
+                self.mesh_error = str(exc)
+            self.refresh_mesh_state()
+
+        threading.Thread(target=work, daemon=True).start()
+
     def mesh_set_overrides(self, duty: str, placement: dict) -> None:
         """Edit one duty's mesh-wide placement (gossiped last-writer-wins)."""
         from .mesh import ctl

@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from dataclasses import replace as _dc_replace  # noqa: E402
 
 from argent_utils.mesh import (  # noqa: E402
-    assign, config, crypto, identity, protocol, spawnjob, stats, trust,
+    assign, banned, config, crypto, identity, protocol, spawnjob, stats, trust,
 )
 from argent_utils.mesh.config import Placement, PlacementOverrides  # noqa: E402
 from argent_utils.mesh.protocol import NodeInfo  # noqa: E402
@@ -250,6 +250,65 @@ def test_trust_allowlist_persists(tmp_path, monkeypatch):
     assert loaded == {"fp1": "mbp", "fp2": ""}
     assert trust.classify("fp1", loaded) == "personal"
     assert trust.classify("nope", loaded) == "foreign"
+
+
+def test_ban_list_matches_by_key_and_falls_back_to_id_for_keyless():
+    entries = banned.add([], banned.entry("fp-banned", "nodeA", label="flaky",
+                                          reason="broke it", job_id="j1"))
+    entries = banned.add(entries, banned.entry("", "nodeK", reason="keyless"))
+    # A keyed device is judged by its key alone…
+    assert banned.is_banned(entries, "fp-banned")
+    assert not banned.is_banned(entries, "fp-other")
+    # …so a spoofed id can never inherit a keyed device's ban…
+    assert not banned.is_banned(entries, "fp-other", "nodeA")
+    # …while a keyless device (no fingerprint) matches its id, best-effort.
+    assert banned.is_banned(entries, "", "nodeK")
+    assert not banned.is_banned(entries, "", "nodeA")  # keyed ban ≠ id ban
+
+
+def test_ban_list_newest_mark_wins_and_removal():
+    entries = banned.add([], banned.entry("fp1", "nodeA", reason="first"))
+    entries = banned.add(entries, banned.entry("fp1", "nodeA", reason="second"))
+    assert len(entries) == 1 and entries[0]["reason"] == "second"
+    entries, removed = banned.remove(entries, fingerprint="fp1")
+    assert removed and not entries
+    entries, removed = banned.remove(entries, fingerprint="fp1")
+    assert not removed
+
+
+def test_ban_list_persists_and_drops_junk(tmp_path, monkeypatch):
+    monkeypatch.setenv("ARGENT_MESH_DIR", str(tmp_path))
+    banned.save([banned.entry("fp1", "nodeA", label="box", reason="late", job_id="j1"),
+                 {"label": "names nobody"},  # no fingerprint, no node → dropped
+                 "not even a dict"])
+    loaded = banned.load()
+    assert len(loaded) == 1
+    e = loaded[0]
+    assert e["fingerprint"] == "fp1" and e["node"] == "nodeA"
+    assert e["reason"] == "late" and e["jobId"] == "j1" and e["bannedAt"] > 0
+
+
+def test_job_status_direct_flag_is_additive():
+    # Omitted when false, so a plain job-status is byte-identical to before…
+    assert "direct" not in protocol.job_status("j1", "spawned", "", "n1")
+    # …and carried only by a personal-path spawn (no job-result will follow).
+    assert protocol.job_status("j1", "spawned", "", "n1", direct=True)["direct"] is True
+
+
+def test_reminder_and_progress_builders():
+    rem = protocol.job_reminder("j1", "origin")
+    assert (rem["t"], rem["id"], rem["node"]) == ("job-reminder", "j1", "origin")
+    prog = protocol.job_progress("j1", "exec", "70% done")
+    assert (prog["t"], prog["id"], prog["node"], prog["note"]) == \
+        ("job-progress", "j1", "exec", "70% done")
+    # Both survive the wire round-trip like any other message.
+    assert protocol.decode(protocol.encode(dict(prog)))["note"] == "70% done"
+
+
+def test_accountability_constants_ship_in_the_model():
+    proto = config.protocol()
+    assert proto["foreignCompletionDeadlineSecs"] == 21600.0  # the 6-hour floor
+    assert proto["foreignReminderGraceSecs"] == 900.0
 
 
 def test_device_key_proof_of_possession(tmp_path, monkeypatch):
@@ -1211,10 +1270,26 @@ def test_emit_result_retries_until_acked_by_the_owed_node(tmp_path, monkeypatch)
     # The ack from the owed node clears it → no more retries.
     node._on_job_ack(protocol.job_ack("j1", "alice"), aw)
     assert "j1" not in node._pending_results
-    # A pending whose deadline passed is dropped on the tick.
+    # A pending whose deadline passed stops retrying but becomes a TOMBSTONE —
+    # kept so a later `job-reminder` from the requester can revive its delivery
+    # (accountability) instead of finding nothing and banning us.
     node._emit_result("j2", "alice", _RESULT)
     node._pending_results["j2"].deadline = _time.monotonic() - 1
     node._retry_pending_results()
+    pending = node._pending_results["j2"]
+    assert pending.gave_up
+    sent_before = len(aw.of("job-result"))
+    node._retry_pending_results()
+    assert len(aw.of("job-result")) == sent_before  # no more retries on the tick
+    # A reminder from the owed requester revives the delivery…
+    node._on_job_reminder({"t": "job-reminder", "id": "j2", "node": "alice"}, aw)
+    assert not node._pending_results["j2"].gave_up
+    assert len(aw.of("job-result")) == sent_before + 1
+    # …and the tombstone is finally reaped once even the requester's
+    # accountability window (deadline + grace) could no longer ask about it.
+    node._pending_results["j2"].gave_up = True
+    node._pending_results["j2"].created = _time.monotonic() - 10**9
+    node._reap_foreign()
     assert "j2" not in node._pending_results
 
 
@@ -1341,10 +1416,17 @@ def test_foreign_registries_expire_and_are_capped(tmp_path, monkeypatch):
         node._register_awaiting(f"j{i}", "bob", "review")
     assert len(node._awaiting_result) == 3 and "j0" not in node._awaiting_result
     # TTL reap: an entry older than the compute+delivery window is dropped.
-    node._awaiting_result["j4"] = ("bob", "review", _time.monotonic() - 10**9)
+    node._awaiting_result["j4"].added = _time.monotonic() - 10**9
     node._acted_results["old"] = _time.monotonic() - 10**9
     node._reap_foreign()
     assert "j4" not in node._awaiting_result and "old" not in node._acted_results
+    # …but an entry whose accountability clock is ARMED (a foreign executor
+    # accepted and owes a result) does NOT expire on the short TTL — it lives
+    # until its cycle resolves it (fulfilled / extended / banned).
+    node._awaiting_result["j3"].added = _time.monotonic() - 10**9
+    node._awaiting_result["j3"].deadline = _time.monotonic() + 60
+    node._reap_foreign()
+    assert "j3" in node._awaiting_result
 
 
 # MARK: - redial from memory (peer-address cache + beacon-outage surfacing)

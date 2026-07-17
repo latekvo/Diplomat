@@ -35,6 +35,8 @@ _ENV_KEYS = {
     "ARGENT_MESH_RESULT_RETRY_SECS": "foreignResultRetryIntervalSecs",
     "ARGENT_MESH_RESULT_MAX_SECS": "foreignResultMaxSecs",
     "ARGENT_MESH_FOREIGN_TIMEOUT_SECS": "foreignJobTimeoutSecs",
+    "ARGENT_MESH_COMPLETION_DEADLINE_SECS": "foreignCompletionDeadlineSecs",
+    "ARGENT_MESH_REMINDER_GRACE_SECS": "foreignReminderGraceSecs",
 }
 
 
@@ -125,6 +127,22 @@ def on_result() -> str:
     computed artifact plus the job metadata. Empty = the originator just records the
     result (no automatic action). See docs/szpontnet/13-foreign-execution.md."""
     return os.environ.get("ARGENT_MESH_ON_RESULT", "")
+
+
+def extend_decider() -> str:
+    """Optional **extension decider** (ARGENT_MESH_EXTEND_DECIDER) — the command
+    template an originator runs to judge a late foreign executor's ``job-progress``
+    plea: whether "still working" is a valid reason to extend its completion
+    deadline. ``{job_file}`` is substituted with a JSON file carrying the case (the
+    job, who the executor is, when it accepted, extensions so far, and the plea);
+    exit status 0 extends (re-arms the full deadline window), anything else — a
+    non-zero exit, a crash, or a timeout — bans. The operator typically points this
+    at an agent, the same pattern as ARGENT_MESH_FOREIGN_SPAWN / ON_RESULT.
+
+    Empty (the default) = **no extension is ever granted**: a progress plea then
+    cannot save a late executor, and it is banned — the zero-trust default. See
+    docs/szpontnet/13-foreign-execution.md#the-extension-decision."""
+    return os.environ.get("ARGENT_MESH_EXTEND_DECIDER", "")
 
 
 def accounts() -> dict:

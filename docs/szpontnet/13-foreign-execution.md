@@ -213,6 +213,158 @@ result, and acted-on ids) against a flood, and expire entries by time, so a
 never-acking originator or a never-returning executor cannot grow memory without
 bound.
 
+## Accountability: deadline, reminder, ban
+
+Reliable delivery bounds the *transport* of a result, but nothing above bounds
+its *production*: a foreign executor that replies `spawned` and then simply never
+delivers costs the originator the work it deferred, silently. Because a foreign
+device is by definition one the operator has **not** vouched for, an acceptance
+is the only promise it ever makes - and v0.4.0 makes that promise **binding**.
+This layer is the originator's: it needs no cooperation beyond the two messages
+below, and a device that breaks the promise is **banned** - marked, machine-local,
+so the operator can see exactly who burned them.
+
+### The completion deadline
+
+When an originator dispatches a SzpontRequest to a peer that **it classifies
+foreign** ([11](11-trust-and-balancing.md#two-trust-levels), from its own
+allowlist) and receives a [`job-status: spawned`](04-messages.md#job-status) that
+does **not** carry `direct: true` (below), the executor has **accepted** the work
+and now owes a [`job-result`](#the-messages). The originator arms a **completion
+deadline** of `foreignCompletionDeadlineSecs`
+([appendix B](appendix-b-constants.md) - default **21600 s / 6 hours**) from the
+acceptance.
+
+The deadline is a **floor, not a cap**: an originator MUST NOT hold the executor
+to account before it elapses (the executor is entitled to the full window), and
+the window can be **extended** - but only by the originator's own
+[extension decision](#the-extension-decision), never unilaterally by the
+executor. A valid result that arrives before the deadline resolves the entry
+normally - including an honest `ok: false` failure, which is a *timely answer*,
+not a broken promise.
+
+**The `direct` escape hatch.** Trust is asymmetric: an executor that classifies
+the *requester* personal runs the job on the [personal
+path](11-trust-and-balancing.md#the-personal-path-v1) - directly, fire-and-forget,
+with **no** `job-result` ever following. So that an accountability-tracking
+originator does not ban an executor for a result that was never owed, v0.4.0 adds
+an **additive** bool field `direct` to `job-status`: an executor that ran a
+`spawned` job on the personal path SHOULD set `direct: true`, and an originator
+MUST NOT arm a completion deadline for a `spawned` that carries it. Absent (every
+older node) or `false` means a result will follow. See
+[Limitations](#limitations-v1) for what this deliberately does not defend.
+
+### The reminder
+
+When the deadline passes unresolved, the originator sends a
+[`job-reminder`](04-messages.md#job-reminder) - "is this ready?" - on the
+executor's link, correlated by Job `id`, and gives the executor
+`foreignReminderGraceSecs` ([appendix B](appendix-b-constants.md) - default
+**900 s**) to answer. An executor that receives a valid reminder (correlation
+gate: only for a job it received, only from that job's requester link) MUST
+answer truthfully with one of:
+
+- the **[`job-result`](#the-messages)** itself, if the compute finished - a
+  reminder also **revives a given-up delivery**: an executor SHOULD retain a
+  computed result (the artifact, not necessarily the in-memory message) for
+  `foreignCompletionDeadlineSecs + foreignReminderGraceSecs` after computing it,
+  and answer a reminder by re-sending it with the normal
+  [retry loop](#reliable-delivery) re-armed. This is what saves an honest
+  executor whose originator was unreachable past `foreignResultMaxSecs`;
+- a **[`job-progress`](04-messages.md#job-progress)** - the work is genuinely
+  still running (or queued), with a human-readable `note` saying where it stands.
+  The note is the executor's *case for an extension*; it is judged, not trusted.
+
+A reminder for a job the executor does not recognize (e.g. it restarted and lost
+it) is **dropped** - under this layer, losing accepted work *is* failing to
+deliver it.
+
+### Resolution: fulfilled, extended, or banned
+
+Within the grace window, exactly one of four things happens:
+
+1. **A valid ready result arrives** (passes the [correlation and
+   authenticity](#correlation-and-authenticity) gates, `ok: true`) → the promise
+   is **fulfilled**; the entry resolves; the originator acts on the result as
+   normal.
+2. **A `job-progress` arrives** → the originator runs the
+   [extension decision](#the-extension-decision). Approved → the deadline
+   **re-arms for another full `foreignCompletionDeadlineSecs` window** (the cycle
+   can repeat, each round re-judged). Declined → **ban**.
+3. **A non-fulfilling reply arrives** - a `job-result` with `ok: false`, or a
+   malformed/unauthentic one → after six-plus hours and a direct ask, an answer
+   that does not fulfill the task is a broken promise → **ban**.
+4. **Nothing arrives** by the end of the grace window → **ban**.
+
+### The extension decision
+
+Whether a late executor's "still working" plea is credible is a **judgement
+call, so an agent makes it** - not a fixed rule. The originator hands the case -
+the Job (duty, prompt), who the executor is, when it accepted, how many
+extensions it has already received, and the `job-progress` note - to a
+locally-configured **decider**, and the decider's verdict is final: extend
+(re-arm the full window) or ban.
+
+The reference exposes this as `ARGENT_MESH_EXTEND_DECIDER`, a command template
+run with `{job_file}` substituted by a JSON file carrying exactly that case; exit
+status `0` extends, anything else bans. The operator typically points it at an
+agent (the same pattern as `ARGENT_MESH_FOREIGN_SPAWN` /
+`ARGENT_MESH_ON_RESULT`). **Unset, no extension is ever granted**: a progress
+plea then cannot save the executor and resolution 2 collapses into a ban - the
+zero-trust default, consistent with every other opt-in in this chapter. A decider
+that crashes, times out (the reference bounds it by the grace window), or answers
+malformed grants **no** extension.
+
+### The ban
+
+A ban is the originator **marking, for its operator**, that this device accepted
+work and failed to deliver it. Like the allowlist it is **machine-local and never
+gossiped** - each operator's own ledger of who burned them
+([`banned.json`](08-state.md#bannedjson), mirrored in the
+[state snapshot](08-state.md#the-statejson-snapshot) so UIs can show it). A ban
+records the device's **verified fingerprint** (the identity that proved itself on
+the link the acceptance arrived on; for a keyless executor, its node id - a
+weaker, best-effort mark), plus the node id, its last known name, the Job id it
+broke its promise on, the reason, and when.
+
+From the moment of the ban, the banning node treats the device as trust level
+**`banned`** ([11](11-trust-and-balancing.md#two-trust-levels)):
+
+- **every** SzpontRequest from it is **declined** (reason `"banned device"`) -
+  even with a confinement runner configured; the confined path is a favor, and
+  favors end here;
+- it is **never selected** as a dispatch target (excluded from candidate
+  ranking; an explicit [`target`](04-messages.md#dispatch) naming it is refused
+  locally);
+- every other privilege gate that requires `personal` (mutation via `set-attr`,
+  [work-claim](12-work-claims.md) ownership) already excludes it, since banned is
+  never personal;
+- outstanding accountability entries for the device are dropped (one broken
+  promise resolves them all);
+- the **peer link itself stays**: a ban withdraws privileges, not mesh
+  membership - the [join fence](03-transport.md#the-join-fence) governs who may
+  be on the mesh, and gossip/liveness continue so the operator can still see the
+  device (marked banned) in the topology.
+
+Two hard rules bound the automation. An automatic ban MUST only ever apply to a
+device the originator classifies **foreign at the moment of the ban** - if the
+operator promoted it to personal mid-flight, the pending accountability entry is
+disarmed instead (trusting a device and auto-banning it are contradictory, and
+the operator's explicit promotion wins). And a ban is **the operator's to
+reverse**: the [`unban`](04-messages.md#ban--unban) control command (and its
+`ban` counterpart for a manual, preemptive mark) edits the same machine-local
+store, exactly as `trust`/`untrust` edit the allowlist.
+
+### Reference bookkeeping
+
+The reference originator holds its accountability ledger **in memory** alongside
+the awaiting-result entries it already keeps (same cap, but an armed entry lives
+until it resolves - fulfilled, extended, or banned - rather than expiring on the
+short result TTL). A node restart therefore forgets in-flight accountability
+(the promise dies with the incarnation; no ban fires) - only the **bans
+themselves** persist, in [`banned.json`](08-state.md#bannedjson). The deadline
+check rides the heartbeat tick, next to the result-retry and reaping passes.
+
 ## Admission: when a foreign request is confined vs declined
 
 The receiver's [admission check](07-dispatch.md#refusal-policy) chooses among three
@@ -220,12 +372,15 @@ outcomes from the [verified](11-trust-and-balancing.md#trust-is-never-derived-fr
 requester classification and local policy:
 
 - **personal** → run **directly** on the host ([the personal
-  path](11-trust-and-balancing.md#the-personal-path-v1)); reply `spawned`.
+  path](11-trust-and-balancing.md#the-personal-path-v1)); reply `spawned` (with
+  [`direct: true`](#the-completion-deadline), since no result will follow).
 - **foreign**, and a confinement runner is configured → run **confined,
   response-only** (this chapter); reply `spawned`; the result follows as a
   `job-result`.
 - **foreign**, and **no** confinement runner is configured → **decline** (the safe
   default: reason `"foreign device (no confinement runner configured)"`).
+- **banned** ([accountability](#the-ban)) → **decline** (reason `"banned
+  device"`), runner or not.
 
 A **disabled duty** or being **out of tokens** declines regardless of trust - a node
 that cannot serve the work refuses it outright rather than sandboxing it. A confined
@@ -263,6 +418,24 @@ acts on the returned result) MUST:
 6. **Ack and act once.** `job-ack` every recognized result (duplicates included) and
    perform the social action **at most once** per Job `id`, under its **own**
    identity.
+
+[Accountability](#accountability-deadline-reminder-ban) (v0.4.0) adds obligations
+to both roles. A **Confined-Executor** MUST answer a valid
+[`job-reminder`](04-messages.md#job-reminder) truthfully (the result if computed,
+a [`job-progress`](04-messages.md#job-progress) if still running), SHOULD retain a
+computed result for the accountability window so a reminder can revive its
+delivery, and SHOULD mark a personal-path `spawned` with `direct: true`. A
+Result-Originator that implements accountability MUST NOT remind before
+`foreignCompletionDeadlineSecs` has elapsed since the acceptance, MUST NOT arm a
+deadline for a `spawned` carrying `direct: true`, MUST grant the full
+`foreignReminderGraceSecs` before banning, MUST grant an extension **only**
+through its configured [extension decision](#the-extension-decision) (never
+because the executor asked), and MUST auto-ban only a device it classifies
+**foreign** at that moment. A node that implements no accountability simply drops
+the two messages ([09 rule 2](09-extensibility.md#the-compatibility-contract)) -
+but on a mesh where originators do implement it, an executor that stays silent
+after accepting work will be banned by them; answering reminders is how a
+conformant executor keeps its standing.
 
 A node that implements **neither** role MUST still, per the [compatibility
 contract](09-extensibility.md#the-compatibility-contract), **drop the unknown
@@ -311,3 +484,19 @@ confinement-aware node and a base node share a mesh without trouble.
   the originator's *action*, not on the executor running the Job exactly once; the
   Job itself is still a [fire-once dispatch](07-dispatch.md#idempotency--duplicates)
   (origination dedup lives in [work-claims](12-work-claims.md)).
+- **Accountability can be dodged, not gamed.** An executor can escape the
+  [completion deadline](#the-completion-deadline) by replying `spawned` with
+  `direct: true` and never delivering - but that buys it nothing a pre-v0.4.0
+  executor didn't already have (unaccountable acceptance was the *only* mode
+  before), and an originator remains free to simply not dispatch to devices it
+  finds unreliable. What the layer guarantees is the converse: an executor that
+  *does* owe a result can no longer be silently late forever - it delivers,
+  makes a case an agent accepts, or is banned. Bans are also only as strong as
+  the identity they mark: a **keyless** executor is banned by node id, which a
+  determined stranger can re-mint - one more reason keyless devices are already
+  foreign everywhere.
+- **A restart clears the reference's in-flight ledger.** The reference keeps
+  accountability entries in memory ([bookkeeping](#reference-bookkeeping)), so an
+  originator that restarts mid-window forgets the promise and no ban fires;
+  persisted, restart-surviving accountability is future work. Bans themselves
+  persist.

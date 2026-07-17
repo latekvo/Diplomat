@@ -95,5 +95,32 @@ def untrust_device(fingerprint: str, timeout: float = 5.0) -> None:
     request({"t": "untrust", "fingerprint": fingerprint}, timeout=timeout)
 
 
+def ban_device(fingerprint: str = "", node: str = "", label: str = "",
+               reason: str = "", timeout: float = 5.0) -> None:
+    """Add a device to the local ban list (the manual counterpart of the
+    automatic foreign-accountability ban). ``fingerprint`` for a keyed device,
+    ``node`` (id) for a keyless one."""
+    msg: dict = {"t": "ban"}
+    if fingerprint:
+        msg["fingerprint"] = fingerprint
+    if node:
+        msg["node"] = node
+    if label:
+        msg["label"] = label
+    if reason:
+        msg["reason"] = reason
+    request(msg, timeout=timeout)
+
+
+def unban_device(fingerprint: str = "", node: str = "", timeout: float = 5.0) -> None:
+    """Lift a ban — the operator's recovery path."""
+    msg: dict = {"t": "unban"}
+    if fingerprint:
+        msg["fingerprint"] = fingerprint
+    if node:
+        msg["node"] = node
+    request(msg, timeout=timeout)
+
+
 def stop(timeout: float = 5.0) -> None:
     request({"t": "stop"}, timeout=timeout)

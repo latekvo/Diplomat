@@ -510,6 +510,162 @@ def test_foreign_request_runs_confined_and_routes_result_back(fleet):
               what="Bob's job-result to be acked and dropped")
 
 
+def _accountability_env(deadline: str = "2", grace: str = "2") -> dict:
+    """Fast accountability timings: the 6-hour completion deadline and 15-min
+    reminder grace shrink to seconds so a test observes the whole
+    accept → deadline → reminder → resolution cycle."""
+    return {"ARGENT_MESH_COMPLETION_DEADLINE_SECS": deadline,
+            "ARGENT_MESH_REMINDER_GRACE_SECS": grace,
+            "ARGENT_MESH_RESULT_RETRY_SECS": "0.5",
+            "ARGENT_MESH_RESULT_MAX_SECS": "30",
+            "ARGENT_MESH_FOREIGN_TIMEOUT_SECS": "30"}
+
+
+def _make_bob_foreign_to_alice(fleet) -> str:
+    """Alice trusts only herself, so Bob — verified but unlisted — is FOREIGN to
+    her and his acceptance arms the accountability clock. Returns Bob's
+    fingerprint as Alice verified it."""
+    bob_peer = _wait_for(
+        lambda: next((p for p in fleet.state("aaaa").get("peers", [])
+                      if p.get("id") == "bbbb" and p.get("verified")), None),
+        what="Alice to verify Bob's device key")
+    alice_fp = fleet.state("aaaa")["self"]["fingerprint"]
+    assert fleet.cli("aaaa", "--trust", alice_fp, "--label", "self").returncode == 0
+    return bob_peer["fingerprint"]
+
+
+def test_foreign_acceptance_unfulfilled_reminder_bans_the_device(fleet):
+    """The accountability contract, end to end: Bob (foreign to Alice) ACCEPTS her
+    SzpontRequest and doesn't deliver within the (shrunken) completion deadline.
+    Alice sends the "is this ready?" reminder; Bob truthfully answers "still
+    running" — but Alice has no extension decider configured, so the plea cannot
+    save him: Alice BANS Bob, marks him for the operator (banned.json + snapshot),
+    declines everything from him, and refuses to dispatch to him — until the
+    operator unbans."""
+    root = fleet.root
+    # Bob accepts and computes forever: the runner never writes the result file.
+    slow_spawn = "sh -c 'sleep 300'"
+    fleet.start("aaaa", "alice", "linux", tier=4,
+                extra_env=_accountability_env())
+    fleet.start("bbbb", "bob", "macos", tier=1,
+                extra_env={**_accountability_env(),
+                           "ARGENT_MESH_FOREIGN_SPAWN": slow_spawn})
+    for nid in ("aaaa", "bbbb"):
+        _wait_for(lambda nid=nid: _links_up(fleet.state(nid), 1), what=f"{nid} link")
+    bob_fp = _make_bob_foreign_to_alice(fleet)
+    # Bob needs Alice foreign too, else he'd run her request directly (personal
+    # path, `direct` — which by design is never deadline-tracked).
+    bob_self_fp = fleet.state("bbbb")["self"]["fingerprint"]
+    assert fleet.cli("bbbb", "--trust", bob_self_fp, "--label", "self").returncode == 0
+
+    r = fleet.cli("aaaa", "--dispatch", "review", "--prompt", "review #1 please",
+                  "--target", "bbbb")
+    assert r.returncode == 0 and "spawned" in r.stdout, r.stdout + r.stderr
+
+    # Deadline (2s) passes → reminder → Bob pleads "still running" → no decider
+    # configured → ban. The mark is persisted and mirrored for the operator.
+    def bob_banned():
+        entries = fleet.state("aaaa").get("banned", [])
+        return next((e for e in entries if e.get("fingerprint") == bob_fp), None)
+    entry = _wait_for(bob_banned, timeout=20.0, what="Alice to ban Bob")
+    assert "failed to deliver" in entry["reason"]
+    assert "no extension decider" in entry["reason"]
+    assert entry["label"] == "bob" and entry["jobId"]
+    assert json.loads(
+        (fleet.dirs["aaaa"] / "banned.json").read_text())["banned"], \
+        "the ban must persist in banned.json"
+    bob_view = next(p for p in fleet.state("aaaa")["peers"] if p["id"] == "bbbb")
+    assert bob_view["trust"] == "banned"
+
+    # Enforcement, both directions: Alice refuses to dispatch to Bob (locally,
+    # without asking him), and declines anything Bob sends her.
+    r = fleet.cli("aaaa", "--dispatch", "review", "--prompt", "x", "--target", "bbbb")
+    assert r.returncode == 1 and "target is banned here" in r.stdout, r.stdout
+    r = fleet.cli("bbbb", "--dispatch", "review", "--prompt", "y", "--target", "aaaa")
+    assert r.returncode == 1 and "banned device" in r.stdout, r.stdout
+    time.sleep(0.5)
+    assert not (root / "spawned" / "alice.txt").exists()
+
+    # The operator's recovery path: unban → Bob is plain foreign again.
+    assert fleet.cli("aaaa", "--unban", bob_fp).returncode == 0
+    _wait_for(lambda: not fleet.state("aaaa").get("banned"),
+              what="the ban to be lifted")
+    bob_view = next(p for p in fleet.state("aaaa")["peers"] if p["id"] == "bbbb")
+    assert bob_view["trust"] == "foreign"
+
+
+def test_executor_that_vanishes_after_accepting_is_banned_for_silence(fleet):
+    """A device that accepts work and then disappears breaks the same promise:
+    the reminder goes unanswered (there is nobody to answer it) and the grace
+    window ends in a ban for silence."""
+    slow_spawn = "sh -c 'sleep 300'"
+    fleet.start("aaaa", "alice", "linux", tier=4,
+                extra_env=_accountability_env())
+    fleet.start("bbbb", "bob", "macos", tier=1,
+                extra_env={**_accountability_env(),
+                           "ARGENT_MESH_FOREIGN_SPAWN": slow_spawn})
+    for nid in ("aaaa", "bbbb"):
+        _wait_for(lambda nid=nid: _links_up(fleet.state(nid), 1), what=f"{nid} link")
+    bob_fp = _make_bob_foreign_to_alice(fleet)
+    bob_self_fp = fleet.state("bbbb")["self"]["fingerprint"]
+    assert fleet.cli("bbbb", "--trust", bob_self_fp, "--label", "self").returncode == 0
+
+    r = fleet.cli("aaaa", "--dispatch", "review", "--prompt", "review #2",
+                  "--target", "bbbb")
+    assert r.returncode == 0 and "spawned" in r.stdout, r.stdout + r.stderr
+    fleet.kill("bbbb")  # accepted the work, then vanished
+
+    def bob_banned():
+        return next((e for e in fleet.state("aaaa").get("banned", [])
+                     if e.get("fingerprint") == bob_fp), None)
+    entry = _wait_for(bob_banned, timeout=20.0, what="Alice to ban vanished Bob")
+    assert "no response to readiness reminder" in entry["reason"]
+
+
+def test_agent_decider_extends_a_late_but_working_executor(fleet):
+    """"6 is a minimum, not a cap": when the late executor is genuinely still
+    working and an agent (the extension decider) rules the plea valid, the
+    deadline re-arms instead of banning — and the eventually-delivered result is
+    acted on normally. Nobody ends up banned."""
+    root = fleet.root
+    (root / "acted").mkdir(exist_ok=True)
+    alice_acted = root / "acted" / "alice.json"
+    decider_case = root / "acted" / "extend-case.json"
+    # Bob's runner delivers late — after the first deadline, before forever.
+    late_spawn = "sh -c 'sleep 5; printf DONE-LATE > {result_file}'"
+    # Alice's decider is the stand-in agent: capture the case it judged, grant.
+    decider = f"sh -c 'cp {{job_file}} {decider_case}; exit 0'"
+    fleet.start("aaaa", "alice", "linux", tier=4,
+                extra_env={**_accountability_env(deadline="2", grace="6"),
+                           "ARGENT_MESH_ON_RESULT": f"cp {{result_file}} {alice_acted}",
+                           "ARGENT_MESH_EXTEND_DECIDER": decider})
+    fleet.start("bbbb", "bob", "macos", tier=1,
+                extra_env={**_accountability_env(deadline="2", grace="6"),
+                           "ARGENT_MESH_FOREIGN_SPAWN": late_spawn})
+    for nid in ("aaaa", "bbbb"):
+        _wait_for(lambda nid=nid: _links_up(fleet.state(nid), 1), what=f"{nid} link")
+    _make_bob_foreign_to_alice(fleet)
+    bob_self_fp = fleet.state("bbbb")["self"]["fingerprint"]
+    assert fleet.cli("bbbb", "--trust", bob_self_fp, "--label", "self").returncode == 0
+
+    r = fleet.cli("aaaa", "--dispatch", "review", "--prompt", "review #3 slowly",
+                  "--target", "bbbb")
+    assert r.returncode == 0 and "spawned" in r.stdout, r.stdout + r.stderr
+
+    # The agent judged Bob's plea (the case file carries it) and granted time…
+    _wait_for(lambda: decider_case.exists(), timeout=20.0,
+              what="the extension decider to judge Bob's plea")
+    case = json.loads(decider_case.read_text())
+    assert case["executor"]["node"] == "bbbb"
+    assert "still running" in case["progressNote"]
+    assert "review #3 slowly" in case["prompt"]
+    # …so the late result still lands and Alice acts on it, and nobody is banned.
+    _wait_for(lambda: alice_acted.exists(), timeout=25.0,
+              what="Alice to act on Bob's late result")
+    assert json.loads(alice_acted.read_text())["output"] == "DONE-LATE"
+    assert not fleet.state("aaaa").get("banned")
+
+
 def test_out_of_tokens_node_refuses_even_a_direct_target(fleet):
     """Refusals are first-class: a dispatcher may forward to whoever it likes,
     and the receiver may refuse. Bob is out of tokens and declines the request

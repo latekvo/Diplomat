@@ -685,6 +685,18 @@ class MeshView(QWidget):
         row.addStretch(1)
         return row
 
+    def _ban_reason(self, peer: dict) -> str:
+        """The recorded reason this peer's device was banned (tooltip text)."""
+        entries = (self.store.mesh_state or {}).get("banned") or []
+        fp, nid = peer.get("fingerprint", ""), peer.get("id", "")
+        for e in entries:
+            if e.get("fingerprint"):
+                if e["fingerprint"] == fp:
+                    return e.get("reason") or "banned"
+            elif e.get("node") == nid:
+                return e.get("reason") or "banned"
+        return "banned"
+
     def _trust_toggle(self, peer: dict) -> QHBoxLayout:
         """A Personal | Foreign segmented toggle for a peer's device. 'Personal' adds
         its proven key fingerprint to the local allowlist (its mesh requests then run
@@ -700,6 +712,30 @@ class MeshView(QWidget):
         fp = peer.get("fingerprint", "")
         verified = bool(peer.get("verified"))
         name = peer.get("name", "")
+
+        if current == "banned":
+            # A banned device gets a mark + an Unban escape hatch instead of the
+            # toggle: it broke the foreign-accountability contract (accepted a
+            # SzpontRequest, never delivered), and stays declined until the
+            # operator explicitly lifts the ban.
+            meta = _TRUST_META.get("banned", {})
+            color = meta.get("colorHex", "#FF3B30")
+            mark = QLabel(f"{meta.get('linuxGlyph', '⊘')} banned")
+            mark.setStyleSheet(f"color: {color}; font-size: 9px; font-weight: 700;")
+            mark.setToolTip(self._ban_reason(peer))
+            row.addWidget(mark)
+            unban = QToolButton()
+            unban.setText("unban")
+            unban.setCursor(Qt.CursorShape.PointingHandCursor)
+            unban.setStyleSheet(
+                "QToolButton { border: none; font-size: 9px; padding: 1px 6px;"
+                " border-radius: 6px; color: palette(mid); }")
+            node_id = peer.get("id", "")
+            unban.clicked.connect(
+                lambda: self.store.mesh_unban(fp if verified else "", node_id))
+            row.addWidget(unban)
+            row.addStretch(1)
+            return row
 
         def seg(level: str) -> QToolButton:
             meta = _TRUST_META.get(level, {})

@@ -26,6 +26,8 @@ may place work differently ([09](09-extensibility.md#vocabulary-skew)).
 | `foreignResultRetryIntervalSecs` | `5.0` | [job-result retry cadence](13-foreign-execution.md#reliable-delivery) |
 | `foreignResultMaxSecs` | `120.0` | [job-result give-up window](13-foreign-execution.md#reliable-delivery) |
 | `foreignJobTimeoutSecs` | `900.0` | [confined compute budget](13-foreign-execution.md#reliable-delivery) |
+| `foreignCompletionDeadlineSecs` | `21600.0` (6 h) | [completion deadline on a foreign-accepted SzpontRequest](13-foreign-execution.md#the-completion-deadline) - a floor; extensions re-arm it |
+| `foreignReminderGraceSecs` | `900.0` | [answer window after a `job-reminder`](13-foreign-execution.md#the-reminder) before the ban |
 | `MAX_LINE_BYTES` | `524288` (512 KiB) | [framing](03-transport.md#framing) |
 | UDP receive buffer | ≥ `2048` bytes | [discovery receive](02-discovery.md#receiving) |
 | multicast TTL | `1` (link-local) | [discovery send](02-discovery.md#transport-multicast-plus-broadcast) |
@@ -73,6 +75,7 @@ override is `"auto"`); these constants set the heuristic ceiling it's measured a
 |----|-------|
 | `personal` | the peer's **verified** fingerprint is in my local allowlist; a received SzpontRequest runs directly. |
 | `foreign` | any other device - unlisted, or it proved no key; its requests are declined by default, or run [confined and response-only](13-foreign-execution.md) when a confinement runner is configured. |
+| `banned` | a device on my local [ban list](13-foreign-execution.md#the-ban) (`~/.argent/mesh/banned.json`) - it broke the [foreign-accountability contract](13-foreign-execution.md#accountability-deadline-reminder-ban) or was banned manually; every request declined, never a dispatch target. |
 
 `trust.default` = `personal` - the classification when the local allowlist is
 **empty** (the trust boundary isn't configured), so a v1 mesh with no trusted
@@ -192,12 +195,30 @@ Foreign execution is an **optional role** ([13 conformance](13-foreign-execution
 a node that omits it drops the `job-result`/`job-ack` messages and keeps the link,
 and declines foreign requests.
 
+## Foreign accountability (v0.4.0 vocabulary)
+
+| Constant | Value | Meaning |
+|----------|-------|---------|
+| `foreignCompletionDeadlineSecs` | `21600.0` (6 h) | how long a **foreign** executor that replied `spawned` (without `direct: true`) has to deliver its `job-result` before the originator sends a [`job-reminder`](04-messages.md#job-reminder). A **floor** - the originator must not remind earlier; an approved extension re-arms the full window. |
+| `foreignReminderGraceSecs` | `900.0` | how long the executor has to answer the reminder (result / [`job-progress`](04-messages.md#job-progress)) before the originator **bans** it. |
+| extension decider via | `ARGENT_MESH_EXTEND_DECIDER` | the originator's command template (`{job_file}`) that judges a late executor's `job-progress` plea - exit `0` extends, anything else bans. **Unset = no extensions** ([13](13-foreign-execution.md#the-extension-decision)). |
+| `job-status.direct` | `true` \| absent | additive flag on a `spawned` [`job-status`](04-messages.md#job-status): the executor ran the job on the personal path, no result will follow, no deadline is armed. |
+| `job-progress.note` cap | `4096` bytes | receiver-side truncation of the progress note. |
+| ban list | `~/.argent/mesh/banned.json` | machine-local, never gossiped ([08](08-state.md#bannedjson)); edited by the automatic ban and the [`ban`/`unban`](04-messages.md#ban--unban) control commands. |
+
+Accountability is an **optional originator-side layer**
+([13 conformance](13-foreign-execution.md#conformance)); a node that omits it
+drops the `job-reminder`/`job-progress` messages and keeps the link - but an
+executor on a mesh with accountability-tracking originators keeps its standing by
+answering reminders.
+
 ## Message types
 
 `beacon`, `hello`, `auth`, `node`, `overrides`, `heartbeat`, `set-attr`,
-`dispatch`, `job-status`, `job-result`, `job-ack`, `work-claim`, `ctl`, `status`,
-`state`, `set-overrides`, `trust`, `untrust`, `stop`, `ok`, `error`,
-`dispatch-result`. Full reference: [04-messages](04-messages.md).
+`dispatch`, `job-status`, `job-result`, `job-ack`, `job-reminder`, `job-progress`,
+`work-claim`, `ctl`, `status`, `state`, `set-overrides`, `trust`, `untrust`,
+`ban`, `unban`, `stop`, `ok`, `error`, `dispatch-result`. Full reference:
+[04-messages](04-messages.md).
 
 ## Job statuses
 
@@ -216,6 +237,7 @@ and declines foreign requests.
 | `~/.argent/mesh/node.json` | persisted identity + attributes ([08](08-state.md#nodejson)) |
 | `~/.argent/mesh/device.key` | this device's Ed25519 private key (`0600`, never gossiped, [08](08-state.md#devicekey)) |
 | `~/.argent/mesh/trusted.json` | local trusted-device allowlist (never gossiped, [08](08-state.md#trustedjson)) |
+| `~/.argent/mesh/banned.json` | local ban list (never gossiped, [08](08-state.md#bannedjson)) |
 | `~/.argent/mesh/stats.json` | local load-balancing accounting (never gossiped, [08](08-state.md#statsjson)) |
 | `~/.argent/mesh/state.json` | public topology snapshot ([08](08-state.md#the-statejson-snapshot)) |
 | overridable via | `ARGENT_MESH_DIR` |

@@ -114,6 +114,10 @@ def _print_status() -> int:
         print("trusted  " + ", ".join(
             f"{e.get('fingerprint','')[:16]}{'(' + e['label'] + ')' if e.get('label') else ''}"
             for e in trusted))
+    for e in state.get("banned", []):
+        who = e.get("fingerprint", "")[:16] or e.get("node", "")[:8]
+        label = f"({e['label']})" if e.get("label") else ""
+        print(f"banned  {who}{label}  — {e.get('reason', '')}")
     for duty, a in (state.get("assignments") or {}).items():
         names = []
         for nid in a.get("assigned", []):
@@ -177,7 +181,14 @@ def main(argv: list[str] | None = None) -> int:
                     help="add a device fingerprint to the local trusted allowlist")
     ap.add_argument("--untrust", metavar="FP",
                     help="remove a device fingerprint from the trusted allowlist")
-    ap.add_argument("--label", default="", help="friendly label for --trust")
+    ap.add_argument("--label", default="", help="friendly label for --trust / --ban")
+    ap.add_argument("--ban", metavar="FP|ID",
+                    help="ban a device (64-hex fingerprint, or a node id for a "
+                         "keyless device) — declines all its requests and never "
+                         "dispatches to it")
+    ap.add_argument("--unban", metavar="FP|ID", help="lift a ban")
+    ap.add_argument("--ban-reason", default="", dest="ban_reason",
+                    help="reason recorded with --ban (default: manual)")
     args = ap.parse_args(argv)
 
     if args.daemon:
@@ -204,6 +215,19 @@ def main(argv: list[str] | None = None) -> int:
         if args.untrust:
             ctl.untrust_device(args.untrust)
             print(f"untrusting {args.untrust[:16]}")
+            return 0
+        if args.ban:
+            # A fingerprint is 64 hex chars; anything else is taken as a node id
+            # (the keyless-device fallback).
+            fp = args.ban if len(args.ban) == 64 else ""
+            ctl.ban_device(fp, "" if fp else args.ban, label=args.label,
+                           reason=args.ban_reason)
+            print(f"banned {args.ban[:16]}")
+            return 0
+        if args.unban:
+            fp = args.unban if len(args.unban) == 64 else ""
+            ctl.unban_device(fp, "" if fp else args.unban)
+            print(f"unbanned {args.unban[:16]}")
             return 0
         if args.set_attrs:
             attrs = _parse_attrs(args.set_attrs)

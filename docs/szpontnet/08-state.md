@@ -1,13 +1,13 @@
 # 08 - State & persistence
 
-A node keeps four machine-local files - `node.json`, `device.key`, `trusted.json`,
-and `stats.json` - plus the `state.json` topology snapshot it publishes. None of the
-files are part of the wire protocol - two implementations interoperate purely over
-[messages](04-messages.md) - but they are specified here because the reference
-implementation's UIs and CLI read them, and a compatible implementation that wants
-to drive those tools should match the shapes.
+A node keeps five machine-local files - `node.json`, `device.key`, `trusted.json`,
+`banned.json`, and `stats.json` - plus the `state.json` topology snapshot it
+publishes. None of the files are part of the wire protocol - two implementations
+interoperate purely over [messages](04-messages.md) - but they are specified here
+because the reference implementation's UIs and CLI read them, and a compatible
+implementation that wants to drive those tools should match the shapes.
 
-All four are written **atomically** (write a temp file, then rename over the
+All five are written **atomically** (write a temp file, then rename over the
 target) so a concurrent reader never sees a torn file, and all are best-effort
 (an unwritable home directory is non-fatal - the node keeps running with in-memory
 state).
@@ -111,6 +111,44 @@ mesh ([11](11-trust-and-balancing.md)). The running node keeps the set in memory
 edits it live through the [`trust`/`untrust`](04-messages.md#ctl) control commands,
 so a change takes effect without a restart.
 
+## `banned.json`
+
+The operator's **local ban list** - devices this node has marked as having broken
+the [foreign-accountability
+contract](13-foreign-execution.md#accountability-deadline-reminder-ban) (accepted
+a SzpontRequest, then failed to deliver its result and gave no - or a
+non-fulfilling - answer to the readiness reminder), plus any the operator banned
+manually. Like the allowlist it is **machine-local and never gossiped**: a ban is
+each operator's own mark, written by the node when an automatic ban fires and
+edited live through the [`ban`/`unban`](04-messages.md#ban--unban) control
+commands.
+
+```json
+{
+  "banned": [
+    {"fingerprint": "5e2b…c9", "node": "bd4eaf…", "label": "flaky-box",
+     "reason": "accepted SzpontRequest b1c2… (review) and failed to deliver: no response to readiness reminder",
+     "bannedAt": 1784057240.5, "jobId": "b1c2…"}
+  ]
+}
+```
+
+| Field | Notes |
+|-------|-------|
+| `fingerprint` | the device's **verified** fingerprint - the strong identity a ban keys on. Empty for a keyless device (then `node` is the best-effort key). |
+| `node` | the device's node id at ban time (display, and the match key when `fingerprint` is empty). |
+| `label` | the device's last known name (human note). |
+| `reason` | why - which promise it broke, or `"manual"`. |
+| `bannedAt` | wall-clock time of the ban. |
+| `jobId` | the SzpontRequest the automatic ban fired on (absent for a manual ban). |
+
+An empty or absent file means nobody is banned. A device is **banned** if its
+verified fingerprint matches an entry, or - only when it never proved a key - its
+node id matches a fingerprint-less entry. Enforcement is specified in
+[13 - the ban](13-foreign-execution.md#the-ban): every request declined, never a
+dispatch target, surfaced to the operator via the
+[snapshot](#the-statejson-snapshot).
+
 ## `stats.json`
 
 A **machine-local** file: this node's load-balancing accounting
@@ -159,6 +197,9 @@ client can get it live or from disk.
       "trust": "personal", "surplus": 1.75 }
   ],
   "trusted": [{"fingerprint": "9c1f…a7", "label": "mbp"}],
+  "banned": [{"fingerprint": "5e2b…c9", "node": "bd4eaf…", "label": "flaky-box",
+              "reason": "accepted SzpontRequest b1c2… (review) and failed to deliver: no response to readiness reminder",
+              "bannedAt": 1784057240.5}],
   "assignments": {
     "review":    {"duty": "review",    "assigned": ["3236…"], "shortfall": []},
     "conflicts": {"duty": "conflicts", "assigned": ["3236…"], "shortfall": []},
@@ -184,8 +225,9 @@ pinned, else the usage-derived state), not the raw override.
 | `linking` | int | peers currently mid-handshake - lets a UI show a "linking to N…" / "scanning" affordance while the mesh forms. |
 | `beaconBlocked` | bool | true while *every* beacon send fails (the node is undiscoverable - e.g. an OS privacy gate denying LAN sends; [02](02-discovery.md#redial-from-memory)) - lets a UI say so instead of showing an inexplicably empty mesh. |
 | `self` | NodeInfo | this node's own advertisement, plus its own `fingerprint` (`sha256` of its advertised `pubkey`, 64 hex — *not* the pubkey itself) and `uptimeSecs` (seconds this node has been running). |
-| `peers` | array | each known peer's NodeInfo plus link decoration: `link` (`up`/`stale`/`down`), `addr` (last-seen source IP), `lastSeenSecsAgo` (float), `uptimeSecs` (float, seconds the current link has been up - `null` while down), plus **this node's local view** of the peer: `verified` (bool - whether the peer *proved possession* of its key on the link), `fingerprint` (the fingerprint it proved, or merely claims if unverified), `trust` (`personal`/`foreign`, [11](11-trust-and-balancing.md)) and `surplus` (float - its spare-quota rank score). |
+| `peers` | array | each known peer's NodeInfo plus link decoration: `link` (`up`/`stale`/`down`), `addr` (last-seen source IP), `lastSeenSecsAgo` (float), `uptimeSecs` (float, seconds the current link has been up - `null` while down), plus **this node's local view** of the peer: `verified` (bool - whether the peer *proved possession* of its key on the link), `fingerprint` (the fingerprint it proved, or merely claims if unverified), `trust` (`personal`/`foreign`/`banned`, [11](11-trust-and-balancing.md)) and `surplus` (float - its spare-quota rank score). |
 | `trusted` | array | this node's local allowlist as `[{fingerprint, label}]` - a read-only mirror of [`trusted.json`](#trustedjson). Like the per-peer trust fields it is this node's own view; `trusted.json` and `device.key` are themselves **never gossiped**. |
+| `banned` | array | this node's local ban list as `[{fingerprint, node, label, reason, bannedAt}]` - a read-only mirror of [`banned.json`](#bannedjson) (also never gossiped), so a UI can show the operator **who was marked banned and why**. `[]` when nobody is. |
 | `assignments` | object | `{duty: {duty, assigned:[node_id], shortfall:[{platform, missing}]}}` - the computed placement ([06](06-coordination.md)). |
 | `overrides` | object | the effective [placement overrides](06-coordination.md#placement-overrides). |
 | `claims` | object | `{workKey: ownerNodeId}` for every currently-owned [work-claim](12-work-claims.md) this node observes (unowned keys omitted); lets a UI show what work is already spoken for. `{}` on a node that implements no work-claims. |

@@ -41,8 +41,8 @@ from dataclasses import dataclass, replace
 
 from .. import activity
 from . import (
-    assign, config, crypto, identity, peercache, protocol, spawnjob, statefile,
-    stats, trust, usage,
+    assign, banned, config, crypto, identity, peercache, protocol, spawnjob,
+    statefile, stats, trust, usage,
 )
 from .config import PlacementOverrides
 from .protocol import Job, NodeInfo
@@ -75,6 +75,12 @@ _MAX_FOREIGN = 1024
 # line, so cap it well under the wire line limit (MAX_LINE_BYTES, 512 KiB) — the
 # JSON envelope + escaping needs headroom. A larger artifact is truncated.
 _MAX_RESULT_BYTES = 400 * 1024
+
+# How many GIVEN-UP result tombstones the executor keeps around so a later
+# `job-reminder` can revive their delivery (accountability). Each holds a full
+# built result line, so this is deliberately much tighter than _MAX_FOREIGN —
+# reviving is a courtesy to an originator that was unreachable, not a queue.
+_MAX_TOMBSTONES = 64
 
 # Domain-separation prefix for the trust proof-of-possession signature. The peer
 # signs this tag + the challenge nonce, never the bare nonce — so a captured
@@ -121,12 +127,37 @@ class _PendingResult:
     heartbeat tick — reliable delivery, not fire-and-forget. ``msg`` is the fully
     built (signed) job-result dict, re-sent verbatim each retry; ``to_node`` is the
     originator whose link we send it on (looked up fresh each time so a flapped link
-    heals)."""
+    heals). Past the deadline the entry becomes a **tombstone** (``gave_up``):
+    retries stop, but the result is kept for the accountability window so a
+    `job-reminder` from the originator revives its delivery instead of getting us
+    banned for work we actually did (docs/szpontnet/13)."""
 
     msg: dict
     to_node: str
     next_retry: float  # monotonic; re-emit when reached
-    deadline: float    # monotonic; give up (originator presumed gone) past this
+    deadline: float    # monotonic; stop retrying (originator presumed gone) past this
+    created: float = 0.0  # monotonic; bounds the tombstone's total lifetime
+    gave_up: bool = False  # tombstone: kept for reminder-revival only
+
+
+@dataclass
+class _Awaiting:
+    """An originator's record of one remote dispatch it will accept a
+    ``job-result`` for — plus, when the executor is **foreign** and accepted
+    (``spawned`` without ``direct``), the accountability clock over its promise
+    (docs/szpontnet/13#accountability-deadline-reminder-ban): the completion
+    ``deadline`` (armed = not None), when the "is this ready?" reminder went out,
+    how many agent-approved extensions it has already received, and whether an
+    extension decision is currently in flight."""
+
+    executor_id: str
+    duty: str
+    added: float  # monotonic
+    prompt_head: str = ""  # truncated prompt — context for the extension decider
+    deadline: float | None = None  # monotonic; None = accountability not armed
+    reminded_at: float | None = None  # monotonic; grace runs from here
+    extensions: int = 0
+    deciding: bool = False
 
 
 class Peer:
@@ -168,6 +199,9 @@ class MeshNode:
         self.stats = stats.load()  # per-node usage/quota accounting for load balancing
         self.key = crypto.load_or_create()  # this device's Ed25519 trust identity
         self._trusted = trust.load()  # local allowlist of trusted fingerprints
+        # Local ban list: devices that accepted a SzpontRequest of ours and failed
+        # to deliver it (or were banned manually). Machine-local, never gossiped.
+        self._banned = banned.load()
         self.platform = identity.detect_platform()
         self.epoch = time.time()
         # Cached automatic token-budget read (refreshed on a throttle, so neither the
@@ -231,8 +265,12 @@ class MeshNode:
         #    job ids we've already acted on, so a retried result is re-acked but never
         #    acted on twice (idempotent). Both expire by time and are capped.
         self._pending_results: dict[str, _PendingResult] = {}
-        self._awaiting_result: dict[str, tuple[str, str, float]] = {}
+        self._awaiting_result: dict[str, _Awaiting] = {}
         self._acted_results: dict[str, float] = {}
+        # Confined jobs currently computing here, job id → (requester id, started
+        # monotonic) — so a `job-reminder` for a still-running job can be answered
+        # truthfully with a `job-progress` instead of silence (which gets us banned).
+        self._confined_running: dict[str, tuple[str, float]] = {}
         # Strong refs to the per-job confined-result watcher coroutines, so the loop
         # can't GC one mid-wait (the asyncio create_task footgun).
         self._result_tasks: set[asyncio.Task] = set()
@@ -878,6 +916,18 @@ class MeshNode:
             self._on_job_ack(msg, writer)
             peer = self._peer_by_writer(writer)
             return peer.info.id if peer else None
+        if t == "job-reminder":
+            # Our foreign requester asks "is this ready?" — answer truthfully with
+            # the result (reviving its delivery) or a progress note, or be banned.
+            self._on_job_reminder(msg, writer)
+            peer = self._peer_by_writer(writer)
+            return peer.info.id if peer else None
+        if t == "job-progress":
+            # A late foreign executor pleads "still working" — hand the plea to the
+            # extension decision (an agent's call, never the executor's).
+            self._on_job_progress(msg, writer)
+            peer = self._peer_by_writer(writer)
+            return peer.info.id if peer else None
         if t == "work-claim":
             # A gossiped origination lease. Authenticate it, merge by freshness,
             # relay it, and yield our own claim if a better peer now owns the key.
@@ -950,11 +1000,29 @@ class MeshNode:
                              f"Mesh: verified {peer.info.name} device {fp[:16]} ({level})")
 
     def _peer_trust(self, peer: Peer | None) -> str:
-        """personal vs foreign for a peer, from its VERIFIED fingerprint against
-        the local allowlist (an unverified peer has no fingerprint -> foreign
-        whenever an allowlist is configured)."""
+        """personal / foreign / banned for a peer. The ban check runs first: a
+        banned device is never anything else. Otherwise the classification comes
+        from the VERIFIED fingerprint against the local allowlist (an unverified
+        peer has no fingerprint -> foreign whenever an allowlist is configured)."""
+        if peer is not None and self._peer_banned(peer):
+            return "banned"
         fp = peer.verified_fp if peer else None
         return trust.classify(fp or "", self._trusted)
+
+    def _peer_banned(self, peer: Peer) -> bool:
+        """Whether a peer is on the local ban list. Judged by its VERIFIED
+        fingerprint when it proved one; else by the fingerprint of the key it
+        merely advertises (safe for a DENY decision — claiming a banned identity
+        only ever costs the claimant); else, keyless, by node id (best-effort)."""
+        fp = peer.verified_fp or crypto.fingerprint_of(peer.info.pubkey)
+        return banned.is_banned(self._banned, fp, peer.info.id)
+
+    def _node_banned(self, node_id: str) -> bool:
+        """The dispatch-side ban gate: never pick a banned device as a target."""
+        if node_id == self.local.id:
+            return False
+        peer = self.peers.get(node_id)
+        return peer is not None and self._peer_banned(peer)
 
     def _learn_node(
         self, info: NodeInfo, host: str, link_writer: asyncio.StreamWriter | None,
@@ -1087,8 +1155,11 @@ class MeshNode:
                     del self.peers[pid]  # long dead / stale phantom — drop it
                     self._forget_claims(pid)  # its origination leases lapse with it
             # Reliable foreign-result delivery + expiry ride the same tick: re-send
-            # any unacked job-result whose retry is due, and reap stale bookkeeping.
+            # any unacked job-result whose retry is due, hold late foreign
+            # executors to their acceptance (reminder → extension or ban), and
+            # reap stale bookkeeping.
             self._retry_pending_results()
+            self._check_foreign_deadlines()
             self._reap_foreign()
 
     def _reapable(self, peer: "Peer", now: float) -> bool:
@@ -1430,7 +1501,10 @@ class MeshNode:
         # The credential presented to an API-key-gated target: the per-request key
         # (from a control client / CLI) when given, else this node's own env key.
         req_key = api_key if api_key is not None else config.api_key()
-        nodes = self._alive_nodes()
+        # Banned devices are never dispatch targets. Filtered from the candidate
+        # input only — NOT from the assignment view (_alive_nodes), which must stay
+        # identical mesh-wide (a ban is this node's local mark, never gossiped).
+        nodes = [n for n in self._alive_nodes() if not self._node_banned(n.id)]
         if config.server_mode():
             # A dedicated server never routes work to peers: a request it is asked
             # to dispatch runs on ITSELF, or is refused if aimed explicitly
@@ -1442,6 +1516,12 @@ class MeshNode:
                          "reason": "server node does not dispatch to peers"}]
             slots = [("server", [self.local.id])]
         elif target is not None:
+            if self._node_banned(target):
+                # An explicit target is the client's unilateral pick — but a banned
+                # device broke a promise here; refuse locally rather than ask it.
+                return [{"slot": "target", "node": target,
+                         "nodeName": self._node_name(target),
+                         "status": "declined", "reason": "target is banned here"}]
             slots = [("target", [target])]
         else:
             # Origination dedup: only the leaderless surplus-first path can race a
@@ -1498,18 +1578,35 @@ class MeshNode:
         # rather than acting on it — we recognize its later `job-result` and act on
         # it ourselves. Harmless for a personal executor that never responds: the
         # entry just expires. (docs/szpontnet/13)
-        self._register_awaiting(job.id, node_id, duty_id)
+        self._register_awaiting(job.id, node_id, duty_id, prompt)
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
         self._job_futures[job.id] = (fut, node_id)
         try:
             peer.writer.write(protocol.encode(protocol.dispatch(job, api_key)))
             await peer.writer.drain()
             msg = await asyncio.wait_for(fut, timeout=self.proto["dispatchAckTimeoutSecs"])
-            return str(msg.get("status", "failed")), str(msg.get("reason", ""))
+            status = str(msg.get("status", "failed"))
+            if status == "spawned":
+                self._maybe_arm_deadline(job.id, node_id, bool(msg.get("direct")))
+            return status, str(msg.get("reason", ""))
         except (asyncio.TimeoutError, ConnectionError, OSError):
             return "failed", "peer did not answer"
         finally:
             self._job_futures.pop(job.id, None)
+
+    def _maybe_arm_deadline(self, job_id: str, node_id: str, direct: bool) -> None:
+        """Arm the accountability clock over an acceptance: a **foreign** executor
+        that replied ``spawned`` (without ``direct`` — the personal path never owes
+        a result) now owes us a ``job-result`` within the completion deadline
+        (docs/szpontnet/13#the-completion-deadline). Personal executors are devices
+        the operator vouched for — never tracked."""
+        aw = self._awaiting_result.get(job_id)
+        if aw is None or direct:
+            return
+        if self._peer_trust(self.peers.get(node_id)) != "foreign":
+            return
+        aw.deadline = (time.monotonic()
+                       + float(self.proto["foreignCompletionDeadlineSecs"]))
 
     def _resolve_job_future(self, msg: dict, writer: asyncio.StreamWriter) -> None:
         entry = self._job_futures.get(str(msg.get("id", "")))
@@ -1545,6 +1642,10 @@ class MeshNode:
         link** ([_peer_trust]) — never from anything in the job, which is spoofable.
         Duty/token refusals apply regardless of trust: a node that can't serve the
         work declines it outright rather than sandboxing it."""
+        if trust_level == "banned":
+            # A banned device broke the accountability contract; the confined path
+            # is a favor, and favors end here (docs/szpontnet/13#the-ban).
+            return "decline", "banned device"
         if not self.local.duty_enabled(job.duty):
             return "decline", f"duty {job.duty} disabled here"
         if self.current_tokens() == "out":
@@ -1582,9 +1683,15 @@ class MeshNode:
         trust_level = self._peer_trust(peer)
         status, out_reason = self._run_local_request(
             job, trust_level, requester_id=peer.info.id if peer else "")
+        # A personal-path spawn is fire-and-forget: no job-result will ever follow.
+        # Say so (`direct`, additive) so an accountability-tracking requester that
+        # happens to classify US foreign doesn't arm a deadline over a result we
+        # never owed — and then ban us for keeping it.
+        direct = status == "spawned" and trust_level == "personal"
         with contextlib.suppress(ConnectionError, OSError):
             writer.write(protocol.encode(
-                protocol.job_status(job.id, status, out_reason, self.local.id)
+                protocol.job_status(job.id, status, out_reason, self.local.id,
+                                    direct=direct)
             ))
 
     def _record_usage(self, units: float) -> None:
@@ -1641,6 +1748,9 @@ class MeshNode:
                          f"Mesh confined {job.duty} failed here: {exc}")
             return "failed", str(exc)
         self._record_usage(config.job_cost_units())
+        # Register the run so a `job-reminder` while it computes gets a truthful
+        # `job-progress` answer instead of silence (docs/szpontnet/13).
+        self._confined_running[job.id] = (requester_id, time.monotonic())
         task = asyncio.get_running_loop().create_task(
             self._await_confined_result(job, requester_id, result_path))
         self._result_tasks.add(task)
@@ -1658,24 +1768,29 @@ class MeshNode:
         poll = max(0.1, float(self.proto["heartbeatIntervalSecs"]))
         deadline = time.monotonic() + float(self.proto["foreignJobTimeoutSecs"])
         last_size = -1
-        while time.monotonic() < deadline:
-            with contextlib.suppress(OSError):
-                size = result_path.stat().st_size if result_path.exists() else 0
-                if size > 0 and size == last_size:
-                    # Non-empty and unchanged since the previous poll → fully written
-                    # (guards against reading a still-growing file; a runner SHOULD
-                    # also write atomically via a temp file + rename).
-                    output = await asyncio.to_thread(self._read_result_file, result_path)
-                    self._emit_result(job.id, requester_id, {
-                        "ok": True, "duty": job.duty, "output": output, "error": ""})
-                    return
-                last_size = size
-            await asyncio.sleep(poll)
-        activity.log("mesh", "mesh-dispatch-failed",
-                     f"Mesh: confined {job.duty} timed out, returning failure")
-        self._emit_result(job.id, requester_id, {
-            "ok": False, "duty": job.duty, "output": "",
-            "error": "confined execution timed out"})
+        try:
+            while time.monotonic() < deadline:
+                with contextlib.suppress(OSError):
+                    size = result_path.stat().st_size if result_path.exists() else 0
+                    if size > 0 and size == last_size:
+                        # Non-empty and unchanged since the previous poll → fully written
+                        # (guards against reading a still-growing file; a runner SHOULD
+                        # also write atomically via a temp file + rename).
+                        output = await asyncio.to_thread(self._read_result_file, result_path)
+                        self._emit_result(job.id, requester_id, {
+                            "ok": True, "duty": job.duty, "output": output, "error": ""})
+                        return
+                    last_size = size
+                await asyncio.sleep(poll)
+            activity.log("mesh", "mesh-dispatch-failed",
+                         f"Mesh: confined {job.duty} timed out, returning failure")
+            self._emit_result(job.id, requester_id, {
+                "ok": False, "duty": job.duty, "output": "",
+                "error": "confined execution timed out"})
+        finally:
+            # However this watcher ends (result, timeout, crash), the job is no
+            # longer "running" for reminder purposes.
+            self._confined_running.pop(job.id, None)
 
     def _result_task_done(self, task: asyncio.Task) -> None:
         """Reap a finished watcher task, surfacing a crash instead of letting it
@@ -1737,7 +1852,8 @@ class MeshNode:
             self._pending_results.pop(oldest, None)
         self._pending_results[job_id] = _PendingResult(
             msg=msg, to_node=to_node, next_retry=now,
-            deadline=now + float(self.proto["foreignResultMaxSecs"]))
+            deadline=now + float(self.proto["foreignResultMaxSecs"]),
+            created=now)
         self._send_pending(job_id)
 
     def _send_pending(self, job_id: str) -> None:
@@ -1755,14 +1871,20 @@ class MeshNode:
                               + float(self.proto["foreignResultRetryIntervalSecs"]))
 
     def _retry_pending_results(self) -> None:
-        """Heartbeat-tick maintenance: re-send any due unacked result, and drop one
-        whose deadline passed (the requester never acked — presumed gone)."""
+        """Heartbeat-tick maintenance: re-send any due unacked result; one whose
+        deadline passed (the requester never acked — presumed gone) stops retrying
+        but stays as a TOMBSTONE, so a later `job-reminder` from the requester can
+        revive its delivery instead of finding nothing and banning us. Tombstones
+        are bounded (count + age, see [_reap_foreign])."""
         now = time.monotonic()
         for job_id, pending in list(self._pending_results.items()):
+            if pending.gave_up:
+                continue
             if now >= pending.deadline:
-                del self._pending_results[job_id]
+                pending.gave_up = True
                 activity.log("mesh", "mesh-dispatch-failed",
-                             f"Mesh: gave up delivering job-result {job_id[:8]} (unacked)")
+                             f"Mesh: gave up delivering job-result {job_id[:8]} "
+                             "(unacked; kept for a reminder)")
             elif now >= pending.next_retry:
                 self._send_pending(job_id)
 
@@ -1778,14 +1900,18 @@ class MeshNode:
             return
         del self._pending_results[job_id]
 
-    def _register_awaiting(self, job_id: str, node_id: str, duty: str) -> None:
-        """Record a remote dispatch we'll accept a later ``job-result`` for."""
+    def _register_awaiting(self, job_id: str, node_id: str, duty: str,
+                           prompt: str = "") -> None:
+        """Record a remote dispatch we'll accept a later ``job-result`` for. Keeps
+        the head of the prompt as context for a possible extension decision."""
         if (job_id not in self._awaiting_result
                 and len(self._awaiting_result) >= _MAX_FOREIGN):
             oldest = min(self._awaiting_result,
-                         key=lambda k: self._awaiting_result[k][2])
+                         key=lambda k: self._awaiting_result[k].added)
             self._awaiting_result.pop(oldest, None)
-        self._awaiting_result[job_id] = (node_id, duty, time.monotonic())
+        self._awaiting_result[job_id] = _Awaiting(
+            executor_id=node_id, duty=duty, added=time.monotonic(),
+            prompt_head=prompt[:protocol.MAX_PROGRESS_NOTE_BYTES])
 
     def _result_authentic(self, msg: dict, peer: Peer) -> bool:
         """Whether a returned result is bound to the executor's key. A **keyed**
@@ -1819,7 +1945,7 @@ class MeshNode:
             if job_id in self._acted_results:
                 self._ack_result(job_id, writer)
             return
-        executor_id, duty, _added = entry
+        executor_id, duty = entry.executor_id, entry.duty
         peer = self._peer_by_writer(writer)
         if peer is None or peer.info.id != executor_id:
             return  # only the node we dispatched to may return its result
@@ -1832,7 +1958,18 @@ class MeshNode:
             return  # already performed the action — never twice
         self._acted_results[job_id] = time.monotonic()
         self._awaiting_result.pop(job_id, None)
-        self._act_on_result(job_id, executor_id, duty, msg.get("result") or {})
+        result = msg.get("result") or {}
+        if entry.reminded_at is not None and not bool(result.get("ok", False)):
+            # We asked "is this ready?" after six-plus hours and the answer is a
+            # failure — a response that does not fulfill the task is a broken
+            # promise (docs/szpontnet/13#resolution-fulfilled-extended-or-banned).
+            # (A timely ok:false, before any reminder, is an honest answer and is
+            # handled below like always.)
+            self._ban_executor(entry, job_id,
+                               "reminder answered with a non-fulfilling result "
+                               f"({result.get('error') or 'ok=false'})")
+            return
+        self._act_on_result(job_id, executor_id, duty, result)
 
     def _act_on_result(self, job_id: str, executor_id: str, duty: str,
                        result: dict) -> None:
@@ -1858,6 +1995,203 @@ class MeshNode:
                      f"Mesh: acting on {duty} result from "
                      f"{self._node_name(executor_id)} (under our identity)")
 
+    # MARK: - foreign accountability (deadline → reminder → extension or ban)
+    #
+    # An acceptance is the only promise a foreign device ever makes, and this
+    # section makes it binding (docs/szpontnet/13#accountability-deadline-
+    # reminder-ban). ORIGINATOR side: a foreign `spawned` (without `direct`) arms
+    # a completion deadline ([_maybe_arm_deadline]); the heartbeat tick checks it
+    # ([_check_foreign_deadlines]); past it we send a `job-reminder`, and within
+    # the grace window the executor either delivers (fulfilled), pleads
+    # `job-progress` (judged by the extension decider — an agent's call), or is
+    # BANNED ([_ban_executor]: persisted to banned.json, marked for the operator,
+    # declined + excluded from dispatch from then on). EXECUTOR side: answer
+    # reminders truthfully ([_on_job_reminder]) so honest lateness never bans us.
+
+    def _check_foreign_deadlines(self) -> None:
+        """Heartbeat-tick pass over the armed accountability entries."""
+        now = time.monotonic()
+        grace = float(self.proto["foreignReminderGraceSecs"])
+        for job_id, aw in list(self._awaiting_result.items()):
+            if aw.deadline is None or aw.deciding:
+                continue
+            peer = self.peers.get(aw.executor_id)
+            if peer is not None and self._peer_trust(peer) == "personal":
+                # Promoted mid-flight: trusting a device and holding it to the
+                # foreign contract are contradictory — the promotion wins.
+                aw.deadline = None
+                continue
+            if aw.reminded_at is None:
+                if now >= aw.deadline:
+                    self._send_reminder(job_id, aw)
+            elif now >= aw.reminded_at + grace:
+                self._ban_for_broken_promise(
+                    job_id, "no response to readiness reminder")
+
+    def _send_reminder(self, job_id: str, aw: _Awaiting) -> None:
+        """Ask the late executor "is this ready?". The grace clock starts now
+        whether or not the link is up — a device that accepted work and vanished
+        is not excused by being unreachable."""
+        aw.reminded_at = time.monotonic()
+        peer = self.peers.get(aw.executor_id)
+        if peer is not None and peer.linked:
+            with contextlib.suppress(ConnectionError, OSError):
+                peer.writer.write(protocol.encode(
+                    protocol.job_reminder(job_id, self.local.id)))
+        activity.log("mesh", "warn",
+                     f"Mesh: reminding {self._node_name(aw.executor_id)} — "
+                     f"{aw.duty} job {job_id[:8]} passed its completion deadline")
+
+    def _on_job_reminder(self, msg: dict, writer: asyncio.StreamWriter) -> None:
+        """Our requester asks whether its job is ready. Truthful answers only:
+        the result if we computed it (reviving a given-up delivery), a progress
+        note if it is still running, silence for a job we don't recognize (losing
+        accepted work IS failing to deliver — the spec's call, and honest)."""
+        job_id = str(msg.get("id", ""))
+        peer = self._peer_by_writer(writer)
+        if peer is None or not job_id:
+            return
+        pending = self._pending_results.get(job_id)
+        if pending is not None:
+            if peer.info.id != pending.to_node:
+                return  # only the originator we owe the result to may ask
+            # Computed already — re-arm delivery (the originator may have been
+            # unreachable past our give-up window; it is clearly back now).
+            pending.gave_up = False
+            pending.deadline = (time.monotonic()
+                                + float(self.proto["foreignResultMaxSecs"]))
+            self._send_pending(job_id)
+            activity.log("mesh", "mesh-spawn",
+                         f"Mesh: reminded about job {job_id[:8]} — re-delivering "
+                         "its result")
+            return
+        running = self._confined_running.get(job_id)
+        if running is not None and running[0] == peer.info.id:
+            elapsed = int(time.monotonic() - running[1])
+            budget = int(float(self.proto["foreignJobTimeoutSecs"]))
+            with contextlib.suppress(ConnectionError, OSError):
+                writer.write(protocol.encode(protocol.job_progress(
+                    job_id, self.local.id,
+                    f"confined compute still running ({elapsed}s elapsed of "
+                    f"{budget}s budget)")))
+
+    def _on_job_progress(self, msg: dict, writer: asyncio.StreamWriter) -> None:
+        """A late executor pleads "still working". Only meaningful from the exact
+        executor of a job we reminded; the plea goes to the extension decider —
+        never taken at face value."""
+        job_id = str(msg.get("id", ""))
+        aw = self._awaiting_result.get(job_id)
+        if aw is None or aw.deadline is None or aw.reminded_at is None or aw.deciding:
+            return
+        peer = self._peer_by_writer(writer)
+        if peer is None or peer.info.id != aw.executor_id:
+            return
+        note = (str(msg.get("note", "")).encode("utf-8")
+                [:protocol.MAX_PROGRESS_NOTE_BYTES].decode("utf-8", "ignore"))
+        aw.deciding = True
+        task = asyncio.get_running_loop().create_task(
+            self._decide_extension(job_id, note))
+        self._result_tasks.add(task)
+        task.add_done_callback(self._result_task_done)
+
+    async def _decide_extension(self, job_id: str, note: str) -> None:
+        """Judge a late executor's plea: hand the case to the operator's extension
+        decider (an agent — ARGENT_MESH_EXTEND_DECIDER); exit 0 re-arms the full
+        deadline window, anything else — including no decider configured, a crash,
+        or a timeout — bans. The verdict is the originator's alone."""
+        aw = self._awaiting_result.get(job_id)
+        if aw is None:
+            return
+        decider = config.extend_decider()
+        granted = False
+        if decider:
+            granted = await self._run_extend_decider(decider, job_id, aw, note)
+        # Re-fetch: the result may have arrived (entry resolved) while we judged.
+        aw = self._awaiting_result.get(job_id)
+        if aw is None:
+            return
+        aw.deciding = False
+        if granted:
+            aw.extensions += 1
+            aw.reminded_at = None
+            aw.deadline = (time.monotonic()
+                           + float(self.proto["foreignCompletionDeadlineSecs"]))
+            activity.log("mesh", "mesh-spawn",
+                         f"Mesh: extension granted to {self._node_name(aw.executor_id)} "
+                         f"for {aw.duty} job {job_id[:8]} (#{aw.extensions}) — "
+                         f"plea: {note[:120]}")
+        else:
+            cause = ("still incomplete at reminder and no extension decider "
+                     "configured" if not decider else
+                     "extension declined by the decider")
+            self._ban_for_broken_promise(job_id, f"{cause}; plea: {note[:200]}")
+
+    async def _run_extend_decider(self, decider: str, job_id: str, aw: _Awaiting,
+                                  note: str) -> bool:
+        """Run the decider on the case file; True = extend. Bounded by the grace
+        window so a hung decider can't stall the ban forever."""
+        peer = self.peers.get(aw.executor_id)
+        case_path = self._result_path(job_id).with_name(f"extend-{job_id}.json")
+        now = time.monotonic()
+        case = {
+            "jobId": job_id,
+            "duty": aw.duty,
+            "prompt": aw.prompt_head,
+            "executor": {
+                "node": aw.executor_id,
+                "name": self._node_name(aw.executor_id),
+                "fingerprint": (peer.verified_fp or "") if peer else "",
+            },
+            "acceptedSecsAgo": round(now - aw.added, 1),
+            "extensionsGranted": aw.extensions,
+            "progressNote": note,
+        }
+        try:
+            case_path.write_text(json.dumps(case, indent=2), encoding="utf-8")
+        except OSError:
+            return False
+        cmd = decider.replace("{job_file}", str(case_path))
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                cmd, stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL)
+            rc = await asyncio.wait_for(
+                proc.wait(), timeout=float(self.proto["foreignReminderGraceSecs"]))
+            return rc == 0
+        except asyncio.TimeoutError:
+            with contextlib.suppress(ProcessLookupError, OSError):
+                proc.kill()
+            activity.log("mesh", "warn",
+                         f"Mesh: extension decider timed out for job {job_id[:8]}")
+            return False
+        except OSError as exc:
+            activity.log("mesh", "warn",
+                         f"Mesh: extension decider failed to run: {exc}")
+            return False
+
+    def _ban_for_broken_promise(self, job_id: str, cause: str) -> None:
+        aw = self._awaiting_result.pop(job_id, None)
+        if aw is not None:
+            self._ban_executor(aw, job_id, cause)
+
+    def _ban_executor(self, aw: _Awaiting, job_id: str, cause: str) -> None:
+        """The accountability verdict: mark the device banned, for the operator.
+        Never fires on a device now classified personal (the promotion wins), and
+        one broken promise resolves every entry we still held for the device."""
+        peer = self.peers.get(aw.executor_id)
+        if peer is not None and self._peer_trust(peer) == "personal":
+            return
+        fp = (peer.verified_fp or "") if peer else ""
+        label = peer.info.name if peer else ""
+        reason = (f"accepted SzpontRequest {job_id[:8]} ({aw.duty}) "
+                  f"and failed to deliver: {cause}")
+        self.ban_device(fp, aw.executor_id, label=label, reason=reason,
+                        job_id=job_id)
+        for jid, other in list(self._awaiting_result.items()):
+            if other.executor_id == aw.executor_id:
+                self._awaiting_result.pop(jid, None)
+        self._flush_state()  # the operator's panel shows the mark immediately
+
     def _reap_foreign(self) -> None:
         """Expire stale foreign bookkeeping. An awaited result may take the whole
         confined compute budget plus the delivery window to arrive, so its TTL spans
@@ -1872,10 +2206,33 @@ class MeshNode:
                      + float(self.proto["foreignResultMaxSecs"])
                      + float(self.proto["peerTimeoutSecs"]))
         acted_ttl = float(self.proto["foreignResultMaxSecs"])
+        grace = float(self.proto["foreignReminderGraceSecs"])
+        margin = float(self.proto["peerTimeoutSecs"])
+
+        def keep_awaiting(aw: _Awaiting) -> bool:
+            if aw.deadline is None:
+                return now - aw.added < await_ttl
+            # An ARMED entry lives until its accountability cycle resolves it
+            # (fulfilled / extended / banned) — the deadline check owns it. The
+            # age bound here is only a backstop against a wedged decision; the
+            # deadline moves on every extension, so it self-renews.
+            return now < aw.deadline + 2 * grace + margin
+
         self._awaiting_result = {k: v for k, v in self._awaiting_result.items()
-                                 if now - v[2] < await_ttl}
+                                 if keep_awaiting(v)}
         self._acted_results = {k: t for k, t in self._acted_results.items()
                                if now - t < acted_ttl}
+        # Result tombstones (gave-up deliveries kept for reminder revival): bound
+        # by the accountability window an originator could still ask within, and
+        # by count — newest first, since a reminder asks about the recent past.
+        tomb_ttl = (float(self.proto["foreignCompletionDeadlineSecs"])
+                    + grace + margin)
+        self._pending_results = {k: p for k, p in self._pending_results.items()
+                                 if now - p.created < tomb_ttl}
+        tombs = sorted((k for k, p in self._pending_results.items() if p.gave_up),
+                       key=lambda k: self._pending_results[k].created)
+        for job_id in tombs[:-_MAX_TOMBSTONES] if len(tombs) > _MAX_TOMBSTONES else []:
+            self._pending_results.pop(job_id, None)
 
     # MARK: - control sessions (panel / CLI)
 
@@ -1944,6 +2301,24 @@ class MeshNode:
             self.remove_trusted(str(msg.get("fingerprint", "")).strip())
             self._flush_state()
             return {"t": "ok"}
+        if t == "ban":
+            fp = str(msg.get("fingerprint", "")).strip()
+            node_id = str(msg.get("node", "")).strip()
+            if not fp and not node_id:
+                return {"t": "error", "reason": "ban needs a fingerprint or node"}
+            self.ban_device(fp, node_id, label=str(msg.get("label", "")),
+                            reason=str(msg.get("reason", "")) or "manual")
+            self._flush_state()
+            return {"t": "ok"}
+        if t == "unban":
+            fp = str(msg.get("fingerprint", "")).strip()
+            node_id = str(msg.get("node", "")).strip()
+            if not fp and not node_id:
+                return {"t": "error", "reason": "unban needs a fingerprint or node"}
+            if not self.unban_device(fp, node_id):
+                return {"t": "error", "reason": "no matching ban"}
+            self._flush_state()
+            return {"t": "ok"}
         if t == "stop":
             self.request_stop()
             return {"t": "ok"}
@@ -1954,6 +2329,11 @@ class MeshNode:
     def add_trusted(self, fingerprint: str, label: str = "") -> None:
         self._trusted[fingerprint] = label
         trust.save(self._trusted)
+        # An explicit promotion is the operator's newest word — it lifts any ban
+        # (trusted and banned are mutually exclusive states).
+        if self.unban_device(fingerprint):
+            activity.log("mesh", "mesh-up",
+                         f"Mesh: promotion lifted the ban on {fingerprint[:16]}")
         activity.log("mesh", "mesh-up",
                      f"Mesh: trusting device {fingerprint[:16]}"
                      f"{' (' + label + ')' if label else ''}")
@@ -1962,6 +2342,33 @@ class MeshNode:
         if self._trusted.pop(fingerprint, None) is not None:
             trust.save(self._trusted)
             activity.log("mesh", "mesh-up", f"Mesh: untrusting device {fingerprint[:16]}")
+
+    # MARK: - ban list (accountability verdicts + operator-managed, local, never gossiped)
+
+    def ban_device(self, fingerprint: str, node_id: str = "", label: str = "",
+                   reason: str = "", job_id: str = "") -> None:
+        """Mark a device banned (the automatic accountability verdict, or the
+        operator's manual mark). The newest word wins: a banned fingerprint can't
+        stay on the trusted allowlist."""
+        if fingerprint and fingerprint in self._trusted:
+            self.remove_trusted(fingerprint)
+        self._banned = banned.add(
+            self._banned,
+            banned.entry(fingerprint, node_id, label=label, reason=reason,
+                         job_id=job_id))
+        banned.save(self._banned)
+        who = label or (node_id[:8] if node_id else fingerprint[:16])
+        activity.log("mesh", "warn", f"Mesh: BANNED device {who} — {reason or 'manual'}")
+
+    def unban_device(self, fingerprint: str = "", node_id: str = "") -> bool:
+        """Lift a ban (the operator's recovery path). True if one matched."""
+        self._banned, removed = banned.remove(self._banned, fingerprint, node_id)
+        if removed:
+            banned.save(self._banned)
+            activity.log("mesh", "mesh-up",
+                         f"Mesh: unbanned device "
+                         f"{fingerprint[:16] or node_id[:8]}")
+        return removed
 
     # MARK: - snapshot
 
@@ -2013,6 +2420,9 @@ class MeshNode:
             "beaconBlocked": self._beacon_blocked,
             "trusted": [{"fingerprint": fp, "label": lbl}
                         for fp, lbl in sorted(self._trusted.items())],
+            # The local ban list, mirrored read-only (like `trusted`) so the
+            # operator's UI shows who was marked banned and why. Never gossiped.
+            "banned": [dict(e) for e in self._banned],
             "assignments": {k: a.to_dict() for k, a in self._assignments.items()},
             "overrides": self.overrides.to_dict(),
             # Active origination leases this node currently observes: work_key →

@@ -22,6 +22,10 @@ Message types (``t``):
 - ``job-result``(TCP)  the computed artifact a FOREIGN request returns to its originator
                        (who then performs any social action itself); re-sent until acked
 - ``job-ack``   (TCP)  the originator's acknowledgement of a ``job-result`` (reliable delivery)
+- ``job-reminder``(TCP) the originator's "is this ready?" — a foreign-accepted job passed
+                       its completion deadline without a result (accountability)
+- ``job-progress``(TCP) the executor's reply to a reminder when the work is still
+                       running: a status note, its case for a deadline extension
 - ``work-claim``(TCP)  gossiped, self-signed origination lease on a unit of work
 - ``status``    (TCP)  ctl request: reply with one ``state`` message (the snapshot)
 """
@@ -448,9 +452,17 @@ def dispatch(job: Job, api_key: str = "") -> dict:
     return msg
 
 
-def job_status(job_id: str, status: str, reason: str = "", node_id: str = "") -> dict:
-    return {"t": "job-status", "id": job_id, "status": status,
-            "reason": reason, "node": node_id}
+def job_status(job_id: str, status: str, reason: str = "", node_id: str = "",
+               direct: bool = False) -> dict:
+    """``direct`` (additive, omitted when false) marks a ``spawned`` job the
+    executor ran on the PERSONAL path — fire-and-forget, no ``job-result`` will
+    follow — so an accountability-tracking originator knows not to arm a
+    completion deadline for it. See docs/szpontnet/13-foreign-execution.md."""
+    msg = {"t": "job-status", "id": job_id, "status": status,
+           "reason": reason, "node": node_id}
+    if direct:
+        msg["direct"] = True
+    return msg
 
 
 def job_result(job_id: str, node_id: str, result: dict, sig: str = "") -> dict:
@@ -469,6 +481,28 @@ def job_ack(job_id: str, node_id: str) -> dict:
     """The originator's acknowledgement of a [job_result], by Job ``id``. Stops the
     executor's retry loop; reliable delivery, not fire-and-forget."""
     return {"t": "job-ack", "id": job_id, "node": node_id}
+
+
+# Receiver-side cap on a job-progress `note` — a plea for an extension, not a
+# payload channel (the artifact itself rides job-result, bounded by MAX_LINE_BYTES).
+MAX_PROGRESS_NOTE_BYTES = 4096
+
+
+def job_reminder(job_id: str, node_id: str) -> dict:
+    """The originator's "is this ready?" for a foreign-accepted SzpontRequest that
+    passed its completion deadline without a result. The executor must answer with
+    the ``job-result`` (if computed) or a [job_progress] (still running); silence,
+    or an answer that doesn't fulfill the task, gets it banned. See
+    docs/szpontnet/13-foreign-execution.md."""
+    return {"t": "job-reminder", "id": job_id, "node": node_id}
+
+
+def job_progress(job_id: str, node_id: str, note: str) -> dict:
+    """The executor's reply to a [job_reminder] when the work is still running: a
+    human-readable status note, judged by the originator's extension decider (an
+    agent's call). Unsigned like job-status — gated by the responder link alone,
+    it only ever influences the originator's local extension decision."""
+    return {"t": "job-progress", "id": job_id, "node": node_id, "note": note}
 
 
 def status_request() -> dict:
