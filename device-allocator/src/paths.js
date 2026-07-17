@@ -32,11 +32,25 @@ export const AUDIT_PATH = path.join(BAN_DIR, 'audit.jsonl'); // shared action lo
 // path from the SDK root. adb too: the daemon may be launched from launchd or the
 // applet, whose PATH lacks Homebrew/SDK dirs — a bare 'adb' would silently make
 // every Android device invisible (run() maps ENOENT to {ok:false} -> empty list).
+//
+// The SDK default location is OS-specific: macOS puts it under ~/Library, Linux
+// (the Android Studio default) under ~/Android/Sdk. Defaulting to the macOS path
+// on Linux points EMULATOR_BIN at a nonexistent file, so `emulator -list-avds`
+// fails and every Android device is invisible — the daemon then reports
+// needs-create for emulators that are booted and adb-visible.
+const DEFAULT_ANDROID_HOME =
+  process.platform === 'darwin'
+    ? path.join(os.homedir(), 'Library', 'Android', 'sdk')
+    : path.join(os.homedir(), 'Android', 'Sdk');
 export const ANDROID_HOME =
   process.env.ANDROID_HOME ||
   process.env.ANDROID_SDK_ROOT ||
-  path.join(os.homedir(), 'Library', 'Android', 'sdk');
-export const EMULATOR_BIN = path.join(ANDROID_HOME, 'emulator', 'emulator');
+  DEFAULT_ANDROID_HOME;
+const SDK_EMULATOR = path.join(ANDROID_HOME, 'emulator', 'emulator');
+// Mirror the adb fallback: if the SDK isn't at the resolved root, fall back to a
+// bare 'emulator' so a PATH-provided binary still works instead of failing hard.
+export const EMULATOR_BIN =
+  process.env.EMULATOR_PATH || (fs.existsSync(SDK_EMULATOR) ? SDK_EMULATOR : 'emulator');
 const SDK_ADB = path.join(ANDROID_HOME, 'platform-tools', 'adb');
 export const ADB_BIN = process.env.ADB_PATH || (fs.existsSync(SDK_ADB) ? SDK_ADB : 'adb');
 
