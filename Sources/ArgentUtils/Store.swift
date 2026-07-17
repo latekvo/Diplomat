@@ -108,6 +108,21 @@ final class Store: ObservableObject {
     @Published var meshState: MeshSnapshot?
     @Published var meshError: String?
 
+    /// Fingerprints of newly-seen mesh devices the user has already decided on (marked
+    /// Personal, or explicitly "Keep Foreign") — so the one-time "New device" prompt on a
+    /// peer card doesn't re-nag. The node stays the source of truth for actual trust; this
+    /// only suppresses the prompt. Persisted locally (this machine's UI state).
+    @Published var meshAckedDevices: Set<String> {
+        didSet { persist(Array(meshAckedDevices), forKey: Keys.meshAckedDevices) }
+    }
+
+    /// Whether the "marked Personal — trust the other side too" reminder is suppressed
+    /// (the modal's "Don't show again"). Persisted locally; default off (shown once per
+    /// promotion until the user opts out).
+    @Published var meshTrustReminderSuppressed: Bool {
+        didSet { persist(meshTrustReminderSuppressed, forKey: Keys.meshTrustReminderSuppressed) }
+    }
+
     /// Whether this machine joins the LAN P2P mesh. Opt-in and OFF by default — the app
     /// never opens a node on the network unasked; enabling it in Settings auto-starts one.
     @Published var meshEnabled: Bool {
@@ -189,6 +204,8 @@ final class Store: ObservableObject {
         static let apiWatchContinues = "apiWatchContinues"
         static let myConflictAttempts = "myConflictAttempts"
         static let meshEnabled = "meshEnabled"
+        static let meshAckedDevices = "meshAckedDevices"
+        static let meshTrustReminderSuppressed = "meshTrustReminderSuppressed"
     }
 
     /// The persisted terminal choice, readable before a Store exists (the AppDelegate's
@@ -256,6 +273,8 @@ final class Store: ObservableObject {
         // Mesh is opt-in and OFF by default (absent key ⇒ false): no node opens on the
         // network until the user enables it in Settings.
         meshEnabled = defaults.object(forKey: Keys.meshEnabled) as? Bool ?? false
+        meshAckedDevices = Set(defaults.stringArray(forKey: Keys.meshAckedDevices) ?? [])
+        meshTrustReminderSuppressed = defaults.bool(forKey: Keys.meshTrustReminderSuppressed)
         processes = Store.loadProcesses()
         if hiddenTools.contains(selected.rawValue),
            let first = ToolKind.allCases.first(where: { !hiddenTools.contains($0.rawValue) }) {
@@ -1229,6 +1248,29 @@ final class Store: ObservableObject {
             self.meshError = err
             await self.meshTick()
         }
+    }
+
+    /// Set the trust level applied to UNKNOWN (unlisted) devices — the mesh screen's
+    /// default-trust toggle. `level` is "personal" or "foreign". Runs the control
+    /// round-trip off-main; a `MeshCtlError` lands in `meshError` for the screen.
+    func meshSetDefaultTrust(level: String) {
+        let port = meshState?.tcpPort ?? 0
+        Task { [weak self] in
+            let err: String? = await Task.detached(priority: .userInitiated) {
+                do { try MeshBridge.setDefaultTrust(level: level, port: port); return nil }
+                catch { return (error as? LocalizedError)?.errorDescription ?? "\(error)" }
+            }.value
+            guard let self else { return }
+            self.meshError = err
+            await self.meshTick()
+        }
+    }
+
+    /// Record that the user has decided on a newly-seen device (Personal or Keep Foreign),
+    /// so its one-time "New device" prompt stops showing. UI-local; does not change trust.
+    func meshAckDevice(fingerprint: String) {
+        guard !fingerprint.isEmpty else { return }
+        meshAckedDevices.insert(fingerprint)
     }
 
     /// Hand a duty job to the mesh — the wizards' "Run on mesh" path (mirrors the Linux

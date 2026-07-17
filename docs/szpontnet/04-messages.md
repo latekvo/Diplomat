@@ -29,6 +29,7 @@ peer TCP link; **ctl** = sent on a control session (client↔node).
 | [`set-overrides`](#set-overrides) | ctl | client→node | edit a duty's placement policy |
 | [`trust`](#trust--untrust) | ctl | client→node | add a fingerprint to the local allowlist |
 | [`untrust`](#trust--untrust) | ctl | client→node | remove a fingerprint from the local allowlist |
+| [`set-default-trust`](#set-default-trust) | ctl | client→node | set the default trust level for unlisted devices |
 | [`stop`](#stop) | ctl | client→node | ask the node to shut down |
 | [`ok` / `error`](#ok--error) | ctl | node→client | generic command results |
 | [`dispatch-result`](#dispatch-result) | ctl | node→client | per-slot dispatch outcomes |
@@ -563,6 +564,25 @@ Both reply [`ok`](#ok--error) (or [`error`](#ok--error) when `fingerprint` is
 missing). This edits **machine-local** state (`~/.argent/mesh/trusted.json`) and is
 **never gossiped** - trust is each operator's own call. See
 [11-trust-and-balancing](11-trust-and-balancing.md).
+
+### `set-default-trust`
+
+Set this node's **default trust level** - how a device *not* in the allowlist is
+classified. `level` is `"personal"` or `"foreign"`.
+
+```json
+{"t": "set-default-trust", "level": "personal", "v": 1}
+```
+
+| Field | Type | Req? | Meaning |
+|-------|------|------|---------|
+| `level` | string | **yes** | `"foreign"` (zero-trust default — a new device is untrusted until promoted) or `"personal"` (full-trust — every unlisted peer trusted). |
+
+Replies [`ok`](#ok--error) (or [`error`](#ok--error) for an unrecognised `level`).
+Like `trust`/`untrust` this edits **machine-local** state (persisted as `defaultLevel`
+in `~/.argent/mesh/trusted.json`) and is **never gossiped**; it takes effect live,
+re-classifying every unlisted peer on the next snapshot. See
+[11-trust-and-balancing](11-trust-and-balancing.md#trust-is-never-derived-from-an-advertisement).
 
 ### `stop`
 

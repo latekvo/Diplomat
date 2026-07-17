@@ -127,6 +127,29 @@ def on_result() -> str:
     return os.environ.get("ARGENT_MESH_ON_RESULT", "")
 
 
+def default_trust() -> str:
+    """The trust level a node applies to an **unknown** device — one whose proven
+    fingerprint is not in the local allowlist (and to any unverified/keyless peer,
+    which can never match the allowlist). ``ARGENT_MESH_DEFAULT_TRUST`` overrides the
+    shipped baseline in ``core/mesh.json`` (``trust.default``).
+
+    Ships as **foreign** (zero-trust by default): a device you have not explicitly
+    marked *personal* is untrusted — its requests are declined (or, with a
+    confinement runner, run confined and response-only), it cannot mutate this node
+    via ``set-attr``, and it can never own work. The operator promotes the devices
+    they trust one at a time (the allowlist is that set of exceptions). Set this to
+    ``personal`` to restore the pre-trust **full-altruism** mode — every unlisted
+    peer is trusted, exactly as a fresh mesh behaved before the default became
+    configurable. An unrecognised value falls back to ``foreign`` (the safe default).
+    This is the node-wide baseline; the operator's live choice is persisted in
+    ``trusted.json`` (:func:`trust.load_default_level`) and edited from the panel."""
+    raw = os.environ.get("ARGENT_MESH_DEFAULT_TRUST", "").strip().lower()
+    if raw in ("personal", "foreign"):
+        return raw
+    baseline = str(core.mesh().get("trust", {}).get("default", "foreign")).strip().lower()
+    return baseline if baseline in ("personal", "foreign") else "foreign"
+
+
 def accounts() -> dict:
     """The subscription-plan + accounting knobs (plan weights, capacity, quota
     window, usage time-constant) behind per-node load balancing."""

@@ -107,11 +107,12 @@ def _print_status() -> int:
     for p in state.get("peers", []):
         vmark = "✓" if p.get("verified") else "?"
         print(f"peer  {p.get('name')}  {p.get('platform')}  {_strength(p)}"
-              f"  tokens {_tokens(p)}{_acct(p)}  {p.get('trust', 'personal')}{vmark}"
+              f"  tokens {_tokens(p)}{_acct(p)}  {p.get('trust', 'foreign')}{vmark}"
               f"  link {p.get('link')}  {p.get('addr')}  fp {p.get('fingerprint','')[:16]}")
+    print(f"default trust for new devices: {state.get('defaultTrust', 'foreign')}")
     trusted = state.get("trusted", [])
     if trusted:
-        print("trusted  " + ", ".join(
+        print("trusted (personal)  " + ", ".join(
             f"{e.get('fingerprint','')[:16]}{'(' + e['label'] + ')' if e.get('label') else ''}"
             for e in trusted))
     for duty, a in (state.get("assignments") or {}).items():
@@ -178,6 +179,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--untrust", metavar="FP",
                     help="remove a device fingerprint from the trusted allowlist")
     ap.add_argument("--label", default="", help="friendly label for --trust")
+    ap.add_argument("--default-trust", metavar="LEVEL", dest="default_trust",
+                    choices=("personal", "foreign"),
+                    help="set the trust level for UNKNOWN devices (personal|foreign); "
+                    "ships foreign (a new device is untrusted until you promote it)")
     args = ap.parse_args(argv)
 
     if args.daemon:
@@ -204,6 +209,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.untrust:
             ctl.untrust_device(args.untrust)
             print(f"untrusting {args.untrust[:16]}")
+            return 0
+        if args.default_trust:
+            ctl.set_default_trust(args.default_trust)
+            print(f"default trust for new devices → {args.default_trust}")
             return 0
         if args.set_attrs:
             attrs = _parse_attrs(args.set_attrs)

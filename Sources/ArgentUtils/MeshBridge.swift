@@ -136,6 +136,13 @@ enum MeshBridge {
         _ = try request(["t": "untrust", "fingerprint": fingerprint], port: port)
     }
 
+    /// Set the trust level applied to UNKNOWN (unlisted) devices — the panel's
+    /// default-trust toggle. `level` is "personal" or "foreign". Mirrors
+    /// `ctl.set_default_trust`.
+    static func setDefaultTrust(level: String, port: Int) throws {
+        _ = try request(["t": "set-default-trust", "level": level], port: port)
+    }
+
     /// Hand a duty job to the mesh: the local node picks the target (per the dispatch
     /// strategy, with failover) unless `target` pins a node id, and the chosen executor
     /// spawns the agent. Returns the per-node result dicts (`status`: spawned / declined /

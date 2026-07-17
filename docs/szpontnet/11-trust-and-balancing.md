@@ -77,25 +77,35 @@ The executor classifies the requester from the **verified fingerprint of the lin
 the request arrived on** - never from the job's self-reported `requestedBy`:
 
 ```
-function classify(verified_fingerprint, allowlist) -> "personal" | "foreign":
-    if allowlist is empty:                          # boundary not configured
-        return "personal"                           # full trust (v1-compatible)
+function classify(verified_fingerprint, allowlist, default_level) -> "personal" | "foreign":
     if verified_fingerprint in allowlist:
-        return "personal"
-    return "foreign"                                # unlisted, or never verified
+        return "personal"                           # an explicit promotion always wins
+    return default_level                            # unlisted, or never verified
 ```
 
-**Empty allowlist = full trust**, so a fresh mesh behaves exactly like the
-pre-trust core. The moment you trust even one device the boundary switches on and
-every unlisted (or unverified) peer becomes foreign. Enabling zero-trust is thus a
-deliberate act: `--trust <fingerprint>` (get a peer's fingerprint from its
-`--fingerprint`, shown in `--status`, or its `state.json`).
+**Zero-trust by default.** `default_level` ships **`foreign`**: a device you have
+not explicitly marked personal is untrusted - a new machine that joins the mesh
+cannot run your requests, [mutate your node](#mutating-a-node-is-a-personal-only-action),
+or [own work](12-work-claims.md) until you promote it. The allowlist is thus the set
+of **exceptions** (promotions) to a foreign baseline; you add to it deliberately with
+`--trust <fingerprint>` (get a peer's fingerprint from its `--fingerprint`, shown in
+`--status`, or its `state.json`).
+
+The default level is **operator-configurable** per node - the panel's default-trust
+toggle, `--default-trust <level>`, or `ARGENT_MESH_DEFAULT_TRUST`; the choice persists
+in [`trusted.json`](08-state.md#trustedjson) alongside the allowlist. Setting it to
+**`personal`** restores the pre-trust **full-altruism** mode - every unlisted peer is
+trusted, exactly as a fresh mesh behaved before the default became configurable - the
+right mode for a fleet of machines you all own. Interop is unchanged either way: trust
+is a purely local decision (nothing about it is on the wire), so a node running the
+foreign default and a core-only node still link, gossip, and dispatch; the foreign node
+simply declines requests it hasn't been told to trust.
 
 > Because verification is symmetric and per-link, an unverified peer (an old core
-> node with no key, or a lib-less keyless node) has **no** verified fingerprint, so
-> `classify` returns foreign under any non-empty allowlist. That is the correct,
-> conservative outcome: you never grant personal access to something you couldn't
-> authenticate.
+> node with no key, or a lib-less keyless node) has **no** verified fingerprint, so it
+> can never match the allowlist and always falls to `default_level` - `foreign` under
+> the shipped default. That is the correct, conservative outcome: you never grant
+> personal access to something you couldn't authenticate.
 
 ### The personal path (v1)
 
@@ -177,9 +187,10 @@ therefore classify the sender of a **peer-link** `set-attr` from the verified li
 device; a `set-attr` from a **foreign** device MUST be ignored. A control-session
 `set-attr` (the local operator, already fenced by the [join
 secret](03-transport.md#the-join-fence)) is a first-party action and is not
-subject to this check. As everywhere, an **empty allowlist means personal**, so an
-unconfigured mesh keeps letting any peer retune any node exactly as the pre-trust
-core did.
+subject to this check. As everywhere, an unlisted sender is classified by the node's
+**default trust level** - `foreign` by default, so an unconfigured mesh **ignores** a
+peer's `set-attr` until that peer is promoted (or the default is switched to
+`personal` for a fully-owned fleet).
 
 ## Authenticated gossip
 
@@ -443,10 +454,15 @@ An implementation of this chapter:
 
 - **MUST NOT** derive trust from any advertised field. Trust rests only on a
   verified key fingerprint against a local allowlist.
-- **MUST** treat an **empty** allowlist as full trust (`personal` for all), so a
-  fresh mesh interoperates with core-only nodes; and treat a peer that has **not**
-  proved a key as having no fingerprint, hence `foreign` under any non-empty
-  allowlist.
+- **MUST** classify an **unknown** device - one whose verified fingerprint is not in
+  the allowlist, or which has **not** proved a key (so it has no fingerprint) - by the
+  node's **default trust level**, and a **listed** fingerprint always as `personal`.
+  The default level **MUST** ship **`foreign`** (a new device is zero-trust until the
+  operator promotes it) and **MUST** be operator-configurable; setting it to
+  `personal` **MUST** restore full trust (every unlisted peer `personal`), so a
+  fully-owned fleet interoperates with core-only nodes exactly as the pre-trust core
+  did. Because trust is a purely local decision (never on the wire), either default
+  interoperates with any other node.
 - **MUST** verify proof of possession before treating a peer as `personal`: the
   peer's [`auth`](04-messages.md#auth) signature over the **domain-separated
   challenge** (`"szpontnet-auth-v1:" || nonce`, [above](#trust-is-never-derived-from-an-advertisement))

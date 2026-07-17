@@ -396,8 +396,12 @@ def case_c_shortfall(rep: Reporter, ctx: Context) -> None:
 
 def case_d_executor(rep: Reporter, ctx: Context) -> None:
     rep.begin_case("D1", "Executor: runs an inbound dispatch, replies job-status (07 / V4)")
+    # This tests dispatch EXECUTION (ch 07), not trust: run the candidate in full-trust
+    # mode (default personal) so the inbound dispatch is admitted regardless of the
+    # probe's device trust — otherwise the ch-11 zero-trust default would decline it and
+    # the execution path would never be exercised. Trust itself is covered by category I.
     scn = Scenario(ctx.node_cmd, ctx.model, candidate_id=ID_A, name="cand",
-                   platform="linux", tier=4, loopback=ctx.loopback)
+                   platform="linux", tier=4, loopback=ctx.loopback, default_trust="personal")
     scn.add_peer(id=ID_B, name="peer", platform="macos", tier=1)
     with scn:
         if not _need_port(rep, scn):
@@ -742,8 +746,11 @@ def _dispatch_status(peer, job, timeout: float = 6.0):
                                     if m.get("id") == job.id), None), timeout)
 
 
-def case_i_empty_allowlist_trust(rep: Reporter, ctx: Context) -> None:
-    rep.begin_case("I1", "Empty allowlist = full trust; a verified peer's dispatch runs (11)")
+def case_i_default_trust_level(rep: Reporter, ctx: Context) -> None:
+    rep.begin_case("I1", "Default trust level ships foreign (zero-trust) and is configurable to personal (11)")
+    # Part A: the SHIPPED default. No trust configured, so an empty allowlist ⇒ the
+    # default level ⇒ foreign: a verified-but-unlisted peer is foreign and its dispatch
+    # is declined, until the operator promotes its proven fingerprint to personal.
     scn = Scenario(ctx.node_cmd, ctx.model, candidate_id=ID_A, platform="linux", tier=4,
                    loopback=ctx.loopback)
     scn.add_peer(id=ID_B, name="peer", platform="macos", tier=1, trust_peer=True)
@@ -766,13 +773,60 @@ def case_i_empty_allowlist_trust(rep: Reporter, ctx: Context) -> None:
         rep.check("candidate proved possession of ITS key back to the peer",
                   bool(wait_until(lambda: peer.candidate_verified_ok, 4.0)), "MUST",
                   "11-trust-and-balancing#conformance")
-        rep.check("empty allowlist classifies the verified peer as personal",
-                  psnap.get("trust") == "personal", "MUST",
-                  "11-trust-and-balancing#the-empty-allowlist")
-        job = Job(id="i1-run", duty="review", prompt="run me", requested_by=ID_B,
+        rep.check("with no trust configured, the default level classifies the verified peer foreign",
+                  psnap.get("trust") == "foreign", "MUST",
+                  "11-trust-and-balancing#trust-is-never-derived-from-an-advertisement",
+                  "a new device is zero-trust by default")
+        job = Job(id="i1-fgn", duty="review", prompt="run me", requested_by=ID_B,
                   requested_at=time.time())
         reply = _dispatch_status(peer, job)
-        rep.check("a personal (verified, full-trust) peer's dispatch is spawned",
+        rep.check("a foreign peer's dispatch is declined by default (no confinement runner)",
+                  reply is not None and reply.get("status") == "declined", "MUST",
+                  "11-trust-and-balancing#the-foreign-path-zero-trust",
+                  f"status={reply.get('status') if reply else None}")
+        try:
+            sess = scn.candidate.open_ctl()
+            sess.command(codec.trust(peer.fingerprint, "peer"))
+            sess.close()
+        except OSError:
+            rep.skip_case("could not drive trust control command")
+            return
+        wait_until(lambda: _peer_snap(scn.candidate.snapshot(), ID_B).get("trust") == "personal", 4.0)
+        rep.check("trusting the peer's proven fingerprint promotes it to personal",
+                  _peer_snap(scn.candidate.snapshot(), ID_B).get("trust") == "personal", "MUST",
+                  "11-trust-and-balancing#trust-is-never-derived-from-an-advertisement")
+        reply = _dispatch_status(peer, Job(id="i1-run", duty="review", prompt="run me",
+                                           requested_by=ID_B, requested_at=time.time()))
+        rep.check("a promoted (personal) peer's dispatch is spawned",
+                  reply is not None and reply.get("status") == "spawned", "MUST",
+                  "11-trust-and-balancing#conformance",
+                  f"status={reply.get('status') if reply else None}")
+
+    # Part B: the default is operator-CONFIGURABLE. With the default set to personal
+    # (the full-trust / full-altruism mode), the same verified-but-unlisted peer is
+    # personal and its dispatch runs — no per-device promotion needed.
+    scn2 = Scenario(ctx.node_cmd, ctx.model, candidate_id=ID_A, platform="linux", tier=4,
+                    loopback=ctx.loopback, default_trust="personal")
+    scn2.add_peer(id=ID_B, name="peer", platform="macos", tier=1, trust_peer=True)
+    with scn2:
+        if not _need_port(rep, scn2):
+            return
+        peer = scn2.mesh.peers[0]
+        if not wait_until(lambda: peer.linked, 8.0):
+            rep.skip_case("peer never linked (personal-default scenario)")
+            return
+        promoted = wait_until(
+            lambda: _peer_snap(scn2.candidate.snapshot(), ID_B).get("trust") == "personal", 6.0)
+        if _peer_snap(scn2.candidate.snapshot(), ID_B).get("trust") is None:
+            rep.skip_case("candidate ignores SZPONTNET_DEFAULT_TRUST — default not configurable")
+            return
+        rep.check("default=personal classifies a verified unlisted peer as personal (full-trust mode)",
+                  promoted, "MUST",
+                  "11-trust-and-balancing#trust-is-never-derived-from-an-advertisement",
+                  "setting the default to personal restores the pre-trust full-altruism behavior")
+        reply = _dispatch_status(peer, Job(id="i1-pers", duty="review", prompt="run me",
+                                           requested_by=ID_B, requested_at=time.time()))
+        rep.check("under the personal default, the peer's dispatch is spawned without promotion",
                   reply is not None and reply.get("status") == "spawned", "MUST",
                   "11-trust-and-balancing#conformance",
                   f"status={reply.get('status') if reply else None}")
@@ -1100,8 +1154,11 @@ def case_j_server_no_dispatch(rep: Reporter, ctx: Context) -> None:
 
 def case_j_api_key_dispatch(rep: Reporter, ctx: Context) -> None:
     rep.begin_case("J2", "API key gates inbound dispatch: declined without, spawned with (11)")
+    # The API key is orthogonal to device trust: to isolate it, run the candidate in
+    # full-trust mode (default personal) so the ONLY gate on the dispatch is the key,
+    # not the ch-11 zero-trust default (which would decline the unlisted probe first).
     scn = Scenario(ctx.node_cmd, ctx.model, candidate_id=ID_A, platform="linux", tier=4,
-                   loopback=ctx.loopback, api_key="sekret-key")
+                   loopback=ctx.loopback, api_key="sekret-key", default_trust="personal")
     scn.add_peer(id=ID_B, name="peer", platform="macos", tier=1, trust_peer=True)
     with scn:
         if not _need_port(rep, scn):
@@ -1522,7 +1579,7 @@ def case_l_keyless_non_authoritative(rep: Reporter, ctx: Context) -> None:
                    loopback=ctx.loopback)
     # A keyless probe (trust_peer=False): its claim carries no key to bind to, so
     # per the ownership binding (12 §Ownership) it can never OWN the key in ANY
-    # trust configuration — not even the empty-allowlist full-trust default, since a
+    # trust configuration — not even under a personal default (full trust), since a
     # keyless claim is not signed by the peer it names. This case additionally
     # configures the allowlist (trusting the candidate's own fingerprint, mirroring
     # I2) so the keyless peer is *also* classified foreign — a strictly stronger
@@ -1790,7 +1847,7 @@ SUITES = {
     "F": [case_f_emitted],
     "G": [case_g_snapshot],
     "H": [case_h_overrides_lww],
-    "I": [case_i_empty_allowlist_trust, case_i_proof_of_possession, case_i_keyless_foreign,
+    "I": [case_i_default_trust_level, case_i_proof_of_possession, case_i_keyless_foreign,
           case_i_requester_from_link, case_i_declined_failover, case_i_surplus_first,
           case_i_omit_when_empty],
     "J": [case_j_server_no_dispatch, case_j_api_key_dispatch, case_j_api_key_ctl],

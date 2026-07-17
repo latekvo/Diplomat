@@ -507,12 +507,14 @@ class MeshView(QWidget):
         for peer in sorted(peers, key=lambda p: (p.get("name") or "").lower()):
             self.nodes_col.addWidget(self._node_card(peer, peer))
 
-        # When no device is trusted yet, every peer is Personal by default — say so,
-        # so the trust toggles don't look inert (marking one Personal seeds the list).
-        trusted = (self.store.mesh_state or {}).get("trusted") or []
-        if peers and not trusted:
-            hint = QLabel("No trust allowlist yet — every peer is treated as Personal. "
-                          "Mark one Personal to start restricting the rest.")
+        # Zero-trust by default: a new device is Foreign until promoted. Spell out
+        # the current default so the trust toggles read as intentional, not inert.
+        state = self.store.mesh_state or {}
+        default_trust = state.get("defaultTrust", "foreign")
+        trusted = state.get("trusted") or []
+        if peers and not trusted and default_trust == "foreign":
+            hint = QLabel("Zero-trust default — a new device is Foreign until you mark it "
+                          "Personal. Foreign devices' requests are declined (or run confined).")
             hint.setWordWrap(True)
             hint.setStyleSheet("color: palette(mid); font-size: 8px;")
             self.nodes_col.addWidget(hint)

@@ -167,7 +167,11 @@ class MeshNode:
         self.local = identity.load()
         self.stats = stats.load()  # per-node usage/quota accounting for load balancing
         self.key = crypto.load_or_create()  # this device's Ed25519 trust identity
-        self._trusted = trust.load()  # local allowlist of trusted fingerprints
+        self._trusted = trust.load()  # local allowlist of trusted (personal) fingerprints
+        # Trust level for an UNKNOWN device (not in the allowlist / unverified): the
+        # operator's persisted panel choice if any, else the node baseline (env /
+        # core/mesh.json, ships 'foreign' → a new device is zero-trust until promoted).
+        self._default_trust = trust.load_default_level() or config.default_trust()
         self.platform = identity.detect_platform()
         self.epoch = time.time()
         # Cached automatic token-budget read (refreshed on a throttle, so neither the
@@ -945,16 +949,16 @@ class MeshNode:
             fp = crypto.fingerprint_of(peer.info.pubkey)
             if fp and peer.verified_fp != fp:
                 peer.verified_fp = fp
-                level = trust.classify(fp, self._trusted)
+                level = trust.classify(fp, self._trusted, self._default_trust)
                 activity.log("mesh", "mesh-peer-up",
                              f"Mesh: verified {peer.info.name} device {fp[:16]} ({level})")
 
     def _peer_trust(self, peer: Peer | None) -> str:
-        """personal vs foreign for a peer, from its VERIFIED fingerprint against
-        the local allowlist (an unverified peer has no fingerprint -> foreign
-        whenever an allowlist is configured)."""
+        """personal vs foreign for a peer, from its VERIFIED fingerprint against the
+        local allowlist, falling back to the node's default trust level (ships
+        foreign, so an unlisted or unverified peer is untrusted until promoted)."""
         fp = peer.verified_fp if peer else None
-        return trust.classify(fp or "", self._trusted)
+        return trust.classify(fp or "", self._trusted, self._default_trust)
 
     def _learn_node(
         self, info: NodeInfo, host: str, link_writer: asyncio.StreamWriter | None,
@@ -1944,6 +1948,12 @@ class MeshNode:
             self.remove_trusted(str(msg.get("fingerprint", "")).strip())
             self._flush_state()
             return {"t": "ok"}
+        if t == "set-default-trust":
+            level = str(msg.get("level", "")).strip().lower()
+            if not self.set_default_trust(level):
+                return {"t": "error", "reason": "level must be 'personal' or 'foreign'"}
+            self._flush_state()
+            return {"t": "ok"}
         if t == "stop":
             self.request_stop()
             return {"t": "ok"}
@@ -1953,15 +1963,27 @@ class MeshNode:
 
     def add_trusted(self, fingerprint: str, label: str = "") -> None:
         self._trusted[fingerprint] = label
-        trust.save(self._trusted)
+        trust.save(self._trusted, self._default_trust)
         activity.log("mesh", "mesh-up",
                      f"Mesh: trusting device {fingerprint[:16]}"
                      f"{' (' + label + ')' if label else ''}")
 
     def remove_trusted(self, fingerprint: str) -> None:
         if self._trusted.pop(fingerprint, None) is not None:
-            trust.save(self._trusted)
+            trust.save(self._trusted, self._default_trust)
             activity.log("mesh", "mesh-up", f"Mesh: untrusting device {fingerprint[:16]}")
+
+    def set_default_trust(self, level: str) -> bool:
+        """Set the trust level applied to UNKNOWN devices (the panel's default-trust
+        toggle). Persisted in ``trusted.json`` so it survives a restart, and applied
+        live: every unlisted/unverified peer re-classifies on the next snapshot.
+        Returns False for an unrecognised level (caller reports the error)."""
+        if level not in ("personal", "foreign") or level == self._default_trust:
+            return level in ("personal", "foreign")
+        self._default_trust = level
+        trust.save(self._trusted, self._default_trust)
+        activity.log("mesh", "mesh-up", f"Mesh: default trust level for new devices → {level}")
+        return True
 
     # MARK: - snapshot
 
@@ -2013,6 +2035,10 @@ class MeshNode:
             "beaconBlocked": self._beacon_blocked,
             "trusted": [{"fingerprint": fp, "label": lbl}
                         for fp, lbl in sorted(self._trusted.items())],
+            # Trust level applied to an UNKNOWN device (not in `trusted`): 'foreign'
+            # by default (a new device is untrusted until promoted), or 'personal'
+            # for a full-trust mesh. Drives the panel's default-trust toggle.
+            "defaultTrust": self._default_trust,
             "assignments": {k: a.to_dict() for k, a in self._assignments.items()},
             "overrides": self.overrides.to_dict(),
             # Active origination leases this node currently observes: work_key →

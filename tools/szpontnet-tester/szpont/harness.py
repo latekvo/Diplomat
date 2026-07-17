@@ -77,7 +77,7 @@ class Scenario:
         mesh_secret: str | None = None, loopback: bool = True,
         spawn_marker: Path | None = None, work_root: Path | None = None,
         server: bool = False, api_key: str = "", stats: dict | None = None,
-        foreign_spawn: str = "",
+        foreign_spawn: str = "", default_trust: str = "",
     ) -> None:
         self.node_cmd = shlex.split(node_cmd)
         self.model = model
@@ -94,6 +94,9 @@ class Scenario:
         self.stats = stats
         # Chapter-13 confinement runner (default off → a foreign request is declined).
         self.foreign_spawn = foreign_spawn
+        # Chapter-11 default trust level for unlisted devices (empty → candidate's own
+        # shipped default, foreign for the reference).
+        self.default_trust = default_trust
         # The secret the PROBE peers/clients present. Defaults to the candidate's,
         # but a fence test can set a *wrong* one to prove the candidate refuses it.
         self.mesh_secret = secret if mesh_secret is None else mesh_secret
@@ -132,6 +135,7 @@ class Scenario:
             server=self.server, api_key=self.api_key, stats=self.stats,
             foreign_spawn=(self.confined_template() if self.foreign_spawn == "auto"
                            else self.foreign_spawn),
+            default_trust=self.default_trust,
         )
         self.candidate = candmod.Candidate(
             self.node_cmd, env, self.work_dir, secret=self.secret, api_key=self.api_key)

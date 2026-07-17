@@ -96,7 +96,7 @@ class Fleet:
 
     def start(self, node_id: str, name: str, platform: str, tier: int,
               tokens: str = "ok", secret: str = "", server: bool = False,
-              api_key: str = "", extra_env: dict | None = None) -> None:
+              api_key: str = "", default_trust: str = "", extra_env: dict | None = None) -> None:
         d = self.root / node_id
         d.mkdir(parents=True, exist_ok=True)
         (d / "node.json").write_text(json.dumps({
@@ -115,6 +115,11 @@ class Fleet:
         # unaffected.
         env["ARGENT_MESH_SERVER"] = "1" if server else ""
         env["ARGENT_MESH_API_KEY"] = api_key
+        # Full-trust fleet mode: a fleet of the user's own machines that all trust
+        # each other. Left unset, a node uses the shipped default (foreign), so the
+        # trust-boundary tests still exercise zero-trust by default.
+        if default_trust:
+            env["ARGENT_MESH_DEFAULT_TRUST"] = default_trust
         (d / "secret").write_text(secret)  # remembered for this node's CLI calls
         # Each fake node logs to the fleet dir, and must not scribble on the
         # real ~/.argent activity feed.
@@ -206,10 +211,12 @@ def _wait_file(path: Path, expect: str, timeout: float = 8.0) -> None:
 def test_mesh_discovery_assignment_failover_and_dispatch(fleet):
     """One flow, one fleet: cheaper than a fleet per assertion, and closer to
     the real lifecycle (a mesh lives through all of these in sequence)."""
-    # The user's fleet: a Linux box + a strong and a weak MacBook.
-    fleet.start("aaaa", "lin", "linux", tier=4)
-    fleet.start("bbbb", "mac-strong", "macos", tier=1)
-    fleet.start("cccc", "mac-weak", "macos", tier=4)
+    # The user's fleet: a Linux box + a strong and a weak MacBook. A fleet of your
+    # own machines runs in full-trust mode (default trust personal), so peers dispatch
+    # to each other without per-device promotion.
+    fleet.start("aaaa", "lin", "linux", tier=4, default_trust="personal")
+    fleet.start("bbbb", "mac-strong", "macos", tier=1, default_trust="personal")
+    fleet.start("cccc", "mac-weak", "macos", tier=4, default_trust="personal")
 
     # 1. Discovery: every node links to both others.
     for nid in ("aaaa", "bbbb", "cccc"):
@@ -528,9 +535,9 @@ def test_surplus_first_dispatch_picks_the_node_with_most_spare_quota(fleet):
     """Load balancing over real gossip: with no explicit target, the dispatcher
     ranks candidates surplus-first, so a request lands on whoever advertises the
     most spare quota — here the Max-20× machine, not the local or weakest node."""
-    fleet.start("aaaa", "lin", "linux", tier=4)
-    fleet.start("bbbb", "mac-big", "macos", tier=1)
-    fleet.start("cccc", "mac-small", "macos", tier=4)
+    fleet.start("aaaa", "lin", "linux", tier=4, default_trust="personal")
+    fleet.start("bbbb", "mac-big", "macos", tier=1, default_trust="personal")
+    fleet.start("cccc", "mac-small", "macos", tier=4, default_trust="personal")
     for nid in ("aaaa", "bbbb", "cccc"):
         _wait_for(lambda nid=nid: _links_up(fleet.state(nid), 2),
                   what=f"{nid} to link 2 peers")
@@ -653,8 +660,10 @@ def test_server_mode_runs_locally_and_never_dispatches_to_peers(fleet):
 def test_api_key_gates_requests_to_a_server(fleet):
     """A server with an API key declines a request that doesn't present it and runs
     one that does — the optional per-request server credential."""
-    fleet.start("aaaa", "client", "linux", tier=4)
-    fleet.start("bbbb", "server", "macos", tier=1, server=True, api_key="k3y")
+    # Full-trust so the API key (not device trust) is the only gate under test.
+    fleet.start("aaaa", "client", "linux", tier=4, default_trust="personal")
+    fleet.start("bbbb", "server", "macos", tier=1, server=True, api_key="k3y",
+                default_trust="personal")
     for nid in ("aaaa", "bbbb"):
         _wait_for(lambda nid=nid: _links_up(fleet.state(nid), 1), what=f"{nid} link")
     spawned = fleet.root / "spawned"
@@ -766,15 +775,16 @@ def test_redial_from_memory_relinks_without_beacons(fleet):
 def test_work_claim_dedupes_origination_and_frees_on_owner_death(fleet):
     """End-to-end origination dedup across two real nodes, and the liveness lease.
 
-    Two personal machines (empty allowlist ⇒ full trust) both dispatch the SAME
-    workKey. The lower-id node claims it first and runs the work; the higher-id
-    node, hearing that claim, STANDS DOWN with a `suppressed` result instead of
-    double-running. Then the owner is killed: its lease lapses on timeout, and the
-    survivor's next dispatch of the same key is no longer suppressed — it takes the
-    work over. This is the whole point of work-claims, proven over sockets."""
+    Two personal machines (a full-trust fleet) both dispatch the SAME workKey. The
+    lower-id node claims it first and runs the work; the higher-id node, hearing that
+    claim, STANDS DOWN with a `suppressed` result instead of double-running. Then the
+    owner is killed: its lease lapses on timeout, and the survivor's next dispatch of
+    the same key is no longer suppressed — it takes the work over. This is the whole
+    point of work-claims, proven over sockets. (A claim is only authoritative from a
+    *personal* peer, so this fleet runs default-trust personal.)"""
     wk = "review:github.com/acme/app#123@abc123"
-    fleet.start("aaaa", "low", "linux", tier=3)   # lower id → wins the claim race
-    fleet.start("bbbb", "high", "linux", tier=3)  # higher id → stands down
+    fleet.start("aaaa", "low", "linux", tier=3, default_trust="personal")   # lower id → wins race
+    fleet.start("bbbb", "high", "linux", tier=3, default_trust="personal")  # higher id → stands down
     for nid in ("aaaa", "bbbb"):
         _wait_for(lambda nid=nid: _links_up(fleet.state(nid), 1),
                   what=f"{nid} to link its peer")

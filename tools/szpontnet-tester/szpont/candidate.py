@@ -33,7 +33,7 @@ def contract_env(
     node_id: str, name: str, platform: str, tier: int, tokens: str,
     duties_enabled: dict, spawn_cmd: str,
     server: bool = False, api_key: str = "", stats: dict | None = None,
-    foreign_spawn: str = "",
+    foreign_spawn: str = "", default_trust: str = "",
 ) -> dict:
     """The SZPONTNET_* environment a candidate (or its adapter) must honor.
 
@@ -44,6 +44,9 @@ def contract_env(
     ``SZPONTNET_FOREIGN_SPAWN`` (ch 13) is the confinement runner that turns a
     foreign request from *declined* into *confined, response-only* execution — its
     absence means no foreign execution, exactly the safe v1 default.
+    ``SZPONTNET_DEFAULT_TRUST`` (ch 11) sets the default trust level for an unlisted
+    device (``personal``/``foreign``); absent, the candidate uses its own shipped
+    default (``foreign`` for the reference — a new device is zero-trust until promoted).
     """
     env = {
         "SZPONTNET_LOOPBACK": "1" if loopback else "0",
@@ -82,6 +85,8 @@ def contract_env(
         env["SZPONTNET_STATS"] = json.dumps(stats)
     if foreign_spawn:
         env["SZPONTNET_FOREIGN_SPAWN"] = foreign_spawn
+    if default_trust:
+        env["SZPONTNET_DEFAULT_TRUST"] = default_trust
     return env
 
 

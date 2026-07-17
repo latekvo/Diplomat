@@ -98,18 +98,23 @@ set by the operator, never derived from anything a peer advertises.
 
 ```json
 {
+  "defaultLevel": "foreign",
   "trusted": [
     {"fingerprint": "9c1f…a7", "label": "mbp"}
   ]
 }
 ```
 
-Each entry is a `{fingerprint, label}` pair (`label` is a human note, optional). An
-**empty or absent** file means the trust boundary is **not configured**, so every
-verified peer is `personal` - the full-trust fallback identical to the pre-trust
-mesh ([11](11-trust-and-balancing.md)). The running node keeps the set in memory and
-edits it live through the [`trust`/`untrust`](04-messages.md#ctl) control commands,
-so a change takes effect without a restart.
+Each `trusted` entry is a `{fingerprint, label}` pair (`label` is a human note,
+optional) naming a device the operator has explicitly promoted to `personal`.
+`defaultLevel` (`"personal"`/`"foreign"`) is the operator's persisted **default trust
+level** for any device *not* in the allowlist; it ships **`foreign`** — a new device
+is zero-trust until promoted ([11](11-trust-and-balancing.md)). An **absent**
+`defaultLevel` falls back to the node baseline (`ARGENT_MESH_DEFAULT_TRUST` /
+`core/mesh.json`'s `trust.default`, itself `foreign`). The running node keeps both the
+set and the level in memory and edits them live through the
+[`trust`/`untrust`/`set-default-trust`](04-messages.md#ctl) control commands, so a
+change takes effect without a restart.
 
 ## `stats.json`
 
@@ -186,6 +191,7 @@ pinned, else the usage-derived state), not the raw override.
 | `self` | NodeInfo | this node's own advertisement, plus its own `fingerprint` (`sha256` of its advertised `pubkey`, 64 hex — *not* the pubkey itself) and `uptimeSecs` (seconds this node has been running). |
 | `peers` | array | each known peer's NodeInfo plus link decoration: `link` (`up`/`stale`/`down`), `addr` (last-seen source IP), `lastSeenSecsAgo` (float), `uptimeSecs` (float, seconds the current link has been up - `null` while down), plus **this node's local view** of the peer: `verified` (bool - whether the peer *proved possession* of its key on the link), `fingerprint` (the fingerprint it proved, or merely claims if unverified), `trust` (`personal`/`foreign`, [11](11-trust-and-balancing.md)) and `surplus` (float - its spare-quota rank score). |
 | `trusted` | array | this node's local allowlist as `[{fingerprint, label}]` - a read-only mirror of [`trusted.json`](#trustedjson). Like the per-peer trust fields it is this node's own view; `trusted.json` and `device.key` are themselves **never gossiped**. |
+| `defaultTrust` | string | this node's **default trust level** for an unknown (unlisted/unverified) device: `foreign` (zero-trust default — a new device is untrusted until promoted) or `personal` (full-trust). Mirrors [`trusted.json`](#trustedjson)'s `defaultLevel`; lets a UI render the default-trust toggle. |
 | `assignments` | object | `{duty: {duty, assigned:[node_id], shortfall:[{platform, missing}]}}` - the computed placement ([06](06-coordination.md)). |
 | `overrides` | object | the effective [placement overrides](06-coordination.md#placement-overrides). |
 | `claims` | object | `{workKey: ownerNodeId}` for every currently-owned [work-claim](12-work-claims.md) this node observes (unowned keys omitted); lets a UI show what work is already spoken for. `{}` on a node that implements no work-claims. |

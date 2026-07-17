@@ -43,6 +43,7 @@ _MAP = {
     # Chapter-11 role knobs (11-trust-and-balancing).
     "SZPONTNET_SERVER": "ARGENT_MESH_SERVER",     # accept-only server role
     "SZPONTNET_API_KEY": "ARGENT_MESH_API_KEY",   # inbound ctl/dispatch gate
+    "SZPONTNET_DEFAULT_TRUST": "ARGENT_MESH_DEFAULT_TRUST",  # default level for unlisted devices
     # Chapter-13 foreign zero-trust execution: the confinement runner that turns a
     # foreign request from declined into confined, response-only, plus fast foreign
     # reliable-delivery timings so a loopback scenario observes retry/ack quickly.

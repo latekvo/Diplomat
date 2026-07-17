@@ -52,7 +52,8 @@ the chosen machine(s), failing over if the first pick can't take it.
    (**foreign**) device is declined, or run confined via the [zero-trust foreign
    path](13-foreign-execution.md). Trust is proven by a device keypair, never
    inferred from a spoofable advertised field.
-   With no allowlist configured every peer is personal, so this reduces to full
+   A new device is **foreign by default** (zero-trust) until you promote it; the
+   default is configurable per node, and setting it to personal reduces to full
    altruism. See [11-trust-and-balancing](11-trust-and-balancing.md).
 5. **Extensible without breaking changes.** The trust model, the resource
    vocabulary, the duty catalog and the placement strategies are all designed to
@@ -77,7 +78,8 @@ local allowlist ([11-trust-and-balancing](11-trust-and-balancing.md)):
   challenge**, proving it holds the private key for the fingerprint it claims.
 - You **manually trust** a device by adding its fingerprint to a **local
   allowlist** (never gossiped). A peer whose *verified* fingerprint is on your
-  list is **personal**; anyone else is **foreign**.
+  list is **personal**; anyone else falls to the node's **default trust level**,
+  which ships **foreign** (a new device is untrusted until you promote it).
 
 A personal peer's requests run directly, as if you'd pressed the button on that
 machine yourself. A **foreign** peer's requests are **declined** by default; a node
@@ -86,12 +88,16 @@ that opts in with a [confinement runner](13-foreign-execution.md) instead runs t
 requester before it happens - zero trust for the stranger, full trust preserved for
 you.
 
-The boundary is opt-in and safe by default: **an empty allowlist means full
-trust** (every peer personal), so a fresh mesh behaves precisely as the trusting
-core did - until you trust a first device. The join fence
-([03-transport](03-transport.md#the-join-fence)) still gates *who may join*; trust
-is the finer question of *whose requests a node will act on*, and unlike the shared
-join secret it distinguishes individual devices.
+**Safe by default: a new device is foreign.** Out of the box a device you have not
+promoted can't run your requests, mutate your node, or own work - you grant trust one
+device at a time. The default level is operator-configurable per node (a panel toggle
+/ `--default-trust` / `ARGENT_MESH_DEFAULT_TRUST`, persisted locally): set it to
+**personal** for a fleet of machines you all own and every unlisted peer is trusted,
+exactly as the pre-trust core behaved. Trust is a purely local decision (never on the
+wire), so either default interoperates with any other node. The join fence
+([03-transport](03-transport.md#the-join-fence)) still gates *who may join*; trust is
+the finer question of *whose requests a node will act on*, and unlike the shared join
+secret it distinguishes individual devices.
 
 **Load balancing and refusals.** Beyond eligibility, a dispatcher picks a target
 by **surplus** - the node with the most spare quota, account-type aware (Max 5x vs

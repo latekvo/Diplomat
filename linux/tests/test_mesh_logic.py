@@ -236,20 +236,30 @@ def test_apply_attrs_clamps_and_ignores_junk(tmp_path, monkeypatch):
 
 def test_trust_allowlist_classifies():
     # Trust keys on a VERIFIED fingerprint against a LOCAL allowlist - never on
-    # anything a peer advertises.
-    assert trust.classify("abc", {}) == "personal"        # empty allowlist = full trust
-    assert trust.classify("abc", {"abc": "mine"}) == "personal"   # listed
-    assert trust.classify("xyz", {"abc": "mine"}) == "foreign"    # unlisted
-    assert trust.classify("", {"abc": "mine"}) == "foreign"       # unverified (no fp)
+    # anything a peer advertises. A listed fingerprint is always personal; an
+    # unknown one falls to the default level (ships foreign - zero-trust).
+    assert trust.classify("abc", {"abc": "mine"}) == "personal"          # listed → personal
+    assert trust.classify("abc", {"abc": "mine"}, "foreign") == "personal"  # listed wins over default
+    assert trust.classify("xyz", {"abc": "mine"}) == "foreign"           # unlisted → default (foreign)
+    assert trust.classify("", {"abc": "mine"}) == "foreign"              # unverified (no fp) → default
+    assert trust.classify("abc", {}) == "foreign"                        # empty allowlist → foreign default
+    # The default level is configurable: 'personal' restores the full-trust mesh.
+    assert trust.classify("abc", {}, "personal") == "personal"           # full-trust mode
+    assert trust.classify("xyz", {"abc": "mine"}, "personal") == "personal"  # unlisted personal-default
 
 
 def test_trust_allowlist_persists(tmp_path, monkeypatch):
     monkeypatch.setenv("ARGENT_MESH_DIR", str(tmp_path))
-    trust.save({"fp1": "mbp", "fp2": ""})
+    trust.save({"fp1": "mbp", "fp2": ""}, "foreign")
     loaded = trust.load()
     assert loaded == {"fp1": "mbp", "fp2": ""}
+    assert trust.load_default_level() == "foreign"          # default persisted alongside the list
     assert trust.classify("fp1", loaded) == "personal"
     assert trust.classify("nope", loaded) == "foreign"
+    # Flipping the persisted default to personal is round-tripped.
+    trust.save(loaded, "personal")
+    assert trust.load_default_level() == "personal"
+    assert trust.classify("nope", trust.load(), trust.load_default_level()) == "personal"
 
 
 def test_device_key_proof_of_possession(tmp_path, monkeypatch):
@@ -867,13 +877,24 @@ def _claim_node(tmp_path, monkeypatch, local_id="m-local"):
     return node
 
 
-def _link_personal_claimant(node, node_id, key):
-    """Learn `node_id` as a LIVE (linked), pinned, verified peer holding `key` — a
-    valid authoritative claimant (personal under the empty default allowlist)."""
+def _link_verified_claimant(node, node_id, key):
+    """Learn `node_id` as a LIVE (linked), pinned, VERIFIED peer holding `key` — but
+    NOT trusted. Whether it then classifies personal or foreign is up to the
+    allowlist / default trust level (foreign unless promoted)."""
     node._learn_node(_peer_info(node_id, 1, pubkey=key.public_b64), "1.2.3.4",
                      _FakeWriter(), raw=_signed_advert(key, node_id))
     node.peers[node_id].verified_fp = key.fingerprint
     return node.peers[node_id]
+
+
+def _link_personal_claimant(node, node_id, key):
+    """A verified claimant that is also TRUSTED — a valid authoritative *personal*
+    claimant. Its proven fingerprint is explicitly promoted into the local allowlist,
+    since the default trust level is now foreign (a peer is not personal until the
+    operator marks it so)."""
+    peer = _link_verified_claimant(node, node_id, key)
+    node._trusted[key.fingerprint] = node_id  # explicit promotion → personal
+    return peer
 
 
 def test_work_claim_signature_rejects_forgery_and_tamper(tmp_path, monkeypatch):
@@ -956,8 +977,8 @@ def test_foreign_claimant_cannot_suppress_work(tmp_path, monkeypatch):
         return
     node = _claim_node(tmp_path, monkeypatch, local_id="z-local")
     node._trusted = {"some-other-fingerprint": "x"}                     # non-empty allowlist
-    lo = _mk_key(); _link_personal_claimant(node, "a-peer", lo)         # verified but not listed
-    assert node._peer_trust(node.peers["a-peer"]) == "foreign"
+    lo = _mk_key(); _link_verified_claimant(node, "a-peer", lo)         # verified but not listed
+    assert node._peer_trust(node.peers["a-peer"]) == "foreign"          # unlisted → foreign
     node._on_work_claim(protocol.work_claim(_signed_claim(lo, _WK, "a-peer")))
     assert node._claim_holder(_WK) is None                             # foreign never owns
     assert node.claim(_WK) is True                                     # anti-starvation guard
@@ -1069,15 +1090,16 @@ def test_coldjoin_forgery_is_purged_when_the_real_key_is_learned(tmp_path, monke
     assert node._claims[_WK]["a-peer"].pubkey == k.public_b64
 
 
-def test_keyless_peer_cannot_suppress_even_under_empty_allowlist(tmp_path, monkeypatch):
-    """The empty allowlist means full trust (every verified peer personal), but a
-    peer that proved NO key is not a trusted device — its claim isn't bound to any
+def test_keyless_peer_cannot_suppress_even_under_full_trust(tmp_path, monkeypatch):
+    """In the personal-default (full-trust) mode every verified peer is personal, but
+    a peer that proved NO key is not a trusted device — its claim isn't bound to any
     key, so it must not own work even in full-trust mode. Otherwise a keyless node
     (which may not even run the work) could starve origination by default."""
     if not crypto.AVAILABLE:
         return
     node = _claim_node(tmp_path, monkeypatch, local_id="z-local")
-    assert node._trusted == {}                                        # default: full trust
+    node._default_trust = "personal"                                  # full-trust mesh mode
+    assert node._trusted == {}                                        # empty allowlist
     # A genuinely keyless linked peer (no pubkey, never verified).
     node._learn_node(_peer_info("a-peer", 1), "1.2.3.4", _FakeWriter())
     assert node.peers["a-peer"].info.pubkey == "" and node.peers["a-peer"].verified_fp is None

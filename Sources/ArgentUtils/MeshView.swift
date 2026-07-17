@@ -17,6 +17,20 @@ struct MeshView: View {
     @EnvironmentObject var store: Store
     @Binding var isPresented: Bool
 
+    /// Set to a device's name to raise the one-time reminder after the user marks a
+    /// new device Personal — trust is directional, so the *other* machine must trust
+    /// this one back for the reverse direction to work.
+    @State private var trustReminderPeer: String?
+    /// The reminder modal's "Don't show again" checkbox (applied on dismiss).
+    @State private var suppressTrustReminder = false
+
+    /// `seedTrustReminder` pre-opens the reminder modal for a headless render self-test
+    /// (`ARGENT_UTILS_RENDER=mesh-reminder`); nil in normal use.
+    init(isPresented: Binding<Bool>, seedTrustReminder: String? = nil) {
+        self._isPresented = isPresented
+        self._trustReminderPeer = State(initialValue: seedTrustReminder)
+    }
+
     /// The shared mesh model (duty catalog, strategies, tier/token vocabulary). Cached in
     /// CoreAssets, so `try?` here is cheap.
     private var catalog: MeshCatalog? { try? CoreAssets.mesh() }
@@ -30,6 +44,59 @@ struct MeshView: View {
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .task { if store.meshEnabled { await store.meshTick() } }
+        // An in-popover overlay, NOT a `.alert`/`.sheet`: a system dialog steals key-window
+        // focus from the MenuBarExtra popover, which then auto-closes on dismiss (the "OK
+        // closes the applet" bug). Drawing the modal inside the same window keeps the
+        // popover open and lets it carry a "Don't show again" checkbox.
+        .overlay {
+            if let name = trustReminderPeer { trustReminderModal(name) }
+        }
+    }
+
+    // MARK: trust reminder modal
+
+    /// The "marked Personal — trust the other side too" reminder, as an in-popover card
+    /// over a dimming scrim. Dismiss (OK or tap-outside) applies the "Don't show again"
+    /// choice. Trust is one-directional, so this nudges the user to set the reverse.
+    private func trustReminderModal(_ peerName: String) -> some View {
+        ZStack {
+            Color.black.opacity(0.28).ignoresSafeArea()
+                .onTapGesture { dismissTrustReminder() }
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.shield.fill")
+                        .foregroundStyle(trustColor("personal"))
+                    Text("Marked as Personal").font(.headline)
+                }
+                Text("“\(peerName)” can now run your requests directly on this machine.\n\n"
+                     + "Trust is one-directional: for it to run *your* requests, set this "
+                     + "machine to Personal on that device too.")
+                    .font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Toggle(isOn: $suppressTrustReminder) {
+                    Text("Don't show again").font(.callout)
+                }
+                .toggleStyle(.checkbox)
+                HStack {
+                    Spacer()
+                    Button("OK") { dismissTrustReminder() }
+                        .buttonStyle(.borderedProminent)
+                        .keyboardShortcut(.defaultAction)
+                }
+            }
+            .padding(16)
+            .frame(width: 340)
+            .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .windowBackgroundColor)))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.gray.opacity(0.35), lineWidth: 1))
+            .shadow(color: .black.opacity(0.3), radius: 20, y: 6)
+        }
+    }
+
+    /// Close the reminder, persisting the "Don't show again" choice if it was checked.
+    private func dismissTrustReminder() {
+        if suppressTrustReminder { store.meshTrustReminderSuppressed = true }
+        suppressTrustReminder = false
+        trustReminderPeer = nil
     }
 
     // MARK: header
@@ -190,6 +257,7 @@ struct MeshView: View {
     private func nodesColumn(selfNode: MeshNode?, peers: [MeshPeer]) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             sectionLabel("NODES")
+            defaultTrustRow()
             if let s = selfNode { nodeCard(node: s, peer: nil) }
             ForEach(peers.sorted { $0.name.lowercased() < $1.name.lowercased() }, id: \.id) { p in
                 nodeCard(node: nil, peer: p)
@@ -225,7 +293,11 @@ struct MeshView: View {
             }
             quotaRow(tokens: tokens, sessionPct: sessionPct, weekPct: weekPct,
                      legacyPct: tokensPct, auto: tokensAuto)
-            if let peer { trustToggle(peer) }
+            if let peer {
+                // A newly-seen, still-untrusted device gets the one-time decision prompt;
+                // once decided it collapses to the compact Personal/Foreign toggle.
+                if isNewDevice(peer) { newDeviceCallout(peer) } else { trustToggle(peer) }
+            }
         }
         .padding(6)
         .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.06)))
@@ -330,19 +402,76 @@ struct MeshView: View {
               + "and the mesh routes on it.")
     }
 
-    /// Personal | Foreign trust toggle for a peer's device. 'Personal' adds its proven
-    /// fingerprint to the local allowlist; 'Foreign' removes it. Disabled until the peer
-    /// proves a device key (trust must key on a verified fingerprint).
+    /// Whether a peer is a *newly-seen* device awaiting a trust decision: it proved a
+    /// key (so it can be promoted), is currently Foreign (the zero-trust default), and
+    /// the operator hasn't decided on it yet. Drives the one-time new-device prompt.
+    private func isNewDevice(_ peer: MeshPeer) -> Bool {
+        peer.verified && !peer.fingerprint.isEmpty && peer.trust == "foreign"
+            && !store.meshAckedDevices.contains(peer.fingerprint)
+    }
+
+    /// Mark a peer Personal — add its proven fingerprint to the local allowlist so its
+    /// requests run directly here. `remind` raises the "trust the other side too" note
+    /// on a genuine promotion (trust is one-directional).
+    private func setPersonal(_ peer: MeshPeer, remind: Bool) {
+        store.meshSetTrust(fingerprint: peer.fingerprint, label: peer.name, trusted: true)
+        store.meshAckDevice(fingerprint: peer.fingerprint)
+        if remind && !store.meshTrustReminderSuppressed { trustReminderPeer = peer.name }
+    }
+
+    /// Mark a peer Foreign. A real demotion (it was Personal) removes it from the
+    /// allowlist; a device that's already Foreign under the zero-trust default just has
+    /// its new-device prompt dismissed — no needless control round-trip.
+    private func setForeign(_ peer: MeshPeer) {
+        if peer.trust == "personal" {
+            store.meshSetTrust(fingerprint: peer.fingerprint, label: peer.name, trusted: false)
+        }
+        store.meshAckDevice(fingerprint: peer.fingerprint)
+    }
+
+    /// The one-time "New device" prompt shown on a peer's card until the operator
+    /// decides: Make Personal (trust it) or Keep Foreign (dismiss). A new device is
+    /// Foreign — zero-trust — by default, so "Keep Foreign" is the safe no-op.
+    private func newDeviceCallout(_ peer: MeshPeer) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: "sparkles").font(.system(size: 10, weight: .bold))
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("New device").font(.system(size: 9, weight: .heavy)).foregroundStyle(.orange)
+                Text("Foreign until you decide. Make it Personal to let it run your "
+                     + "requests directly on this machine.")
+                    .font(.system(size: 8)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 5) {
+                    Button("Make Personal") { setPersonal(peer, remind: true) }
+                        .buttonStyle(.borderedProminent).controlSize(.mini)
+                        .tint(trustColor("personal"))
+                    Button("Keep Foreign") { setForeign(peer) }
+                        .buttonStyle(.bordered).controlSize(.mini)
+                }
+                .padding(.top, 1)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 7).padding(.vertical, 5)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color.orange.opacity(0.12)))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.orange.opacity(0.40), lineWidth: 1))
+    }
+
+    /// Personal | Foreign trust toggle for a peer's device (shown once the new-device
+    /// prompt is dismissed). 'Personal' adds its proven fingerprint to the local
+    /// allowlist; 'Foreign' removes it. Disabled until the peer proves a device key
+    /// (trust must key on a verified fingerprint).
     private func trustToggle(_ peer: MeshPeer) -> some View {
         let hasKey = !peer.fingerprint.isEmpty
         let personal = peer.trust == "personal"
         return HStack(spacing: 4) {
             Text("trust").font(.system(size: 9)).foregroundStyle(.secondary)
-            trustSeg("personal", active: personal, enabled: hasKey) {
-                store.meshSetTrust(fingerprint: peer.fingerprint, label: peer.name, trusted: true)
+            segButton("personal", active: personal, tint: trustColor("personal"), enabled: hasKey) {
+                if !personal { setPersonal(peer, remind: true) }
             }
-            trustSeg("foreign", active: !personal, enabled: hasKey) {
-                store.meshSetTrust(fingerprint: peer.fingerprint, label: peer.name, trusted: false)
+            segButton("foreign", active: !personal, tint: trustColor("foreign"), enabled: hasKey) {
+                if personal { setForeign(peer) }
             }
             Spacer(minLength: 0)
             if !hasKey {
@@ -353,16 +482,50 @@ struct MeshView: View {
         }
     }
 
-    private func trustSeg(_ level: String, active: Bool, enabled: Bool,
-                          _ action: @escaping () -> Void) -> some View {
-        let color = trustColor(level)
-        return Button(action: action) {
-            Text(level).font(.system(size: 9, weight: .bold))
-                .foregroundStyle(active ? color : Color.secondary)
-                .padding(.horizontal, 6).padding(.vertical, 1)
-                .background(Capsule().fill(active ? color.opacity(0.18) : Color.clear))
+    /// A compact, reliably-hittable segmented pill button. `.plain` style plus an
+    /// explicit `contentShape` so the whole padded capsule taps (not just the glyph or a
+    /// clear background), with an always-visible outline so it reads as pressable — the
+    /// old `.borderless` + `Color.clear`-backed version had a hairline hit target and no
+    /// affordance, which read as "not clickable".
+    private func segButton(_ label: String, active: Bool, tint: Color, enabled: Bool = true,
+                           _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(label).font(.system(size: 9, weight: .bold))
+                .foregroundStyle(enabled ? (active ? tint : Color.secondary)
+                                         : Color.secondary.opacity(0.5))
+                .padding(.horizontal, 7).padding(.vertical, 3)
+                .frame(minHeight: 18)
+                .background(Capsule().fill(active ? tint.opacity(0.20) : Color.clear))
+                .overlay(Capsule().stroke(active ? tint.opacity(0.6)
+                                                 : Color.secondary.opacity(0.30), lineWidth: 1))
+                .contentShape(Capsule())
         }
-        .buttonStyle(.borderless).disabled(!enabled)
+        .buttonStyle(.plain).disabled(!enabled)
+    }
+
+    /// The mesh-wide default-trust toggle: how a device is treated the moment it joins.
+    /// 'Foreign' (default) is zero-trust — a new device can't run your requests until you
+    /// promote it; 'Personal' is full-trust — every new device is trusted automatically.
+    private func defaultTrustRow() -> some View {
+        let current = store.meshState?.defaultTrust ?? "foreign"
+        return HStack(spacing: 5) {
+            Image(systemName: "shield.lefthalf.filled").font(.system(size: 9))
+                .foregroundStyle(.secondary)
+            Text("New devices:").font(.system(size: 9)).foregroundStyle(.secondary)
+            segButton("Personal", active: current == "personal", tint: trustColor("personal")) {
+                if current != "personal" { store.meshSetDefaultTrust(level: "personal") }
+            }
+            segButton("Foreign", active: current == "foreign", tint: trustColor("foreign")) {
+                if current != "foreign" { store.meshSetDefaultTrust(level: "foreign") }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 6).padding(.vertical, 4)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.05)))
+        .help("Default trust level for a device the moment it joins the mesh. "
+              + "Foreign (default) = zero-trust: a new device can't run your requests, "
+              + "mutate this node, or own work until you mark it Personal. "
+              + "Personal = full-trust: every new device is trusted automatically.")
     }
 
     private func trustColor(_ level: String) -> Color {
