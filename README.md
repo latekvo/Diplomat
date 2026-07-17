@@ -47,7 +47,7 @@ moment you click the wrench - even if the panel was never open.
 **Reverse lookup:** type a PR/issue number in the search box (press **⌘F** to jump to
 it) and it instantly shows which of the six lists that number is on - a ✓/— checklist
 plus what the number is (open PR/issue, author, draft/ready). Cache-only, so it reacts
-as you type. Launch with `ARGENT_UTILS_PREFILL=<n>` to open pre-focused on a number.
+as you type. Launch with `CO_MAINTAINER_PREFILL=<n>` to open pre-focused on a number.
 
 ## The panel
 
@@ -102,7 +102,7 @@ theirs → review-only; banned authors get a flashing warning instead).
 
 > Preview the exact assembled prompt without launching anything:
 > ```bash
-> ARGENT_UTILS_PRINT_PROMPT=mine swift run ArgentUtils   # also: =user, =single; append -final for the verdict pass
+> CO_MAINTAINER_PRINT_PROMPT=mine swift run CoMaintainer   # also: =user, =single; append -final for the verdict pass
 > ```
 
 ## Actions - Resolve conflicts
@@ -122,7 +122,7 @@ appears only for the target it applies to.
 
 > Preview the assembled prompt without launching anything:
 > ```bash
-> ARGENT_UTILS_PRINT_PROMPT=conflicts-mine swift run ArgentUtils   # also: =conflicts-user, =conflicts-single
+> CO_MAINTAINER_PRINT_PROMPT=conflicts-mine swift run CoMaintainer   # also: =conflicts-user, =conflicts-single
 > ```
 
 ## Actions - Full E2E test
@@ -135,17 +135,17 @@ and reports - nothing is changed. Two escalation toggles widen the blast radius:
 feature requests) and **Open PRs for every finding** (a focused PR per confirmed
 fix; off = a strictly read-only audit).
 
-> Preview: `ARGENT_UTILS_PRINT_PROMPT=audit swift run ArgentUtils` (also `=audit-issues`, `=audit-prs`, `=audit-all`).
+> Preview: `CO_MAINTAINER_PRINT_PROMPT=audit swift run CoMaintainer` (also `=audit-issues`, `=audit-prs`, `=audit-all`).
 
-## Argent Mesh (experimental) — LAN P2P duty coordination
+## Co-Maintainer Mesh (experimental) — LAN P2P duty coordination
 
-> Argent Mesh is the reference implementation of **SzpontNet**, a small leaderless
+> Co-Maintainer Mesh is the reference implementation of **SzpontNet**, a small leaderless
 > LAN protocol for self-discovery, resource advertisement, and work hand-off. The
 > full, independently-implementable specification is in
 > [`docs/szpontnet/`](docs/szpontnet/README.md).
 
 With several machines on one desk (say a Linux box and two MacBooks), the
-wrench's grunt work shouldn't all land on the laptop you're typing on. **Argent
+wrench's grunt work shouldn't all land on the laptop you're typing on. **Co-Maintainer
 Mesh** makes the machines coordinate: every node self-discovers its peers over
 UDP (multicast + subnet broadcast), holds heartbeat TCP links, and gossips its
 status — platform, a user-set machine *tier* (1 = strongest), and token
@@ -177,15 +177,15 @@ a *remote* node forwards over the mesh, so one panel configures the whole fleet)
 and per-duty strategy + token-awareness controls (gossiped last-writer-wins). The
 mesh node itself is stdlib-only Python that runs on any OS — both the macOS app and
 the Linux applet drive that same node (a Swift node is future work), so enabling the
-mesh on macOS needs the source checkout on disk (`ARGENT_UTILS_SELF_REPO` if it
-isn't at the default `~/dev/argent-utils-applet`):
+mesh on macOS needs the source checkout on disk (`CO_MAINTAINER_SELF_REPO` if it
+isn't at the default `~/dev/co-maintainer-applet`):
 
 ```bash
 cd linux
-python3 -m argent_utils.mesh --daemon      # join the mesh (any OS, no Qt needed)
-python3 -m argent_utils.mesh --status      # live topology + duty assignments
-python3 -m argent_utils.mesh --set tokens=out          # "this machine is out of tokens"
-python3 -m argent_utils.mesh --dispatch review --prompt "…"   # route a job
+python3 -m co_maintainer.mesh --daemon      # join the mesh (any OS, no Qt needed)
+python3 -m co_maintainer.mesh --status      # live topology + duty assignments
+python3 -m co_maintainer.mesh --set tokens=out          # "this machine is out of tokens"
+python3 -m co_maintainer.mesh --dispatch review --prompt "…"   # route a job
 ```
 
 Model + constants live in [`core/mesh.json`](core/mesh.json); node state in
@@ -195,7 +195,7 @@ device-allocator pattern).
 **Trust model.** The mesh is meant for a LAN you control (IPv4; discovery is
 multicast + subnet broadcast). Two independent fences:
 
-- **Join fence** — set the same `ARGENT_MESH_SECRET=<token>` on every machine
+- **Join fence** — set the same `CO_MAINTAINER_MESH_SECRET=<token>` on every machine
   (and in the applet's environment): a node with a secret refuses peers, control
   sessions, and dispatches that don't present the matching token. The token rides
   plaintext on the LAN, so it keeps a stray machine or a colleague's mesh from
@@ -209,7 +209,7 @@ multicast + subnet broadcast). Two independent fences:
   empty = every peer is `personal` (a boundary you haven't configured); non-empty
   = only listed, verified keys are `personal`, everyone else is `foreign` and
   their dispatch requests are declined. Manage it with
-  `python3 -m argent_utils.mesh --fingerprint` (print this machine's),
+  `python3 -m co_maintainer.mesh --fingerprint` (print this machine's),
   `--trust <FP> [--label <name>]`, `--untrust <FP>`.
 
 Nodes also gossip **per-node quota accounting** (plan, decayed usage average,
@@ -287,15 +287,15 @@ to a settings screen:
   (iTerm is the default when installed, Terminal the always-present fallback).
 - **Device allocator (MCP)** - install/uninstall the bundled allocator daemon +
   MCP server (see `device-allocator/`), with install and daemon status.
-- **Mesh (LAN P2P)** - opt into [Argent Mesh](#argent-mesh-experimental--lan-p2p-duty-coordination):
+- **Mesh (LAN P2P)** - opt into [Co-Maintainer Mesh](#co-maintainer-mesh-experimental--lan-p2p-duty-coordination):
   a toggle that starts/stops the local node (off by default), with live node/peer
   status. The mesh itself is managed from the **⬡ Mesh screen**.
 - **Update** - pull the checkout, rebuild, and relaunch in place. Shows how many
   commits behind upstream the checkout is; the button pulls (`--ff-only`), runs
   `scripts/build-app.sh`, and reopens the rebuilt app (the newest-wins singleton
-  hands over). Needs the source checkout on disk (`ARGENT_UTILS_SELF_REPO`).
+  hands over). Needs the source checkout on disk (`CO_MAINTAINER_SELF_REPO`).
 
-All of it persists across launches (UserDefaults, `com.ignacy.argent-utils`).
+All of it persists across launches (UserDefaults, `com.ignacy.co-maintainer`).
 
 ### Definitions / heuristics (where it's deliberately loose)
 
@@ -313,7 +313,7 @@ All of it persists across launches (UserDefaults, `com.ignacy.argent-utils`).
 
 All of these constants are data-driven from [`core/filters.json`](core/filters.json) -
 retune them there and every front-end picks them up. (The Swift `Filters` shim lives
-in `Sources/ArgentUtilsCore/Models.swift`.)
+in `Sources/CoMaintainerCore/Models.swift`.)
 
 ### Auto-refresh
 
@@ -321,7 +321,7 @@ The tool data refreshes every **5 minutes**. Override the interval (seconds, min
 for tuning/testing:
 
 ```bash
-ARGENT_UTILS_REFRESH_SECS=30 open ./ArgentUtils.app   # refresh every 30s
+CO_MAINTAINER_REFRESH_SECS=30 open ./CoMaintainer.app   # refresh every 30s
 ```
 
 This is the tool-data cadence only - the [autonomous monitors](#autonomous-monitors-macos)
@@ -330,24 +330,24 @@ poll GitHub on their own 3-minute schedule.
 ## Run
 
 ```bash
-cd ~/dev/argent-utils-applet
-swift run ArgentUtils    # launches the menu-bar app (no Dock icon)
+cd ~/dev/co-maintainer-applet
+swift run CoMaintainer    # launches the menu-bar app (no Dock icon)
 ```
 
 > The package now has two executables (the app + a Linux-buildable
-> `ArgentUtilsCoreSmoke` core self-test), so name the target: `swift run ArgentUtils`.
+> `CoMaintainerCoreSmoke` core self-test), so name the target: `swift run CoMaintainer`.
 
-Quit from the panel's ⏻ button, or `pkill ArgentUtils`.
+Quit from the panel's ⏻ button, or `pkill CoMaintainer`.
 
-**On Linux?** See [`linux/README.md`](linux/README.md) — `cd linux && ./argent-utils`.
+**On Linux?** See [`linux/README.md`](linux/README.md) — `cd linux && ./co-maintainer`.
 
 **First run from a terminal** (`swift run`, interactive TTY) offers to set itself up
 as a login daemon:
 
 ```
-┌─ ArgentUtils setup ─────────────────────────────────────────
+┌─ CoMaintainer setup ─────────────────────────────────────────
 │ Install as a background daemon? This will:
-│   • build + copy ArgentUtils.app to /Applications
+│   • build + copy CoMaintainer.app to /Applications
 │   • add a per-user LaunchAgent so the wrench boots on login
 │   • start it now (it replaces this foreground instance)
 │   • ask macOS for permission to control your terminal (SPAWN)
@@ -364,11 +364,11 @@ up front, instead of on your first SPAWN.
 ### Double-clickable applet (recommended)
 
 ```bash
-./scripts/build-app.sh     # produces ./ArgentUtils.app (menu-bar-only, no Dock icon)
-open ./ArgentUtils.app
+./scripts/build-app.sh     # produces ./CoMaintainer.app (menu-bar-only, no Dock icon)
+open ./CoMaintainer.app
 ```
 
-Drag `ArgentUtils.app` into `/Applications` and add it under
+Drag `CoMaintainer.app` into `/Applications` and add it under
 System Settings → General → Login Items — or just use the autostart script below.
 
 ### Autostart on login
@@ -378,7 +378,7 @@ System Settings → General → Login Items — or just use the autostart script
 ./scripts/uninstall-autostart.sh   # removes the LaunchAgent and stops the app
 ```
 
-Installs a per-user LaunchAgent at `~/Library/LaunchAgents/com.ignacy.argent-utils.plist`
+Installs a per-user LaunchAgent at `~/Library/LaunchAgents/com.ignacy.co-maintainer.plist`
 (`RunAtLoad`), so the wrench reappears on every login. The ⏻ Quit button still works
 within a session (no `KeepAlive`) — it just returns next login.
 
@@ -388,36 +388,36 @@ Every mode runs the real pipeline once, prints, and exits - none of them start
 the monitors or touch a terminal (except `TRACK_TEST`, whose point is exactly that):
 
 ```bash
-ARGENT_UTILS_DUMP=1 swift run ArgentUtils            # real fetch+filter pipeline, prints all 6 tools, exits
-ARGENT_UTILS_LOOKUP=337 swift run ArgentUtils        # reverse-lookup one number through the real Store
-ARGENT_UTILS_PRINT_PROMPT=mine swift run ArgentUtils # assemble + print a prompt: mine|user|single (append
+CO_MAINTAINER_DUMP=1 swift run CoMaintainer            # real fetch+filter pipeline, prints all 6 tools, exits
+CO_MAINTAINER_LOOKUP=337 swift run CoMaintainer        # reverse-lookup one number through the real Store
+CO_MAINTAINER_PRINT_PROMPT=mine swift run CoMaintainer # assemble + print a prompt: mine|user|single (append
                                                      #   -final for the verdict pass), conflicts[-user|-single],
                                                      #   audit[-issues|-prs|-all]
-ARGENT_UTILS_SETTINGS_DUMP=1 ./ArgentUtils.app/Contents/MacOS/ArgentUtils  # resolved persisted settings
-ARGENT_UTILS_RENDER=panel    ./ArgentUtils.app/Contents/MacOS/ArgentUtils  # snapshot a screen to PNG (out
-                                                     #   path: ARGENT_UTILS_RENDER_OUT). States: panel|panel-procs
+CO_MAINTAINER_SETTINGS_DUMP=1 ./CoMaintainer.app/Contents/MacOS/CoMaintainer  # resolved persisted settings
+CO_MAINTAINER_RENDER=panel    ./CoMaintainer.app/Contents/MacOS/CoMaintainer  # snapshot a screen to PNG (out
+                                                     #   path: CO_MAINTAINER_RENDER_OUT). States: panel|panel-procs
                                                      #   natural|settings|settings-live|approved|unban-confirm
                                                      #   wizard[-other|-specific|-wrong|-banned]|devices[-open]
                                                      #   conflicts[-other|-specific|-wrong]|audit[-issues|-prs|-all]
                                                      #   mesh (⬡ screen over a synthetic topology)
                                                      #   popover (REAL NSWindow snapshot incl. the legacy
-                                                     #   scroller — pair with ARGENT_UTILS_POPOVER_CAP=400
+                                                     #   scroller — pair with CO_MAINTAINER_POPOVER_CAP=400
                                                      #   to force the scrolling state)
-ARGENT_UTILS_TRACK_TEST=1    ...                     # E2E of session tracking via a real throwaway terminal
+CO_MAINTAINER_TRACK_TEST=1    ...                     # E2E of session tracking via a real throwaway terminal
                                                      #   window; exits non-zero on failure
-ARGENT_UTILS_DEVICE_DUMP=1   ...                     # device-allocator paths + daemon state, printed
-ARGENT_UTILS_AUTOFIX_POLL=1  ...                     # one real monitor poll: prints its dispatch decisions and
+CO_MAINTAINER_DEVICE_DUMP=1   ...                     # device-allocator paths + daemon state, printed
+CO_MAINTAINER_AUTOFIX_POLL=1  ...                     # one real monitor poll: prints its dispatch decisions and
                                                      #   the exact prompts it would spawn, opens nothing
-ARGENT_UTILS_APIWATCH_SCAN=1 ...                     # dry-run the API-error watcher over live sessions, sends nothing
+CO_MAINTAINER_APIWATCH_SCAN=1 ...                     # dry-run the API-error watcher over live sessions, sends nothing
 
 # The shared core itself is independently buildable & testable (also on Linux):
-swift run ArgentUtilsCoreSmoke                        # loads core/, runs filter + prompt + golden-file assertions
-ARGENT_UTILS_DUMP=1 swift run ArgentUtilsCoreSmoke    # + live gh dump, cross-checks the Linux front-end
-ARGENT_GOLDEN_WRITE=1 swift run ArgentUtilsCoreSmoke  # regenerate core/golden-prompts/ after an intentional change
+swift run CoMaintainerCoreSmoke                        # loads core/, runs filter + prompt + golden-file assertions
+CO_MAINTAINER_DUMP=1 swift run CoMaintainerCoreSmoke    # + live gh dump, cross-checks the Linux front-end
+CO_MAINTAINER_GOLDEN_WRITE=1 swift run CoMaintainerCoreSmoke  # regenerate core/golden-prompts/ after an intentional change
 ```
 
 The `SETTINGS_DUMP` / `RENDER` checks read UserDefaults, so run them through the
-`.app` bundle's binary (it shares the GUI's `com.ignacy.argent-utils` domain).
+`.app` bundle's binary (it shares the GUI's `com.ignacy.co-maintainer` domain).
 
 ## Requirements
 
@@ -442,7 +442,7 @@ device-allocator/              ← Node MCP server + daemon arbitrating simulato
                                  persist across daemon restarts, idle devices reclaimed after 15 min; a
                                  prompt-injection report bans the author and terminates the reporting agent)
 Sources/
-  ArgentUtilsCore/             ← Foundation-only Swift; loads core/. Builds on macOS AND Linux.
+  CoMaintainerCore/             ← Foundation-only Swift; loads core/. Builds on macOS AND Linux.
     CoreAssets.swift             resolves + decodes core/ (config, catalog, filters, review, conflicts, audit, graphql)
     GH.swift                     gh CLI shell-out (GraphQL via core/graphql)
     Models.swift                 domain models, Filters, Fmt, API
@@ -454,8 +454,8 @@ Sources/
     ReviewReconcile.swift        pure retry/backoff/dedup decisions for the monitors
     AgentActivity.swift          terminal-tail classification: running vs awaiting input
     ApiErrorMatch.swift          "is this a Claude API error?" matcher for the watcher
-  ArgentUtils/                 ← macOS SwiftUI app — thin UI over the core
-    ArgentUtilsApp.swift         @main app + MenuBarExtra + the headless self-test entry points
+  CoMaintainer/                 ← macOS SwiftUI app — thin UI over the core
+    CoMaintainerApp.swift         @main app + MenuBarExtra + the headless self-test entry points
     Headless.swift               the single "are we a one-shot self-test?" env-var list
     ContentView.swift            two-column panel (left: monitoring lists, right: grid + wizards/results)
     Components.swift             shared UI atoms (cards, chips, badges)
@@ -467,16 +467,16 @@ Sources/
     AutofixStatus.swift          the monitor heartbeat behind the status pill
     ApiErrorWatcher.swift        iTerm/Terminal session reader + continue-nudge sender
     ProcessTracker.swift         tracked agent sessions (liveness, focus, done sentinel, merged)
-    TrackTest.swift              E2E self-test of the tracking path (ARGENT_UTILS_TRACK_TEST)
+    TrackTest.swift              E2E self-test of the tracking path (CO_MAINTAINER_TRACK_TEST)
     BanList.swift / AuditLog.swift   ban list (the daemon's banned.json) + the unified activity feed (audit.jsonl)
     DeviceAllocator.swift        allocator daemon state reader + installer bridge
     DeviceFocus.swift            click an in-use device → focus the holding agent's terminal
     Daemon.swift                 first-run login-daemon opt-in (TTY Accept [y/N])
     Render.swift                 headless ImageRenderer snapshots for UI checks
     Color+Hex.swift              Color ↔ "#RRGGBB" for persisted tint overrides
-  ArgentUtilsCoreSmoke/        ← Linux-buildable core self-test (filters + prompts + golden files + live dump)
+  CoMaintainerCoreSmoke/        ← Linux-buildable core self-test (filters + prompts + golden files + live dump)
 linux/                         ← Linux Qt6/PySide6 tray applet (see linux/README.md)
-  argent_utils/mesh/           ← Argent Mesh node: stdlib-only Python (runs headless on macOS too) — LAN
+  co_maintainer/mesh/           ← Co-Maintainer Mesh node: stdlib-only Python (runs headless on macOS too) — LAN
                                  discovery, heartbeat links, gossip, deterministic duty assignment,
                                  dispatch with failover; model in core/mesh.json, state in ~/.argent/mesh/
 ```

@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# Build the argent-core CLI (the Swift prompt engine the applet shells out to)
-# and install it to ~/.local/share/argent-utils/argent-core.
+# Build the co-maintainer-core CLI (the Swift prompt engine the applet shells out to)
+# and install it to ~/.local/share/co-maintainer/co-maintainer-core.
 #
-# argent-core is a statically-linked, self-contained binary (Swift stdlib + core
+# co-maintainer-core is a statically-linked, self-contained binary (Swift stdlib + core
 # baked in): its only non-glibc deps are libstdc++/libgcc_s, so it runs on any
 # glibc Linux without a Swift toolchain present. Building it, however, needs a
 # Swift toolchain (https://swift.org/install — swiftly is the easy path).
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-DEST_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/argent-utils"
-DEST="$DEST_DIR/argent-core"
+DEST_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/co-maintainer"
+DEST="$DEST_DIR/co-maintainer-core"
 
 # Local library shims first, when present (unsupported-distro setups — e.g.
 # Arch, whose ncurses/libxml2 sonames differ from what the toolchain links —
@@ -32,11 +32,11 @@ if ! command -v swift >/dev/null 2>&1; then
     exit 1
 fi
 
-echo "Building argent-core (static) with $(swift --version 2>/dev/null | head -1)…"
+echo "Building co-maintainer-core (static) with $(swift --version 2>/dev/null | head -1)…"
 cd "$REPO_ROOT"
-swift build --product argent-core --static-swift-stdlib -c release
+swift build --product co-maintainer-core --static-swift-stdlib -c release
 
-BIN="$(swift build --product argent-core -c release --show-bin-path)/argent-core"
+BIN="$(swift build --product co-maintainer-core -c release --show-bin-path)/co-maintainer-core"
 mkdir -p "$DEST_DIR"
 install -m 0755 "$BIN" "$DEST"
 echo "Installed: $DEST"

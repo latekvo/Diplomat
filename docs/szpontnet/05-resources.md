@@ -48,7 +48,7 @@ specs MUST fall back to `tiers.default` rather than fail.
 ### Tokens
 
 `tokens` (string, `"ok"` | `"low"` | `"out"`, default `"ok"`) - a **coarse budget
-availability** signal. In Argent Mesh it means "this machine still has API budget
+availability** signal. In Co-Maintainer Mesh it means "this machine still has API budget
 to spawn agents"; in general it is *any* consumable the operator wants placement to
 respect. Semantics:
 

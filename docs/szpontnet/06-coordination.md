@@ -9,7 +9,7 @@ converges on the new answer without negotiating.
 
 Interoperability depends on every implementation computing this function
 **identically**. This chapter specifies it exactly; the reference is
-[`assign.py`](../../linux/argent_utils/mesh/assign.py) and its tests
+[`assign.py`](../../linux/co_maintainer/mesh/assign.py) and its tests
 [`test_mesh_logic.py`](../../linux/tests/test_mesh_logic.py).
 
 ## The live-node set

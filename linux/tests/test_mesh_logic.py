@@ -14,11 +14,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from dataclasses import replace as _dc_replace  # noqa: E402
 
-from argent_utils.mesh import (  # noqa: E402
+from co_maintainer.mesh import (  # noqa: E402
     assign, config, crypto, identity, protocol, spawnjob, stats, trust,
 )
-from argent_utils.mesh.config import Placement, PlacementOverrides  # noqa: E402
-from argent_utils.mesh.protocol import NodeInfo  # noqa: E402
+from co_maintainer.mesh.config import Placement, PlacementOverrides  # noqa: E402
+from co_maintainer.mesh.protocol import NodeInfo  # noqa: E402
 
 
 def _node(id: str, platform: str = "linux", tier: int = 3, tokens: str = "ok",
@@ -206,7 +206,7 @@ def test_placement_for_falls_back_to_core_defaults():
 
 
 def test_identity_minted_and_persisted(tmp_path, monkeypatch):
-    monkeypatch.setenv("ARGENT_MESH_DIR", str(tmp_path))
+    monkeypatch.setenv("CO_MAINTAINER_MESH_DIR", str(tmp_path))
     n1 = identity.load()
     assert len(n1.id) == 32
     n2 = identity.load()
@@ -214,8 +214,8 @@ def test_identity_minted_and_persisted(tmp_path, monkeypatch):
 
 
 def test_apply_attrs_clamps_and_ignores_junk(tmp_path, monkeypatch):
-    monkeypatch.setenv("ARGENT_MESH_DIR", str(tmp_path))
-    monkeypatch.setenv("ARGENT_MESH_TIER", "3")  # deterministic auto-detect
+    monkeypatch.setenv("CO_MAINTAINER_MESH_DIR", str(tmp_path))
+    monkeypatch.setenv("CO_MAINTAINER_MESH_TIER", "3")  # deterministic auto-detect
     n = identity.load()
     lo, hi, _ = config.tier_bounds()
     assert n.tokens == "auto" and n.strength_auto  # fresh node: auto everything
@@ -244,7 +244,7 @@ def test_trust_allowlist_classifies():
 
 
 def test_trust_allowlist_persists(tmp_path, monkeypatch):
-    monkeypatch.setenv("ARGENT_MESH_DIR", str(tmp_path))
+    monkeypatch.setenv("CO_MAINTAINER_MESH_DIR", str(tmp_path))
     trust.save({"fp1": "mbp", "fp2": ""})
     loaded = trust.load()
     assert loaded == {"fp1": "mbp", "fp2": ""}
@@ -255,7 +255,7 @@ def test_trust_allowlist_persists(tmp_path, monkeypatch):
 def test_device_key_proof_of_possession(tmp_path, monkeypatch):
     if not crypto.AVAILABLE:  # dependency-free run without `cryptography`
         return
-    monkeypatch.setenv("ARGENT_MESH_DIR", str(tmp_path))
+    monkeypatch.setenv("CO_MAINTAINER_MESH_DIR", str(tmp_path))
     k = crypto.load_or_create()
     assert crypto.fingerprint_of(k.public_b64) == k.fingerprint
     nonce = b"per-connection-nonce"
@@ -273,7 +273,7 @@ def test_device_key_proof_of_possession(tmp_path, monkeypatch):
 def test_device_key_is_stable_across_loads(tmp_path, monkeypatch):
     if not crypto.AVAILABLE:
         return
-    monkeypatch.setenv("ARGENT_MESH_DIR", str(tmp_path))
+    monkeypatch.setenv("CO_MAINTAINER_MESH_DIR", str(tmp_path))
     a = crypto.load_or_create()
     b = crypto.load_or_create()
     assert a.fingerprint == b.fingerprint  # minted once, persisted
@@ -294,7 +294,7 @@ def test_dispatch_strategy_and_plan_weights():
 def test_stats_ema_decays_over_time_constant(tmp_path, monkeypatch):
     import math
 
-    monkeypatch.setenv("ARGENT_MESH_DIR", str(tmp_path))
+    monkeypatch.setenv("CO_MAINTAINER_MESH_DIR", str(tmp_path))
     now, day = 1_000_000.0, 86_400.0
     st = stats.load(now=now)
     assert st.plan  # a default plan (from the model)
@@ -307,7 +307,7 @@ def test_stats_ema_decays_over_time_constant(tmp_path, monkeypatch):
 
 
 def test_stats_quota_is_account_type_aware_and_windowed(tmp_path, monkeypatch):
-    monkeypatch.setenv("ARGENT_MESH_DIR", str(tmp_path))
+    monkeypatch.setenv("CO_MAINTAINER_MESH_DIR", str(tmp_path))
     now, day = 1_000_000.0, 86_400.0
     st = stats.load(now=now)
     st = stats.apply_stat_attrs(st, {"plan": "max-20x"}, now=now)
@@ -320,7 +320,7 @@ def test_stats_quota_is_account_type_aware_and_windowed(tmp_path, monkeypatch):
 
 
 def test_stats_apply_attrs_edits_and_surplus(tmp_path, monkeypatch):
-    monkeypatch.setenv("ARGENT_MESH_DIR", str(tmp_path))
+    monkeypatch.setenv("CO_MAINTAINER_MESH_DIR", str(tmp_path))
     now = 1_000_000.0
     st = stats.apply_stat_attrs(stats.load(now=now),
                                 {"plan": "max-20x", "quotaLeft": 12.0, "usageAvg": 2.0},
@@ -338,7 +338,7 @@ def test_stats_apply_attrs_edits_and_surplus(tmp_path, monkeypatch):
 
 
 def test_stats_persist_roundtrip(tmp_path, monkeypatch):
-    monkeypatch.setenv("ARGENT_MESH_DIR", str(tmp_path))
+    monkeypatch.setenv("CO_MAINTAINER_MESH_DIR", str(tmp_path))
     now = 1_000_000.0
     st = stats.record(stats.load(now=now), 2.0, now=now)
     stats.save(st)
@@ -398,7 +398,7 @@ def test_surplus_first_is_account_type_aware():
 
 
 def test_advertise_quota_left_capped_by_real_binding_window(tmp_path, monkeypatch):
-    monkeypatch.setenv("ARGENT_MESH_DIR", str(tmp_path))
+    monkeypatch.setenv("CO_MAINTAINER_MESH_DIR", str(tmp_path))
     now = 1_000_000.0
     st = stats.apply_stat_attrs(stats.load(now=now), {"plan": "max-20x"}, now=now)
     assert st.quota_left() == 20.0  # bookkeeping alone: a full window
@@ -419,7 +419,7 @@ def test_surplus_first_avoids_host_with_drained_binding_window(tmp_path, monkeyp
     # of its week) must NOT win dispatch on bookkeeping surplus — it would run
     # out mid-task. With the real-probe cap its advertised quotaLeft collapses
     # to 0.02 × 20 = 0.4, so a modest fresh node out-ranks it.
-    monkeypatch.setenv("ARGENT_MESH_DIR", str(tmp_path))
+    monkeypatch.setenv("CO_MAINTAINER_MESH_DIR", str(tmp_path))
     now = 1_000_000.0
     big = stats.apply_stat_attrs(stats.load(now=now), {"plan": "max-20x"}, now=now)
     drained = NodeInfo(id="big", name="big", platform="linux", tier=1, tokens="low",
@@ -461,7 +461,7 @@ def test_surplus_first_neutral_stats_fall_back_to_weakest_first():
 
 
 def test_cpu_class_buckets_apple_silicon_and_boost_clocks():
-    from argent_utils.mesh import hardware
+    from co_maintainer.mesh import hardware
     # Apple Silicon tops the scale; Pro/Max/Ultra bins above the base part.
     assert hardware.cpu_class("Apple M4 Pro", None) == 4
     assert hardware.cpu_class("Apple M3 Max", None) == 4
@@ -475,7 +475,7 @@ def test_cpu_class_buckets_apple_silicon_and_boost_clocks():
 
 
 def test_strength_score_ranks_stronger_boxes_higher():
-    from argent_utils.mesh import hardware
+    from co_maintainer.mesh import hardware
     weak = hardware.strength_score(ram_gb=8, cores=4, dgpu=False)
     strong = hardware.strength_score(ram_gb=64, cores=16, dgpu=True,
                                      cpu=hardware.cpu_class(None, 5.7))
@@ -489,7 +489,7 @@ def test_strength_score_apple_silicon_outranks_big_ram_smt_laptop():
     """Regression: an M-series Pro box (24 GB unified, 14 real cores, no dGPU)
     must outrank a 64 GB SMT laptop with a dGPU — RAM gigabytes and logical
     threads used to dominate and invert the ranking."""
-    from argent_utils.mesh import hardware
+    from co_maintainer.mesh import hardware
     lo, hi, _ = config.tier_bounds()
     m_pro = hardware.strength_score(
         ram_gb=24, cores=14, dgpu=False, cpu=hardware.cpu_class("Apple M4 Pro", None))
@@ -501,7 +501,7 @@ def test_strength_score_apple_silicon_outranks_big_ram_smt_laptop():
 
 
 def test_strength_score_maps_to_tier_bounds_inverted():
-    from argent_utils.mesh import hardware
+    from co_maintainer.mesh import hardware
     lo, hi, _ = config.tier_bounds()
     # 1 = strongest, so the strongest box lands on `lo` and the weakest on `hi`.
     assert hardware._score_to_tier(8, lo, hi) == lo
@@ -510,10 +510,10 @@ def test_strength_score_maps_to_tier_bounds_inverted():
 
 
 def test_detect_tier_honours_env_override(monkeypatch):
-    from argent_utils.mesh import hardware
-    monkeypatch.setenv("ARGENT_MESH_TIER", "2")
+    from co_maintainer.mesh import hardware
+    monkeypatch.setenv("CO_MAINTAINER_MESH_TIER", "2")
     assert hardware.detect_tier() == 2
-    monkeypatch.setenv("ARGENT_MESH_TIER", "999")  # clamped to bounds
+    monkeypatch.setenv("CO_MAINTAINER_MESH_TIER", "999")  # clamped to bounds
     _, hi, _ = config.tier_bounds()
     assert hardware.detect_tier() == hi
 
@@ -539,7 +539,7 @@ def _write_usage(dir_path, entries):
 
 def test_window_tokens_sums_recent_and_excludes_cache_reads(tmp_path, monkeypatch):
     from datetime import datetime, timezone, timedelta
-    from argent_utils.mesh import usage
+    from co_maintainer.mesh import usage
     monkeypatch.setenv("HOME", str(tmp_path))
     now = datetime.now(timezone.utc)
     recent = (now - timedelta(hours=1)).isoformat()
@@ -551,7 +551,7 @@ def test_window_tokens_sums_recent_and_excludes_cache_reads(tmp_path, monkeypatc
 
 
 def test_token_state_thresholds(monkeypatch):
-    from argent_utils.mesh import usage
+    from co_maintainer.mesh import usage
     # Ceiling for pro = weight(1) * tokensPerWeight.
     ceiling = usage.token_ceiling("pro")
     assert ceiling == config.tokens_per_weight()
@@ -563,7 +563,7 @@ def test_token_state_thresholds(monkeypatch):
 def test_token_state_prefers_real_quota_over_heuristic(monkeypatch):
     """When the OAuth probe answers, the state comes from the account's REAL
     windows — the tighter (binding) one — and both fractions are surfaced."""
-    from argent_utils.mesh import usage
+    from co_maintainer.mesh import usage
     monkeypatch.setattr(usage, "quota_left", lambda: (0.64, 0.27))
     state, frac, sess, week = usage.token_state("pro")
     assert (sess, week) == (0.64, 0.27)
@@ -572,7 +572,7 @@ def test_token_state_prefers_real_quota_over_heuristic(monkeypatch):
 
 
 def test_token_state_falls_back_to_heuristic_when_probe_dark(tmp_path, monkeypatch):
-    from argent_utils.mesh import usage
+    from co_maintainer.mesh import usage
     monkeypatch.setenv("HOME", str(tmp_path))  # empty logs → fresh heuristic
     monkeypatch.setattr(usage, "quota_left", lambda: (None, None))
     state, frac, sess, week = usage.token_state("pro")
@@ -581,8 +581,8 @@ def test_token_state_falls_back_to_heuristic_when_probe_dark(tmp_path, monkeypat
 
 
 def test_quota_left_parses_utilization_and_caches(monkeypatch):
-    from argent_utils.mesh import usage
-    monkeypatch.delenv("ARGENT_MESH_OAUTH_PROBE", raising=False)
+    from co_maintainer.mesh import usage
+    monkeypatch.delenv("CO_MAINTAINER_MESH_OAUTH_PROBE", raising=False)
     calls = []
     payload = {"five_hour": {"utilization": 36.0}, "seven_day": {"utilization": 27}}
     monkeypatch.setattr(usage, "_fetch_usage_payload",
@@ -601,12 +601,12 @@ def test_quota_left_parses_utilization_and_caches(monkeypatch):
 
 
 def test_quota_probe_disabled_by_env(monkeypatch):
-    from argent_utils.mesh import usage
+    from co_maintainer.mesh import usage
 
     def _boom():
         raise AssertionError("probe must not run when disabled")
 
-    monkeypatch.setenv("ARGENT_MESH_OAUTH_PROBE", "0")
+    monkeypatch.setenv("CO_MAINTAINER_MESH_OAUTH_PROBE", "0")
     monkeypatch.setattr(usage, "_fetch_usage_payload", _boom)
     usage._reset_probe_cache()
     assert usage.quota_left() == (None, None)
@@ -616,19 +616,19 @@ def test_quota_probe_disabled_by_env(monkeypatch):
 
 
 def test_identity_auto_detects_strength_on_first_run(tmp_path, monkeypatch):
-    monkeypatch.setenv("ARGENT_MESH_DIR", str(tmp_path))
-    monkeypatch.setenv("ARGENT_MESH_TIER", "2")
+    monkeypatch.setenv("CO_MAINTAINER_MESH_DIR", str(tmp_path))
+    monkeypatch.setenv("CO_MAINTAINER_MESH_TIER", "2")
     n = identity.load()
     assert n.strength_auto and n.tier == 2 and n.tokens == "auto"
     # Persisted with the auto flag; a reload with a different detected tier follows it.
-    monkeypatch.setenv("ARGENT_MESH_TIER", "4")
+    monkeypatch.setenv("CO_MAINTAINER_MESH_TIER", "4")
     assert identity.load().tier == 4
 
 
 def test_identity_explicit_tier_in_file_is_a_pin(tmp_path, monkeypatch):
     import json as _json
-    monkeypatch.setenv("ARGENT_MESH_DIR", str(tmp_path))
-    monkeypatch.setenv("ARGENT_MESH_TIER", "1")  # would auto-detect strong…
+    monkeypatch.setenv("CO_MAINTAINER_MESH_DIR", str(tmp_path))
+    monkeypatch.setenv("CO_MAINTAINER_MESH_TIER", "1")  # would auto-detect strong…
     (tmp_path / "node.json").write_text(_json.dumps(
         {"id": "abc123", "name": "box", "tier": 5}))  # …but the file pins weak
     n = identity.load()
@@ -639,12 +639,12 @@ def test_identity_explicit_tier_in_file_is_a_pin(tmp_path, monkeypatch):
 
 
 def test_server_mode_and_api_key_config(monkeypatch):
-    monkeypatch.delenv("ARGENT_MESH_SERVER", raising=False)
-    monkeypatch.delenv("ARGENT_MESH_API_KEY", raising=False)
+    monkeypatch.delenv("CO_MAINTAINER_MESH_SERVER", raising=False)
+    monkeypatch.delenv("CO_MAINTAINER_MESH_API_KEY", raising=False)
     assert config.server_mode() is False
     assert config.api_key() == ""
-    monkeypatch.setenv("ARGENT_MESH_SERVER", "1")
-    monkeypatch.setenv("ARGENT_MESH_API_KEY", "sekret")
+    monkeypatch.setenv("CO_MAINTAINER_MESH_SERVER", "1")
+    monkeypatch.setenv("CO_MAINTAINER_MESH_API_KEY", "sekret")
     assert config.server_mode() is True
     assert config.api_key() == "sekret"
 
@@ -663,8 +663,8 @@ def test_dispatch_and_ctl_carry_api_key_only_when_set():
 def test_auth_signature_is_domain_separated(tmp_path, monkeypatch):
     if not crypto.AVAILABLE:  # dependency-free run without `cryptography`
         return
-    monkeypatch.setenv("ARGENT_MESH_DIR", str(tmp_path))
-    from argent_utils.mesh import node as node_mod
+    monkeypatch.setenv("CO_MAINTAINER_MESH_DIR", str(tmp_path))
+    from co_maintainer.mesh import node as node_mod
 
     k = crypto.load_or_create()
     nonce = "a1b2c3d4e5f60718"
@@ -679,9 +679,9 @@ def test_auth_signature_is_domain_separated(tmp_path, monkeypatch):
 
 
 def _fresh_node(tmp_path, monkeypatch):
-    monkeypatch.setenv("ARGENT_MESH_DIR", str(tmp_path))
+    monkeypatch.setenv("CO_MAINTAINER_MESH_DIR", str(tmp_path))
     monkeypatch.setenv("HOME", str(tmp_path))
-    from argent_utils.mesh.node import MeshNode
+    from co_maintainer.mesh.node import MeshNode
     return MeshNode()
 
 
@@ -740,7 +740,7 @@ def test_malformed_beacon_epoch_is_ignored_not_fatal(tmp_path, monkeypatch):
 
 
 def test_peer_table_is_bounded_on_gossip(tmp_path, monkeypatch):
-    from argent_utils.mesh import node as node_mod
+    from co_maintainer.mesh import node as node_mod
     node = _fresh_node(tmp_path, monkeypatch)
     for i in range(node_mod._MAX_PEERS + 25):  # a gossip flood of spoofed ids
         node._learn_node(_peer_info(f"p{i:05d}", 1), "1.2.3.4", None)
@@ -749,7 +749,7 @@ def test_peer_table_is_bounded_on_gossip(tmp_path, monkeypatch):
 
 def test_reapable_covers_downed_and_gossip_only_phantoms(tmp_path, monkeypatch):
     import time as _time
-    from argent_utils.mesh import node as node_mod
+    from co_maintainer.mesh import node as node_mod
     node = _fresh_node(tmp_path, monkeypatch)
     node._learn_node(_peer_info("phantom", 1), "1.2.3.4", None)  # gossip-only, never linked
     peer = node.peers["phantom"]
@@ -979,7 +979,7 @@ def test_work_claim_cannot_hijack_a_pinned_node_id(tmp_path, monkeypatch):
 def test_claim_book_is_bounded(tmp_path, monkeypatch):
     if not crypto.AVAILABLE:
         return
-    from argent_utils.mesh import node as node_mod
+    from co_maintainer.mesh import node as node_mod
     node = _claim_node(tmp_path, monkeypatch)
     k = _mk_key(); _link_personal_claimant(node, "a-peer", k)
     for i in range(node_mod._MAX_CLAIMS + 25):                        # a flood of spoofed keys
@@ -1166,13 +1166,13 @@ def test_admit_confines_foreign_only_with_a_runner(tmp_path, monkeypatch):
     """The mode a request runs in: personal → run on host; foreign → confined iff a
     confinement runner is configured, else declined; duty/token refusals win first."""
     node = _fresh_node(tmp_path, monkeypatch)
-    monkeypatch.delenv("ARGENT_MESH_FOREIGN_SPAWN", raising=False)
+    monkeypatch.delenv("CO_MAINTAINER_MESH_FOREIGN_SPAWN", raising=False)
     assert node._admit(_job(), "personal") == ("run", "")
     # Foreign with no runner → the safe v1 decline.
     mode, reason = node._admit(_job(), "foreign")
     assert mode == "decline" and "foreign device" in reason
     # Foreign with a runner configured → confined, response-only.
-    monkeypatch.setenv("ARGENT_MESH_FOREIGN_SPAWN", "sandbox {prompt_file} {result_file}")
+    monkeypatch.setenv("CO_MAINTAINER_MESH_FOREIGN_SPAWN", "sandbox {prompt_file} {result_file}")
     assert node._admit(_job(), "foreign") == ("confined", "")
     # Duty/token refusals apply regardless of trust and take precedence.
     node.local = _dc_replace(node.local, duties_enabled={"review": False})
@@ -1186,7 +1186,7 @@ def test_run_confined_needs_a_requester_link(tmp_path, monkeypatch):
     """Response-only is meaningless with nobody to answer: a confined run without a
     verified requester fails outright rather than running a stranger's code for no one."""
     node = _fresh_node(tmp_path, monkeypatch)
-    monkeypatch.setenv("ARGENT_MESH_FOREIGN_SPAWN", "sandbox {prompt_file} {result_file}")
+    monkeypatch.setenv("CO_MAINTAINER_MESH_FOREIGN_SPAWN", "sandbox {prompt_file} {result_file}")
     assert node._run_confined(_job(), requester_id="")[0] == "failed"
 
 
@@ -1308,15 +1308,15 @@ def test_confined_env_is_scrubbed_of_host_credentials(monkeypatch):
     programmatically prevents a foreign agent from acting as us (using `gh`, cloud
     APIs, the mesh secret). Benign config survives; explicit overlays are applied."""
     creds = ("GH_TOKEN", "GITHUB_TOKEN", "ANTHROPIC_API_KEY",
-             "AWS_SECRET_ACCESS_KEY", "MY_SSH_KEY", "ARGENT_MESH_SECRET",
-             "ARGENT_MESH_API_KEY")
+             "AWS_SECRET_ACCESS_KEY", "MY_SSH_KEY", "CO_MAINTAINER_MESH_SECRET",
+             "CO_MAINTAINER_MESH_API_KEY")
     for k in creds:
         monkeypatch.setenv(k, "SEKRIT")
     monkeypatch.setenv("PATH", "/usr/bin")            # benign — must survive
-    monkeypatch.setenv("ARGENT_MESH_DIR", "/m")       # benign — must survive
-    env = spawnjob._scrubbed_env(ARGENT_MESH_RESULT_FILE="/r")
-    assert env["PATH"] == "/usr/bin" and env["ARGENT_MESH_DIR"] == "/m"
-    assert env["ARGENT_MESH_RESULT_FILE"] == "/r"     # overlay applied
+    monkeypatch.setenv("CO_MAINTAINER_MESH_DIR", "/m")       # benign — must survive
+    env = spawnjob._scrubbed_env(CO_MAINTAINER_MESH_RESULT_FILE="/r")
+    assert env["PATH"] == "/usr/bin" and env["CO_MAINTAINER_MESH_DIR"] == "/m"
+    assert env["CO_MAINTAINER_MESH_RESULT_FILE"] == "/r"     # overlay applied
     for k in creds:
         assert k not in env, f"credential {k} leaked into the confined child"
 
@@ -1324,7 +1324,7 @@ def test_confined_env_is_scrubbed_of_host_credentials(monkeypatch):
 def test_fill_substitutes_tokens_and_quotes():
     """The command template substitutes {prompt_file}/{result_file} with shell-quoted
     values, and appends the prompt path when the template omits the token (the
-    back-compat shape ARGENT_MESH_SPAWN has always accepted)."""
+    back-compat shape CO_MAINTAINER_MESH_SPAWN has always accepted)."""
     assert spawnjob._fill("run {prompt_file} {result_file}",
                           prompt_file="/a b", result_file="/c") == "run '/a b' /c"
     assert spawnjob._fill("run", prompt_file="/p") == "run /p"
@@ -1334,7 +1334,7 @@ def test_foreign_registries_expire_and_are_capped(tmp_path, monkeypatch):
     """The originator's awaited/acted bookkeeping is bounded and self-expiring, so a
     flood or a never-returning executor can't grow memory without bound."""
     import time as _time
-    from argent_utils.mesh import node as node_mod
+    from co_maintainer.mesh import node as node_mod
     node = _fresh_node(tmp_path, monkeypatch)
     monkeypatch.setattr(node_mod, "_MAX_FOREIGN", 3)
     for i in range(5):
@@ -1352,8 +1352,8 @@ def test_foreign_registries_expire_and_are_capped(tmp_path, monkeypatch):
 
 def test_peer_cache_round_trip_and_malformed_entries(tmp_path, monkeypatch):
     import json
-    monkeypatch.setenv("ARGENT_MESH_DIR", str(tmp_path))
-    from argent_utils.mesh import peercache
+    monkeypatch.setenv("CO_MAINTAINER_MESH_DIR", str(tmp_path))
+    from co_maintainer.mesh import peercache
     assert peercache.load() == {}  # no file yet
     peercache.save({"bb": ("192.168.1.7", 40878), "cc": ("10.0.0.9", 40880)})
     assert peercache.load() == {"bb": ("192.168.1.7", 40878),
@@ -1371,7 +1371,7 @@ def test_peer_cache_round_trip_and_malformed_entries(tmp_path, monkeypatch):
 
 
 def test_hello_on_own_link_remembers_dialable_address(tmp_path, monkeypatch):
-    from argent_utils.mesh import peercache
+    from co_maintainer.mesh import peercache
     node = _fresh_node(tmp_path, monkeypatch)
     info = NodeInfo(id="peerR", name="p", platform="linux", tier=3, tokens="ok",
                     epoch=1.0, seq=1, tcp_port=41000)
@@ -1386,7 +1386,7 @@ def test_hello_on_own_link_remembers_dialable_address(tmp_path, monkeypatch):
 
 
 def test_redial_targets_respect_dial_rule_link_state_and_inflight(tmp_path, monkeypatch):
-    from argent_utils.mesh.node import Peer
+    from co_maintainer.mesh.node import Peer
     node = _fresh_node(tmp_path, monkeypatch)
     lo, linked, dialing, free = "0", "zz-linked", "zz-dialing", "zz-free"
     # "0" sorts below any hex id and "zz…" above ("z" > "f"), regardless of the
@@ -1409,8 +1409,8 @@ def test_rebuild_udp_sockets_swap_in_fresh_ones(tmp_path, monkeypatch):
     the verdict at socket creation), so the rebuilders must produce a fresh socket
     and close the old one — never leave the node socketless."""
     import asyncio
-    monkeypatch.setenv("ARGENT_MESH_LOOPBACK", "1")
-    monkeypatch.setenv("ARGENT_MESH_MCAST_PORT", str(44300 + os.getpid() % 400))
+    monkeypatch.setenv("CO_MAINTAINER_MESH_LOOPBACK", "1")
+    monkeypatch.setenv("CO_MAINTAINER_MESH_MCAST_PORT", str(44300 + os.getpid() % 400))
     node = _fresh_node(tmp_path, monkeypatch)
     node._rebuild_udp_send()  # no socket yet — builds the first one
     first = node._udp_send
@@ -1431,7 +1431,7 @@ def test_rebuild_udp_sockets_swap_in_fresh_ones(tmp_path, monkeypatch):
 
 
 def test_beacon_outage_surfaced_once_and_recovery_logged(tmp_path, monkeypatch):
-    from argent_utils import activity
+    from co_maintainer import activity
     node = _fresh_node(tmp_path, monkeypatch)
 
     def beacon_lines() -> list[str]:
@@ -1464,7 +1464,7 @@ if __name__ == "__main__":  # dependency-free smoke run
         try:
             if params:
                 with tempfile.TemporaryDirectory() as td:
-                    mp = unittest.mock.patch.dict(os.environ, {"ARGENT_MESH_DIR": td})
+                    mp = unittest.mock.patch.dict(os.environ, {"CO_MAINTAINER_MESH_DIR": td})
                     with mp:
                         class _MP:  # minimal monkeypatch stand-in
                             def __init__(self):

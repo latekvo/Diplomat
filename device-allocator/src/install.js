@@ -36,7 +36,7 @@ const CLAUDE_MD = path.join(HOME, '.claude', 'CLAUDE.md');
 const MCP_KEY = 'argent-device-allocator';
 const CMD_NODE = process.execPath; // capture the node that ran the installer
 
-const CLAUDE_MD_BEGIN = '<!-- argent-device-allocator (managed — installed by Argent Utils; remove via the installer) -->';
+const CLAUDE_MD_BEGIN = '<!-- argent-device-allocator (managed — installed by Co-Maintainer; remove via the installer) -->';
 const CLAUDE_MD_END = '<!-- end argent-device-allocator -->';
 const CLAUDE_MD_BODY = [
   CLAUDE_MD_BEGIN,

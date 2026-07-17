@@ -289,7 +289,7 @@ both **additively** (a plain v1 node needs no change to interoperate with them):
 ### The server role
 
 A node MAY run in **server mode** (the reference keys it off
-`ARGENT_MESH_SERVER=1`). A server:
+`CO_MAINTAINER_MESH_SERVER=1`). A server:
 
 - **never originates a dispatch to a peer.** A request it is asked to route (via a
   control client or its CLI) runs on **itself**; a request explicitly
@@ -302,7 +302,7 @@ A node MAY run in **server mode** (the reference keys it off
 ### The API key
 
 Independently, a node MAY require an **API key** on inbound requests (the reference
-reads `ARGENT_MESH_API_KEY`). This is the *"accepts requests authenticated with an
+reads `CO_MAINTAINER_MESH_API_KEY`). This is the *"accepts requests authenticated with an
 optional API key"* credential, and it is **orthogonal to both the join secret and
 device trust**:
 

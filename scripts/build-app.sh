@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Build a double-clickable, menu-bar-only ArgentUtils.app (LSUIElement, no Dock icon).
-# Usage: ./scripts/build-app.sh        then: open ArgentUtils.app
+# Build a double-clickable, menu-bar-only CoMaintainer.app (LSUIElement, no Dock icon).
+# Usage: ./scripts/build-app.sh        then: open CoMaintainer.app
 #        (drag into /Applications and add to Login Items to keep it around)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-APP_NAME="ArgentUtils"
+APP_NAME="CoMaintainer"
 echo "Building release…"
 swift build -c release
 
@@ -25,10 +25,10 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key><string>Argent Utils</string>
-  <key>CFBundleDisplayName</key><string>Argent Utils</string>
-  <key>CFBundleIdentifier</key><string>com.ignacy.argent-utils</string>
-  <key>CFBundleExecutable</key><string>ArgentUtils</string>
+  <key>CFBundleName</key><string>Co-Maintainer</string>
+  <key>CFBundleDisplayName</key><string>Co-Maintainer</string>
+  <key>CFBundleIdentifier</key><string>com.ignacy.co-maintainer</string>
+  <key>CFBundleExecutable</key><string>CoMaintainer</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>1.0</string>
   <key>CFBundleVersion</key><string>1</string>

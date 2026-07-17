@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Launcher for the Linux (Qt6/PySide6) Co-Maintainer tray applet.
+# Runs the package regardless of the current working directory.
+set -euo pipefail
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export PYTHONPATH="${DIR}${PYTHONPATH:+:$PYTHONPATH}"
+exec python3 -m co_maintainer "$@"

@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
-# Launcher for the Linux (Qt6/PySide6) Argent Utils tray applet.
-# Runs the package regardless of the current working directory.
+# DEPRECATED compat shim — the applet is now Co-Maintainer (launcher:
+# linux/co-maintainer). Pre-rename installs still reference this path (the
+# autostart .desktop, the argent-utils-update.service 6AM unit, and the old
+# updater's relaunch), so keep forwarding until every machine has re-run
+# linux/scripts/install-autostart.sh; then this file can be deleted.
 set -euo pipefail
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-export PYTHONPATH="${DIR}${PYTHONPATH:+:$PYTHONPATH}"
-exec python3 -m argent_utils "$@"
+if [ "${ARGENT_UTILS_SELF_UPDATE:-}" = "1" ]; then
+    export CO_MAINTAINER_SELF_UPDATE=1
+fi
+exec "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/co-maintainer" "$@"

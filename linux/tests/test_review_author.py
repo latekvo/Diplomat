@@ -18,11 +18,11 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from argent_utils import gh, review  # noqa: E402
-from argent_utils.prtarget import PRTarget  # noqa: E402
-from argent_utils.review import SpecificAuthor  # noqa: E402
-from argent_utils.store import Store  # noqa: E402
-from argent_utils.wizardview import WizardView  # noqa: E402
+from co_maintainer import gh, review  # noqa: E402
+from co_maintainer.prtarget import PRTarget  # noqa: E402
+from co_maintainer.review import SpecificAuthor  # noqa: E402
+from co_maintainer.store import Store  # noqa: E402
+from co_maintainer.wizardview import WizardView  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -91,7 +91,7 @@ def test_specific_pr_resolves_to_mine(qapp):
     assert w.final_pass.isHidden()
     assert (cfg.can_mark_ready, cfg.can_leave_reviews,
             cfg.can_reply_to_reviews, cfg.can_final_pass) == (True, False, True, False)
-    # Config sent to argent-core carries the resolved disposition.
+    # Config sent to co-maintainer-core carries the resolved disposition.
     assert cfg.specific_author == SpecificAuthor.MINE
     assert (not w.author_hint.isHidden())
     assert "Your PR" in w.author_hint.text()
@@ -157,7 +157,7 @@ def test_entering_specific_pr_starts_loading(qapp, monkeypatch):
     # A fresh, valid PR ref flips the wizard into the loading state and spawns a
     # background poll (which we stub so no gh runs and no thread lingers).
     monkeypatch.setattr(
-        "argent_utils.wizardview.threading.Thread",
+        "co_maintainer.wizardview.threading.Thread",
         lambda *a, **k: type("T", (), {"start": lambda self: None})(),
     )
     store = Store()

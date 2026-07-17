@@ -163,9 +163,9 @@ exactly like `failed` - any non-`spawned` outcome fails the slot over (or, for a
 foreign check.
 
 What "run locally" *means* is implementation-defined and outside the wire protocol.
-Argent Mesh stages the `prompt` to a file and opens a terminal running an agent on
+Co-Maintainer Mesh stages the `prompt` to a file and opens a terminal running an agent on
 it, exactly like a local spawn; a headless deployment substitutes its own runner
-(the reference honors an `ARGENT_MESH_SPAWN` command template for exactly this).
+(the reference honors an `CO_MAINTAINER_MESH_SPAWN` command template for exactly this).
 SzpontNet only requires that the node truthfully report `spawned` vs `failed`.
 
 > **v1 reports hand-off, not completion.** `spawned` means the node accepted and

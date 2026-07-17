@@ -1,10 +1,10 @@
 """Whole-applet mesh E2E: the real app object, a real node, a real peer.
 
-Opt-in (``ARGENT_MESH_E2E=1``) because it boots the actual Qt application
+Opt-in (``CO_MAINTAINER_MESH_E2E=1``) because it boots the actual Qt application
 object offscreen and real node subprocesses — a few seconds of sockets and
 processes, deliberately not part of the default fast suite.
 
-    ARGENT_MESH_E2E=1 QT_QPA_PLATFORM=offscreen python -m pytest tests/test_mesh_e2e_applet.py
+    CO_MAINTAINER_MESH_E2E=1 QT_QPA_PLATFORM=offscreen python -m pytest tests/test_mesh_e2e_applet.py
 
 What it proves, through the real entry points:
 
@@ -32,8 +32,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 LINUX_DIR = Path(__file__).resolve().parents[1]
 
 pytestmark = pytest.mark.skipif(
-    os.environ.get("ARGENT_MESH_E2E") != "1",
-    reason="applet-level mesh E2E is opt-in: ARGENT_MESH_E2E=1",
+    os.environ.get("CO_MAINTAINER_MESH_E2E") != "1",
+    reason="applet-level mesh E2E is opt-in: CO_MAINTAINER_MESH_E2E=1",
 )
 
 _PORT_BASE = 43000 + (os.getpid() % 400) * 20
@@ -41,33 +41,33 @@ _PORT_BASE = 43000 + (os.getpid() % 400) * 20
 
 def _mesh_env(tmp: Path) -> dict:
     return {
-        "ARGENT_MESH_LOOPBACK": "1",
-        "ARGENT_MESH_MCAST_PORT": str(_PORT_BASE),
-        "ARGENT_MESH_TCP_BASE": str(_PORT_BASE + 1),
-        "ARGENT_MESH_TCP_SPAN": "12",
-        "ARGENT_MESH_BEACON_SECS": "0.25",
-        "ARGENT_MESH_HEARTBEAT_SECS": "0.25",
-        "ARGENT_MESH_STALE_SECS": "1.0",
-        "ARGENT_MESH_TIMEOUT_SECS": "2.0",
-        "ARGENT_MESH_ACK_SECS": "4.0",
-        "ARGENT_MESH_STATE_SECS": "0.25",
-        "ARGENT_MESH_DIR": str(tmp / "mesh-self"),
-        "ARGENT_MESH_PLATFORM": "linux",
-        "ARGENT_MESH_SPAWN": f"cp {{prompt_file}} {tmp}/spawned-self.txt",
+        "CO_MAINTAINER_MESH_LOOPBACK": "1",
+        "CO_MAINTAINER_MESH_MCAST_PORT": str(_PORT_BASE),
+        "CO_MAINTAINER_MESH_TCP_BASE": str(_PORT_BASE + 1),
+        "CO_MAINTAINER_MESH_TCP_SPAN": "12",
+        "CO_MAINTAINER_MESH_BEACON_SECS": "0.25",
+        "CO_MAINTAINER_MESH_HEARTBEAT_SECS": "0.25",
+        "CO_MAINTAINER_MESH_STALE_SECS": "1.0",
+        "CO_MAINTAINER_MESH_TIMEOUT_SECS": "2.0",
+        "CO_MAINTAINER_MESH_ACK_SECS": "4.0",
+        "CO_MAINTAINER_MESH_STATE_SECS": "0.25",
+        "CO_MAINTAINER_MESH_DIR": str(tmp / "mesh-self"),
+        "CO_MAINTAINER_MESH_PLATFORM": "linux",
+        "CO_MAINTAINER_MESH_SPAWN": f"cp {{prompt_file}} {tmp}/spawned-self.txt",
         "HOME": str(tmp / "home"),
     }
 
 
 def test_applet_meshes_and_dispatches(tmp_path, monkeypatch):
-    # Prompt assembly shells out to the argent-core Swift binary; resolve it
+    # Prompt assembly shells out to the co-maintainer-core Swift binary; resolve it
     # against the REAL environment before we fake HOME away.
-    from argent_utils import promptcore
+    from co_maintainer import promptcore
 
     try:
         core_bin = promptcore.core_bin()
     except promptcore.CoreBinaryMissing:
-        pytest.skip("argent-core binary not built (linux/scripts/build-core.sh)")
-    monkeypatch.setenv("ARGENT_CORE_BIN", core_bin)
+        pytest.skip("co-maintainer-core binary not built (linux/scripts/build-core.sh)")
+    monkeypatch.setenv("CO_MAINTAINER_CORE_BIN", core_bin)
 
     for k, v in _mesh_env(tmp_path).items():
         monkeypatch.setenv(k, v)
@@ -85,19 +85,19 @@ def test_applet_meshes_and_dispatches(tmp_path, monkeypatch):
          "tokens": "ok", "dutiesEnabled": {}}))
     peer_env = dict(os.environ)
     peer_env.update({
-        "ARGENT_MESH_DIR": str(peer_dir),
-        "ARGENT_MESH_PLATFORM": "macos",
-        "ARGENT_MESH_SPAWN": f"cp {{prompt_file}} {tmp_path}/spawned-peer.txt",
+        "CO_MAINTAINER_MESH_DIR": str(peer_dir),
+        "CO_MAINTAINER_MESH_PLATFORM": "macos",
+        "CO_MAINTAINER_MESH_SPAWN": f"cp {{prompt_file}} {tmp_path}/spawned-peer.txt",
     })
     peer = subprocess.Popen(
-        [sys.executable, "-m", "argent_utils.mesh"], cwd=LINUX_DIR, env=peer_env,
+        [sys.executable, "-m", "co_maintainer.mesh"], cwd=LINUX_DIR, env=peer_env,
         stdout=(tmp_path / "peer.log").open("w"), stderr=subprocess.STDOUT,
     )
 
     from PySide6.QtWidgets import QApplication
 
-    from argent_utils.app import ArgentUtilsApp
-    from argent_utils.mesh import ctl
+    from co_maintainer.app import CoMaintainerApp
+    from co_maintainer.mesh import ctl
 
     app_obj = None
     try:
@@ -106,14 +106,14 @@ def test_applet_meshes_and_dispatches(tmp_path, monkeypatch):
         # Pre-seed settings THROUGH the store's own mechanism (conftest already
         # redirects QSettings into the test dir): mesh on, allocator settled so
         # the app doesn't try to install anything.
-        from argent_utils.store import Store
+        from co_maintainer.store import Store
 
         seed = Store()
         seed.mesh_enabled = True
         seed.allocator_setup_done = True
         seed._settings.sync()
 
-        app_obj = ArgentUtilsApp()  # the real applet — starts the mesh node itself
+        app_obj = CoMaintainerApp()  # the real applet — starts the mesh node itself
 
         def pump(seconds: float) -> None:
             deadline = time.monotonic() + seconds

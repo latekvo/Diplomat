@@ -13,7 +13,7 @@ target) so a concurrent reader never sees a torn file, and all are best-effort
 state).
 
 The reference paths live under `~/.argent/mesh/` (overridable via
-`ARGENT_MESH_DIR`).
+`CO_MAINTAINER_MESH_DIR`).
 
 ## `node.json`
 

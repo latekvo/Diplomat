@@ -2,8 +2,8 @@
 
 Everything in here is consumed **verbatim** by both front-ends:
 
-- the macOS SwiftUI menu-bar app (`Sources/ArgentUtilsCore` loads it), and
-- the Linux Qt6/PySide6 tray applet (`linux/argent_utils` loads it).
+- the macOS SwiftUI menu-bar app (`Sources/CoMaintainerCore` loads it), and
+- the Linux Qt6/PySide6 tray applet (`linux/co_maintainer` loads it).
 
 The two UIs differ only in *rendering*. All the triage logic — what to query,
 how to filter, what the prompts say — lives here once. Change a query or a
@@ -23,8 +23,8 @@ threshold in one file and both platforms pick it up; the golden-prompt tests
 | `review.json` | the Review-PRs prompt model: depth levels + scope/action text blocks the wizard assembles |
 | `conflicts.json` | the Resolve-conflicts prompt model: scope templates + the merge/resolve action blocks the wizard assembles |
 | `audit.json` | the Full-E2E-test prompt model: scope + action blocks (find-only / fix open bug issues / open a PR per finding) |
-| `mesh.json` | the LAN P2P mesh model: protocol constants (discovery/heartbeat ports + timings), the duty catalog (which job classes the mesh routes, with per-duty platform spread — e.g. the audit's one-linux-plus-one-macos), and the placement strategies (weakest-first / strongest-first / local-first). Consumed by the Python mesh node (`linux/argent_utils/mesh`) and the topology panel; a future Swift node reads the same file |
-| `golden-prompts/` | canonical prompt outputs, one `.txt` per mode; regenerate with `ARGENT_GOLDEN_WRITE=1 swift run ArgentUtilsCoreSmoke`, asserted byte-for-byte by the Swift smoke test AND `linux/tests/test_golden_prompts.py` |
+| `mesh.json` | the LAN P2P mesh model: protocol constants (discovery/heartbeat ports + timings), the duty catalog (which job classes the mesh routes, with per-duty platform spread — e.g. the audit's one-linux-plus-one-macos), and the placement strategies (weakest-first / strongest-first / local-first). Consumed by the Python mesh node (`linux/co_maintainer/mesh`) and the topology panel; a future Swift node reads the same file |
+| `golden-prompts/` | canonical prompt outputs, one `.txt` per mode; regenerate with `CO_MAINTAINER_GOLDEN_WRITE=1 swift run CoMaintainerCoreSmoke`, asserted byte-for-byte by the Swift smoke test AND `linux/tests/test_golden_prompts.py` |
 
 ## Contract notes
 

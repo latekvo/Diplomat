@@ -93,7 +93,7 @@ An implementation that runs (rather than declines) a foreign request **MUST**:
    escaping the sandbox or acting under the requester's identity is not.
 
 > **The reference confinement.** The reference gates foreign execution on an
-> operator-supplied sandbox command, `ARGENT_MESH_FOREIGN_SPAWN` (with
+> operator-supplied sandbox command, `CO_MAINTAINER_MESH_FOREIGN_SPAWN` (with
 > `{prompt_file}`/`{result_file}` placeholders - e.g. a `docker run` wrapper).
 > **Its absence means no foreign execution**: a foreign request is declined, exactly
 > as the base protocol does. So a node only ever runs a stranger's compute when the

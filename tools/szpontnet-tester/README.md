@@ -132,7 +132,7 @@ If your node already reads the `SZPONTNET_*` variables, point `--node-cmd` at it
 directly. Otherwise write a launcher that maps them onto your node's own
 configuration — `adapters/reference.py` is the worked example (≈50 lines): it
 writes the reference node's `node.json`, translates `SZPONTNET_*` →
-`ARGENT_MESH_*`, and execs the node.
+`CO_MAINTAINER_MESH_*`, and execs the node.
 
 ## Layout
 
@@ -149,5 +149,5 @@ szpont/
   selftest.py   pure oracle/codec self-tests (V1–V3 + ch-11 codec/oracle + ch-12 claim codec, without a node)
   report.py     per-check reporting, MUST/SHOULD verdict, exit code
 adapters/
-  reference.py  candidate adapter for linux/argent_utils/mesh
+  reference.py  candidate adapter for linux/co_maintainer/mesh
 ```

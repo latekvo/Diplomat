@@ -1,9 +1,9 @@
 """Self-update: the git plumbing, and the Settings button end-to-end.
 
 Builds a throwaway "GitHub" (a local origin repo) plus a clone standing in for
-the running checkout (pointed at via ``ARGENT_UTILS_SELF_REPO``), so nothing
+the running checkout (pointed at via ``CO_MAINTAINER_SELF_REPO``), so nothing
 touches the network or the real install: the synthetic origin ships stub
-``build-core.sh`` / ``argent-utils`` scripts that drop marker files instead of
+``build-core.sh`` / ``co-maintainer`` scripts that drop marker files instead of
 running swift or spawning a tray app. The E2E clicks the real Update button in
 the real SettingsView (offscreen Qt) and asserts the clone fast-forwarded, the
 build ran, and the relaunch fired.
@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from argent_utils import selfupdate  # noqa: E402
+from co_maintainer import selfupdate  # noqa: E402
 
 
 def _run(cwd: Path, *args: str) -> str:
@@ -53,7 +53,7 @@ def _make_origin(tmp_path: Path) -> Path:
     (origin / "linux" / "scripts" / "build-core.sh").write_text(
         "#!/usr/bin/env bash\ntouch \"$MARKER_DIR/built\"\n"
     )
-    (origin / "linux" / "argent-utils").write_text(
+    (origin / "linux" / "co-maintainer").write_text(
         "#!/usr/bin/env bash\ntouch \"$MARKER_DIR/relaunched\"\n"
     )
     (origin / "VERSION").write_text("1\n")
@@ -75,7 +75,7 @@ def repos(tmp_path, monkeypatch):
     _git(tmp_path, "clone", "-q", str(origin), str(clone))
     marker = tmp_path / "markers"
     marker.mkdir()
-    monkeypatch.setenv("ARGENT_UTILS_SELF_REPO", str(clone))
+    monkeypatch.setenv("CO_MAINTAINER_SELF_REPO", str(clone))
     monkeypatch.setenv("MARKER_DIR", str(marker))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     # Isolate the singleton pidfile so running_pid() can't see a real tray.
@@ -83,7 +83,7 @@ def repos(tmp_path, monkeypatch):
     (tmp_path / "run").mkdir()
     # Keep the E2E hermetic: SettingsView also fires the allocator check on
     # open; point it at nothing so no real Node installer runs.
-    monkeypatch.setenv("ARGENT_DEVICE_ALLOCATOR_DIR", str(tmp_path / "no-allocator"))
+    monkeypatch.setenv("CO_MAINTAINER_DEVICE_ALLOCATOR_DIR", str(tmp_path / "no-allocator"))
     return origin, clone, marker
 
 
@@ -193,7 +193,7 @@ def test_run_scheduled_relaunches_a_running_tray(repos):
     origin, clone, marker = repos
     _advance_origin(origin)
     # Pretend a tray is live: claim the singleton pidfile with this process' PID.
-    from argent_utils.singleton import _pidfile
+    from co_maintainer.singleton import _pidfile
 
     _pidfile().write_text(str(os.getpid()))
 
@@ -212,8 +212,8 @@ def test_update_button_pulls_builds_and_relaunches(repos):
 
     from PySide6.QtWidgets import QApplication
 
-    from argent_utils.settingsview import SettingsView
-    from argent_utils.store import Store
+    from co_maintainer.settingsview import SettingsView
+    from co_maintainer.store import Store
 
     qapp = QApplication.instance() or QApplication([])
     store = Store()

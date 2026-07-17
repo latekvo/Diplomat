@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import pytest
 
-from argent_utils import autofix, review
-from argent_utils.autofix import (
+from co_maintainer import autofix, review
+from co_maintainer.autofix import (
     PRFingerprint,
     PRSnapshot,
     ReviewAttempt,
@@ -155,13 +155,13 @@ def test_verdict_withhold_reasons():
 
 @pytest.fixture
 def store(monkeypatch):
-    from argent_utils.store import Store
+    from co_maintainer.store import Store
 
     st = Store()
     st.me = "alice"  # skip the gh viewer-login shell-out
-    # Never run the argent-core CLI in a unit test: stub the prompt builder.
+    # Never run the co-maintainer-core CLI in a unit test: stub the prompt builder.
     monkeypatch.setattr(
-        "argent_utils.promptcore.build_prompt",
+        "co_maintainer.promptcore.build_prompt",
         lambda cfg: f"PROMPT:{cfg.get('kind')}:{cfg.get('specificPR')}",
     )
     return st
@@ -189,7 +189,7 @@ def test_poll_noop_when_both_disabled(store, monkeypatch):
     calls = _spawn_recorder(monkeypatch)
     called = []
     monkeypatch.setattr(
-        "argent_utils.autofixmonitor.fetch_snapshots",
+        "co_maintainer.autofixmonitor.fetch_snapshots",
         lambda *a, **k: called.append(1) or [],
     )
     store.run_autofix_poll_async()
@@ -206,7 +206,7 @@ def test_conflict_dispatch_and_backoff(store, monkeypatch):
     # Seed a prior fingerprint so it's not a first-sighting (edge is a no-op for
     # conflicts anyway; the level-triggered reconciler does the work).
     store._save_fingerprints({42: PRFingerprint("MERGEABLE", "", 0)})
-    monkeypatch.setattr("argent_utils.autofixmonitor.fetch_snapshots", lambda *a, **k: snaps)
+    monkeypatch.setattr("co_maintainer.autofixmonitor.fetch_snapshots", lambda *a, **k: snaps)
 
     store._poll_my_prs("o", "r")
     assert len(calls) == 1
@@ -224,7 +224,7 @@ def test_in_flight_dedup(store, monkeypatch):
     calls = _spawn_recorder(monkeypatch, finish=False)  # agent still running
     snaps = [_snap(number=9, mergeable="CONFLICTING")]
     store._save_fingerprints({9: PRFingerprint("MERGEABLE", "", 0)})
-    monkeypatch.setattr("argent_utils.autofixmonitor.fetch_snapshots", lambda *a, **k: snaps)
+    monkeypatch.setattr("co_maintainer.autofixmonitor.fetch_snapshots", lambda *a, **k: snaps)
 
     store._poll_my_prs("o", "r")
     store._poll_my_prs("o", "r")  # sentinel still absent → still in flight
@@ -238,7 +238,7 @@ def test_review_request_verdict_gating(store, monkeypatch):
     calls = _spawn_recorder(monkeypatch, finish=True)
     # A clean PR by a trusted author → verdict allowed (final_pass=true in prompt).
     reqs = [_req(requested_at="2026-01-02", author_association="MEMBER", files=["a.py"])]
-    monkeypatch.setattr("argent_utils.autofixmonitor.fetch_review_requests", lambda *a, **k: reqs)
+    monkeypatch.setattr("co_maintainer.autofixmonitor.fetch_review_requests", lambda *a, **k: reqs)
     store._poll_review_requests("o", "r")
     assert len(calls) == 1 and "review" in calls[0]["prompt"]
     assert store.review_requests_handled == 1
@@ -247,7 +247,7 @@ def test_review_request_verdict_gating(store, monkeypatch):
     calls.clear()
     skill_reqs = [_req(number=8, requested_at="2026-02-02", author_association="MEMBER",
                        files=["foo.skill.md"])]
-    monkeypatch.setattr("argent_utils.autofixmonitor.fetch_review_requests",
+    monkeypatch.setattr("co_maintainer.autofixmonitor.fetch_review_requests",
                         lambda *a, **k: skill_reqs)
     store._poll_review_requests("o", "r")
     assert len(calls) == 1  # dispatched (comments-only)
@@ -260,8 +260,8 @@ def test_unaddressed_count_and_ban_skip(store, monkeypatch):
     reqs = [
         _req(requested_at="2026-01-02", author_association="MEMBER"),  # owed, dispatched
     ]
-    monkeypatch.setattr("argent_utils.autofixmonitor.fetch_review_requests", lambda *a, **k: reqs)
-    monkeypatch.setattr("argent_utils.bans.read", lambda: [])
+    monkeypatch.setattr("co_maintainer.autofixmonitor.fetch_review_requests", lambda *a, **k: reqs)
+    monkeypatch.setattr("co_maintainer.bans.read", lambda: [])
     store._poll_review_requests("o", "r")
     # Dispatched + finished → no longer in-flight → counts as still unaddressed until
     # the reviewer resolves it (the reconciler will retry on the next poll).
@@ -274,11 +274,11 @@ def test_poll_error_surfaced_and_recovers(store, monkeypatch):
     def boom(*a, **k):
         raise RuntimeError("gh exploded")
 
-    monkeypatch.setattr("argent_utils.autofixmonitor.fetch_snapshots", boom)
+    monkeypatch.setattr("co_maintainer.autofixmonitor.fetch_snapshots", boom)
     store._autofix_poll_once()
     assert store.autofix_poll_error and "gh exploded" in store.autofix_poll_error
 
     # Recovery clears it.
-    monkeypatch.setattr("argent_utils.autofixmonitor.fetch_snapshots", lambda *a, **k: [])
+    monkeypatch.setattr("co_maintainer.autofixmonitor.fetch_snapshots", lambda *a, **k: [])
     store._autofix_poll_once()
     assert store.autofix_poll_error is None

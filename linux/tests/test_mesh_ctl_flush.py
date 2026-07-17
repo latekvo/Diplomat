@@ -17,18 +17,18 @@ import asyncio
 
 import pytest
 
-from argent_utils.mesh import statefile
-from argent_utils.mesh.node import MeshNode
+from co_maintainer.mesh import statefile
+from co_maintainer.mesh.node import MeshNode
 
 
 @pytest.fixture
 def isolated_node(tmp_path, monkeypatch):
     """A never-started node whose identity/stats/state all live under tmp_path,
     with the snapshot loop's write interval pinned absurdly high."""
-    monkeypatch.setenv("ARGENT_MESH_DIR", str(tmp_path))
-    monkeypatch.setenv("ARGENT_MESH_LOOPBACK", "1")
+    monkeypatch.setenv("CO_MAINTAINER_MESH_DIR", str(tmp_path))
+    monkeypatch.setenv("CO_MAINTAINER_MESH_LOOPBACK", "1")
     # The only writer we permit during the test is the ctl flush.
-    monkeypatch.setenv("ARGENT_MESH_STATE_SECS", "10000")
+    monkeypatch.setenv("CO_MAINTAINER_MESH_STATE_SECS", "10000")
     node = MeshNode()
     # No start(): sockets and the snapshot loop never run.
     assert statefile.read_state() is None  # nothing on disk yet
@@ -52,7 +52,7 @@ def test_set_attr_flushes_immediately(isolated_node):
 
 def test_set_overrides_flushes_immediately(isolated_node):
     async def go():
-        from argent_utils.mesh import config
+        from co_maintainer.mesh import config
 
         duty = next(iter(config.duty_ids()))
         reply = await isolated_node._ctl_command(

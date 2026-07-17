@@ -91,7 +91,7 @@ dispatch *will* do, but nothing enforces exclusivity in v1.
 
 A **dispatch** is a request to actually run a duty now, carrying a **job** — a
 unit of work with an id, the duty, and an opaque **prompt** (the work payload;
-Argent Mesh uses it as the text handed to an agent, but SzpontNet treats it as an
+Co-Maintainer Mesh uses it as the text handed to an agent, but SzpontNet treats it as an
 uninterpreted string). Dispatch routes the job to the node(s) the placement picks,
 one **slot** at a time, failing over within a slot if a candidate can't take it.
 See [07-dispatch](07-dispatch.md).

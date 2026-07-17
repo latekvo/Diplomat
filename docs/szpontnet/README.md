@@ -6,8 +6,8 @@ network find each other, **advertise the resources they have available**, and
 hand work to whichever machine is the best fit - with no central coordinator and
 automatic take-over when a machine drops.
 
-SzpontNet is the *protocol*. **Argent Mesh** (in this repository under
-[`linux/argent_utils/mesh/`](../../linux/argent_utils/mesh)) is its reference
+SzpontNet is the *protocol*. **Co-Maintainer Mesh** (in this repository under
+[`linux/co_maintainer/mesh/`](../../linux/co_maintainer/mesh)) is its reference
 implementation; the shared constants live in
 [`core/mesh.json`](../../core/mesh.json). This spec is written so that a second,
 independent implementation - in any language - can join the same mesh and
@@ -188,9 +188,9 @@ that only wants to *offer* resources. The exact minimal set is enumerated in
 
 ## Relationship to the reference implementation
 
-Everything in this spec is implemented and exercised by Argent Mesh:
+Everything in this spec is implemented and exercised by Co-Maintainer Mesh:
 
-- Wire protocol & node: [`linux/argent_utils/mesh/`](../../linux/argent_utils/mesh)
+- Wire protocol & node: [`linux/co_maintainer/mesh/`](../../linux/co_maintainer/mesh)
   (`protocol.py`, `node.py`, `assign.py`, `identity.py`, `statefile.py`, `ctl.py`).
 - Shared constants & vocabulary: [`core/mesh.json`](../../core/mesh.json).
 - Interop-relevant behavior is covered by

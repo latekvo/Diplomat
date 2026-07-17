@@ -69,7 +69,7 @@ DEFAULT_DUTIES = {
 
 
 def _find_mesh_json() -> Path | None:
-    env = os.environ.get("SZPONTNET_MESH_JSON") or os.environ.get("ARGENT_MESH_JSON")
+    env = os.environ.get("SZPONTNET_MESH_JSON") or os.environ.get("CO_MAINTAINER_MESH_JSON")
     if env and Path(env).is_file():
         return Path(env)
     here = Path(__file__).resolve()

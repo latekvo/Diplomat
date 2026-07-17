@@ -74,7 +74,7 @@ link — a reconnect may already have replaced it.
 
 SzpontNet supports an optional **pre-shared secret** that fences off who may join
 the mesh and receive work. It is configured out of band (the reference
-implementation reads `ARGENT_MESH_SECRET`; every node and every control client
+implementation reads `CO_MAINTAINER_MESH_SECRET`; every node and every control client
 must carry the same value). When a secret is configured:
 
 - A `hello` or `ctl` message **MUST** carry a `secret` field equal to the

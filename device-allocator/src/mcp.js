@@ -71,7 +71,7 @@ const TOOLS = [
         format: { type: 'string', enum: FORMATS, description: 'Form factor — only for ios/android. Omit unless you specifically need a phone vs a tablet.' },
         version: { type: 'string', description: 'OPTIONAL and DISCOURAGED — only set an OS version (e.g. "18.5", or "34" API level) when a specific version is genuinely required; otherwise omit and take whatever is available.' },
         deviceId: { type: 'string', description: 'Claim a specific device by UDID/serial — use this to claim a device you just created after a needs-create response.' },
-        agentName: { type: 'string', description: 'Short label for you, shown in the Argent Utils panel (e.g. your task or window title).' },
+        agentName: { type: 'string', description: 'Short label for you, shown in the Co-Maintainer panel (e.g. your task or window title).' },
       },
       required: [],
     },
@@ -222,7 +222,7 @@ function formatResult(name, r) {
     human = `A device slot has freed up (${r.active}/${r.quota} now in use). Call request-device again to claim one.`;
   } else if (r && r.outcome === 'await-timeout') {
     human = `Still exhausted after waiting (${r.active}/${r.quota} in use). Call await-device again to keep waiting, `
-      + `or open the Argent Utils panel to see who holds the devices.`;
+      + `or open the Co-Maintainer panel to see who holds the devices.`;
   } else if (name === 'request-device' || name === 'change-device') {
     human = r.deviceId
       ? `Allocated ${r.name} (${deviceDesc(r)}). Device id: ${r.deviceId} (status: ${r.status}). `

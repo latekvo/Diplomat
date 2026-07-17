@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   # The macOS app + shared core. `swift build` compiles every target (incl. the
-  # SwiftUI/AppKit `ArgentUtils` app); the smoke binary then asserts the shared
+  # SwiftUI/AppKit `CoMaintainer` app); the smoke binary then asserts the shared
   # core logic (filters, prompt assembly, PR-reference parsing, conflict prompts).
   swift-macos:
     name: Swift (macOS) · build + core smoke
@@ -27,15 +27,15 @@ jobs:
       - name: Build all targets
         run: swift build
       - name: Run shared-core smoke test
-        run: swift run ArgentUtilsCoreSmoke
+        run: swift run CoMaintainerCoreSmoke
       # Headless UI snapshot: renders the real two-column panel (seeded sessions,
       # devices, bans, audit feed) through ImageRenderer — a cheap whole-UI crash
       # guard that needs no gh auth and no display. Render mode never persists
       # (settings writes are render-guarded), so it can't touch any defaults.
       - name: Headless panel render
         run: |
-          ARGENT_UTILS_RENDER=devices ARGENT_UTILS_RENDER_OUT="$RUNNER_TEMP/panel.png" \
-            swift run ArgentUtils
+          CO_MAINTAINER_RENDER=devices CO_MAINTAINER_RENDER_OUT="$RUNNER_TEMP/panel.png" \
+            swift run CoMaintainer
           test -s "$RUNNER_TEMP/panel.png"
 
   # The shared core advertises "compiles on macOS *and* Linux". This guards that
@@ -49,29 +49,29 @@ jobs:
       - uses: actions/checkout@v7
       - run: swift --version
       - name: Build + run shared-core smoke test
-        run: swift run ArgentUtilsCoreSmoke
-      # Build the static, portable argent-core CLI and hand it to the python-linux
+        run: swift run CoMaintainerCoreSmoke
+      # Build the static, portable co-maintainer-core CLI and hand it to the python-linux
       # job. The Python front-end shells out to this binary for every prompt, so
       # its pytest suite needs it present; building it here (once, in the Swift
       # container) keeps the Swift<->Python golden parity provable in CI.
-      - name: Build argent-core CLI (static, portable)
+      - name: Build co-maintainer-core CLI (static, portable)
         run: |
-          swift build --product argent-core --static-swift-stdlib -c release
-          bin="$(swift build --product argent-core --static-swift-stdlib -c release --show-bin-path)"
+          swift build --product co-maintainer-core --static-swift-stdlib -c release
+          bin="$(swift build --product co-maintainer-core --static-swift-stdlib -c release --show-bin-path)"
           mkdir -p artifact
-          cp "$bin/argent-core" artifact/argent-core
-      - name: Upload argent-core binary
+          cp "$bin/co-maintainer-core" artifact/co-maintainer-core
+      - name: Upload co-maintainer-core binary
         uses: actions/upload-artifact@v4
         with:
-          name: argent-core-linux
-          path: artifact/argent-core
+          name: co-maintainer-core-linux
+          path: artifact/co-maintainer-core
 
   # The Linux (Qt6/PySide6) front-end. Offline, headless regression tests over the
   # same shared-core logic the GUI renders.
   python-linux:
     name: Python (Linux) · pytest
     runs-on: ubuntu-latest
-    # The prompt tests shell out to argent-core; take the static binary the
+    # The prompt tests shell out to co-maintainer-core; take the static binary the
     # swift-core-linux job built rather than installing a Swift toolchain here.
     needs: swift-core-linux
     steps:
@@ -91,17 +91,17 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r linux/requirements.txt pytest
-      - name: Download argent-core binary
+      - name: Download co-maintainer-core binary
         uses: actions/download-artifact@v4
         with:
-          name: argent-core-linux
+          name: co-maintainer-core-linux
           path: core-bin
-      - name: Make argent-core executable
-        run: chmod +x core-bin/argent-core
+      - name: Make co-maintainer-core executable
+        run: chmod +x core-bin/co-maintainer-core
       - name: Run tests (headless Qt)
         env:
           QT_QPA_PLATFORM: offscreen
-          ARGENT_CORE_BIN: ${{ github.workspace }}/core-bin/argent-core
+          CO_MAINTAINER_CORE_BIN: ${{ github.workspace }}/core-bin/co-maintainer-core
         run: pytest linux/tests -q
 
   # The device-allocator MCP server + daemon. Self-contained Node tests that drive

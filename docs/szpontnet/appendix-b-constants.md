@@ -32,7 +32,7 @@ may place work differently ([09](09-extensibility.md#vocabulary-skew)).
 | down-peer retention | `300` s (reference) | [snapshot retention](08-state.md#down-peer-retention) |
 
 > Timing values are the reference defaults. An implementation MAY expose overrides
-> for testing (the reference reads `ARGENT_MESH_*` env vars to run fast-timed
+> for testing (the reference reads `CO_MAINTAINER_MESH_*` env vars to run fast-timed
 > meshes on loopback), but nodes on the *same* mesh must use compatible values -
 > in particular `peerTimeoutSecs` must exceed `heartbeatIntervalSecs` with margin,
 > and `peerStaleSecs` must sit between them.
@@ -112,8 +112,8 @@ empty (keyless). See [11 - authenticated gossip](11-trust-and-balancing.md#authe
 
 | Constant | Value | Meaning |
 |----------|-------|---------|
-| server mode via | `ARGENT_MESH_SERVER=1` | node accepts work but never dispatches to peers ([11](11-trust-and-balancing.md#the-server-role)). |
-| API key via | `ARGENT_MESH_API_KEY` | required `apiKey` on inbound `ctl`/`dispatch` ([11](11-trust-and-balancing.md#the-api-key)); empty = no gate. |
+| server mode via | `CO_MAINTAINER_MESH_SERVER=1` | node accepts work but never dispatches to peers ([11](11-trust-and-balancing.md#the-server-role)). |
+| API key via | `CO_MAINTAINER_MESH_API_KEY` | required `apiKey` on inbound `ctl`/`dispatch` ([11](11-trust-and-balancing.md#the-api-key)); empty = no gate. |
 
 The `apiKey` field is optional and additive (omitted when empty), and is
 orthogonal to the join `secret` and to device trust.
@@ -182,8 +182,8 @@ a node that omits them drops the `work-claim` message and keeps the link.
 | Constant | Value | Meaning |
 |----------|-------|---------|
 | job-result signing tag | `szpontnet-jobresult-v1:` | domain tag for a `job-result` `sig` ([13](13-foreign-execution.md#correlation-and-authenticity)). |
-| confinement runner via | `ARGENT_MESH_FOREIGN_SPAWN` | operator's sandbox command (`{prompt_file}`/`{result_file}`); its presence enables confined foreign execution, absence = decline ([13](13-foreign-execution.md#confinement-the-executors-responsibility)). |
-| result handler via | `ARGENT_MESH_ON_RESULT` | originator's own-identity action on a returned result (`{result_file}`); where e.g. `gh` runs. |
+| confinement runner via | `CO_MAINTAINER_MESH_FOREIGN_SPAWN` | operator's sandbox command (`{prompt_file}`/`{result_file}`); its presence enables confined foreign execution, absence = decline ([13](13-foreign-execution.md#confinement-the-executors-responsibility)). |
+| result handler via | `CO_MAINTAINER_MESH_ON_RESULT` | originator's own-identity action on a returned result (`{result_file}`); where e.g. `gh` runs. |
 | `foreignResultRetryIntervalSecs` | `5.0` | executor re-sends an unacked `job-result` this often. |
 | `foreignResultMaxSecs` | `120.0` | executor gives up delivering after this (originator presumed gone). |
 | `foreignJobTimeoutSecs` | `900.0` | confined compute budget before the executor returns an `ok:false` result. |
@@ -218,6 +218,6 @@ and declines foreign requests.
 | `~/.argent/mesh/trusted.json` | local trusted-device allowlist (never gossiped, [08](08-state.md#trustedjson)) |
 | `~/.argent/mesh/stats.json` | local load-balancing accounting (never gossiped, [08](08-state.md#statsjson)) |
 | `~/.argent/mesh/state.json` | public topology snapshot ([08](08-state.md#the-statejson-snapshot)) |
-| overridable via | `ARGENT_MESH_DIR` |
-| join secret via | `ARGENT_MESH_SECRET` ([03](03-transport.md#the-join-fence)) |
-| server mode / API key via | `ARGENT_MESH_SERVER` / `ARGENT_MESH_API_KEY` ([11](11-trust-and-balancing.md#server-nodes--api-key-authentication)) |
+| overridable via | `CO_MAINTAINER_MESH_DIR` |
+| join secret via | `CO_MAINTAINER_MESH_SECRET` ([03](03-transport.md#the-join-fence)) |
+| server mode / API key via | `CO_MAINTAINER_MESH_SERVER` / `CO_MAINTAINER_MESH_API_KEY` ([11](11-trust-and-balancing.md#server-nodes--api-key-authentication)) |

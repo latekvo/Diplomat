@@ -1,15 +1,15 @@
 """Mesh integration tests: real nodes, real sockets, one machine.
 
-Spins actual ``python -m argent_utils.mesh`` node processes on loopback
-(ARGENT_MESH_LOOPBACK=1 keeps every socket on 127.0.0.1; multicast loops back
+Spins actual ``python -m co_maintainer.mesh`` node processes on loopback
+(CO_MAINTAINER_MESH_LOOPBACK=1 keeps every socket on 127.0.0.1; multicast loops back
 locally) with fast protocol timings, then asserts the behaviours the design
 promises: discovery convergence, deterministic cross-node assignment
 agreement, duty takeover when a node dies, remote attribute edits, LWW
 placement-override gossip, and per-slot dispatch with token failover.
 
-Each fake node gets its own ARGENT_MESH_DIR (identity + state.json) and a
+Each fake node gets its own CO_MAINTAINER_MESH_DIR (identity + state.json) and a
 platform override, so a single Linux CI runner hosts a mixed linux/macos
-fleet. Dispatch lands via ARGENT_MESH_SPAWN (a `cp` template) instead of a
+fleet. Dispatch lands via CO_MAINTAINER_MESH_SPAWN (a `cp` template) instead of a
 real terminal.
 """
 
@@ -69,20 +69,20 @@ _PORT_BASE = 42000 + (os.getpid() % 400) * 20
 
 def _proto_env() -> dict:
     return {
-        "ARGENT_MESH_LOOPBACK": "1",
+        "CO_MAINTAINER_MESH_LOOPBACK": "1",
         # Offline + deterministic: never let a fleet node probe the real OAuth
         # usage endpoint (on macOS dev machines the Keychain token would resolve
         # even under a sandboxed HOME). Token states come from seeded logs/pins.
-        "ARGENT_MESH_OAUTH_PROBE": "0",
-        "ARGENT_MESH_MCAST_PORT": str(_PORT_BASE),
-        "ARGENT_MESH_TCP_BASE": str(_PORT_BASE + 1),
-        "ARGENT_MESH_TCP_SPAN": "12",
-        "ARGENT_MESH_BEACON_SECS": "0.25",
-        "ARGENT_MESH_HEARTBEAT_SECS": "0.25",
-        "ARGENT_MESH_STALE_SECS": "1.0",
-        "ARGENT_MESH_TIMEOUT_SECS": "2.0",
-        "ARGENT_MESH_ACK_SECS": "4.0",
-        "ARGENT_MESH_STATE_SECS": "0.25",
+        "CO_MAINTAINER_MESH_OAUTH_PROBE": "0",
+        "CO_MAINTAINER_MESH_MCAST_PORT": str(_PORT_BASE),
+        "CO_MAINTAINER_MESH_TCP_BASE": str(_PORT_BASE + 1),
+        "CO_MAINTAINER_MESH_TCP_SPAN": "12",
+        "CO_MAINTAINER_MESH_BEACON_SECS": "0.25",
+        "CO_MAINTAINER_MESH_HEARTBEAT_SECS": "0.25",
+        "CO_MAINTAINER_MESH_STALE_SECS": "1.0",
+        "CO_MAINTAINER_MESH_TIMEOUT_SECS": "2.0",
+        "CO_MAINTAINER_MESH_ACK_SECS": "4.0",
+        "CO_MAINTAINER_MESH_STATE_SECS": "0.25",
     }
 
 
@@ -106,15 +106,15 @@ class Fleet:
         (self.root / "spawned").mkdir(exist_ok=True)
         env = dict(os.environ)
         env.update(_proto_env())
-        env["ARGENT_MESH_DIR"] = str(d)
-        env["ARGENT_MESH_PLATFORM"] = platform
-        env["ARGENT_MESH_SPAWN"] = f"cp {{prompt_file}} {self.root}/spawned/{name}.txt"
-        env["ARGENT_MESH_SECRET"] = secret
+        env["CO_MAINTAINER_MESH_DIR"] = str(d)
+        env["CO_MAINTAINER_MESH_PLATFORM"] = platform
+        env["CO_MAINTAINER_MESH_SPAWN"] = f"cp {{prompt_file}} {self.root}/spawned/{name}.txt"
+        env["CO_MAINTAINER_MESH_SECRET"] = secret
         # A dedicated server never dispatches to peers; an API key (when set) gates
         # inbound control + dispatch. Both off by default so ordinary nodes are
         # unaffected.
-        env["ARGENT_MESH_SERVER"] = "1" if server else ""
-        env["ARGENT_MESH_API_KEY"] = api_key
+        env["CO_MAINTAINER_MESH_SERVER"] = "1" if server else ""
+        env["CO_MAINTAINER_MESH_API_KEY"] = api_key
         (d / "secret").write_text(secret)  # remembered for this node's CLI calls
         # Each fake node logs to the fleet dir, and must not scribble on the
         # real ~/.argent activity feed.
@@ -123,7 +123,7 @@ class Fleet:
         # beacon channel on its own multicast port).
         env.update(extra_env or {})
         self.procs[node_id] = subprocess.Popen(
-            [sys.executable, "-m", "argent_utils.mesh"],
+            [sys.executable, "-m", "co_maintainer.mesh"],
             cwd=LINUX_DIR, env=env,
             stdout=(d / "node.log").open("w"),
             stderr=subprocess.STDOUT,
@@ -140,14 +140,14 @@ class Fleet:
             secret: str | None = None) -> subprocess.CompletedProcess:
         env = dict(os.environ)
         env.update(_proto_env())
-        env["ARGENT_MESH_DIR"] = str(self.dirs[node_id])
+        env["CO_MAINTAINER_MESH_DIR"] = str(self.dirs[node_id])
         env["HOME"] = str(self.dirs[node_id])
-        env["ARGENT_MESH_SECRET"] = (
+        env["CO_MAINTAINER_MESH_SECRET"] = (
             secret if secret is not None
             else (self.dirs[node_id] / "secret").read_text()
         )
         return subprocess.run(
-            [sys.executable, "-m", "argent_utils.mesh", *args],
+            [sys.executable, "-m", "co_maintainer.mesh", *args],
             cwd=LINUX_DIR, env=env, capture_output=True, text=True, timeout=timeout,
         )
 
@@ -302,7 +302,7 @@ def test_mesh_discovery_assignment_failover_and_dispatch(fleet):
 
 
 def test_secret_fences_peers_and_control(fleet):
-    """With ARGENT_MESH_SECRET set, a wrong-secret node never links (it can
+    """With CO_MAINTAINER_MESH_SECRET set, a wrong-secret node never links (it can
     beacon all it wants) and a wrong-secret CLI can't drive the node."""
     fleet.start("aaaa", "lin", "linux", tier=4, secret="hunter2")
     fleet.start("bbbb", "mac", "macos", tier=1, secret="hunter2")
@@ -335,8 +335,8 @@ def test_outbound_dial_fence_rejects_naked_dispatch(fleet, tmp_path):
 
     proto = _proto_env()
     group = "239.83.77.7"  # the real default group; loopback multicast delivers it
-    mport = int(proto["ARGENT_MESH_MCAST_PORT"])
-    # The bypass "wins" if the victim SPAWNS at all: its own ARGENT_MESH_SPAWN
+    mport = int(proto["CO_MAINTAINER_MESH_MCAST_PORT"])
+    # The bypass "wins" if the victim SPAWNS at all: its own CO_MAINTAINER_MESH_SPAWN
     # stub (set by Fleet.start) copies the staged prompt here. The attacker
     # controls the prompt content, not the command — so the tell is that the
     # stub fired, not what it ran.
@@ -465,14 +465,14 @@ def test_foreign_request_runs_confined_and_routes_result_back(fleet):
     alice_acted = root / "acted" / "alice.json"
     on_result = f"cp {{result_file}} {alice_acted}"
     # Fast delivery timers so the response/ack loop resolves within the test window.
-    fast = {"ARGENT_MESH_RESULT_RETRY_SECS": "0.5",
-            "ARGENT_MESH_RESULT_MAX_SECS": "30",
-            "ARGENT_MESH_FOREIGN_TIMEOUT_SECS": "20"}
+    fast = {"CO_MAINTAINER_MESH_RESULT_RETRY_SECS": "0.5",
+            "CO_MAINTAINER_MESH_RESULT_MAX_SECS": "30",
+            "CO_MAINTAINER_MESH_FOREIGN_TIMEOUT_SECS": "20"}
 
     fleet.start("aaaa", "alice", "linux", tier=4,
-                extra_env={**fast, "ARGENT_MESH_ON_RESULT": on_result})
+                extra_env={**fast, "CO_MAINTAINER_MESH_ON_RESULT": on_result})
     fleet.start("bbbb", "bob", "macos", tier=1,
-                extra_env={**fast, "ARGENT_MESH_FOREIGN_SPAWN": foreign_spawn})
+                extra_env={**fast, "CO_MAINTAINER_MESH_FOREIGN_SPAWN": foreign_spawn})
     for nid in ("aaaa", "bbbb"):
         _wait_for(lambda nid=nid: _links_up(fleet.state(nid), 1), what=f"{nid} link")
 
@@ -633,7 +633,7 @@ def test_pin_then_unpin_token_state_round_trips(fleet):
 
 
 def test_server_mode_runs_locally_and_never_dispatches_to_peers(fleet):
-    """A dedicated server (ARGENT_MESH_SERVER=1) runs a request ITSELF and never
+    """A dedicated server (CO_MAINTAINER_MESH_SERVER=1) runs a request ITSELF and never
     fans it out — even to a weaker worker that weakest-first would otherwise pick."""
     fleet.start("aaaa", "server", "linux", tier=1, server=True)
     fleet.start("bbbb", "worker", "linux", tier=4)  # weaker → the default pick
@@ -708,7 +708,7 @@ def test_spoofed_higher_epoch_beacon_does_not_evict_a_live_link(fleet):
 
     proto = _proto_env()
     group = "239.83.77.7"
-    mport = int(proto["ARGENT_MESH_MCAST_PORT"])
+    mport = int(proto["CO_MAINTAINER_MESH_MCAST_PORT"])
     tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     tx.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, 1)
     tx.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton("127.0.0.1"))
@@ -745,13 +745,13 @@ def test_redial_from_memory_relinks_without_beacons(fleet):
     (aa_dir / "peers.json").write_text(json.dumps(
         {"bb": {"addr": "127.0.0.1", "tcpPort": bb_tcp}}))
     fleet.start("bb", "bee", "linux", tier=3, extra_env={
-        "ARGENT_MESH_MCAST_PORT": str(_PORT_BASE + 16),
-        "ARGENT_MESH_TCP_BASE": str(bb_tcp), "ARGENT_MESH_TCP_SPAN": "1",
+        "CO_MAINTAINER_MESH_MCAST_PORT": str(_PORT_BASE + 16),
+        "CO_MAINTAINER_MESH_TCP_BASE": str(bb_tcp), "CO_MAINTAINER_MESH_TCP_SPAN": "1",
     })
     fleet.start("aa", "aye", "macos", tier=2, extra_env={
-        "ARGENT_MESH_MCAST_PORT": str(_PORT_BASE + 17),
-        "ARGENT_MESH_TCP_BASE": str(_PORT_BASE + 15), "ARGENT_MESH_TCP_SPAN": "1",
-        "ARGENT_MESH_REDIAL_SECS": "0.5",
+        "CO_MAINTAINER_MESH_MCAST_PORT": str(_PORT_BASE + 17),
+        "CO_MAINTAINER_MESH_TCP_BASE": str(_PORT_BASE + 15), "CO_MAINTAINER_MESH_TCP_SPAN": "1",
+        "CO_MAINTAINER_MESH_REDIAL_SECS": "0.5",
     })
     _wait_for(lambda: _links_up(fleet.state("aa"), 1) and _links_up(fleet.state("bb"), 1),
               what="aa↔bb linked via redial-from-memory with beacons isolated")

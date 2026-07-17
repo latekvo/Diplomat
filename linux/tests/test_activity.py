@@ -1,8 +1,8 @@
 """Activity-feed taxonomy + parsing tests.
 
 The category-mapping assertions mirror the Swift smoke test
-(Sources/ArgentUtilsCoreSmoke/main.swift, "audit category" section) so the shared
-core/audit-categories.json can't drift from Sources/ArgentUtilsCore/AuditCategory.swift.
+(Sources/CoMaintainerCoreSmoke/main.swift, "audit category" section) so the shared
+core/audit-categories.json can't drift from Sources/CoMaintainerCore/AuditCategory.swift.
 Pure, offline — no display, no ~/.argent files required.
 """
 
@@ -13,7 +13,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from argent_utils import activity  # noqa: E402
+from co_maintainer import activity  # noqa: E402
 
 
 def test_category_of_matches_swift_taxonomy() -> None:

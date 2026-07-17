@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Candidate adapter for the reference node (``linux/argent_utils/mesh``).
+"""Candidate adapter for the reference node (``linux/co_maintainer/mesh``).
 
 The conformance tester launches a candidate purely through the ``SZPONTNET_*``
 environment (the *candidate contract*). The reference node predates that contract
-and reads its own ``ARGENT_MESH_*`` variables + a ``node.json`` identity file, so
+and reads its own ``CO_MAINTAINER_MESH_*`` variables + a ``node.json`` identity file, so
 this thin adapter translates one into the other and then execs the real node. It
 is the worked example every other implementation copies: read ``SZPONTNET_*``,
 configure your node, run it.
@@ -24,32 +24,32 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[3]
 LINUX = REPO / "linux"
 
-# SZPONTNET_* → ARGENT_MESH_* protocol/discovery knobs (names differ, values 1:1).
+# SZPONTNET_* → CO_MAINTAINER_MESH_* protocol/discovery knobs (names differ, values 1:1).
 _MAP = {
-    "SZPONTNET_LOOPBACK": "ARGENT_MESH_LOOPBACK",
-    "SZPONTNET_MCAST_GROUP": "ARGENT_MESH_MCAST_GROUP",
-    "SZPONTNET_MCAST_PORT": "ARGENT_MESH_MCAST_PORT",
-    "SZPONTNET_TCP_BASE": "ARGENT_MESH_TCP_BASE",
-    "SZPONTNET_TCP_SPAN": "ARGENT_MESH_TCP_SPAN",
-    "SZPONTNET_BEACON_SECS": "ARGENT_MESH_BEACON_SECS",
-    "SZPONTNET_HEARTBEAT_SECS": "ARGENT_MESH_HEARTBEAT_SECS",
-    "SZPONTNET_STALE_SECS": "ARGENT_MESH_STALE_SECS",
-    "SZPONTNET_TIMEOUT_SECS": "ARGENT_MESH_TIMEOUT_SECS",
-    "SZPONTNET_ACK_SECS": "ARGENT_MESH_ACK_SECS",
-    "SZPONTNET_STATE_SECS": "ARGENT_MESH_STATE_SECS",
-    "SZPONTNET_SECRET": "ARGENT_MESH_SECRET",
-    "SZPONTNET_PLATFORM": "ARGENT_MESH_PLATFORM",
-    "SZPONTNET_SPAWN": "ARGENT_MESH_SPAWN",
+    "SZPONTNET_LOOPBACK": "CO_MAINTAINER_MESH_LOOPBACK",
+    "SZPONTNET_MCAST_GROUP": "CO_MAINTAINER_MESH_MCAST_GROUP",
+    "SZPONTNET_MCAST_PORT": "CO_MAINTAINER_MESH_MCAST_PORT",
+    "SZPONTNET_TCP_BASE": "CO_MAINTAINER_MESH_TCP_BASE",
+    "SZPONTNET_TCP_SPAN": "CO_MAINTAINER_MESH_TCP_SPAN",
+    "SZPONTNET_BEACON_SECS": "CO_MAINTAINER_MESH_BEACON_SECS",
+    "SZPONTNET_HEARTBEAT_SECS": "CO_MAINTAINER_MESH_HEARTBEAT_SECS",
+    "SZPONTNET_STALE_SECS": "CO_MAINTAINER_MESH_STALE_SECS",
+    "SZPONTNET_TIMEOUT_SECS": "CO_MAINTAINER_MESH_TIMEOUT_SECS",
+    "SZPONTNET_ACK_SECS": "CO_MAINTAINER_MESH_ACK_SECS",
+    "SZPONTNET_STATE_SECS": "CO_MAINTAINER_MESH_STATE_SECS",
+    "SZPONTNET_SECRET": "CO_MAINTAINER_MESH_SECRET",
+    "SZPONTNET_PLATFORM": "CO_MAINTAINER_MESH_PLATFORM",
+    "SZPONTNET_SPAWN": "CO_MAINTAINER_MESH_SPAWN",
     # Chapter-11 role knobs (11-trust-and-balancing).
-    "SZPONTNET_SERVER": "ARGENT_MESH_SERVER",     # accept-only server role
-    "SZPONTNET_API_KEY": "ARGENT_MESH_API_KEY",   # inbound ctl/dispatch gate
+    "SZPONTNET_SERVER": "CO_MAINTAINER_MESH_SERVER",     # accept-only server role
+    "SZPONTNET_API_KEY": "CO_MAINTAINER_MESH_API_KEY",   # inbound ctl/dispatch gate
     # Chapter-13 foreign zero-trust execution: the confinement runner that turns a
     # foreign request from declined into confined, response-only, plus fast foreign
     # reliable-delivery timings so a loopback scenario observes retry/ack quickly.
-    "SZPONTNET_FOREIGN_SPAWN": "ARGENT_MESH_FOREIGN_SPAWN",  # confinement runner
-    "SZPONTNET_RESULT_RETRY_SECS": "ARGENT_MESH_RESULT_RETRY_SECS",
-    "SZPONTNET_RESULT_MAX_SECS": "ARGENT_MESH_RESULT_MAX_SECS",
-    "SZPONTNET_FOREIGN_TIMEOUT_SECS": "ARGENT_MESH_FOREIGN_TIMEOUT_SECS",
+    "SZPONTNET_FOREIGN_SPAWN": "CO_MAINTAINER_MESH_FOREIGN_SPAWN",  # confinement runner
+    "SZPONTNET_RESULT_RETRY_SECS": "CO_MAINTAINER_MESH_RESULT_RETRY_SECS",
+    "SZPONTNET_RESULT_MAX_SECS": "CO_MAINTAINER_MESH_RESULT_MAX_SECS",
+    "SZPONTNET_FOREIGN_TIMEOUT_SECS": "CO_MAINTAINER_MESH_FOREIGN_TIMEOUT_SECS",
 }
 
 
@@ -96,18 +96,18 @@ def main() -> None:
     for src, dst in _MAP.items():
         if src in os.environ:
             env[dst] = os.environ[src]
-    env["ARGENT_MESH_DIR"] = str(work_dir)
+    env["CO_MAINTAINER_MESH_DIR"] = str(work_dir)
     # Keep the reference's activity feed inside the scenario dir, not real ~/.argent.
     env["HOME"] = str(work_dir)
     # A conformance candidate must be deterministic: no live OAuth quota probe.
     # (On macOS the Keychain resolves even under the sandboxed HOME, and a live
     # read would cap the advertised quotaLeft with this machine's real budget,
     # skewing seeded ch-11 stats.)
-    env["ARGENT_MESH_OAUTH_PROBE"] = "0"
+    env["CO_MAINTAINER_MESH_OAUTH_PROBE"] = "0"
     env["PYTHONPATH"] = os.pathsep.join([str(LINUX), env.get("PYTHONPATH", "")]).rstrip(os.pathsep)
 
     os.chdir(str(LINUX))
-    os.execvpe(sys.executable, [sys.executable, "-m", "argent_utils.mesh"], env)
+    os.execvpe(sys.executable, [sys.executable, "-m", "co_maintainer.mesh"], env)
 
 
 if __name__ == "__main__":

@@ -3,11 +3,11 @@
 set -euo pipefail
 
 UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
-SERVICE="${UNIT_DIR}/argent-utils-update.service"
-TIMER="${UNIT_DIR}/argent-utils-update.timer"
+SERVICE="${UNIT_DIR}/co-maintainer-update.service"
+TIMER="${UNIT_DIR}/co-maintainer-update.timer"
 
 if command -v systemctl >/dev/null 2>&1; then
-    systemctl --user disable --now argent-utils-update.timer 2>/dev/null || true
+    systemctl --user disable --now co-maintainer-update.timer 2>/dev/null || true
 fi
 
 removed=0

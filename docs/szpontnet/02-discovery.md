@@ -147,7 +147,7 @@ The reference implementation's integration tests run three-node meshes entirely 
 ## Loopback-only mode
 
 An implementation MAY offer a "loopback-only" mode (the reference one keys it off
-`ARGENT_MESH_LOOPBACK=1`) that pins every socket to `127.0.0.1`, skips the
+`CO_MAINTAINER_MESH_LOOPBACK=1`) that pins every socket to `127.0.0.1`, skips the
 subnet-broadcast copy, and sets the multicast interface to loopback. This is for
 running a self-contained mesh on one machine without touching the LAN; it is not
 part of the wire protocol and needs no agreement between nodes.
