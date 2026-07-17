@@ -75,8 +75,10 @@ def test_store_settings_are_isolated_from_the_real_user(tmp_path):
     # write from a test must land there, never in the user's real settings (which
     # would also leak back in and break tests like test_store_lookup).
     s = Store()
-    assert s.hidden_tools == set()
+    # Fresh settings: SKILL.md + Installer/CLI tools ship hidden by default.
+    assert s.hidden_tools == {"skillPRs", "installerPRs"}
     s.hidden_tools = {"skillPRs"}
+    assert s.hidden_tools == {"skillPRs"}
     s._settings.sync()
     assert list(tmp_path.rglob("*.ini")), "Store settings must land in tmp_path"
 
@@ -87,6 +89,7 @@ def test_store_lookup():
     s.prs = _prs()
     s.issues = _issues()
     s.has_loaded = True
+    s.hidden_tools = set()  # lookup only reports visible tools; show them all
     assert s.lookup(101).on_lists == ["skillPRs"]
     assert s.lookup(201).on_lists == ["unaddressedIssues"]
     assert s.lookup(999).on_lists == []

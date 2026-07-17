@@ -190,6 +190,10 @@ class Store(QObject):
 
     @property
     def hidden_tools(self) -> set[str]:
+        # SKILL.md + Installer/CLI tools ship hidden (absent key => default); any
+        # Settings toggle persists the explicit set from then on.
+        if not self._settings.contains("hiddenTools"):
+            return {"skillPRs", "installerPRs"}
         raw = self._settings.value("hiddenTools", [], list) or []
         return set(raw)
 

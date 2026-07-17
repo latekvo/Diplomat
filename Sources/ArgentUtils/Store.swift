@@ -235,7 +235,10 @@ final class Store: ObservableObject {
     init() {
         let defaults = UserDefaults.standard
         usernameOverride = defaults.string(forKey: Keys.usernameOverride) ?? ""
-        hiddenTools = Set(defaults.stringArray(forKey: Keys.hiddenTools) ?? [])
+        // SKILL.md + Installer/CLI tools ship hidden (absent key ⇒ default); any
+        // Settings toggle persists the explicit set from then on.
+        hiddenTools = Set(defaults.stringArray(forKey: Keys.hiddenTools)
+            ?? [ToolKind.skillPRs.rawValue, ToolKind.installerPRs.rawValue])
         colorOverrides = (defaults.dictionary(forKey: Keys.colorOverrides) as? [String: String]) ?? [:]
         terminalChoice = defaults.string(forKey: Keys.terminalChoice)
             ?? (SpawnTerminal.iterm.isInstalled ? SpawnTerminal.iterm.rawValue : SpawnTerminal.terminal.rawValue)
