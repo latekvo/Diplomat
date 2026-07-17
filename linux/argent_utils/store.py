@@ -21,6 +21,7 @@ import time
 
 from . import (
     activity,
+    apiwatch,
     autofix,
     autofixmonitor,
     bans,
@@ -28,6 +29,7 @@ from . import (
     core,
     deviceallocator,
     review,
+    tmuxwatch,
 )
 from .models import API, Filters, Fmt, OpenIssue, OpenPR
 from .prtarget import PRTarget
@@ -110,6 +112,8 @@ class Store(QObject):
     update_changed = Signal()
     # Emitted after each PR auto-fix monitor poll (status pill, counts, poll error).
     autofix_changed = Signal()
+    # Emitted after each Claude-API-error watcher scan (status pill + continue count).
+    apiwatch_changed = Signal()
 
     _ORG = "argent-utils"
     _APP = "argent-utils"
@@ -163,6 +167,14 @@ class Store(QObject):
         # spawning a second agent on a PR one is already working.
         self._autofix_inflight: list[dict] = []
         self._autofix_lock = threading.Lock()
+
+        # Claude-API-error watcher: live-only runtime state (the toggle/count persist
+        # via QSettings below). Mirrors the per-tty backoff + idle-confirmation maps in
+        # Store.swift, keyed by tmux pane_id.
+        self.apiwatch_status: dict | None = None
+        self._apiwatch_backoff: dict[str, dict] = {}  # pane_id -> {nextAllowed, interval}
+        self._apiwatch_seen_tail: dict[str, str] = {}  # pane_id -> last erroring tail
+        self._apiwatch_lock = threading.Lock()
 
         # Honor the process-wide default format (NativeFormat unless overridden):
         # the two-arg QSettings(org, app) constructor is hardwired to NativeFormat,
@@ -336,6 +348,27 @@ class Store(QObject):
     @review_requests_handled.setter
     def review_requests_handled(self, value: int) -> None:
         self._settings.setValue("reviewRequestsHandled", int(value))
+
+    # Claude-API-error watcher (mirrors apiWatchEnabled / apiWatchContinues in
+    # Store.swift). On by default, matching macOS.
+
+    @property
+    def api_watch_enabled(self) -> bool:
+        """Whether the terminal watcher nudges any agent that stalls on a transient
+        Claude API error to continue. On by default (matches macOS)."""
+        return self._settings.value("apiWatchEnabled", True, bool)
+
+    @api_watch_enabled.setter
+    def api_watch_enabled(self, value: bool) -> None:
+        self._settings.setValue("apiWatchEnabled", bool(value))
+
+    @property
+    def api_watch_continues(self) -> int:
+        return self._settings.value("apiWatchContinues", 0, int)
+
+    @api_watch_continues.setter
+    def api_watch_continues(self, value: int) -> None:
+        self._settings.setValue("apiWatchContinues", int(value))
 
     # MARK: derived settings
 
@@ -750,6 +783,100 @@ class Store(QObject):
             for k, a in attempts.items()
         }
         self._settings.setValue(key, json.dumps(obj))
+
+    # MARK: Claude-API-error watcher
+
+    # The Linux port of Store.swift's runApiErrorScanOnce. A background scan (driven
+    # by a QTimer in app.py, independent of the panel) reads every tmux pane's last
+    # visible lines and, for any showing a Claude API error that has stopped changing
+    # (a confirmed stall), submits the "continue" nudge to that exact pane — so an
+    # agent that stalled on a transient server error (e.g. overnight 529 overload)
+    # resumes on its own. The pure detection/backoff logic lives in apiwatch.py; the
+    # tmux reads/writes in tmuxwatch.py.
+
+    def run_apiwatch_poll_async(self) -> None:
+        """Kick one watcher scan on a worker thread (guarded against overlap). Safe to
+        call from a QTimer whether or not the panel is open; no-ops when disabled."""
+        if not self.api_watch_enabled:
+            return
+        if not self._apiwatch_lock.acquire(blocking=False):
+            return  # a scan is already running
+
+        def work() -> None:
+            try:
+                self._apiwatch_scan_once()
+            finally:
+                self._apiwatch_lock.release()
+                self.apiwatch_changed.emit()
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _apiwatch_scan_once(self) -> None:
+        """One scan: read every pane and nudge any confirmed-stalled erroring pane
+        that's outside its backoff window."""
+        if not self.api_watch_enabled:
+            return
+        # None = a tmux command failed unexpectedly — skip the whole scan rather than
+        # treating it as "no panes", which would wrongly clear every backoff.
+        panes = tmuxwatch.dump_panes()
+        available = tmuxwatch.is_available()
+        if panes is None:
+            self.apiwatch_status = {
+                "updatedAt": time.time(),
+                "watching": 0,
+                "continues": self.api_watch_continues,
+                "tmux": available,
+            }
+            return
+        now = time.time()
+        erroring: set[str] = set()
+        for p in panes:
+            # Out-of-quota banners return False here: a quota-limited agent can't
+            # progress until its window resets, so only transient errors are nudged.
+            if not apiwatch.looks_like_api_error(p.tail):
+                continue
+            erroring.add(p.pane_id)
+            # Idle-confirmation: only nudge a pane whose erroring tail is UNCHANGED
+            # since the previous scan. An actively-working pane changes between scans
+            # and must not be treated as stalled.
+            stalled = apiwatch.is_confirmed_stall(
+                self._apiwatch_seen_tail.get(p.pane_id), p.tail
+            )
+            self._apiwatch_seen_tail[p.pane_id] = p.tail
+            if not stalled:
+                continue
+            b = self._apiwatch_backoff.get(p.pane_id)
+            if b and now < b["nextAllowed"]:  # still inside this pane's backoff window
+                continue
+            if not tmuxwatch.send_continue(p.pane_id, apiwatch.CONTINUE_MESSAGE):
+                continue  # pane vanished — don't count a nudge that never landed
+            self.api_watch_continues += 1
+            nxt = apiwatch.next_backoff(b["interval"] if b else None)
+            self._apiwatch_backoff[p.pane_id] = {
+                "nextAllowed": now + nxt,
+                "interval": nxt,
+            }
+            activity.log(
+                "auto", "nudge",
+                f"Continued a stalled agent (API error) on {p.pane_id}; "
+                f"next retry in ≥ {apiwatch.human_interval(nxt)}",
+            )
+        # Keep backoff + idle-confirmation state ONLY for currently-erroring panes: a
+        # pane that stopped erroring has recovered (reset to base), and a closed pane's
+        # entry must not linger. tmux never recycles a pane_id, but pruning keeps the
+        # maps bounded and forces a fresh two-scan confirmation if it errors again.
+        self._apiwatch_backoff = {
+            k: v for k, v in self._apiwatch_backoff.items() if k in erroring
+        }
+        self._apiwatch_seen_tail = {
+            k: v for k, v in self._apiwatch_seen_tail.items() if k in erroring
+        }
+        self.apiwatch_status = {
+            "updatedAt": now,
+            "watching": len(panes),
+            "continues": self.api_watch_continues,
+            "tmux": available,
+        }
 
     # MARK: device allocator
 

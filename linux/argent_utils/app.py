@@ -56,6 +56,17 @@ def autofix_poll_secs() -> float:
     return max(30.0, secs)
 
 
+def apiwatch_poll_secs() -> float:
+    """Cadence of the Claude-API-error watcher scan (matches the macOS 20s default).
+    Overridable with ARGENT_UTILS_APIWATCH_SECS; floored at 5s."""
+    raw = os.environ.get("ARGENT_UTILS_APIWATCH_SECS")
+    try:
+        secs = float(raw) if raw else 20.0
+    except ValueError:
+        secs = 20.0
+    return max(5.0, secs)
+
+
 class ArgentUtilsApp:
     def __init__(self) -> None:
         self.app = QApplication.instance() or QApplication(sys.argv)
@@ -86,6 +97,15 @@ class ArgentUtilsApp:
         self.autofix_timer.start()
         # First poll shortly after launch, once identity has had a moment to resolve.
         QTimer.singleShot(3000, self.store.run_autofix_poll_async)
+
+        # Claude-API-error watcher: scan tmux panes on a fast cadence (matches the
+        # macOS 20s watcher). The scan no-ops when the toggle is off or tmux is absent.
+        self.apiwatch_timer = QTimer()
+        self.apiwatch_timer.setInterval(int(apiwatch_poll_secs() * 1000))
+        self.apiwatch_timer.timeout.connect(self.store.run_apiwatch_poll_async)
+        self.apiwatch_timer.start()
+        # First scan shortly after launch.
+        QTimer.singleShot(5000, self.store.run_apiwatch_poll_async)
 
         # Resolve identity + first fetch eagerly.
         threading.Thread(target=self.store.fetch_me, daemon=True).start()

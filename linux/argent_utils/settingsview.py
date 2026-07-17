@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import deviceallocator, review
+from . import apiwatch, deviceallocator, review
 from .store import Store, tools
 from .widgets import IconChip
 
@@ -59,6 +59,7 @@ class SettingsView(QWidget):
         left.setSpacing(14)
         left.addLayout(self._identity_section())
         left.addLayout(self._autofix_section())
+        left.addLayout(self._apiwatch_section())
         left.addStretch(1)
 
         right = QVBoxLayout()
@@ -79,10 +80,12 @@ class SettingsView(QWidget):
         store.mesh_changed.connect(self._refresh_mesh_ui)
         store.update_changed.connect(self._refresh_update_ui)
         store.autofix_changed.connect(self._refresh_autofix_ui)
+        store.apiwatch_changed.connect(self._refresh_apiwatch_ui)
         self._refresh_allocator_ui()
         self._refresh_mesh_ui()
         self._refresh_update_ui()
         self._refresh_autofix_ui()
+        self._refresh_apiwatch_ui()
         store.refresh_allocator_install_async()
         store.refresh_update_status_async()
         if store.mesh_enabled:
@@ -294,6 +297,70 @@ class SettingsView(QWidget):
 
         self._approve_container.setVisible(review_on)
         self._verdict_container.setVisible(review_on and self.store.auto_approve_enabled)
+
+    # MARK: Claude API-error watcher
+
+    def _apiwatch_section(self) -> QVBoxLayout:
+        col = QVBoxLayout()
+        col.setSpacing(6)
+        col.addWidget(_section_label("CLAUDE API ERRORS"))
+
+        self._cb_apiwatch = QCheckBox("Auto-continue agents on API errors")
+        self._cb_apiwatch.setChecked(self.store.api_watch_enabled)
+        self._cb_apiwatch.toggled.connect(self._on_apiwatch_toggled)
+        col.addWidget(self._cb_apiwatch)
+
+        self._apiwatch_status = QLabel("")
+        self._apiwatch_status.setWordWrap(True)
+        self._apiwatch_status.setStyleSheet("font-size: 10px;")
+        col.addWidget(self._apiwatch_status)
+
+        hint = QLabel(
+            "Watches every tmux pane; when a Claude API error shows up (e.g. “529 "
+            "Overloaded”), it types “" + apiwatch.CONTINUE_MESSAGE + "” so a stalled "
+            "agent resumes on its own. Out-of-quota stalls (“You've hit your weekly "
+            "limit”) are left alone — nudging can't help until the limit resets. Run "
+            "your agents inside tmux for this to reach them."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: palette(mid); font-size: 10px;")
+        col.addWidget(hint)
+        return col
+
+    def _on_apiwatch_toggled(self, on: bool) -> None:
+        self.store.api_watch_enabled = on
+        self.store.changed.emit()
+        self._refresh_apiwatch_ui()
+        if on:
+            self.store.run_apiwatch_poll_async()  # kick a scan immediately
+
+    def _refresh_apiwatch_ui(self) -> None:
+        on = self.store.api_watch_enabled
+        self._apiwatch_status.setVisible(on)
+        if not on:
+            return
+        count = self.store.api_watch_continues
+        tail = f"  Continued {count}× so far." if count else ""
+        st = self.store.apiwatch_status
+        live = bool(st) and (time.time() - st.get("updatedAt", 0)) < 15 * 60
+        if st is not None and not st.get("tmux", True):
+            self._apiwatch_status.setText(
+                "⚠ tmux not found — this watcher drives tmux panes; install tmux and "
+                "run agents inside it." + tail
+            )
+            self._apiwatch_status.setStyleSheet("color: #FF9500; font-size: 10px;")
+        elif live:
+            n = st.get("watching", 0)
+            plural = "" if n == 1 else "s"
+            self._apiwatch_status.setText(
+                f"● Active — watching {n} tmux pane{plural}." + tail
+            )
+            self._apiwatch_status.setStyleSheet("color: #34C759; font-size: 10px;")
+        else:
+            self._apiwatch_status.setText(
+                "○ Enabled, but no scan has run yet." + tail
+            )
+            self._apiwatch_status.setStyleSheet("color: #FF9500; font-size: 10px;")
 
     # MARK: tool colour & visibility
 

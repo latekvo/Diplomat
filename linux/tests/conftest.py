@@ -37,6 +37,21 @@ def isolated_qsettings(tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def isolated_activity_feed(tmp_path, monkeypatch):
+    """Redirect the shared ``~/.argent/pr-monitor`` activity feed to a per-test temp
+    dir so tests never scribble on the user's real audit.jsonl. The monitor + API-error
+    watcher dispatch paths call :func:`activity.log`, which otherwise appends to the
+    user's live feed (``activity._dir`` resolves via ``Path.home()``, which the
+    QSettings redirect above does not cover)."""
+    from argent_utils import activity
+
+    feed = tmp_path / "argent-feed"
+    feed.mkdir()
+    monkeypatch.setattr(activity, "_dir", lambda: feed)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _drain_qt_widgets():
     """After each test, delete any leftover top-level widgets and drain the
     event loop, so no QTimer/QObject survives into the next test's event loop.
