@@ -332,25 +332,49 @@ struct MeshView: View {
 
     /// Personal | Foreign trust toggle for a peer's device. 'Personal' adds its proven
     /// fingerprint to the local allowlist; 'Foreign' removes it. Disabled until the peer
-    /// proves a device key (trust must key on a verified fingerprint).
+    /// proves a device key (trust must key on a verified fingerprint). A BANNED device
+    /// (it accepted a SzpontRequest of ours and failed to deliver — docs/szpontnet/13)
+    /// gets a mark + an Unban escape hatch instead: it stays declined until the operator
+    /// explicitly lifts the ban.
     private func trustToggle(_ peer: MeshPeer) -> some View {
         let hasKey = !peer.fingerprint.isEmpty
         let personal = peer.trust == "personal"
         return HStack(spacing: 4) {
             Text("trust").font(.system(size: 9)).foregroundStyle(.secondary)
-            trustSeg("personal", active: personal, enabled: hasKey) {
-                store.meshSetTrust(fingerprint: peer.fingerprint, label: peer.name, trusted: true)
-            }
-            trustSeg("foreign", active: !personal, enabled: hasKey) {
-                store.meshSetTrust(fingerprint: peer.fingerprint, label: peer.name, trusted: false)
-            }
-            Spacer(minLength: 0)
-            if !hasKey {
-                Text("(no key yet)").font(.system(size: 8)).foregroundStyle(.secondary)
-            } else if !peer.verified {
-                Text("(unverified)").font(.system(size: 8)).foregroundStyle(.secondary)
+            if peer.trust == "banned" {
+                Text("⊘ banned").font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(trustColor("banned"))
+                    .help(banReason(peer))
+                Button("unban") {
+                    store.meshUnban(fingerprint: peer.verified ? peer.fingerprint : "",
+                                    node: peer.id)
+                }
+                .buttonStyle(.borderless).font(.system(size: 9))
+                Spacer(minLength: 0)
+            } else {
+                trustSeg("personal", active: personal, enabled: hasKey) {
+                    store.meshSetTrust(fingerprint: peer.fingerprint, label: peer.name, trusted: true)
+                }
+                trustSeg("foreign", active: !personal, enabled: hasKey) {
+                    store.meshSetTrust(fingerprint: peer.fingerprint, label: peer.name, trusted: false)
+                }
+                Spacer(minLength: 0)
+                if !hasKey {
+                    Text("(no key yet)").font(.system(size: 8)).foregroundStyle(.secondary)
+                } else if !peer.verified {
+                    Text("(unverified)").font(.system(size: 8)).foregroundStyle(.secondary)
+                }
             }
         }
+    }
+
+    /// The recorded reason a peer's device was banned (hover text on the mark).
+    private func banReason(_ peer: MeshPeer) -> String {
+        let entries = store.meshState?.banned ?? []
+        let hit = entries.first { e in
+            e.fingerprint.isEmpty ? e.node == peer.id : e.fingerprint == peer.fingerprint
+        }
+        return hit?.reason.isEmpty == false ? hit!.reason : "banned"
     }
 
     private func trustSeg(_ level: String, active: Bool, enabled: Bool,
@@ -367,6 +391,7 @@ struct MeshView: View {
 
     private func trustColor(_ level: String) -> Color {
         if let hex = catalog?.trustLevel(level)?.colorHex, let c = Color(hex: hex) { return c }
+        if level == "banned" { return .red }
         return level == "personal" ? .green : .gray
     }
 

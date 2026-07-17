@@ -136,6 +136,16 @@ enum MeshBridge {
         _ = try request(["t": "untrust", "fingerprint": fingerprint], port: port)
     }
 
+    /// Lift a ban on a device (it was marked banned after accepting a SzpontRequest and
+    /// failing to deliver it — or manually). `fingerprint` for a keyed device, `node`
+    /// (id) for a keyless one. Mirrors `ctl.unban_device`.
+    static func unban(fingerprint: String, node: String, port: Int) throws {
+        var msg: [String: Any] = ["t": "unban"]
+        if !fingerprint.isEmpty { msg["fingerprint"] = fingerprint }
+        if !node.isEmpty { msg["node"] = node }
+        _ = try request(msg, port: port)
+    }
+
     /// Hand a duty job to the mesh: the local node picks the target (per the dispatch
     /// strategy, with failover) unless `target` pins a node id, and the chosen executor
     /// spawns the agent. Returns the per-node result dicts (`status`: spawned / declined /

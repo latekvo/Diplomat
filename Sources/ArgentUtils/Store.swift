@@ -1231,6 +1231,25 @@ final class Store: ObservableObject {
         }
     }
 
+    /// Lift a ban on a peer's device — it was marked banned after accepting a
+    /// SzpontRequest and failing to deliver it (docs/szpontnet/13#the-ban), or
+    /// manually. It returns to Foreign; promote via the trust toggle if it's yours.
+    /// (Mirrors the Linux store's `mesh_unban`.)
+    func meshUnban(fingerprint: String, node: String) {
+        let port = meshState?.tcpPort ?? 0
+        Task { [weak self] in
+            let err: String? = await Task.detached(priority: .userInitiated) {
+                do {
+                    try MeshBridge.unban(fingerprint: fingerprint, node: node, port: port)
+                    return nil
+                } catch { return (error as? LocalizedError)?.errorDescription ?? "\(error)" }
+            }.value
+            guard let self else { return }
+            self.meshError = err
+            await self.meshTick()
+        }
+    }
+
     /// Hand a duty job to the mesh — the wizards' "Run on mesh" path (mirrors the Linux
     /// store's `mesh_dispatch`). The local node picks the executor per the dispatch
     /// strategy and walks failover candidates; the per-slot result dicts (or a transport

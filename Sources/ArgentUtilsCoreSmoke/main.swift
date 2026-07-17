@@ -164,6 +164,9 @@ let snapJSON = """
            "strengthAuto":false,"tokensAuto":true,"tokensPct":0.2,"uptimeSecs":187.0,
            "tokensSessionPct":0.2,"tokensWeekPct":0.4,
            "trust":"personal","fingerprint":"ff11","verified":true}],
+ "banned":[{"fingerprint":"ee22","node":"ccc","label":"flaky-box",
+            "reason":"accepted SzpontRequest b1c2 (review) and failed to deliver: no response to readiness reminder",
+            "bannedAt":1784057240.5,"jobId":"b1c2"}],
  "assignments":{"audit":{"assigned":["aaa"],"shortfall":[{"missing":1,"platform":"linux"}]}}}
 """.data(using: .utf8)!
 check(MeshSnapshot.decode(snapJSON) != nil, "snapshot decodes")
@@ -179,6 +182,14 @@ check(snap.peers[0].tokensSessionPct == 0.2 && snap.peers[0].tokensWeekPct == 0.
       "peer session/week quota decode")
 check(snap.peers[0].strengthAuto == false && snap.peers[0].uptimeSecs == 187.0, "peer strength/uptime")
 check(snap.peers[0].trust == "personal" && snap.peers[0].verified == true, "peer trust decode")
+// The ban-list mirror (foreign accountability, docs/szpontnet/13): who this node
+// marked banned and why — the panel's mark + tooltip depend on these fields.
+check(snap.banned.count == 1, "banned list decodes")
+check(snap.banned[0].fingerprint == "ee22" && snap.banned[0].node == "ccc"
+      && snap.banned[0].label == "flaky-box", "banned entry identity")
+check(snap.banned[0].reason.contains("failed to deliver") && snap.banned[0].bannedAt > 0,
+      "banned entry reason/time")
+check(mesh.trustLevel("banned") != nil, "banned trust level ships in the catalog")
 check(snap.peers.count == 1 && snap.peers[0].link == "up" && snap.peers[0].sees == ["aaa"], "peer decode")
 check(snap.assignments["audit"]?.assigned == ["aaa"], "assignment decode")
 check(snap.assignments["audit"]?.shortfall.first?.platform == "linux", "shortfall decode")
@@ -197,6 +208,9 @@ let snap2 = MeshSnapshot.decode("""
            "strengthAuto":false,"tokensAuto":true,"tokensPct":0.2,"uptimeSecs":999.0,
            "tokensSessionPct":0.2,"tokensWeekPct":0.4,
            "trust":"personal","fingerprint":"ff11","verified":true}],
+ "banned":[{"fingerprint":"ee22","node":"ccc","label":"flaky-box",
+            "reason":"accepted SzpontRequest b1c2 (review) and failed to deliver: no response to readiness reminder",
+            "bannedAt":1784057240.5,"jobId":"b1c2"}],
  "assignments":{"audit":{"assigned":["aaa"],"shortfall":[{"missing":1,"platform":"linux"}]}}}
 """.data(using: .utf8)!)
 check(snap == snap2, "snapshot equality ignores lastSeenSecsAgo/uptime/raw-fraction drift")
@@ -212,6 +226,9 @@ let snap3 = MeshSnapshot.decode("""
            "strengthAuto":false,"tokensAuto":true,"tokensPct":0.2,"uptimeSecs":187.0,
            "tokensSessionPct":0.2,"tokensWeekPct":0.4,
            "trust":"personal","fingerprint":"ff11","verified":true}],
+ "banned":[{"fingerprint":"ee22","node":"ccc","label":"flaky-box",
+            "reason":"accepted SzpontRequest b1c2 (review) and failed to deliver: no response to readiness reminder",
+            "bannedAt":1784057240.5,"jobId":"b1c2"}],
  "assignments":{"audit":{"assigned":["aaa"],"shortfall":[{"missing":1,"platform":"linux"}]}}}
 """.data(using: .utf8)!)
 check(snap != snap3, "a session-quota percent move is a meaningful change")

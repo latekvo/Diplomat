@@ -294,8 +294,10 @@ public struct MeshPeer: Decodable, Equatable {
     public let tokensWeekPct: Double?
     /// Seconds the current link has been up ("up 3m") — nil while down.
     public let uptimeSecs: Double?
-    /// "personal" | "foreign" — the local allowlist's verdict on the VERIFIED key
-    /// (an empty allowlist classes everyone personal, preserving pre-trust behavior).
+    /// "personal" | "foreign" | "banned" — the local allowlist's (and ban list's)
+    /// verdict on the VERIFIED key (an empty allowlist classes everyone personal,
+    /// preserving pre-trust behavior; "banned" = the device accepted a
+    /// SzpontRequest and failed to deliver it — see docs/szpontnet/13).
     public let trust: String
     /// The peer's device-key fingerprint (proven if `verified`, else merely claimed;
     /// `""` for keyless peers).
@@ -365,6 +367,29 @@ public struct MeshTrustedEntry: Decodable, Equatable {
     }
 }
 
+/// One ban-list entry as published in the snapshot's `banned` list — a device this
+/// node marked as having accepted a SzpontRequest and failed to deliver it (or one
+/// the operator banned manually). Machine-local (`~/.argent/mesh/banned.json`),
+/// never gossiped; `fingerprint` is empty for a keyless device (then `node` is the
+/// best-effort key). See docs/szpontnet/13-foreign-execution.md#the-ban.
+public struct MeshBannedEntry: Decodable, Equatable {
+    public let fingerprint: String
+    public let node: String
+    public let label: String
+    public let reason: String
+    public let bannedAt: Double
+
+    enum CodingKeys: String, CodingKey { case fingerprint, node, label, reason, bannedAt }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        fingerprint = (try? c.decode(String.self, forKey: .fingerprint)) ?? ""
+        node = (try? c.decode(String.self, forKey: .node)) ?? ""
+        label = (try? c.decode(String.self, forKey: .label)) ?? ""
+        reason = (try? c.decode(String.self, forKey: .reason)) ?? ""
+        bannedAt = (try? c.decode(Double.self, forKey: .bannedAt)) ?? 0
+    }
+}
+
 public struct MeshShortfall: Decodable, Equatable {
     public let missing: Int
     public let platform: String
@@ -404,6 +429,9 @@ public struct MeshSnapshot: Decodable, Equatable {
     /// The local device-key allowlist, as `[{fingerprint, label}]` — published so
     /// front-ends can render the trust boundary without touching `trusted.json`.
     public let trusted: [MeshTrustedEntry]
+    /// The local ban list mirror — who this node marked banned (accepted a
+    /// SzpontRequest, failed to deliver) and why. Empty when nobody is.
+    public let banned: [MeshBannedEntry]
     public let assignments: [String: MeshAssignment]
     public let overrides: MeshOverrides?
     /// Peers mid-handshake right now — drives the "linking to N…" scanning banner.
@@ -414,8 +442,8 @@ public struct MeshSnapshot: Decodable, Equatable {
     public let beaconBlocked: Bool
 
     enum CodingKeys: String, CodingKey {
-        case pid, tcpPort, selfNode = "self", peers, trusted, assignments, overrides, linking,
-             beaconBlocked
+        case pid, tcpPort, selfNode = "self", peers, trusted, banned, assignments, overrides,
+             linking, beaconBlocked
     }
 
     public init(from decoder: Decoder) throws {
@@ -425,6 +453,7 @@ public struct MeshSnapshot: Decodable, Equatable {
         selfNode = try? c.decode(MeshNode.self, forKey: .selfNode)
         peers = (try? c.decode([MeshPeer].self, forKey: .peers)) ?? []
         trusted = (try? c.decode([MeshTrustedEntry].self, forKey: .trusted)) ?? []
+        banned = (try? c.decode([MeshBannedEntry].self, forKey: .banned)) ?? []
         assignments = (try? c.decode([String: MeshAssignment].self, forKey: .assignments)) ?? [:]
         overrides = try? c.decode(MeshOverrides.self, forKey: .overrides)
         linking = (try? c.decode(Int.self, forKey: .linking)) ?? 0
