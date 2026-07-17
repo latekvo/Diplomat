@@ -33,7 +33,8 @@ def contract_env(
     node_id: str, name: str, platform: str, tier: int, tokens: str,
     duties_enabled: dict, spawn_cmd: str,
     server: bool = False, api_key: str = "", stats: dict | None = None,
-    foreign_spawn: str = "",
+    foreign_spawn: str = "", completion_deadline_secs: float | None = None,
+    reminder_grace_secs: float | None = None, extend_decider: str = "",
 ) -> dict:
     """The SZPONTNET_* environment a candidate (or its adapter) must honor.
 
@@ -43,7 +44,13 @@ def contract_env(
     and ``SZPONTNET_STATS`` seeds the node's advertised load-balancing stats.
     ``SZPONTNET_FOREIGN_SPAWN`` (ch 13) is the confinement runner that turns a
     foreign request from *declined* into *confined, response-only* execution — its
-    absence means no foreign execution, exactly the safe v1 default.
+    absence means no foreign execution, exactly the safe v1 default. The v0.4.0
+    accountability knobs (ch 13) shrink the completion deadline / reminder grace
+    from their 6 h / 15 min defaults so an accept → deadline → reminder →
+    resolution cycle is observable within a scenario, and
+    ``SZPONTNET_EXTEND_DECIDER`` configures the originator's extension-decision
+    command (``{job_file}`` substituted; exit 0 extends, anything else bans) —
+    unset, no extension is ever granted, the zero-trust default.
     """
     env = {
         "SZPONTNET_LOOPBACK": "1" if loopback else "0",
@@ -82,6 +89,15 @@ def contract_env(
         env["SZPONTNET_STATS"] = json.dumps(stats)
     if foreign_spawn:
         env["SZPONTNET_FOREIGN_SPAWN"] = foreign_spawn
+    # Chapter-13 v0.4.0 accountability knobs — optional, default UNSET so the
+    # shared defaults apply (a 6 h deadline never fires inside a scenario window
+    # and no extension is ever granted without a decider).
+    if completion_deadline_secs is not None:
+        env["SZPONTNET_COMPLETION_DEADLINE_SECS"] = str(completion_deadline_secs)
+    if reminder_grace_secs is not None:
+        env["SZPONTNET_REMINDER_GRACE_SECS"] = str(reminder_grace_secs)
+    if extend_decider:
+        env["SZPONTNET_EXTEND_DECIDER"] = extend_decider
     return env
 
 

@@ -444,8 +444,17 @@ def untrust(fingerprint: str) -> dict:
     return {"t": "untrust", "fingerprint": fingerprint}
 
 
-def job_status(job_id: str, status: str, reason: str = "", node_id: str = "") -> dict:
-    return {"t": "job-status", "id": job_id, "status": status, "reason": reason, "node": node_id}
+def job_status(job_id: str, status: str, reason: str = "", node_id: str = "",
+               direct: bool = False) -> dict:
+    """``direct`` (additive, v0.4.0; OMITTED when false so a plain status stays
+    byte-identical to a pre-v0.4.0 one) marks a ``spawned`` job the executor ran
+    on the PERSONAL path — fire-and-forget, no ``job-result`` will follow — so an
+    accountability-tracking originator MUST NOT arm a completion deadline for it
+    (13-foreign-execution#the-completion-deadline)."""
+    msg = {"t": "job-status", "id": job_id, "status": status, "reason": reason, "node": node_id}
+    if direct:
+        msg["direct"] = True
+    return msg
 
 
 def job_result(job_id: str, node_id: str, result: dict, sig: str = "") -> dict:
@@ -466,6 +475,28 @@ def job_ack(job_id: str, node_id: str) -> dict:
     carrying the acknowledging (originator) ``node`` id. Stops the executor's
     reliable-delivery retries."""
     return {"t": "job-ack", "id": job_id, "node": node_id}
+
+
+# Receiver-side cap on a `job-progress` note (appendix B, v0.4.0): the note is a
+# plea for an extension, not a payload channel — a receiver truncates past this.
+MAX_PROGRESS_NOTE_BYTES = 4096
+
+
+def job_reminder(job_id: str, node_id: str) -> dict:
+    """The originator's **"is this ready?"** (13 v0.4.0 accountability): sent when
+    a FOREIGN executor's accepted SzpontRequest passes its completion deadline
+    without a ``job-result``. Correlated by Job ``id``, carrying the asking
+    (originator) ``node`` id, sent on the executor's link."""
+    return {"t": "job-reminder", "id": job_id, "node": node_id}
+
+
+def job_progress(job_id: str, node_id: str, note: str) -> dict:
+    """The executor's reply to a ``job-reminder`` when the work is still running
+    (13 v0.4.0): a human-readable ``note`` — its case for a deadline extension,
+    judged by the originator's configured decider, never taken at face value.
+    Unsigned like ``job-status``: gated by the responder link alone, it only ever
+    influences the originator's local extension decision."""
+    return {"t": "job-progress", "id": job_id, "node": node_id, "note": note}
 
 
 def status_request() -> dict:
@@ -621,6 +652,38 @@ def validate_work_claim(msg: dict) -> list[str]:
     # A keyed claim (carries a pubkey) MUST be signed, or a receiver drops it (12).
     if claim.get("pubkey") and not claim.get("sig"):
         problems.append("keyed claim (has pubkey) missing sig")
+    return problems
+
+
+def validate_job_reminder(msg: dict) -> list[str]:
+    """Strict schema for a ``job-reminder`` an originator EMITS (04/13 v0.4.0):
+    the Job ``id`` being asked about and the asking (originator) ``node`` id,
+    both non-empty strings."""
+    problems = validate_envelope(msg)
+    if msg.get("t") != "job-reminder":
+        problems.append(f"expected t=job-reminder, got {msg.get('t')!r}")
+    if not isinstance(msg.get("id"), str) or not msg.get("id"):
+        problems.append("job-reminder.id missing or not a non-empty string")
+    if not isinstance(msg.get("node"), str) or not msg.get("node"):
+        problems.append("job-reminder.node missing or not a non-empty string")
+    return problems
+
+
+def validate_job_progress(msg: dict) -> list[str]:
+    """Strict schema for a ``job-progress`` an executor EMITS (04/13 v0.4.0): the
+    Job ``id`` it reports on, the reporting (executor) ``node`` id, and a
+    non-empty human-readable ``note`` — the executor's case for an extension (an
+    empty plea pleads nothing). The 4 KiB note cap is the RECEIVER's truncation,
+    not an emitter requirement."""
+    problems = validate_envelope(msg)
+    if msg.get("t") != "job-progress":
+        problems.append(f"expected t=job-progress, got {msg.get('t')!r}")
+    if not isinstance(msg.get("id"), str) or not msg.get("id"):
+        problems.append("job-progress.id missing or not a non-empty string")
+    if not isinstance(msg.get("node"), str) or not msg.get("node"):
+        problems.append("job-progress.node missing or not a non-empty string")
+    if not isinstance(msg.get("note"), str) or not msg.get("note"):
+        problems.append("job-progress.note missing or not a non-empty string")
     return problems
 
 

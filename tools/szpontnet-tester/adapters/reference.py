@@ -50,6 +50,13 @@ _MAP = {
     "SZPONTNET_RESULT_RETRY_SECS": "ARGENT_MESH_RESULT_RETRY_SECS",
     "SZPONTNET_RESULT_MAX_SECS": "ARGENT_MESH_RESULT_MAX_SECS",
     "SZPONTNET_FOREIGN_TIMEOUT_SECS": "ARGENT_MESH_FOREIGN_TIMEOUT_SECS",
+    # Chapter-13 v0.4.0 foreign accountability: shrink the completion deadline /
+    # reminder grace so the accept → deadline → reminder → ban cycle is observable
+    # in seconds, and point the extension decision at a command (`{job_file}`
+    # substituted; exit 0 extends, anything else bans).
+    "SZPONTNET_COMPLETION_DEADLINE_SECS": "ARGENT_MESH_COMPLETION_DEADLINE_SECS",
+    "SZPONTNET_REMINDER_GRACE_SECS": "ARGENT_MESH_REMINDER_GRACE_SECS",
+    "SZPONTNET_EXTEND_DECIDER": "ARGENT_MESH_EXTEND_DECIDER",
 }
 
 

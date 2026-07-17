@@ -20,7 +20,11 @@ id to its key so no relay can hijack another node's advertisement, and requires 
 valid signature on a non-default override from a known editor — **and chapter 12**,
 **work-claims**: gossiped self-signed origination leases, where a lower-id
 personal peer's active claim suppresses a `workKey` dispatch, a forged/keyless
-claim never owns anything, and an adopted claim is relayed verbatim.
+claim never owns anything, and an adopted claim is relayed verbatim — **and
+chapter 13**, **foreign zero-trust execution** and its **v0.4.0 accountability
+layer**: confined response-only compute returning a signed `job-result` that is
+re-sent until `job-ack`ed, plus the completion-deadline → `job-reminder` →
+`job-progress`/ban cycle that makes a foreign acceptance a binding promise.
 
 ## Requirements
 
@@ -95,9 +99,13 @@ wrapping it in a tiny launcher like [`adapters/reference.py`](adapters/reference
 | `SZPONTNET_SERVER` | `1` → the accept-only [server role](../../docs/szpontnet/11-trust-and-balancing.md#the-server-role): the node runs work but never originates a dispatch to a peer (ch 11). |
 | `SZPONTNET_API_KEY` | per-node [API key](../../docs/szpontnet/11-trust-and-balancing.md#the-api-key): when set, inbound `ctl` and `dispatch` MUST present a matching `apiKey` (ch 11). |
 | `SZPONTNET_STATS` | JSON `{plan, quotaLeft, usageAvg}` seed for the node's advertised load-balancing stats, so `surplus-first` picks are meaningful (ch 11). |
+| `SZPONTNET_FOREIGN_SPAWN` | [confinement runner](../../docs/szpontnet/13-foreign-execution.md#confinement-the-executors-responsibility) command template (`{prompt_file}`/`{result_file}` substituted): its presence turns a foreign request from *declined* into *confined, response-only* execution; absent = no foreign execution (ch 13). |
+| `SZPONTNET_RESULT_RETRY_SECS`, `SZPONTNET_RESULT_MAX_SECS`, `SZPONTNET_FOREIGN_TIMEOUT_SECS` | foreign [reliable-delivery](../../docs/szpontnet/13-foreign-execution.md#reliable-delivery) timings: the `job-result` retry cadence, its give-up window, and the confined compute budget (ch 13). |
+| `SZPONTNET_COMPLETION_DEADLINE_SECS`, `SZPONTNET_REMINDER_GRACE_SECS` | v0.4.0 [accountability](../../docs/szpontnet/13-foreign-execution.md#accountability-deadline-reminder-ban) timings: the completion deadline a foreign `spawned` (without `direct: true`) arms, and the answer window after a `job-reminder` before the ban (ch 13). |
+| `SZPONTNET_EXTEND_DECIDER` | v0.4.0 [extension-decision](../../docs/szpontnet/13-foreign-execution.md#the-extension-decision) command template (`{job_file}` substituted): judges a late executor's `job-progress` plea — exit `0` extends (re-arms the full deadline window), anything else bans; unset = no extension is ever granted (ch 13). |
 
-The three chapter-11 variables are optional and default off, so a node that
-implements only chapters 01–10 sees the exact same contract as before.
+The chapter-11 and chapter-13 variables are optional and default off, so a node
+that implements only chapters 01–10 sees the exact same contract as before.
 
 **Snapshot readout.** To check placement (a Participant MUST), the tester must
 read your node's computed assignments. It tries, in order: a control session
@@ -125,6 +133,8 @@ resource-offering-only node is judged only on what it promises.
 | **J** | ch 11 server / key | server mode never dispatches to a peer (and refuses an explicit peer target), the **API key** gates inbound dispatch (declined without, spawned with) and the control session. |
 | **K** | ch 11 authenticated gossip | a relayed **keyed advert** is dropped when its `sig` is missing, tampered (a field changed after signing), or made by a key other than its `pubkey` (with a correctly-signed advert learned as the positive control); a third node **cannot hijack** another peer's advertisement (id→key pin — spoofed content with an inflated seq leaves the victim's pinned key/identity unchanged); and a placement **override** is adopted only when validly signed by its `updatedBy` editor, rejected when tampered or forged by another node. |
 | **L** | ch 12 work-claims | a lower-id **personal** peer's active, signed work-claim is adopted as the key's owner and **suppresses** a control-session `dispatch` carrying that `workKey` (the slot reports `status: suppressed` with the owner); a keyed claim with an **invalid sig** is dropped (never suppresses); a **keyless** claim is non-authoritative (never owns, under a configured allowlist); and an adopted claim is **relayed verbatim** to the other linked peer (byte-identical, so the claimant's signature survives the hop). |
+| **M** | ch 13 foreign exec | an unknown `job-result`/`job-ack` is **dropped and the link kept** (a base node interoperates unchanged); with a confinement runner configured, a **foreign** request is confined (`spawned`, not declined), returns a well-formed, **validly-signed** `job-result` correlated by Job id on the requester's link, and the retry loop **stops on `job-ack`**. |
+| **N** | ch 13 v0.4.0 accountability | a confined acceptance carries **no `direct`** and a valid `job-reminder` is answered truthfully with a correlated, non-empty `job-progress` (an unknown-id reminder is dropped, link kept); a **given-up** result delivery is retained and **revived** by a reminder, then stopped by the ack; an originator whose foreign executor accepts and goes silent reminds **only after** the completion deadline (a floor) and **bans** after the unanswered grace — snapshot `banned` mark with the verified fingerprint, peer `trust: banned`, refused as a dispatch target, link kept; a **personal-path** spawn carries `direct: true` and no result ever follows. |
 
 ## Writing an adapter for your implementation
 
@@ -145,8 +155,8 @@ szpont/
   probe.py      the probe mesh: multi-identity trust-capable self-signing fake peers + an adversary hook
   candidate.py  launch + observe the candidate (ctl session / state.json)
   harness.py    per-scenario isolation (ports, timings, work dir)
-  suites.py     the conformance cases, grouped A–L (I/J/K = ch 11 trust + server/API-key + authenticated gossip; L = ch 12 work-claims)
-  selftest.py   pure oracle/codec self-tests (V1–V3 + ch-11 codec/oracle + ch-12 claim codec, without a node)
+  suites.py     the conformance cases, grouped A–N (I/J/K = ch 11 trust + server/API-key + authenticated gossip; L = ch 12 work-claims; M/N = ch 13 foreign execution + v0.4.0 accountability)
+  selftest.py   pure oracle/codec self-tests (V1–V3 + ch-11 codec/oracle + ch-12 claim codec + ch-13 result/accountability codec, without a node)
   report.py     per-check reporting, MUST/SHOULD verdict, exit code
 adapters/
   reference.py  candidate adapter for linux/argent_utils/mesh

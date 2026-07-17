@@ -77,7 +77,8 @@ class Scenario:
         mesh_secret: str | None = None, loopback: bool = True,
         spawn_marker: Path | None = None, work_root: Path | None = None,
         server: bool = False, api_key: str = "", stats: dict | None = None,
-        foreign_spawn: str = "",
+        foreign_spawn: str = "", completion_deadline_secs: float | None = None,
+        reminder_grace_secs: float | None = None, extend_decider: str = "",
     ) -> None:
         self.node_cmd = shlex.split(node_cmd)
         self.model = model
@@ -94,6 +95,14 @@ class Scenario:
         self.stats = stats
         # Chapter-13 confinement runner (default off → a foreign request is declined).
         self.foreign_spawn = foreign_spawn
+        # Chapter-13 v0.4.0 accountability knobs (default off → the shared 6 h
+        # deadline / 15 min grace apply, which never fire inside a scenario). A
+        # case shrinks them to seconds to observe the accept → deadline →
+        # reminder → resolution cycle, and may configure an extension-decider
+        # command (`{job_file}` substituted) to judge a late executor's plea.
+        self.completion_deadline_secs = completion_deadline_secs
+        self.reminder_grace_secs = reminder_grace_secs
+        self.extend_decider = extend_decider
         # The secret the PROBE peers/clients present. Defaults to the candidate's,
         # but a fence test can set a *wrong* one to prove the candidate refuses it.
         self.mesh_secret = secret if mesh_secret is None else mesh_secret
@@ -132,6 +141,9 @@ class Scenario:
             server=self.server, api_key=self.api_key, stats=self.stats,
             foreign_spawn=(self.confined_template() if self.foreign_spawn == "auto"
                            else self.foreign_spawn),
+            completion_deadline_secs=self.completion_deadline_secs,
+            reminder_grace_secs=self.reminder_grace_secs,
+            extend_decider=self.extend_decider,
         )
         self.candidate = candmod.Candidate(
             self.node_cmd, env, self.work_dir, secret=self.secret, api_key=self.api_key)

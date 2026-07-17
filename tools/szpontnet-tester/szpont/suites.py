@@ -8,7 +8,9 @@ server / API-key role) in categories **I** (trust & load balancing), **J**
 and overrides — forged/tampered/relayed-hijack payloads are rejected),
 **chapter 12** (leaderless origination work-claims) in category **L**, and
 **chapter 13** (foreign zero-trust execution: confined compute, response-back)
-in category **M**. Each drives the candidate over real sockets via the
+in category **M**, plus its **v0.4.0 accountability layer** (completion
+deadline, `job-reminder`/`job-progress`, extension decision, ban) in category
+**N**. Each drives the candidate over real sockets via the
 probe mesh, observes it (snapshot + wire captures), and records per-requirement
 checks with the spec section that mandates them.
 
@@ -1777,6 +1779,347 @@ def case_m_confined_result(rep: Reporter, ctx: Context) -> None:
                   "(retry interval ~0.5s — several retries would have fired if unacked)")
 
 
+# MARK: - N. Foreign accountability (ch 13 v0.4.0 — deadline, reminder, extension, ban)
+#
+# Reliable delivery (M) bounds the *transport* of a foreign result; accountability
+# bounds its *production*. A foreign `spawned` that does not carry `direct: true`
+# is a binding promise: the originator arms a completion deadline, asks "is this
+# ready?" (`job-reminder`) once it passes, and an executor that neither delivers
+# nor makes its case (`job-progress`, judged by the originator's extension
+# decider) within the grace window is BANNED — marked machine-local for the
+# operator, declined and never dispatched to again. These cases drive both roles
+# black-box, with the 6 h / 15 min windows shrunk to seconds via the contract env:
+#
+#  - N1 (executor): a confined acceptance carries NO `direct` (a result is owed);
+#    a valid reminder while the compute runs is answered truthfully with a
+#    correlated, non-empty `job-progress`; an unknown-id reminder is dropped and
+#    the link kept.
+#  - N2 (executor): a computed result whose delivery GAVE UP (the originator
+#    never acked) is retained, and a reminder REVIVES its delivery; the ack then
+#    stops the re-armed retries.
+#  - N3 (originator): the candidate dispatches to a foreign probe-executor that
+#    accepts (`spawned`, no `direct`) and goes silent. The candidate MUST NOT
+#    remind before the completion deadline (a floor), MUST remind after it, and
+#    after the unanswered grace MUST ban: snapshot mark + trust `banned` +
+#    refused as a dispatch target — while the peer link itself stays.
+#  - N4 (executor): a PERSONAL requester's spawn carries `direct: true` (no
+#    result will ever follow), so accountability is never armed over it.
+
+
+def _ctl_dispatch_target(scn, duty: str, prompt: str, target: str, timeout: float = 12.0):
+    """Open a control session and dispatch ``duty`` at an explicit ``target`` node
+    (the client's unilateral pick, no failover). Returns the dispatch-result dict,
+    or None."""
+    try:
+        sess = scn.candidate.open_ctl()
+    except OSError:
+        return None
+    try:
+        return sess.command(codec.dispatch_route(duty, prompt, target=target),
+                            timeout=timeout)
+    finally:
+        try:
+            sess.close()
+        except Exception:
+            pass
+
+
+def _foreign_accept(rep: Reporter, scn, peer, job) -> dict | None:
+    """Dispatch ``job`` from the (foreign) probe to the candidate and require the
+    confined acceptance. Returns the `spawned` job-status, or records a skip and
+    returns None when the candidate isn't Confined-Executor-capable."""
+    reply = _dispatch_status(peer, job)
+    if reply is None:
+        rep.skip_case("candidate never answered the foreign dispatch — not dispatch-capable")
+        return None
+    if reply.get("status") != "spawned":
+        rep.skip_case("candidate did not accept the foreign request despite a configured "
+                      f"runner (not Confined-Executor-capable): status={reply.get('status')} "
+                      f"reason={reply.get('reason', '')!r}")
+        return None
+    return reply
+
+
+def case_n_reminder_progress(rep: Reporter, ctx: Context) -> None:
+    rep.begin_case("N1", "Executor: no `direct` on a confined acceptance; a reminder gets a truthful job-progress; an unknown one is dropped (13 v0.4.0)")
+    # The runner accepts and computes "forever" (never writes the result file), so
+    # the job is still genuinely RUNNING when the reminder arrives — the truthful
+    # answer is a `job-progress`, not a result. The probe plays the originator.
+    scn = Scenario(ctx.node_cmd, ctx.model, candidate_id=ID_A, platform="linux", tier=4,
+                   loopback=ctx.loopback, foreign_spawn="sh -c 'sleep 300'")
+    scn.add_peer(id=ID_B, name="originator", platform="macos", tier=1, trust_peer=True)
+    with scn:
+        if not _need_port(rep, scn):
+            return
+        peer = scn.mesh.peers[0]
+        if not wait_until(lambda: peer.linked, 8.0):
+            rep.skip_case("peer never linked")
+            return
+        if _make_probe_foreign(rep, scn, peer) is None:
+            return
+        job = Job(id="n1-slow", duty="review", prompt="review this, slowly",
+                  requested_by=ID_B, requested_at=time.time())
+        reply = _foreign_accept(rep, scn, peer, job)
+        if reply is None:
+            return
+        # A confined job OWES a job-result, so its acceptance must not claim the
+        # personal fire-and-forget path — `direct` absent (or false) means "a
+        # result will follow", which is what arms the requester's accountability.
+        rep.check("a confined (result-owing) acceptance does NOT carry `direct: true`",
+                  reply.get("direct") is not True, "MUST", "04-messages#job-status",
+                  f"job-status={reply} — `direct` marks the personal path, where no "
+                  "job-result ever follows")
+        # The originator asks "is this ready?" while the compute is still running:
+        # the executor MUST answer truthfully with a correlated `job-progress`.
+        peer.send(codec.job_reminder(job.id, ID_B))
+        prog = wait_until(lambda: next((m for m in peer.messages("job-progress")
+                                        if m.get("id") == job.id), None), 6.0)
+        rep.check("a valid job-reminder is answered with a job-progress correlated by Job id",
+                  prog is not None, "MUST", "13-foreign-execution#the-reminder",
+                  f"job-progress ids seen={[m.get('id') for m in peer.messages('job-progress')]}\n"
+                  + scn.candidate.log_tail())
+        if prog is not None:
+            rep.check("the job-progress carries a non-empty human-readable note",
+                      isinstance(prog.get("note"), str) and prog.get("note") != "",
+                      "MUST", "04-messages#job-progress", f"note={prog.get('note')!r}")
+            rep.check("the job-progress names the reporting (executor) node",
+                      prog.get("node") == ID_A, "MUST", "04-messages#job-progress",
+                      f"node={prog.get('node')!r} (expected the candidate {ID_A[:8]}…)")
+        # A reminder for a job the executor does not recognize is DROPPED — no
+        # reply of any kind for that id, and the link is kept.
+        peer.send(codec.job_reminder("n1-unknown", ID_B))
+        time.sleep(1.5)
+        answered = [m for m in peer.messages() if m.get("id") == "n1-unknown"]
+        rep.check("a reminder for an unrecognized Job id gets NO reply (dropped)",
+                  answered == [], "MUST", "13-foreign-execution#the-reminder",
+                  f"replies={answered}")
+        rep.check("the link stays up after the unknown reminder",
+                  peer.linked, "MUST", "13-foreign-execution#the-reminder")
+
+
+def case_n_result_revival(rep: Reporter, ctx: Context) -> None:
+    rep.begin_case("N2", "Executor: a reminder REVIVES a given-up result delivery; the ack stops it (13 v0.4.0)")
+    # Fast runner (the stand-in confinement writes its artifact immediately), and a
+    # SHRUNKEN give-up window: the probe-originator stays silent, so the executor
+    # retries, gives up, and must still RETAIN the computed result so a later
+    # reminder can revive its delivery.
+    scn = Scenario(ctx.node_cmd, ctx.model, candidate_id=ID_A, platform="linux", tier=4,
+                   loopback=ctx.loopback, foreign_spawn="auto")
+    scn.proto["foreignResultMaxSecs"] = 3.0  # → SZPONTNET_RESULT_MAX_SECS
+    scn.add_peer(id=ID_B, name="originator", platform="macos", tier=1, trust_peer=True)
+    with scn:
+        if not _need_port(rep, scn):
+            return
+        peer = scn.mesh.peers[0]
+        if not wait_until(lambda: peer.linked, 8.0):
+            rep.skip_case("peer never linked")
+            return
+        if _make_probe_foreign(rep, scn, peer) is None:
+            return
+        job = Job(id="n2-revive", duty="review", prompt="review the diff",
+                  requested_by=ID_B, requested_at=time.time())
+        if _foreign_accept(rep, scn, peer, job) is None:
+            return
+
+        def results() -> list[dict]:
+            return [m for m in peer.messages("job-result") if m.get("id") == job.id]
+
+        if not wait_until(lambda: results(), 16.0):
+            rep.skip_case("no job-result ever arrived for the confined job — "
+                          "cannot exercise revival\n" + scn.candidate.log_tail())
+            return
+        # The originator stays SILENT (no ack) → the executor must re-send on the
+        # retry cadence…
+        rep.check("unacked, the executor re-sends the job-result on the retry cadence",
+                  bool(wait_until(lambda: len(results()) >= 2, 5.0)), "MUST",
+                  "13-foreign-execution#reliable-delivery",
+                  f"results seen={len(results())} (retry interval ~0.5s)")
+        # …and give up once foreignResultMaxSecs (shrunk to 3s) passes: the count
+        # stops growing across a window spanning several retry intervals.
+        gave_up = False
+        give_up_deadline = time.monotonic() + 10.0
+        while time.monotonic() < give_up_deadline:
+            before = len(results())
+            time.sleep(2.0)
+            if len(results()) == before:
+                gave_up = True
+                break
+        rep.check("the executor gives up re-sending after foreignResultMaxSecs without an ack",
+                  gave_up, "MUST", "13-foreign-execution#reliable-delivery",
+                  f"results still flowing after the give-up window ({len(results())} sent)")
+        # A job-reminder REVIVES the given-up delivery: the executor answers with
+        # the retained result, retry loop re-armed. (Retention + revival is the
+        # spec's SHOULD that saves an honest executor whose originator was away.)
+        base = len(results())
+        peer.send(codec.job_reminder(job.id, ID_B))
+        revived = wait_until(lambda: len(results()) > base, 5.0)
+        rep.check("a job-reminder revives the given-up delivery (the result is re-sent)",
+                  bool(revived), "SHOULD", "13-foreign-execution#the-reminder",
+                  f"results before reminder={base}, after={len(results())}\n"
+                  + scn.candidate.log_tail())
+        if revived:
+            latest = results()[-1].get("result") or {}
+            rep.check("the revived job-result still carries the computed artifact (ok: true)",
+                      latest.get("ok") is True and bool(latest.get("output")), "MUST",
+                      "13-foreign-execution#the-reminder", f"result={latest}")
+            # The originator acks → the re-armed retries MUST cease. Let any
+            # in-flight re-send land before baselining the count.
+            peer.send(codec.job_ack(job.id, ID_B))
+            time.sleep(1.0)
+            settled = len(results())
+            time.sleep(2.0)
+            rep.check("the originator's job-ack stops the revived retry loop",
+                      len(results()) == settled, "MUST",
+                      "13-foreign-execution#reliable-delivery",
+                      f"results at ack+1s={settled}, at ack+3s={len(results())}")
+
+
+def case_n_silent_ban(rep: Reporter, ctx: Context) -> None:
+    rep.begin_case("N3", "Originator: a foreign acceptance that stays silent is reminded after the deadline, then BANNED after the grace (13 v0.4.0)")
+    # The candidate is the ORIGINATOR; the probe plays a foreign executor that
+    # ACCEPTS (its stock `spawned` reply carries no `direct`) and then never
+    # delivers and never answers the reminder — the broken promise. The 6 h / 15 m
+    # windows shrink to 2 s each via the contract env; no extension decider is
+    # configured, matching the zero-trust default.
+    scn = Scenario(ctx.node_cmd, ctx.model, candidate_id=ID_A, platform="linux", tier=4,
+                   loopback=ctx.loopback,
+                   completion_deadline_secs=2.0, reminder_grace_secs=2.0)
+    scn.add_peer(id=ID_B, name="executor", platform="macos", tier=1, trust_peer=True,
+                 dispatch_reply="spawned")
+    with scn:
+        if not _need_port(rep, scn):
+            return
+        peer = scn.mesh.peers[0]
+        if not wait_until(lambda: peer.linked, 8.0):
+            rep.skip_case("peer never linked")
+            return
+        if _make_probe_foreign(rep, scn, peer) is None:
+            return
+        res = _ctl_dispatch_target(scn, "review", "n3 accountability", ID_B)
+        if res is None or res.get("t") != "dispatch-result":
+            rep.skip_case("no dispatch-result from the control session — not a Dispatcher "
+                          f"(got {res.get('t') if res else None})")
+            return
+        slot = next(iter(res.get("results", [])), {})
+        if slot.get("status") != "spawned" or slot.get("node") != ID_B:
+            rep.skip_case(f"targeted dispatch was not accepted by the probe: {slot}")
+            return
+        job = next((j for j in peer.jobs if j.prompt == "n3 accountability"), None)
+        # The deadline is a FLOOR, not a cap: the executor is entitled to the full
+        # window, so no reminder may arrive at half of it.
+        time.sleep(1.0)
+        early = peer.messages("job-reminder")
+        rep.check("the originator does NOT remind before the completion deadline elapses (a floor)",
+                  early == [], "MUST", "13-foreign-execution#the-completion-deadline",
+                  f"reminders at deadline/2: {early}")
+        reminder = wait_until(lambda: next(iter(peer.messages("job-reminder")), None), 8.0)
+        rep.check("past the deadline the originator sends a job-reminder on the executor's link",
+                  reminder is not None, "MUST", "13-foreign-execution#the-reminder",
+                  "no job-reminder within deadline+6s of the acceptance\n"
+                  + scn.candidate.log_tail())
+        if reminder is None:
+            return
+        rep.check("the reminder is correlated by the dispatched Job id and names the originator",
+                  job is not None and reminder.get("id") == job.id
+                  and reminder.get("node") == ID_A, "MUST", "04-messages#job-reminder",
+                  f"reminder={reminder} dispatched job id={job.id if job else None}")
+        # Silence through the whole grace window → resolution 4: the ban.
+        banned = wait_until(lambda: next(
+            (b for b in (scn.candidate.snapshot() or {}).get("banned", [])
+             if b.get("node") == ID_B or b.get("fingerprint") == peer.fingerprint),
+            None), 10.0)
+        rep.check("after the unanswered grace window the device is BANNED (snapshot mark)",
+                  banned is not None, "MUST",
+                  "13-foreign-execution#resolution-fulfilled-extended-or-banned",
+                  f"banned={(scn.candidate.snapshot() or {}).get('banned')}\n"
+                  + scn.candidate.log_tail())
+        if banned is None:
+            return
+        rep.check("the ban records the device's verified fingerprint and a reason, for the operator",
+                  banned.get("fingerprint") == peer.fingerprint and bool(banned.get("reason")),
+                  "MUST", "08-state#bannedjson", f"entry={banned}")
+        rep.check("the banned peer is now trust level `banned` in the snapshot",
+                  bool(wait_until(lambda: _peer_snap(scn.candidate.snapshot(),
+                                                     ID_B).get("trust") == "banned", 4.0)),
+                  "MUST", "08-state#the-statejson-snapshot",
+                  f"peer={_peer_snap(scn.candidate.snapshot(), ID_B)}")
+        rep.check("the peer LINK itself stays up (a ban withdraws privileges, not membership)",
+                  peer.linked, "MUST", "13-foreign-execution#the-ban")
+        # Enforcement: a banned device is never a dispatch target — an explicit
+        # `target` naming it is refused LOCALLY, without asking the device.
+        jobs_before = len(peer.jobs)
+        res2 = _ctl_dispatch_target(scn, "review", "n3 post-ban", ID_B)
+        slot2 = next(iter((res2 or {}).get("results", [])), {})
+        rep.check("a follow-up dispatch targeting the banned device is refused (not spawned)",
+                  res2 is not None and slot2.get("status") != "spawned", "MUST",
+                  "13-foreign-execution#the-ban", f"slot={slot2}")
+        time.sleep(0.5)
+        rep.check("the banned device never received the refused job (refused locally)",
+                  len(peer.jobs) == jobs_before, "MUST", "13-foreign-execution#the-ban",
+                  f"probe jobs={[j.prompt for j in peer.jobs]}")
+
+
+def case_n_personal_direct(rep: Reporter, ctx: Context) -> None:
+    rep.begin_case("N4", "Executor: a PERSONAL requester's spawn carries `direct: true` — no result follows, no deadline is armed (13 v0.4.0)")
+    scn = Scenario(ctx.node_cmd, ctx.model, candidate_id=ID_A, platform="linux", tier=4,
+                   loopback=ctx.loopback)
+    scn.add_peer(id=ID_B, name="requester", platform="macos", tier=1, trust_peer=True)
+    with scn:
+        if not _need_port(rep, scn):
+            return
+        peer = scn.mesh.peers[0]
+        if not wait_until(lambda: peer.linked, 8.0):
+            rep.skip_case("peer never linked")
+            return
+        if peer.key is None:
+            rep.skip_case("probe is keyless (no cryptography) — cannot be trusted personal")
+            return
+        # Make the probe explicitly PERSONAL — independent of the candidate's
+        # default-trust policy — by allowlisting its verified fingerprint.
+        if not wait_until(lambda: _peer_snap(scn.candidate.snapshot(), ID_B).get("verified"), 8.0):
+            rep.skip_case("candidate never verified the probe's key — not trust-capable")
+            return
+        try:
+            sess = scn.candidate.open_ctl()
+            sess.command(codec.trust(peer.fingerprint, "probe"))
+            sess.close()
+        except OSError:
+            rep.skip_case("could not drive trust control command")
+            return
+        if not wait_until(lambda: _peer_snap(scn.candidate.snapshot(), ID_B).get("trust")
+                          == "personal", 4.0):
+            rep.skip_case("probe never classified personal (allowlist not honored)")
+            return
+        job = Job(id="n4-direct", duty="review", prompt="personal run",
+                  requested_by=ID_B, requested_at=time.time())
+        reply = _dispatch_status(peer, job)
+        if reply is None:
+            rep.skip_case("no job-status reply — candidate is not an Executor")
+            return
+        rep.check("the personal request is spawned (runs directly, not confined/declined)",
+                  reply.get("status") == "spawned", "MUST",
+                  "13-foreign-execution#admission-when-a-foreign-request-is-confined-vs-declined",
+                  f"status={reply.get('status')} reason={reply.get('reason', '')}")
+        # The escape hatch that keeps accountability honest: a personal-path spawn
+        # never owes a result, and saying so (`direct`) is what stops a requester
+        # that classifies US foreign from arming a deadline over it.
+        rep.check("the spawned job-status carries `direct: true` (personal path, no result owed)",
+                  reply.get("direct") is True, "SHOULD", "04-messages#job-status",
+                  f"job-status={reply} — without it an accountability-tracking "
+                  "originator arms a deadline over a result that never comes")
+        marker = scn.spawn_marker / "cand.txt"
+        landed = wait_until(lambda: marker.exists() and marker.read_text() == "personal run", 6.0)
+        rep.check("the job ran on the HOST path (personal, not confined)", bool(landed),
+                  "MUST",
+                  "13-foreign-execution#admission-when-a-foreign-request-is-confined-vs-declined",
+                  "the SZPONTNET_SPAWN template must have staged the prompt")
+        time.sleep(2.0)
+        got = [m for m in peer.messages("job-result") if m.get("id") == job.id]
+        rep.check("no job-result ever follows a `direct` spawn (fire-and-forget)",
+                  got == [], "MUST", "13-foreign-execution#the-completion-deadline",
+                  f"job-results={got}")
+
+
 # MARK: - registry
 
 
@@ -1799,6 +2142,8 @@ SUITES = {
     "L": [case_l_suppression, case_l_forgery_dropped, case_l_keyless_non_authoritative,
           case_l_relay_verbatim],
     "M": [case_m_unknown_dropped, case_m_confined_result],
+    "N": [case_n_reminder_progress, case_n_result_revival, case_n_silent_ban,
+          case_n_personal_direct],
 }
 
 CATEGORY_TITLES = {
@@ -1815,4 +2160,5 @@ CATEGORY_TITLES = {
     "K": "Authenticated gossip (ch 11)",
     "L": "Work-claims (ch 12)",
     "M": "Foreign zero-trust execution (ch 13)",
+    "N": "Foreign accountability (ch 13)",
 }

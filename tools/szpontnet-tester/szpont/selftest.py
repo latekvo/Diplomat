@@ -25,6 +25,7 @@ def run(rep: Reporter) -> None:
     _trust_codec(rep)
     _surplus_first_oracle(rep, model)
     _result_codec(rep)
+    _accountability_codec(rep)
 
 
 def _codec_roundtrips(rep: Reporter) -> None:
@@ -318,6 +319,57 @@ def _result_codec(rep: Reporter) -> None:
     rep.check("the signature does NOT verify against a wrong (different) key",
               not verifies(other_raw, payload, sig_b64), "MUST",
               "13-foreign-execution#correlation-and-authenticity")
+
+
+def _accountability_codec(rep: Reporter) -> None:
+    rep.begin_case("S10", "Accountability codec: job-reminder/job-progress + job-status.direct (13 v0.4.0)")
+    # The two additive accountability messages: builder shapes match chapter 04.
+    rem = codec.job_reminder("b1c2", "3" * 32)
+    rep.check("job_reminder builder shape {t,id,node}",
+              rem == {"t": "job-reminder", "id": "b1c2", "node": "3" * 32}, "MUST",
+              "04-messages#job-reminder")
+    prog = codec.job_progress("b1c2", "a" * 32, "review 70% done, need ~1h more")
+    rep.check("job_progress builder shape {t,id,node,note}",
+              prog == {"t": "job-progress", "id": "b1c2", "node": "a" * 32,
+                       "note": "review 70% done, need ~1h more"}, "MUST",
+              "04-messages#job-progress")
+    # Round-trips: encode → decode is identity (plus the defaulted envelope `v`),
+    # and the decoded message passes its own strict validator.
+    for name, msg, validate in [
+        ("job-reminder", rem, codec.validate_job_reminder),
+        ("job-progress", prog, codec.validate_job_progress),
+    ]:
+        decoded = codec.decode(codec.encode(msg))
+        rep.check(f"{name} encode→decode round-trips and validates cleanly",
+                  decoded == {**msg, "v": 1} and validate(decoded) == [], "MUST",
+                  "03-transport#framing")
+    # The validators flag the malformed set a receiver would drop.
+    rep.check("validate_job_reminder flags a missing/empty id and node",
+              any("id" in p for p in codec.validate_job_reminder(
+                  {"t": "job-reminder", "node": "n"}))
+              and any("node" in p for p in codec.validate_job_reminder(
+                  {"t": "job-reminder", "id": "x", "node": ""})), "MUST",
+              "04-messages#job-reminder")
+    rep.check("validate_job_progress flags a missing/empty note",
+              any("note" in p for p in codec.validate_job_progress(
+                  {"t": "job-progress", "id": "x", "node": "n"}))
+              and any("note" in p for p in codec.validate_job_progress(
+                  {"t": "job-progress", "id": "x", "node": "n", "note": ""})), "MUST",
+              "04-messages#job-progress")
+    # `direct` on job-status (additive, v0.4.0): omitted when false so a plain
+    # status stays byte-identical to a pre-v0.4.0 one; true marks a personal-path
+    # spawn that never owes a job-result (no deadline may be armed over it).
+    plain = codec.job_status("j1", "spawned", "", "a" * 32)
+    rep.check("job-status omits `direct` when false (byte-compat with pre-v0.4.0)",
+              "direct" not in plain, "MUST", "04-messages#job-status")
+    marked = codec.job_status("j1", "spawned", "", "a" * 32, direct=True)
+    rep.check("job-status carries `direct: true` for a personal-path spawn",
+              marked.get("direct") is True and codec.decode(
+                  codec.encode(marked)).get("direct") is True, "MUST",
+              "13-foreign-execution#the-completion-deadline")
+    rep.check("the progress-note receiver cap constant is 4096 bytes (appendix B)",
+              codec.MAX_PROGRESS_NOTE_BYTES == 4096, "MUST",
+              "appendix-b-constants")
 
 
 def _surplus_first_oracle(rep: Reporter, model) -> None:
