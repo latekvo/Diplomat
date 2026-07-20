@@ -249,7 +249,28 @@ final class Store: ObservableObject {
     }
     private var autoRefreshTask: Task<Void, Never>?
 
+    /// One-time carry-over of the pre-rename defaults domain. The Diplomat rename
+    /// changed the bundle id (com.ignacy.argent-utils → com.ignacy.diplomat), which
+    /// points UserDefaults at a FRESH domain — without this, the first post-rename
+    /// launch silently resets every preference. Most dangerously the monitor
+    /// toggles, which default ON: an operator who explicitly disabled them (e.g.
+    /// after the 2026-07-20 duplicate-dispatch incident) would have them re-enable
+    /// themselves. Copies only keys the new domain doesn't already have, so a
+    /// setting changed post-rename is never clobbered, and runs once (marker key).
+    static func migrateLegacyDefaultsIfNeeded() {
+        let marker = "legacyDefaultsMigrated"
+        let std = UserDefaults.standard
+        guard !std.bool(forKey: marker) else { return }
+        if let legacy = std.persistentDomain(forName: "com.ignacy.argent-utils") {
+            for (key, value) in legacy where std.object(forKey: key) == nil {
+                std.set(value, forKey: key)
+            }
+        }
+        std.set(true, forKey: marker)
+    }
+
     init() {
+        Store.migrateLegacyDefaultsIfNeeded()
         let defaults = UserDefaults.standard
         usernameOverride = defaults.string(forKey: Keys.usernameOverride) ?? ""
         // SKILL.md + Installer/CLI tools ship hidden (absent key ⇒ default); any
