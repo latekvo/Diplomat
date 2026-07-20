@@ -29,6 +29,7 @@ enum AutofixMonitor {
         let files: [String]         // changed file paths (for skill/installer verdict gating)
         let requestedAt: String?    // latest "review requested from me" (ISO8601)
         let myLastReviewAt: String? // my latest review submission (ISO8601)
+        let headSha: String         // head commit sha — the mesh work key's "@sha" part
 
         /// I owe a review when I'm requested and that request is newer than my last review
         /// of this PR (ISO8601 strings compare chronologically). A fresh re-request (newer
@@ -61,6 +62,7 @@ enum AutofixMonitor {
                 let url: String?
                 let author: Login?
                 let authorAssociation: String?
+                let headRefOid: String?
                 let files: FilesConn?
                 let timelineItems: TL?
                 let reviews: RVs?
@@ -75,7 +77,7 @@ enum AutofixMonitor {
         }
         let r = try JSONDecoder().decode(Resp.self, from: data)
         let lower = me.lowercased()
-        return r.data.search.nodes.compactMap { n in
+        return r.data.search.nodes.compactMap { n -> ReviewRequest? in
             guard let number = n.number else { return nil }
             let reqAt = (n.timelineItems?.nodes ?? [])
                 .filter { $0.requestedReviewer?.login?.lowercased() == lower }
@@ -87,7 +89,8 @@ enum AutofixMonitor {
                                  author: n.author?.login ?? "",
                                  authorAssociation: n.authorAssociation ?? "NONE",
                                  files: (n.files?.nodes ?? []).compactMap { $0.path },
-                                 requestedAt: reqAt, myLastReviewAt: myReviewAt)
+                                 requestedAt: reqAt, myLastReviewAt: myReviewAt,
+                                 headSha: n.headRefOid ?? "")
         }
     }
 
@@ -107,6 +110,7 @@ enum AutofixMonitor {
                 let isDraft: Bool?
                 let mergeable: String?
                 let reviewDecision: String?
+                let headRefOid: String?
                 let reviewThreads: Threads?
             }
             struct Author: Decodable { let login: String? }
@@ -120,7 +124,7 @@ enum AutofixMonitor {
             }
         }
         let r = try JSONDecoder().decode(Resp.self, from: data)
-        return r.data.search.nodes.compactMap { n in
+        return r.data.search.nodes.compactMap { n -> PRSnapshot? in
             guard let number = n.number else { return nil }
             let threads = n.reviewThreads?.nodes ?? []
             let unresolved = threads.filter { !$0.isResolved }.count
@@ -136,7 +140,8 @@ enum AutofixMonitor {
                 mergeable: n.mergeable ?? "UNKNOWN",
                 reviewDecision: n.reviewDecision ?? "",
                 threadsUnresolved: unresolved,
-                threadsIOwe: iOwe)
+                threadsIOwe: iOwe,
+                headSha: n.headRefOid ?? "")
         }
     }
 }

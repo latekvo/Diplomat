@@ -166,6 +166,16 @@ enum MeshBridge {
         return (reply["results"] as? [[String: Any]]) ?? []
     }
 
+    /// Run the origination claim gate for one unit of external work WITHOUT
+    /// dispatching (docs/szpontnet/12) — for the auto-monitor, which runs the work
+    /// itself as a local tracked agent. `owned` false means a better live personal
+    /// peer already holds the lease and the caller must NOT originate. Mirrors
+    /// `ctl.claim_work`.
+    static func claim(workKey: String, port: Int) throws -> (owned: Bool, ownerName: String?) {
+        let reply = try request(["t": "claim", "workKey": workKey], port: port)
+        return ((reply["owned"] as? Bool) ?? false, reply["ownerName"] as? String)
+    }
+
     /// One command, one reply, over a fresh loopback TCP connection to the node's control
     /// port — the Swift port of `mesh.ctl.request`. Blocking; throws `MeshCtlError` when
     /// the node is unreachable, silent, or answers with an error.

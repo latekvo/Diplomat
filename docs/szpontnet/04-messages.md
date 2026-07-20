@@ -34,6 +34,8 @@ peer TCP link; **ctl** = sent on a control session (client↔node).
 | [`ban`](#ban--unban) | ctl | client→node | add a device to the local ban list ([13](13-foreign-execution.md#the-ban)) |
 | [`unban`](#ban--unban) | ctl | client→node | remove a device from the local ban list |
 | [`set-default-trust`](#set-default-trust) | ctl | client→node | set the default trust level for unlisted devices |
+| [`claim`](#claim--claim-result) | ctl | client→node | run the origination claim gate for a work key, without dispatching ([12](12-work-claims.md)) |
+| [`claim-result`](#claim--claim-result) | ctl | node→client | the claim gate's verdict (reply to `claim`) |
 | [`stop`](#stop) | ctl | client→node | ask the node to shut down |
 | [`ok` / `error`](#ok--error) | ctl | node→client | generic command results |
 | [`dispatch-result`](#dispatch-result) | ctl | node→client | per-slot dispatch outcomes |
@@ -671,6 +673,32 @@ Like `trust`/`untrust` this edits **machine-local** state (persisted as `default
 in `~/.argent/mesh/trusted.json`) and is **never gossiped**; it takes effect live,
 re-classifying every unlisted peer on the next snapshot. See
 [11-trust-and-balancing](11-trust-and-balancing.md#trust-is-never-derived-from-an-advertisement).
+
+### `claim` / `claim-result`
+
+Run the [origination claim gate](12-work-claims.md#origination-and-yield) for one
+unit of external work **without dispatching** - for a control client that will run
+the work *itself* (the applet's auto-monitor spawns a local, tracked agent when it
+originates). The node consults the claim book, and either announces its own active
+claim (`owned: true` - proceed) or stands the caller down (`owned: false` - a
+better live personal peer holds the lease). Re-claiming a key this node already
+owns is idempotent, so a legitimate retry is never suppressed.
+
+```json
+{"t": "claim", "workKey": "review:github.com/acme/app#123@abc123", "v": 1}
+{"t": "claim-result", "owned": false, "owner": "3236…", "ownerName": "softoobox", "v": 1}
+```
+
+| Field | Type | Req? | Meaning |
+|-------|------|------|---------|
+| `workKey` | string | **yes** | the unit of work ([12 - the work key](12-work-claims.md#the-work-key)). An empty key is an [`error`](#ok--error). |
+| `owned` | bool | reply | whether this node now originates the work. |
+| `owner` | string | reply | the current owner's node id (`null` when nobody owns it - only possible with `owned: true`). |
+| `ownerName` | string | reply | the owner's human name, for the caller's log line. |
+
+A [`dispatch`](#dispatch) with a `workKey` runs this same gate internally and
+reports `suppressed`; the stand-alone verb exists so origination dedup does not
+require routing the execution through the mesh.
 
 ### `stop`
 

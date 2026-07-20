@@ -2325,6 +2325,18 @@ class MeshNode:
             results = await self.dispatch(duty, str(msg.get("prompt", "")),
                                           target, api_key, work_key)
             return {"t": "dispatch-result", "duty": duty, "results": results}
+        if t == "claim":
+            # The origination claim gate, stand-alone (docs/szpontnet/12): a client
+            # that will run the work ITSELF (e.g. the applet's auto-monitor spawning
+            # a local, tracked agent) claims the key without dispatching. `owned`
+            # False → a better live personal peer holds the lease; don't originate.
+            work_key = str(msg.get("workKey", "")).strip()
+            if not work_key:
+                return {"t": "error", "reason": "claim needs a workKey"}
+            owned = self.claim(work_key)
+            holder = self._claim_holder(work_key)
+            return {"t": "claim-result", "owned": owned, "owner": holder,
+                    "ownerName": self._node_name(holder) if holder else None}
         if t == "trust":
             fp = str(msg.get("fingerprint", "")).strip()
             if not fp:

@@ -26,10 +26,13 @@ public struct PRSnapshot: Equatable {
     /// reconcile so we don't dispatch a fix agent for a PR where the ball is with the
     /// reviewer. `threadsUnresolved` (raw count) still drives the edge-trigger.
     public let threadsIOwe: Int
+    /// Head commit sha (`headRefOid`) — the "which push" part of the mesh work key,
+    /// so two nodes observing the same commit derive the same key (docs/szpontnet/12).
+    public let headSha: String
 
     public init(number: Int, title: String, url: String, isDraft: Bool,
                 mergeable: String, reviewDecision: String,
-                threadsUnresolved: Int, threadsIOwe: Int = 0) {
+                threadsUnresolved: Int, threadsIOwe: Int = 0, headSha: String = "") {
         self.number = number
         self.title = title
         self.url = url
@@ -38,6 +41,7 @@ public struct PRSnapshot: Equatable {
         self.reviewDecision = reviewDecision
         self.threadsUnresolved = threadsUnresolved
         self.threadsIOwe = threadsIOwe
+        self.headSha = headSha
     }
 }
 
@@ -91,5 +95,52 @@ public enum AutofixDiff {
                 threadsUnresolved: s.threadsUnresolved)
         }
         return (events, fingerprints)
+    }
+}
+
+// MARK: - Mesh coordination for the auto-monitors (mirrors autofix.py's twin)
+//
+// Two machines running this monitor poll the same GitHub state as the same user, so
+// each is an independent origin of the same work (docs/szpontnet/12-work-claims.md).
+// The Store gates every auto dispatch with:
+//   1. `standDown` — the duty is assigned to OTHER live nodes: their monitor
+//      originates there, ours stands down (assignment already tracks liveness);
+//   2. the ctl `claim` verb on `workKey` — origination dedup for the remaining
+//      races (no assignee, takeover flaps, spread placements).
+public enum AutofixMesh {
+    public static let kindReviewReq = "review"        // reviews requested of me → duty "review"
+    public static let kindReviewReply = "review-reply" // replies to reviews on MY PRs → duty "review"
+    public static let kindConflicts = "conflicts"     // conflict fixes on MY PRs → duty "conflicts"
+
+    /// The origination-dedup key for one unit of monitor work — the reference
+    /// convention from docs/szpontnet/12: `<kind>:<host>/<owner>/<repo>#<n>@<sha>`.
+    /// Derived from the PR's own URL so every node observing the same PR agrees
+    /// byte-for-byte (the Python twin must produce identical strings — see the
+    /// parity tests). Returns "" — claim gate skipped, the safe pre-claims
+    /// degradation — when the URL doesn't look like a PR URL or the sha is unknown.
+    public static func workKey(kind: String, prURL: String, headSha: String) -> String {
+        guard !headSha.isEmpty,
+              let u = URL(string: prURL),
+              let host = u.host?.lowercased(), !host.isEmpty else { return "" }
+        let parts = u.pathComponents.filter { $0 != "/" }
+        guard parts.count == 4, parts[2] == "pull",
+              parts[3].allSatisfy(\.isNumber), !parts[3].isEmpty else { return "" }
+        return "\(kind):\(host)/\(parts[0])/\(parts[1])#\(parts[3])@\(headSha)"
+    }
+
+    /// Whether this node's auto-monitor must NOT originate `duty` work: the mesh
+    /// assigns the duty to other nodes only (their own monitors originate there,
+    /// with full local in-flight tracking). Returns the assigned node ids to stand
+    /// down for, or nil to originate here (assigned to us, or nobody assigned — a
+    /// duty nobody can take is still better handled than dropped).
+    ///
+    /// `assignments` is the node's state.json assignments map; the node already
+    /// recomputes it on peer-down, so an assignee listed there is a live one
+    /// modulo gossip lag (the claim gate covers that window).
+    public static func standDown(assignments: [String: MeshAssignment],
+                                 selfID: String, duty: String) -> [String]? {
+        let assigned = (assignments[duty]?.assigned ?? []).filter { !$0.isEmpty }
+        if assigned.isEmpty || assigned.contains(selfID) { return nil }
+        return assigned
     }
 }

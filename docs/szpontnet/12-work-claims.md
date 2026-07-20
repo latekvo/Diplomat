@@ -314,6 +314,32 @@ that is the only path where two nodes can race to the same external event:
 
 Both bypass the claim gate. A `workKey` on either is simply ignored.
 
+## Integration without dispatch: the `claim` control verb
+
+An originator does not have to route the *execution* through the mesh to use the
+dedup. The stand-alone [`claim`](04-messages.md#claim--claim-result) control verb
+runs `should_originate(workKey)` and reports the verdict, letting the client run
+the work itself when it wins.
+
+This is how the applet's **PR auto-monitors** integrate (their reference work-key
+kinds: `review:` for a review requested of the operator, `review-reply:` for
+replies owed on the operator's own PR, `conflicts:` for a merge-conflict fix - all
+`<kind>:<host>/<owner>/<repo>#<number>@<head-sha>`). Each monitor gates an auto
+spawn twice:
+
+1. **Assignment first** ([06](06-coordination.md)): if the matching duty is
+   assigned to *other* live nodes only, the monitor stands down entirely - the
+   assignee's own monitor originates there, keeping the spawned agent locally
+   tracked. No claim is minted for work the node won't run.
+2. **Claim second**: when the node *would* originate (the duty is assigned to it,
+   or to nobody), it claims the work key via this verb and stands down if a better
+   peer already owns it - closing the races assignment can't see (takeover flaps,
+   `spread` placements, the no-eligible-node fallback).
+
+Fail-open is deliberate: when the local node is unreachable the monitors revert to
+pre-claims behavior (originate locally), preferring a rare duplicate over silently
+dropping the operator's work.
+
 ## Conformance
 
 Work-claims define an **optional role**, the **Originator-with-dedup**. A node need

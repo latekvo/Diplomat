@@ -167,6 +167,11 @@ class Store(QObject):
         # spawning a second agent on a PR one is already working.
         self._autofix_inflight: list[dict] = []
         self._autofix_lock = threading.Lock()
+        # Mesh coordination for the monitor (docs/szpontnet/12): per-duty stand-down
+        # state (True while the duty is assigned to other nodes — logged only on
+        # transition) and the work keys whose claim suppression was already logged.
+        self._mesh_duty_stood_down: dict[str, bool] = {}
+        self._mesh_suppressed_logged: set[str] = set()
 
         # Claude-API-error watcher: live-only runtime state (the toggle/count persist
         # via QSettings below). Mirrors the per-tty backoff + idle-confirmation maps in
@@ -543,7 +548,7 @@ class Store(QObject):
                 attempts.get(k), "conflicting", self._in_flight(s.url), False, now
             )
             if action == "dispatch" and self._dispatch_conflict_fix(
-                s.number, s.url, int(val), "auto"
+                s.number, s.url, int(val), "auto", head_sha=s.head_sha
             ):
                 attempts[k] = autofix.ReviewAttempt("conflicting", now, int(val))
         keep = {str(s.number) for s in snaps if s.mergeable != "MERGEABLE"}
@@ -591,10 +596,88 @@ class Store(QObject):
 
     # MARK: monitor dispatch + tracking
 
+    def _mesh_monitor_gate(self, duty: str, work_key: str, what: str) -> bool:
+        """The auto-monitor's mesh coordination gate (docs/szpontnet/12): True →
+        stand down, another node originates this work; False → originate here and
+        spawn the local tracked agent as always.
+
+        Two layers: the duty ASSIGNMENT (other live nodes own the duty → their own
+        monitors originate there; logged once per transition, not per tick) and the
+        work-key CLAIM via the ctl ``claim`` verb (origination dedup for the
+        remaining races — no assignee, takeover flaps, spread placements; a
+        suppression is logged once per key). Fail-open on any mesh unavailability —
+        a wedged node must never leave PRs unhandled."""
+        from .mesh import ctl, statefile
+
+        if not self.mesh_enabled:
+            self._note_mesh_resume(duty)
+            return False
+        state = statefile.read_state()
+        if not state or not statefile.node_running(state):
+            self._note_mesh_resume(duty)
+            return False
+        self_id = (state.get("self") or {}).get("id") or ""
+        assigned = autofix.mesh_stand_down(
+            state.get("assignments") or {}, self_id, duty
+        )
+        if assigned is not None:
+            if not self._mesh_duty_stood_down.get(duty):
+                self._mesh_duty_stood_down[duty] = True
+                names = ", ".join(self._mesh_node_names(state, assigned))
+                activity.log(
+                    "auto",
+                    "mesh-standdown",
+                    f"Auto-monitor: {duty} handled by {names} (mesh assignment)",
+                )
+            return True
+        self._note_mesh_resume(duty)
+        if not work_key:
+            return False
+        try:
+            res = ctl.claim_work(work_key)
+        except ctl.CtlError:
+            return False  # fail-open: claim gate unavailable → pre-mesh behavior
+        if res["owned"]:
+            return False
+        if work_key not in self._mesh_suppressed_logged:
+            if len(self._mesh_suppressed_logged) > 256:
+                self._mesh_suppressed_logged.clear()
+            self._mesh_suppressed_logged.add(work_key)
+            owner = res.get("ownerName") or str(res.get("owner") or "?")[:8]
+            activity.log(
+                "auto",
+                "mesh-suppressed",
+                f"Auto-monitor: {what} claimed by {owner} — standing down",
+            )
+        return True
+
+    def _note_mesh_resume(self, duty: str) -> None:
+        """Log the stand-down → originate-here transition (once, not per tick)."""
+        if self._mesh_duty_stood_down.get(duty):
+            self._mesh_duty_stood_down[duty] = False
+            activity.log("auto", "mesh-resume", f"Auto-monitor: {duty} resumes here")
+
+    @staticmethod
+    def _mesh_node_names(state: dict, ids: list[str]) -> list[str]:
+        names: dict[str, str] = {}
+        me = state.get("self") or {}
+        if me.get("id"):
+            names[me["id"]] = me.get("name") or me["id"][:8]
+        for p in state.get("peers") or []:
+            if p.get("id"):
+                names[p["id"]] = p.get("name") or p["id"][:8]
+        return [names.get(i, i[:8]) for i in ids]
+
     def _dispatch_conflict_fix(
-        self, number: int, url: str, attempt: int, source: str
+        self, number: int, url: str, attempt: int, source: str, head_sha: str = ""
     ) -> bool:
         if self._in_flight(url):
+            return False
+        if source == "auto" and self._mesh_monitor_gate(
+            "conflicts",
+            autofix.work_key(autofix.WORK_CONFLICTS, url, head_sha),
+            f"Resolve #{number}",
+        ):
             return False
         prompt = conflicts.ConflictConfig(
             target=PRTarget.SPECIFIC, me=self.effective_me, specific_pr=str(number)
@@ -617,6 +700,12 @@ class Store(QObject):
     def _dispatch_my_review(self, s, attempt: int = 1) -> bool:
         if self._in_flight(s.url):
             return False
+        if self._mesh_monitor_gate(
+            "review",
+            autofix.work_key(autofix.WORK_REVIEW_REPLY, s.url, s.head_sha),
+            f"Review #{s.number}",
+        ):
+            return False
         prompt = review.ReviewConfig(
             depth="deep",
             target=PRTarget.SPECIFIC,
@@ -638,6 +727,12 @@ class Store(QObject):
 
     def _dispatch_review_request(self, r, attempt: int = 1) -> bool:
         if self._in_flight(r.url):
+            return False
+        if self._mesh_monitor_gate(
+            "review",
+            autofix.work_key(autofix.WORK_REVIEW_REQ, r.url, r.head_sha),
+            f"Review-req #{r.number}",
+        ):
             return False
         reasons = self.verdict_policy.withhold_reasons(r.files, r.author_association)
         verdict = self.auto_approve_enabled and not reasons

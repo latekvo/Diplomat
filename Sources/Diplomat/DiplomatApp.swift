@@ -540,6 +540,43 @@ enum Dump {
                                markReady: false, leaveReviews: true, replyToReviews: false,
                                specificPR: String(sample), finalPass: sampleVerdict,
                                specificAuthor: .theirs).buildPrompt())
+
+            // Mesh coordination: the exact gate every auto dispatch above passes
+            // through (docs/szpontnet/12) — REAL node state, REAL claim verb, no spawn.
+            print("\n== mesh coordination gate ==")
+            let meshOn = UserDefaults.standard.object(forKey: "meshEnabled") as? Bool ?? false
+            let snap = MeshBridge.readState()
+            guard meshOn, let snap, MeshBridge.nodeRunning(snap),
+                  let selfID = snap.selfNode?.id else {
+                print("mesh off or no live node → monitors originate locally (pre-mesh behavior)")
+                return
+            }
+            var names: [String: String] = [:]
+            if let s = snap.selfNode { names[s.id] = s.name }
+            for p in snap.peers { names[p.id] = p.name }
+            for duty in ["review", "conflicts"] {
+                if let assigned = AutofixMesh.standDown(assignments: snap.assignments,
+                                                        selfID: selfID, duty: duty) {
+                    let who = assigned.map { names[$0] ?? String($0.prefix(8)) }
+                        .joined(separator: ", ")
+                    print("  \(duty): assigned to \(who) → auto-monitor STANDS DOWN here")
+                } else {
+                    print("  \(duty): assigned here (or to nobody) → originate after claim gate")
+                }
+            }
+            // Live claim-gate round-trip against the running node. The key is
+            // real-shaped but synthetic; the lease it mints is scoped to this
+            // node's liveness and suppresses nothing real.
+            let probeKey = AutofixMesh.workKey(
+                kind: "review", prURL: "https://github.com/argent-test/gate-dump/pull/1",
+                headSha: "d0d0")
+            if let r = try? MeshBridge.claim(workKey: probeKey, port: snap.tcpPort ?? 0) {
+                print("  claim verb: \(probeKey) → "
+                    + (r.owned ? "owned (this node would originate)"
+                               : "suppressed by \(r.ownerName ?? "a peer")"))
+            } else {
+                print("  claim verb: UNREACHABLE → gate fails open (originate locally)")
+            }
         } catch {
             print("AUTOFIX POLL ERROR: \((error as? LocalizedError)?.errorDescription ?? "\(error)")")
         }

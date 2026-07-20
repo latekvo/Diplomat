@@ -53,6 +53,7 @@ def _parse_snapshots(env: dict, me: str) -> list[PRSnapshot]:
                 review_decision=n.get("reviewDecision") or "",
                 threads_unresolved=unresolved,
                 threads_i_owe=i_owe,
+                head_sha=n.get("headRefOid") or "",
             )
         )
     return out
@@ -106,6 +107,7 @@ def _parse_review_requests(env: dict, me: str) -> list[ReviewRequest]:
                 ],
                 requested_at=max(req_times) if req_times else None,
                 my_last_review_at=max(my_times) if my_times else None,
+                head_sha=n.get("headRefOid") or "",
             )
         )
     return out

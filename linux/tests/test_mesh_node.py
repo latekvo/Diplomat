@@ -972,3 +972,44 @@ def test_work_claim_dedupes_origination_and_frees_on_owner_death(fleet):
     r = fleet.cli("bbbb", "--dispatch", "review", "--prompt", "third", "--work-key", wk)
     assert r.returncode == 0, r.stdout + r.stderr
     _wait_file(spawned / "high.txt", "third")              # bbbb now runs it
+
+
+def test_ctl_claim_verb_gates_origination_without_dispatch(fleet):
+    """The stand-alone ctl `claim` verb — the auto-monitors' origination gate
+    (docs/szpontnet/04#claim--claim-result). Claiming marks this node the
+    originator WITHOUT routing any job through the mesh; a peer's later claim of
+    the same key is suppressed (exit 3, naming the owner); re-claiming one's own
+    key is idempotent; and the key frees when the owner dies (liveness lease)."""
+    wk = "review-reply:github.com/acme/app#7@beef00"
+    fleet.start("aaaa", "low", "linux", tier=3, default_trust="personal")
+    fleet.start("bbbb", "high", "linux", tier=3, default_trust="personal")
+    for nid in ("aaaa", "bbbb"):
+        _wait_for(lambda nid=nid: _links_up(fleet.state(nid), 1),
+                  what=f"{nid} to link its peer")
+
+    # 1. aaaa claims → owns the key → would originate.
+    r = fleet.cli("aaaa", "--claim", wk)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "owned" in r.stdout
+
+    # 2. The claim gossips; bbbb's claim of the same key is then suppressed.
+    _wait_for(lambda: fleet.state("bbbb").get("claims", {}).get(wk) == "aaaa",
+              what="bbbb to observe aaaa's claim")
+    r = fleet.cli("bbbb", "--claim", wk)
+    assert r.returncode == 3, r.stdout + r.stderr
+    assert "low" in r.stdout                               # names the owner
+
+    # 3. Re-claiming one's own key is idempotent — a retry is never suppressed.
+    r = fleet.cli("aaaa", "--claim", wk)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+    # 4. None of this dispatched a job anywhere.
+    spawned = fleet.root / "spawned"
+    assert not spawned.exists() or not any(spawned.iterdir())
+
+    # 5. The owner dies → its lease lapses → the survivor now owns the key.
+    fleet.kill("aaaa")
+    _wait_for(lambda: fleet.state("bbbb").get("claims", {}).get(wk) is None,
+              what="aaaa's lease to lapse on bbbb")
+    r = fleet.cli("bbbb", "--claim", wk)
+    assert r.returncode == 0, r.stdout + r.stderr

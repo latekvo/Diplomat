@@ -401,6 +401,52 @@ let u = AutofixDiff.compute(prior: unk, now: [snap(1, mergeable: "UNKNOWN")])
 check(u.events.isEmpty && u.fingerprints[1]?.mergeable == "MERGEABLE", "UNKNOWN carries prior forward")
 print("autofix diff assertions passed")
 
+// ---- mesh coordination (work keys + assignment gate) ----
+section("autofix mesh coordination")
+// PARITY fixtures: linux/tests/test_autofix.py asserts these exact strings — two
+// nodes only dedupe origination when their derivations agree byte-for-byte
+// (docs/szpontnet/12-work-claims.md).
+check(AutofixMesh.workKey(kind: "review", prURL: "https://github.com/acme/app/pull/123",
+                          headSha: "abc123")
+      == "review:github.com/acme/app#123@abc123", "work key reference convention")
+check(AutofixMesh.workKey(kind: "review-reply", prURL: "https://github.com/a/b/pull/9",
+                          headSha: "F00")
+      == "review-reply:github.com/a/b#9@F00")
+check(AutofixMesh.workKey(kind: "conflicts", prURL: "https://github.com/a/b/pull/9",
+                          headSha: "F00")
+      == "conflicts:github.com/a/b#9@F00")
+check(AutofixMesh.workKey(kind: "review", prURL: "https://GitHub.com/Acme/App/pull/5",
+                          headSha: "AbC")
+      == "review:github.com/Acme/App#5@AbC",
+      "host lowercased; owner/repo/sha case preserved")
+// Safe degradation: no sha / not a PR URL / garbage → "" (claim gate skipped).
+check(AutofixMesh.workKey(kind: "review", prURL: "https://github.com/acme/app/pull/123",
+                          headSha: "") == "")
+check(AutofixMesh.workKey(kind: "review", prURL: "https://github.com/acme/app/issues/5",
+                          headSha: "x") == "")
+check(AutofixMesh.workKey(kind: "review", prURL: "https://github.com/acme/app",
+                          headSha: "x") == "")
+check(AutofixMesh.workKey(kind: "review", prURL: "not a url", headSha: "x") == "")
+check(AutofixMesh.workKey(kind: "review", prURL: "", headSha: "x") == "")
+
+func assignmentsFixture(_ json: String) -> [String: MeshAssignment] {
+    try! JSONDecoder().decode([String: MeshAssignment].self, from: Data(json.utf8))
+}
+check(AutofixMesh.standDown(assignments: assignmentsFixture(#"{"review":{"assigned":["bbbb"]}}"#),
+                            selfID: "aaaa", duty: "review") == ["bbbb"],
+      "assigned elsewhere → stand down")
+check(AutofixMesh.standDown(assignments: assignmentsFixture(#"{"review":{"assigned":["aaaa","bbbb"]}}"#),
+                            selfID: "aaaa", duty: "review") == nil,
+      "assigned to us (among others) → originate")
+check(AutofixMesh.standDown(assignments: assignmentsFixture(#"{"review":{"assigned":[]}}"#),
+                            selfID: "aaaa", duty: "review") == nil,
+      "nobody assigned → originate (better handled than dropped)")
+check(AutofixMesh.standDown(assignments: [:], selfID: "aaaa", duty: "review") == nil)
+check(AutofixMesh.standDown(assignments: assignmentsFixture(#"{"review":{"assigned":[""]}}"#),
+                            selfID: "aaaa", duty: "review") == nil,
+      "empty ids are noise, not assignees")
+print("autofix mesh coordination assertions passed")
+
 // ---- known-mine single-PR review prompt (auto-fix monitor) ----
 section("known-mine review prompt")
 let km = ReviewConfig(depth: "deep", target: .specific, me: "latekvo",

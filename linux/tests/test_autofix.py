@@ -282,3 +282,189 @@ def test_poll_error_surfaced_and_recovers(store, monkeypatch):
     monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_snapshots", lambda *a, **k: [])
     store._autofix_poll_once()
     assert store.autofix_poll_error is None
+
+
+# MARK: - Mesh coordination (work keys + assignment gate + monitor gating)
+#
+# The work-key / stand-down fixtures are PARITY fixtures: the Swift twin
+# (AutofixMesh, asserted in DiplomatCoreSmoke) must produce byte-identical
+# strings for the same inputs — the whole point of the key is that two nodes
+# observing the same work agree on it (docs/szpontnet/12).
+
+
+def test_work_key_reference_convention():
+    assert (
+        autofix.work_key("review", "https://github.com/acme/app/pull/123", "abc123")
+        == "review:github.com/acme/app#123@abc123"
+    )
+    assert (
+        autofix.work_key("review-reply", "https://github.com/a/b/pull/9", "F00")
+        == "review-reply:github.com/a/b#9@F00"
+    )
+    assert (
+        autofix.work_key("conflicts", "https://github.com/a/b/pull/9", "F00")
+        == "conflicts:github.com/a/b#9@F00"
+    )
+    # Host is case-normalized; owner/repo/sha case is preserved.
+    assert (
+        autofix.work_key("review", "https://GitHub.com/Acme/App/pull/5", "AbC")
+        == "review:github.com/Acme/App#5@AbC"
+    )
+
+
+def test_work_key_safe_degradation():
+    # No sha / not a PR URL / garbage → "" (claim gate skipped, pre-claims behavior).
+    assert autofix.work_key("review", "https://github.com/acme/app/pull/123", "") == ""
+    assert autofix.work_key("review", "https://github.com/acme/app/issues/5", "x") == ""
+    assert autofix.work_key("review", "https://github.com/acme/app", "x") == ""
+    assert autofix.work_key("review", "not a url", "x") == ""
+    assert autofix.work_key("review", "", "x") == ""
+
+
+def test_mesh_stand_down():
+    assigned_other = {"review": {"assigned": ["bbbb"]}}
+    assert autofix.mesh_stand_down(assigned_other, "aaaa", "review") == ["bbbb"]
+    # Assigned to us (alone or with others) → originate.
+    assert autofix.mesh_stand_down({"review": {"assigned": ["aaaa"]}}, "aaaa", "review") is None
+    assert (
+        autofix.mesh_stand_down({"review": {"assigned": ["aaaa", "bbbb"]}}, "aaaa", "review")
+        is None
+    )
+    # Nobody assigned / unknown duty → originate (better handled than dropped).
+    assert autofix.mesh_stand_down({"review": {"assigned": []}}, "aaaa", "review") is None
+    assert autofix.mesh_stand_down({}, "aaaa", "review") is None
+    # Empty ids are noise, not assignees.
+    assert autofix.mesh_stand_down({"review": {"assigned": [""]}}, "aaaa", "review") is None
+
+
+# MARK: - Store gating (the monitor consults the mesh before every auto spawn)
+
+
+def _mesh_store(monkeypatch, store, assignments, claim=None):
+    """Enable the mesh for `store` against a fake node snapshot; `claim` is the
+    fake ctl claim_work outcome (True/False), or an exception to raise, or None
+    to fail the test if the claim gate is consulted. Returns the recorded claim
+    keys."""
+    from diplomat_app.mesh import ctl, statefile
+
+    store._mesh_enabled_override = True
+    state = {
+        "pid": 1,
+        "tcpPort": 1,
+        "self": {"id": "me-node", "name": "mac"},
+        "peers": [{"id": "peer-node", "name": "softoobox"}],
+        "assignments": assignments,
+    }
+    monkeypatch.setattr(statefile, "read_state", lambda: state)
+    monkeypatch.setattr(statefile, "node_running", lambda s=None: True)
+    keys: list[str] = []
+
+    def fake_claim(work_key, timeout=5.0):
+        keys.append(work_key)
+        if claim is None:
+            raise AssertionError("claim gate must not be consulted")
+        if isinstance(claim, Exception):
+            raise claim
+        return {"owned": claim, "owner": None if claim else "peer-node",
+                "ownerName": None if claim else "softoobox"}
+
+    monkeypatch.setattr(ctl, "claim_work", fake_claim)
+    return keys
+
+
+def _mesh_req(number=7, sha="abc123"):
+    return ReviewRequest(
+        number=number, title="t", url=f"https://github.com/o/r/pull/{number}",
+        author="bob", author_association="MEMBER", files=[],
+        requested_at="2026-01-02", my_last_review_at=None, head_sha=sha,
+    )
+
+
+def test_review_request_stands_down_when_duty_assigned_elsewhere(store, monkeypatch):
+    _mesh_store(monkeypatch, store, {"review": {"assigned": ["peer-node"]}})
+    calls = _spawn_recorder(monkeypatch)
+    monkeypatch.setattr(
+        "diplomat_app.autofixmonitor.fetch_review_requests", lambda *a, **k: [_mesh_req()]
+    )
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    store._poll_review_requests("o", "r")
+    assert calls == []  # softoobox's own monitor originates there — not us
+    assert store._mesh_duty_stood_down["review"] is True
+    # No attempt recorded: if the assignee dies, the next poll takes over fresh.
+    assert store._load_attempts("reviewReqAttempts") == {}
+
+
+def test_review_request_claims_then_originates_here(store, monkeypatch):
+    keys = _mesh_store(
+        monkeypatch, store, {"review": {"assigned": ["me-node"]}}, claim=True
+    )
+    calls = _spawn_recorder(monkeypatch)
+    monkeypatch.setattr(
+        "diplomat_app.autofixmonitor.fetch_review_requests", lambda *a, **k: [_mesh_req()]
+    )
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    store._poll_review_requests("o", "r")
+    assert len(calls) == 1  # assigned here → claimed → spawned locally
+    assert keys == ["review:github.com/o/r#7@abc123"]
+
+
+def test_review_request_suppressed_by_peer_claim(store, monkeypatch):
+    _mesh_store(monkeypatch, store, {"review": {"assigned": []}}, claim=False)
+    calls = _spawn_recorder(monkeypatch)
+    monkeypatch.setattr(
+        "diplomat_app.autofixmonitor.fetch_review_requests", lambda *a, **k: [_mesh_req()]
+    )
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    store._poll_review_requests("o", "r")
+    assert calls == []  # a live personal peer owns the lease
+    assert store._load_attempts("reviewReqAttempts") == {}  # keeps watching
+
+
+def test_review_request_fails_open_when_claim_unreachable(store, monkeypatch):
+    from diplomat_app.mesh import ctl
+
+    _mesh_store(
+        monkeypatch, store, {"review": {"assigned": []}}, claim=ctl.CtlError("down")
+    )
+    calls = _spawn_recorder(monkeypatch)
+    monkeypatch.setattr(
+        "diplomat_app.autofixmonitor.fetch_review_requests", lambda *a, **k: [_mesh_req()]
+    )
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    store._poll_review_requests("o", "r")
+    assert len(calls) == 1  # mesh unavailability must never leave PRs unhandled
+
+
+def test_my_review_and_conflicts_use_their_own_duties_and_kinds(store, monkeypatch):
+    keys = _mesh_store(
+        monkeypatch, store,
+        {"review": {"assigned": ["me-node"]}, "conflicts": {"assigned": ["me-node"]}},
+        claim=True,
+    )
+    calls = _spawn_recorder(monkeypatch)
+    snap = PRSnapshot(
+        number=3, title="t", url="https://github.com/o/r/pull/3", is_draft=False,
+        mergeable="CONFLICTING", review_decision="", threads_unresolved=1,
+        threads_i_owe=1, head_sha="beef",
+    )
+    assert store._dispatch_my_review(snap, 1) is True
+    assert store._dispatch_conflict_fix(3, snap.url, 1, "auto", head_sha=snap.head_sha) is False  # in-flight now
+    # Clear in-flight (the spawned fake finished nothing) — drive conflicts alone.
+    store._autofix_inflight.clear()
+    assert store._dispatch_conflict_fix(3, snap.url, 1, "auto", head_sha=snap.head_sha) is True
+    assert keys == [
+        "review-reply:github.com/o/r#3@beef",
+        "conflicts:github.com/o/r#3@beef",
+    ]
+    assert len(calls) == 2
+
+
+def test_conflict_stand_down_only_gates_auto_source(store, monkeypatch):
+    _mesh_store(monkeypatch, store, {"conflicts": {"assigned": ["peer-node"]}})
+    calls = _spawn_recorder(monkeypatch)
+    # Auto: stands down. Panel: a deliberate user action — never mesh-gated.
+    assert store._dispatch_conflict_fix(4, "https://github.com/o/r/pull/4", 1, "auto",
+                                        head_sha="beef") is False
+    assert calls == []
+    assert store._dispatch_conflict_fix(4, "https://github.com/o/r/pull/4", 1, "panel") is True
+    assert len(calls) == 1

@@ -15,6 +15,7 @@ query ($q: String!, $withFiles: Boolean!) {
         url
         author { login }
         authorAssociation
+        headRefOid
         files(first: 60) @include(if: $withFiles) { nodes { path } }
         timelineItems(itemTypes: [REVIEW_REQUESTED_EVENT], last: 15) {
           nodes { ... on ReviewRequestedEvent {

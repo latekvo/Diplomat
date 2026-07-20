@@ -15,6 +15,7 @@ query ($q: String!) {
         isDraft
         mergeable
         reviewDecision
+        headRefOid
         reviewThreads(first: 40) {
           nodes {
             isResolved

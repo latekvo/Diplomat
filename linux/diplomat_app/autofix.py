@@ -27,6 +27,9 @@ class PRSnapshot:
     review_decision: str  # "" / "CHANGES_REQUESTED" / "APPROVED" / …
     threads_unresolved: int
     threads_i_owe: int
+    # Head commit sha (headRefOid) — the "which push" part of the mesh work key,
+    # so two nodes observing the same commit derive the same key (docs/szpontnet/12).
+    head_sha: str = ""
 
 
 @dataclass(frozen=True)
@@ -144,6 +147,7 @@ class ReviewRequest:
     files: list[str]
     requested_at: str | None  # latest "review requested from me" (ISO8601)
     my_last_review_at: str | None  # my latest review submission (ISO8601)
+    head_sha: str = ""  # head commit sha — the mesh work key's "@sha" part
 
     @property
     def owe_review(self) -> bool:
@@ -194,3 +198,58 @@ class VerdictPolicy:
 
     def allows_verdict(self, files: list[str], author_association: str) -> bool:
         return not self.withhold_reasons(files, author_association)
+
+
+# MARK: - Mesh coordination for the auto-monitors (mirrors AutofixMesh in Autofix.swift)
+#
+# Two machines running this monitor poll the same GitHub state as the same user, so
+# each is an independent origin of the same work (docs/szpontnet/12-work-claims.md).
+# The store gates every auto dispatch with:
+#   1. mesh_stand_down — the duty is assigned to OTHER live nodes: their monitor
+#      originates there, ours stands down (assignment already tracks liveness);
+#   2. the ctl `claim` verb on work_key — origination dedup for the remaining
+#      races (no assignee, takeover flaps, spread placements).
+
+WORK_REVIEW_REQ = "review"  # reviews requested of me → duty "review"
+WORK_REVIEW_REPLY = "review-reply"  # replies to reviews on MY PRs → duty "review"
+WORK_CONFLICTS = "conflicts"  # conflict fixes on MY PRs → duty "conflicts"
+
+
+def work_key(kind: str, pr_url: str, head_sha: str) -> str:
+    """The origination-dedup key for one unit of monitor work — the reference
+    convention from docs/szpontnet/12: ``<kind>:<host>/<owner>/<repo>#<n>@<sha>``.
+
+    Derived from the PR's own URL so every node observing the same PR agrees
+    byte-for-byte (the Swift twin must produce identical strings — see the parity
+    tests). Returns ``""`` — claim gate skipped, the safe pre-claims degradation —
+    when the URL doesn't look like a PR URL or the head sha is unknown."""
+    if not head_sha:
+        return ""
+    from urllib.parse import urlparse
+
+    try:
+        u = urlparse(pr_url)
+    except ValueError:
+        return ""
+    host = (u.hostname or "").lower()
+    parts = [p for p in (u.path or "").split("/") if p]
+    if not host or len(parts) != 4 or parts[2] != "pull" or not parts[3].isdigit():
+        return ""
+    return f"{kind}:{host}/{parts[0]}/{parts[1]}#{parts[3]}@{head_sha}"
+
+
+def mesh_stand_down(assignments: dict, self_id: str, duty: str) -> list[str] | None:
+    """Whether this node's auto-monitor must NOT originate ``duty`` work: the mesh
+    assigns the duty to other nodes only (their own monitors originate there, with
+    full local in-flight tracking). Returns the assigned node ids to stand down
+    for, or ``None`` to originate here (assigned to us, or nobody assigned — a
+    duty nobody can take is still better handled than dropped).
+
+    ``assignments`` is the node's state.json ``assignments`` map; the node already
+    recomputes it on peer-down, so an assignee listed there is a live one modulo
+    gossip lag (the claim gate covers that window)."""
+    entry = assignments.get(duty) or {}
+    assigned = [n for n in (entry.get("assigned") or []) if n]
+    if not assigned or self_id in assigned:
+        return None
+    return assigned

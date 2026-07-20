@@ -15,6 +15,7 @@
     python -m diplomat_app.mesh --dispatch audit --prompt "…"      # route a request
     python -m diplomat_app.mesh --dispatch review --prompt-file /tmp/p.txt
     python -m diplomat_app.mesh --dispatch review --prompt "…" --target <node-id>
+    python -m diplomat_app.mesh --claim "review:github.com/o/r#1@sha"  # claim gate only
 """
 
 from __future__ import annotations
@@ -173,6 +174,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--prompt-file", help="read the --dispatch prompt from a file")
     ap.add_argument("--target", metavar="ID", help="dispatch to one node directly "
                     "(the dispatcher's own pick, no failover)")
+    ap.add_argument("--claim", metavar="KEY", dest="claim_key",
+                    help="run the origination claim gate for a work key without "
+                         "dispatching (docs/szpontnet/12) — exit 0 when this node "
+                         "should originate, 3 when a peer owns the work")
     ap.add_argument("--work-key", default="", metavar="KEY", dest="work_key",
                     help="origination-dedup key: claim it first, and stand down "
                     "with a 'suppressed' result if a peer already owns the work")
@@ -247,6 +252,14 @@ def main(argv: list[str] | None = None) -> int:
             ctl.set_attr(args.node, attrs)
             print(f"applied to {args.node}: {json.dumps(attrs)}")
             return 0
+        if args.claim_key:
+            res = ctl.claim_work(args.claim_key)
+            if res["owned"]:
+                print(f"✓ owned — originate {args.claim_key} here")
+                return 0
+            owner = res.get("ownerName") or res.get("owner") or "?"
+            print(f"◦ suppressed — {owner} owns {args.claim_key}")
+            return 3
         if args.dispatch:
             prompt = args.prompt
             if args.prompt_file:

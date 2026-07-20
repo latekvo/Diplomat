@@ -85,6 +85,21 @@ def dispatch(duty: str, prompt: str, target: str | None = None,
     return list(reply.get("results", []))
 
 
+def claim_work(work_key: str, timeout: float = 5.0) -> dict:
+    """Run the origination claim gate for one unit of external work WITHOUT
+    dispatching (docs/szpontnet/12) — for a client that will run the work itself,
+    like the applet's auto-monitor spawning a local tracked agent. Returns
+    ``{"owned": bool, "owner": id | None, "ownerName": str | None}``; ``owned``
+    False means a better live personal peer already holds the lease and the
+    caller MUST NOT originate."""
+    reply = request({"t": "claim", "workKey": work_key}, timeout=timeout)
+    return {
+        "owned": bool(reply.get("owned")),
+        "owner": reply.get("owner"),
+        "ownerName": reply.get("ownerName"),
+    }
+
+
 def trust_device(fingerprint: str, label: str = "", timeout: float = 5.0) -> None:
     """Add a device fingerprint to the local trusted allowlist (personal)."""
     request({"t": "trust", "fingerprint": fingerprint, "label": label}, timeout=timeout)
