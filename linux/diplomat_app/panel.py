@@ -265,7 +265,7 @@ class Panel(QWidget):
 
     def _build_left_pane(self) -> QWidget:
         """Telemetry column: device-allocator pool, activity feed, ban list. Each
-        section is rebuilt in place from the shared ~/.argent files and hidden when
+        section is rebuilt in place from the shared ~/.diplomat files and hidden when
         empty. Wrapped in a scroll area so a busy feed scrolls within the pane."""
         host = QWidget()
         col = QVBoxLayout(host)

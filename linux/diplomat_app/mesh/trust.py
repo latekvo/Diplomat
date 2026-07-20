@@ -16,7 +16,7 @@ this same file's ``defaultLevel``): flipping it to *personal* restores the
 pre-trust **full-altruism** mode where every unlisted peer is trusted, exactly as
 a fresh mesh behaved before the default became configurable.
 
-Persisted at ``~/.argent/mesh/trusted.json`` as
+Persisted at ``~/.diplomat/mesh/trusted.json`` as
 ``{"defaultLevel": "...", "trusted": [{"fingerprint","label"}, ...]}``; the running
 node keeps the set + level in memory and edits them through control commands so
 ``--trust`` / the panel's default-trust toggle take effect live.

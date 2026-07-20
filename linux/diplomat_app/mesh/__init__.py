@@ -19,8 +19,8 @@ Everything in this package is **stdlib-only** (no Qt): the same node runs
 
 The protocol constants, duty catalog and placement strategies are shared
 language-neutral assets in ``core/mesh.json``; node-local attributes persist in
-``~/.argent/mesh/node.json``; the live topology snapshot every UI renders is
-``~/.argent/mesh/state.json`` (the device-allocator ``state.json`` pattern).
+``~/.diplomat/mesh/node.json``; the live topology snapshot every UI renders is
+``~/.diplomat/mesh/state.json`` (the device-allocator ``state.json`` pattern).
 """
 
 __all__ = ["assign", "config", "ctl", "identity", "node", "protocol", "spawnjob", "statefile"]

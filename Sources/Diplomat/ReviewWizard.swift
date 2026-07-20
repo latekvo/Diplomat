@@ -130,13 +130,13 @@ enum AgentSpawner {
     }
 
     /// A fresh path for the per-spawn completion sentinel (not created until the
-    /// spawned shell writes it). Lives under ~/.argent, NOT the temp dir — macOS
+    /// spawned shell writes it). Lives under ~/.diplomat, NOT the temp dir — macOS
     /// purges temp files after ~3 days, and the sweep re-derives `done` from the
     /// file's existence, so a purged sentinel flipped long-lived completed sessions
     /// back to "running".
     static func doneFilePath() -> String {
         let dir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".argent/pr-monitor/done")
+            .appendingPathComponent(".diplomat/pr-monitor/done")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.appendingPathComponent("diplomat-done-\(UUID().uuidString).txt").path
     }

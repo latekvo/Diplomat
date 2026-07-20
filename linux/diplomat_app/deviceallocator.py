@@ -1,7 +1,7 @@
 """Bridge to the local device-allocator daemon + installer (Linux parity).
 
 Mirrors ``Sources/Diplomat/DeviceAllocator.swift``: the applet is a *viewer*
-of the daemon's public ``~/.argent/device-allocator/state.json`` (the device pool
+of the daemon's public ``~/.diplomat/device-allocator/state.json`` (the device pool
 + who holds what) and a *driver* of the Node installer (``device-allocator/src/
 install.js``) for the Settings install controls. It never allocates devices itself.
 """
@@ -51,7 +51,7 @@ def deps_installed() -> bool:
 
 
 def state_path() -> Path:
-    return _home() / ".argent" / "device-allocator" / "state.json"
+    return _home() / ".diplomat" / "device-allocator" / "state.json"
 
 
 def package_available() -> bool:

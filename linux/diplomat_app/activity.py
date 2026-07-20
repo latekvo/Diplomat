@@ -1,7 +1,7 @@
 """The unified activity/audit feed — the Linux port of AuditLog.swift + AuditCategory.
 
 Every action the panel or the daemon takes appends one JSON line to
-``~/.argent/pr-monitor/audit.jsonl`` (written by the macOS app and the
+``~/.diplomat/pr-monitor/audit.jsonl`` (written by the macOS app and the
 device-allocator daemon). This module tail-reads that shared file and groups the
 raw ``action`` verbs into the activity *categories* the panel filters by, using
 the shared taxonomy in ``core/audit-categories.json`` (mirrors the Swift enum).
@@ -17,7 +17,7 @@ from . import core
 
 
 def _dir() -> Path:
-    return Path.home() / ".argent" / "pr-monitor"
+    return Path.home() / ".diplomat" / "pr-monitor"
 
 
 def audit_path() -> Path:

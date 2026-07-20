@@ -1,7 +1,7 @@
 """Per-device cryptographic identity for SzpontNet trust.
 
 A node's **trust identity** is an Ed25519 keypair generated once per machine and
-persisted locally (``~/.argent/mesh/device.key``, ``0600``). The private key
+persisted locally (``~/.diplomat/mesh/device.key``, ``0600``). The private key
 never leaves the machine and is never gossiped; the public key is advertised, but
 **advertising it grants nothing**. A peer is only believed to hold a given key
 once it *signs a fresh, per-connection challenge* with the matching private key

@@ -2,7 +2,7 @@ import Foundation
 
 // A lightweight, cross-process action log shown in the panel. Every action — whether the
 // user triggered it from the panel or the applet dispatched it automatically — appends
-// one JSON line to ~/.argent/pr-monitor/audit.jsonl. The daemon appends here too (bans /
+// one JSON line to ~/.diplomat/pr-monitor/audit.jsonl. The daemon appends here too (bans /
 // terminations), so the panel shows a single unified activity feed. Appends use a real
 // O_APPEND file descriptor, which keeps small concurrent writes atomic across processes
 // (FileHandle's seek-then-write is NOT — it raced the daemon's appends).
@@ -19,7 +19,7 @@ struct AuditEntry: Codable, Equatable, Identifiable {
 
 enum AuditLog {
     static var dir: URL {
-        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".argent/pr-monitor")
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".diplomat/pr-monitor")
     }
     static var fileURL: URL { dir.appendingPathComponent("audit.jsonl") }
 

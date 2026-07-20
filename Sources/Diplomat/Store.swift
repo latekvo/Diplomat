@@ -271,6 +271,7 @@ final class Store: ObservableObject {
 
     init() {
         Store.migrateLegacyDefaultsIfNeeded()
+        MeshBridge.migrateLegacyStateDirIfNeeded()
         let defaults = UserDefaults.standard
         usernameOverride = defaults.string(forKey: Keys.usernameOverride) ?? ""
         // SKILL.md + Installer/CLI tools ship hidden (absent key ⇒ default); any

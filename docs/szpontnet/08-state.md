@@ -12,7 +12,7 @@ target) so a concurrent reader never sees a torn file, and all are best-effort
 (an unwritable home directory is non-fatal - the node keeps running with in-memory
 state).
 
-The reference paths live under `~/.argent/mesh/` (overridable via
+The reference paths live under `~/.diplomat/mesh/` (overridable via
 `DIPLOMAT_MESH_DIR`).
 
 ## `node.json`

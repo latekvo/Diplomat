@@ -122,7 +122,7 @@ class Fleet:
             env["DIPLOMAT_MESH_DEFAULT_TRUST"] = default_trust
         (d / "secret").write_text(secret)  # remembered for this node's CLI calls
         # Each fake node logs to the fleet dir, and must not scribble on the
-        # real ~/.argent activity feed.
+        # real ~/.diplomat activity feed.
         env["HOME"] = str(d)
         # Last so a test can override anything above (e.g. isolate a node's
         # beacon channel on its own multicast port).
@@ -304,7 +304,7 @@ def test_mesh_discovery_assignment_failover_and_dispatch(fleet):
 
     # 7. The takeover is visible in each survivor's activity feed (HOME is the
     #    node dir, so the shared audit.jsonl lands inside the fixture).
-    feed = (fleet.dirs["aaaa"] / ".argent" / "pr-monitor" / "audit.jsonl").read_text()
+    feed = (fleet.dirs["aaaa"] / ".diplomat" / "pr-monitor" / "audit.jsonl").read_text()
     assert "mesh-takeover" in feed and "mesh-peer-down" in feed
 
 
@@ -890,7 +890,7 @@ def test_spoofed_higher_epoch_beacon_does_not_evict_a_live_link(fleet):
     assert _links_up(fleet.state("aaaa"), 1)
     bob = next(p for p in fleet.state("aaaa")["peers"] if p["id"] == "bbbb")
     assert bob["link"] == "up"
-    feed = (fleet.dirs["aaaa"] / ".argent" / "pr-monitor" / "audit.jsonl").read_text()
+    feed = (fleet.dirs["aaaa"] / ".diplomat" / "pr-monitor" / "audit.jsonl").read_text()
     assert "restarted" not in feed, "spoofed epoch beacon evicted a live link"
 
 

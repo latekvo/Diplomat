@@ -1,7 +1,7 @@
 import Foundation
 
 // One prompt-injection ban. Written by the device-allocator daemon's
-// report-prompt-injection tool to ~/.argent/pr-monitor/banned.json (a cross-process
+// report-prompt-injection tool to ~/.diplomat/pr-monitor/banned.json (a cross-process
 // file, since any agent on the machine can report). The applet reads it to skip
 // auto-reviewing that author's PRs and to show the ban list.
 struct BannedAuthor: Codable, Equatable, Identifiable {
@@ -22,7 +22,7 @@ struct BannedAuthor: Codable, Equatable, Identifiable {
 enum BanList {
     static var fileURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".argent/pr-monitor/banned.json")
+            .appendingPathComponent(".diplomat/pr-monitor/banned.json")
     }
 
     static func read() -> [BannedAuthor] {
@@ -69,7 +69,7 @@ enum BanList {
 
     private static var daemonSocket: URL {
         FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".argent/device-allocator/daemon.sock")
+            .appendingPathComponent(".diplomat/device-allocator/daemon.sock")
     }
 
     /// POST /unban over the daemon's unix socket (via curl — URLSession has no unix-

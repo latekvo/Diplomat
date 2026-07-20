@@ -1,7 +1,7 @@
 // Central filesystem layout + tool locations for the device allocator.
 //
 // Everything the daemon owns lives under one base dir so it is trivial to
-// inspect and to clean up. The base dir defaults to ~/.argent/device-allocator
+// inspect and to clean up. The base dir defaults to ~/.diplomat/device-allocator
 // but can be redirected with DA_BASE_DIR (used by the test harness so it never
 // touches the real allocation state).
 
@@ -10,7 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 export const BASE_DIR =
-  process.env.DA_BASE_DIR || path.join(os.homedir(), '.argent', 'device-allocator');
+  process.env.DA_BASE_DIR || path.join(os.homedir(), '.diplomat', 'device-allocator');
 
 export const SOCKET_PATH = path.join(BASE_DIR, 'daemon.sock');
 export const DISCOVERY_PATH = path.join(BASE_DIR, 'daemon.json'); // {pid, startedAt, socket}
@@ -23,7 +23,7 @@ export const REPAIRS_DIR = path.join(BASE_DIR, 'repairs');
 // (a sibling of device-allocator) because the applet's PR-review monitor reads it
 // to skip banned authors. Overridable with DA_BAN_DIR for tests.
 export const BAN_DIR =
-  process.env.DA_BAN_DIR || path.join(os.homedir(), '.argent', 'pr-monitor');
+  process.env.DA_BAN_DIR || path.join(os.homedir(), '.diplomat', 'pr-monitor');
 export const BANNED_PATH = path.join(BAN_DIR, 'banned.json'); // the applet reads this
 export const INJECTIONS_DIR = path.join(BAN_DIR, 'injections'); // per-incident evidence
 export const AUDIT_PATH = path.join(BAN_DIR, 'audit.jsonl'); // shared action log the applet shows

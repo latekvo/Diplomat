@@ -1,4 +1,4 @@
-"""Last-known peer addresses — ``~/.argent/mesh/peers.json``.
+"""Last-known peer addresses — ``~/.diplomat/mesh/peers.json``.
 
 Discovery normally finds peers via UDP beacons (02-discovery). But the beacon
 channel can silently die under a live node — an AP that filters multicast, or

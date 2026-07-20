@@ -1,4 +1,4 @@
-# Co-Maintainer (Szpont Yon)
+# Diplomat (Szpont Yon)
 
 <img width="1146" height="904" alt="image" src="https://github.com/user-attachments/assets/bffd7a4b-2859-48ee-bffb-9da8221a4b02" />
 
@@ -76,7 +76,7 @@ input / done / merged* state - click a row to focus its terminal window, ✕ to
 stop tracking); the **devices** pool (who holds which simulator/emulator, for
 how long, with a per-device kill - clicking an in-use device focuses the holding
 agent's terminal); and the **activity** log, one unified audit feed
-(`~/.argent/pr-monitor/audit.jsonl`) of panel actions, monitor dispatches,
+(`~/.diplomat/pr-monitor/audit.jsonl`) of panel actions, monitor dispatches,
 nudges, and daemon-side bans.
 
 ## Actions - Review PRs
@@ -87,7 +87,7 @@ AGENT** - it opens a fresh terminal window (iTerm if installed, else Terminal)
 running a detached review session in `~/dev/argent` that you watch and steer
 yourself. The prompt is staged to a file and the window runs
 `claude "$(cat <promptfile>)"; printf %s $? > <done>` - the trailing sentinel
-(under `~/.argent/pr-monitor/done/`) is how the sessions list knows the agent
+(under `~/.diplomat/pr-monitor/done/`) is how the sessions list knows the agent
 finished. The choices are baked into the prompt:
 
 - **Target** — *My PRs* (the resolved handle, see Settings) or *someone else's* (any handle).
@@ -199,7 +199,7 @@ python3 -m diplomat_app.mesh --dispatch review --prompt "…"   # route a job
 ```
 
 Model + constants live in [`core/mesh.json`](core/mesh.json); node state in
-`~/.argent/mesh/` (`node.json` identity, `state.json` topology snapshot — the
+`~/.diplomat/mesh/` (`node.json` identity, `state.json` topology snapshot — the
 device-allocator pattern).
 
 **Trust model.** The mesh is meant for a LAN you control (IPv4; discovery is
@@ -211,11 +211,11 @@ multicast + subnet broadcast). Two independent fences:
   plaintext on the LAN, so it keeps a stray machine or a colleague's mesh from
   joining yours; it does not defend against a hostile network.
 - **Authenticated device keys** — every node mints an Ed25519 keypair on first
-  run (`~/.argent/mesh/device.key`, requires the `cryptography` package; without
+  run (`~/.diplomat/mesh/device.key`, requires the `cryptography` package; without
   it the node runs *keyless* and can never be verified). A peer must prove
   possession of its key on each link (fresh-nonce signature) before its identity
   counts; advertised names/ids grant nothing. Trust is then a **local allowlist**
-  of proven key fingerprints (`~/.argent/mesh/trusted.json`, never gossiped):
+  of proven key fingerprints (`~/.diplomat/mesh/trusted.json`, never gossiped):
   empty = every peer is `personal` (a boundary you haven't configured); non-empty
   = only listed, verified keys are `personal`, everyone else is `foreign` and
   their dispatch requests are declined. Manage it with
@@ -488,5 +488,5 @@ Sources/
 linux/                         ← Linux Qt6/PySide6 tray applet (see linux/README.md)
   diplomat_app/mesh/           ← Diplomat Mesh node: stdlib-only Python (runs headless on macOS too) — LAN
                                  discovery, heartbeat links, gossip, deterministic duty assignment,
-                                 dispatch with failover; model in core/mesh.json, state in ~/.argent/mesh/
+                                 dispatch with failover; model in core/mesh.json, state in ~/.diplomat/mesh/
 ```

@@ -624,7 +624,7 @@ optional operator label); `untrust` removes one.
 | `label` | string | no | human label stored alongside a trusted fingerprint (`trust` only). |
 
 Both reply [`ok`](#ok--error) (or [`error`](#ok--error) when `fingerprint` is
-missing). This edits **machine-local** state (`~/.argent/mesh/trusted.json`) and is
+missing). This edits **machine-local** state (`~/.diplomat/mesh/trusted.json`) and is
 **never gossiped** - trust is each operator's own call. See
 [11-trust-and-balancing](11-trust-and-balancing.md).
 
@@ -652,7 +652,7 @@ Both reply [`ok`](#ok--error) (or [`error`](#ok--error) when neither
 `fingerprint` nor `node` is given). A manual `ban` of a fingerprint currently on
 the trusted allowlist also **removes it from the allowlist** (the two states are
 mutually exclusive, and the operator's newest word wins). This edits
-**machine-local** state (`~/.argent/mesh/banned.json`) and is **never
+**machine-local** state (`~/.diplomat/mesh/banned.json`) and is **never
 gossiped** - a ban is each operator's own mark.
 
 ### `set-default-trust`
@@ -670,7 +670,7 @@ classified. `level` is `"personal"` or `"foreign"`.
 
 Replies [`ok`](#ok--error) (or [`error`](#ok--error) for an unrecognised `level`).
 Like `trust`/`untrust` this edits **machine-local** state (persisted as `defaultLevel`
-in `~/.argent/mesh/trusted.json`) and is **never gossiped**; it takes effect live,
+in `~/.diplomat/mesh/trusted.json`) and is **never gossiped**; it takes effect live,
 re-classifying every unlisted peer on the next snapshot. See
 [11-trust-and-balancing](11-trust-and-balancing.md#trust-is-never-derived-from-an-advertisement).
 

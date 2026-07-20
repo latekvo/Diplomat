@@ -3,7 +3,7 @@
 The Linux face of Diplomat Mesh (see ``core/mesh.json`` for the model and
 ``diplomat_app.mesh`` for the node). One of the panel's three screens (Actions ·
 Mesh · Settings), it renders the local node's public topology snapshot
-(``~/.argent/mesh/state.json``): a compact wire graph of self + peers,
+(``~/.diplomat/mesh/state.json``): a compact wire graph of self + peers,
 one editable card per node (machine strength in words + an auto-measured token
 budget + a Personal/Foreign trust toggle — edits apply to *any* node, self or
 peer, forwarded over the mesh so one machine configures the fleet), and

@@ -28,21 +28,37 @@ const ASSETS = path.join(PKG_DIR, 'assets');
 
 const HOME = os.homedir();
 const CLAUDE_JSON = path.join(HOME, '.claude.json');
-const SKILL_DIR = path.join(HOME, '.claude', 'skills', 'argent-device-allocator');
+const SKILL_DIR = path.join(HOME, '.claude', 'skills', 'diplomat-device-allocator');
 const RULES_DIR = path.join(HOME, '.claude', 'rules');
-const RULE_DEST = path.join(RULES_DIR, 'argent-device-allocator.md');
+const RULE_DEST = path.join(RULES_DIR, 'diplomat-device-allocator.md');
 const CLAUDE_MD = path.join(HOME, '.claude', 'CLAUDE.md');
 
-const MCP_KEY = 'argent-device-allocator';
+const MCP_KEY = 'diplomat-device-allocator';
 const CMD_NODE = process.execPath; // capture the node that ran the installer
 
-const CLAUDE_MD_BEGIN = '<!-- argent-device-allocator (managed — installed by Diplomat; remove via the installer) -->';
-const CLAUDE_MD_END = '<!-- end argent-device-allocator -->';
+// Pre-rename identifiers (was `argent-device-allocator`, state under `~/.argent`).
+// A re-run of --install on an already-deployed machine migrates it: see
+// migrateLegacy(). `~/.argent` is SHARED with the separate Argent device-control
+// tool (its tool-server.json lives there), so only the three subdirs WE own are
+// moved — never the parent.
+const LEGACY = {
+  mcpKey: 'argent-device-allocator',
+  skillDir: path.join(HOME, '.claude', 'skills', 'argent-device-allocator'),
+  ruleDest: path.join(RULES_DIR, 'argent-device-allocator.md'),
+  claudeMdBegin: '<!-- argent-device-allocator (managed — installed by Diplomat; remove via the installer) -->',
+  claudeMdEnd: '<!-- end argent-device-allocator -->',
+  base: path.join(HOME, '.argent'),
+  subdirs: ['device-allocator', 'pr-monitor', 'mesh'],
+};
+const NEW_BASE = path.join(HOME, '.diplomat');
+
+const CLAUDE_MD_BEGIN = '<!-- diplomat-device-allocator (managed — installed by Diplomat; remove via the installer) -->';
+const CLAUDE_MD_END = '<!-- end diplomat-device-allocator -->';
 const CLAUDE_MD_BODY = [
   CLAUDE_MD_BEGIN,
   '## Device allocation is mandatory',
   '',
-  '**If you can see the `argent-device-allocator` MCP server, there are — or may at any moment',
+  '**If you can see the `diplomat-device-allocator` MCP server, there are — or may at any moment',
   'be — MULTIPLE agents running on this machine. You are NEVER the only one.** Never assume a',
   'simulator/emulator is yours or free.',
   '',
@@ -88,6 +104,26 @@ function writeJson(file, obj) {
 function copyFile(src, dest) {
   fs.mkdirSync(path.dirname(dest), { recursive: true });
   fs.copyFileSync(src, dest);
+}
+// Move every entry from a legacy dir into the new one WITHOUT overwriting anything
+// already there (an applet started post-update may have created the new dir first,
+// so a blind rename would either fail or clobber newer data). Best-effort — a
+// migration hiccup must never break install. Drops the source dir once emptied.
+function mergeMoveDir(src, dst) {
+  if (!fs.existsSync(src)) return;
+  fs.mkdirSync(dst, { recursive: true });
+  for (const entry of fs.readdirSync(src)) {
+    const s = path.join(src, entry);
+    const d = path.join(dst, entry);
+    if (fs.existsSync(d)) continue; // keep the newer copy
+    try {
+      fs.renameSync(s, d);
+    } catch {
+      // cross-device (EXDEV) or a race — copy then drop the source.
+      try { fs.cpSync(s, d, { recursive: true }); fs.rmSync(s, { recursive: true, force: true }); } catch {}
+    }
+  }
+  try { if (fs.readdirSync(src).length === 0) fs.rmdirSync(src); } catch {}
 }
 
 // ---- status ---------------------------------------------------------------
@@ -147,7 +183,7 @@ function unregisterMcp() {
 
 function installSkillAndRule() {
   copyFile(path.join(ASSETS, 'skill', 'SKILL.md'), path.join(SKILL_DIR, 'SKILL.md'));
-  copyFile(path.join(ASSETS, 'rule', 'argent-device-allocator.md'), RULE_DEST);
+  copyFile(path.join(ASSETS, 'rule', 'diplomat-device-allocator.md'), RULE_DEST);
 }
 function uninstallSkillAndRule() {
   try { fs.rmSync(SKILL_DIR, { recursive: true, force: true }); } catch {}
@@ -163,18 +199,20 @@ function injectClaudeMd() {
   const sep = text && !text.endsWith('\n\n') ? (text.endsWith('\n') ? '\n' : '\n\n') : '';
   writeFileAtomic(CLAUDE_MD, `${text}${sep}${CLAUDE_MD_BODY}\n`);
 }
-// Remove every managed block (loop), so install/uninstall always converge to one.
-function stripClaudeMd(text) {
+// Remove every block delimited by (begin, end) — loop, so install/uninstall and
+// the legacy-marker cleanup always converge to zero copies.
+function stripBlock(text, begin, end) {
   let out = text;
   for (;;) {
-    const i = out.indexOf(CLAUDE_MD_BEGIN);
+    const i = out.indexOf(begin);
     if (i === -1) break;
-    const j = out.indexOf(CLAUDE_MD_END, i);
+    const j = out.indexOf(end, i);
     if (j === -1) { out = out.slice(0, i); break; }
-    out = out.slice(0, i) + out.slice(j + CLAUDE_MD_END.length);
+    out = out.slice(0, i) + out.slice(j + end.length);
   }
   return out.replace(/\n{3,}/g, '\n\n').replace(/\s+$/, out.trim() ? '\n' : '');
 }
+function stripClaudeMd(text) { return stripBlock(text, CLAUDE_MD_BEGIN, CLAUDE_MD_END); }
 function uninjectClaudeMd() {
   try {
     if (!fs.existsSync(CLAUDE_MD)) return;
@@ -197,14 +235,56 @@ function startDaemon() {
 }
 function stopDaemon() {
   try {
-    // Via paths.js discovery (honors DA_BASE_DIR) — a hardcoded ~/.argent path
+    // Via paths.js discovery (honors DA_BASE_DIR) — a hardcoded ~/.diplomat path
     // here would SIGTERM the user's real daemon from a test-sandboxed uninstall.
     const disc = readDiscovery();
     if (disc && disc.pid) process.kill(disc.pid, 'SIGTERM');
   } catch {}
 }
 
+// One-time migration from the pre-rename install (argent-device-allocator +
+// ~/.argent). Idempotent: a no-op once done, or on a clean machine. Runs at the
+// top of --install (the documented per-machine migration action), so it ends with
+// exactly one, new copy of everything.
+function migrateLegacy() {
+  // Sandboxed test runs redirect state via DA_BASE_DIR/DA_BAN_DIR and set a fake
+  // HOME; never let a test touch the real ~/.argent or ~/.claude.
+  if (process.env.DA_BASE_DIR || process.env.DA_BAN_DIR) return;
+  // 1. Stop any daemon still running from the pre-rename install — its discovery
+  //    file is at the OLD path, so we can find + SIGTERM it, and we must, or we'd
+  //    move its state dir out from under a live writer.
+  try {
+    const disc = readJson(path.join(LEGACY.base, 'device-allocator', 'daemon.json'));
+    if (disc && disc.pid) { try { process.kill(disc.pid, 'SIGTERM'); } catch {} }
+  } catch {}
+  // 2. Move the state we own (mesh identity + the daemon's two dirs) to ~/.diplomat.
+  //    mesh is also migrated at applet startup; both use mergeMoveDir so whichever
+  //    runs first wins and the other is a no-op.
+  for (const sub of LEGACY.subdirs) {
+    try { mergeMoveDir(path.join(LEGACY.base, sub), path.join(NEW_BASE, sub)); } catch {}
+  }
+  // 3. Remove the stale MCP registration / skill / rule / CLAUDE.md block so the
+  //    machine isn't left with two of each after re-install.
+  try {
+    const j = readJson(CLAUDE_JSON);
+    if (j && j.mcpServers && j.mcpServers[LEGACY.mcpKey]) {
+      delete j.mcpServers[LEGACY.mcpKey];
+      writeJson(CLAUDE_JSON, j);
+    }
+  } catch {}
+  try { fs.rmSync(LEGACY.skillDir, { recursive: true, force: true }); } catch {}
+  try { fs.rmSync(LEGACY.ruleDest, { force: true }); } catch {}
+  try {
+    if (fs.existsSync(CLAUDE_MD)) {
+      const text = fs.readFileSync(CLAUDE_MD, 'utf8');
+      const stripped = stripBlock(text, LEGACY.claudeMdBegin, LEGACY.claudeMdEnd);
+      if (stripped !== text) writeFileAtomic(CLAUDE_MD, stripped);
+    }
+  } catch {}
+}
+
 function doInstall() {
+  migrateLegacy();
   registerMcp();
   installSkillAndRule();
   injectClaudeMd();

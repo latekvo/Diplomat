@@ -3,7 +3,7 @@ import Foundation
 /// Shared, platform-neutral model for **Diplomat Mesh** — the LAN P2P duty-coordination
 /// layer. This is the Swift half of the "two front-ends, one brain" split: it decodes
 /// the shared `core/mesh.json` (duty catalog, placement strategies, tier/token model)
-/// and the local node's public topology snapshot (`~/.argent/mesh/state.json`), exactly
+/// and the local node's public topology snapshot (`~/.diplomat/mesh/state.json`), exactly
 /// as the Python front-end's `diplomat_app.mesh.config` / `.statefile` do.
 ///
 /// Nothing here opens a socket or spawns a node — it's pure decode + placement logic,
@@ -170,7 +170,7 @@ public struct MeshOverrides: Decodable, Equatable {
     }
 }
 
-// MARK: - Topology snapshot (~/.argent/mesh/state.json)
+// MARK: - Topology snapshot (~/.diplomat/mesh/state.json)
 
 /// A node's advertised quota accounting (`NodeInfo.stats` in the Python node): the
 /// plan it runs on and the derived load figures the `surplus-first` dispatch strategy
@@ -354,7 +354,7 @@ public struct MeshPeer: Decodable, Equatable {
 }
 
 /// One local-allowlist entry as published in the snapshot's `trusted` list — the
-/// operator-managed device-key allowlist (`~/.argent/mesh/trusted.json`).
+/// operator-managed device-key allowlist (`~/.diplomat/mesh/trusted.json`).
 public struct MeshTrustedEntry: Decodable, Equatable {
     public let fingerprint: String
     public let label: String
@@ -369,7 +369,7 @@ public struct MeshTrustedEntry: Decodable, Equatable {
 
 /// One ban-list entry as published in the snapshot's `banned` list — a device this
 /// node marked as having accepted a SzpontRequest and failed to deliver it (or one
-/// the operator banned manually). Machine-local (`~/.argent/mesh/banned.json`),
+/// the operator banned manually). Machine-local (`~/.diplomat/mesh/banned.json`),
 /// never gossiped; `fingerprint` is empty for a keyless device (then `node` is the
 /// best-effort key). See docs/szpontnet/13-foreign-execution.md#the-ban.
 public struct MeshBannedEntry: Decodable, Equatable {

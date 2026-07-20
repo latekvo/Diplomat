@@ -1,11 +1,11 @@
 ---
-name: argent-device-allocator
+name: diplomat-device-allocator
 description: Reserve and manage exclusive Android emulators / iOS simulators / Apple TV / Android TV / Vega devices through the local device-allocator MCP server. Use whenever you are about to boot, launch, install onto, screenshot, create, or interact with any simulator or emulator, or when doing on-device / E2E / UI testing, so you never collide with another agent's device.
 ---
 
 # Device allocator
 
-**If you can see this skill or the `argent-device-allocator` MCP server, there are — or
+**If you can see this skill or the `diplomat-device-allocator` MCP server, there are — or
 may at any moment be — MULTIPLE agents on this machine. You are NEVER the only one.**
 Two agents on one device corrupt each other's session, so each agent gets a device for
 its **exclusive** use and the allocator reclaims it when the agent finishes or dies.

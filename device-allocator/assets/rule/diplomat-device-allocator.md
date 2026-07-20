@@ -1,11 +1,11 @@
 ---
-description: Argent device allocator — always-on rule. Forces every agent to reserve a simulator/emulator before using it, so concurrent agents never collide on a shared device.
+description: Diplomat device allocator — always-on rule. Forces every agent to reserve a simulator/emulator before using it, so concurrent agents never collide on a shared device.
 alwaysApply: true
 ---
 
 # Device allocation is mandatory
 
-> **If you can see this rule (or the `argent-device-allocator` MCP server), there are
+> **If you can see this rule (or the `diplomat-device-allocator` MCP server), there are
 > — or may at any moment be — MULTIPLE agents running on this machine. You are NEVER
 > the only one.** Never assume a simulator/emulator is yours or free.
 
@@ -15,7 +15,7 @@ wasted debugging). To prevent that:
 
 **Before you boot, run, install onto, screenshot, create, or otherwise interact with
 ANY simulator or emulator, you MUST first call `request-device`** (from the
-`argent-device-allocator` MCP server) and then use **only** the device id it returns.
+`diplomat-device-allocator` MCP server) and then use **only** the device id it returns.
 
 - Ask for what you need: `platform` (`ios`, `android`, `apple-tv`, `android-tv`,
   `vega`), optionally `format` (`phone`/`tablet`, iOS/Android only). Set `version`

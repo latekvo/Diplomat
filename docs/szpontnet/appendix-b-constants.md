@@ -75,7 +75,7 @@ override is `"auto"`); these constants set the heuristic ceiling it's measured a
 |----|-------|
 | `personal` | the peer's **verified** fingerprint is in my local allowlist; a received SzpontRequest runs directly. |
 | `foreign` | any other device - unlisted, or it proved no key; its requests are declined by default, or run [confined and response-only](13-foreign-execution.md) when a confinement runner is configured. |
-| `banned` | a device on my local [ban list](13-foreign-execution.md#the-ban) (`~/.argent/mesh/banned.json`) - it broke the [foreign-accountability contract](13-foreign-execution.md#accountability-deadline-reminder-ban) or was banned manually; every request declined, never a dispatch target. |
+| `banned` | a device on my local [ban list](13-foreign-execution.md#the-ban) (`~/.diplomat/mesh/banned.json`) - it broke the [foreign-accountability contract](13-foreign-execution.md#accountability-deadline-reminder-ban) or was banned manually; every request declined, never a dispatch target. |
 
 `trust.default` = `foreign` - the classification of a device **not** on the local
 allowlist (zero-trust: a new device is untrusted until promoted). Configurable to
@@ -83,9 +83,9 @@ allowlist (zero-trust: a new device is untrusted until promoted). Configurable t
 `trusted.json`. See [11-trust-and-balancing](11-trust-and-balancing.md).
 
 **Trust identity / files.** Each device holds an Ed25519 keypair persisted at
-`~/.argent/mesh/device.key` (`0600`, machine-local, never gossiped); a fingerprint
+`~/.diplomat/mesh/device.key` (`0600`, machine-local, never gossiped); a fingerprint
 is `sha256(public key)` as 64 hex chars. The trusted allowlist lives at
-`~/.argent/mesh/trusted.json` (operator-managed, machine-local, never gossiped).
+`~/.diplomat/mesh/trusted.json` (operator-managed, machine-local, never gossiped).
 
 **Auth proof-of-possession construction.** The `auth` signature is over the
 domain-separated bytes `"szpontnet-auth-v1:" || <nonce as UTF-8>` (ASCII tag
@@ -204,7 +204,7 @@ and declines foreign requests.
 | extension decider via | `DIPLOMAT_MESH_EXTEND_DECIDER` | the originator's command template (`{job_file}`) that judges a late executor's `job-progress` plea - exit `0` extends, anything else bans. **Unset = no extensions** ([13](13-foreign-execution.md#the-extension-decision)). |
 | `job-status.direct` | `true` \| absent | additive flag on a `spawned` [`job-status`](04-messages.md#job-status): the executor ran the job on the personal path, no result will follow, no deadline is armed. |
 | `job-progress.note` cap | `4096` bytes | receiver-side truncation of the progress note. |
-| ban list | `~/.argent/mesh/banned.json` | machine-local, never gossiped ([08](08-state.md#bannedjson)); edited by the automatic ban and the [`ban`/`unban`](04-messages.md#ban--unban) control commands. |
+| ban list | `~/.diplomat/mesh/banned.json` | machine-local, never gossiped ([08](08-state.md#bannedjson)); edited by the automatic ban and the [`ban`/`unban`](04-messages.md#ban--unban) control commands. |
 
 Accountability is an **optional originator-side layer**
 ([13 conformance](13-foreign-execution.md#conformance)); a node that omits it
@@ -234,12 +234,12 @@ answering reminders.
 
 | Path | Contents |
 |------|----------|
-| `~/.argent/mesh/node.json` | persisted identity + attributes ([08](08-state.md#nodejson)) |
-| `~/.argent/mesh/device.key` | this device's Ed25519 private key (`0600`, never gossiped, [08](08-state.md#devicekey)) |
-| `~/.argent/mesh/trusted.json` | local trusted-device allowlist (never gossiped, [08](08-state.md#trustedjson)) |
-| `~/.argent/mesh/banned.json` | local ban list (never gossiped, [08](08-state.md#bannedjson)) |
-| `~/.argent/mesh/stats.json` | local load-balancing accounting (never gossiped, [08](08-state.md#statsjson)) |
-| `~/.argent/mesh/state.json` | public topology snapshot ([08](08-state.md#the-statejson-snapshot)) |
+| `~/.diplomat/mesh/node.json` | persisted identity + attributes ([08](08-state.md#nodejson)) |
+| `~/.diplomat/mesh/device.key` | this device's Ed25519 private key (`0600`, never gossiped, [08](08-state.md#devicekey)) |
+| `~/.diplomat/mesh/trusted.json` | local trusted-device allowlist (never gossiped, [08](08-state.md#trustedjson)) |
+| `~/.diplomat/mesh/banned.json` | local ban list (never gossiped, [08](08-state.md#bannedjson)) |
+| `~/.diplomat/mesh/stats.json` | local load-balancing accounting (never gossiped, [08](08-state.md#statsjson)) |
+| `~/.diplomat/mesh/state.json` | public topology snapshot ([08](08-state.md#the-statejson-snapshot)) |
 | overridable via | `DIPLOMAT_MESH_DIR` |
 | join secret via | `DIPLOMAT_MESH_SECRET` ([03](03-transport.md#the-join-fence)) |
 | server mode / API key via | `DIPLOMAT_MESH_SERVER` / `DIPLOMAT_MESH_API_KEY` ([11](11-trust-and-balancing.md#server-nodes--api-key-authentication)) |

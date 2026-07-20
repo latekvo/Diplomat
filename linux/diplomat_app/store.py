@@ -140,7 +140,7 @@ class Store(QObject):
         self.device_state: dict | None = None
         self.allocator_install: dict | None = None
 
-        # Live telemetry read from the shared ~/.argent files (activity feed + bans).
+        # Live telemetry read from the shared ~/.diplomat files (activity feed + bans).
         self.audit_entries: list = []
         self.banned_authors: list = []
 
@@ -1218,7 +1218,7 @@ class Store(QObject):
         rebuild so the badges stay honest.
         """
         # Render mode pins a synthetic topology via the override — never let a
-        # poll read (or clobber it with) the real ~/.argent/mesh/state.json.
+        # poll read (or clobber it with) the real ~/.diplomat/mesh/state.json.
         if self._mesh_enabled_override is not None:
             return
 

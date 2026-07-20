@@ -1,4 +1,4 @@
-"""The public topology snapshot — ``~/.argent/mesh/state.json``.
+"""The public topology snapshot — ``~/.diplomat/mesh/state.json``.
 
 The mesh node rewrites this atomically every couple of seconds (and on every
 topology change); UIs poll it the way they poll the device-allocator's

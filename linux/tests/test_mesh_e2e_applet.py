@@ -177,7 +177,7 @@ def test_applet_meshes_and_dispatches(tmp_path, monkeypatch):
         assert "end-to-end" in prompt.lower() or len(prompt) > 100  # a real audit prompt
 
         # 4. The dispatch shows up in the activity feed (fake HOME).
-        feed = (tmp_path / "home" / ".argent" / "pr-monitor" / "audit.jsonl").read_text()
+        feed = (tmp_path / "home" / ".diplomat" / "pr-monitor" / "audit.jsonl").read_text()
         assert "via mesh" in feed and "mesh-dispatch" in feed
     finally:
         peer.kill()

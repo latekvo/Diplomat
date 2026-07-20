@@ -1,11 +1,11 @@
 {
-  "name": "argent-device-allocator",
+  "name": "diplomat-device-allocator",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "description": "Local resource-allocation manager: hands out exclusive iOS simulators / Android emulators to AI agents and reclaims them when the agent dies or the device goes idle.",
   "bin": {
-    "argent-device-allocator": "src/mcp.js"
+    "diplomat-device-allocator": "src/mcp.js"
   },
   "scripts": {
     "daemon": "node src/daemon.js",

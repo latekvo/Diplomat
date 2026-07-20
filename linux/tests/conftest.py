@@ -38,7 +38,7 @@ def isolated_qsettings(tmp_path):
 
 @pytest.fixture(autouse=True)
 def isolated_activity_feed(tmp_path, monkeypatch):
-    """Redirect the shared ``~/.argent/pr-monitor`` activity feed to a per-test temp
+    """Redirect the shared ``~/.diplomat/pr-monitor`` activity feed to a per-test temp
     dir so tests never scribble on the user's real audit.jsonl. The monitor + API-error
     watcher dispatch paths call :func:`activity.log`, which otherwise appends to the
     user's live feed (``activity._dir`` resolves via ``Path.home()``, which the

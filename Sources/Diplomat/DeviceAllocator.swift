@@ -5,7 +5,7 @@ import Foundation
 /// and a *driver* of its installer — it never allocates devices itself.
 ///
 /// Two surfaces:
-///   - `readState()` decodes the daemon's `~/.argent/device-allocator/state.json`
+///   - `readState()` decodes the daemon's `~/.diplomat/device-allocator/state.json`
 ///     (the live pool + who holds what), polled by the Store.
 ///   - `check()/install()/uninstall()` shell the package's `install.js` so the
 ///     Settings screen can show install status and one-click (un)install the MCP
@@ -93,10 +93,10 @@ enum DeviceAllocator {
     private static var home: URL { FileManager.default.homeDirectoryForCurrentUser }
     static var installJS: String { packageDir + "/src/install.js" }
     static var stateURL: URL {
-        home.appendingPathComponent(".argent/device-allocator/state.json")
+        home.appendingPathComponent(".diplomat/device-allocator/state.json")
     }
     static var socketPath: String {
-        home.appendingPathComponent(".argent/device-allocator/daemon.sock").path
+        home.appendingPathComponent(".diplomat/device-allocator/daemon.sock").path
     }
 
     /// Ask the daemon to force-kill a device by key (free any allocation + shut the

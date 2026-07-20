@@ -1,7 +1,7 @@
 """Prompt-injection ban list — the Linux read-only port of BanList.swift.
 
 The device-allocator daemon (and the macOS monitor) write banned authors to
-``~/.argent/pr-monitor/banned.json`` as ``{"banned": [BannedAuthor, ...]}``. The
+``~/.diplomat/pr-monitor/banned.json`` as ``{"banned": [BannedAuthor, ...]}``. The
 panel only reads it (bans are managed by the daemon), surfacing who is blocked
 from automated reviews.
 """
@@ -14,7 +14,7 @@ from pathlib import Path
 
 
 def banned_path() -> Path:
-    return Path.home() / ".argent" / "pr-monitor" / "banned.json"
+    return Path.home() / ".diplomat" / "pr-monitor" / "banned.json"
 
 
 @dataclass(frozen=True)

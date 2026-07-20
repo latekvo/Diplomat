@@ -3,7 +3,7 @@
 The category-mapping assertions mirror the Swift smoke test
 (Sources/DiplomatCoreSmoke/main.swift, "audit category" section) so the shared
 core/audit-categories.json can't drift from Sources/DiplomatCore/AuditCategory.swift.
-Pure, offline — no display, no ~/.argent files required.
+Pure, offline — no display, no ~/.diplomat files required.
 """
 
 from __future__ import annotations

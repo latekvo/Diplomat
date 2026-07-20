@@ -105,7 +105,7 @@ def main() -> None:
         if src in os.environ:
             env[dst] = os.environ[src]
     env["DIPLOMAT_MESH_DIR"] = str(work_dir)
-    # Keep the reference's activity feed inside the scenario dir, not real ~/.argent.
+    # Keep the reference's activity feed inside the scenario dir, not real ~/.diplomat.
     env["HOME"] = str(work_dir)
     # A conformance candidate must be deterministic: no live OAuth quota probe.
     # (On macOS the Keychain resolves even under the sandboxed HOME, and a live

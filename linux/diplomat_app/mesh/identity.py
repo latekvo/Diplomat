@@ -1,4 +1,4 @@
-"""Node identity + node-local attributes, persisted in ``~/.argent/mesh/node.json``.
+"""Node identity + node-local attributes, persisted in ``~/.diplomat/mesh/node.json``.
 
 The id is a stable UUID minted on first run; name/tier/tokens are the
 user-editable attributes the node gossips (and that peers may edit remotely
@@ -28,7 +28,7 @@ def mesh_dir() -> Path:
     """State directory — override with DIPLOMAT_MESH_DIR (tests give every
     fake node its own)."""
     env = os.environ.get("DIPLOMAT_MESH_DIR")
-    return Path(env) if env else Path.home() / ".argent" / "mesh"
+    return Path(env) if env else Path.home() / ".diplomat" / "mesh"
 
 
 def node_path() -> Path:

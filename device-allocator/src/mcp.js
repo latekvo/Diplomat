@@ -249,7 +249,7 @@ function formatResult(name, r) {
 // ---- server ---------------------------------------------------------------
 
 const server = new Server(
-  { name: 'argent-device-allocator', version: '0.1.0' },
+  { name: 'diplomat-device-allocator', version: '0.1.0' },
   { capabilities: { tools: {} }, instructions: COERCION },
 );
 

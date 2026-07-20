@@ -5,7 +5,7 @@ import DiplomatCore
 /// The macOS bridge to a local Diplomat Mesh node — the counterpart of the Linux
 /// front-end's `store` mesh helpers (`ensure_mesh_running_async`, `mesh.statefile`,
 /// `mesh.ctl`). Two surfaces:
-///   - a *viewer* of the node's public topology snapshot (`~/.argent/mesh/state.json`);
+///   - a *viewer* of the node's public topology snapshot (`~/.diplomat/mesh/state.json`);
 ///   - a *driver* that spawns the node (`python3 -m diplomat_app.mesh --daemon`, run
 ///     from the checkout's `linux/` tree) and talks its synchronous control protocol
 ///     (one NDJSON command → one reply over a loopback TCP connection).
@@ -23,15 +23,46 @@ struct MeshCtlError: LocalizedError {
 enum MeshBridge {
     private static var home: URL { FileManager.default.homeDirectoryForCurrentUser }
 
-    /// The node's state directory (`DIPLOMAT_MESH_DIR` override, else `~/.argent/mesh`) —
+    /// The node's state directory (`DIPLOMAT_MESH_DIR` override, else `~/.diplomat/mesh`) —
     /// matches `diplomat_app.mesh.identity.mesh_dir`.
     static var stateDir: URL {
         if let env = ProcessInfo.processInfo.environment["DIPLOMAT_MESH_DIR"], !env.isEmpty {
             return URL(fileURLWithPath: env)
         }
-        return home.appendingPathComponent(".argent/mesh")
+        return home.appendingPathComponent(".diplomat/mesh")
     }
     static var stateURL: URL { stateDir.appendingPathComponent("state.json") }
+
+    /// One-time migration of the pre-rename mesh state (`~/.argent/mesh` →
+    /// `~/.diplomat/mesh`). The identity (`device.key`/`node.json`) is what peers pin
+    /// trust to, so a fresh empty dir would mint a NEW identity and silently break this
+    /// node fleet-wide. Merges without overwriting (a partially-created new dir must
+    /// neither block the move nor clobber newer data), skips when `DIPLOMAT_MESH_DIR`
+    /// redirects the path, and never throws — a migration hiccup must not stop launch.
+    /// Only the mesh subdir is touched; `~/.argent` is shared with the separate Argent
+    /// tool. Mirrors `diplomat_app.migrate.migrate_legacy_state_dir`.
+    static func migrateLegacyStateDirIfNeeded() {
+        if let env = ProcessInfo.processInfo.environment["DIPLOMAT_MESH_DIR"], !env.isEmpty { return }
+        let fm = FileManager.default
+        let src = home.appendingPathComponent(".argent/mesh")
+        let dst = home.appendingPathComponent(".diplomat/mesh")
+        var isDir: ObjCBool = false
+        guard fm.fileExists(atPath: src.path, isDirectory: &isDir), isDir.boolValue else { return }
+        try? fm.createDirectory(at: dst, withIntermediateDirectories: true)
+        for name in (try? fm.contentsOfDirectory(atPath: src.path)) ?? [] {
+            let s = src.appendingPathComponent(name)
+            let d = dst.appendingPathComponent(name)
+            if fm.fileExists(atPath: d.path) { continue } // keep the newer copy
+            do { try fm.moveItem(at: s, to: d) }
+            catch { // cross-device or a race — copy then drop the source
+                try? fm.copyItem(at: s, to: d)
+                try? fm.removeItem(at: s)
+            }
+        }
+        if ((try? fm.contentsOfDirectory(atPath: src.path))?.isEmpty) ?? false {
+            try? fm.removeItem(at: src)
+        }
+    }
 
     /// Optional pre-shared join token (`DIPLOMAT_MESH_SECRET`), presented on every control
     /// session — mirrors `mesh.config.secret`. Empty (the default) = open mesh.

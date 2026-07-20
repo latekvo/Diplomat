@@ -11,7 +11,7 @@ fingerprint - or, for a keyless device that has no fingerprint, its node id
 (a weaker, best-effort mark; a stranger can re-mint an id, which is one more
 reason keyless devices are already foreign everywhere).
 
-Persisted at ``~/.argent/mesh/banned.json``; the running node keeps the list in
+Persisted at ``~/.diplomat/mesh/banned.json``; the running node keeps the list in
 memory and edits it through the ``ban``/``unban`` control commands, and appends
 to it itself when an automatic accountability ban fires.
 """

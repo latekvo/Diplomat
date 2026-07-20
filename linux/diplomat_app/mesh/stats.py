@@ -19,7 +19,7 @@ advertised on the node's :class:`~diplomat_app.mesh.protocol.NodeInfo`:
   probe is live (usage.py), the *advertised* quotaLeft is additionally capped by
   the binding rate-limit window — see :meth:`NodeStats.advertise`.
 
-State persists to ``~/.argent/mesh/stats.json`` (machine-local; only the derived
+State persists to ``~/.diplomat/mesh/stats.json`` (machine-local; only the derived
 ``advertise()`` view is gossiped). All time arithmetic takes an injectable
 ``now`` so tests can fast-forward without sleeping.
 """

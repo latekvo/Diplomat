@@ -18,7 +18,7 @@ One asyncio event loop drives everything:
 - the same TCP port doubles as the **control** endpoint: a client opening with
   ``{"t":"ctl"}`` (the topology panel, the CLI) can read status, edit any
   node's attributes, edit placement overrides, and dispatch jobs;
-- a **snapshot** task mirrors the topology to ``~/.argent/mesh/state.json``
+- a **snapshot** task mirrors the topology to ``~/.diplomat/mesh/state.json``
   every couple of seconds for the UIs.
 
 Peers stay visible in the snapshot for a few minutes after going down (link
