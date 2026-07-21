@@ -243,15 +243,24 @@ class Job:
     prompt: str
     requested_by: str  # node id
     requested_at: float
+    # The origination-dedup key this job is an execution of, when it was routed
+    # with one (docs/szpontnet/12). The EXECUTOR claims it for the spawned agent's
+    # lifetime, so a re-observation of the same work is suppressed while it runs
+    # and freed when it finishes. Empty = an undeduped dispatch (server/target/
+    # manual "Run on mesh"). Additive: a pre-claims node just ignores it.
+    work_key: str = ""
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "id": self.id,
             "duty": self.duty,
             "prompt": self.prompt,
             "requestedBy": self.requested_by,
             "requestedAt": self.requested_at,
         }
+        if self.work_key:
+            d["workKey"] = self.work_key
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "Job | None":
@@ -262,6 +271,7 @@ class Job:
                 prompt=str(d.get("prompt", "")),
                 requested_by=str(d.get("requestedBy", "?")),
                 requested_at=float(d.get("requestedAt", time.time())),
+                work_key=str(d.get("workKey", "")),
             )
         except (KeyError, TypeError, ValueError):
             return None

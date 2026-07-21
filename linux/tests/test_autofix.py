@@ -325,55 +325,42 @@ def test_work_key_safe_degradation():
     assert autofix.work_key("review", "", "x") == ""
 
 
-def test_mesh_stand_down():
-    assigned_other = {"review": {"assigned": ["bbbb"]}}
-    assert autofix.mesh_stand_down(assigned_other, "aaaa", "review") == ["bbbb"]
-    # Assigned to us (alone or with others) → originate.
-    assert autofix.mesh_stand_down({"review": {"assigned": ["aaaa"]}}, "aaaa", "review") is None
-    assert (
-        autofix.mesh_stand_down({"review": {"assigned": ["aaaa", "bbbb"]}}, "aaaa", "review")
-        is None
-    )
-    # Nobody assigned / unknown duty → originate (better handled than dropped).
-    assert autofix.mesh_stand_down({"review": {"assigned": []}}, "aaaa", "review") is None
-    assert autofix.mesh_stand_down({}, "aaaa", "review") is None
-    # Empty ids are noise, not assignees.
-    assert autofix.mesh_stand_down({"review": {"assigned": [""]}}, "aaaa", "review") is None
+# MARK: - Store routing (the monitor routes auto work through the mesh)
 
 
-# MARK: - Store gating (the monitor consults the mesh before every auto spawn)
-
-
-def _mesh_store(monkeypatch, store, assignments, claim=None):
-    """Enable the mesh for `store` against a fake node snapshot; `claim` is the
-    fake ctl claim_work outcome (True/False), or an exception to raise, or None
-    to fail the test if the claim gate is consulted. Returns the recorded claim
-    keys."""
+def _mesh_store(monkeypatch, store, dispatch=None):
+    """Enable the mesh for `store` against a fake node snapshot. `dispatch` is the
+    fake ``ctl.dispatch`` outcome — a list of slot-result dicts, an Exception to
+    raise, or None to fail the test if the mesh is consulted at all. Returns the
+    recorded ``(duty, work_key)`` dispatch calls."""
     from diplomat_app.mesh import ctl, statefile
 
     store._mesh_enabled_override = True
-    state = {
-        "pid": 1,
-        "tcpPort": 1,
-        "self": {"id": "me-node", "name": "mac"},
-        "peers": [{"id": "peer-node", "name": "softoobox"}],
-        "assignments": assignments,
-    }
+    state = {"pid": 1, "tcpPort": 1, "self": {"id": "me-node", "name": "mac"},
+             "peers": [{"id": "peer-node", "name": "softoobox"}]}
     monkeypatch.setattr(statefile, "read_state", lambda: state)
     monkeypatch.setattr(statefile, "node_running", lambda s=None: True)
-    keys: list[str] = []
+    calls: list[tuple[str, str]] = []
 
-    def fake_claim(work_key, timeout=5.0):
-        keys.append(work_key)
-        if claim is None:
-            raise AssertionError("claim gate must not be consulted")
-        if isinstance(claim, Exception):
-            raise claim
-        return {"owned": claim, "owner": None if claim else "peer-node",
-                "ownerName": None if claim else "softoobox"}
+    def fake_dispatch(duty, prompt, target=None, api_key="", work_key="", timeout=60.0):
+        calls.append((duty, work_key))
+        if dispatch is None:
+            raise AssertionError("the mesh must not be consulted for this source")
+        if isinstance(dispatch, Exception):
+            raise dispatch
+        return dispatch
 
-    monkeypatch.setattr(ctl, "claim_work", fake_claim)
-    return keys
+    monkeypatch.setattr(ctl, "dispatch", fake_dispatch)
+    return calls
+
+
+def _spawned(node="mac"):
+    return [{"slot": "any", "node": "n", "nodeName": node, "status": "spawned", "reason": ""}]
+
+
+def _suppressed(node="softoobox"):
+    return [{"slot": "claim", "node": "p", "nodeName": node, "status": "suppressed",
+             "reason": f"work already claimed by {node}"}]
 
 
 def _mesh_req(number=7, sha="abc123"):
@@ -384,94 +371,79 @@ def _mesh_req(number=7, sha="abc123"):
     )
 
 
-def test_review_request_stands_down_when_duty_assigned_elsewhere(store, monkeypatch):
-    _mesh_store(monkeypatch, store, {"review": {"assigned": ["peer-node"]}})
-    calls = _spawn_recorder(monkeypatch)
+def _poll_one_review(store, monkeypatch):
     monkeypatch.setattr(
         "diplomat_app.autofixmonitor.fetch_review_requests", lambda *a, **k: [_mesh_req()]
     )
     monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
     store._poll_review_requests("o", "r")
-    assert calls == []  # softoobox's own monitor originates there — not us
-    assert store._mesh_duty_stood_down["review"] is True
-    # No attempt recorded: if the assignee dies, the next poll takes over fresh.
-    assert store._load_attempts("reviewReqAttempts") == {}
 
 
-def test_review_request_claims_then_originates_here(store, monkeypatch):
-    keys = _mesh_store(
-        monkeypatch, store, {"review": {"assigned": ["me-node"]}}, claim=True
-    )
-    calls = _spawn_recorder(monkeypatch)
-    monkeypatch.setattr(
-        "diplomat_app.autofixmonitor.fetch_review_requests", lambda *a, **k: [_mesh_req()]
-    )
-    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
-    store._poll_review_requests("o", "r")
-    assert len(calls) == 1  # assigned here → claimed → spawned locally
-    assert keys == ["review:github.com/o/r#7@abc123"]
+def test_review_request_runs_on_the_mesh(store, monkeypatch):
+    """An owed review is routed through the mesh (best-surplus placement), not
+    spawned locally, and its attempt is recorded so retries back off."""
+    calls = _mesh_store(monkeypatch, store, dispatch=_spawned("mac"))
+    local = _spawn_recorder(monkeypatch)
+    _poll_one_review(store, monkeypatch)
+    assert local == []                                     # ran on the mesh, not here
+    assert calls == [("review", "review:github.com/o/r#7@abc123")]
+    assert list(store._load_attempts("reviewReqAttempts")) == ["7"]
 
 
-def test_review_request_suppressed_by_peer_claim(store, monkeypatch):
-    _mesh_store(monkeypatch, store, {"review": {"assigned": []}}, claim=False)
-    calls = _spawn_recorder(monkeypatch)
-    monkeypatch.setattr(
-        "diplomat_app.autofixmonitor.fetch_review_requests", lambda *a, **k: [_mesh_req()]
-    )
-    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
-    store._poll_review_requests("o", "r")
-    assert calls == []  # a live personal peer owns the lease
-    assert store._load_attempts("reviewReqAttempts") == {}  # keeps watching
+def test_review_request_originates_without_assignment_standdown(store, monkeypatch):
+    """The regression guard for the bug this branch fixes: there is NO duty-
+    assignment stand-down anymore. Every machine scans and routes its finds through
+    the mesh — a review request is never silently dropped because some other node
+    happened to be 'assigned' the duty (the mesh places the run on the best node)."""
+    calls = _mesh_store(monkeypatch, store, dispatch=_spawned("softoobox"))
+    local = _spawn_recorder(monkeypatch)
+    _poll_one_review(store, monkeypatch)
+    assert calls == [("review", "review:github.com/o/r#7@abc123")]  # consulted, not stood down
+    assert local == []
+    assert list(store._load_attempts("reviewReqAttempts")) == ["7"]
 
 
-def test_review_request_fails_open_when_claim_unreachable(store, monkeypatch):
+def test_review_request_suppressed_when_a_peer_owns_it(store, monkeypatch):
+    _mesh_store(monkeypatch, store, dispatch=_suppressed())
+    local = _spawn_recorder(monkeypatch)
+    _poll_one_review(store, monkeypatch)
+    assert local == []                                     # a peer's agent owns the work
+    # Recorded so we back off rather than re-poll the node every tick (still watching).
+    assert list(store._load_attempts("reviewReqAttempts")) == ["7"]
+
+
+def test_review_request_falls_back_to_local_when_mesh_unreachable(store, monkeypatch):
     from diplomat_app.mesh import ctl
 
-    _mesh_store(
-        monkeypatch, store, {"review": {"assigned": []}}, claim=ctl.CtlError("down")
-    )
-    calls = _spawn_recorder(monkeypatch)
-    monkeypatch.setattr(
-        "diplomat_app.autofixmonitor.fetch_review_requests", lambda *a, **k: [_mesh_req()]
-    )
-    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
-    store._poll_review_requests("o", "r")
-    assert len(calls) == 1  # mesh unavailability must never leave PRs unhandled
+    _mesh_store(monkeypatch, store, dispatch=ctl.CtlError("node down"))
+    local = _spawn_recorder(monkeypatch)
+    _poll_one_review(store, monkeypatch)
+    assert len(local) == 1                                 # fail-open: never leave a PR unhandled
 
 
-def test_my_review_and_conflicts_use_their_own_duties_and_kinds(store, monkeypatch):
-    keys = _mesh_store(
-        monkeypatch, store,
-        {"review": {"assigned": ["me-node"]}, "conflicts": {"assigned": ["me-node"]}},
-        claim=True,
-    )
-    calls = _spawn_recorder(monkeypatch)
+def test_my_review_and_conflicts_route_their_own_duties_and_keys(store, monkeypatch):
+    calls = _mesh_store(monkeypatch, store, dispatch=_spawned("mac"))
+    _spawn_recorder(monkeypatch)
     snap = PRSnapshot(
         number=3, title="t", url="https://github.com/o/r/pull/3", is_draft=False,
         mergeable="CONFLICTING", review_decision="", threads_unresolved=1,
         threads_i_owe=1, head_sha="beef",
     )
     assert store._dispatch_my_review(snap, 1) is True
-    assert store._dispatch_conflict_fix(3, snap.url, 1, "auto", head_sha=snap.head_sha) is False  # in-flight now
-    # Clear in-flight (the spawned fake finished nothing) — drive conflicts alone.
-    store._autofix_inflight.clear()
     assert store._dispatch_conflict_fix(3, snap.url, 1, "auto", head_sha=snap.head_sha) is True
-    assert keys == [
-        "review-reply:github.com/o/r#3@beef",
-        "conflicts:github.com/o/r#3@beef",
+    assert calls == [
+        ("review", "review-reply:github.com/o/r#3@beef"),
+        ("conflicts", "conflicts:github.com/o/r#3@beef"),
     ]
-    assert len(calls) == 2
 
 
-def test_conflict_stand_down_only_gates_auto_source(store, monkeypatch):
-    _mesh_store(monkeypatch, store, {"conflicts": {"assigned": ["peer-node"]}})
-    calls = _spawn_recorder(monkeypatch)
-    # Auto: stands down. Panel: a deliberate user action — never mesh-gated.
-    assert store._dispatch_conflict_fix(4, "https://github.com/o/r/pull/4", 1, "auto",
-                                        head_sha="beef") is False
-    assert calls == []
+def test_panel_spawn_never_routes_to_the_mesh(store, monkeypatch):
+    """A manual (panel) spawn is the operator's own action: it runs and is tracked
+    locally, never routed through the mesh — whatever the mesh would decide."""
+    _mesh_store(monkeypatch, store, dispatch=None)  # fails if the mesh is consulted
+    local = _spawn_recorder(monkeypatch)
     assert store._dispatch_conflict_fix(4, "https://github.com/o/r/pull/4", 1, "panel") is True
-    assert len(calls) == 1
+    assert len(local) == 1
 
 
 # MARK: - live-agent ps fallback (tracking-independent in-flight)
@@ -585,12 +557,22 @@ def test_banned_author_blocks_both_interfaces(store, monkeypatch):
     assert calls == []
 
 
-def test_mesh_gates_only_auto_origination(store, monkeypatch):
-    _mesh_store(monkeypatch, store, {"review": {"assigned": ["peer-node"]}})
+def test_mesh_routes_only_auto_source(store, monkeypatch):
+    """An AUTO job routes through the mesh (a peer may already own it → stand down);
+    a PANEL (manual) spawn is the operator's own action and always runs locally,
+    never routed — the human already decided placement."""
+    dispatch = _mesh_store(monkeypatch, store, dispatch=_suppressed())
     calls = _spawn_recorder(monkeypatch)
     monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
-    assert store.dispatch_agent(_job(number=11), autofix.SOURCE_AUTO) == autofix.VERDICT_STAND_DOWN
-    assert calls == []
-    # The click runs locally regardless - the human already decided placement.
-    assert store.dispatch_agent(_job(number=11), autofix.SOURCE_PANEL) == "spawned"
+    job = autofix.AgentJob(
+        kind="review", audit_action="review", label="Review · #11", prompt="P",
+        pr_url="https://github.com/o/r/pull/11", pr_number=11, duty="review",
+        work_key="review:github.com/o/r#11@sha",
+    )
+    assert store.dispatch_agent(job, autofix.SOURCE_AUTO) == autofix.VERDICT_STAND_DOWN
+    assert calls == []                                     # a peer owns it → nothing local
+    assert dispatch == [("review", "review:github.com/o/r#11@sha")]
+    # The click runs locally regardless, and never consults the mesh.
+    assert store.dispatch_agent(job, autofix.SOURCE_PANEL) == "spawned"
     assert len(calls) == 1
+    assert dispatch == [("review", "review:github.com/o/r#11@sha")]  # no second consult

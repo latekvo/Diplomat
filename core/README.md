@@ -22,8 +22,9 @@ threshold in one file and both platforms pick it up; the golden-prompt tests
 | `filters.json` | filter constants: skill-file suffix, installer path prefixes, team/org/trusted associations, stale-ready day threshold, the `APPROVED` sentinel |
 | `review.json` | the Review-PRs prompt model: depth levels + scope/action text blocks the wizard assembles |
 | `conflicts.json` | the Resolve-conflicts prompt model: scope templates + the merge/resolve action blocks the wizard assembles |
-| `audit.json` | the Full-E2E-test prompt model: scope + action blocks (find-only / fix open bug issues / open a PR per finding) |
-| `mesh.json` | the LAN P2P mesh model: protocol constants (discovery/heartbeat ports + timings), the duty catalog (which job classes the mesh routes, with per-duty platform spread — e.g. the audit's one-linux-plus-one-macos), and the placement strategies (weakest-first / strongest-first / local-first). Consumed by the Python mesh node (`linux/diplomat_app/mesh`) and the topology panel; a future Swift node reads the same file |
+| `audit.json` | the Full-E2E-test prompt model: scope + action blocks (find-only / fix open bug issues / open a PR per finding), plus the always-on HIGH/MEDIUM/LOW severity classification |
+| `audit-categories.json` | the **activity-feed** taxonomy (unrelated to `audit.json`): maps each raw audit action verb to one of the ten categories the panel's filter chips toggle, with per-platform icon + tint. Canonical mirror of `Sources/DiplomatCore/AuditCategory.swift`, which stays the source of truth for the exhaustive Swift switch |
+| `mesh.json` | the LAN P2P mesh model: protocol constants (discovery/heartbeat ports + timings, foreign accept/reminder deadlines), the duty catalog (which job classes the mesh routes, with per-duty platform spread — e.g. the audit's one-linux-plus-one-macos), the placement strategies (weakest-first / strongest-first / local-first / surplus-first), the three trust levels + the zero-trust `default`, and the quota `accounts` model. Consumed by the Python mesh node (`linux/diplomat_app/mesh`) and both topology panels; a future Swift node reads the same file |
 | `golden-prompts/` | canonical prompt outputs, one `.txt` per mode; regenerate with `DIPLOMAT_GOLDEN_WRITE=1 swift run DiplomatCoreSmoke`, asserted byte-for-byte by the Swift smoke test AND `linux/tests/test_golden_prompts.py` |
 
 ## Contract notes
@@ -31,23 +32,22 @@ threshold in one file and both platforms pick it up; the golden-prompt tests
 - **GraphQL variables, not interpolation.** The PR/issue queries declare
   `$owner`/`$name` and the monitor queries `$q` (+`$withFiles`); each front-end
   passes them via `gh api graphql -f …` so the query text stays repo-agnostic.
-  The two monitor queries are currently only *executed* by the macOS applet
-  (the monitors are macOS-only), but they live here with the rest so a future
-  Linux monitor reuses them as-is.
+  Both applets now run the monitors, so both execute all five.
 - **Icons/colours are intentionally dual.** `sfSymbol`+`color` are the macOS
   (SF Symbols + SwiftUI semantic colours) assets; `emoji`+`colorHex` are the
   Linux assets. These are rendering choices, not logic — both are kept here so
   the catalog stays a single list.
 - **`_comment` keys** are documentation only; loaders ignore unknown keys.
-- **Prompt assembly** (which blocks appear, in what order, under which toggles)
-  is the only logic that lives as a glue layer in each front-end
-  (`buildPrompt` in Swift, `build_prompt` in Python). The parity guarantee is
-  not "by construction" but enforced: every mode both sides can assemble is
-  compared byte-for-byte against `golden-prompts/` in both test suites, so a
-  drift fails one CI job before it ships.
+- **Prompt assembly is single-sourced in Swift.** `buildPrompt` in `DiplomatCore`
+  is the only implementation: the Linux applet does *not* re-implement it in
+  Python, it shells out to the `diplomat-core` CLI
+  (`linux/diplomat_app/promptcore.py` → `Sources/diplomat-core`), so the two
+  front-ends are identical by construction rather than by convention. The
+  `golden-prompts/` assertions on both sides remain as the regression net over
+  that one builder (and over the Python→CLI bridge): a drift fails a CI job
+  before it ships. Build the binary with `linux/scripts/build-core.sh`.
 - **The known-author single-PR tier** in `review.json`
   (`specific.mineOnly` / `specific.theirsOnly` / `specific.reviewerFindingsFirst`
-  and `blocks.noVerdict`) is currently consumed by the macOS side only - the
-  monitors always know the PR's author, so they skip the author-poll CASE A/B
-  prompt the wizards use. The Python builder doesn't assemble these modes (yet),
-  which is also why they have no golden files.
+  and `blocks.noVerdict`) exists because the monitors always know the PR's author,
+  so they skip the author-poll CASE A/B prompt the wizards use. It has no golden
+  files of its own.

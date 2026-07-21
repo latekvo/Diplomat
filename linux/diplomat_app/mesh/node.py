@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 import secrets
 import socket
 import struct
@@ -262,6 +263,17 @@ class MeshNode:
         # node was originating, so a caller (e.g. an auto-poller) can abort the
         # local work it started. None = no-op (the default; origination is manual).
         self.on_claim_lost: Callable[[str], None] | None = None
+        # Agents this node is EXECUTING for a dedup key, work_key -> {done, at}. The
+        # executor claims the key when it spawns the agent and releases it when the
+        # agent's completion sentinel (`done`) appears — so a re-scan of the same
+        # work is suppressed while it runs and freed when it finishes
+        # (docs/szpontnet/12). Presence is also the local idempotency guard: a
+        # second dispatch of a key we already run never spawns a duplicate.
+        self._agents: dict[str, dict] = {}
+        # Backstop: free an executor's claim if its completion sentinel is ever lost
+        # (a SIGKILL'd terminal, say), so a claim can never pin a key forever. Well
+        # above any real agent runtime; the sentinel is the normal path.
+        self._agent_max_secs = float(os.environ.get("DIPLOMAT_MESH_AGENT_MAX_SECS", "7200"))
         # Foreign zero-trust request/response bookkeeping (docs/szpontnet/13):
         #  - as EXECUTOR: results we computed for a foreign requester and owe back to
         #    it, keyed by job id, re-emitted until job-ack'd (reliable delivery);
@@ -1530,17 +1542,22 @@ class MeshNode:
                          "status": "declined", "reason": "target is banned here"}]
             slots = [("target", [target])]
         else:
-            # Origination dedup: only the leaderless surplus-first path can race a
-            # peer to the same external event, so the claim gate lives here (not on
-            # the server/target paths). Suppressed → report the current owner and
-            # do not dispatch, so two nodes don't both run the same work.
-            if work_key and not self.claim(work_key):
+            # Origination dedup (docs/szpontnet/12): only the leaderless surplus-first
+            # path can race a peer to the same external event, so the gate lives here
+            # (not on the server/target paths). We do NOT claim on the dispatcher —
+            # the EXECUTOR claims the key for its agent's lifetime, so the key stays
+            # held exactly while the work is actually running (and is freed when it
+            # finishes, so a retry after a crash isn't suppressed). Here we only READ
+            # the owner: if a live authoritative node already holds it, its agent is
+            # on the work → suppress rather than route a second run.
+            if work_key:
                 holder = self._claim_holder(work_key)
-                name = self._node_name(holder) if holder else None
-                return [{"slot": "claim", "node": holder, "nodeName": name,
-                         "status": "suppressed",
-                         "reason": f"work already claimed by {name}" if name
-                         else "work already claimed"}]
+                if holder is not None:
+                    name = self._node_name(holder)
+                    return [{"slot": "claim", "node": holder, "nodeName": name,
+                             "status": "suppressed",
+                             "reason": f"work already claimed by {name}" if name
+                             else "work already claimed"}]
             slots = assign.slot_candidates(duty_id, nodes, self.overrides,
                                            self.local.id, config.dispatch_strategy())
         used: set[str] = set()
@@ -1551,7 +1568,8 @@ class MeshNode:
             for node_id in candidates:
                 if node_id in used:
                     continue
-                status, reason = await self._dispatch_to(node_id, duty_id, prompt, req_key)
+                status, reason = await self._dispatch_to(node_id, duty_id, prompt,
+                                                         req_key, work_key)
                 if status == "spawned":
                     used.add(node_id)
                     outcome = {"slot": slot_platform, "node": node_id,
@@ -1571,9 +1589,10 @@ class MeshNode:
         return results
 
     async def _dispatch_to(self, node_id: str, duty_id: str, prompt: str,
-                           api_key: str = "") -> tuple[str, str]:
+                           api_key: str = "", work_key: str = "") -> tuple[str, str]:
         job = Job(id=uuid.uuid4().hex, duty=duty_id, prompt=prompt,
-                  requested_by=self.local.id, requested_at=time.time())
+                  requested_by=self.local.id, requested_at=time.time(),
+                  work_key=work_key)
         if node_id == self.local.id:
             return self._run_local_request(job, "personal")  # dispatching to myself
         peer = self.peers.get(node_id)
@@ -1713,15 +1732,67 @@ class MeshNode:
         self._bump_and_gossip()
 
     def _spawn_local(self, job: Job) -> tuple[str, str]:
+        wk = job.work_key
+        # Idempotency + the executor-claim's atomicity: if our own agent for this
+        # key is already live, don't spawn a second one — report success (the work
+        # IS being handled here). This runs synchronously with the claim below (no
+        # await between the check and `_emit_claim`), so two dispatches of the same
+        # key arriving back-to-back can never both pass it.
+        if wk and wk in self._agents:
+            return "spawned", ""
+        done_path = self._agent_done_path(wk) if wk else None
         try:
-            spawnjob.spawn_job(job.prompt)
+            spawnjob.spawn_job(job.prompt, done_path=done_path)
         except spawnjob.JobSpawnError as exc:
             activity.log("mesh", "spawn-failed", f"Mesh job {job.duty} failed here: {exc}")
             return "failed", str(exc)
+        if wk:
+            # The executor owns the key for the agent's lifetime: claim it now, and
+            # free it when the agent's completion sentinel appears (docs/szpontnet/12).
+            self._agents[wk] = {"done": done_path, "at": time.monotonic()}
+            self._emit_claim(wk, "active")
+            with contextlib.suppress(RuntimeError):  # no running loop → tests w/o watch
+                asyncio.get_running_loop().create_task(self._watch_agent(wk, done_path))
         self._record_usage(config.job_cost_units())
         activity.log("mesh", "mesh-spawn",
                      f"Mesh: running {job.duty} (from {self._node_name(job.requested_by)})")
         return "spawned", ""
+
+    def _agent_done_path(self, work_key: str) -> str:
+        """A per-agent completion-sentinel path under the mesh dir (NOT /tmp, which
+        macOS purges). Its existence later == the executor's agent finished."""
+        from . import statefile
+
+        agents = statefile.state_path().parent / "agents"
+        with contextlib.suppress(OSError):
+            agents.mkdir(parents=True, exist_ok=True)
+        safe = "".join(c if c.isalnum() else "_" for c in work_key)[:96]
+        return str(agents / f"{safe}.{self._claim_seq.get(work_key, 0)}.done")
+
+    async def _watch_agent(self, work_key: str, done_path: str | None) -> None:
+        """Hold the executor's claim on ``work_key`` until its agent finishes.
+
+        The agent writes ``done_path`` on exit (``review.shell_command``'s exit-code
+        sentinel), which frees the key so the SAME work can be re-run if it wasn't
+        actually resolved (a crashed review) — the retry path. A backstop frees the
+        key if that signal is ever lost, and a yield (a better peer preempts us)
+        stops the watch early. Freeing on node death is the liveness lease, handled
+        elsewhere."""
+        deadline = time.monotonic() + self._agent_max_secs
+        try:
+            while time.monotonic() < deadline:
+                if done_path and os.path.exists(done_path):
+                    break
+                own = self._own_claim(work_key)
+                if own is None or not own.active:
+                    break  # preempted (yield) — our claim is already gone
+                await asyncio.sleep(0.1)
+        finally:
+            self._agents.pop(work_key, None)
+            if done_path:
+                with contextlib.suppress(OSError):
+                    os.unlink(done_path)
+            self.release(work_key)
 
     # MARK: - foreign zero-trust execution (confined compute + response-back)
     #

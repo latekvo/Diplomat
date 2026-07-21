@@ -204,11 +204,12 @@ class VerdictPolicy:
 #
 # Two machines running this monitor poll the same GitHub state as the same user, so
 # each is an independent origin of the same work (docs/szpontnet/12-work-claims.md).
-# The store gates every auto dispatch with:
-#   1. mesh_stand_down — the duty is assigned to OTHER live nodes: their monitor
-#      originates there, ours stands down (assignment already tracks liveness);
-#   2. the ctl `claim` verb on work_key — origination dedup for the remaining
-#      races (no assignee, takeover flaps, spread placements).
+# Every machine scans; the Store routes each auto find through claim-gated DISPATCH
+# (`Store._route_via_mesh`): the mesh runs it once, on the best-surplus node, and
+# the EXECUTOR holds the work-key claim for its agent's lifetime — so a concurrent
+# or repeat scan is suppressed, a crash frees it for a retry, and a node death frees
+# it for failover. There is deliberately NO duty-assignment stand-down: it deferred
+# to a node that might not be scanning, silently dropping the operator's work.
 
 WORK_REVIEW_REQ = "review"  # reviews requested of me → duty "review"
 WORK_REVIEW_REPLY = "review-reply"  # replies to reviews on MY PRs → duty "review"
@@ -341,20 +342,3 @@ def live_pr_numbers(ps_output: str, owner: str, repo: str) -> set[int]:
         for m in pat.finditer(line):
             out.add(int(m.group(1)))
     return out
-
-
-def mesh_stand_down(assignments: dict, self_id: str, duty: str) -> list[str] | None:
-    """Whether this node's auto-monitor must NOT originate ``duty`` work: the mesh
-    assigns the duty to other nodes only (their own monitors originate there, with
-    full local in-flight tracking). Returns the assigned node ids to stand down
-    for, or ``None`` to originate here (assigned to us, or nobody assigned — a
-    duty nobody can take is still better handled than dropped).
-
-    ``assignments`` is the node's state.json ``assignments`` map; the node already
-    recomputes it on peer-down, so an assignee listed there is a live one modulo
-    gossip lag (the claim gate covers that window)."""
-    entry = assignments.get(duty) or {}
-    assigned = [n for n in (entry.get("assigned") or []) if n]
-    if not assigned or self_id in assigned:
-        return None
-    return assigned

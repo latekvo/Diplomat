@@ -194,20 +194,4 @@ public enum AutofixMesh {
               parts[3].allSatisfy(\.isNumber), !parts[3].isEmpty else { return "" }
         return "\(kind):\(host)/\(parts[0])/\(parts[1])#\(parts[3])@\(headSha)"
     }
-
-    /// Whether this node's auto-monitor must NOT originate `duty` work: the mesh
-    /// assigns the duty to other nodes only (their own monitors originate there,
-    /// with full local in-flight tracking). Returns the assigned node ids to stand
-    /// down for, or nil to originate here (assigned to us, or nobody assigned — a
-    /// duty nobody can take is still better handled than dropped).
-    ///
-    /// `assignments` is the node's state.json assignments map; the node already
-    /// recomputes it on peer-down, so an assignee listed there is a live one
-    /// modulo gossip lag (the claim gate covers that window).
-    public static func standDown(assignments: [String: MeshAssignment],
-                                 selfID: String, duty: String) -> [String]? {
-        let assigned = (assignments[duty]?.assigned ?? []).filter { !$0.isEmpty }
-        if assigned.isEmpty || assigned.contains(selfID) { return nil }
-        return assigned
-    }
 }

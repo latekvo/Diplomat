@@ -248,7 +248,11 @@ doesn't discard state that a reconnect would restore.
 > running" - acceptable because completion tracking is a
 > [reserved extension](09-extensibility.md#adding-a-job-status), and a lease that
 > outlives a *finished* job merely suppresses a redundant re-run of the same
-> `workKey`, which is the desired behavior anyway.
+> `workKey`, which is the desired behavior anyway. An executor that *does* observe
+> its agent's completion (the applet watches a per-agent sentinel) MAY
+> [release](#origination-and-yield) the lease early — turning the crash of an agent
+> into a prompt retry — without changing the primitive: a release is just a normal
+> withdrawal, and a node death still frees the lease regardless.
 
 ## Origination and yield
 
@@ -298,11 +302,23 @@ with no bidding, no lock, and no leader.
 
 The claim gate attaches to the [control-session dispatch](07-dispatch.md#dispatching-via-a-control-session):
 the [`dispatch`](04-messages.md#dispatch) control message MAY carry an optional
-`workKey`. When present, the node runs `should_originate(workKey)` first and, if it
-must stand down, returns a [`dispatch-result`](04-messages.md#dispatch-result) whose
-single slot is `"claim"` with status **`"suppressed"`** and the current owner in
-`node`/`nodeName`, **instead of** routing anything. When the node proceeds, dispatch
-is exactly as [chapter 07](07-dispatch.md) describes.
+`workKey`. When present, the **dispatcher** first *reads* the current owner: if a
+live [authoritative](#ownership) node already holds the key, an agent is on the work,
+so it returns a [`dispatch-result`](04-messages.md#dispatch-result) whose single slot
+is `"claim"` with status **`"suppressed"`** (the owner in `node`/`nodeName`)
+**instead of** routing anything. Otherwise it places the run on the best node exactly
+as [chapter 07](07-dispatch.md) describes, and the **executor** — the node that
+spawns the agent — mints the active claim, holds it for that agent's lifetime, and
+[releases](#origination-and-yield) it when the agent finishes.
+
+Claiming on the **executor**, not the dispatcher, is what makes the lease track the
+*work* rather than merely the act of dispatching. From the one
+liveness-plus-completion lease: a re-observation while the agent runs is suppressed
+(the executor owns the key), an agent that crashes frees the key so the work is
+*retried*, and the executor's death frees it for *failover*. A simultaneous race —
+two dispatchers both read "unowned" and place on different executors — still
+converges by the [yield rule](#origination-and-yield): the higher-id executor hears
+the lower-id claim, withdraws, and aborts.
 
 The gate applies **only** to the leaderless surplus-first origination path, because
 that is the only path where two nodes can race to the same external event:
@@ -316,28 +332,29 @@ Both bypass the claim gate. A `workKey` on either is simply ignored.
 
 ## Integration without dispatch: the `claim` control verb
 
-An originator does not have to route the *execution* through the mesh to use the
-dedup. The stand-alone [`claim`](04-messages.md#claim--claim-result) control verb
-runs `should_originate(workKey)` and reports the verdict, letting the client run
-the work itself when it wins.
+A client that will run the work *itself* — not route the execution through the mesh
+— can still use the dedup directly. The stand-alone
+[`claim`](04-messages.md#claim--claim-result) control verb runs
+`should_originate(workKey)` and reports the verdict, so the caller originates only
+when it wins.
 
-This is how the applet's **PR auto-monitors** integrate (their reference work-key
-kinds: `review:` for a review requested of the operator, `review-reply:` for
-replies owed on the operator's own PR, `conflicts:` for a merge-conflict fix - all
-`<kind>:<host>/<owner>/<repo>#<number>@<head-sha>`). Each monitor gates an auto
-spawn twice:
+The applet's **PR auto-monitors** (reference work-key kinds: `review:` for a review
+requested of the operator, `review-reply:` for replies owed on the operator's own
+PR, `conflicts:` for a merge-conflict fix — all
+`<kind>:<host>/<owner>/<repo>#<number>@<head-sha>`) instead integrate through
+[claim-gated **dispatch**](#integration-with-dispatch): **every machine scans**, and
+each find is routed *with* its `workKey`, so the mesh runs it **once, on the
+best-surplus node**, with the executor holding the lease for the agent's lifetime.
 
-1. **Assignment first** ([06](06-coordination.md)): if the matching duty is
-   assigned to *other* live nodes only, the monitor stands down entirely - the
-   assignee's own monitor originates there, keeping the spawned agent locally
-   tracked. No claim is minted for work the node won't run.
-2. **Claim second**: when the node *would* originate (the duty is assigned to it,
-   or to nobody), it claims the work key via this verb and stands down if a better
-   peer already owns it - closing the races assignment can't see (takeover flaps,
-   `spread` placements, the no-eligible-node fallback).
+There is deliberately **no** duty-*assignment* stand-down. Assignment
+([06](06-coordination.md)) answers "where should a dispatched job run", not "who is
+scanning"; deferring a scan to the assignee dropped the work whenever that node was
+not itself watching (a `tokens:"out"` machine, a duty toggled off) — the very bug
+this integration replaces. The **claim**, not the assignment, is the dedup: it is
+minted only where an agent actually runs, and the losers stand down against *it*.
 
 Fail-open is deliberate: when the local node is unreachable the monitors revert to
-pre-claims behavior (originate locally), preferring a rare duplicate over silently
+pre-claims behavior (spawn locally), preferring a rare duplicate over silently
 dropping the operator's work.
 
 ## Conformance
