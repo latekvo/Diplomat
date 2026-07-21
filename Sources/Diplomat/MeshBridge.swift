@@ -189,10 +189,17 @@ enum MeshBridge {
     /// spawns the agent. Returns the per-node result dicts (`status`: spawned / declined /
     /// failed + `reason`). Mirrors `ctl.dispatch`. A remote spawn can take a while to
     /// ack, hence the generous timeout.
-    static func dispatch(duty: String, prompt: String, target: String? = nil, port: Int,
+    ///
+    /// `workKey` (optional) opts the dispatch into origination dedup: the node
+    /// claims the key, and if a live peer already owns the work returns a single
+    /// `suppressed` slot instead of routing a second run. The EXECUTOR holds that
+    /// claim for its agent's lifetime (docs/szpontnet/12).
+    static func dispatch(duty: String, prompt: String, target: String? = nil,
+                         workKey: String = "", port: Int,
                          timeout: TimeInterval = 60) throws -> [[String: Any]] {
         var msg: [String: Any] = ["t": "dispatch", "duty": duty, "prompt": prompt]
         if let target { msg["target"] = target }
+        if !workKey.isEmpty { msg["workKey"] = workKey }
         let reply = try request(msg, port: port, timeout: timeout)
         return (reply["results"] as? [[String: Any]]) ?? []
     }

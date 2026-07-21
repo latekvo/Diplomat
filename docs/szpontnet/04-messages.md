@@ -129,6 +129,7 @@ type stays [`dispatch`](#dispatch) carrying a `job`.
 | `prompt` | string | no (`""`) | opaque work payload; SzpontNet does not interpret it. |
 | `requestedBy` | string | no (`"?"`) | node id of the dispatcher. |
 | `requestedAt` | float | no (now) | dispatcher's timestamp. |
+| `workKey` | string | no (`""`) | the origination-dedup key this job executes ([12](12-work-claims.md)). When set, the **executor** claims it on spawn and holds the lease for the agent's lifetime; empty on a server-local / explicit-target / manual dispatch. Additive — a pre-claims node ignores it. |
 
 A Job missing `id` or `duty` is invalid and MUST be dropped.
 

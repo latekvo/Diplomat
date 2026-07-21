@@ -54,6 +54,10 @@ def _mesh_env(tmp: Path) -> dict:
         "DIPLOMAT_MESH_DIR": str(tmp / "mesh-self"),
         "DIPLOMAT_MESH_PLATFORM": "linux",
         "DIPLOMAT_MESH_SPAWN": f"cp {{prompt_file}} {tmp}/spawned-self.txt",
+        # Full-trust fleet: a set of the user's own machines that trust each other,
+        # so peers accept each other's dispatches without per-device promotion (the
+        # shipped default is zero-trust/foreign — see docs/szpontnet/11).
+        "DIPLOMAT_MESH_DEFAULT_TRUST": "personal",
         "HOME": str(tmp / "home"),
     }
 
@@ -88,6 +92,7 @@ def test_applet_meshes_and_dispatches(tmp_path, monkeypatch):
         "DIPLOMAT_MESH_DIR": str(peer_dir),
         "DIPLOMAT_MESH_PLATFORM": "macos",
         "DIPLOMAT_MESH_SPAWN": f"cp {{prompt_file}} {tmp_path}/spawned-peer.txt",
+        "DIPLOMAT_MESH_DEFAULT_TRUST": "personal",  # full-trust fleet (see _mesh_env)
     })
     peer = subprocess.Popen(
         [sys.executable, "-m", "diplomat_app.mesh"], cwd=LINUX_DIR, env=peer_env,
@@ -176,9 +181,13 @@ def test_applet_meshes_and_dispatches(tmp_path, monkeypatch):
         assert prompt == (tmp_path / "spawned-peer.txt").read_text()
         assert "end-to-end" in prompt.lower() or len(prompt) > 100  # a real audit prompt
 
-        # 4. The dispatch shows up in the activity feed (fake HOME).
+        # 4. The dispatch shows up in the node's activity feed (fake HOME): one
+        #    mesh-dispatch that spawned on BOTH machines. (The applet's own
+        #    "· via mesh" panel row goes to the conftest-isolated in-process feed,
+        #    not this node-written file, so we assert the node's record here.)
         feed = (tmp_path / "home" / ".diplomat" / "pr-monitor" / "audit.jsonl").read_text()
-        assert "via mesh" in feed and "mesh-dispatch" in feed
+        assert "mesh-dispatch" in feed
+        assert "applet-linux(spawned)" in feed and "fake-mac(spawned)" in feed
     finally:
         peer.kill()
         peer.wait(timeout=10)

@@ -105,12 +105,17 @@ def _detached(cmd: str, what: str, env: dict | None = None) -> None:
         raise JobSpawnError(f"{what} failed: {exc}") from exc
 
 
-def _spawn_override(prompt_file: str, template: str) -> None:
-    _detached(_fill(template, prompt_file=prompt_file), "DIPLOMAT_MESH_SPAWN")
+def _spawn_override(prompt_file: str, template: str, done_path: str | None = None) -> None:
+    env = None
+    if done_path:
+        # The executor watches this sentinel to free its work-claim when the agent
+        # finishes; a custom/test runner touches it on exit (docs/szpontnet/12).
+        env = {**os.environ, "DIPLOMAT_MESH_DONE_FILE": done_path}
+    _detached(_fill(template, prompt_file=prompt_file), "DIPLOMAT_MESH_SPAWN", env=env)
 
 
-def _spawn_macos(prompt_file: str) -> None:
-    shell_cmd = review.shell_command(prompt_file)
+def _spawn_macos(prompt_file: str, done_path: str | None = None) -> None:
+    shell_cmd = review.shell_command(prompt_file, done_path)
     script = f'tell application "Terminal" to do script {_applescript_quote(shell_cmd)}'
     try:
         subprocess.Popen(
@@ -128,26 +133,32 @@ def _applescript_quote(s: str) -> str:
     return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def spawn_job(prompt: str) -> str:
+def spawn_job(prompt: str, done_path: str | None = None) -> str:
     """Stage the prompt and launch the agent. Returns the prompt-file path;
     raises :class:`JobSpawnError` when this machine can't take the job (the
-    dispatcher then fails over to the next candidate)."""
+    dispatcher then fails over to the next candidate).
+
+    ``done_path`` (optional) is a completion sentinel the agent writes on exit —
+    how the executor learns its work-claim can be freed (docs/szpontnet/12). Every
+    spawn path wires it: the shell runners append ``review.shell_command``'s
+    exit-code write, and a custom ``DIPLOMAT_MESH_SPAWN`` runner is handed it as
+    ``DIPLOMAT_MESH_DONE_FILE`` to touch itself."""
     template = os.environ.get("DIPLOMAT_MESH_SPAWN")
     if template:
         prompt_file = review.write_prompt(prompt)
-        _spawn_override(prompt_file, template)
+        _spawn_override(prompt_file, template, done_path)
         return prompt_file
 
     import platform
 
     if platform.system() == "Darwin":
         prompt_file = review.write_prompt(prompt)
-        _spawn_macos(prompt_file)
+        _spawn_macos(prompt_file, done_path)
         return prompt_file
 
     # Linux: reuse the applet's spawner (terminal auto-detection included).
     try:
-        return review.spawn(prompt, None)
+        return review.spawn(prompt, None, done_path=done_path)
     except review.SpawnError as exc:
         raise JobSpawnError(str(exc)) from exc
 

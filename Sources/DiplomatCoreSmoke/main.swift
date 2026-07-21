@@ -462,22 +462,6 @@ check(AutofixMesh.workKey(kind: "review", prURL: "https://github.com/acme/app",
 check(AutofixMesh.workKey(kind: "review", prURL: "not a url", headSha: "x") == "")
 check(AutofixMesh.workKey(kind: "review", prURL: "", headSha: "x") == "")
 
-func assignmentsFixture(_ json: String) -> [String: MeshAssignment] {
-    try! JSONDecoder().decode([String: MeshAssignment].self, from: Data(json.utf8))
-}
-check(AutofixMesh.standDown(assignments: assignmentsFixture(#"{"review":{"assigned":["bbbb"]}}"#),
-                            selfID: "aaaa", duty: "review") == ["bbbb"],
-      "assigned elsewhere → stand down")
-check(AutofixMesh.standDown(assignments: assignmentsFixture(#"{"review":{"assigned":["aaaa","bbbb"]}}"#),
-                            selfID: "aaaa", duty: "review") == nil,
-      "assigned to us (among others) → originate")
-check(AutofixMesh.standDown(assignments: assignmentsFixture(#"{"review":{"assigned":[]}}"#),
-                            selfID: "aaaa", duty: "review") == nil,
-      "nobody assigned → originate (better handled than dropped)")
-check(AutofixMesh.standDown(assignments: [:], selfID: "aaaa", duty: "review") == nil)
-check(AutofixMesh.standDown(assignments: assignmentsFixture(#"{"review":{"assigned":[""]}}"#),
-                            selfID: "aaaa", duty: "review") == nil,
-      "empty ids are noise, not assignees")
 print("autofix mesh coordination assertions passed")
 
 // ---- known-mine single-PR review prompt (auto-fix monitor) ----

@@ -519,10 +519,8 @@ final class Store: ObservableObject {
     /// this flag race-free.
     private var autofixPollInFlight = false
 
-    /// Mesh coordination for the monitor (docs/szpontnet/12): per-duty stand-down
-    /// state (true while the duty is assigned to other nodes — logged only on
-    /// transition) and the work keys whose claim suppression was already logged.
-    private var meshDutyStoodDown: [String: Bool] = [:]
+    /// Work keys a peer's agent already owns, so the "claimed elsewhere" note is
+    /// logged once per key rather than every poll (docs/szpontnet/12).
     private var meshSuppressedLogged: Set<String> = []
 
     /// Set when the last monitor poll cycle failed (gh/auth/network), so persistent
@@ -802,62 +800,62 @@ final class Store: ObservableObject {
         NSWorkspace.shared.frontmostApplication?.bundleIdentifier
     }
 
-    /// The auto-monitor's mesh coordination gate (docs/szpontnet/12): true → stand
-    /// down, another node originates this work; false → originate here and spawn the
-    /// local tracked agent as always. Mirrors the Linux store's `_mesh_monitor_gate`.
+    enum MeshRoute { case standDown, spawned, local }
+
+    /// Route an AUTO job through the mesh (docs/szpontnet/12): claim-gated dispatch
+    /// to the best-surplus node. Mirrors the Linux store's `_route_via_mesh`.
     ///
-    /// Two layers: the duty ASSIGNMENT (other live nodes own the duty → their own
-    /// monitors originate there; logged once per transition, not per tick) and the
-    /// work-key CLAIM via the ctl `claim` verb (origination dedup for the remaining
-    /// races — no assignee, takeover flaps, spread placements; a suppression is
-    /// logged once per key). Fail-open on any mesh unavailability — a wedged node
-    /// must never leave PRs unhandled.
-    private func meshMonitorStandsDown(duty: String, workKey: String, what: String) async -> Bool {
-        guard meshEnabled, let snap = meshState, MeshBridge.nodeRunning(snap),
-              let selfID = snap.selfNode?.id else {
-            noteMeshResume(duty)
-            return false
-        }
-        if let assigned = AutofixMesh.standDown(assignments: snap.assignments,
-                                                selfID: selfID, duty: duty) {
-            if meshDutyStoodDown[duty] != true {
-                meshDutyStoodDown[duty] = true
-                var names: [String: String] = [:]
-                if let s = snap.selfNode { names[s.id] = s.name }
-                for p in snap.peers { names[p.id] = p.name }
-                let who = assigned.map { names[$0] ?? String($0.prefix(8)) }
-                    .joined(separator: ", ")
-                AuditLog.log("auto", "mesh-standdown",
-                             "Auto-monitor: \(duty) handled by \(who) (mesh assignment)")
-                refreshAudit()
-            }
-            return true
-        }
-        noteMeshResume(duty)
-        guard !workKey.isEmpty else { return false }
+    /// Every machine scans GitHub independently, but the mesh runs each unit of work
+    /// **once** — `MeshBridge.dispatch` claims the work key and places the run on the
+    /// best node; the EXECUTOR holds that claim for its agent's lifetime, so a
+    /// concurrent or repeat scan is suppressed and a node death frees it for
+    /// failover. No node stands down on a duty ASSIGNMENT anymore — that deferred to
+    /// a node that might not be scanning at all, silently dropping the work.
+    ///
+    /// `.spawned` (the mesh took it), `.standDown` (a peer's agent owns it), or
+    /// `.local` to fall through to a LOCAL tracked spawn — the fail-open path when
+    /// the mesh is unavailable, so a wedged node never drops the operator's work.
+    private func routeViaMesh(_ job: AgentJob) async -> MeshRoute {
+        guard meshEnabled, !job.workKey.isEmpty,
+              let snap = meshState, MeshBridge.nodeRunning(snap) else { return .local }
         let port = snap.tcpPort ?? 0
-        let outcome: (owned: Bool, ownerName: String?)? =
-            await Task.detached(priority: .userInitiated) {
-                try? MeshBridge.claim(workKey: workKey, port: port)
-            }.value
-        // Fail-open: claim gate unavailable → pre-mesh behavior (originate).
-        guard let outcome, !outcome.owned else { return false }
-        if !meshSuppressedLogged.contains(workKey) {
-            if meshSuppressedLogged.count > 256 { meshSuppressedLogged.removeAll() }
-            meshSuppressedLogged.insert(workKey)
-            AuditLog.log("auto", "mesh-suppressed",
-                         "Auto-monitor: \(what) claimed by \(outcome.ownerName ?? "a peer") — standing down")
-            refreshAudit()
+        let (duty, prompt, workKey) = (job.duty, job.prompt, job.workKey)
+        let results: [[String: Any]]? = await Task.detached(priority: .userInitiated) {
+            try? MeshBridge.dispatch(duty: duty, prompt: prompt, workKey: workKey, port: port)
+        }.value
+        guard let results, !results.isEmpty else { return .local }  // unreachable → fail-open
+        let statuses = results.map { ($0["status"] as? String) ?? "failed" }
+        if statuses.allSatisfy({ $0 == "suppressed" }) {
+            logMeshSuppressed(workKey, results)
+            return .standDown
         }
-        return true
+        if statuses.allSatisfy({ $0 == "spawned" || $0 == "suppressed" }) {
+            return .spawned  // ran on the mesh (the node logs where)
+        }
+        return .local  // declined/failed on every slot → fall through to a local spawn
     }
 
-    /// Log the stand-down → originate-here transition (once, not per tick).
-    private func noteMeshResume(_ duty: String) {
-        if meshDutyStoodDown[duty] == true {
-            meshDutyStoodDown[duty] = false
-            AuditLog.log("auto", "mesh-resume", "Auto-monitor: \(duty) resumes here")
-            refreshAudit()
+    /// A peer's agent owns this work — note it once per key, not per poll.
+    private func logMeshSuppressed(_ workKey: String, _ results: [[String: Any]]) {
+        if meshSuppressedLogged.contains(workKey) { return }
+        if meshSuppressedLogged.count > 256 { meshSuppressedLogged.removeAll() }
+        meshSuppressedLogged.insert(workKey)
+        let owner = results.compactMap { $0["nodeName"] as? String }.first ?? "a peer"
+        AuditLog.log("auto", "mesh-suppressed", "Work claimed by \(owner) — running there")
+        refreshAudit()
+    }
+
+    /// Auto-handled counters bump only on a monitor's FIRST dispatch (a retry is not
+    /// new work; a manual run is the user's own action). Shared by both spawn paths.
+    private func bumpAutoCounter(_ job: AgentJob, source: AgentDispatchGate.Source,
+                                 attemptNumber: Int) {
+        guard AgentDispatchGate.bumpsCounter(source: source, attemptNumber: attemptNumber)
+        else { return }
+        switch job.counter {
+        case .reviewRequests: reviewRequestsHandled += 1
+        case .myReviews: autofixReviewsHandled += 1
+        case .conflicts: autofixConflictsHandled += 1
+        case nil: break
         }
     }
 
@@ -917,16 +915,8 @@ final class Store: ObservableObject {
                 agentOnPR = await livePRAgents().contains(n)
             }
         }
-        // Mesh last, and only when the job would otherwise run: a claim has gossip
-        // side effects. Only auto origination is gated — a human clicking THIS
-        // machine's button has already decided placement.
-        var meshStandsDown = false
-        if !banned, !agentOnPR, source == .auto {
-            meshStandsDown = await meshMonitorStandsDown(duty: job.duty, workKey: job.workKey,
-                                                         what: job.label)
-        }
         switch AgentDispatchGate.decide(source: source, banned: banned,
-                                        agentOnPR: agentOnPR, meshStandsDown: meshStandsDown) {
+                                        agentOnPR: agentOnPR, meshStandsDown: false) {
         case .banned:
             AuditLog.log(source.rawValue, "ban-skip",
                          "\(job.label) — author is banned (un-ban to review)")
@@ -942,9 +932,28 @@ final class Store: ObservableObject {
             }
             return .inFlight
         case .standDown:
-            return .standDown   // logged (once per transition/key) by the gate
+            return .standDown
         case .proceed:
             break
+        }
+        // An AUTO job on a live mesh runs on the best-surplus node via claim-gated
+        // dispatch (every machine scans; the mesh runs it once and dedups via the
+        // executor's claim). A manual spawn — or a wedged/absent mesh — runs and is
+        // tracked locally instead (fail-open).
+        if source == .auto {
+            switch await routeViaMesh(job) {
+            case .standDown:
+                return .standDown   // a peer's agent owns it (logged once by the router)
+            case .spawned:
+                AuditLog.log(source.rawValue, job.auditAction,
+                             AgentDispatchGate.label(source: source, core: job.label,
+                                                     attemptNumber: attemptNumber))
+                bumpAutoCounter(job, source: source, attemptNumber: attemptNumber)
+                refreshAudit()
+                return .spawned(terminal: "mesh")
+            case .local:
+                break               // fall through to a local tracked spawn
+            }
         }
         let preferred = terminal
         let restoreBID = AgentDispatchGate.stealsFocus(source) ? nil : frontmostAppBundleID
@@ -958,16 +967,7 @@ final class Store: ObservableObject {
                                                  attemptNumber: attemptNumber),
                   prURL: job.prURL, result: result, source: source.rawValue,
                   auditAction: job.auditAction)
-            // Retries are re-dispatches, not new work handled — count once, and
-            // only for the monitor (a manual run is the user's own action).
-            if AgentDispatchGate.bumpsCounter(source: source, attemptNumber: attemptNumber) {
-                switch job.counter {
-                case .reviewRequests: reviewRequestsHandled += 1
-                case .myReviews: autofixReviewsHandled += 1
-                case .conflicts: autofixConflictsHandled += 1
-                case nil: break
-                }
-            }
+            bumpAutoCounter(job, source: source, attemptNumber: attemptNumber)
             return .spawned(terminal: result.terminal.rawValue)
         } catch {
             let msg = (error as? LocalizedError)?.errorDescription ?? "\(error)"

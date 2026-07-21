@@ -176,10 +176,8 @@ class Store(QObject):
         # under _autofix_lock) - a click and an overlapping poll can't race two
         # spawns onto one PR.
         self._dispatching_prs: set[int] = set()
-        # Mesh coordination for the monitor (docs/szpontnet/12): per-duty stand-down
-        # state (True while the duty is assigned to other nodes — logged only on
-        # transition) and the work keys whose claim suppression was already logged.
-        self._mesh_duty_stood_down: dict[str, bool] = {}
+        # Work keys a peer's agent already owns, so the "claimed elsewhere" note is
+        # logged once per key rather than every poll (docs/szpontnet/12).
         self._mesh_suppressed_logged: set[str] = set()
 
         # Claude-API-error watcher: live-only runtime state (the toggle/count persist
@@ -605,77 +603,52 @@ class Store(QObject):
 
     # MARK: monitor dispatch + tracking
 
-    def _mesh_monitor_gate(self, duty: str, work_key: str, what: str) -> bool:
-        """The auto-monitor's mesh coordination gate (docs/szpontnet/12): True →
-        stand down, another node originates this work; False → originate here and
-        spawn the local tracked agent as always.
+    def _route_via_mesh(self, job: "autofix.AgentJob") -> str | None:
+        """Route an auto job through the mesh (docs/szpontnet/12): claim-gated
+        dispatch to the best-surplus node.
 
-        Two layers: the duty ASSIGNMENT (other live nodes own the duty → their own
-        monitors originate there; logged once per transition, not per tick) and the
-        work-key CLAIM via the ctl ``claim`` verb (origination dedup for the
-        remaining races — no assignee, takeover flaps, spread placements; a
-        suppression is logged once per key). Fail-open on any mesh unavailability —
-        a wedged node must never leave PRs unhandled."""
+        Every machine scans GitHub independently, but the mesh runs each unit of
+        work **once** — ``ctl.dispatch`` claims the work key and places the run on
+        the best node; the EXECUTOR holds that claim for its agent's lifetime, so a
+        concurrent or repeat scan is suppressed and a node death frees it for
+        failover. No node stands down on a duty ASSIGNMENT anymore — that deferred
+        to a node that might not be scanning at all, silently dropping the work.
+
+        Returns ``"spawned"`` (the mesh took it), ``VERDICT_STAND_DOWN`` (a peer's
+        agent already owns it), or ``None`` to fall through to a LOCAL spawn — the
+        fail-open path when the mesh is unavailable, so a wedged node never drops
+        the operator's work."""
         from .mesh import ctl, statefile
 
-        if not self.mesh_enabled:
-            self._note_mesh_resume(duty)
-            return False
+        if not self.mesh_enabled or not job.work_key:
+            return None
         state = statefile.read_state()
         if not state or not statefile.node_running(state):
-            self._note_mesh_resume(duty)
-            return False
-        self_id = (state.get("self") or {}).get("id") or ""
-        assigned = autofix.mesh_stand_down(
-            state.get("assignments") or {}, self_id, duty
-        )
-        if assigned is not None:
-            if not self._mesh_duty_stood_down.get(duty):
-                self._mesh_duty_stood_down[duty] = True
-                names = ", ".join(self._mesh_node_names(state, assigned))
-                activity.log(
-                    "auto",
-                    "mesh-standdown",
-                    f"Auto-monitor: {duty} handled by {names} (mesh assignment)",
-                )
-            return True
-        self._note_mesh_resume(duty)
-        if not work_key:
-            return False
+            return None
         try:
-            res = ctl.claim_work(work_key)
+            results = ctl.dispatch(job.duty, job.prompt, work_key=job.work_key)
         except ctl.CtlError:
-            return False  # fail-open: claim gate unavailable → pre-mesh behavior
-        if res["owned"]:
-            return False
-        if work_key not in self._mesh_suppressed_logged:
-            if len(self._mesh_suppressed_logged) > 256:
-                self._mesh_suppressed_logged.clear()
-            self._mesh_suppressed_logged.add(work_key)
-            owner = res.get("ownerName") or str(res.get("owner") or "?")[:8]
-            activity.log(
-                "auto",
-                "mesh-suppressed",
-                f"Auto-monitor: {what} claimed by {owner} — standing down",
-            )
-        return True
+            return None  # node unreachable → fail-open to a local tracked spawn
+        if not results:
+            return None
+        statuses = [r.get("status") for r in results]
+        if statuses and all(s == "suppressed" for s in statuses):
+            self._log_mesh_suppressed(job.work_key, results)
+            return autofix.VERDICT_STAND_DOWN
+        if all(s in ("spawned", "suppressed") for s in statuses):
+            return "spawned"  # ran on the mesh (the node logs where)
+        return None  # declined/failed on every slot → fall through to a local spawn
 
-    def _note_mesh_resume(self, duty: str) -> None:
-        """Log the stand-down → originate-here transition (once, not per tick)."""
-        if self._mesh_duty_stood_down.get(duty):
-            self._mesh_duty_stood_down[duty] = False
-            activity.log("auto", "mesh-resume", f"Auto-monitor: {duty} resumes here")
-
-    @staticmethod
-    def _mesh_node_names(state: dict, ids: list[str]) -> list[str]:
-        names: dict[str, str] = {}
-        me = state.get("self") or {}
-        if me.get("id"):
-            names[me["id"]] = me.get("name") or me["id"][:8]
-        for p in state.get("peers") or []:
-            if p.get("id"):
-                names[p["id"]] = p.get("name") or p["id"][:8]
-        return [names.get(i, i[:8]) for i in ids]
+    def _log_mesh_suppressed(self, work_key: str, results: list) -> None:
+        """A peer's agent owns this work — note it once per key, not per poll."""
+        if work_key in self._mesh_suppressed_logged:
+            return
+        if len(self._mesh_suppressed_logged) > 256:
+            self._mesh_suppressed_logged.clear()
+        self._mesh_suppressed_logged.add(work_key)
+        owner = next((r.get("nodeName") for r in results if r.get("nodeName")), "a peer")
+        activity.log("auto", "mesh-suppressed",
+                     f"Work claimed by {owner} — running there")
 
     # MARK: - the one dispatch pipeline (buttons and monitors are triggers, not paths)
 
@@ -700,16 +673,7 @@ class Store(QObject):
                 job.author_login, bans.read()
             )
             agent_on_pr = bool(job.pr_url) and self._in_flight(job.pr_url)
-            # Mesh last, and only when the job would otherwise run: a claim has
-            # gossip side effects. Only auto origination is gated - a human
-            # clicking THIS machine's button has already decided placement.
-            stands_down = (
-                not banned
-                and not agent_on_pr
-                and source == autofix.SOURCE_AUTO
-                and self._mesh_monitor_gate(job.duty, job.work_key, job.label)
-            )
-            verdict = autofix.dispatch_decide(source, banned, agent_on_pr, stands_down)
+            verdict = autofix.dispatch_decide(source, banned, agent_on_pr, False)
             if verdict == autofix.VERDICT_BANNED:
                 activity.log(
                     source, "ban-skip", f"{job.label} - author is banned (un-ban to review)"
@@ -725,9 +689,17 @@ class Store(QObject):
                     )
                     self.refresh_activity()
                 return verdict
-            if verdict == autofix.VERDICT_STAND_DOWN:
-                return verdict  # logged (once per transition/key) by the gate
-            if job.pr_url is not None and job.pr_number is not None:
+            # An AUTO job on a live mesh runs on the best-surplus node via
+            # claim-gated dispatch (every machine scans; the mesh runs it once and
+            # dedups via the executor's claim). A manual spawn — or a wedged/absent
+            # mesh — runs and is tracked locally instead (fail-open). Both converge
+            # on the shared audit/counter tail below.
+            routed = self._route_via_mesh(job) if source == autofix.SOURCE_AUTO else None
+            if routed == autofix.VERDICT_STAND_DOWN:
+                return routed  # a peer's agent owns it (logged once by the router)
+            if routed == "spawned":
+                ok = True
+            elif job.pr_url is not None and job.pr_number is not None:
                 ok = self._spawn_tracked(job.prompt, job.pr_url, job.pr_number)
             else:
                 # Not PR-scoped (sweeps, audits): nothing to dedup against, so no
@@ -777,7 +749,7 @@ class Store(QObject):
             work_key=autofix.work_key(autofix.WORK_CONFLICTS, url, head_sha),
             counter="conflicts",
         )
-        return self.dispatch_agent(job, source, attempt) == "spawned"
+        return self.dispatch_agent(job, source, attempt) in ("spawned", autofix.VERDICT_STAND_DOWN)
 
     def _dispatch_my_review(self, s, attempt: int = 1) -> bool:
         job = autofix.AgentJob(
@@ -800,7 +772,7 @@ class Store(QObject):
             work_key=autofix.work_key(autofix.WORK_REVIEW_REPLY, s.url, s.head_sha),
             counter="my_reviews",
         )
-        return self.dispatch_agent(job, autofix.SOURCE_AUTO, attempt) == "spawned"
+        return self.dispatch_agent(job, autofix.SOURCE_AUTO, attempt) in ("spawned", autofix.VERDICT_STAND_DOWN)
 
     def _dispatch_review_request(self, r, attempt: int = 1) -> bool:
         reasons = self.verdict_policy.withhold_reasons(r.files, r.author_association)
@@ -833,7 +805,7 @@ class Store(QObject):
             work_key=autofix.work_key(autofix.WORK_REVIEW_REQ, r.url, r.head_sha),
             counter="review_requests",
         )
-        return self.dispatch_agent(job, autofix.SOURCE_AUTO, attempt) == "spawned"
+        return self.dispatch_agent(job, autofix.SOURCE_AUTO, attempt) in ("spawned", autofix.VERDICT_STAND_DOWN)
 
     def _spawn_tracked(self, prompt: str, url: str, number: int) -> bool:
         """Spawn an agent with a completion sentinel and record it in-flight. Returns
