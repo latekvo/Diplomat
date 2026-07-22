@@ -198,14 +198,14 @@ class SettingsView(QWidget):
         owner, repo = core.config()["owner"], core.config()["repo"]
         if env:
             text = (
-                f"DIPLOMAT_REPO is set in this app's environment — agents run in "
+                "DIPLOMAT_REPO is set in this app's environment — agents run in "
                 f"{os.path.expanduser(env)}, whatever this field says. Unset it to use "
                 "the picker again."
             )
         elif not is_checkout:
             text = (
                 f"No git checkout at {resolved} — the spawn's `cd` is best-effort, so an "
-                f"agent would start in your home directory instead. Pick the clone of "
+                "agent would start in your home directory instead. Pick the clone of "
                 f"{owner}/{repo}."
             )
         else:
