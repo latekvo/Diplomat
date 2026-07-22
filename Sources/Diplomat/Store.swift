@@ -46,7 +46,9 @@ final class Store: ObservableObject {
     /// Store with preview values through the same persisted properties the GUI uses,
     /// and it shares the live app's defaults domain: an unguarded write would silently
     /// flip the user's real settings (a past render turned the auto-approve opt-in ON).
-    /// Every settings didSet must go through here.
+    /// Every UserDefaults-backed settings didSet must go through here. (The one
+    /// exception is `repoPathOverride`, which lives in the shared `AppConfig` file, not
+    /// UserDefaults — its didSet applies the same render guard inline.)
     private func persist(_ value: Any?, forKey key: String) {
         guard !Headless.isRender else { return }
         UserDefaults.standard.set(value, forKey: key)

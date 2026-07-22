@@ -592,8 +592,9 @@ enum Dump {
         }
     }
 
-    /// Exercises the persisted-settings load path: a fresh Store reads UserDefaults
-    /// in its initializer. Run via the .app bundle's binary so it shares the GUI's
+    /// Exercises the persisted-settings load path: a fresh Store reads its settings
+    /// (UserDefaults, plus the repo root from the shared `AppConfig` file) in its
+    /// initializer. Run via the .app bundle's binary so it shares the GUI's
     /// `com.ignacy.diplomat` defaults domain.
     @MainActor static func settings() {
         let s = Store()

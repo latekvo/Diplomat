@@ -3,7 +3,9 @@
 A port of Store.swift. The tool catalog (titles, subtitles, colours, order) is
 loaded from the shared ``core/catalog.json``; the row-mapping in ``items_for``
 is the same dense formatting the macOS panel renders. Settings persist via
-``QSettings`` (the Linux analogue of macOS UserDefaults).
+``QSettings`` (the Linux analogue of macOS UserDefaults) — except the repo root,
+which lives in the shared ``~/.diplomat/config.json`` (see :mod:`appconfig`) so a
+Qt-less mesh node can read it too.
 """
 
 from __future__ import annotations

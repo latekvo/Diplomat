@@ -61,7 +61,8 @@ alone with `./scripts/install-autoupdate.sh` / `./scripts/uninstall-autoupdate.s
 
 ## Settings
 
-A two-pane screen matching macOS. Persist via `QSettings` (`~/.config/diplomat/…`):
+A two-pane screen matching macOS. Most persist via `QSettings`
+(`~/.config/diplomat/…`); the repo root is the exception (see its bullet):
 
 - **GitHub username** — overrides the `gh`-authenticated login for the "My …" tools.
 - **Repo root** — the local checkout every spawned agent `cd`s into, with a
@@ -162,8 +163,9 @@ python tests/test_logic.py        # the logic tests, dependency-free (no pytest)
   restart re-linking.
 - `tests/test_mesh_ctl_flush.py` / `tests/test_mesh_e2e_applet.py` - control-edit
   state flush, and the applet driving a real node end to end.
-- `tests/conftest.py` - redirects `QSettings` to a per-test temp dir, so tests
-  never read (or scribble on) your live config.
+- `tests/conftest.py` - redirects `QSettings`, the shared `~/.diplomat/config.json`
+  and the activity feed to per-test temp dirs, so tests never read (or scribble on)
+  your live config.
 
 ## Layout
 

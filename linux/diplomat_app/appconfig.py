@@ -32,7 +32,12 @@ REPO_ROOT = "repoRoot"
 
 def path() -> Path:
     env = os.environ.get("DIPLOMAT_CONFIG")
-    return Path(env).expanduser() if env else Path.home() / ".diplomat" / "config.json"
+    if not env:
+        return Path.home() / ".diplomat" / "config.json"
+    try:
+        return Path(env).expanduser()
+    except RuntimeError:  # e.g. "~nosuchuser/..." — no home to expand; use it verbatim
+        return Path(env)
 
 
 def read() -> dict:
@@ -52,7 +57,10 @@ def get(key: str, default: str = "") -> str:
 
 def set_value(key: str, value: str) -> None:
     """Read-modify-write one key (empty value removes it), atomically, so a node
-    reading concurrently never sees a torn file and other keys survive."""
+    reading concurrently never sees a torn file. Keys the file already holds survive a
+    normal write; a file that failed to parse (see :func:`read`) is rewritten from
+    defaults, so a *corrupt* file loses any other keys — acceptable while repo root is
+    the only key, revisit if a second one lands here."""
     data = read()
     if value:
         data[key] = value

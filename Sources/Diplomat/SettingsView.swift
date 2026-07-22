@@ -374,30 +374,32 @@ struct SettingsView: View {
 
     // MARK: Repo root (where the agents work)
 
+    /// Trimmed the same way the resolver blanks it (`RepoPaths.storedAgentRepo`), so a
+    /// newline-only paste reads as blank in the UI too — otherwise the clear button and
+    /// the "Blank = …" tail would disagree with what actually resolves.
     private var trimmedRepoPath: String {
-        store.repoPathOverride.trimmingCharacters(in: .whitespaces)
+        store.repoPathOverride.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// Precomputed outside the ViewBuilder (SwiftUI type-checker budget — same reason
-    /// as `meshBlurb`). One `agentRepoState` read decides both the text and the colour,
-    /// so they can't disagree and the filesystem is stat'd once per render.
-    private var repoHint: String {
-        let resolved = RepoPaths.agentRepo
-        switch RepoPaths.agentRepoState {
+    /// The hint text for a given state. `state` is passed in (not re-read) so one read in
+    /// `repoSection` drives both the text and the colour — they can't disagree, and the
+    /// filesystem is stat'd once per render. Mirrors `settingsview._refresh_repo_ui`.
+    private func repoHint(_ state: RepoPaths.AgentRepoState) -> String {
+        switch state {
         case .envShadowed:
             return "DIPLOMAT_REPO is set in this app's environment — agents run in "
-                + "\(RepoPaths.agentRepoEnvOverride ?? resolved), whatever this field says. "
-                + "Unset it to use the picker again."
+                + "\(RepoPaths.agentRepoEnvOverride ?? RepoPaths.agentRepo), whatever this "
+                + "field says. Unset it to use the picker again."
         case .notAbsolute:
             return "Use an absolute path — a relative one resolves against whatever "
                 + "directory the spawned terminal happens to start in, not this app's."
         case .notACheckout:
-            return "No git checkout at \(resolved) — the spawn's `cd` is best-effort, so an "
-                + "agent would start in your home directory instead. Pick the clone of "
-                + "\(repoSlug)."
+            return "No git checkout at \(RepoPaths.agentRepo) — the spawn's `cd` is "
+                + "best-effort, so an agent would start in your home directory instead. "
+                + "Pick the clone of \(repoSlug)."
         case .ok:
-            return "Every spawned agent starts with `cd \(resolved)` — your local clone of "
-                + "\(repoSlug)\(trimmedRepoPath.isEmpty ? ". Blank = the default path." : ".")"
+            return "Every spawned agent starts with `cd \(RepoPaths.agentRepo)` — your local "
+                + "clone of \(repoSlug)\(trimmedRepoPath.isEmpty ? ". Blank = the default path." : ".")"
         }
     }
 
@@ -406,13 +408,10 @@ struct SettingsView: View {
         return "\(c.owner)/\(c.repo)"
     }
 
-    /// Orange for every state where the field's value isn't what agents will use.
-    private var repoHintColor: Color {
-        RepoPaths.agentRepoState == .ok ? .secondary : .orange
-    }
-
     private var repoSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        // One state read per render decides both the hint text and its colour.
+        let state = RepoPaths.agentRepoState
+        return VStack(alignment: .leading, spacing: 6) {
             sectionLabel("REPO ROOT")
             HStack(spacing: 6) {
                 Image(systemName: "folder").font(.caption).foregroundStyle(.secondary)
@@ -433,8 +432,8 @@ struct SettingsView: View {
             .padding(8)
             .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.1)))
 
-            Text(repoHint)
-                .font(.caption2).foregroundStyle(repoHintColor)
+            Text(repoHint(state))
+                .font(.caption2).foregroundStyle(state == .ok ? Color.secondary : .orange)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }

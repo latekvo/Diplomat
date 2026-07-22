@@ -36,9 +36,11 @@ enum AppConfig {
 
     static func string(_ key: String) -> String { read()[key] as? String ?? "" }
 
-    /// Read-modify-write, atomically (Foundation writes to a temp file and renames), so
-    /// a node reading concurrently never sees a torn file and neighbouring keys survive.
-    /// Best-effort: an unwritable HOME must never throw into the UI.
+    /// Read-modify-write, atomically (Foundation writes to a temp file and renames), so a
+    /// node reading concurrently never sees a torn file. Keys the file already holds
+    /// survive a normal write; a file that failed to parse (see `read`) is rewritten from
+    /// defaults, so a *corrupt* file loses any other keys — fine while repo root is the
+    /// only key. Best-effort: an unwritable HOME must never throw into the UI.
     static func set(_ key: String, _ value: String) {
         var obj = read()
         if value.isEmpty { obj.removeValue(forKey: key) } else { obj[key] = value }
