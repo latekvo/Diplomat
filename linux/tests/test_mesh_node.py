@@ -299,13 +299,26 @@ def test_mesh_discovery_assignment_failover_and_dispatch(fleet):
             lambda nid=nid: _assignments(fleet.state(nid)).get("audit") == ("aaaa", "bbbb"),
             what=f"{nid} to reassign the audit after mac-weak died",
         )
-    down = [p for p in fleet.state("aaaa")["peers"] if p["id"] == "cccc"]
-    assert down and down[0]["link"] == "down"
+    # aaaa can adopt the reassignment via bbbb's gossip before its own link to
+    # mac-weak times out, so poll for the link-down rather than assume it lands
+    # in lockstep with the audit move.
+    def _cccc_link_down():
+        cccc = next((p for p in fleet.state("aaaa")["peers"] if p["id"] == "cccc"), None)
+        return cccc if cccc and cccc["link"] == "down" else None
+
+    down = _wait_for(_cccc_link_down, what="aaaa to mark mac-weak's link down")
+    assert down["link"] == "down"
 
     # 7. The takeover is visible in each survivor's activity feed (HOME is the
-    #    node dir, so the shared audit.jsonl lands inside the fixture).
-    feed = (fleet.dirs["aaaa"] / ".diplomat" / "pr-monitor" / "audit.jsonl").read_text()
-    assert "mesh-takeover" in feed and "mesh-peer-down" in feed
+    #    node dir, so the shared audit.jsonl lands inside the fixture). The log
+    #    line lands on the down-detection sweep, which can trail the link-state
+    #    flip, so poll the feed too.
+    feed_path = fleet.dirs["aaaa"] / ".diplomat" / "pr-monitor" / "audit.jsonl"
+    _wait_for(
+        lambda: "mesh-takeover" in feed_path.read_text()
+        and "mesh-peer-down" in feed_path.read_text(),
+        what="aaaa's feed to record the takeover and peer-down",
+    )
 
 
 def test_secret_fences_peers_and_control(fleet):
