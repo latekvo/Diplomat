@@ -48,6 +48,10 @@ function fakeDevices() {
   try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return null; }
 }
 const FAKE = () => process.env.DA_FAKE_DEVICES != null;
+// How long a wipe waits for a shut-down Android instance to release its AVD lock
+// before giving up. Overridable so the wedged-device timeout path is testable without
+// a real 60s wait.
+const ANDROID_GONE_TIMEOUT_MS = Number(process.env.DA_ANDROID_GONE_TIMEOUT_MS) || 60000;
 
 // ---- platform helpers -----------------------------------------------------
 
@@ -55,6 +59,18 @@ const FAKE = () => process.env.DA_FAKE_DEVICES != null;
 // (serial). Vega (Fire TV) has no local enumeration CLI — it's create-only.
 export const isApplePlatform = (p) => p === 'ios' || p === 'apple-tv';
 export const isAndroidPlatform = (p) => p === 'android' || p === 'android-tv';
+
+// Which destructive first-line reset an automated repair (DA_AUTO_REPAIR=1) applies
+// to a platform: Apple sims (ios + apple-tv) are erased via simctl on their udid;
+// Android (android + android-tv) cold-boot -wipe-data on their avd; vega/unknown
+// have no local reset CLI and must escalate to a repair agent. Named + exported so
+// the routing is unit-testable: a bare `=== 'ios'` check silently sent apple-tv
+// down the Android branch as wipeAndroid(undefined).
+export function resetKind(platform) {
+  if (isApplePlatform(platform)) return 'erase';
+  if (isAndroidPlatform(platform)) return 'wipe';
+  return 'none';
+}
 
 // The canonical platform/format catalogue the tools advertise.
 export const PLATFORMS = ['ios', 'android', 'apple-tv', 'android-tv', 'vega'];
@@ -203,7 +219,13 @@ export async function shutdownIOS(udid) {
 }
 
 export async function eraseIOS(udid) {
-  if (FAKE()) return { ok: true };
+  if (FAKE()) {
+    // Test-only: a real event-loop yield so a test can interleave a concurrent op
+    // during the erase await (the real simctl shutdown+erase always yields).
+    const _d = Number(process.env.DA_FAKE_RESET_DELAY_MS || 0);
+    if (_d > 0) await new Promise((r) => setTimeout(r, _d));
+    return { ok: true };
+  }
   await run('xcrun', ['simctl', 'shutdown', udid], { timeout: 60000 });
   return run('xcrun', ['simctl', 'erase', udid], { timeout: 120000 });
 }
@@ -213,9 +235,26 @@ export async function bootAndroid(avd, { wipe = false } = {}) {
   // Already running? Reuse it instead of spawning a doomed second instance that
   // would just abort on the AVD lock. (simctl boot is a no-op when booted, but
   // the emulator binary is not, so we guard here.)
-  if (!wipe) {
-    const running = (await androidRunningMap())[avd];
-    if (running) {
+  const running = (await androidRunningMap())[avd];
+  if (running) {
+    if (wipe) {
+      // A data wipe must start from a COLD instance. If the original stays up, the
+      // `-wipe-data` emulator spawned below aborts on the AVD lock (detached +
+      // stdio:'ignore', so the abort is unobserved), and waitForAndroidBoot then
+      // finds the still-running UN-WIPED original and falsely returns booted:true —
+      // repair "succeeds" without ever wiping. Shut the original down and wait for
+      // the lock to release first, mirroring eraseIOS's `simctl shutdown` before
+      // `simctl erase` (which is why a running Apple sim IS wiped).
+      await shutdownAndroid(running);
+      if (!(await waitForAndroidGone(avd, ANDROID_GONE_TIMEOUT_MS))) {
+        // The original never released the AVD lock (a wedged device whose `emu kill`
+        // doesn't take). A `-wipe-data` boot now would abort on the held lock, and
+        // waitForAndroidBoot would then read the still-running UN-WIPED original as
+        // booted:true — the exact false repair-success this branch exists to prevent.
+        // Fail honestly so dispatchRepair keeps the device quarantined, not the pool.
+        return { ok: false, handle: running, serial: running };
+      }
+    } else {
       const b = await run(ADB_BIN, ['-s', running, 'shell', 'getprop', 'sys.boot_completed']);
       if (b.ok && b.stdout.trim() === '1') return { ok: true, handle: running, serial: running };
     }
@@ -246,6 +285,19 @@ async function waitForAndroidBoot(avd, timeoutMs) {
   return { serial, booted: false };
 }
 
+// Poll until the AVD is no longer adb-visible (its emulator has exited and released
+// the multi-instance lock), so a subsequent cold `-wipe-data` boot won't abort on the
+// lock. `emu kill` returns before the process fully exits, so a caller that spawns the
+// wipe emulator immediately would race the still-held lock.
+async function waitForAndroidGone(avd, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!(await androidRunningMap())[avd]) return true;
+    await delay(1000);
+  }
+  return false; // still held; the caller must NOT proceed to wipe (it would falsely succeed)
+}
+
 export async function shutdownAndroid(serial) {
   if (FAKE() || !serial) return { ok: true };
   return run(ADB_BIN, ['-s', serial, 'emu', 'kill'], { timeout: 30000 });
@@ -265,6 +317,11 @@ export async function wipeAndroid(avd) {
 // Identical hashes across an interval ⇒ no on-screen motion.
 export async function motionHash(dev) {
   if (FAKE()) {
+    // Test-only: a real event-loop yield inside the fake, so a test can reproduce
+    // the idle-sweep-vs-/broken race that hinges on this await ceding the loop (the
+    // real screenshot subprocess always yields; the fake otherwise resolves inline).
+    const _d = Number(process.env.DA_FAKE_MOTION_DELAY_MS || 0);
+    if (_d > 0) await new Promise((r) => setTimeout(r, _d));
     // In tests, a per-device file lets us simulate "frozen" vs "moving" screens.
     const f = process.env.DA_FAKE_MOTION_DIR
       ? path.join(process.env.DA_FAKE_MOTION_DIR, `${dev.key.replace(/[^\w.-]/g, '_')}.txt`)

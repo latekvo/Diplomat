@@ -11,6 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
+import { resetKind } from '../src/devices.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DAEMON = path.join(__dirname, '..', 'src', 'daemon.js');
@@ -431,6 +432,23 @@ async function phase11() {
   } finally { await stop(d); await delay(300); }
 }
 
+// Automated-repair routing (DA_AUTO_REPAIR=1). apple-tv is an Apple sim, so its
+// first-line reset is `simctl erase`, NOT the Android `emulator -wipe-data` path —
+// the old `alloc.platform === 'ios'` guard mis-routed it to wipeAndroid(undefined).
+function phase12() {
+  console.log('phase 12: automated-repair routing (resetKind)');
+  assert.equal(resetKind('ios'), 'erase');
+  pass('ios -> simctl erase');
+  assert.equal(resetKind('apple-tv'), 'erase'); // regression: was wipeAndroid(undefined)
+  pass('apple-tv -> simctl erase (not the Android wipe branch)');
+  assert.equal(resetKind('android'), 'wipe');
+  pass('android -> emulator -wipe-data');
+  assert.equal(resetKind('android-tv'), 'wipe');
+  pass('android-tv -> emulator -wipe-data');
+  assert.equal(resetKind('vega'), 'none');
+  pass('vega -> no local reset CLI (escalate to a repair agent)');
+}
+
 try {
   await phase1();
   await phase2();
@@ -443,6 +461,7 @@ try {
   await phase9();
   await phase10();
   await phase11();
+  phase12();
   console.log(`\nINTEGRATION OK — ${ok} assertions passed`);
 } catch (e) {
   console.error('\nINTEGRATION FAILED:', e.message);

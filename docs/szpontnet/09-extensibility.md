@@ -192,9 +192,13 @@ caps. No flag day, no `v` bump required for the common cases - exactly the
   over the peer's fresh hello nonce), and **signs every gossiped advertisement and
   override** so a relay can neither forge nor tamper with another node's gossip
   ([11 - authenticated gossip](11-trust-and-balancing.md#authenticated-gossip)) - so
-  identity and integrity are covered. What remains future work is **encrypting the
-  traffic** for *confidentiality*: mutual TLS or an encrypted transport for the bytes
-  on the wire. The [join fence](03-transport.md#the-join-fence) is still a **plaintext
+  **gossip** forgery/tamper and **passive** link impersonation are covered. What remains
+  future work is an **encrypted, mutually-authenticated transport** (mutual TLS or an
+  equivalent) - needed both for *confidentiality* of the bytes on the wire AND to close
+  the [active link-auth reflection](11-trust-and-balancing.md#trust-is-never-derived-from-an-advertisement):
+  a bare-nonce proof of possession has no channel binding, so an *active* LAN adversary
+  can reflect a personal peer's signature off it and be verified as that peer (a known
+  v1 limitation). The [join fence](03-transport.md#the-join-fence) is still a **plaintext
   gate** (a shared-secret admission check, not a confidential channel), and a signed
   advertisement is authenticated but not secret.
 - **Exactly-once dispatch / completion tracking.** v1 tracks hand-off, not

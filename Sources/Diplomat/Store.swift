@@ -662,7 +662,7 @@ final class Store: ObservableObject {
             if case .dispatch(let attemptNumber) = decision {
                 if await dispatchConflictFix(number: s.number, url: s.url,
                                              attemptNumber: attemptNumber, source: .auto,
-                                             headSha: s.headSha).didSpawn {
+                                             headSha: s.headSha).wasHandled {
                     attempts[key] = ReviewAttempt(requestedAt: "conflicting",
                                                   lastDispatchedAt: now, attempts: attemptNumber)
                 }
@@ -903,6 +903,19 @@ final class Store: ObservableObject {
         case standDown
         case failed(String)
         var didSpawn: Bool { if case .spawned = self { return true }; return false }
+        /// The work is now being handled — spawned locally OR stood down to a peer
+        /// whose agent already owns it. This is the signal to record the attempt and
+        /// start the retry backoff, mirroring the Python reference which treats
+        /// `("spawned", VERDICT_STAND_DOWN)` as handled. `.failed` deliberately does
+        /// NOT count (a transient spawn error retries next poll); nor do `.inFlight`
+        /// / `.banned`. Using `.didSpawn` here instead would re-dispatch peer-owned
+        /// work to the mesh on every poll, the backoff never engaging.
+        var wasHandled: Bool {
+            switch self {
+            case .spawned, .standDown: return true
+            case .inFlight, .banned, .failed: return false
+            }
+        }
     }
 
     /// Run one agent job through the shared gate (`AgentDispatchGate` — the pure,
@@ -1024,7 +1037,7 @@ final class Store: ObservableObject {
                            workKey: AutofixMesh.workKey(kind: AutofixMesh.kindReviewReq,
                                                         prURL: r.url, headSha: r.headSha),
                            counter: .reviewRequests)
-        return await dispatchAgent(job, source: .auto, attemptNumber: attemptNumber).didSpawn
+        return await dispatchAgent(job, source: .auto, attemptNumber: attemptNumber).wasHandled
     }
 
     var reviewRequestsHandled: Int {
@@ -1096,7 +1109,7 @@ final class Store: ObservableObject {
                            workKey: AutofixMesh.workKey(kind: AutofixMesh.kindReviewReply,
                                                         prURL: s.url, headSha: s.headSha),
                            counter: .myReviews)
-        return await dispatchAgent(job, source: .auto, attemptNumber: attemptNumber).didSpawn
+        return await dispatchAgent(job, source: .auto, attemptNumber: attemptNumber).wasHandled
     }
 
     /// prNumber(String) -> our attempt record for reviews received on my own PRs (unresolved

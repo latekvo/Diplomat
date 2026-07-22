@@ -160,6 +160,61 @@ def test_nodeinfo_tolerates_missing_and_junk_fields():
     assert NodeInfo.from_dict({"id": "x", "tier": "not-a-number"}) is None
 
 
+def test_nodeinfo_drops_non_finite_floats_from_the_wire():
+    """A peer advert carrying a non-finite float (JSON ``1e999`` parses to ∞, or ``NaN``)
+    must be DROPPED. ``float(inf)``/``float(nan)`` do NOT raise (unlike the swept
+    ``int(inf)`` OverflowError), so an unclamped decode let ∞ into the model, where an ∞
+    ``epoch`` out-freshes every honest advert AND ∞/NaN serialize as the bare tokens
+    ``Infinity``/``NaN`` — RFC 8259-invalid JSON that a strict reader (the Swift snapshot
+    decoder) rejects WHOLESALE, blanking the topology for every node. tokensPct, epoch,
+    every stats float, and every dutiesEnabled value (recursively) are guarded — each is
+    re-serialized verbatim into the snapshot and the ctl status reply."""
+    import json
+    for bad in ({"id": "x", "tokensPct": 1e999},
+                {"id": "x", "tokensPct": float("nan")},
+                {"id": "x", "epoch": 1e999},
+                {"id": "x", "stats": {"quotaLeft": 1e999, "usageAvg": 0.0}},
+                {"id": "x", "stats": {"surplus": 10 ** 400}},            # bigint: float() OverflowError
+                {"id": "x", "stats": {"cfg": {"w": 10 ** 400}}},         # nested bigint
+                {"id": "x", "stats": {"plan": {"weight": float("inf")}}},
+                {"id": "x", "stats": {"buckets": [1.0, float("nan")]}},  # nested list
+                {"id": "x", "dutiesEnabled": {"review": 1e999}},
+                {"id": "x", "dutiesEnabled": {"review": float("nan")}},
+                {"id": "x", "dutiesEnabled": {"cfg": {"weight": float("inf")}}},  # nested
+                {"id": "x", "dutiesEnabled": {"cfg": [1.0, -1e999]}}):  # nested list
+        assert NodeInfo.from_dict(bad) is None, bad
+    # A well-formed advert still decodes, and its snapshot serializes as strict RFC JSON.
+    good = NodeInfo.from_dict({"id": "x", "tokensPct": 0.4, "epoch": 1784.5,
+                               "dutiesEnabled": {"review": False, "audit": True},
+                               "stats": {"surplus": 8.0, "quotaLeft": 10.0, "usageAvg": 2.0}})
+    assert good is not None and good.surplus() == 8.0
+    assert good.duties_enabled == {"review": False, "audit": True}  # finite values preserved
+    ser = json.dumps({"peers": [dict(good.to_dict(), surplus=round(good.surplus(), 3))]})
+    assert "Infinity" not in ser and "NaN" not in ser
+    json.loads(ser, parse_constant=lambda x: (_ for _ in ()).throw(ValueError(x)))  # strict
+
+
+def test_nodeinfo_drops_non_finite_numeric_string_stats():
+    """Round-19: a stats value can be a numeric STRING, not just a float. float("1e400")/
+    float("inf")/float("nan") return non-finite WITHOUT raising, so a crafted advert like
+    {"stats": {"quotaLeft": "1e400"}} slipped past the float-INSTANCE guard and drove
+    surplus()'s float() to ±inf/nan -> round(inf,3)=inf -> the bare Infinity/NaN token in the
+    snapshot that a strict Swift reader rejects WHOLESALE. Such an advert must be dropped at
+    ingestion; a FINITE numeric string is still accepted and a non-numeric string (plan name)
+    left untouched. Discriminates the fix: an instance-only guard leaks these."""
+    import json
+    for bad in ("1e400", "1e999", "inf", "-inf", "nan"):
+        assert NodeInfo.from_dict({"id": "x", "stats": {"quotaLeft": bad, "usageAvg": 0.0}}) is None, bad
+        assert NodeInfo.from_dict({"id": "x", "stats": {"usageAvg": bad}}) is None, bad
+        assert NodeInfo.from_dict({"id": "x", "stats": {"cfg": {"w": bad}}}) is None, bad      # nested dict
+        assert NodeInfo.from_dict({"id": "x", "dutiesEnabled": {"cfg": [bad]}}) is None, bad    # nested list
+    # A FINITE numeric string is accepted; a non-numeric string (a plan name) is untouched.
+    good = NodeInfo.from_dict({"id": "x", "stats": {"plan": "max-5x", "surplus": "8.0", "quotaLeft": "9.0", "usageAvg": "1.0"}})
+    assert good is not None and good.surplus() == 8.0
+    ser = json.dumps({"surplus": round(good.surplus(), 3)})
+    assert "Infinity" not in ser and "NaN" not in ser
+
+
 def test_nodeinfo_freshness_epoch_beats_seq():
     old = NodeInfo(id="x", name="x", platform="linux", tier=3, tokens="ok",
                    epoch=100.0, seq=50)
@@ -262,6 +317,48 @@ def test_trust_allowlist_persists(tmp_path, monkeypatch):
     trust.save(loaded, "personal")
     assert trust.load_default_level() == "personal"
     assert trust.classify("nope", trust.load(), trust.load_default_level()) == "personal"
+
+
+def test_promotion_does_not_pin_env_baseline_default_trust(tmp_path, monkeypatch):
+    """An allowlist edit must persist only the operator's EXPLICIT default-trust choice
+    — never the boot-resolved env/mesh.json baseline. Otherwise promoting one device
+    while DIPLOMAT_MESH_DEFAULT_TRUST=personal pins 'personal' into trusted.json, and a
+    later foreign lockdown (env→foreign) is silently ignored: the persisted value wins
+    at the next boot, so an unlisted, unverified device stays classified personal
+    (run-on-host / set-attr / can own work) despite the operator's intent."""
+    from diplomat_app.mesh.node import MeshNode
+    monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    # Boot #1: env baseline personal, no persisted defaultLevel; operator promotes a device.
+    monkeypatch.setenv("DIPLOMAT_MESH_DEFAULT_TRUST", "personal")
+    node = MeshNode()
+    assert node._default_trust == "personal"                 # resolved from the env baseline
+    node.add_trusted("ABCDEF0123456789", "laptop")
+    assert trust.load_default_level() == ""                  # baseline must NOT be pinned
+
+    # Boot #2: operator flips env to foreign to lock the mesh down — it MUST take effect.
+    monkeypatch.setenv("DIPLOMAT_MESH_DEFAULT_TRUST", "foreign")
+    node2 = MeshNode()
+    assert node2._default_trust == "foreign"
+    assert trust.classify("UNKNOWN_FP", trust.load(), node2._default_trust) == "foreign"
+
+
+def test_explicit_default_trust_choice_survives_allowlist_edits(tmp_path, monkeypatch):
+    """Complement of the above: an EXPLICIT set_default_trust choice IS persisted, wins
+    over env at the next boot, and survives later add/remove_trusted edits."""
+    from diplomat_app.mesh.node import MeshNode
+    monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("DIPLOMAT_MESH_DEFAULT_TRUST", "foreign")
+    node = MeshNode()
+    assert node.set_default_trust("personal")                # explicit operator choice
+    assert trust.load_default_level() == "personal"
+    node.add_trusted("FEDCBA9876543210", "desktop")          # later allowlist edits
+    node.remove_trusted("FEDCBA9876543210")
+    assert trust.load_default_level() == "personal"          # explicit choice preserved
+    node2 = MeshNode()                                       # env=foreign, but choice wins
+    assert node2._default_trust == "personal"
 
 
 def test_ban_list_matches_by_key_and_falls_back_to_id_for_keyless():
@@ -489,6 +586,65 @@ def test_stats_persist_roundtrip(tmp_path, monkeypatch):
     assert abs(again.quota_left() - st.quota_left()) < 1e-9
 
 
+def test_stats_load_and_apply_reject_non_finite_floats(tmp_path, monkeypatch):
+    """A non-finite float (∞/NaN — which float() accepts, unlike the swept int(inf)
+    OverflowError) must not enter NodeStats: a non-finite acc drives surplus() to ±inf/nan
+    (so the node mis-ranks itself in surplus-first dispatch) AND rides advertise() into the
+    snapshot as a bare RFC-8259-invalid Infinity/NaN that a strict reader rejects WHOLESALE.
+    A corrupt stats.json falls back to the clean default; a set-attr edit's non-finite value
+    is skipped (the max(0.0, x) clamp folds NaN but not +inf)."""
+    import json
+    import math
+    monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
+    now = 1_000_000.0
+    for bad in (float("inf"), float("nan"), float("-inf")):
+        stats.stats_path().write_text(json.dumps(
+            {"plan": "max-5x", "acc": bad, "quotaUsed": 0.0,
+             "windowStart": 0.0, "updatedAt": 0.0}))
+        st = stats.load(now=now)
+        assert st.acc == 0.0 and math.isfinite(st.surplus())     # fell back to _default
+        adv = st.advertise()
+        assert all(math.isfinite(v) for v in adv.values() if isinstance(v, float))
+        assert "Infinity" not in json.dumps({"stats": adv}) and "NaN" not in json.dumps(adv)
+    base = stats._default(now)
+    for key in ("usageAvg", "usage", "quotaLeft"):
+        st = stats.apply_stat_attrs(base, {key: float("inf")}, now=now)
+        assert math.isfinite(st.acc) and math.isfinite(st.surplus())
+        assert math.isfinite(st.advertise()["usageAvg"])
+    ok = stats.apply_stat_attrs(base, {"usageAvg": 2.0}, now=now)   # a finite edit still applies
+    assert abs(ok.usage_avg() - 2.0) < 1e-9
+
+
+def test_stats_apply_rejects_a_finite_input_that_overflows_the_field(tmp_path, monkeypatch):
+    """Round-16: _finite guarding only the INPUT is not enough — a FINITE set-attr value can
+    still OVERFLOW the stored field to +inf (a float product/sum overflows silently, with NO
+    OverflowError, unlike int). The two acc sinks are usageAvg * _tau_days() and record()'s
+    running sum; an overflowed acc poisons surplus()/advertise() and rides into the snapshot as
+    a bare RFC-8259-invalid Infinity that a strict Swift reader rejects WHOLESALE. The edit must
+    be SKIPPED (prior finite value kept), exactly like a non-finite input. Discriminates the
+    Round-16 fix: an input-only guard leaks acc=inf here."""
+    import json
+    import math
+    monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
+    now = 1_000_000.0
+    base = stats._default(now)
+    # usageAvg: 1e307 is finite (passes an input-only guard) but 1e307 * 21.0 overflows to inf.
+    st = stats.apply_stat_attrs(base, {"usageAvg": 1e307}, now=now)
+    assert math.isfinite(st.acc), "usageAvg overflow leaked a non-finite acc"
+    assert math.isfinite(st.surplus())
+    adv = st.advertise()
+    assert all(math.isfinite(v) for v in adv.values() if isinstance(v, float))
+    assert "Infinity" not in json.dumps({"stats": adv}) and "NaN" not in json.dumps(adv)
+    # usage/record: two near-max books at the same instant overflow the running sum.
+    st2 = stats.apply_stat_attrs(base, {"usage": 1.7e308}, now=now)
+    st2 = stats.apply_stat_attrs(st2, {"usage": 1.7e308}, now=now)
+    assert math.isfinite(st2.acc) and math.isfinite(st2.quota_used), \
+        "record() running-sum overflow leaked a non-finite field"
+    # A legitimate in-range edit still lands — the guard rejects only the overflow.
+    ok = stats.apply_stat_attrs(base, {"usageAvg": 3.0}, now=now)
+    assert abs(ok.usage_avg() - 3.0) < 1e-9
+
+
 # MARK: surplus-first load balancing
 
 
@@ -610,6 +766,47 @@ def test_surplus_ranking_is_bucketed_so_drift_cannot_reshuffle_peers():
     c = _snode("c", surplus=1.5 + 3 * protocol.SURPLUS_RANK_BUCKET, tier=1)
     slots = assign.slot_candidates("review", [a, c], strategy="surplus-first")
     assert slots[0][1] == ["c", "a"]
+
+
+def test_surplus_bucket_clamps_a_hostile_out_of_range_advert_instead_of_crashing():
+    """main added surplus_bucket() = round(value / SURPLUS_RANK_BUCKET) and made
+    surplus-first the DEFAULT ranking. A peer's advertised surplus is attacker-shaped: a
+    FINITE-but-huge value (1e307 slips past the non-finite ingestion guard — it is a real
+    float, not a bigint) or a negative one drives value / SURPLUS_RANK_BUCKET to ±inf and
+    makes round() raise an uncaught OverflowError on the ranking path (a keyless peer on an
+    open mesh -> assign -> _ranked). Clamping to [0, SURPLUS_RANK_CAP] can't, and denies the
+    attacker a bucket ABOVE a genuinely maximally-flush peer."""
+    assert protocol.surplus_bucket(0.0) == 0
+    top = protocol.surplus_bucket(protocol.SURPLUS_RANK_CAP)
+    for hostile in (1e307, 1e308, float("inf"), -1e307, float("-inf")):
+        b = protocol.surplus_bucket(hostile)               # must not raise
+        assert 0 <= b <= top                               # pinned to the legit range
+    assert protocol.surplus_bucket(1e307) == top           # cannot out-bucket max flush
+    # End-to-end: a hostile peer does not crash the (default) surplus-first ranking.
+    honest = _snode("honest", surplus=2.0, tier=1)
+    attacker = _snode("attacker", surplus=1e307, tier=1)
+    slots = assign.slot_candidates("review", [honest, attacker], strategy="surplus-first")
+    assert set(slots[0][1]) == {"honest", "attacker"}      # completed, no OverflowError
+
+
+def test_pr_agent_running_fails_open_on_undecodable_ps_output(tmp_path, monkeypatch):
+    """The executor's ps ground-truth floor (`_pr_agent_running`) promises to FAIL OPEN
+    like Store._live_pr_agents — a ps error reads as "not seen" so a transient failure
+    never drops work. But `ps -Ao args=` under text=True decodes strict UTF-8, so any
+    process on the box with a non-UTF-8 byte in its argv makes the output undecodable and
+    raises UnicodeDecodeError — a ValueError, NOT an OSError/SubprocessError. Uncaught it
+    escapes the guard, up through _spawn_local -> _run_local_request -> _take_job, tearing
+    the dispatching peer's link (or failing a self-dispatch)."""
+    from diplomat_app.mesh import node as nodemod
+
+    node = _fresh_node(tmp_path, monkeypatch)
+
+    def boom(*a, **k):
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+    monkeypatch.setattr(nodemod.subprocess, "run", boom)
+    wk = "review:github.com/owner/repo#7@abc123"
+    assert node._pr_agent_running(wk) is False  # fails open, never raises
 
 
 def test_advertise_quota_left_capped_by_real_binding_window(tmp_path, monkeypatch):
@@ -1065,6 +1262,44 @@ def test_reapable_covers_downed_and_gossip_only_phantoms(tmp_path, monkeypatch):
     assert node._reapable(peer, now + node_mod._DOWN_RETENTION_SECS + 1)
 
 
+def test_gossip_does_not_refresh_a_linked_peers_heartbeat_clock(tmp_path, monkeypatch):
+    """Round-16: a non-fresh third-party `node` gossip must NOT refresh a DIRECTLY-LINKED
+    peer's last_seen. For a bound peer, `now - last_seen > peerTimeoutSecs` in _heartbeat_loop
+    is the ONLY reaper (the Round-15 read-timeout skips bound writers; drain errors are
+    suppressed), so if a replayed public advert keeps last_seen fresh, a dead-but-half-open
+    peer reads link_state != "down" forever and its work-claims stay authoritative — an
+    advert-replay work-suppression DoS. Own-link hellos and gossip-only PHANTOMS must still
+    refresh (the phantom's last_seen is its only liveness signal, consumed by _reapable)."""
+    import time as _time
+    node = _fresh_node(tmp_path, monkeypatch)
+    stale, timeout = node.proto["peerStaleSecs"], node.proto["peerTimeoutSecs"]
+
+    # A linked peer that has gone silent (half-open link) reads "down"...
+    node._learn_node(_peer_info("P", 5), "1.2.3.4", _FakeWriter())
+    P = node.peers["P"]
+    assert P.linked
+    P.last_seen = _time.monotonic() - (timeout + 10.0)
+    assert P.link_state(stale, timeout) == "down"
+    # ...and a non-fresh third-party gossip replay (link_writer=None, same seq) must NOT
+    # resurrect it — the fix. Pre-fix, lines 1209-1210 refreshed last_seen unconditionally.
+    node._learn_node(_peer_info("P", 5), "9.9.9.9", None)
+    assert P.link_state(stale, timeout) == "down", "replayed gossip resurrected a dead linked peer"
+
+    # No over-gating: a gossip-only PHANTOM (never linked) still has its clock refreshed,
+    # so _reapable keeps using a live last_seen.
+    node._learn_node(_peer_info("ghost", 1), "1.2.3.4", None)
+    ghost = node.peers["ghost"]
+    assert not ghost.linked
+    ghost.last_seen = _time.monotonic() - 5.0
+    node._learn_node(_peer_info("ghost", 1), "1.2.3.4", None)  # non-fresh gossip
+    assert _time.monotonic() - ghost.last_seen < 1.0, "phantom gossip refresh was wrongly suppressed"
+
+    # No over-gating: a hello on the peer's OWN link still refreshes a linked peer's clock.
+    P.last_seen = _time.monotonic() - (timeout + 10.0)
+    node._learn_node(_peer_info("P", 6), "1.2.3.4", _FakeWriter())  # own-link hello (fresh)
+    assert P.link_state(stale, timeout) == "up", "own-link hello must refresh a linked peer"
+
+
 # MARK: - authenticated gossip (self-signed adverts + overrides)
 
 
@@ -1118,6 +1353,149 @@ def test_gossip_cannot_hijack_a_pinned_node_id(tmp_path, monkeypatch):
     assert node._advert_authentic(a2)
     node._learn_node(NodeInfo.from_dict(a2), "9.9.9.9", None, raw=a2)
     assert node.peers["peerX"].info.pubkey == k.public_b64  # unchanged — id hijack blocked
+
+
+def test_own_link_hello_rekeys_past_a_forged_inflated_epoch(tmp_path, monkeypatch):
+    """A forged GOSSIP advert for a peer's id, carrying an INFLATED epoch, must not
+    permanently hijack the id→key pin. The real peer's own-link hello + proof of
+    possession still re-keys and verifies (docs/szpontnet/11 — only the own link may
+    re-key), so it becomes personal once allowlisted. Regression: the re-key was
+    gated behind `if fresh:`, and the forged epoch made the honest hello non-fresh,
+    leaving the victim foreign forever."""
+    if not crypto.AVAILABLE:
+        return
+    from diplomat_app.mesh import node as node_mod
+    node = _fresh_node(tmp_path, monkeypatch)
+    attacker, real = _mk_key(), _mk_key()
+
+    def advert(key, epoch, seq):
+        info = NodeInfo(id="peerX", name="p", platform="linux", tier=3, tokens="ok",
+                        epoch=epoch, seq=seq, pubkey=key.public_b64)
+        d = info.to_dict()
+        d["sig"] = key.sign(protocol.advert_signing_bytes(d))
+        return d
+
+    # 1. Forged cold-join gossip pins peerX to the attacker key with a huge epoch.
+    forged = advert(attacker, epoch=1e18, seq=999)
+    node._learn_node(NodeInfo.from_dict(forged), "9.9.9.9", None, raw=forged)
+    assert node.peers["peerX"].info.pubkey == attacker.public_b64
+    assert node.peers["peerX"].verified_fp is None
+
+    # 2. The real peerX connects on its OWN link with a realistic (smaller) epoch.
+    w = _FakeWriter()
+    real_advert = advert(real, epoch=1.75e9, seq=1)
+    node._learn_node(NodeInfo.from_dict(real_advert), "1.2.3.4", w, raw=real_advert)
+    assert node.peers["peerX"].info.pubkey == real.public_b64  # re-keyed past the forged epoch
+
+    # 3. peerX proves possession of its real key → verified fingerprint recorded.
+    node._issued_nonce[w] = "nonce-xyz"
+    node._verify_auth({"sig": real.sign(node_mod._auth_challenge("nonce-xyz"))}, w)
+    assert node.peers["peerX"].verified_fp == crypto.fingerprint_of(real.public_b64)
+
+    # 4. Allowlisting the real fingerprint promotes the recovered peer to personal.
+    node._trusted[crypto.fingerprint_of(real.public_b64)] = "personal"
+    assert node._peer_trust(node.peers["peerX"]) == "personal"
+
+
+def test_non_fresh_own_link_hello_cannot_inherit_personal_trust(tmp_path, monkeypatch):
+    """An attacker opening a link as a verified-personal peer's id with a LOWER epoch
+    takes over the peer's writer (inherent to newest-link-wins), but must NOT inherit
+    its personal trust: the stale verified_fp is dropped so the new link must re-prove
+    possession, and an unproven/keyless peer lands foreign. Regression for a
+    privilege-escalation hijack (writer reassigned while verified_fp was kept)."""
+    if not crypto.AVAILABLE:
+        return
+    from diplomat_app.mesh import node as node_mod
+    real = _mk_key()
+
+    def advert(key, epoch, seq):
+        pub = key.public_b64 if key else ""
+        info = NodeInfo(id="peerX", name="p", platform="linux", tier=3, tokens="ok",
+                        epoch=epoch, seq=seq, pubkey=pub)
+        d = info.to_dict()
+        if key:
+            d["sig"] = key.sign(protocol.advert_signing_bytes(d))
+        return d
+
+    for attacker in (None, _mk_key()):  # keyless, and a different real key
+        node = _fresh_node(tmp_path, monkeypatch)
+        # Establish peerX verified + personal on its own link (higher epoch).
+        w1 = _FakeWriter()
+        a_real = advert(real, epoch=1.75e9, seq=5)
+        node._learn_node(NodeInfo.from_dict(a_real), "1.2.3.4", w1, raw=a_real)
+        node._issued_nonce[w1] = "n1"
+        node._verify_auth({"sig": real.sign(node_mod._auth_challenge("n1"))}, w1)
+        node._trusted[crypto.fingerprint_of(real.public_b64)] = "personal"
+        assert node._peer_trust(node.peers["peerX"]) == "personal"
+
+        # Attacker connects as peerX on a NEW link with a LOWER epoch (non-fresh).
+        w2 = _FakeWriter()
+        a_att = advert(attacker, epoch=1.0, seq=1)
+        node._learn_node(NodeInfo.from_dict(a_att), "6.6.6.6", w2, raw=a_att)
+        assert node._peer_trust(node.peers["peerX"]) == "foreign"  # no personal inheritance
+        assert node.peers["peerX"].verified_fp is None
+
+
+def test_placement_from_dict_tolerates_malformed_spread():
+    """A placement dict can arrive over gossip (overrides) or a ctl edit and is
+    resolved on every _recompute; a malformed spread entry must be SKIPPED, not
+    crash assignment. Regression for the KeyError/ValueError/TypeError."""
+    from diplomat_app.mesh import config
+    assert config.Placement.from_dict({"spread": [{"count": 2}]}).spread == ()  # no platform
+    assert config.Placement.from_dict(
+        {"spread": [{"platform": "linux", "count": "lots"}]}).spread == (("linux", 1),)
+    assert config.Placement.from_dict({"spread": ["linux"]}).spread == ()   # entry not a dict
+    assert config.Placement.from_dict({"spread": "nope"}).spread == ()       # spread not a list
+    # A non-positive count is a bad count too: it must fall back to the schema default 1,
+    # not pass through — a valid -1/0 diverges assign_duty (reports satisfied) from
+    # slot_candidates (range(count) == 0 slots -> dispatches to nobody).
+    assert config.Placement.from_dict(
+        {"spread": [{"platform": "linux", "count": -1}]}).spread == (("linux", 1),)
+    assert config.Placement.from_dict(
+        {"spread": [{"platform": "linux", "count": 0}]}).spread == (("linux", 1),)
+    # Valid entries still parse; a missing count defaults to 1.
+    assert config.Placement.from_dict(
+        {"spread": [{"platform": "linux", "count": 2}, {"platform": "macos"}]}
+    ).spread == (("linux", 2), ("macos", 1))
+
+
+def test_negative_spread_count_does_not_falsely_satisfy_a_duty():
+    """A negative/zero spread count must normalize to 1 so the two placement consumers,
+    both fed by _parse_spread, stay consistent. The bug: assign_duty reported the duty
+    SATISFIED (its `got == count` loop never trips for count<=0 and `got < count` is false,
+    so no shortfall) while slot_candidates yielded range(count) == 0 slots and dispatched
+    to NOBODY — a duty shown placed/satisfied that silently never ran. Reachable via a
+    signed gossiped override on an open mesh (Round 6 bounded only the upper side)."""
+    linA, linB = _node("a", "linux"), _node("d", "linux")
+    for bad in (-1, 0):
+        ov = PlacementOverrides(rev=1, updated_by="op", duties={
+            "review": {"strategy": "weakest-first", "tokenAware": True,
+                       "spread": [{"platform": "linux", "count": bad}]}})
+        da = assign.assign_duty("review", [linA, linB], ov, "op")
+        slots = assign.slot_candidates("review", [linA, linB], ov, "op")
+        # count normalized to 1: one linux node assigned, satisfied, no shortfall, ONE slot.
+        assert len(da.assigned) == 1 and da.satisfied and da.shortfall == (), (bad, da)
+        assert len(slots) == 1 and slots[0][0] == "linux", (bad, slots)
+        # The invariant the divergence broke: a duty reported satisfied must be dispatchable.
+        assert not (da.satisfied and len(slots) == 0), (bad, da, slots)
+
+
+def test_identity_load_tolerates_malformed_duties_enabled(tmp_path, monkeypatch):
+    """A corrupt/hand-edited node.json whose dutiesEnabled is a non-mapping (null, a
+    list, a scalar) must fall back to {} rather than crash identity.load with a
+    dict(None) TypeError."""
+    import json
+    from diplomat_app.mesh import identity
+    monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
+    for bad in (None, ["review"], 5):
+        (tmp_path / "node.json").write_text(json.dumps(
+            {"id": "n1", "name": "x", "tier": 3, "tokens": "auto",
+             "dutiesEnabled": bad, "strengthAuto": False}))
+        assert identity.load().duties_enabled == {}   # must not raise
+    (tmp_path / "node.json").write_text(json.dumps(
+        {"id": "n1", "name": "x", "tier": 3, "tokens": "auto",
+         "dutiesEnabled": {"review": False}, "strengthAuto": False}))
+    assert identity.load().duties_enabled == {"review": False}  # valid mapping preserved
 
 
 def test_overrides_signature_required_from_a_known_editor(tmp_path, monkeypatch):
@@ -1504,6 +1882,62 @@ def test_run_confined_needs_a_requester_link(tmp_path, monkeypatch):
     assert node._run_confined(_job(), requester_id="")[0] == "failed"
 
 
+def test_confined_executor_dedups_and_claims_the_work_key(tmp_path, monkeypatch):
+    """The confined (foreign) executor must mint the work-claim and dedup by key, just
+    like _spawn_local (docs/szpontnet/12: "the executor — the node that spawns the
+    agent — mints the active claim, holds it for that agent's lifetime, and releases it
+    when the agent finishes"). Without it, an originator's same-poll double dispatch of
+    ONE work_key spawned TWO confined agents → two results → a DUPLICATE social action
+    under the originator's identity, and no claim ever suppressed a re-poll.
+
+    A second dispatch of a key already running here must (a) spawn no second sandbox,
+    (b) report ``no_result`` so [_take_job] marks it ``direct`` — the originator neither
+    acts twice nor arms a completion deadline over a result the original job carries —
+    and (c) the claim must be minted for the run and released when it finishes."""
+    import asyncio
+    if not crypto.AVAILABLE:
+        return
+    node = _fresh_node(tmp_path, monkeypatch)
+    node.proto["heartbeatIntervalSecs"] = 0.05
+    node.proto["foreignJobTimeoutSecs"] = 5.0
+    calls: list[str] = []
+
+    def fake_spawn_confined(prompt, result_file):
+        calls.append(result_file)
+        with open(result_file, "w") as f:
+            f.write("REVIEW-BY-EXECUTOR")  # sandbox artifact, written immediately
+
+    monkeypatch.setattr(spawnjob, "spawn_confined", fake_spawn_confined)
+    _link_peer(node, "alice", _mk_key())  # the (foreign) requester the result routes to
+    wk = "review:github.com/acme/app#7@abc"
+
+    def j(job_id):
+        return protocol.Job(id=job_id, duty="review", prompt="do it",
+                            requested_by="alice", requested_at=1.0, work_key=wk)
+
+    async def go():
+        r1 = node._run_confined(j("job-1"), "alice")
+        r2 = node._run_confined(j("job-2"), "alice")   # same-poll re-dispatch of wk
+        assert len(calls) == 1                          # (a) exactly one sandbox spawned
+        assert r1 == ("spawned", "", False)             # fresh run owes a job-result
+        assert r2 == ("spawned", "", True)              # (b) dedup owes none → direct
+        own = node._own_claim(wk)
+        assert own is not None and own.active           # (c) claim held for the agent
+        assert wk in node._agents
+        # Drive the confined watcher to completion; the claim is then released so the
+        # work is ownable again (re-run if unresolved, failover on node death).
+        for _ in range(200):
+            await asyncio.sleep(0.05)
+            cur = node._own_claim(wk)
+            if cur is None or not cur.active:
+                break
+        cur = node._own_claim(wk)
+        assert cur is None or not cur.active
+        assert wk not in node._agents
+
+    asyncio.run(go())
+
+
 def test_emit_result_retries_until_acked_by_the_owed_node(tmp_path, monkeypatch):
     """An executor's job-result is re-sent on demand until the node it's owed to acks
     it; an ack from any OTHER node is ignored, and a passed deadline drops it."""
@@ -1590,6 +2024,42 @@ def test_foreign_result_dropped_from_wrong_link_or_when_forged(tmp_path, monkeyp
     # Unsolicited: a result for a job we never dispatched → dropped.
     node._on_job_result(_signed_result(kb, "unknown", "bob"), bw)
     assert not bw.of("job-ack") and not acted
+
+
+def test_failed_dispatch_does_not_act_on_a_late_foreign_result(tmp_path, monkeypatch):
+    """A dispatch whose ack is lost (a link flap / timeout — the routine transient the
+    redial subsystem exists for) is reported ``failed`` and the caller re-runs the work
+    locally. A FOREIGN executor that had already received + spawned before the flap later
+    re-delivers its result on the healed link; that late result MUST be ACKed (to stop its
+    reliable-delivery retries) but NEVER acted on — else the unit of work is performed
+    TWICE under our identity (a duplicate PR review). The executor's foreign claim is
+    non-authoritative here so it never suppressed the local re-run, and the job ids differ
+    so per-job-id dedup can't catch it: forgetting the failed dispatch is what makes it
+    act-once."""
+    import asyncio
+    if not crypto.AVAILABLE:
+        return
+    acted = []
+    monkeypatch.setattr(spawnjob, "run_result_handler", lambda p: acted.append(p))
+    node = _fresh_node(tmp_path, monkeypatch)
+    node.proto["dispatchAckTimeoutSecs"] = 0.05  # make the lost-ack timeout fast
+    k = _mk_key()
+    _ex, ew = _link_peer(node, "exec", k)          # a keyed executor on a recording link
+
+    async def go():
+        # Dispatch to exec; the ack never comes back (the future stays unresolved) so
+        # wait_for times out → ('failed', ...), exactly the lost-ack transient.
+        status, _ = await node._dispatch_to("exec", "review", "review #7",
+                                            work_key="review:o/r#7@sha")
+        assert status == "failed"
+        jid = next(iter(node._acted_results))       # the fix forgot it (ack-don't-act)
+        assert jid not in node._awaiting_result
+        # The executor's confined agent finishes and re-delivers on the healed link.
+        node._on_job_result(_signed_result(k, jid, "exec"), ew)
+        assert len(ew.of("job-ack")) >= 1           # acked → its retries stop
+        assert acted == []                          # but NOT acted on → work acts once
+
+    asyncio.run(go())
 
 
 def test_stop_cancels_inflight_confined_watchers(tmp_path, monkeypatch):
@@ -1722,6 +2192,36 @@ def test_hello_on_own_link_remembers_dialable_address(tmp_path, monkeypatch):
     assert peercache.load()["peerR"] == ("192.168.1.30", 41000)
 
 
+def test_peer_cache_is_bounded_and_evicts_coldest(tmp_path, monkeypatch):
+    """peers.json must stay bounded like the peer table (_MAX_PEER_CACHE): the cache
+    persists an address per distinct AUTHENTICATED id and is never reaped in lockstep
+    with self.peers, so a churn of distinct ids — an on-mesh flooder cycling ids across
+    reap windows, or ephemeral-id peers (CI runners regenerating node.json each boot) —
+    would otherwise grow the file, and the _redial_targets fan-out that iterates it,
+    without bound. The most-recently-contacted addresses are kept, the coldest evicted."""
+    from diplomat_app.mesh import peercache
+    from diplomat_app.mesh.node import _MAX_PEER_CACHE
+    node = _fresh_node(tmp_path, monkeypatch)
+    ids = [f"zzzz-{i:05d}" for i in range(_MAX_PEER_CACHE + 50)]  # all sort above local id
+    for pid in ids:
+        node._remember_peer(pid, "10.0.0.5", 5000)
+    # In-memory, on disk, and the redial fan-out are all bounded.
+    assert len(node._peer_cache) == _MAX_PEER_CACHE
+    assert len(peercache.load()) == _MAX_PEER_CACHE
+    assert len(node._redial_targets()) == _MAX_PEER_CACHE
+    # LRU: the newest _MAX_PEER_CACHE ids survived; the oldest 50 were evicted.
+    assert set(node._peer_cache) == set(ids[-_MAX_PEER_CACHE:])
+    assert ids[-1] in node._peer_cache and ids[0] not in node._peer_cache
+    # A peer we keep hearing from (same address, refreshed each hello) is never the
+    # eviction victim: it survives a flood that fully cycles the rest of the cache.
+    live = ids[-1]
+    for pid in (f"flood-{i:05d}" for i in range(_MAX_PEER_CACHE)):  # 'f' < 'z': fresh churn
+        node._remember_peer(live, "10.0.0.5", 5000)   # refresh the live peer's recency
+        node._remember_peer(pid, "10.0.0.6", 5000)    # ...while adding a new cold id
+    assert live in node._peer_cache
+    assert len(node._peer_cache) == _MAX_PEER_CACHE
+
+
 def test_redial_targets_respect_dial_rule_link_state_and_inflight(tmp_path, monkeypatch):
     from diplomat_app.mesh.node import Peer
     node = _fresh_node(tmp_path, monkeypatch)
@@ -1739,6 +2239,140 @@ def test_redial_targets_respect_dial_rule_link_state_and_inflight(tmp_path, monk
     node.peers[linked] = up
     node._dialing.add(dialing)
     assert node._redial_targets() == [(free, "10.0.0.4", 40878)]
+
+
+def test_dialed_link_drops_a_silent_peer_on_the_hello_timeout(tmp_path, monkeypatch):
+    """An OUTBOUND dialed link answers whoever replied to a spoofable beacon and must
+    not wait forever for its first hello: a silent/slowloris peer (an attacker answering
+    a spoofed-beacon dial and never speaking) would otherwise pin the fd + Task +
+    _dialing entry FOREVER — an unbounded fd leak under a flood, since the outbound leg
+    never enters self.peers for the heartbeat reaper to reclaim. The wait is bounded like
+    the inbound path's first read (_on_tcp_connection's 10s)."""
+    import asyncio
+    from diplomat_app.mesh import node as node_mod
+    monkeypatch.setattr(node_mod, "_LINK_HELLO_TIMEOUT_SECS", 0.2)
+    node = _fresh_node(tmp_path, monkeypatch)
+
+    class _SilentReader:
+        async def readline(self):
+            await asyncio.Event().wait()   # never yields a line
+
+    w = _FakeWriter()
+
+    async def go():
+        # Returns (does not hang) once the hello timeout fires; a TimeoutError out of
+        # wait_for would mean the link hung past 2s (the bug).
+        await asyncio.wait_for(
+            node._run_link(_SilentReader(), w, "10.0.0.5", authenticated=False),
+            timeout=2.0)
+    asyncio.run(go())
+
+
+def test_beacon_flood_dial_fanout_is_bounded(tmp_path, monkeypatch):
+    """An unauthenticated beacon flood (distinct spoofed ids) must not spawn unbounded
+    outbound dials: the _MAX_PEERS backstop only counts self.peers, which a silent-hello
+    flooder keeps empty, so concurrent in-flight dials are capped directly at
+    _MAX_INFLIGHT_DIALS — otherwise every distinct id pins an fd + Task (exhaustion →
+    node-disabling DoS)."""
+    import asyncio
+    from diplomat_app.mesh.node import _MAX_INFLIGHT_DIALS
+    node = _fresh_node(tmp_path, monkeypatch)
+
+    async def _hang(*a, **k):
+        await asyncio.Event().wait()
+
+    async def go():
+        node._dial = lambda *a, **k: _hang()          # stuck (silent-peer) dials
+        for i in range(_MAX_INFLIGHT_DIALS + 200):    # "zzzz-…" sorts above the uuid local id
+            node._on_beacon({"id": f"zzzz-{i:05d}", "tcpPort": 9999}, "10.0.0.5")
+        assert len(node._dial_tasks) == _MAX_INFLIGHT_DIALS
+        for t in list(node._dial_tasks):
+            t.cancel()
+        await asyncio.sleep(0)                         # let the cancellations settle
+    asyncio.run(go())
+
+
+def test_inbound_link_binding_no_peer_is_dropped_on_the_hello_timeout(tmp_path, monkeypatch):
+    """An INBOUND link (authenticated=True) whose opening hello binds NO reapable peer must
+    still be time-bounded: the heartbeat reaper only reclaims self.peers entries, so an
+    unbound link has no other reaper and a silent peer pins its fd + Task + _issued_nonce
+    entry FOREVER (a remote fd-exhaustion DoS bypassing the join secret). Two triggers bind
+    no peer — a hello carrying OUR OWN id (_on_message short-circuits before _learn_node),
+    and a distinct-id hello once the peer table is full (_learn_node refuses the Peer, yet
+    _on_message still returns the id) — so the guard keys on the unbound WRITER, not peer_id."""
+    import asyncio
+    from diplomat_app.mesh import node as node_mod
+    from diplomat_app.mesh.node import Peer, _MAX_PEERS
+    monkeypatch.setattr(node_mod, "_LINK_HELLO_TIMEOUT_SECS", 0.2)
+    node = _fresh_node(tmp_path, monkeypatch)
+
+    class _SilentReader:
+        async def readline(self):
+            await asyncio.Event().wait()
+
+    async def go():
+        # (A) a hello carrying our own id — binds no peer, must still time out (not hang).
+        await asyncio.wait_for(
+            node._run_link(_SilentReader(), _FakeWriter(), "9.9.9.9", authenticated=True,
+                           first={"t": "hello", "node": {"id": node.local.id}, "overrides": {}}),
+            timeout=2.0)
+        # (B) a distinct-id hello with the peer table already full: _learn_node refuses the
+        # Peer but _on_message returns the id, so peer_id binds while the writer stays unbound.
+        for i in range(_MAX_PEERS):
+            node.peers[f"filler-{i}"] = Peer(_peer_info(f"filler-{i}", 1), "1.1.1.1")
+        await asyncio.wait_for(
+            node._run_link(_SilentReader(), _FakeWriter(), "9.9.9.9", authenticated=True,
+                           first={"t": "hello", "node": {"id": "zzzz-distinct"}, "overrides": {}}),
+            timeout=2.0)
+    asyncio.run(go())
+
+
+def test_trickle_slowloris_link_is_reaped_by_the_cumulative_hello_deadline(tmp_path, monkeypatch):
+    """Round-19: the pre-hello reap deadline is CUMULATIVE, not per-readline. A trickle-
+    slowloris that feeds one decode-rejected/no-op line every < timeout would reset a per-read
+    timeout FOREVER, never bind a self.peers entry (so the heartbeat reaper never sees it), and
+    never be reaped — an unbounded inbound fd/Task/_issued_nonce leak (inbound has no fan-in
+    cap). It must be dropped within the cumulative deadline regardless of the trickle, while a
+    link whose hello DOES bind a peer must NOT be reaped (no over-reaping)."""
+    import asyncio
+    from diplomat_app.mesh import node as node_mod
+    monkeypatch.setattr(node_mod, "_LINK_HELLO_TIMEOUT_SECS", 0.3)
+    node = _fresh_node(tmp_path, monkeypatch)
+
+    class _TrickleReader:
+        def __init__(self): self.n = 0
+        async def readline(self):
+            await asyncio.sleep(0.05)    # << the 0.3s deadline; would reset a per-read timeout
+            self.n += 1
+            return b"x\n"                # protocol.decode -> None -> continue; binds nothing
+
+    async def go():
+        # (A) An UNBOUND trickle link is reaped within the cumulative deadline, not hung.
+        w = _FakeWriter()
+        node._issued_nonce[w] = "nonce"                      # as _send_hello populates it
+        reader = _TrickleReader()
+        await asyncio.wait_for(                              # TimeoutError here = the trickle hung it
+            node._run_link(reader, w, "9.9.9.9", authenticated=True,
+                           first={"t": "hello", "node": {}, "overrides": {}}),
+            timeout=2.0)
+        assert reader.n >= 2, "the reader should have trickled several lines before the reap"
+        assert w not in node._issued_nonce, "the finally must free the leaked nonce/fd"
+
+        # (B) No over-reaping: a link whose hello BINDS a peer survives well past the deadline.
+        w2 = _FakeWriter()
+        bound = asyncio.ensure_future(
+            node._run_link(_TrickleReader(), w2, "9.9.9.9", authenticated=True,
+                           first={"t": "hello", "node": {"id": "peerZ"}, "overrides": {}}))
+        await asyncio.sleep(node_mod._LINK_HELLO_TIMEOUT_SECS * 3)
+        assert node._peer_by_writer(w2) is not None
+        assert not bound.done(), "a bound peer's link was wrongly reaped by the hello deadline"
+        bound.cancel()
+        try:
+            await bound
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(go())
 
 
 def test_rebuild_udp_sockets_swap_in_fresh_ones(tmp_path, monkeypatch):
@@ -1786,6 +2420,461 @@ def test_beacon_outage_surfaced_once_and_recovery_logged(tmp_path, monkeypatch):
     node._note_beacon_sends(2, None)  # steady state — no re-log either
     assert not node._beacon_blocked
     assert len(beacon_lines()) == 2  # the outage line + the recovery line
+
+
+def test_non_object_job_result_is_dropped_not_crashing(tmp_path, monkeypatch):
+    """A correlated, authentic job-result whose `result` field is a non-object (a
+    string/list/number) must be treated as a non-fulfilling answer and NOT raise
+    AttributeError on `.get` — an uncaught AttributeError escapes _run_link's except
+    tuple and tears the link (docs/szpontnet/13: a malformed reply is simply dropped)."""
+    if not crypto.AVAILABLE:
+        return
+    acted = []
+    monkeypatch.setattr(spawnjob, "run_result_handler", lambda p: acted.append(p))
+    node = _fresh_node(tmp_path, monkeypatch)
+    k = _mk_key()
+    bob, bw = _link_peer(node, "bob", k)
+    node._register_awaiting("j1", "bob", "review")
+    node._on_job_result(_signed_result(k, "j1", "bob", result="x"), bw)  # must not raise
+    assert len(bw.of("job-ack")) == 1                    # still acked (idempotent)
+    assert not acted                                     # ok:false path — never acted on
+    assert "j1" in node._acted_results and "j1" not in node._awaiting_result
+    # The reminded → ban branch also reads `result.get`; a non-object must not crash it.
+    banned = []
+    monkeypatch.setattr(node, "_ban_executor", lambda *a, **k: banned.append(a))
+    node._register_awaiting("j2", "bob", "review")
+    node._awaiting_result["j2"].reminded_at = 1.0
+    node._on_job_result(_signed_result(k, "j2", "bob", result=[1, 2]), bw)  # must not raise
+    assert banned                                        # branch reached, no crash
+
+
+def test_merge_overrides_tolerates_malformed_rev_and_duties(tmp_path, monkeypatch):
+    """A gossiped placement-override with a malformed rev (null/list/non-numeric) or a
+    non-mapping duties must be tolerated, never raise an uncaught TypeError/ValueError
+    that tears the link (and, on the first-hello path, leaks the issued nonce). Mirrors
+    the tolerance of Placement._parse_spread / NodeInfo.from_dict / ClaimRecord.from_dict."""
+    node = _fresh_node(tmp_path, monkeypatch)
+    assert node._overrides_authentic({"rev": None}) is True   # no crash, default path
+    assert node._overrides_authentic({"rev": [1]}) is True
+    for raw in ({"rev": None}, {"rev": [1]}, {"rev": 0, "duties": "x"},
+                {"duties": 5}, {"rev": "abc"}):
+        node._merge_overrides(raw)                            # must not raise
+    ov = PlacementOverrides.from_dict({"rev": None, "duties": 5})
+    assert ov.rev == 0 and ov.duties == {}                    # garbage → defaults
+    ov2 = PlacementOverrides.from_dict({"rev": "12", "duties": {"review": {}}})
+    assert ov2.rev == 12 and ov2.duties == {"review": {}}     # a numeric string still parses
+
+
+def test_stale_agent_sentinel_does_not_release_a_live_claim(tmp_path, monkeypatch):
+    """A detached agent that OUTLIVES a node restart writes its exit-sentinel long
+    after. Without the incarnation stamp, the fresh node's agent for the SAME work_key
+    shared that path (_claim_seq resets to 0 on restart), so the watcher saw the stale
+    sentinel on its first poll and released a still-held claim → double-dispatch. The
+    sentinel path must be unique per incarnation so a prior incarnation never collides,
+    and startup must sweep orphan sentinels."""
+    prior = _fresh_node(tmp_path, monkeypatch)
+    fresh = _fresh_node(tmp_path, monkeypatch)
+    prior.epoch, fresh.epoch = 1_000_000.0, 2_000_000.0      # two node runs
+    wk = "review:github.com/o/r#5@sha_abc"
+    assert prior._agent_done_path(wk) != fresh._agent_done_path(wk)  # disjoint paths
+    orphan = prior._agent_done_path(wk)                      # incarnation-1 leftover
+    with open(orphan, "w") as f:
+        f.write("0")
+    from diplomat_app.mesh import node as node_mod
+    monkeypatch.setattr(node_mod.spawnjob, "spawn_job", lambda *a, **k: None)
+    job = protocol.Job(id="j1", duty="review", prompt="p", requested_by="me",
+                       requested_at=1.0, work_key=wk)
+    fresh._spawn_local(job)
+    own = fresh._own_claim(wk)
+    assert own is not None and own.active                    # claim held after spawn
+    assert not os.path.exists(fresh._agents[wk]["done"])     # the stale sentinel isn't ours
+    fresh._sweep_stale_sentinels()
+    assert not os.path.exists(orphan)                        # orphan cleaned at startup
+
+
+def test_placement_override_tolerates_non_dict_duty_value(tmp_path, monkeypatch):
+    """A gossiped override whose per-duty VALUE is a non-object (junk) must be dropped
+    at ingestion and never crash placement_for at assign time — otherwise one
+    unauthenticated frame permanently poisons self.overrides and takes the whole
+    assignment engine (and, via verbatim relay, the mesh) down. The Round-2 fix guarded
+    the duties FIELD type; this guards the per-duty VALUE, dereferenced later."""
+    ov = PlacementOverrides.from_dict(
+        {"rev": 3, "updatedBy": "z",
+         "duties": {"review": "x", "conflicts": {"strategy": "round-robin"}}})
+    assert ov.duties == {"conflicts": {"strategy": "round-robin"}}  # junk value dropped
+    assert config.placement_for("review", ov).strategy              # default, no crash
+    assert config.placement_for("conflicts", ov).strategy == "round-robin"  # valid kept
+    # Placement.from_dict itself tolerates a non-dict argument (the assign-time site).
+    assert config.Placement.from_dict("x").strategy
+    assert config.Placement.from_dict(None).spread == ()
+
+
+def test_placement_override_drops_duty_carrying_a_non_finite_float():
+    """A gossiped override's per-duty dict is kept VERBATIM and re-serialized into the
+    shared snapshot, so a signed peer that slips a bare ∞/NaN into ANY key (a non-schema
+    key, or nested inside spread) would write the RFC 8259-invalid tokens Infinity/NaN
+    into state.json and blank a strict reader's topology mesh-wide — the override-path
+    twin of the advert dutiesEnabled/stats guard. The offending duty is dropped at
+    ingestion (falls back to its catalog default); clean sibling duties survive."""
+    import json
+    ov = PlacementOverrides.from_dict(
+        {"rev": 4, "updatedBy": "z",
+         "duties": {
+             "review": {"strategy": "weakest-first", "tokenAware": True, "junk": float("inf")},
+             "audit": {"strategy": "round-robin",
+                       "spread": [{"platform": "linux", "count": 1, "x": float("nan")}]},
+             "conflicts": {"strategy": "round-robin"}}})
+    assert set(ov.duties) == {"conflicts"}                       # both poisoned duties dropped
+    assert config.placement_for("review", ov).strategy           # default, no crash
+    assert config.placement_for("conflicts", ov).strategy == "round-robin"  # clean one kept
+    ser = json.dumps({"overrides": ov.to_dict()})                # snapshot serialization
+    assert "Infinity" not in ser and "NaN" not in ser
+    json.loads(ser, parse_constant=lambda x: (_ for _ in ()).throw(ValueError(x)))  # strict
+    # A wholly-clean override is untouched (the guard only drops poisoned duties).
+    clean = PlacementOverrides.from_dict(
+        {"rev": 1, "updatedBy": "z",
+         "duties": {"review": {"strategy": "weakest-first", "tokenAware": True}}})
+    assert set(clean.duties) == {"review"}
+
+
+def test_emit_claim_stores_own_claim_even_when_book_is_full(tmp_path, monkeypatch):
+    """The anti-flood claim cap fences spoofed PEER work_keys; the node's OWN claim is
+    authoritative locally and must always store. If _emit_claim silently drops it
+    (ignoring _store_claim's cap refusal) _own_claim is None, so the executor lease is
+    released on the watcher's first poll and a re-dispatch double-spawns the same work,
+    while the gossiped 'active' claim is never withdrawn."""
+    from diplomat_app.mesh import node as node_mod
+    node = _fresh_node(tmp_path, monkeypatch)
+    cap = node_mod._MAX_CLAIMS
+    for i in range(cap):
+        node._claims[f"k{i}"] = {f"n{i}": protocol.ClaimRecord(work_key=f"k{i}", node=f"n{i}")}
+    assert sum(len(b) for b in node._claims.values()) == cap
+    wk = "review:github.com/o/r#1@sha"
+    node._emit_claim(wk, "active")
+    own = node._own_claim(wk)
+    assert own is not None and own.active                # stored despite the full book
+    # A PEER's new claim is still refused at the cap — the anti-flood is intact.
+    assert node._store_claim(
+        protocol.ClaimRecord(work_key="peerkey", node="peerX")) is False
+
+
+def test_banned_and_trust_load_tolerate_scalar_values(tmp_path, monkeypatch):
+    """A corrupt/hand-edited banned.json / trusted.json whose "banned"/"trusted" key
+    holds a non-iterable scalar (null/int/bool/float) must be treated as empty (the
+    module contract), not raise an uncaught TypeError that aborts node startup — the
+    `.get(key, [])` default does NOT cover a present-but-scalar value."""
+    monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    banned.banned_path().parent.mkdir(parents=True, exist_ok=True)
+    for value in ("null", "5", "true", "3.14"):
+        banned.banned_path().write_text('{"banned": %s}' % value)
+        assert banned.load() == []
+        trust.trusted_path().write_text('{"trusted": %s}' % value)
+        assert trust.load() == {}
+    # A well-formed list still loads normally.
+    banned.banned_path().write_text('{"banned": [{"fingerprint": "fp1", "reason": "x"}]}')
+    assert [e["fingerprint"] for e in banned.load()] == ["fp1"]
+    trust.trusted_path().write_text('{"trusted": [{"fingerprint": "fp1", "label": "mbp"}]}')
+    assert trust.load() == {"fp1": "mbp"}
+
+
+def test_wire_decoders_tolerate_infinity_from_json(tmp_path, monkeypatch):
+    """A JSON numeric literal like 1e999 parses to float('inf'), and int(inf) raises
+    OverflowError — an ArithmeticError, NOT a ValueError, so the decoders' except tuples
+    missed it. A single hello/node/work-claim/overrides frame carrying it must be
+    dropped, not tear the link (and leak the first-hello nonce)."""
+    for field in ("tier", "tcpPort", "seq", "v"):
+        raw = protocol.decode(
+            ('{"t":"node","node":{"id":"x","%s":1e999}}' % field).encode())["node"]
+        assert raw[field] == float("inf")
+        assert NodeInfo.from_dict(raw) is None            # dropped, not OverflowError
+    craw = protocol.decode(
+        b'{"t":"work-claim","claim":{"workKey":"w","node":"n","seq":1e999}}')["claim"]
+    assert protocol.ClaimRecord.from_dict(craw) is None
+    node = _fresh_node(tmp_path, monkeypatch)
+    oraw = protocol.decode(b'{"t":"overrides","overrides":{"rev":1e999}}')["overrides"]
+    assert PlacementOverrides.from_dict(oraw).rev == 0    # inf rev → default 0
+    assert node._overrides_authentic(oraw) is True        # no OverflowError
+    node._merge_overrides(oraw)                            # must not raise
+
+
+def test_prior_incarnation_claim_lapses_after_executor_restart(tmp_path, monkeypatch):
+    """A work-claim minted by a peer's PRIOR incarnation must stop being authoritative
+    once that peer restarts (re-advertises a higher epoch). The device key survives a
+    restart, so the pubkey binding alone would keep a stale lease suppressing work
+    (indefinitely for a server-mode executor) — ownership must track liveness via epoch."""
+    if not crypto.AVAILABLE:
+        return
+    from dataclasses import replace as _replace
+    node = _claim_node(tmp_path, monkeypatch, local_id="aaa")
+    k = _mk_key()
+    peer = _link_personal_claimant(node, "xxx", k)
+    peer.info = _replace(peer.info, epoch=2.0)             # X's CURRENT incarnation E2
+    current = protocol.ClaimRecord(work_key="wk", node="xxx", pubkey=k.public_b64,
+                                   epoch=2.0, seq=0, state="active")
+    assert node._claim_authoritative("xxx", current) is True   # current lease holds
+    prior = protocol.ClaimRecord(work_key="wk", node="xxx", pubkey=k.public_b64,
+                                 epoch=1.0, seq=0, state="active")
+    assert node._claim_authoritative("xxx", prior) is False    # E1 < E2 → lapsed
+
+
+def test_unsigned_rev0_override_with_duties_is_rejected(tmp_path, monkeypatch):
+    """A rev-0 override is the unsigned DEFAULT and must be EMPTY. A rev-0 override that
+    carries actual duties is a forgery skipping the signature scheme — on the open mesh a
+    foreign peer could otherwise push arbitrary mesh-wide placement (it win_overs the
+    default via the updatedBy tie-break). It must be rejected; the empty default stays."""
+    node = _fresh_node(tmp_path, monkeypatch)
+    assert node._overrides_authentic({"rev": 0, "updatedBy": "", "duties": {}}) is True
+    assert node._overrides_authentic({"rev": 0}) is True         # empty default, unsigned OK
+    forged = {"rev": 0, "updatedBy": "z",
+              "duties": {"review": {"strategy": "strongest-first"}}}
+    assert node._overrides_authentic(forged) is False            # rev-0 + duties → rejected
+    before = node.overrides
+    node._merge_overrides(forged)
+    assert node.overrides is before                              # dropped; default kept
+
+
+def test_all_numeric_coercions_tolerate_overflow(tmp_path, monkeypatch):
+    """The systemic OverflowError class: float(bigint) and int(inf) both raise
+    OverflowError (an ArithmeticError, NOT a ValueError), so every numeric coercion
+    of wire/config input that guarded only (Type/Value)Error let a single crafted
+    number crash it. A JSON integer literal parses to a Python bigint (float() of it
+    overflows); a JSON 1e999 literal parses to inf (int() of it overflows). Each of
+    these real decoders must swallow both, never raise."""
+    from diplomat_app.mesh import usage
+    _fresh_node(tmp_path, monkeypatch)  # sets DIPLOMAT_MESH_DIR for banned.load()
+    huge = 10 ** 400          # float(huge) -> OverflowError
+    inf = float("inf")        # int(inf)   -> OverflowError
+
+    # int(inf) sites
+    assert Placement._parse_spread([{"platform": "ios", "count": inf}]) == (("ios", 1),)
+    assert identity._clamped_tier(inf) == config.tier_bounds()[2]  # -> default
+
+    # float(bigint) sites
+    assert protocol._opt_frac(huge) is None
+    surplus_info = NodeInfo(id="x", name="x", platform="linux", tier=3, tokens="ok",
+                            epoch=1.0, seq=1,
+                            stats={"surplus": huge, "quotaLeft": 1.0, "usageAvg": 0.0})
+    # surplus() floats stats["surplus"]; a bigint there raises OverflowError, which it
+    # must swallow to NEUTRAL (main's except caught only KeyError/TypeError/ValueError),
+    # or a hostile advert crashes surplus-first dispatch ranking.
+    assert surplus_info.surplus() == protocol.NEUTRAL_SURPLUS     # float(bigint) swallowed, not raised
+    assert protocol.Job.from_dict({"id": "j", "duty": "d", "requestedAt": huge}) is None
+    st = stats._default(0.0)
+    for attr in ("quotaLeft", "usageAvg", "usage"):
+        stats.apply_stat_attrs(st, {attr: huge}, now=0.0)          # must not raise
+    assert usage._token_cost({"input_tokens": huge, "output_tokens": 1}) == 1.0
+
+    import json as _json
+    banned.banned_path().write_text(
+        _json.dumps({"banned": [{"fingerprint": "fp", "node": "n", "bannedAt": huge}]}),
+        encoding="utf-8")
+    assert banned.load()[0]["bannedAt"] == 0.0                    # overflow -> default
+
+
+def test_beacon_with_overflow_epoch_and_out_of_range_port_is_ignored(tmp_path, monkeypatch):
+    """A beacon is unauthenticated LAN input. A crafted epoch given as a huge integer
+    literal (float(bigint) -> OverflowError) must be dropped like any malformed epoch,
+    never raise out of the UDP reader. And a tcpPort outside 1..65535 must be refused
+    before we dial — asyncio.open_connection() raises OverflowError (not OSError) on an
+    out-of-range port, which would crash the dial task."""
+    node = _fresh_node(tmp_path, monkeypatch)
+    node._learn_node(_peer_info("peer1", 1), "1.2.3.4", _FakeWriter())  # linked peer
+    assert node.peers["peer1"].linked
+    node._on_beacon({"t": "beacon", "id": "peer1", "tcpPort": 5, "epoch": 10 ** 400},
+                    "9.9.9.9")
+    assert node.peers["peer1"].linked and node.peers["peer1"].addr == "1.2.3.4"
+    # An out-of-range port never reaches _dial: no dial task is created for it.
+    node._on_beacon({"t": "beacon", "id": "peerNew", "tcpPort": 999999, "epoch": 1.0},
+                    "5.6.7.8")
+    assert not node._dial_tasks    # rejected up front, never dialed
+
+
+def test_reaped_keyed_executor_ban_binds_to_proven_key(tmp_path, monkeypatch):
+    """Accountability ban of a foreign executor that goes silent: if the executor is
+    reaped before the deadline fires, _ban_executor has no live peer to read a key
+    from. Without pinning the key it proved at accept time, the ban falls back to an
+    id-only (fingerprint-less) mark — which any keyed reconnect defeats, since a keyed
+    device is judged by its key alone. The pinned executor_fp binds the ban to that key."""
+    if not crypto.AVAILABLE:
+        return
+    node = _fresh_node(tmp_path, monkeypatch)
+    node._trusted = {"someone-else": ""}   # boundary on → the executor is foreign
+    k = _mk_key()
+    node._learn_node(_peer_info("exec1", 1, pubkey=k.public_b64), "1.2.3.4",
+                     _FakeWriter(), raw=_signed_advert(k, "exec1"))
+    peer = node.peers["exec1"]
+    peer.verified_fp = k.fingerprint       # executor PROVED its key on the link
+
+    node._register_awaiting("job1", "exec1", "review", "prompt")
+    node._maybe_arm_deadline("job1", "exec1", direct=False)
+    aw = node._awaiting_result["job1"]
+    assert aw.executor_fp == k.fingerprint  # key pinned while the link was live
+
+    node.peers.pop("exec1", None)           # executor goes silent and is reaped
+    node._ban_executor(aw, "job1", "went silent")
+
+    # The ban is keyed to the proven fingerprint, so the reconnecting key is blocked.
+    assert node._banned and node._banned[0]["fingerprint"] == k.fingerprint
+    assert banned.is_banned(node._banned, k.fingerprint, "exec1")
+
+
+def test_slot_candidates_bounds_slots_by_live_node_count():
+    """A placement override's spread `count` is attacker-influenceable on an open mesh
+    (a signed rev>=1 override from any keyed foreign peer is adopted and relayed). One
+    job runs per slot and the executor never lands two on one node, so slot_candidates
+    must never materialize more slots than nodes-of-platform — an unbounded range(count)
+    would OOM the node the instant it dispatches this duty. Its sibling assign_duty is
+    already bounded; slot_candidates must match."""
+    nodes = [_node("a", "linux"), _node("b", "linux")]
+    ov = PlacementOverrides.from_dict({
+        "rev": 1, "updatedBy": "x",
+        "duties": {"review": {"strategy": "weakest-first", "tokenAware": True,
+                              "spread": [{"platform": "linux", "count": 10_000_000}]}},
+    })
+    slots = assign.slot_candidates("review", nodes, ov, "a")
+    assert len(slots) == 2                        # bounded by the 2 linux nodes, not 10M
+    # A platform with zero live nodes still surfaces exactly one failover slot (so the
+    # dispatch reports one "no eligible node" failure) — not `count` empty slots.
+    macos_ov = PlacementOverrides.from_dict({
+        "rev": 1, "updatedBy": "x",
+        "duties": {"review": {"spread": [{"platform": "macos", "count": 10_000_000}]}},
+    })
+    slots = assign.slot_candidates("review", nodes, macos_ov, "a")
+    assert slots == [("macos", [])]
+
+
+def test_agent_done_path_distinguishes_keys_sharing_a_long_prefix(tmp_path, monkeypatch):
+    """Two distinct work_keys that sanitize to the same 96-char prefix — two PRs of one
+    long owner/repo, whose distinguishing `#<n>@<sha>` tail is truncated away — must get
+    DISTINCT completion-sentinel paths. A collision lets one agent's exit sentinel be
+    misread as the other's: the first watcher releases a still-held claim (re-opening the
+    PR to a double-dispatch) and the finished agent's claim is stranded."""
+    from diplomat_app import autofix
+    node = _fresh_node(tmp_path, monkeypatch)
+    node.epoch = 3_000_000.0
+    owner = "my-github-organization"
+    repo = "observability-platform-shared-infrastructure-components"
+    wk1 = autofix.work_key("review", f"https://github.com/{owner}/{repo}/pull/11", "a" * 40)
+    wk2 = autofix.work_key("review", f"https://github.com/{owner}/{repo}/pull/22", "b" * 40)
+    assert wk1 and wk2 and wk1 != wk2
+    # Precondition: the sanitized+truncated prefixes really do collide (so this test
+    # exercises the truncation case, not two trivially-different keys).
+    pfx = lambda wk: "".join(c if c.isalnum() else "_" for c in wk)[:96]
+    assert pfx(wk1) == pfx(wk2)
+    # Yet the full sentinel paths stay distinct (a digest of the whole key disambiguates).
+    assert node._agent_done_path(wk1) != node._agent_done_path(wk2)
+
+
+def test_same_key_advert_replay_on_new_link_drops_verification(tmp_path, monkeypatch):
+    """A validly-signed advert is REPLAYABLE — its signature covers a static dict with
+    no per-connection nonce. If a key-less attacker replays a verified personal peer's
+    advert verbatim over a NEW inbound link, _learn_node takes over the peer's writer;
+    it MUST drop verified_fp so the new link re-proves possession (its own `auth`), or
+    the attacker's link inherits the peer's personal trust with no private key (run-on-
+    host / mesh-wide set-attr). The same-key replay is non-fresh, so the Round-1
+    key-change clear never fires — the writer takeover itself must clear."""
+    if not crypto.AVAILABLE:
+        return
+    k = _mk_key()
+    node = _fresh_node(tmp_path, monkeypatch)
+    node._trusted = {k.fingerprint: ""}           # P is operator-trusted
+    w_p = _FakeWriter()
+    node._learn_node(_peer_info("peerP", 5, pubkey=k.public_b64), "1.1.1.1", w_p)
+    peer = node.peers["peerP"]
+    peer.verified_fp = k.fingerprint              # P proved its key on W_P this session
+    assert node._peer_trust(peer) == "personal"
+    w_a = _FakeWriter()                           # a DIFFERENT physical link
+    node._learn_node(_peer_info("peerP", 5, pubkey=k.public_b64), "9.9.9.9", w_a)
+    assert peer.writer is w_a                      # the replay took over the writer...
+    assert peer.verified_fp is None                # ...so the prior link's proof is void
+    assert node._peer_trust(peer) != "personal"    # an unproven link is never personal
+
+
+def test_inbound_surrogate_nonce_hello_does_not_leak_or_crash(tmp_path, monkeypatch):
+    """An inbound first-hello is processed INSIDE _run_link's try/finally. A lone-
+    surrogate `nonce` makes _auth_challenge's nonce.encode() raise UnicodeEncodeError
+    (a ValueError subclass); if that escaped the connection callback, _run_link's
+    finally — the only inbound path that pops _issued_nonce[writer] — would be skipped,
+    orphaning the issued nonce (an unbounded, unauthenticated remote memory leak). It
+    must be caught and the nonce cleaned up, and the reader must not raise out."""
+    import asyncio
+    import json as _json
+    if not crypto.AVAILABLE:
+        return
+    node = _fresh_node(tmp_path, monkeypatch)
+
+    class _Reader:
+        def __init__(self, line): self._chunks = [line, b""]
+        async def readline(self): return self._chunks.pop(0)
+
+    class _Writer:
+        def get_extra_info(self, k, default=None):
+            return ("9.9.9.9", 5) if k == "peername" else default
+        def write(self, *a): pass
+        async def drain(self): pass
+        def close(self, *a): pass
+
+    hello = {"t": "hello",
+             "node": {"id": "atk", "name": "e", "platform": "linux", "tier": 3,
+                      "tokens": "ok", "tcpPort": 6001, "epoch": 1, "seq": 1, "v": 1},
+             "overrides": {}, "nonce": "\ud800"}
+    line = (_json.dumps(hello) + "\n").encode()   # literal \ud800 escape reaches the wire
+    asyncio.run(node._on_tcp_connection(_Reader(line), _Writer()))  # must not raise
+    assert not node._issued_nonce                 # cleaned up — no orphaned nonce leaked
+
+
+def test_self_released_tombstones_dont_starve_peers_and_are_reaped(tmp_path, monkeypatch):
+    """A long-lived node's own 'released' claim tombstones must neither (a) count toward
+    the _MAX_CLAIMS cap — else they starve real peer claims, dropping a live peer's lease
+    and breaking origination dedup (double-dispatch) — nor (b) accumulate without bound.
+    The cap counts only peer records, and a heartbeat reaper drops settled tombstones
+    while keeping _claim_seq so a later re-claim still supersedes."""
+    import time as _time
+    from diplomat_app.mesh import node as node_mod
+    node = _fresh_node(tmp_path, monkeypatch)
+    node._broadcast = lambda *a, **k: None
+    me = node.local.id
+    for i in range(node_mod._MAX_CLAIMS):         # fill the book with self tombstones
+        node._store_claim(protocol.ClaimRecord(
+            work_key=f"self_{i}", node=me, pubkey="", epoch=node.epoch, seq=1,
+            state="released"))
+    peer_rec = protocol.ClaimRecord(work_key="peer_wk", node="peerB", pubkey="k",
+                                    epoch=1.0, seq=1, state="active")
+    assert node._store_claim(peer_rec) is True    # peer claim still adopted (not starved)
+    assert node._claims["peer_wk"]["peerB"] is peer_rec
+
+    node._emit_claim("live_wk", "active")
+    node._emit_claim("live_wk", "released")
+    assert node._own_claim("live_wk") is not None
+    node._reap_released_claims(_time.monotonic() + node.proto["peerTimeoutSecs"] * 3 + 1)
+    assert node._own_claim("live_wk") is None     # settled tombstone reaped
+    node._emit_claim("live_wk", "active")
+    assert node._own_claim("live_wk").seq >= 2    # _claim_seq kept → re-claim supersedes
+
+
+def test_identity_load_tolerates_non_dict_node_json(tmp_path, monkeypatch):
+    """A valid-JSON but non-object node.json (a bare scalar/array from a hand-edit or
+    corruption) must fall back to a minted default identity, not abort node startup with
+    a TypeError/AttributeError — the same corrupt-file tolerance trust/banned/peercache
+    already have."""
+    monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
+    for payload in ("5", "3.14", '"hello"', "[1,2]"):
+        (tmp_path / "node.json").write_text(payload)
+        node = identity.load()                    # must not raise
+        assert node.id and node.tier
+
+
+def test_stats_load_tolerates_non_dict_stats_json(tmp_path, monkeypatch):
+    """A truthy valid-JSON non-object stats.json makes raw.get raise AttributeError —
+    which the coercion except tuple doesn't catch — aborting startup. stats.load must
+    fall back to _default for any non-dict (the `if not raw` short-circuit only caught
+    falsy values)."""
+    monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
+    for payload in ("5", '"x"', "[1,2]", "true"):
+        (tmp_path / "stats.json").write_text(payload)
+        st = stats.load(now=1000.0)               # must not raise
+        assert st.plan                            # fell back to _default
 
 
 if __name__ == "__main__":  # dependency-free smoke run

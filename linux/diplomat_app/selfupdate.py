@@ -189,6 +189,14 @@ def relaunch(extra_env: dict[str, str] | None = None) -> None:
     launcher = root / "linux" / "diplomat"
     log_dir = _state_dir()
     env = dict(os.environ)
+    # Strip every headless-mode marker: the 6AM job runs with DIPLOMAT_SELF_UPDATE=1 in
+    # its env, and a copied env would make the relaunched child re-enter __main__.main's
+    # headless updater (find itself up-to-date, log "up to date", exit) instead of
+    # launching the GUI tray — so newest-wins never fires and the applet is never swapped
+    # onto the new code. Clearing them guarantees relaunch() always starts a real GUI.
+    for _marker in ("DIPLOMAT_SELF_UPDATE", "DIPLOMAT_DUMP", "DIPLOMAT_LOOKUP",
+                    "DIPLOMAT_PRINT_PROMPT", "DIPLOMAT_RENDER"):
+        env.pop(_marker, None)
     if extra_env:
         env.update(extra_env)
     try:
@@ -271,16 +279,22 @@ def run_scheduled() -> int:
     _sched_log(f"{st['behind']} behind at {st['commit']} — merging {st['upstream']}")
     try:
         commit = pull()
-    except UpdateError as exc:
-        # A conflict/dirty tree is not a transient failure to hammer on; wait
-        # for the user to sort it, then the next 6AM tick picks it up.
+    except (UpdateError, OSError, subprocess.TimeoutExpired) as exc:
+        # A conflict/dirty tree — or a black-holed network hitting the git timeout,
+        # or a missing git — is not a transient failure to hammer on; wait for the
+        # next 6AM tick. These subprocess errors are NOT UpdateError subclasses, so
+        # they must be caught explicitly (as check() already does) to honor the
+        # "never raises; returns an exit code" contract.
         _sched_log(f"skip: {exc}")
         return 0
 
     _sched_log(f"merged to {commit} — rebuilding diplomat-core")
     try:
         build_core()
-    except UpdateError as exc:
+    except (UpdateError, OSError, subprocess.TimeoutExpired) as exc:
+        # A hung/overrunning swift build hits build_core's timeout (TimeoutExpired),
+        # or bash is missing (OSError) — neither is an UpdateError; catch them or the
+        # traceback aborts the headless job instead of logging a build failure.
         _sched_log(f"build failed: {exc}")
         return 1
 
@@ -288,7 +302,15 @@ def run_scheduled() -> int:
 
     pid = SingleInstance.running_pid()
     if pid:
-        relaunch(_display_env_of(pid))
+        try:
+            relaunch(_display_env_of(pid))
+        except (UpdateError, OSError, subprocess.TimeoutExpired) as exc:
+            # relaunch() re-raises OSError (a read-only/full XDG_STATE_HOME on the
+            # log open, a missing bash) as UpdateError. The update itself already
+            # landed on disk; a relaunch failure must be logged, not raised — same
+            # never-raises contract the pull()/build_core() guards above honor.
+            _sched_log(f"update built but relaunch failed: {exc}")
+            return 1
         _sched_log(f"relaunched running tray (was pid {pid}) onto {commit}")
     else:
         _sched_log(f"updated to {commit} in place (tray not running)")

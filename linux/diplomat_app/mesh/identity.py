@@ -84,7 +84,7 @@ def _clamped_tier(raw: object) -> int:
     lo, hi, default = config.tier_bounds()
     try:
         return min(hi, max(lo, int(raw)))  # type: ignore[arg-type]
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
 
 
@@ -103,6 +103,11 @@ def load() -> LocalNode:
         raw = json.loads(node_path().read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         pass
+    # A valid-JSON but non-object node.json (a bare scalar/array from a hand-edit or
+    # corruption) would make `in raw` / `raw.get` below raise Type/AttributeError and
+    # abort startup; fall back to defaults, exactly like trust/banned/peercache load.
+    if not isinstance(raw, dict):
+        raw = {}
 
     # Default: auto unless the file explicitly pins a tier (older files) or says so.
     if "strengthAuto" in raw:
@@ -116,7 +121,11 @@ def load() -> LocalNode:
         name=str(raw.get("name") or default_name()),
         tier=tier,
         tokens=raw.get("tokens") if raw.get("tokens") in TOKEN_STATES else "auto",
-        duties_enabled=dict(raw.get("dutiesEnabled", {})),
+        # A corrupt/hand-edited node.json may carry a non-mapping dutiesEnabled
+        # (null, a list, a scalar); dict() on those raises. Fall back to {} like
+        # every other malformed field here rather than crashing identity.load.
+        duties_enabled=(dict(raw["dutiesEnabled"])
+                        if isinstance(raw.get("dutiesEnabled"), dict) else {}),
         strength_auto=auto,
     )
     # First run, a corrupt file, or a refreshed auto tier: persist the current view.

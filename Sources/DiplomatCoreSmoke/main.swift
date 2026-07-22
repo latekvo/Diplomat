@@ -152,6 +152,35 @@ let overridden = mesh.placement(for: "review", overrides: overrides)
 check(overridden.strategy == "strongest-first" && !overridden.tokenAware, "override wins over default")
 check(mesh.placement(for: "conflicts", overrides: overrides).strategy == mesh.defaultStrategy,
       "an un-overridden duty keeps its catalog default")
+// A gossiped override can carry a MALFORMED spread entry (one that names no platform,
+// or a non-object) — the wire layer tolerates garbage (config.Placement._parse_spread).
+// One bad spread entry must skip only THAT entry, never collapse the whole duties map
+// (which used to hide EVERY operator placement override in the topology view). Mirrors
+// the Python port: both duties survive, the bad entry is dropped, strategies are kept.
+// 'audit' carries a non-OBJECT duty value (junk) — it must drop only that duty, not
+// collapse the map; 'review'/'conflicts' are valid objects with malformed spreads.
+let malformedJSON = """
+{"rev":4,"updatedBy":"nodeB","duties":{
+  "review":{"strategy":"surplus-first","spread":[{"count":2},"garbage",{"platform":""}]},
+  "conflicts":{"strategy":"round-robin","spread":[{"platform":"android","count":"x"},{"platform":"linux"}]},
+  "audit":"not-an-object"
+}}
+""".data(using: .utf8)!
+let malformed = try JSONDecoder().decode(MeshOverrides.self, from: malformedJSON)
+check(malformed.duties.keys.sorted() == ["conflicts", "review"],
+      "a malformed spread entry (or non-object duty value) must not drop the whole map")
+// The dropped 'audit' duty falls back to its catalog default (linux+macos spread).
+check(mesh.placement(for: "audit", overrides: malformed).spread.map { $0.platform } == ["linux", "macos"],
+      "a duty with a junk override value resolves to the catalog default")
+let mReview = mesh.placement(for: "review", overrides: malformed)
+check(mReview.strategy == "surplus-first" && mReview.spread.isEmpty,
+      "review keeps its strategy; its all-malformed spread resolves to empty")
+let mConflicts = mesh.placement(for: "conflicts", overrides: malformed)
+check(mConflicts.strategy == "round-robin", "conflicts keeps its overridden strategy")
+// android: bad count "x" falls back to the schema default 1; linux: missing count → 1.
+check(mConflicts.spread.map { $0.platform } == ["android", "linux"]
+      && mConflicts.spread.allSatisfy { $0.count == 1 },
+      "malformed/absent spread counts fall back to 1, matching _parse_spread")
 // The topology snapshot the UI renders (self + peers + assignments), decoded from a
 // synthetic state.json shaped exactly like the node writes.
 let snapJSON = """

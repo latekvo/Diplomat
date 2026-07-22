@@ -47,7 +47,11 @@ def load() -> dict[str, str]:
     """Return the allowlist ``{fingerprint: label}`` (the operator's explicitly
     *personal* devices). Missing/corrupt file = empty allowlist."""
     out: dict[str, str] = {}
-    for e in _read().get("trusted", []):
+    entries = _read().get("trusted")
+    # A present-but-scalar "trusted" (null/int/bool) slips past .get's default (which
+    # only fires on an absent key), so guard the type or `for e in null` raises an
+    # uncaught TypeError that aborts node startup — corrupt file = empty allowlist.
+    for e in entries if isinstance(entries, list) else []:
         if isinstance(e, dict) and isinstance(e.get("fingerprint"), str) and e["fingerprint"]:
             out[e["fingerprint"]] = str(e.get("label", ""))
     return out

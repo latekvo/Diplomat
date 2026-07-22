@@ -109,7 +109,13 @@ enum DeviceAllocator {
             .flatMap { String(data: $0, encoding: .utf8) } ?? "{\"key\":\"\(key)\"}"
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
-        p.arguments = ["-s", "--max-time", "25", "--unix-socket", socketPath,
+        // -f (fail): without it curl exits 0 on a completed HTTP transaction even
+        // when the daemon answered 4xx/5xx (e.g. a 404 for a device that left the
+        // pool between the poll snapshot and the click), so this would report a
+        // failed kill as success and the audit feed would assert a kill that never
+        // happened. -sf makes terminationStatus reflect the HTTP status (matches
+        // BanList.unbanViaDaemon).
+        p.arguments = ["-sf", "--max-time", "25", "--unix-socket", socketPath,
                        "-X", "POST", "http://localhost/kill",
                        "-H", "content-type: application/json", "-d", payload]
         p.standardOutput = Pipe()

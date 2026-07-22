@@ -61,6 +61,11 @@ DEFAULT_DISPATCH_STRATEGY = "surplus-first"
 # need to agree on a stable ordering. (11 / appendix-b.)
 NEUTRAL_SURPLUS = 1.0
 SURPLUS_RANK_BUCKET = 0.05
+# The widest surplus the ranking distinguishes — mirrors PACE_CAP, the ceiling the
+# account owner caps its burn-down ratio at. A hostile finite-but-huge (or negative)
+# advertised surplus would otherwise overflow round(value / SURPLUS_RANK_BUCKET) and
+# crash surplus-first ranking; clamping also stops it out-ranking a maximally-flush peer.
+SURPLUS_RANK_CAP = 10.0
 
 # Plan quota weights relative to Pro (Max 5× → 5, Max 20× → 20), matching
 # core/mesh.json "accounts" / appendix-b. The tester's oracle ranks on the

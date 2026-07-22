@@ -274,7 +274,7 @@ def _token_cost(usage: dict) -> float:
     for key in ("input_tokens", "output_tokens", "cache_creation_input_tokens"):
         try:
             total += float(usage.get(key, 0) or 0)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             continue
     return total
 

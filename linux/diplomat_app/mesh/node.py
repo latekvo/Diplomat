@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import os
 import secrets
@@ -60,6 +61,29 @@ _TOKEN_REFRESH_SECS = 30.0
 # A sane home/office LAN has a handful of machines; this only bounds a beacon
 # flood of spoofed ids from ballooning the peers table + snapshot, not real use.
 _MAX_PEERS = 256
+
+# The sibling bound for the redial-from-memory cache (peers.json). _MAX_PEERS caps
+# the live table, but the cache persists an address per distinct AUTHENTICATED id
+# and is never reaped with the table, so without this it grows unbounded under a
+# churn of ids — an on-mesh flooder cycling ids across reap windows, or ephemeral-id
+# peers (CI runners regenerating node.json each boot) — ballooning peers.json and the
+# redial fan-out that iterates it. The cache is a best-effort accelerator, so it keeps
+# the most-recently-contacted addresses and evicts the coldest past this bound.
+_MAX_PEER_CACHE = _MAX_PEERS
+
+# Hard cap on concurrent in-flight outbound dials. A beacon is UNAUTHENTICATED, so the
+# _MAX_PEERS backstop in _on_beacon (which counts self.peers) never fires against a
+# flooder that answers our dial but never completes a hello — self.peers stays empty.
+# Capping the dial fan-out directly is what the author intended _MAX_PEERS to do for it;
+# real use dials a handful of peers at once, far under this.
+_MAX_INFLIGHT_DIALS = _MAX_PEERS
+
+# How long an outbound dialed link (talking to whoever answered a spoofable beacon)
+# waits for its first valid hello before being dropped — the mirror of the inbound
+# path's 10s first-read timeout in _on_tcp_connection. Without it a silent/slowloris
+# peer pins the fd + Task + _dialing entry forever (an unbounded fd leak under a flood,
+# since nothing at runtime reaps a dialed link that never entered self.peers).
+_LINK_HELLO_TIMEOUT_SECS = 10.0
 
 # Upper bound on stored work-claim records (work_key × claimant). Real use holds a
 # handful of in-flight work items; this only stops a gossip flood of spoofed
@@ -156,6 +180,10 @@ class _Awaiting:
     duty: str
     added: float  # monotonic
     prompt_head: str = ""  # truncated prompt — context for the extension decider
+    executor_fp: str = ""  # fingerprint the executor PROVED at accept time — the
+    # ban binds to this even after the peer is reaped, so a keyed executor that goes
+    # silent can't drop its ban by reconnecting (a fingerprint-less, id-only ban is
+    # bypassed the instant the device presents any key — see _ban_executor).
     deadline: float | None = None  # monotonic; None = accountability not armed
     reminded_at: float | None = None  # monotonic; grace runs from here
     next_remind: float = 0.0  # monotonic; reminders re-send across the grace window
@@ -264,6 +292,12 @@ class MeshNode:
         # work-claims section below and docs/szpontnet/12-work-claims.md.
         self._claims: dict[str, dict[str, protocol.ClaimRecord]] = {}
         self._claim_seq: dict[str, int] = {}
+        # work_key -> monotonic time we last emitted a 'released' self-claim. Drives
+        # reaping of our own settled tombstones so a long-lived node's book doesn't
+        # grow one permanent released record per distinct work_key ever handled
+        # (which also, before the cap counted only peer records, could starve new
+        # peer claims). Cleared when the key is re-claimed 'active'.
+        self._released_at: dict[str, float] = {}
         # Optional hook fired when a better (lower-id) peer preempts a work_key this
         # node was originating, so a caller (e.g. an auto-poller) can abort the
         # local work it started. None = no-op (the default; origination is manual).
@@ -410,6 +444,7 @@ class MeshNode:
 
     async def start(self) -> None:
         loop = asyncio.get_running_loop()
+        self._sweep_stale_sentinels()  # clear prior-incarnation orphan sentinels
         await self._start_tcp()
         self._start_udp(loop)
         self._tasks = [
@@ -644,7 +679,10 @@ class MeshNode:
                              f"duplicate node.json? give each machine its own.")
             return
         tcp_port = msg.get("tcpPort")
-        if not isinstance(tcp_port, int) or tcp_port <= 0:
+        # An out-of-range port is not just invalid — asyncio.open_connection() would
+        # raise OverflowError (not OSError) from the C bind, escaping _dial's except
+        # and crashing the dial task. Reject anything a socket can't hold up front.
+        if not isinstance(tcp_port, int) or not 0 < tcp_port <= 65535:
             return
         peer = self.peers.get(peer_id)
         if peer is not None and peer.linked:
@@ -660,7 +698,7 @@ class MeshNode:
             # we do NOT let a beacon rewrite a live peer's address at all.
             try:
                 epoch = float(msg.get("epoch", 0.0))
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 return  # a malformed beacon epoch must never raise out of the reader
             quiet = (time.monotonic() - peer.last_seen) > self.proto["peerStaleSecs"]
             if epoch > peer.info.epoch and quiet:
@@ -678,6 +716,13 @@ class MeshNode:
             return
         # Smaller id dials: exactly one connection per pair, no dial races.
         if self.local.id < peer_id:
+            if len(self._dial_tasks) >= _MAX_INFLIGHT_DIALS:
+                # Hard-bound the outbound dial fan-out. The _MAX_PEERS backstop above
+                # only counts self.peers, which a silent-hello beacon flooder keeps
+                # empty, so without this cap every distinct spoofed id would spawn a
+                # dial without limit (fd/Task exhaustion → node-disabling DoS). The
+                # per-dial hello timeout below frees these slots for real peers.
+                return
             task = asyncio.get_running_loop().create_task(
                 self._dial(peer_id, host, tcp_port), name=f"mesh-dial-{peer_id[:6]}"
             )
@@ -705,8 +750,9 @@ class MeshNode:
                     asyncio.open_connection(host, port, limit=protocol.MAX_LINE_BYTES),
                     timeout=5.0,
                 )
-            except (OSError, asyncio.TimeoutError):
-                return  # next beacon retries
+            except (OSError, asyncio.TimeoutError, OverflowError):
+                return  # next beacon retries (OverflowError: an out-of-range port —
+                # _on_beacon already screens these, this is defense-in-depth)
             self._send_hello(writer)
             try:
                 await writer.drain()
@@ -726,13 +772,31 @@ class MeshNode:
         """Persist a peer's last-known dialable address, learned from an
         authenticated hello on its own link (never from a spoofable beacon), so
         redial-from-memory survives both a link drop and a node restart. Written
-        only on change — a steady link costs no I/O."""
+        only on change — a steady link costs no I/O.
+
+        Bounded like the peer table (_MAX_PEER_CACHE): the cache is never reaped in
+        lockstep with self.peers (a reaped-but-known peer is exactly what we still
+        want to redial), so a churn of distinct authenticated ids would otherwise grow
+        peers.json — and the redial fan-out that iterates it — without bound. The cache
+        keeps the most-recently-contacted addresses (insertion order = recency, refreshed
+        on each hello) and evicts the coldest entry past the bound; it is a best-effort
+        accelerator (see peercache.py), so dropping a cold entry only costs a fallback to
+        a beacon-triggered dial."""
         if not addr or tcp_port <= 0:
             return
         entry = (addr, tcp_port)
         if self._peer_cache.get(peer_id) == entry:
+            # Unchanged address on a fresh hello: refresh recency in memory only (this
+            # peer is live, and there is no on-disk change, so no I/O), so a peer we keep
+            # hearing from is never the eviction victim under a flood of new ids.
+            self._peer_cache[peer_id] = self._peer_cache.pop(peer_id)
             return
+        # New or changed address: (re)insert at most-recent and evict the coldest
+        # entries until the persisted cache is back within its bound.
+        self._peer_cache.pop(peer_id, None)
         self._peer_cache[peer_id] = entry
+        while len(self._peer_cache) > _MAX_PEER_CACHE:
+            del self._peer_cache[next(iter(self._peer_cache))]
         peercache.save(self._peer_cache)
 
     def _redial_targets(self) -> list[tuple[str, str, int]]:
@@ -807,14 +871,19 @@ class MeshNode:
             self._send_hello(writer)
             with contextlib.suppress(ConnectionError, OSError):
                 await writer.drain()
-            self._on_message(first, host, writer)
-            await self._run_link(reader, writer, host, authenticated=True)
+            # Process the opening hello INSIDE _run_link's try/finally (not here): a
+            # malformed field that raises — e.g. a lone-surrogate `nonce`, whose
+            # _auth_challenge nonce.encode() raises UnicodeEncodeError (a ValueError
+            # subclass) — must not escape this asyncio callback, or the finally that
+            # pops _issued_nonce[writer] and closes the link never runs, orphaning the
+            # issued nonce (unbounded remote memory leak) and the transport.
+            await self._run_link(reader, writer, host, authenticated=True, first=first)
             return
         writer.close()
 
     async def _run_link(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, host: str,
-        authenticated: bool,
+        authenticated: bool, first: dict | None = None,
     ) -> None:
         """Pump one peer link until EOF/error.
 
@@ -828,9 +897,39 @@ class MeshNode:
         attacker would let unauthenticated dispatches spawn agents on this box.
         """
         peer_id: str | None = None
+        # A CUMULATIVE deadline for the pre-hello phase (consumed in the loop): set once,
+        # never re-armed per read, so a trickle-slowloris cannot keep resetting it.
+        hello_deadline = time.monotonic() + _LINK_HELLO_TIMEOUT_SECS
         try:
+            if first is not None:
+                # The opening inbound hello, already decoded + secret-checked by
+                # _on_tcp_connection; handled here so a raise (e.g. a surrogate nonce)
+                # is caught below and the finally cleans up (mirrors the loop).
+                got = self._on_message(first, host, writer)
+                if got and peer_id is None:
+                    peer_id = got
             while True:
-                line = await reader.readline()
+                # A link is reclaimed by the heartbeat reaper only once its writer is
+                # bound to a self.peers entry. Until then nothing else will ever reap it,
+                # so bound the whole pre-hello phase by the CUMULATIVE deadline above. This
+                # covers every link with no reapable peer:
+                #  - an OUTBOUND leg still awaiting the hello that will bind a peer;
+                #  - an INBOUND hello that binds NONE — its id is ours (_on_message
+                #    short-circuits at info.id == self.local.id) or the peer table is full
+                #    (_learn_node refuses the Peer, yet _on_message still returns the id, so
+                #    peer_id alone is NOT a safe signal — the writer is what stays unbound).
+                # The deadline is CUMULATIVE, not per-read: a per-read timeout is reset by
+                # every line that arrives, so a trickle-slowloris feeding one decode-rejected
+                # /no-op line every < timeout would never trip it, never bind, and never be
+                # reaped — pinning the fd + Task + _issued_nonce entry FOREVER (an unbounded,
+                # node-disabling leak bypassing the join secret; inbound has no fan-in cap).
+                if self._peer_by_writer(writer) is None:
+                    remaining = hello_deadline - time.monotonic()
+                    if remaining <= 0:
+                        break  # never bound a peer in time — reap (the finally cleans up)
+                    line = await asyncio.wait_for(reader.readline(), timeout=remaining)
+                else:
+                    line = await reader.readline()
                 if not line:
                     break
                 msg = protocol.decode(line)
@@ -843,7 +942,8 @@ class MeshNode:
                 got = self._on_message(msg, host, writer)
                 if got and peer_id is None:
                     peer_id = got
-        except (ConnectionError, OSError, asyncio.LimitOverrunError, ValueError):
+        except (ConnectionError, OSError, asyncio.TimeoutError,
+                asyncio.LimitOverrunError, ValueError):
             pass
         finally:
             self._issued_nonce.pop(writer, None)
@@ -1077,6 +1177,23 @@ class MeshNode:
                 and info.pubkey != peer.info.pubkey):
             return
         fresh = peer is None or info.newer_than(peer.info)
+        # An own-link hello (``link_writer`` set) is the peer ITSELF on its
+        # authenticated link, and it REPLACES the peer's writer below regardless of
+        # freshness. So a KEY CHANGE it carries must be adopted here regardless of the
+        # (epoch, seq) — otherwise two things break when the hello is non-fresh:
+        #   (1) a forged GOSSIP advert (link_writer=None) that reached us first with an
+        #       inflated ``epoch`` keeps the wrong key pinned forever, and the real
+        #       peer can never re-key or re-verify (permanent trust-DoS); and
+        #   (2) an attacker opening a link as a verified-personal peer's id with a
+        #       lower epoch would take over its writer while the STALE verified_fp is
+        #       kept (the clear below is under ``if fresh``), inheriting that peer's
+        #       personal trust — a privilege escalation. Adopting the advertised key
+        #       (incl. keyless) re-keys the pin and drops the now-void verification, so
+        #       the new link must re-prove possession; an unproven/keyless peer lands
+        #       foreign. The id→key reject above still blocks the gossip (relay) path.
+        if (not fresh and link_writer is not None and peer is not None
+                and info.pubkey != peer.info.pubkey):
+            fresh = True
         prev_pubkey = "" if peer is None else peer.info.pubkey
         if peer is None:
             peer = Peer(info, host)
@@ -1110,14 +1227,38 @@ class MeshNode:
             if info.pubkey and info.pubkey != prev_pubkey:
                 self._evict_unbound_claims(info.id, info.pubkey)
         peer.addr = host or peer.addr
-        peer.last_seen = time.monotonic()
-        peer.down_since = None
+        # Refresh the liveness clock only from a proof-of-life this node can trust: the
+        # peer's OWN direct link (link_writer set), or gossip about a peer we are NOT
+        # directly linked to (a gossip-only phantom, whose last_seen is its ONLY liveness
+        # signal — consumed by _reapable). For an already-LINKED peer, third-party `node`
+        # gossip is NOT proof its link to us is alive: a keyless on-mesh attacker (or even a
+        # benign echo) replaying its genuine public advert would otherwise keep a dead-but-
+        # half-open peer's clock fresh forever, so _heartbeat_loop's `now - last_seen >
+        # timeout` reap — the ONLY reaper for a bound peer, since the Round-15 read-timeout
+        # skips bound writers and drain errors are suppressed — never trips, and the dead
+        # peer's work-claims stay authoritative for the whole OS TCP window (~minutes)
+        # instead of peerTimeoutSecs (~seconds). A live linked peer needs no gossip refresh:
+        # its own heartbeats already advance last_seen via _on_message.
+        if link_writer is not None or not peer.linked:
+            peer.last_seen = time.monotonic()
+            peer.down_since = None
         if link_writer is not None:
-            if peer.writer is not None and peer.writer is not link_writer:
-                # Duplicate link (dial race despite the id rule, or a zombie):
-                # keep the new one, close the old quietly.
-                with contextlib.suppress(Exception):
-                    peer.writer.close()
+            if peer.writer is not link_writer:
+                # A DIFFERENT physical link than the one we last bound (a reconnect, a
+                # dial-race duplicate, or a hostile takeover). Any verification was
+                # proven on the OTHER link and does NOT carry to this one — drop it so
+                # this link must answer THIS connection's challenge (its own `auth`)
+                # before it is trusted. Without this, a captured, validly-signed advert
+                # REPLAYED verbatim on a fresh link (SAME key, so non-fresh and the
+                # fresh-force above never fires) would inherit the peer's verified
+                # fingerprint and its personal trust with no private key — a full trust
+                # hijack (run-on-host / mesh-wide set-attr). Legitimate reconnects
+                # re-prove in one round-trip; the id→key pin still blocks the relay path.
+                peer.verified_fp = None
+                if peer.writer is not None:
+                    # Duplicate/zombie old link: keep the new one, close the old quietly.
+                    with contextlib.suppress(Exception):
+                        peer.writer.close()
             if peer.linked_since is None:
                 peer.linked_since = time.monotonic()  # link came up: start the uptime clock
             peer.writer = link_writer
@@ -1192,6 +1333,7 @@ class MeshNode:
             self._retry_pending_results()
             self._check_foreign_deadlines()
             self._reap_foreign()
+            self._reap_released_claims(time.monotonic())
 
     def _reapable(self, peer: "Peer", now: float) -> bool:
         """Whether an *unlinked* peer should be dropped from the snapshot: a peer
@@ -1228,8 +1370,18 @@ class MeshNode:
         learn that editor's signed advertisement. The one exception is a node
         without a crypto library at all: it can verify nothing, so it stays in the
         legacy accept-everything mode (it is itself keyless → foreign to everyone)."""
-        if int(raw.get("rev", 0)) <= 0:
-            return True
+        # Coerce rev tolerantly: a gossiped override with a malformed rev (null, a
+        # list, a non-numeric string) defaults to 0 — the default (unsigned) override
+        # — rather than raising an uncaught TypeError that would tear the link (and,
+        # on the first-hello path, leak the issued nonce). Mirrors from_dict.
+        if PlacementOverrides._as_rev(raw.get("rev", 0)) <= 0:
+            # rev 0 is the unsigned DEFAULT (empty) override — it needs no signature.
+            # But a REAL edit bumps rev >= 1 (with_duty) and MUST be signed, so a rev-0
+            # override carrying actual duties is a forgery trying to skip the signature
+            # scheme entirely: on the open (secret-less) mesh any foreign peer could
+            # push arbitrary mesh-wide placement that way (it still win_overs the
+            # default via the updatedBy tie-break). Accept rev 0 ONLY when it is empty.
+            return not raw.get("duties")
         if not crypto.AVAILABLE:
             return True  # no crypto here — can't verify anything (keyless legacy node)
         editor = str(raw.get("updatedBy", ""))
@@ -1326,6 +1478,10 @@ class MeshNode:
         bumping the per-key seq so it supersedes our previous record everywhere."""
         seq = self._claim_seq.get(work_key, -1) + 1
         self._claim_seq[work_key] = seq
+        if state == "released":
+            self._released_at[work_key] = time.monotonic()  # arm tombstone reaping
+        else:
+            self._released_at.pop(work_key, None)            # re-claimed: not a tombstone
         rec = self._sign_claim(protocol.ClaimRecord(
             work_key=work_key, node=self.local.id, epoch=self.epoch,
             seq=seq, state=state))
@@ -1391,7 +1547,18 @@ class MeshNode:
         cur = book.get(rec.node)
         if cur is not None and not rec.newer_than(cur):
             return False
-        if cur is None and sum(len(b) for b in self._claims.values()) >= _MAX_CLAIMS:
+        # The cap only fences a gossip flood of spoofed PEER work_keys. Our OWN claim
+        # is authoritative locally and MUST always be stored — dropping it silently
+        # (via _emit_claim, which ignores this return) leaves _own_claim None, so the
+        # executor watcher releases the lease on its first poll and a re-dispatch
+        # double-spawns the same work while the gossiped 'active' claim is never
+        # withdrawn. Self is never a flood source, so exempt it — AND count only PEER
+        # records toward the cap: our own records (esp. un-reaped 'released' tombstones
+        # on a long-lived node) must never fill the book and starve real peer claims,
+        # which would drop a live peer's lease and break origination dedup.
+        if (cur is None and rec.node != self.local.id
+                and sum(1 for b in self._claims.values()
+                        for n in b if n != self.local.id) >= _MAX_CLAIMS):
             if not book:
                 self._claims.pop(rec.work_key, None)  # don't leave an empty book
             return False
@@ -1422,7 +1589,16 @@ class MeshNode:
         # `_claim_authentic` verified rec.sig under rec.pubkey; requiring
         # rec.pubkey == the peer's advertised (pinned) key closes the loop, so only
         # the holder of that peer's private key could have produced this record.
-        return bool(rec.pubkey) and rec.pubkey == peer.info.pubkey
+        if not (bool(rec.pubkey) and rec.pubkey == peer.info.pubkey):
+            return False
+        # Liveness-scoped lease: a claim minted by a PRIOR incarnation must lapse once
+        # the peer restarts. The device key survives a restart, so the pubkey binding
+        # alone would keep a stale lease authoritative — and a quick reconnect (6AM
+        # self-update) beats the 300s down-reap, so _forget_claims never runs. The
+        # node's epoch (time.time() at construction) only advances on restart, so a
+        # claim from before the peer's current incarnation (rec.epoch < the peer's
+        # advertised epoch) no longer reflects held work and must not suppress it.
+        return rec.epoch >= peer.info.epoch
 
     def _claim_holder(self, work_key: str) -> str | None:
         """The node that currently owns ``work_key``: the lowest-id claimant among
@@ -1484,6 +1660,32 @@ class MeshNode:
                 del book[node_id]
                 if not book:
                     del self._claims[work_key]
+
+    def _reap_released_claims(self, now: float) -> None:
+        """Drop our own long-settled ``released`` tombstones. A released self-record
+        only needs to live long enough to gossip the release and out-fresh a stale
+        ``active`` a briefly-disconnected peer might echo; past a few peer-timeout
+        windows every still-live peer has converged (and a longer-gone one is reaped,
+        its book forgotten, its restart bumping the epoch that lapses old claims). The
+        record is dead weight after that: [_claim_holder] already ignores non-active
+        records, so removing it changes no ownership decision. Without this, a
+        long-lived node accretes one permanent released record per distinct work_key
+        it ever handled (an unbounded leak). ``_claim_seq`` is deliberately KEPT so a
+        later re-claim of the same key still supersedes any peer's stale copy; a peer
+        echoing our reaped claim is dropped at ingestion ([_on_work_claim]), so the
+        tombstone can't be resurrected."""
+        ttl = self.proto["peerTimeoutSecs"] * 3
+        me = self.local.id
+        for work_key, ts in list(self._released_at.items()):
+            if now - ts < ttl:
+                continue
+            book = self._claims.get(work_key)
+            rec = book.get(me) if book else None
+            if rec is not None and not rec.active:
+                del book[me]
+                if not book:
+                    self._claims.pop(work_key, None)
+            self._released_at.pop(work_key, None)
 
     # MARK: - assignments
 
@@ -1607,7 +1809,8 @@ class MeshNode:
                   requested_by=self.local.id, requested_at=time.time(),
                   work_key=work_key)
         if node_id == self.local.id:
-            return self._run_local_request(job, "personal")  # dispatching to myself
+            status, reason, _ = self._run_local_request(job, "personal")  # to myself
+            return status, reason
         peer = self.peers.get(node_id)
         if peer is None or not peer.linked:
             return "failed", "no link"
@@ -1626,11 +1829,36 @@ class MeshNode:
             status = str(msg.get("status", "failed"))
             if status == "spawned":
                 self._maybe_arm_deadline(job.id, node_id, bool(msg.get("direct")))
+            else:
+                # Explicit refusal (declined/failed): the executor spawns nothing, so it
+                # owes no result — stop awaiting one.
+                self._forget_dispatch(job.id)
             return status, str(msg.get("reason", ""))
         except (asyncio.TimeoutError, ConnectionError, OSError):
+            # The ack never came back (timeout) or the link flapped mid-dispatch. We
+            # report `failed`, and the caller re-runs the work locally / fails it over —
+            # so we MUST NOT later act on a result for THIS job: a FOREIGN executor that
+            # DID receive + spawn before the flap re-delivers its result on the healed
+            # link, and _on_job_result would otherwise find the still-armed awaiting entry
+            # and perform the same unit of work a SECOND time under our identity (a
+            # duplicate PR review). Its foreign claim is non-authoritative here, so it
+            # never suppressed the local re-run, and the job ids differ so per-job-id
+            # dedup can't catch it — forgetting the dispatch is what makes it act-once.
+            self._forget_dispatch(job.id)
             return "failed", "peer did not answer"
         finally:
             self._job_futures.pop(job.id, None)
+
+    def _forget_dispatch(self, job_id: str) -> None:
+        """Abandon a remote dispatch whose hand-off did not succeed (ack lost, link flap,
+        or an explicit decline/fail). Drop the awaiting entry and mark the job handled, so
+        a foreign executor's LATE ``job-result`` (it may have received + spawned before the
+        flap) is still ACKed — stopping its reliable-delivery retries — but is NEVER acted
+        on: the originator has already re-run or failed the work over, and acting again
+        would perform the social action twice. Mirrors the duplicate-result path in
+        [_on_job_result] (ack, don't re-act)."""
+        self._awaiting_result.pop(job_id, None)
+        self._acted_results[job_id] = time.monotonic()
 
     def _maybe_arm_deadline(self, job_id: str, node_id: str, direct: bool) -> None:
         """Arm the accountability clock over an acceptance: a **foreign** executor
@@ -1646,10 +1874,17 @@ class MeshNode:
             # false-ban every honest asymmetric-trust executor, whose personal
             # path never owes a result. Deliberate; see ch13 "Limitations".
             return
-        if self._peer_trust(self.peers.get(node_id)) != "foreign":
+        peer = self.peers.get(node_id)
+        if self._peer_trust(peer) != "foreign":
             return
         aw.deadline = (time.monotonic()
                        + float(self.proto["foreignCompletionDeadlineSecs"]))
+        # Pin the key the executor PROVED right now, while its link is live. If it
+        # goes silent and is reaped before the deadline fires, _ban_executor has no
+        # peer left to read a fingerprint from — without this the ban would fall back
+        # to an id-only (fingerprint-less) mark, which any keyed reconnect bypasses.
+        if peer is not None and peer.verified_fp:
+            aw.executor_fp = peer.verified_fp
 
     def _resolve_job_future(self, msg: dict, writer: asyncio.StreamWriter) -> None:
         entry = self._job_futures.get(str(msg.get("id", "")))
@@ -1700,18 +1935,21 @@ class MeshNode:
         return "run", ""
 
     def _run_local_request(self, job: Job, trust_level: str,
-                           requester_id: str = "") -> tuple[str, str]:
+                           requester_id: str = "") -> tuple[str, str, bool]:
         """Admit-or-decline, then run. Shared by the remote-receive path
         (``_take_job``) and a local/self dispatch, so both apply the same policy.
         A ``"confined"`` admission (foreign, zero-trust) runs sandboxed and routes
         its result back to ``requester_id``; the personal/self path never confines
-        (``requester_id`` unused there)."""
+        (``requester_id`` unused there). Returns ``(status, reason, no_result)`` where
+        ``no_result`` marks a ``spawned`` that owes NO later ``job-result`` (a personal
+        fire-and-forget run, or a confined dispatch deduped against an already-running
+        agent) — see [_take_job]."""
         mode, reason = self._admit(job, trust_level)
         if mode == "decline":
             activity.log("mesh", "mesh-dispatch-failed",
                          f"Mesh: declined {job.duty} from "
                          f"{self._node_name(job.requested_by)} — {reason}")
-            return "declined", reason
+            return "declined", reason, False
         if mode == "confined":
             return self._run_confined(job, requester_id)
         return self._spawn_local(job)
@@ -1724,13 +1962,15 @@ class MeshNode:
         ``spawned`` here is only the hand-off ack."""
         peer = self._peer_by_writer(writer)
         trust_level = self._peer_trust(peer)
-        status, out_reason = self._run_local_request(
+        status, out_reason, no_result = self._run_local_request(
             job, trust_level, requester_id=peer.info.id if peer else "")
-        # A personal-path spawn is fire-and-forget: no job-result will ever follow.
-        # Say so (`direct`, additive) so an accountability-tracking requester that
-        # happens to classify US foreign doesn't arm a deadline over a result we
-        # never owed — and then ban us for keeping it.
-        direct = status == "spawned" and trust_level == "personal"
+        # A spawn that owes no later job-result is fire-and-forget: say so (`direct`,
+        # additive) so an accountability-tracking requester that happens to classify US
+        # foreign doesn't arm a deadline over a result we never owed — and then ban us
+        # for keeping it. True for a personal (direct) run AND for a confined dispatch
+        # deduped against an already-running agent (the original job carries the one
+        # result); a fresh confined spawn owes a result, so it is NOT direct.
+        direct = status == "spawned" and no_result
         with contextlib.suppress(ConnectionError, OSError):
             writer.write(protocol.encode(
                 protocol.job_status(job.id, status, out_reason, self.local.id,
@@ -1744,7 +1984,13 @@ class MeshNode:
         stats.save(self.stats)
         self._bump_and_gossip()
 
-    def _spawn_local(self, job: Job) -> tuple[str, str]:
+    def _spawn_local(self, job: Job) -> tuple[str, str, bool]:
+        """Run a personal request directly on the host. Returns
+        ``(status, reason, no_result)``; ``no_result`` is True for every ``spawned``
+        outcome because the personal path is fire-and-forget — no ``job-result`` ever
+        follows — which [_take_job] reports as ``direct`` so a requester that happens
+        to classify us foreign doesn't arm a completion deadline over a result we
+        never owed."""
         wk = job.work_key
         # Idempotency + the executor-claim's atomicity: if our own agent for this
         # key is already live, don't spawn a second one — report success (the work
@@ -1752,7 +1998,7 @@ class MeshNode:
         # await between the check and `_emit_claim`), so two dispatches of the same
         # key arriving back-to-back can never both pass it.
         if wk and wk in self._agents:
-            return "spawned", ""
+            return "spawned", "", True  # deduped against our own live agent — owes no result
         # Ground-truth floor for the EXECUTOR — the same one the ORIGINATING side
         # has always had (Store._in_flight). `_agents` only remembers agents THIS
         # node incarnation spawned; an agent can be live on the host yet absent
@@ -1765,13 +2011,13 @@ class MeshNode:
         if wk and self._pr_agent_running(wk):
             activity.log("mesh", "mesh-dedup",
                          f"Already running {job.duty} for this PR here — not double-spawning")
-            return "spawned", ""
+            return "spawned", "", True  # deduped against a live host agent — owes no result
         done_path = self._agent_done_path(wk) if wk else None
         try:
             spawnjob.spawn_job(job.prompt, done_path=done_path)
         except spawnjob.JobSpawnError as exc:
             activity.log("mesh", "spawn-failed", f"Mesh job {job.duty} failed here: {exc}")
-            return "failed", str(exc)
+            return "failed", str(exc), False
         if wk:
             # The executor owns the key for the agent's lifetime: claim it now, and
             # free it when the agent's completion sentinel appears (docs/szpontnet/12).
@@ -1782,7 +2028,7 @@ class MeshNode:
         self._record_usage(config.job_cost_units())
         activity.log("mesh", "mesh-spawn",
                      f"Mesh: running {job.duty} (from {self._node_name(job.requested_by)})")
-        return "spawned", ""
+        return "spawned", "", True
 
     def _pr_agent_running(self, work_key: str) -> bool:
         """Is a live ``claude`` agent for this work key's PR already running on THIS
@@ -1804,20 +2050,58 @@ class MeshNode:
         try:
             out = subprocess.run(["ps", "-Ao", "args="],
                                  capture_output=True, text=True, timeout=10).stdout
-        except (OSError, subprocess.SubprocessError):
+        except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
+            # UnicodeDecodeError: text=True decodes strict UTF-8, so any process on the
+            # box with a non-UTF-8 byte in its argv makes `ps` output undecodable. It is a
+            # ValueError, not an OSError/SubprocessError, so without it here the exception
+            # escapes this fail-open guard and tears the caller's link / self-dispatch —
+            # the same catch Store._live_pr_agents makes for its identical ps scan.
             return False
         return number in autofix.live_pr_numbers(out, owner, repo)
 
     def _agent_done_path(self, work_key: str) -> str:
         """A per-agent completion-sentinel path under the mesh dir (NOT /tmp, which
-        macOS purges). Its existence later == the executor's agent finished."""
+        macOS purges). Its existence later == THIS agent finished.
+
+        The incarnation (``epoch``) is stamped into the path: agents are detached
+        (``start_new_session``) and OUTLIVE a node restart, writing their exit
+        sentinel long after. Without the epoch, a prior incarnation's agent for the
+        same work_key wrote to the same path (``_claim_seq`` resets to 0 on
+        restart), so its late sentinel was misread as the NEW agent's — the watcher
+        released a still-held claim on the first poll, re-opening the work to a
+        double-dispatch. Epoch makes the two paths disjoint. ``_claim_seq`` still
+        disambiguates sequential re-dispatches within one incarnation."""
         from . import statefile
 
         agents = statefile.state_path().parent / "agents"
         with contextlib.suppress(OSError):
             agents.mkdir(parents=True, exist_ok=True)
-        safe = "".join(c if c.isalnum() else "_" for c in work_key)[:96]
-        return str(agents / f"{safe}.{self._claim_seq.get(work_key, 0)}.done")
+        # The readable prefix is truncated for a sane filename, but the discriminating
+        # part of a work_key (`…#<n>@<sha>`) sits at the END, so two long keys sharing a
+        # 96-char sanitized prefix (two PRs of one long owner/repo) would collide onto
+        # ONE sentinel — one agent's exit would then release the OTHER's still-held claim
+        # (double-dispatch) and strand the finished one. Bind a digest of the FULL key so
+        # distinct keys are always distinct paths, regardless of prefix length.
+        prefix = "".join(c if c.isalnum() else "_" for c in work_key)[:96]
+        digest = hashlib.sha1(work_key.encode("utf-8", "surrogatepass")).hexdigest()[:12]
+        inc = int(self.epoch * 1_000_000)  # this node run, unique per process start
+        seq = self._claim_seq.get(work_key, 0)
+        return str(agents / f"{prefix}.{digest}.{inc}.{seq}.done")
+
+    def _sweep_stale_sentinels(self) -> None:
+        """At startup this node owns no agents yet, so every completion sentinel on
+        disk is an orphan from a prior incarnation (a detached agent that outlived a
+        restart, or a crash before ``_watch_agent``'s cleanup). Remove them so they
+        can never be misread — and so the epoch-stamped paths don't accumulate
+        without bound across restarts. A prior-incarnation agent still running will
+        just re-create its own epoch-stamped file, which no watcher here tracks."""
+        from . import statefile
+
+        agents = statefile.state_path().parent / "agents"
+        with contextlib.suppress(OSError):
+            for p in agents.glob("*.done"):
+                with contextlib.suppress(OSError):
+                    p.unlink()
 
     async def _watch_agent(self, work_key: str, done_path: str | None) -> None:
         """Hold the executor's claim on ``work_key`` until its agent finishes.
@@ -1863,26 +2147,49 @@ class MeshNode:
         d.mkdir(parents=True, exist_ok=True)
         return d / (f"in-{job_id}.json" if incoming else f"out-{job_id}.json")
 
-    def _run_confined(self, job: Job, requester_id: str) -> tuple[str, str]:
+    def _run_confined(self, job: Job, requester_id: str) -> tuple[str, str, bool]:
         """Run a foreign request under zero trust: launch the confinement runner on
         the (untrusted) prompt, book usage, and start watching for its result file to
-        return to ``requester_id``. Returns the hand-off ``spawned``/``failed`` — the
-        actual artifact is delivered later as a `job-result`."""
+        return to ``requester_id``. Returns ``(status, reason, no_result)``; a fresh
+        confined spawn is the one path that DOES owe a later `job-result`, so it
+        reports ``no_result=False`` (the requester may arm a completion deadline). The
+        actual artifact is delivered later as that `job-result`."""
         if not requester_id:
             # No verified requester link to return the result to — we can't honor
             # response-only, so decline rather than run a stranger's code for nobody.
-            return "failed", "no verified requester for confined result"
+            return "failed", "no verified requester for confined result", False
+        wk = job.work_key
+        # Idempotency + the executor-claim (docs/szpontnet/12), mirroring _spawn_local:
+        # the executor that spawns the agent mints the work-claim and holds it for the
+        # agent's lifetime. Without this the confined path spawned a fresh sandbox on
+        # EVERY (re-)dispatch of the same key — so an originator's same-poll double
+        # dispatch (event + reconcile) ran the work twice and acted on two results
+        # (e.g. a duplicate PR review under its identity), and a re-poll never saw a
+        # holder to suppress against. If a confined (or personal) agent for this key is
+        # already live here, don't spawn a second — report ``spawned`` with
+        # ``no_result=True`` so the originator neither acts twice nor arms a deadline
+        # over a result that won't come (the original job.id carries the one result).
+        if wk and wk in self._agents:
+            return "spawned", "", True
         result_path = self._result_path(job.id)
         try:
             spawnjob.spawn_confined(job.prompt, str(result_path))
         except spawnjob.JobSpawnError as exc:
             activity.log("mesh", "spawn-failed",
                          f"Mesh confined {job.duty} failed here: {exc}")
-            return "failed", str(exc)
+            return "failed", str(exc), False
         self._record_usage(config.job_cost_units())
         # Register the run so a `job-reminder` while it computes gets a truthful
         # `job-progress` answer instead of silence (docs/szpontnet/13).
         self._confined_running[job.id] = (requester_id, time.monotonic())
+        if wk:
+            # Claim the key for the confined agent's lifetime; _await_confined_result
+            # releases it when the sandbox finishes (or times out). Tracked in the same
+            # _agents map as personal agents (presence is the idempotency guard, and the
+            # value is never inspected — see __init__), tagged with THIS job.id so only
+            # this run's completion frees it.
+            self._agents[wk] = {"confined": job.id, "at": time.monotonic()}
+            self._emit_claim(wk, "active")
         task = asyncio.get_running_loop().create_task(
             self._await_confined_result(job, requester_id, result_path))
         self._result_tasks.add(task)
@@ -1890,7 +2197,7 @@ class MeshNode:
         activity.log("mesh", "mesh-spawn",
                      f"Mesh: running {job.duty} CONFINED for foreign "
                      f"{self._node_name(requester_id)} (result routes back)")
-        return "spawned", ""
+        return "spawned", "", False
 
     async def _await_confined_result(self, job: Job, requester_id: str,
                                      result_path) -> None:
@@ -1923,6 +2230,15 @@ class MeshNode:
             # However this watcher ends (result, timeout, crash), the job is no
             # longer "running" for reminder purposes.
             self._confined_running.pop(job.id, None)
+            # Release the executor-claim we minted for this key (docs/szpontnet/12), so
+            # the same work becomes ownable again — a re-run if it wasn't resolved, and
+            # failover if this node dies (the liveness lease). Guard on THIS job.id so a
+            # later run's entry is never freed by ours; skip release if a personal agent
+            # now holds the shared claim (it will free it via _watch_agent).
+            wk = job.work_key
+            if wk and self._agents.get(wk, {}).get("confined") == job.id:
+                self._agents.pop(wk, None)
+                self.release(wk)
 
     def _result_task_done(self, task: asyncio.Task) -> None:
         """Reap a finished watcher task, surfacing a crash instead of letting it
@@ -2090,7 +2406,13 @@ class MeshNode:
             return  # already performed the action — never twice
         self._acted_results[job_id] = time.monotonic()
         self._awaiting_result.pop(job_id, None)
-        result = msg.get("result") or {}
+        result = msg.get("result")
+        if not isinstance(result, dict):
+            # A malformed (non-object) result is not a fulfilling answer. Coerce it
+            # to an empty dict so it flows through the ok:false path (logged, not
+            # acted on) instead of raising AttributeError on `.get` — a wire peer
+            # must never be able to crash the link with a bad `result` type.
+            result = {}
         if entry.reminded_at is not None and not bool(result.get("ok", False)):
             # We asked "is this ready?" after six-plus hours and the answer is a
             # failure — a response that does not fulfill the task is a broken
@@ -2337,7 +2659,11 @@ class MeshNode:
         # and a deny-side mark on a claimed identity only ever costs the claimant),
         # else keyless → node id. Recording only the verified key would let a
         # keyed-but-never-authed executor slip its own ban on the next check.
-        fp = (peer.verified_fp or crypto.fingerprint_of(peer.info.pubkey)) if peer else ""
+        # If the peer was already reaped, fall back to the fingerprint we pinned when
+        # the deadline was armed (executor_fp) — otherwise a keyed executor that goes
+        # silent gets an id-only ban that its own key defeats on reconnect.
+        fp = ((peer.verified_fp or crypto.fingerprint_of(peer.info.pubkey))
+              if peer else aw.executor_fp)
         label = peer.info.name if peer else ""
         reason = (f"accepted SzpontRequest {job_id[:8]} ({aw.duty}) "
                   f"and failed to deliver: {cause}")
@@ -2502,7 +2828,17 @@ class MeshNode:
 
     def add_trusted(self, fingerprint: str, label: str = "") -> None:
         self._trusted[fingerprint] = label
-        trust.save(self._trusted, self._default_trust)
+        # Persist the operator's EXPLICIT default-trust choice (what is already on
+        # disk), NOT self._default_trust. At boot self._default_trust is resolved as
+        # `load_default_level() or config.default_trust()`, so when the operator has
+        # never toggled the default it holds the env/mesh.json BASELINE. Writing that
+        # baseline here as `defaultLevel` would pin it — a later
+        # DIPLOMAT_MESH_DEFAULT_TRUST change (e.g. a foreign lockdown) is then silently
+        # shadowed forever, since the persisted value wins over env at the next boot.
+        # `load_default_level()` is "" unless the operator explicitly set the default
+        # (set_default_trust), so an allowlist edit never converts a baseline into an
+        # authoritative persisted choice.
+        trust.save(self._trusted, trust.load_default_level())
         # An explicit promotion is the operator's newest word — it lifts any ban
         # (trusted and banned are mutually exclusive states).
         if self.unban_device(fingerprint):
@@ -2514,7 +2850,9 @@ class MeshNode:
 
     def remove_trusted(self, fingerprint: str) -> None:
         if self._trusted.pop(fingerprint, None) is not None:
-            trust.save(self._trusted, self._default_trust)
+            # Preserve only the operator's EXPLICIT persisted default (see add_trusted):
+            # an allowlist edit must never pin the env/mesh.json baseline as a choice.
+            trust.save(self._trusted, trust.load_default_level())
             activity.log("mesh", "mesh-up", f"Mesh: untrusting device {fingerprint[:16]}")
 
     def set_default_trust(self, level: str) -> bool:

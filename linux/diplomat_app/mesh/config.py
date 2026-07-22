@@ -13,10 +13,29 @@ Layers, weakest to strongest:
 
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass, field, replace
 
 from .. import core
+
+
+def _has_non_finite(v: object) -> bool:
+    """Whether ``v`` contains a non-finite float (∞/NaN) anywhere, recursing through
+    dicts and lists. A gossiped placement override's duty dict is kept VERBATIM (see
+    :meth:`PlacementOverrides.from_dict`) and re-serialized into the shared snapshot, so
+    a signed peer that slips a non-finite float into any key would poison ``state.json``:
+    ``json.dumps`` (allow_nan=True default) writes it as the bare RFC 8259-invalid token
+    ``Infinity``/``NaN`` that a strict reader rejects WHOLESALE. Mirrors the advert-side
+    guard in ``protocol.NodeInfo.from_dict``."""
+    if isinstance(v, float):
+        return not math.isfinite(v)
+    if isinstance(v, dict):
+        return any(_has_non_finite(x) for x in v.values())
+    if isinstance(v, list):
+        return any(_has_non_finite(x) for x in v)
+    return False
+
 
 # Env override names, mapped onto core/mesh.json "protocol" keys. Values are
 # parsed with the type of the default they replace.
@@ -181,7 +200,7 @@ def plan_weight(plan_id: str) -> float:
         if p.get("id") == plan_id:
             try:
                 return float(p.get("weight", 1.0))
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 return 1.0
     return 1.0
 
@@ -190,7 +209,7 @@ def job_cost_units() -> float:
     """How much quota one spawned SzpontRequest books, in capacity units."""
     try:
         return float(accounts().get("jobCostUnits", 1.0))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 1.0
 
 
@@ -227,7 +246,7 @@ def tokens_per_weight() -> float:
     plan's weight to get its ceiling (see usage.py)."""
     try:
         return float(accounts().get("tokensPerWeight", 2_000_000))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 2_000_000.0
 
 
@@ -235,7 +254,7 @@ def usage_window_hours() -> float:
     """Trailing window over which local token consumption is measured."""
     try:
         return float(accounts().get("usageWindowHours", 5.0)) or 5.0
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 5.0
 
 
@@ -243,7 +262,7 @@ def low_threshold() -> float:
     """Remaining-fraction boundary below which the token state drops to 'low'."""
     try:
         return float(accounts().get("lowThreshold", 0.34))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0.34
 
 
@@ -260,14 +279,54 @@ class Placement:
     spread: tuple[tuple[str, int], ...] = ()
 
     @classmethod
-    def from_dict(cls, d: dict) -> "Placement":
+    def from_dict(cls, d: object) -> "Placement":
+        if not isinstance(d, dict):
+            # A per-duty placement VALUE can arrive over gossip (overrides) as junk
+            # (a non-object) and is dereferenced here at assign time via placement_for
+            # — tolerate it exactly like _parse_spread tolerates its entries, or one
+            # poisoned override crashes every _recompute (a persistent, mesh-wide DoS).
+            # A non-mapping resolves to the schema default.
+            d = {}
         return cls(
             strategy=d.get("strategy", core.mesh()["defaultStrategy"]),
             token_aware=bool(d.get("tokenAware", True)),
-            spread=tuple(
-                (s["platform"], int(s.get("count", 1))) for s in d.get("spread", [])
-            ),
+            spread=cls._parse_spread(d.get("spread", [])),
         )
+
+    @staticmethod
+    def _parse_spread(raw: object) -> tuple[tuple[str, int], ...]:
+        """Parse the ``[(platform, count)]`` spread, tolerating malformed entries
+        the way the rest of the wire layer tolerates garbage. This resolves on
+        every ``_recompute`` from placement dicts that can arrive over gossip
+        (``overrides``) or a ctl edit, so an entry that isn't a mapping, names no
+        platform, or carries a non-integer count must be SKIPPED / defaulted, not
+        allowed to crash assignment. A bad or non-positive count falls back to the
+        schema default 1."""
+        out: list[tuple[str, int]] = []
+        if not isinstance(raw, list):
+            return ()
+        for s in raw:
+            if not isinstance(s, dict):
+                continue
+            platform = s.get("platform")
+            if not isinstance(platform, str) or not platform:
+                continue
+            try:
+                count = int(s.get("count", 1))
+            except (TypeError, ValueError, OverflowError):
+                count = 1
+            if count < 1:
+                # A non-positive count is a semantically bad count — a spread entry
+                # dispatches to >= 1 node — so fall back to the schema default 1, the
+                # same as the parse-exception branch above. Left unnormalized, a valid
+                # negative/zero int diverges the two placement consumers that both read
+                # this spread: assign_duty counts the duty SATISFIED (its `got == count`
+                # loop never trips and `got < count` is false, so it records no
+                # shortfall) while slot_candidates yields range(count) == 0 slots and
+                # dispatches to NOBODY — a duty that looks placed but silently never runs.
+                count = 1
+            out.append((platform, count))
+        return tuple(out)
 
     def to_dict(self) -> dict:
         return {
@@ -298,12 +357,36 @@ class PlacementOverrides:
     @classmethod
     def from_dict(cls, d: dict | None) -> "PlacementOverrides":
         d = d or {}
+        raw_duties = d.get("duties")
         return cls(
-            rev=int(d.get("rev", 0)),
+            rev=cls._as_rev(d.get("rev", 0)),
             updated_by=str(d.get("updatedBy", "")),
-            duties=dict(d.get("duties", {})),
+            # Keep only mapping duty VALUES, and only ones free of non-finite floats:
+            # a non-object value is junk that would crash placement_for at assign time,
+            # and a signed peer can slip a bare ∞/NaN into any key of an otherwise-valid
+            # duty dict (kept VERBATIM here and re-serialized into the snapshot) to write
+            # the RFC 8259-invalid tokens Infinity/NaN into state.json and blank a strict
+            # reader's topology mesh-wide — the override-path twin of the advert-side
+            # dutiesEnabled/stats guard. Either way the offending duty is dropped at
+            # ingestion and falls back to its catalog default.
+            duties={k: v for k, v in raw_duties.items()
+                    if isinstance(v, dict) and not _has_non_finite(v)}
+            if isinstance(raw_duties, dict) else {},
             sig=str(d.get("sig", "")),
         )
+
+    @staticmethod
+    def _as_rev(raw: object) -> int:
+        """The LWW rev, tolerating garbage the way the rest of the wire layer does
+        (cf. :meth:`Placement._parse_spread`): a gossiped override arrives from a
+        peer/hello and a non-numeric ``rev`` (null, a list, a string) must default
+        to 0, not raise — a malformed edit is simply the default (no) edit."""
+        try:
+            return int(raw)
+        except (TypeError, ValueError, OverflowError):
+            # OverflowError: a JSON rev of 1e999 parses to float('inf'), and int(inf)
+            # raises it (an ArithmeticError, not a ValueError) — treat as the default 0.
+            return 0
 
     def to_dict(self) -> dict:
         d = {"rev": self.rev, "updatedBy": self.updated_by, "duties": self.duties}

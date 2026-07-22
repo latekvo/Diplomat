@@ -67,10 +67,52 @@ public struct MeshCatalog: Decodable, Equatable {
         public let strategy: String?
         public let tokenAware: Bool?
         public let spread: [SpreadDTO]?
+
+        enum CodingKeys: String, CodingKey { case strategy, tokenAware, spread }
+
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            strategy = try? c.decode(String.self, forKey: .strategy)
+            tokenAware = try? c.decode(Bool.self, forKey: .tokenAware)
+            // Per-element tolerant spread parse, mirroring `config.Placement._parse_spread`:
+            // one malformed spread entry must be SKIPPED, not throw away the whole
+            // placement (which — via the all-or-nothing `[String: PlacementDTO]` dict
+            // decode in MeshOverrides — used to collapse EVERY duty override to none,
+            // silently hiding all operator placement edits in the topology view).
+            if let wrapped = try? c.decode([TolerantSpread].self, forKey: .spread) {
+                spread = wrapped.compactMap { $0.value }
+            } else {
+                spread = nil
+            }
+        }
     }
     public struct SpreadDTO: Decodable, Equatable {
         public let platform: String
         public let count: Int?
+
+        enum CodingKeys: String, CodingKey { case platform, count }
+
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            // platform is required and non-empty (an entry that names none — missing
+            // OR empty — is skipped by the TolerantSpread wrapper, matching
+            // `_parse_spread`'s `not platform` guard); a bad/missing count falls back
+            // to the schema default 1 downstream (`count ?? 1`).
+            let p = try c.decode(String.self, forKey: .platform)
+            guard !p.isEmpty else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .platform, in: c, debugDescription: "empty platform")
+            }
+            platform = p
+            count = try? c.decode(Int.self, forKey: .count)
+        }
+    }
+    /// Decodes one spread element without ever throwing: an entry that isn't an
+    /// object or names no platform becomes `nil` and is dropped, exactly as
+    /// `config.Placement._parse_spread` skips it.
+    private struct TolerantSpread: Decodable {
+        let value: SpreadDTO?
+        init(from decoder: Decoder) throws { value = try? SpreadDTO(from: decoder) }
     }
 
     public let platforms: [Platform]
@@ -162,11 +204,28 @@ public struct MeshOverrides: Decodable, Equatable {
 
     enum CodingKeys: String, CodingKey { case rev, updatedBy, duties }
 
+    /// Decodes one duty's placement VALUE without ever throwing: a value that isn't a
+    /// placement object becomes `nil` and that duty is dropped, so a single malformed
+    /// duty can't collapse the whole map (mirrors the Python port dropping non-mapping
+    /// duty values in `config.PlacementOverrides.from_dict`).
+    private struct TolerantPlacement: Decodable {
+        let value: MeshCatalog.PlacementDTO?
+        init(from decoder: Decoder) throws {
+            value = try? MeshCatalog.PlacementDTO(from: decoder)
+        }
+    }
+
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         rev = (try? c.decode(Int.self, forKey: .rev)) ?? 0
         updatedBy = (try? c.decode(String.self, forKey: .updatedBy)) ?? ""
-        duties = (try? c.decode([String: MeshCatalog.PlacementDTO].self, forKey: .duties)) ?? [:]
+        // Per-key tolerant: one malformed duty value (or a malformed spread within one)
+        // drops only that duty, never the whole overrides map.
+        if let wrapped = try? c.decode([String: TolerantPlacement].self, forKey: .duties) {
+            duties = wrapped.compactMapValues { $0.value }
+        } else {
+            duties = [:]
+        }
     }
 }
 

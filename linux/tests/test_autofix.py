@@ -297,6 +297,33 @@ def test_poll_error_surfaced_and_recovers(store, monkeypatch):
     assert store.autofix_poll_error is None
 
 
+def test_build_prompt_failure_surfaces_as_poll_error_not_a_dead_worker(store, monkeypatch):
+    """A diplomat-core build-prompt failure (subprocess non-zero / binary absent ->
+    RuntimeError/CoreBinaryMissing) is raised EAGERLY while constructing AgentJob(prompt=...)
+    in a _dispatch_* helper — before dispatch_agent's own guard. It must surface as a poll
+    failure (light the pill) exactly like a fetch failure, and NEVER escape _autofix_poll_once
+    to kill the daemon poll worker thread (after which every poll silently no-ops and a stale
+    error never clears). Regression for the unguarded poll body (only fetch_* was wrapped)."""
+    store.review_requests_enabled = False
+    _spawn_recorder(monkeypatch, finish=True)  # the recovery poll DISPATCHES — never spawn for real
+    snap = _snap(number=9, mergeable="CONFLICTING")           # a fresh conflict -> dispatch
+    store._save_fingerprints({9: PRFingerprint("MERGEABLE", "", 0)})
+    monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_snapshots", lambda *a, **k: [snap])
+
+    def boom_build(cfg):
+        raise RuntimeError("diplomat-core failed: build-prompt exit 1")
+    monkeypatch.setattr("diplomat_app.promptcore.build_prompt", boom_build)
+
+    store._autofix_poll_once()   # must NOT raise (a raise here would kill the worker thread)
+    assert store.autofix_poll_error and "diplomat-core failed" in store.autofix_poll_error
+
+    # Recovery: once build-prompt works again, the pill clears on the next clean poll.
+    monkeypatch.setattr("diplomat_app.promptcore.build_prompt",
+                        lambda cfg: f"PROMPT:{cfg.get('kind')}")
+    store._autofix_poll_once()
+    assert store.autofix_poll_error is None
+
+
 # MARK: - Mesh coordination (work keys + assignment gate + monitor gating)
 #
 # The work-key / stand-down fixtures are PARITY fixtures: the Swift twin
@@ -353,7 +380,13 @@ def test_parse_work_key_rejects_non_pr_keys():
     # Anything work_key never emits parses to None → the ps floor is skipped and
     # the spawn proceeds (no false suppression on a malformed / empty key).
     for bad in ["", "review", "review:github.com/acme/app", "audit",
-                "review:github.com/acme/app#nope@sha", "review:acme/app#1@s"]:
+                "review:github.com/acme/app#nope@sha", "review:acme/app#1@s",
+                # str.isdigit() is True but int() raises: a Unicode superscript, and a
+                # decimal run past CPython's 4300-digit int() limit. Both must parse to
+                # None, not raise — an escaped ValueError breaks the executor's fail-open
+                # ps floor (_pr_agent_running) and tears the dispatching peer's link.
+                "review:github.com/acme/app#²@sha",
+                "review:github.com/acme/app#" + "1" * 4301 + "@sha"]:
         assert autofix.parse_work_key(bad) is None
 
 
@@ -522,6 +555,22 @@ def test_in_flight_falls_back_to_live_ps_agents(store, monkeypatch):
     assert len(calls) == 1
 
 
+def test_live_pr_agents_fails_open_on_undecodable_ps_output(store, monkeypatch):
+    """`ps -eo args=` renders every process's argv; a single process on the box with a
+    non-UTF-8 byte in its arguments makes text=True raise UnicodeDecodeError — a
+    ValueError, NOT an OSError/SubprocessError. It must be caught, or it escapes this
+    fail-open guard and wedges the autofix poll worker every cycle (the raise precedes
+    the cache write, so every subsequent poll re-runs ps and re-raises)."""
+    import diplomat_app.store as storemod
+
+    def boom(*a, **k):
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+    monkeypatch.setattr(storemod.subprocess, "run", boom)
+    store._live_agents_cache = None
+    assert store._live_pr_agents() == set()  # fails open to empty, never raises
+
+
 # MARK: - unified dispatch pipeline (buttons and monitors are triggers, not paths)
 
 
@@ -608,3 +657,35 @@ def test_mesh_routes_only_auto_source(store, monkeypatch):
     assert store.dispatch_agent(job, autofix.SOURCE_PANEL) == "spawned"
     assert len(calls) == 1
     assert dispatch == [("review", "review:github.com/o/r#11@sha")]  # no second consult
+
+
+def test_autofix_poll_does_not_deadlock_on_dispatch(store, monkeypatch):
+    """run_autofix_poll_async holds the poll-overlap guard across the whole worker;
+    the worker's dispatch_agent takes a SEPARATE lock for the _dispatching_prs guard.
+    Sharing ONE non-reentrant lock self-deadlocked the worker the first time a poll
+    dispatched a PR-scoped fix (it re-acquired a lock it already held, store.py:667).
+    Drive the real wrapper + real dispatch_agent and assert the worker finishes."""
+    import threading
+
+    store.pr_autofix_enabled = True
+    _spawn_recorder(monkeypatch)
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+
+    done = threading.Event()
+    result = {}
+
+    def poll_body():
+        # What a real poll does on a fixable PR: a PR-scoped dispatch_agent call.
+        job = autofix.AgentJob(
+            kind="conflicts", audit_action="conflicts", label="Resolve · #42",
+            prompt="P", pr_url="https://github.com/o/r/pull/42", pr_number=42,
+            counter="conflicts",
+        )
+        result["verdict"] = store.dispatch_agent(job, autofix.SOURCE_PANEL)
+        done.set()
+
+    monkeypatch.setattr(store, "_autofix_poll_once", poll_body)
+    store.run_autofix_poll_async()
+    assert done.wait(timeout=5.0), \
+        "autofix worker deadlocked re-acquiring _autofix_lock (store.py dispatch_agent)"
+    assert result["verdict"] == "spawned"

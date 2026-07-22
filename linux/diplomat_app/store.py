@@ -168,7 +168,16 @@ class Store(QObject):
         # In-flight auto-fix agents [{url, number, done, at}] — dedups against
         # spawning a second agent on a PR one is already working.
         self._autofix_inflight: list[dict] = []
+        # Guards the _dispatching_prs set (below). MUST stay distinct from the
+        # poll-overlap guard: run_autofix_poll_async holds that one across the whole
+        # worker, and the worker's dispatch_agent re-takes THIS one — sharing a single
+        # non-reentrant lock across both self-deadlocks the worker (it would re-acquire
+        # a lock it already holds).
         self._autofix_lock = threading.Lock()
+        # Serializes autofix polls so two never overlap. Acquired in the caller
+        # thread and released by the worker (see run_autofix_poll_async), so it must
+        # be a plain Lock (cross-thread release), never nested with _autofix_lock.
+        self._poll_lock = threading.Lock()
         # Brief cache over the `ps` live-agent scan (autofix.live_pr_numbers) so one
         # poll cycle costs one subprocess: (at, pr numbers).
         self._live_agents_cache: tuple[float, set[int]] | None = None
@@ -487,33 +496,43 @@ class Store(QObject):
         are off."""
         if not (self.pr_autofix_enabled or self.review_requests_enabled):
             return
-        if not self._autofix_lock.acquire(blocking=False):
+        if not self._poll_lock.acquire(blocking=False):
             return  # a poll is already running
 
         def work() -> None:
             try:
                 self._autofix_poll_once()
             finally:
-                self._autofix_lock.release()
+                self._poll_lock.release()
                 self.autofix_changed.emit()
 
         threading.Thread(target=work, daemon=True).start()
 
     def _autofix_poll_once(self) -> None:
         self._poll_error_this_cycle = None
-        if not self.effective_me:
-            self.fetch_me()
-        if not self.effective_me:
-            self._note_poll_failure(
-                "GitHub login unknown — is `gh` installed and authenticated?"
-            )
-        else:
-            cfg = core.config()
-            owner, repo = cfg["owner"], cfg["repo"]
-            if self.pr_autofix_enabled:
-                self._poll_my_prs(owner, repo)
-            if self.review_requests_enabled:
-                self._poll_review_requests(owner, repo)
+        try:
+            if not self.effective_me:
+                self.fetch_me()
+            if not self.effective_me:
+                self._note_poll_failure(
+                    "GitHub login unknown — is `gh` installed and authenticated?"
+                )
+            else:
+                cfg = core.config()
+                owner, repo = cfg["owner"], cfg["repo"]
+                if self.pr_autofix_enabled:
+                    self._poll_my_prs(owner, repo)
+                if self.review_requests_enabled:
+                    self._poll_review_requests(owner, repo)
+        except Exception as exc:  # noqa: BLE001 — any poll failure surfaces, never kills the worker
+            # The per-poll helpers guard only their fetch_* calls; a failure deeper in the
+            # poll — notably a diplomat-core build-prompt subprocess error
+            # (RuntimeError/CoreBinaryMissing) raised while EAGERLY building an
+            # AgentJob(prompt=...) in a _dispatch_* helper — would otherwise escape here, past
+            # _settle_poll_error, out of the try/finally-only work() wrapper, and KILL the daemon
+            # poll worker thread (after which every poll silently no-ops and a stale error never
+            # clears). Route it through the same poll-failure path as a fetch error instead.
+            self._note_poll_failure(exc)
         self._settle_poll_error()
 
     def _poll_my_prs(self, owner: str, repo: str) -> None:
@@ -884,7 +903,11 @@ class Store(QObject):
             out = subprocess.run(
                 ["ps", "-eo", "args="], capture_output=True, text=True, timeout=10
             ).stdout
-        except (OSError, subprocess.SubprocessError):
+        except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
+            # UnicodeDecodeError: text=True decodes strict UTF-8, and any process on
+            # the box with a non-UTF-8 byte in its argv makes `ps` output undecodable.
+            # It is a ValueError, not an OSError/SubprocessError, so it must be caught
+            # explicitly or it escapes this fail-open guard and wedges the poll worker.
             out = ""
         cfg = core.config()
         refs = autofix.live_pr_numbers(out, cfg["owner"], cfg["repo"])
@@ -1184,7 +1207,12 @@ class Store(QObject):
                 step("relaunching…")
                 selfupdate.relaunch()
                 self.update_state = {"phase": "restarting", "commit": commit}
-            except selfupdate.UpdateError as exc:
+            except (selfupdate.UpdateError, OSError, subprocess.TimeoutExpired) as exc:
+                # TimeoutExpired (black-holed network on pull's fetch, or a hung swift
+                # build) and OSError are NOT UpdateError subclasses; without catching
+                # them the worker thread dies with update_state stuck on "updating",
+                # and the phase guard above then makes every later update a permanent
+                # no-op until the app restarts. Surface it as an error phase instead.
                 self.update_state = {"phase": "error", "error": str(exc)}
             self.update_changed.emit()
 

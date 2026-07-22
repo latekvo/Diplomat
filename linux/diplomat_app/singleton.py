@@ -131,14 +131,18 @@ class SingleInstance:
     def acquire_newest_wins() -> None:
         me = os.getpid()
         # Terminate every other live tray instance — whatever it's named and
-        # whichever pidfile it wrote. The recorded pidfile pid is folded in for
-        # the common case (the scan catches it too, but this keeps the guarantee
-        # even if /proc is somehow unreadable).
+        # whichever pidfile it wrote. The recorded pidfile pid is folded in for the
+        # common case (the scan catches it too), but it MUST pass the same identity
+        # check: a tray that exited uncleanly leaves a stale pidfile, and the OS
+        # recycles that pid to an unrelated same-uid process (an editor, a shell, a
+        # build). Folding it in on liveness ALONE would SIGTERM/SIGKILL that innocent
+        # process. _is_applet_gui verifies the pid is really a GUI tray of this applet
+        # before it can become a victim.
         victims = _other_instances()
         pf = _pidfile()
         try:
             old = int(pf.read_text().strip())
-            if old and old != me and _alive(old):
+            if old and old != me and _alive(old) and _is_applet_gui(old):
                 victims.add(old)
         except (OSError, ValueError):
             pass
@@ -183,7 +187,15 @@ class SingleInstance:
             pid = int(pf.read_text().strip())
         except (OSError, ValueError):
             return 0
-        return pid if pid and _alive(pid) else 0
+        # Liveness alone is not enough: a tray that exited uncleanly leaves a stale
+        # pidfile, and the OS recycles that pid to an unrelated same-uid process. A
+        # bare _alive check would then report a "running tray" that is really a shell
+        # or an editor, and the 6AM updater would relaunch a GUI on a session that
+        # has none. _is_applet_gui verifies the pidfile pid really is a GUI tray of
+        # this applet (the same identity gate acquire_newest_wins uses before it
+        # kills). This stays pidfile-only — it verifies the ONE recorded pid, it does
+        # not /proc-scan — so the headless updater never detects itself as a tray.
+        return pid if pid and _alive(pid) and _is_applet_gui(pid) else 0
 
     @staticmethod
     def release() -> None:

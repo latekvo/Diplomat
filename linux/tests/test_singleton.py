@@ -94,13 +94,16 @@ def isolated_runtime(tmp_path, monkeypatch):
 
 def test_acquire_signals_recorded_instance_by_pidfile(isolated_runtime, monkeypatch):
     """Even if the /proc scan finds nothing (old instance under a name we can't
-    see), the pid recorded in the pidfile is still SIGTERM'd and replaced."""
+    see), the pid recorded in the pidfile is still SIGTERM'd and replaced — provided
+    it still verifies as a GUI tray of this applet (identity, not liveness alone)."""
     signalled: list[tuple[int, int]] = []
 
-    # Pretend an old instance (pid 424242) is alive and owns the pidfile, and
-    # that the /proc scan surfaces nobody (simulating a scan blind spot).
+    # Pretend an old instance (pid 424242) is alive and owns the pidfile, the /proc
+    # scan surfaces nobody (a scan blind spot), but the recorded pid DOES still
+    # verify as one of our tray instances.
     monkeypatch.setattr(singleton, "_other_instances", lambda: set())
     monkeypatch.setattr(singleton, "_alive", lambda pid: pid == 424242)
+    monkeypatch.setattr(singleton, "_is_applet_gui", lambda pid: pid == 424242)
     monkeypatch.setattr(singleton.time, "sleep", lambda _s: None)
     monkeypatch.setattr(
         singleton.os, "kill", lambda pid, sig: signalled.append((pid, sig))
@@ -113,6 +116,28 @@ def test_acquire_signals_recorded_instance_by_pidfile(isolated_runtime, monkeypa
 
     assert (424242, signal.SIGTERM) in signalled
     assert pf.read_text().strip() == str(os.getpid())
+
+
+def test_acquire_spares_recycled_non_applet_pid(isolated_runtime, monkeypatch):
+    """A tray that exited uncleanly leaves a stale pidfile; the OS recycles that pid
+    to an unrelated same-uid process (an editor, a shell). The fold-in must NOT
+    signal it — a pid may become a victim only if it still verifies as an applet
+    GUI tray, never on liveness alone."""
+    signalled: list[tuple[int, int]] = []
+    monkeypatch.setattr(singleton, "_other_instances", lambda: set())
+    monkeypatch.setattr(singleton, "_alive", lambda pid: True)  # the recycled pid is alive
+    monkeypatch.setattr(singleton, "_is_applet_gui", lambda pid: False)  # but it is not our tray
+    monkeypatch.setattr(singleton.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(
+        singleton.os, "kill", lambda pid, sig: signalled.append((pid, sig))
+    )
+
+    singleton._pidfile().write_text("424242")
+
+    SingleInstance.acquire_newest_wins()
+
+    assert signalled == []  # the innocent recycled-pid process was left untouched
+    assert singleton._pidfile().read_text().strip() == str(os.getpid())
 
 
 def test_acquire_terminates_scanned_instance_under_any_name(
@@ -156,10 +181,25 @@ def test_acquire_escalates_to_sigkill_when_sigterm_ignored(
 
 def test_running_pid_is_pidfile_only(isolated_runtime, monkeypatch):
     """running_pid must not /proc-scan: the 6AM updater runs as the applet
-    module itself and would otherwise detect itself as a live tray."""
+    module itself and would otherwise detect itself as a live tray. It still
+    verifies the ONE recorded pid is a GUI tray (a targeted check, not a scan)."""
     monkeypatch.setattr(singleton, "_alive", lambda pid: pid == 555)
+    monkeypatch.setattr(singleton, "_is_applet_gui", lambda pid: pid == 555)
+    monkeypatch.setattr(singleton, "_other_instances",
+                        lambda: pytest.fail("running_pid must not enumerate /proc"))
     singleton._pidfile().write_text("555")
     assert SingleInstance.running_pid() == 555
 
     singleton._pidfile().write_text("777")  # not alive per the stub above
+    assert SingleInstance.running_pid() == 0
+
+
+def test_running_pid_ignores_recycled_non_applet_pid(isolated_runtime, monkeypatch):
+    """The running_pid analogue of test_acquire_spares_recycled_non_applet_pid: a
+    stale pidfile whose pid the OS recycled to an unrelated same-uid process is alive
+    but is NOT our GUI tray. running_pid must report 0 (no tray) so the 6AM updater
+    updates in place instead of relaunching a wrench onto a session that has none."""
+    monkeypatch.setattr(singleton, "_alive", lambda pid: True)           # recycled pid is alive
+    monkeypatch.setattr(singleton, "_is_applet_gui", lambda pid: False)  # but not our tray
+    singleton._pidfile().write_text("424242")
     assert SingleInstance.running_pid() == 0

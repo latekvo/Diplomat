@@ -130,3 +130,17 @@ jobs:
         run: node test/mcp-protocol.mjs
       - name: Agent-kill on prompt injection
         run: node test/agent-kill.mjs
+      - name: Report-injection capture stays off the event loop
+        run: node test/report-injection-nonblocking.mjs
+      - name: Report-injection evidence survives UTF-8 round-trip
+        run: node test/report-injection-utf8.mjs
+      - name: Idle sweep spares a device quarantined into repairing
+        run: node test/idle-sweep-repairing-race.mjs
+      - name: Repair completion re-checks allocation identity
+        run: node test/repair-completion-identity.mjs
+      - name: Device-id claim leases a still-booting device
+        run: node test/deviceid-claim-booting-lease.mjs
+      - name: Android wipe shuts a running instance down before erasing
+        run: node test/android-wipe-shuts-down-running-instance.mjs
+      - name: Android wipe fails honestly when the AVD lock never releases
+        run: node test/android-wipe-fails-when-lock-never-releases.mjs

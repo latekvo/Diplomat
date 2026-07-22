@@ -172,5 +172,14 @@ def slot_candidates(
     slots: list[tuple[str, list[str]]] = []
     for platform, count in placement.spread:
         of_platform = [n.id for n in pool if n.platform == platform]
-        slots.extend((platform, of_platform) for _ in range(count))
+        # One job per slot, and the executor never lands two slots on one node, so
+        # more slots than nodes-of-platform can never be filled — every extra slot is
+        # a guaranteed "no eligible node" failure. Bounding here keeps a hostile/typo
+        # `count` (a signed placement override's spread is attacker-influenceable on an
+        # open mesh — see config._parse_spread) from materializing an arbitrarily large
+        # list and OOM-ing the node the moment it dispatches this duty. Keep a floor of
+        # one slot so a platform with zero live nodes still surfaces a single failure
+        # (mirrors assign_duty's shortfall) instead of vanishing silently.
+        n_slots = min(count, max(1, len(of_platform)))
+        slots.extend((platform, of_platform) for _ in range(n_slots))
     return slots

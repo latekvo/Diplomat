@@ -94,9 +94,21 @@ def send_continue(pane_id: str, message: str) -> bool:
 def _run(argv: list[str]) -> str | None:
     """Run a tmux command; ``None`` on ANY failure (missing binary, non-zero exit,
     timeout), stdout otherwise — so a broken/absent tmux is distinguishable from a
-    clean empty result."""
+    clean empty result.
+
+    Decode leniently (``errors="replace"``): ``capture-pane -p`` emits pane content
+    VERBATIM, so a single non-UTF-8 byte in a watched pane (a Latin-1 filename, a raw
+    high byte from a binary dump, a tmux server started under a C locale) would make a
+    strict decode raise ``UnicodeDecodeError`` — a ``ValueError``, NOT an ``OSError``/
+    ``SubprocessError``, so it escaped the guard, propagated out of ``dump_panes`` and
+    the ``run_apiwatch_poll_async`` worker (which has no ``except``), and silently
+    killed the whole API-error watcher every poll for as long as that pane existed.
+    Replacement decoding keeps the crash out AND still scans the pane — a stalled agent
+    showing ``API Error`` (a static pane, most likely to carry a stray byte) is exactly
+    the one we must still be able to nudge."""
     try:
-        r = subprocess.run(argv, capture_output=True, text=True, timeout=10)
+        r = subprocess.run(argv, capture_output=True, text=True,
+                           errors="replace", timeout=10)
     except (OSError, subprocess.SubprocessError):
         return None
     if r.returncode != 0:

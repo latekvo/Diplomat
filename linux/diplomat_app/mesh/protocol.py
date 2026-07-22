@@ -33,6 +33,7 @@ Message types (``t``):
 from __future__ import annotations
 
 import json
+import math
 import time
 from dataclasses import dataclass, field, replace
 
@@ -53,9 +54,24 @@ NEUTRAL_SURPLUS = 1.0
 SURPLUS_RANK_BUCKET = 0.05
 
 
+# The widest surplus the ranking distinguishes. surplus is a burn-down ratio the
+# account owner caps at usage.PACE_CAP (10.0): a peer advertising more cannot be
+# "more than maximally flush", and a hostile finite-but-huge advert (1e307 — a FINITE
+# float, so it passes the non-finite ingestion guard) or a negative one (-1e307) would
+# make ``value / SURPLUS_RANK_BUCKET`` overflow to ±inf and ``round()`` raise an
+# uncaught OverflowError on the (default) surplus-first ranking path. Kept a local
+# literal mirroring usage.PACE_CAP so this ranking-side module needs no probe import.
+SURPLUS_RANK_CAP = 10.0
+
+
 def surplus_bucket(value: float) -> int:
-    """A surplus quantised to :data:`SURPLUS_RANK_BUCKET`, as a comparable index."""
-    return round(value / SURPLUS_RANK_BUCKET)
+    """A surplus quantised to :data:`SURPLUS_RANK_BUCKET`, as a comparable index.
+
+    Clamped to ``[0, SURPLUS_RANK_CAP]`` first: a legitimate surplus never leaves that
+    range, but a hostile finite-but-huge (or negative) advertised value would otherwise
+    overflow ``round(value / SURPLUS_RANK_BUCKET)`` and crash surplus-first ranking. The
+    clamp also stops such a value from out-ranking a genuinely maximally-flush peer."""
+    return round(max(0.0, min(value, SURPLUS_RANK_CAP)) / SURPLUS_RANK_BUCKET)
 
 # A guard against garbage/hostile blobs on the mesh port, not a real limit —
 # a dispatch carries a whole review prompt (tens of KB).
@@ -113,13 +129,104 @@ def result_signing_bytes(result_payload: dict) -> bytes:
 
 
 def _opt_frac(v: object) -> float | None:
-    """An optional [0, 1]-clamped fraction from the wire; None when absent/garbage."""
+    """An optional [0, 1]-clamped fraction from the wire; None when absent/garbage.
+    ``max``/``min`` also fold a non-finite input to a finite bound (∞→1.0, −∞/NaN→…),
+    so an optional display fraction can never carry ∞/NaN into serialization."""
     if v is None:
         return None
     try:
         return max(0.0, min(1.0, float(v)))  # type: ignore[arg-type]
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
+
+
+def _finite(v: object) -> float:
+    """``float(v)`` for a REQUIRED numeric field, but a **non-finite** result raises
+    ``ValueError`` so the caller's malformed-input guard drops the whole record.
+
+    ``float('inf')`` / ``float('nan')`` do NOT raise (unlike ``int(inf)``, the
+    OverflowError class), so without this check a peer's advert with ``tokensPct: 1e999``
+    or ``epoch: NaN`` (JSON ``1e999`` parses to ∞) yields a *valid* NodeInfo carrying ∞.
+    That poisons two things: (1) ``epoch`` is the freshness key, so an ∞ epoch
+    out-freshes every honest advert forever (a gossip-poisoning DoS), and (2) ∞/NaN
+    serialize (``json.dumps`` defaults to ``allow_nan=True``) as the bare tokens
+    ``Infinity``/``NaN`` — **RFC 8259-invalid** JSON that a strict reader rejects
+    WHOLESALE, so the shared ``state.json`` snapshot and the ctl ``status`` reply
+    become undecodable and the Swift topology panel blanks for EVERY node. Dropping the
+    malformed advert (return None, as from_dict already does for OverflowError) keeps
+    non-finite out of the model, the snapshot, and the verbatim gossip relay alike."""
+    f = float(v)  # type: ignore[arg-type]  # TypeError/ValueError/OverflowError propagate
+    if not math.isfinite(f):
+        raise ValueError("non-finite float in a required numeric field")
+    return f
+
+
+def _reject_non_finite(v: object) -> None:
+    """Raise ``ValueError`` if ``v`` contains a non-finite float anywhere (recursing
+    through dicts and lists) — an advert's ``stats`` and ``dutiesEnabled`` are
+    attacker-shaped blobs that ``to_dict`` serializes verbatim, so a nested/list ∞/NaN
+    would poison the snapshot just as a top-level one does. A numeric STRING that
+    coerces to a non-finite float (``"1e400"``/``"1e999"``/``"inf"``/``"nan"``) is
+    rejected too: it slips past the float-instance check yet drives ``surplus()``'s
+    ``float()`` to ±inf/nan (``float(str)`` returns non-finite WITHOUT raising), writing
+    the same bare ``Infinity``/``NaN`` token into the snapshot. A non-numeric string (a
+    plan name, a duty id) doesn't parse as a float and is left untouched."""
+    if isinstance(v, float):
+        if not math.isfinite(v):
+            raise ValueError("non-finite float in a verbatim wire dict")
+    elif isinstance(v, str):
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return
+        if not math.isfinite(f):
+            raise ValueError("non-finite numeric string in a verbatim wire dict")
+    elif isinstance(v, int):
+        # A JSON integer literal too big to hold in a float (a 400-digit number)
+        # decodes to a Python bigint: it is neither a float instance nor a string,
+        # so it slips past both guards above, yet surplus()'s float(stats["surplus"])
+        # — whose except is only KeyError/TypeError/ValueError — raises an UNcaught
+        # OverflowError on it (and round(surplus(), 3) into the snapshot the same).
+        # Same "drop the advert" class as a non-finite float or numeric string.
+        # (bool is an int subclass; float(True/False) is finite, so JSON true/false
+        # in dutiesEnabled passes untouched.)
+        try:
+            if not math.isfinite(float(v)):
+                raise ValueError("non-finite integer in a verbatim wire dict")
+        except OverflowError:
+            raise ValueError("integer too large for a finite float in a verbatim wire dict")
+    elif isinstance(v, dict):
+        for x in v.values():
+            _reject_non_finite(x)
+    elif isinstance(v, list):
+        for x in v:
+            _reject_non_finite(x)
+
+
+def _finite_stats(raw: object) -> dict:
+    """The advert's optional ``stats`` sub-dict, requiring every float value (recursively,
+    through nested dicts AND lists) be finite — a non-finite one raises ``ValueError`` so
+    from_dict drops the advert. Keeps ∞/NaN out of ``surplus()`` (an ∞ ``quotaLeft`` would
+    make an attacker always rank surplus-first) and out of the serialized snapshot."""
+    if not isinstance(raw, dict):
+        return {}
+    _reject_non_finite(raw)
+    return dict(raw)
+
+
+def _finite_duties(raw: object) -> dict:
+    """The advert's ``dutiesEnabled`` map (duty id → enabled bool). Coerced with
+    ``dict()`` so a non-mapping still drops the whole advert exactly as before, but with
+    every value required FINITE (recursing dicts/lists via ``_reject_non_finite``): the
+    map is re-serialized VERBATIM by ``to_dict`` into the snapshot, so a non-finite float
+    here — which ``float()`` accepts but ``json.dumps`` (allow_nan=True default) writes as
+    the bare RFC 8259-invalid token ``Infinity``/``NaN`` — would blank the strict Swift
+    topology reader and spread via the verbatim gossip relay, exactly like a poisoned
+    ``tokensPct``/``epoch``/``stats`` would. Round 11 guarded those three; ``dutiesEnabled``
+    is the same class."""
+    out = dict(raw)  # a non-mapping raises TypeError → from_dict drops the advert (unchanged)
+    _reject_non_finite(out)
+    return out
 
 
 # MARK: - NodeInfo (the gossiped view of one node)
@@ -214,20 +321,26 @@ class NodeInfo:
                 tokens=str(d.get("tokens", "ok")),
                 strength_auto=bool(d.get("strengthAuto", True)),
                 tokens_auto=bool(d.get("tokensAuto", True)),
-                tokens_pct=float(d.get("tokensPct", 1.0)),
+                tokens_pct=_finite(d.get("tokensPct", 1.0)),
                 tokens_session_pct=_opt_frac(d.get("tokensSessionPct")),
                 tokens_week_pct=_opt_frac(d.get("tokensWeekPct")),
                 tcp_port=int(d.get("tcpPort", 0)),
-                epoch=float(d.get("epoch", 0.0)),
+                epoch=_finite(d.get("epoch", 0.0)),
                 seq=int(d.get("seq", 0)),
                 sees=tuple(str(s) for s in d.get("sees", [])),
-                duties_enabled=dict(d.get("dutiesEnabled", {})),
+                duties_enabled=_finite_duties(d.get("dutiesEnabled", {})),
                 pubkey=str(d.get("pubkey", "")),
-                stats=dict(d.get("stats", {})) if isinstance(d.get("stats"), dict) else {},
+                stats=_finite_stats(d.get("stats")),
                 sig=str(d.get("sig", "")),
                 version=int(d.get("v", PROTOCOL_VERSION)),
             )
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError, OverflowError):
+            # A malformed advert is dropped (return None), never tears the link. Covers:
+            # OverflowError — a JSON literal like 1e999 parses to float('inf') and int(inf)
+            # raises it (an ArithmeticError, NOT a ValueError); and ValueError from
+            # _finite/_finite_stats/_finite_duties — a NON-FINITE float (∞/NaN) that
+            # float() accepts but must not enter the model or the serialized snapshot
+            # (see _finite); tokensPct/epoch, stats, and dutiesEnabled are all guarded.
             return None
 
     def surplus(self) -> float:
@@ -250,7 +363,10 @@ class NodeInfo:
             return NEUTRAL_SURPLUS
         try:
             return float(self.stats["surplus"])
-        except (KeyError, TypeError, ValueError):
+        # OverflowError: a bigint surplus (a too-large JSON integer) — from_dict's
+        # _finite_stats already drops such an advert at ingestion, so this only
+        # catches a locally-constructed NodeInfo, ranking it neutrally not crashing.
+        except (KeyError, TypeError, ValueError, OverflowError):
             return NEUTRAL_SURPLUS
 
     def newer_than(self, other: "NodeInfo") -> bool:
@@ -305,7 +421,7 @@ class Job:
                 requested_at=float(d.get("requestedAt", time.time())),
                 work_key=str(d.get("workKey", "")),
             )
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError, OverflowError):
             return None
 
 
@@ -373,7 +489,9 @@ class ClaimRecord:
                 state=str(d.get("state", "active")),
                 sig=str(d.get("sig", "")),
             )
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
+            # OverflowError: a JSON `seq`/`epoch` of 1e999 parses to inf, and int(inf)
+            # raises it (not a ValueError) — drop the claim, keep the link alive.
             return None
 
     @property

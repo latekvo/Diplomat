@@ -38,7 +38,11 @@ def load() -> list[dict]:
     except (OSError, json.JSONDecodeError):
         return []
     out: list[dict] = []
-    for e in raw.get("banned", []) if isinstance(raw, dict) else []:
+    entries = raw.get("banned") if isinstance(raw, dict) else None
+    # A present-but-scalar "banned" (null/int/bool) is NOT covered by .get's default
+    # (that only fires on an absent key), so guard the type or `for e in null` raises
+    # an uncaught TypeError that aborts node startup — corrupt file = nobody banned.
+    for e in entries if isinstance(entries, list) else []:
         if not isinstance(e, dict):
             continue
         fp, node = str(e.get("fingerprint", "")), str(e.get("node", ""))
@@ -46,7 +50,7 @@ def load() -> list[dict]:
             continue  # an entry that names nobody bans nobody
         try:
             banned_at = float(e.get("bannedAt", 0.0))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             banned_at = 0.0
         out.append({
             "fingerprint": fp,

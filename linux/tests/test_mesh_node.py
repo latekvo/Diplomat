@@ -208,6 +208,43 @@ def _wait_file(path: Path, expect: str, timeout: float = 8.0) -> None:
     )
 
 
+def _wait_json(path: Path, timeout: float = 15.0):
+    """Poll until ``path`` holds parseable JSON, then return it. The stub result
+    handlers here are fire-and-forget ``cp`` commands, and ``cp`` creates the
+    destination (O_CREAT) BEFORE its bytes land — so ``path.exists()`` can be true
+    while a read still sees an empty/partial file. Keying readiness on existence
+    and then ``json.loads`` therefore raises ``JSONDecodeError`` under load; waiting
+    for a successful parse closes that window."""
+    box = {}
+
+    def _ready() -> bool:
+        try:
+            box["value"] = json.loads(path.read_text())
+        except (OSError, ValueError):
+            return False
+        return True
+
+    _wait_for(_ready, timeout=timeout, what=f"{path.name} to hold parseable JSON")
+    return box["value"]
+
+
+def _wait_text(path: Path, needle: str, timeout: float = 15.0) -> str:
+    """Poll until ``path`` contains ``needle``, then return its full text. Same
+    fire-and-forget ``cp`` race as :func:`_wait_json` (existence precedes content);
+    waiting on the marker avoids reading a half-written stub file."""
+    box = {}
+
+    def _ready() -> bool:
+        try:
+            box["text"] = path.read_text()
+        except OSError:
+            return False
+        return needle in box["text"]
+
+    _wait_for(_ready, timeout=timeout, what=f"{path.name} to contain {needle!r}")
+    return box["text"]
+
+
 def test_mesh_discovery_assignment_failover_and_dispatch(fleet):
     """One flow, one fleet: cheaper than a fleet per assertion, and closer to
     the real lifecycle (a mesh lives through all of these in sequence)."""
@@ -510,8 +547,10 @@ def test_foreign_request_runs_confined_and_routes_result_back(fleet):
     assert r.returncode == 0 and "spawned" in r.stdout, r.stdout + r.stderr
 
     # 1. Bob ran the compute in the confinement runner, on the response-only prompt.
-    _wait_for(lambda: bob_confined.exists(), what="Bob's confinement runner to run")
-    confined_prompt = bob_confined.read_text()
+    # (The stub `cp`s the prompt file in; wait on the request marker — which the stub
+    # writes AFTER the preamble — so both assertions see settled content, not a
+    # half-copied file.)
+    confined_prompt = _wait_text(bob_confined, "please review #123")
     assert "zero-trust execution" in confined_prompt   # the response-only preamble
     assert "please review #123" in confined_prompt     # the actual request
 
@@ -520,8 +559,7 @@ def test_foreign_request_runs_confined_and_routes_result_back(fleet):
     assert not (root / "spawned" / "bob.txt").exists(), "foreign job hit the host path!"
 
     # 3. The result routed back and Alice acted on it under her own identity.
-    _wait_for(lambda: alice_acted.exists(), what="Alice to act on Bob's returned result")
-    payload = json.loads(alice_acted.read_text())
+    payload = _wait_json(alice_acted)
     assert payload["from"] == "bbbb" and payload["duty"] == "review"
     assert payload["output"] == "REVIEW-BY-BOB"
 
@@ -673,16 +711,12 @@ def test_agent_decider_extends_a_late_but_working_executor(fleet):
     assert r.returncode == 0 and "spawned" in r.stdout, r.stdout + r.stderr
 
     # The agent judged Bob's plea (the case file carries it) and granted time…
-    _wait_for(lambda: decider_case.exists(), timeout=20.0,
-              what="the extension decider to judge Bob's plea")
-    case = json.loads(decider_case.read_text())
+    case = _wait_json(decider_case, timeout=20.0)
     assert case["executor"]["node"] == "bbbb"
     assert "still running" in case["progressNote"]
     assert "review #3 slowly" in case["prompt"]
     # …so the late result still lands and Alice acts on it, and nobody is banned.
-    _wait_for(lambda: alice_acted.exists(), timeout=25.0,
-              what="Alice to act on Bob's late result")
-    assert json.loads(alice_acted.read_text())["output"] == "DONE-LATE"
+    assert _wait_json(alice_acted, timeout=25.0)["output"] == "DONE-LATE"
     assert not fleet.state("aaaa").get("banned")
 
 

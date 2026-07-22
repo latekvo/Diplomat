@@ -12,7 +12,7 @@
     "mcp": "node src/mcp.js",
     "install-allocator": "node src/install.js --install",
     "check": "node src/install.js --check",
-    "test": "node test/paths.mjs && node test/integration.mjs && node test/mcp-protocol.mjs && node test/agent-kill.mjs"
+    "test": "node test/paths.mjs && node test/integration.mjs && node test/mcp-protocol.mjs && node test/agent-kill.mjs && node test/report-injection-nonblocking.mjs && node test/report-injection-utf8.mjs && node test/idle-sweep-repairing-race.mjs && node test/repair-completion-identity.mjs && node test/deviceid-claim-booting-lease.mjs && node test/android-wipe-shuts-down-running-instance.mjs && node test/android-wipe-fails-when-lock-never-releases.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0"

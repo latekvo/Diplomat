@@ -264,7 +264,15 @@ def parse_work_key(key: str) -> tuple[str, str, str, int] | None:
     if len(segs) != 3:  # host / owner / repo
         return None
     _host, owner, repo = segs
-    return kind, owner, repo, int(num)
+    try:
+        # str.isdigit() is True for Unicode superscripts (¹²³) and for decimal runs
+        # longer than CPython's 4300-digit int() limit — neither of which int() will
+        # parse. work_key never emits those, so a raise here would break every caller's
+        # fail-open contract (the executor's _pr_agent_running dedup floor tears the
+        # dispatching peer's link on a hostile work_key); treat them as a non-PR key.
+        return kind, owner, repo, int(num)
+    except ValueError:
+        return None
 
 
 # MARK: - Unified dispatch gate (one workflow, two triggers)

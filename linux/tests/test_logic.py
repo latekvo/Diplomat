@@ -360,6 +360,20 @@ def test_pr_ref_parsing():
         f"https://github.com/{owner}/{repo}/pull/٣٣٧", owner, repo
     ).number is None
 
+    # 64-bit clamp, matching Swift's Int(_:): Int64.max parses, one past it is nil on
+    # both sides (Python's int() is unbounded and would otherwise accept it, letting
+    # the Linux wizard dispatch on a PR number the macOS one rejects).
+    int64_max = "9223372036854775807"
+    assert parse_pr_ref(int64_max, owner, repo).number == 9223372036854775807
+    assert parse_pr_ref("9223372036854775808", owner, repo).number is None
+    assert not parse_pr_ref("9223372036854775808", owner, repo).is_valid
+    assert parse_pr_ref("99999999999999999999999", owner, repo).number is None
+    # Over-large in the URL / shorthand paths too.
+    assert parse_pr_ref(
+        f"https://github.com/{owner}/{repo}/pull/9223372036854775808", owner, repo
+    ).number is None
+    assert parse_pr_ref(f"{owner}/{repo}#9223372036854775808", owner, repo).number is None
+
 
 def test_review_single_pr_accepts_url():
     # A pasted URL for the target repo resolves to the same single-PR prompt.

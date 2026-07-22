@@ -23,14 +23,16 @@ can judge a load-balanced dispatch placement. It is the default strategy.
 from __future__ import annotations
 
 from .codec import NodeInfo
-from .model import DEFAULT_STRATEGY, SURPLUS_RANK_BUCKET, TOKEN_RANK, Model
+from .model import DEFAULT_STRATEGY, SURPLUS_RANK_BUCKET, SURPLUS_RANK_CAP, TOKEN_RANK, Model
 
 
 def surplus_bucket(value: float) -> int:
     """A surplus quantised to SURPLUS_RANK_BUCKET, as a comparable index — the
     hysteresis that keeps continuous pace drift from reshuffling the ranking.
+    Clamped to [0, SURPLUS_RANK_CAP] so a hostile finite-but-huge (or negative)
+    advertised surplus pins to a bucket instead of overflowing round().
     Mirrors the reference ``protocol.surplus_bucket``."""
-    return round(value / SURPLUS_RANK_BUCKET)
+    return round(max(0.0, min(value, SURPLUS_RANK_CAP)) / SURPLUS_RANK_BUCKET)
 
 
 def placement(model: Model, duty_id: str, overrides: dict | None) -> dict:

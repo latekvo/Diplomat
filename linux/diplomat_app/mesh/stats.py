@@ -43,6 +43,23 @@ from .usage import QuotaWindow
 _DAY_SECS = 86_400.0
 
 
+def _finite(v: object) -> float:
+    """``float(v)`` for a stats field, raising ``ValueError`` on a NON-FINITE result
+    (∞/NaN — which ``float()`` accepts, unlike the ``int(inf)`` OverflowError). A
+    hand-edited/corrupt stats.json or a ``set-attr`` edit carrying ``Infinity``/``NaN``
+    (json.loads parses those RFC-8259-extension tokens by default) would otherwise put a
+    non-finite ``acc`` into NodeStats, which both drives ``surplus()`` to ±inf/nan (so the
+    node mis-ranks itself in surplus-first dispatch) AND rides ``advertise()`` verbatim
+    into the snapshot, where json.dumps (allow_nan=True default) emits the bare
+    RFC-8259-invalid token a strict reader (Swift MeshSnapshot.decode) rejects WHOLESALE,
+    blanking the topology. Callers catch the ValueError (load -> _default; apply_stat_attrs
+    -> skip the attr). Mirrors protocol._finite for the wire path."""
+    f = float(v)  # type: ignore[arg-type]
+    if not math.isfinite(f):
+        raise ValueError("non-finite float in stats")
+    return f
+
+
 def stats_path():
     return identity.mesh_dir() / "stats.json"
 
@@ -157,17 +174,22 @@ def load(now: float | None = None) -> NodeStats:
         raw = json.loads(stats_path().read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         pass
-    if not raw:
+    # A truthy valid-JSON non-object (a bare scalar/array/bool) makes raw.get below
+    # raise AttributeError — which the coercion except tuple doesn't catch — so guard
+    # the type here (empty/falsy already falls through to _default).
+    if not isinstance(raw, dict) or not raw:
         return _default(now)
     try:
         st = NodeStats(
             plan=str(raw.get("plan") or config.accounts().get("defaultPlan", "max-5x")),
-            acc=float(raw.get("acc", 0.0)),
-            quota_used=float(raw.get("quotaUsed", 0.0)),
-            window_start=float(raw.get("windowStart", now)),
-            updated_at=float(raw.get("updatedAt", now)),
+            acc=_finite(raw.get("acc", 0.0)),
+            quota_used=_finite(raw.get("quotaUsed", 0.0)),
+            window_start=_finite(raw.get("windowStart", now)),
+            updated_at=_finite(raw.get("updatedAt", now)),
         )
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # A non-finite (∞/NaN) or otherwise-uncoercible field makes stats.json corrupt;
+        # honour the corrupt-file-tolerance contract and fall back to the clean default.
         return _default(now)
     return st.decayed(now)
 
@@ -201,21 +223,31 @@ def apply_stat_attrs(st: NodeStats, attrs: dict, now: float | None = None) -> No
     st = st.decayed(now)
     if isinstance(attrs.get("plan"), str) and attrs["plan"]:
         st = replace(st, plan=attrs["plan"])
+    # Each numeric edit goes through _finite on BOTH the input AND the stored result: a
+    # non-finite (∞/NaN) input — which float() accepts and the max(0.0, ...) clamp folds
+    # only for NaN, not for +inf — is rejected, AND a FINITE input whose arithmetic
+    # OVERFLOWS the field (usageAvg * _tau_days, or record()'s running sum — a float
+    # product/sum overflows to inf with NO exception, unlike int) is rejected too. Either
+    # raises ValueError and the edit is SKIPPED (the field keeps its prior value), so a
+    # set-attr can't put a non-finite acc into this node's stats and poison surplus()/the
+    # snapshot. quotaLeft stays finite by construction (capacity()-left, both ≥0 finite).
     if "quotaLeft" in attrs:
         try:
-            left = max(0.0, float(attrs["quotaLeft"]))
+            left = max(0.0, _finite(attrs["quotaLeft"]))
             st = replace(st, quota_used=max(0.0, st.capacity() - left), window_start=now)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             pass
     if "usageAvg" in attrs:
         try:
-            st = replace(st, acc=max(0.0, float(attrs["usageAvg"])) * st._tau_days())
-        except (TypeError, ValueError):
+            st = replace(st, acc=_finite(max(0.0, _finite(attrs["usageAvg"])) * st._tau_days()))
+        except (TypeError, ValueError, OverflowError):
             pass
     if "usage" in attrs:
         try:
-            st = record(st, float(attrs["usage"]), now=now)
-        except (TypeError, ValueError):
+            booked = record(st, _finite(attrs["usage"]), now=now)
+            _finite(booked.acc); _finite(booked.quota_used)  # a finite delta can still OVERFLOW the running sum
+            st = booked
+        except (TypeError, ValueError, OverflowError):
             pass
     return st
 

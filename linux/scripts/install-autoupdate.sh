@@ -30,6 +30,15 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+# When the checkout is behind AND a tray is running, run_scheduled relaunches the GUI
+# (relaunch(): subprocess.Popen(..., start_new_session=True)) so it swaps onto the fresh
+# build via acquire_newest_wins. setsid()/start_new_session creates a new session but does
+# NOT move the child out of THIS unit's cgroup, so under the default KillMode=control-group
+# systemd SIGTERM/SIGKILLs it the instant this oneshot deactivates — killing the relaunched
+# tray mid-startup and silently defeating the update swap. KillMode=process kills only the
+# (already-exited) main ExecStart process, sparing the detached tray. NOT RemainAfterExit=yes:
+# that leaves the oneshot 'active (exited)', making the daily timer's `start` a no-op.
+KillMode=process
 Environment=DIPLOMAT_SELF_UPDATE=1
 ExecStart=/bin/bash ${LAUNCHER}
 EOF

@@ -47,8 +47,29 @@ beacon any of them. Trust therefore rests on two things a stranger cannot forge:
    random `nonce`, and the peer must return an [`auth`](04-messages.md#auth)
    message signing it. Only a peer holding the private key can produce a valid
    signature, and the nonce is per-connection so a captured signature can't be
-   replayed. A peer that copies someone else's advertised `pubkey` cannot sign our
-   challenge for it, so it is never *verified* as that identity.
+   replayed, and a peer that copies someone else's advertised `pubkey` holds no
+   matching private key, so it cannot *itself* produce a signature over our challenge —
+   **passive** copy-and-replay never yields a verification.
+
+   > **Known limitation — active reflection (v1).** Proof of possession over a bare
+   > per-connection nonce is **reflectable** by an *active* on-mesh adversary, because
+   > the plaintext transport gives the signature no **channel binding**. An attacker A
+   > holding no key can still be verified as a personal peer P by using the online P as
+   > a one-shot signing oracle: A reads our fresh nonce `N` (we put it in our own hello),
+   > opens a link to P and challenges it with `N`; P — which answers any hello's
+   > challenge — signs `"szpontnet-auth-v1:" || N` with P's key; A replays that exact
+   > `auth` back to us and is recorded as P (a foreign→personal escalation to host
+   > execution, needing no packet capture). The domain tag stops the key being an oracle
+   > over *non-auth* bytes, but not this *within-protocol* reflection, and no variant
+   > binding only **public** values (the peers' identities or nonces, a dial/role tag)
+   > closes it — an active relay forwards or supplies each one, and can flip the dial
+   > direction by choosing its own id. The robust fix is an **authenticated key
+   > exchange** (mutual TLS / an encrypted transport whose signatures bind the session's
+   > ephemeral keys) — the [deferred transport-encryption
+   > work](09-extensibility.md#non-goals-for-v1-explicitly-deferred). Until then,
+   > `personal` trust on an **open** mesh is sound against *passive* adversaries only;
+   > where an *active* LAN attacker is a concern, fence the mesh with a [join
+   > secret](03-transport.md#the-join-fence) or a trusted network.
 
    **The signed message (normative).** To keep the device key from doubling as a
    generic signing oracle over attacker-chosen bytes, the signature is **not** over

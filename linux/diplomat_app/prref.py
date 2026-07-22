@@ -24,6 +24,19 @@ _SHORTHAND = re.compile(r"^([\w.-]+)/([\w.-]+)#([0-9]+)$")
 # A bare PR number (after any leading '#' is stripped).
 _BARE_NUMBER = re.compile(r"^[0-9]+$")
 
+# Swift's ``Int`` is 64-bit, so ``Int("9223372036854775808")`` (2^63, one past
+# Int64.max) overflows to nil and PRRef.swift rejects it. Python's ``int()`` is
+# unbounded and would accept it, diverging the two front-ends. Clamp here so an
+# over-large PR number is rejected on both (PRRef.swift parity).
+_INT64_MAX = 9223372036854775807
+
+
+def _int64(digits: str) -> int | None:
+    """The value of an all-ASCII-digit string as Swift's ``Int(_:)`` would see it:
+    the integer, or ``None`` when it overflows the 64-bit range."""
+    n = int(digits)  # digits is [0-9]+, so this never raises
+    return n if n <= _INT64_MAX else None
+
 
 @dataclass(frozen=True)
 class PRRef:
@@ -49,12 +62,14 @@ def parse_pr_ref(raw: str, owner: str, repo: str) -> PRRef:
 
     m = _URL.search(s) or _SHORTHAND.match(s)
     if m:
-        o, r, n = m.group(1), m.group(2), int(m.group(3))
+        o, r, n = m.group(1), m.group(2), _int64(m.group(3))
         matches = o.lower() == owner.lower() and r.lower() == repo.lower()
-        return PRRef(n if n > 0 else None, not matches)
+        return PRRef(n if (n is not None and n > 0) else None, not matches)
 
     bare = s[1:] if s.startswith("#") else s
-    if _BARE_NUMBER.match(bare) and int(bare) > 0:
-        return PRRef(int(bare), False)
+    if _BARE_NUMBER.match(bare):
+        n = _int64(bare)
+        if n is not None and n > 0:
+            return PRRef(n, False)
 
     return PRRef(None, False)

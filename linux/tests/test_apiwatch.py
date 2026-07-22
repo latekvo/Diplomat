@@ -108,6 +108,22 @@ def test_dump_panes_parses_and_captures(monkeypatch):
     assert "API Error: 529 on %0" in panes[0].tail
 
 
+def test_run_survives_non_utf8_pane_bytes_and_still_scans():
+    """A regression for the whole-watcher crash: ``capture-pane -p`` emits pane
+    content verbatim, so a stalled agent's pane can carry a raw non-UTF-8 byte. A
+    strict decode raised ``UnicodeDecodeError`` (a ``ValueError``, so it slipped past
+    ``_run``'s ``(OSError, SubprocessError)`` guard, propagated out of the watcher's
+    no-``except`` worker, and silently killed every poll). ``_run`` must instead
+    decode leniently: no raise, and the ``API Error`` text — the very thing we scan a
+    stalled pane for — is still visible."""
+    # A real child (no tmux needed) emitting the error line plus a lone 0xE9 byte.
+    argv = ["python3", "-c",
+            r'import os; os.write(1, b"API Error: 529\n\xe9 build.log\n")']
+    out = tmuxwatch._run(argv)  # must NOT raise
+    assert out is not None
+    assert "API Error: 529" in out  # still scannable despite the stray byte
+
+
 def test_dump_panes_none_when_tmux_command_fails(monkeypatch):
     monkeypatch.setattr(tmuxwatch.shutil, "which", lambda _: "/usr/bin/tmux")
     monkeypatch.setattr(tmuxwatch, "_run", lambda argv: None)

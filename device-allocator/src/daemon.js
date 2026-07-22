@@ -23,8 +23,16 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, execFileSync, execFile } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
+import { promisify } from 'node:util';
+
+// Async subprocess for anything that runs ON the event loop (evidence capture):
+// execFileSync would freeze the single-threaded daemon for the whole `gh`/browser
+// call, during which /health can't be answered and a concurrent client's liveness
+// probe times out — spawning a second daemon that unlinks the live socket. Sync is
+// reserved for exit-time teardown (shutdownBootedSync), where blocking is fine.
+const pexecFile = promisify(execFile);
 import {
   SOCKET_PATH, DISCOVERY_PATH, REPAIRS_DIR,
   IDLE_LIMIT_MS, REAP_INTERVAL_MS, IDLE_INTERVAL_MS, POOL_INTERVAL_MS, ALLOC_GRACE_MS,
@@ -145,6 +153,17 @@ async function handleRequest(p, exclude = new Set()) {
     if (p.deviceId) {
       if (allocatedByHandle(p.deviceId)) throw httpError(409, `device ${p.deviceId} is already allocated`);
       const specific = await findPoolDevice(p.deviceId);
+      // allocatedByHandle() scans STORED lease fields and can miss an in-flight lease:
+      // an Android lease reserved for a not-yet-running AVD keeps serial=null until
+      // bootAndroid resolves (up to 180s, outside the lock), while findPoolDevice()
+      // resolves the id via LIVE enumeration, which surfaces the emulator's serial much
+      // earlier. So mirror selectDevice's `!allocations.has(d.key)` filter on the resolved
+      // key — otherwise reserve() would OVERWRITE the committed lease and hand one agent's
+      // exclusive, actually-booted device to another (exclusivity violation + spurious 409
+      // to the victim after its full boot wait).
+      if (specific && allocations.has(specific.key)) {
+        throw httpError(409, `device ${p.deviceId} is already allocated`);
+      }
       if (specific && !exclude.has(specific.key)) return reserve(specific, p, req);
       // Vega (Fire TV) has no enumeration CLI, so a created device can never show
       // up in the pool — trust the claim and track it as an unmanaged allocation
@@ -351,6 +370,13 @@ function dispatchRepair(alloc) {
   if (process.env.DA_AUTO_REPAIR === '1') {
     automatedRepair(alloc)
       .then((ok) => {
+        // eraseIOS/wipeAndroid awaited a multi-second subprocess; during it a /kill or
+        // /repaired could have removed THIS repair record and a /request re-handed the
+        // key to a new owner. Only act if the record is still ours — else deleting by
+        // key would drop the new owner's live lease (double-allocation) and the repair
+        // agent would erase a device someone else now drives. Mirrors the identity
+        // re-checks at handleRequest/bootAlloc/idleSweep.
+        if (allocations.get(alloc.key) !== alloc) return;
         if (ok) {
           allocations.delete(alloc.key); // back into the pool
           publish();
@@ -366,16 +392,26 @@ function dispatchRepair(alloc) {
 }
 
 // Opt-in first-line automated repair (DA_AUTO_REPAIR=1): the cheap, DESTRUCTIVE
-// "clean / reset" that wipes device state. iOS: shutdown + erase. Android: cold
-// boot with -wipe-data. Off by default — see dispatchRepair.
+// "clean / reset" that wipes device state. Apple (ios/apple-tv): shutdown + simctl
+// erase. Android (android/android-tv): cold boot with -wipe-data. Off by default —
+// see dispatchRepair.
 async function automatedRepair(alloc) {
   try {
-    if (alloc.platform === 'ios') {
+    // Route by platform FAMILY (dev.resetKind), not `=== 'ios'`: apple-tv is an
+    // Apple sim (erased via simctl, and its lease carries a udid, not an avd). The
+    // old `=== 'ios'` check sent apple-tv down the Android branch as
+    // wipeAndroid(undefined), which never erased the tvOS sim and burned the whole
+    // emulator boot-wait on a bogus `emulator -avd undefined`.
+    const kind = dev.resetKind(alloc.platform);
+    if (kind === 'erase') {
       const r = await dev.eraseIOS(alloc.udid);
       return r.ok;
     }
-    const r = await dev.wipeAndroid(alloc.avd);
-    return r.ok;
+    if (kind === 'wipe') {
+      const r = await dev.wipeAndroid(alloc.avd);
+      return r.ok;
+    }
+    return false; // vega (unmanaged) / unknown: no local reset CLI — escalate to a repair agent
   } catch { return false; }
 }
 
@@ -466,10 +502,13 @@ async function idleSweep() {
     if (a.status !== 'ready') continue;
     const h = await dev.motionHash(a);
     if (h == null) continue;
-    // The screenshot above yields for seconds; the allocation may have been
-    // freed and the device reallocated meanwhile. Only act if this exact
-    // allocation still holds the key (identity, not just key match).
-    if (allocations.get(a.key) !== a) continue;
+    // The screenshot above yields for seconds; during that yield the allocation may
+    // have been freed and the device reallocated (identity changes), OR /broken may
+    // have flipped THIS same object to 'repairing' in place (identity preserved,
+    // owner cleared, kept in the map as quarantine). Re-check BOTH: reaping a
+    // just-quarantined device would delete the record the repair agent's /repaired
+    // needs and let selectDevice re-hand the device mid-repair.
+    if (allocations.get(a.key) !== a || a.status !== 'ready') continue;
     if (a.motionHash && h === a.motionHash) {
       if (Date.now() - a.lastMotionAt > IDLE_LIMIT_MS) {
         log('reap: idle >limit, freeing', a.key, 'idleMs', Date.now() - a.lastMotionAt);
@@ -605,9 +644,9 @@ function toolEnv() {
   const extra = '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin';
   return { ...process.env, PATH: process.env.PATH ? `${process.env.PATH}:${extra}` : extra };
 }
-function resolveGh() {
+async function resolveGh() {
   for (const c of ['gh', '/opt/homebrew/bin/gh', '/usr/local/bin/gh', '/usr/bin/gh']) {
-    try { execFileSync(c, ['--version'], { timeout: 5000, stdio: 'ignore', env: toolEnv() }); return c; } catch {}
+    try { await pexecFile(c, ['--version'], { timeout: 5000, env: toolEnv() }); return c; } catch {}
   }
   return null;
 }
@@ -623,7 +662,7 @@ function parsePrRef(ref) {
   if (m) return { owner: null, repo: null, number: Number(m[1]) };
   return null;
 }
-function captureScreenshot(url, outPath) {
+async function captureScreenshot(url, outPath) {
   const browsers = [
     '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
     '/Applications/Chromium.app/Contents/MacOS/Chromium',
@@ -631,9 +670,9 @@ function captureScreenshot(url, outPath) {
   ];
   for (const b of browsers) {
     try {
-      execFileSync(b, ['--headless=new', '--disable-gpu', '--hide-scrollbars',
+      await pexecFile(b, ['--headless=new', '--disable-gpu', '--hide-scrollbars',
         '--window-size=1400,3200', `--screenshot=${outPath}`, url],
-        { timeout: 30000, stdio: 'ignore', env: toolEnv() });
+        { timeout: 30000, env: toolEnv() });
       if (fs.existsSync(outPath)) return true;
     } catch {}
   }
@@ -641,13 +680,14 @@ function captureScreenshot(url, outPath) {
 }
 // Log the exact triggering content: the PR's gh JSON + human view, and a best-effort
 // page screenshot (a private repo will screenshot a login page — gh content is the
-// authoritative record, per spec).
-function captureEvidence(dir, ref, gh) {
+// authoritative record, per spec). Async throughout so the (multi-second) gh/browser
+// shell-outs never block the daemon's event loop — see pexecFile.
+async function captureEvidence(dir, ref, gh) {
   const out = { ghCaptured: false, screenshotCaptured: false, url: null };
   if (!ref || ref.owner == null || !gh) return out;
   const nwo = `${ref.owner}/${ref.repo}`;
   try {
-    const json = execFileSync(gh, ['pr', 'view', String(ref.number), '--repo', nwo, '--json',
+    const { stdout: json } = await pexecFile(gh, ['pr', 'view', String(ref.number), '--repo', nwo, '--json',
       'number,title,author,url,body,createdAt,headRefName,comments,reviews'],
       { encoding: 'utf8', timeout: 30000, env: toolEnv() });
     fs.writeFileSync(path.join(dir, 'pr.json'), json);
@@ -655,11 +695,11 @@ function captureEvidence(dir, ref, gh) {
     out.ghCaptured = true;
   } catch (e) { log('injection evidence: gh json failed', String(e)); }
   try {
-    const text = execFileSync(gh, ['pr', 'view', String(ref.number), '--repo', nwo, '--comments'],
+    const { stdout: text } = await pexecFile(gh, ['pr', 'view', String(ref.number), '--repo', nwo, '--comments'],
       { encoding: 'utf8', timeout: 30000, env: toolEnv() });
     fs.writeFileSync(path.join(dir, 'pr.txt'), text);
   } catch {}
-  if (out.url) out.screenshotCaptured = captureScreenshot(out.url, path.join(dir, 'screenshot.png'));
+  if (out.url) out.screenshotCaptured = await captureScreenshot(out.url, path.join(dir, 'screenshot.png'));
   return out;
 }
 
@@ -715,12 +755,12 @@ async function handleReportInjection(p) {
   if (!login) { const e = new Error('person (the offending PR author login) is required'); e.statusCode = 400; throw e; }
   const at = new Date().toISOString();
   const ref = parsePrRef(p.pr);
-  const gh = process.env.DA_FAKE_DEVICES != null ? null : resolveGh(); // tests: skip real gh/browser
+  const gh = process.env.DA_FAKE_DEVICES != null ? null : await resolveGh(); // tests: skip real gh/browser
   const slug = `${at.replace(/[:.]/g, '-')}-${login.replace(/[^A-Za-z0-9_-]/g, '_')}`;
   const dir = path.join(INJECTIONS_DIR, slug);
   try { fs.mkdirSync(dir, { recursive: true }); } catch {}
   try { fs.writeFileSync(path.join(dir, 'evidence.txt'), String(p.evidence || '')); } catch {}
-  const cap = captureEvidence(dir, ref, gh);
+  const cap = await captureEvidence(dir, ref, gh);
   const incident = {
     login, pr: p.pr || null, prRef: ref, evidence: p.evidence || '', reportedBy: p.agentName || null,
     at, ghCaptured: cap.ghCaptured, screenshotCaptured: cap.screenshotCaptured, url: cap.url,
@@ -757,6 +797,12 @@ const server = http.createServer((req, res) => {
   if (req.method === 'GET' && req.url === '/state') return send(200, lastState);
 
   let body = '';
+  // Decode as UTF-8 via a StringDecoder so a multi-byte character split across two
+  // socket 'data' chunks is reassembled, not turned into U+FFFD. Without this, a
+  // large unicode report-prompt-injection `evidence` payload (verbatim forensic
+  // capture) is silently corrupted at every chunk boundary. (The client sets the
+  // same on its response in ipc.js.)
+  req.setEncoding('utf8');
   req.on('data', (c) => {
     body += c;
     // No legitimate request body approaches 1MB; cap the buffer so a runaway
@@ -866,4 +912,9 @@ async function start() {
   process.on('SIGTERM', bye);
 }
 
-start();
+// Test seam: with DA_EXPOSE_TEST=1 the module can be imported to drive the real
+// handlers directly (deterministic concurrency tests) without binding the socket.
+// Unset in every real run, so production behavior is unchanged.
+export { allocations, idleSweep, handleBroken, dispatchRepair, handleRequest };
+
+if (process.env.DA_EXPOSE_TEST !== '1') start();
