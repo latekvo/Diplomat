@@ -33,11 +33,11 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import time
 from dataclasses import dataclass, replace
 
 from . import config, identity
+from .atomicjson import write_atomic
 from .usage import QuotaWindow
 
 _DAY_SECS = 86_400.0
@@ -174,21 +174,13 @@ def load(now: float | None = None) -> NodeStats:
 
 def save(st: NodeStats) -> None:
     """Atomic write (tmp + rename); best-effort, never raises."""
-    path = stats_path()
-    payload = {
+    write_atomic(stats_path(), {
         "plan": st.plan,
         "acc": st.acc,
         "quotaUsed": st.quota_used,
         "windowStart": st.window_start,
         "updatedAt": st.updated_at,
-    }
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-        os.replace(tmp, path)
-    except OSError:
-        pass
+    })
 
 
 def record(st: NodeStats, units: float, now: float | None = None) -> NodeStats:

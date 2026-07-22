@@ -24,6 +24,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
+import { setTimeout as delay } from 'node:timers/promises';
 import {
   SOCKET_PATH, DISCOVERY_PATH, REPAIRS_DIR,
   IDLE_LIMIT_MS, REAP_INTERVAL_MS, IDLE_INTERVAL_MS, POOL_INTERVAL_MS, ALLOC_GRACE_MS,
@@ -48,7 +49,6 @@ function withLock(fn) {
 }
 
 function httpError(code, message) { return Object.assign(new Error(message), { statusCode: code }); }
-const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ---- selection ------------------------------------------------------------
 

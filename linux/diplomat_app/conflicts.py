@@ -10,8 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from . import core
-from .prref import PRRef, parse_pr_ref
+from .configbase import PRSweepConfig
 from .prtarget import PRTarget
 
 # Whose PRs we sweep — the same axis the Review wizard uses. Kept as ``Target`` here
@@ -20,37 +19,14 @@ Target = PRTarget
 
 
 @dataclass
-class ConflictConfig:
+class ConflictConfig(PRSweepConfig):
     target: Target = Target.MINE
     username: str = ""
     me: str = ""  # authenticated viewer login, used as the @handle for "mine"
     specific_pr: str = ""
 
-    # The @handle whose PRs we sweep (empty in single-PR mode).
-    @property
-    def author_handle(self) -> str:
-        if self.target == Target.MINE:
-            return self.me or "me"
-        if self.target == Target.SOMEONE:
-            return self.username.strip()
-        return ""
-
-    @property
-    def is_single_pr(self) -> bool:
-        return self.target == Target.SPECIFIC
-
-    @property
-    def target_repo(self) -> tuple[str, str]:
-        """The configured target repo (owner, repo), from the shared core config."""
-        cfg = core.config()
-        return cfg["owner"], cfg["repo"]
-
-    @property
-    def pr_ref(self) -> PRRef:
-        """The single-PR field parsed as a number / URL / ``owner/repo#n`` shorthand,
-        checked against the target repo."""
-        owner, repo = self.target_repo
-        return parse_pr_ref(self.specific_pr, owner, repo)
+    # author_handle / is_single_pr / target_repo / pr_ref are inherited verbatim
+    # from PRSweepConfig (shared with ReviewConfig).
 
     @property
     def is_valid(self) -> bool:

@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import identity
+from .atomicjson import write_atomic
 from .protocol import PROTOCOL_VERSION
 
 
@@ -50,14 +51,7 @@ def stamp(snapshot: dict) -> dict:
 def write_state(snapshot: dict) -> None:
     """Atomic write (tmp + rename); best-effort, never raises into the node."""
     stamp(snapshot)
-    path = state_path()
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(snapshot, indent=1) + "\n", encoding="utf-8")
-        os.replace(tmp, path)
-    except OSError:
-        pass
+    write_atomic(state_path(), snapshot, indent=1)
 
 
 def read_state() -> dict | None:
