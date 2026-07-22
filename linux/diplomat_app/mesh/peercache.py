@@ -19,10 +19,10 @@ whoever answers exactly as it does for a beacon-triggered dial.
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 from . import identity
+from .atomicjson import write_atomic
 
 
 def path() -> Path:
@@ -51,13 +51,6 @@ def load() -> dict[str, tuple[str, int]]:
 
 def save(cache: dict[str, tuple[str, int]]) -> None:
     """Atomic write (tmp + rename); best-effort, never raises into the node."""
-    p = path()
-    try:
-        p.parent.mkdir(parents=True, exist_ok=True)
-        body = {pid: {"addr": addr, "tcpPort": port}
-                for pid, (addr, port) in sorted(cache.items())}
-        tmp = p.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(body, indent=1) + "\n", encoding="utf-8")
-        os.replace(tmp, p)
-    except OSError:
-        pass
+    body = {pid: {"addr": addr, "tcpPort": port}
+            for pid, (addr, port) in sorted(cache.items())}
+    write_atomic(path(), body, indent=1)

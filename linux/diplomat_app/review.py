@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from . import core
-from .prref import PRRef, parse_pr_ref
+from .configbase import PRSweepConfig
 from .prtarget import PRTarget
 
 
@@ -94,7 +94,7 @@ def default_depth_id() -> str:
 
 
 @dataclass
-class ReviewConfig:
+class ReviewConfig(PRSweepConfig):
     depth: str = ""  # depth id; "" -> default
     target: PRTarget = PRTarget.MINE
     username: str = ""
@@ -122,14 +122,8 @@ class ReviewConfig:
         if not self.depth:
             self.depth = default_depth_id()
 
-    # The @handle whose PRs we go through (empty in single-PR mode).
-    @property
-    def author_handle(self) -> str:
-        if self.target == PRTarget.MINE:
-            return self.me or "me"
-        if self.target == PRTarget.SOMEONE:
-            return self.username.strip()
-        return ""
+    # author_handle / is_single_pr / target_repo / pr_ref are inherited verbatim
+    # from PRSweepConfig (shared with ConflictConfig).
 
     # The review disposition: mine (fix on branch) or theirs (review only). For a
     # whose-PRs sweep it follows the target; for a specific PR it's the polled author
@@ -170,24 +164,6 @@ class ReviewConfig:
     @property
     def can_soft_approve(self) -> bool:
         return self.disposition != SpecificAuthor.MINE
-
-    # Review exactly one PR by number/URL instead of a whose-PRs sweep.
-    @property
-    def is_single_pr(self) -> bool:
-        return self.target == PRTarget.SPECIFIC
-
-    @property
-    def target_repo(self) -> tuple[str, str]:
-        """The configured target repo (owner, repo), from the shared core config."""
-        cfg = core.config()
-        return cfg["owner"], cfg["repo"]
-
-    @property
-    def pr_ref(self) -> PRRef:
-        """The single-PR field parsed as a number / URL / ``owner/repo#n`` shorthand,
-        checked against the target repo."""
-        owner, repo = self.target_repo
-        return parse_pr_ref(self.specific_pr, owner, repo)
 
     @property
     def is_valid(self) -> bool:

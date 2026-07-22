@@ -18,19 +18,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from . import core
+from .configbase import RepoConfig
 
 
 @dataclass
-class AuditConfig:
+class AuditConfig(RepoConfig):
     fix_issues: bool = False
     open_prs: bool = False
 
-    @property
-    def target_repo(self) -> tuple[str, str]:
-        """The configured target repo (owner, repo), from the shared core config."""
-        cfg = core.config()
-        return cfg["owner"], cfg["repo"]
+    # target_repo is inherited from RepoConfig (shared with Conflict/Review configs).
 
     @property
     def is_valid(self) -> bool:

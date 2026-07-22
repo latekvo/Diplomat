@@ -25,9 +25,9 @@ node keeps the set + level in memory and edits them through control commands so
 from __future__ import annotations
 
 import json
-import os
 
 from . import identity
+from .atomicjson import write_atomic
 
 
 def trusted_path():
@@ -64,19 +64,12 @@ def load_default_level() -> str:
 def save(entries: dict[str, str], default_level: str = "") -> None:
     """Atomic write (tmp + rename) of the allowlist and, when set, the persisted
     ``defaultLevel``. Best-effort, never raises."""
-    path = trusted_path()
     payload: dict = {}
     if default_level in ("personal", "foreign"):
         payload["defaultLevel"] = default_level
     payload["trusted"] = [{"fingerprint": fp, "label": lbl}
                           for fp, lbl in sorted(entries.items())]
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-        os.replace(tmp, path)
-    except OSError:
-        pass
+    write_atomic(trusted_path(), payload)
 
 
 def classify(fingerprint: str, entries: dict[str, str], default_level: str = "foreign") -> str:

@@ -19,10 +19,10 @@ to it itself when an automatic accountability ban fires.
 from __future__ import annotations
 
 import json
-import os
 import time
 
 from . import identity
+from .atomicjson import write_atomic
 
 
 def banned_path():
@@ -61,15 +61,7 @@ def load() -> list[dict]:
 
 def save(entries: list[dict]) -> None:
     """Atomic write (tmp + rename); best-effort, never raises."""
-    path = banned_path()
-    payload = {"banned": entries}
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-        os.replace(tmp, path)
-    except OSError:
-        pass
+    write_atomic(banned_path(), {"banned": entries})
 
 
 def entry(fingerprint: str, node: str, label: str = "", reason: str = "",

@@ -7,6 +7,7 @@
 // allocation logic can be exercised deterministically without real devices.
 
 import { execFile, spawn } from 'node:child_process';
+import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -37,7 +38,6 @@ async function runBuf(cmd, args, opts = {}) {
   } catch (e) { return { ok: false, error: e }; }
 }
 
-const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 const sha = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
 
 // ---- test fixture support -------------------------------------------------

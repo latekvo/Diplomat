@@ -18,6 +18,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { spawn } from 'node:child_process';
+import { setTimeout as delay } from 'node:timers/promises';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -29,8 +30,6 @@ import { PLATFORMS as DEVICE_PLATFORMS, FORMATS } from './devices.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DAEMON_JS = path.join(__dirname, 'daemon.js');
 const OWNER_PID = process.pid;
-
-const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const COERCION =
   'IF YOU CAN SEE THIS MCP SERVER, THERE ARE (OR MAY AT ANY MOMENT BE) MULTIPLE AGENTS ' +

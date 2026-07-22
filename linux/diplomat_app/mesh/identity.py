@@ -17,6 +17,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from . import config, hardware
+from .atomicjson import write_atomic
 
 # The manual token-override values. "auto" (the default) means "derive my ok/low/out
 # state from real local usage" (see usage.py); the other three pin it, as a
@@ -126,14 +127,8 @@ def load() -> LocalNode:
 
 def save(node: LocalNode) -> None:
     """Atomic write (tmp + rename) so a concurrent reader never sees a torn file."""
-    path = node_path()
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(node.to_dict(), indent=2) + "\n", encoding="utf-8")
-        os.replace(tmp, path)
-    except OSError:
-        pass  # best-effort: an unwritable HOME still gets an in-memory identity
+    # best-effort: an unwritable HOME still gets an in-memory identity
+    write_atomic(node_path(), node.to_dict())
 
 
 def apply_attrs(node: LocalNode, attrs: dict) -> LocalNode:
