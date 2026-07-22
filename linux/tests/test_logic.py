@@ -234,6 +234,56 @@ def test_sweep_disposition_follows_target_not_specific_author():
     assert other.disposition == SpecificAuthor.THEIRS
 
 
+def test_poll_dispatch_does_not_self_deadlock_on_the_overlap_lock():
+    # Regression: run_autofix_poll_async holds _autofix_lock for the WHOLE poll
+    # (the overlap guard), and a poll reaches dispatch_agent to spawn a fix. If
+    # dispatch_agent re-acquired that same non-reentrant lock for its
+    # _dispatching_prs dedup, the poll would deadlock on itself, never release the
+    # lock, and every later tick would no-op ("no monitor has polled yet") forever.
+    # dispatch_agent must guard _dispatching_prs with its OWN mutex.
+    import threading
+
+    from diplomat_app import autofix
+
+    s = Store()
+    s.me = "latekvo"
+    # Keep dispatch offline and deterministic: no mesh, no real terminal spawn.
+    s._route_via_mesh = lambda job: None
+    s._spawn_tracked = lambda prompt, url, number: True
+    s._in_flight = lambda url: False
+
+    job = autofix.AgentJob(
+        kind="conflicts",
+        audit_action="conflicts",
+        label="Resolve · #421",
+        prompt="resolve",
+        pr_url="u/421",
+        pr_number=421,
+        duty="conflicts",
+        work_key="",
+        counter="conflicts",
+    )
+
+    result: list[str] = []
+
+    def poll_body() -> None:
+        # Mirror run_autofix_poll_async: hold the overlap lock across the dispatch.
+        assert s._autofix_lock.acquire(blocking=False)
+        try:
+            result.append(s.dispatch_agent(job, autofix.SOURCE_AUTO))
+        finally:
+            s._autofix_lock.release()
+
+    t = threading.Thread(target=poll_body, daemon=True)
+    t.start()
+    t.join(timeout=5)
+    assert not t.is_alive(), "dispatch under the poll's overlap lock deadlocked"
+    assert result == ["spawned"]
+    # And the lock is free again for the next tick (was released, not wedged).
+    assert s._autofix_lock.acquire(blocking=False)
+    s._autofix_lock.release()
+
+
 def test_openpr_mergeable_and_has_conflicts():
     # mergeable defaults to UNKNOWN (fixtures/older payloads) and only the exact
     # CONFLICTING state reads as a conflict — mirrors OpenPR in Models.swift.

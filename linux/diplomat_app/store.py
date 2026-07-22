@@ -172,10 +172,13 @@ class Store(QObject):
         # Brief cache over the `ps` live-agent scan (autofix.live_pr_numbers) so one
         # poll cycle costs one subprocess: (at, pr numbers).
         self._live_agents_cache: tuple[float, set[int]] | None = None
-        # PR numbers with a dispatch_agent call in flight (held for the whole call,
-        # under _autofix_lock) - a click and an overlapping poll can't race two
-        # spawns onto one PR.
+        # PR numbers with a dispatch_agent call in flight - a click and an
+        # overlapping poll can't race two spawns onto one PR. Guarded by its own
+        # short mutex: _autofix_lock is the whole-poll overlap guard (held for the
+        # entire poll by run_autofix_poll_async), and a poll reaches dispatch_agent
+        # while holding it - reusing that non-reentrant lock here would self-deadlock.
         self._dispatching_prs: set[int] = set()
+        self._dispatching_lock = threading.Lock()
         # Work keys a peer's agent already owns, so the "claimed elsewhere" note is
         # logged once per key rather than every poll (docs/szpontnet/12).
         self._mesh_suppressed_logged: set[str] = set()
@@ -664,7 +667,7 @@ class Store(QObject):
         very machine. ``_dispatching_prs`` is held for the whole call so an
         overlapping poll and a click can't race two spawns onto one PR."""
         if job.pr_number is not None:
-            with self._autofix_lock:
+            with self._dispatching_lock:
                 if job.pr_number in self._dispatching_prs:
                     return autofix.VERDICT_IN_FLIGHT
                 self._dispatching_prs.add(job.pr_number)
@@ -730,7 +733,7 @@ class Store(QObject):
             return "spawned"
         finally:
             if job.pr_number is not None:
-                with self._autofix_lock:
+                with self._dispatching_lock:
                     self._dispatching_prs.discard(job.pr_number)
 
     def _dispatch_conflict_fix(
