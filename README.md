@@ -43,14 +43,12 @@ Targets `software-mansion/argent` and shells out to the authenticated `gh` CLI.
 
 ## The library
 
-| Icon | Tool | What it lists |
-|------|------|---------------|
-| 📕 (purple) | **SKILL.md PRs** | open PRs touching any `SKILL.md` |
-| 📦 (orange) | **Installer/CLI PRs** | open PRs touching `packages/argent-installer/` or `packages/argent-cli/` |
-| ⏳ (red) | **Stale Ready >10d** | non-draft PRs that have been ready-for-review for over 10 days |
-| 💬 (teal) | **Unaddressed Issues** | open issues **not** opened by an SWM org member that have no team reply and no assignee |
-| ✅ (green) | **My Approved PRs** | *your* open PRs whose review decision is `APPROVED` |
-| ↩️ (indigo) | **My Unaddressed Reviews** | *your* open PRs with a review thread that's resolvable, unresolved, and that you haven't replied to |
+| Tool | What it lists |
+|------|---------------|
+| **Stale Ready >10d** | non-draft PRs that have been ready-for-review for over 10 days |
+| **Unaddressed Issues** | open issues **not** opened by an SWM org member that have no team reply and no assignee |
+| **My Approved PRs** | *your* open PRs whose review decision is `APPROVED` |
+| **My Unaddressed Reviews** | *your* open PRs with a review thread that's resolvable, unresolved, and that you haven't replied to |
 
 The first two ship **hidden** on both platforms - they're the niche ones; unhide
 them under Settings → *Tools - color & visibility*.
@@ -190,7 +188,7 @@ Mesh** makes the machines coordinate: every node self-discovers its peers over
 UDP (multicast + subnet broadcast), holds heartbeat TCP links, and gossips its
 status — platform, a machine *tier* (1 = strongest, auto-detected from the
 hardware CPU-first; editing it pins the value), and token availability
-(🟢 ok / 🟡 low / 🔴 out, tracked from real usage unless you pin that too).
+(ok / low / out, tracked from real usage unless you pin that too).
 
 On top of that shared view, every node runs the same **deterministic duty
 assignment** — no leader, no election, no split-brain: identical inputs give
