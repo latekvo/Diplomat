@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from PySide6.QtCore import QObject, QSettings, Signal
+from PySide6.QtCore import QObject, Signal
 
 import json
 import os
@@ -30,6 +30,7 @@ from . import (
     conflicts,
     core,
     deviceallocator,
+    prefs,
     review,
     tmuxwatch,
 )
@@ -117,9 +118,6 @@ class Store(QObject):
     # Emitted after each Claude-API-error watcher scan (status pill + continue count).
     apiwatch_changed = Signal()
 
-    _ORG = "diplomat"
-    _APP = "diplomat"
-
     # A tracked auto-fix agent whose completion sentinel never appears (window
     # killed, machine slept) is considered finished after this long, so a stuck
     # entry can't pin a PR as "in flight" forever.
@@ -191,13 +189,9 @@ class Store(QObject):
         self._apiwatch_seen_tail: dict[str, str] = {}  # pane_id -> last erroring tail
         self._apiwatch_lock = threading.Lock()
 
-        # Honor the process-wide default format (NativeFormat unless overridden):
-        # the two-arg QSettings(org, app) constructor is hardwired to NativeFormat,
-        # which on macOS ignores QSettings.setPath — so the test suite couldn't
-        # redirect it and would read/write the real user settings.
-        self._settings = QSettings(
-            QSettings.defaultFormat(), QSettings.Scope.UserScope, self._ORG, self._APP
-        )
+        # Shared with the headless mesh node, which resolves settings (the repo root)
+        # without a Store — see prefs for the format/redirect caveat.
+        self._settings = prefs.settings()
 
         # Re-point a hidden default selection.
         if self.selected in self.hidden_tools:
@@ -244,6 +238,18 @@ class Store(QObject):
     @terminal_choice.setter
     def terminal_choice(self, value: str) -> None:
         self._settings.setValue("terminalChoice", value)
+
+    @property
+    def repo_path_override(self) -> str:
+        """The repo root every spawned agent ``cd``s into (Settings → REPO ROOT).
+        Empty => ``review.default_repo_path()``; ``DIPLOMAT_REPO`` outranks both.
+        Stored raw (a typed ``~/…`` is expanded at use) so the field shows back
+        exactly what was entered."""
+        return self._settings.value(prefs.REPO_PATH, "", str)
+
+    @repo_path_override.setter
+    def repo_path_override(self, value: str) -> None:
+        self._settings.setValue(prefs.REPO_PATH, value)
 
     @property
     def allocator_setup_done(self) -> bool:

@@ -108,6 +108,12 @@ enum MeshBridge {
         p.executableURL = URL(fileURLWithPath: python)
         p.arguments = ["-m", "diplomat_app.mesh", "--daemon"]
         p.currentDirectoryURL = RepoPaths.root.appendingPathComponent("linux")
+        // A job arriving over the mesh is spawned by the node itself (Python
+        // `review.shell_command`), which resolves the repo root from `DIPLOMAT_REPO` or
+        // the *Qt* settings — it can't see this app's UserDefaults. Hand it the resolved
+        // path so a mesh-landed agent works in the same checkout as a local spawn.
+        p.environment = ProcessInfo.processInfo.environment
+            .merging(["DIPLOMAT_REPO": RepoPaths.agentRepo]) { _, new in new }
         p.standardInput = FileHandle.nullDevice
         // Discard output to null (not a Pipe) so an unread buffer can never deadlock the
         // detach — same rule as DeviceAllocator's installer shell-out.

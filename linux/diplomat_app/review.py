@@ -269,9 +269,36 @@ def resolved(preferred: SpawnTerminal | None) -> SpawnTerminal:
     return default_terminal()
 
 
+def default_repo_path() -> str:
+    """``~/dev/<repo>`` for whichever repo the shared core config targets, so the
+    fallback follows a retargeted ``core/config.json`` instead of naming one repo."""
+    return os.path.expanduser(f"~/dev/{core.config()['repo']}")
+
+
+def stored_repo_path() -> str:
+    """The repo root picked in Settings, or "" when unset.
+
+    Read straight from QSettings rather than through the Store: the mesh node spawns
+    agents from its own process, where there is no Store to ask (see prefs)."""
+    from . import prefs
+
+    try:
+        raw = prefs.settings().value(prefs.REPO_PATH, "", str)
+    except Exception:  # noqa: BLE001 - no Qt / unreadable settings: fall back silently
+        return ""
+    return (raw or "").strip()
+
+
 def repo_path() -> str:
-    """The local checkout the agent works in (override with DIPLOMAT_REPO)."""
-    return os.environ.get("DIPLOMAT_REPO") or os.path.expanduser("~/dev/argent")
+    """The local checkout the agent works in — the ``cd`` in every spawned session.
+
+    Strongest first: the ``DIPLOMAT_REPO`` env override (how the macOS front-end hands
+    its own UserDefaults-stored choice to a mesh node, and the escape hatch every other
+    ``DIPLOMAT_*`` knob follows), the repo root picked in Settings, then
+    :func:`default_repo_path`.
+    """
+    chosen = os.environ.get("DIPLOMAT_REPO") or stored_repo_path()
+    return os.path.expanduser(chosen) if chosen else default_repo_path()
 
 
 class SpawnError(RuntimeError):

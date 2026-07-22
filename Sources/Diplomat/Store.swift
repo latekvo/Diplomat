@@ -64,6 +64,12 @@ final class Store: ObservableObject {
     @Published var terminalChoice: String {
         didSet { persist(terminalChoice, forKey: Keys.terminalChoice) }
     }
+    /// The repo root every spawned agent `cd`s into (Settings → REPO ROOT). Empty ⇒
+    /// fall back to `~/dev/<repo>`; `DIPLOMAT_REPO` outranks both. Stored raw (a typed
+    /// `~/…` is expanded at use), so the field shows back exactly what was entered.
+    @Published var repoPathOverride: String {
+        didSet { persist(repoPathOverride, forKey: Keys.repoPath) }
+    }
     /// Whether the in-process PR auto-fix monitor is on. Persisted; when turned on we
     /// kick an immediate poll rather than waiting for the next tick.
     @Published var prAutofixEnabled: Bool {
@@ -196,6 +202,8 @@ final class Store: ObservableObject {
         static let hiddenTools = "hiddenTools"
         static let colorOverrides = "colorOverrides"
         static let terminalChoice = "terminalChoice"
+        // Owned by RepoPaths, which resolves the path without a Store.
+        static let repoPath = RepoPaths.agentRepoKey
         static let processes = "trackedProcesses"
         static let prAutofixEnabled = "prAutofixEnabled"
         static let autofixFingerprints = "autofixFingerprints"
@@ -291,6 +299,7 @@ final class Store: ObservableObject {
         colorOverrides = (defaults.dictionary(forKey: Keys.colorOverrides) as? [String: String]) ?? [:]
         terminalChoice = defaults.string(forKey: Keys.terminalChoice)
             ?? (SpawnTerminal.iterm.isInstalled ? SpawnTerminal.iterm.rawValue : SpawnTerminal.terminal.rawValue)
+        repoPathOverride = defaults.string(forKey: Keys.repoPath) ?? ""
         // Default ON (absent key ⇒ true): the pill only lights up on a live heartbeat,
         // so defaulting on can't falsely claim "active" when no monitor is running.
         prAutofixEnabled = defaults.object(forKey: Keys.prAutofixEnabled) as? Bool ?? true

@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import DiplomatCore
 
 /// The settings screen — swapped in for the main panel body when the header gear
@@ -16,6 +17,7 @@ struct SettingsView: View {
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 16) {
                     identitySection
+                    repoSection
                     autofixSection
                     apiWatchSection
                 }
@@ -367,6 +369,86 @@ struct SettingsView: View {
                  : "Overriding to @\(trimmedOverride) for the “My …” tools and the Review wizard.")
                 .font(.caption2).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    // MARK: Repo root (where the agents work)
+
+    private var trimmedRepoPath: String {
+        store.repoPathOverride.trimmingCharacters(in: .whitespaces)
+    }
+
+    /// Precomputed outside the ViewBuilder (SwiftUI type-checker budget — same reason
+    /// as `meshBlurb`), and it keeps the three states readable in one place.
+    private var repoHint: String {
+        let resolved = RepoPaths.agentRepo
+        if let env = RepoPaths.agentRepoEnvOverride {
+            return "DIPLOMAT_REPO is set in this app's environment — agents run in \(env), "
+                + "whatever this field says. Unset it to use the picker again."
+        }
+        if !RepoPaths.isCheckout(resolved) {
+            return "No git checkout at \(resolved) — the spawn's `cd` is best-effort, so an "
+                + "agent would start in your home directory instead. Pick the clone of "
+                + "\(repoSlug)."
+        }
+        return "Every spawned agent starts with `cd \(resolved)` — your local clone of "
+            + "\(repoSlug)\(trimmedRepoPath.isEmpty ? ". Blank = the default path." : ".")"
+    }
+
+    private var repoSlug: String {
+        let c = CoreAssets.repoCoordinates()
+        return "\(c.owner)/\(c.repo)"
+    }
+
+    /// Orange when the resolved path can't work (missing checkout) or is being shadowed
+    /// by the env override — both make the field's value a no-op.
+    private var repoHintColor: Color {
+        (RepoPaths.agentRepoEnvOverride != nil || !RepoPaths.isCheckout(RepoPaths.agentRepo))
+            ? .orange : .secondary
+    }
+
+    private var repoSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            sectionLabel("REPO ROOT")
+            HStack(spacing: 6) {
+                Image(systemName: "folder").font(.caption).foregroundStyle(.secondary)
+                TextField(RepoPaths.defaultAgentRepo, text: $store.repoPathOverride)
+                    .textFieldStyle(.plain)
+                    .font(.callout)
+                    .lineLimit(1)
+                if !trimmedRepoPath.isEmpty {
+                    Button { store.repoPathOverride = "" } label: {
+                        Image(systemName: "xmark.circle.fill")
+                    }
+                    .buttonStyle(.borderless).foregroundStyle(.secondary)
+                    .help("Clear — fall back to \(RepoPaths.defaultAgentRepo)")
+                }
+                Button("Choose…") { chooseRepoRoot() }
+                    .buttonStyle(.bordered).controlSize(.small)
+            }
+            .padding(8)
+            .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.1)))
+
+            Text(repoHint)
+                .font(.caption2).foregroundStyle(repoHintColor)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// Directory picker for the repo root. The menu-bar popover closes when the panel
+    /// takes focus (it's a `.window`-style MenuBarExtra) — the pick is still stored, so
+    /// reopening Settings shows the new path.
+    private func chooseRepoRoot() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose the local checkout agents should work in"
+        panel.prompt = "Use as repo root"
+        panel.directoryURL = URL(fileURLWithPath: RepoPaths.agentRepo)
+        NSApp.activate(ignoringOtherApps: true)
+        if panel.runModal() == .OK, let url = panel.url {
+            store.repoPathOverride = url.path
         }
     }
 

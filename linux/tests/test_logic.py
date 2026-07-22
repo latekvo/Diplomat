@@ -487,6 +487,57 @@ def test_unaddressed_threads_login_compare_is_case_insensitive():
     assert len(pr2.unaddressed_threads("alice")) == 1
 
 
+def test_repo_path_resolution(tmp_path):
+    """Settings → REPO ROOT drives the `cd` in every spawned session, with
+    DIPLOMAT_REPO still outranking it (that's how the macOS front-end hands its own
+    stored choice to a mesh node) and ~/dev/<repo> as the fallback."""
+    import shlex
+
+    from diplomat_app import core
+
+    prior = os.environ.pop("DIPLOMAT_REPO", None)
+    try:
+        # Nothing set anywhere: the conventional path for the configured target repo.
+        assert review.default_repo_path() == os.path.expanduser(
+            f"~/dev/{core.config()['repo']}"
+        )
+        assert review.repo_path() == review.default_repo_path()
+
+        # The Settings pick wins over the default, and reaches a separate reader
+        # (the mesh node reads QSettings, not the Store).
+        store = Store()
+        picked = str(tmp_path / "clone")
+        store.repo_path_override = picked
+        store._settings.sync()
+        assert store.repo_path_override == picked
+        assert review.stored_repo_path() == picked
+        assert review.repo_path() == picked
+
+        # A hand-typed "~/…" expands like the shell would — the spawn single-quotes
+        # the path, so the shell itself never gets the chance.
+        store.repo_path_override = "~/dev/typed"
+        store._settings.sync()
+        assert review.repo_path() == os.path.expanduser("~/dev/typed")
+        assert review.shell_command("/tmp/p.txt").startswith(
+            f"cd {shlex.quote(os.path.expanduser('~/dev/typed'))} 2>/dev/null;"
+        )
+
+        # Blank clears it back to the default.
+        store.repo_path_override = "  "
+        store._settings.sync()
+        assert review.repo_path() == review.default_repo_path()
+
+        # The env override outranks the stored pick.
+        store.repo_path_override = picked
+        store._settings.sync()
+        os.environ["DIPLOMAT_REPO"] = str(tmp_path / "env-clone")
+        assert review.repo_path() == str(tmp_path / "env-clone")
+    finally:
+        os.environ.pop("DIPLOMAT_REPO", None)
+        if prior is not None:
+            os.environ["DIPLOMAT_REPO"] = prior
+
+
 if __name__ == "__main__":
     # Standalone (no-pytest) mode bypasses conftest.py, so replicate its QSettings
     # isolation here — otherwise these tests would read (and one would WRITE) the

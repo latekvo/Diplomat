@@ -603,6 +603,10 @@ enum Dump {
         print("visibleTools     : \(s.visibleTools.map { $0.rawValue })")
         print("colorOverrides   : \(s.colorOverrides)")
         print("terminalChoice   : '\(s.terminalChoice)' -> resolved \(AgentSpawner.resolved(s.terminal).title)")
+        print("repoPathOverride : '\(s.repoPathOverride)'")
+        print("repoRoot         : \(AgentSpawner.repoPath)   "
+            + "(env \(RepoPaths.agentRepoEnvOverride ?? "unset") · default \(RepoPaths.defaultAgentRepo) · "
+            + "checkout \(RepoPaths.isCheckout(AgentSpawner.repoPath) ? "yes" : "NO"))")
         print("tints            : \(ToolKind.allCases.map { "\($0.rawValue)=\(s.tint(for: $0).hexRGB)" })")
     }
 }

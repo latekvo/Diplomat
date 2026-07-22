@@ -31,9 +31,11 @@ enum SpawnTerminal: String, CaseIterable, Identifiable {
 /// `$(cat …)` so we never have to wrestle a multi-line prompt through nested
 /// shell + AppleScript quoting.
 enum AgentSpawner {
-    /// The local checkout the agent works in. Personal-machine path; the `cd` is
-    /// best-effort (`;`, not `&&`) so `claude` still starts if it ever moves.
-    static let repoPath = "/Users/ignacylatka/dev/argent"
+    /// The local checkout the agent works in — Settings → REPO ROOT (see
+    /// `RepoPaths.agentRepo` for the full resolution). Read per spawn, so changing it
+    /// takes effect on the next agent without a restart. The `cd` is best-effort
+    /// (`;`, not `&&`) so `claude` still starts if the path is wrong.
+    static var repoPath: String { RepoPaths.agentRepo }
 
     /// Seconds between OPENING the terminal window and TYPING the command into it.
     /// A freshly created window's shell is still initializing, and input written
