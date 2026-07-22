@@ -363,6 +363,17 @@ verdict for a PR that touches a SKILL, touches the installer/CLI, or comes from 
 community author (outside `trustedAssociations` in `core/filters.json`) - those
 classes stay comments-only even with approvals enabled.
 
+### Soft-approvals (default ON)
+
+A separate toggle governs what a *comments-only* review does when it finds a PR
+perfectly clean - **default ON**. Instead of staying silent, the agent leaves a
+single friendly top-level comment (*"Ran full E2E sweep... Returned perfectly
+clean. Thank you for contributing!"*) and nothing more. A soft-approval is that
+comment alone - it **never** carries an `APPROVE` action, so nothing is submitted
+on my behalf; it's just an acknowledgement. It's independent of the verdict toggle
+above and is moot on any PR that gets a real verdict (that takes precedence). Turn
+it off to make clean reviews fully silent again.
+
 ## Settings
 
 The header **⚙︎** button (next to ↻, the **⬡** mesh button, and ⏻) swaps the panel

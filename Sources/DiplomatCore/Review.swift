@@ -69,6 +69,12 @@ public struct ReviewConfig {
     /// The "final pass" escalation: a culminating full-E2E verdict pass. Off by default.
     public var finalPass: Bool
 
+    /// Soft-approve: when a review-only PR comes back perfectly clean, leave a friendly
+    /// "ran the sweep, all clean, thanks for contributing" comment — but NEVER an APPROVE
+    /// action. On by default. Independent of `finalPass`; when `finalPass` submits a real
+    /// verdict it takes precedence and this is moot.
+    public var softApprove: Bool
+
     /// For a specific PR: whether it's mine, someone else's, or not yet determined. The
     /// wizard polls the PR's author and sets this; the monitors set it directly (they
     /// always know). Ignored unless single-PR.
@@ -78,7 +84,7 @@ public struct ReviewConfig {
                 me: String = "", markReady: Bool = true, leaveReviews: Bool = true,
                 replyToReviews: Bool = true, includeDrafts: Bool = true,
                 includeReady: Bool = true, specificPR: String = "", finalPass: Bool = false,
-                specificAuthor: SpecificAuthor = .unknown) {
+                softApprove: Bool = true, specificAuthor: SpecificAuthor = .unknown) {
         self.depth = depth.isEmpty ? ReviewCatalog.defaultDepthID() : depth
         self.target = target
         self.username = username
@@ -90,6 +96,7 @@ public struct ReviewConfig {
         self.includeReady = includeReady
         self.specificPR = specificPR
         self.finalPass = finalPass
+        self.softApprove = softApprove
         self.specificAuthor = specificAuthor
     }
 
@@ -123,10 +130,16 @@ public struct ReviewConfig {
     public var canLeaveReviews: Bool { disposition != .mine }
     public var canReplyToReviews: Bool { disposition != .theirs }
     public var canFinalPass: Bool { disposition != .mine }
+    // Soft-approve is a reviewer's courtesy on someone else's PR — never on my own work
+    // (I don't thank myself for contributing), so it follows the same gate as the verdict.
+    public var canSoftApprove: Bool { disposition != .mine }
     public var effMarkReady: Bool { markReady && canMarkReady }
     public var effLeaveReviews: Bool { leaveReviews && canLeaveReviews }
     public var effReplyToReviews: Bool { replyToReviews && canReplyToReviews }
     public var effFinalPass: Bool { finalPass && canFinalPass }
+    // A real verdict (finalPass) outranks a soft approval — when we're submitting APPROVE /
+    // request-changes there's no separate soft-approve comment.
+    public var effSoftApprove: Bool { softApprove && canSoftApprove && !effFinalPass }
 
     /// Review exactly one PR by number/URL instead of a whose-PRs sweep.
     public var isSinglePR: Bool { target == .specific }
@@ -210,7 +223,11 @@ public struct ReviewConfig {
         // Commit-authoring guidance only when we might actually commit — never
         // for someone else's branch, which we don't touch.
         if !isReviewOnly, let b = blocks["noAttribution"] { out.append(b) }
-        if effFinalPass, let b = blocks["finalPass"] { out.append(b) }
+        if effFinalPass, let b = blocks["finalPass"] {
+            out.append(b)
+        } else if effSoftApprove, let b = blocks["softApprove"] {
+            out.append(b)
+        }
 
         return out.joined(separator: "\n\n")
     }
@@ -272,10 +289,13 @@ public struct ReviewConfig {
         if let b = blocks["reviewOnly"] { out.append(b) }
         if effLeaveReviews, let b = blocks["leaveReviews"] { out.append(b) }
         out.append(fill(specific["otherNoMarkReady"] ?? ""))
-        // Deliver the approve/changes-requested verdict only when the Final-E2E toggle
-        // is on (manual review). Automatic runs leave it off → no verdict, the final
-        // call stays with me.
+        // Closing disposition, in precedence order: a real approve/changes-requested
+        // verdict only under the Final-E2E toggle (manual review or a trusted-author auto
+        // run); else a soft approval (friendly clean comment, no APPROVE action) when that
+        // toggle is on (the default); else stay fully silent and leave the call to me.
         if effFinalPass, let b = blocks["finalPass"] {
+            out.append(b)
+        } else if effSoftApprove, let b = blocks["softApprove"] {
             out.append(b)
         } else if let b = blocks["noVerdict"] {
             out.append(fill(b))
@@ -326,7 +346,11 @@ public struct ReviewConfig {
         out.append(fill(specific["otherNoMarkReady"] ?? ""))
 
         if let trailer = blocks["trailer"] { out.append(trailer) }
-        if effFinalPass, let b = blocks["finalPass"] { out.append(b) }
+        if effFinalPass, let b = blocks["finalPass"] {
+            out.append(b)
+        } else if effSoftApprove, let b = blocks["softApprove"] {
+            out.append(b)
+        }
 
         return out.filter { !$0.isEmpty }.joined(separator: "\n\n")
     }

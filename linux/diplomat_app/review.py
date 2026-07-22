@@ -109,6 +109,10 @@ class ReviewConfig:
     specific_pr: str = ""
     # The "final pass" escalation: a culminating full-E2E verdict pass. Off by default.
     final_pass: bool = False
+    # Soft-approve: when a review-only PR comes back perfectly clean, leave a friendly
+    # "ran the sweep, all clean, thanks for contributing" comment - but NEVER an APPROVE
+    # action. On by default. Outranked by final_pass (a real verdict) when both are set.
+    soft_approve: bool = True
 
     # For a specific PR: whether it's mine, someone else's, or not yet determined.
     # The wizard polls the PR's author and sets this. Ignored unless single-PR.
@@ -161,6 +165,12 @@ class ReviewConfig:
     def can_final_pass(self) -> bool:
         return self.disposition != SpecificAuthor.MINE
 
+    # Soft-approve is a reviewer's courtesy on someone else's PR - never my own work
+    # (Swift: canSoftApprove = disposition != .mine).
+    @property
+    def can_soft_approve(self) -> bool:
+        return self.disposition != SpecificAuthor.MINE
+
     # Review exactly one PR by number/URL instead of a whose-PRs sweep.
     @property
     def is_single_pr(self) -> bool:
@@ -204,6 +214,7 @@ class ReviewConfig:
             "includeReady": self.include_ready,
             "specificPR": self.specific_pr,
             "finalPass": self.final_pass,
+            "softApprove": self.soft_approve,
             "specificAuthor": self.disposition.value,
         })
 

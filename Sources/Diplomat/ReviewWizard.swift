@@ -363,6 +363,9 @@ struct ReviewWizardView: View {
     @State private var includeReady = true
     @State private var specificPR = ""
     @State private var finalPass = false
+    /// Soft-approve a perfectly-clean PR with a friendly thank-you comment (no APPROVE
+    /// action). On by default; hidden for my own PRs (I don't thank myself).
+    @State private var softApprove = true
     @State private var status: String?
     /// "Run on mesh" (effective only while the row is live) — checked by default,
     /// like the Linux wizards.
@@ -408,6 +411,7 @@ struct ReviewWizardView: View {
             includeReady: includeReady,
             specificPR: specificPR,
             finalPass: finalPass,
+            softApprove: softApprove,
             specificAuthor: specificAuthor)
     }
 
@@ -627,6 +631,13 @@ struct ReviewWizardView: View {
                     Text("Reply to others' review threads").font(.caption)
                 }
                 .help("Reply \"Fixed in <hash>\" on threads others left.")
+                .transition(rowTransition)
+            }
+            if config.canSoftApprove {
+                Toggle(isOn: $softApprove) {
+                    Text("Soft-approve clean PRs (thank-you comment)").font(.caption)
+                }
+                .help("On a perfectly-clean PR, leave a friendly thank-you comment — never an APPROVE action.")
                 .transition(rowTransition)
             }
         }

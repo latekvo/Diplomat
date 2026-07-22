@@ -64,6 +64,7 @@ case "review":
         includeReady: flag("includeReady", true),
         specificPR: str("specificPR"),
         finalPass: flag("finalPass", false),
+        softApprove: flag("softApprove", true),
         specificAuthor: specificAuthor(obj["specificAuthor"] as? String)
     )
     prompt = cfg.buildPrompt()

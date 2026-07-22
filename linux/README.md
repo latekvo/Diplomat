@@ -66,7 +66,9 @@ A two-pane screen matching macOS. Persist via `QSettings` (`~/.config/diplomat/�
 - **GitHub username** — overrides the `gh`-authenticated login for the "My …" tools.
 - **PR auto-fix / Full-E2E review requests** — the two monitor toggles with live
   status, and under the review-requests one the **auto-approve** master toggle
-  plus its three withhold-the-verdict suppressors (SKILL / installer / community).
+  plus its three withhold-the-verdict suppressors (SKILL / installer / community),
+  and the **soft-approve** toggle (default ON — a clean comments-only review leaves
+  a friendly thank-you note, never an APPROVE action).
 - **Claude API errors** — the tmux watcher toggle, plus a count of nudges sent.
 - **Tools — colour & visibility** — retint or hide any tool card. (SKILL.md PRs
   and Installer/CLI PRs ship hidden.)

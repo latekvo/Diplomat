@@ -492,7 +492,9 @@ check(gated.contains("WHO AUTHORED IT") && gated.contains("CASE A") && gated.con
 print("known-mine review prompt assertions passed")
 
 // ---- known-theirs comprehensive review (review-request monitor) ----
-section("known-theirs review prompt")
+// Default now: soft-approve ON, no hard verdict → a perfectly-clean PR gets a friendly
+// thank-you comment, but still NO APPROVE action.
+section("known-theirs review prompt (default → soft-approve)")
 let kt = ReviewConfig(depth: "max", target: .specific, me: "latekvo",
                       markReady: false, leaveReviews: true, replyToReviews: false,
                       specificPR: "500", specificAuthor: .theirs).buildPrompt()
@@ -503,17 +505,30 @@ check(kt.contains("ABSOLUTELY DO NOT touch their branch"), "reviewOnly block pre
 check(kt.contains("POST a pull-request review"), "leaveReviews block present")
 check(kt.contains("Do NOT mark this PR ready"), "otherNoMarkReady present")
 check(kt.contains("SECOND, independent verification"), "max-depth fragment present")
-// No auto-verdict — the final approve is the user's, not the agent's.
-check(kt.contains("Do NOT submit an APPROVE"), "no-verdict instruction present")
-check(kt.contains("PR #500 looks clean"), "no-verdict {pr} substituted")
+// Soft-approve: no hard verdict, but a friendly clean comment — never an APPROVE action.
+check(kt.contains("Do NOT submit an APPROVE"), "soft-approve still withholds the APPROVE verdict")
+check(kt.contains("Thank you for contributing"), "soft-approve clean thank-you comment present")
+check(!kt.contains("PR #500 looks clean"), "soft-approve replaces the silent no-verdict close")
 check(!kt.contains("still APPROVE"), "the finalPass approve-verdict block is gone")
 check(!kt.contains("fix it directly on the PR's branch"), "never fixes someone else's branch")
 check(!kt.contains("No AI attribution"), "no commits ⇒ no attribution block")
-print("known-theirs review prompt assertions passed")
+print("known-theirs (soft-approve) review prompt assertions passed")
+
+// ---- known-theirs, soft-approve OFF → fully silent no-verdict ----
+section("known-theirs review prompt (soft-approve off → silent)")
+let kts = ReviewConfig(depth: "max", target: .specific, me: "latekvo",
+                       markReady: false, leaveReviews: true, replyToReviews: false,
+                       specificPR: "500", softApprove: false, specificAuthor: .theirs).buildPrompt()
+check(kts.contains("Do NOT submit an APPROVE"), "no-verdict instruction present")
+check(kts.contains("PR #500 looks clean"), "no-verdict {pr} substituted")
+check(!kts.contains("Thank you for contributing"), "soft-approve off ⇒ no thank-you comment")
+check(!kts.contains("still APPROVE"), "no finalPass block")
+print("known-theirs (silent) review prompt assertions passed")
 
 // ---- known-theirs WITH verdict (trusted author: member/maintainer/contributor) ----
 // The review-request monitor sets finalPass=true when the PR author is trusted, so the
 // auto-review closes with an APPROVE/changes-requested verdict instead of comments only.
+// A real verdict outranks the (default-on) soft-approve, so no thank-you comment either.
 section("known-theirs review prompt (trusted author → verdict)")
 let ktv = ReviewConfig(depth: "max", target: .specific, me: "latekvo",
                        markReady: false, leaveReviews: true, replyToReviews: false,
@@ -521,6 +536,7 @@ let ktv = ReviewConfig(depth: "max", target: .specific, me: "latekvo",
 check(ktv.contains("SOMEONE ELSE'S"), "review-only framing still present with verdict")
 check(ktv.contains("still APPROVE"), "trusted author ⇒ finalPass APPROVE-verdict block present")
 check(!ktv.contains("Do NOT submit an APPROVE"), "trusted author ⇒ no no-verdict block")
+check(!ktv.contains("Thank you for contributing"), "hard verdict outranks soft-approve")
 print("known-theirs (trusted author) review prompt assertions passed")
 
 // ---- Auto-review verdict policy (skill / installer / community suppressors) ----

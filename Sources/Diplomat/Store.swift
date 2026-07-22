@@ -144,6 +144,15 @@ final class Store: ObservableObject {
         didSet { persist(autoApproveEnabled, forKey: Keys.autoApproveEnabled) }
     }
 
+    /// Soft-approvals: when an auto-review that is NOT submitting a real verdict finds a PR
+    /// perfectly clean, it leaves a friendly "ran the sweep, all clean, thanks for
+    /// contributing" comment — never an APPROVE action. Default ON. Independent of
+    /// `autoApproveEnabled`: it's what a comments-only review does on a clean PR instead of
+    /// staying silent. Moot on any PR that gets a real verdict (that takes precedence).
+    @Published var softApproveEnabled: Bool {
+        didSet { persist(softApproveEnabled, forKey: Keys.softApproveEnabled) }
+    }
+
     /// Auto-review verdict policy: each flag independently withholds the "final pass +
     /// verdict" escalation for one class of review-requested PR (SKILL / installer /
     /// community). All default ON. Persisted; no poll kick needed (only affects the next
@@ -197,6 +206,7 @@ final class Store: ObservableObject {
         static let myReviewAttempts = "myReviewAttempts"
         static let reviewRequestsHandled = "reviewRequestsHandled"
         static let autoApproveEnabled = "autoApproveEnabled"
+        static let softApproveEnabled = "softApproveEnabled"
         static let verdictWithholdSkill = "verdictWithholdSkill"
         static let verdictWithholdInstaller = "verdictWithholdInstaller"
         static let verdictWithholdCommunity = "verdictWithholdCommunity"
@@ -288,6 +298,10 @@ final class Store: ObservableObject {
         // Auto-approvals OFF by default — an auto-review never submits a verdict on my
         // behalf until I explicitly opt in.
         autoApproveEnabled = defaults.object(forKey: Keys.autoApproveEnabled) as? Bool ?? false
+        // Soft-approvals ON by default (absent key ⇒ true): a clean comments-only review
+        // still leaves a friendly thank-you note — no APPROVE action, so nothing is submitted
+        // on my behalf.
+        softApproveEnabled = defaults.object(forKey: Keys.softApproveEnabled) as? Bool ?? true
         verdictWithholdSkill = defaults.object(forKey: Keys.verdictWithholdSkill) as? Bool ?? true
         verdictWithholdInstaller = defaults.object(forKey: Keys.verdictWithholdInstaller) as? Bool ?? true
         verdictWithholdCommunity = defaults.object(forKey: Keys.verdictWithholdCommunity) as? Bool ?? true
@@ -989,18 +1003,20 @@ final class Store: ObservableObject {
         // comments-only and the final call stays with me.
         let reasons = verdictPolicy.withholdReasons(files: r.files, authorAssociation: r.authorAssociation)
         let verdict = autoApproveEnabled && reasons.isEmpty
+        // Without a real verdict, a clean review still soft-approves (friendly comment, no
+        // APPROVE) unless the user turned that off too. Moot when `verdict` is true.
+        let soft = softApproveEnabled
         let tag: String
         if verdict {
             tag = " +verdict"
-        } else if !autoApproveEnabled {
-            tag = " −verdict (auto-approvals off)"
         } else {
-            tag = " −verdict (\(reasons.joined(separator: ", ")))"
+            let why = !autoApproveEnabled ? "auto-approvals off" : reasons.joined(separator: ", ")
+            tag = soft ? " ~soft-approve (\(why))" : " −verdict (\(why))"
         }
         let prompt = ReviewConfig(depth: "max", target: .specific, me: effectiveMe,
                                   markReady: false, leaveReviews: true, replyToReviews: false,
                                   specificPR: String(r.number), finalPass: verdict,
-                                  specificAuthor: .theirs).buildPrompt()
+                                  softApprove: soft, specificAuthor: .theirs).buildPrompt()
         let job = AgentJob(kind: "review", auditAction: "review-req",
                            label: "Review-req · #\(r.number) (@\(r.author))\(tag)",
                            prompt: prompt, prURL: r.url, prNumber: r.number,

@@ -193,6 +193,25 @@ struct SettingsView: View {
                 .font(.caption2).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             if store.autoApproveEnabled { verdictPolicyBlock }
+            softApproveToggle
+        }
+    }
+
+    /// Soft-approvals: what a comments-only review does when it finds a PR perfectly
+    /// clean — leave a friendly thank-you note (no APPROVE action) instead of staying
+    /// silent. On by default; independent of the verdict toggle above.
+    private var softApproveToggle: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Toggle(isOn: $store.softApproveEnabled) {
+                Text("Soft-approve clean PRs (thank-you comment, no approval)").font(.caption)
+            }
+            .toggleStyle(.switch).controlSize(.small)
+            .padding(.top, 2)
+            Text("On ⇒ a review that comes back perfectly clean leaves one friendly "
+                 + "\u{201C}ran the sweep, all clean, thanks for contributing\u{201D} comment — "
+                 + "never an APPROVE action. Off ⇒ a clean review stays silent.")
+                .font(.caption2).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 

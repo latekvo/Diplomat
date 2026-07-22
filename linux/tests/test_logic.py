@@ -174,6 +174,35 @@ def test_final_pass_never_applies_to_my_own_prs():
     ).build_prompt()
 
 
+def test_soft_approve_leaves_a_thank_you_but_no_verdict():
+    # Soft-approve is ON by default: a review-only PR that comes back clean gets a
+    # friendly thank-you comment, but never an APPROVE action. It never applies to my
+    # own PRs (Swift: canSoftApprove = disposition != .mine).
+    mine = review.ReviewConfig(me="latekvo")  # target MINE
+    assert not mine.can_soft_approve
+    assert "Thank you for contributing" not in mine.build_prompt()
+
+    # Someone else's PRs: soft-approve on by default -> the thank-you comment, no APPROVE.
+    other = review.ReviewConfig(target=PRTarget.SOMEONE, username="someuser")
+    assert other.can_soft_approve
+    other_prompt = other.build_prompt()
+    assert "Thank you for contributing" in other_prompt
+    assert "FULL E2E pass" not in other_prompt  # soft, not a hard verdict
+
+    # Turning it off -> fully silent (no thank-you), and still no verdict.
+    silent = review.ReviewConfig(
+        target=PRTarget.SOMEONE, username="someuser", soft_approve=False
+    ).build_prompt()
+    assert "Thank you for contributing" not in silent
+
+    # A real verdict (final_pass) outranks the default-on soft-approve.
+    verdict = review.ReviewConfig(
+        target=PRTarget.SOMEONE, username="someuser", final_pass=True
+    ).build_prompt()
+    assert "FULL E2E pass" in verdict
+    assert "Thank you for contributing" not in verdict
+
+
 def test_specific_pr_disposition_drives_toggles_and_prompt():
     # A specific PR's polled author (mine / theirs / unknown) picks the disposition,
     # which decides both the visible action toggles and the diplomat-core prompt -

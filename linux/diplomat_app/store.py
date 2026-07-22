@@ -307,6 +307,17 @@ class Store(QObject):
         self._settings.setValue("autoApproveEnabled", bool(value))
 
     @property
+    def soft_approve_enabled(self) -> bool:
+        """Whether a clean comments-only auto-review leaves a friendly thank-you note
+        (no APPROVE action) instead of staying silent. On by default; moot on any PR
+        that gets a real verdict."""
+        return self._settings.value("softApproveEnabled", True, bool)
+
+    @soft_approve_enabled.setter
+    def soft_approve_enabled(self, value: bool) -> None:
+        self._settings.setValue("softApproveEnabled", bool(value))
+
+    @property
     def verdict_withhold_skill(self) -> bool:
         return self._settings.value("verdictWithholdSkill", True, bool)
 
@@ -780,12 +791,14 @@ class Store(QObject):
     def _dispatch_review_request(self, r, attempt: int = 1) -> bool:
         reasons = self.verdict_policy.withhold_reasons(r.files, r.author_association)
         verdict = self.auto_approve_enabled and not reasons
+        # Without a real verdict, a clean review still soft-approves (friendly comment, no
+        # APPROVE) unless the user turned that off too. Moot when verdict is True.
+        soft = self.soft_approve_enabled
         if verdict:
             tag = " +verdict"
-        elif not self.auto_approve_enabled:
-            tag = " -verdict (auto-approvals off)"
         else:
-            tag = f" -verdict ({', '.join(reasons)})"
+            why = "auto-approvals off" if not self.auto_approve_enabled else ", ".join(reasons)
+            tag = f" ~soft-approve ({why})" if soft else f" -verdict ({why})"
         job = autofix.AgentJob(
             kind="review",
             audit_action="review-req",
@@ -799,6 +812,7 @@ class Store(QObject):
                 reply_to_reviews=False,
                 specific_pr=str(r.number),
                 final_pass=verdict,
+                soft_approve=soft,
                 specific_author=review.SpecificAuthor.THEIRS,
             ).build_prompt(),
             pr_url=r.url,

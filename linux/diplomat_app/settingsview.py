@@ -233,6 +233,24 @@ class SettingsView(QWidget):
         verdict.addWidget(self._cb_verdict_community)
         approve.addWidget(self._verdict_container)
 
+        # Soft-approvals: what a comments-only review does on a perfectly-clean PR -
+        # leave a friendly thank-you note (no APPROVE action) instead of staying silent.
+        # On by default; independent of the verdict toggle above.
+        self._cb_soft_approve = QCheckBox(
+            "Soft-approve clean PRs (thank-you comment, no approval)"
+        )
+        self._cb_soft_approve.setChecked(self.store.soft_approve_enabled)
+        self._cb_soft_approve.toggled.connect(self._on_soft_approve_toggled)
+        approve.addWidget(self._cb_soft_approve)
+        soft_hint = QLabel(
+            "On ⇒ a review that comes back perfectly clean leaves one friendly "
+            "“ran the sweep, all clean, thanks for contributing” comment — "
+            "never an APPROVE action. Off ⇒ a clean review stays silent."
+        )
+        soft_hint.setWordWrap(True)
+        soft_hint.setStyleSheet("color: palette(mid); font-size: 10px;")
+        approve.addWidget(soft_hint)
+
         col.addWidget(self._approve_container)
         return col
 
@@ -254,6 +272,10 @@ class SettingsView(QWidget):
         self.store.auto_approve_enabled = on
         self.store.changed.emit()
         self._refresh_autofix_ui()
+
+    def _on_soft_approve_toggled(self, on: bool) -> None:
+        self.store.soft_approve_enabled = on
+        self.store.changed.emit()
 
     def _set_verdict(self, which: str, on: bool) -> None:
         setattr(self.store, f"verdict_withhold_{which}", on)

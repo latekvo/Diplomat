@@ -138,7 +138,15 @@ class WizardView(QWidget):
         self.leave_reviews.setChecked(True)
         self.reply = QCheckBox("Reply to others' review threads")
         self.reply.setChecked(True)
-        for cb in (self.mark_ready, self.leave_reviews, self.reply):
+        # Soft-approve a perfectly-clean PR with a friendly thank-you comment (no APPROVE
+        # action). On by default; hidden for my own PRs (I don't thank myself).
+        self.soft_approve = QCheckBox("Soft-approve clean PRs (thank-you comment)")
+        self.soft_approve.setChecked(True)
+        self.soft_approve.setToolTip(
+            "On a perfectly-clean PR, leave a friendly thank-you comment — "
+            "never an APPROVE action."
+        )
+        for cb in (self.mark_ready, self.leave_reviews, self.reply, self.soft_approve):
             root.addWidget(cb)
 
         # The "final pass" escalation — off by default, visually highlighted (amber)
@@ -192,6 +200,7 @@ class WizardView(QWidget):
             mark_ready=self.mark_ready.isChecked(),
             leave_reviews=self.leave_reviews.isChecked(),
             reply_to_reviews=self.reply.isChecked(),
+            soft_approve=self.soft_approve.isChecked(),
             include_drafts=self.drafts.isChecked(),
             include_ready=self.ready.isChecked(),
             specific_pr=self.specific_pr.text(),
@@ -239,6 +248,7 @@ class WizardView(QWidget):
         self.mark_ready.setVisible(cfg.can_mark_ready)
         self.leave_reviews.setVisible(cfg.can_leave_reviews)
         self.reply.setVisible(cfg.can_reply_to_reviews)
+        self.soft_approve.setVisible(cfg.can_soft_approve)
         self.final_pass.setVisible(cfg.can_final_pass)
 
         self.spawn_btn.setEnabled(cfg.is_valid)
