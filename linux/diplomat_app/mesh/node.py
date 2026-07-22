@@ -219,6 +219,10 @@ class MeshNode:
         self._token_frac = 1.0
         self._token_session: float | None = None
         self._token_week: float | None = None
+        # Burn-down ratio across those real windows — budget left over clock left
+        # until they reset. The figure dispatch ranks on; None on the heuristic
+        # fallback, where the local bookkeeping window is paced instead.
+        self._token_pace: float | None = None
         self._last_token_refresh = 0.0  # monotonic; 0 => refresh on the first tick
         self.tcp_port = 0  # bound in start()
         self.peers: dict[str, Peer] = {}
@@ -314,7 +318,8 @@ class MeshNode:
             sees=tuple(sorted(pid for pid, p in self.peers.items() if p.linked)),
             duties_enabled=self.local.duties_enabled,
             pubkey=self.key.public_b64 if self.key else "",
-            stats=self.stats.advertise(real_frac=self._real_quota_frac()),
+            stats=self.stats.advertise(real_frac=self._real_quota_frac(),
+                                       pace=self._token_pace),
         )
         return self._sign_advert(info)
 
@@ -351,8 +356,13 @@ class MeshNode:
         the change-detection key for re-gossiping."""
         def r(v: float | None) -> float | None:
             return None if v is None else round(v, 2)
+        # Pace is compared at bucket granularity, so re-gossip at that granularity
+        # too — otherwise its steady drift toward the reset would re-advertise the
+        # node every refresh tick without changing any routing decision.
+        pace = (None if self._token_pace is None
+                else protocol.surplus_bucket(self._token_pace))
         return (self.current_tokens(), r(self._token_frac),
-                r(self._token_session), r(self._token_week))
+                r(self._token_session), r(self._token_week), pace)
 
     async def _refresh_tokens(self) -> bool:
         """Re-probe the token budget (real quota endpoint, else local-log heuristic)
@@ -362,13 +372,15 @@ class MeshNode:
         (~1s, worst case a few seconds' timeout) and must not stall the event loop."""
         before = self._gossiped_tokens()
         try:
-            state, frac, session, week = await asyncio.to_thread(
+            state, frac, session, week, pace = await asyncio.to_thread(
                 usage.token_state, self.stats.plan)
         except Exception:  # noqa: BLE001 — a broken probe must never take the node down
             state, frac = self._token_state, self._token_frac
             session, week = self._token_session, self._token_week
+            pace = self._token_pace
         self._token_state, self._token_frac = state, frac
         self._token_session, self._token_week = session, week
+        self._token_pace = pace
         return self._gossiped_tokens() != before
 
     @property

@@ -44,7 +44,8 @@
   },
 
   "accounts": {
-    "_comment": "Subscription plans and the accounting knobs behind per-node load balancing. A plan's 'weight' is its quota capacity RELATIVE to Pro (Max 5× → 5, Max 20× → 20); capacity units = weight × capacityPerWeight. Absolute token quotas are intentionally NOT hard-coded — Anthropic's limits are dynamic rolling windows — so surplus is compared in these relative units. usageAvg is an exponential rolling average of consumption with a ~21-day time constant; quotaLeft is remaining capacity in the current window. A node's dispatch surplus = quotaLeft − usageAvg (see dispatchStrategy).",
+    "_comment": "Subscription plans and the accounting knobs behind per-node load balancing. A plan's 'weight' is its quota capacity RELATIVE to Pro (Max 5× → 5, Max 20× → 20); capacity units = weight × capacityPerWeight. Absolute token quotas are intentionally NOT hard-coded — Anthropic's limits are dynamic rolling windows. usageAvg is an exponential rolling average of consumption with a ~21-day time constant; quotaLeft is remaining capacity in the current window. Both are retained for display and for peers on older builds; routing ranks on 'surplus' instead (see _surplusComment).",
+    "_surplusComment": "A node's surplus is a burn-down RATIO, not an amount: the budget left in its quota window divided by the share of that window's clock still ahead of it. 1.0 is exactly on pace, above is flush, below is rationing. Measuring it relatively is the entire point — 60% left with 2 of 7 days to go paces at 2.1 (that budget expires at the reset, so spend it here), while 70% left with 6 of 7 days to go paces at 0.82 (genuinely low, despite the bigger number). Ranking on the raw remaining amount gets both cases backwards: it hoards the account that is about to reset and drains the one that has to stretch. Each node computes its own surplus from the real reset instants the OAuth usage endpoint reports for the 5-hour session and 7-day week windows (the tighter of the two binds), falling back to pacing its local bookkeeping window when the probe is unavailable. Capped at 10.0, since past that a node is simply 'use it or lose it'.",
     "plans": [
       { "id": "pro", "title": "Claude Pro", "weight": 1 },
       { "id": "max-5x", "title": "Claude Max 5×", "weight": 5 },
@@ -95,12 +96,13 @@
     {
       "id": "surplus-first",
       "title": "Most surplus first",
-      "detail": "route to the node with the most spare quota (quotaLeft − usageAvg), account-type aware; ties fall back to weakest-first"
+      "detail": "route to the node with the most spare quota RELATIVE to its reset — budget left ÷ clock left; ties fall back to weakest-first"
     }
   ],
-  "defaultStrategy": "weakest-first",
+  "_defaultStrategyComment": "surplus-first is the default: absent a reason to pin a duty elsewhere, work should follow spare capacity. Surplus is a burn-down RATIO (see accounts._surplusComment), so the ordering is stable — it only moves when a node's standing against its own reset clock genuinely changes, not as raw percentages tick down.",
+  "defaultStrategy": "surplus-first",
 
-  "_dispatchStrategyComment": "The ranking a DISPATCHER uses to pick a target when it dispatches a SzpontRequest — the load-balancing decision, made unilaterally by the dispatching node from its own gossiped view (no consensus). Separate from a duty's placement 'strategy', which drives the stable displayed ownership. Defaults to surplus-first so requests flow to whoever has the most spare quota.",
+  "_dispatchStrategyComment": "The ranking a DISPATCHER uses to pick a target when it dispatches a SzpontRequest — the load-balancing decision, made unilaterally by the dispatching node from its own gossiped view (no consensus). Separate from a duty's placement 'strategy', which drives the stable displayed ownership; both now default to surplus-first.",
   "dispatchStrategy": "surplus-first",
 
   "duties": [
@@ -110,7 +112,7 @@
       "emoji": "✅",
       "linuxGlyph": "☑",
       "colorHex": "#FF2D78",
-      "placement": { "strategy": "weakest-first", "tokenAware": true, "spread": [] }
+      "placement": { "tokenAware": true, "spread": [] }
     },
     {
       "id": "conflicts",
@@ -118,7 +120,7 @@
       "emoji": "🔀",
       "linuxGlyph": "⋔",
       "colorHex": "#32ADE6",
-      "placement": { "strategy": "weakest-first", "tokenAware": true, "spread": [] }
+      "placement": { "tokenAware": true, "spread": [] }
     },
     {
       "id": "audit",
@@ -127,8 +129,7 @@
       "linuxGlyph": "◉",
       "colorHex": "#5856D6",
       "placement": {
-        "_comment": "The bundle E2E runs on one Linux AND one macOS node — platform coverage beats machine preference here. An empty spread means 'any one node'.",
-        "strategy": "weakest-first",
+        "_comment": "The bundle E2E runs on one Linux AND one macOS node — platform coverage beats machine preference here. No 'strategy' key, so it inherits defaultStrategy (surplus-first): within each platform slot the flusher node wins.",
         "tokenAware": true,
         "spread": [
           { "platform": "linux", "count": 1 },

@@ -84,8 +84,14 @@ def _print_status() -> int:
         st = info.get("stats") or {}
         if not st:
             return ""
-        surplus = round(float(st.get("quotaLeft", 0)) - float(st.get("usageAvg", 0)), 2)
-        return f"  {st.get('plan', '?')}  surplus {surplus}"
+        # The advertised surplus is a burn-down ratio (budget left ÷ clock left);
+        # 1.0 is on pace, higher is flush. Read the field the node computed rather
+        # than the absolute quotaLeft−usageAvg, which is a different scale.
+        try:
+            surplus = round(float(st["surplus"]), 2)
+        except (KeyError, TypeError, ValueError):
+            surplus = 1.0  # legacy peer with no surplus field → neutral (on pace)
+        return f"  {st.get('plan', '?')}  surplus {surplus}×"
 
     def _strength(info: dict) -> str:
         label = config.tier_label(int(info.get("tier", 3)))

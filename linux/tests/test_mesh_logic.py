@@ -16,7 +16,9 @@ from dataclasses import replace as _dc_replace  # noqa: E402
 
 from diplomat_app.mesh import (  # noqa: E402
     assign, banned, config, crypto, identity, protocol, spawnjob, stats, trust,
+    usage,
 )
+from diplomat_app import core  # noqa: E402
 from diplomat_app.mesh.config import Placement, PlacementOverrides  # noqa: E402
 from diplomat_app.mesh.protocol import NodeInfo  # noqa: E402
 
@@ -410,6 +412,15 @@ def test_device_key_is_stable_across_loads(tmp_path, monkeypatch):
 # MARK: per-node stats (usage EMA + quota) and account types
 
 
+def test_surplus_first_is_the_default_strategy_everywhere():
+    """Both defaults: the dispatcher's target ranking AND a duty's placement,
+    so work follows relative spare capacity unless a duty is explicitly pinned."""
+    assert config.dispatch_strategy() == "surplus-first"
+    assert core.mesh()["defaultStrategy"] == "surplus-first"
+    # An unpinned duty resolves to it through the real placement path.
+    assert config.placement_for("review", PlacementOverrides()).strategy == "surplus-first"
+
+
 def test_dispatch_strategy_and_plan_weights():
     assert config.dispatch_strategy() == "surplus-first"
     assert config.plan_weight("pro") == 1.0
@@ -455,7 +466,10 @@ def test_stats_apply_attrs_edits_and_surplus(tmp_path, monkeypatch):
     assert st.plan == "max-20x"
     assert abs(st.quota_left() - 12.0) < 1e-9
     assert abs(st.usage_avg() - 2.0) < 1e-9
-    assert abs(st.surplus() - 10.0) < 1e-9  # quotaLeft − usageAvg
+    # Surplus is the burn-down ratio, not quotaLeft − usageAvg: the edit set
+    # quotaLeft to 12 of 20 capacity and restarted the window, so 60% of the
+    # budget remains with the full 7 days still to cover — behind the line.
+    assert abs(st.surplus(now=now) - 0.6) < 1e-9
     # A 'usage' delta books against the quota.
     st2 = stats.apply_stat_attrs(st, {"usage": 1.0}, now=now)
     assert st2.quota_left() < st.quota_left()
@@ -478,50 +492,124 @@ def test_stats_persist_roundtrip(tmp_path, monkeypatch):
 # MARK: surplus-first load balancing
 
 
-def _snode(id: str, plan: str = "max-5x", quota: float | None = None,
-           usage: float = 0.0, tier: int = 3, platform: str = "linux",
-           tokens: str = "ok") -> NodeInfo:
+def _pace(frac_left: float, days_to_reset: float, window_days: float = 7.0) -> float:
+    """The burn-down ratio a node with ``frac_left`` of its budget and
+    ``days_to_reset`` left on a ``window_days`` window advertises."""
+    now = 1_000_000.0
+    w = usage.QuotaWindow(frac_left, now + days_to_reset * 86400.0,
+                          window_days * 86400.0)
+    return w.pace(now)
+
+
+def _snode(id: str, plan: str = "max-5x", surplus: float = 1.0, tier: int = 3,
+           platform: str = "linux", tokens: str = "ok") -> NodeInfo:
     weight = {"pro": 1.0, "max-5x": 5.0, "max-20x": 20.0}[plan]
     return NodeInfo(id=id, name=id, platform=platform, tier=tier, tokens=tokens,
-                    stats={"plan": plan, "quotaLeft": weight if quota is None else quota,
-                           "usageAvg": usage})
+                    stats={"plan": plan, "quotaLeft": weight, "usageAvg": 0.0,
+                           "surplus": surplus})
+
+
+def test_pace_measures_budget_against_the_clock_not_in_absolute_terms():
+    """The two cases that a raw remaining-percentage comparison gets backwards.
+
+    More budget left does NOT mean more spare capacity: what matters is how much
+    budget remains per unit of time it still has to cover."""
+    # 60% left but only 2 of 7 days to burn it — flush, and it expires at the
+    # reset, so this is the node to drain.
+    assert abs(_pace(0.60, days_to_reset=2) - 2.1) < 1e-9
+    # 70% left with 6 of 7 days still to cover — a bigger number, but genuinely
+    # low: it is behind the burn-down line and has to ration.
+    assert abs(_pace(0.70, days_to_reset=6) - 0.8166666) < 1e-6
+    # So despite holding LESS budget, the first node ranks as the flusher one.
+    assert _pace(0.60, days_to_reset=2) > _pace(0.70, days_to_reset=6)
+    # 1.0 is exactly on the line: budget left proportional to time left.
+    assert abs(_pace(0.5, days_to_reset=3.5) - 1.0) < 1e-9
+    assert abs(_pace(1.0, days_to_reset=7) - 1.0) < 1e-9
+
+
+def test_pace_edges_are_bounded_and_never_divide_by_zero():
+    # Exhausted is exhausted, however imminent the reset — no free lunch.
+    assert _pace(0.0, days_to_reset=0.001) == 0.0
+    # A reset that is due (or overdue, e.g. a stale advert) makes the whole
+    # remaining balance free to spend: saturates rather than dividing by zero.
+    assert _pace(0.5, days_to_reset=0.0) == usage.PACE_CAP
+    assert _pace(0.5, days_to_reset=-3) == usage.PACE_CAP
+    # Vanishing clock saturates at the cap instead of running off to infinity.
+    assert _pace(0.9, days_to_reset=0.0001) == usage.PACE_CAP
+    assert _pace(1.0, days_to_reset=7) < usage.PACE_CAP  # ordinary values unaffected
 
 
 def test_nodeinfo_pubkey_and_stats_roundtrip():
     n = NodeInfo(id="a", name="a", platform="linux", tier=3, tokens="ok",
                  pubkey="QUJDRA==",
-                 stats={"plan": "max-20x", "quotaLeft": 18.0, "usageAvg": 2.0})
+                 stats={"plan": "max-20x", "quotaLeft": 18.0, "usageAvg": 2.0,
+                        "surplus": 1.6})
     d = n.to_dict()
     assert d["pubkey"] == "QUJDRA==" and d["stats"]["plan"] == "max-20x"
     assert NodeInfo.from_dict(d) == n
-    assert abs(NodeInfo.from_dict(d).surplus() - 16.0) < 1e-9
+    assert abs(NodeInfo.from_dict(d).surplus() - 1.6) < 1e-9
     # A bare node omits the additive fields entirely (v1 wire-compat) and still
-    # roundtrips; its surplus is a neutral 0. Advertising a pubkey grants nothing
-    # on its own - trust needs proof of possession + a local allowlist entry.
+    # roundtrips; its surplus is a neutral 1.0 — on the burn-down line. Advertising
+    # a pubkey grants nothing on its own - trust needs proof of possession + a
+    # local allowlist entry.
     bare = NodeInfo(id="b", name="b", platform="linux", tier=3, tokens="ok")
     bd = bare.to_dict()
     assert "pubkey" not in bd and "stats" not in bd
-    assert NodeInfo.from_dict(bd) == bare and bare.surplus() == 0.0
+    assert NodeInfo.from_dict(bd) == bare
+    assert bare.surplus() == protocol.NEUTRAL_SURPLUS == 1.0
 
 
-def test_surplus_first_ranks_by_spare_quota():
-    a = _snode("a", "max-5x", quota=4.0, usage=1.0)    # surplus 3
-    b = _snode("b", "max-20x", quota=18.0, usage=2.0)  # surplus 16
-    c = _snode("c", "max-5x", quota=5.0, usage=4.5)    # surplus 0.5
+def test_legacy_stats_without_a_surplus_field_rank_neutrally():
+    """A peer on an older build advertises only the absolute quotaLeft/usageAvg
+    pair. Those are a different scale (capacity units, commonly >1), so converting
+    them would let one legacy advert outrank every paced node."""
+    legacy = NodeInfo(id="old", name="old", platform="linux", tier=3, tokens="ok",
+                      stats={"plan": "max-20x", "quotaLeft": 18.0, "usageAvg": 2.0})
+    assert legacy.surplus() == protocol.NEUTRAL_SURPLUS
+    # Garbage in the field degrades the same way, never raises.
+    assert _snode("junk", surplus="lots").surplus() == protocol.NEUTRAL_SURPLUS
+
+
+def test_surplus_first_ranks_by_pace_not_by_raw_remaining_budget():
+    # The headline behaviour change, in the user's own terms: `drain` holds LESS
+    # budget than `hoard` but its window resets in 2 days, so it must win.
+    drain = _snode("drain", surplus=_pace(0.60, days_to_reset=2))    # 2.10
+    hoard = _snode("hoard", surplus=_pace(0.70, days_to_reset=6))    # 0.82
+    mid = _snode("mid", surplus=_pace(0.50, days_to_reset=3.5))      # 1.00
     # Through the public assign path (an override naming the strategy)…
     o = PlacementOverrides().with_duty("review", Placement("surplus-first", True), by="x")
-    assert assign.assign_duty("review", [a, b, c], o).assigned == ("b",)
+    assert assign.assign_duty("review", [hoard, drain, mid], o).assigned == ("drain",)
     # …and through the dispatch-time ranking override.
-    slots = assign.slot_candidates("review", [a, b, c], strategy="surplus-first")
-    assert slots == [("any", ["b", "a", "c"])]
+    slots = assign.slot_candidates("review", [hoard, drain, mid], strategy="surplus-first")
+    assert slots == [("any", ["drain", "mid", "hoard"])]
 
 
-def test_surplus_first_is_account_type_aware():
-    # Two idle nodes: the bigger plan has more room, so it wins.
-    big = _snode("big", "max-20x")
-    small = _snode("small", "max-5x")
-    slots = assign.slot_candidates("review", [small, big], strategy="surplus-first")
-    assert slots[0][1][0] == "big"
+def test_surplus_first_no_longer_favours_a_bigger_plan_on_size_alone():
+    """Deliberate change: two idle accounts are equally flush in relative terms —
+    each has all of its budget and all of its window. Plan size used to decide
+    (absolute units), which starved the smaller account even when it had just as
+    much room to spend proportionally. Now the stable tier tie-break decides."""
+    big = _snode("big", "max-20x", surplus=_pace(1.0, days_to_reset=7), tier=1)
+    small = _snode("small", "max-5x", surplus=_pace(1.0, days_to_reset=7), tier=4)
+    slots = assign.slot_candidates("review", [big, small], strategy="surplus-first")
+    assert slots[0][1] == ["small", "big"]  # tied on pace → weakest-first breaks it
+    # And a small plan that is genuinely ahead of pace beats a big idle one.
+    ahead = _snode("ahead", "pro", surplus=_pace(0.9, days_to_reset=1), tier=1)
+    slots = assign.slot_candidates("review", [big, ahead], strategy="surplus-first")
+    assert slots[0][1][0] == "ahead"
+
+
+def test_surplus_ranking_is_bucketed_so_drift_cannot_reshuffle_peers():
+    """Pace slides continuously as the reset clock runs down. Without hysteresis
+    that would churn the ranking — and the gossiped adverts — on noise alone."""
+    a = _snode("a", surplus=1.500, tier=4)
+    b = _snode("b", surplus=1.51, tier=1)  # within one bucket of `a`
+    slots = assign.slot_candidates("review", [a, b], strategy="surplus-first")
+    assert slots[0][1] == ["a", "b"]  # same bucket → the stable tier break decides
+    # A difference bigger than the bucket does move the ranking.
+    c = _snode("c", surplus=1.5 + 3 * protocol.SURPLUS_RANK_BUCKET, tier=1)
+    slots = assign.slot_candidates("review", [a, c], strategy="surplus-first")
+    assert slots[0][1] == ["c", "a"]
 
 
 def test_advertise_quota_left_capped_by_real_binding_window(tmp_path, monkeypatch):
@@ -543,41 +631,82 @@ def test_advertise_quota_left_capped_by_real_binding_window(tmp_path, monkeypatc
 
 def test_surplus_first_avoids_host_with_drained_binding_window(tmp_path, monkeypatch):
     # The regression: a Max 20× host with 2% of its 5-hour session left (but 80%
-    # of its week) must NOT win dispatch on bookkeeping surplus — it would run
-    # out mid-task. With the real-probe cap its advertised quotaLeft collapses
-    # to 0.02 × 20 = 0.4, so a modest fresh node out-ranks it.
+    # of its week) must NOT win dispatch — it would run out mid-task. The session
+    # window binds, and pacing it against its own near-term reset keeps it low.
     monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
     now = 1_000_000.0
     big = stats.apply_stat_attrs(stats.load(now=now), {"plan": "max-20x"}, now=now)
+    session = usage.QuotaWindow(0.02, now + 2.5 * 3600, 5 * 3600.0)  # 2%, half a window
+    week = usage.QuotaWindow(0.8, now + 3.5 * 86400, 7 * 86400.0)    # 80%, half a window
+    pace = usage.binding_pace(session, week, now=now)
+    assert abs(pace - 0.04) < 1e-9  # the session (0.02/0.5) binds, not the week (1.6)
     drained = NodeInfo(id="big", name="big", platform="linux", tier=1, tokens="low",
                        tokens_pct=0.02, tokens_session_pct=0.02, tokens_week_pct=0.8,
-                       stats=big.advertise(real_frac=min(0.02, 0.8)))
-    fresh = _snode("fresh", "max-5x", quota=4.0, usage=1.0)  # surplus 3
+                       stats=big.advertise(real_frac=0.02, pace=pace, now=now))
+    fresh = _snode("fresh", "max-5x", surplus=_pace(0.5, days_to_reset=3.5))  # 1.0
     slots = assign.slot_candidates("review", [drained, fresh], strategy="surplus-first")
     assert slots == [("any", ["fresh", "big"])]
-    # Without the cap the same host advertises surplus 20 and wrongly wins.
+    # Had only the WEEK been consulted the same host would look flush (1.6) and
+    # wrongly win — which is why the binding pace is a minimum across windows.
     from dataclasses import replace
-    uncapped = replace(drained, stats=big.advertise())
-    slots = assign.slot_candidates("review", [uncapped, fresh], strategy="surplus-first")
+    week_only = replace(drained,
+                        stats=big.advertise(pace=week.pace(now), now=now))
+    slots = assign.slot_candidates("review", [week_only, fresh], strategy="surplus-first")
     assert slots[0][1][0] == "big"
 
 
-def test_node_advert_wires_real_probe_fraction_into_stats(tmp_path, monkeypatch):
-    # MeshNode.info must thread the live probe's binding fraction into the
-    # advertised stats — the cap is useless if the advert path skips it.
+def test_advertised_surplus_paces_the_local_window_when_the_probe_is_dark(
+        tmp_path, monkeypatch):
+    """No real probe ⇒ no reset instants from the endpoint, but the bookkeeping
+    window has its own start and a fixed span, so the node still advertises a
+    comparable ratio rather than dropping out of the ranking."""
+    monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
+    now, day = 1_000_000.0, 86_400.0
+    st = stats.apply_stat_attrs(stats.load(now=now), {"plan": "max-20x"}, now=now)
+    # Fresh window: all the budget, all the clock → exactly on pace.
+    assert st.advertise(now=now)["surplus"] == 1.0
+    # Half the budget spent with 2 of 7 days left ⇒ 0.5 / (2/7) = 1.75: flush,
+    # because what is left expires at the reset.
+    spent = stats.record(st, 10.0, now=now)
+    assert spent.advertise(now=now + 5 * day)["surplus"] == 1.75
+    # The same balance with 6 of 7 days still to cover is behind the line
+    # (7/12, rounded to the 4dp the advert carries).
+    assert spent.advertise(now=now + day)["surplus"] == 0.5833
+
+
+def test_node_advert_wires_real_probe_pace_into_stats(tmp_path, monkeypatch):
+    # MeshNode.info must thread the live probe's pace into the advertised stats —
+    # the metric is useless if the advert path skips it and paces bookkeeping.
     node = _fresh_node(tmp_path, monkeypatch)
     node.stats = stats.apply_stat_attrs(node.stats, {"plan": "max-20x"})
     node._token_state, node._token_frac = "low", 0.02
     node._token_session, node._token_week = 0.02, 0.8
-    assert node.info.stats["quotaLeft"] == 0.4
-    # Heuristic fallback (no real session/week reading): bookkeeping untouched.
-    node._token_session = node._token_week = None
+    node._token_pace = 0.04
+    assert node.info.stats["surplus"] == 0.04
+    assert node.info.stats["quotaLeft"] == 0.4  # fraction still caps the display field
+    # Heuristic fallback (no real reading): the local window is paced instead, and
+    # a node that has booked nothing sits exactly on the line.
+    node._token_session = node._token_week = node._token_pace = None
+    assert node.info.stats["surplus"] == 1.0
     assert node.info.stats["quotaLeft"] == 20.0
 
 
+def test_gossip_key_tracks_pace_at_bucket_granularity(tmp_path, monkeypatch):
+    """Pace drifts every second toward the reset. Re-gossiping on raw float
+    changes would re-advertise the node on every refresh tick for no routing
+    benefit, so change detection uses the same buckets the ranking does."""
+    node = _fresh_node(tmp_path, monkeypatch)
+    node._token_pace = 1.50
+    before = node._gossiped_tokens()
+    node._token_pace = 1.51  # same bucket → peers see nothing new
+    assert node._gossiped_tokens() == before
+    node._token_pace = 1.50 + 3 * protocol.SURPLUS_RANK_BUCKET
+    assert node._gossiped_tokens() != before
+
+
 def test_surplus_first_neutral_stats_fall_back_to_weakest_first():
-    # No stats advertised ⇒ surplus 0 for all ⇒ ranking degrades to weakest-first
-    # (highest tier number), preserving today's behavior for v1 nodes.
+    # No stats advertised ⇒ a neutral 1.0 for all ⇒ ranking degrades to
+    # weakest-first (highest tier number), preserving today's behavior for v1 nodes.
     hi = NodeInfo(id="hi", name="hi", platform="linux", tier=1, tokens="ok")
     lo = NodeInfo(id="lo", name="lo", platform="linux", tier=4, tokens="ok")
     slots = assign.slot_candidates("review", [hi, lo], strategy="surplus-first")
@@ -691,20 +820,28 @@ def test_token_state_prefers_real_quota_over_heuristic(monkeypatch):
     """When the OAuth probe answers, the state comes from the account's REAL
     windows — the tighter (binding) one — and both fractions are surfaced."""
     from diplomat_app.mesh import usage
-    monkeypatch.setattr(usage, "quota_left", lambda: (0.64, 0.27))
-    state, frac, sess, week = usage.token_state("pro")
-    assert (sess, week) == (0.64, 0.27)
+    now = 1_000_000.0
+    session = usage.QuotaWindow(0.64, now + 2.5 * 3600, 5 * 3600.0)   # half the clock left
+    week = usage.QuotaWindow(0.27, now + 3.5 * 86400, 7 * 86400.0)    # half the clock left
+    monkeypatch.setattr(usage, "windows", lambda: (session, week))
+    state, frac, sess, wk, pace = usage.token_state("pro", now=now)
+    assert (sess, wk) == (0.64, 0.27)
     assert frac == 0.27              # the week window binds
     assert state == "low"            # 0.27 < lowThreshold 0.34
+    # Pace is the tighter burn-down ratio: the week at 0.27/0.5 = 0.54 binds over
+    # the session at 0.64/0.5 = 1.28.
+    assert abs(pace - 0.54) < 1e-9
 
 
 def test_token_state_falls_back_to_heuristic_when_probe_dark(tmp_path, monkeypatch):
     from diplomat_app.mesh import usage
     monkeypatch.setenv("HOME", str(tmp_path))  # empty logs → fresh heuristic
-    monkeypatch.setattr(usage, "quota_left", lambda: (None, None))
-    state, frac, sess, week = usage.token_state("pro")
+    monkeypatch.setattr(usage, "windows", lambda: (None, None))
+    state, frac, sess, week, pace = usage.token_state("pro")
     assert (state, frac) == ("ok", 1.0)
-    assert sess is None and week is None  # marks the fraction an estimate
+    # All three None mark the fraction an estimate; with no reset instants there
+    # is nothing to pace against, so the node paces its bookkeeping window instead.
+    assert sess is None and week is None and pace is None
 
 
 def test_quota_left_parses_utilization_and_caches(monkeypatch):
@@ -720,11 +857,49 @@ def test_quota_left_parses_utilization_and_caches(monkeypatch):
         assert usage.quota_left() == (0.64, 0.73)  # within TTL → served from cache
         assert len(calls) == 1
         # A malformed window (or an over-100 utilization) degrades per-field, never raises.
-        assert usage._frac_left({"utilization": 250}) == 0.0
-        assert usage._frac_left({"utilization": "high"}) is None
-        assert usage._frac_left(None) is None
+        assert usage._window({"utilization": 250}, 100.0).frac_left == 0.0
+        assert usage._window({"utilization": "high"}, 100.0) is None
+        assert usage._window(None, 100.0) is None
     finally:
         usage._reset_probe_cache()  # never leak a fake probe result to other tests
+
+
+def test_probe_reads_the_reset_instant_each_window_reports(monkeypatch):
+    """The endpoint's ``resets_at`` is what makes surplus relative — without it
+    there is no clock to divide the remaining budget by."""
+    from diplomat_app.mesh import usage
+    monkeypatch.delenv("DIPLOMAT_MESH_OAUTH_PROBE", raising=False)
+    payload = {
+        "five_hour": {"utilization": 36.0,
+                      "resets_at": "2026-07-20T19:09:59.816900+00:00"},
+        "seven_day": {"utilization": 27,
+                      "resets_at": "2026-07-21T06:59:59.816926+00:00"},
+    }
+    monkeypatch.setattr(usage, "_fetch_usage_payload", lambda: payload)
+    usage._reset_probe_cache()
+    try:
+        session, week = usage.windows()
+        assert session.frac_left == 0.64 and week.frac_left == 0.73
+        assert session.length_secs == 5 * 3600.0
+        assert week.length_secs == 7 * 86400.0
+        # Parsed as real instants, not dropped on the floor (the pre-fix behaviour).
+        from datetime import datetime, timezone
+        assert session.resets_at == datetime(2026, 7, 20, 19, 9, 59, 816900,
+                                             tzinfo=timezone.utc).timestamp()
+        assert week.resets_at > session.resets_at
+    finally:
+        usage._reset_probe_cache()
+
+
+def test_window_without_a_reset_instant_assumes_a_full_span(monkeypatch):
+    """A window the endpoint reports without ``resets_at`` must still be paceable:
+    assuming a full span ahead paces it at its raw fraction — the neutral reading,
+    and exactly how the metric behaved before reset instants were read."""
+    from diplomat_app.mesh import usage
+    now = 1_000_000.0
+    w = usage._window({"utilization": 30.0}, 100.0, now=now)
+    assert w.resets_at == now + 100.0
+    assert abs(w.pace(now) - 0.7) < 1e-9
 
 
 def test_quota_probe_disabled_by_env(monkeypatch):

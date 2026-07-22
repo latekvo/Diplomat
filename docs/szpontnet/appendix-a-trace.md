@@ -100,11 +100,13 @@ default policies, so both compute the **same** `assign_all`
 
 | Duty | Policy | Eligible, ranked | Assigned |
 |------|--------|------------------|----------|
-| `review` | weakest-first | A(t4), B(t1) → `A,B` | `[A]` |
-| `conflicts` | weakest-first | `A,B` | `[A]` |
+| `review` | default `surplus-first` | A(t4), B(t1) → `A,B` | `[A]` |
+| `conflicts` | default `surplus-first` | `A,B` | `[A]` |
 | `audit` | spread 1×linux+1×macos | linux:`A`, macos:`B` | `[A, B]` |
 
-No messages are needed to *agree* — agreement is a consequence of both nodes
+Neither node advertises `stats`, so both rank at `NEUTRAL_SURPLUS` and the default
+`surplus-first` orders **exactly as weakest-first** (higher tier first) - hence
+`A,B`. No messages are needed to *agree* — agreement is a consequence of both nodes
 running the same function on the same input. Each writes it to its
 [`state.json`](08-state.md#the-statejson-snapshot).
 
@@ -161,8 +163,8 @@ is back to `tokens: ok` so both slots can fill.)
 
 N-A computes `slot_candidates("audit")` = `[("linux",[aaaa…]), ("macos",[bbbb…])]`
 ([07](07-dispatch.md#slots)) — ranked `surplus-first`, but neither node advertises
-`stats`, so all surpluses are `0` and the ranking degrades exactly to
-weakest-first. It places one job per slot:
+`stats`, so all surpluses are `NEUTRAL_SURPLUS` (`1.0`) and the ranking degrades
+exactly to weakest-first. It places one job per slot:
 
 - **linux slot → N-A itself** (local): N-A runs the job and gets `spawned`.
 - **macos slot → N-B** (remote): N-A sends a dispatch on the link and waits (≤ 8 s):

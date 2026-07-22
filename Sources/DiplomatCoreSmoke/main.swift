@@ -239,18 +239,20 @@ check(snap != snap3, "a session-quota percent move is a meaningful change")
 let trustJSONText = """
 {"pid":4242,"tcpPort":40878,"v":1,
  "self":{"id":"aaa","name":"here","platform":"macos","tier":2,"tokens":"ok",
-         "fingerprint":"f00d","stats":{"plan":"max-5x","usageAvg":0.8,"quotaLeft":4.2}},
+         "fingerprint":"f00d","stats":{"plan":"max-5x","usageAvg":0.8,"quotaLeft":4.2,"surplus":1.75}},
  "peers":[{"id":"bbb","name":"lin","platform":"linux","tier":4,"tokens":"low",
            "link":"up","addr":"192.168.1.9:40878","lastSeenSecsAgo":1.4,"sees":["aaa"],
            "verified":true,"fingerprint":"beef","trust":"foreign","surplus":1.25,
-           "stats":{"plan":"pro","usageAvg":0.25,"quotaLeft":1.5}}],
+           "stats":{"plan":"pro","usageAvg":0.25,"quotaLeft":1.5,"surplus":1.25}}],
  "trusted":[{"fingerprint":"beef","label":"linux box"}],
  "assignments":{}}
 """
 let trustSnap = MeshSnapshot.decode(trustJSONText.data(using: .utf8)!)!
 check(trustSnap.selfNode?.fingerprint == "f00d", "self fingerprint decode")
 check(trustSnap.selfNode?.stats?.plan == "max-5x", "self stats decode")
-check(abs((trustSnap.selfNode?.surplus ?? 0) - 3.4) < 0.0001, "self surplus = quotaLeft − usageAvg")
+// surplus is the advertised burn-down ratio (from stats.surplus), NOT the absolute
+// quotaLeft − usageAvg — a small plan ahead of its reset can out-rank a big idle one.
+check(abs((trustSnap.selfNode?.surplus ?? 0) - 1.75) < 0.0001, "self surplus = advertised pace")
 check(trustSnap.peers[0].verified && trustSnap.peers[0].trust == "foreign", "peer trust decode")
 check(trustSnap.peers[0].fingerprint == "beef" && trustSnap.peers[0].surplus == 1.25, "peer key + surplus")
 check(trustSnap.trusted.first?.label == "linux box", "published allowlist decode")
@@ -264,9 +266,9 @@ let legacySnap = MeshSnapshot.decode("""
  "assignments":{}}
 """.data(using: .utf8)!)!
 check(!legacySnap.peers[0].verified && legacySnap.peers[0].trust == "personal"
-      && legacySnap.peers[0].surplus == 0, "pre-trust peer defaults")
-check(legacySnap.selfNode?.surplus == 0 && legacySnap.selfNode?.stats == nil,
-      "no stats ⇒ neutral surplus")
+      && legacySnap.peers[0].surplus == MeshStats.neutralSurplus, "pre-trust peer defaults")
+check(legacySnap.selfNode?.surplus == MeshStats.neutralSurplus && legacySnap.selfNode?.stats == nil,
+      "no stats ⇒ neutral surplus (on the burn-down line, 1.0)")
 check(legacySnap.selfNode?.tokensSessionPct == nil && legacySnap.peers[0].tokensWeekPct == nil,
       "pre-probe snapshots ⇒ nil session/week quota (UI falls back to ≈estimate)")
 check(legacySnap.trusted.isEmpty, "no published allowlist ⇒ empty")

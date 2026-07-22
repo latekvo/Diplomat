@@ -687,10 +687,24 @@ def test_out_of_tokens_node_refuses_even_a_direct_target(fleet):
     assert not (fleet.root / "spawned" / "bob.txt").exists()
 
 
-def test_surplus_first_dispatch_picks_the_node_with_most_spare_quota(fleet):
+def _peer_surplus(state: dict, pid: str) -> float | None:
+    """The surplus the dispatcher currently sees a peer advertising, or None if it
+    hasn't gossiped stats yet."""
+    peer = next((p for p in state.get("peers", []) if p["id"] == pid), {})
+    return peer.get("stats", {}).get("surplus")
+
+
+def test_surplus_first_dispatch_picks_the_relatively_flushest_node(fleet):
     """Load balancing over real gossip: with no explicit target, the dispatcher
-    ranks candidates surplus-first, so a request lands on whoever advertises the
-    most spare quota — here the Max-20× machine, not the local or weakest node."""
+    ranks candidates surplus-first, and surplus is RELATIVE — budget left over
+    clock left to its reset, not raw units. So the request lands on the node with
+    the most spare quota *proportionally*, even when that node is the smallest
+    plan, is not the dispatcher, and is not the strongest machine.
+
+    mac-big is a Max-20× with almost all its budget booked; lin is a half-drained
+    Max-5×; mac-small is a fresh Max-5×. Under the old absolute score mac-big
+    (20 units) would have won on plan size alone — exactly the bug. Now the fresh
+    small node, sitting highest against its own reset clock, takes the work."""
     fleet.start("aaaa", "lin", "linux", tier=4, default_trust="personal")
     fleet.start("bbbb", "mac-big", "macos", tier=1, default_trust="personal")
     fleet.start("cccc", "mac-small", "macos", tier=4, default_trust="personal")
@@ -698,24 +712,29 @@ def test_surplus_first_dispatch_picks_the_node_with_most_spare_quota(fleet):
         _wait_for(lambda nid=nid: _links_up(fleet.state(nid), 2),
                   what=f"{nid} to link 2 peers")
 
-    # Give mac-big the fattest account + full quota (one set: plan applies before
-    # quotaLeft, so the 20 isn't clamped to the old 5x capacity).
-    assert fleet.cli("aaaa", "--set", "plan=max-20x", "quotaLeft=20",
-                     "--node", "bbbb").returncode == 0
+    # Drain the big machine hard and the dispatcher partially; leave mac-small
+    # fresh. (plan applies before the usage delta, so max-20×'s capacity is set
+    # before 19 units are booked against it.)
+    assert fleet.cli("aaaa", "--set", "plan=max-20x", "usage=19",
+                     "--node", "bbbb").returncode == 0  # 1 of 20 left → pace ~0.05
+    assert fleet.cli("aaaa", "--set", "usage=4",
+                     "--node", "aaaa").returncode == 0   # 1 of 5 left → pace ~0.2
+    # Wait until the drained surpluses have gossiped to the dispatcher and it can
+    # see mac-small (fresh, ~1.0) clearly out-pacing both.
     _wait_for(
-        lambda: next((p for p in fleet.state("aaaa").get("peers", [])
-                      if p["id"] == "bbbb"), {}).get("stats", {}).get("plan") == "max-20x",
-        what="mac-big's stats to gossip to the dispatcher",
+        lambda: (_peer_surplus(fleet.state("aaaa"), "bbbb") or 1.0) < 0.2
+        and (_peer_surplus(fleet.state("aaaa"), "cccc") or 0.0) > 0.9,
+        what="drained surpluses to gossip to the dispatcher",
     )
 
     r = fleet.cli("aaaa", "--dispatch", "review", "--prompt", "balance")
     assert r.returncode == 0, r.stdout + r.stderr
     spawned = fleet.root / "spawned"
-    _wait_file(spawned / "mac-big.txt", "balance")
-    # Surplus-first ignores locality and tier: neither the dispatcher nor the
-    # weak mac (both max-5x, surplus 5) should have run it.
+    _wait_file(spawned / "mac-small.txt", "balance")
+    # Neither the fat-but-drained big node, nor the half-drained local dispatcher,
+    # should have run it — relative surplus beats plan size, locality, and tier.
+    assert not (spawned / "mac-big.txt").exists()
     assert not (spawned / "lin.txt").exists()
-    assert not (spawned / "mac-small.txt").exists()
 
 
 def test_node_restart_is_a_new_incarnation(fleet):

@@ -67,8 +67,8 @@ it, place it, dispatch it — never crash on it). See
 Each duty carries a **placement policy** describing *how* to choose which node(s)
 run it:
 
-- a **strategy** — how to rank eligible nodes (`weakest-first`,
-  `strongest-first`, `local-first`);
+- a **strategy** — how to rank eligible nodes (`surplus-first` (the default),
+  `weakest-first`, `strongest-first`, `local-first`);
 - **token-awareness** — whether a node that is `tokens: "out"` is excluded;
 - a **spread** — an optional list of `{platform, count}` requirements, so a duty
   can demand coverage across platforms (e.g. *one Linux and one macOS node*)

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from . import assign, codec
 from .codec import NodeInfo
-from .model import load_model
+from .model import NEUTRAL_SURPLUS, SURPLUS_RANK_BUCKET, load_model
 from .report import Reporter
 
 
@@ -139,7 +139,8 @@ def _trust_codec(rep: Reporter) -> None:
               "11-trust-and-balancing#conformance")
     # A populated node round-trips both additive fields exactly.
     rich = NodeInfo(id="b" * 32, platform="macos", tier=1, pubkey="AAAA",
-                    stats={"plan": "max-20x", "usageAvg": 1.0, "quotaLeft": 20.0})
+                    stats={"plan": "max-20x", "usageAvg": 1.0, "quotaLeft": 20.0,
+                           "surplus": 1.75})
     back = NodeInfo.from_dict(rich.to_dict())
     rep.check("pubkey/stats round-trip (encode→decode identity)", back == rich, "MUST",
               "11-trust-and-balancing#conformance")
@@ -147,11 +148,16 @@ def _trust_codec(rep: Reporter) -> None:
     rep.check("populated pubkey/stats appear on the wire",
               rd.get("pubkey") == "AAAA" and rd.get("stats", {}).get("plan") == "max-20x",
               "MUST", "11-trust-and-balancing")
-    # surplus = quotaLeft − usageAvg; 0.0 when no stats.
-    rep.check("surplus() = quotaLeft − usageAvg", abs(rich.surplus() - 19.0) < 1e-9, "MUST",
-              "11-trust-and-balancing#stats")
-    rep.check("no-stats node has surplus 0 (neutral)", plain.surplus() == 0.0, "MUST",
-              "11-trust-and-balancing#stats")
+    # surplus is the advertised burn-down ratio (stats.surplus), NOT quotaLeft −
+    # usageAvg; NEUTRAL_SURPLUS (1.0) when absent.
+    rep.check("surplus() reads the advertised ratio", abs(rich.surplus() - 1.75) < 1e-9,
+              "MUST", "11-trust-and-balancing#stats")
+    legacy = NodeInfo(id="c" * 32, stats={"plan": "max-20x", "usageAvg": 1.0,
+                                          "quotaLeft": 20.0})  # pre-surplus advert
+    rep.check("legacy stats without surplus rank at NEUTRAL_SURPLUS",
+              legacy.surplus() == NEUTRAL_SURPLUS, "MUST", "11-trust-and-balancing#stats")
+    rep.check("no-stats node has NEUTRAL_SURPLUS (on the burn-down line)",
+              plain.surplus() == NEUTRAL_SURPLUS, "MUST", "11-trust-and-balancing#stats")
     # A malformed stats blob degrades to empty rather than invalidating the node.
     tolerant = NodeInfo.from_dict({"id": "x", "stats": "not-an-object"})
     rep.check("malformed stats degrades to empty, node still valid",
@@ -374,29 +380,45 @@ def _accountability_codec(rep: Reporter) -> None:
 
 def _surplus_first_oracle(rep: Reporter, model) -> None:
     rep.begin_case("S7", "surplus-first ranking oracle (11 load balancing)")
-    # Three eligible linux nodes, ranked by DESCENDING surplus. Tier/id would
-    # order them A,B,C weakest-first; surplus must reorder to the most-surplus.
-    lo = NodeInfo(id="a" * 32, platform="linux", tier=4, tokens="ok",
-                  stats={"plan": "pro", "usageAvg": 0.0, "quotaLeft": 1.0})    # surplus 1
-    mid = NodeInfo(id="b" * 32, platform="linux", tier=4, tokens="ok",
-                   stats={"plan": "max-5x", "usageAvg": 1.0, "quotaLeft": 6.0})  # surplus 5
-    hi = NodeInfo(id="c" * 32, platform="linux", tier=4, tokens="ok",
-                  stats={"plan": "max-20x", "usageAvg": 2.0, "quotaLeft": 20.0})  # surplus 18
+
+    def _node(id_ch: str, tier: int, surplus: float | None) -> NodeInfo:
+        stats = {} if surplus is None else {"plan": "pro", "usageAvg": 0.0,
+                                            "quotaLeft": 1.0, "surplus": surplus}
+        return NodeInfo(id=id_ch * 32, platform="linux", tier=tier, tokens="ok", stats=stats)
+
+    # Three eligible linux nodes ranked by DESCENDING advertised surplus (a
+    # burn-down ratio). Tier/id would order them A,B,C weakest-first; surplus
+    # reorders to the flushest. Note the winner (hi, ratio 2.1) advertises the
+    # SMALLEST budget of the three in absolute terms — its window is near reset,
+    # so relatively it is the most flush. Ranking on quotaLeft−usageAvg would get
+    # this backwards; that is the whole point of chapter 11's relative surplus.
+    lo = _node("a", tier=4, surplus=0.82)   # 70% left, 6 of 7 days → behind pace
+    mid = _node("b", tier=4, surplus=1.00)  # exactly on the burn-down line
+    hi = _node("c", tier=4, surplus=2.10)   # 60% left, 2 of 7 days → drain it
     order = [n.id for n in assign.ranked([lo, mid, hi], "surplus-first", local_id=lo.id)]
-    rep.check("surplus-first ranks most-surplus first", order == [hi.id, mid.id, lo.id],
-              "MUST", "11-trust-and-balancing#the-load-balancer")
-    # Neutral-stats (no stats) degrades exactly to weakest-first (tier then id).
-    n1 = NodeInfo(id="a" * 32, platform="linux", tier=2, tokens="ok")
-    n2 = NodeInfo(id="b" * 32, platform="linux", tier=4, tokens="ok")
+    rep.check("surplus-first ranks the relatively-flushest first",
+              order == [hi.id, mid.id, lo.id], "MUST",
+              "11-trust-and-balancing#the-load-balancer")
+    # Neutral-surplus (no stats) degrades exactly to weakest-first (tier then id).
+    n1, n2 = _node("a", tier=2, surplus=None), _node("b", tier=4, surplus=None)
     neutral = [n.id for n in assign.ranked([n1, n2], "surplus-first", local_id=n1.id)]
     weakest = [n.id for n in assign.ranked([n1, n2], "weakest-first", local_id=n1.id)]
     rep.check("all-neutral surplus-first == weakest-first", neutral == weakest, "MUST",
               "11-trust-and-balancing#conformance")
     # A tie in surplus falls back to weakest-first (tier), not id order alone.
-    t1 = NodeInfo(id="a" * 32, platform="linux", tier=2, tokens="ok",
-                  stats={"plan": "pro", "usageAvg": 0.0, "quotaLeft": 3.0})
-    t2 = NodeInfo(id="b" * 32, platform="linux", tier=4, tokens="ok",
-                  stats={"plan": "pro", "usageAvg": 0.0, "quotaLeft": 3.0})
+    t1, t2 = _node("a", tier=2, surplus=1.4), _node("b", tier=4, surplus=1.4)
     tie = [n.id for n in assign.ranked([t1, t2], "surplus-first", local_id=t1.id)]
     rep.check("surplus tie → weakest-first (higher tier first)", tie == [t2.id, t1.id],
               "MUST", "11-trust-and-balancing#conformance")
+    # Surpluses within one bucket are TIED for ranking (the drift hysteresis), so
+    # the stable tier tie-break — not the hair's-breadth surplus edge — decides.
+    b1 = _node("a", tier=2, surplus=1.50)
+    b2 = _node("b", tier=4, surplus=1.50 + 0.4 * SURPLUS_RANK_BUCKET)  # same bucket
+    same = [n.id for n in assign.ranked([b2, b1], "surplus-first", local_id=b1.id)]
+    rep.check("surpluses within a bucket tie → weakest-first breaks it (weaker tier first)",
+              same == [b2.id, b1.id], "MUST", "11-trust-and-balancing#conformance")
+    # A gap wider than a bucket DOES move the ranking, tier notwithstanding.
+    b3 = _node("c", tier=1, surplus=1.50 + 3 * SURPLUS_RANK_BUCKET)
+    moved = [n.id for n in assign.ranked([b1, b3], "surplus-first", local_id=b1.id)]
+    rep.check("a supra-bucket surplus gap outranks the tier break",
+              moved == [b3.id, b1.id], "MUST", "11-trust-and-balancing#conformance")

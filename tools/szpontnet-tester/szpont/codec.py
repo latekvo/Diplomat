@@ -21,7 +21,7 @@ import json
 import time
 from dataclasses import dataclass, field, replace
 
-from .model import MAX_LINE_BYTES, PROTOCOL_VERSION
+from .model import MAX_LINE_BYTES, NEUTRAL_SURPLUS, PROTOCOL_VERSION
 
 
 # MARK: - Authenticated-gossip signing bytes (11 — self-signed adverts + overrides)
@@ -107,9 +107,10 @@ class NodeInfo:
     # Chapter 11 additive fields. ``pubkey`` is the node's advertised Ed25519
     # public key (base64) — its *claimed* trust identity, believed only once the
     # node proves possession with an ``auth`` signature. ``stats`` is the
-    # load-balancing view ({"plan","usageAvg","quotaLeft"}). BOTH are omitted from
-    # to_dict() when empty so a node that uses neither is byte-identical to a
-    # core-v1 advertisement (11-trust-and-balancing conformance MUST).
+    # load-balancing view ({"plan","usageAvg","quotaLeft","surplus"}, where
+    # surplus is the burn-down ratio ranked on and the others are display-only).
+    # BOTH are omitted from to_dict() when empty so a node that uses neither is
+    # byte-identical to a core-v1 advertisement (11-trust-and-balancing MUST).
     pubkey: str = ""
     stats: dict = field(default_factory=dict)
     # Base64 Ed25519 signature by THIS node's device key over the advert's
@@ -174,17 +175,18 @@ class NodeInfo:
             return None
 
     def surplus(self) -> float:
-        """Spare quota this node advertises for load balancing:
-        ``quotaLeft − usageAvg`` in plan-relative units. 0.0 when the node
-        advertises no stats (neutral — surplus-first ranking then degrades to
-        weakest-first). Mirrors the reference NodeInfo.surplus() (11)."""
+        """The burn-down ratio this node advertises for load balancing: budget
+        left ÷ clock left until its quota resets (``stats.surplus``). 1.0 is on
+        pace, above is flush, below is rationing. NEUTRAL_SURPLUS (1.0, on the
+        line) when the node advertises no stats, or a legacy advert carrying only
+        the absolute quotaLeft/usageAvg pair — those are a different scale and are
+        NOT converted. Mirrors the reference NodeInfo.surplus() (11)."""
         if not self.stats:
-            return 0.0
+            return NEUTRAL_SURPLUS
         try:
-            return float(self.stats.get("quotaLeft", 0.0)) - float(
-                self.stats.get("usageAvg", 0.0))
-        except (TypeError, ValueError):
-            return 0.0
+            return float(self.stats["surplus"])
+        except (KeyError, TypeError, ValueError):
+            return NEUTRAL_SURPLUS
 
     def newer_than(self, other: "NodeInfo") -> bool:
         return (self.epoch, self.seq) > (other.epoch, other.seq)
@@ -571,7 +573,9 @@ def validate_nodeinfo(d: dict) -> list[str]:
         else:
             if "plan" in st and not isinstance(st["plan"], str):
                 problems.append("NodeInfo.stats.plan not a string")
-            for k in ("usageAvg", "quotaLeft"):
+            # usageAvg/quotaLeft are retained for display; surplus (11) is the
+            # burn-down ratio ranked on. All optional, all numeric when present.
+            for k in ("usageAvg", "quotaLeft", "surplus"):
                 if k in st and not _is_num(st[k]):
                     problems.append(f"NodeInfo.stats.{k} not a number")
     return problems

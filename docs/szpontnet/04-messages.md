@@ -65,7 +65,7 @@ The resource advertisement for one node. Appears inside `hello` and `node`, and
   "sees": ["bd4eaf7671d24b9792bcfd09762ac5b5"],
   "dutiesEnabled": {"audit": false},
   "pubkey": "kQ0f…base64-Ed25519-public-key…=",
-  "stats": {"plan": "max-20x", "usageAvg": 3.1, "quotaLeft": 20.0},
+  "stats": {"plan": "max-20x", "usageAvg": 3.1, "quotaLeft": 20.0, "surplus": 1.75},
   "v": 1
 }
 ```
@@ -86,15 +86,20 @@ The resource advertisement for one node. Appears inside `hello` and `node`, and
 | `sees` | array<string> | no (`[]`) | ids of peers this node currently holds a link to (for topology display + partition awareness). |
 | `dutiesEnabled` | object<string,bool> | no (`{}`) | per-duty opt-out; a duty absent from the map is **enabled** by default. |
 | `pubkey` | string | no | the node's advertised base64 Ed25519 public key. Advertising it grants **nothing** - a peer must prove possession by signing the [`hello`](#hello)/[`auth`](#auth) challenge before it is believed to hold this key. Trust then keys on its fingerprint `sha256(pubkey)` against a local allowlist. See [11-trust-and-balancing](11-trust-and-balancing.md). |
-| `stats` | object | no (`{}`) | load-balancing accounting: `{"plan", "usageAvg", "quotaLeft"}` in plan-relative units. See [05-resources](05-resources.md#per-node-stats-account-aware-load-balancing) and [11](11-trust-and-balancing.md). |
+| `stats` | object | no (`{}`) | load-balancing accounting: `{"plan", "usageAvg", "quotaLeft", "surplus"}`. Routing ranks on `surplus` (a burn-down ratio); `usageAvg`/`quotaLeft` are plan-relative display figures. See [05-resources](05-resources.md#per-node-stats-account-aware-load-balancing) and [11](11-trust-and-balancing.md#the-load-balancer). |
 | `sig` | string | no | base64 Ed25519 signature by this node's device key over the advert's canonical bytes, authenticating it end to end across relays. A **keyed** advert (one with a `pubkey`) MUST carry a valid `sig` or be dropped; a keyless advert carries none. See [11 - authenticated gossip](11-trust-and-balancing.md#authenticated-gossip). |
 | `v` | int | no (`1`) | protocol version of this advertisement. |
 
 `pubkey`, `stats`, and `sig` are **additive and optional**: all are **omitted from
 the wire form when empty**, so a v1 advertisement that sets none is byte-identical
 to before. The `stats` sub-keys are `plan` (string, account-type id, e.g.
-`max-20x`), `usageAvg` (float, 21-day rolling average of usage per day), and
-`quotaLeft` (float, remaining capacity in the current window).
+`max-20x`), `surplus` (float, the **burn-down ratio** routing ranks on - budget left
+÷ clock left to reset; `1.0` = on pace, capped at `10.0`), and the display-only
+`usageAvg` (float, 21-day rolling average of usage per day) and `quotaLeft` (float,
+remaining capacity in the current window). All sub-keys are additive: a missing or
+absent `surplus` (e.g. a legacy `quotaLeft`/`usageAvg`-only advert) degrades to
+`NEUTRAL_SURPLUS` (`1.0`), never an error, and is **not** converted from the absolute
+pair. See [11 - surplus](11-trust-and-balancing.md#surplus).
 
 **Freshness.** Two NodeInfos for the same `id` are ordered by the tuple
 `(epoch, seq)`: the larger wins. A restart (higher `epoch`) always supersedes the
@@ -589,7 +594,8 @@ its own `fingerprint`; each peer entry gains `verified` (bool - whether the peer
 proved a key on this link), `fingerprint` (its **verified** fingerprint, or the
 fingerprint of its advertised `pubkey` when not yet verified), `trust`
 (`personal`/`foreign`/`banned` against the local allowlist and ban list), and
-`surplus` (float - its spare-quota rank score); a top-level `trusted` array lists
+`surplus` (float - its advertised burn-down ratio, the value the load balancer ranks
+on); a top-level `trusted` array lists
 the local allowlist as `{fingerprint, label}` entries; and a top-level `banned`
 array mirrors the local [ban list](08-state.md#bannedjson) as
 `{fingerprint, node, label, reason, bannedAt, jobId}` entries.

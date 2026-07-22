@@ -1024,16 +1024,21 @@ def case_i_declined_failover(rep: Reporter, ctx: Context) -> None:
 
 def case_i_surplus_first(rep: Reporter, ctx: Context) -> None:
     rep.begin_case("I6", "surplus-first dispatch picks the most-surplus node (11)")
-    # Candidate has the LEAST surplus; two peers advertise more. The default
-    # dispatch strategy is surplus-first, so `review` (no spread, single slot)
-    # must route to the highest-surplus node — here peer C (surplus 18).
+    # Surplus is RELATIVE: the advertised burn-down ratio (budget left ÷ clock
+    # left to reset), not absolute units. Peer C advertises the highest ratio
+    # (2.1 — near its reset, so drain it) despite NOT being the biggest plan, so
+    # the default surplus-first dispatch of `review` (no spread, single slot)
+    # must route there. Peer B is on pace (1.0); the candidate is behind (0.4).
     scn = Scenario(ctx.node_cmd, ctx.model, candidate_id=ID_A, platform="linux", tier=4,
                    loopback=ctx.loopback,
-                   stats={"plan": "pro", "usageAvg": 0.0, "quotaLeft": 0.5})   # surplus 0.5
+                   stats={"plan": "pro", "usageAvg": 0.0, "quotaLeft": 0.5,
+                          "surplus": 0.4})    # behind pace
     scn.add_peer(id=ID_B, name="mid", platform="macos", tier=1,
-                 stats={"plan": "max-5x", "usageAvg": 1.0, "quotaLeft": 6.0})   # surplus 5
+                 stats={"plan": "max-5x", "usageAvg": 1.0, "quotaLeft": 6.0,
+                        "surplus": 1.0})       # on the burn-down line
     scn.add_peer(id=ID_C, name="hi", platform="macos", tier=4,
-                 stats={"plan": "max-20x", "usageAvg": 2.0, "quotaLeft": 20.0})  # surplus 18
+                 stats={"plan": "max-20x", "usageAvg": 2.0, "quotaLeft": 20.0,
+                        "surplus": 2.1})       # flushest relative to its reset
     with scn:
         if not _need_port(rep, scn):
             return
@@ -1046,7 +1051,7 @@ def case_i_surplus_first(rep: Reporter, ctx: Context) -> None:
         # Confirm the candidate actually ingested the peers' advertised surplus,
         # else the dispatch pick would be meaningless.
         surplus_seen = wait_until(
-            lambda: _peer_snap(scn.candidate.snapshot(), ID_C).get("surplus") == 18.0, 6.0)
+            lambda: _peer_snap(scn.candidate.snapshot(), ID_C).get("surplus") == 2.1, 6.0)
         rep.check("candidate ingests a peer's advertised stats (surplus)",
                   bool(surplus_seen), "MUST", "11-trust-and-balancing#stats",
                   f"peer C surplus in snapshot={_peer_snap(scn.candidate.snapshot(), ID_C).get('surplus')}")
@@ -1065,7 +1070,7 @@ def case_i_surplus_first(rep: Reporter, ctx: Context) -> None:
                   outcome.get("node") == ID_C and outcome.get("status") == "spawned", "MUST",
                   "11-trust-and-balancing#conformance",
                   f"picked={outcome.get('node','')[:6]} status={outcome.get('status')} "
-                  f"(expected C={ID_C[:6]}, surplus 18)")
+                  f"(expected C={ID_C[:6]}, surplus 2.1)")
 
 
 def case_i_omit_when_empty(rep: Reporter, ctx: Context) -> None:

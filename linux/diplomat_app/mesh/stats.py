@@ -2,22 +2,27 @@
 and the quota a node has left, account-type aware.
 
 This is the data behind SzpontNet's load balancing: a dispatcher picks the node
-with the most **surplus** (``quotaLeft − usageAvg``, in plan-relative units), so
-work flows to whoever has spare budget. Two quantities are tracked locally and
-advertised on the node's :class:`~diplomat_app.mesh.protocol.NodeInfo`:
+with the most **surplus**, a *relative* burn-down ratio (budget left ÷ clock left
+until the quota resets — see :meth:`NodeStats.surplus`), so work flows to whoever
+is most flush against its own reset clock, not merely whoever holds the most raw
+budget. Three quantities are advertised on the node's
+:class:`~diplomat_app.mesh.protocol.NodeInfo`:
 
 - **usageAvg** — an exponentially-weighted rolling average of consumption, in
   capacity units per day, with a ~21-day time constant. Implemented as a decaying
   reservoir ``acc`` (``acc *= exp(-Δdays / τ)`` per elapsed day, ``+= units`` per
   event); the steady-state of a constant rate ``r`` is ``acc = r·τ``, so
-  ``usageAvg = acc / τ`` recovers the mean daily rate.
+  ``usageAvg = acc / τ`` recovers the mean daily rate. Retained for display.
 - **quotaLeft** — remaining capacity in the current quota window. Capacity is
   ``plan.weight × capacityPerWeight`` (Max 20× has 4× the room of Max 5×); the
   window rolls every ``quotaWindowDays`` and resets what's been used. Absolute
-  token quotas are deliberately not modelled — Anthropic's limits are dynamic —
-  so everything is compared in plan-relative units. When the node's REAL quota
-  probe is live (usage.py), the *advertised* quotaLeft is additionally capped by
-  the binding rate-limit window — see :meth:`NodeStats.advertise`.
+  token quotas are deliberately not modelled — Anthropic's limits are dynamic.
+  Retained for display; when the node's REAL quota probe is live (usage.py) it is
+  additionally capped by the binding rate-limit window — see
+  :meth:`NodeStats.advertise`.
+- **surplus** — the burn-down ratio routing actually ranks on. From the real
+  probe's per-window reset instants when live, else the local bookkeeping window
+  paced against its own roll (:meth:`NodeStats.local_window`).
 
 State persists to ``~/.diplomat/mesh/stats.json`` (machine-local; only the derived
 ``advertise()`` view is gossiped). All time arithmetic takes an injectable
@@ -33,6 +38,7 @@ import time
 from dataclasses import dataclass, replace
 
 from . import config, identity
+from .usage import QuotaWindow
 
 _DAY_SECS = 86_400.0
 
@@ -81,21 +87,50 @@ class NodeStats:
     def quota_left(self) -> float:
         return max(0.0, self.capacity() - self.quota_used)
 
-    def surplus(self) -> float:
-        return self.quota_left() - self.usage_avg()
+    def local_window(self, now: float) -> QuotaWindow:
+        """The bookkeeping window as a paceable :class:`QuotaWindow` — the offline
+        stand-in for a real rate-limit window. ``quota_used`` against capacity
+        gives the remaining fraction, and the window rolls a fixed
+        ``quotaWindowDays`` after it started, which gives the reset instant."""
+        cap = self.capacity()
+        span = self._window_secs()
+        return QuotaWindow(
+            frac_left=(self.quota_left() / cap) if cap > 0 else 1.0,
+            resets_at=self.window_start + span,
+            length_secs=span,
+        )
 
-    def advertise(self, real_frac: float | None = None) -> dict:
+    def surplus(self, now: float | None = None, pace: float | None = None) -> float:
+        """This node's spare capacity as a burn-down ratio — budget left over
+        clock left until the quota resets. See :meth:`QuotaWindow.pace`.
+
+        Relative by construction, which is the whole point: an absolute "units
+        remaining" figure ranks a node with a big balance above one whose smaller
+        balance is about to expire unused, and starves the node that actually has
+        room to spend. ``pace`` supplies the real probe's answer when it is live;
+        otherwise this paces the local bookkeeping window."""
+        if pace is not None:
+            return pace
+        now = time.time() if now is None else now
+        return self.local_window(now).pace(now)
+
+    def advertise(self, real_frac: float | None = None, pace: float | None = None,
+                  now: float | None = None) -> dict:
         """The gossiped view — what rides on NodeInfo.stats.
 
-        ``real_frac`` is the account's REAL remaining fraction in its binding
-        rate-limit window — min(5-hour session, 7-day week) — when the OAuth
-        quota probe is live, else None. It caps the advertised ``quotaLeft``:
-        whatever the local bookkeeping says, the account has no more room than
-        its tightest real window, so surplus-first dispatch can't route work to
-        a node that would run dry mid-task (e.g. 2% of the session left but 80%
-        of the week — the session gates the next job, not the week). Heuristic
-        fallback estimates deliberately do NOT cap: they can read 0 for heavy
-        users and would wrongly zero an actually-fresh node's surplus."""
+        ``pace`` is the account's REAL burn-down ratio across its rate-limit
+        windows (the tighter of the 5-hour session and 7-day week) when the OAuth
+        quota probe is live, else None. It becomes the advertised ``surplus``,
+        the figure peers rank on; without it the local bookkeeping window is
+        paced instead, so an offline node still advertises a comparable number.
+
+        ``real_frac`` is the matching remaining *fraction*, and still caps the
+        advertised ``quotaLeft``: that field is retained for display and for
+        peers on older builds, and must not overstate the room the account has.
+        Heuristic fallback estimates deliberately do NOT cap — they can read 0
+        for heavy users and would wrongly zero an actually-fresh node.
+        """
+        now = time.time() if now is None else now
         left = self.quota_left()
         if real_frac is not None:
             left = min(left, self.capacity() * max(0.0, min(1.0, real_frac)))
@@ -103,6 +138,7 @@ class NodeStats:
             "plan": self.plan,
             "usageAvg": round(self.usage_avg(), 4),
             "quotaLeft": round(left, 4),
+            "surplus": round(self.surplus(now=now, pace=pace), 4),
         }
 
 

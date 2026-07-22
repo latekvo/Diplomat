@@ -42,26 +42,39 @@ TOKEN_STATES = ("ok", "low", "out")
 PLATFORMS = ("linux", "macos")
 # Ranking strategies (06/11). ``local-first`` is a real reference strategy;
 # ``surplus-first`` (11) ranks by descending dispatch surplus with a
-# weakest-first tie-break — the default a dispatcher applies to target selection.
+# weakest-first tie-break, and is the DEFAULT — for both a dispatcher's target
+# selection and a duty's displayed placement (a duty inherits it unless it pins
+# another strategy).
 STRATEGIES = ("weakest-first", "strongest-first", "local-first", "surplus-first")
-DEFAULT_STRATEGY = "weakest-first"
+DEFAULT_STRATEGY = "surplus-first"
 # The default target ranking a dispatcher applies (config.dispatchStrategy in the
-# reference / appendix-b). Distinct from a duty's displayed placement strategy.
+# reference / appendix-b). Now equal to DEFAULT_STRATEGY: both default to surplus-first.
 DEFAULT_DISPATCH_STRATEGY = "surplus-first"
+
+# Surplus is a burn-down RATIO, not an amount: budget left ÷ clock left until the
+# quota window resets. 1.0 (NEUTRAL_SURPLUS) is exactly on pace, above is flush,
+# below is rationing — and it is what a node advertises in ``stats.surplus``. A
+# node with no usable surplus signal (no stats, or a legacy advert carrying only
+# quotaLeft/usageAvg) ranks at NEUTRAL_SURPLUS. Rankings compare surplus quantised
+# to SURPLUS_RANK_BUCKET, so continuous pace drift can't reshuffle otherwise-equal
+# nodes (and re-gossip adverts) on noise — the hysteresis two conformant nodes
+# need to agree on a stable ordering. (11 / appendix-b.)
+NEUTRAL_SURPLUS = 1.0
+SURPLUS_RANK_BUCKET = 0.05
 
 # Plan quota weights relative to Pro (Max 5× → 5, Max 20× → 20), matching
 # core/mesh.json "accounts" / appendix-b. The tester's oracle ranks on the
-# already-advertised surplus so it needs no capacity math, but these are the
-# canonical constants a scenario uses to build meaningful stats.
+# already-advertised surplus so it needs no capacity or pace math, but these are
+# the canonical constants a scenario uses to build meaningful stats.
 PLAN_WEIGHTS = {"pro": 1.0, "max-5x": 5.0, "max-20x": 20.0}
 DEFAULT_PLAN = "max-5x"
 
 # The v1 duty catalog with default placement policies (appendix B / 05-resources).
+# No duty pins a ``strategy`` — each inherits DEFAULT_STRATEGY (surplus-first).
 DEFAULT_DUTIES = {
-    "review": {"strategy": "weakest-first", "tokenAware": True, "spread": []},
-    "conflicts": {"strategy": "weakest-first", "tokenAware": True, "spread": []},
+    "review": {"tokenAware": True, "spread": []},
+    "conflicts": {"tokenAware": True, "spread": []},
     "audit": {
-        "strategy": "weakest-first",
         "tokenAware": True,
         "spread": [{"platform": "linux", "count": 1}, {"platform": "macos", "count": 1}],
     },

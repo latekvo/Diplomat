@@ -345,13 +345,17 @@ sends one. This is a **plaintext credential** on the LAN, with the same threat
 model as the join secret ([03](03-transport.md#the-join-fence)): a fence and an
 authenticator, not a confidential channel.
 
-## Per-node stats: account-aware load balancing
+## Stats
 
 The core ranks nodes by tier and the coarse `tokens` signal. This chapter adds a
 finer, **budget-aware** ranking so a dispatcher can send work to whoever actually
-has spare capacity. Each node tracks two quantities locally and advertises them in
-the additive [`stats`](04-messages.md#nodeinfo) object
-(`{"plan", "usageAvg", "quotaLeft"}`):
+has spare capacity. Each node tracks its accounting locally and advertises a derived
+view in the additive [`stats`](04-messages.md#nodeinfo) object
+(`{"plan", "usageAvg", "quotaLeft", "surplus"}`). The number the load balancer ranks
+on is **`surplus`** ([below](#surplus)) - a relative burn-down ratio. `usageAvg` and
+`quotaLeft` are retained for display and for peers on older builds; they are **not**
+what routing compares, and a peer reads a node's `surplus` straight from the
+advertised field rather than deriving it from them.
 
 ### usageAvg - a 21-day rolling average
 
@@ -360,7 +364,9 @@ capacity units per day, with a ~21-day time constant. It is a decaying reservoir
 each unit of usage adds to `acc`; `acc` decays as `acc *= exp(-Δdays / τ)` with
 `τ = usageTimeConstantDays` (21); the advertised average is `acc / τ`. A node that
 consumes at a steady rate `r` settles at `usageAvg = r`; a node that goes idle sees
-its average decay by `1/e` each time constant. This is the node's *typical burn*.
+its average decay by `1/e` each time constant. This is the node's *typical burn* -
+a **display-only** figure now. Surplus is no longer `quotaLeft − usageAvg`; it is a
+burn-down ratio ([below](#surplus)), so `usageAvg` no longer feeds the ranking.
 
 ### quotaLeft - account-type aware
 
@@ -377,9 +383,10 @@ tier **relative to Pro**:
 So a Max 20x node has 4x the room of a Max 5x node. The window rolls every
 `quotaWindowDays` (7), resetting what's been used. **Absolute token quotas are
 deliberately not modelled** - Anthropic's real limits are dynamic rolling windows,
-so hard-coding token counts would be brittle and wrong. Everything is compared in
-these plan-relative units, which is enough to rank *comparative* headroom
-correctly.
+so hard-coding token counts would be brittle and wrong. `quotaLeft` is a
+**display-only** figure: routing does not rank on it directly - a raw remaining
+amount is not comparable across nodes (see [Surplus](#surplus)) - it feeds the live
+"quota NN%" readout and peers on older builds.
 
 > **Where the numbers come from.** The reference node books `jobCostUnits` of
 > usage each time it spawns a SzpontRequest, and exposes `set-attr` keys
@@ -387,53 +394,103 @@ correctly.
 > When the node's **real quota probe** is live (the OAuth usage endpoint behind
 > the `tokens` auto-state), the advertised `quotaLeft` is additionally **capped
 > by the binding rate-limit window**:
-> `quotaLeft ≤ capacity × min(session_left, week_left)`. The tightest window is
-> what actually gates the next job - a node with 2% of its 5-hour session left
-> but 80% of its week left must not out-rank a modest node with real room, or
-> dispatch sends work to a host that runs dry mid-task. Heuristic fallback
-> estimates do not cap (they can read 0 for heavy users and would wrongly zero
-> a fresh node's surplus). The *mechanism* - track, advertise, rank, decline -
-> is what this chapter specifies, and it degrades safely when the inputs are
-> neutral.
+> `quotaLeft ≤ capacity × min(session_left, week_left)`, so the displayed figure
+> never overstates the room the account actually has. Heuristic fallback estimates
+> do not cap (they can read 0 for heavy users and would wrongly zero a fresh node's
+> displayed quota). The "tightest window binds" reasoning that used to protect the
+> ranking now lives in [surplus](#surplus) itself, which paces the *tighter* of the
+> session and week windows. The *mechanism* - track, advertise, rank, decline - is
+> what this chapter specifies, and it degrades safely when the inputs are neutral.
 
 ### Surplus
 
-A node's **surplus** is the single number the load balancer ranks on:
+A node's **surplus** is the single number the load balancer ranks on - a **relative
+burn-down ratio**, not an absolute amount:
 
 ```
-surplus(node) = quotaLeft - usageAvg        # in plan-relative units; 0 if no stats
+surplus(node)      = budget_left / time_left_fraction   # for the binding window
+time_left_fraction = clamp((seconds until the window resets) / (window length), 0, 1)
 ```
 
-It is the spare quota a node has *after* covering its own typical burn. A node that
-advertises no `stats` has surplus **0** (neutral). The advertised `stats` values
-decay locally over time so an idle node's displayed surplus ages, but a node
-re-gossips only on a real change (a spawn, an edit), not every tick, so idle
-accounting does not churn the mesh.
+`1.0` is **exactly on the burn-down line** - the budget left is proportional to the
+time left. **Above `1.0`** the account is *flush*: ahead of pace, sitting on spare
+capacity that will otherwise expire unused at the reset, so spend it here. **Below
+`1.0`** it is *rationing*: behind pace, so the budget it has left has to be stretched
+to reach the reset.
 
-## Choosing a target is the dispatcher's call - no consensus
+Measuring it relatively is the entire point, because the raw remaining amount ranks
+two nodes backwards:
 
-The core's [assignment](06-coordination.md) is a *consensus* computation: every
-node computes the same duty owner, and that drives the **displayed** ownership in
-the panel. **Dispatch target selection is separate and unilateral.** When a node
-dispatches a SzpontRequest, it ranks candidates by `dispatchStrategy`
-(**`surplus-first`** by default) over *its own* gossiped view and picks - with no
-agreement from anyone. Two consequences:
+- **60% of budget left with 2 of 7 days to the reset paces at ≈ 2.1** → **drain it**:
+  that budget expires soon, so the work belongs here.
+- **70% left with 6 of 7 days to the reset paces at ≈ 0.82** → **genuinely low**,
+  despite the bigger number, because it has to stretch across most of a week.
 
-- **Load balancing follows surplus, not the displayed owner.** The panel may show
-  a duty owned by the weakest machine (stable, weakest-first), while a live
-  dispatch of that duty lands on a different machine that currently has the most
-  spare quota. That is intentional: fast-moving budget shifts load without
-  churning the stable ownership view. See
-  [placement vs dispatch strategy](06-coordination.md#placement-strategy-vs-dispatch-strategy).
-- **A dispatcher may target whoever it likes.** It can name an explicit
-  [`target`](07-dispatch.md#routing-a-job) and send the request there directly,
-  with no failover - *"Alice may forward everything to Bob, even if Bob is low."*
-  The receiver is free to refuse.
+Ranking on the raw remaining amount gets **both** cases backwards - it hoards the
+account that is about to reset and hammers the one that must stretch.
 
-`surplus-first` ranks by descending surplus, tie-breaking with the same
-`(tokens, tier, id)` order as weakest-first - so when no node advertises stats (all
-surplus 0), it degrades **exactly** to weakest-first and the core behavior is
-preserved. See the [ranking table](06-coordination.md#ranking).
+**The binding window is the tighter of the two.** An account has a 5-hour session
+window and a 7-day week window, each with its own pace; a node's surplus is the
+**minimum** of the two. Both gate the next job, so a node is only as flush as its
+most-rationed window - an account 3× ahead on the week but behind on the session
+cannot absorb work right now, and must not out-rank a peer that can.
+
+Surplus is **capped at `10.0`** (`PACE_CAP`): past ~10× the line a node is simply
+"use it or lose it" and finer distinctions there are noise. A window whose reset is
+already due (or overdue) paces at the cap - its whole balance is free; an
+**exhausted** window (no budget left) paces at `0`, however close its reset.
+
+Each node computes its **own** surplus, because only it holds the real reset instants
+the [OAuth usage endpoint](05-resources.md#tokens) reports for the two windows -
+pacing a peer's numbers here would compare wall-clocks across machines whose clocks
+disagree. When the probe is unavailable it paces its local bookkeeping window
+instead, so an offline node still advertises a comparable figure. The value rides in
+`stats.surplus`, and peers rank on it directly.
+
+A node that advertises **no `stats`**, or a **legacy peer** on an older build that
+advertises only the absolute `quotaLeft`/`usageAvg` pair with **no `surplus` field**,
+ranks at **`NEUTRAL_SURPLUS` (`1.0`)** - on the line, ordered between the peers ahead
+of pace and those behind. Those absolute figures are a **different scale**
+(plan-relative capacity units, commonly `> 1`) and are deliberately **not** converted:
+folding them into the ratio ordering would let a legacy advert out-rank every paced
+node. A malformed or absent `surplus` degrades to `NEUTRAL_SURPLUS`, never an error.
+
+The advertised `surplus` drifts continuously (the time-left denominator shrinks every
+second), but a node re-gossips only on a real change, and rankings compare surplus in
+**buckets** of `SURPLUS_RANK_BUCKET` (`0.05`, via `round(surplus / 0.05)`) - so idle
+pace drift neither churns the mesh nor reshuffles rankings on noise. See
+[the load balancer](#the-load-balancer).
+
+## The load balancer
+
+**`surplus-first` is the default everywhere.** It drives both the **displayed** duty
+ownership (the consensus [assignment](06-coordination.md), `defaultStrategy`) and a
+**dispatcher's** unilateral target pick (`dispatchStrategy`) - the two are equal now.
+The distinction is only *when* the ranking runs, not *which* ranking:
+
+- The core's [assignment](06-coordination.md) is a *consensus* computation - every
+  node computes the same duty owner from the **same gossiped adverts**, and that
+  drives the **displayed** ownership in the panel. It reads the advertised
+  `stats.surplus` verbatim (never a locally-recomputed live value), so every node
+  ranks on identical numbers and the result stays
+  [deterministic](06-coordination.md#determinism-requirements-normative). What makes
+  this safe for a *continuously drifting* metric is the bucketing: displayed
+  ownership only moves when a node's surplus crosses a `SURPLUS_RANK_BUCKET`
+  boundary, not as the pace ticks down.
+- **Dispatch target selection is separate and unilateral.** When a node dispatches a
+  SzpontRequest it ranks candidates by `dispatchStrategy` over *its own* gossiped
+  view and picks - with no agreement from anyone. It may also name an explicit
+  [`target`](07-dispatch.md#routing-a-job) and send the request there directly, with
+  no failover - *"Alice may forward everything to Bob, even if Bob is low."* The
+  receiver is free to refuse.
+
+`surplus-first` ranks by **descending bucketed surplus** - the sort key is
+`(−surplus_bucket(surplus(n)), tok_rank, −tier, id)` - and tie-breaks with the same
+`(tokens, tier, id)` order as weakest-first. So a meaningfully more flush node leads,
+and when surpluses are **neutral or tied** (in particular when no node advertises
+`stats`, all `NEUTRAL_SURPLUS`) the ranking degrades **exactly** to weakest-first and
+the core behavior is preserved. See the [ranking table](06-coordination.md#ranking)
+and [placement vs dispatch strategy](06-coordination.md#placement-strategy-vs-dispatch-strategy).
 
 ## Refusals are first-class
 
@@ -510,9 +567,15 @@ An implementation of this chapter:
   confined [zero-trust foreign path](13-foreign-execution.md) — it MUST NOT run
   foreign work directly on the host.
 - **SHOULD** rank dispatch targets `surplus-first` and MUST fall back to
-  weakest-first ordering when surpluses tie (including the all-neutral case).
-- **MAY** advertise `stats`; a node that doesn't is treated as surplus 0 and ranks
-  by the core strategies, never as an error.
+  weakest-first ordering when surpluses are neutral or tied (including the case
+  where no node advertises `stats`, so all rank at `NEUTRAL_SURPLUS`).
+- **MUST**, when it ranks `surplus-first`, read a node's surplus from the advertised
+  `stats.surplus` field and **MUST NOT** re-derive it from `quotaLeft`/`usageAvg`; a
+  peer with no `stats`, or a legacy peer advertising only the absolute
+  `quotaLeft`/`usageAvg` pair with no `surplus`, **MUST** be treated as
+  `NEUTRAL_SURPLUS` (`1.0`) - never converted from those figures, never an error.
+- **MAY** advertise `stats`; a node that doesn't ranks at `NEUTRAL_SURPLUS`, i.e. by
+  the core weakest-first order, never as an error.
 
 Everything here rides `v: 1` and the [compatibility contract](09-extensibility.md#the-compatibility-contract):
 new optional fields (`pubkey`, `stats`, `apiKey`), new message types (`auth`), a

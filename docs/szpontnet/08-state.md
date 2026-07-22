@@ -158,7 +158,8 @@ dispatch target, surfaced to the operator via the
 
 A **machine-local** file: this node's load-balancing accounting
 ([11](11-trust-and-balancing.md)). Unlike the other two it is **never gossiped** -
-only its derived `advertise()` view (`plan`, `usageAvg`, `quotaLeft`) rides on
+only its derived `advertise()` view (`plan`, `usageAvg`, `quotaLeft`, and the
+`surplus` burn-down ratio routing ranks on) rides on
 [NodeInfo.stats](04-messages.md#nodeinfo). It is written atomically like the others,
 best-effort, and rebuilt fresh (defaults) if missing or corrupt.
 
@@ -230,7 +231,7 @@ pinned, else the usage-derived state), not the raw override.
 | `linking` | int | peers currently mid-handshake - lets a UI show a "linking to N…" / "scanning" affordance while the mesh forms. |
 | `beaconBlocked` | bool | true while *every* beacon send fails (the node is undiscoverable - e.g. an OS privacy gate denying LAN sends; [02](02-discovery.md#redial-from-memory)) - lets a UI say so instead of showing an inexplicably empty mesh. |
 | `self` | NodeInfo | this node's own advertisement, plus its own `fingerprint` (`sha256` of its advertised `pubkey`, 64 hex — *not* the pubkey itself) and `uptimeSecs` (seconds this node has been running). |
-| `peers` | array | each known peer's NodeInfo plus link decoration: `link` (`up`/`stale`/`down`), `addr` (last-seen source IP), `lastSeenSecsAgo` (float), `uptimeSecs` (float, seconds the current link has been up - `null` while down), plus **this node's local view** of the peer: `verified` (bool - whether the peer *proved possession* of its key on the link), `fingerprint` (the fingerprint it proved, or merely claims if unverified), `trust` (`personal`/`foreign`/`banned`, [11](11-trust-and-balancing.md)) and `surplus` (float - its spare-quota rank score). |
+| `peers` | array | each known peer's NodeInfo plus link decoration: `link` (`up`/`stale`/`down`), `addr` (last-seen source IP), `lastSeenSecsAgo` (float), `uptimeSecs` (float, seconds the current link has been up - `null` while down), plus **this node's local view** of the peer: `verified` (bool - whether the peer *proved possession* of its key on the link), `fingerprint` (the fingerprint it proved, or merely claims if unverified), `trust` (`personal`/`foreign`/`banned`, [11](11-trust-and-balancing.md)) and `surplus` (float - its advertised burn-down ratio, the value the load balancer ranks on). |
 | `trusted` | array | this node's local allowlist as `[{fingerprint, label}]` - a read-only mirror of [`trusted.json`](#trustedjson). Like the per-peer trust fields it is this node's own view; `trusted.json` and `device.key` are themselves **never gossiped**. |
 | `banned` | array | this node's local ban list as `[{fingerprint, node, label, reason, bannedAt, jobId}]` - a read-only mirror of [`banned.json`](#bannedjson) (also never gossiped), so a UI can show the operator **who was marked banned and why**. `[]` when nobody is. |
 | `defaultTrust` | string | this node's **default trust level** for an unknown (unlisted/unverified) device: `foreign` (zero-trust default — a new device is untrusted until promoted) or `personal` (full-trust). Mirrors [`trusted.json`](#trustedjson)'s `defaultLevel`; lets a UI render the default-trust toggle. |

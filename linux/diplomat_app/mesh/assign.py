@@ -17,17 +17,23 @@ Strategies (ranking among eligible nodes):
 - ``weakest-first``    highest tier number first (tier 1 = strongest machine)
 - ``strongest-first``  lowest tier number first
 - ``local-first``      the given local node first, the rest weakest-first
-- ``surplus-first``    most spare quota first (``quotaLeft − usageAvg``,
-  account-type aware); ties fall back to weakest-first. This is the load
-  balancer: dispatchers rank targets by it (see ``config.dispatch_strategy``),
-  while the displayed duty ownership keeps its stable per-duty strategy.
+- ``surplus-first``    most spare quota first, where "spare" is *relative*: each
+  node's budget left divided by the clock left until that budget resets (see
+  ``protocol.NodeInfo.surplus``). Ties fall back to weakest-first. This is the
+  default, and the load balancer — dispatchers rank targets by it (see
+  ``config.dispatch_strategy``) and it also drives displayed duty ownership.
+
+  Ranking on the raw remaining budget instead would be wrong in both directions:
+  it would hoard an account whose quota resets in hours (leaving budget to expire
+  unspent) while hammering one whose larger balance still has to stretch across
+  a week. Only the ratio tells the two apart.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from . import config
+from . import config, protocol
 from .config import Placement, PlacementOverrides
 from .protocol import NodeInfo
 
@@ -72,10 +78,14 @@ def _ranked(nodes: list[NodeInfo], strategy: str, local_id: str) -> list[NodeInf
         if strategy == "local-first":
             return (tok, n.id != local_id, -n.tier, n.id)
         if strategy == "surplus-first":
-            # Most spare quota first. Surplus leads; token rank then tier break
-            # ties (and make neutral-stats nodes fall back to weakest-first).
-            # Round so tiny float noise can't reorder otherwise-equal nodes.
-            return (round(-n.surplus(), 6), tok, -n.tier, n.id)
+            # Most spare quota first, measured as pace — budget left over clock
+            # left until reset — so the comparison is relative, not absolute. A
+            # node sitting on a big balance that resets tonight outranks one whose
+            # larger balance still has to cover a week. Surplus leads; token rank
+            # then tier break ties, which also lands neutral-surplus nodes on the
+            # weakest-first ordering. Bucketed so drift can't reshuffle peers that
+            # are, for routing purposes, equally flush.
+            return (-protocol.surplus_bucket(n.surplus()), tok, -n.tier, n.id)
         # weakest-first (and any unknown strategy from a newer peer)
         return (tok, -n.tier, n.id)
 

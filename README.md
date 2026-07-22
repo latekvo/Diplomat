@@ -198,15 +198,16 @@ identical answers everywhere, so the moment a machine dies (heartbeat timeout)
 or runs out of tokens, every survivor has *already* agreed where each duty
 moved. Duties are the three spawn actions, each with a configurable placement:
 
-- **Review PRs / Resolve conflicts** — default *weakest-first*: route to the
-  weakest eligible machine and keep the strong ones free for interactive work.
-- **Full E2E test** — same weakest-first strategy, plus a platform **spread**:
+- **Review PRs / Resolve conflicts** — default *surplus-first*: route to the node
+  with the most spare quota relative to its reset (with no quota signal this falls
+  back to *weakest-first*, keeping the strong machines free for interactive work).
+- **Full E2E test** — same surplus-first default, plus a platform **spread**:
   one Linux node **and** one macOS node run the bundle E2E, each slot failing
   over within its platform.
 
 (Strategy and spread are separate placement fields. The strategies are
-`weakest-first` (the default), `strongest-first`, `local-first` and
-`surplus-first`.)
+`weakest-first`, `strongest-first`, `local-first` and `surplus-first` (the
+default).)
 
 Dispatching routes a staged prompt to the chosen node over the mesh; the
 receiving machine opens its own terminal running `claude` exactly like a local
@@ -290,10 +291,11 @@ extension instead — earns a **ban**, recorded machine-local in
 `--ban <FP|ID> [--ban-reason …]` / `--unban`; the macOS Mesh screen surfaces them
 as a banned chip with the reason and an inline un-ban.
 
-Nodes also gossip **per-node quota accounting** (plan, decayed usage average,
-quota left — see `accounts` in `core/mesh.json`): the default `surplus-first`
-dispatch ranking sends work to the machine with the most spare quota, and each
-executed job books usage on the executor.
+Nodes also gossip **per-node quota accounting** (plan, a surplus **burn-down ratio**
+— budget left ÷ clock left until the quota resets — plus display-only usage-average
+and quota-left figures; see `accounts` in `core/mesh.json`): the default
+`surplus-first` ranking sends work to the machine that is most flush *relative to its
+reset*, and each executed job books usage on the executor.
 
 ## Autonomous monitors
 

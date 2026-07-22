@@ -38,6 +38,25 @@ from dataclasses import dataclass, field, replace
 
 PROTOCOL_VERSION = 1
 
+# What an advert carrying no usable surplus signal ranks as. 1.0 is definitional,
+# not a tunable: surplus is a burn-down ratio (budget left ÷ clock left), so 1.0
+# is exactly on the line — the honest neutral prior for "unknown", ordering such a
+# node between the peers that are ahead of pace and those that are behind.
+NEUTRAL_SURPLUS = 1.0
+
+# Granularity at which surpluses are compared. Pace drifts continuously — the
+# clock-left denominator shrinks every second even when nothing is spent — so
+# comparing raw floats would reshuffle rankings, and re-gossip adverts, on noise
+# alone. Quantising gives the ordering hysteresis: a node only overtakes a peer
+# on a difference big enough to mean something, and otherwise the stable tier/id
+# tie-breaks decide, which keeps displayed duty ownership from flapping.
+SURPLUS_RANK_BUCKET = 0.05
+
+
+def surplus_bucket(value: float) -> int:
+    """A surplus quantised to :data:`SURPLUS_RANK_BUCKET`, as a comparable index."""
+    return round(value / SURPLUS_RANK_BUCKET)
+
 # A guard against garbage/hostile blobs on the mesh port, not a real limit —
 # a dispatch carries a whole review prompt (tens of KB).
 MAX_LINE_BYTES = 512 * 1024
@@ -139,9 +158,11 @@ class NodeInfo:
     # private key ([crypto]/[node] handshake). Trust then keys on this key's
     # fingerprint against a LOCAL allowlist ([trust]), never on any claimed field.
     pubkey: str = ""
-    # Load-balancing accounting, additive: {"plan", "usageAvg", "quotaLeft"}.
-    # Empty when a node advertises no stats — its dispatch surplus is then 0
-    # (neutral), so surplus-first ranking degrades to weakest-first. See stats.py.
+    # Load-balancing accounting, additive: {"plan", "usageAvg", "quotaLeft",
+    # "surplus"} — surplus is the burn-down ratio ranked on, the rest display-only.
+    # Empty when a node advertises no stats — its dispatch surplus is then
+    # NEUTRAL_SURPLUS (1.0, on the pace line), so surplus-first ranking degrades to
+    # weakest-first. See stats.py.
     stats: dict = field(default_factory=dict)
     # Base64 Ed25519 signature by THIS node's device key over the canonical form of
     # this advertisement ([advert_signing_bytes]). It authenticates the advert end
@@ -210,16 +231,27 @@ class NodeInfo:
             return None
 
     def surplus(self) -> float:
-        """Spare quota this node advertises for load balancing:
-        ``quotaLeft − usageAvg`` in plan-relative capacity units. 0.0 when the
-        node advertises no stats (neutral — ranks like today's weakest-first)."""
+        """Spare quota this node advertises for load balancing, as a burn-down
+        ratio: budget left over clock left until its quota resets (see
+        ``stats.NodeStats.surplus``). 1.0 is exactly on pace, above is flush,
+        below is rationing.
+
+        The figure is computed by the node that owns the account, because only it
+        holds the reset instants — pacing a peer's numbers here would compare
+        timestamps across machines whose clocks disagree.
+
+        ``NEUTRAL_SURPLUS`` when the node advertises nothing usable: no stats at
+        all, or a peer on a build old enough to still advertise only the absolute
+        ``quotaLeft``/``usageAvg`` pair. Those absolute figures are deliberately
+        NOT converted — they are a different scale (plan-relative capacity units,
+        commonly >1) and mixing the two in one ordering would let a legacy advert
+        outrank every paced node. Such a peer ranks neutrally until it upgrades."""
         if not self.stats:
-            return 0.0
+            return NEUTRAL_SURPLUS
         try:
-            return float(self.stats.get("quotaLeft", 0.0)) - float(
-                self.stats.get("usageAvg", 0.0))
-        except (TypeError, ValueError):
-            return 0.0
+            return float(self.stats["surplus"])
+        except (KeyError, TypeError, ValueError):
+            return NEUTRAL_SURPLUS
 
     def newer_than(self, other: "NodeInfo") -> bool:
         """Freshness for gossip merges: a new incarnation always wins, then the

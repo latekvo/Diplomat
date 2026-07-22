@@ -99,12 +99,14 @@ wire), so either default interoperates with any other node. The join fence
 the finer question of *whose requests a node will act on*, and unlike the shared join
 secret it distinguishes individual devices.
 
-**Load balancing and refusals.** Beyond eligibility, a dispatcher picks a target
-by **surplus** - the node with the most spare quota, account-type aware (Max 5x vs
-20x) - computed from a 21-day usage average and remaining quota that each node
-advertises. The choice is the dispatcher's alone (no consensus): it may even
-forward everything to one peer, and that peer may **refuse** (a first-class
-`declined` outcome). The remaining knobs on altruism - per-peer caps, priority
+**Load balancing and refusals.** Beyond eligibility, work follows **surplus** - the
+node with the most spare quota *relative to when its quota resets*. Surplus is a
+**burn-down ratio** (budget left ÷ clock left to reset), so a balance that expires
+tonight is drained before a bigger one that must stretch across a week; it is the
+default ranking for both the displayed duty ownership and a dispatcher's target pick.
+A dispatch is still the dispatcher's alone (no consensus): it may even forward
+everything to one peer, and that peer may **refuse** (a first-class `declined`
+outcome). The remaining knobs on altruism - per-peer caps, priority
 classes, cost accounting - stay reserved as additive extension points in
 [09-extensibility](09-extensibility.md#the-altruism-limits-roadmap).
 
@@ -161,7 +163,7 @@ The chapters are ordered so you can implement bottom-up:
 | 08 | [State & persistence](08-state.md) | `node.json`, `state.json`, liveness, incarnations |
 | 09 | [Extensibility & future work](09-extensibility.md) | the compatibility rules + the altruism-limits roadmap |
 | 10 | [Conformance](10-conformance.md) | MUST/SHOULD/MAY, a minimal-node checklist, interop vectors |
-| 11 | [Trust & load balancing](11-trust-and-balancing.md) | personal/foreign trust, per-node quota stats, surplus-first dispatch, refusals |
+| 11 | [Trust & load balancing](11-trust-and-balancing.md) | personal/foreign trust, per-node quota stats, surplus-first load balancing (a relative burn-down ratio), refusals |
 | 12 | [Work claims](12-work-claims.md) | leaderless origination dedup: who runs externally-triggered work, and failover when the owner dies |
 | 13 | [Foreign execution](13-foreign-execution.md) | zero-trust: run a foreign request's compute confined, return the result for the originator to act on; accountability: the completion deadline, the readiness reminder, and the ban |
 | A | [Appendix A - annotated trace](appendix-a-trace.md) | a full two-node session, message by message |

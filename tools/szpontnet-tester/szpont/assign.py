@@ -15,14 +15,22 @@ is what makes two conformant nodes agree byte-for-byte.
 
 Beyond the core strategies (weakest-first, strongest-first, local-first) this
 oracle also implements chapter 11's ``surplus-first`` — ranking by descending
-dispatch surplus (``quotaLeft − usageAvg``) with a weakest-first tie-break — so
-the tester can judge a load-balanced dispatch placement.
+dispatch surplus (the advertised burn-down ratio: budget left ÷ clock left to
+reset), quantised into buckets, with a weakest-first tie-break — so the tester
+can judge a load-balanced dispatch placement. It is the default strategy.
 """
 
 from __future__ import annotations
 
 from .codec import NodeInfo
-from .model import DEFAULT_STRATEGY, TOKEN_RANK, Model
+from .model import DEFAULT_STRATEGY, SURPLUS_RANK_BUCKET, TOKEN_RANK, Model
+
+
+def surplus_bucket(value: float) -> int:
+    """A surplus quantised to SURPLUS_RANK_BUCKET, as a comparable index — the
+    hysteresis that keeps continuous pace drift from reshuffling the ranking.
+    Mirrors the reference ``protocol.surplus_bucket``."""
+    return round(value / SURPLUS_RANK_BUCKET)
 
 
 def placement(model: Model, duty_id: str, overrides: dict | None) -> dict:
@@ -58,11 +66,13 @@ def ranked(nodes: list[NodeInfo], strategy: str, local_id: str) -> list[NodeInfo
         if strategy == "local-first":
             return (tok, n.id != local_id, -n.tier, n.id)
         if strategy == "surplus-first":
-            # Most spare quota first (11 load balancing). Surplus leads; token
-            # rank then tier break ties (and make neutral-stats nodes fall back
-            # to weakest-first). Round so tiny float noise can't reorder
-            # otherwise-equal nodes — the exact reference key.
-            return (round(-n.surplus(), 6), tok, -n.tier, n.id)
+            # Most spare quota first (11 load balancing), where "spare" is
+            # RELATIVE: budget left ÷ clock left to reset, not absolute units.
+            # Surplus leads; token rank then tier break ties (and make
+            # neutral-surplus nodes fall back to weakest-first). Compared in
+            # buckets so continuous pace drift can't reorder otherwise-equal
+            # nodes — the exact reference key.
+            return (-surplus_bucket(n.surplus()), tok, -n.tier, n.id)
         # weakest-first, and any UNKNOWN strategy falls back here (06 ranking)
         return (tok, -n.tier, n.id)
 

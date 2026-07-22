@@ -173,22 +173,37 @@ public struct MeshOverrides: Decodable, Equatable {
 // MARK: - Topology snapshot (~/.diplomat/mesh/state.json)
 
 /// A node's advertised quota accounting (`NodeInfo.stats` in the Python node): the
-/// plan it runs on and the derived load figures the `surplus-first` dispatch strategy
-/// ranks by. Absent entirely for nodes that haven't recorded any usage.
+/// plan it runs on, the derived load figures kept for display, and `surplus` — the
+/// burn-down ratio the `surplus-first` strategy ranks by. Absent entirely for nodes
+/// that haven't recorded any usage.
 public struct MeshStats: Decodable, Equatable {
     public let plan: String
     public let usageAvg: Double
     public let quotaLeft: Double
+    /// Budget left divided by the clock left until the quota resets: 1.0 is exactly
+    /// on pace, above is flush, below is rationing. Relative by construction, so a
+    /// small plan about to reset can out-rank a big idle one. `NEUTRAL_SURPLUS`
+    /// (1.0, on the line) for an older peer that advertises only the absolute
+    /// `quotaLeft`/`usageAvg` pair — those are a different scale and are NOT
+    /// converted. Mirrors `stats.NodeStats.surplus` / `protocol.NodeInfo.surplus`.
+    public let surplus: Double
 
-    enum CodingKeys: String, CodingKey { case plan, usageAvg, quotaLeft }
+    /// The value an advert with no usable surplus signal ranks as — exactly on the
+    /// burn-down line. Mirrors `protocol.NEUTRAL_SURPLUS`.
+    public static let neutralSurplus: Double = 1.0
+
+    enum CodingKeys: String, CodingKey { case plan, usageAvg, quotaLeft, surplus }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         plan = (try? c.decode(String.self, forKey: .plan)) ?? ""
         usageAvg = (try? c.decode(Double.self, forKey: .usageAvg)) ?? 0
         quotaLeft = (try? c.decode(Double.self, forKey: .quotaLeft)) ?? 0
+        surplus = (try? c.decode(Double.self, forKey: .surplus)) ?? MeshStats.neutralSurplus
     }
-    public init(plan: String, usageAvg: Double, quotaLeft: Double) {
+    public init(plan: String, usageAvg: Double, quotaLeft: Double,
+                surplus: Double = MeshStats.neutralSurplus) {
         self.plan = plan; self.usageAvg = usageAvg; self.quotaLeft = quotaLeft
+        self.surplus = surplus
     }
 }
 
@@ -266,9 +281,9 @@ public struct MeshNode: Decodable, Equatable {
             && a.tokensSessionPct == b.tokensSessionPct && a.tokensWeekPct == b.tokensWeekPct
     }
 
-    /// `quotaLeft − usageAvg`, the figure `surplus-first` ranks by; 0 (neutral) with
-    /// no stats — mirrors `NodeInfo.surplus()`.
-    public var surplus: Double { stats.map { $0.quotaLeft - $0.usageAvg } ?? 0 }
+    /// The burn-down ratio `surplus-first` ranks by (see `MeshStats.surplus`);
+    /// `NEUTRAL_SURPLUS` (1.0) with no stats — mirrors `NodeInfo.surplus()`.
+    public var surplus: Double { stats?.surplus ?? MeshStats.neutralSurplus }
 }
 
 /// A peer as seen from the local node: its node attributes plus the link state, remote
@@ -305,7 +320,8 @@ public struct MeshPeer: Decodable, Equatable {
     /// True once the peer has proven possession of its device key on this link
     /// (Ed25519 fresh-nonce signature) — advertised identity alone never sets this.
     public let verified: Bool
-    /// The peer's advertised `quotaLeft − usageAvg` (3dp), used by `surplus-first`.
+    /// The peer's advertised surplus (3dp): budget left ÷ clock left to its reset,
+    /// the burn-down ratio `surplus-first` ranks by (see `MeshStats.surplus`).
     public let surplus: Double
     /// Advertised quota accounting; nil until the peer gossips stats.
     public let stats: MeshStats?
@@ -336,7 +352,7 @@ public struct MeshPeer: Decodable, Equatable {
         trust = (try? c.decode(String.self, forKey: .trust)) ?? "personal"
         fingerprint = (try? c.decode(String.self, forKey: .fingerprint)) ?? ""
         verified = (try? c.decode(Bool.self, forKey: .verified)) ?? false
-        surplus = (try? c.decode(Double.self, forKey: .surplus)) ?? 0
+        surplus = (try? c.decode(Double.self, forKey: .surplus)) ?? MeshStats.neutralSurplus
         stats = try? c.decode(MeshStats.self, forKey: .stats)
     }
 

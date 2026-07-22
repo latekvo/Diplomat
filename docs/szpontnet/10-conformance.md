@@ -128,11 +128,12 @@ reference asserts all of them in
 ### V1 - placement (pure, no sockets)
 
 Fleet `A`=linux/tier4/ok, `B`=macos/tier1/ok, `C`=macos/tier4/ok, all duties
-enabled, default policies:
+enabled, default policies. No node advertises `stats`, so the default `surplus-first`
+ranks all at `NEUTRAL_SURPLUS` and orders exactly as `weakest-first`:
 
 | Input | Expected `assigned` |
 |-------|---------------------|
-| `review` (weakest-first) | `[A]` |
+| `review` (default `surplus-first`, no stats → weakest-first) | `[A]` |
 | `conflicts` | `[A]` |
 | `audit` (spread 1×linux+1×macos) | `[A, C]` |
 | `review`, override `strongest-first` | `[B]` |

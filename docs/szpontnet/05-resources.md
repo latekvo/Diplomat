@@ -31,7 +31,8 @@ correct, safe behavior.
 the strongest**. Tier is the knob that lets the mesh route *on purpose*:
 
 - Keep a powerful workstation free for interactive use by sending grunt work to
-  weaker machines (`weakest-first` strategy - the default).
+  weaker machines (`weakest-first` - and the default `surplus-first` falls back to
+  exactly this ordering when no node advertises spare-quota stats).
 - Or get the fastest wall-clock by preferring the strongest (`strongest-first`).
 
 **Auto-detection.** Tier is **auto-detected on first run** from the machine's specs
@@ -77,32 +78,43 @@ are model-tunable.
 
 ### Per-node stats (account-aware load balancing)
 
-`stats` (object, optional) - a **fine-grained, account-aware** load-balancing view
-that complements `tokens`. Where `tokens` is the coarse three-state budget signal,
-`stats` carries continuous quantities so a dispatcher can pick the node with the
-most spare budget. It is additive; a node advertising no `stats` is treated as
-neutral (see below). The keys:
+`stats` (object, optional) - a **fine-grained** load-balancing view that complements
+`tokens`. Where `tokens` is the coarse three-state budget signal, `stats` carries the
+continuous number a dispatcher ranks on so it can pick the node with the most spare
+capacity. It is additive; a node advertising no `stats` is treated as neutral (see
+below). The keys:
 
 - **`plan`** (string) - the node's account type id: `pro`, `max-5x`, or `max-20x`.
-- **`usageAvg`** (number) - a **21-day exponential rolling average** of token usage,
-  in **plan-relative capacity units per day**. It decays with a ~21-day time
-  constant, so a burst fades over weeks rather than instantly.
-- **`quotaLeft`** (number) - remaining capacity in the current quota window, in the
-  same plan-relative units.
+- **`surplus`** (number) - the node's **burn-down ratio**: budget left ÷ the fraction
+  of the binding rate-limit window's clock still ahead, so `1.0` is exactly on pace,
+  above is flush, below is rationing. **This is the field routing ranks on.** It is a
+  *relative* measure, capped at `10.0`; the owning node computes it from the real
+  reset instants of its 5-hour session and 7-day week windows (the tighter binds) and
+  advertises the result. Full definition in
+  [11 - surplus](11-trust-and-balancing.md#surplus).
+- **`usageAvg`** (number, **display-only**) - a **21-day exponential rolling average**
+  of token usage, in plan-relative capacity units per day. It decays with a ~21-day
+  time constant, so a burst fades over weeks. Retained for display and for peers on
+  older builds; it no longer feeds the ranking.
+- **`quotaLeft`** (number, **display-only**) - remaining capacity in the current quota
+  window, in the same plan-relative units. Capacity is `plan weight ×
+  capacityPerWeight`, so Max 20× has **4× the room** of Max 5× (weights 20 vs 5).
+  Absolute token quotas are deliberately **not** modelled - Anthropic's limits are
+  dynamic rolling windows - so this is plan-relative, never raw tokens.
 
-Capacity is `plan weight × capacityPerWeight`, so Max 20× has **4× the room** of
-Max 5× (weights 20 vs 5). Absolute token quotas are deliberately **not** modelled -
-Anthropic's limits are dynamic rolling windows - so everything is compared in
-plan-relative units, never raw tokens. From these, a node's dispatch **surplus** =
-`quotaLeft − usageAvg`: how much spare budget it has after covering its own running
-average.
+Earlier revisions defined surplus as the *absolute* `quotaLeft − usageAvg`; it is now
+the relative ratio above, because a raw remaining amount ranks two nodes backwards - a
+balance that expires tonight should be drained before a bigger one that must stretch
+across a week (see [11](11-trust-and-balancing.md#surplus)).
 
-`stats` is **additive**. A node that advertises no `stats` has surplus `0`
-(neutral): under [surplus-first ranking](06-coordination.md#ranking) it ranks
-exactly as it would under today's `weakest-first`, so an old node in a mixed mesh
-is never penalised. See [06-coordination](06-coordination.md#ranking) for the
-ranking and [11-trust-and-balancing](11-trust-and-balancing.md) for how stats drive
-dispatch.
+`stats` is **additive**. A node that advertises no `stats` - or a legacy peer that
+advertises only the `quotaLeft`/`usageAvg` pair with no `surplus` - is treated as
+`NEUTRAL_SURPLUS` (`1.0`): under [surplus-first ranking](06-coordination.md#ranking)
+it ranks exactly as it would under `weakest-first`, so an old node in a mixed mesh is
+never penalised (and its absolute figures are never folded into the ratio ordering).
+See [06-coordination](06-coordination.md#ranking) for the ranking and
+[11-trust-and-balancing](11-trust-and-balancing.md#the-load-balancer) for how stats
+drive placement and dispatch.
 
 ### Device identity (trust)
 
@@ -131,9 +143,9 @@ The v1 model defines three ([appendix B](appendix-b-constants.md)):
 
 | Duty | Default placement |
 |------|-------------------|
-| `review` | `weakest-first`, token-aware, no spread |
-| `conflicts` | `weakest-first`, token-aware, no spread |
-| `audit` | `weakest-first`, token-aware, spread = **1× linux + 1× macos** |
+| `review` | `surplus-first` (inherited default), token-aware, no spread |
+| `conflicts` | `surplus-first` (inherited default), token-aware, no spread |
+| `audit` | `surplus-first` (inherited default), token-aware, spread = **1× linux + 1× macos** |
 
 Duties are **data**. An implementation MUST tolerate a duty it doesn't recognize:
 gossip advertisements that reference it, run its placement, and dispatch it, all

@@ -66,10 +66,16 @@ node id `L`, is:
 | `weakest-first` (and any **unknown** strategy) | `(tok_rank(n.tokens), −n.tier, n.id)` |
 | `strongest-first` | `(tok_rank(n.tokens), n.tier, n.id)` |
 | `local-first` | `(tok_rank(n.tokens), n.id != L, −n.tier, n.id)` |
-| `surplus-first` | `(−surplus(n), tok_rank(n.tokens), −n.tier, n.id)` |
+| `surplus-first` (the **default**) | `(−surplus_bucket(surplus(n)), tok_rank(n.tokens), −n.tier, n.id)` |
 
-where `surplus(n)` = `n.stats.quotaLeft − n.stats.usageAvg`, or `0` when the node
-advertises no stats.
+where `surplus(n)` is the node's advertised **burn-down ratio** (`n.stats.surplus`;
+budget left ÷ clock left until the quota resets -
+[11](11-trust-and-balancing.md#surplus)), or `NEUTRAL_SURPLUS` = `1.0` when the node
+advertises no usable `surplus` (no stats, or a legacy `quotaLeft`/`usageAvg`-only
+advert - those absolute figures are a different scale and are **not** converted). The
+key compares surplus in buckets: `surplus_bucket(v)` = `round(v / SURPLUS_RANK_BUCKET)`
+with `SURPLUS_RANK_BUCKET` = `0.05`, which gives the ordering hysteresis so continuous
+pace drift can't reshuffle peers that are, for routing, equally flush.
 
 Reading the keys:
 
@@ -79,10 +85,12 @@ Reading the keys:
 - **strongest-first** then prefers the *smallest* tier number (strongest machine).
 - **local-first** then prefers the local node (the boolean `n.id != L` sorts
   `False`=local first), then falls back to weakest-first ordering for the rest.
-- **surplus-first** leads with the *most* spare quota (`−surplus` sorts the largest
-  surplus first); ties fall back to weakest-first (token rank, then tier, then id).
-  A neutral-stats node (surplus `0`) ranks exactly as it would under weakest-first,
-  so it never jumps ahead of a node with measured spare budget.
+- **surplus-first** (the default) leads with the *relatively most flush* node
+  (`−surplus_bucket` sorts the largest surplus first); ties - including two surpluses
+  in the same bucket - fall back to weakest-first (token rank, then tier, then id). A
+  neutral node (`NEUTRAL_SURPLUS`, e.g. no stats) ranks exactly as it would under
+  weakest-first, so when nobody advertises a usable `surplus` the whole ordering
+  degrades to weakest-first.
 - **id tie-break** makes the result identical on every node.
 
 > An **unknown** strategy (from a newer peer's override) MUST fall back to
@@ -129,13 +137,14 @@ map `{duty: {assigned, shortfall}}` that the [snapshot](08-state.md) publishes.
 ### Worked examples
 
 Fleet: `A` linux tier 4, `B` macos tier 1, `C` macos tier 4, all `tokens: ok`, all
-duties enabled.
+duties enabled. None advertises `stats`, so the default `surplus-first` ranks all
+nodes at `NEUTRAL_SURPLUS` and therefore orders **exactly as weakest-first**.
 
 | Duty / policy | Eligible, ranked | Assigned | Shortfall |
 |---------------|------------------|----------|-----------|
-| `review` weakest-first, no spread | A(t4), C(t4), B(t1) → `A,C,B` | `[A]` | - |
-| `review` strongest-first | B(t1), A(t4)/C(t4) by id | `[B]` | - |
-| `audit` weakest-first, spread 1×linux+1×macos | linux: A; macos: C(t4),B(t1) | `[A, C]` | - |
+| `review` default (surplus-first, no stats → weakest-first), no spread | A(t4), C(t4), B(t1) → `A,C,B` | `[A]` | - |
+| `review` override `strongest-first` | B(t1), A(t4)/C(t4) by id | `[B]` | - |
+| `audit` default, spread 1×linux+1×macos | linux: A; macos: C(t4),B(t1) | `[A, C]` | - |
 | `audit` but only B,C present (no linux) | linux: -; macos: C,B | `[C]` | `[(linux, 1)]` |
 | `review`, but A is `tokens:out` | eligible C,B (A excluded) | `[C]` | - |
 | `review`, A `tokens:low`, others ok | ranked B,C ahead of A | `[C]` | - |
@@ -192,37 +201,39 @@ default, an implementation MAY omit it from a new (higher-`rev`) `duties` map.
 
 ## Placement strategy vs dispatch strategy
 
-Two separate rankings, easily confused, do different jobs:
+Two rankings that share the same **default** (`surplus-first`) but run at different
+times, easily confused:
 
 - A duty's **placement `strategy`** drives the **stable displayed ownership** - what
   the topology panel shows as the duty's owner. It is recomputed by consensus
-  (`assign_all` over the shared inputs), so every node shows the same owner and it
-  only moves when the inputs move.
+  (`assign_all` over the shared gossiped inputs), so every node shows the same owner
+  and it only moves when those inputs move.
 - The **dispatch-time target selection** is a **separate, dispatcher-local choice**.
   When a node actually dispatches a request it ranks candidates by
-  `dispatchStrategy` (default `surplus-first`) via
-  `slot_candidates(…, strategy=…)` - its `strategy` argument overrides only the
-  *ranking*, not eligibility or spread. This decision is made **unilaterally** from
-  the dispatcher's own gossiped view, with **no consensus**.
+  `dispatchStrategy` via `slot_candidates(…, strategy=…)` - its `strategy` argument
+  overrides only the *ranking*, not eligibility or spread. This decision is made
+  **unilaterally** from the dispatcher's own gossiped view, with **no consensus**.
 
-That separation is deliberate: fast-moving `stats` load-balance dispatch to whoever
-has the most spare quota *without* churning the displayed owner, which stays put on
-its stable placement strategy. See [07-dispatch](07-dispatch.md) for how a chosen
-target is executed and [11-trust-and-balancing](11-trust-and-balancing.md) for the
-accounting the surplus ranking reads.
+Both now **default to `surplus-first`** (`defaultStrategy` = `dispatchStrategy` =
+`surplus-first`), so displayed ownership and live dispatch both follow spare capacity
+out of the box; a duty may still pin a different placement `strategy`, an operator may
+override it, and a dispatcher may still aim at an explicit target. See
+[07-dispatch](07-dispatch.md) for how a chosen target is executed and
+[11 - the load balancer](11-trust-and-balancing.md#the-load-balancer) for the surplus
+the ranking reads.
 
-> **`surplus-first` is a *dispatch* strategy, not a placement one.** Consensus
-> assignment MUST be a pure function of *gossiped* advertisements ([determinism
-> requirements](#determinism-requirements-normative)); but a node's `stats` **decay
-> continuously and locally** and are re-gossiped only on a real change
-> ([11](11-trust-and-balancing.md#surplus)), so a node's own live surplus differs
-> from the last value its peers hold. Ranking the **consensus** assignment by
-> surplus would therefore let two nodes compute different owners — breaking
-> determinism. So `surplus-first` is defined for **dispatch** target selection
-> only; an implementation **SHOULD NOT** configure it as a duty's placement
-> `strategy`, and one that receives it as a placement override MAY treat it as
-> `weakest-first` for the *displayed* assignment. (It stays fully valid, and is the
-> default, for `dispatchStrategy`.)
+> **Why `surplus-first` is safe for consensus placement.** Consensus assignment MUST
+> be a pure function of *gossiped* advertisements ([determinism
+> requirements](#determinism-requirements-normative)). That holds because `surplus`
+> is itself a **gossiped, advertised field**: every node reads the same
+> `stats.surplus` straight off a peer's advert and ranks on it, so two nodes never
+> compute different owners. The metric drifts continuously, but the ranking compares
+> it in **buckets** (`SURPLUS_RANK_BUCKET`, [11](11-trust-and-balancing.md#surplus)),
+> and a node re-gossips only on a real change - so the displayed owner moves only when
+> a node's surplus crosses a bucket boundary, not as the pace ticks down. That
+> hysteresis is exactly what lets `surplus-first` drive stable displayed ownership as
+> well as dispatch, which earlier revisions (with an absolute, continuously-recomputed
+> surplus) reserved for `dispatchStrategy` alone.
 
 ## Why leaderless works, briefly
 

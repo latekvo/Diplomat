@@ -148,23 +148,27 @@ presentation only. Unknown platforms are opaque strings.
 
 | id | ranking (after token rank) |
 |----|----------------------------|
-| `weakest-first` (default, and the unknown-strategy fallback) | prefer larger `tier` (weaker machine) |
+| `weakest-first` (the unknown-strategy fallback) | prefer larger `tier` (weaker machine) |
 | `strongest-first` | prefer smaller `tier` (stronger machine) |
 | `local-first` | prefer the dispatching node, then weakest-first |
-| `surplus-first` | prefer the most spare quota (`quotaLeft − usageAvg`), account-aware; ties fall back to weakest-first |
+| `surplus-first` (**the default**) | prefer the highest **burn-down ratio** (`stats.surplus` = budget left ÷ clock left to reset), quantised into `SURPLUS_RANK_BUCKET` buckets; ties fall back to weakest-first |
 
-`defaultStrategy` = `weakest-first`. `dispatchStrategy` = `surplus-first` - the
-ranking a dispatcher uses to pick a target for a SzpontRequest (unilateral, from
-its own gossiped view; separate from a duty's placement `strategy`). Full sort keys
-in [06-coordination](06-coordination.md#ranking).
+`defaultStrategy` = `dispatchStrategy` = `surplus-first` - both the **displayed** duty
+ownership (consensus placement) and a dispatcher's **unilateral** target pick default
+to it now, and a duty that pins no `strategy` inherits `defaultStrategy`. Surplus
+ranking constants: `NEUTRAL_SURPLUS` = `1.0` (a node with no usable `surplus` field),
+`SURPLUS_RANK_BUCKET` = `0.05` (ranking granularity via `round(surplus / 0.05)`),
+`PACE_CAP` = `10.0` (max surplus). Full sort keys in
+[06-coordination](06-coordination.md#ranking); the surplus definition in
+[11](11-trust-and-balancing.md#surplus).
 
 ## Duties (v1 vocabulary)
 
 | id | default placement |
 |----|-------------------|
-| `review` | `{strategy: weakest-first, tokenAware: true, spread: []}` |
-| `conflicts` | `{strategy: weakest-first, tokenAware: true, spread: []}` |
-| `audit` | `{strategy: weakest-first, tokenAware: true, spread: [{linux,1},{macos,1}]}` |
+| `review` | `{tokenAware: true, spread: []}` (no pinned `strategy` → inherits `defaultStrategy` = `surplus-first`) |
+| `conflicts` | `{tokenAware: true, spread: []}` (inherits `surplus-first`) |
+| `audit` | `{tokenAware: true, spread: [{linux,1},{macos,1}]}` (inherits `surplus-first`) |
 
 ## Work claims (v0.2.0 vocabulary)
 
