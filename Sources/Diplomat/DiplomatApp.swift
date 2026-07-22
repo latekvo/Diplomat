@@ -592,8 +592,9 @@ enum Dump {
         }
     }
 
-    /// Exercises the persisted-settings load path: a fresh Store reads UserDefaults
-    /// in its initializer. Run via the .app bundle's binary so it shares the GUI's
+    /// Exercises the persisted-settings load path: a fresh Store reads its settings
+    /// (UserDefaults, plus the repo root from the shared `AppConfig` file) in its
+    /// initializer. Run via the .app bundle's binary so it shares the GUI's
     /// `com.ignacy.diplomat` defaults domain.
     @MainActor static func settings() {
         let s = Store()
@@ -603,6 +604,10 @@ enum Dump {
         print("visibleTools     : \(s.visibleTools.map { $0.rawValue })")
         print("colorOverrides   : \(s.colorOverrides)")
         print("terminalChoice   : '\(s.terminalChoice)' -> resolved \(AgentSpawner.resolved(s.terminal).title)")
+        print("repoPathOverride : '\(s.repoPathOverride)'   (shared file: \(AppConfig.url.path))")
+        print("repoRoot         : \(AgentSpawner.repoPath)   "
+            + "(env \(RepoPaths.agentRepoEnvOverride ?? "unset") · default \(RepoPaths.defaultAgentRepo) · "
+            + "state \(RepoPaths.agentRepoState))")
         print("tints            : \(ToolKind.allCases.map { "\($0.rawValue)=\(s.tint(for: $0).hexRGB)" })")
     }
 }

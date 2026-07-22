@@ -7,6 +7,7 @@ by a background data refresh.
 
 from __future__ import annotations
 
+import os
 import time
 
 from PySide6.QtCore import Qt, Signal
@@ -15,6 +16,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QColorDialog,
     QComboBox,
+    QFileDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -23,7 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import apiwatch, deviceallocator, review
+from . import apiwatch, core, deviceallocator, review
 from .store import Store, tools
 from .widgets import IconChip
 
@@ -58,6 +60,7 @@ class SettingsView(QWidget):
         left = QVBoxLayout()
         left.setSpacing(14)
         left.addLayout(self._identity_section())
+        left.addLayout(self._repo_section())
         left.addLayout(self._autofix_section())
         left.addLayout(self._apiwatch_section())
         left.addStretch(1)
@@ -144,6 +147,92 @@ class SettingsView(QWidget):
         col.addWidget(field)
         col.addWidget(hint)
         return col
+
+    # MARK: repo root (where the agents work)
+
+    def _repo_section(self) -> QVBoxLayout:
+        col = QVBoxLayout()
+        col.setSpacing(6)
+        col.addWidget(_section_label("REPO ROOT"))
+
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        self._repo_field = QLineEdit(self.store.repo_path_override)
+        self._repo_field.setPlaceholderText(review.default_repo_path())
+        self._repo_field.setClearButtonEnabled(True)
+        row.addWidget(self._repo_field, 1)
+        browse = QPushButton("Browse…")
+        browse.setToolTip("Pick the local checkout agents should work in")
+        browse.clicked.connect(self._browse_repo)
+        row.addWidget(browse)
+        col.addLayout(row)
+
+        self._repo_hint = QLabel()
+        self._repo_hint.setWordWrap(True)
+        col.addWidget(self._repo_hint)
+
+        def on_text(text: str) -> None:
+            self.store.repo_path_override = text
+            self._refresh_repo_ui()
+
+        self._repo_field.textChanged.connect(on_text)
+        self._refresh_repo_ui()
+        return col
+
+    def _browse_repo(self) -> None:
+        chosen = QFileDialog.getExistingDirectory(
+            self, "Choose the repo root", review.repo_path()
+        )
+        if chosen:
+            # Writes through the field so the text, the setting and the hint all move
+            # together (textChanged -> on_text).
+            self._repo_field.setText(chosen)
+
+    def _repo_state(self) -> str:
+        """Which of the four hint states applies. A relative entry gets its own:
+        an "is it a checkout?" stat would be judged against THIS process's working
+        directory while the spawn's ``cd`` runs in the terminal's — the two disagree,
+        so neither verdict is honest. Mirrors ``RepoPaths.agentRepoState`` in Swift."""
+        if os.environ.get("DIPLOMAT_REPO"):
+            return "env-shadowed"
+        resolved = review.repo_path()
+        if not os.path.isabs(resolved):
+            return "not-absolute"
+        return "ok" if os.path.exists(os.path.join(resolved, ".git")) else "not-a-checkout"
+
+    def _refresh_repo_ui(self) -> None:
+        """Hint + colour, from one state read so the two can't disagree."""
+        state = self._repo_state()
+        resolved = review.repo_path()
+        owner, repo = core.config()["owner"], core.config()["repo"]
+        if state == "env-shadowed":
+            env = os.environ.get("DIPLOMAT_REPO", "")
+            text = (
+                "DIPLOMAT_REPO is set in this app's environment — agents run in "
+                f"{os.path.expanduser(env)}, whatever this field says. Unset it to use "
+                "the picker again."
+            )
+        elif state == "not-absolute":
+            text = (
+                "Use an absolute path — a relative one resolves against whatever "
+                "directory the spawned terminal happens to start in, not this app's."
+            )
+        elif state == "not-a-checkout":
+            text = (
+                f"No git checkout at {resolved} — the spawn's `cd` is best-effort, so an "
+                "agent would start in your home directory instead. Pick the clone of "
+                f"{owner}/{repo}."
+            )
+        else:
+            tail = "" if self.store.repo_path_override.strip() else " Blank = the default path."
+            text = (
+                f"Every spawned agent starts with `cd {resolved}` — your local clone of "
+                f"{owner}/{repo}.{tail}"
+            )
+        self._repo_hint.setText(text)
+        self._repo_hint.setStyleSheet(
+            f"color: {'palette(mid)' if state == 'ok' else '#FF9500'}; font-size: 10px;"
+        )
 
     # MARK: PR auto-fix monitor
 

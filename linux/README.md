@@ -61,9 +61,19 @@ alone with `./scripts/install-autoupdate.sh` / `./scripts/uninstall-autoupdate.s
 
 ## Settings
 
-A two-pane screen matching macOS. Persist via `QSettings` (`~/.config/diplomat/…`):
+A two-pane screen matching macOS. Most persist via `QSettings`
+(`~/.config/diplomat/…`); the repo root is the exception (see its bullet):
 
 - **GitHub username** — overrides the `gh`-authenticated login for the "My …" tools.
+- **Repo root** — the local checkout every spawned agent `cd`s into, with a
+  **Browse…** picker. Blank = `~/dev/<repo>` for the repo `core/config.json`
+  targets; `DIPLOMAT_REPO` still outranks both. The hint warns when the path isn't
+  absolute, or has no `.git` (the spawn's `cd` is best-effort, so the agent would
+  otherwise start in `$HOME` unnoticed). The one setting that is **not** in
+  `QSettings`: it lives in the shared `~/.diplomat/config.json` (`appconfig.py`)
+  because a mesh node is a separate, stdlib-only process with no Qt — so a job
+  that lands over the mesh uses the same checkout, and a *running* node picks up
+  a change on its next spawn.
 - **PR auto-fix / Full-E2E review requests** — the two monitor toggles with live
   status, and under the review-requests one the **auto-approve** master toggle
   plus its three withhold-the-verdict suppressors (SKILL / installer / community),
@@ -117,7 +127,9 @@ DIPLOMAT_RENDER=panel DIPLOMAT_RENDER_OUT=/tmp/p.png \
 DIPLOMAT_REFRESH_SECS=30 ./diplomat            # faster auto-refresh, for tuning
 ```
 
-Also overridable: `DIPLOMAT_REPO` (the agents' working dir, default `~/dev/argent`),
+Also overridable: `DIPLOMAT_REPO` (the agents' working dir — outranks Settings ▸
+*Repo root*, whose own default is `~/dev/<repo>`), `DIPLOMAT_CONFIG` (where the
+shared `config.json` lives),
 `DIPLOMAT_CORE_BIN`, `DIPLOMAT_AUTOFIX_SECS` (floor 30s), `DIPLOMAT_APIWATCH_SECS`
 (floor 5s), `DIPLOMAT_SHELL`, `DIPLOMAT_PYTHON`, `DIPLOMAT_NPM`.
 
@@ -151,8 +163,9 @@ python tests/test_logic.py        # the logic tests, dependency-free (no pytest)
   restart re-linking.
 - `tests/test_mesh_ctl_flush.py` / `tests/test_mesh_e2e_applet.py` - control-edit
   state flush, and the applet driving a real node end to end.
-- `tests/conftest.py` - redirects `QSettings` to a per-test temp dir, so tests
-  never read (or scribble on) your live config.
+- `tests/conftest.py` - redirects `QSettings`, the shared `~/.diplomat/config.json`
+  and the activity feed to per-test temp dirs, so tests never read (or scribble on)
+  your live config.
 
 ## Layout
 
@@ -162,6 +175,7 @@ linux/diplomat_app/
   gh.py           gh CLI shell-out (GraphQL)
   models.py       domain models, Filters, Fmt, API (from core/)
   store.py        state, QSettings, tool catalog, row mapping, lookup
+  appconfig.py    ~/.diplomat/config.json — the settings a stdlib-only mesh node must read too
   prref.py        single-PR reference parsing (number / URL / owner-repo#337)
   prtarget.py     the whose-PRs axis shared by the wizards
   promptcore.py   shells out to the diplomat-core binary — the ONLY prompt assembly

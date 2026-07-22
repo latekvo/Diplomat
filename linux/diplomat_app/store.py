@@ -3,7 +3,9 @@
 A port of Store.swift. The tool catalog (titles, subtitles, colours, order) is
 loaded from the shared ``core/catalog.json``; the row-mapping in ``items_for``
 is the same dense formatting the macOS panel renders. Settings persist via
-``QSettings`` (the Linux analogue of macOS UserDefaults).
+``QSettings`` (the Linux analogue of macOS UserDefaults) — except the repo root,
+which lives in the shared ``~/.diplomat/config.json`` (see :mod:`appconfig`) so a
+Qt-less mesh node can read it too.
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ import time
 from . import (
     activity,
     apiwatch,
+    appconfig,
     autofix,
     autofixmonitor,
     bans,
@@ -253,6 +256,21 @@ class Store(QObject):
     @terminal_choice.setter
     def terminal_choice(self, value: str) -> None:
         self._settings.setValue("terminalChoice", value)
+
+    @property
+    def repo_path_override(self) -> str:
+        """The repo root every spawned agent ``cd``s into (Settings → REPO ROOT).
+        Empty => ``review.default_repo_path()``; ``DIPLOMAT_REPO`` outranks both.
+        Stored raw (a typed ``~/…`` is expanded at use) so the field shows back
+        exactly what was entered.
+
+        The one setting NOT in QSettings: a mesh node spawns agents from its own
+        stdlib-only process, which has no Qt — see :mod:`appconfig`."""
+        return appconfig.get(appconfig.REPO_ROOT)
+
+    @repo_path_override.setter
+    def repo_path_override(self, value: str) -> None:
+        appconfig.set_value(appconfig.REPO_ROOT, value)
 
     @property
     def allocator_setup_done(self) -> bool:

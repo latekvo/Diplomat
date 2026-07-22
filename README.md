@@ -96,8 +96,9 @@ tint) is shared in [`core/audit-categories.json`](core/audit-categories.json), w
 The grid carries a **Review PRs** card alongside the tools. Click it and the wizard
 opens where the PR lists normally render; dial in a few choices and hit **SPAWN
 AGENT** - it opens a fresh terminal window (iTerm if installed, else Terminal)
-running a detached review session in `~/dev/argent` that you watch and steer
-yourself. The prompt is staged to a file and the window runs
+running a detached review session in your **repo root** (Settings; default
+`~/dev/<repo>`) that you watch and steer yourself. The prompt is staged to a
+file and the window runs
 `claude "$(cat <promptfile>)"; printf %s $? > <done>` - the trailing sentinel
 (under `~/.diplomat/pr-monitor/done/`) is how the sessions list knows the agent
 finished. The choices are baked into the prompt:
@@ -135,7 +136,8 @@ banned authors get a flashing warning instead).
 ## Actions - Resolve conflicts
 
 A second grid card, **Resolve conflicts**, spawns a detached agent the same way
-(fresh terminal, staged prompt + done sentinel, in `~/dev/argent`) but for keeping
+(fresh terminal, staged prompt + done sentinel, in the same repo root from
+Settings) but for keeping
 branches merge-able. A single three-way selector picks *whose* PRs to sweep:
 
 - **Mine** — every currently-open PR authored by the resolved handle (see Settings).
@@ -380,6 +382,16 @@ to a settings screen:
 - **GitHub username** - override the handle used by the "My …" tools, the wizards
   and the monitors. Blank = the `gh`-authenticated user (`viewer.login`), resolved
   eagerly at launch so it's the default everywhere.
+- **Repo root** - the local checkout every spawned agent `cd`s into, with a
+  **Choose…** directory picker (type a path if you prefer; a leading `~` expands).
+  Blank = `~/dev/<repo>` for whichever repo [`core/config.json`](core/config.json)
+  targets. The hint warns when the path isn't absolute, or has no `.git` - the
+  spawn's `cd` is best-effort, so an agent would otherwise start in your home
+  directory unnoticed. `DIPLOMAT_REPO` still outranks the field, and says so in the
+  hint when it's set. Unlike every other setting this one is **not** in UserDefaults:
+  a mesh node spawns agents from its own stdlib-only process, so the pick lives in
+  the shared `~/.diplomat/config.json` that both front-ends and the node re-read on
+  each spawn - change it and a *running* node picks it up.
 - **Auto-fix my PRs / Full-E2E review requests** - the two monitor toggles, with
   live status: PRs watched, reviews done so far, "N unaddressed reviews -
   retrying", and any poll failure. (The combined *fixed N* counter lives on the
@@ -566,7 +578,9 @@ The `SETTINGS_DUMP` / `RENDER` checks read UserDefaults, so run them through the
 Cadences and paths are overridable too, for tuning: `DIPLOMAT_AUTOFIX_SECS`,
 `DIPLOMAT_APIWATCH_SECS`, `DIPLOMAT_PROC_POLL_SECS` (min 2s), `DIPLOMAT_MESH_POLL_SECS`,
 `DIPLOMAT_CORE` (where `core/` lives), `DIPLOMAT_DEVICE_ALLOCATOR_DIR`,
-`DIPLOMAT_NODE` / `DIPLOMAT_PYTHON` (the `node` / `python3` to use).
+`DIPLOMAT_NODE` / `DIPLOMAT_PYTHON` (the `node` / `python3` to use),
+`DIPLOMAT_REPO` (the agents' repo root - outranks Settings ▸ *Repo root*) and
+`DIPLOMAT_CONFIG` (where that shared `config.json` lives).
 
 ## Requirements
 
@@ -624,7 +638,7 @@ Sources/
     Components.swift             shared UI atoms (cards, chips, badges)
     ReviewWizard.swift           Review-PRs wizard + AgentSpawner (staged prompt file, done sentinel, iTerm/Terminal)
     ConflictWizard.swift / AuditWizard.swift   the Resolve-conflicts and Full-E2E-test wizards
-    SettingsView.swift           settings (username, monitors + auto-approve, watcher, tools, terminal, allocator)
+    SettingsView.swift           settings (username, repo root, monitors + auto-approve, watcher, tools, terminal, allocator)
     Store.swift                  ObservableObject; settings + the monitor/watcher loops; logic in ToolData
     AutofixMonitor.swift         the monitors' GitHub reads (monitor-prs / review-requests queries)
     AutofixStatus.swift          the monitor heartbeat behind the status pill
@@ -642,6 +656,8 @@ Sources/
     MeshSpawn.swift              the wizards' "⬡ Run on mesh" row + destination preview
     SelfUpdate.swift             fetch/merge upstream, rebuild, relaunch (Update button + the 06:00 run)
     RepoPaths.swift              locate this app's own checkout (DIPLOMAT_SELF_REPO → … → ~/dev/diplomat)
+                                 + the agents' repo root (DIPLOMAT_REPO → Settings → ~/dev/<repo>)
+    AppConfig.swift              the cross-process settings file (~/.diplomat/config.json) the mesh node shares
   DiplomatCoreSmoke/        ← Linux-buildable core self-test (filters + prompts + golden files + live dump)
   diplomat-core/            ← thin `build-prompt` CLI over the core, so the Linux front-end shells out for
                                  Review/Conflicts/Audit prompts instead of reimplementing them

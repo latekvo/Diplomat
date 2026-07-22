@@ -501,6 +501,128 @@ def test_unaddressed_threads_login_compare_is_case_insensitive():
     assert len(pr2.unaddressed_threads("alice")) == 1
 
 
+def test_repo_path_resolution(tmp_path):
+    """Settings → REPO ROOT drives the `cd` in every spawned session.
+
+    It lives in the shared appconfig file rather than QSettings so a mesh node — its
+    own stdlib-only process, no Qt, no Store — resolves the same value on its next
+    spawn. DIPLOMAT_REPO still outranks it; ~/dev/<repo> is the fallback.
+    """
+    import shlex
+
+    from diplomat_app import appconfig, core
+
+    prior_repo = os.environ.pop("DIPLOMAT_REPO", None)
+    prior_config = os.environ.get("DIPLOMAT_CONFIG")
+    os.environ["DIPLOMAT_CONFIG"] = str(tmp_path / "config.json")
+    try:
+        # Nothing set anywhere: the conventional path for the configured target repo.
+        assert review.default_repo_path() == os.path.expanduser(
+            f"~/dev/{core.config()['repo']}"
+        )
+        assert review.repo_path() == review.default_repo_path()
+
+        # The Settings pick wins over the default and lands in the shared file — the
+        # exact bytes a node (which has no Store to ask) reads back.
+        store = Store()
+        picked = str(tmp_path / "clone")
+        store.repo_path_override = picked
+        assert store.repo_path_override == picked
+        assert appconfig.read() == {"repoRoot": picked}
+        assert review.stored_repo_path() == picked
+        assert review.repo_path() == picked
+
+        # A hand-typed "~/…" expands like the shell would — the spawn single-quotes
+        # the path, so the shell itself never gets the chance.
+        store.repo_path_override = "~/dev/typed"
+        assert review.repo_path() == os.path.expanduser("~/dev/typed")
+        assert review.shell_command("/tmp/p.txt").startswith(
+            f"cd {shlex.quote(os.path.expanduser('~/dev/typed'))} 2>/dev/null;"
+        )
+
+        # Whitespace-only is blank; blank drops the key rather than storing "".
+        store.repo_path_override = "  "
+        assert review.repo_path() == review.default_repo_path()
+        store.repo_path_override = ""
+        assert appconfig.read() == {}
+        assert review.repo_path() == review.default_repo_path()
+
+        # A truncated / hand-edited file degrades to the default instead of breaking
+        # every spawn.
+        (tmp_path / "config.json").write_text("{ not json", encoding="utf-8")
+        assert review.repo_path() == review.default_repo_path()
+
+        # The env override outranks the stored pick.
+        store.repo_path_override = picked
+        os.environ["DIPLOMAT_REPO"] = str(tmp_path / "env-clone")
+        assert review.repo_path() == str(tmp_path / "env-clone")
+    finally:
+        os.environ.pop("DIPLOMAT_REPO", None)
+        if prior_repo is not None:
+            os.environ["DIPLOMAT_REPO"] = prior_repo
+        os.environ.pop("DIPLOMAT_CONFIG", None)
+        if prior_config is not None:
+            os.environ["DIPLOMAT_CONFIG"] = prior_config
+
+
+# A meta-path finder that makes `import PySide6[...]` fail, so a subprocess simulates
+# the stdlib-only mesh node — the deployment whose broken repo-root read this whole
+# design exists to fix. Kept as source the child execs, not imported here.
+_QT_LESS_CHILD = """
+import sys
+
+class _NoQt:
+    def find_spec(self, name, path=None, target=None):
+        if name == "PySide6" or name.startswith("PySide6."):
+            raise ImportError("PySide6 blocked (simulating a Qt-less mesh node)")
+        return None
+
+sys.meta_path.insert(0, _NoQt())
+try:
+    import PySide6  # noqa: F401
+    print("QT_STILL_IMPORTABLE"); sys.exit(2)
+except ImportError:
+    pass
+
+from diplomat_app import review
+print(review.repo_path())
+"""
+
+
+def test_qt_less_node_reads_the_shared_config(tmp_path):
+    """A mesh node is a separate, stdlib-only process — the exact case the first design
+    got wrong (it read Qt settings, which failed silently with no PySide6). Prove a
+    process that CANNOT import PySide6 still resolves the repo root the applet wrote,
+    by reading it back out of the shared file rather than any Qt store."""
+    import subprocess
+    import sys
+
+    cfg = tmp_path / "config.json"
+    picked = str(tmp_path / "node-clone")
+    # Write it the way the applet's Store setter does, from THIS (Qt-capable) process.
+    prior = os.environ.get("DIPLOMAT_CONFIG")
+    os.environ["DIPLOMAT_CONFIG"] = str(cfg)
+    try:
+        from diplomat_app import appconfig
+
+        appconfig.set_value(appconfig.REPO_ROOT, picked)
+        assert cfg.exists(), "the applet-side write must land on disk"
+
+        linux_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        env = {**os.environ, "PYTHONPATH": linux_dir, "DIPLOMAT_CONFIG": str(cfg)}
+        out = subprocess.run(
+            [sys.executable, "-c", _QT_LESS_CHILD],
+            capture_output=True, text=True, env=env, timeout=30,
+        )
+        assert out.returncode == 0, f"child failed: {out.stdout!r} {out.stderr!r}"
+        # A separate process, with Qt import blocked, resolved the applet's pick.
+        assert out.stdout.strip() == picked
+    finally:
+        os.environ.pop("DIPLOMAT_CONFIG", None)
+        if prior is not None:
+            os.environ["DIPLOMAT_CONFIG"] = prior
+
+
 if __name__ == "__main__":
     # Standalone (no-pytest) mode bypasses conftest.py, so replicate its QSettings
     # isolation here — otherwise these tests would read (and one would WRITE) the

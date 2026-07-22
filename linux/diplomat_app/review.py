@@ -23,7 +23,7 @@ import tempfile
 from dataclasses import dataclass
 from enum import Enum
 
-from . import core
+from . import appconfig, core
 from .configbase import PRSweepConfig
 from .prtarget import PRTarget
 
@@ -245,9 +245,30 @@ def resolved(preferred: SpawnTerminal | None) -> SpawnTerminal:
     return default_terminal()
 
 
+def default_repo_path() -> str:
+    """``~/dev/<repo>`` for whichever repo the shared core config targets, so the
+    fallback follows a retargeted ``core/config.json`` instead of naming one repo."""
+    return os.path.expanduser(f"~/dev/{core.config()['repo']}")
+
+
+def stored_repo_path() -> str:
+    """The repo root picked in Settings, or "" when unset.
+
+    Read from the shared :mod:`appconfig` file rather than this front-end's QSettings:
+    a mesh node spawns agents from its own stdlib-only process, which has no Store and
+    no Qt to ask. Re-read per call, so changing the setting reaches a running node."""
+    return appconfig.get(appconfig.REPO_ROOT).strip()
+
+
 def repo_path() -> str:
-    """The local checkout the agent works in (override with DIPLOMAT_REPO)."""
-    return os.environ.get("DIPLOMAT_REPO") or os.path.expanduser("~/dev/argent")
+    """The local checkout the agent works in — the ``cd`` in every spawned session.
+
+    Strongest first: the ``DIPLOMAT_REPO`` env override (the escape hatch every other
+    ``DIPLOMAT_*`` knob follows), the repo root picked in Settings, then
+    :func:`default_repo_path`.
+    """
+    chosen = os.environ.get("DIPLOMAT_REPO") or stored_repo_path()
+    return os.path.expanduser(chosen) if chosen else default_repo_path()
 
 
 class SpawnError(RuntimeError):

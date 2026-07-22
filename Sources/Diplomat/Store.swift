@@ -46,7 +46,9 @@ final class Store: ObservableObject {
     /// Store with preview values through the same persisted properties the GUI uses,
     /// and it shares the live app's defaults domain: an unguarded write would silently
     /// flip the user's real settings (a past render turned the auto-approve opt-in ON).
-    /// Every settings didSet must go through here.
+    /// Every UserDefaults-backed settings didSet must go through here. (The one
+    /// exception is `repoPathOverride`, which lives in the shared `AppConfig` file, not
+    /// UserDefaults — its didSet applies the same render guard inline.)
     private func persist(_ value: Any?, forKey key: String) {
         guard !Headless.isRender else { return }
         UserDefaults.standard.set(value, forKey: key)
@@ -63,6 +65,19 @@ final class Store: ObservableObject {
     }
     @Published var terminalChoice: String {
         didSet { persist(terminalChoice, forKey: Keys.terminalChoice) }
+    }
+    /// The repo root every spawned agent `cd`s into (Settings → REPO ROOT). Empty ⇒
+    /// fall back to `~/dev/<repo>`; `DIPLOMAT_REPO` outranks both. Stored raw (a typed
+    /// `~/…` is expanded at use), so the field shows back exactly what was entered.
+    ///
+    /// The one setting NOT in UserDefaults: a mesh node spawns agents from its own
+    /// stdlib-only process and can't read them, so it lives in the shared
+    /// `~/.diplomat/config.json` (see `AppConfig`). Render-guarded like the rest.
+    @Published var repoPathOverride: String {
+        didSet {
+            guard !Headless.isRender else { return }
+            AppConfig.set(AppConfig.repoRootKey, repoPathOverride)
+        }
     }
     /// Whether the in-process PR auto-fix monitor is on. Persisted; when turned on we
     /// kick an immediate poll rather than waiting for the next tick.
@@ -291,6 +306,7 @@ final class Store: ObservableObject {
         colorOverrides = (defaults.dictionary(forKey: Keys.colorOverrides) as? [String: String]) ?? [:]
         terminalChoice = defaults.string(forKey: Keys.terminalChoice)
             ?? (SpawnTerminal.iterm.isInstalled ? SpawnTerminal.iterm.rawValue : SpawnTerminal.terminal.rawValue)
+        repoPathOverride = AppConfig.string(AppConfig.repoRootKey)
         // Default ON (absent key ⇒ true): the pill only lights up on a live heartbeat,
         // so defaulting on can't falsely claim "active" when no monitor is running.
         prAutofixEnabled = defaults.object(forKey: Keys.prAutofixEnabled) as? Bool ?? true

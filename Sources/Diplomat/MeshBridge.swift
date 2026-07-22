@@ -108,6 +108,11 @@ enum MeshBridge {
         p.executableURL = URL(fileURLWithPath: python)
         p.arguments = ["-m", "diplomat_app.mesh", "--daemon"]
         p.currentDirectoryURL = RepoPaths.root.appendingPathComponent("linux")
+        // Deliberately NOT handing the node a `DIPLOMAT_REPO`: a process environment is
+        // fixed at exec, and this daemon outlives the app (an already-running one is
+        // adopted, not restarted — see the early return above), so it would pin a stale
+        // repo root the moment the user changed it. The node re-reads the shared
+        // `~/.diplomat/config.json` per spawn instead.
         p.standardInput = FileHandle.nullDevice
         // Discard output to null (not a Pipe) so an unread buffer can never deadlock the
         // detach — same rule as DeviceAllocator's installer shell-out.

@@ -87,6 +87,17 @@ def isolated_activity_feed(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def isolated_app_config(tmp_path, monkeypatch):
+    """Redirect the shared ``~/.diplomat/config.json`` to a per-test temp file, for the
+    same reason as the two fixtures above: it holds the repo root every spawn `cd`s
+    into, so a test that writes it would retarget the operator's real agents. Uses the
+    documented ``DIPLOMAT_CONFIG`` hook, so the redirect also reaches any child process
+    a test starts (a mesh node reads the same file)."""
+    monkeypatch.setenv("DIPLOMAT_CONFIG", str(tmp_path / "diplomat-config.json"))
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _drain_qt_widgets():
     """After each test, delete any leftover top-level widgets and drain the
     event loop, so no QTimer/QObject survives into the next test's event loop.
