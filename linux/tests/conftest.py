@@ -11,6 +11,10 @@ test. All tests share one process-wide QApplication, so a leaked QTimer fires
 into freed memory during a *later* test's ``processEvents`` — a segfault whose
 victim depends on ordering. Draining leftover widgets after each test keeps
 that from leaking across the boundary.
+
+The host's agent launchers are fenced off for the same reason: a test that
+reaches a dispatch path is running on the operator's own machine, where a spawn
+opens a real terminal and turns a stub prompt loose in their checkout.
 """
 
 from __future__ import annotations
@@ -33,6 +37,37 @@ def isolated_qsettings(tmp_path):
     QSettings.setPath(
         QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(tmp_path)
     )
+    yield
+
+
+@pytest.fixture(autouse=True)
+def no_host_agent_spawn(monkeypatch):
+    """Fail loudly instead of launching a real agent on the machine running the tests.
+
+    ``review.spawn`` (and ``spawnjob._spawn_macos``, its macOS mesh twin) are the two
+    paths that detach a terminal window running ``claude`` in :func:`review.repo_path`
+    — the operator's own checkout, with their credentials. A test that reaches a
+    dispatch path without stubbing them therefore turns a *stub* prompt into a live
+    agent in a real repo, and the suite still passes green because the spawn is
+    fire-and-forget. Tests that exercise dispatch stub the spawner themselves (see
+    ``_spawn_recorder`` in test_autofix.py); this is the backstop for the ones that
+    reach it by accident.
+
+    The confined/override mesh runners (``DIPLOMAT_MESH_SPAWN``,
+    ``DIPLOMAT_MESH_FOREIGN_SPAWN``) are deliberately left alone: they are empty by
+    default and the mesh tests point them at a harmless ``cp`` template.
+    """
+    from diplomat_app import review
+    from diplomat_app.mesh import spawnjob
+
+    def refuse(*args, **kwargs):
+        raise AssertionError(
+            "a test reached a real agent launch — stub the spawner "
+            "(see _spawn_recorder in tests/test_autofix.py)"
+        )
+
+    monkeypatch.setattr(review, "spawn", refuse)
+    monkeypatch.setattr(spawnjob, "_spawn_macos", refuse)
     yield
 
 

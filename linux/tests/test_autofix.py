@@ -187,6 +187,15 @@ def _spawn_recorder(monkeypatch, finish=False):
     return calls
 
 
+def test_an_unstubbed_spawn_is_refused_not_launched():
+    """Guards the conftest backstop (``no_host_agent_spawn``). A dispatch test that
+    forgets :func:`_spawn_recorder` must fail, not open a terminal running claude in
+    the operator's own checkout — the spawn is fire-and-forget, so without this the
+    test still passes green while a live agent is loose on their machine."""
+    with pytest.raises(AssertionError, match="real agent launch"):
+        review.spawn("prompt", None)
+
+
 def test_poll_noop_when_both_disabled(store, monkeypatch):
     store.pr_autofix_enabled = False
     store.review_requests_enabled = False
