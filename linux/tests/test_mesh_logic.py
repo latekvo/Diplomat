@@ -6,6 +6,7 @@ dependency-free via ``python linux/tests/test_mesh_logic.py``.
 
 from __future__ import annotations
 
+import errno
 import itertools
 import os
 import sys
@@ -2412,14 +2413,91 @@ def test_beacon_outage_surfaced_once_and_recovery_logged(tmp_path, monkeypatch):
             return []
         return [ln for ln in text.splitlines() if "beacon" in ln]
 
-    node._note_beacon_sends(0, OSError(65, "No route to host"))
-    node._note_beacon_sends(0, OSError(65, "No route to host"))  # no re-log
+    err = OSError(errno.EHOSTUNREACH, "No route to host")
+    node._note_beacon_sends(0, err)
+    node._note_beacon_sends(0, err)  # no re-log
     assert node._beacon_blocked
     assert len(beacon_lines()) == 1  # surfaced exactly once, not per tick
+    # The snapshot mirrors WHY (the field a front-end banner keys on), not just that.
+    assert node.snapshot()["beaconBlockReason"] in {"local-network", "network-down"}
     node._note_beacon_sends(1, None)
     node._note_beacon_sends(2, None)  # steady state — no re-log either
     assert not node._beacon_blocked
     assert len(beacon_lines()) == 2  # the outage line + the recovery line
+    assert node.snapshot()["beaconBlockReason"] == ""  # cleared on recovery
+
+
+def test_beacon_block_diagnosis_gate_vs_dead_network(tmp_path, monkeypatch):
+    """The total-send-outage message must diagnose, not guess. This replaces a fixed
+    hint that always told macOS users to "allow Python" in Local Network settings —
+    useless (and infuriating) when it is already allowed, and simply wrong when the
+    network is down. A LAN-gate errno while a loopback send still works ⇒ the OS/
+    firewall is refusing this process's LAN traffic (an actionable permission problem);
+    a loopback that ALSO fails, or a non-gate errno, ⇒ the network stack itself is gone."""
+    node = _fresh_node(tmp_path, monkeypatch)
+
+    # (1) macOS Local Network denial: a gate errno + working loopback.
+    node.platform = "macos"
+    monkeypatch.setattr(node, "_loopback_send_ok", lambda: True)
+    gate_err = OSError(errno.EHOSTUNREACH, "No route to host")
+    assert node._classify_beacon_block(gate_err) == "local-network"  # value banner keys on
+    msg = node._beacon_block_message("local-network", gate_err)
+    assert "Local Network" in msg and "loopback works" in msg
+    assert "has not" in msg and "taken effect" in msg  # the already-enabled remedy
+    assert "DIPLOMAT_PYTHON" in msg
+    assert "network stack looks down" not in msg  # never misdiagnosed as an outage
+
+    # (2) Same errno but loopback ALSO fails ⇒ a downed stack, not a permission.
+    monkeypatch.setattr(node, "_loopback_send_ok", lambda: False)
+    assert node._classify_beacon_block(gate_err) == "network-down"
+    down = node._beacon_block_message("network-down", gate_err)
+    assert "network stack looks down" in down and "Local Network" not in down
+
+    # (3) A non-gate errno is never a permission, even with loopback up.
+    monkeypatch.setattr(node, "_loopback_send_ok", lambda: True)
+    assert node._classify_beacon_block(OSError(errno.ENETUNREACH, "unreachable")) == "network-down"
+
+    # (4) Linux keeps the gate reason but gets host-firewall advice specific to its
+    # branch (the mesh port), never the macOS Settings text.
+    node.platform = "linux"
+    lin = node._beacon_block_message("local-network", OSError(errno.EACCES, "Permission denied"))
+    assert "mesh port" in lin  # pins the Linux-only advice, not just the shared base
+    assert "System Settings" not in lin and "DIPLOMAT_PYTHON" not in lin
+
+
+def test_beacon_block_reason_tracks_cause_change_mid_outage(tmp_path, monkeypatch):
+    """The reason (and the banner it drives) must follow the CURRENT cause even without
+    an intervening recovery: a dead network that comes back as a Local Network gate —
+    sends never succeeding in between — must flip network-down → local-network, so the
+    banner stops (falsely) saying "the net is down" and offers the permission fix. And
+    the new diagnosis is re-logged once, not swallowed, but a steady cause stays quiet."""
+    from diplomat_app import activity
+    node = _fresh_node(tmp_path, monkeypatch)
+    node.platform = "macos"
+
+    def warn_lines():
+        try:
+            text = activity.audit_path().read_text()
+        except OSError:
+            return []
+        return [ln for ln in text.splitlines() if '"warn"' in ln and "beacon" in ln]
+
+    # Phase 1 — genuinely down: a non-gate errno and loopback also failing.
+    monkeypatch.setattr(node, "_loopback_send_ok", lambda: False)
+    node._note_beacon_sends(0, OSError(errno.ENETDOWN, "Network is down"))
+    assert node._beacon_block_reason == "network-down"
+    assert len(warn_lines()) == 1
+
+    # Phase 2 — network back, but now the Local Network gate; sends STILL fail (0).
+    monkeypatch.setattr(node, "_loopback_send_ok", lambda: True)
+    node._note_beacon_sends(0, OSError(errno.EHOSTUNREACH, "No route to host"))
+    assert node._beacon_block_reason == "local-network"          # tracked, not stale
+    assert node.snapshot()["beaconBlockReason"] == "local-network"
+    assert len(warn_lines()) == 2                                # re-logged the new cause
+
+    # Phase 3 — same gate cause persists ⇒ no spurious re-log.
+    node._note_beacon_sends(0, OSError(errno.EHOSTUNREACH, "No route to host"))
+    assert len(warn_lines()) == 2
 
 
 def test_non_object_job_result_is_dropped_not_crashing(tmp_path, monkeypatch):

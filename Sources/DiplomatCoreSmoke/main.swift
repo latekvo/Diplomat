@@ -262,6 +262,21 @@ let snap3 = MeshSnapshot.decode("""
  "assignments":{"audit":{"assigned":["aaa"],"shortfall":[{"missing":1,"platform":"linux"}]}}}
 """.data(using: .utf8)!)
 check(snap != snap3, "a session-quota percent move is a meaningful change")
+// The discoverability banner keys on the node's OWN diagnosis: `beaconBlockReason`
+// travels beside `beaconBlocked` so the UI shows a Local-Network gate vs a genuinely
+// downed network, not a fixed "allow Python" guess. An older node predating the field
+// decodes to "" — the Local-Network case — so the banner stays backward-compatible.
+let blockedSnap = MeshSnapshot.decode("""
+{"pid":1,"tcpPort":40878,"linking":0,"peers":[],"assignments":{},
+ "beaconBlocked":true,"beaconBlockReason":"network-down"}
+""".data(using: .utf8)!)!
+check(blockedSnap.beaconBlocked && blockedSnap.beaconBlockReason == "network-down",
+      "beaconBlockReason decodes beside beaconBlocked")
+let legacyBlocked = MeshSnapshot.decode("""
+{"pid":1,"tcpPort":40878,"linking":0,"peers":[],"assignments":{},"beaconBlocked":true}
+""".data(using: .utf8)!)!
+check(legacyBlocked.beaconBlocked && legacyBlocked.beaconBlockReason == "",
+      "a node without beaconBlockReason defaults to \"\" (the Local-Network case)")
 // Trust + accounting fields (device-key fingerprints, personal/foreign verdicts,
 // advertised stats, the published allowlist) — shaped exactly like the node writes
 // them since the trust/load-balancing layer landed.

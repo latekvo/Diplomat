@@ -523,11 +523,16 @@ public struct MeshSnapshot: Decodable, Equatable {
     /// OS privacy gate — macOS Local Network — denying LAN sends). Drives the loud
     /// "device is not discoverable" banner so the mesh doesn't just look empty.
     public let beaconBlocked: Bool
+    /// WHY it's blocked, so the banner shows the node's own diagnosis instead of
+    /// always blaming Local Network: "local-network" (an OS/firewall gate the operator
+    /// can fix) or "network-down" (the stack itself is gone). Empty when up, and empty
+    /// from an older node that predates the field → treated as the Local-Network case.
+    public let beaconBlockReason: String
 
     enum CodingKeys: String, CodingKey {
         case pid, tcpPort, selfNode = "self", peers, trusted, banned, defaultTrust,
              assignments, overrides,
-             linking, beaconBlocked
+             linking, beaconBlocked, beaconBlockReason
     }
 
     public init(from decoder: Decoder) throws {
@@ -543,6 +548,7 @@ public struct MeshSnapshot: Decodable, Equatable {
         overrides = try? c.decode(MeshOverrides.self, forKey: .overrides)
         linking = (try? c.decode(Int.self, forKey: .linking)) ?? 0
         beaconBlocked = (try? c.decode(Bool.self, forKey: .beaconBlocked)) ?? false
+        beaconBlockReason = (try? c.decode(String.self, forKey: .beaconBlockReason)) ?? ""
     }
 
     /// Decode a snapshot from raw JSON bytes; nil for garbage/absent, matching

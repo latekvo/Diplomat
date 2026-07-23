@@ -210,26 +210,37 @@ struct MeshView: View {
         return "Scanning the LAN for machines\(elapsed)…"
     }
 
-    /// The major-issue banner for a node whose every beacon send fails: macOS's
-    /// Local Network permission (or a firewall) is denying LAN sends, so this
-    /// machine is invisible to its peers. "Open" jumps straight to the settings
-    /// pane where Python must be allowed.
+    /// The major-issue banner for a node whose every beacon send fails. It shows the
+    /// node's OWN diagnosis (snapshot `beaconBlockReason`), not a fixed guess: a Local
+    /// Network / firewall gate (the fixable common case — "Open" jumps to the Local
+    /// Network pane) versus a genuinely downed network stack (nothing to grant, so no
+    /// button). The old banner always told the user to "allow Python", which is useless
+    /// once it is already allowed (macOS pins the grant to an unsigned interpreter
+    /// unreliably) and simply wrong when the network is down.
     private var discoverabilityBanner: some View {
-        HStack(spacing: 8) {
+        let networkDown = store.meshState?.beaconBlockReason == "network-down"
+        return HStack(spacing: 8) {
             Image(systemName: "wifi.exclamationmark")
                 .font(.system(size: 15, weight: .bold)).foregroundStyle(.red)
             VStack(alignment: .leading, spacing: 1) {
                 Text("DEVICE IS NOT DISCOVERABLE")
                     .font(.system(size: 11, weight: .heavy)).foregroundStyle(.red)
-                Text("macOS is blocking mesh discovery: allow “Python” in "
-                     + "Privacy & Security → Local Network, or peers can't find this machine.")
+                Text(networkDown
+                     ? "No usable network — even a loopback send fails, so the network "
+                       + "stack looks down. Check this machine's connection; it isn't a "
+                       + "permissions problem."
+                     : "macOS is blocking this node's Local Network access. If “Python” "
+                       + "already appears enabled in Privacy & Security → Local Network, "
+                       + "the grant hasn't taken effect — toggle it off and back on.")
                     .font(.system(size: 9)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 6)
-            Button("Open") { openLocalNetworkSettings() }
-                .buttonStyle(.borderedProminent).tint(.red).controlSize(.small)
-                .help("Open System Settings → Privacy & Security → Local Network")
+            if !networkDown {
+                Button("Open") { openLocalNetworkSettings() }
+                    .buttonStyle(.borderedProminent).tint(.red).controlSize(.small)
+                    .help("Open System Settings → Privacy & Security → Local Network")
+            }
         }
         .padding(.horizontal, 8).padding(.vertical, 6)
         .background(RoundedRectangle(cornerRadius: 6).fill(Color.red.opacity(0.12)))

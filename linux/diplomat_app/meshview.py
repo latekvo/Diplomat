@@ -388,9 +388,21 @@ class MeshView(QWidget):
             self.err_line.setText("⚠ " + self.store.mesh_error)
 
         # The blocked banner only makes sense over a live node (a dead/off node is
-        # undiscoverable for a plainer reason the state hosts already explain).
-        self.blocked_banner.setVisible(
-            running and bool((state or {}).get("beaconBlocked")))
+        # undiscoverable for a plainer reason the state hosts already explain). Its
+        # text tracks the node's own diagnosis (`beaconBlockReason`) so it matches the
+        # activity log instead of always blaming the OS privacy gate.
+        blocked = running and bool((state or {}).get("beaconBlocked"))
+        self.blocked_banner.setVisible(blocked)
+        if blocked:
+            if (state or {}).get("beaconBlockReason") == "network-down":
+                self.blocked_banner.setText(
+                    "⚠ DEVICE IS NOT DISCOVERABLE — no usable network (even a loopback "
+                    "send fails). Check this machine's connection.")
+            else:
+                self.blocked_banner.setText(
+                    "⚠ DEVICE IS NOT DISCOVERABLE — the OS or a firewall is blocking "
+                    "this node's LAN sends, so peers can't find it. Check the host "
+                    "firewall isn't dropping multicast/broadcast on the mesh port.")
 
         # Off / empty / dead states — no live topology to render.
         if not self.store.mesh_enabled:

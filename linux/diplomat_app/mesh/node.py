@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
 import hashlib
 import json
 import os
@@ -52,6 +53,15 @@ from .protocol import Job, NodeInfo
 
 # How long a dead peer stays in the snapshot (link "down") before it's dropped.
 _DOWN_RETENTION_SECS = 300.0
+
+# The errnos a macOS Local Network privacy denial (or a host firewall) raises when it
+# refuses a LAN send while the socket itself is healthy. macOS 15's Local Network gate
+# fails multicast/broadcast/same-subnet sends with EHOSTUNREACH; a packet filter may
+# instead return EACCES/EPERM. All three mean "the OS refused this send" — as opposed to
+# ENETDOWN/ENETUNREACH, which mean the network stack itself is gone. Used to tell an
+# actionable permission problem apart from a genuinely downed network in the operator
+# message for a total beacon-send outage (see _classify_beacon_block).
+_LAN_GATE_ERRNOS = frozenset({errno.EHOSTUNREACH, errno.EACCES, errno.EPERM})
 
 # How often the node re-measures real token usage from the local logs. The budget
 # doesn't move second-to-second, and scanning ~/.claude costs real file I/O, so this
@@ -283,6 +293,10 @@ class MeshNode:
         # undiscoverable and says so (activity feed + snapshot) instead of failing
         # silently. Flips back on the first successful send. See _note_beacon_sends.
         self._beacon_blocked = False
+        # Why it is blocked, mirrored into the snapshot so a front-end banner shows the
+        # SAME diagnosis the activity log does: "local-network" (an OS/firewall gate the
+        # operator can fix) or "network-down" (the stack itself is gone). "" while up.
+        self._beacon_block_reason = ""
         # The trust challenge nonce THIS node issued on each link, keyed by writer,
         # so an inbound `auth` can be verified against the nonce we chose.
         self._issued_nonce: dict[asyncio.StreamWriter, str] = {}
@@ -630,21 +644,85 @@ class MeshNode:
         reads as "the mesh silently broke" with no visible cause. The classic
         trigger is not a network fault but an OS privacy gate (macOS 15's Local
         Network permission fails LAN sends with EHOSTUNREACH) while unicast links
-        still work, so the node otherwise looks healthy. Logged only on the
-        blocked/unblocked transition, never per tick."""
-        blocked = sent == 0
-        if blocked == self._beacon_blocked:
-            return
-        self._beacon_blocked = blocked
-        if blocked:
-            hint = (" On macOS check System Settings → Privacy & Security → "
-                    "Local Network (Python must be allowed)."
-                    if self.platform == "macos" else "")
-            activity.log("mesh", "warn",
-                         f"Mesh: every beacon send is failing ({err}) — this node "
-                         f"is undiscoverable until sends recover.{hint}")
-        else:
+        still work, so the node otherwise looks healthy.
+
+        The diagnosed reason is re-evaluated EVERY blocked tick (not just on the
+        entry transition) so the snapshot/banner always reflect the CURRENT cause:
+        a downed network that recovers into a Local Network gate — sends never
+        succeeding in between — must flip network-down → local-network, or the
+        banner would keep telling the operator "the net is down" and hide the one
+        fix (the permission toggle) that now applies. But it is LOGGED only on the
+        block/recover transition and whenever the reason changes, never per tick."""
+        if sent == 0:
+            reason = self._classify_beacon_block(err)
+            if not self._beacon_blocked or reason != self._beacon_block_reason:
+                # Entering the outage, or the cause changed under a continuous outage
+                # (a different fix applies) — surface the CURRENT diagnosis so the log
+                # and the banner agree. Steady ticks on an unchanged cause stay quiet.
+                activity.log("mesh", "warn", self._beacon_block_message(reason, err))
+            self._beacon_blocked = True
+            self._beacon_block_reason = reason
+        elif self._beacon_blocked:
+            self._beacon_blocked = False
+            self._beacon_block_reason = ""
             activity.log("mesh", "mesh-up", "Mesh: beacon sending recovered")
+
+    def _loopback_send_ok(self) -> bool:
+        """Can this process put a datagram on the wire at all? A send to 127.0.0.1
+        never leaves the host, so it bypasses the macOS Local Network privacy gate
+        and any LAN firewall. If it succeeds while every real beacon send fails, the
+        socket layer is healthy and only OFF-host traffic is being refused — a
+        permission/firewall gate the operator can fix, not a downed network stack.
+        A FRESH socket each call: the OS pins the Local Network verdict at socket
+        creation, so a reused (possibly denied) socket would misreport."""
+        try:
+            probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        except OSError:
+            return False
+        try:
+            probe.setblocking(False)
+            probe.sendto(b"", ("127.0.0.1", self.proto["multicastPort"]))
+            return True
+        except OSError:
+            return False
+        finally:
+            probe.close()
+
+    def _classify_beacon_block(self, err: OSError | None) -> str:
+        """Diagnose a TOTAL beacon-send outage from the actual failure signature
+        instead of a fixed guess. A LAN-gate errno WITH a working loopback send means
+        the socket is fine and only OFF-host traffic is refused — an OS/firewall gate
+        the operator can fix ("local-network"). Anything else (a non-gate errno, or a
+        loopback that also fails) means the network stack itself looks gone
+        ("network-down"). Cheap enough to run every blocked tick: one throwaway
+        loopback datagram. The value is mirrored into the snapshot so the app's banner
+        shows the same diagnosis the log does."""
+        gated = (err is not None and err.errno in _LAN_GATE_ERRNOS
+                 and self._loopback_send_ok())
+        return "local-network" if gated else "network-down"
+
+    def _beacon_block_message(self, reason: str, err: OSError | None) -> str:
+        """The operator-facing line for a total beacon-send outage, built from the
+        diagnosed ``reason``. The old message always told macOS users to "allow Python"
+        in Local Network settings — useless (and infuriating) when it is already
+        allowed, and simply wrong when the network is down."""
+        if reason == "network-down":
+            return (f"Mesh: every beacon send is failing ({err}) and even a loopback "
+                    "send does not — the network stack looks down (no usable "
+                    "interface). This node is undiscoverable until it recovers.")
+        base = (f"Mesh: every LAN beacon send is failing ({err}) while loopback works "
+                "— the OS or a firewall is blocking this node's LAN traffic, so peers "
+                "cannot discover it.")
+        if self.platform == "macos":
+            base += (" Fix in System Settings → Privacy & Security → Local Network. If "
+                     "this Python already appears enabled there, the grant has not "
+                     "taken effect — common for an unsigned/Homebrew interpreter: "
+                     "toggle it off and back on, or point the node at a signed Python "
+                     "via DIPLOMAT_PYTHON.")
+        else:
+            base += (" Check the host firewall is not dropping this node's multicast/"
+                     "broadcast on the mesh port.")
+        return base
 
     def _on_udp_readable(self, sock: socket.socket) -> None:
         # Drain everything queued; each datagram is one beacon line.
@@ -2940,8 +3018,11 @@ class MeshNode:
             "linking": len(self._dialing),
             # True while every beacon send fails (the node is undiscoverable —
             # e.g. an OS privacy gate); lets a UI say so instead of showing an
-            # inexplicably empty mesh.
+            # inexplicably empty mesh. `beaconBlockReason` carries WHY, so the banner
+            # shows the same diagnosis the log does: "local-network" (an OS/firewall
+            # gate the operator can fix) or "network-down" (the stack is gone); "" up.
             "beaconBlocked": self._beacon_blocked,
+            "beaconBlockReason": self._beacon_block_reason,
             "trusted": [{"fingerprint": fp, "label": lbl}
                         for fp, lbl in sorted(self._trusted.items())],
             # The local ban list, mirrored read-only (like `trusted`) so the
