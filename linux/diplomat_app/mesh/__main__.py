@@ -31,7 +31,22 @@ import sys
 
 
 def _run_node() -> int:
+    from . import singlelock
     from .node import MeshNode
+
+    # One node per state directory. The pre-launch node_running() checks (Swift
+    # ensureRunning + _daemonize) are time-of-check/time-of-use races: several
+    # launches inside the window before the first child writes state.json all read
+    # "not running" and each spawn a node. Sharing one mesh_dir, they then share one
+    # identity and clobber one state.json — only whichever a peer dials is truly
+    # linked, the rest overwrite the snapshot with an empty `sees`. This flock is the
+    # single point that can't be raced; keyed to the state dir, so the tests'
+    # many-nodes-per-host affordance (a distinct DIPLOMAT_MESH_DIR each) is untouched.
+    lock = singlelock.acquire()
+    if lock is None:
+        print("mesh node already running for this state directory — exiting",
+              file=sys.stderr)
+        return 0
 
     async def main() -> None:
         node = MeshNode()
@@ -44,7 +59,10 @@ def _run_node() -> int:
         await node.run()
         print("mesh node stopped", file=sys.stderr)
 
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    finally:
+        singlelock.release(lock)
     return 0
 
 
