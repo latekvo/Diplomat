@@ -76,6 +76,20 @@ binding*, not on a bare TCP answer — an onion that answers but never completes
 handshake (a rotated join secret, a reassigned/squatted address) stays throttled
 rather than being re-dialed every tick.
 
+**What this means for the shipped `foreign` default.** Because auto-dial is
+personal-only, two nodes that met on the LAN but have *not* promoted each other to
+`personal` (the zero-trust default, [11](11-trust-and-balancing.md)) will **not**
+auto-reconnect over Tor after they part — each sees the other as `foreign` and
+neither originates the dial. This is by design and rarely bites in practice: a mesh
+that actually *shares work* has already promoted the collaborating devices to
+`personal` (a `foreign` peer's requests are declined-or-confined and it can never own
+work — [13](13-foreign-execution.md)), and those personal peers **do** auto-reconnect
+over Tor. To Tor-reconnect a pair you deliberately keep `foreign`, either promote one
+side (`--trust` / the panel), run the fleet in full-altruism
+(`DIPLOMAT_MESH_DEFAULT_TRUST=personal`), or reach across with a one-shot manual paste
+(below). A `foreign` server that takes work is reached the same way: its clients
+originate the dial, so a client promotes the server it chose to use.
+
 **No aggressive switching.** A peer that already holds a live link — over *either*
 transport — is never probed or re-dialed. The LAN↔Tor quality gap is small, so a
 Tor link is not torn down merely because the peer reappears on the LAN, and vice
