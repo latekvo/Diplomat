@@ -31,7 +31,7 @@ import sys
 
 
 def _run_node() -> int:
-    from . import singlelock
+    from . import singlelock, singleton
     from .node import MeshNode
 
     # One node per state directory. The pre-launch node_running() checks (Swift
@@ -47,6 +47,19 @@ def _run_node() -> int:
         print("mesh node already running for this state directory — exiting",
               file=sys.stderr)
         return 0
+
+    # Cross-state-dir reaper, complementing the flock above. The flock is keyed to
+    # THIS node's state dir, so it cannot see a ghost running under a DIFFERENT dir
+    # — exactly the pre-rename case (~/.argent/mesh vs ~/.diplomat/mesh) that let a
+    # detached old-incarnation node survive and spawn duplicate fix terminals. So a
+    # fresh node also reaps every OTHER live mesh node of this uid by /proc argv,
+    # under any module name it has launched as. Ordered AFTER the flock so a losing
+    # same-dir racer exits above without reaping anyone; stands down in loopback
+    # (the multi-node test/dev fleet). See mesh/singleton.py.
+    reaped = singleton.terminate_other_nodes()
+    if reaped:
+        print(f"mesh singleton: reaped {len(reaped)} stale node(s) {sorted(reaped)}",
+              file=sys.stderr)
 
     async def main() -> None:
         node = MeshNode()
