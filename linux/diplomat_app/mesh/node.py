@@ -931,7 +931,14 @@ class MeshNode:
         listener). Tag it ``tor`` before handing it to the normal accept path, so
         the link is known to be over Tor even though it lands on loopback."""
         self._link_transport[writer] = "tor"
-        await self._on_tcp_connection(reader, writer)
+        try:
+            await self._on_tcp_connection(reader, writer)
+        finally:
+            # _run_link pops this on the peer-link path; the finally covers the
+            # accept paths that close the writer BEFORE _run_link (a bad/absent first
+            # line, a secret mismatch, a ctl session) so a tor-tagged writer never
+            # leaks the map. pop is idempotent, so the double-pop is harmless.
+            self._link_transport.pop(writer, None)
 
     def _remember_onion(self, peer_id: str, onion: str, fingerprint: str) -> None:
         """Persist a peer's permanent onion (from its SIGNED advert). Written on
@@ -1043,6 +1050,7 @@ class MeshNode:
                 await writer.drain()
             except (ConnectionError, OSError):
                 self._issued_nonce.pop(writer, None)
+                self._link_transport.pop(writer, None)  # never reached _run_link
                 writer.close()
                 return
             # A Tor-dialed link is talking to whoever answered the onion, so — as on

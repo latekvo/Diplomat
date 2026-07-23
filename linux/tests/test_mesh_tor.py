@@ -227,6 +227,49 @@ def test_tor_dial_backs_off_when_the_socks_handshake_dies(tmp_path, monkeypatch)
     assert _ONION_B not in node._tor_dialing  # in-flight guard released
 
 
+def test_tor_dial_drain_failure_does_not_leak_the_transport_map(tmp_path, monkeypatch):
+    """A dial that connects but fails to flush the hello early-returns before
+    _run_link — it must still pop its writer from _link_transport (else the map
+    grows one dead entry per such failure, unbounded)."""
+    node = _fresh_node(tmp_path, monkeypatch)
+
+    class _DrainFailWriter(_FakeWriter):
+        async def drain(self):
+            raise ConnectionError("flush failed")
+
+    class _Tor:
+        def onion_address(self):
+            return _ONION_B
+
+        async def dial(self, _onion):
+            return object(), _DrainFailWriter()  # reader unused before the drain
+
+        async def stop(self):
+            pass
+
+    node.tor = _Tor()
+    asyncio.run(node._tor_dial(_ONION_B, peer_id="p"))
+    assert node._link_transport == {}          # writer popped despite early return
+    assert _ONION_B not in node._tor_dialing
+
+
+def test_tor_inbound_closing_before_a_hello_does_not_leak_the_transport_map(
+        tmp_path, monkeypatch):
+    """An inbound Tor connection tagged by _on_tor_inbound that closes before a
+    valid hello (here: immediate EOF) never reaches _run_link's pop, so the wrapper
+    must pop the tag itself — otherwise every scan/probe of our onion leaks a map
+    entry."""
+    node = _fresh_node(tmp_path, monkeypatch)
+
+    class _EOFReader:
+        async def readline(self):
+            return b""
+
+    fw = _FakeWriter()
+    asyncio.run(node._on_tor_inbound(_EOFReader(), fw))
+    assert node._link_transport == {}
+
+
 # MARK: - the capstone: a real link over an injected dialer, with a dispatch on it
 
 
