@@ -225,6 +225,10 @@ def main(argv: list[str] | None = None) -> int:
                     choices=("personal", "foreign"),
                     help="set the trust level for UNKNOWN devices (personal|foreign); "
                     "ships foreign (a new device is untrusted until you promote it)")
+    ap.add_argument("--tor-connect", metavar="ONION", dest="tor_connect",
+                    help="dial a peer's v3 onion address over Tor to initiate "
+                         "contact — works even if you never met on the LAN "
+                         "(the node needs DIPLOMAT_MESH_TOR=1)")
     args = ap.parse_args(argv)
 
     if args.daemon:
@@ -268,6 +272,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.default_trust:
             ctl.set_default_trust(args.default_trust)
             print(f"default trust for new devices → {args.default_trust}")
+            return 0
+        if args.tor_connect:
+            onion = ctl.tor_connect(args.tor_connect)
+            print(f"dialing {onion} over Tor… (watch --status for the peer)")
             return 0
         if args.set_attrs:
             attrs = _parse_attrs(args.set_attrs)

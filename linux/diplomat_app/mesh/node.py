@@ -44,8 +44,8 @@ from dataclasses import dataclass, replace
 
 from .. import activity
 from . import (
-    assign, banned, config, crypto, identity, peercache, protocol, spawnjob,
-    statefile, stats, trust, usage,
+    assign, banned, config, crypto, identity, onioncache, peercache, protocol,
+    spawnjob, statefile, stats, tor, trust, usage,
 )
 from .config import PlacementOverrides
 from .protocol import Job, NodeInfo
@@ -114,6 +114,20 @@ _MAX_TOMBSTONES = 64
 # can't be coaxed into acting as a general signing oracle over attacker-chosen
 # bytes. The exact byte construction is normative (see docs/szpontnet/11).
 _AUTH_CONTEXT = b"szpontnet-auth-v1:"
+
+# Tor reconnect backoff — per known peer we hold an onion for but can't currently
+# see on the LAN. Start small, grow geometrically to a ceiling, and reset the
+# moment the onion answers. The LAN↔Tor quality gap is small, so probing is
+# deliberately unhurried and a peer already linked (over EITHER transport) is never
+# probed — no aggressive switching. See the Tor transport section.
+_TOR_BACKOFF_MIN_SECS = 10.0
+_TOR_BACKOFF_MAX_SECS = 600.0
+_TOR_BACKOFF_FACTOR = 2.0
+# How often the Tor reconnect loop wakes to check which known peers are due.
+_TOR_REDIAL_TICK_SECS = 5.0
+# Upper bound on one Tor dial + SOCKS handshake before it's abandoned (and the
+# backoff grows). A cold onion connect can legitimately take double-digit seconds.
+_TOR_DIAL_TIMEOUT_SECS = 30.0
 
 
 def _auth_challenge(nonce: str) -> bytes:
@@ -189,6 +203,17 @@ class _Awaiting:
     next_remind: float = 0.0  # monotonic; reminders re-send across the grace window
     extensions: int = 0
     deciding: bool = False
+
+
+@dataclass
+class _TorBackoff:
+    """Per-peer Tor reconnect schedule: when the next probe is due (monotonic) and
+    the current interval — doubled on each miss up to a ceiling, and dropped
+    entirely the moment the peer's onion answers (a reachable peer reconnects
+    promptly). See the Tor transport section in :class:`MeshNode`."""
+
+    next_attempt: float = 0.0
+    interval: float = _TOR_BACKOFF_MIN_SECS
 
 
 class Peer:
@@ -279,6 +304,20 @@ class MeshNode:
         # Last-known dialable addresses of authenticated peers (persisted), so a
         # dropped link can be redialed even while the beacon channel is dead.
         self._peer_cache = peercache.load()
+        # Known peers' PERMANENT onion addresses (onions.json), learned from their
+        # SIGNED adverts — the WAN sibling of _peer_cache. Once two nodes have met
+        # (on the LAN, or by a manual paste) either can redial the other over Tor
+        # from anywhere, no public IP or DNS. See onioncache / mesh/tor.py.
+        self._onion_cache = onioncache.load()
+        # The Tor transport (a persistent onion service + SOCKS dialer). Created in
+        # start() only when DIPLOMAT_MESH_TOR=1 and the `tor` binary is present;
+        # None keeps the node LAN-only, exactly as before.
+        self.tor: tor.TorTransport | None = None
+        # Onions currently being dialed over Tor (auto-redial or a manual paste),
+        # so a repeat tick / paste never opens a second circuit to the same peer.
+        self._tor_dialing: set[str] = set()
+        # Per-peer Tor reconnect backoff, keyed by peer id (see _TorBackoff).
+        self._tor_backoff: dict[str, _TorBackoff] = {}
         # Whether the last beacon tick failed EVERY send — the node is then
         # undiscoverable and says so (activity feed + snapshot) instead of failing
         # silently. Flips back on the first successful send. See _note_beacon_sends.
@@ -352,10 +391,16 @@ class MeshNode:
             sees=tuple(sorted(pid for pid, p in self.peers.items() if p.linked)),
             duties_enabled=self.local.duties_enabled,
             pubkey=self.key.public_b64 if self.key else "",
+            onion=self._onion_address(),
             stats=self.stats.advertise(real_frac=self._real_quota_frac(),
                                        pace=self._token_pace),
         )
         return self._sign_advert(info)
+
+    def _onion_address(self) -> str:
+        """This node's advertised permanent onion, or '' when Tor is off / not yet
+        bootstrapped. Rides inside the signed advert (bound to the device key)."""
+        return (self.tor.onion_address() or "") if self.tor else ""
 
     def _sign_advert(self, info: NodeInfo) -> NodeInfo:
         """Attach our Ed25519 signature over the advert's canonical form. This
@@ -453,6 +498,21 @@ class MeshNode:
             loop.create_task(self._heartbeat_loop(), name="mesh-heartbeat"),
             loop.create_task(self._snapshot_loop(), name="mesh-snapshot"),
         ]
+        if config.tor_enabled() and tor.available():
+            # The WAN transport is an ATOMIC add-on: it brings up a persistent onion
+            # service (bootstrapped in the background so the LAN stays usable
+            # immediately) and a reconnect loop that Tor-dials known-but-unseen peers
+            # with exponential backoff. Nothing else in the node changes.
+            self.tor = tor.TorTransport(identity.mesh_dir(),
+                                        binary_path=tor.binary() or "tor")
+            self._tasks.append(loop.create_task(self._tor_serve(),
+                                                name="mesh-tor-serve"))
+            self._tasks.append(loop.create_task(self._tor_redial_loop(),
+                                                name="mesh-tor-redial"))
+        elif config.tor_enabled():
+            activity.log("mesh", "warn",
+                         "Mesh/Tor: DIPLOMAT_MESH_TOR=1 but no 'tor' binary found "
+                         "— running LAN-only.")
         await self._refresh_tokens()  # seed the auto token state before the first advert
         self._last_token_refresh = time.monotonic()
         self._recompute("start")
@@ -493,6 +553,11 @@ class MeshNode:
         if self._udp_send:
             self._udp_send.close()
             self._udp_send = None
+        # Terminate our Tor child last, so any in-flight link teardown above still
+        # had a live SOCKS/onion to close against.
+        if self.tor is not None:
+            await self.tor.stop()
+            self.tor = None
 
     def request_stop(self) -> None:
         self._stopping.set()
@@ -834,6 +899,129 @@ class MeshNode:
                 )
                 self._dial_tasks.add(task)
                 task.add_done_callback(self._dial_tasks.discard)
+
+    # MARK: - Tor transport (WAN reachability over onion services)
+
+    async def _tor_serve(self) -> None:
+        """Bring our onion service up in the background, then advertise it. The node
+        is fully usable on the LAN while Tor bootstraps (which can take tens of
+        seconds). Once the onion is live, gossip our new advert so currently-linked
+        peers record where to reach us over Tor after we part ways on the LAN."""
+        if self.tor is None:
+            return
+        if await self.tor.start(self.tcp_port,
+                                bootstrap_timeout=config.tor_bootstrap_timeout()):
+            self._bump_and_gossip()  # our advert now carries an `onion`
+
+    def _remember_onion(self, peer_id: str, onion: str, fingerprint: str) -> None:
+        """Persist a peer's permanent onion (from its SIGNED advert). Written on
+        change only; the WAN sibling of :meth:`_remember_peer`, bounded the same way
+        so a churn of ids can't grow onions.json without limit."""
+        onion = tor.normalize_onion(onion)
+        if not onion:
+            return
+        prev = self._onion_cache.get(peer_id)
+        if prev is not None and prev.onion == onion and prev.fingerprint == fingerprint:
+            return
+        self._onion_cache.pop(peer_id, None)
+        self._onion_cache[peer_id] = onioncache.OnionEntry(
+            onion=onion, fingerprint=fingerprint)
+        while len(self._onion_cache) > _MAX_PEER_CACHE:
+            del self._onion_cache[next(iter(self._onion_cache))]
+        onioncache.save(self._onion_cache)
+
+    def _tor_reset_backoff(self, peer_id: str) -> None:
+        """The onion answered — clear the backoff so a reachable peer that flaps
+        reconnects promptly instead of waiting out a grown interval."""
+        self._tor_backoff.pop(peer_id, None)
+
+    def _tor_grow_backoff(self, peer_id: str) -> None:
+        """The onion did not answer — schedule the next probe further out, doubling
+        the interval up to the ceiling."""
+        b = self._tor_backoff.get(peer_id) or _TorBackoff()
+        b.next_attempt = time.monotonic() + b.interval
+        b.interval = min(b.interval * _TOR_BACKOFF_FACTOR, _TOR_BACKOFF_MAX_SECS)
+        self._tor_backoff[peer_id] = b
+
+    def _tor_redial_targets(self, now: float) -> list[tuple[str, str]]:
+        """Known peers to probe over Tor right now: we hold an onion for them, our
+        id sorts below theirs (the same smaller-id-dials rule as the LAN, so exactly
+        one side dials), they are neither linked nor already being dialed, and their
+        backoff is due. A peer linked over EITHER transport is skipped — that is the
+        whole of "no aggressive switching": a live link is never disturbed."""
+        out: list[tuple[str, str]] = []
+        for peer_id, entry in self._onion_cache.items():
+            onion = tor.normalize_onion(entry.onion)
+            if not onion or not self.local.id < peer_id:
+                continue
+            peer = self.peers.get(peer_id)
+            if (peer is not None and peer.linked) or onion in self._tor_dialing:
+                continue
+            b = self._tor_backoff.get(peer_id)
+            if b is not None and now < b.next_attempt:
+                continue
+            out.append((peer_id, onion))
+        return out
+
+    async def _tor_redial_loop(self) -> None:
+        """Probe known-but-unseen peers over Tor with per-peer exponential backoff.
+        A no-op until the onion service is up (bootstrap runs in ``_tor_serve``),
+        and it never touches a peer that already has a live link."""
+        while True:
+            await asyncio.sleep(_TOR_REDIAL_TICK_SECS)
+            if self.tor is None or self.tor.onion_address() is None:
+                continue
+            now = time.monotonic()
+            for peer_id, onion in self._tor_redial_targets(now):
+                task = asyncio.get_running_loop().create_task(
+                    self._tor_dial(onion, peer_id=peer_id),
+                    name=f"mesh-tor-dial-{peer_id[:6]}")
+                self._dial_tasks.add(task)
+                task.add_done_callback(self._dial_tasks.discard)
+
+    async def _tor_dial(self, onion: str, peer_id: str | None = None) -> None:
+        """Open a Tor link to ``onion`` and run it EXACTLY like a LAN-dialed link
+        (same hello/auth/trust handshake, same message pump). ``peer_id`` (when
+        known) dedups against an existing link and drives the reachability backoff;
+        a manual paste passes None and dials unconditionally — reaching a peer you
+        may never have met on the LAN."""
+        if self.tor is None:
+            return
+        onion = tor.normalize_onion(onion)
+        if not onion:
+            return
+        peer = self.peers.get(peer_id) if peer_id else None
+        if (peer is not None and peer.linked) or onion in self._tor_dialing:
+            return
+        self._tor_dialing.add(onion)
+        try:
+            try:
+                reader, writer = await asyncio.wait_for(
+                    self.tor.dial(onion), timeout=_TOR_DIAL_TIMEOUT_SECS)
+            except (OSError, ValueError, RuntimeError, asyncio.TimeoutError):
+                # Onion unreachable (down, descriptor not published, tor busy) —
+                # back off and let the loop try again later. A manual paste (no
+                # peer_id) simply reports nothing; the operator can re-issue it.
+                if peer_id:
+                    self._tor_grow_backoff(peer_id)
+                return
+            # The onion answered → the peer is reachable; clear its backoff.
+            if peer_id:
+                self._tor_reset_backoff(peer_id)
+            self._send_hello(writer)
+            try:
+                await writer.drain()
+            except (ConnectionError, OSError):
+                self._issued_nonce.pop(writer, None)
+                writer.close()
+                return
+            # A Tor-dialed link is talking to whoever answered the onion, so — as on
+            # a LAN dial — nothing is trusted until the first message is a valid
+            # hello. ``host`` is the onion: it shows in the snapshot as the peer's
+            # address but is kept OUT of the LAN redial cache (see _learn_node).
+            await self._run_link(reader, writer, onion, authenticated=False)
+        finally:
+            self._tor_dialing.discard(onion)
 
     # MARK: - TCP links + control sessions
 
@@ -1226,6 +1414,13 @@ class MeshNode:
             # key we now trust closes that cold-join window. See _forget_claims.
             if info.pubkey and info.pubkey != prev_pubkey:
                 self._evict_unbound_claims(info.id, info.pubkey)
+            # Persist the peer's permanent onion the moment we learn it — from the
+            # SIGNED advert, so it is bound to the device key (a hello on the LAN,
+            # the "first sight" exchange, or a verified gossip relay). This is what
+            # lets us redial the peer over Tor once the LAN link is gone.
+            if info.onion:
+                self._remember_onion(info.id, info.onion,
+                                     crypto.fingerprint_of(info.pubkey))
         peer.addr = host or peer.addr
         # Refresh the liveness clock only from a proof-of-life this node can trust: the
         # peer's OWN direct link (link_writer set), or gossip about a peer we are NOT
@@ -1263,8 +1458,14 @@ class MeshNode:
                 peer.linked_since = time.monotonic()  # link came up: start the uptime clock
             peer.writer = link_writer
             # A hello on the peer's own link is the one authenticated source of a
-            # dialable address (source IP + the listen port it advertises).
-            self._remember_peer(info.id, host, info.tcp_port)
+            # dialable LAN address (source IP + the listen port it advertises). A
+            # Tor-dialed link's host is an .onion — its permanent address is
+            # persisted separately (above, from the signed advert), and it must NOT
+            # enter the LAN redial cache (that cache dials host:tcpPort directly,
+            # which can't resolve an onion). The onion never fools this: an inbound
+            # Tor link arrives on loopback, an outbound one carries the .onion host.
+            if not host.endswith(".onion"):
+                self._remember_peer(info.id, host, info.tcp_port)
             self._bump_and_gossip()  # our `sees` changed
         if fresh:
             # Relay a genuinely-newer advertisement learned via GOSSIP onward, so a
@@ -2819,6 +3020,24 @@ class MeshNode:
                 return {"t": "error", "reason": "level must be 'personal' or 'foreign'"}
             self._flush_state()
             return {"t": "ok"}
+        if t == "tor-connect":
+            # Manual paste: initiate a Tor link to a peer's onion, even one we never
+            # met on the LAN. Dials unconditionally (bypasses smaller-id-dials), as a
+            # background one-shot so this reply returns immediately — the operator
+            # watches --status for the peer to appear.
+            onion = tor.normalize_onion(msg.get("onion"))
+            if not onion:
+                return {"t": "error",
+                        "reason": "tor-connect needs a valid v3 onion address"}
+            if self.tor is None or self.tor.onion_address() is None:
+                return {"t": "error",
+                        "reason": "the Tor transport is not enabled or not ready "
+                                  "on this node (set DIPLOMAT_MESH_TOR=1)"}
+            task = asyncio.get_running_loop().create_task(
+                self._tor_dial(onion), name="mesh-tor-connect")
+            self._dial_tasks.add(task)
+            task.add_done_callback(self._dial_tasks.discard)
+            return {"t": "ok", "onion": onion}
         if t == "stop":
             self.request_stop()
             return {"t": "ok"}
@@ -2921,6 +3140,9 @@ class MeshNode:
             # classification against the local allowlist, and its dispatch surplus.
             d["verified"] = p.verified_fp is not None
             d["fingerprint"] = p.verified_fp or crypto.fingerprint_of(p.info.pubkey)
+            # Which transport the current link runs over — an .onion peer address
+            # means we reached (or were reached by) this peer over Tor, else LAN.
+            d["transport"] = "tor" if str(p.addr).endswith(".onion") else "lan"
             d["trust"] = self._peer_trust(p)
             d["surplus"] = round(p.info.surplus(), 3)
             # Real connection uptime for the badge (seconds since the link came up);
@@ -2942,6 +3164,15 @@ class MeshNode:
             # e.g. an OS privacy gate); lets a UI say so instead of showing an
             # inexplicably empty mesh.
             "beaconBlocked": self._beacon_blocked,
+            # The Tor transport's state: whether it's enabled, whether the onion
+            # service is live yet, and this node's permanent onion (also on `self`).
+            # Lets a UI show WAN reachability and give the operator an address to
+            # share for a manual `tor-connect`.
+            "tor": {
+                "enabled": config.tor_enabled(),
+                "ready": self.tor is not None and self.tor.onion_address() is not None,
+                "onion": self.tor.onion_address() if self.tor is not None else None,
+            },
             "trusted": [{"fingerprint": fp, "label": lbl}
                         for fp, lbl in sorted(self._trusted.items())],
             # The local ban list, mirrored read-only (like `trusted`) so the

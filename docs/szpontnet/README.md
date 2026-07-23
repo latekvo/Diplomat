@@ -136,7 +136,8 @@ don't change behavior. The major stays `0` until the protocol is declared stable
 | **v0.1.0** | discovery, links, gossip, deterministic placement, dispatch/failover, the personal/foreign trust model, server + API key, and authenticated gossip (signed advertisements + overrides). |
 | **v0.2.0** | [work-claims](12-work-claims.md) — leaderless origination-dedup leases. |
 | **v0.3.0** | [foreign zero-trust execution](13-foreign-execution.md) — confined compute for a foreign request, with the result returned (`job-result`/`job-ack`) for the originator to act on. |
-| **v0.4.0** *(this revision)* | [foreign accountability](13-foreign-execution.md#accountability-deadline-reminder-ban) — a foreign executor that accepts a SzpontRequest owes its result within a completion deadline (6 h floor); past it the originator asks "is this ready?" (`job-reminder`), an agent judges any "still working" plea (`job-progress`), and a device that goes silent or fails to deliver is **banned** (machine-local, marked for the operator; trust level `banned`, `ban`/`unban` commands). |
+| **v0.4.0** | [foreign accountability](13-foreign-execution.md#accountability-deadline-reminder-ban) — a foreign executor that accepts a SzpontRequest owes its result within a completion deadline (6 h floor); past it the originator asks "is this ready?" (`job-reminder`), an agent judges any "still working" plea (`job-progress`), and a device that goes silent or fails to deliver is **banned** (machine-local, marked for the operator; trust level `banned`, `ban`/`unban` commands). |
+| **v0.5.0** *(this revision)* | [Tor transport](14-tor-transport.md) — opt-in WAN reachability with no public IP or domain: each node runs a permanent v3 onion service, advertises its `.onion` inside its signed advert, and redials known-but-unseen peers over Tor with exponential backoff (or a manual `--tor-connect` paste). A Tor link runs the identical handshake/trust as a LAN link. Additive: `v` stays `1`, and a LAN-only node is wire-unchanged. |
 
 This is **separate from the wire `v` field**, which every message carries
 ([04](04-messages.md)). That field is the **wire-compatibility version**, a single
@@ -166,6 +167,7 @@ The chapters are ordered so you can implement bottom-up:
 | 11 | [Trust & load balancing](11-trust-and-balancing.md) | personal/foreign trust, per-node quota stats, surplus-first load balancing (a relative burn-down ratio), refusals |
 | 12 | [Work claims](12-work-claims.md) | leaderless origination dedup: who runs externally-triggered work, and failover when the owner dies |
 | 13 | [Foreign execution](13-foreign-execution.md) | zero-trust: run a foreign request's compute confined, return the result for the originator to act on; accountability: the completion deadline, the readiness reminder, and the ban |
+| 14 | [Tor transport](14-tor-transport.md) | opt-in WAN reachability: a permanent onion service per node, onion exchange in the signed advert, reconnect with exponential backoff, and manual `--tor-connect` |
 | A | [Appendix A - annotated trace](appendix-a-trace.md) | a full two-node session, message by message |
 | B | [Appendix B - constants](appendix-b-constants.md) | every default value in one table |
 
