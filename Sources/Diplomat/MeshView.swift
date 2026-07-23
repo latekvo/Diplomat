@@ -219,19 +219,24 @@ struct MeshView: View {
     /// unreliably) and simply wrong when the network is down.
     private var discoverabilityBanner: some View {
         let networkDown = store.meshState?.beaconBlockReason == "network-down"
+        // Build the detail string OUTSIDE the view builder: a ternary over long string
+        // concatenations inside `Text(...)` makes SwiftUI's type-checker blow past its
+        // time budget ("unable to type-check in reasonable time"). Plain typed lets are
+        // trivial for it; the builder only ever sees `Text(detail)`.
+        let downText: String = "No usable network — even a loopback send fails, so the "
+            + "network stack looks down. Check this machine's connection; it isn't a "
+            + "permissions problem."
+        let gateText: String = "macOS is blocking this node's Local Network access. If "
+            + "“Python” already appears enabled in Privacy & Security → Local Network, "
+            + "the grant hasn't taken effect — toggle it off and back on."
+        let detail: String = networkDown ? downText : gateText
         return HStack(spacing: 8) {
             Image(systemName: "wifi.exclamationmark")
                 .font(.system(size: 15, weight: .bold)).foregroundStyle(.red)
             VStack(alignment: .leading, spacing: 1) {
                 Text("DEVICE IS NOT DISCOVERABLE")
                     .font(.system(size: 11, weight: .heavy)).foregroundStyle(.red)
-                Text(networkDown
-                     ? "No usable network — even a loopback send fails, so the network "
-                       + "stack looks down. Check this machine's connection; it isn't a "
-                       + "permissions problem."
-                     : "macOS is blocking this node's Local Network access. If “Python” "
-                       + "already appears enabled in Privacy & Security → Local Network, "
-                       + "the grant hasn't taken effect — toggle it off and back on.")
+                Text(detail)
                     .font(.system(size: 9)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
