@@ -715,6 +715,64 @@ def test_nodeinfo_pubkey_and_stats_roundtrip():
     assert bare.surplus() == protocol.NEUTRAL_SURPLUS == 1.0
 
 
+def test_nodeinfo_onion_roundtrip_and_omitted_when_empty():
+    """The Tor reachability handle is additive, exactly like pubkey/stats: it
+    roundtrips when present and is OMITTED from the wire when empty, so a LAN-only
+    or older node stays byte-identical to before."""
+    onion = "a" * 56 + ".onion"
+    n = NodeInfo(id="a", name="a", platform="linux", tier=3, tokens="ok",
+                 pubkey="QUJDRA==", onion=onion)
+    d = n.to_dict()
+    assert d["onion"] == onion
+    assert NodeInfo.from_dict(d) == n
+    bare = NodeInfo(id="b", name="b", platform="linux", tier=3, tokens="ok")
+    assert "onion" not in bare.to_dict()
+    assert NodeInfo.from_dict(bare.to_dict()).onion == ""
+
+
+def test_nodeinfo_onion_is_covered_by_the_advert_signature(tmp_path, monkeypatch):
+    """The onion rides INSIDE the signed advert, so a relay cannot tamper with it
+    to redirect a Tor dial: swapping the onion invalidates the signature and the
+    advert is dropped by `_advert_authentic`, exactly as for any other field."""
+    monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    k = crypto.load_or_create()
+    assert k is not None  # cryptography is a hard test dep
+    onion = "b" * 56 + ".onion"
+    info = NodeInfo(id="a", name="a", platform="linux", tier=3, tokens="ok",
+                    pubkey=k.public_b64, onion=onion)
+    raw = _dc_replace(
+        info, sig=k.sign(protocol.advert_signing_bytes(info.to_dict()))).to_dict()
+    # Honest advert verifies…
+    assert crypto.verify(raw["pubkey"], protocol.advert_signing_bytes(raw), raw["sig"])
+    # …a relay swapping the onion does NOT.
+    tampered = dict(raw, onion="c" * 56 + ".onion")
+    assert not crypto.verify(
+        tampered["pubkey"], protocol.advert_signing_bytes(tampered), tampered["sig"])
+
+
+def test_onioncache_roundtrip_and_tolerates_garbage(tmp_path, monkeypatch):
+    """The onion cache (onions.json) is a best-effort accelerator like peers.json:
+    it roundtrips, and a malformed file or entry is dropped, never raised."""
+    monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
+    from diplomat_app.mesh import onioncache
+
+    cache = {"peer-a": onioncache.OnionEntry(onion="a" * 56 + ".onion",
+                                             fingerprint="ff00"),
+             "peer-b": onioncache.OnionEntry(onion="b" * 56 + ".onion")}
+    onioncache.save(cache)
+    assert onioncache.load() == cache
+    # A malformed entry (no onion) and a non-dict entry are dropped silently.
+    onioncache.path().write_text(
+        '{"ok": {"onion": "z.onion"}, "bad": {"fingerprint": "x"}, "junk": 5}',
+        encoding="utf-8")
+    loaded = onioncache.load()
+    assert set(loaded) == {"ok"} and loaded["ok"].onion == "z.onion"
+    # A wholly malformed file is an empty cache, not a crash.
+    onioncache.path().write_text("not json", encoding="utf-8")
+    assert onioncache.load() == {}
+
+
 def test_legacy_stats_without_a_surplus_field_rank_neutrally():
     """A peer on an older build advertises only the absolute quotaLeft/usageAvg
     pair. Those are a different scale (capacity units, commonly >1), so converting
