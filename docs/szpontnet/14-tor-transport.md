@@ -28,11 +28,15 @@ link is indistinguishable from a LAN link to everything above the socket
 The link layer already consumes a bare `(reader, writer)` stream, so the transport
 seam is tiny:
 
-- **Inbound needs no new listener.** The onion service forwards its virtual port
-  (`ONION_VIRTPORT`) to the node's *existing* loopback TCP listener
-  (`HiddenServicePort <ONION_VIRTPORT> 127.0.0.1:<tcpPort>`). A connection arriving
-  over Tor therefore lands on the same accept path as a LAN link
-  ([03](03-transport.md#inbound-the-accepter)) and runs the same handshake.
+- **Inbound adds no protocol surface.** The onion service forwards its virtual port
+  (`ONION_VIRTPORT`) to a small **dedicated loopback listener** the transport owns
+  (`HiddenServicePort <ONION_VIRTPORT> 127.0.0.1:<forward-port>`), which hands the
+  stream straight to the *same* accept path a LAN link uses
+  ([03](03-transport.md#inbound-the-accepter)) and runs the same handshake. The
+  dedicated listener (rather than reusing the node's shared TCP port) is what lets an
+  inbound Tor connection be **tagged** as arriving over Tor — which the node uses to
+  keep a Tor link's endpoint out of the LAN redial cache and to refuse operator
+  control (`ctl`) sessions over the onion (see [Security notes](#security-notes)).
 - **Outbound is the one new primitive:** a minimal SOCKS5 CONNECT through the local
   `tor` process's SOCKS port to `<peer-onion>:<ONION_VIRTPORT>`. The tunneled stream
   is handed to the same link pump a LAN dial uses.
@@ -56,13 +60,17 @@ missing or stale entry costs at most a fenced dial.
 
 ## Reconnecting: reachability with backoff
 
-A node probes each known-but-unseen peer by **attempting the Tor dial** — reaching
-the onion at all *is* the reachability check. The same
+A node probes each known-but-unseen peer by **attempting the Tor dial and running
+the handshake**. The same
 [dial rule](02-discovery.md#the-dial-rule-smaller-id-dials) as the LAN applies
 (only the smaller-id side auto-dials, so exactly one link forms per pair), and the
-schedule is **per-peer exponential backoff**: it starts small, doubles on each miss
-up to a ceiling, and **resets the moment the onion answers**, so a reachable peer
-that flaps reconnects promptly while an unreachable one is probed ever more rarely.
+schedule is **per-peer exponential backoff**: each probe pre-schedules the next one
+further out (doubling up to a ceiling), and a probe that **establishes a link resets
+the schedule**, so a reachable peer that flaps reconnects promptly while an
+unreachable one is probed ever more rarely. The reset keys on a *link actually
+binding*, not on a bare TCP answer — an onion that answers but never completes the
+handshake (a rotated join secret, a reassigned/squatted address) stays throttled
+rather than being re-dialed every tick.
 
 **No aggressive switching.** A peer that already holds a live link — over *either*
 transport — is never probed or re-dialed. The LAN↔Tor quality gap is small, so a
@@ -103,10 +111,27 @@ stable across restarts.
   ([11](11-trust-and-balancing.md)), so a Tor peer is `foreign` until its
   fingerprint is in your allowlist, exactly like a LAN peer.
 - The [join fence](03-transport.md#the-join-fence) (`DIPLOMAT_MESH_SECRET`) applies
-  unchanged over Tor.
-- Enabling Tor advertises a stable onion to your mesh peers; it does not expose the
-  node to the open internet beyond the onion service, which only forwards to the
-  mesh's own loopback listener.
+  unchanged over Tor: the secret check is transport-agnostic, and because a Tor
+  circuit is encrypted the token is not exposed in transit (as it would be on the
+  plaintext LAN).
+- **Operator control (`ctl`) is never served over the onion.** The onion forwards
+  only to the accept path, and that path serves *two* kinds of opener: peer links
+  (`hello`) and the operator's local **control** channel (`ctl` — `status`,
+  `dispatch`, `set-attr`, `trust`/`ban`, `set-default-trust`, `tor-connect`, `stop`).
+  Only `hello` is meant to arrive from the network; `ctl` is the operator driving
+  their *own* node over loopback. A connection arriving over Tor is therefore refused
+  outright if it opens a `ctl` session — otherwise the full node-control surface would
+  be reachable by anyone holding the advertised onion, and in an **open mesh** (no
+  join secret — the documented home-LAN default) with no authentication at all. Peer
+  linking, dispatch, gossip, and trust over Tor are unaffected; only the local admin
+  channel is fenced off from the WAN.
+- Enabling Tor advertises a stable onion to your mesh peers. Beyond that onion
+  service — which forwards only peer links to the loopback accept path (control
+  sessions refused, per the point above) — it does not expose the node to the open
+  internet. Note the corollary of the join fence: on an **open** mesh, a Tor peer can
+  still *link* and (subject to [trust](11-trust-and-balancing.md)) exchange gossip and
+  dispatch with you from the WAN, exactly as an unauthenticated LAN peer could on the
+  LAN. If that is not what you want, set a `DIPLOMAT_MESH_SECRET`.
 
 ## Configuration
 

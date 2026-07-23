@@ -8,11 +8,15 @@ speaks only to :class:`TorTransport` through a two-method seam — ``onion_addre
 
 How it plugs in with almost no new surface:
 
-- **Inbound** needs no new listener. The onion service forwards its virtual port
-  to the node's *existing* loopback TCP listener (``HiddenServicePort
-  <ONION_VIRTPORT> 127.0.0.1:<tcpPort>``), so a connection arriving over Tor lands
-  on the same accept path as a LAN link and runs the identical hello/auth/trust
-  handshake. "Behaves exactly like the LAN" is therefore free.
+- **Inbound** adds no *protocol* surface. The onion service forwards its virtual
+  port to a small DEDICATED loopback listener this transport owns
+  (``HiddenServicePort <ONION_VIRTPORT> 127.0.0.1:<forward-port>``), which hands the
+  stream straight to the *same* accept path a LAN link uses (``_on_tcp_connection``)
+  and runs the identical hello/auth/trust handshake — so "behaves exactly like the
+  LAN" is free. The dedicated listener (rather than reusing the node's shared TCP
+  port) is what lets an inbound Tor link be TAGGED ``tor``, which the node relies on
+  to keep a Tor link's endpoint out of the LAN redial cache and to refuse operator
+  control (``ctl``) sessions over the onion. See ``node._on_tor_inbound``.
 - **Outbound** is the only genuinely new primitive: a minimal, dependency-free
   SOCKS5 CONNECT through the local ``tor`` process's SOCKS port to
   ``<peer-onion>:<ONION_VIRTPORT>``. The resulting stream is handed to the same
@@ -171,6 +175,12 @@ class TorTransport:
                 self._binary, "-f", str(torrc),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
+                # Match the transport's line budget instead of asyncio's 64KB default:
+                # a stdout line longer than the reader's limit makes readline() raise
+                # LimitOverrunError, which would kill _pump_stdout — after which tor's
+                # stdout pipe fills and tor blocks. Real tor log lines are short, so
+                # this only removes a latent foot-gun (a chatty/hostile binary).
+                limit=protocol.MAX_LINE_BYTES,
             )
         except OSError as exc:
             activity.log("mesh", "warn", f"Mesh/Tor: cannot launch tor ({exc})")
@@ -195,22 +205,33 @@ class TorTransport:
         return True
 
     async def _await_bootstrap(self, timeout: float) -> bool:
-        """Wait for 'Bootstrapped 100%', but FAIL FAST if the tor process exits
-        first (a bad torrc, a crash) instead of blocking the whole timeout for an
-        already-dead process."""
+        """Wait for 'Bootstrapped 100%', but FAIL FAST if the tor process exits first
+        (a bad torrc, a crash) OR the stdout pump dies, instead of blocking the whole
+        timeout. The pump (``_pump_stdout``) is what *sets* ``_bootstrapped``, so a
+        dead pump means the bootstrap line can never be observed — waiting out the
+        full timeout for a signal that will never arrive is pointless (it would stall
+        the node's Tor bring-up for the entire ``bootstrap_timeout``)."""
         boot = asyncio.ensure_future(self._bootstrapped.wait())
         dead = asyncio.ensure_future(self._proc.wait())
+        # The pump task is owned by stop() (which retrieves its result); watch it for
+        # completion here but NEVER cancel it — only boot/dead are ours to cancel.
+        pump = self._pump_task
+        waits = {boot, dead} | ({pump} if pump is not None else set())
         try:
             done, _pending = await asyncio.wait(
-                {boot, dead}, timeout=timeout,
-                return_when=asyncio.FIRST_COMPLETED)
+                waits, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
         finally:
             for t in (boot, dead):
                 if not t.done():
                     t.cancel()
         if self._bootstrapped.is_set():
             return True
-        why = "tor exited during bootstrap" if dead in done else "bootstrap timed out"
+        if dead in done:
+            why = "tor exited during bootstrap"
+        elif pump is not None and pump in done:
+            why = "tor stdout pump stopped during bootstrap"
+        else:
+            why = "bootstrap timed out"
         activity.log("mesh", "warn", f"Mesh/Tor: {why} — staying LAN-only")
         return False
 

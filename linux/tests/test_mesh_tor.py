@@ -270,6 +270,133 @@ def test_tor_inbound_closing_before_a_hello_does_not_leak_the_transport_map(
     assert node._link_transport == {}
 
 
+# MARK: - security: the onion serves peer links, never operator control (ctl)
+
+
+class _RecWriter(_FakeWriter):
+    """A _FakeWriter that records close() and answers drain(), for driving the
+    accept path directly."""
+
+    def __init__(self):
+        super().__init__()
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+    async def drain(self):
+        pass
+
+
+class _LineReader:
+    """Feeds a fixed list of lines, then EOF — a stand-in for a StreamReader."""
+
+    def __init__(self, lines):
+        self._lines = list(lines)
+
+    async def readline(self):
+        return self._lines.pop(0) if self._lines else b""
+
+
+def test_ctl_over_tor_is_refused_while_lan_ctl_is_served(tmp_path, monkeypatch):
+    """The onion must carry peer links (`hello`) but NEVER the operator's local
+    control channel (`ctl`): serving ctl over the advertised onion would expose the
+    full node-control surface (stop/set-attr/trust/dispatch/tor-connect) to anyone
+    holding the onion, unauthenticated in an open mesh. An inbound connection tagged
+    `tor` that opens a ctl session is refused outright; an untagged (LAN/loopback)
+    ctl is served exactly as before."""
+    node = _fresh_node(tmp_path, monkeypatch)
+    served: list[bool] = []
+
+    async def _fake_run_ctl(_reader, _writer):
+        served.append(True)
+
+    monkeypatch.setattr(node, "_run_ctl", _fake_run_ctl)
+    ctl_line = protocol.encode({"t": "ctl"})
+
+    # Tor-tagged inbound ctl → refused: _run_ctl never runs, the writer is closed.
+    tor_w = _RecWriter()
+    node._link_transport[tor_w] = "tor"
+    asyncio.run(node._on_tcp_connection(_LineReader([ctl_line]), tor_w))
+    assert served == [] and tor_w.closed
+
+    # LAN/loopback inbound ctl (untagged) → served, exactly as before.
+    lan_w = _RecWriter()
+    asyncio.run(node._on_tcp_connection(_LineReader([ctl_line]), lan_w))
+    assert served == [True]
+
+
+# MARK: - backoff: reset on a real link bind, not on a bare SOCKS answer
+
+
+def test_tor_dial_answer_without_a_link_keeps_the_backoff(tmp_path, monkeypatch):
+    """An onion that ANSWERS the SOCKS dial but never binds a mesh link (rotated
+    secret, a squatted address, answer-then-drop) must stay throttled — the dial
+    pre-schedules the next probe and only a real link bind clears it. Resetting on the
+    bare answer would defeat the backoff and thrash a fresh Tor circuit every tick."""
+    node = _fresh_node(tmp_path, monkeypatch)
+
+    class _AnswerNoLinkTor:
+        def onion_address(self):
+            return _ONION_B
+
+        async def dial(self, _onion):
+            return _LineReader([]), _RecWriter()  # answers, then immediate EOF = no bind
+
+        async def stop(self):
+            pass
+
+    node.tor = _AnswerNoLinkTor()
+    asyncio.run(node._tor_dial(_ONION_B, peer_id="p"))
+    # Pre-scheduled once (interval doubled off the floor) and NOT reset by the answer.
+    assert "p" in node._tor_backoff
+    assert node._tor_backoff["p"].interval == (
+        nodemod._TOR_BACKOFF_MIN_SECS * nodemod._TOR_BACKOFF_FACTOR)
+    assert node._tor_backoff["p"].next_attempt > 0
+    assert _ONION_B not in node._tor_dialing  # in-flight guard released
+
+
+def test_a_bound_tor_link_resets_the_backoff(tmp_path, monkeypatch):
+    """The complement: when a Tor link actually BINDS, the peer's reconnect backoff is
+    cleared so a reachable peer that flaps redials promptly."""
+    node = _fresh_node(tmp_path, monkeypatch, "a")
+    bkey = crypto.DeviceKey(Ed25519PrivateKey.generate())
+    braw = _signed_advert(bkey, "peer-b", onion=_ONION_B, tcp_port=40901)
+    node._tor_backoff["peer-b"] = nodemod._TorBackoff(next_attempt=9e9, interval=300)
+    fw = _FakeWriter()
+    node._link_transport[fw] = "tor"
+    node._learn_node(NodeInfo.from_dict(braw), "127.0.0.1", fw, raw=braw)
+    assert node.peers["peer-b"].transport == "tor"
+    assert "peer-b" not in node._tor_backoff  # bind cleared the schedule
+
+
+# MARK: - lifecycle: bootstrap fails fast if the stdout pump dies
+
+
+def test_await_bootstrap_fails_fast_when_the_pump_dies(tmp_path):
+    """_await_bootstrap must not block the whole bootstrap_timeout when the stdout
+    pump (which is what SETS _bootstrapped) has died while the tor proc lingers —
+    otherwise a dead pump stalls Tor bring-up for the full timeout. It watches the
+    pump task and returns False the moment the pump completes."""
+
+    class _NeverProc:
+        returncode = None
+
+        async def wait(self):
+            await asyncio.Event().wait()  # proc never exits
+
+    async def _run():
+        t = tor.TorTransport(tmp_path, binary_path="/nonexistent")
+        t._proc = _NeverProc()
+        t._pump_task = asyncio.ensure_future(asyncio.sleep(0))  # a pump that finishes
+        await asyncio.sleep(0)  # let it complete
+        # A 30s bootstrap timeout, but a wait_for cap of 3s: the fix must return well
+        # inside 3s (the pump is done); the unfixed code would block the full 30s.
+        return await asyncio.wait_for(t._await_bootstrap(30.0), timeout=3.0)
+
+    assert asyncio.run(_run()) is False
+
+
 # MARK: - the capstone: a real link over an injected dialer, with a dispatch on it
 
 

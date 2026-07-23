@@ -541,6 +541,14 @@ class MeshNode:
         self._tasks = []
         for t in list(self._dial_tasks):
             t.cancel()
+        # Await the cancelled dial tasks (incl. in-flight Tor dials) rather than just
+        # dropping them, so a non-CancelledError raised during their teardown surfaces
+        # here instead of as a swallowed "Task exception was never retrieved". Tor is
+        # still alive at this point (stopped last, below), so an outbound dial's writer
+        # close has a live SOCKS to close against.
+        for t in list(self._dial_tasks):
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await t
         self._dial_tasks.clear()
         # Confined-result watcher tasks live in their own set (created per foreign
         # job); cancel them too or they outlive the node — waking to touch links we
@@ -953,6 +961,10 @@ class MeshNode:
             return
         prev = self._onion_cache.get(peer_id)
         if prev is not None and prev.onion == onion and prev.fingerprint == fingerprint:
+            # Unchanged content on a fresh hello: refresh recency in memory only (no
+            # on-disk change, so no I/O), so a peer we keep hearing from is never the
+            # eviction victim under a flood of new ids — parity with _remember_peer.
+            self._onion_cache[peer_id] = self._onion_cache.pop(peer_id)
             return
         self._onion_cache.pop(peer_id, None)
         self._onion_cache[peer_id] = onioncache.OnionEntry(
@@ -967,13 +979,15 @@ class MeshNode:
         onioncache.save(self._onion_cache)
 
     def _tor_reset_backoff(self, peer_id: str) -> None:
-        """The onion answered — clear the backoff so a reachable peer that flaps
-        reconnects promptly instead of waiting out a grown interval."""
+        """A Tor link to this peer actually BOUND — clear the backoff so a reachable
+        peer that flaps reconnects promptly instead of waiting out a grown interval.
+        Fired on link establishment (see _learn_node), not on a bare SOCKS answer."""
         self._tor_backoff.pop(peer_id, None)
 
     def _tor_grow_backoff(self, peer_id: str) -> None:
-        """The onion did not answer — schedule the next probe further out, doubling
-        the interval up to the ceiling."""
+        """Schedule the peer's next Tor probe further out, doubling the interval up to
+        the ceiling. Called before each dial attempt (a link binding then clears it),
+        so an onion that never links is probed geometrically less often."""
         b = self._tor_backoff.get(peer_id) or _TorBackoff()
         b.next_attempt = time.monotonic() + b.interval
         b.interval = min(b.interval * _TOR_BACKOFF_FACTOR, _TOR_BACKOFF_MAX_SECS)
@@ -1030,24 +1044,27 @@ class MeshNode:
         if (peer is not None and peer.linked) or onion in self._tor_dialing:
             return
         self._tor_dialing.add(onion)
+        # Pre-schedule the NEXT probe before dialing: assume this attempt is a miss and
+        # let a genuine Tor link BINDING clear it (in _learn_node). Resetting the
+        # backoff on the bare SOCKS answer instead would let an onion that answers TCP
+        # but never links — a rotated join secret, a squatted/reassigned onion, an
+        # answer-then-drop — defeat the backoff entirely and thrash a fresh (expensive)
+        # circuit every tick forever. A manual paste (no peer_id) is unthrottled.
+        if peer_id:
+            self._tor_grow_backoff(peer_id)
         try:
             try:
                 reader, writer = await asyncio.wait_for(
                     self.tor.dial(onion), timeout=_TOR_DIAL_TIMEOUT_SECS)
             except (OSError, ValueError, RuntimeError, asyncio.TimeoutError,
                     asyncio.IncompleteReadError):
-                # Onion unreachable (down, descriptor not published, tor busy) —
-                # back off and let the loop try again later. A manual paste (no
-                # peer_id) simply reports nothing; the operator can re-issue it.
-                # IncompleteReadError (an EOFError subclass, NOT an OSError) is the
-                # SOCKS peer closing mid-handshake — a reachability failure like any
-                # other, not a crash the dial task should escape with.
-                if peer_id:
-                    self._tor_grow_backoff(peer_id)
+                # Onion unreachable (down, descriptor not published, tor busy) — the
+                # next probe is already scheduled above, so just let the loop retry.
+                # A manual paste (no peer_id) simply reports nothing; the operator can
+                # re-issue it. IncompleteReadError (an EOFError subclass, NOT an
+                # OSError) is the SOCKS peer closing mid-handshake — a reachability
+                # failure like any other, not a crash the dial task should escape with.
                 return
-            # The onion answered → the peer is reachable; clear its backoff.
-            if peer_id:
-                self._tor_reset_backoff(peer_id)
             self._link_transport[writer] = "tor"  # this link runs over Tor
             self._send_hello(writer)
             try:
@@ -1087,6 +1104,20 @@ class MeshNode:
             writer.close()
             return
         if first.get("t") == "ctl":
+            # `ctl` is the operator's LOCAL control channel (status, dispatch,
+            # set-attr, trust/ban, set-default-trust, tor-connect, stop). It is driven
+            # over loopback by the operator's own CLI/panel and MUST NOT be reachable
+            # over the Tor onion: the onion is advertised to every mesh peer (and can
+            # be pasted around), so serving ctl over it would expose the full
+            # node-control surface to anyone holding the onion — and in an OPEN mesh
+            # (no join secret, the documented home-LAN default) with no authentication
+            # at all. Peer LINKS (`hello`) legitimately arrive over Tor; control
+            # sessions do not. An inbound Tor connection is tagged `tor` by
+            # _on_tor_inbound BEFORE this runs, so refuse ctl on it outright. See
+            # docs/szpontnet/14#security-notes.
+            if self._link_transport.get(writer) == "tor":
+                writer.close()
+                return
             # A server configured with an API key requires it on the opening ctl,
             # on top of the join secret: the secret admits mesh members, the key
             # authenticates who may drive/submit work to this node.
@@ -1516,6 +1547,13 @@ class MeshNode:
                 peer.linked_since = time.monotonic()  # link came up: start the uptime clock
             peer.writer = link_writer
             peer.transport = self._link_transport.get(link_writer, "lan")
+            if peer.transport == "tor":
+                # A real Tor link BOUND (not merely a SOCKS answer) is the true "this
+                # onion is usable" signal — clear the reconnect backoff so a reachable
+                # peer that flaps reconnects promptly. An onion that answers but never
+                # gets here (secret rotated, address squatted) keeps its pre-scheduled
+                # backoff and is throttled, exactly as intended. See _tor_dial.
+                self._tor_reset_backoff(info.id)
             # A hello on the peer's OWN link (a direct LAN link or a manual paste) is
             # the one authenticated source of a peer's permanent onion — persist it so
             # we can redial over Tor after this link drops. (Deliberately NOT from
