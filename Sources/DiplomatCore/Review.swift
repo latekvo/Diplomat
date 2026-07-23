@@ -228,6 +228,8 @@ public struct ReviewConfig {
         } else if effSoftApprove, let b = blocks["softApprove"] {
             out.append(b)
         }
+        // Every comment/review this run posts carries the Diplomat attribution tag.
+        if let b = blocks["diplomatTag"] { out.append(b) }
 
         return out.joined(separator: "\n\n")
     }
@@ -262,6 +264,8 @@ public struct ReviewConfig {
         // No final verdict for my own PR — I don't approve my own work. The reviewer-
         // findings block above already covers replying to threads (so the separate reply
         // block is redundant here).
+        // Thread replies this run posts carry the Diplomat attribution tag.
+        if let b = blocks["diplomatTag"] { out.append(b) }
         return out.filter { !$0.isEmpty }.joined(separator: "\n\n")
     }
 
@@ -301,6 +305,8 @@ public struct ReviewConfig {
             out.append(fill(b))
         }
         if let trailer = blocks["trailer"] { out.append(trailer) }
+        // Every review/comment this run posts carries the Diplomat attribution tag.
+        if let b = blocks["diplomatTag"] { out.append(b) }
         return out.filter { !$0.isEmpty }.joined(separator: "\n\n")
     }
 
@@ -351,6 +357,8 @@ public struct ReviewConfig {
         } else if effSoftApprove, let b = blocks["softApprove"] {
             out.append(b)
         }
+        // Whichever branch the PR falls into, tag every comment/review it posts.
+        if let b = blocks["diplomatTag"] { out.append(b) }
 
         return out.filter { !$0.isEmpty }.joined(separator: "\n\n")
     }

@@ -13,3 +13,5 @@ For review threads that OTHERS have left on these PRs: address each one, and nev
 Keep dispatching swarms until every PR you go through comes back clean.
 
 No AI attribution anywhere in git/GitHub — commits authored as me, no Co-Authored-By, no "Generated with" taglines.
+
+Diplomat attribution tag — a REQUIRED exception to the no-attribution rule, for GitHub commentary only: every comment, inline review comment, review body, and review-thread reply you post as part of this task must begin with the exact prefix `\[[Diplomat](https://github.com/latekvo/Diplomat)\]: ` (a literal `[`, then the word Diplomat as a Markdown link to https://github.com/latekvo/Diplomat, then a literal `]`, then a colon and a space), followed by the text you would otherwise have written — so it renders as "[Diplomat]: <your text>". This is the ONE sanctioned attribution; it applies to posted comment/review text ONLY and never changes commit messages, commit authorship, or the no-Co-Authored-By / no-"Generated with" git rules, which remain in force.

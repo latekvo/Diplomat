@@ -49,6 +49,8 @@ public struct AuditConfig {
         if openPRs {
             if let b = blocks["openPRs"] { out.append(fill(b)) }
             if let b = blocks["noAttribution"] { out.append(fill(b)) }
+            // PRs/comments this run opens carry the Diplomat attribution tag.
+            if let b = blocks["diplomatTag"] { out.append(fill(b)) }
         } else if let b = blocks["readOnly"] {
             out.append(fill(b))
         }
