@@ -399,11 +399,11 @@ struct MeshView: View {
         let meta = tokenMeta(tokens)
         var left: String
         if let s = sessionPct {
-            left = "5h \(Int((s * 100).rounded()))%"
-            if let w = weekPct { left += " · wk \(Int((w * 100).rounded()))%" }
+            left = "5h \(clampedInt((s * 100).rounded()))%"
+            if let w = weekPct { left += " · wk \(clampedInt((w * 100).rounded()))%" }
             left += " left"
         } else {
-            left = "≈\(Int((legacyPct * 100).rounded()))% left"
+            left = "≈\(clampedInt((legacyPct * 100).rounded()))% left"
         }
         if !auto { left += " · pinned" }
         return HStack(spacing: 4) {
@@ -575,7 +575,7 @@ struct MeshView: View {
     }
 
     private func fmtDur(_ secs: Double) -> String {
-        let s = Int(secs)
+        let s = clampedInt(secs)
         if s < 60 { return "\(s)s" }
         if s < 3600 { return "\(s / 60)m" }
         if s < 86400 { return "\(s / 3600)h" }

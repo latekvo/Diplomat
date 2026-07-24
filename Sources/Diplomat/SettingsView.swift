@@ -53,7 +53,7 @@ struct SettingsView: View {
     private var meshBlurb: String {
         "Runs a small peer-to-peer node that discovers the other Diplomat machines on "
             + "your LAN (UDP beacons) and routes duty work — reviews, conflict fixes, the full "
-            + "E2E audit — to whichever node fits the placement policy (weakest-first by default, "
+            + "E2E audit — to whichever node fits the placement policy (surplus-first by default, "
             + "token- and platform-aware). Configure the whole mesh from the ⬡ Mesh screen (the "
             + "⬡ button in the panel header). Off by default; no node opens on the network until "
             + "you enable it here."

@@ -192,7 +192,7 @@ public enum Fmt {
     /// A compact elapsed-duration label from a raw seconds count: "just now", "12m",
     /// "1h 3m", "2d 4h". Used for how long an in-use device has been held.
     public static func duration(_ seconds: TimeInterval) -> String {
-        let s = Int(max(0, seconds))
+        let s = clampedInt(max(0, seconds))
         if s < 60 { return "just now" }
         let m = (s / 60) % 60
         let h = (s / 3600) % 24
@@ -201,6 +201,19 @@ public enum Fmt {
         if h > 0 { return m > 0 ? "\(h)h \(m)m" : "\(h)h" }
         return "\(m)m"
     }
+}
+
+/// Non-trapping Double→Int for a value decoded from an untrusted snapshot — a peer's
+/// gossiped `state.json`, or a corrupt / hand-edited local state file. Swift's `Int(Double)`
+/// TRAPS (fatalError) once the magnitude exceeds Int's range, so a poisoned or absurd
+/// *finite* value (e.g. a peer's `1e300`) would crash the app the moment it renders. This
+/// clamps instead. For in-range values it truncates toward zero exactly like `Int(Double)`,
+/// so normal display output is unchanged; only the out-of-range / non-finite case differs.
+public func clampedInt(_ x: Double) -> Int {
+    guard x.isFinite else { return 0 }
+    if x >= 9.0e18 { return Int.max }   // < Int.max (~9.22e18); above this Int(x) would trap
+    if x <= -9.0e18 { return Int.min }
+    return Int(x)
 }
 
 // MARK: - GitHub API (GraphQL via the gh CLI)

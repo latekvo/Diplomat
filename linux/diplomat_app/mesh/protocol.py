@@ -161,6 +161,17 @@ def _finite(v: object) -> float:
     return f
 
 
+def _frac(v: object) -> float:
+    """A REQUIRED [0, 1] fraction from the wire (``tokensPct``): finite via ``_finite`` (a
+    non-finite value still drops the whole advert), then CLAMPED to [0, 1]. The clamp
+    closes the finite-but-huge sibling of the non-finite hazard above: a peer's
+    ``tokensPct: 1e300`` is valid RFC-8259 JSON, so unlike ∞/NaN it does NOT blank the
+    strict Swift decoder — but the snapshot renders it as ``Int((pct * 100).rounded())``,
+    a TRAPPING Double→Int conversion that crashes the macOS app on an out-of-range
+    magnitude. Clamping keeps the advertised fraction inside its documented range."""
+    return min(1.0, max(0.0, _finite(v)))
+
+
 def _reject_non_finite(v: object) -> None:
     """Raise ``ValueError`` if ``v`` contains a non-finite float anywhere (recursing
     through dicts and lists) — an advert's ``stats`` and ``dutiesEnabled`` are
@@ -333,7 +344,7 @@ class NodeInfo:
                 tokens=str(d.get("tokens", "ok")),
                 strength_auto=bool(d.get("strengthAuto", True)),
                 tokens_auto=bool(d.get("tokensAuto", True)),
-                tokens_pct=_finite(d.get("tokensPct", 1.0)),
+                tokens_pct=_frac(d.get("tokensPct", 1.0)),
                 tokens_session_pct=_opt_frac(d.get("tokensSessionPct")),
                 tokens_week_pct=_opt_frac(d.get("tokensWeekPct")),
                 tcp_port=int(d.get("tcpPort", 0)),

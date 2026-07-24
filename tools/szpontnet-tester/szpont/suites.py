@@ -1314,6 +1314,17 @@ def case_k_tampered_dropped(rep: Reporter, ctx: Context) -> None:
         if relay is None:
             return
         time.sleep(1.0)
+        # Positive control (mirrors K1): a correctly self-signed third-party advert MUST be
+        # relay-learned first, so the drop below is attributable to the stale signature —
+        # not to a candidate that never learns any relayed advert (which would pass trivially).
+        good_id = "9" * 32
+        relay.send(codec.node_update(NodeInfo.from_dict(
+            _signed_advert(ProbeKey(), good_id, name="ok"))))
+        learned = wait_until(lambda: good_id in _peer_ids(scn.candidate.snapshot()), 6.0)
+        rep.check("a correctly self-signed third-party advert is learned via relay (positive control)",
+                  bool(learned), "MUST", "11-trust-and-balancing#conformance",
+                  "so the tampered-advert drop below is attributable to the bad signature, "
+                  "not missing relay support")
         tamp_id = "1" * 32
         # Signed correctly, then a field (name) is changed → the sig is now stale.
         relay.send({"t": "node", "node": _signed_advert(
@@ -1337,6 +1348,17 @@ def case_k_wrong_key_dropped(rep: Reporter, ctx: Context) -> None:
         if relay is None:
             return
         time.sleep(1.0)
+        # Positive control (mirrors K1): a correctly self-signed third-party advert MUST be
+        # relay-learned first, so the drop below is attributable to the wrong-key signature —
+        # not to a candidate that never learns any relayed advert (which would pass trivially).
+        good_id = "8" * 32
+        relay.send(codec.node_update(NodeInfo.from_dict(
+            _signed_advert(ProbeKey(), good_id, name="ok"))))
+        learned = wait_until(lambda: good_id in _peer_ids(scn.candidate.snapshot()), 6.0)
+        rep.check("a correctly self-signed third-party advert is learned via relay (positive control)",
+                  bool(learned), "MUST", "11-trust-and-balancing#conformance",
+                  "so the wrong-key-advert drop below is attributable to the bad signature, "
+                  "not missing relay support")
         wk_id = "2" * 32
         advertised, other = ProbeKey(), ProbeKey()
         # pubkey = `advertised`, but the sig is produced by `other` → verifies

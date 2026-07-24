@@ -1106,7 +1106,7 @@ private struct DeviceRow: View {
     /// Whole minutes idle (nil under a minute). The daemon floors idleMs to minutes.
     private var idleMinutes: Int? {
         guard let ms = dev.idleMs, ms >= 60_000 else { return nil }
-        return Int(ms / 60_000)
+        return clampedInt(ms / 60_000)
     }
     private func idleColor(_ minutes: Int) -> Color {
         if minutes >= 14 { return .red }        // reclaim at 15m — imminent

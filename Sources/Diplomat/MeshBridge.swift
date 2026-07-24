@@ -83,7 +83,9 @@ enum MeshBridge {
         let s = snap ?? readState()
         guard let pid = s?.pid, pid > 0 else { return false }
         // kill(pid, 0): 0 ⇒ alive & ours; -1/EPERM ⇒ alive but not ours; -1/ESRCH ⇒ gone.
-        if kill(pid_t(pid), 0) == 0 { return true }
+        // pid_t(clamping:) not pid_t(): a corrupt state.json pid > Int32.max would TRAP the
+        // plain Int32 conversion; clamping yields an out-of-range pid that kill reports ESRCH.
+        if kill(pid_t(clamping: pid), 0) == 0 { return true }
         return errno == EPERM
     }
 

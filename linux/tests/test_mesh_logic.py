@@ -184,6 +184,15 @@ def test_nodeinfo_drops_non_finite_floats_from_the_wire():
                 {"id": "x", "dutiesEnabled": {"cfg": {"weight": float("inf")}}},  # nested
                 {"id": "x", "dutiesEnabled": {"cfg": [1.0, -1e999]}}):  # nested list
         assert NodeInfo.from_dict(bad) is None, bad
+    # A large FINITE tokensPct is valid RFC JSON (NOT dropped like ∞/NaN), but the Swift
+    # snapshot renders it as Int((pct*100).rounded()) — a trapping conversion that would
+    # crash the app. So it is CLAMPED into [0,1], not passed through, and the peer stays
+    # visible (a hostile peer can't crash the panel by advertising a huge pct).
+    clamped = NodeInfo.from_dict({"id": "x", "tokensPct": 1e300})
+    assert clamped is not None and clamped.tokens_pct == 1.0
+    assert clamped.to_dict()["tokensPct"] == 1.0
+    neg = NodeInfo.from_dict({"id": "x", "tokensPct": -5.0})
+    assert neg is not None and neg.tokens_pct == 0.0
     # A well-formed advert still decodes, and its snapshot serializes as strict RFC JSON.
     good = NodeInfo.from_dict({"id": "x", "tokensPct": 0.4, "epoch": 1784.5,
                                "dutiesEnabled": {"review": False, "audit": True},

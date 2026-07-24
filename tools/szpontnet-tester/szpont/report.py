@@ -103,6 +103,11 @@ class Reporter:
 
     def summary(self) -> int:
         must_fail = should_fail = passed = skipped = 0
+        # A case that RAISED before recording its checks (case_error) contributes 0 FAILs,
+        # so gating the verdict on `must_fail` alone would certify a candidate that WEDGED a
+        # case as CONFORMANT. A case that could not run is a candidate failure, not a pass —
+        # it blocks conformance exactly like a MUST failure.
+        errored = [case for case in self.cases if case.error]
         for case in self.cases:
             for c in case.checks:
                 if c.result == PASS:
@@ -120,6 +125,7 @@ class Reporter:
         self._line(f"  passed     : {passed}", color=PASS)
         self._line(f"  MUST fails : {must_fail}", color=FAIL if must_fail else None)
         self._line(f"  SHOULD warn: {should_fail}", color=WARN if should_fail else None)
+        self._line(f"  errored    : {len(errored)}", color=FAIL if errored else None)
         self._line(f"  skipped    : {skipped}", color=SKIP)
 
         if must_fail:
@@ -130,7 +136,13 @@ class Reporter:
             self._line("\nMUST failures (block conformance):", color=FAIL)
             for f in failing:
                 self._line(f"  - {f}", color=FAIL)
+        if errored:
+            self._line("\nErrored cases (block conformance — a case that could not run "
+                       "is a candidate failure, not a pass):", color=FAIL)
+            for case in errored:
+                self._line(f"  - {case.id}: {case.error}", color=FAIL)
 
-        verdict = "NON-CONFORMANT" if must_fail else "CONFORMANT (v1)"
-        self._line(f"\nVerdict: {verdict}", color=FAIL if must_fail else PASS, bold=True)
-        return 1 if must_fail else 0
+        blocked = bool(must_fail) or bool(errored)
+        verdict = "NON-CONFORMANT" if blocked else "CONFORMANT (v1)"
+        self._line(f"\nVerdict: {verdict}", color=FAIL if blocked else PASS, bold=True)
+        return 1 if blocked else 0
