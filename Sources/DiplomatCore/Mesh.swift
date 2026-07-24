@@ -180,7 +180,12 @@ public struct MeshPlacement: Equatable {
         MeshPlacement(
             strategy: dto.strategy ?? defaultStrategy,
             tokenAware: dto.tokenAware ?? true,
-            spread: (dto.spread ?? []).map { MeshSpread(platform: $0.platform, count: $0.count ?? 1) }
+            // `max(1, …)` mirrors the Python node's `_parse_spread`: a non-positive count
+            // normalizes to 1. A spread entry dispatches to >= 1 node, and leaving a
+            // gossiped `count: 0`/negative unnormalized would desync the two placement
+            // consumers (a duty that looks placed but silently never runs), so both
+            // front-ends must resolve it identically.
+            spread: (dto.spread ?? []).map { MeshSpread(platform: $0.platform, count: max(1, $0.count ?? 1)) }
         )
     }
 

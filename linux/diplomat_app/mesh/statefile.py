@@ -55,11 +55,15 @@ def write_state(snapshot: dict) -> None:
 
 
 def read_state() -> dict | None:
-    """Decode the snapshot; None if the node has never run here."""
+    """Decode the snapshot; None if the node has never run here, OR the file is
+    corrupt/hostile (unreadable, non-JSON, or valid JSON that is NOT an object).
+    Every caller treats None as "no live node", so a bad file degrades instead of
+    crashing them on ``state.get(...)`` / ``state.items()`` (mirrors appconfig.read)."""
     try:
-        return json.loads(state_path().read_text(encoding="utf-8"))
+        data = json.loads(state_path().read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
+    return data if isinstance(data, dict) else None
 
 
 def _pid_alive(pid: int) -> bool:
@@ -69,6 +73,12 @@ def _pid_alive(pid: int) -> bool:
         return False
     except (PermissionError, OSError):
         return True  # exists but not ours
+    except (OverflowError, ValueError):
+        # A pid outside the OS's pid_t range (e.g. an oversized int in a corrupt/hostile
+        # state.json) makes os.kill raise OverflowError — not an OSError, so it would
+        # otherwise escape node_running() and crash the tray/launcher/panel. Such a value
+        # can never name a live process, so treat it as dead.
+        return False
     return True
 
 
@@ -78,7 +88,7 @@ def node_running(state: dict | None = None) -> bool:
     resumes with a stale ``updatedAt`` but a live node that recovers.)"""
     if state is None:
         state = read_state()
-    if not state:
-        return False
+    if not isinstance(state, dict):
+        return False  # never run here, or a caller passed a corrupt/non-object snapshot
     pid = state.get("pid")
     return isinstance(pid, int) and pid > 0 and _pid_alive(pid)

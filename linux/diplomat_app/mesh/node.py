@@ -2713,6 +2713,13 @@ class MeshNode:
             # However this watcher ends (result, timeout, crash), the job is no
             # longer "running" for reminder purposes.
             self._confined_running.pop(job.id, None)
+            # Reap the sandbox's staging artifact: it was already read into the
+            # (re-sent-from-memory) `job-result`, so the file is spent. Left behind,
+            # ``results/out-*.json`` accretes one file per distinct foreign job id — an
+            # attacker-amplifiable disk leak, since the id is theirs (the in-flight cap
+            # bounds concurrency, not the total ever staged).
+            with contextlib.suppress(OSError):
+                result_path.unlink(missing_ok=True)
             # Release the executor-claim we minted for this key (docs/szpontnet/12), so
             # the same work becomes ownable again — a re-run if it wasn't resolved, and
             # failover if this node dies (the liveness lease). Guard on THIS job.id so a
@@ -2736,8 +2743,13 @@ class MeshNode:
 
     @staticmethod
     def _read_result_file(path) -> str:
-        """Read a confined artifact as text, truncated to the wire cap."""
-        raw = path.read_bytes()
+        """Read a confined artifact as text, truncated to the wire cap. Reads at most
+        ``_MAX_RESULT_BYTES + 1`` bytes rather than slurping the whole file: the sandbox
+        writes this file and its size is influenced by the (untrusted) foreign prompt, so
+        a hostile runner emitting a multi-GB artifact must not be pulled entirely into
+        memory just to be truncated away."""
+        with open(path, "rb") as f:
+            raw = f.read(_MAX_RESULT_BYTES + 1)
         if len(raw) > _MAX_RESULT_BYTES:
             raw = raw[:_MAX_RESULT_BYTES]
         return raw.decode("utf-8", errors="replace")

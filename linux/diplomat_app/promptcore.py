@@ -47,13 +47,24 @@ def build_prompt(config: dict) -> str:
     binary = core_bin()
     env = dict(os.environ)
     env.setdefault("DIPLOMAT_CORE", str(core.core_dir()))
-    proc = subprocess.run(  # noqa: S603 — argv is a literal list, not a shell string
-        [binary, "build-prompt"],
-        input=json.dumps(config),
-        capture_output=True,
-        text=True,
-        env=env,
-    )
+    try:
+        proc = subprocess.run(  # noqa: S603 — argv is a literal list, not a shell string
+            [binary, "build-prompt"],
+            input=json.dumps(config),
+            capture_output=True,
+            text=True,
+            env=env,
+            # Prompt assembly is local string work (milliseconds). A bound is mandatory:
+            # this runs synchronously on the Qt UI thread (wizard "Spawn") and inside the
+            # auto-fix poll worker while `_poll_lock` is held — an unbounded hang (a wedged
+            # or misbuilt core binary) would freeze the tray forever or silently no-op
+            # every future poll. Every other subprocess in the app is likewise timed.
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired as exc:
+        # Surface as RuntimeError, which callers already catch (releasing the poll lock),
+        # rather than letting TimeoutExpired escape a Qt slot / wedge the worker.
+        raise RuntimeError("diplomat-core timed out assembling the prompt") from exc
     if proc.returncode != 0:
         raise RuntimeError(f"diplomat-core failed: {proc.stderr.strip()}")
     return proc.stdout
