@@ -161,6 +161,30 @@ def test_gossiped_onion_is_not_remembered_only_a_direct_link(tmp_path, monkeypat
     assert "peer-b" not in node._onion_cache
 
 
+def test_a_forged_or_tampered_onion_advert_is_not_learned(tmp_path, monkeypatch):
+    """The onion is trusted only because it rides INSIDE the peer's signed advert, and
+    the signature gate (``_advert_authentic`` in ``_on_message``) is what enforces that.
+    Driving a forged advert through ``_on_message`` — the real inbound entry, ABOVE
+    ``_learn_node`` — proves the gate itself: an advert whose ``sig`` doesn't cover its
+    ``onion`` (a relay swapped it) or that dropped its ``sig`` is rejected whole, so the
+    onion is never cached and could never become a Tor-dial reflector target."""
+    node = _fresh_node(tmp_path, monkeypatch, "a")
+    bkey = crypto.DeviceKey(Ed25519PrivateKey.generate())
+    fw = _FakeWriter()
+
+    # (a) a relay swapped the onion AFTER signing → the sig no longer verifies.
+    tampered = _signed_advert(bkey, "peer-b", onion=_ONION_B, tcp_port=40901)
+    tampered["onion"] = _ONION_A  # sig covers _ONION_B; the wire now says _ONION_A
+    assert node._on_message({"t": "hello", "node": tampered}, "127.0.0.1", fw) is None
+    assert node._onion_cache == {}  # forged advert dropped whole — nothing learned
+
+    # (b) the sig is stripped off an otherwise-keyed advert → likewise rejected.
+    unsigned = _signed_advert(bkey, "peer-b", onion=_ONION_B, tcp_port=40901)
+    unsigned.pop("sig", None)
+    assert node._on_message({"t": "hello", "node": unsigned}, "127.0.0.1", fw) is None
+    assert node._onion_cache == {}
+
+
 # MARK: - backoff
 
 
@@ -177,7 +201,8 @@ def test_backoff_grows_geometrically_and_resets(tmp_path, monkeypatch):
     for _ in range(20):
         node._tor_grow_backoff("p")
     assert node._tor_backoff["p"].interval == nodemod._TOR_BACKOFF_MAX_SECS
-    # The onion answering clears the schedule so a reachable peer reconnects fast.
+    # A bound Tor link (not a bare SOCKS answer) clears the schedule, so a reachable
+    # peer that flaps reconnects fast — see test_tor_dial_answer_without_a_link_keeps...
     node._tor_reset_backoff("p")
     assert "p" not in node._tor_backoff
 
@@ -205,6 +230,49 @@ def test_redial_targets_respects_dial_rule_liveness_and_backoff(tmp_path, monkey
     del node.peers[hi]
     node._tor_backoff[hi] = nodemod._TorBackoff(next_attempt=now + 100, interval=20)
     assert node._tor_redial_targets(now) == []
+
+
+def test_redial_loop_skips_dialing_while_the_onion_is_not_live(tmp_path, monkeypatch):
+    """The redial loop is a no-op until the onion service is actually up: it gates each
+    tick on ``tor.onion_address() is None`` (a dead or still-booting tor). With a due
+    PERSONAL target present, a live onion dials it; but while ``onion_address()`` returns
+    None the loop must dial NOTHING — else a node whose tor died dials out through a dead
+    SOCKS port forever. (The injected _FakeTor is always live, so this gate had no node-
+    level test.)"""
+    monkeypatch.setattr(nodemod, "_TOR_REDIAL_TICK_SECS", 0.01)
+    node = _fresh_node(tmp_path, monkeypatch, DIPLOMAT_MESH_DEFAULT_TRUST="personal")
+    node.local = _dc_replace(node.local, id="0" * 32)  # sorts below the target
+    target = "z" * 32
+    node._onion_cache = {target: onioncache.OnionEntry(onion=_ONION_B)}
+    dialed: list[str | None] = []
+
+    async def _fake_dial(onion, peer_id=None):
+        dialed.append(peer_id)
+
+    monkeypatch.setattr(node, "_tor_dial", _fake_dial)
+
+    class _TorLiveness:
+        def __init__(self, onion):
+            self._onion = onion
+
+        def onion_address(self):
+            return self._onion
+
+    async def run_briefly():
+        node.tor = _TorLiveness(None)  # tor present but the onion is not live yet
+        t = asyncio.get_running_loop().create_task(node._tor_redial_loop())
+        try:
+            await asyncio.sleep(0.05)   # several ticks with a dead onion
+            assert dialed == []          # not live → dials nothing, despite a due target
+            node.tor = _TorLiveness(_ONION_B)  # onion comes up
+            await _await_until(lambda: target in dialed, 2.0,
+                               "a due personal target was not dialed once the onion was live")
+        finally:
+            t.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await t
+
+    asyncio.run(run_briefly())
 
 
 def test_tor_dial_backs_off_when_the_socks_handshake_dies(tmp_path, monkeypatch):
@@ -326,6 +394,28 @@ def test_ctl_over_tor_is_refused_while_lan_ctl_is_served(tmp_path, monkeypatch):
     lan_w = _RecWriter()
     asyncio.run(node._on_tcp_connection(_LineReader([ctl_line]), lan_w))
     assert served == [True]
+
+
+def test_unencodable_secret_or_apikey_closes_cleanly_not_crashes(tmp_path, monkeypatch):
+    """A hostile opener can put a JSON lone surrogate (``"\\ud800"``) in the join secret
+    or the ctl apiKey; it decodes to a Python str that a plain ``.encode("utf-8")``
+    rejects with UnicodeEncodeError. ``_on_tcp_connection`` runs OUTSIDE any try, so an
+    escaping raise would orphan the socket — an unbounded, pre-auth fd leak reachable
+    even on the default open mesh. The join/key compares must be surrogate-safe: the bad
+    value simply mismatches and the writer is closed, no raise escapes the callback."""
+    # (a) hello with a lone-surrogate secret (open mesh: any non-empty secret mismatches).
+    node = _fresh_node(tmp_path, monkeypatch, "a")
+    w = _RecWriter()
+    hello = protocol.encode({"t": "hello", "secret": "\ud800"})
+    asyncio.run(node._on_tcp_connection(_LineReader([hello]), w))  # must NOT raise
+    assert w.closed
+
+    # (b) ctl with a lone-surrogate apiKey on a node that requires an API key.
+    keyed = _fresh_node(tmp_path, monkeypatch, "k", DIPLOMAT_MESH_API_KEY="realkey")
+    w2 = _RecWriter()
+    ctl = protocol.encode({"t": "ctl", "apiKey": "\ud800"})
+    asyncio.run(keyed._on_tcp_connection(_LineReader([ctl]), w2))  # must NOT raise
+    assert w2.closed
 
 
 # MARK: - backoff: reset on a real link bind, not on a bare SOCKS answer

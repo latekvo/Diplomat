@@ -87,17 +87,35 @@ def binary() -> str | None:
     return shutil.which(os.environ.get("DIPLOMAT_MESH_TOR_BINARY", "tor"))
 
 
+_PR_SET_PDEATHSIG = 1
+
+# Preload libc in the PARENT, at import, so the pdeathsig hook the forked child runs
+# (between fork and exec) makes NO dlopen/import call. Both take non-async-signal-safe
+# locks, and the mesh process is not strictly single-threaded at the fork (asyncio keeps a
+# lingering ThreadPoolExecutor worker), so doing them child-side is technically fork-unsafe;
+# calling an already-loaded handle's ``prctl`` (a bare syscall wrapper) in the child is
+# async-signal-safe. Best-effort: on a non-Linux / missing-libc host the load fails and
+# _pdeathsig simply no-ops (the child still execs).
+try:
+    import ctypes as _ctypes
+
+    _libc = _ctypes.CDLL("libc.so.6", use_errno=True)
+except Exception:  # noqa: BLE001 — non-Linux / no libc: pdeathsig degrades to a no-op
+    _libc = None
+
+
 def _pdeathsig() -> None:
     """Run in the forked child before exec: ask the Linux kernel to SIGTERM this
     process when its parent (the mesh node) dies — even on SIGKILL/OOM, which skip our
     graceful ``stop()``. Best-effort: any failure (non-Linux, missing libc, denied
     syscall) is swallowed so the child still execs. ``prctl(PR_SET_PDEATHSIG, ...)``
-    persists across exec for a non-setuid binary like ``tor``."""
+    persists across exec for a non-setuid binary like ``tor``. libc is preloaded in the
+    parent (see above) so this child-side hook makes no async-signal-unsafe dlopen/import
+    call — only the bare ``prctl`` syscall."""
+    if _libc is None:
+        return
     with contextlib.suppress(Exception):
-        import ctypes
-
-        _PR_SET_PDEATHSIG = 1
-        ctypes.CDLL("libc.so.6", use_errno=True).prctl(_PR_SET_PDEATHSIG, signal.SIGTERM)
+        _libc.prctl(_PR_SET_PDEATHSIG, signal.SIGTERM)
 
 
 def _write_torrc(tor_dir: Path, socks_port: int, forward_to_port: int) -> Path:
@@ -200,11 +218,11 @@ class TorTransport:
                 self._binary, "-f", str(torrc),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
-                # Match the transport's line budget instead of asyncio's 64KB default:
-                # a stdout line longer than the reader's limit makes readline() raise
-                # LimitOverrunError, which would kill _pump_stdout — after which tor's
-                # stdout pipe fills and tor blocks. Real tor log lines are short, so
-                # this only removes a latent foot-gun (a chatty/hostile binary).
+                # Match the transport's line budget instead of asyncio's 64KB default so
+                # a normal tor log line is never split. A line longer than the limit makes
+                # readline() discard it and raise ValueError, which _pump_stdout catches and
+                # skips — so an oversized line from a chatty/hostile binary can't kill the
+                # pump (a dead pump stops draining → tor's stdout pipe fills → tor blocks).
                 limit=protocol.MAX_LINE_BYTES,
                 # Tie tor's lifetime to ours: if the node dies WITHOUT running stop()
                 # (SIGKILL, OOM-kill, crash), the kernel SIGTERMs tor too. Without this
@@ -269,7 +287,15 @@ class TorTransport:
     async def _pump_stdout(self) -> None:
         assert self._proc is not None and self._proc.stdout is not None
         while True:
-            line = await self._proc.stdout.readline()
+            try:
+                line = await self._proc.stdout.readline()
+            except ValueError:
+                # A stdout line longer than MAX_LINE_BYTES: readline() discards it
+                # (clearing its buffer) and raises ValueError. Skip it and keep draining
+                # rather than let one oversized line kill the pump and wedge tor on a full
+                # stdout pipe. Real tor log lines are short, so this only forecloses a
+                # latent foot-gun (a chatty/hostile binary).
+                continue
             if not line:
                 return
             text = line.decode("utf-8", "replace")

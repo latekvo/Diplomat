@@ -137,6 +137,18 @@ def _auth_challenge(nonce: str) -> bytes:
     return _AUTH_CONTEXT + nonce.encode()
 
 
+def _utf8(s: str) -> bytes:
+    """UTF-8-encode a possibly-hostile wire string TOTALLY. A JSON string can decode to
+    a lone surrogate (e.g. ``"\\ud800"``), which a plain ``.encode("utf-8")`` rejects with
+    UnicodeEncodeError (a ValueError subclass). Encoding with ``surrogatepass`` makes it
+    total, so a hostile ``secret``/``apiKey`` compares UNEQUAL via ``hmac.compare_digest``
+    instead of RAISING into — and thus orphaning the socket on — the pre-auth accept path
+    (``_on_tcp_connection`` runs outside any try, so an escaping raise leaks the fd). An
+    operator's own valid config value encodes byte-identically either way. Mirrors the
+    ``surrogatepass`` the work_key/job_id staging paths already use."""
+    return s.encode("utf-8", "surrogatepass")
+
+
 def _own_addresses() -> set[str]:
     """This machine's own IP addresses (loopback + LAN), so a node can tell its
     own looped-back beacon from a genuine peer sharing its id. Best-effort; an
@@ -209,9 +221,11 @@ class _Awaiting:
 @dataclass
 class _TorBackoff:
     """Per-peer Tor reconnect schedule: when the next probe is due (monotonic) and
-    the current interval — doubled on each miss up to a ceiling, and dropped
-    entirely the moment the peer's onion answers (a reachable peer reconnects
-    promptly). See the Tor transport section in :class:`MeshNode`."""
+    the current interval — doubled on each miss up to a ceiling, and dropped entirely
+    the moment a Tor link to the peer actually BINDS (a valid signed hello), not on a
+    bare SOCKS answer — so a reachable peer reconnects promptly while an onion that
+    answers TCP but never links stays throttled. See the Tor transport section in
+    :class:`MeshNode`."""
 
     next_attempt: float = 0.0
     interval: float = _TOR_BACKOFF_MIN_SECS
@@ -1136,8 +1150,7 @@ class MeshNode:
         # The join fence: with DIPLOMAT_MESH_SECRET set, an opener (peer OR control
         # client) that doesn't present the token gets silently dropped.
         if first.get("t") in ("ctl", "hello") and not hmac.compare_digest(
-                str(first.get("secret", "")).encode("utf-8"),
-                config.secret().encode("utf-8")):
+                _utf8(str(first.get("secret", ""))), _utf8(config.secret())):
             writer.close()
             return
         if first.get("t") == "ctl":
@@ -1159,8 +1172,7 @@ class MeshNode:
             # on top of the join secret: the secret admits mesh members, the key
             # authenticates who may drive/submit work to this node.
             if config.api_key() and not hmac.compare_digest(
-                    str(first.get("apiKey", "")).encode("utf-8"),
-                    config.api_key().encode("utf-8")):
+                    _utf8(str(first.get("apiKey", ""))), _utf8(config.api_key())):
                 writer.close()
                 return
             await self._run_ctl(reader, writer)
@@ -1279,9 +1291,12 @@ class MeshNode:
         bound = self._peer_by_writer(writer)
         if bound is not None:
             bound.last_seen = time.monotonic()
-        if t == "hello" and str(msg.get("secret", "")) != config.secret():
+        if t == "hello" and not hmac.compare_digest(
+                _utf8(str(msg.get("secret", ""))), _utf8(config.secret())):
             # A dialed "peer" that can't present the join token isn't one of
-            # ours — tear the link down (ValueError ends _run_link's pump).
+            # ours — tear the link down (ValueError ends _run_link's pump). Constant-time
+            # (and surrogate-safe) like the accept-path fence: the sole secret check on the
+            # OUTBOUND-dial path, and now meaningful over Tor where the token isn't on-wire.
             raise ValueError("mesh secret mismatch")
         if t in ("hello", "node"):
             raw = msg.get("node")
@@ -1389,7 +1404,7 @@ class MeshNode:
         to present a matching ``apiKey`` (the server request-authentication gate)."""
         key = config.api_key()
         return not key or hmac.compare_digest(
-            str(msg.get("apiKey", "")).encode("utf-8"), key.encode("utf-8"))
+            _utf8(str(msg.get("apiKey", ""))), _utf8(key))
 
     # MARK: - gossip authentication (self-signed adverts + overrides)
 
@@ -2522,7 +2537,10 @@ class MeshNode:
         operator-chosen location). Hashing yields a collision-free hex token — no path
         separators, no ``..`` — so the staging path is always inside ``results/`` while
         still deterministic per job (executor write and host read agree on it)."""
-        token = hashlib.sha256(job_id.encode("utf-8")).hexdigest()[:32]
+        # surrogatepass: job_id is attacker-controlled and a JSON lone surrogate would
+        # make a plain .encode("utf-8") raise (mirrors the work_key `.done` sentinel), so
+        # hashing stays total for ANY id — the whole point of accepting arbitrary ids.
+        token = hashlib.sha256(job_id.encode("utf-8", "surrogatepass")).hexdigest()[:32]
         d = identity.mesh_dir() / "results"
         d.mkdir(parents=True, exist_ok=True)
         return d / (f"in-{token}.json" if incoming else f"out-{token}.json")
@@ -2939,7 +2957,7 @@ class MeshNode:
         peer = self._peer_by_writer(writer)
         if peer is None or peer.info.id != aw.executor_id:
             return
-        note = (str(msg.get("note", "")).encode("utf-8")
+        note = (str(msg.get("note", "")).encode("utf-8", "surrogatepass")
                 [:protocol.MAX_PROGRESS_NOTE_BYTES].decode("utf-8", "ignore"))
         aw.deciding = True
         task = asyncio.get_running_loop().create_task(
