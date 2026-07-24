@@ -112,11 +112,12 @@ def test_decide_changed_stamp_cooldown():
 
 
 def _req(requested_at=None, my_last_review_at=None, author_association="MEMBER",
-         files=None, number=7):
+         files=None, number=7, my_last_comment_at=None):
     return ReviewRequest(
         number=number, title="t", url=f"https://x/pr/{number}", author="bob",
         author_association=author_association, files=files or [],
         requested_at=requested_at, my_last_review_at=my_last_review_at,
+        my_last_comment_at=my_last_comment_at,
     )
 
 
@@ -125,6 +126,64 @@ def test_owe_review_rules():
     assert _req("2026-01-02", None).owe_review is True  # never reviewed
     assert _req("2026-01-02", "2026-01-01").owe_review is True  # request newer
     assert _req("2026-01-01", "2026-01-02").owe_review is False  # already reviewed since
+
+
+def test_owe_review_counts_a_soft_approve_comment_as_a_response():
+    """A clean PR's auto-response is a friendly top-level comment, never a review
+    verdict. It must clear the owed state or the monitor re-dispatches every backoff
+    cycle forever (the real #516 regression: request 07-24 06:47 vs a soft-approve
+    comment 24 min later, with the last formal review four days stale)."""
+    # Comment posted AFTER the request → responded, not owed (even with no/old review).
+    assert _req("2026-07-24T06:47:36Z", my_last_review_at="2026-07-20T11:37:37Z",
+                my_last_comment_at="2026-07-24T07:11:35Z").owe_review is False
+    assert _req("2026-01-02", my_last_review_at=None,
+                my_last_comment_at="2026-01-03").owe_review is False
+    # A comment OLDER than the request doesn't count — still owed.
+    assert _req("2026-01-02", my_last_comment_at="2026-01-01").owe_review is True
+    # A fresh re-request (newer than both my review and my comment) re-arms it.
+    assert _req("2026-01-05", my_last_review_at="2026-01-03",
+                my_last_comment_at="2026-01-04").owe_review is True
+    # The later of review / comment wins when the review is the more recent response.
+    assert _req("2026-01-02", my_last_review_at="2026-01-03",
+                my_last_comment_at="2026-01-01").owe_review is False
+
+
+def test_parse_review_requests_reads_my_comment_time():
+    """The review-requests parser must lift MY latest top-level comment out of the
+    `comments` connection (filtered to me, case-insensitive) so a soft-approve clears
+    the owed state. Mirrors the #516 shape: an old review, a newer soft-approve
+    comment, a request in between."""
+    from diplomat_app import autofixmonitor
+
+    env = {"data": {"search": {"nodes": [
+        {
+            "number": 516,
+            "title": "feat",
+            "url": "https://github.com/o/r/pull/516",
+            "author": {"login": "j-piasecki"},
+            "authorAssociation": "MEMBER",
+            "headRefOid": "64d41d9",
+            "timelineItems": {"nodes": [
+                {"createdAt": "2026-07-24T06:47:36Z",
+                 "requestedReviewer": {"__typename": "User", "login": "Latekvo"}},
+            ]},
+            "reviews": {"nodes": [
+                {"author": {"login": "latekvo"}, "submittedAt": "2026-07-20T11:37:37Z"},
+                {"author": {"login": "someone"}, "submittedAt": "2026-07-25T00:00:00Z"},
+            ]},
+            "comments": {"nodes": [
+                {"author": {"login": "bob"}, "createdAt": "2026-07-24T09:00:00Z"},
+                {"author": {"login": "LATEKVO"}, "createdAt": "2026-07-24T07:11:35Z"},
+            ]},
+        },
+    ]}}}
+    reqs = autofixmonitor._parse_review_requests(env, "latekvo")
+    assert len(reqs) == 1
+    r = reqs[0]
+    assert r.requested_at == "2026-07-24T06:47:36Z"
+    assert r.my_last_review_at == "2026-07-20T11:37:37Z"  # only MINE, not someone's
+    assert r.my_last_comment_at == "2026-07-24T07:11:35Z"  # only MINE, case-insensitive
+    assert r.owe_review is False  # the soft-approve comment answered the re-request
 
 
 # MARK: - VerdictPolicy

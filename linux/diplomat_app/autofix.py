@@ -148,16 +148,29 @@ class ReviewRequest:
     requested_at: str | None  # latest "review requested from me" (ISO8601)
     my_last_review_at: str | None  # my latest review submission (ISO8601)
     head_sha: str = ""  # head commit sha — the mesh work key's "@sha" part
+    my_last_comment_at: str | None = None  # my latest top-level comment (ISO8601)
+
+    @property
+    def my_last_response_at(self) -> str | None:
+        """The most recent time I responded to this PR — a formal review submission
+        OR a top-level comment, whichever is later. A clean PR's auto-response is a
+        friendly soft-approve *comment* (never a review verdict), so a review-only
+        signal misses it and the request reads as forever-owed. ISO8601 strings
+        compare chronologically, so ``max`` picks the latest."""
+        times = [t for t in (self.my_last_review_at, self.my_last_comment_at) if t]
+        return max(times) if times else None
 
     @property
     def owe_review(self) -> bool:
         """I owe a review when I'm requested and that request is newer than my last
-        review of this PR (ISO8601 strings compare chronologically)."""
+        response to this PR (review or comment). A genuine re-request stamps a newer
+        timestamp and re-arms this even after I've responded once."""
         if self.requested_at is None:
             return True
-        if self.my_last_review_at is None:
+        last = self.my_last_response_at
+        if last is None:
             return True
-        return self.requested_at > self.my_last_review_at
+        return self.requested_at > last
 
 
 # MARK: - Verdict-withhold policy (mirrors VerdictPolicy in Review.swift)

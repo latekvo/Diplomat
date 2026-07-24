@@ -1,11 +1,16 @@
 # PRs that request MY review (search qualifier in $q), with the timestamps needed
 # to decide whether I still owe a review: the latest "review requested from me"
-# event vs my latest review submission.
+# event vs my latest RESPONSE to it. A response is either a formal review
+# submission OR a top-level comment — a clean PR's auto-response is a friendly
+# soft-approve comment (never a review verdict), so counting reviews alone leaves
+# such a request perpetually "owed" and re-dispatches it every backoff cycle.
 #
 # $withFiles pulls each PR's changed paths — used ONLY to gate the auto-review
 # verdict (skill/installer withhold), which is off by default, and a big slice of
 # the query's rate-limit cost — so callers pass false unless auto-approvals are on.
-# The `first:`/`last:` caps are kept tight for the same rate-limit reason.
+# The `first:`/`last:` caps are kept tight for the same rate-limit reason; comments
+# get a slightly wider window than reviews because a chatty PR accrues far more of
+# them, and my soft-approve must stay inside it to be seen.
 query ($q: String!, $withFiles: Boolean!) {
   search(query: $q, type: ISSUE, first: 30) {
     nodes {
@@ -24,6 +29,7 @@ query ($q: String!, $withFiles: Boolean!) {
           } }
         }
         reviews(last: 15) { nodes { author { login } submittedAt } }
+        comments(last: 20) { nodes { author { login } createdAt } }
       }
     }
   }

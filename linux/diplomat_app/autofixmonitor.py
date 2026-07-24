@@ -93,6 +93,15 @@ def _parse_review_requests(env: dict, me: str) -> list[ReviewRequest]:
             and ((rv.get("author") or {}).get("login") or "").lower() == lower
             and rv.get("submittedAt")
         ]
+        # My latest top-level comment on this PR — a soft-approve (the clean-PR
+        # auto-response) lands here, not in `reviews`, so it must count as a response.
+        my_comment_times = [
+            c.get("createdAt")
+            for c in ((n.get("comments") or {}).get("nodes") or [])
+            if c
+            and ((c.get("author") or {}).get("login") or "").lower() == lower
+            and c.get("createdAt")
+        ]
         out.append(
             ReviewRequest(
                 number=number,
@@ -108,6 +117,7 @@ def _parse_review_requests(env: dict, me: str) -> list[ReviewRequest]:
                 requested_at=max(req_times) if req_times else None,
                 my_last_review_at=max(my_times) if my_times else None,
                 head_sha=n.get("headRefOid") or "",
+                my_last_comment_at=max(my_comment_times) if my_comment_times else None,
             )
         )
     return out

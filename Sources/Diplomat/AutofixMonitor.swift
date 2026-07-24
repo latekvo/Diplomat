@@ -30,14 +30,24 @@ enum AutofixMonitor {
         let requestedAt: String?    // latest "review requested from me" (ISO8601)
         let myLastReviewAt: String? // my latest review submission (ISO8601)
         let headSha: String         // head commit sha — the mesh work key's "@sha" part
+        let myLastCommentAt: String? // my latest top-level comment (ISO8601)
 
-        /// I owe a review when I'm requested and that request is newer than my last review
-        /// of this PR (ISO8601 strings compare chronologically). A fresh re-request (newer
-        /// timestamp) re-qualifies even after I reviewed once.
+        /// The most recent time I responded to this PR — a formal review submission OR a
+        /// top-level comment, whichever is later. A clean PR's auto-response is a friendly
+        /// soft-approve *comment* (never a review verdict), so a review-only signal misses
+        /// it and the request reads as forever-owed. ISO8601 strings compare
+        /// chronologically, so `max` picks the latest.
+        var myLastResponseAt: String? {
+            [myLastReviewAt, myLastCommentAt].compactMap { $0 }.max()
+        }
+
+        /// I owe a review when I'm requested and that request is newer than my last response
+        /// to this PR (review or comment). A fresh re-request (newer timestamp) re-qualifies
+        /// even after I responded once.
         var oweReview: Bool {
             guard let r = requestedAt else { return true } // requested but no event detail → assume owed
-            guard let m = myLastReviewAt else { return true }
-            return r > m
+            guard let last = myLastResponseAt else { return true }
+            return r > last
         }
     }
 
@@ -66,6 +76,7 @@ enum AutofixMonitor {
                 let files: FilesConn?
                 let timelineItems: TL?
                 let reviews: RVs?
+                let comments: CVs?
             }
             struct Login: Decodable { let login: String? }
             struct FilesConn: Decodable { let nodes: [FileNode] }
@@ -74,6 +85,8 @@ enum AutofixMonitor {
             struct Ev: Decodable { let createdAt: String?; let requestedReviewer: Login? }
             struct RVs: Decodable { let nodes: [RV] }
             struct RV: Decodable { let author: Login?; let submittedAt: String? }
+            struct CVs: Decodable { let nodes: [CV] }
+            struct CV: Decodable { let author: Login?; let createdAt: String? }
         }
         let r = try JSONDecoder().decode(Resp.self, from: data)
         let lower = me.lowercased()
@@ -85,12 +98,16 @@ enum AutofixMonitor {
             let myReviewAt = (n.reviews?.nodes ?? [])
                 .filter { $0.author?.login?.lowercased() == lower }
                 .compactMap { $0.submittedAt }.max()
+            let myCommentAt = (n.comments?.nodes ?? [])
+                .filter { $0.author?.login?.lowercased() == lower }
+                .compactMap { $0.createdAt }.max()
             return ReviewRequest(number: number, title: n.title ?? "", url: n.url ?? "",
                                  author: n.author?.login ?? "",
                                  authorAssociation: n.authorAssociation ?? "NONE",
                                  files: (n.files?.nodes ?? []).compactMap { $0.path },
                                  requestedAt: reqAt, myLastReviewAt: myReviewAt,
-                                 headSha: n.headRefOid ?? "")
+                                 headSha: n.headRefOid ?? "",
+                                 myLastCommentAt: myCommentAt)
         }
     }
 
