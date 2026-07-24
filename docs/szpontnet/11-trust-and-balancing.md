@@ -244,20 +244,32 @@ the **canonical bytes** of the advertisement:
 sig = Ed25519_sign( device_privkey, "szpontnet-nodeinfo-v1:" || canonical(nodeinfo_without_sig) )
 ```
 
-where `canonical(x)` is the JSON encoding of `x` with **its `sig` field removed**,
-**sorted keys**, and **compact separators** (`,`/`:`) — so every implementation
-signs and verifies byte-identical input, and the signature covers *every* field
-(including `pubkey`, so the key can't be swapped without breaking it). Canonical
-bytes are taken over the **raw received dict**, never a re-parse, so a field a
+where `canonical(x)` is the JSON encoding of `x` with **its top-level `sig` field
+removed**, **sorted keys**, and **compact separators** (`,`/`:`), UTF-8 encoded — so
+every implementation signs and verifies byte-identical input, and the signature covers
+*every* field (including `pubkey`, so the key can't be swapped without breaking it).
+Canonical bytes are taken over the **raw received dict**, never a re-parse, so a field a
 newer signer included is still covered on an older verifier — and this is why a
 relay MUST forward the advertisement verbatim (below).
 
-> **Cross-implementation caveat.** Two implementations must serialize *numbers*
-> identically for the canonical bytes to match (the classic JSON-signing pitfall).
-> The reference uses Python's `json` (which round-trips floats via `repr`); a
-> second implementation must reproduce that number formatting, or — cleaner for a
-> future revision — the signed fields should avoid floats. Within one implementation
-> (and between the reference and its conformance tester, both Python) this is exact.
+> **Canonical construction (normative - the #1 interop hazard).** For the signed bytes
+> to match across implementations, `canonical(x)` MUST be reproduced exactly:
+>
+> - **only the top-level `sig` is removed** before signing. A **nested** `sig` - e.g.
+>   one inside a job-result's `result` sub-object - is **not** stripped and **is** part
+>   of the signed bytes, covered by the signature.
+> - **strings are ASCII-escaped** (`ensure_ascii`): every non-ASCII code point is emitted
+>   as a lowercase `\uXXXX` escape. So a node `name` with non-ASCII characters signs
+>   byte-identically everywhere, whatever the implementation's native string encoding.
+> - **numbers:** an **integer** carries no decimal point, and any **float-typed** signed
+>   field - notably `epoch` and the `stats` floats - MUST be formatted with the
+>   **shortest round-trip decimal**, the algorithm that Python `repr`, ECMA-262
+>   Number-to-String, Go, and Swift all use by default (the classic JSON-signing pitfall
+>   is serializing numbers differently). The reference uses Python's `json`, which
+>   formats floats via `repr`; a second implementation must reproduce exactly that.
+>   Implementations SHOULD avoid introducing further float-typed fields into signed
+>   payloads. Within one implementation (and between the reference and its conformance
+>   tester, both Python) this is exact.
 
 On receiving a `hello`/`node` advertisement, a node **MUST**:
 

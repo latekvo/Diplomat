@@ -716,6 +716,64 @@ def test_nodeinfo_pubkey_and_stats_roundtrip():
     assert bare.surplus() == protocol.NEUTRAL_SURPLUS == 1.0
 
 
+def test_nodeinfo_onion_roundtrip_and_omitted_when_empty():
+    """The Tor reachability handle is additive, exactly like pubkey/stats: it
+    roundtrips when present and is OMITTED from the wire when empty, so a LAN-only
+    or older node stays byte-identical to before."""
+    onion = "a" * 56 + ".onion"
+    n = NodeInfo(id="a", name="a", platform="linux", tier=3, tokens="ok",
+                 pubkey="QUJDRA==", onion=onion)
+    d = n.to_dict()
+    assert d["onion"] == onion
+    assert NodeInfo.from_dict(d) == n
+    bare = NodeInfo(id="b", name="b", platform="linux", tier=3, tokens="ok")
+    assert "onion" not in bare.to_dict()
+    assert NodeInfo.from_dict(bare.to_dict()).onion == ""
+
+
+def test_nodeinfo_onion_is_covered_by_the_advert_signature(tmp_path, monkeypatch):
+    """The onion rides INSIDE the signed advert, so a relay cannot tamper with it
+    to redirect a Tor dial: swapping the onion invalidates the signature and the
+    advert is dropped by `_advert_authentic`, exactly as for any other field."""
+    monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    k = crypto.load_or_create()
+    assert k is not None  # cryptography is a hard test dep
+    onion = "b" * 56 + ".onion"
+    info = NodeInfo(id="a", name="a", platform="linux", tier=3, tokens="ok",
+                    pubkey=k.public_b64, onion=onion)
+    raw = _dc_replace(
+        info, sig=k.sign(protocol.advert_signing_bytes(info.to_dict()))).to_dict()
+    # Honest advert verifies…
+    assert crypto.verify(raw["pubkey"], protocol.advert_signing_bytes(raw), raw["sig"])
+    # …a relay swapping the onion does NOT.
+    tampered = dict(raw, onion="c" * 56 + ".onion")
+    assert not crypto.verify(
+        tampered["pubkey"], protocol.advert_signing_bytes(tampered), tampered["sig"])
+
+
+def test_onioncache_roundtrip_and_tolerates_garbage(tmp_path, monkeypatch):
+    """The onion cache (onions.json) is a best-effort accelerator like peers.json:
+    it roundtrips, and a malformed file or entry is dropped, never raised."""
+    monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
+    from diplomat_app.mesh import onioncache
+
+    cache = {"peer-a": onioncache.OnionEntry(onion="a" * 56 + ".onion",
+                                             fingerprint="ff00"),
+             "peer-b": onioncache.OnionEntry(onion="b" * 56 + ".onion")}
+    onioncache.save(cache)
+    assert onioncache.load() == cache
+    # A malformed entry (no onion) and a non-dict entry are dropped silently.
+    onioncache.path().write_text(
+        '{"ok": {"onion": "z.onion"}, "bad": {"fingerprint": "x"}, "junk": 5}',
+        encoding="utf-8")
+    loaded = onioncache.load()
+    assert set(loaded) == {"ok"} and loaded["ok"].onion == "z.onion"
+    # A wholly malformed file is an empty cache, not a crash.
+    onioncache.path().write_text("not json", encoding="utf-8")
+    assert onioncache.load() == {}
+
+
 def test_legacy_stats_without_a_surplus_field_rank_neutrally():
     """A peer on an older build advertises only the absolute quotaLeft/usageAvg
     pair. Those are a different scale (capacity units, commonly >1), so converting
@@ -2631,9 +2689,83 @@ def test_emit_claim_stores_own_claim_even_when_book_is_full(tmp_path, monkeypatc
     node._emit_claim(wk, "active")
     own = node._own_claim(wk)
     assert own is not None and own.active                # stored despite the full book
-    # A PEER's new claim is still refused at the cap — the anti-flood is intact.
+    # A NON-authoritative peer's new claim is still refused at the cap — the anti-flood
+    # against a spoofed-workKey flood is intact (peerX is unknown/unlinked here).
     assert node._store_claim(
         protocol.ClaimRecord(work_key="peerkey", node="peerX")) is False
+
+
+def test_foreign_flood_cannot_starve_a_personal_claim(tmp_path, monkeypatch):
+    """A verified-but-foreign device (or any keyed intruder inside the join fence) that
+    floods the claim book to the cap must NOT be able to deny a genuine PERSONAL claimant
+    its lease — docs/szpontnet/12 "a foreign or keyless node can never deny you work". At
+    the cap an authoritative personal claim EVICTS an expendable (non-authoritative) flood
+    record rather than being refused, so origination dedup never silently breaks."""
+    if not crypto.AVAILABLE:
+        return
+    from diplomat_app.mesh import node as node_mod
+    node = _claim_node(tmp_path, monkeypatch, local_id="z-local")   # high id: the peer owns
+    cap = node_mod._MAX_CLAIMS
+    for i in range(cap):  # foreign flood: cap spoofed keys from unknown/unlinked claimants
+        node._claims[f"flood{i}"] = {
+            f"atk{i}": protocol.ClaimRecord(work_key=f"flood{i}", node=f"atk{i}")}
+    assert sum(len(b) for b in node._claims.values()) == cap
+    key = _mk_key()
+    _link_personal_claimant(node, "a-peer", key)  # a live, personal, key-bound claimant
+    node._on_work_claim(protocol.work_claim(_signed_claim(key, _WK, "a-peer")))
+    assert node._claim_holder(_WK) == "a-peer"              # won ownership despite full book
+    assert sum(len(b) for b in node._claims.values()) == cap  # a slot was EVICTED, not grown
+
+
+def test_claim_and_job_reject_nonfinite_numbers():
+    """ClaimRecord.epoch and Job.requestedAt run through _finite like NodeInfo.epoch: a
+    non-finite value (JSON 1e999 → inf, or NaN) drops the record. Otherwise an ∞ freshness
+    key out-freshes every honest claim forever and re-serializes as the RFC 8259-invalid
+    `Infinity`/`NaN` token through the verbatim gossip relay."""
+    for bad in (float("inf"), float("nan"), float("-inf")):
+        assert protocol.ClaimRecord.from_dict(
+            {"workKey": "k", "node": "n", "epoch": bad, "seq": 1}) is None
+        assert protocol.Job.from_dict(
+            {"id": "j", "duty": "review", "requestedAt": bad}) is None
+    assert protocol.ClaimRecord.from_dict(
+        {"workKey": "k", "node": "n", "epoch": 1784.5, "seq": 1}) is not None
+    assert protocol.Job.from_dict({"id": "j", "duty": "review", "requestedAt": 1.0}) is not None
+
+
+def test_confined_result_path_never_escapes_results_dir(tmp_path, monkeypatch):
+    """On the executor side job.id is fully attacker-controlled; _result_path derives a
+    safe in-results/ filename by hashing it, so `id = "../.."` can't steer the confined
+    artifact outside the mesh results dir (path traversal into an operator-chosen file)."""
+    from diplomat_app.mesh import identity
+    node = _fresh_node(tmp_path, monkeypatch)
+    results = (identity.mesh_dir() / "results").resolve()
+    for hostile in ["../../../../etc/evil", "/etc/passwd", "a/../../b", "..",
+                    "....//....//x", "normal-uuid-123"]:
+        for incoming in (False, True):
+            p = node._result_path(hostile, incoming=incoming).resolve()
+            assert results in p.parents, f"escaped results/: {p}"
+            assert p.suffix == ".json"
+
+
+def test_beacon_rejects_boolean_tcpport(tmp_path, monkeypatch):
+    """`bool` is an int subclass, so a beacon `tcpPort: true` must not slip past the
+    positive-integer guard and get dialed as port 1 (or 0 for `false`)."""
+    import asyncio
+    from dataclasses import replace
+    node = _fresh_node(tmp_path, monkeypatch)
+    node.local = replace(node.local, id="aaaa-local")   # low id → we dial larger ids
+
+    async def go():
+        node._dial = lambda *a, **k: asyncio.sleep(0)    # don't open a real connection
+        node._on_beacon({"t": "beacon", "id": "zzzz-peer", "tcpPort": True, "epoch": 1.0},
+                        "1.2.3.4")
+        assert not node._dial_tasks                       # boolean rejected → no dial
+        node._on_beacon({"t": "beacon", "id": "zzzz-peer", "tcpPort": 40878, "epoch": 1.0},
+                        "1.2.3.4")
+        assert node._dial_tasks                            # a real int port → dial scheduled
+        for t in list(node._dial_tasks):
+            t.cancel()
+    asyncio.run(go())
 
 
 def test_banned_and_trust_load_tolerate_scalar_values(tmp_path, monkeypatch):

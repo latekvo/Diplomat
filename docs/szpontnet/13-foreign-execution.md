@@ -138,7 +138,11 @@ The `result` object:
 
 `output` travels inside one NDJSON line, so it is bounded by
 [`MAX_LINE_BYTES`](04-messages.md#encoding-rules-summary) (512 KiB) with headroom
-for the envelope; a larger artifact is truncated by the executor.
+for the envelope; a larger artifact is truncated by the executor. A `job-result`
+carries no free-form numeric field (its payload is strings and a bool), so the
+general rule that a **non-finite numeric field is dropped**
+([04](04-messages.md#encoding-rules-summary)) leaves it untouched - the same holds
+for `job-status` and `job-ack`, whose only number is the integer `v`.
 
 ### `job-ack`
 
@@ -396,8 +400,14 @@ requester classification and local policy:
 
 A **disabled duty** or being **out of tokens** declines regardless of trust - a node
 that cannot serve the work refuses it outright rather than sandboxing it. A confined
-run also requires a verified requester link to return the result to; absent one, the
-receiver reports the slot `failed` rather than running a stranger's code for nobody.
+run also requires a **requester link to return the result on** - an established link
+with a known node id to address the [`job-result`](#the-messages) to. This is *not* a
+proven Ed25519 fingerprint: a foreign requester may be **keyless** yet still
+legitimately receive its confined result (correlation rides the
+[responder link](#correlation-and-authenticity), not the requester's key). What the
+run cannot tolerate is *no* link at all - absent a requester id to route the result
+back to, the receiver reports the slot `failed` rather than running a stranger's code
+for nobody.
 
 The dispatcher needs no new logic: a `spawned` from a confined executor looks
 exactly like any other hand-off, and a decline fails the slot over as always. The

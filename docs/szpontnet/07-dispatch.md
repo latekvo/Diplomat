@@ -39,9 +39,23 @@ function slot_candidates(duty, live_nodes, overrides, local_id) -> [(slot_label,
     slots = []
     for (platform, count) in policy.spread:
         of_platform = [n.id for n in ranked if n.platform == platform]
-        repeat count times: slots.append((platform, of_platform))
+        emit = count                                          # or, per the note below:
+        # emit = min(count, max(1, len(of_platform)))         # cap slots at eligible nodes
+        repeat emit times: slots.append((platform, of_platform))
     return slots
 ```
+
+> **Slot count MAY be capped at the eligible-node count.** A `(platform, count)`
+> requirement asks for `count` slots, but no two slots ever land on one machine
+> ([routing](#routing-a-job)), so any slots beyond the number of eligible nodes of
+> that platform are structurally unfillable. An implementation **MAY** therefore emit
+> only `min(count, max(1, len(of_platform)))` slots for the requirement (at least one,
+> so an empty platform still yields a `failed` slot that reports the shortfall) and
+> report the unfillable remainder as an [unfilled shortfall](#routing-a-job) rather
+> than as extra `failed` slot entries. The reference does exactly this, as an OOM
+> guard against a hostile or mistyped `count` on an open mesh. The **effective
+> placement is identical** either way - the same jobs land on the same nodes; only
+> the number of `dispatch-result` slot entries for an over-asked requirement differs.
 
 The candidate list for a slot is the assigned node **first**, then every other
 eligible node of that platform by rank - so a slot survives its top pick dropping

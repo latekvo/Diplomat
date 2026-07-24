@@ -75,10 +75,14 @@ it advertised:
 
 Each verifies the signature against the nonce **it** issued and the peer's
 advertised `pubkey`, records the peer's **verified fingerprint**
-(`sha256(pubkey)`), and classifies it. Neither has configured a trust allowlist
-here, so both peers are **personal** (the empty-allowlist full-trust default —
-[11](11-trust-and-balancing.md)); once either operator `--trust`s a first
-fingerprint, an unlisted peer would become foreign.
+(`sha256(pubkey)`), and classifies it. This is a fleet the same operators own, so
+each has already promoted the *other's* device fingerprint to **personal** (added
+it to the local trust allowlist), and each peer's verified fingerprint therefore
+classifies **personal** ([11](11-trust-and-balancing.md)). Under the shipped
+`foreign` default this promotion is what earns personal trust; a verified-but-
+unlisted peer would classify **foreign** instead. (Flipping the whole node to
+`--default-trust personal` would classify every unlisted peer personal too, but
+here we promote explicitly, fingerprint by fingerprint.)
 
 The link is now **authenticated** on both sides. Each learns the other's NodeInfo,
 binds this connection as that peer's link, and recomputes assignments. Each node's

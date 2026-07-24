@@ -101,6 +101,29 @@ def secret() -> str:
     return os.environ.get("DIPLOMAT_MESH_SECRET", "")
 
 
+def tor_enabled() -> bool:
+    """DIPLOMAT_MESH_TOR=1 turns on the Tor onion-service transport: the node runs
+    a persistent onion service (a permanent ``.onion`` it advertises) and dials
+    known-but-unseen peers over Tor with exponential backoff — WAN reachability
+    with no public IP or domain. Off by default; when off, or when the ``tor``
+    binary is missing, the node is LAN-only exactly as before. See mesh/tor.py."""
+    return os.environ.get("DIPLOMAT_MESH_TOR") == "1"
+
+
+def tor_bootstrap_timeout() -> float:
+    """How long to wait for Tor to bootstrap before giving up and staying LAN-only
+    (DIPLOMAT_MESH_TOR_BOOTSTRAP_SECS). Tor's first bootstrap can be slow; the node
+    stays fully usable on the LAN in the meantime."""
+    try:
+        v = float(os.environ.get("DIPLOMAT_MESH_TOR_BOOTSTRAP_SECS", "90"))
+    except ValueError:
+        return 90.0
+    # Reject non-finite / non-positive (e.g. "inf" from 1e999, "nan", "-1", "0"): a
+    # non-finite timeout makes asyncio.wait block FOREVER — the opposite of the
+    # docstring's "give up and stay LAN-only" — and a non-positive one is meaningless.
+    return v if math.isfinite(v) and v > 0 else 90.0
+
+
 def server_mode() -> bool:
     """DIPLOMAT_MESH_SERVER=1 makes this node a dedicated **server**: it accepts and
     runs requests but NEVER originates a dispatch to peers. A request it is asked

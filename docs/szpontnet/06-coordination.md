@@ -77,6 +77,18 @@ key compares surplus in buckets: `surplus_bucket(v)` = `round(v / SURPLUS_RANK_B
 with `SURPLUS_RANK_BUCKET` = `0.05`, which gives the ordering hysteresis so continuous
 pace drift can't reshuffle peers that are, for routing, equally flush.
 
+> **`round()` here is round-half-to-even (normative).** Because placement MUST be
+> byte-identical across implementations ([below](#determinism-requirements-normative)),
+> the rounding mode is pinned: `round()` in `surplus_bucket` MUST be **round-half-to-even**
+> (banker's rounding), as the reference's Python `round()` is. Reachable advertised
+> surpluses (rounded to 4 dp) land exactly on half-bucket boundaries - e.g. `0.025`,
+> `0.125`, `0.225`, whose `v / 0.05` is `0.5`, `2.5`, `4.5` - where round-half-to-even and
+> the round-half-away-from-zero default of Swift/Go/JS disagree, yielding a different
+> bucket and possibly a different consensus owner. A second implementation MUST therefore
+> use the ties-to-even primitive explicitly (Swift `.toNearestOrEven`, Rust
+> `round_ties_even`), **not** the language default, or it violates the byte-identical
+> assignment requirement.
+
 Reading the keys:
 
 - **Token rank first, always.** `ok` beats `low` beats the rest, under every

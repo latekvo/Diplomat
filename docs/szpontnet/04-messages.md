@@ -36,6 +36,7 @@ peer TCP link; **ctl** = sent on a control session (client↔node).
 | [`set-default-trust`](#set-default-trust) | ctl | client→node | set the default trust level for unlisted devices |
 | [`claim`](#claim--claim-result) | ctl | client→node | run the origination claim gate for a work key, without dispatching ([12](12-work-claims.md)) |
 | [`claim-result`](#claim--claim-result) | ctl | node→client | the claim gate's verdict (reply to `claim`) |
+| [`tor-connect`](#tor-connect) | ctl | client→node | dial a peer's onion over Tor to initiate contact ([14](14-tor-transport.md)) |
 | [`stop`](#stop) | ctl | client→node | ask the node to shut down |
 | [`ok` / `error`](#ok--error) | ctl | node→client | generic command results |
 | [`dispatch-result`](#dispatch-result) | ctl | node→client | per-slot dispatch outcomes |
@@ -80,18 +81,22 @@ The resource advertisement for one node. Appears inside `hello` and `node`, and
 | `tokens` | string | no (`"ok"`) | **effective** budget state: `"ok"`/`"low"`/`"out"` - see [05](05-resources.md#tokens). |
 | `tokensAuto` | bool | no (`true`) | whether `tokens` is auto-derived from real usage (vs a manual pin). Display hint. |
 | `tokensPct` | float | no (`1.0`) | fraction of the heuristic token ceiling remaining (`0.0`-`1.0`), for a live "NN%" readout. |
+| `tokensSessionPct` | float | no (omitted) | real remaining-quota fraction (`0.0`-`1.0`) of the **5-hour session** rate-limit window, from the node's OAuth usage probe. Additive/optional; omitted when unprobed (heuristic fallback). |
+| `tokensWeekPct` | float | no (omitted) | real remaining-quota fraction (`0.0`-`1.0`) of the **7-day week** rate-limit window, from the node's OAuth usage probe. Additive/optional; omitted when unprobed. The binding (smaller) of the two windows drives the effective `ok`/`low`/`out` token state. |
 | `tcpPort` | int | no (`0`) | the node's TCP listen port. |
 | `epoch` | float | no (`0`) | incarnation stamp; increases each process (re)start. |
 | `seq` | int | no (`0`) | per-incarnation update counter. |
 | `sees` | array<string> | no (`[]`) | ids of peers this node currently holds a link to (for topology display + partition awareness). |
 | `dutiesEnabled` | object<string,bool> | no (`{}`) | per-duty opt-out; a duty absent from the map is **enabled** by default. |
 | `pubkey` | string | no | the node's advertised base64 Ed25519 public key. Advertising it grants **nothing** - a peer must prove possession by signing the [`hello`](#hello)/[`auth`](#auth) challenge before it is believed to hold this key. Trust then keys on its fingerprint `sha256(pubkey)` against a local allowlist. See [11-trust-and-balancing](11-trust-and-balancing.md). |
+| `onion` | string | no (omitted) | this node's permanent Tor v3 onion address (`<56-base32>.onion`) when it runs an onion service (`DIPLOMAT_MESH_TOR`). Its stable, NAT-independent WAN reachability handle: a peer that met this node learns it here (in the first signed [`hello`](#hello)) and can redial it over Tor from anywhere. Covered by `sig` like every other field, so a relay cannot swap it to redirect a dial. See [14-tor-transport](14-tor-transport.md). |
 | `stats` | object | no (`{}`) | load-balancing accounting: `{"plan", "usageAvg", "quotaLeft", "surplus"}`. Routing ranks on `surplus` (a burn-down ratio); `usageAvg`/`quotaLeft` are plan-relative display figures. See [05-resources](05-resources.md#per-node-stats-account-aware-load-balancing) and [11](11-trust-and-balancing.md#the-load-balancer). |
 | `sig` | string | no | base64 Ed25519 signature by this node's device key over the advert's canonical bytes, authenticating it end to end across relays. A **keyed** advert (one with a `pubkey`) MUST carry a valid `sig` or be dropped; a keyless advert carries none. See [11 - authenticated gossip](11-trust-and-balancing.md#authenticated-gossip). |
 | `v` | int | no (`1`) | protocol version of this advertisement. |
 
-`pubkey`, `stats`, and `sig` are **additive and optional**: all are **omitted from
-the wire form when empty**, so a v1 advertisement that sets none is byte-identical
+`pubkey`, `onion`, `stats`, `sig`, `tokensSessionPct`, and `tokensWeekPct` are
+**additive and optional**: all are **omitted from the wire form when empty**, so a v1
+advertisement that sets none is byte-identical
 to before. The `stats` sub-keys are `plan` (string, account-type id, e.g.
 `max-20x`), `surplus` (float, the **burn-down ratio** routing ranks on - budget left
 ÷ clock left to reset; `1.0` = on pace, capped at `10.0`), and the display-only
@@ -109,7 +114,11 @@ an older one overwrite a newer one. See [08-state](08-state.md#liveness--incarna
 
 Validation: if `id` is missing, or a present numeric field fails to parse as its
 type (e.g. `tier` is `"abc"`), the whole NodeInfo is invalid and MUST be dropped
-(not partially applied).
+(not partially applied). The same guard covers a present numeric field that is
+**non-finite** (`∞`/`NaN` — JSON `1e999` parses to `∞`): it MUST be dropped (the
+whole record). This rule is not NodeInfo-specific — a [`work-claim`](#work-claim)'s
+`epoch` and a [`dispatch`](#dispatch) Job's `requestedAt` route through the same
+finite guard, so a non-finite value in either likewise drops its whole record.
 
 ### Job
 
@@ -706,6 +715,27 @@ owns is idempotent, so a legitimate retry is never suppressed.
 A [`dispatch`](#dispatch) with a `workKey` runs this same gate internally and
 reports `suppressed`; the stand-alone verb exists so origination dedup does not
 require routing the execution through the mesh.
+
+### `tor-connect`
+
+Ask the node to initiate a **Tor link** to a peer's onion address - reaching a peer
+you may never have met on the LAN. The node dials the onion in the background (this
+reply returns immediately) and runs the identical hello/auth/trust handshake a LAN dial
+does; watch [`status`](#status) for the peer to appear. Requires the Tor transport
+enabled and bootstrapped (`DIPLOMAT_MESH_TOR=1`). Unlike auto-redial, a manual paste
+dials **unconditionally** - it bypasses the personal-only and smaller-id-dials fences (a
+deliberate one-shot introduction), though it is still deduped against an in-flight dial
+to the same onion. See [14-tor-transport](14-tor-transport.md).
+
+```json
+{"t": "tor-connect", "onion": "<56-base32>.onion", "v": 1}
+{"t": "ok", "onion": "<normalized-onion>"}
+```
+
+| Field | Type | Req? | Meaning |
+|-------|------|------|---------|
+| `onion` | string | **yes** | the peer's v3 onion to dial. Leniently parsed (a pasted `http://….onion/`, `…:port`, or surrounding whitespace is normalized); an address that is not a valid v3 onion is an [`error`](#ok--error), as is a node whose Tor transport is disabled or not yet ready. |
+| `onion` | string | reply | the normalized onion the node is now dialing. |
 
 ### `stop`
 

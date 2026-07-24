@@ -27,8 +27,10 @@ accumulates bytes until a newline, parses the line as one message, and continues
   non-string `t` — **MUST** be dropped (skip the line; do not close the link).
 - Implementations **MUST** enforce a maximum line length of `MAX_LINE_BYTES`
   (**512 KiB**, `524288`). A line exceeding it is dropped and the link **MAY** be
-  closed. 512 KiB is generous headroom — a dispatch prompt is the only large
-  payload and is typically a few KiB — not a semantic limit.
+  closed. The limit is measured on the encoded line **including** its terminating
+  `\n`, so the largest accepted JSON object payload is `MAX_LINE_BYTES - 1`
+  (`524287`) bytes. 512 KiB is generous headroom — a dispatch prompt is the only
+  large payload and is typically a few KiB — not a semantic limit.
 - Every message carries a protocol version `v` (integer). Senders set it (default
   `1`); receivers **MUST** tolerate messages with a `v` they don't recognize by
   applying the [compatibility rules](09-extensibility.md) (ignore unknown fields;

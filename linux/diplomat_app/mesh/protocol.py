@@ -265,6 +265,16 @@ class NodeInfo:
     # private key ([crypto]/[node] handshake). Trust then keys on this key's
     # fingerprint against a LOCAL allowlist ([trust]), never on any claimed field.
     pubkey: str = ""
+    # This node's permanent Tor v3 onion address ("<56-base32>.onion"), when it
+    # runs an onion service (DIPLOMAT_MESH_TOR). Additive and OMITTED from the wire
+    # when empty, like pubkey/stats, so a LAN-only or older node interops unchanged.
+    # It is the node's stable, NAT-independent reachability handle: a peer that met
+    # this node on the LAN learns it here (in the very first signed hello) and can
+    # redial it over Tor from anywhere. Carried INSIDE the signed advert, so it is
+    # bound to the device key end to end — a relay cannot swap it to redirect a Tor
+    # dial (the onion is self-authenticating too, but the handshake still re-proves
+    # the device key, so a wrong onion just lands foreign). See mesh/tor.py.
+    onion: str = ""
     # Load-balancing accounting, additive: {"plan", "usageAvg", "quotaLeft",
     # "surplus"} — surplus is the burn-down ratio ranked on, the rest display-only.
     # Empty when a node advertises no stats — its dispatch surplus is then
@@ -304,6 +314,8 @@ class NodeInfo:
             d["tokensWeekPct"] = round(self.tokens_week_pct, 3)
         if self.pubkey:
             d["pubkey"] = self.pubkey
+        if self.onion:
+            d["onion"] = self.onion
         if self.stats:
             d["stats"] = self.stats
         if self.sig:
@@ -330,6 +342,7 @@ class NodeInfo:
                 sees=tuple(str(s) for s in d.get("sees", [])),
                 duties_enabled=_finite_duties(d.get("dutiesEnabled", {})),
                 pubkey=str(d.get("pubkey", "")),
+                onion=str(d.get("onion", "")),
                 stats=_finite_stats(d.get("stats")),
                 sig=str(d.get("sig", "")),
                 version=int(d.get("v", PROTOCOL_VERSION)),
@@ -418,7 +431,7 @@ class Job:
                 duty=str(d["duty"]),
                 prompt=str(d.get("prompt", "")),
                 requested_by=str(d.get("requestedBy", "?")),
-                requested_at=float(d.get("requestedAt", time.time())),
+                requested_at=_finite(d.get("requestedAt", time.time())),
                 work_key=str(d.get("workKey", "")),
             )
         except (KeyError, TypeError, ValueError, OverflowError):
@@ -484,14 +497,18 @@ class ClaimRecord:
                 work_key=work_key,
                 node=node,
                 pubkey=str(d.get("pubkey", "")),
-                epoch=float(d.get("epoch", 0.0)),
+                epoch=_finite(d.get("epoch", 0.0)),
                 seq=int(d.get("seq", 0)),
                 state=str(d.get("state", "active")),
                 sig=str(d.get("sig", "")),
             )
         except (TypeError, ValueError, OverflowError):
-            # OverflowError: a JSON `seq`/`epoch` of 1e999 parses to inf, and int(inf)
-            # raises it (not a ValueError) — drop the claim, keep the link alive.
+            # `epoch` runs through _finite (mirroring NodeInfo.epoch): a non-finite
+            # freshness key would out-fresh every honest claim forever AND re-serialize as
+            # the RFC 8259-invalid `Infinity`/`NaN` token through the verbatim gossip
+            # relay — a hazard a claim shares with an advert. OverflowError: a JSON
+            # `seq`/`epoch` of 1e999 parses to inf, and int(inf) raises it (not a
+            # ValueError) — drop the claim, keep the link alive.
             return None
 
     @property
@@ -517,7 +534,11 @@ def encode(msg: dict) -> bytes:
 
 def decode(line: bytes) -> dict | None:
     """Parse one line; None for garbage (oversized, non-JSON, non-object, or
-    missing the type tag) — callers drop and move on."""
+    missing the type tag) — callers drop and move on. Non-finite numbers are
+    tolerated at parse (``1e999``/``Infinity`` decode to ∞) and dropped one layer up
+    by each payload's ``from_dict`` finite guard (see ``_finite``), so a poisoned
+    field drops its record while a coercible one (``overrides.rev``) still normalizes
+    — the reference's deliberate per-field layering."""
     if not line or len(line) > MAX_LINE_BYTES:
         return None
     try:

@@ -152,11 +152,28 @@ record }`. On receiving a [`work-claim`](04-messages.md#work-claim) a node MUST:
 4. **Reconcile** its own claim ([yield](#origination-and-yield)) if the adoption
    changed who owns the key.
 
-A node MUST bound the claim book against a gossip flood of spoofed `workKey`s (the
-reference caps the total record count and refuses only **new** `(workKey, node)`
-records past the cap, so a fresher update to an existing lease is never dropped by
-the cap). A node's **own** claim is authoritative locally and is never subject to
-being out-freshed by a relayed copy of itself.
+A node MUST bound the claim book against a gossip flood of spoofed `workKey`s, and
+it MUST do so **without letting the bound itself starve a genuine claim**. The
+reference caps the total record count; a fresher update to an existing lease is
+always merged (freshness never counts against the cap). At the cap, a **new**
+`(workKey, node)` record is admitted by the **authoritative-eviction** rule:
+
+- An [**authoritative**](#ownership) incoming claim - one that can actually win
+  ownership here: a live, `personal`, key-bound claimant (self included) - **evicts
+  one expendable stored record** to make room, then is inserted. An **expendable**
+  record is a `released` tombstone **or** any record that is *not* authoritative
+  here (a foreign, `down`, keyless, wrong-key, or prior-incarnation claimant that
+  can never win ownership). If no expendable record exists - the book is full of
+  live authoritative claims - the new claim is refused, but that is a real
+  saturation of genuine work, not a spoofing artifact.
+- A **non-authoritative** incoming claim past the cap is **refused outright**,
+  exactly as before: it never displaces a stored record.
+
+So a foreign or keyless flood can only ever occupy the evictable slots and can never
+displace or starve a live, key-bound `personal` claim, while the book stays bounded
+at the cap (evict-one-then-insert). A node's **own** claim is authoritative locally
+and is never subject to being out-freshed - or evicted - by a relayed copy of
+itself.
 
 ## Ownership
 
@@ -371,7 +388,10 @@ not implement them; if it does, it MUST:
    claimant's pinned key; treat a keyless claim as non-authoritative.
 3. **Merge and relay.** Keep the freshest record per `(workKey, node)` by
    `(epoch, seq)`, never overwrite newer with older, and re-propagate an adopted
-   claim **verbatim**. Bound the book against a spoofed-`workKey` flood.
+   claim **verbatim**. Bound the book against a spoofed-`workKey` flood **by
+   [authoritative eviction](#the-claim-book)** - at the cap, admit an authoritative
+   claim by evicting an expendable record, and refuse a non-authoritative one - so
+   the bound never starves a live key-bound `personal` claim.
 4. **Elect deterministically.** Compute `claim_owner` as the lowest-id **active**
    claimant that is **live**, **`personal`**, **and bound** — its claim carries the
    claimant's pinned key (self always; a keyless, wrong-key, foreign, or dead
@@ -401,16 +421,23 @@ other.
   claim is never sufficient; the *key* must check out.
 - **No starvation *by an untrusted party*.** Only a claimant that is **both**
   `personal` **and** proven to hold the key it claims under can suppress work, so a
-  foreign or keyless node can never deny you work by claiming keys it won't run. The
-  residual is a *trusted* peer griefing: with a **configured allowlist** the
-  suppression set is exactly the devices you chose to trust; with the
-  **empty-allowlist full-trust default** you have declared every joined, **keyed**
-  device trusted, so fence the mesh (a [join secret](03-transport.md#the-join-fence)
-  or an allowlist) if you don't trust everyone who can reach the LAN. A keyless
-  intruder is powerless regardless.
+  foreign or keyless node can never deny you work by claiming keys it won't run. This
+  holds **even under a book-filling flood**: the [authoritative-eviction
+  rule](#the-claim-book) admits a live, key-bound `personal` claim at the cap by
+  evicting an expendable (foreign / `down` / keyless / wrong-key / `released`)
+  record, so a stranger who spams 4096 spoofed `workKey`s occupies only evictable
+  slots and can never crowd out - and thereby silently defeat the dedup for - a
+  genuine personal claim. The residual is a *trusted* peer griefing: with a
+  **configured allowlist** the suppression set is exactly the devices you chose to
+  trust; with the **empty-allowlist full-trust default** you have declared every
+  joined, **keyed** device trusted, so fence the mesh (a [join
+  secret](03-transport.md#the-join-fence) or an allowlist) if you don't trust
+  everyone who can reach the LAN. A keyless intruder is powerless regardless.
 - **No amplification.** Verifying a claim is one signature check; the book is
-  size-bounded; a stale or duplicate claim is dropped by the freshness gate, so a
-  claim flood cannot be turned into unbounded work or memory.
+  size-bounded (and a full book admits an authoritative claim only by
+  [evicting](#the-claim-book) an expendable one, never by growing); a stale or
+  duplicate claim is dropped by the freshness gate, so a claim flood cannot be turned
+  into unbounded work or memory - nor into starvation of a real claim.
 - **Bounded replay.** A claim is not nonce-bound (unlike the
   [link auth](11-trust-and-balancing.md#trust-is-never-derived-from-an-advertisement)),
   so a captured claim can be replayed - but a replay only re-asserts the *same*

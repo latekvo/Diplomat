@@ -142,5 +142,14 @@ def set_default_trust(level: str, timeout: float = 5.0) -> None:
     request({"t": "set-default-trust", "level": level}, timeout=timeout)
 
 
+def tor_connect(onion: str, timeout: float = 10.0) -> str:
+    """Ask the local node to initiate a Tor link to a peer's ``.onion`` address —
+    reaching a peer you may never have met on the LAN. The node dials in the
+    background; returns the normalized onion it is dialing (watch ``--status`` for
+    the peer to appear)."""
+    reply = request({"t": "tor-connect", "onion": onion}, timeout=timeout)
+    return str(reply.get("onion", ""))
+
+
 def stop(timeout: float = 5.0) -> None:
     request({"t": "stop"}, timeout=timeout)
