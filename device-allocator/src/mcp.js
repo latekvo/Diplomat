@@ -17,7 +17,7 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -174,16 +174,62 @@ async function ensureDaemon() {
   throw new Error('device-allocator daemon failed to start');
 }
 
+// A stable per-incarnation identity for a pid, so a PID reused after the original process
+// exits is never mistaken for it. Linux: /proc/<pid>/stat field 22 (starttime, jiffies
+// since boot). Elsewhere (macOS): `ps -o lstart=`. '' when it can't be read.
+function procIdentity(pid) {
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+    // comm (field 2) is parenthesized and may contain spaces/')' — split the tail after
+    // the LAST ')': starttime is overall field 22 = index 19 of that tail (state is [0]).
+    const tail = stat.slice(stat.lastIndexOf(')') + 1).trim().split(/\s+/);
+    if (tail[19]) return tail[19];
+  } catch {}
+  try {
+    return execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], { timeout: 2000 })
+      .toString().trim();
+  } catch {}
+  return '';
+}
+
+// The command name of a pid (Linux /proc, else `ps -o comm=`), lowercased; '' if unknown.
+function procComm(pid) {
+  try { return fs.readFileSync(`/proc/${pid}/comm`, 'utf8').trim().toLowerCase(); } catch {}
+  try {
+    return execFileSync('ps', ['-o', 'comm=', '-p', String(pid)], { timeout: 2000 })
+      .toString().trim().toLowerCase();
+  } catch {}
+  return '';
+}
+
+// init / service-manager names an agent may be REPARENTED onto once its real parent dies
+// (pid 1, or a systemd/launchd user subreaper with a pid > 1 that the <= 1 guard misses).
+// SIGKILLing one of these would take down the session manager, not the agent.
+const SUPERVISOR_COMMS = new Set(['systemd', 'init', 'launchd', 'systemd-user', '(sd-pam)', 'sd-pam']);
+
 // An agent that hit a prompt injection is terminated as a precaution — a targeted agent
 // must not keep running on that task. We are the agent's MCP subprocess, so our parent
 // process IS the agent (the `claude` session). SIGKILL it a beat after the tool result
 // flushes (so the ban is recorded and the agent sees why). DA_KILL_PID_OVERRIDE targets a
 // different pid (used by the test); DA_NO_AGENT_KILL disables it.
+//
+// Two guards keep the SIGKILL off the wrong process: (1) never kill a pid whose comm is a
+// service manager the agent may have been reparented onto (subreaper/systemd reparenting
+// gives a non-1 pid the bare `<= 1` check would miss); (2) pin the target's process
+// incarnation now and re-verify it at fire time, so a pid reused in the ~400ms window (the
+// real parent having exited) is spared. Best-effort: if identity can't be read, fall back
+// to the prior behavior rather than never terminating.
 function scheduleAgentTermination() {
   if (process.env.DA_NO_AGENT_KILL) return;
   const target = Number(process.env.DA_KILL_PID_OVERRIDE) || process.ppid;
   if (!target || target <= 1) return;
-  setTimeout(() => { try { process.kill(target, 'SIGKILL'); } catch {} }, 400);
+  if (SUPERVISOR_COMMS.has(procComm(target))) return;
+  const identity = procIdentity(target);
+  setTimeout(() => {
+    // A reused pid (original parent gone) has a different start time → do not kill it.
+    if (identity && procIdentity(target) !== identity) return;
+    try { process.kill(target, 'SIGKILL'); } catch {}
+  }, 400);
 }
 
 // ---- result formatting ----------------------------------------------------

@@ -2666,13 +2666,20 @@ class MeshNode:
         # `job-progress` answer instead of silence (docs/szpontnet/13).
         self._confined_running[job.id] = (requester_id, time.monotonic())
         if wk:
-            # Claim the key for the confined agent's lifetime; _await_confined_result
-            # releases it when the sandbox finishes (or times out). Tracked in the same
-            # _agents map as personal agents (presence is the idempotency guard, and the
-            # value is never inspected — see __init__), tagged with THIS job.id so only
-            # this run's completion frees it.
+            # LOCAL idempotency only: track the confined agent in _agents so a repeat
+            # dispatch of the same key HERE dedups (the `wk in self._agents` guard above),
+            # tagged with THIS job.id so only this run's completion frees it.
+            #
+            # Deliberately NO _emit_claim here (unlike the personal _spawn_local path): wk
+            # comes from a FOREIGN requester's SzpontRequest — attacker-controlled — so
+            # gossiping a mesh-authoritative claim under our trusted device key would let a
+            # foreign peer LAUNDER-suppress the personal mesh's own origination of any key it
+            # names, violating "a foreign or keyless node can never deny you work"
+            # (docs/szpontnet/12#security-properties). We only compute the sandboxed result
+            # and return it to the requester; we are NOT the originator of wk, so we must not
+            # claim ownership of it on the mesh's behalf. Local dedup still prevents us
+            # double-spawning the same key here.
             self._agents[wk] = {"confined": job.id, "at": time.monotonic()}
-            self._emit_claim(wk, "active")
         task = asyncio.get_running_loop().create_task(
             self._await_confined_result(job, requester_id, result_path))
         self._result_tasks.add(task)
@@ -2720,15 +2727,15 @@ class MeshNode:
             # bounds concurrency, not the total ever staged).
             with contextlib.suppress(OSError):
                 result_path.unlink(missing_ok=True)
-            # Release the executor-claim we minted for this key (docs/szpontnet/12), so
-            # the same work becomes ownable again — a re-run if it wasn't resolved, and
-            # failover if this node dies (the liveness lease). Guard on THIS job.id so a
-            # later run's entry is never freed by ours; skip release if a personal agent
-            # now holds the shared claim (it will free it via _watch_agent).
+            # Free the LOCAL dedup slot for this key (the confined path holds no mesh
+            # claim to release — see _run_confined). Guard on THIS job.id so a later run's
+            # entry, or a personal agent that took over the shared slot, is never freed by
+            # ours. `release` is a defensive no-op here unless a personal _spawn_local for
+            # the same key later minted a real claim — then it belongs to that agent and is
+            # freed via its own _watch_agent, so we deliberately do NOT release it.
             wk = job.work_key
             if wk and self._agents.get(wk, {}).get("confined") == job.id:
                 self._agents.pop(wk, None)
-                self.release(wk)
 
     def _result_task_done(self, task: asyncio.Task) -> None:
         """Reap a finished watcher task, surfacing a crash instead of letting it

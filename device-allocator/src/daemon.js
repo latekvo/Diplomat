@@ -875,21 +875,67 @@ function onListening() {
   setInterval(idleSweep, IDLE_INTERVAL_MS);
 }
 
-// Singleton acquisition without a pre-emptive unlink (which would clobber a live
-// peer's socket and split-brain the allocator). We let listen() fail with
-// EADDRINUSE and use a /health probe to distinguish "a live daemon owns it"
-// (defer + exit) from "a stale socket file remains" (unlink + retry once).
+// Startup-takeover lock. The stale-socket reclaim ("unlink the dead socket file, then
+// re-listen") is unavoidably two steps, so two daemons that both see the socket as stale
+// each unlink + bind — and the second unlinks the first's FRESHLY bound socket, leaving
+// two live daemons (split-brain: each runs its own reap/idle/reclaim loops against the
+// shared lease files). Serialize the reclaim behind an exclusive lock so exactly one
+// daemon takes over. Held only for the few ms of takeover, then released; a crash while
+// holding it leaves a stale lock the next daemon reclaims by pid-liveness.
+const LOCK_PATH = `${SOCKET_PATH}.lock`;
+
+function acquireTakeoverLock() {
+  // An open fd (lock held) or null if a LIVE daemon already holds it.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const fd = fs.openSync(LOCK_PATH, 'wx'); // atomic O_CREAT | O_EXCL
+      try { fs.writeSync(fd, String(process.pid)); } catch {}
+      return fd;
+    } catch (e) {
+      if (e.code !== 'EEXIST') return null;
+      let holder = 0;
+      try { holder = Number(fs.readFileSync(LOCK_PATH, 'utf8').trim()) || 0; } catch {}
+      if (holder && holder !== process.pid && pidAlive(holder)) return null; // a live holder
+      // Stale lock (holder dead/unreadable): drop it and retry the exclusive create once.
+      // If another recoverer wins the re-create, our second attempt sees a live holder and
+      // returns null (defers) — so the O_EXCL create, not the unlink, decides the winner.
+      try { fs.unlinkSync(LOCK_PATH); } catch {}
+    }
+  }
+  return null;
+}
+
+function releaseTakeoverLock(fd) {
+  try { fs.closeSync(fd); } catch {}
+  try { fs.unlinkSync(LOCK_PATH); } catch {}
+}
+
+// Singleton acquisition without a pre-emptive unlink (which would clobber a live peer's
+// socket). We let listen() fail with EADDRINUSE and use a /health probe to distinguish "a
+// live daemon owns it" (defer + exit) from "a stale socket file remains" (take the lock,
+// unlink + retry once). A second EADDRINUSE means a fresh daemon bound in the gap — defer
+// to it rather than take over again.
 let retriedListen = false;
 server.on('error', async (e) => {
   if (e.code === 'EADDRINUSE') {
     if (await socketHealthy()) { log('a live daemon already owns the socket; exiting'); process.exit(0); }
-    if (!retriedListen) {
-      retriedListen = true;
-      try { fs.unlinkSync(SOCKET_PATH); } catch {}
-      server.listen(SOCKET_PATH, onListening);
-      return;
+    if (retriedListen) { log('could not acquire the socket (contended); deferring'); process.exit(0); }
+    retriedListen = true;
+    const lockFd = acquireTakeoverLock();
+    if (lockFd == null) {
+      // Another daemon is (or just finished) taking over. Give it a beat, then defer to it.
+      await delay(300);
+      if (await socketHealthy()) { log('another daemon took the socket; exiting'); process.exit(0); }
+      log('the startup lock is held by a live daemon; deferring'); process.exit(0);
     }
-    log('could not acquire the socket (contended); deferring'); process.exit(0);
+    // Re-probe UNDER the lock: a peer may have bound between our first probe and the lock.
+    if (await socketHealthy()) {
+      releaseTakeoverLock(lockFd);
+      log('a live daemon already owns the socket; exiting'); process.exit(0);
+    }
+    try { fs.unlinkSync(SOCKET_PATH); } catch {}
+    server.listen(SOCKET_PATH, () => { releaseTakeoverLock(lockFd); onListening(); });
+    return;
   }
   log('server error', String(e));
   process.exit(1);

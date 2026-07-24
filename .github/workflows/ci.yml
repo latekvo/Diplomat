@@ -126,10 +126,14 @@ jobs:
         run: npm ci
       - name: Allocation logic (request/change/broken/reap/idle)
         run: node test/integration.mjs
+      - name: Daemon singleton survives a stale-socket startup race
+        run: node test/daemon-singleton-race.mjs
       - name: MCP protocol (handshake/tools/alwaysLoad/allocate)
         run: node test/mcp-protocol.mjs
       - name: Agent-kill on prompt injection
         run: node test/agent-kill.mjs
+      - name: Agent-kill spares a reparent supervisor
+        run: node test/agent-kill-spares-supervisor.mjs
       - name: Report-injection capture stays off the event loop
         run: node test/report-injection-nonblocking.mjs
       - name: Report-injection evidence survives UTF-8 round-trip

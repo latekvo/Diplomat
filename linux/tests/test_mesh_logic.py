@@ -1941,18 +1941,20 @@ def test_run_confined_needs_a_requester_link(tmp_path, monkeypatch):
     assert node._run_confined(_job(), requester_id="")[0] == "failed"
 
 
-def test_confined_executor_dedups_and_claims_the_work_key(tmp_path, monkeypatch):
-    """The confined (foreign) executor must mint the work-claim and dedup by key, just
-    like _spawn_local (docs/szpontnet/12: "the executor — the node that spawns the
-    agent — mints the active claim, holds it for that agent's lifetime, and releases it
-    when the agent finishes"). Without it, an originator's same-poll double dispatch of
-    ONE work_key spawned TWO confined agents → two results → a DUPLICATE social action
-    under the originator's identity, and no claim ever suppressed a re-poll.
+def test_confined_executor_dedups_locally_but_never_claims_the_work_key(tmp_path, monkeypatch):
+    """The confined (foreign) executor deduplicates a work_key LOCALLY — an originator's
+    same-poll double dispatch spawns ONE sandbox, not two (no duplicate social action) —
+    but it must NEVER mint a mesh-authoritative work-claim on it. The work_key is chosen
+    by the FOREIGN requester; a gossiped claim under our trusted device key would let that
+    requester launder-suppress the personal mesh's own origination of any key it names,
+    violating "a foreign or keyless node can never deny you work"
+    (docs/szpontnet/12#security-properties). We only compute the sandboxed result and
+    return it — we are not the originator of wk, unlike the personal `_spawn_local` path
+    (which DOES legitimately claim, and is covered separately).
 
     A second dispatch of a key already running here must (a) spawn no second sandbox,
-    (b) report ``no_result`` so [_take_job] marks it ``direct`` — the originator neither
-    acts twice nor arms a completion deadline over a result the original job carries —
-    and (c) the claim must be minted for the run and released when it finishes."""
+    (b) report ``no_result`` so [_take_job] marks it ``direct``, and (c) hold ONLY the
+    local dedup entry — nothing in the claim book — freed when the run finishes."""
     import asyncio
     if not crypto.AVAILABLE:
         return
@@ -1980,19 +1982,17 @@ def test_confined_executor_dedups_and_claims_the_work_key(tmp_path, monkeypatch)
         assert len(calls) == 1                          # (a) exactly one sandbox spawned
         assert r1 == ("spawned", "", False)             # fresh run owes a job-result
         assert r2 == ("spawned", "", True)              # (b) dedup owes none → direct
-        own = node._own_claim(wk)
-        assert own is not None and own.active           # (c) claim held for the agent
-        assert wk in node._agents
-        # Drive the confined watcher to completion; the claim is then released so the
-        # work is ownable again (re-run if unresolved, failover on node death).
+        assert node._own_claim(wk) is None              # (c) NO mesh claim — never laundered
+        assert wk not in node._claims                   #     nothing in the claim book at all
+        assert wk in node._agents                       #     only the LOCAL dedup entry
+        # Drive the confined watcher to completion; the local dedup entry is then freed so
+        # the same work can be re-dispatched here later.
         for _ in range(200):
             await asyncio.sleep(0.05)
-            cur = node._own_claim(wk)
-            if cur is None or not cur.active:
+            if wk not in node._agents:
                 break
-        cur = node._own_claim(wk)
-        assert cur is None or not cur.active
         assert wk not in node._agents
+        assert node._own_claim(wk) is None              # still no claim, ever
 
     asyncio.run(go())
 
