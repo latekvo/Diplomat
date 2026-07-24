@@ -41,6 +41,30 @@ Targets `software-mansion/argent` and shells out to the authenticated `gh` CLI.
 > the one spawn that bypasses the pipeline - it lands through the mesh node's own
 > runner, and the `ps` ground-truth scan is what re-attaches it afterwards.
 
+## ⚠️ Billing and usage - read this first
+
+> **This software may be used _only_ with usage-based Anthropic API billing** - an
+> **Anthropic API key** from the [Anthropic Console](https://console.anthropic.com),
+> metered per token and governed by Anthropic's
+> [**Commercial Terms of Service**](https://www.anthropic.com/legal/commercial-terms).
+> Point the spawned agents at it via `ANTHROPIC_API_KEY` (Claude Code prefers an API
+> key in the environment over any logged-in subscription).
+>
+> **It may _not_ be used with a personal Claude subscription plan** - the consumer
+> **Claude Free / Pro / Max** plans, governed by Anthropic's
+> [**Consumer Terms of Service**](https://www.anthropic.com/legal/consumer-terms).
+> Diplomat exists to spawn **automated, unattended agents** - background monitors that
+> open `claude` windows and push to your branches with no human in the loop. That is
+> programmatic / headless / service-style use, which belongs on the API, not on a
+> personal subscription.
+>
+> **No warranty, no responsibility.** This software is provided **"as is"**, without
+> warranty of any kind. **The author accepts no responsibility and no liability** for
+> anything arising from its use - API charges, subscription or account actions, commits
+> and pushes made to your repositories, or agents spawned on your machines. **You alone
+> are responsible** for your API key and your spend, and for ensuring your use complies
+> with Anthropic's applicable terms.
+
 ## The library
 
 | Tool | What it lists |
