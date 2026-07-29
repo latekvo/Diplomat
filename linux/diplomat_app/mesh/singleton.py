@@ -31,10 +31,7 @@ would be a ``ps``-based sweep — a follow-up, not this change.
 
 from __future__ import annotations
 
-import os
-import signal
-import time
-from pathlib import Path
+from .. import procscan
 
 # Every ``python -m <module>`` a mesh node has launched under. Mirrors
 # ``diplomat_app.singleton._APPLET_MODULES`` (the tray's list) with the ``.mesh``
@@ -55,61 +52,24 @@ def _cmdline_is_mesh_node(tokens: list[str]) -> bool:
     match is exact, so neither a look-alike top-level (``diplomat_app.meshery``) nor
     a deeper submodule (``diplomat_app.mesh.foo``) can masquerade as the node.
     """
-    try:
-        i = tokens.index("-m")
-    except ValueError:
+    if procscan.module_arg(tokens) not in _MESH_MODULES:
         return False
-    if i + 1 >= len(tokens) or tokens[i + 1] not in _MESH_MODULES:
-        return False
+    i = tokens.index("-m")
     return not any(t.startswith("-") for t in tokens[i + 2:])
-
-
-def _alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except OSError:
-        return False
-    return True
 
 
 def _is_mesh_node(pid: int) -> bool:
     """Whether a live pid is a mesh node daemon (under any module name)."""
-    try:
-        parts = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
-    except OSError:
-        return False
-    tokens = [p.decode("utf-8", "replace") for p in parts if p]
-    return _cmdline_is_mesh_node(tokens)
+    return _cmdline_is_mesh_node(procscan.cmdline_tokens(pid))
 
 
 def _other_nodes() -> set[int]:
     """PIDs of every *other* live mesh node of this uid, by any name.
 
-    Restricted to processes owned by this uid; unreadable ``/proc`` entries are
-    skipped. Best-effort — on a host without ``/proc`` (or a scan failure) it
-    returns nothing and the node simply starts without reaping.
+    Best-effort — on a host without ``/proc`` (or a scan failure) it returns
+    nothing and the node simply starts without reaping.
     """
-    me = os.getpid()
-    uid = os.getuid()
-    found: set[int] = set()
-    try:
-        entries = os.listdir("/proc")
-    except OSError:
-        return found
-    for name in entries:
-        if not name.isdigit():
-            continue
-        pid = int(name)
-        if pid == me:
-            continue
-        try:
-            if os.stat(f"/proc/{pid}").st_uid != uid:
-                continue
-        except OSError:
-            continue
-        if _is_mesh_node(pid):
-            found.add(pid)
-    return found
+    return procscan.scan_own_pids(_is_mesh_node)
 
 
 def terminate_other_nodes() -> set[int]:
@@ -117,9 +77,10 @@ def terminate_other_nodes() -> set[int]:
     uid, so a freshly starting node is the only one left. Returns the pids it
     targeted (for the caller's log line and the tests).
 
-    Mirrors :meth:`diplomat_app.singleton.SingleInstance.acquire_newest_wins`:
-    ~2s of grace for a clean asyncio ``stop()`` before a survivor is forced down,
-    so the guarantee holds even against a wedged node rather than degrading to two.
+    The reap escalation itself is :func:`diplomat_app.procscan.terminate`, shared
+    with the tray's singleton: ~2s of grace for a clean asyncio ``stop()`` before
+    a survivor is forced down, so the guarantee holds even against a wedged node
+    rather than degrading to two.
 
     Stands down entirely in loopback-only mode (``DIPLOMAT_MESH_LOOPBACK=1``): the
     singleton's whole premise is "one physical machine = one node", but loopback is
@@ -134,22 +95,5 @@ def terminate_other_nodes() -> set[int]:
     if config.loopback_only():
         return set()
     victims = _other_nodes()
-    for pid in victims:
-        try:
-            os.kill(pid, signal.SIGTERM)  # ask the older node to quit
-        except OSError:
-            pass
-    remaining = set(victims)
-    for _ in range(20):  # up to ~2s for a clean shutdown
-        remaining = {p for p in remaining if _alive(p)}
-        if not remaining:
-            break
-        time.sleep(0.1)
-    # Anything that ignored SIGTERM is forced down — the guarantee can't degrade
-    # to two live nodes just because one incarnation is wedged.
-    for pid in remaining:
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except OSError:
-            pass
+    procscan.terminate(victims)
     return victims

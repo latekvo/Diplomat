@@ -15,7 +15,7 @@ import signal
 
 import pytest
 
-from diplomat_app import singleton
+from diplomat_app import procscan, singleton
 from diplomat_app.singleton import (
     SingleInstance,
     _cmdline_is_applet_gui,
@@ -104,9 +104,11 @@ def test_acquire_signals_recorded_instance_by_pidfile(isolated_runtime, monkeypa
     monkeypatch.setattr(singleton, "_other_instances", lambda: set())
     monkeypatch.setattr(singleton, "_alive", lambda pid: pid == 424242)
     monkeypatch.setattr(singleton, "_is_applet_gui", lambda pid: pid == 424242)
-    monkeypatch.setattr(singleton.time, "sleep", lambda _s: None)
+    # The reap escalation lives in procscan; it dies on the first poll here.
+    monkeypatch.setattr(procscan, "alive", lambda pid: False)
+    monkeypatch.setattr(procscan.time, "sleep", lambda _s: None)
     monkeypatch.setattr(
-        singleton.os, "kill", lambda pid, sig: signalled.append((pid, sig))
+        procscan.os, "kill", lambda pid, sig: signalled.append((pid, sig))
     )
 
     pf = singleton._pidfile()
@@ -127,9 +129,9 @@ def test_acquire_spares_recycled_non_applet_pid(isolated_runtime, monkeypatch):
     monkeypatch.setattr(singleton, "_other_instances", lambda: set())
     monkeypatch.setattr(singleton, "_alive", lambda pid: True)  # the recycled pid is alive
     monkeypatch.setattr(singleton, "_is_applet_gui", lambda pid: False)  # but it is not our tray
-    monkeypatch.setattr(singleton.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(procscan.time, "sleep", lambda _s: None)
     monkeypatch.setattr(
-        singleton.os, "kill", lambda pid, sig: signalled.append((pid, sig))
+        procscan.os, "kill", lambda pid, sig: signalled.append((pid, sig))
     )
 
     singleton._pidfile().write_text("424242")
@@ -147,9 +149,9 @@ def test_acquire_terminates_scanned_instance_under_any_name(
     found by the /proc scan and terminated even though no pidfile names it."""
     signalled: list[tuple[int, int]] = []
     monkeypatch.setattr(singleton, "_other_instances", lambda: {999001})
-    monkeypatch.setattr(singleton, "_alive", lambda pid: False)  # dies at once
+    monkeypatch.setattr(procscan, "alive", lambda pid: False)  # dies at once
     monkeypatch.setattr(
-        singleton.os, "kill", lambda pid, sig: signalled.append((pid, sig))
+        procscan.os, "kill", lambda pid, sig: signalled.append((pid, sig))
     )
 
     SingleInstance.acquire_newest_wins()
@@ -167,10 +169,10 @@ def test_acquire_escalates_to_sigkill_when_sigterm_ignored(
     can never degrade to two wrenches."""
     signalled: list[tuple[int, int]] = []
     monkeypatch.setattr(singleton, "_other_instances", lambda: {999002})
-    monkeypatch.setattr(singleton, "_alive", lambda pid: True)  # never dies
-    monkeypatch.setattr(singleton.time, "sleep", lambda _s: None)  # no real wait
+    monkeypatch.setattr(procscan, "alive", lambda pid: True)  # never dies
+    monkeypatch.setattr(procscan.time, "sleep", lambda _s: None)  # no real wait
     monkeypatch.setattr(
-        singleton.os, "kill", lambda pid, sig: signalled.append((pid, sig))
+        procscan.os, "kill", lambda pid, sig: signalled.append((pid, sig))
     )
 
     SingleInstance.acquire_newest_wins()

@@ -19,9 +19,10 @@ as a cheap record for the headless 6AM updater (``running_pid``).
 from __future__ import annotations
 
 import os
-import signal
-import time
 from pathlib import Path
+
+from . import procscan
+from .procscan import alive as _alive
 
 # Every module name this applet's tray has launched under. A rename appends a
 # new name but keeps the old ones, so newest-wins still terminates a pre-rename
@@ -48,24 +49,12 @@ def _pidfile() -> Path:
     return d / "diplomat.pid"
 
 
-def _alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except OSError:
-        return False
-    return True
-
-
 def _cmdline_is_applet_gui(tokens: list[str]) -> bool:
     """Whether an argv is a tray launch of this applet: ``python -m <module>``
     where <module> is *exactly* an applet module. The exact match excludes
     submodules like ``diplomat_app.mesh`` (the mesh node is a separate long-lived
     process that must never be terminated here)."""
-    try:
-        i = tokens.index("-m")
-    except ValueError:
-        return False
-    return i + 1 < len(tokens) and tokens[i + 1] in _APPLET_MODULES
+    return procscan.module_arg(tokens) in _APPLET_MODULES
 
 
 def _environ_is_headless(raw: bytes) -> bool:
@@ -83,47 +72,17 @@ def _environ_is_headless(raw: bytes) -> bool:
 
 def _is_applet_gui(pid: int) -> bool:
     """Whether a live pid is a *GUI tray* instance of the applet (any name)."""
-    try:
-        parts = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
-    except OSError:
+    if not _cmdline_is_applet_gui(procscan.cmdline_tokens(pid)):
         return False
-    tokens = [p.decode("utf-8", "replace") for p in parts if p]
-    if not _cmdline_is_applet_gui(tokens):
-        return False
-    try:
-        raw = Path(f"/proc/{pid}/environ").read_bytes()
-    except OSError:
-        raw = b""
-    return not _environ_is_headless(raw)
+    return not _environ_is_headless(procscan.environ_bytes(pid))
 
 
 def _other_instances() -> set[int]:
     """PIDs of every *other* live GUI tray instance of the applet, by any name.
 
-    Restricted to processes owned by this uid; unreadable ``/proc`` entries are
-    skipped. Best-effort — a scan failure just falls back to the pidfile path.
+    Best-effort — a scan failure just falls back to the pidfile path.
     """
-    me = os.getpid()
-    uid = os.getuid()
-    found: set[int] = set()
-    try:
-        entries = os.listdir("/proc")
-    except OSError:
-        return found
-    for name in entries:
-        if not name.isdigit():
-            continue
-        pid = int(name)
-        if pid == me:
-            continue
-        try:
-            if os.stat(f"/proc/{pid}").st_uid != uid:
-                continue
-        except OSError:
-            continue
-        if _is_applet_gui(pid):
-            found.add(pid)
-    return found
+    return procscan.scan_own_pids(_is_applet_gui)
 
 
 class SingleInstance:
@@ -147,23 +106,10 @@ class SingleInstance:
         except (OSError, ValueError):
             pass
 
-        for pid in victims:
-            try:
-                os.kill(pid, signal.SIGTERM)  # ask the older instance to quit
-            except OSError:
-                pass
-        for _ in range(20):  # up to ~2s grace for a clean Qt shutdown
-            victims = {p for p in victims if _alive(p)}
-            if not victims:
-                break
-            time.sleep(0.1)
-        # Anything that ignored SIGTERM is forced down, so the guarantee holds
-        # even against a wedged instance rather than degrading to two wrenches.
-        for pid in victims:
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except OSError:
-                pass
+        # SIGTERM, ~2s of grace for a clean Qt shutdown, then SIGKILL any
+        # survivor — so the guarantee holds even against a wedged instance
+        # rather than degrading to two wrenches.
+        procscan.terminate(victims)
 
         try:
             pf.write_text(str(me))

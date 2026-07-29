@@ -19,6 +19,7 @@ import signal
 
 import pytest
 
+from diplomat_app import procscan
 from diplomat_app.mesh import singleton
 from diplomat_app.mesh.singleton import _cmdline_is_mesh_node, terminate_other_nodes
 
@@ -71,8 +72,8 @@ def test_terminate_signals_every_other_node(monkeypatch):
     rename case that let the ghost survive is exactly this path."""
     signalled: list[tuple[int, int]] = []
     monkeypatch.setattr(singleton, "_other_nodes", lambda: {999001, 999002})
-    monkeypatch.setattr(singleton, "_alive", lambda pid: False)  # both die at once
-    monkeypatch.setattr(singleton.os, "kill",
+    monkeypatch.setattr(procscan, "alive", lambda pid: False)  # both die at once
+    monkeypatch.setattr(procscan.os, "kill",
                         lambda pid, sig: signalled.append((pid, sig)))
 
     reaped = terminate_other_nodes()
@@ -89,9 +90,9 @@ def test_terminate_escalates_to_sigkill_when_sigterm_ignored(monkeypatch):
     never degrade to two live nodes."""
     signalled: list[tuple[int, int]] = []
     monkeypatch.setattr(singleton, "_other_nodes", lambda: {999003})
-    monkeypatch.setattr(singleton, "_alive", lambda pid: True)  # never dies
-    monkeypatch.setattr(singleton.time, "sleep", lambda _s: None)  # no real wait
-    monkeypatch.setattr(singleton.os, "kill",
+    monkeypatch.setattr(procscan, "alive", lambda pid: True)  # never dies
+    monkeypatch.setattr(procscan.time, "sleep", lambda _s: None)  # no real wait
+    monkeypatch.setattr(procscan.os, "kill",
                         lambda pid, sig: signalled.append((pid, sig)))
 
     terminate_other_nodes()
@@ -111,7 +112,7 @@ def test_terminate_stands_down_in_loopback_mode(monkeypatch):
         lambda: pytest.fail("loopback mode must not scan for or reap other nodes"),
     )
     monkeypatch.setattr(
-        singleton.os, "kill",
+        procscan.os, "kill",
         lambda pid, sig: pytest.fail("loopback mode must not signal any node"),
     )
 
@@ -123,7 +124,7 @@ def test_terminate_is_noop_when_no_other_node(monkeypatch):
     node proceeds untouched."""
     signalled: list[tuple[int, int]] = []
     monkeypatch.setattr(singleton, "_other_nodes", lambda: set())
-    monkeypatch.setattr(singleton.os, "kill",
+    monkeypatch.setattr(procscan.os, "kill",
                         lambda pid, sig: signalled.append((pid, sig)))
 
     assert terminate_other_nodes() == set()
