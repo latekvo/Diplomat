@@ -275,6 +275,36 @@ class SpawnError(RuntimeError):
     pass
 
 
+def popen_detached(target: list[str] | str, *, shell: bool = False,
+                   env: dict | None = None) -> None:
+    """Launch an agent process and forget it, raising ``OSError`` if it won't start.
+
+    Every launcher in the applet wants the same two properties, and both are
+    load-bearing:
+
+    * **its own session** (``start_new_session``) — the agent outlives the applet
+      that spawned it. Without it the child shares the process group and dies with
+      the tray (or with the mesh node), killing a running review mid-flight;
+    * **no inherited stdio** — the applet's stdin/stdout may be a closed pipe, a
+      tty it no longer owns, or the journal. A child writing into it blocks on a
+      full pipe or scribbles over the parent's own output.
+
+    ``target`` is an argv list, or a shell string with ``shell=True``. ``env``
+    replaces the inherited environment (the confined foreign runner passes a
+    credential-scrubbed one). The ``OSError`` is left for the caller to translate
+    into its own error type, which is the only part that differs between them.
+    """
+    subprocess.Popen(  # noqa: S603 - argv list, or the operator's own template
+        target,
+        shell=shell,
+        env=env,
+        start_new_session=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
 def write_prompt(prompt: str) -> str:
     # 0600 via mkstemp: /tmp is world-readable and multi-user, and a mesh
     # dispatch stages the prompt here too — don't leave it readable to other
@@ -324,13 +354,7 @@ def spawn(prompt: str, preferred: SpawnTerminal | None, done_path: str | None = 
     # `claude` alias + exported env are present — a plain `bash -c` gets neither.
     argv = [term.exec_name, *term.prefix, user_shell(), "-i", "-c", cmd]
     try:
-        subprocess.Popen(  # noqa: S603 — args are a literal list, not a shell string
-            argv,
-            start_new_session=True,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        popen_detached(argv)
     except OSError as exc:
         raise SpawnError(f"failed to launch {term.title}: {exc}") from exc
     return file

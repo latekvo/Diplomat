@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import os
 import shlex
-import subprocess
 
 from .. import review
 from . import config
@@ -95,12 +94,7 @@ def _detached(cmd: str, what: str, env: dict | None = None) -> None:
     the child — a personal spawn is hand-off-only, a confined one is polled via its
     result file). ``env`` overrides the inherited environment when given."""
     try:
-        subprocess.Popen(  # noqa: S602 — the template is the operator's own config
-            cmd, shell=True, start_new_session=True, env=env,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        review.popen_detached(cmd, shell=True, env=env)
     except OSError as exc:
         raise JobSpawnError(f"{what} failed: {exc}") from exc
 
@@ -118,13 +112,7 @@ def _spawn_macos(prompt_file: str, done_path: str | None = None) -> None:
     shell_cmd = review.shell_command(prompt_file, done_path)
     script = f'tell application "Terminal" to do script {_applescript_quote(shell_cmd)}'
     try:
-        subprocess.Popen(
-            ["osascript", "-e", script],
-            start_new_session=True,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        review.popen_detached(["osascript", "-e", script])
     except OSError as exc:
         raise JobSpawnError(f"osascript failed: {exc}") from exc
 
