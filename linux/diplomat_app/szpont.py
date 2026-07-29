@@ -3,14 +3,23 @@
 The mesh is an **add-on**: Diplomat reviews pull requests perfectly well on a
 single machine, and everything that spans machines — the topology screen, routing
 a job to whoever has budget left — is what the library adds on top. So this module
-is the only place that answers "is it here?", and the modules that reach for the
-mesh import it inside the call that needs it and ask here first, rather than at
-their own top level where a missing library takes the applet down with it.
+is the only place that answers "is it here?", and no module imports the library at
+its own top level, where a missing add-on would take the whole applet down.
 
-One module does not yet: :mod:`diplomat_app.meshview` imports the library at
-import time and :mod:`diplomat_app.panel` imports *it* at import time, so the
-applet still needs the add-on to start. Closing that is what makes the gate
-below worth anything.
+Two shapes of gate hang off :data:`AVAILABLE`, and which one a call site wants
+depends on whether the user could have got there:
+
+* Most of the applet asks :attr:`Store.mesh_enabled`, which is False without the
+  add-on — one lever covering every "should this run through the mesh?" path,
+  because a machine with no library is not on the mesh whatever its preference
+  says. Those call sites put that check *before* their ``from szpontnet import``.
+* A control round-trip (the mesh commands, the ⬡ render) calls :func:`require`
+  instead. Nothing builds those controls without the library, so arriving there
+  is a bug in the caller and reads as one rather than as an ImportError.
+
+:mod:`diplomat_app.meshview` is the exception that proves it: the Mesh screen is
+*made of* SzpontNet, so it imports the library normally at its top level and the
+Panel imports the screen only behind the gate.
 
 Resolution mirrors :func:`deviceallocator.package_dir`: an installed
 ``szpontnet`` wins, and failing that the sibling module in this checkout is put on

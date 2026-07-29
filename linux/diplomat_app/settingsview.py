@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import apiwatch, core, deviceallocator, review
+from . import apiwatch, core, deviceallocator, review, szpont
 from .store import Store, tools
 from .widgets import IconChip, muted
 
@@ -616,6 +616,10 @@ class SettingsView(QWidget):
 
         toggle = QCheckBox("Coordinate duties with other machines on this LAN")
         toggle.setChecked(self.store.mesh_enabled)
+        # Dead without the add-on: the mesh is SzpontNet, and there is no node for
+        # this switch to start. Shown-but-disabled rather than hidden, so the
+        # feature is discoverable and the status line below can say what is missing.
+        toggle.setEnabled(szpont.AVAILABLE)
         toggle.toggled.connect(self._on_mesh_toggled)
         col.addWidget(toggle)
 
@@ -631,6 +635,14 @@ class SettingsView(QWidget):
             "Configure the whole mesh from the ⬡ Mesh screen (the ⬡ button in the "
             "panel header). "
             "Off by default; no node opens on the network until you enable it here."
+            if szpont.AVAILABLE else
+            # The ⬡ screen and its header button are not built without the add-on,
+            # so pointing at them here would send the reader looking for a control
+            # that isn't there.
+            "Coordinating duties across machines is an add-on: it needs the "
+            f"SzpontNet library, which is not installed (looked for "
+            f"{szpont.package_dir()}). Everything else in Diplomat runs on this "
+            "machine alone and is unaffected."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet(muted(10))
@@ -646,15 +658,24 @@ class SettingsView(QWidget):
         self._refresh_mesh_ui()
 
     def _refresh_mesh_ui(self) -> None:
-        from szpontnet import statefile
-
-        state = self.store.mesh_state
+        # Before ``mesh_enabled``, which is also False here — the disabled toggle
+        # above needs a reason beside it, and "Off" reads as a choice the user made.
+        if not szpont.AVAILABLE:
+            self._mesh_status.setText("SzpontNet not installed")
+            self._mesh_status.setStyleSheet(
+                "font-weight: 700; font-size: 11px; color: palette(mid);"
+            )
+            return
         if not self.store.mesh_enabled:
             self._mesh_status.setText("Off")
             self._mesh_status.setStyleSheet(
                 "font-weight: 700; font-size: 11px; color: palette(mid);"
             )
             return
+
+        from szpontnet import statefile
+
+        state = self.store.mesh_state
         if statefile.node_running(state):
             peers = len((state or {}).get("peers", []))
             plural = "" if peers == 1 else "s"

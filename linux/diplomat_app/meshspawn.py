@@ -62,9 +62,15 @@ class MeshSpawnRow(QWidget):
 
     @property
     def _mesh_live(self) -> bool:
+        # The enabled check first, because it is also the add-on check — with no
+        # SzpontNet installed ``mesh_enabled`` is False and the import below would
+        # be the wizard's way of failing to open at all.
+        if not self.store.mesh_enabled:
+            return False
+
         from szpontnet import statefile
 
-        return self.store.mesh_enabled and statefile.node_running(self.store.mesh_state)
+        return statefile.node_running(self.store.mesh_state)
 
     def use_mesh(self) -> bool:
         """True when this SPAWN should go through the mesh."""

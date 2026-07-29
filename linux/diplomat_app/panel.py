@@ -26,7 +26,7 @@ from PySide6.QtCore import QUrl
 
 import time
 
-from . import activity, core, glyphs
+from . import activity, core, glyphs, szpont
 from .models import Fmt
 from .settingsview import SettingsView
 from .store import Store, tool_by_id
@@ -48,7 +48,9 @@ from .widgets import (
 from .conflictwizardview import ConflictWizardView
 from .auditwizardview import AuditWizardView
 from .wizardview import WizardView
-from .meshview import MeshView
+# `.meshview` is imported in __init__ instead, behind `szpont.AVAILABLE`: it paints
+# SzpontNet's topology and so imports the library at its own top level, which up
+# here would make the add-on a hard dependency of the whole applet.
 
 _REVIEW_TINT = "#FF2D78"
 _CONFLICT_TINT = "#32ADE6"
@@ -151,25 +153,36 @@ class Panel(QWidget):
         self.body = QStackedWidget()
         outer.addWidget(self.body, 1)
 
-        # Page 0: main
+        # Screen name → page index, filled in as the pages are added, because the
+        # last one is conditional. `_set_screen` looks up here rather than in a
+        # literal map, so a build without the mesh page has no index to switch to
+        # rather than switching to whatever happens to sit at that number.
+        self._screens: dict[str, int] = {}
+
+        # Page: main
         self.main_page = QWidget()
         self._build_main_page()
-        self.body.addWidget(self.main_page)
+        self._screens["main"] = self.body.addWidget(self.main_page)
 
-        # Page 1: settings
+        # Page: settings
         self.settings_view = SettingsView(store)
         self.settings_view.done.connect(lambda: self._set_screen("main"))
-        self.body.addWidget(self.settings_view)
+        self._screens["settings"] = self.body.addWidget(self.settings_view)
 
-        # Page 2: mesh management (topology graph, node cards, duty routing).
-        self.mesh_view = MeshView(store)
-        self.mesh_view.done.connect(lambda: self._set_screen("main"))
-        mesh_scroll = QScrollArea()
-        mesh_scroll.setWidgetResizable(True)
-        mesh_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        mesh_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        mesh_scroll.setWidget(self.mesh_view)
-        self.body.addWidget(mesh_scroll)
+        # Page: mesh management (topology graph, node cards, duty routing) —
+        # present only when the add-on is.
+        self.mesh_view = None
+        if szpont.AVAILABLE:
+            from .meshview import MeshView
+
+            self.mesh_view = MeshView(store)
+            self.mesh_view.done.connect(lambda: self._set_screen("main"))
+            mesh_scroll = QScrollArea()
+            mesh_scroll.setWidgetResizable(True)
+            mesh_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+            mesh_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            mesh_scroll.setWidget(self.mesh_view)
+            self._screens["mesh"] = self.body.addWidget(mesh_scroll)
 
         # Shortcuts
         QShortcut(QKeySequence("Ctrl+F"), self, activated=self._focus_search)
@@ -197,10 +210,14 @@ class Panel(QWidget):
 
         # Mesh should feel live: poll the topology snapshot on a tight 2s cadence,
         # but only while the panel is visible AND the mesh is enabled (the tick
-        # guards both, so a hidden panel or an opted-out user costs nothing).
-        self._mesh_timer = QTimer(self)
-        self._mesh_timer.timeout.connect(self._mesh_tick)
-        self._mesh_timer.start(2000)
+        # guards both, so a hidden panel or an opted-out user costs nothing). No
+        # add-on, no timer at all — there is nothing the user could switch on that
+        # would give it something to read.
+        self._mesh_timer = None
+        if szpont.AVAILABLE:
+            self._mesh_timer = QTimer(self)
+            self._mesh_timer.timeout.connect(self._mesh_tick)
+            self._mesh_timer.start(2000)
 
         self._rebuild_grid()
         self._rebuild_devices()
@@ -244,9 +261,13 @@ class Panel(QWidget):
         refresh.clicked.connect(self.refresh_requested.emit)
         row.addWidget(refresh)
 
-        self.mesh_btn = _icon_button(glyphs.G_MESH, "Mesh management")
-        self.mesh_btn.clicked.connect(self._toggle_mesh)
-        row.addWidget(self.mesh_btn)
+        # No add-on, no ⬡ button: the screen behind it does not exist, and a
+        # control that opens nothing is worse than an absent one.
+        self.mesh_btn = None
+        if szpont.AVAILABLE:
+            self.mesh_btn = _icon_button(glyphs.G_MESH, "Mesh management")
+            self.mesh_btn.clicked.connect(self._toggle_mesh)
+            row.addWidget(self.mesh_btn)
 
         self.settings_btn = _icon_button("⚙", "Settings")
         self.settings_btn.clicked.connect(self._toggle_settings)
@@ -662,10 +683,10 @@ class Panel(QWidget):
         self._update_results()
 
     def _set_screen(self, name: str) -> None:
-        """Flip the body to one of the three screens: Actions ("main"),
-        Settings, or Mesh management."""
+        """Flip the body to one of the screens: Actions ("main"), Settings, or —
+        when the mesh add-on is installed — Mesh management."""
         self._screen = name
-        self.body.setCurrentIndex({"main": 0, "settings": 1, "mesh": 2}[name])
+        self.body.setCurrentIndex(self._screens[name])
         if name == "mesh" and self.store.mesh_enabled:
             # Fresh topology the moment the screen opens (the 2s poll follows).
             self.store.refresh_mesh_state()

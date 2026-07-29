@@ -19,6 +19,7 @@ from datetime import datetime, timedelta, timezone
 
 from PySide6.QtWidgets import QApplication
 
+from . import szpont
 from .models import OpenIssue, OpenPR
 from .panel import Panel
 from .store import Store
@@ -157,10 +158,21 @@ def run(what: str, out: str) -> int:
     else:
         _fixture(store)
 
+    # ⬡ is a whole screen only when the add-on is installed, so asking for that
+    # render without it is a request for something that does not exist — said
+    # here, where the answer names what is missing, rather than as a KeyError
+    # from the screen switch below.
+    if what == "mesh":
+        szpont.require()
+
     # The mesh fixture must land before Panel() — the MeshView paints from the
     # store snapshot at construction. The wizard modes get it too, so their
-    # "⬡ Run on mesh" row (+ destination preview) is visible.
-    if what in ("mesh", "panel", "settings", "wizard", "conflicts", "audit"):
+    # "⬡ Run on mesh" row (+ destination preview) is visible. Without the add-on
+    # every one of those is absent, and the fixture would be a synthetic topology
+    # nothing reads.
+    if szpont.AVAILABLE and what in (
+        "mesh", "panel", "settings", "wizard", "conflicts", "audit"
+    ):
         _mesh_fixture(store)
 
     panel = Panel(store)

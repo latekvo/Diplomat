@@ -34,6 +34,7 @@ from . import (
     core,
     deviceallocator,
     review,
+    szpont,
     tmuxwatch,
 )
 from .models import API, Filters, Fmt, OpenIssue, OpenPR
@@ -302,7 +303,16 @@ class Store(QObject):
         auto-starts a node only once the user enables it in Settings.
 
         ``_mesh_enabled_override`` lets the headless render force it on without
-        writing (and persisting) to the real user QSettings."""
+        writing (and persisting) to the real user QSettings.
+
+        A machine with no SzpontNet installed is not on the mesh whatever its
+        preference says, and this is where that becomes true rather than at each
+        of the dozen call sites: every mesh-shaped path in the applet already
+        asks this question, so answering it honestly is what makes the add-on
+        optional. The stored preference is left alone — install the library and
+        the machine rejoins the mesh it was already opted into."""
+        if not szpont.AVAILABLE:
+            return False
         if self._mesh_enabled_override is not None:
             return self._mesh_enabled_override
         return self._settings.value("meshEnabled", False, bool)
@@ -680,10 +690,11 @@ class Store(QObject):
         agent already owns it), or ``None`` to fall through to a LOCAL spawn — the
         fail-open path when the mesh is unavailable, so a wedged node never drops
         the operator's work."""
-        from szpontnet import ctl, statefile
-
         if not self.mesh_enabled or not job.work_key:
             return None
+
+        from szpontnet import ctl, statefile
+
         state = statefile.read_state()
         if not state or not statefile.node_running(state):
             return None
@@ -1263,6 +1274,11 @@ class Store(QObject):
         link-freshness drift (a peer's `lastSeenSecsAgo` creeping up) to trigger a
         rebuild so the badges stay honest.
         """
+        # ``AVAILABLE``, not ``mesh_enabled``: this also runs on the way *out* of
+        # the mesh — the refresh right after ctl.stop() is what clears the topology
+        # off the screen, and by then the preference is already off.
+        if not szpont.AVAILABLE:
+            return
         # Render mode pins a synthetic topology via the override — never let a
         # poll read (or clobber it with) the real ~/.diplomat/mesh/state.json.
         if self._mesh_enabled_override is not None:
@@ -1305,12 +1321,17 @@ class Store(QObject):
 
     def ensure_mesh_running_async(self) -> None:
         """Start a background mesh node iff the user enabled the mesh and none is
-        already alive. No-ops when disabled, so it's safe to call blindly on app
-        start. Never runs in a headless render/test (guarded by mesh_enabled,
+        already alive. No-ops when disabled — which includes having no SzpontNet
+        installed — so it's safe to call blindly on app start, as the launcher
+        does. Never runs in a headless render/test (guarded by mesh_enabled,
         which those paths leave off / stub)."""
+        if not self.mesh_enabled:
+            self.refresh_mesh_state()
+            return
+
         from szpontnet import statefile
 
-        if not self.mesh_enabled or statefile.node_running():
+        if statefile.node_running():
             self.refresh_mesh_state()
             return
 
@@ -1318,8 +1339,6 @@ class Store(QObject):
             import os
             import subprocess
             import sys
-
-            from . import szpont
 
             linux_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             # The node is a separate process and gets no say in who its host is, so
@@ -1352,6 +1371,7 @@ class Store(QObject):
 
     def stop_mesh_async(self) -> None:
         """Ask the local node to stop (used when the user disables the mesh)."""
+        szpont.require()
         from szpontnet import ctl
 
         def work() -> None:
@@ -1372,7 +1392,14 @@ class Store(QObject):
         routine rather than each spelling it out: without the refresh the screen keeps
         showing pre-edit state, and without the error assignment a rejected edit looks
         like it worked. Twin of ``meshCommand`` in Store.swift.
+
+        :func:`szpont.require` up front, here and in the two commands that don't
+        share this routine: a control round-trip is only reachable from a mesh
+        control, so with the add-on gone the caller has a bug rather than a
+        disabled feature, and it should read as one — not as a bare ImportError
+        from the line below.
         """
+        szpont.require()
         from szpontnet import ctl
 
         def work() -> None:
@@ -1411,6 +1438,7 @@ class Store(QObject):
     def mesh_dispatch(self, duty: str, prompt: str, done_callback=None) -> None:
         """Route a job through the mesh; `done_callback(results, error)` fires on
         the worker thread (callers marshal back to the UI thread themselves)."""
+        szpont.require()
         from szpontnet import ctl
 
         def work() -> None:
