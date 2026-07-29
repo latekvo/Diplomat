@@ -100,13 +100,6 @@ enum DeviceFocus {
     }
 
     private static func runSilently(_ script: String) -> Bool {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        p.arguments = ["-e", script]
-        p.standardOutput = Pipe()
-        p.standardError = Pipe()
-        do { try p.run() } catch { return false }
-        p.waitUntilExit()
-        return p.terminationStatus == 0
+        OSAScript.runSilently(script)
     }
 }

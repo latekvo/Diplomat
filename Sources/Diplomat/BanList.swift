@@ -67,26 +67,13 @@ enum BanList {
         return false
     }
 
-    private static var daemonSocket: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".diplomat/device-allocator/daemon.sock")
-    }
-
-    /// POST /unban over the daemon's unix socket (via curl — URLSession has no unix-
-    /// socket support). True only when the daemon answered 200.
+    /// POST /unban to the device-allocator daemon (which owns the ban list). True
+    /// only when it answered 2xx.
+    ///
+    /// The socket path comes from `DeviceAllocator` rather than a second copy here:
+    /// this file used to define its own, so moving the daemon's socket would have
+    /// left un-banning silently posting into a path nothing listens on.
     private static func unbanViaDaemon(_ login: String) -> Bool {
-        guard FileManager.default.fileExists(atPath: daemonSocket.path),
-              let body = try? JSONSerialization.data(withJSONObject: ["login": login]),
-              let json = String(data: body, encoding: .utf8) else { return false }
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
-        p.arguments = ["-sf", "--max-time", "5", "--unix-socket", daemonSocket.path,
-                       "-X", "POST", "http://localhost/unban",
-                       "-H", "content-type: application/json", "-d", json]
-        p.standardOutput = Pipe()
-        p.standardError = Pipe()
-        do { try p.run() } catch { return false }
-        p.waitUntilExit()
-        return p.terminationStatus == 0
+        DeviceAllocator.post("unban", body: ["login": login], timeoutSecs: 5)
     }
 }

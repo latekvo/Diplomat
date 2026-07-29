@@ -112,17 +112,7 @@ enum ApiErrorWatcher {
     /// to come back as "" — indistinguishable from "no sessions", hiding a revoked
     /// automation permission forever.
     private static func run(_ script: String) -> String? {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        p.arguments = ["-e", script]
-        let outPipe = Pipe()
-        p.standardOutput = outPipe
-        p.standardError = Pipe()
-        do { try p.run() } catch { return nil }
-        let data = outPipe.fileHandleForReading.readDataToEndOfFile()
-        p.waitUntilExit()
-        guard p.terminationStatus == 0 else { return nil }
-        return String(data: data, encoding: .utf8) ?? ""
+        OSAScript.capture(script)
     }
 
     // MARK: AppleScript

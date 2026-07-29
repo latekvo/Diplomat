@@ -266,12 +266,8 @@ enum TrackTest {
             end repeat
         end tell
         """
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        proc.arguments = ["-e", script]
-        proc.standardOutput = Pipe()
-        proc.standardError = Pipe()
-        try? proc.run()
-        proc.waitUntilExit()
+        // Best-effort cleanup of a throwaway window: a window the user already
+        // closed makes this fail, which is not a test failure.
+        OSAScript.runSilently(script)
     }
 }

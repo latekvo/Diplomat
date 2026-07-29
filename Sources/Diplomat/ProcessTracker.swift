@@ -172,17 +172,7 @@ enum ProcessMonitor {
         end if
         return ""
         """
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        proc.arguments = ["-e", script]
-        let out = Pipe()
-        proc.standardOutput = out
-        proc.standardError = Pipe()
-        do { try proc.run() } catch { return nil }
-        let data = out.fileHandleForReading.readDataToEndOfFile()
-        proc.waitUntilExit()
-        guard proc.terminationStatus == 0 else { return nil } // couldn't query → unknown
-        let s = String(data: data, encoding: .utf8) ?? ""
+        guard let s = OSAScript.capture(script) else { return nil } // couldn't query → unknown
         var set = Set<String>()
         for line in s.split(separator: "\n") {
             let t = line.trimmingCharacters(in: .whitespaces)
@@ -438,13 +428,6 @@ enum ProcessMonitor {
 
     /// Run an AppleScript, discard output, return whether it exited 0.
     private static func runOsascriptSilently(_ script: String) -> Bool {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        proc.arguments = ["-e", script]
-        proc.standardOutput = Pipe()
-        proc.standardError = Pipe()
-        do { try proc.run() } catch { return false }
-        proc.waitUntilExit()
-        return proc.terminationStatus == 0
+        OSAScript.runSilently(script)
     }
 }

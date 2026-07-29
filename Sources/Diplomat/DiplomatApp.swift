@@ -108,6 +108,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if env["DIPLOMAT_SPAWN_FOCUS_TEST"] == "1" {
             Task { @MainActor in exit(Dump.spawnFocusTest() ? 0 : 1) }
         }
+        // AppleScript-runner self-test: proves OSAScript keeps "ran and printed
+        // nothing" distinct from "could not run" — the distinction every terminal
+        // path depends on. Pure AppleScript, so it needs no Automation permission
+        // and no open windows. Exit code = pass/fail.
+        if env["DIPLOMAT_OSA_TEST"] == "1" {
+            exit(OSATest.run() ? 0 : 1)
+        }
     }
 }
 
@@ -362,15 +369,10 @@ enum Dump {
     /// Returns overall pass/fail so a hook/script can gate on the exit code. Drives the
     /// terminal the panel is configured for (falls back to iTerm).
     @MainActor static func spawnFocusTest() -> Bool {
+        // Deliberately NOT OSAScript.capture: this is a diagnostic, and whatever a
+        // partially-failing script did print is more useful here than a flat nil.
         func osa(_ script: String) -> String {
-            let p = Process()
-            p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-            p.arguments = ["-e", script]
-            let out = Pipe(); p.standardOutput = out; p.standardError = Pipe()
-            do { try p.run() } catch { return "" }
-            let d = out.fileHandleForReading.readDataToEndOfFile()
-            p.waitUntilExit()
-            return String(data: d, encoding: .utf8)?
+            OSAScript.run(script)?.stdout
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         }
         func frontmost() -> String {

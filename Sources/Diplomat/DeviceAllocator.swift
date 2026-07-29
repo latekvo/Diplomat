@@ -99,30 +99,42 @@ enum DeviceAllocator {
         home.appendingPathComponent(".diplomat/device-allocator/daemon.sock").path
     }
 
-    /// Ask the daemon to force-kill a device by key (free any allocation + shut the
-    /// sim/emulator down). Backs the panel's per-device X. Uses curl over the daemon's
-    /// unix socket. Best-effort; returns whether the request succeeded.
-    @discardableResult
-    static func killDevice(key: String) -> Bool {
-        guard FileManager.default.fileExists(atPath: socketPath) else { return false }
-        let payload = (try? JSONSerialization.data(withJSONObject: ["key": key]))
-            .flatMap { String(data: $0, encoding: .utf8) } ?? "{\"key\":\"\(key)\"}"
+    /// POST a JSON body to one of the daemon's endpoints over its unix socket, and
+    /// report whether the daemon answered 2xx. The transport is `curl` because
+    /// `URLSession` cannot speak to a unix socket at all.
+    ///
+    /// `-f` is the load-bearing flag: without it curl exits 0 for any *completed*
+    /// HTTP transaction, including a 4xx/5xx — so a refused request would read as
+    /// success and the audit feed would assert an action that never happened (a
+    /// device that left the pool between the poll snapshot and the click answers
+    /// 404). With `-sf`, terminationStatus follows the HTTP status.
+    ///
+    /// Returns false rather than throwing when the daemon isn't running, the body
+    /// won't encode, or curl can't be launched: every caller is a best-effort
+    /// side-channel to a daemon that may simply not be installed.
+    static func post(_ endpoint: String, body: [String: String], timeoutSecs: Int) -> Bool {
+        guard FileManager.default.fileExists(atPath: socketPath),
+              let data = try? JSONSerialization.data(withJSONObject: body),
+              let json = String(data: data, encoding: .utf8) else { return false }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
-        // -f (fail): without it curl exits 0 on a completed HTTP transaction even
-        // when the daemon answered 4xx/5xx (e.g. a 404 for a device that left the
-        // pool between the poll snapshot and the click), so this would report a
-        // failed kill as success and the audit feed would assert a kill that never
-        // happened. -sf makes terminationStatus reflect the HTTP status (matches
-        // BanList.unbanViaDaemon).
-        p.arguments = ["-sf", "--max-time", "25", "--unix-socket", socketPath,
-                       "-X", "POST", "http://localhost/kill",
-                       "-H", "content-type: application/json", "-d", payload]
+        p.arguments = ["-sf", "--max-time", "\(timeoutSecs)", "--unix-socket", socketPath,
+                       "-X", "POST", "http://localhost/\(endpoint)",
+                       "-H", "content-type: application/json", "-d", json]
         p.standardOutput = Pipe()
         p.standardError = Pipe()
         do { try p.run() } catch { return false }
         p.waitUntilExit()
         return p.terminationStatus == 0
+    }
+
+    /// Ask the daemon to force-kill a device by key (free any allocation + shut the
+    /// sim/emulator down). Backs the panel's per-device X. Best-effort; returns
+    /// whether the request succeeded.
+    @discardableResult
+    static func killDevice(key: String) -> Bool {
+        // Generous timeout: the daemon shuts a real simulator/emulator down inline.
+        post("kill", body: ["key": key], timeoutSecs: 25)
     }
 
     /// True when the package is actually present on disk (so the UI can offer install).
