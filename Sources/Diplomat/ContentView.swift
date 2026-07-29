@@ -461,8 +461,7 @@ struct ContentView: View {
                 }
             }
         }
-        .padding(7)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.red.opacity(0.06)))
+        .cardChrome(fill: .red.opacity(0.06))
     }
 
     /// Inline "Unban @X?" confirmation shown in place of the ban row when its ✕ is
@@ -516,8 +515,7 @@ struct ContentView: View {
                 ForEach(visible.prefix(30)) { entry in AuditRow(entry: entry) }
             }
         }
-        .padding(7)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.gray.opacity(0.07)))
+        .cardChrome()
     }
 
     /// Wrapping row of toggle chips, one per activity type present in the feed. A lit chip
@@ -589,8 +587,7 @@ struct ContentView: View {
                 )
             }
         }
-        .padding(7)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.gray.opacity(0.07)))
+        .cardChrome()
     }
 
     private func processTint(_ proc: TrackedProcess) -> Color {
@@ -968,8 +965,7 @@ struct DevicesView: View {
                 section("Free", color: .secondary, expanded: $freeExpanded, devices: free)
             }
         }
-        .padding(7)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.gray.opacity(0.07)))
+        .cardChrome()
     }
 
     /// One collapsible group: the shared section header and, when expanded, its

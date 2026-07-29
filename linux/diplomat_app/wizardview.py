@@ -67,7 +67,7 @@ class WizardView(SpawnWizard):
         root.addWidget(self.target)
 
         self.mine_caption = QLabel("")
-        self.mine_caption.setStyleSheet("color: palette(mid); font-size: 10px;")
+        self.mine_caption.setStyleSheet(widgets.muted(10))
         root.addWidget(self.mine_caption)
 
         # The username field (someone else's) and the single-PR field share this
@@ -105,7 +105,7 @@ class WizardView(SpawnWizard):
         # Depth
         depth_header = QHBoxLayout()
         dl = QLabel("Review depth")
-        dl.setStyleSheet("color: palette(mid); font-weight: 700; font-size: 10px;")
+        dl.setStyleSheet(widgets.muted(10, bold=True))
         self.depth_title = QLabel()
         self.depth_title.setStyleSheet("font-weight: 700; font-size: 10px;")
         self.depth_title.setAlignment(Qt.AlignmentFlag.AlignRight)

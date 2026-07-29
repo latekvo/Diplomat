@@ -192,8 +192,7 @@ struct MeshView: View {
             TopologyGraph(selfNode: selfNode, peers: peers, platformMeta: platformMeta)
                 .frame(height: 190)
                 .frame(maxWidth: .infinity)
-                .padding(6)
-                .background(RoundedRectangle(cornerRadius: 8).fill(Color.gray.opacity(0.07)))
+                .cardChrome(padding: 6)
 
             HStack(alignment: .top, spacing: 12) {
                 nodesColumn(selfNode: selfNode, peers: peers)
@@ -279,8 +278,7 @@ struct MeshView: View {
                 nodeCard(node: nil, peer: p)
             }
         }
-        .padding(7)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.gray.opacity(0.07)))
+        .cardChrome()
     }
 
     /// One node row. Exactly one of `node` (self) / `peer` is non-nil; the common
@@ -600,8 +598,7 @@ struct MeshView: View {
                          idToName: idToName)
             }
         }
-        .padding(7)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.gray.opacity(0.07)))
+        .cardChrome()
     }
 
     private func dutyCard(duty: MeshCatalog.Duty, assignment: MeshAssignment?,

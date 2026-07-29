@@ -297,6 +297,18 @@ struct WizardSpawnControls: View {
 }
 
 extension View {
+    /// The panel's card chrome: padded content on a soft rounded tint. Every grouped
+    /// block in the popover wears it — the activity feed, the ongoing-sessions list, the
+    /// device pool, the mesh topology/nodes/duties — so the corner radius and the tint
+    /// live in one place instead of once per card.
+    ///
+    /// `fill` is the whole colour, opacity included, because the one non-default card
+    /// (the ban list) differs in both hue and strength.
+    func cardChrome(fill: Color = .gray.opacity(0.07), padding: CGFloat = 7) -> some View {
+        self.padding(padding)
+            .background(RoundedRectangle(cornerRadius: 8).fill(fill))
+    }
+
     /// Wrap a wizard body in the results pane's ScrollView.
     ///
     /// `scrolls: false` is the headless renderer's escape hatch: `ImageRenderer`

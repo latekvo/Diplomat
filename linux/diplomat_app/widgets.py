@@ -21,6 +21,23 @@ def tint_bg(hex_color: str, alpha: float) -> str:
     return f"rgba({c.red()},{c.green()},{c.blue()},{alpha:.3f})"
 
 
+def muted(size: int = 10, *, mono: bool = False, bold: bool = False) -> str:
+    """The stylesheet for secondary text: dimmed to the theme's `palette(mid)`.
+
+    Every screen carries captions, hints and status lines in this one style, and Qt
+    stylesheets have no variables — so the string was written out literally in more
+    than forty places across the panel, the mesh screen, Settings and the wizards.
+    Building it here means "muted" has one definition and the per-screen sizes are
+    visible as arguments instead of hiding inside otherwise identical strings.
+
+    `mono` for anything column-aligned (ids, counts, timings); `bold` for a muted
+    heading over a group.
+    """
+    family = " font-family: monospace;" if mono else ""
+    weight = " font-weight: 700;" if bold else ""
+    return f"color: palette(mid);{weight}{family} font-size: {size}px;"
+
+
 # Reference size at which we measure a glyph's intrinsic ink extent before
 # scaling it to the target. Large enough that tightBoundingRect is precise.
 _MEASURE_PX = 128
@@ -285,17 +302,17 @@ class ResultRow(ClickableFrame):
         t.setStyleSheet("font-size: 11px;")
         col.addWidget(t)
         l2 = QLabel(line2)
-        l2.setStyleSheet("color: palette(mid); font-size: 9px;")
+        l2.setStyleSheet(muted(9))
         col.addWidget(l2)
         if line3:
             l3 = QLabel(line3)
-            l3.setStyleSheet("color: palette(mid); font-size: 9px; font-family: monospace;")
+            l3.setStyleSheet(muted(9, mono=True))
             l3.setWordWrap(True)
             col.addWidget(l3)
         row.addLayout(col, 1)
 
         arrow = QLabel("↗")
-        arrow.setStyleSheet("color: palette(mid); font-size: 10px;")
+        arrow.setStyleSheet(muted(10))
         arrow.setAlignment(Qt.AlignmentFlag.AlignTop)
         row.addWidget(arrow)
 
@@ -318,20 +335,20 @@ class SectionHeader(ClickableFrame):
         row.addWidget(GlyphLabel(glyph, 14, glyph_color, font_px=12))
         t = QLabel(title.upper())
         t.setStyleSheet(
-            "color: palette(mid); font-weight: 700; font-size: 10px;"
+            muted(10, bold=True)
         )
         row.addWidget(t)
         if count is not None:
             c = QLabel(str(count))
-            c.setStyleSheet("color: palette(mid); font-family: monospace; font-size: 10px;")
+            c.setStyleSheet(muted(10, mono=True))
             row.addWidget(c)
         if caption:
             cap = QLabel(caption)
-            cap.setStyleSheet("color: palette(mid); font-size: 9px;")
+            cap.setStyleSheet(muted(9))
             row.addWidget(cap)
         row.addStretch(1)
         self._chev = QLabel("▾" if expanded else "▸")
-        self._chev.setStyleSheet("color: palette(mid); font-size: 10px;")
+        self._chev.setStyleSheet(muted(10))
         row.addWidget(self._chev)
 
     def set_expanded(self, expanded: bool) -> None:
@@ -366,7 +383,7 @@ class ActivityRow(QFrame):
             row.addWidget(badge, 0, Qt.AlignmentFlag.AlignTop)
         if clock:
             ts = QLabel(clock)
-            ts.setStyleSheet("color: palette(mid); font-family: monospace; font-size: 9px;")
+            ts.setStyleSheet(muted(9, mono=True))
             row.addWidget(ts, 0, Qt.AlignmentFlag.AlignTop)
 
 
@@ -391,7 +408,7 @@ class BanRow(QFrame):
         if reason:
             r = QLabel(reason)
             r.setWordWrap(True)
-            r.setStyleSheet("color: palette(mid); font-size: 9px;")
+            r.setStyleSheet(muted(9))
             col.addWidget(r)
         row.addLayout(col, 1)
 
@@ -429,11 +446,8 @@ def dispatch_status_text(verdict: str, terminal_title: str) -> str:
 # Resolve-conflicts) and hardcoded a third time in the audit, whose config is
 # always valid. The macOS twins live in Components.swift.
 
-# Colour tokens for the shared chrome, so a font size or tint lives in one place
-# rather than in eighteen literal stylesheet strings.
-_MUTED_CSS = "color: palette(mid); font-size: 10px;"
+# The two chrome styles that are not plain muted text (see :func:`muted`).
 _TITLE_CSS = "font-weight: 700; font-size: 13px;"
-_STATUS_CSS = "color: palette(mid); font-family: monospace; font-size: 10px;"
 _WARNING_CSS = "color: #e0563f; font-size: 10px;"
 # The fill a SPAWN button takes while its config is not spawnable.
 SPAWN_DISABLED_TINT = "#888888"
@@ -450,7 +464,7 @@ def wizard_blurb(text: str) -> QLabel:
     """The grey explainer paragraph under a heading or a toggle."""
     label = QLabel(text)
     label.setWordWrap(True)
-    label.setStyleSheet(_MUTED_CSS)
+    label.setStyleSheet(muted())
     return label
 
 
@@ -465,7 +479,7 @@ def wizard_warning() -> QLabel:
 def wizard_status() -> QLabel:
     """The monospaced line under SPAWN that reports what the click did."""
     label = QLabel("")
-    label.setStyleSheet(_STATUS_CSS)
+    label.setStyleSheet(muted(mono=True))
     label.setWordWrap(True)
     return label
 

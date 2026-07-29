@@ -44,7 +44,7 @@ class AuditWizardView(SpawnWizard):
         )
         bar.setWordWrap(True)
         bar.setStyleSheet(
-            "color: palette(mid); font-size: 10px; padding: 7px;"
+            widgets.muted() + " padding: 7px;"
             " background-color: rgba(88,86,214,0.10); border-radius: 7px;"
         )
         root.addWidget(bar)

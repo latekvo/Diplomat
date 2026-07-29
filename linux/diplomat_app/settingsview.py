@@ -27,12 +27,12 @@ from PySide6.QtWidgets import (
 
 from . import apiwatch, core, deviceallocator, review
 from .store import Store, tools
-from .widgets import IconChip
+from .widgets import IconChip, muted
 
 
 def _section_label(text: str) -> QLabel:
     lbl = QLabel(text)
-    lbl.setStyleSheet("color: palette(mid); font-weight: 700; font-size: 9px; letter-spacing: 1px;")
+    lbl.setStyleSheet(muted(9, bold=True) + " letter-spacing: 1px;")
     return lbl
 
 
@@ -125,7 +125,7 @@ class SettingsView(QWidget):
 
         hint = QLabel()
         hint.setWordWrap(True)
-        hint.setStyleSheet("color: palette(mid); font-size: 10px;")
+        hint.setStyleSheet(muted(10))
 
         def update_hint() -> None:
             o = self.store.username_override.strip()
@@ -261,7 +261,7 @@ class SettingsView(QWidget):
             "dispatch."
         )
         hint.setWordWrap(True)
-        hint.setStyleSheet("color: palette(mid); font-size: 10px;")
+        hint.setStyleSheet(muted(10))
         col.addWidget(hint)
 
         self._cb_review_req = QCheckBox("Full-E2E review PRs that request my review")
@@ -271,7 +271,7 @@ class SettingsView(QWidget):
 
         self._review_req_hint = QLabel("")
         self._review_req_hint.setWordWrap(True)
-        self._review_req_hint.setStyleSheet("color: palette(mid); font-size: 10px;")
+        self._review_req_hint.setStyleSheet(muted(10))
         col.addWidget(self._review_req_hint)
 
         self._unaddressed = QLabel("")
@@ -296,7 +296,7 @@ class SettingsView(QWidget):
             "verdict, except where withheld below."
         )
         approve_hint.setWordWrap(True)
-        approve_hint.setStyleSheet("color: palette(mid); font-size: 10px;")
+        approve_hint.setStyleSheet(muted(10))
         approve.addWidget(approve_hint)
 
         self._verdict_container = QWidget()
@@ -337,7 +337,7 @@ class SettingsView(QWidget):
             "never an APPROVE action. Off ⇒ a clean review stays silent."
         )
         soft_hint.setWordWrap(True)
-        soft_hint.setStyleSheet("color: palette(mid); font-size: 10px;")
+        soft_hint.setStyleSheet(muted(10))
         approve.addWidget(soft_hint)
 
         col.addWidget(self._approve_container)
@@ -434,7 +434,7 @@ class SettingsView(QWidget):
             "your agents inside tmux for this to reach them."
         )
         hint.setWordWrap(True)
-        hint.setStyleSheet("color: palette(mid); font-size: 10px;")
+        hint.setStyleSheet(muted(10))
         col.addWidget(hint)
         return col
 
@@ -495,7 +495,7 @@ class SettingsView(QWidget):
         t = QLabel(title)
         t.setStyleSheet("font-weight: 600; font-size: 11px;")
         s = QLabel(subtitle)
-        s.setStyleSheet("color: palette(mid); font-size: 9px;")
+        s.setStyleSheet(muted(9))
         text.addWidget(t)
         text.addWidget(s)
         row.addLayout(text, 1)
@@ -547,7 +547,7 @@ class SettingsView(QWidget):
         col.addLayout(status_row)
 
         self._alloc_detail = QLabel("querying the installer…")
-        self._alloc_detail.setStyleSheet("color: palette(mid); font-family: monospace; font-size: 9px;")
+        self._alloc_detail.setStyleSheet(muted(9, mono=True))
         col.addWidget(self._alloc_detail)
 
         btn_row = QHBoxLayout()
@@ -633,7 +633,7 @@ class SettingsView(QWidget):
             "Off by default; no node opens on the network until you enable it here."
         )
         hint.setWordWrap(True)
-        hint.setStyleSheet("color: palette(mid); font-size: 10px;")
+        hint.setStyleSheet(muted(10))
         col.addWidget(hint)
         return col
 
@@ -683,7 +683,7 @@ class SettingsView(QWidget):
         self._update_detail = QLabel("comparing with origin…")
         self._update_detail.setWordWrap(True)
         self._update_detail.setStyleSheet(
-            "color: palette(mid); font-family: monospace; font-size: 9px;"
+            muted(9, mono=True)
         )
         col.addWidget(self._update_detail)
 
@@ -707,7 +707,7 @@ class SettingsView(QWidget):
             "prompt engine, and relaunches the tray app in place."
         )
         hint.setWordWrap(True)
-        hint.setStyleSheet("color: palette(mid); font-size: 10px;")
+        hint.setStyleSheet(muted(10))
         col.addWidget(hint)
         return col
 
@@ -781,6 +781,6 @@ class SettingsView(QWidget):
             "SPAWN AGENT opens a new terminal window running `claude` with the review prompt."
         )
         hint.setWordWrap(True)
-        hint.setStyleSheet("color: palette(mid); font-size: 10px;")
+        hint.setStyleSheet(muted(10))
         col.addWidget(hint)
         return col

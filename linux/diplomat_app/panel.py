@@ -40,6 +40,7 @@ from .widgets import (
     SectionHeader,
     ToolCard,
     hline,
+    muted,
     tint_bg,
 )
 from .conflictwizardview import ConflictWizardView
@@ -224,17 +225,17 @@ class Panel(QWidget):
         name.setStyleSheet("font-weight: 700; font-size: 14px;")
         row.addWidget(name)
         repo = QLabel(f"{core.config()['owner']}/{core.config()['repo']}")
-        repo.setStyleSheet("color: palette(mid); font-size: 9px;")
+        repo.setStyleSheet(muted(9))
         row.addWidget(repo)
         row.addStretch(1)
 
         self.spinner = QLabel("⟳")
-        self.spinner.setStyleSheet("color: palette(mid); font-size: 12px;")
+        self.spinner.setStyleSheet(muted(12))
         self.spinner.setVisible(False)
         row.addWidget(self.spinner)
 
         self.updated = QLabel("upd —")
-        self.updated.setStyleSheet("color: palette(mid); font-size: 9px;")
+        self.updated.setStyleSheet(muted(9))
         row.addWidget(self.updated)
 
         refresh = _icon_button("⟲", "Refresh")
@@ -316,7 +317,7 @@ class Panel(QWidget):
         self.telemetry_empty.setWordWrap(True)
         self.telemetry_empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.telemetry_empty.setStyleSheet(
-            "color: palette(mid); font-size: 11px; padding: 24px 8px;"
+            muted(11) + " padding: 24px 8px;"
         )
         col.addWidget(self.telemetry_empty)
 
@@ -392,7 +393,7 @@ class Panel(QWidget):
         self.results.addWidget(self.lookup_scroll)  # index 1
 
         self.hint = QLabel("Type a PR or issue number.")
-        self.hint.setStyleSheet("color: palette(mid); font-size: 11px;")
+        self.hint.setStyleSheet(muted(11))
         self.hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.results.addWidget(self.hint)  # index 2
 
@@ -498,7 +499,7 @@ class Panel(QWidget):
         head.setSpacing(6)
         head.addWidget(GlyphLabel(glyphs.G_DEVICES, 14, "#9aa0a6", font_px=12))
         title = QLabel("Devices")
-        title.setStyleSheet("color: palette(mid); font-weight: 700; font-size: 10px;")
+        title.setStyleSheet(muted(10, bold=True))
         head.addWidget(title)
         head.addStretch(1)
         self.devices_col.addLayout(head)
@@ -636,11 +637,11 @@ class Panel(QWidget):
         name_row.addWidget(name)
         if dev.get("version"):
             ver = QLabel(str(dev["version"]))
-            ver.setStyleSheet("color: palette(mid); font-size: 9px;")
+            ver.setStyleSheet(muted(9))
             name_row.addWidget(ver)
         if dev.get("format"):
             fmt = QLabel(str(dev["format"]))
-            fmt.setStyleSheet("color: palette(mid); font-size: 9px;")
+            fmt.setStyleSheet(muted(9))
             name_row.addWidget(fmt)
         name_row.addStretch(1)
         text.addLayout(name_row)
@@ -734,7 +735,7 @@ class Panel(QWidget):
 
         if selected is None:
             empty = QLabel("All tools hidden — re-enable some under ⚙ Settings.")
-            empty.setStyleSheet("color: palette(mid); font-size: 11px;")
+            empty.setStyleSheet(muted(11))
             empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
             col.addWidget(empty)
             col.addStretch(1)
@@ -751,7 +752,7 @@ class Panel(QWidget):
         title.setStyleSheet("font-weight: 700; font-size: 12px;")
         header.addWidget(title)
         cnt = QLabel(str(len(items)))
-        cnt.setStyleSheet("color: palette(mid); font-family: monospace; font-size: 10px;")
+        cnt.setStyleSheet(muted(10, mono=True))
         header.addWidget(cnt)
         header.addStretch(1)
         col.addLayout(header)
@@ -759,7 +760,7 @@ class Panel(QWidget):
         if not items:
             msg = "Loading…" if self.store.is_loading else "Nothing here."
             empty = QLabel(msg)
-            empty.setStyleSheet("color: palette(mid); font-size: 11px;")
+            empty.setStyleSheet(muted(11))
             col.addWidget(empty)
         else:
             for it in items:
@@ -805,7 +806,7 @@ class Panel(QWidget):
         col.addLayout(top)
 
         presence = QLabel(r.presence)
-        presence.setStyleSheet("color: palette(mid); font-size: 10px;")
+        presence.setStyleSheet(muted(10))
         col.addWidget(presence)
 
         for tool in self.store.visible_tools:

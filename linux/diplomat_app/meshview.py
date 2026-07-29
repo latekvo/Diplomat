@@ -38,7 +38,7 @@ from .mesh import config as mesh_config
 from .mesh import statefile
 from .mesh.config import PlacementOverrides
 from .store import Store
-from .widgets import ElidedLabel, GlyphLabel, IconChip, tint_bg
+from .widgets import ElidedLabel, GlyphLabel, IconChip, muted, tint_bg
 
 # Link-state colours (shared with the wire graph + the node badges). Mirrors the
 # duty/token palette in core/mesh.json so the whole feature reads as one thing.
@@ -361,7 +361,7 @@ class MeshView(QWidget):
         row.addWidget(title)
         self.node_count = QLabel("")
         self.node_count.setStyleSheet(
-            "color: palette(mid); font-family: monospace; font-size: 10px;"
+            muted(10, mono=True)
         )
         row.addWidget(self.node_count)
         row.addStretch(1)
@@ -369,7 +369,7 @@ class MeshView(QWidget):
         self.status_dot.setStyleSheet("color: gray; font-size: 10px;")
         row.addWidget(self.status_dot)
         self.status_text = QLabel("")
-        self.status_text.setStyleSheet("color: palette(mid); font-size: 9px;")
+        self.status_text.setStyleSheet(muted(9))
         row.addWidget(self.status_text)
         done = QPushButton("Done")
         done.setStyleSheet("font-weight: 700;")
@@ -496,7 +496,7 @@ class MeshView(QWidget):
         d = QLabel(detail)
         d.setAlignment(Qt.AlignmentFlag.AlignCenter)
         d.setWordWrap(True)
-        d.setStyleSheet("color: palette(mid); font-size: 10px;")
+        d.setStyleSheet(muted(10))
         self.state_col.addWidget(d)
         if button:
             btn = QPushButton(button)
@@ -510,7 +510,7 @@ class MeshView(QWidget):
         _clear_layout(self.nodes_col)
         head = QLabel("NODES")
         head.setStyleSheet(
-            "color: palette(mid); font-weight: 700; font-size: 9px;"
+            muted(9, bold=True)
         )
         self.nodes_col.addWidget(head)
 
@@ -528,7 +528,7 @@ class MeshView(QWidget):
             hint = QLabel("Zero-trust default — a new device is Foreign until you mark it "
                           "Personal. Foreign devices' requests are declined (or run confined).")
             hint.setWordWrap(True)
-            hint.setStyleSheet("color: palette(mid); font-size: 8px;")
+            hint.setStyleSheet(muted(8))
             self.nodes_col.addWidget(hint)
 
     def _node_card(self, node: dict, peer: dict | None) -> QWidget:
@@ -560,7 +560,7 @@ class MeshView(QWidget):
         if peer is not None and peer.get("addr"):
             addr = QLabel(str(peer["addr"]))
             addr.setStyleSheet(
-                "color: palette(mid); font-family: monospace; font-size: 9px;"
+                muted(9, mono=True)
             )
             outer.addWidget(addr)
 
@@ -684,7 +684,7 @@ class MeshView(QWidget):
         row = QHBoxLayout()
         row.setSpacing(4)
         cap = QLabel("quota")
-        cap.setStyleSheet("color: palette(mid); font-size: 9px;")
+        cap.setStyleSheet(muted(9))
         row.addWidget(cap)
         color = _TOKEN_COLOR.get(tokens, "#8E8E93")
         val = QLabel(f"{_TOKEN_GLYPH.get(tokens, '●')} {left}")
@@ -719,7 +719,7 @@ class MeshView(QWidget):
         row = QHBoxLayout()
         row.setSpacing(4)
         lbl = QLabel("trust")
-        lbl.setStyleSheet("color: palette(mid); font-size: 9px;")
+        lbl.setStyleSheet(muted(9))
         row.addWidget(lbl)
 
         current = peer.get("trust", "personal")
@@ -781,7 +781,7 @@ class MeshView(QWidget):
             personal.setToolTip("This device hasn't proven a key yet.")
         elif not verified:
             note = QLabel("(unverified key)")
-            note.setStyleSheet("color: palette(mid); font-size: 8px;")
+            note.setStyleSheet(muted(8))
             note.setToolTip("The peer advertises this key but hasn't yet signed our "
                             "challenge — trust applies once it does.")
             row.addWidget(note)
@@ -794,7 +794,7 @@ class MeshView(QWidget):
         _clear_layout(self.duties_col)
         head = QLabel("DUTIES")
         head.setStyleSheet(
-            "color: palette(mid); font-weight: 700; font-size: 9px;"
+            muted(9, bold=True)
         )
         self.duties_col.addWidget(head)
 
@@ -845,7 +845,7 @@ class MeshView(QWidget):
             outer.addWidget(arrow)
         elif not shortfall:
             nobody = QLabel("∅ nobody")
-            nobody.setStyleSheet("color: palette(mid); font-size: 10px;")
+            nobody.setStyleSheet(muted(10))
             outer.addWidget(nobody)
         if shortfall:
             miss = " · ".join(
@@ -865,7 +865,7 @@ class MeshView(QWidget):
                 parts.append(f"{cnt}×{pglyph}")
             spread = QLabel("spread: " + "+".join(parts))
             spread.setStyleSheet(
-                "color: palette(mid); font-family: monospace; font-size: 9px;"
+                muted(9, mono=True)
             )
             outer.addWidget(spread)
 
