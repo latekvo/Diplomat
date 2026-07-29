@@ -52,8 +52,8 @@ enum DeviceFocus {
 
     private static func focusByTTY(_ tty: String) -> Bool {
         let devPath = "/dev/\(tty)"
-        if isRunning("com.googlecode.iterm2"), runSilently(itermByTTY(devPath)) { return true }
-        if isRunning("com.apple.Terminal"), runSilently(terminalByTTY(devPath)) { return true }
+        if isRunning("com.googlecode.iterm2"), OSAScript.runSilently(itermByTTY(devPath)) { return true }
+        if isRunning("com.apple.Terminal"), OSAScript.runSilently(terminalByTTY(devPath)) { return true }
         return false
     }
 
@@ -97,9 +97,5 @@ enum DeviceFocus {
             if not _hit then error "tty not found"
         end tell
         """
-    }
-
-    private static func runSilently(_ script: String) -> Bool {
-        OSAScript.runSilently(script)
     }
 }

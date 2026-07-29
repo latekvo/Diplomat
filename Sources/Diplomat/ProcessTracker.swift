@@ -378,7 +378,7 @@ enum ProcessMonitor {
         guard !p.windowID.isEmpty else { return false }
         let term = SpawnTerminal(rawValue: p.terminal) ?? .iterm
         let script = focusScript(term: term, windowID: p.windowID, sessionID: p.sessionID)
-        return runOsascriptSilently(script)
+        return OSAScript.runSilently(script)
     }
 
     /// AppleScript that selects the window with the captured id (erroring if it's
@@ -424,10 +424,5 @@ enum ProcessMonitor {
             end tell
             """
         }
-    }
-
-    /// Run an AppleScript, discard output, return whether it exited 0.
-    private static func runOsascriptSilently(_ script: String) -> Bool {
-        OSAScript.runSilently(script)
     }
 }
