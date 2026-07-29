@@ -18,8 +18,10 @@ import DiplomatCore
 enum RepoPaths {
     private static var home: URL { FileManager.default.homeDirectoryForCurrentUser }
 
-    /// The checkout root. Env-overridable; falls back to the conventional path used by
-    /// the sibling `DeviceAllocator.packageDir` default (a personal, single-checkout setup).
+    /// The checkout root. Env-overridable; falls back to the conventional clone path
+    /// (a personal, single-checkout setup). Everything that lives beside the app in
+    /// this monorepo — the SzpontNet library, the device-allocator package — hangs off
+    /// here, so a moved or renamed checkout relocates all of them together.
     static var root: URL {
         if let env = ProcessInfo.processInfo.environment["DIPLOMAT_SELF_REPO"], !env.isEmpty {
             return URL(fileURLWithPath: env)

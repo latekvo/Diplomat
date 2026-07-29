@@ -293,8 +293,15 @@ function formatResult(name, r) {
 
 // ---- server ---------------------------------------------------------------
 
+// Read, not spelled out again: a second copy of the version is a copy that goes
+// stale, and this one is what the client sees on the handshake — the one place a
+// wrong number is invisible from inside the package.
+const VERSION = JSON.parse(
+  fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'),
+).version;
+
 const server = new Server(
-  { name: 'diplomat-device-allocator', version: '0.1.0' },
+  { name: 'diplomat-device-allocator', version: VERSION },
   { capabilities: { tools: {} }, instructions: COERCION },
 );
 

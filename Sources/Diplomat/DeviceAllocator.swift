@@ -56,6 +56,15 @@ struct AllocatorInstall: Decodable, Equatable {
     var claudeMdInjected = false
     var daemonRunning = false
     var installed = false
+    /// The installed package's version, for display. `nil` until a check answers.
+    var version: String?
+    /// An install whose deployed copies no longer match this checkout (the installer
+    /// compares them by content). Never true for a machine that isn't installed —
+    /// so a deliberate uninstall is never mistaken for damage to repair.
+    var outdated = false
+    /// Which artifacts drifted (`skill`, `rule`, `claudeMd`, `mcp`) — shown beside
+    /// the status so "out of date" says what, not just that.
+    var drift: [String] = []
 
     init() {}
 
@@ -70,10 +79,14 @@ struct AllocatorInstall: Decodable, Equatable {
         claudeMdInjected = (try? c.decode(Bool.self, forKey: .claudeMdInjected)) ?? false
         daemonRunning = (try? c.decode(Bool.self, forKey: .daemonRunning)) ?? false
         installed = (try? c.decode(Bool.self, forKey: .installed)) ?? false
+        version = try? c.decode(String.self, forKey: .version)
+        outdated = (try? c.decode(Bool.self, forKey: .outdated)) ?? false
+        drift = (try? c.decode([String].self, forKey: .drift)) ?? []
     }
 
     private enum CodingKeys: String, CodingKey {
-        case mcpRegistered, skillInstalled, ruleInstalled, claudeMdInjected, daemonRunning, installed
+        case mcpRegistered, skillInstalled, ruleInstalled, claudeMdInjected, daemonRunning
+        case installed, version, outdated, drift
     }
 
     /// Unknown until the first check completes (so the UI can say "checking…").
@@ -81,17 +94,24 @@ struct AllocatorInstall: Decodable, Equatable {
 }
 
 enum DeviceAllocator {
-    /// Where the Node package lives. Overridable for non-standard checkouts; defaults
-    /// to the user's repo path (this is a personal, single-checkout setup).
+    /// Where the Node package lives: a sibling of this app inside the same checkout.
+    /// Overridable for a layout that keeps them apart.
+    ///
+    /// Resolved through `RepoPaths.root` rather than hardcoded to `~/dev/diplomat`,
+    /// which is the twin of the Linux bridge deriving it from its own file's path: an
+    /// app run out of a worktree, a differently-named clone, or a checkout moved
+    /// anywhere else must drive *its own* installer, not one belonging to whatever
+    /// happens to sit at the conventional path.
     static var packageDir: String {
         if let env = ProcessInfo.processInfo.environment["DIPLOMAT_DEVICE_ALLOCATOR_DIR"], !env.isEmpty {
             return env
         }
-        return home.appendingPathComponent("dev/diplomat/device-allocator").path
+        return RepoPaths.root.appendingPathComponent("device-allocator").path
     }
 
     private static var home: URL { FileManager.default.homeDirectoryForCurrentUser }
     static var installJS: String { packageDir + "/src/install.js" }
+    static var nodeModulesDir: String { packageDir + "/node_modules" }
     static var stateURL: URL {
         home.appendingPathComponent(".diplomat/device-allocator/state.json")
     }
@@ -145,6 +165,46 @@ enum DeviceAllocator {
     /// True when a usable `node` can be found (the installer/daemon need it).
     static var nodeAvailable: Bool { resolveNode() != nil }
 
+    /// True once the MCP server's one runtime dependency is present. The daemon needs
+    /// no deps, but `mcp.js` imports `@modelcontextprotocol/sdk`, so without this the
+    /// installer registers a server that dies the moment Claude Code spawns it —
+    /// which looks from the outside like an allocator that installed fine and then
+    /// simply never appears.
+    static var depsInstalled: Bool {
+        FileManager.default.fileExists(
+            atPath: nodeModulesDir + "/@modelcontextprotocol/sdk")
+    }
+
+    /// Fetch the package's `node_modules` if they aren't there yet. No-op once
+    /// present. Blocking (call off the main thread); returns whether the deps ended
+    /// up available. Twin of `deviceallocator.ensure_deps` on Linux.
+    @discardableResult
+    static func ensureDeps() -> Bool {
+        guard packageAvailable else { return false }
+        if depsInstalled { return true }
+        guard let npm = resolveNpm() else { return false }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: npm)
+        p.arguments = ["install", "--omit=dev", "--no-audit", "--no-fund"]
+        p.currentDirectoryURL = URL(fileURLWithPath: packageDir)
+        // npm's own shebang is `env node`; the app may be launched with a PATH that
+        // has none, so put the node we resolved in front of whatever it inherited.
+        var env = ProcessInfo.processInfo.environment
+        if let node = resolveNode() {
+            let dir = (node as NSString).deletingLastPathComponent
+            env["PATH"] = dir + ":" + (env["PATH"] ?? "")
+        }
+        p.environment = env
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        do { try p.run() } catch { return false }
+        let watchdog = DispatchWorkItem { if p.isRunning { p.terminate() } }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 300, execute: watchdog)
+        p.waitUntilExit()
+        watchdog.cancel()
+        return depsInstalled
+    }
+
     // MARK: state
 
     static func readState() -> DeviceState? {
@@ -153,6 +213,31 @@ enum DeviceAllocator {
     }
 
     // MARK: installer (blocking — call off the main thread)
+
+    /// Whether a launch should run `--install`, given what `--check` reported and
+    /// whether this machine's setup has already been settled.
+    ///
+    /// One routine because it is one decision made in two places (this app and the
+    /// Linux applet, whose `deviceallocator.needs_install` is its twin) covering three
+    /// situations that look alike and must not be confused:
+    ///
+    /// - **First run** — nothing installed, nothing settled. Install. A failure leaves
+    ///   `setupDone` false, so the next launch retries; that is how a machine with no
+    ///   node yet eventually gets set up.
+    /// - **Stale** — installed, but the deployed skill/rule/CLAUDE.md/registration no
+    ///   longer match this checkout. Re-install: `--install` rewrites every artifact,
+    ///   so it is also the repair.
+    /// - **Settled uninstall** — the user removed it in Settings. Leave it alone. This
+    ///   is the one an "is everything in place?" check gets wrong, and getting it
+    ///   wrong means silently reinstalling something the user deliberately took off.
+    ///
+    /// Derives current from `installed && !outdated` rather than a positive flag: an
+    /// installer predating drift detection reports neither, and keying off a missing
+    /// flag would reinstall on every launch forever.
+    static func needsInstall(status: AllocatorInstall, setupDone: Bool) -> Bool {
+        if setupDone && !status.installed { return false }
+        return !(status.installed && !status.outdated)
+    }
 
     static func check() -> AllocatorInstall { runInstaller("--check") }
     static func install() -> AllocatorInstall { runInstaller("--install") }
@@ -199,6 +284,21 @@ enum DeviceAllocator {
             }
         }
         for path in ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"] {
+            if fm.fileExists(atPath: path) { return path }
+        }
+        return nil
+    }
+
+    /// Find `npm` the same way we find `node`; npm normally sits beside it.
+    static func resolveNpm() -> String? {
+        let fm = FileManager.default
+        if let env = ProcessInfo.processInfo.environment["DIPLOMAT_NPM"],
+           fm.fileExists(atPath: env) { return env }
+        if let node = resolveNode() {
+            let beside = (node as NSString).deletingLastPathComponent + "/npm"
+            if fm.fileExists(atPath: beside) { return beside }
+        }
+        for path in ["/opt/homebrew/bin/npm", "/usr/local/bin/npm", "/usr/bin/npm"] {
             if fm.fileExists(atPath: path) { return path }
         }
         return nil

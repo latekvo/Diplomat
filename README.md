@@ -436,9 +436,15 @@ to a settings screen:
 - **Spawn terminal** - which terminal SPAWN AGENT opens: **iTerm** or **Terminal**
   (iTerm is the default when installed, Terminal the always-present fallback).
 - **Device allocator (MCP)** - install/uninstall the bundled allocator daemon +
-  MCP server (see `device-allocator/`), with install and daemon status. It
+  MCP server (see [`device-allocator/README.md`](device-allocator/README.md)), with
+  install status, the installed version, and whether it is still current. It
   registers as **`diplomat-device-allocator`**; installing also clears the old
   `argent-device-allocator` registration, so a pre-rename setup migrates itself.
+  Both applets install it on first run and refresh it when a `git pull` has moved
+  the skill, rule, CLAUDE.md block or registration out from under an installed
+  copy - the status then reads **Out of date** and names what drifted. An
+  allocator you *uninstall* here stays uninstalled; only an existing install is
+  ever refreshed.
 - **Mesh (LAN P2P)** - opt into [Diplomat Mesh](#diplomat-mesh-experimental--lan-p2p-duty-coordination):
   a toggle that starts/stops the local node (off by default), with live node/peer
   status. The mesh itself is managed from the **⬡ Mesh screen**.
@@ -590,7 +596,11 @@ DIPLOMAT_TRACK_TEST=1    ...                     # E2E of session tracking via a
                                                      #   window; exits non-zero on failure
 DIPLOMAT_SPAWN_FOCUS_TEST=1 ...                  # E2E that background spawns keep focus and foreground ones
                                                      #   don't — drives two throwaway windows; exit code = verdict
-DIPLOMAT_DEVICE_DUMP=1   ...                     # device-allocator paths + daemon state, printed
+DIPLOMAT_DEVICE_DUMP=1   ...                     # device-allocator paths + daemon state, printed, plus the
+                                                     #   installed version and what (if anything) has drifted
+DIPLOMAT_ALLOCATOR_TEST=1 ...                    # the launch-time allocator decision: reinstall a stale copy,
+                                                     #   leave an uninstalled one alone. Shells no installer;
+                                                     #   exit code = verdict
 DIPLOMAT_AUTOFIX_POLL=1  ...                     # one real monitor poll: prints its dispatch decisions and
                                                      #   the exact prompts it would spawn, opens nothing
 DIPLOMAT_APIWATCH_SCAN=1 ...                     # dry-run the API-error watcher over live sessions, sends nothing
@@ -641,12 +651,12 @@ golden-prompt parity is proven across languages), and `node-device-allocator`.
 ```
 core/                          ← shared source of truth (see core/README.md)
   golden-prompts/                canonical prompt outputs, asserted byte-for-byte by BOTH platforms' tests
-device-allocator/              ← the `diplomat-device-allocator` MCP server + daemon, arbitrating
-                                 simulator/emulator allocation between the agents on this machine
-                                 (request/await/free/change/broken + repair; leases persist across daemon
-                                 restarts in ~/.diplomat/device-allocator/, idle devices reclaimed after
-                                 15 min; a prompt-injection report bans the author and terminates the
-                                 reporting agent)
+device-allocator/              ← the `diplomat-device-allocator` MCP server + daemon (see its README),
+                                 arbitrating simulator/emulator allocation between the agents on this
+                                 machine (request/await/free/change/broken + repair; leases persist across
+                                 daemon restarts in ~/.diplomat/device-allocator/, idle devices reclaimed
+                                 after 15 min; a prompt-injection report bans the author and terminates
+                                 the reporting agent). Standalone: any MCP client can point at src/mcp.js
 Sources/
   DiplomatCore/             ← Foundation-only Swift; loads core/. Builds on macOS AND Linux.
     CoreAssets.swift             resolves + decodes core/ (config, catalog, filters, review, conflicts, audit, graphql)

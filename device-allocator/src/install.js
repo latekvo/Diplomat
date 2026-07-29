@@ -25,6 +25,7 @@ const PKG_DIR = path.resolve(__dirname, '..');
 const MCP_JS = path.join(__dirname, 'mcp.js');
 const DAEMON_JS = path.join(__dirname, 'daemon.js');
 const ASSETS = path.join(PKG_DIR, 'assets');
+const PKG_JSON = path.join(PKG_DIR, 'package.json');
 
 const HOME = os.homedir();
 const CLAUDE_JSON = path.join(HOME, '.claude.json');
@@ -128,6 +129,10 @@ function mergeMoveDir(src, dst) {
 
 // ---- status ---------------------------------------------------------------
 
+// This package's version, reported so both applets can show what they installed.
+// Never fatal: an unreadable package.json must not take the installer down.
+const VERSION = (readJson(PKG_JSON) || {}).version ?? 'unknown';
+
 function mcpRegistered() {
   const j = readJson(CLAUDE_JSON);
   return !!(j && j.mcpServers && j.mcpServers[MCP_KEY]);
@@ -135,8 +140,72 @@ function mcpRegistered() {
 function claudeMdInjected() {
   try { return fs.readFileSync(CLAUDE_MD, 'utf8').includes(CLAUDE_MD_BEGIN); } catch { return false; }
 }
+
+// ---- drift ----------------------------------------------------------------
+// Everything --install lays down is a COPY: the skill and the rule are copied out
+// of assets/, the CLAUDE.md block is generated from the constant above, and the MCP
+// registration names the mcp.js of whichever checkout installed it. A `git pull`
+// moves all four sources and none of the copies, so without this an installed
+// machine keeps coercing its agents with last month's text while `--check` reports
+// a clean install.
+//
+// Compared by content, not against a recorded version: a stamp only catches an
+// update someone remembered to bump, and it cannot see a hand-edited copy at all.
+// `version` below is what the UIs *show*; this is what they act on.
+
+function sameBytes(a, b) {
+  try { return fs.readFileSync(a).equals(fs.readFileSync(b)); } catch { return false; }
+}
+
+/// Whether two paths name the same file on disk, by (device, inode) rather than by
+/// string. A path is not an identity here: this checkout is reached as both
+/// ~/dev/diplomat and ~/dev/Diplomat on a case-insensitive volume, and a registration
+/// written through one spelling would read as pointing at a different checkout from
+/// the other — a permanent, self-reinstalling "out of date" on every launch.
+function sameFile(a, b) {
+  try {
+    const x = fs.statSync(a);
+    const y = fs.statSync(b);
+    return x.dev === y.dev && x.ino === y.ino;
+  } catch { return false; }
+}
+
+/// The managed block as it currently sits in the user's CLAUDE.md, markers included.
+function installedClaudeMdBlock() {
+  try {
+    const text = fs.readFileSync(CLAUDE_MD, 'utf8');
+    const i = text.indexOf(CLAUDE_MD_BEGIN);
+    const j = text.indexOf(CLAUDE_MD_END, i);
+    return i === -1 || j === -1 ? null : text.slice(i, j + CLAUDE_MD_END.length);
+  } catch { return null; }
+}
+
+/// What no longer matches this checkout, as a list of names for the UI and the log.
+///
+/// The MCP entry is judged on its `args` and on whether its `command` still exists,
+/// deliberately NOT on `command` matching the node running right now: the two
+/// front-ends resolve node slightly differently, and an equality check there would
+/// have each of them see the other's registration as drift and reinstall on every
+/// launch, forever. A registration pointing at a deleted node, or at another
+/// checkout's mcp.js, is the real breakage — and both of those this catches.
+function drift() {
+  const stale = [];
+  if (!sameBytes(path.join(ASSETS, 'skill', 'SKILL.md'), path.join(SKILL_DIR, 'SKILL.md'))) {
+    stale.push('skill');
+  }
+  if (!sameBytes(path.join(ASSETS, 'rule', 'diplomat-device-allocator.md'), RULE_DEST)) {
+    stale.push('rule');
+  }
+  if (installedClaudeMdBlock() !== CLAUDE_MD_BODY) stale.push('claudeMd');
+  const entry = (readJson(CLAUDE_JSON) || {}).mcpServers?.[MCP_KEY];
+  if (entry && (!sameFile(entry.args?.[0] ?? '', MCP_JS) || !fs.existsSync(entry.command ?? ''))) {
+    stale.push('mcp');
+  }
+  return stale;
+}
+
 function status() {
-  return {
+  const s = {
     mcpRegistered: mcpRegistered(),
     skillInstalled: fs.existsSync(path.join(SKILL_DIR, 'SKILL.md')),
     ruleInstalled: fs.existsSync(RULE_DEST),
@@ -144,7 +213,20 @@ function status() {
     daemonRunning: daemonAlive(),
     nodePath: CMD_NODE,
     mcpJs: MCP_JS,
+    version: VERSION,
   };
+  s.drift = drift();
+  // Only an install can be out of date. On a machine that never installed (or
+  // deliberately uninstalled) every artifact "differs" trivially, and calling that
+  // outdated would have the applet treat an uninstall as something to repair.
+  //
+  // There is deliberately no companion `upToDate`: both applets derive it as
+  // `installed && !outdated`, which is also the right reading of an *older*
+  // installer's output — a version of this file that predates drift detection
+  // reports neither field, and a client keying off a missing positive flag would
+  // reinstall on every launch forever.
+  s.outdated = installed(s) && s.drift.length > 0;
+  return s;
 }
 function installed(s = status()) {
   return s.mcpRegistered && s.skillInstalled && s.ruleInstalled && s.claudeMdInjected;

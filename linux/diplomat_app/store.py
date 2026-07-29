@@ -1162,22 +1162,37 @@ class Store(QObject):
             self.activity_changed.emit()
 
     def ensure_allocator_installed_async(self) -> None:
-        """One-time automatic install of the device-allocator MCP when Diplomat
-        is first set up. Skips when the package/node isn't available or the
-        user has already settled it (installed or uninstalled in Settings). Only
-        marks itself done once the install actually lands, so a transient failure
-        (e.g. node missing) simply retries on a later launch."""
-        if self.allocator_setup_done or not deviceallocator.package_available():
+        """Install the device-allocator MCP when Diplomat is first set up, and keep
+        an existing install current afterwards. Called blindly on every launch.
+
+        Two jobs, one shell of the installer, because they answer to the same
+        status. The first is the original one-time install, which only marks itself
+        done once the install actually lands so a transient failure (no node yet)
+        retries on a later launch. The second is the update: everything the
+        installer writes — the skill, the always-on rule, the CLAUDE.md block, the
+        MCP registration — is a *copy* of something in this checkout, and a
+        ``git pull`` moves the originals alone. Without this, a machine set up once
+        coerces its agents with whatever text shipped that day, forever.
+
+        Which of the three situations this is — first run, stale, or an install the
+        user deliberately removed — is :func:`deviceallocator.needs_install`, shared
+        with its macOS twin so the two applets can't drift on the one question where
+        being wrong reinstalls something behind the user's back.
+        """
+        if not deviceallocator.package_available():
             return
 
         def work() -> None:
-            status = deviceallocator.check()
-            if status and status.get("installed"):
+            status = deviceallocator.check() or {}
+            if not deviceallocator.needs_install(status, self.allocator_setup_done):
                 self.allocator_install = status
-                self.allocator_setup_done = True
+                if status.get("installed"):
+                    self.allocator_setup_done = True
                 self.allocator_changed.emit()
                 return
-            # Not installed yet: pull the MCP server's runtime deps, then register.
+            # A first install and a stale one are the same act: pull the MCP server's
+            # runtime deps, then (re-)register — `--install` rewrites every artifact,
+            # so it is also the repair.
             deviceallocator.ensure_deps()
             result = deviceallocator.install()
             self.allocator_install = result

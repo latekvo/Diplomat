@@ -594,16 +594,35 @@ class SettingsView(QWidget):
             self._alloc_daemon.setVisible(False)
             return
         installed = bool(s.get("installed"))
+        outdated = bool(s.get("outdated"))
+        version = s.get("version") or "?"
 
         def mark(b: object) -> str:
             return "✓" if b else "✗"
 
-        self._alloc_status.setText("Installed" if installed else "Not installed")
-        self._alloc_detail.setText(
+        # "Installed" alone would be a true statement about a machine still running
+        # the copies some earlier checkout laid down, so the stale case says so and
+        # names what drifted. Amber, not green: it is working, but not from here.
+        self._alloc_status.setText(
+            f"Out of date (v{version})" if outdated
+            else f"Installed · v{version}" if installed
+            else "Not installed"
+        )
+        self._alloc_status.setStyleSheet(
+            "font-weight: 700; font-size: 11px;"
+            + (" color: #FF9500;" if outdated else "")
+        )
+        detail = (
             f"MCP {mark(s.get('mcpRegistered'))} · skill {mark(s.get('skillInstalled'))}"
             f" · rule {mark(s.get('ruleInstalled'))} · CLAUDE.md {mark(s.get('claudeMdInjected'))}"
         )
-        self._alloc_install.setText("Reinstall" if installed else "Install")
+        drift = s.get("drift") or []
+        if outdated and drift:
+            detail += f"  ⟳ stale: {', '.join(str(d) for d in drift)}"
+        self._alloc_detail.setText(detail)
+        self._alloc_install.setText(
+            "Update" if outdated else "Reinstall" if installed else "Install"
+        )
         self._alloc_uninstall.setVisible(installed)
         self._alloc_daemon.setVisible(bool(s.get("daemonRunning")))
 

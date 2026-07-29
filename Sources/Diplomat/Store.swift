@@ -241,6 +241,7 @@ final class Store: ObservableObject {
         static let meshEnabled = "meshEnabled"
         static let meshAckedDevices = "meshAckedDevices"
         static let meshTrustReminderSuppressed = "meshTrustReminderSuppressed"
+        static let allocatorSetupDone = "allocatorSetupDone"
     }
 
     /// The persisted terminal choice, readable before a Store exists (the AppDelegate's
@@ -356,7 +357,10 @@ final class Store: ObservableObject {
             refreshAudit()
             Task { await fetchMe() }
             Task { await refreshDeviceState() }
-            Task { await refreshAllocatorInstall() }
+            // Installs the device allocator on first run and refreshes a stale one
+            // afterwards; publishes the status either way, so it stands in for the
+            // plain `refreshAllocatorInstall()` this used to do here.
+            Task { await ensureAllocatorInstalled() }
             // Auto-start a node on launch if the user has previously opted into the mesh
             // (mirrors the Linux applet's ensure-running-on-start).
             if meshEnabled { ensureMeshRunning() }
@@ -382,14 +386,68 @@ final class Store: ObservableObject {
         await refreshDeviceState()
     }
 
+    /// Whether the allocator's setup has been settled on this machine — installed, or
+    /// deliberately uninstalled in Settings. Gates the first-run auto-install so it
+    /// never re-installs behind a user who removed it. Plain UserDefaults rather than
+    /// `@Published`: no view renders it, and a publish here would invalidate the whole
+    /// panel from a background launch task. Twin of `Store.allocator_setup_done`.
+    var allocatorSetupDone: Bool {
+        get { UserDefaults.standard.bool(forKey: Keys.allocatorSetupDone) }
+        set { persist(newValue, forKey: Keys.allocatorSetupDone) }
+    }
+
     /// Shell the installer's `--check` (Node startup, ~100-300ms) off-main and
     /// publish the result. Called at startup, when Settings opens, and post-install.
     func refreshAllocatorInstall() async {
         allocatorInstall = await Task.detached(priority: .utility) { DeviceAllocator.check() }.value
     }
 
+    /// Install the device-allocator MCP on first run, and keep an existing install
+    /// current afterwards. Called on every launch; twin of the Linux applet's
+    /// `ensure_allocator_installed_async`.
+    ///
+    /// Everything the installer writes — the skill, the always-on rule, the CLAUDE.md
+    /// block, the MCP registration — is a *copy* of something in this checkout, and a
+    /// `git pull` moves the originals alone. So an install is not a one-time event:
+    /// without this, a machine set up once keeps coercing its agents with whatever
+    /// text shipped that day.
+    ///
+    /// Which of the three situations this is — first run, stale, or an install the
+    /// user deliberately removed — is `DeviceAllocator.needsInstall`, shared with its
+    /// Linux twin so the two applets can't drift on the one question where being
+    /// wrong reinstalls something behind the user's back.
+    func ensureAllocatorInstalled() async {
+        guard DeviceAllocator.packageAvailable else { return }
+        let status = await Task.detached(priority: .utility) { DeviceAllocator.check() }.value
+        if !DeviceAllocator.needsInstall(status: status, setupDone: allocatorSetupDone) {
+            allocatorInstall = status
+            if status.installed { allocatorSetupDone = true }
+            return
+        }
+        // A first install or a stale one — the same act either way, since `--install`
+        // rewrites every artifact and is therefore also the repair.
+        let reason = status.installed ? "update (stale: \(status.drift.joined(separator: ", ")))"
+                                      : "first-run install"
+        let result = await Task.detached(priority: .utility) { () -> AllocatorInstall in
+            DeviceAllocator.ensureDeps()
+            return DeviceAllocator.install()
+        }.value
+        allocatorInstall = result
+        if result.installed { allocatorSetupDone = true }
+        AuditLog.log("panel", "allocator-install",
+                     "Device allocator \(reason) (ok: \(result.installed))")
+        refreshAudit()
+        await refreshDeviceState()
+    }
+
     func installAllocator() async {
-        allocatorInstall = await Task.detached(priority: .utility) { DeviceAllocator.install() }.value
+        allocatorInstall = await Task.detached(priority: .utility) { () -> AllocatorInstall in
+            // Deps first: the installer would otherwise register an MCP server that
+            // dies on spawn for want of its one runtime dependency.
+            DeviceAllocator.ensureDeps()
+            return DeviceAllocator.install()
+        }.value
+        allocatorSetupDone = true
         AuditLog.log("panel", "allocator-install",
                      "Installed device allocator (ok: \(allocatorInstall?.installed == true))")
         refreshAudit()
@@ -398,6 +456,9 @@ final class Store: ObservableObject {
 
     func uninstallAllocator() async {
         allocatorInstall = await Task.detached(priority: .utility) { DeviceAllocator.uninstall() }.value
+        // An explicit uninstall is a settled choice — the launch-time install must
+        // not put it back on the next start.
+        allocatorSetupDone = true
         AuditLog.log("panel", "allocator-uninstall", "Uninstalled device allocator")
         refreshAudit()
         await refreshDeviceState()

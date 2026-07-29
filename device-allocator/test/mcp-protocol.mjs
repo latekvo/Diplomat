@@ -59,6 +59,15 @@ try {
   });
   assert.ok(/MANDATORY|MUST/.test(init.instructions || ''), 'handshake instructions missing the coercion');
   pass('initialize handshake carries the coercive instructions');
+
+  // The handshake is the one place a wrong version is invisible from inside the
+  // package — nothing here reads it back — so pin it against package.json rather
+  // than against a literal, which would just be the same stale copy twice.
+  const pkgVersion = JSON.parse(
+    fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')).version;
+  assert.equal(init.serverInfo?.version, pkgVersion,
+    `handshake announced ${init.serverInfo?.version}, package.json says ${pkgVersion}`);
+  pass(`initialize handshake announces the package version (${pkgVersion})`);
   notify('notifications/initialized');
 
   const list = await rpc('tools/list', {});

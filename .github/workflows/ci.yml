@@ -37,15 +37,17 @@ jobs:
           DIPLOMAT_RENDER=devices DIPLOMAT_RENDER_OUT="$RUNNER_TEMP/panel.png" \
             swift run Diplomat
           test -s "$RUNNER_TEMP/panel.png"
-      # The two shared-helper self-tests. Both are pure logic: OSA_TEST runs bare
-      # AppleScript expressions (no `tell application`, so no Automation permission),
-      # and MESH_CMD_TEST is pinned to a scratch state dir and a non-checkout so it
-      # can neither read a real mesh node nor start one.
+      # The shared-helper self-tests. All pure logic, and none of them touches the
+      # runner's real state: OSA_TEST runs bare AppleScript expressions (no `tell
+      # application`, so no Automation permission), MESH_CMD_TEST is pinned to a
+      # scratch state dir and a non-checkout so it can neither read a real mesh node
+      # nor start one, and ALLOCATOR_TEST shells no installer and reads no ~/.claude.
       - name: Headless helper self-tests
         run: |
           DIPLOMAT_OSA_TEST=1 swift run Diplomat
           DIPLOMAT_MESH_DIR="$RUNNER_TEMP/mesh" DIPLOMAT_SELF_REPO=/nonexistent \
             DIPLOMAT_MESH_CMD_TEST=1 swift run Diplomat
+          DIPLOMAT_ALLOCATOR_TEST=1 swift run Diplomat
 
   # The shared core advertises "compiles on macOS *and* Linux". This guards that
   # invariant by building + running only the platform-agnostic core/smoke targets
@@ -171,6 +173,11 @@ jobs:
         run: node test/mcp-protocol.mjs
       - name: Agent-kill on prompt injection
         run: node test/agent-kill.mjs
+      # Everything the installer writes is a copy of something in the checkout, so
+      # this is the check that an already-deployed machine notices a `git pull`.
+      # Runs against a throwaway HOME — it never sees the runner's real ~/.claude.
+      - name: Installer drift detection + re-install
+        run: node test/install-drift.mjs
       - name: Agent-kill spares a reparent supervisor
         run: node test/agent-kill-spares-supervisor.mjs
       - name: Report-injection capture stays off the event loop

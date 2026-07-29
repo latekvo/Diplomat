@@ -122,6 +122,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if env["DIPLOMAT_MESH_CMD_TEST"] == "1" {
             Task { @MainActor in exit(await MeshCommandTest.run() ? 0 : 1) }
         }
+        // Allocator-setup self-test: proves a launch reinstalls a stale allocator and
+        // leaves a deliberately-uninstalled one alone. Pure decision logic — shells no
+        // installer, reads no ~/.claude. Exit code = pass/fail.
+        if env["DIPLOMAT_ALLOCATOR_TEST"] == "1" {
+            exit(AllocatorSetupTest.run() ? 0 : 1)
+        }
     }
 }
 
@@ -589,8 +595,14 @@ enum Dump {
         let s = DeviceAllocator.check()
         print("install: mcp=\(s.mcpRegistered) skill=\(s.skillInstalled) rule=\(s.ruleInstalled) "
             + "claudeMd=\(s.claudeMdInjected) daemon=\(s.daemonRunning) installed=\(s.installed)")
+        // The update half of the bridge: whether what is deployed still matches this
+        // checkout. `outdated` is what drives the launch-time re-install, so a wrong
+        // decode here is the difference between a silently stale machine and a loop.
+        print("version: \(s.version ?? "(none)") upToDate=\(!s.outdated && s.installed) "
+            + "outdated=\(s.outdated) drift=[\(s.drift.joined(separator: ", "))]")
         print("packageDir: \(DeviceAllocator.packageDir)")
         print("node: \(DeviceAllocator.resolveNode() ?? "(not found)")")
+        print("npm: \(DeviceAllocator.resolveNpm() ?? "(not found)") deps=\(DeviceAllocator.depsInstalled)")
         if let st = DeviceAllocator.readState() {
             print("state: devices=\(st.devices.count) "
                 + "· \(st.allocatedCount) in use · \(st.freeCount) free")

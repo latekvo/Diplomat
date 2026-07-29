@@ -513,10 +513,9 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 6) {
             sectionLabel("DEVICE ALLOCATOR (MCP)")
             HStack(spacing: 8) {
-                Image(systemName: (s?.installed ?? false) ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
-                    .foregroundStyle((s?.installed ?? false) ? .green : .orange)
+                Image(systemName: allocatorSymbol(s)).foregroundStyle(allocatorTint(s))
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(s == nil ? "Checking…" : ((s?.installed ?? false) ? "Installed" : "Not installed"))
+                    Text(allocatorStatusText(s))
                         .font(.caption.bold())
                     Text(statusDetail(s)).font(.system(size: 9, design: .monospaced))
                         .foregroundStyle(.secondary)
@@ -532,7 +531,8 @@ struct SettingsView: View {
             }
             HStack(spacing: 8) {
                 Button { Task { await store.installAllocator() } } label: {
-                    Text((s?.installed ?? false) ? "Reinstall" : "Install").bold()
+                    Text(s?.outdated ?? false ? "Update"
+                         : (s?.installed ?? false) ? "Reinstall" : "Install").bold()
                 }
                 .buttonStyle(.borderedProminent).controlSize(.small)
                 .disabled(!DeviceAllocator.packageAvailable || !DeviceAllocator.nodeAvailable)
@@ -566,11 +566,33 @@ struct SettingsView: View {
         return "Forces every local agent to reserve an emulator/simulator before using it (MCP server + skill + always-on rule), so agents never collide on a shared device. Reclaims a device when its agent dies or it sits idle for 15 minutes."
     }
 
+    /// "Installed" alone would be a true statement about a machine still running the
+    /// copies some earlier checkout laid down, so the stale case says so and the
+    /// detail line below names what drifted. Mirrors `settingsview._refresh_allocator_ui`.
+    private func allocatorStatusText(_ s: AllocatorInstall?) -> String {
+        guard let s else { return "Checking…" }
+        let version = s.version ?? "?"
+        if s.outdated { return "Out of date (v\(version))" }
+        return s.installed ? "Installed · v\(version)" : "Not installed"
+    }
+
+    /// Amber for stale, not green: it is working, but not from this checkout.
+    private func allocatorSymbol(_ s: AllocatorInstall?) -> String {
+        (s?.installed ?? false) && !(s?.outdated ?? false)
+            ? "checkmark.seal.fill" : "exclamationmark.triangle.fill"
+    }
+
+    private func allocatorTint(_ s: AllocatorInstall?) -> Color {
+        (s?.installed ?? false) && !(s?.outdated ?? false) ? .green : .orange
+    }
+
     private func statusDetail(_ s: AllocatorInstall?) -> String {
         guard let s else { return "querying the installer…" }
         func mark(_ b: Bool) -> String { b ? "✓" : "✗" }
-        return "MCP \(mark(s.mcpRegistered)) · skill \(mark(s.skillInstalled)) · "
+        let base = "MCP \(mark(s.mcpRegistered)) · skill \(mark(s.skillInstalled)) · "
             + "rule \(mark(s.ruleInstalled)) · CLAUDE.md \(mark(s.claudeMdInjected))"
+        guard s.outdated, !s.drift.isEmpty else { return base }
+        return base + "  ⟳ stale: \(s.drift.joined(separator: ", "))"
     }
 
     private func sectionLabel(_ text: String) -> some View {

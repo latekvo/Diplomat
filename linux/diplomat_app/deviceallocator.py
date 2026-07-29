@@ -156,6 +156,35 @@ def check() -> dict | None:
     return _run_installer("--check")
 
 
+def needs_install(status: dict | None, setup_done: bool) -> bool:
+    """Whether a launch should run ``--install``, given what ``--check`` reported and
+    whether this machine's setup has already been settled.
+
+    One routine because it is one decision made in two places (this applet and the
+    macOS one, whose `DeviceAllocator.needsInstall` is its twin) covering three
+    situations that look alike and must not be confused:
+
+    * **First run** — nothing installed, nothing settled. Install. A failure here
+      leaves ``setup_done`` false, so the next launch retries; that is how a machine
+      with no node yet eventually gets set up.
+    * **Stale** — installed, but the deployed skill/rule/CLAUDE.md/registration no
+      longer match this checkout. Re-install: ``--install`` rewrites every artifact,
+      so it is also the repair.
+    * **Settled uninstall** — the user removed it in Settings. Leave it alone. This is
+      the one an "is everything in place?" check gets wrong, and getting it wrong
+      means silently reinstalling something the user deliberately took off.
+
+    Derives current from ``installed and not outdated`` rather than reading a positive
+    flag: an installer predating drift detection reports neither, and keying off a
+    missing flag would reinstall on every launch forever.
+    """
+    status = status or {}
+    installed = bool(status.get("installed"))
+    if setup_done and not installed:
+        return False
+    return not (installed and not status.get("outdated"))
+
+
 def install() -> dict | None:
     return _run_installer("--install")
 
