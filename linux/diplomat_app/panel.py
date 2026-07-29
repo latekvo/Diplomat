@@ -39,6 +39,8 @@ from .widgets import (
     ResultRow,
     SectionHeader,
     ToolCard,
+    CARD_FILL_ALERT,
+    card_host,
     hline,
     muted,
     tint_bg,
@@ -275,35 +277,17 @@ class Panel(QWidget):
 
         # Device-allocator pool (the shared simulators/emulators + who holds what).
         # Rebuilt in place from the daemon's state file; hidden when the pool is empty.
-        self.devices_host = QWidget()
-        self.devices_col = QVBoxLayout(self.devices_host)
-        self.devices_col.setContentsMargins(7, 7, 7, 7)
-        self.devices_col.setSpacing(4)
-        self.devices_host.setStyleSheet(
-            "background-color: rgba(128,128,128,0.07); border-radius: 8px;"
-        )
+        self.devices_host, self.devices_col = card_host(spacing=4)
         self.devices_host.setVisible(False)
         col.addWidget(self.devices_host)
 
         # Activity feed — the shared audit.jsonl action log (panel + daemon + agents).
-        self.activity_host = QWidget()
-        self.activity_col = QVBoxLayout(self.activity_host)
-        self.activity_col.setContentsMargins(7, 7, 7, 7)
-        self.activity_col.setSpacing(4)
-        self.activity_host.setStyleSheet(
-            "background-color: rgba(128,128,128,0.07); border-radius: 8px;"
-        )
+        self.activity_host, self.activity_col = card_host(spacing=4)
         self.activity_host.setVisible(False)
         col.addWidget(self.activity_host)
 
         # Banned authors (prompt-injection blocklist; read-only here).
-        self.bans_host = QWidget()
-        self.bans_col = QVBoxLayout(self.bans_host)
-        self.bans_col.setContentsMargins(7, 7, 7, 7)
-        self.bans_col.setSpacing(4)
-        self.bans_host.setStyleSheet(
-            "background-color: rgba(255,59,48,0.06); border-radius: 8px;"
-        )
+        self.bans_host, self.bans_col = card_host(fill=CARD_FILL_ALERT, spacing=4)
         self.bans_host.setVisible(False)
         col.addWidget(self.bans_host)
 

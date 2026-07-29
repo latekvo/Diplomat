@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QVBoxLayout,
+    QWidget,
 )
 
 from . import glyphs
@@ -19,6 +20,31 @@ from . import glyphs
 def tint_bg(hex_color: str, alpha: float) -> str:
     c = QColor(hex_color)
     return f"rgba({c.red()},{c.green()},{c.blue()},{alpha:.3f})"
+
+
+#: The panel's card fill - the soft neutral tint behind a grouped block.
+CARD_FILL = "rgba(128,128,128,0.07)"
+#: The ban list's card fill; the one block that is tinted rather than neutral.
+CARD_FILL_ALERT = "rgba(255,59,48,0.06)"
+
+
+def card_host(*, fill: str = CARD_FILL, padding: int = 7,
+              spacing: int = 6) -> tuple[QWidget, QVBoxLayout]:
+    """A grouped block: padded content on a soft rounded card fill.
+
+    Every such block on both screens — the device pool, the activity feed, the ban
+    list, the mesh topology/nodes/duties — is this same widget-with-a-column, so the
+    fill and the 8px radius live here. Twin of ``cardChrome`` in Components.swift.
+
+    Returns the host widget and its layout: add children to the layout, the host to
+    the parent (callers set their own visibility and size policy).
+    """
+    host = QWidget()
+    layout = QVBoxLayout(host)
+    layout.setContentsMargins(padding, padding, padding, padding)
+    layout.setSpacing(spacing)
+    host.setStyleSheet(f"background-color: {fill}; border-radius: 8px;")
+    return host, layout
 
 
 def muted(size: int = 10, *, mono: bool = False, bold: bool = False) -> str:
@@ -198,78 +224,73 @@ class ClickableFrame(QFrame):
         super().mousePressEvent(event)
 
 
-class ToolCard(ClickableFrame):
+class _Tile(ClickableFrame):
+    """The shared body of the panel's two 52px tiles: a tinted chip on the left, a
+    title/subtitle column that stretches, and one trailing widget the subclass adds
+    to ``self.row``.
+
+    ToolCard (a tool, trailing its live count) and ActionCard (an action pane,
+    trailing a chevron) differ only in that last widget — the selected-state fill,
+    the border, the height, the margins and the text column are one design.
+    """
+
+    def __init__(self, *, emoji: str, title: str, subtitle: str,
+                 hex_color: str, selected: bool) -> None:
+        super().__init__()
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedHeight(52)
+        bg = tint_bg(hex_color, 0.16) if selected else "rgba(128,128,128,0.08)"
+        border = hex_color if selected else "transparent"
+        # The selector is the concrete subclass, so each tile styles only itself
+        # (a bare rule here would repaint every descendant of _Tile).
+        self.setStyleSheet(
+            f"{type(self).__name__} {{ background-color: {bg};"
+            f" border: 1.2px solid {border}; border-radius: 8px; }}"
+        )
+
+        self.row = QHBoxLayout(self)
+        self.row.setContentsMargins(7, 6, 7, 6)
+        self.row.setSpacing(8)
+        self.row.addWidget(IconChip(emoji, hex_color), 0, Qt.AlignmentFlag.AlignVCenter)
+
+        text = QVBoxLayout()
+        text.setSpacing(1)
+        t = QLabel(title)
+        t.setStyleSheet("font-weight: 600; font-size: 11px;")
+        text.addWidget(t)
+        text.addWidget(_elided_label(subtitle))
+        self.row.addLayout(text, 1)
+
+
+class ToolCard(_Tile):
     """A tool tile: tinted emoji chip + title/subtitle + live count."""
 
     def __init__(
         self, *, emoji: str, title: str, subtitle: str, hex_color: str,
         count: int | None, selected: bool,
     ) -> None:
-        super().__init__()
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setFixedHeight(52)
-        self._style(hex_color, selected)
-
-        row = QHBoxLayout(self)
-        row.setContentsMargins(7, 6, 7, 6)
-        row.setSpacing(8)
-        row.addWidget(IconChip(emoji, hex_color), 0, Qt.AlignmentFlag.AlignVCenter)
-
-        text = QVBoxLayout()
-        text.setSpacing(1)
-        t = QLabel(title)
-        t.setStyleSheet("font-weight: 600; font-size: 11px;")
-        s = _elided_label(subtitle)
-        text.addWidget(t)
-        text.addWidget(s)
-        row.addLayout(text, 1)
-
+        super().__init__(emoji=emoji, title=title, subtitle=subtitle,
+                         hex_color=hex_color, selected=selected)
         c = QLabel("…" if count is None else str(count))
         c.setStyleSheet(f"color: {hex_color}; font-weight: 700; font-size: 14px;")
         c.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
-        row.addWidget(c)
-
-    def _style(self, hex_color: str, selected: bool) -> None:
-        bg = tint_bg(hex_color, 0.16) if selected else "rgba(128,128,128,0.08)"
-        border = hex_color if selected else "transparent"
-        self.setStyleSheet(
-            f"ToolCard {{ background-color: {bg}; border: 1.2px solid {border};"
-            f" border-radius: 8px; }}"
-        )
+        self.row.addWidget(c)
 
 
-class ActionCard(ClickableFrame):
+class ActionCard(_Tile):
     """A grid tile that opens an action pane (e.g. Review PRs)."""
 
     def __init__(
         self, *, emoji: str, title: str, subtitle: str, hex_color: str, selected: bool
     ) -> None:
-        super().__init__()
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setFixedHeight(52)
-        bg = tint_bg(hex_color, 0.16) if selected else "rgba(128,128,128,0.08)"
-        border = hex_color if selected else "transparent"
-        self.setStyleSheet(
-            f"ActionCard {{ background-color: {bg}; border: 1.2px solid {border};"
-            f" border-radius: 8px; }}"
-        )
-        row = QHBoxLayout(self)
-        row.setContentsMargins(7, 6, 7, 6)
-        row.setSpacing(8)
-        row.addWidget(IconChip(emoji, hex_color), 0, Qt.AlignmentFlag.AlignVCenter)
-        text = QVBoxLayout()
-        text.setSpacing(1)
-        t = QLabel(title)
-        t.setStyleSheet("font-weight: 600; font-size: 11px;")
-        s = _elided_label(subtitle)
-        text.addWidget(t)
-        text.addWidget(s)
-        row.addLayout(text, 1)
+        super().__init__(emoji=emoji, title=title, subtitle=subtitle,
+                         hex_color=hex_color, selected=selected)
         chevron = QLabel("›")
         chevron.setStyleSheet(
-            f"color: {hex_color if selected else 'palette(mid)'}; font-size: 16px; font-weight: 700;"
+            f"color: {hex_color if selected else 'palette(mid)'};"
+            " font-size: 16px; font-weight: 700;"
         )
-        row.addWidget(chevron)
+        self.row.addWidget(chevron)
 
 
 class ResultRow(ClickableFrame):

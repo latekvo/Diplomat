@@ -38,7 +38,7 @@ from .mesh import config as mesh_config
 from .mesh import statefile
 from .mesh.config import PlacementOverrides
 from .store import Store
-from .widgets import ElidedLabel, GlyphLabel, IconChip, muted, tint_bg
+from .widgets import ElidedLabel, GlyphLabel, IconChip, card_host, muted, tint_bg
 
 # Link-state colours (shared with the wire graph + the node badges). Mirrors the
 # duty/token palette in core/mesh.json so the whole feature reads as one thing.
@@ -293,40 +293,22 @@ class MeshView(QWidget):
         live.setSpacing(8)
 
         self.graph = TopologyGraph()
-        graph_wrap = QWidget()
-        gw = QVBoxLayout(graph_wrap)
-        gw.setContentsMargins(6, 6, 6, 6)
-        gw.setSpacing(0)
+        graph_wrap, gw = card_host(padding=6, spacing=0)
         gw.addWidget(self.graph)
-        graph_wrap.setStyleSheet(
-            "background-color: rgba(128,128,128,0.07); border-radius: 8px;"
-        )
         live.addWidget(graph_wrap)
 
         columns = QHBoxLayout()
         columns.setSpacing(12)
 
         # Node cards
-        self.nodes_host = QWidget()
-        self.nodes_col = QVBoxLayout(self.nodes_host)
-        self.nodes_col.setContentsMargins(7, 7, 7, 7)
-        self.nodes_col.setSpacing(6)
-        self.nodes_host.setStyleSheet(
-            "background-color: rgba(128,128,128,0.07); border-radius: 8px;"
-        )
+        self.nodes_host, self.nodes_col = card_host()
         self.nodes_host.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum
         )
         columns.addWidget(self.nodes_host, 1, Qt.AlignmentFlag.AlignTop)
 
         # Duties
-        self.duties_host = QWidget()
-        self.duties_col = QVBoxLayout(self.duties_host)
-        self.duties_col.setContentsMargins(7, 7, 7, 7)
-        self.duties_col.setSpacing(6)
-        self.duties_host.setStyleSheet(
-            "background-color: rgba(128,128,128,0.07); border-radius: 8px;"
-        )
+        self.duties_host, self.duties_col = card_host()
         self.duties_host.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum
         )
