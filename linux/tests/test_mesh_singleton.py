@@ -19,9 +19,8 @@ import signal
 
 import pytest
 
-from diplomat_app import procscan
-from diplomat_app.mesh import singleton
-from diplomat_app.mesh.singleton import _cmdline_is_mesh_node, terminate_other_nodes
+from szpontnet import procscan, singleton
+from szpontnet.singleton import _cmdline_is_mesh_node, terminate_other_nodes
 
 
 # ---- cmdline matcher: who is a live mesh node ----------------------------
@@ -30,7 +29,7 @@ from diplomat_app.mesh.singleton import _cmdline_is_mesh_node, terminate_other_n
 @pytest.mark.parametrize(
     "tokens",
     [
-        ["python3", "-m", "diplomat_app.mesh"],  # current name
+        ["python3", "-m", "szpontnet"],  # current name
         ["python3", "-m", "argent_utils.mesh"],  # legacy name (rename boundary)
         ["/usr/bin/python3.14", "-m", "argent_utils.mesh"],  # the real ghost's argv
     ],
@@ -43,17 +42,17 @@ def test_cmdline_matches_mesh_node(tokens):
     "tokens",
     [
         # One-shot CLI modes carry a flag and exit before _run_node — never the node.
-        ["python3", "-m", "diplomat_app.mesh", "--daemon"],  # the short-lived launcher
-        ["python3", "-m", "diplomat_app.mesh", "--status"],
-        ["python3", "-m", "diplomat_app.mesh", "--stop"],
+        ["python3", "-m", "szpontnet", "--daemon"],  # the short-lived launcher
+        ["python3", "-m", "szpontnet", "--status"],
+        ["python3", "-m", "szpontnet", "--stop"],
         ["python3", "-m", "argent_utils.mesh", "--dispatch", "audit", "--prompt", "x"],
-        ["python3", "-m", "diplomat_app.mesh", "--set", "tokens=out"],
+        ["python3", "-m", "szpontnet", "--set", "tokens=out"],
         # The tray GUI is the *other* singleton's job, never this one's.
         ["python3", "-m", "diplomat_app"],
         ["python3", "-m", "argent_utils"],
         # Look-alikes and deeper submodules must not masquerade as the node.
-        ["python3", "-m", "diplomat_app.meshery"],
-        ["python3", "-m", "diplomat_app.mesh.ctl"],
+        ["python3", "-m", "szpontnetty"],
+        ["python3", "-m", "szpontnet.ctl"],
         ["python3", "-m", "something_else.mesh"],
         ["python3", "script.py"],  # no -m at all
         ["python3", "-m"],  # -m with nothing after it

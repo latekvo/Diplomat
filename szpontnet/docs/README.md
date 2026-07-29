@@ -6,10 +6,9 @@ network find each other, **advertise the resources they have available**, and
 hand work to whichever machine is the best fit - with no central coordinator and
 automatic take-over when a machine drops.
 
-SzpontNet is the *protocol*. **Diplomat Mesh** (in this repository under
-[`linux/diplomat_app/mesh/`](../../linux/diplomat_app/mesh)) is its reference
-implementation; the shared constants live in
-[`core/mesh.json`](../../core/mesh.json). This spec is written so that a second,
+SzpontNet is the *protocol*. The node in
+[`szpontnet/szpontnet/`](../szpontnet) is its reference implementation; its
+canonical constants live in [`netmodel.json`](../szpontnet/netmodel.json). This spec is written so that a second,
 independent implementation - in any language - can join the same mesh and
 interoperate byte-for-byte with the reference one.
 
@@ -201,9 +200,10 @@ that only wants to *offer* resources. The exact minimal set is enumerated in
 
 Everything in this spec is implemented and exercised by Diplomat Mesh:
 
-- Wire protocol & node: [`linux/diplomat_app/mesh/`](../../linux/diplomat_app/mesh)
+- Wire protocol & node: [`szpontnet/szpontnet/`](../szpontnet)
   (`protocol.py`, `node.py`, `assign.py`, `identity.py`, `statefile.py`, `ctl.py`).
-- Shared constants & vocabulary: [`core/mesh.json`](../../core/mesh.json).
+- Canonical constants & duty catalog: [`netmodel.json`](../szpontnet/netmodel.json)
+  (a deployment may overlay its own - see [`host.py`](../szpontnet/host.py)).
 - Interop-relevant behavior is covered by
   [`linux/tests/test_mesh_logic.py`](../../linux/tests/test_mesh_logic.py) (the
   placement function) and

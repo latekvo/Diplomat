@@ -62,7 +62,7 @@ class MeshSpawnRow(QWidget):
 
     @property
     def _mesh_live(self) -> bool:
-        from .mesh import statefile
+        from szpontnet import statefile
 
         return self.store.mesh_enabled and statefile.node_running(self.store.mesh_state)
 

@@ -88,7 +88,7 @@ def dispatch(duty: str, prompt: str, target: str | None = None,
 def claim_work(work_key: str, timeout: float = 5.0) -> dict:
     """Run the origination claim gate for one unit of external work WITHOUT
     dispatching (szpontnet/docs/12) — for a client that will run the work itself,
-    like the applet's auto-monitor spawning a local tracked agent. Returns
+    like a host's own monitor spawning a local agent. Returns
     ``{"owned": bool, "owner": id | None, "ownerName": str | None}``; ``owned``
     False means a better live personal peer already holds the lease and the
     caller MUST NOT originate."""

@@ -1,17 +1,19 @@
-"""Process identification and newest-wins reaping, for the tray.
+"""Process identification and newest-wins reaping, for the node daemon.
 
-:mod:`diplomat_app.singleton` enforces "newest wins" over the applet: on startup,
-find every *other* live tray of this uid and terminate it. Reading a pid's argv,
-walking ``/proc`` restricted to this uid, and the SIGTERM/grace/SIGKILL escalation
-are that guarantee's machinery, and the half that decides which process receives a
+:mod:`.singleton` enforces "newest wins" over the node: on startup, find every
+*other* live node of this uid and terminate it. Reading a pid's argv, walking
+``/proc`` restricted to this uid, and the SIGTERM/grace/SIGKILL escalation are
+that guarantee's machinery, and the half that decides which process receives a
 signal.
 
-The mesh node keeps the same guarantee over *itself*, and — being an independent
-library that installs without Diplomat — carries its own copy of this routine
-(:mod:`szpontnet.procscan`). Two copies of a routine that picks SIGKILL targets is
-a real risk: a guard added to one and missed in the other force-kills an unrelated
-process of the same user. ``linux/tests/test_procscan.py`` runs every case
-against both, so a divergence fails rather than ships.
+This is deliberately the library's own copy rather than a shared helper borrowed
+from whatever application is hosting the node: a library that reaches into its
+consumer for the routine that picks SIGKILL targets is not one you can install on
+its own. An application that reaps its *own* processes wants the identical
+routine, and the risk in two copies is real — a guard added to one and missed in
+the other force-kills an unrelated process of the same user — so the applications
+in this repository pin the two against each other by behaviour rather than by
+sharing a file (``linux/tests/test_procscan.py``).
 
 Linux-only, by way of ``/proc``: on a host without it the scan finds nobody and
 the caller starts without reaping, which is the intended best-effort degradation.
@@ -26,8 +28,8 @@ from collections.abc import Callable
 from pathlib import Path
 
 # The reap escalation: poll liveness this many times, sleeping between polls, and
-# force down whatever is still up. ~2s of grace for a clean shutdown (a Qt event
-# loop, an asyncio ``stop()``) before the guarantee is enforced the hard way.
+# force down whatever is still up. ~2s of grace for a clean shutdown (an asyncio
+# ``stop()``) before the guarantee is enforced the hard way.
 _GRACE_POLLS = 20
 _GRACE_POLL_SECS = 0.1
 
@@ -55,20 +57,12 @@ def cmdline_tokens(pid: int) -> list[str]:
     return [p.decode("utf-8", "replace") for p in parts if p]
 
 
-def environ_bytes(pid: int) -> bytes:
-    """A pid's raw NUL-separated environment; empty when it can't be read."""
-    try:
-        return Path(f"/proc/{pid}/environ").read_bytes()
-    except OSError:
-        return b""
-
-
 def module_arg(tokens: list[str]) -> str | None:
     """The module name in a ``python -m <module>`` argv, or ``None``.
 
     Callers match the result *exactly* against their own module set, so neither a
-    look-alike top-level (``diplomat_apple``) nor a deeper submodule
-    (``diplomat_app.store``) can pass as the module it resembles.
+    look-alike top-level (``szpontnetty``) nor a deeper submodule
+    (``szpontnet.ctl``) can pass as the module it resembles.
     """
     try:
         i = tokens.index("-m")

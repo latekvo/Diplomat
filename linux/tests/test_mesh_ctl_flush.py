@@ -17,8 +17,8 @@ import asyncio
 
 import pytest
 
-from diplomat_app.mesh import statefile
-from diplomat_app.mesh.node import MeshNode
+from szpontnet import statefile
+from szpontnet.node import MeshNode
 
 
 @pytest.fixture
@@ -52,7 +52,7 @@ def test_set_attr_flushes_immediately(isolated_node):
 
 def test_set_overrides_flushes_immediately(isolated_node):
     async def go():
-        from diplomat_app.mesh import config
+        from szpontnet import config
 
         duty = next(iter(config.duty_ids()))
         reply = await isolated_node._ctl_command(

@@ -1,4 +1,4 @@
-"""The one-node-per-state-dir startup lock (diplomat_app.mesh.singlelock).
+"""The one-node-per-state-dir startup lock (szpontnet.singlelock).
 
 Guards against the failure that ran four "ignacy" node processes at once: the
 pre-launch node_running() checks are a time-of-check/time-of-use race, and
@@ -18,8 +18,8 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from diplomat_app.mesh import singlelock  # noqa: E402
-from diplomat_app.mesh import __main__ as mesh_main  # noqa: E402
+from szpontnet import singlelock  # noqa: E402
+from szpontnet import __main__ as mesh_main  # noqa: E402
 
 
 def test_second_acquire_in_same_dir_is_refused(tmp_path):
@@ -85,7 +85,7 @@ def test_run_node_backs_off_when_the_dir_is_locked(tmp_path, monkeypatch):
     def _boom(*a, **k):  # constructing a node here means the guard failed to fence it
         raise AssertionError("MeshNode must not be built when the state dir is locked")
 
-    monkeypatch.setattr("diplomat_app.mesh.node.MeshNode", _boom)
+    monkeypatch.setattr("szpontnet.node.MeshNode", _boom)
     assert mesh_main._run_node() == 0
 
 

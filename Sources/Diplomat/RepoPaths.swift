@@ -7,7 +7,8 @@ import DiplomatCore
 /// keeps the two resolutions from being confused for each other.
 ///
 /// `root` is the source tree behind both the self-update (git pull + rebuild) and the
-/// mesh node (`python3 -m diplomat_app.mesh`, which runs from `<repo>/linux`).
+/// mesh node (`python3 -m szpontnet`, which runs from `<repo>/linux` with `<repo>/szpontnet`
+/// on its import path).
 ///
 /// A packaged `Diplomat.app` is decoupled from its source (it may sit in
 /// /Applications), so the checkout is located by, in order: an explicit env override,
@@ -34,13 +35,15 @@ enum RepoPaths {
         return home.appendingPathComponent("dev/diplomat")
     }
 
-    /// True when `root` looks like an actual checkout (a `.git` and the `linux/` tree),
-    /// so the UI can disable the Update button / mesh spawn with a clear reason instead
-    /// of failing obscurely on a missing directory.
+    /// True when `root` looks like an actual checkout, so the UI can disable the Update
+    /// button / mesh spawn with a clear reason instead of failing obscurely on a missing
+    /// directory. Both trees, because a node spawn needs both: the library it runs, and
+    /// the applet package holding the host module that puts Diplomat behind it.
     static var checkoutPresent: Bool {
         let fm = FileManager.default
         return fm.fileExists(atPath: root.appendingPathComponent(".git").path)
-            && fm.fileExists(atPath: root.appendingPathComponent("linux/diplomat_app/mesh").path)
+            && fm.fileExists(atPath: root.appendingPathComponent("szpontnet/szpontnet").path)
+            && fm.fileExists(atPath: root.appendingPathComponent("linux/diplomat_app").path)
     }
 
     // MARK: - the TARGET repo (where the agents work)

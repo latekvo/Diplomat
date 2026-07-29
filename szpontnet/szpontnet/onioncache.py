@@ -1,4 +1,4 @@
-"""Last-known peer onion addresses — ``~/.diplomat/mesh/onions.json``.
+"""Last-known peer onion addresses — ``<state dir>/onions.json``.
 
 The sibling of :mod:`peercache`, for the WAN. ``peers.json`` remembers a peer's
 last *LAN* address (an IP that changes with the network); this remembers a peer's
@@ -7,7 +7,7 @@ an authenticated ``hello`` (the signed advert carries it, so it is bound to the
 peer's device key — never taken from a spoofable beacon), and persists it here so
 that once two nodes have met — on the LAN, or by a manual paste — either can
 redial the other over Tor from anywhere, across restarts and networks, with no
-public IP or DNS. See mesh/tor.py and the Tor reconnect loop in mesh/node.py.
+public IP or DNS. See tor.py and the Tor reconnect loop in node.py.
 
 Each entry also records the device ``fingerprint`` the onion was last seen paired
 with (from the same signed advert), so a reconnect over Tor can be sanity-checked

@@ -1,7 +1,7 @@
 """The Mesh management screen — read the LAN, configure the whole mesh.
 
 The Linux face of Diplomat Mesh (see ``core/mesh.json`` for the model and
-``diplomat_app.mesh`` for the node). One of the panel's three screens (Actions ·
+``szpontnet`` for the node). One of the panel's three screens (Actions ·
 Mesh · Settings), it renders the local node's public topology snapshot
 (``~/.diplomat/mesh/state.json``): a compact wire graph of self + peers,
 one editable card per node (machine strength in words + an auto-measured token
@@ -34,9 +34,9 @@ from PySide6.QtWidgets import (
 )
 
 from . import core, glyphs
-from .mesh import config as mesh_config
-from .mesh import statefile
-from .mesh.config import PlacementOverrides
+from szpontnet import config as mesh_config
+from szpontnet import statefile
+from szpontnet.config import PlacementOverrides
 from .store import Store
 from .widgets import ElidedLabel, GlyphLabel, IconChip, card_host, muted, tint_bg
 

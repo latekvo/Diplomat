@@ -680,7 +680,7 @@ class Store(QObject):
         agent already owns it), or ``None`` to fall through to a LOCAL spawn — the
         fail-open path when the mesh is unavailable, so a wedged node never drops
         the operator's work."""
-        from .mesh import ctl, statefile
+        from szpontnet import ctl, statefile
 
         if not self.mesh_enabled or not job.work_key:
             return None
@@ -1268,7 +1268,7 @@ class Store(QObject):
         if self._mesh_enabled_override is not None:
             return
 
-        from .mesh import statefile
+        from szpontnet import statefile
 
         new = statefile.read_state()
         if self._mesh_meaningfully_changed(self.mesh_state, new):
@@ -1308,7 +1308,7 @@ class Store(QObject):
         already alive. No-ops when disabled, so it's safe to call blindly on app
         start. Never runs in a headless render/test (guarded by mesh_enabled,
         which those paths leave off / stub)."""
-        from .mesh import statefile
+        from szpontnet import statefile
 
         if not self.mesh_enabled or statefile.node_running():
             self.refresh_mesh_state()
@@ -1319,11 +1319,26 @@ class Store(QObject):
             import subprocess
             import sys
 
+            from . import szpont
+
             linux_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            # The node is a separate process and gets no say in who its host is, so
+            # hand it both halves: the path to import Diplomat and the library from,
+            # and the module that registers Diplomat behind it. Without the second
+            # the node comes up on the library's own defaults — its own state
+            # directory, no duty catalog of ours, no activity feed.
+            env = {
+                **os.environ,
+                "SZPONTNET_HOST": "diplomat_app.szponthost",
+                "PYTHONPATH": os.pathsep.join(
+                    [linux_dir, szpont.package_dir(), os.environ.get("PYTHONPATH", "")]
+                ).rstrip(os.pathsep),
+            }
             try:
                 subprocess.Popen(  # noqa: S603 — relaunch ourselves as a node
-                    [sys.executable, "-m", "diplomat_app.mesh", "--daemon"],
+                    [sys.executable, "-m", "szpontnet", "--daemon"],
                     cwd=linux_dir,
+                    env=env,
                     start_new_session=True,
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
@@ -1337,7 +1352,7 @@ class Store(QObject):
 
     def stop_mesh_async(self) -> None:
         """Ask the local node to stop (used when the user disables the mesh)."""
-        from .mesh import ctl
+        from szpontnet import ctl
 
         def work() -> None:
             try:
@@ -1358,7 +1373,7 @@ class Store(QObject):
         showing pre-edit state, and without the error assignment a rejected edit looks
         like it worked. Twin of ``meshCommand`` in Store.swift.
         """
-        from .mesh import ctl
+        from szpontnet import ctl
 
         def work() -> None:
             try:
@@ -1396,7 +1411,7 @@ class Store(QObject):
     def mesh_dispatch(self, duty: str, prompt: str, done_callback=None) -> None:
         """Route a job through the mesh; `done_callback(results, error)` fires on
         the worker thread (callers marshal back to the UI thread themselves)."""
-        from .mesh import ctl
+        from szpontnet import ctl
 
         def work() -> None:
             results: list = []

@@ -2,12 +2,13 @@
 
 Layers, weakest to strongest:
 
-1. the shared ``core/mesh.json`` (protocol constants, duty catalog, strategies);
+1. the network model — ``netmodel.json`` (the canonical v1 constants and duty
+   catalog) with the host's overlay merged over it, see :mod:`.host`;
 2. ``DIPLOMAT_MESH_*`` environment overrides for the protocol knobs — how the
    tests run whole meshes on loopback with fast timeouts without touching the
-   shared file;
+   model;
 3. gossiped last-writer-wins *placement overrides* (per-duty strategy /
-   token-awareness / platform spread, edited live from the topology panel) —
+   token-awareness / platform spread, edited live from a topology UI) —
    see :class:`PlacementOverrides`.
 """
 
@@ -17,7 +18,7 @@ import math
 import os
 from dataclasses import dataclass, field, replace
 
-from .. import core
+from .host import model
 
 
 def _has_non_finite(v: object) -> bool:
@@ -37,7 +38,7 @@ def _has_non_finite(v: object) -> bool:
     return False
 
 
-# Env override names, mapped onto core/mesh.json "protocol" keys. Values are
+# Env override names, mapped onto the network model's "protocol" keys. Values are
 # parsed with the type of the default they replace.
 _ENV_KEYS = {
     "DIPLOMAT_MESH_MCAST_GROUP": "multicastGroup",
@@ -61,7 +62,7 @@ _ENV_KEYS = {
 
 def protocol() -> dict:
     """The protocol constants with any DIPLOMAT_MESH_* env overrides applied."""
-    out = dict(core.mesh()["protocol"])
+    out = dict(model()["protocol"])
     for env, key in _ENV_KEYS.items():
         raw = os.environ.get(env)
         if raw is None:
@@ -77,7 +78,7 @@ def protocol() -> dict:
             else:
                 out[key] = raw
         except ValueError:
-            pass  # a malformed override falls back to the shared default
+            pass  # a malformed override falls back to the model default
     return out
 
 
@@ -106,7 +107,7 @@ def tor_enabled() -> bool:
     a persistent onion service (a permanent ``.onion`` it advertises) and dials
     known-but-unseen peers over Tor with exponential backoff — WAN reachability
     with no public IP or domain. Off by default; when off, or when the ``tor``
-    binary is missing, the node is LAN-only exactly as before. See mesh/tor.py."""
+    binary is missing, the node is LAN-only exactly as before. See tor.py."""
     return os.environ.get("DIPLOMAT_MESH_TOR") == "1"
 
 
@@ -191,7 +192,7 @@ def default_trust() -> str:
     """The trust level a node applies to an **unknown** device — one whose proven
     fingerprint is not in the local allowlist (and to any unverified/keyless peer,
     which can never match the allowlist). ``DIPLOMAT_MESH_DEFAULT_TRUST`` overrides the
-    shipped baseline in ``core/mesh.json`` (``trust.default``).
+    shipped baseline in the network model (``trust.default``).
 
     Ships as **foreign** (zero-trust by default): a device you have not explicitly
     marked *personal* is untrusted — its requests are declined (or, with a
@@ -206,14 +207,14 @@ def default_trust() -> str:
     raw = os.environ.get("DIPLOMAT_MESH_DEFAULT_TRUST", "").strip().lower()
     if raw in ("personal", "foreign"):
         return raw
-    baseline = str(core.mesh().get("trust", {}).get("default", "foreign")).strip().lower()
+    baseline = str(model().get("trust", {}).get("default", "foreign")).strip().lower()
     return baseline if baseline in ("personal", "foreign") else "foreign"
 
 
 def accounts() -> dict:
     """The subscription-plan + accounting knobs (plan weights, capacity, quota
     window, usage time-constant) behind per-node load balancing."""
-    return core.mesh().get("accounts", {})
+    return model().get("accounts", {})
 
 
 def plan_weight(plan_id: str) -> float:
@@ -240,27 +241,27 @@ def dispatch_strategy() -> str:
     """The ranking a dispatcher uses to pick a target — the load-balancing
     decision, made unilaterally from its own view (no consensus). Defaults to
     surplus-first so requests flow to whoever has the most spare quota."""
-    return str(core.mesh().get("dispatchStrategy", "surplus-first"))
+    return str(model().get("dispatchStrategy", "surplus-first"))
 
 
 def duty_ids() -> list[str]:
-    return [d["id"] for d in core.mesh()["duties"]]
+    return [d["id"] for d in model()["duties"]]
 
 
 def duty_by_id(duty_id: str) -> dict | None:
-    return next((d for d in core.mesh()["duties"] if d["id"] == duty_id), None)
+    return next((d for d in model()["duties"] if d["id"] == duty_id), None)
 
 
 def tier_bounds() -> tuple[int, int, int]:
     """(min, max, default) machine tier from the shared model."""
-    t = core.mesh()["tiers"]
+    t = model()["tiers"]
     return t["min"], t["max"], t["default"]
 
 
 def tier_label(tier: int) -> str:
     """Human word for a strength tier ('Very strong' … 'Very light'), from the
     shared model's ``tiers.labels``; falls back to ``tier N`` if unlabelled."""
-    labels = core.mesh()["tiers"].get("labels", {})
+    labels = model()["tiers"].get("labels", {})
     return labels.get(str(tier), f"tier {tier}")
 
 
@@ -311,7 +312,7 @@ class Placement:
             # A non-mapping resolves to the schema default.
             d = {}
         return cls(
-            strategy=d.get("strategy", core.mesh()["defaultStrategy"]),
+            strategy=d.get("strategy", model()["defaultStrategy"]),
             token_aware=bool(d.get("tokenAware", True)),
             spread=cls._parse_spread(d.get("spread", [])),
         )
@@ -431,7 +432,7 @@ class PlacementOverrides:
 
 def placement_for(duty_id: str, overrides: PlacementOverrides | None = None) -> Placement:
     """The effective placement for a duty: the gossiped override if present,
-    else the core/mesh.json default."""
+    else the network model's default."""
     if overrides and duty_id in overrides.duties:
         return Placement.from_dict(overrides.duties[duty_id])
     duty = duty_by_id(duty_id)

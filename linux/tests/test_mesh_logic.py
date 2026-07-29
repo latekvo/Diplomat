@@ -15,13 +15,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from dataclasses import replace as _dc_replace  # noqa: E402
 
-from diplomat_app.mesh import (  # noqa: E402
+from szpontnet import (  # noqa: E402
     assign, banned, config, crypto, identity, protocol, spawnjob, stats, trust,
     usage,
 )
 from diplomat_app import core  # noqa: E402
-from diplomat_app.mesh.config import Placement, PlacementOverrides  # noqa: E402
-from diplomat_app.mesh.protocol import NodeInfo  # noqa: E402
+from szpontnet.config import Placement, PlacementOverrides  # noqa: E402
+from szpontnet.protocol import NodeInfo  # noqa: E402
 
 
 def _node(id: str, platform: str = "linux", tier: int = 3, tokens: str = "ok",
@@ -336,7 +336,7 @@ def test_promotion_does_not_pin_env_baseline_default_trust(tmp_path, monkeypatch
     later foreign lockdown (env→foreign) is silently ignored: the persisted value wins
     at the next boot, so an unlisted, unverified device stays classified personal
     (run-on-host / set-attr / can own work) despite the operator's intent."""
-    from diplomat_app.mesh.node import MeshNode
+    from szpontnet.node import MeshNode
     monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
     monkeypatch.setenv("HOME", str(tmp_path))
 
@@ -357,7 +357,7 @@ def test_promotion_does_not_pin_env_baseline_default_trust(tmp_path, monkeypatch
 def test_explicit_default_trust_choice_survives_allowlist_edits(tmp_path, monkeypatch):
     """Complement of the above: an EXPLICIT set_default_trust choice IS persisted, wins
     over env at the next boot, and survives later add/remove_trusted edits."""
-    from diplomat_app.mesh.node import MeshNode
+    from szpontnet.node import MeshNode
     monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("DIPLOMAT_MESH_DEFAULT_TRUST", "foreign")
@@ -439,7 +439,7 @@ def test_ban_of_a_keyed_but_unverified_executor_still_enforces(tmp_path, monkeyp
     if not crypto.AVAILABLE:
         return
     import time as _time
-    from diplomat_app.mesh import node as node_mod
+    from szpontnet import node as node_mod
     node = _fresh_node(tmp_path, monkeypatch)
     node._trusted = {"someone-else": ""}  # boundary on → an unverified peer is foreign
     k = _mk_key()
@@ -462,7 +462,7 @@ def test_reminder_resends_across_the_grace_window(tmp_path, monkeypatch):
     if not crypto.AVAILABLE:
         return
     import time as _time
-    from diplomat_app.mesh import node as node_mod
+    from szpontnet import node as node_mod
     monkeypatch.setenv("DIPLOMAT_MESH_REMINDER_GRACE_SECS", "60")
     node = _fresh_node(tmp_path, monkeypatch)
     node._trusted = {"someone-else": ""}  # boundary on → bob is foreign
@@ -764,7 +764,7 @@ def test_onioncache_roundtrip_and_tolerates_garbage(tmp_path, monkeypatch):
     """The onion cache (onions.json) is a best-effort accelerator like peers.json:
     it roundtrips, and a malformed file or entry is dropped, never raised."""
     monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
-    from diplomat_app.mesh import onioncache
+    from szpontnet import onioncache
 
     cache = {"peer-a": onioncache.OnionEntry(onion="a" * 56 + ".onion",
                                              fingerprint="ff00"),
@@ -854,26 +854,6 @@ def test_surplus_bucket_clamps_a_hostile_out_of_range_advert_instead_of_crashing
     attacker = _snode("attacker", surplus=1e307, tier=1)
     slots = assign.slot_candidates("review", [honest, attacker], strategy="surplus-first")
     assert set(slots[0][1]) == {"honest", "attacker"}      # completed, no OverflowError
-
-
-def test_pr_agent_running_fails_open_on_undecodable_ps_output(tmp_path, monkeypatch):
-    """The executor's ps ground-truth floor (`_pr_agent_running`) promises to FAIL OPEN
-    like Store._live_pr_agents — a ps error reads as "not seen" so a transient failure
-    never drops work. But `ps -Ao args=` under text=True decodes strict UTF-8, so any
-    process on the box with a non-UTF-8 byte in its argv makes the output undecodable and
-    raises UnicodeDecodeError — a ValueError, NOT an OSError/SubprocessError. Uncaught it
-    escapes the guard, up through _spawn_local -> _run_local_request -> _take_job, tearing
-    the dispatching peer's link (or failing a self-dispatch)."""
-    from diplomat_app.mesh import node as nodemod
-
-    node = _fresh_node(tmp_path, monkeypatch)
-
-    def boom(*a, **k):
-        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
-
-    monkeypatch.setattr(nodemod.subprocess, "run", boom)
-    wk = "review:github.com/owner/repo#7@abc123"
-    assert node._pr_agent_running(wk) is False  # fails open, never raises
 
 
 def test_advertise_quota_left_capped_by_real_binding_window(tmp_path, monkeypatch):
@@ -981,7 +961,7 @@ def test_surplus_first_neutral_stats_fall_back_to_weakest_first():
 
 
 def test_cpu_class_buckets_apple_silicon_and_boost_clocks():
-    from diplomat_app.mesh import hardware
+    from szpontnet import hardware
     # Apple Silicon tops the scale; Pro/Max/Ultra bins above the base part.
     assert hardware.cpu_class("Apple M4 Pro", None) == 4
     assert hardware.cpu_class("Apple M3 Max", None) == 4
@@ -995,7 +975,7 @@ def test_cpu_class_buckets_apple_silicon_and_boost_clocks():
 
 
 def test_strength_score_ranks_stronger_boxes_higher():
-    from diplomat_app.mesh import hardware
+    from szpontnet import hardware
     weak = hardware.strength_score(ram_gb=8, cores=4, dgpu=False)
     strong = hardware.strength_score(ram_gb=64, cores=16, dgpu=True,
                                      cpu=hardware.cpu_class(None, 5.7))
@@ -1009,7 +989,7 @@ def test_strength_score_apple_silicon_outranks_big_ram_smt_laptop():
     """Regression: an M-series Pro box (24 GB unified, 14 real cores, no dGPU)
     must outrank a 64 GB SMT laptop with a dGPU — RAM gigabytes and logical
     threads used to dominate and invert the ranking."""
-    from diplomat_app.mesh import hardware
+    from szpontnet import hardware
     lo, hi, _ = config.tier_bounds()
     m_pro = hardware.strength_score(
         ram_gb=24, cores=14, dgpu=False, cpu=hardware.cpu_class("Apple M4 Pro", None))
@@ -1021,7 +1001,7 @@ def test_strength_score_apple_silicon_outranks_big_ram_smt_laptop():
 
 
 def test_strength_score_maps_to_tier_bounds_inverted():
-    from diplomat_app.mesh import hardware
+    from szpontnet import hardware
     lo, hi, _ = config.tier_bounds()
     # 1 = strongest, so the strongest box lands on `lo` and the weakest on `hi`.
     assert hardware._score_to_tier(8, lo, hi) == lo
@@ -1030,7 +1010,7 @@ def test_strength_score_maps_to_tier_bounds_inverted():
 
 
 def test_detect_tier_honours_env_override(monkeypatch):
-    from diplomat_app.mesh import hardware
+    from szpontnet import hardware
     monkeypatch.setenv("DIPLOMAT_MESH_TIER", "2")
     assert hardware.detect_tier() == 2
     monkeypatch.setenv("DIPLOMAT_MESH_TIER", "999")  # clamped to bounds
@@ -1059,7 +1039,7 @@ def _write_usage(dir_path, entries):
 
 def test_window_tokens_sums_recent_and_excludes_cache_reads(tmp_path, monkeypatch):
     from datetime import datetime, timezone, timedelta
-    from diplomat_app.mesh import usage
+    from szpontnet import usage
     monkeypatch.setenv("HOME", str(tmp_path))
     now = datetime.now(timezone.utc)
     recent = (now - timedelta(hours=1)).isoformat()
@@ -1071,7 +1051,7 @@ def test_window_tokens_sums_recent_and_excludes_cache_reads(tmp_path, monkeypatc
 
 
 def test_token_state_thresholds(monkeypatch):
-    from diplomat_app.mesh import usage
+    from szpontnet import usage
     # Ceiling for pro = weight(1) * tokensPerWeight.
     ceiling = usage.token_ceiling("pro")
     assert ceiling == config.tokens_per_weight()
@@ -1083,7 +1063,7 @@ def test_token_state_thresholds(monkeypatch):
 def test_token_state_prefers_real_quota_over_heuristic(monkeypatch):
     """When the OAuth probe answers, the state comes from the account's REAL
     windows — the tighter (binding) one — and both fractions are surfaced."""
-    from diplomat_app.mesh import usage
+    from szpontnet import usage
     now = 1_000_000.0
     session = usage.QuotaWindow(0.64, now + 2.5 * 3600, 5 * 3600.0)   # half the clock left
     week = usage.QuotaWindow(0.27, now + 3.5 * 86400, 7 * 86400.0)    # half the clock left
@@ -1098,7 +1078,7 @@ def test_token_state_prefers_real_quota_over_heuristic(monkeypatch):
 
 
 def test_token_state_falls_back_to_heuristic_when_probe_dark(tmp_path, monkeypatch):
-    from diplomat_app.mesh import usage
+    from szpontnet import usage
     monkeypatch.setenv("HOME", str(tmp_path))  # empty logs → fresh heuristic
     monkeypatch.setattr(usage, "windows", lambda: (None, None))
     state, frac, sess, week, pace = usage.token_state("pro")
@@ -1109,7 +1089,7 @@ def test_token_state_falls_back_to_heuristic_when_probe_dark(tmp_path, monkeypat
 
 
 def test_quota_left_parses_utilization_and_caches(monkeypatch):
-    from diplomat_app.mesh import usage
+    from szpontnet import usage
     monkeypatch.delenv("DIPLOMAT_MESH_OAUTH_PROBE", raising=False)
     calls = []
     payload = {"five_hour": {"utilization": 36.0}, "seven_day": {"utilization": 27}}
@@ -1131,7 +1111,7 @@ def test_quota_left_parses_utilization_and_caches(monkeypatch):
 def test_probe_reads_the_reset_instant_each_window_reports(monkeypatch):
     """The endpoint's ``resets_at`` is what makes surplus relative — without it
     there is no clock to divide the remaining budget by."""
-    from diplomat_app.mesh import usage
+    from szpontnet import usage
     monkeypatch.delenv("DIPLOMAT_MESH_OAUTH_PROBE", raising=False)
     payload = {
         "five_hour": {"utilization": 36.0,
@@ -1159,7 +1139,7 @@ def test_window_without_a_reset_instant_assumes_a_full_span(monkeypatch):
     """A window the endpoint reports without ``resets_at`` must still be paceable:
     assuming a full span ahead paces it at its raw fraction — the neutral reading,
     and exactly how the metric behaved before reset instants were read."""
-    from diplomat_app.mesh import usage
+    from szpontnet import usage
     now = 1_000_000.0
     w = usage._window({"utilization": 30.0}, 100.0, now=now)
     assert w.resets_at == now + 100.0
@@ -1167,7 +1147,7 @@ def test_window_without_a_reset_instant_assumes_a_full_span(monkeypatch):
 
 
 def test_quota_probe_disabled_by_env(monkeypatch):
-    from diplomat_app.mesh import usage
+    from szpontnet import usage
 
     def _boom():
         raise AssertionError("probe must not run when disabled")
@@ -1230,7 +1210,7 @@ def test_auth_signature_is_domain_separated(tmp_path, monkeypatch):
     if not crypto.AVAILABLE:  # dependency-free run without `cryptography`
         return
     monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
-    from diplomat_app.mesh import node as node_mod
+    from szpontnet import node as node_mod
 
     k = crypto.load_or_create()
     nonce = "a1b2c3d4e5f60718"
@@ -1247,7 +1227,7 @@ def test_auth_signature_is_domain_separated(tmp_path, monkeypatch):
 def _fresh_node(tmp_path, monkeypatch):
     monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
     monkeypatch.setenv("HOME", str(tmp_path))
-    from diplomat_app.mesh.node import MeshNode
+    from szpontnet.node import MeshNode
     return MeshNode()
 
 
@@ -1306,7 +1286,7 @@ def test_malformed_beacon_epoch_is_ignored_not_fatal(tmp_path, monkeypatch):
 
 
 def test_peer_table_is_bounded_on_gossip(tmp_path, monkeypatch):
-    from diplomat_app.mesh import node as node_mod
+    from szpontnet import node as node_mod
     node = _fresh_node(tmp_path, monkeypatch)
     for i in range(node_mod._MAX_PEERS + 25):  # a gossip flood of spoofed ids
         node._learn_node(_peer_info(f"p{i:05d}", 1), "1.2.3.4", None)
@@ -1315,7 +1295,7 @@ def test_peer_table_is_bounded_on_gossip(tmp_path, monkeypatch):
 
 def test_reapable_covers_downed_and_gossip_only_phantoms(tmp_path, monkeypatch):
     import time as _time
-    from diplomat_app.mesh import node as node_mod
+    from szpontnet import node as node_mod
     node = _fresh_node(tmp_path, monkeypatch)
     node._learn_node(_peer_info("phantom", 1), "1.2.3.4", None)  # gossip-only, never linked
     peer = node.peers["phantom"]
@@ -1431,7 +1411,7 @@ def test_own_link_hello_rekeys_past_a_forged_inflated_epoch(tmp_path, monkeypatc
     leaving the victim foreign forever."""
     if not crypto.AVAILABLE:
         return
-    from diplomat_app.mesh import node as node_mod
+    from szpontnet import node as node_mod
     node = _fresh_node(tmp_path, monkeypatch)
     attacker, real = _mk_key(), _mk_key()
 
@@ -1472,7 +1452,7 @@ def test_non_fresh_own_link_hello_cannot_inherit_personal_trust(tmp_path, monkey
     privilege-escalation hijack (writer reassigned while verified_fp was kept)."""
     if not crypto.AVAILABLE:
         return
-    from diplomat_app.mesh import node as node_mod
+    from szpontnet import node as node_mod
     real = _mk_key()
 
     def advert(key, epoch, seq):
@@ -1507,7 +1487,7 @@ def test_placement_from_dict_tolerates_malformed_spread():
     """A placement dict can arrive over gossip (overrides) or a ctl edit and is
     resolved on every _recompute; a malformed spread entry must be SKIPPED, not
     crash assignment. Regression for the KeyError/ValueError/TypeError."""
-    from diplomat_app.mesh import config
+    from szpontnet import config
     assert config.Placement.from_dict({"spread": [{"count": 2}]}).spread == ()  # no platform
     assert config.Placement.from_dict(
         {"spread": [{"platform": "linux", "count": "lots"}]}).spread == (("linux", 1),)
@@ -1552,7 +1532,7 @@ def test_identity_load_tolerates_malformed_duties_enabled(tmp_path, monkeypatch)
     list, a scalar) must fall back to {} rather than crash identity.load with a
     dict(None) TypeError."""
     import json
-    from diplomat_app.mesh import identity
+    from szpontnet import identity
     monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
     for bad in (None, ["review"], 5):
         (tmp_path / "node.json").write_text(json.dumps(
@@ -1737,7 +1717,7 @@ def test_work_claim_cannot_hijack_a_pinned_node_id(tmp_path, monkeypatch):
 def test_claim_book_is_bounded(tmp_path, monkeypatch):
     if not crypto.AVAILABLE:
         return
-    from diplomat_app.mesh import node as node_mod
+    from szpontnet import node as node_mod
     node = _claim_node(tmp_path, monkeypatch)
     k = _mk_key(); _link_personal_claimant(node, "a-peer", k)
     for i in range(node_mod._MAX_CLAIMS + 25):                        # a flood of spoofed keys
@@ -2192,16 +2172,18 @@ def test_fill_substitutes_tokens_and_quotes():
     """The command template substitutes {prompt_file}/{result_file} with shell-quoted
     values, and appends the prompt path when the template omits the token (the
     back-compat shape DIPLOMAT_MESH_SPAWN has always accepted)."""
-    assert spawnjob._fill("run {prompt_file} {result_file}",
-                          prompt_file="/a b", result_file="/c") == "run '/a b' /c"
-    assert spawnjob._fill("run", prompt_file="/p") == "run /p"
+    from szpontnet import launch
+
+    assert launch.fill("run {prompt_file} {result_file}",
+                       prompt_file="/a b", result_file="/c") == "run '/a b' /c"
+    assert launch.fill("run", prompt_file="/p") == "run /p"
 
 
 def test_foreign_registries_expire_and_are_capped(tmp_path, monkeypatch):
     """The originator's awaited/acted bookkeeping is bounded and self-expiring, so a
     flood or a never-returning executor can't grow memory without bound."""
     import time as _time
-    from diplomat_app.mesh import node as node_mod
+    from szpontnet import node as node_mod
     node = _fresh_node(tmp_path, monkeypatch)
     monkeypatch.setattr(node_mod, "_MAX_FOREIGN", 3)
     for i in range(5):
@@ -2227,7 +2209,7 @@ def test_foreign_registries_expire_and_are_capped(tmp_path, monkeypatch):
 def test_peer_cache_round_trip_and_malformed_entries(tmp_path, monkeypatch):
     import json
     monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
-    from diplomat_app.mesh import peercache
+    from szpontnet import peercache
     assert peercache.load() == {}  # no file yet
     peercache.save({"bb": ("192.168.1.7", 40878), "cc": ("10.0.0.9", 40880)})
     assert peercache.load() == {"bb": ("192.168.1.7", 40878),
@@ -2245,7 +2227,7 @@ def test_peer_cache_round_trip_and_malformed_entries(tmp_path, monkeypatch):
 
 
 def test_hello_on_own_link_remembers_dialable_address(tmp_path, monkeypatch):
-    from diplomat_app.mesh import peercache
+    from szpontnet import peercache
     node = _fresh_node(tmp_path, monkeypatch)
     info = NodeInfo(id="peerR", name="p", platform="linux", tier=3, tokens="ok",
                     epoch=1.0, seq=1, tcp_port=41000)
@@ -2266,8 +2248,8 @@ def test_peer_cache_is_bounded_and_evicts_coldest(tmp_path, monkeypatch):
     reap windows, or ephemeral-id peers (CI runners regenerating node.json each boot) —
     would otherwise grow the file, and the _redial_targets fan-out that iterates it,
     without bound. The most-recently-contacted addresses are kept, the coldest evicted."""
-    from diplomat_app.mesh import peercache
-    from diplomat_app.mesh.node import _MAX_PEER_CACHE
+    from szpontnet import peercache
+    from szpontnet.node import _MAX_PEER_CACHE
     node = _fresh_node(tmp_path, monkeypatch)
     ids = [f"zzzz-{i:05d}" for i in range(_MAX_PEER_CACHE + 50)]  # all sort above local id
     for pid in ids:
@@ -2290,7 +2272,7 @@ def test_peer_cache_is_bounded_and_evicts_coldest(tmp_path, monkeypatch):
 
 
 def test_redial_targets_respect_dial_rule_link_state_and_inflight(tmp_path, monkeypatch):
-    from diplomat_app.mesh.node import Peer
+    from szpontnet.node import Peer
     node = _fresh_node(tmp_path, monkeypatch)
     lo, linked, dialing, free = "0", "zz-linked", "zz-dialing", "zz-free"
     # "0" sorts below any hex id and "zz…" above ("z" > "f"), regardless of the
@@ -2316,7 +2298,7 @@ def test_dialed_link_drops_a_silent_peer_on_the_hello_timeout(tmp_path, monkeypa
     never enters self.peers for the heartbeat reaper to reclaim. The wait is bounded like
     the inbound path's first read (_on_tcp_connection's 10s)."""
     import asyncio
-    from diplomat_app.mesh import node as node_mod
+    from szpontnet import node as node_mod
     monkeypatch.setattr(node_mod, "_LINK_HELLO_TIMEOUT_SECS", 0.2)
     node = _fresh_node(tmp_path, monkeypatch)
 
@@ -2342,7 +2324,7 @@ def test_beacon_flood_dial_fanout_is_bounded(tmp_path, monkeypatch):
     _MAX_INFLIGHT_DIALS — otherwise every distinct id pins an fd + Task (exhaustion →
     node-disabling DoS)."""
     import asyncio
-    from diplomat_app.mesh.node import _MAX_INFLIGHT_DIALS
+    from szpontnet.node import _MAX_INFLIGHT_DIALS
     node = _fresh_node(tmp_path, monkeypatch)
 
     async def _hang(*a, **k):
@@ -2368,8 +2350,8 @@ def test_inbound_link_binding_no_peer_is_dropped_on_the_hello_timeout(tmp_path, 
     and a distinct-id hello once the peer table is full (_learn_node refuses the Peer, yet
     _on_message still returns the id) — so the guard keys on the unbound WRITER, not peer_id."""
     import asyncio
-    from diplomat_app.mesh import node as node_mod
-    from diplomat_app.mesh.node import Peer, _MAX_PEERS
+    from szpontnet import node as node_mod
+    from szpontnet.node import Peer, _MAX_PEERS
     monkeypatch.setattr(node_mod, "_LINK_HELLO_TIMEOUT_SECS", 0.2)
     node = _fresh_node(tmp_path, monkeypatch)
 
@@ -2402,7 +2384,7 @@ def test_trickle_slowloris_link_is_reaped_by_the_cumulative_hello_deadline(tmp_p
     cap). It must be dropped within the cumulative deadline regardless of the trickle, while a
     link whose hello DOES bind a peer must NOT be reaped (no over-reaping)."""
     import asyncio
-    from diplomat_app.mesh import node as node_mod
+    from szpontnet import node as node_mod
     monkeypatch.setattr(node_mod, "_LINK_HELLO_TIMEOUT_SECS", 0.3)
     node = _fresh_node(tmp_path, monkeypatch)
 
@@ -2624,7 +2606,7 @@ def test_stale_agent_sentinel_does_not_release_a_live_claim(tmp_path, monkeypatc
     orphan = prior._agent_done_path(wk)                      # incarnation-1 leftover
     with open(orphan, "w") as f:
         f.write("0")
-    from diplomat_app.mesh import node as node_mod
+    from szpontnet import node as node_mod
     monkeypatch.setattr(node_mod.spawnjob, "spawn_job", lambda *a, **k: None)
     job = protocol.Job(id="j1", duty="review", prompt="p", requested_by="me",
                        requested_at=1.0, work_key=wk)
@@ -2687,7 +2669,7 @@ def test_emit_claim_stores_own_claim_even_when_book_is_full(tmp_path, monkeypatc
     (ignoring _store_claim's cap refusal) _own_claim is None, so the executor lease is
     released on the watcher's first poll and a re-dispatch double-spawns the same work,
     while the gossiped 'active' claim is never withdrawn."""
-    from diplomat_app.mesh import node as node_mod
+    from szpontnet import node as node_mod
     node = _fresh_node(tmp_path, monkeypatch)
     cap = node_mod._MAX_CLAIMS
     for i in range(cap):
@@ -2711,7 +2693,7 @@ def test_foreign_flood_cannot_starve_a_personal_claim(tmp_path, monkeypatch):
     record rather than being refused, so origination dedup never silently breaks."""
     if not crypto.AVAILABLE:
         return
-    from diplomat_app.mesh import node as node_mod
+    from szpontnet import node as node_mod
     node = _claim_node(tmp_path, monkeypatch, local_id="z-local")   # high id: the peer owns
     cap = node_mod._MAX_CLAIMS
     for i in range(cap):  # foreign flood: cap spoofed keys from unknown/unlinked claimants
@@ -2744,7 +2726,7 @@ def test_confined_result_path_never_escapes_results_dir(tmp_path, monkeypatch):
     """On the executor side job.id is fully attacker-controlled; _result_path derives a
     safe in-results/ filename by hashing it, so `id = "../.."` can't steer the confined
     artifact outside the mesh results dir (path traversal into an operator-chosen file)."""
-    from diplomat_app.mesh import identity
+    from szpontnet import identity
     node = _fresh_node(tmp_path, monkeypatch)
     results = (identity.mesh_dir() / "results").resolve()
     for hostile in ["../../../../etc/evil", "/etc/passwd", "a/../../b", "..",
@@ -2859,7 +2841,7 @@ def test_all_numeric_coercions_tolerate_overflow(tmp_path, monkeypatch):
     number crash it. A JSON integer literal parses to a Python bigint (float() of it
     overflows); a JSON 1e999 literal parses to inf (int() of it overflows). Each of
     these real decoders must swallow both, never raise."""
-    from diplomat_app.mesh import usage
+    from szpontnet import usage
     _fresh_node(tmp_path, monkeypatch)  # sets DIPLOMAT_MESH_DIR for banned.load()
     huge = 10 ** 400          # float(huge) -> OverflowError
     inf = float("inf")        # int(inf)   -> OverflowError
@@ -3049,7 +3031,7 @@ def test_self_released_tombstones_dont_starve_peers_and_are_reaped(tmp_path, mon
     The cap counts only peer records, and a heartbeat reaper drops settled tombstones
     while keeping _claim_seq so a later re-claim still supersedes."""
     import time as _time
-    from diplomat_app.mesh import node as node_mod
+    from szpontnet import node as node_mod
     node = _fresh_node(tmp_path, monkeypatch)
     node._broadcast = lambda *a, **k: None
     me = node.local.id

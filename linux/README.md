@@ -98,14 +98,21 @@ The applet can coordinate duties with the other machines on your LAN — see the
 [root README's Mesh section](../README.md#diplomat-mesh-experimental--lan-p2p-duty-coordination)
 for the model. Enable it in ⚙ Settings; the panel then grows a collapsible
 topology column (live nodes, link states, per-node tier/token editors, per-duty
-strategy controls). The node itself is stdlib-only and runs headless anywhere:
+strategy controls). The node is [SzpontNet](../szpontnet/README.md), an independent
+standard-library-only library the applet registers itself behind; it runs headless
+anywhere:
 
 ```bash
-python3 -m diplomat_app.mesh --daemon     # join the mesh (works on macOS too, no Qt)
-python3 -m diplomat_app.mesh --status     # topology + duty assignments
-python3 -m diplomat_app.mesh --set tokens=out tier=2
-python3 -m diplomat_app.mesh --dispatch audit --prompt "…"
-python3 -m diplomat_app.mesh --fingerprint    # this device's trust key; --trust/--untrust/--ban to manage
+# From this directory. `SZPONTNET_HOST` is what puts Diplomat behind the node —
+# without it the node runs SzpontNet's own defaults (canonical v1 duties, state in
+# ~/.szpontnet, no activity feed) and joins a different mesh than the applet's.
+export SZPONTNET_HOST=diplomat_app.szponthost PYTHONPATH=../szpontnet
+
+python3 -m szpontnet --daemon     # join the mesh (works on macOS too, no Qt)
+python3 -m szpontnet --status     # topology + duty assignments
+python3 -m szpontnet --set tokens=out tier=2
+python3 -m szpontnet --dispatch audit --prompt "…"
+python3 -m szpontnet --fingerprint    # this device's trust key; --trust/--untrust/--ban to manage
 ```
 
 New devices are **foreign (zero-trust)** until you promote them — see the root

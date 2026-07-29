@@ -18,7 +18,7 @@ One asyncio event loop drives everything:
 - the same TCP port doubles as the **control** endpoint: a client opening with
   ``{"t":"ctl"}`` (the topology panel, the CLI) can read status, edit any
   node's attributes, edit placement overrides, and dispatch jobs;
-- a **snapshot** task mirrors the topology to ``~/.diplomat/mesh/state.json``
+- a **snapshot** task mirrors the topology to ``<state dir>/state.json``
   every couple of seconds for the UIs.
 
 Peers stay visible in the snapshot for a few minutes after going down (link
@@ -38,13 +38,12 @@ import os
 import secrets
 import socket
 import struct
-import subprocess
 import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 
-from .. import activity
+from .host import log, work_already_running
 from . import (
     assign, banned, config, crypto, identity, onioncache, peercache, protocol,
     spawnjob, statefile, stats, tor, trust, usage,
@@ -289,7 +288,7 @@ class MeshNode:
         self._banned = banned.load()
         # Trust level for an UNKNOWN device (not in the allowlist / unverified): the
         # operator's persisted panel choice if any, else the node baseline (env /
-        # core/mesh.json, ships 'foreign' → a new device is zero-trust until promoted).
+        # network model, ships 'foreign' → a new device is zero-trust until promoted).
         self._default_trust = trust.load_default_level() or config.default_trust()
         self.platform = identity.detect_platform()
         self.epoch = time.time()
@@ -336,7 +335,7 @@ class MeshNode:
         # Known peers' PERMANENT onion addresses (onions.json), learned from their
         # SIGNED adverts — the WAN sibling of _peer_cache. Once two nodes have met
         # (on the LAN, or by a manual paste) either can redial the other over Tor
-        # from anywhere, no public IP or DNS. See onioncache / mesh/tor.py.
+        # from anywhere, no public IP or DNS. See onioncache / tor.py.
         self._onion_cache = onioncache.load()
         # The Tor transport (a persistent onion service + SOCKS dialer). Created in
         # start() only when DIPLOMAT_MESH_TOR=1 and the `tor` binary is present;
@@ -551,14 +550,14 @@ class MeshNode:
                 self._tasks.append(loop.create_task(self._tor_redial_loop(),
                                                     name="mesh-tor-redial"))
             else:
-                activity.log("mesh", "warn",
-                             "Mesh/Tor: DIPLOMAT_MESH_TOR=1 but no 'tor' binary "
-                             "found — running LAN-only.")
+                log("warn",
+                    "Mesh/Tor: DIPLOMAT_MESH_TOR=1 but no 'tor' binary "
+                    "found — running LAN-only.")
         await self._refresh_tokens()  # seed the auto token state before the first advert
         self._last_token_refresh = time.monotonic()
         self._recompute("start")
-        activity.log("mesh", "mesh-up",
-                     f"Mesh node up: {self.local.name} ({self.platform}) :{self.tcp_port}")
+        log("mesh-up",
+            f"Mesh node up: {self.local.name} ({self.platform}) :{self.tcp_port}")
 
     async def stop(self) -> None:
         for t in self._tasks:
@@ -759,13 +758,13 @@ class MeshNode:
                 # Entering the outage, or the cause changed under a continuous outage
                 # (a different fix applies) — surface the CURRENT diagnosis so the log
                 # and the banner agree. Steady ticks on an unchanged cause stay quiet.
-                activity.log("mesh", "warn", self._beacon_block_message(reason, err))
+                log("warn", self._beacon_block_message(reason, err))
             self._beacon_blocked = True
             self._beacon_block_reason = reason
         elif self._beacon_blocked:
             self._beacon_blocked = False
             self._beacon_block_reason = ""
-            activity.log("mesh", "mesh-up", "Mesh: beacon sending recovered")
+            log("mesh-up", "Mesh: beacon sending recovered")
 
     def _loopback_send_ok(self) -> bool:
         """Can this process put a datagram on the wire at all? A send to 127.0.0.1
@@ -852,9 +851,9 @@ class MeshNode:
             # real interface), which is not a clone — suppress those.
             if host not in self._local_addrs and not self._warned_id_clone:
                 self._warned_id_clone = True
-                activity.log("mesh", "warn",
-                             f"Mesh: another host ({host}) advertises our node id — "
-                             f"duplicate node.json? give each machine its own.")
+                log("warn",
+                    f"Mesh: another host ({host}) advertises our node id — "
+                    f"duplicate node.json? give each machine its own.")
             return
         tcp_port = msg.get("tcpPort")
         # An out-of-range port is not just invalid — asyncio.open_connection() would
@@ -1341,8 +1340,8 @@ class MeshNode:
                     # message" invariant structural rather than per-handler: any
                     # unexpected KeyError/TypeError/OverflowError/ValueError from one
                     # message is logged and that message dropped, the link kept.
-                    activity.log("mesh", "mesh-msg-error",
-                                 f"Mesh: dropped a message raising {exc!r}; link kept")
+                    log("mesh-msg-error",
+                        f"Mesh: dropped a message raising {exc!r}; link kept")
                     continue
                 if got and peer_id is None:
                     peer_id = got
@@ -1422,8 +1421,8 @@ class MeshNode:
             if self._peer_trust(self._peer_by_writer(writer)) == "personal":
                 self._on_set_attr(msg)
             else:
-                activity.log("mesh", "warn",
-                             "Mesh: ignored set-attr from a foreign device")
+                log("warn",
+                    "Mesh: ignored set-attr from a foreign device")
             return None
         if t == "dispatch":
             job = Job.from_dict(msg.get("job") or {})
@@ -1535,8 +1534,8 @@ class MeshNode:
             if fp and peer.verified_fp != fp:
                 peer.verified_fp = fp
                 level = trust.classify(fp, self._trusted, self._default_trust)
-                activity.log("mesh", "mesh-peer-up",
-                             f"Mesh: verified {peer.info.name} device {fp[:16]} ({level})")
+                log("mesh-peer-up",
+                    f"Mesh: verified {peer.info.name} device {fp[:16]} ({level})")
 
     def _peer_trust(self, peer: Peer | None) -> str:
         """personal / foreign / banned for a peer. The ban check runs first: a
@@ -1607,8 +1606,8 @@ class MeshNode:
         if peer is None:
             peer = Peer(info, host)
             self.peers[info.id] = peer
-            activity.log("mesh", "mesh-peer-up",
-                         f"Mesh: discovered {info.name} ({info.platform}, tier {info.tier})")
+            log("mesh-peer-up",
+                f"Mesh: discovered {info.name} ({info.platform}, tier {info.tier})")
         if fresh:
             # A verified fingerprint is bound to the exact pubkey the peer PROVED it
             # holds. If the peer re-advertises a DIFFERENT pubkey **on its own link**
@@ -1723,8 +1722,8 @@ class MeshNode:
         self._close_link(peer)
         if peer.down_since is None:
             peer.down_since = time.monotonic()
-            activity.log("mesh", "mesh-peer-down",
-                         f"Mesh: lost {peer.info.name} ({reason})")
+            log("mesh-peer-down",
+                f"Mesh: lost {peer.info.name} ({reason})")
         self._bump_and_gossip()
         self._recompute(f"peer down: {peer.info.name}")
 
@@ -2096,8 +2095,8 @@ class MeshNode:
         holder = self._claim_holder(work_key)
         if holder is not None and holder != self.local.id and holder < self.local.id:
             self._emit_claim(work_key, "released")
-            activity.log("mesh", "mesh-claim-yield",
-                         f"Mesh: yielded {work_key} to {self._node_name(holder)}")
+            log("mesh-claim-yield",
+                f"Mesh: yielded {work_key} to {self._node_name(holder)}")
             if self.on_claim_lost is not None:
                 with contextlib.suppress(Exception):
                     self.on_claim_lost(work_key)
@@ -2160,8 +2159,8 @@ class MeshNode:
             before = old.get(duty_id)
             if before is not None and before.assigned != a.assigned:
                 names = [self._node_name(nid) for nid in a.assigned] or ["nobody"]
-                activity.log("mesh", "mesh-takeover",
-                             f"Mesh: {duty_id} → {', '.join(names)} ({why})")
+                log("mesh-takeover",
+                    f"Mesh: {duty_id} → {', '.join(names)} ({why})")
 
     def _node_name(self, node_id: str) -> str:
         if node_id == self.local.id:
@@ -2263,7 +2262,7 @@ class MeshNode:
         )
         action = "mesh-dispatch" if all(r["status"] == "spawned" for r in results) \
             else "mesh-dispatch-failed"
-        activity.log("mesh", action, f"Mesh dispatch {duty_id}: {detail}")
+        log(action, f"Mesh dispatch {duty_id}: {detail}")
         return results
 
     async def _dispatch_to(self, node_id: str, duty_id: str, prompt: str,
@@ -2409,9 +2408,9 @@ class MeshNode:
         agent) — see [_take_job]."""
         mode, reason = self._admit(job, trust_level)
         if mode == "decline":
-            activity.log("mesh", "mesh-dispatch-failed",
-                         f"Mesh: declined {job.duty} from "
-                         f"{self._node_name(job.requested_by)} — {reason}")
+            log("mesh-dispatch-failed",
+                f"Mesh: declined {job.duty} from "
+                f"{self._node_name(job.requested_by)} — {reason}")
             return "declined", reason, False
         if mode == "confined":
             return self._run_confined(job, requester_id)
@@ -2462,24 +2461,22 @@ class MeshNode:
         # key arriving back-to-back can never both pass it.
         if wk and wk in self._agents:
             return "spawned", "", True  # deduped against our own live agent — owes no result
-        # Ground-truth floor for the EXECUTOR — the same one the ORIGINATING side
-        # has always had (Store._in_flight). `_agents` only remembers agents THIS
-        # node incarnation spawned; an agent can be live on the host yet absent
-        # from it — the applet's fail-open local spawn (no claim, no book entry), a
-        # node restart / singleton respawn after a deploy (book wiped, agent lives
-        # on), or a manual SPAWN. A peer routing that same work here sees no claim
-        # and its own ps-scan can't see our host, so without this check we'd launch
-        # a duplicate onto a PR already under review. Keyed on the PR, not the exact
-        # work key, so a fresh push (new @sha) can't dodge it either.
-        if wk and self._pr_agent_running(wk):
-            activity.log("mesh", "mesh-dedup",
-                         f"Already running {job.duty} for this PR here — not double-spawning")
+        # Ground-truth floor for the EXECUTOR, asked of the host because only it
+        # can look: `_agents` remembers agents THIS node incarnation spawned, and
+        # work can be live on the machine yet absent from it — started locally by
+        # the application with no claim and no book entry, or surviving a node
+        # restart that wiped the book. A peer routing that same work here sees no
+        # claim and cannot see our machine, so without this check we launch a
+        # duplicate onto work already under way.
+        if wk and work_already_running(wk):
+            log("mesh-dedup",
+                f"Already running {job.duty} for this work here — not double-spawning")
             return "spawned", "", True  # deduped against a live host agent — owes no result
         done_path = self._agent_done_path(wk) if wk else None
         try:
             spawnjob.spawn_job(job.prompt, done_path=done_path)
         except spawnjob.JobSpawnError as exc:
-            activity.log("mesh", "spawn-failed", f"Mesh job {job.duty} failed here: {exc}")
+            log("spawn-failed", f"Mesh job {job.duty} failed here: {exc}")
             return "failed", str(exc), False
         if wk:
             # The executor owns the key for the agent's lifetime: claim it now, and
@@ -2489,38 +2486,9 @@ class MeshNode:
             with contextlib.suppress(RuntimeError):  # no running loop → tests w/o watch
                 asyncio.get_running_loop().create_task(self._watch_agent(wk, done_path))
         self._record_usage(config.job_cost_units())
-        activity.log("mesh", "mesh-spawn",
-                     f"Mesh: running {job.duty} (from {self._node_name(job.requested_by)})")
+        log("mesh-spawn",
+            f"Mesh: running {job.duty} (from {self._node_name(job.requested_by)})")
         return "spawned", "", True
-
-    def _pr_agent_running(self, work_key: str) -> bool:
-        """Is a live ``claude`` agent for this work key's PR already running on THIS
-        host? The executor's ground-truth floor against a double-spawn (see
-        `_spawn_local`). Reuses the ORIGINATING side's matcher (`live_pr_numbers`)
-        so both sides agree on what "an agent is on this PR" means. Fails OPEN — a
-        ps error reads as "not seen" so a transient failure never drops work — the
-        same trade the store's `_live_pr_agents` makes.
-
-        ``ps -Ao args=`` is the portable spelling: on macOS ``-e`` prints the
-        environment, not every process, so the store's Linux-only ``-eo`` can't be
-        reused in this cross-platform node (it runs on both OSes)."""
-        from .. import autofix
-
-        ref = autofix.parse_work_key(work_key)
-        if ref is None:
-            return False
-        _kind, owner, repo, number = ref
-        try:
-            out = subprocess.run(["ps", "-Ao", "args="],
-                                 capture_output=True, text=True, timeout=10).stdout
-        except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
-            # UnicodeDecodeError: text=True decodes strict UTF-8, so any process on the
-            # box with a non-UTF-8 byte in its argv makes `ps` output undecodable. It is a
-            # ValueError, not an OSError/SubprocessError, so without it here the exception
-            # escapes this fail-open guard and tears the caller's link / self-dispatch —
-            # the same catch Store._live_pr_agents makes for its identical ps scan.
-            return False
-        return number in autofix.live_pr_numbers(out, owner, repo)
 
     def _agent_done_path(self, work_key: str) -> str:
         """A per-agent completion-sentinel path under the mesh dir (NOT /tmp, which
@@ -2658,8 +2626,8 @@ class MeshNode:
         try:
             spawnjob.spawn_confined(job.prompt, str(result_path))
         except spawnjob.JobSpawnError as exc:
-            activity.log("mesh", "spawn-failed",
-                         f"Mesh confined {job.duty} failed here: {exc}")
+            log("spawn-failed",
+                f"Mesh confined {job.duty} failed here: {exc}")
             return "failed", str(exc), False
         self._record_usage(config.job_cost_units())
         # Register the run so a `job-reminder` while it computes gets a truthful
@@ -2684,9 +2652,9 @@ class MeshNode:
             self._await_confined_result(job, requester_id, result_path))
         self._result_tasks.add(task)
         task.add_done_callback(self._result_task_done)
-        activity.log("mesh", "mesh-spawn",
-                     f"Mesh: running {job.duty} CONFINED for foreign "
-                     f"{self._node_name(requester_id)} (result routes back)")
+        log("mesh-spawn",
+            f"Mesh: running {job.duty} CONFINED for foreign "
+            f"{self._node_name(requester_id)} (result routes back)")
         return "spawned", "", False
 
     async def _await_confined_result(self, job: Job, requester_id: str,
@@ -2711,8 +2679,8 @@ class MeshNode:
                         return
                     last_size = size
                 await asyncio.sleep(poll)
-            activity.log("mesh", "mesh-dispatch-failed",
-                         f"Mesh: confined {job.duty} timed out, returning failure")
+            log("mesh-dispatch-failed",
+                f"Mesh: confined {job.duty} timed out, returning failure")
             self._emit_result(job.id, requester_id, {
                 "ok": False, "duty": job.duty, "output": "",
                 "error": "confined execution timed out"})
@@ -2745,8 +2713,8 @@ class MeshNode:
         if not task.cancelled():
             exc = task.exception()
             if exc is not None:
-                activity.log("mesh", "mesh-dispatch-failed",
-                             f"Mesh: confined result watcher crashed: {exc!r}")
+                log("mesh-dispatch-failed",
+                    f"Mesh: confined result watcher crashed: {exc!r}")
 
     @staticmethod
     def _read_result_file(path) -> str:
@@ -2832,9 +2800,9 @@ class MeshNode:
                 continue
             if now >= pending.deadline:
                 pending.gave_up = True
-                activity.log("mesh", "mesh-dispatch-failed",
-                             f"Mesh: gave up delivering job-result {job_id[:8]} "
-                             "(unacked; kept for a reminder)")
+                log("mesh-dispatch-failed",
+                    f"Mesh: gave up delivering job-result {job_id[:8]} "
+                    "(unacked; kept for a reminder)")
             elif now >= pending.next_retry:
                 self._send_pending(job_id)
 
@@ -2933,9 +2901,9 @@ class MeshNode:
         (the reference hands it to ``DIPLOMAT_MESH_ON_RESULT``, where e.g. `gh` runs).
         A failed compute is logged, not acted on."""
         if not bool(result.get("ok", False)):
-            activity.log("mesh", "mesh-dispatch-failed",
-                         f"Mesh: {duty} from {self._node_name(executor_id)} returned "
-                         f"no result ({result.get('error') or 'failed'})")
+            log("mesh-dispatch-failed",
+                f"Mesh: {duty} from {self._node_name(executor_id)} returned "
+                f"no result ({result.get('error') or 'failed'})")
             return
         path = self._result_path(job_id, incoming=True)
         try:
@@ -2944,12 +2912,12 @@ class MeshNode:
                 "output": str(result.get("output", ""))}), encoding="utf-8")
             spawnjob.run_result_handler(str(path))
         except (OSError, spawnjob.JobSpawnError) as exc:
-            activity.log("mesh", "spawn-failed",
-                         f"Mesh: result handler for {duty} failed: {exc}")
+            log("spawn-failed",
+                f"Mesh: result handler for {duty} failed: {exc}")
             return
-        activity.log("mesh", "mesh-spawn",
-                     f"Mesh: acting on {duty} result from "
-                     f"{self._node_name(executor_id)} (under our identity)")
+        log("mesh-spawn",
+            f"Mesh: acting on {duty} result from "
+            f"{self._node_name(executor_id)} (under our identity)")
 
     # MARK: - foreign accountability (deadline → reminder → extension or ban)
     #
@@ -3006,9 +2974,9 @@ class MeshNode:
                 peer.writer.write(protocol.encode(
                     protocol.job_reminder(job_id, self.local.id)))
         if first:
-            activity.log("mesh", "warn",
-                         f"Mesh: reminding {self._node_name(aw.executor_id)} — "
-                         f"{aw.duty} job {job_id[:8]} passed its completion deadline")
+            log("warn",
+                f"Mesh: reminding {self._node_name(aw.executor_id)} — "
+                f"{aw.duty} job {job_id[:8]} passed its completion deadline")
 
     def _on_job_reminder(self, msg: dict, writer: asyncio.StreamWriter) -> None:
         """Our requester asks whether its job is ready. Truthful answers only:
@@ -3029,9 +2997,9 @@ class MeshNode:
             pending.deadline = (time.monotonic()
                                 + float(self.proto["foreignResultMaxSecs"]))
             self._send_pending(job_id)
-            activity.log("mesh", "mesh-spawn",
-                         f"Mesh: reminded about job {job_id[:8]} — re-delivering "
-                         "its result")
+            log("mesh-spawn",
+                f"Mesh: reminded about job {job_id[:8]} — re-delivering "
+                "its result")
             return
         running = self._confined_running.get(job_id)
         if running is not None and running[0] == peer.info.id:
@@ -3078,8 +3046,8 @@ class MeshNode:
             except Exception as exc:  # noqa: BLE001 — a crashed decider grants nothing;
                 # the decision must still conclude (extend or ban), or `deciding`
                 # would wedge the entry past every check until the reap backstop.
-                activity.log("mesh", "warn",
-                             f"Mesh: extension decider crashed: {exc!r}")
+                log("warn",
+                    f"Mesh: extension decider crashed: {exc!r}")
                 granted = False
         # Re-fetch: the result may have arrived (entry resolved) while we judged.
         aw = self._awaiting_result.get(job_id)
@@ -3091,10 +3059,10 @@ class MeshNode:
             aw.reminded_at = None
             aw.deadline = (time.monotonic()
                            + float(self.proto["foreignCompletionDeadlineSecs"]))
-            activity.log("mesh", "mesh-spawn",
-                         f"Mesh: extension granted to {self._node_name(aw.executor_id)} "
-                         f"for {aw.duty} job {job_id[:8]} (#{aw.extensions}) — "
-                         f"plea: {note[:120]}")
+            log("mesh-spawn",
+                f"Mesh: extension granted to {self._node_name(aw.executor_id)} "
+                f"for {aw.duty} job {job_id[:8]} (#{aw.extensions}) — "
+                f"plea: {note[:120]}")
         else:
             cause = ("still incomplete at reminder and no extension decider "
                      "configured" if not decider else
@@ -3136,12 +3104,12 @@ class MeshNode:
         except asyncio.TimeoutError:
             with contextlib.suppress(ProcessLookupError, OSError):
                 proc.kill()
-            activity.log("mesh", "warn",
-                         f"Mesh: extension decider timed out for job {job_id[:8]}")
+            log("warn",
+                f"Mesh: extension decider timed out for job {job_id[:8]}")
             return False
         except OSError as exc:
-            activity.log("mesh", "warn",
-                         f"Mesh: extension decider failed to run: {exc}")
+            log("warn",
+                f"Mesh: extension decider failed to run: {exc}")
             return False
 
     def _ban_for_broken_promise(self, job_id: str, cause: str) -> None:
@@ -3276,7 +3244,7 @@ class MeshNode:
             return {"t": "dispatch-result", "duty": duty, "results": results}
         if t == "claim":
             # The origination claim gate, stand-alone (szpontnet/docs/12): a client
-            # that will run the work ITSELF (e.g. the applet's auto-monitor spawning
+            # that will run the work ITSELF (e.g. a host's own monitor spawning
             # a local, tracked agent) claims the key without dispatching. `owned`
             # False → a better live personal peer holds the lease; don't originate.
             work_key = str(msg.get("workKey", "")).strip()
@@ -3362,18 +3330,18 @@ class MeshNode:
         # An explicit promotion is the operator's newest word — it lifts any ban
         # (trusted and banned are mutually exclusive states).
         if self.unban_device(fingerprint):
-            activity.log("mesh", "mesh-up",
-                         f"Mesh: promotion lifted the ban on {fingerprint[:16]}")
-        activity.log("mesh", "mesh-up",
-                     f"Mesh: trusting device {fingerprint[:16]}"
-                     f"{' (' + label + ')' if label else ''}")
+            log("mesh-up",
+                f"Mesh: promotion lifted the ban on {fingerprint[:16]}")
+        log("mesh-up",
+            f"Mesh: trusting device {fingerprint[:16]}"
+            f"{' (' + label + ')' if label else ''}")
 
     def remove_trusted(self, fingerprint: str) -> None:
         if self._trusted.pop(fingerprint, None) is not None:
             # Preserve only the operator's EXPLICIT persisted default (see add_trusted):
             # an allowlist edit must never pin the env/mesh.json baseline as a choice.
             trust.save(self._trusted, trust.load_default_level())
-            activity.log("mesh", "mesh-up", f"Mesh: untrusting device {fingerprint[:16]}")
+            log("mesh-up", f"Mesh: untrusting device {fingerprint[:16]}")
 
     def set_default_trust(self, level: str) -> bool:
         """Set the trust level applied to UNKNOWN devices (the panel's default-trust
@@ -3384,7 +3352,7 @@ class MeshNode:
             return level in ("personal", "foreign")
         self._default_trust = level
         trust.save(self._trusted, self._default_trust)
-        activity.log("mesh", "mesh-up", f"Mesh: default trust level for new devices → {level}")
+        log("mesh-up", f"Mesh: default trust level for new devices → {level}")
         return True
 
     # MARK: - ban list (accountability verdicts + operator-managed, local, never gossiped)
@@ -3402,16 +3370,16 @@ class MeshNode:
                          job_id=job_id))
         banned.save(self._banned)
         who = label or (node_id[:8] if node_id else fingerprint[:16])
-        activity.log("mesh", "warn", f"Mesh: BANNED device {who} — {reason or 'manual'}")
+        log("warn", f"Mesh: BANNED device {who} — {reason or 'manual'}")
 
     def unban_device(self, fingerprint: str = "", node_id: str = "") -> bool:
         """Lift a ban (the operator's recovery path). True if one matched."""
         self._banned, removed = banned.remove(self._banned, fingerprint, node_id)
         if removed:
             banned.save(self._banned)
-            activity.log("mesh", "mesh-up",
-                         f"Mesh: unbanned device "
-                         f"{fingerprint[:16] or node_id[:8]}")
+            log("mesh-up",
+                f"Mesh: unbanned device "
+                f"{fingerprint[:16] or node_id[:8]}")
         return removed
 
     # MARK: - snapshot

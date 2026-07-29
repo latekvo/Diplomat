@@ -3,7 +3,7 @@
 The mesh ranks nodes by *strength* (tier 1 = strongest) so ``weakest-first``
 routing keeps a powerful interactive machine free. Rather than make the operator
 guess a number, a fresh node measures the box it runs on and maps that to a 1..5
-tier (:func:`diplomat_app.mesh.identity.load`). A manual edit in the panel pins
+tier (:func:`.identity.load`). A manual edit pins
 the tier and turns auto-detection off (``strengthAuto=False``).
 
 The score is CPU-quality-first: what the mesh routes is agent work (builds,
@@ -22,7 +22,7 @@ carry 64 GB while being much slower than an Apple-Silicon box that reports
 
 Stdlib-only and best-effort on both platforms the node runs on (Linux + macOS);
 every probe degrades to a neutral value on failure, so detection never raises and
-an undetectable box lands on the ``tiers.default`` from ``core/mesh.json``.
+an undetectable box lands on the network model's ``tiers.default``.
 """
 
 from __future__ import annotations

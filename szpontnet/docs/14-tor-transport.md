@@ -101,7 +101,7 @@ old link has gone quiet), exactly as on the LAN today.
 You can reach a peer you were **never** on a LAN with by pasting its onion:
 
 ```
-python -m diplomat_app.mesh --tor-connect <hash>.onion
+python -m szpontnet --tor-connect <hash>.onion
 ```
 
 This dials the onion **unconditionally** (bypassing the smaller-id rule — it is a

@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "szpontnet"
+version = "0.4.0"
+description = "Leaderless LAN peer-to-peer resource sharing: self-discovery, resource advertisement and work hand-off"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+# Nothing. The node is standard library only, which is what lets it run as a
+# detached daemon on a machine that has no application installed on it.
+dependencies = []
+
+[project.optional-dependencies]
+# Ed25519 device identity. Without it a node still runs, keyless - it advertises
+# no public key, can never be verified, and so is foreign to any peer with a trust
+# allowlist. See szpontnet/crypto.py.
+trust = ["cryptography>=41"]
+
+[project.scripts]
+szpontnet = "szpontnet.__main__:main"
+
+[tool.setuptools]
+packages = ["szpontnet"]
+
+[tool.setuptools.package-data]
+szpontnet = ["netmodel.json"]

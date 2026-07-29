@@ -1,12 +1,11 @@
-"""Best-effort atomic JSON reads and writes for the app's small state files.
+"""Best-effort atomic JSON reads and writes for the node's small state files.
 
-Every mesh state file — the local identity (``node.json``), the peer-address and
-onion caches, the trust store, the ban list, per-plan usage stats and the public
-topology snapshot — plus the shared ``~/.diplomat/config.json``, is persisted the
-same way: serialise to JSON, write a sibling ``*.json.tmp``, then ``os.replace``
-it over the target so a concurrent reader never sees a torn file. The write is
-deliberately best-effort — an unwritable ``HOME`` must never crash the node — so
-``OSError`` is swallowed.
+Every one — the local identity (``node.json``), the peer-address and onion caches,
+the trust store, the ban list, per-plan usage stats and the public topology
+snapshot — is persisted the same way: serialise to JSON, write a sibling
+``*.json.tmp``, then ``os.replace`` it over the target so a concurrent reader
+never sees a torn file. The write is deliberately best-effort — an unwritable
+``HOME`` must never crash the node — so ``OSError`` is swallowed.
 
 Reading is the same story in reverse, and for the same reason: none of these
 files is a correctness dependency (a cache is an accelerator, a corrupt store

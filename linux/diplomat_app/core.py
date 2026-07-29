@@ -90,7 +90,7 @@ def mesh() -> dict:
     """The shared mesh model (protocol constants, duty catalog, strategies).
 
     See core/mesh.json; consumed by the LAN P2P mesh node
-    (``diplomat_app.mesh``) and the topology panel.
+    (:mod:`szpontnet`) and the topology panel.
     """
     return _read_json("mesh.json")
 

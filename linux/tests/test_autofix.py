@@ -457,7 +457,7 @@ def _mesh_store(monkeypatch, store, dispatch=None):
     fake ``ctl.dispatch`` outcome — a list of slot-result dicts, an Exception to
     raise, or None to fail the test if the mesh is consulted at all. Returns the
     recorded ``(duty, work_key)`` dispatch calls."""
-    from diplomat_app.mesh import ctl, statefile
+    from szpontnet import ctl, statefile
 
     store._mesh_enabled_override = True
     state = {"pid": 1, "tcpPort": 1, "self": {"id": "me-node", "name": "mac"},
@@ -537,7 +537,7 @@ def test_review_request_suppressed_when_a_peer_owns_it(store, monkeypatch):
 
 
 def test_review_request_falls_back_to_local_when_mesh_unreachable(store, monkeypatch):
-    from diplomat_app.mesh import ctl
+    from szpontnet import ctl
 
     _mesh_store(monkeypatch, store, dispatch=ctl.CtlError("node down"))
     local = _spawn_recorder(monkeypatch)

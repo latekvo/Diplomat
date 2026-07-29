@@ -5,7 +5,7 @@ The auto-monitors on several machines all scan GitHub for the same work, route
 it to the best-surplus node, and lean on work-claims to run it *exactly once*
 with failover and retry (szpontnet/docs/12). That behaviour is impossible to
 judge from a single process, so this simulator stands up a **fleet of real
-``python -m diplomat_app.mesh`` nodes** on loopback, injects **simulated work
+``python -m szpontnet`` nodes** on loopback, injects **simulated work
 events** (a review request = a duty + a work key), and checks the invariants:
 
     exactly-once · best-fit placement · no-drop · failover · retry · race-safety
@@ -33,7 +33,6 @@ import json
 import os
 import subprocess
 import sys
-import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -43,6 +42,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from diplomat_app import autofix  # the shared work-key parser (one source of truth)
 
 LINUX_DIR = Path(__file__).resolve().parents[1]
+SZPONTNET_DIR = Path(__file__).resolve().parents[2] / "szpontnet"
 _AGENT = Path(__file__).resolve().parent / "mesh_sim_agent.py"
 
 
@@ -80,6 +80,20 @@ def loopback_multicast_works() -> bool:
         for s in (rx, tx):
             if s is not None:
                 s.close()
+
+
+# The node runs as its own process, so the host that makes it *Diplomat's* node -
+# our duty catalog, the shared activity feed, the ps ground-truth dedup floor - is
+# handed over in its environment, exactly as `store.ensure_mesh_running_async`
+# does. A fleet spawned without it is a fleet of bare library nodes, and the halves
+# of the behaviour these tests are about simply never run.
+def _host_env() -> dict:
+    import os as _os
+    return {
+        "SZPONTNET_HOST": "diplomat_app.szponthost",
+        "PYTHONPATH": _os.pathsep.join(
+            [str(LINUX_DIR), _os.environ.get("PYTHONPATH", "")]).rstrip(_os.pathsep),
+    }
 
 
 def _proto_env(port_base: int) -> dict:
@@ -158,6 +172,7 @@ class Simulator:
         }))
         env = dict(os.environ)
         env.update(_proto_env(self.port_base))
+        env.update(_host_env())
         env["DIPLOMAT_MESH_DIR"] = str(d)
         env["DIPLOMAT_MESH_PLATFORM"] = spec.platform
         env["DIPLOMAT_MESH_SERVER"] = "1" if spec.server else ""
@@ -171,8 +186,8 @@ class Simulator:
         )
         env["HOME"] = str(d)  # keep the shared activity feed off the real ~/.diplomat
         self.procs[spec.node_id] = subprocess.Popen(
-            [sys.executable, "-m", "diplomat_app.mesh"],
-            cwd=LINUX_DIR, env=env,
+            [sys.executable, "-m", "szpontnet"],
+            cwd=SZPONTNET_DIR, env=env,
             stdout=(d / "node.log").open("w"), stderr=subprocess.STDOUT,
         )
         self.dirs[spec.node_id] = d
@@ -219,13 +234,14 @@ class Simulator:
     def cli(self, node_id: str, *args: str, timeout: float = 30.0) -> subprocess.CompletedProcess:
         env = dict(os.environ)
         env.update(_proto_env(self.port_base))
+        env.update(_host_env())
         env["DIPLOMAT_MESH_DIR"] = str(self.dirs[node_id])
         env["HOME"] = str(self.dirs[node_id])
         env["DIPLOMAT_MESH_DEFAULT_TRUST"] = next(
             (s.trust for s in self.specs if s.node_id == node_id), "personal")
         return subprocess.run(
-            [sys.executable, "-m", "diplomat_app.mesh", *args],
-            cwd=LINUX_DIR, env=env, capture_output=True, text=True, timeout=timeout,
+            [sys.executable, "-m", "szpontnet", *args],
+            cwd=SZPONTNET_DIR, env=env, capture_output=True, text=True, timeout=timeout,
         )
 
     def state(self, node_id: str) -> dict:

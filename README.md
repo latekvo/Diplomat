@@ -258,19 +258,26 @@ isn't at the default `~/dev/diplomat`):
 
 ```bash
 cd linux
-python3 -m diplomat_app.mesh --daemon      # join the mesh (any OS, no Qt needed)
-python3 -m diplomat_app.mesh --status      # live topology + duty assignments
-python3 -m diplomat_app.mesh --stop        # stop the running node
-python3 -m diplomat_app.mesh --set tokens=out          # also: tier=N name=X duty.<id>=on|off
-python3 -m diplomat_app.mesh --set tier=1 --node <ID>  # edit a REMOTE node over the mesh
-python3 -m diplomat_app.mesh --dispatch review --prompt "…"   # route a job (--prompt-file, --target)
-python3 -m diplomat_app.mesh --claim <KEY>             # origination-dedup lease (spec ch 12)
+# Put Diplomat behind the node: without this it runs SzpontNet's own defaults —
+# the canonical v1 duties, state in ~/.szpontnet, no activity feed — and so joins
+# a different mesh than the one your app is on.
+export SZPONTNET_HOST=diplomat_app.szponthost PYTHONPATH=../szpontnet
+
+python3 -m szpontnet --daemon      # join the mesh (any OS, no Qt needed)
+python3 -m szpontnet --status      # live topology + duty assignments
+python3 -m szpontnet --stop        # stop the running node
+python3 -m szpontnet --set tokens=out          # also: tier=N name=X duty.<id>=on|off
+python3 -m szpontnet --set tier=1 --node <ID>  # edit a REMOTE node over the mesh
+python3 -m szpontnet --dispatch review --prompt "…"   # route a job (--prompt-file, --target)
+python3 -m szpontnet --claim <KEY>             # origination-dedup lease (spec ch 12)
 ```
 
-Bare `python3 -m diplomat_app.mesh` runs a node in the foreground. `--help` lists
+Bare `python3 -m szpontnet` runs a node in the foreground. `--help` lists
 the rest (trust/ban management, `--api-key`, `--work-key`).
 
-Model + constants live in [`core/mesh.json`](core/mesh.json); node state in
+The canonical model lives in [`szpontnet/szpontnet/netmodel.json`](szpontnet/szpontnet/netmodel.json)
+and Diplomat's overlay - the duty catalog both panels render - in
+[`core/mesh.json`](core/mesh.json); node state in
 `~/.diplomat/mesh/` (`node.json` identity, `state.json` topology snapshot,
 `device.key` + `trusted.json` + `banned.json` for trust, `peers.json` to redial
 known peers — the device-allocator pattern; `DIPLOMAT_MESH_DIR` relocates it).
@@ -292,7 +299,7 @@ multicast + subnet broadcast). Two independent fences:
   and it is **zero-trust by default**: a device you have not explicitly promoted
   is `foreign` no matter how empty the allowlist is. Promote from the Mesh screen
   or the CLI:
-  `python3 -m diplomat_app.mesh --fingerprint` (print this machine's),
+  `python3 -m szpontnet --fingerprint` (print this machine's),
   `--trust <FP> [--label <name>]`, `--untrust <FP>`. The baseline itself is a
   per-node knob (`--default-trust personal|foreign`, `DIPLOMAT_MESH_DEFAULT_TRUST`,
   or `trust.default` in `core/mesh.json`) — set it to `personal` for the old
@@ -317,7 +324,7 @@ as a banned chip with the reason and an inline un-ban.
 
 Nodes also gossip **per-node quota accounting** (plan, a surplus **burn-down ratio**
 — budget left ÷ clock left until the quota resets — plus display-only usage-average
-and quota-left figures; see `accounts` in `core/mesh.json`): the default
+and quota-left figures; see `accounts` in `szpontnet/szpontnet/netmodel.json`): the default
 `surplus-first` ranking sends work to the machine that is most flush *relative to its
 reset*, and each executed job books usage on the executor.
 
@@ -675,7 +682,7 @@ Sources/
     Daemon.swift                 first-run login-daemon opt-in (TTY Accept [y/N])
     Render.swift                 headless ImageRenderer snapshots for UI checks
     Color+Hex.swift              Color ↔ "#RRGGBB" for persisted tint overrides
-    MeshBridge.swift             drives the local mesh node (spawn python3 -m …mesh --daemon, NDJSON control)
+    MeshBridge.swift             drives the local mesh node (spawn python3 -m szpontnet --daemon, NDJSON control)
     MeshView.swift               the ⬡ Mesh screen: node graph, tier/token/trust editors, duty table
     MeshSpawn.swift              the wizards' "⬡ Run on mesh" row + destination preview
     SelfUpdate.swift             fetch/merge upstream, rebuild, relaunch (Update button + the 06:00 run)
@@ -686,13 +693,16 @@ Sources/
   diplomat-core/            ← thin `build-prompt` CLI over the core, so the Linux front-end shells out for
                                  Review/Conflicts/Audit prompts instead of reimplementing them
 linux/                         ← Linux Qt6/PySide6 tray applet (see linux/README.md)
-  diplomat_app/mesh/           ← Diplomat Mesh node: stdlib-only Python (runs headless on macOS too) — LAN
-                                 discovery, heartbeat links, gossip, deterministic duty assignment,
-                                 dispatch with failover; model in core/mesh.json, state in ~/.diplomat/mesh/
-szpontnet/                     ← the SzpontNet module (see szpontnet/README.md)
+  diplomat_app/szponthost.py   ← Diplomat's answers to the five questions a mesh node asks its host:
+                                 the duty catalog, the state dir, where events go, how a job runs here,
+                                 and whether an agent is already up on that work
+szpontnet/                     ← the SzpontNet module: an independent library (see szpontnet/README.md)
+  szpontnet/                   ← the node: stdlib-only Python (runs headless on macOS too) — LAN discovery,
+                                 heartbeat links, gossip, deterministic duty assignment, dispatch with
+                                 failover; canonical v1 model in netmodel.json, `python -m szpontnet`
   docs/                        ← the normative SzpontNet protocol spec (15 chapters, v0.4.0)
   conformance/                 ← black-box SzpontNet conformance tester: runs a candidate node as an opaque
                                  subprocess, joins over real multicast + TCP, exits non-zero on any MUST failure
 scripts/                       ← build-app, install/uninstall-autostart, install/uninstall-autoupdate
-.github/workflows/ci.yml       ← swift-macos · swift-core-linux · python-linux · node-device-allocator
+.github/workflows/ci.yml       ← swift-macos · swift-core-linux · python-linux · szpontnet · node-device-allocator
 ```

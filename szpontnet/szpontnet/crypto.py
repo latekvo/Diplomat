@@ -1,13 +1,13 @@
 """Per-device cryptographic identity for SzpontNet trust.
 
 A node's **trust identity** is an Ed25519 keypair generated once per machine and
-persisted locally (``~/.diplomat/mesh/device.key``, ``0600``). The private key
+persisted locally (``<state dir>/device.key``, ``0600``). The private key
 never leaves the machine and is never gossiped; the public key is advertised, but
 **advertising it grants nothing**. A peer is only believed to hold a given key
 once it *signs a fresh, per-connection challenge* with the matching private key
-(proof of possession, in :mod:`diplomat_app.mesh.node`). Trust decisions then key
+(proof of possession, in :mod:`.node`). Trust decisions then key
 on the resulting **fingerprint** against a local operator-managed allowlist
-(:mod:`diplomat_app.mesh.trust`).
+(:mod:`.trust`).
 
 This is the design consequence of "assume advertisements are spoofed": the node
 `id`, `name`, and every other self-reported field are display-only and confer no

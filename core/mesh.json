@@ -1,26 +1,5 @@
 {
-  "_comment": "Diplomat Mesh — LAN P2P coordination between the machines running Diplomat. Protocol constants, the duty catalog (which job classes the mesh routes), and the placement strategies. Consumed by the Python mesh node (linux/diplomat_app/mesh) today; a future Swift node reads the same file. Node-local attributes (tier, token state) live in ~/.diplomat/mesh/node.json on each machine; mesh-wide placement overrides are gossiped last-writer-wins and start from the defaults here.",
-
-  "protocol": {
-    "_comment": "Discovery is UDP (multicast + subnet broadcast, receivers dedupe — Wi-Fi APs commonly drop multicast); links are TCP with NDJSON messages. A node is 'stale' after missing heartbeats for peerStaleSecs and 'down' (duties reassigned) after peerTimeoutSecs.",
-    "version": 1,
-    "multicastGroup": "239.83.77.7",
-    "multicastPort": 40877,
-    "tcpPortBase": 40878,
-    "tcpPortSpan": 10,
-    "beaconIntervalSecs": 2.0,
-    "redialIntervalSecs": 10.0,
-    "heartbeatIntervalSecs": 2.0,
-    "peerStaleSecs": 5.0,
-    "peerTimeoutSecs": 10.0,
-    "dispatchAckTimeoutSecs": 8.0,
-    "stateWriteIntervalSecs": 2.0,
-    "foreignResultRetryIntervalSecs": 5.0,
-    "foreignResultMaxSecs": 120.0,
-    "foreignJobTimeoutSecs": 900.0,
-    "foreignCompletionDeadlineSecs": 21600.0,
-    "foreignReminderGraceSecs": 900.0
-  },
+  "_comment": "Diplomat's mesh model — the deployment overlay SzpontNet merges over its own netmodel.json (szpontnet/szpontnet/netmodel.json, the canonical v1 constants). This half is what both front-ends RENDER: the duty catalog (which job classes the mesh routes, with per-duty platform spread — e.g. the audit's one-linux-plus-one-macos), the placement strategies, the platform/token/trust vocabularies and the tier labels. Wire constants and the quota accounting model are the node's business and live in netmodel.json; nothing here is read by the node that isn't also drawn on screen. Node-local attributes (tier, token state) live in ~/.diplomat/mesh/node.json on each machine; mesh-wide placement overrides are gossiped last-writer-wins and start from the defaults here.",
 
   "platforms": [
     { "id": "linux", "title": "Linux", "emoji": "🐧", "linuxGlyph": "⬢", "colorHex": "#FF9500" },
@@ -43,28 +22,8 @@
     "default": "foreign"
   },
 
-  "accounts": {
-    "_comment": "Subscription plans and the accounting knobs behind per-node load balancing. A plan's 'weight' is its quota capacity RELATIVE to Pro (Max 5× → 5, Max 20× → 20); capacity units = weight × capacityPerWeight. Absolute token quotas are intentionally NOT hard-coded — Anthropic's limits are dynamic rolling windows. usageAvg is an exponential rolling average of consumption with a ~21-day time constant; quotaLeft is remaining capacity in the current window. Both are retained for display and for peers on older builds; routing ranks on 'surplus' instead (see _surplusComment).",
-    "_surplusComment": "A node's surplus is a burn-down RATIO, not an amount: the budget left in its quota window divided by the share of that window's clock still ahead of it. 1.0 is exactly on pace, above is flush, below is rationing. Measuring it relatively is the entire point — 60% left with 2 of 7 days to go paces at 2.1 (that budget expires at the reset, so spend it here), while 70% left with 6 of 7 days to go paces at 0.82 (genuinely low, despite the bigger number). Ranking on the raw remaining amount gets both cases backwards: it hoards the account that is about to reset and drains the one that has to stretch. Each node computes its own surplus from the real reset instants the OAuth usage endpoint reports for the 5-hour session and 7-day week windows (the tighter of the two binds), falling back to pacing its local bookkeeping window when the probe is unavailable. Capped at 10.0, since past that a node is simply 'use it or lose it'.",
-    "plans": [
-      { "id": "pro", "title": "Claude Pro", "weight": 1 },
-      { "id": "max-5x", "title": "Claude Max 5×", "weight": 5 },
-      { "id": "max-20x", "title": "Claude Max 20×", "weight": 20 }
-    ],
-    "defaultPlan": "max-5x",
-    "capacityPerWeight": 1.0,
-    "jobCostUnits": 1.0,
-    "quotaWindowDays": 7.0,
-    "usageTimeConstantDays": 21.0,
-
-    "_tokenComment": "Automatic token-budget signal (the ok/low/out state the panel shows and the mesh routes around). PRIMARY: the node probes the account's REAL remaining quota via the OAuth usage endpoint (the same data Claude Code's /usage shows) — utilization of the 5-hour session and 7-day week rate-limit windows, gossiped as tokensSessionPct/tokensWeekPct; the binding (smaller) fraction drives the state: ≥ lowThreshold → ok, > 0 → low, ≤ 0 → out. FALLBACK (no credentials / offline / DIPLOMAT_MESH_OAUTH_PROBE=0): the node measures its OWN recent consumption from the local Claude logs (~/.claude/projects/**/*.jsonl, input+output+cache-creation tokens over the last usageWindowHours) against a heuristic per-plan ceiling = plan.weight × tokensPerWeight. The fallback is deliberately rough (real limits are dynamic and account-specific) — the UIs mark it '≈'; tune tokensPerWeight, or pin a node's state with the manual override.",
-    "tokensPerWeight": 2000000,
-    "usageWindowHours": 5.0,
-    "lowThreshold": 0.34
-  },
-
   "tiers": {
-    "_comment": "Machine strength, 1 = strongest. 'weakest-first' keeps the strong machine free for interactive work by routing grunt jobs to the weakest eligible node. Auto-detected CPU-quality-first (Apple-Silicon variant / boost clock, then physical cores, RAM, dGPU — see mesh/hardware.py); a manual edit in the panel pins it. 'labels' give the UIs human words instead of a bare number.",
+    "_comment": "Machine strength, 1 = strongest. 'weakest-first' keeps the strong machine free for interactive work by routing grunt jobs to the weakest eligible node. Auto-detected CPU-quality-first (Apple-Silicon variant / boost clock, then physical cores, RAM, dGPU — see szpontnet/szpontnet/hardware.py); a manual edit in the panel pins it. 'labels' give the UIs human words instead of a bare number.",
     "min": 1,
     "max": 5,
     "default": 3,
@@ -99,11 +58,8 @@
       "detail": "route to the node with the most spare quota RELATIVE to its reset — budget left ÷ clock left; ties fall back to weakest-first"
     }
   ],
-  "_defaultStrategyComment": "surplus-first is the default: absent a reason to pin a duty elsewhere, work should follow spare capacity. Surplus is a burn-down RATIO (see accounts._surplusComment), so the ordering is stable — it only moves when a node's standing against its own reset clock genuinely changes, not as raw percentages tick down.",
+  "_defaultStrategyComment": "surplus-first is the default: absent a reason to pin a duty elsewhere, work should follow spare capacity. Surplus is a burn-down RATIO (see accounts._surplusComment in szpontnet/szpontnet/netmodel.json), so the ordering is stable — it only moves when a node's standing against its own reset clock genuinely changes, not as raw percentages tick down.",
   "defaultStrategy": "surplus-first",
-
-  "_dispatchStrategyComment": "The ranking a DISPATCHER uses to pick a target when it dispatches a SzpontRequest — the load-balancing decision, made unilaterally by the dispatching node from its own gossiped view (no consensus). Separate from a duty's placement 'strategy', which drives the stable displayed ownership; both now default to surplus-first.",
-  "dispatchStrategy": "surplus-first",
 
   "duties": [
     {

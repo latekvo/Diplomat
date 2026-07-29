@@ -1,7 +1,7 @@
 # Appendix B - Constants
 
 Every default value SzpontNet v1 nodes must agree on, in one place. The canonical
-source is [`core/mesh.json`](../../core/mesh.json); these are its v1 values. Two
+source is [`netmodel.json`](../szpontnet/netmodel.json); these are its v1 values. Two
 nodes that disagree on the discovery group/ports, or whose timing values differ far
 enough, will not form a healthy mesh; nodes that disagree on the *vocabulary*
 (platforms/tiers/tokens/duties/strategies) still interoperate at the wire level but

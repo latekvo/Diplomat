@@ -30,6 +30,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 LINUX_DIR = Path(__file__).resolve().parents[1]
+SZPONTNET_DIR = Path(__file__).resolve().parents[2] / "szpontnet"
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("DIPLOMAT_MESH_E2E") != "1",
@@ -89,20 +90,25 @@ def test_applet_meshes_and_dispatches(tmp_path, monkeypatch):
          "tokens": "ok", "dutiesEnabled": {}}))
     peer_env = dict(os.environ)
     peer_env.update({
+        # The peer runs as its own process, so the host that makes it Diplomat's
+        # node is handed over in its environment (see store.ensure_mesh_running_async).
+        "SZPONTNET_HOST": "diplomat_app.szponthost",
+        "PYTHONPATH": os.pathsep.join(
+            [str(LINUX_DIR), os.environ.get("PYTHONPATH", "")]).rstrip(os.pathsep),
         "DIPLOMAT_MESH_DIR": str(peer_dir),
         "DIPLOMAT_MESH_PLATFORM": "macos",
         "DIPLOMAT_MESH_SPAWN": f"cp {{prompt_file}} {tmp_path}/spawned-peer.txt",
         "DIPLOMAT_MESH_DEFAULT_TRUST": "personal",  # full-trust fleet (see _mesh_env)
     })
     peer = subprocess.Popen(
-        [sys.executable, "-m", "diplomat_app.mesh"], cwd=LINUX_DIR, env=peer_env,
+        [sys.executable, "-m", "szpontnet"], cwd=SZPONTNET_DIR, env=peer_env,
         stdout=(tmp_path / "peer.log").open("w"), stderr=subprocess.STDOUT,
     )
 
     from PySide6.QtWidgets import QApplication
 
     from diplomat_app.app import DiplomatApp
-    from diplomat_app.mesh import ctl
+    from szpontnet import ctl
 
     app_obj = None
     try:

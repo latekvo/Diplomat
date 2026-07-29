@@ -24,7 +24,13 @@ import sys
 
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(_HERE))
+# The mesh add-on, from this checkout rather than an install, so the suite runs
+# against the SzpontNet in the tree it is testing. Normalised, because whichever
+# of the two suites' conftests lands first decides the ``__file__`` every module
+# in the package reports for the rest of the session.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(_HERE)), "szpontnet"))
 
 from PySide6.QtCore import QSettings  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
@@ -44,9 +50,10 @@ def isolated_qsettings(tmp_path):
 def no_host_agent_spawn(monkeypatch):
     """Fail loudly instead of launching a real agent on the machine running the tests.
 
-    ``review.spawn`` (and ``spawnjob._spawn_macos``, its macOS mesh twin) are the two
-    paths that detach a terminal window running ``claude`` in :func:`review.repo_path`
-    — the operator's own checkout, with their credentials. A test that reaches a
+    ``review.spawn`` (and ``szponthost._spawn_macos``, the macOS half of Diplomat's
+    answer to "run a mesh job here") are the two paths that detach a terminal window
+    running ``claude`` in :func:`review.repo_path` — the operator's own checkout,
+    with their credentials. A test that reaches a
     dispatch path without stubbing them therefore turns a *stub* prompt into a live
     agent in a real repo, and the suite still passes green because the spawn is
     fire-and-forget. Tests that exercise dispatch stub the spawner themselves (see
@@ -57,8 +64,7 @@ def no_host_agent_spawn(monkeypatch):
     ``DIPLOMAT_MESH_FOREIGN_SPAWN``) are deliberately left alone: they are empty by
     default and the mesh tests point them at a harmless ``cp`` template.
     """
-    from diplomat_app import review
-    from diplomat_app.mesh import spawnjob
+    from diplomat_app import review, szponthost
 
     def refuse(*args, **kwargs):
         raise AssertionError(
@@ -67,7 +73,7 @@ def no_host_agent_spawn(monkeypatch):
         )
 
     monkeypatch.setattr(review, "spawn", refuse)
-    monkeypatch.setattr(spawnjob, "_spawn_macos", refuse)
+    monkeypatch.setattr(szponthost, "_spawn_macos", refuse)
     yield
 
 

@@ -42,7 +42,7 @@ import shutil
 import signal
 from pathlib import Path
 
-from .. import activity
+from .host import log
 from . import protocol
 
 # The virtual port the onion service exposes. It is namespaced to the onion and
@@ -203,14 +203,14 @@ class TorTransport:
             self._forward_server = await asyncio.start_server(
                 inbound_handler, "127.0.0.1", 0, limit=protocol.MAX_LINE_BYTES)
         except OSError as exc:
-            activity.log("mesh", "warn",
-                         f"Mesh/Tor: cannot open the forward listener ({exc})")
+            log("warn",
+                f"Mesh/Tor: cannot open the forward listener ({exc})")
             return False
         forward_port = self._forward_server.sockets[0].getsockname()[1]
         try:
             torrc = _write_torrc(self._tor_dir, self._socks_port, forward_port)
         except OSError as exc:
-            activity.log("mesh", "warn", f"Mesh/Tor: cannot write torrc ({exc})")
+            log("warn", f"Mesh/Tor: cannot write torrc ({exc})")
             await self.stop()
             return False
         try:
@@ -232,7 +232,7 @@ class TorTransport:
                 preexec_fn=_pdeathsig,
             )
         except OSError as exc:
-            activity.log("mesh", "warn", f"Mesh/Tor: cannot launch tor ({exc})")
+            log("warn", f"Mesh/Tor: cannot launch tor ({exc})")
             await self.stop()
             return False
         # Drain stdout forever (so tor never blocks on a full pipe) and flip the
@@ -244,13 +244,13 @@ class TorTransport:
             return False
         onion = await self._read_hostname()
         if not onion:
-            activity.log("mesh", "warn",
-                         "Mesh/Tor: bootstrapped but no onion hostname — LAN-only")
+            log("warn",
+                "Mesh/Tor: bootstrapped but no onion hostname — LAN-only")
             await self.stop()
             return False
         self._onion = onion
-        activity.log("mesh", "mesh-up",
-                     f"Mesh/Tor: onion service up — {onion} (SOCKS :{self._socks_port})")
+        log("mesh-up",
+            f"Mesh/Tor: onion service up — {onion} (SOCKS :{self._socks_port})")
         return True
 
     async def _await_bootstrap(self, timeout: float) -> bool:
@@ -281,7 +281,7 @@ class TorTransport:
             why = "tor stdout pump stopped during bootstrap"
         else:
             why = "bootstrap timed out"
-        activity.log("mesh", "warn", f"Mesh/Tor: {why} — staying LAN-only")
+        log("warn", f"Mesh/Tor: {why} — staying LAN-only")
         return False
 
     async def _pump_stdout(self) -> None:
@@ -302,7 +302,7 @@ class TorTransport:
             if "Bootstrapped 100%" in text:
                 self._bootstrapped.set()
             elif "[warn]" in text or "[err]" in text:
-                activity.log("mesh", "warn", f"Mesh/Tor: {text.strip()[:200]}")
+                log("warn", f"Mesh/Tor: {text.strip()[:200]}")
 
     async def _read_hostname(self, tries: int = 20, delay: float = 0.25) -> str:
         """Read ``<HiddenServiceDir>/hostname`` (written by tor once the service is

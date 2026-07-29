@@ -6,7 +6,7 @@ with the most **surplus**, a *relative* burn-down ratio (budget left ÷ clock le
 until the quota resets — see :meth:`NodeStats.surplus`), so work flows to whoever
 is most flush against its own reset clock, not merely whoever holds the most raw
 budget. Three quantities are advertised on the node's
-:class:`~diplomat_app.mesh.protocol.NodeInfo`:
+:class:`~.protocol.NodeInfo`:
 
 - **usageAvg** — an exponentially-weighted rolling average of consumption, in
   capacity units per day, with a ~21-day time constant. Implemented as a decaying
@@ -24,7 +24,7 @@ budget. Three quantities are advertised on the node's
   probe's per-window reset instants when live, else the local bookkeeping window
   paced against its own roll (:meth:`NodeStats.local_window`).
 
-State persists to ``~/.diplomat/mesh/stats.json`` (machine-local; only the derived
+State persists to ``<state dir>/stats.json`` (machine-local; only the derived
 ``advertise()`` view is gossiped). All time arithmetic takes an injectable
 ``now`` so tests can fast-forward without sleeping.
 """

@@ -9,7 +9,7 @@ raises on non-UTF-8 bytes. Under that guard a single corrupt byte in
 ``~/.diplomat/mesh/peers.json`` propagates out of ``peercache.load()`` and kills
 the node at startup — every restart, until the file is deleted by hand.
 
-The loaders share :func:`diplomat_app.mesh.atomicjson.read_object` now. This is
+The loaders share :func:`szpontnet.atomicjson.read_object` now. This is
 the end-to-end guard: drive each *real* loader over each way a file can be
 corrupt and assert it returns its documented empty value instead of raising.
 """
@@ -19,7 +19,7 @@ from __future__ import annotations
 import pytest
 
 from diplomat_app import appconfig
-from diplomat_app.mesh import identity, onioncache, peercache, statefile, stats, trust
+from szpontnet import identity, onioncache, peercache, statefile, stats, trust
 
 # The ways a state file goes bad in the field: a truncated write, a hand-edit
 # that left the wrong shape, and bytes that aren't UTF-8 at all (a partially

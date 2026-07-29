@@ -28,10 +28,10 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (  # noqa: E402
     Ed25519PrivateKey,
 )
 
-from diplomat_app.mesh import (  # noqa: E402
+from szpontnet import (  # noqa: E402
     crypto, node as nodemod, onioncache, protocol, tor,
 )
-from diplomat_app.mesh.protocol import NodeInfo  # noqa: E402
+from szpontnet.protocol import NodeInfo  # noqa: E402
 
 _ONION_A = "a" * 56 + ".onion"
 _ONION_B = "b" * 56 + ".onion"
@@ -578,7 +578,7 @@ def test_tor_bootstrap_timeout_rejects_non_finite(monkeypatch):
     asyncio.wait block FOREVER — the opposite of "give up and stay LAN-only" — and a
     non-positive one is meaningless. All fall back to the 90s default; a sane value
     passes through."""
-    from diplomat_app.mesh import config
+    from szpontnet import config
 
     for bad in ("inf", "1e999", "-inf", "nan", "-1", "0"):
         monkeypatch.setenv("DIPLOMAT_MESH_TOR_BOOTSTRAP_SECS", bad)

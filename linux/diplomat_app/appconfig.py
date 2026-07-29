@@ -23,7 +23,7 @@ from pathlib import Path
 # The mesh's shared atomic writer rather than a seventh copy of tmp-file+rename
 # (see the dedup that introduced it). stdlib-only, so the node keeps its Qt-free
 # import graph.
-from .mesh.atomicjson import read_object, write_atomic
+from .atomicjson import read_object, write_atomic
 
 # Keys. Kept in sync with Swift's `AppConfig` (Sources/Diplomat/AppConfig.swift).
 REPO_ROOT = "repoRoot"

@@ -1,21 +1,21 @@
-"""Run or drive a mesh node from any machine (stdlib-only, no Qt needed).
+"""Run or drive a node from any machine (standard library only).
 
-    python -m diplomat_app.mesh                  # node in the foreground (Ctrl+C stops)
-    python -m diplomat_app.mesh --daemon         # detach a background node
-    python -m diplomat_app.mesh --status         # print the live topology
-    python -m diplomat_app.mesh --stop           # stop the running node
-    python -m diplomat_app.mesh --set tokens=out tier=2 name=mbp-old
-    python -m diplomat_app.mesh --set plan=max-20x quotaLeft=12 usage=1  # accounting
-    python -m diplomat_app.mesh --set tokens=ok --node <peer-id>   # edit a REMOTE node
-    python -m diplomat_app.mesh --fingerprint                      # print this device's key fp
-    python -m diplomat_app.mesh --trust <fp> --label mbp           # trust a device (personal)
-    python -m diplomat_app.mesh --untrust <fp>                     # revoke trust
-    python -m diplomat_app.mesh --ban <fp-or-node-id>              # ban a device (declines all)
-    python -m diplomat_app.mesh --unban <fp-or-node-id>            # lift a ban
-    python -m diplomat_app.mesh --dispatch audit --prompt "…"      # route a request
-    python -m diplomat_app.mesh --dispatch review --prompt-file /tmp/p.txt
-    python -m diplomat_app.mesh --dispatch review --prompt "…" --target <node-id>
-    python -m diplomat_app.mesh --claim "review:github.com/o/r#1@sha"  # claim gate only
+    python -m szpontnet                  # node in the foreground (Ctrl+C stops)
+    python -m szpontnet --daemon         # detach a background node
+    python -m szpontnet --status         # print the live topology
+    python -m szpontnet --stop           # stop the running node
+    python -m szpontnet --set tokens=out tier=2 name=mbp-old
+    python -m szpontnet --set plan=max-20x quotaLeft=12 usage=1  # accounting
+    python -m szpontnet --set tokens=ok --node <peer-id>   # edit a REMOTE node
+    python -m szpontnet --fingerprint                      # print this device's key fp
+    python -m szpontnet --trust <fp> --label mbp           # trust a device (personal)
+    python -m szpontnet --untrust <fp>                     # revoke trust
+    python -m szpontnet --ban <fp-or-node-id>              # ban a device (declines all)
+    python -m szpontnet --unban <fp-or-node-id>            # lift a ban
+    python -m szpontnet --dispatch audit --prompt "…"      # route a request
+    python -m szpontnet --dispatch review --prompt-file /tmp/p.txt
+    python -m szpontnet --dispatch review --prompt "…" --target <node-id>
+    python -m szpontnet --claim "review:github.com/o/r#1@sha"  # claim gate only
 """
 
 from __future__ import annotations
@@ -55,7 +55,7 @@ def _run_node() -> int:
     # fresh node also reaps every OTHER live mesh node of this uid by /proc argv,
     # under any module name it has launched as. Ordered AFTER the flock so a losing
     # same-dir racer exits above without reaping anyone; stands down in loopback
-    # (the multi-node test/dev fleet). See mesh/singleton.py.
+    # (the multi-node test/dev fleet). See singleton.py.
     reaped = singleton.terminate_other_nodes()
     if reaped:
         print(f"mesh singleton: reaped {len(reaped)} stale node(s) {sorted(reaped)}",
@@ -85,13 +85,23 @@ def _daemonize() -> int:
     if statefile.node_running():
         print("mesh node already running")
         return 0
+    # The child must be able to import this package however we were imported —
+    # installed, or off a path entry in a checkout — so carry the package's parent
+    # directory (and whatever PYTHONPATH we were given) across the re-exec. Its cwd
+    # is that same stable directory: a detached daemon inheriting the launcher's cwd
+    # can end up holding a deleted worktree open for as long as it lives.
+    pkg_parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    inherited = os.environ.get("PYTHONPATH", "")
     proc = subprocess.Popen(  # noqa: S603 — relaunching ourselves
-        [sys.executable, "-m", "diplomat_app.mesh"],
+        [sys.executable, "-m", "szpontnet"],
         start_new_session=True,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        cwd=os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        cwd=pkg_parent,
+        env={**os.environ,
+             "PYTHONPATH": os.pathsep.join([pkg_parent, inherited]) if inherited
+             else pkg_parent},
     )
     print(f"mesh node detached (pid {proc.pid})")
     return 0
@@ -194,7 +204,7 @@ def _parse_attrs(pairs: list[str]) -> dict:
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(prog="python -m diplomat_app.mesh",
+    ap = argparse.ArgumentParser(prog="python -m szpontnet",
                                  description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--daemon", action="store_true", help="detach a background node")

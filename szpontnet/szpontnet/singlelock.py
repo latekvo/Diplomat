@@ -1,6 +1,6 @@
 """One running node per state directory — a kernel-arbitrated startup guard.
 
-Two mesh node *processes* that share a state directory (``~/.diplomat/mesh``, or
+Two mesh node *processes* that share a state directory (see :meth:`.host.Host.state_dir`, or
 whatever ``DIPLOMAT_MESH_DIR`` points at) share one identity, one ``state.json``
 and one ``peers.json`` — so they clobber each other's published snapshot, and
 only whichever instance a peer happens to dial is ever truly linked. The others

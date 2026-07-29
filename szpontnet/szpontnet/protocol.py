@@ -284,7 +284,7 @@ class NodeInfo:
     # redial it over Tor from anywhere. Carried INSIDE the signed advert, so it is
     # bound to the device key end to end — a relay cannot swap it to redirect a Tor
     # dial (the onion is self-authenticating too, but the handshake still re-proves
-    # the device key, so a wrong onion just lands foreign). See mesh/tor.py.
+    # the device key, so a wrong onion just lands foreign). See tor.py.
     onion: str = ""
     # Load-balancing accounting, additive: {"plan", "usageAvg", "quotaLeft",
     # "surplus"} — surplus is the burn-down ratio ranked on, the rest display-only.

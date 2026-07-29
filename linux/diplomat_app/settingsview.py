@@ -646,7 +646,7 @@ class SettingsView(QWidget):
         self._refresh_mesh_ui()
 
     def _refresh_mesh_ui(self) -> None:
-        from .mesh import statefile
+        from szpontnet import statefile
 
         state = self.store.mesh_state
         if not self.store.mesh_enabled:

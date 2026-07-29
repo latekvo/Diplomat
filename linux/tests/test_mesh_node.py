@@ -1,6 +1,6 @@
 """Mesh integration tests: real nodes, real sockets, one machine.
 
-Spins actual ``python -m diplomat_app.mesh`` node processes on loopback
+Spins actual ``python -m szpontnet`` node processes on loopback
 (DIPLOMAT_MESH_LOOPBACK=1 keeps every socket on 127.0.0.1; multicast loops back
 locally) with fast protocol timings, then asserts the behaviours the design
 promises: discovery convergence, deterministic cross-node assignment
@@ -25,6 +25,9 @@ from pathlib import Path
 import pytest
 
 LINUX_DIR = Path(__file__).resolve().parents[1]
+# `python -m szpontnet` puts its cwd on sys.path, so running the fake fleet from
+# the library's project dir is what makes the checkout's node the one under test.
+SZPONTNET_DIR = Path(__file__).resolve().parents[2] / "szpontnet"
 
 
 def _loopback_multicast_works() -> bool:
@@ -67,6 +70,20 @@ pytestmark = pytest.mark.skipif(
 _PORT_BASE = 42000 + (os.getpid() % 400) * 20
 
 
+# The node runs as its own process, so the host that makes it *Diplomat's* node -
+# our duty catalog, the shared activity feed, the ps ground-truth dedup floor - is
+# handed over in its environment, exactly as `store.ensure_mesh_running_async`
+# does. A fleet spawned without it is a fleet of bare library nodes, and the halves
+# of the behaviour these tests are about simply never run.
+def _host_env() -> dict:
+    import os as _os
+    return {
+        "SZPONTNET_HOST": "diplomat_app.szponthost",
+        "PYTHONPATH": _os.pathsep.join(
+            [str(LINUX_DIR), _os.environ.get("PYTHONPATH", "")]).rstrip(_os.pathsep),
+    }
+
+
 def _proto_env() -> dict:
     return {
         "DIPLOMAT_MESH_LOOPBACK": "1",
@@ -106,6 +123,7 @@ class Fleet:
         (self.root / "spawned").mkdir(exist_ok=True)
         env = dict(os.environ)
         env.update(_proto_env())
+        env.update(_host_env())
         env["DIPLOMAT_MESH_DIR"] = str(d)
         env["DIPLOMAT_MESH_PLATFORM"] = platform
         env["DIPLOMAT_MESH_SPAWN"] = f"cp {{prompt_file}} {self.root}/spawned/{name}.txt"
@@ -128,8 +146,8 @@ class Fleet:
         # beacon channel on its own multicast port).
         env.update(extra_env or {})
         self.procs[node_id] = subprocess.Popen(
-            [sys.executable, "-m", "diplomat_app.mesh"],
-            cwd=LINUX_DIR, env=env,
+            [sys.executable, "-m", "szpontnet"],
+            cwd=SZPONTNET_DIR, env=env,
             stdout=(d / "node.log").open("w"),
             stderr=subprocess.STDOUT,
         )
@@ -145,6 +163,7 @@ class Fleet:
             secret: str | None = None) -> subprocess.CompletedProcess:
         env = dict(os.environ)
         env.update(_proto_env())
+        env.update(_host_env())
         env["DIPLOMAT_MESH_DIR"] = str(self.dirs[node_id])
         env["HOME"] = str(self.dirs[node_id])
         env["DIPLOMAT_MESH_SECRET"] = (
@@ -152,8 +171,8 @@ class Fleet:
             else (self.dirs[node_id] / "secret").read_text()
         )
         return subprocess.run(
-            [sys.executable, "-m", "diplomat_app.mesh", *args],
-            cwd=LINUX_DIR, env=env, capture_output=True, text=True, timeout=timeout,
+            [sys.executable, "-m", "szpontnet", *args],
+            cwd=SZPONTNET_DIR, env=env, capture_output=True, text=True, timeout=timeout,
         )
 
     def kill(self, node_id: str) -> None:

@@ -11,12 +11,12 @@ claimed one) is in this set; everything else falls to the **default trust level*
 personal is *foreign*: a new machine that joins the mesh is untrusted until you
 promote it. The allowlist is thus the set of *exceptions* (promotions) to a
 foreign baseline. The default level is configurable per node
-(``config.default_trust`` - env / ``core/mesh.json``, persisted operator choice in
+(``config.default_trust`` - env / the network model, persisted operator choice in
 this same file's ``defaultLevel``): flipping it to *personal* restores the
 pre-trust **full-altruism** mode where every unlisted peer is trusted, exactly as
 a fresh mesh behaved before the default became configurable.
 
-Persisted at ``~/.diplomat/mesh/trusted.json`` as
+Persisted at ``<state dir>/trusted.json`` as
 ``{"defaultLevel": "...", "trusted": [{"fingerprint","label"}, ...]}``; the running
 node keeps the set + level in memory and edits them through control commands so
 ``--trust`` / the panel's default-trust toggle take effect live.

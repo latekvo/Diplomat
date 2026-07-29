@@ -148,7 +148,7 @@ writes the reference node's `node.json`, translates `SZPONTNET_*` →
 
 ```
 szpont/
-  model.py      shared constants + duty catalog (from core/mesh.json, or built-in v1 defaults)
+  model.py      shared constants + duty catalog (from the reference netmodel.json, or built-in v1 defaults)
   codec.py      clean-room NDJSON codec + strict message validators
   assign.py     independent placement oracle (06-coordination)
   net.py        multicast + TCP socket helpers
@@ -159,5 +159,5 @@ szpont/
   selftest.py   pure oracle/codec self-tests (V1–V3 + ch-11 codec/oracle + ch-12 claim codec + ch-13 result/accountability codec, without a node)
   report.py     per-check reporting, MUST/SHOULD verdict, exit code
 adapters/
-  reference.py  candidate adapter for linux/diplomat_app/mesh
+  reference.py  candidate adapter for the reference node
 ```

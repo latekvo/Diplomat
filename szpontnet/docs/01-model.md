@@ -138,8 +138,9 @@ from a peer link by its opening message. See
 Constants that every node must agree on to interoperate — the discovery
 group/ports, the timing values, the resource vocabulary (platforms, tiers,
 tokens), the duty catalog and the strategies — form the **shared model**. In this
-repository it is [`core/mesh.json`](../../core/mesh.json), and the canonical
-values are tabulated in [appendix B](appendix-b-constants.md). An implementation
+repository it is [`netmodel.json`](../szpontnet/netmodel.json), which a deployment
+may overlay ([`host.py`](../szpontnet/host.py)), and the canonical values are
+tabulated in [appendix B](appendix-b-constants.md). An implementation
 MAY read these from its own copy, but two nodes with different discovery
 groups/ports or timing far enough apart will not form a healthy mesh, and two
 nodes with different *vocabularies* will still interoperate at the wire level but

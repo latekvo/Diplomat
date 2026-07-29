@@ -4,7 +4,7 @@ import Foundation
 /// layer. This is the Swift half of the "two front-ends, one brain" split: it decodes
 /// the shared `core/mesh.json` (duty catalog, placement strategies, tier/token model)
 /// and the local node's public topology snapshot (`~/.diplomat/mesh/state.json`), exactly
-/// as the Python front-end's `diplomat_app.mesh.config` / `.statefile` do.
+/// as the Python front-end's `szpontnet.config` / `.statefile` do.
 ///
 /// Nothing here opens a socket or spawns a node — it's pure decode + placement logic,
 /// so it builds and is unit-testable on Linux alongside the rest of the core. The
@@ -501,7 +501,7 @@ public struct MeshAssignment: Decodable, Equatable {
 }
 
 /// The public topology snapshot the node rewrites atomically every couple of seconds.
-/// Mirrors the shape documented in `diplomat_app.mesh.statefile`.
+/// Mirrors the shape documented in `szpontnet.statefile`.
 public struct MeshSnapshot: Decodable, Equatable {
     /// The node process pid, used for the liveness check.
     public let pid: Int?

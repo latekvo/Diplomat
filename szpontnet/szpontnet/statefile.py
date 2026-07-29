@@ -1,10 +1,10 @@
-"""The public topology snapshot — ``~/.diplomat/mesh/state.json``.
+"""The public topology snapshot — ``<state dir>/state.json``.
 
 The mesh node rewrites this atomically every couple of seconds (and on every
 topology change); UIs poll it the way they poll the device-allocator's
 ``state.json`` — a cheap file read, no live socket needed to *render*. The
 snapshot also carries the node's TCP port, which is how a UI or the CLI finds
-the local control socket for edits/dispatch (see :mod:`diplomat_app.mesh.ctl`).
+the local control socket for edits/dispatch (see :mod:`.ctl`).
 
 Shape::
 
@@ -71,7 +71,7 @@ def _pid_alive(pid: int) -> bool:
     except (OverflowError, ValueError):
         # A pid outside the OS's pid_t range (e.g. an oversized int in a corrupt/hostile
         # state.json) makes os.kill raise OverflowError — not an OSError, so it would
-        # otherwise escape node_running() and crash the tray/launcher/panel. Such a value
+        # otherwise escape node_running() and crash the launcher or whatever renders it. Such a value
         # can never name a live process, so treat it as dead.
         return False
     return True

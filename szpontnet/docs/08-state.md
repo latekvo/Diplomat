@@ -111,7 +111,7 @@ optional) naming a device the operator has explicitly promoted to `personal`.
 level** for any device *not* in the allowlist; it ships **`foreign`** — a new device
 is zero-trust until promoted ([11](11-trust-and-balancing.md)). An **absent**
 `defaultLevel` falls back to the node baseline (`DIPLOMAT_MESH_DEFAULT_TRUST` /
-`core/mesh.json`'s `trust.default`, itself `foreign`). The running node keeps both the
+the shared model's `trust.default`, itself `foreign`). The running node keeps both the
 set and the level in memory and edits them live through the
 [`trust`/`untrust`/`set-default-trust`](04-messages.md#ctl) control commands, so a
 change takes effect without a restart.

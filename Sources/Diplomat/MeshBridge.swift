@@ -6,8 +6,9 @@ import DiplomatCore
 /// front-end's `store` mesh helpers (`ensure_mesh_running_async`, `mesh.statefile`,
 /// `mesh.ctl`). Two surfaces:
 ///   - a *viewer* of the node's public topology snapshot (`~/.diplomat/mesh/state.json`);
-///   - a *driver* that spawns the node (`python3 -m diplomat_app.mesh --daemon`, run
-///     from the checkout's `linux/` tree) and talks its synchronous control protocol
+///   - a *driver* that spawns the node (`python3 -m szpontnet --daemon`, run from the
+///     checkout with Diplomat registered as its host) and talks its synchronous control
+///     protocol
 ///     (one NDJSON command → one reply over a loopback TCP connection).
 ///
 /// The mesh node itself is stdlib-only Python that runs on any OS (see the README);
@@ -24,7 +25,7 @@ enum MeshBridge {
     private static var home: URL { FileManager.default.homeDirectoryForCurrentUser }
 
     /// The node's state directory (`DIPLOMAT_MESH_DIR` override, else `~/.diplomat/mesh`) —
-    /// matches `diplomat_app.mesh.identity.mesh_dir`.
+    /// matches what `szpontnet.identity.mesh_dir` resolves to under Diplomat's host.
     static var stateDir: URL {
         if let env = ProcessInfo.processInfo.environment["DIPLOMAT_MESH_DIR"], !env.isEmpty {
             return URL(fileURLWithPath: env)
@@ -108,8 +109,23 @@ enum MeshBridge {
         }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: python)
-        p.arguments = ["-m", "diplomat_app.mesh", "--daemon"]
+        p.arguments = ["-m", "szpontnet", "--daemon"]
+        // Both trees come in on PYTHONPATH, so the working directory is only the one the
+        // daemon inherits for its lifetime — `linux/` for the same reason the Linux
+        // spawner picks it: it is the tree this front-end can be sure exists.
         p.currentDirectoryURL = RepoPaths.root.appendingPathComponent("linux")
+        // The node is a separate process and gets no say in who its host is, so hand it
+        // both halves: the paths to import the library and Diplomat from, and the module
+        // that registers Diplomat behind it. Without the second it comes up on SzpontNet's
+        // own defaults — its own state directory, none of our duties, no activity feed.
+        var env = ProcessInfo.processInfo.environment
+        env["SZPONTNET_HOST"] = "diplomat_app.szponthost"
+        env["PYTHONPATH"] = [
+            RepoPaths.root.appendingPathComponent("linux").path,
+            RepoPaths.root.appendingPathComponent("szpontnet").path,
+            env["PYTHONPATH"] ?? "",
+        ].filter { !$0.isEmpty }.joined(separator: ":")
+        p.environment = env
         // Deliberately NOT handing the node a `DIPLOMAT_REPO`: a process environment is
         // fixed at exec, and this daemon outlives the app (an already-running one is
         // adopted, not restarted — see the early return above), so it would pin a stale

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Candidate adapter for the reference node (``linux/diplomat_app/mesh``).
+"""Candidate adapter for the reference node (``szpontnet/szpontnet``).
 
 The conformance tester launches a candidate purely through the ``SZPONTNET_*``
 environment (the *candidate contract*). The reference node predates that contract
@@ -22,7 +22,7 @@ from pathlib import Path
 
 # repo/szpontnet/conformance/adapters/reference.py → repo root is parents[3].
 REPO = Path(__file__).resolve().parents[3]
-LINUX = REPO / "linux"
+PROJECT = REPO / "szpontnet"  # the library's project dir, where `szpontnet` imports from
 
 # SZPONTNET_* → DIPLOMAT_MESH_* protocol/discovery knobs (names differ, values 1:1).
 _MAP = {
@@ -105,17 +105,18 @@ def main() -> None:
         if src in os.environ:
             env[dst] = os.environ[src]
     env["DIPLOMAT_MESH_DIR"] = str(work_dir)
-    # Keep the reference's activity feed inside the scenario dir, not real ~/.diplomat.
+    # Keep anything the node reads out of $HOME inside the scenario dir.
     env["HOME"] = str(work_dir)
     # A conformance candidate must be deterministic: no live OAuth quota probe.
     # (On macOS the Keychain resolves even under the sandboxed HOME, and a live
     # read would cap the advertised quotaLeft with this machine's real budget,
     # skewing seeded ch-11 stats.)
     env["DIPLOMAT_MESH_OAUTH_PROBE"] = "0"
-    env["PYTHONPATH"] = os.pathsep.join([str(LINUX), env.get("PYTHONPATH", "")]).rstrip(os.pathsep)
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(PROJECT), env.get("PYTHONPATH", "")]).rstrip(os.pathsep)
 
-    os.chdir(str(LINUX))
-    os.execvpe(sys.executable, [sys.executable, "-m", "diplomat_app.mesh"], env)
+    os.chdir(str(PROJECT))
+    os.execvpe(sys.executable, [sys.executable, "-m", "szpontnet"], env)
 
 
 if __name__ == "__main__":
