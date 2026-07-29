@@ -259,6 +259,38 @@ enum Dump {
     /// network. `mode` is "user" to preview the someone-else's-PRs variant,
     /// anything else previews my-PRs. Mirrors the wizard's default toggle state.
     /// Modes prefixed "conflict…" route to the Resolve-conflicts prompt instead.
+    /// The shared tail of the three prompt dumps: the assembled prompt, the shell
+    /// command that would run it, and the AppleScript that would open a terminal on
+    /// it. The prompt file is a throwaway — it exists only so `shellCommand` and
+    /// `appleScript` see the real thing, and is removed before returning.
+    ///
+    /// `withBackgroundScript` is the Review dump's extra: it is the one action the
+    /// auto-fix monitor also spawns *without* stealing focus, so both AppleScript
+    /// variants are worth eyeballing there.
+    private static func printPromptDump(header: String, prompt: String,
+                                        withBackgroundScript: Bool = false) {
+        print("== \(header) ==\n")
+        print("----- PROMPT -----")
+        print(prompt)
+        guard let file = try? AgentSpawner.writePrompt(prompt) else { return }
+        defer { try? FileManager.default.removeItem(at: file) }
+        let cmd = AgentSpawner.shellCommand(promptFile: file,
+                                            donePath: AgentSpawner.doneFilePath())
+        print("\n----- SHELL COMMAND -----")
+        print(cmd)
+        let term = AgentSpawner.resolved(.iterm)
+        guard withBackgroundScript else {
+            print("\n----- APPLESCRIPT (\(term.title)) -----")
+            print(AgentSpawner.appleScript(for: term, shellCommand: cmd))
+            return
+        }
+        print("\n----- APPLESCRIPT · foreground (user SPAWN, activates terminal) -----")
+        print(AgentSpawner.appleScript(for: term, shellCommand: cmd))
+        print("\n----- APPLESCRIPT · background (auto-fix, restores focus to Finder) -----")
+        print(AgentSpawner.appleScript(for: term, shellCommand: cmd,
+                                       restoreFocusTo: "com.apple.finder"))
+    }
+
     static func printPrompt(mode: String) {
         let m = mode.lowercased()
         if m.hasPrefix("conflict") { printConflictPrompt(mode: m); return }
@@ -278,20 +310,9 @@ enum Dump {
             specificPR: isSingle ? "337" : "",
             finalPass: m.contains("final"))
         let label = isSingle ? "single PR #337" : (isUser ? "someone else's PRs" : "my PRs")
-        print("== ReviewConfig: \(label) · depth=\(ReviewCatalog.depth(id: cfg.depth).title) ==\n")
-        print("----- PROMPT -----")
-        print(cfg.buildPrompt())
-        if let file = try? AgentSpawner.writePrompt(cfg.buildPrompt()) {
-            let cmd = AgentSpawner.shellCommand(promptFile: file, donePath: AgentSpawner.doneFilePath())
-            print("\n----- SHELL COMMAND -----")
-            print(cmd)
-            let term = AgentSpawner.resolved(.iterm)
-            print("\n----- APPLESCRIPT · foreground (user SPAWN, activates terminal) -----")
-            print(AgentSpawner.appleScript(for: term, shellCommand: cmd))
-            print("\n----- APPLESCRIPT · background (auto-fix, restores focus to Finder) -----")
-            print(AgentSpawner.appleScript(for: term, shellCommand: cmd, restoreFocusTo: "com.apple.finder"))
-            try? FileManager.default.removeItem(at: file)
-        }
+        printPromptDump(
+            header: "ReviewConfig: \(label) · depth=\(ReviewCatalog.depth(id: cfg.depth).title)",
+            prompt: cfg.buildPrompt(), withBackgroundScript: true)
     }
 
     /// Same as `printPrompt`, but for the Resolve-conflicts wizard. `mode` selects
@@ -307,17 +328,7 @@ enum Dump {
             me: "latekvo",
             specificPR: isSingle ? "337" : "")
         let label = isSingle ? "single PR #337" : (isUser ? "someone else's PRs" : "my PRs")
-        print("== ConflictConfig: \(label) ==\n")
-        print("----- PROMPT -----")
-        print(cfg.buildPrompt())
-        if let file = try? AgentSpawner.writePrompt(cfg.buildPrompt()) {
-            let cmd = AgentSpawner.shellCommand(promptFile: file, donePath: AgentSpawner.doneFilePath())
-            print("\n----- SHELL COMMAND -----")
-            print(cmd)
-            print("\n----- APPLESCRIPT (\(AgentSpawner.resolved(.iterm).title)) -----")
-            print(AgentSpawner.appleScript(for: AgentSpawner.resolved(.iterm), shellCommand: cmd))
-            try? FileManager.default.removeItem(at: file)
-        }
+        printPromptDump(header: "ConflictConfig: \(label)", prompt: cfg.buildPrompt())
     }
 
     /// Same as `printPrompt`, but for the Full-E2E-test action. `mode` selects the
@@ -328,17 +339,8 @@ enum Dump {
             fixIssues: mode.contains("issues") || mode.contains("all"),
             openPRs: mode.contains("prs") || mode.contains("all"))
         let flags = "fixIssues=\(cfg.fixIssues) openPRs=\(cfg.openPRs)"
-        print("== AuditConfig: full-repo E2E test · \(flags) ==\n")
-        print("----- PROMPT -----")
-        print(cfg.buildPrompt())
-        if let file = try? AgentSpawner.writePrompt(cfg.buildPrompt()) {
-            let cmd = AgentSpawner.shellCommand(promptFile: file, donePath: AgentSpawner.doneFilePath())
-            print("\n----- SHELL COMMAND -----")
-            print(cmd)
-            print("\n----- APPLESCRIPT (\(AgentSpawner.resolved(.iterm).title)) -----")
-            print(AgentSpawner.appleScript(for: AgentSpawner.resolved(.iterm), shellCommand: cmd))
-            try? FileManager.default.removeItem(at: file)
-        }
+        printPromptDump(header: "AuditConfig: full-repo E2E test · \(flags)",
+                        prompt: cfg.buildPrompt())
     }
 
     /// API-error watcher dry-run: read every terminal session's last visible lines,

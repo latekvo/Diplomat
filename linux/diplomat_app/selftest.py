@@ -4,7 +4,8 @@ Mirrors the macOS ``Dump`` enum so the two front-ends can be cross-checked:
 
     DIPLOMAT_DUMP=1           full fetch+filter pipeline, prints all 6 tools
     DIPLOMAT_LOOKUP=337       reverse-lookup one number through the real Store
-    DIPLOMAT_PRINT_PROMPT=... assemble + print a Review-PRs prompt (mine|user|single)
+    DIPLOMAT_PRINT_PROMPT=... assemble + print a wizard's prompt: mine|user|single for
+                              Review, conflicts[-user|-single], audit[-issues|-prs|-all]
 
 None of these need a display; they only touch QtCore (QSettings) + gh.
 """
@@ -90,10 +91,29 @@ def run_lookup(n: int) -> int:
     return 0
 
 
+def _print_prompt_dump(header: str, prompt: str) -> int:
+    """The shared body of the prompt dumps: the assembled prompt, then the shell
+    command that would run it.
+
+    Twin of ``Dump.printPromptDump`` in DiplomatApp.swift, which additionally prints
+    the AppleScript - macOS spawns a terminal that way, Linux runs the shell command
+    directly. ``prompt`` is passed in already built because building it shells out to
+    the diplomat-core CLI, so it is worth doing exactly once.
+    """
+    print(f"== {header} ==\n")
+    print("----- PROMPT -----")
+    print(prompt)
+    print("\n----- SHELL COMMAND -----")
+    print(review.shell_command(review.write_prompt(prompt)))
+    return 0
+
+
 def run_print_prompt(mode: str) -> int:
     m = mode.lower()
     if m.startswith("conflict"):
         return _run_conflict_prompt(m)
+    if m.startswith("audit"):
+        return _run_audit_prompt(m)
     is_user = m.startswith("user")
     is_single = m.startswith("single")
     target = (
@@ -111,14 +131,8 @@ def run_print_prompt(mode: str) -> int:
         final_pass="final" in m,
     )
     label = "single PR #337" if is_single else ("someone else's PRs" if is_user else "my PRs")
-
-    print(f"== ReviewConfig: {label} · depth={review.depth_by_id(cfg.depth)['title']} ==\n")
-    print("----- PROMPT -----")
-    print(cfg.build_prompt())
-    print("\n----- SHELL COMMAND -----")
-    file = review.write_prompt(cfg.build_prompt())
-    print(review.shell_command(file))
-    return 0
+    depth = review.depth_by_id(cfg.depth)["title"]
+    return _print_prompt_dump(f"ReviewConfig: {label} · depth={depth}", cfg.build_prompt())
 
 
 def _run_conflict_prompt(m: str) -> int:
@@ -135,11 +149,16 @@ def _run_conflict_prompt(m: str) -> int:
         specific_pr="337" if is_single else "",
     )
     label = "single PR #337" if is_single else ("someone else's PRs" if is_user else "my PRs")
+    return _print_prompt_dump(f"ConflictConfig: {label}", cfg.build_prompt())
 
-    print(f"== ConflictConfig: {label} ==\n")
-    print("----- PROMPT -----")
-    print(cfg.build_prompt())
-    print("\n----- SHELL COMMAND -----")
-    file = review.write_prompt(cfg.build_prompt())
-    print(review.shell_command(file))
-    return 0
+
+def _run_audit_prompt(m: str) -> int:
+    """Full-E2E-test variant: audit / audit-issues / audit-prs / audit-all."""
+    from .audit import AuditConfig
+
+    cfg = AuditConfig(
+        fix_issues="issues" in m or "all" in m,
+        open_prs="prs" in m or "all" in m,
+    )
+    flags = f"fixIssues={cfg.fix_issues} openPRs={cfg.open_prs}"
+    return _print_prompt_dump(f"AuditConfig: full-repo E2E test · {flags}", cfg.build_prompt())
