@@ -57,8 +57,8 @@ cd szpontnet/conformance
 # The tester's own codec + placement oracle, no node needed:
 python -m szpont --selftest
 
-# A candidate node, as an opaque subprocess:
-python -m szpont --node-cmd "python szpontnet/conformance/adapters/reference.py"
+# A candidate node, as an opaque subprocess (the command runs from HERE):
+python -m szpont --node-cmd "python adapters/reference.py"
 ```
 
 The tester speaks only the wire protocol from `docs/`; nothing in it reads the

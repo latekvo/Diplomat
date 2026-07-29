@@ -135,6 +135,13 @@ jobs:
       - name: Conformance tester self-test
         working-directory: szpontnet/conformance
         run: python -m szpont --selftest
+      # The reference node as an opaque subprocess, over real multicast + TCP on
+      # loopback. Nothing here reads the node's source, so this is the check that
+      # the spec in docs/ is implementable from the spec alone — and the one that
+      # catches a MUST the unit tests are shaped around rather than against.
+      - name: Conformance run against the reference node
+        working-directory: szpontnet/conformance
+        run: python -m szpont --node-cmd "python adapters/reference.py" --no-color
 
   # The device-allocator MCP server + daemon. Self-contained Node tests that drive
   # the allocator over its unix socket against a synthetic device pool (DA_FAKE_DEVICES),

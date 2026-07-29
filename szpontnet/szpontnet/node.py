@@ -140,6 +140,21 @@ _TOR_REDIAL_TICK_SECS = 5.0
 _TOR_DIAL_TIMEOUT_SECS = 30.0
 
 
+class _LinkRefused(ValueError):
+    """This peer must not keep the link — it failed a *fence*, not a field check.
+
+    ``_run_link`` swallows anything a message handler raises, because a malformed or
+    hostile message must never drop a healthy link (szpontnet/docs/09). A fence
+    refusal is the exact opposite: dropping the link IS the outcome, so the pump
+    re-raises this type ahead of that guard. Anything raised as a plain exception
+    from a handler gets logged and the link kept, however emphatically the comment
+    beside it says otherwise.
+
+    A ``ValueError`` so ``_run_link``'s own outer clause still ends the read loop and
+    runs its ``finally`` (close the writer, drop the peer) without a traceback.
+    """
+
+
 def _auth_challenge(nonce: str) -> bytes:
     """The exact bytes signed/verified for a proof-of-possession `auth`:
     the domain tag followed by the UTF-8 challenge nonce."""
@@ -1331,8 +1346,10 @@ class MeshNode:
                     authenticated = True  # _on_message re-checks the secret
                 try:
                     got = self._on_message(msg, host, writer)
-                except (ConnectionError, OSError):
-                    raise  # a real socket failure in a handler → tear the link down
+                except (_LinkRefused, ConnectionError, OSError):
+                    # A fence refusal, or a real socket failure in a handler — both
+                    # mean this link ends, so they go past the guard below.
+                    raise
                 except Exception as exc:  # noqa: BLE001
                     # A malformed/hostile message MUST NOT wedge or drop the link
                     # (conformance rule 10 / szpontnet/docs/09). Handlers normalize
@@ -1370,11 +1387,14 @@ class MeshNode:
             bound.last_seen = time.monotonic()
         if t == "hello" and not hmac.compare_digest(
                 _utf8(str(msg.get("secret", ""))), _utf8(config.secret())):
-            # A dialed "peer" that can't present the join token isn't one of
-            # ours — tear the link down (ValueError ends _run_link's pump). Constant-time
-            # (and surrogate-safe) like the accept-path fence: the sole secret check on the
-            # OUTBOUND-dial path, and now meaningful over Tor where the token isn't on-wire.
-            raise ValueError("mesh secret mismatch")
+            # A dialed "peer" that can't present the join token isn't one of ours —
+            # tear the link down. :class:`_LinkRefused`, not a bare ValueError: the pump
+            # keeps the link on anything else a handler raises, so a plain one would be
+            # logged as a dropped message and this fence would admit exactly whom it
+            # exists to exclude. Constant-time (and surrogate-safe) like the accept-path
+            # fence: the sole secret check on the OUTBOUND-dial path, and meaningful over
+            # Tor where the token isn't on-wire.
+            raise _LinkRefused("mesh secret mismatch")
         if t in ("hello", "node"):
             raw = msg.get("node")
             if not isinstance(raw, dict):

@@ -3077,6 +3077,52 @@ def test_stats_load_tolerates_non_dict_stats_json(tmp_path, monkeypatch):
         assert st.plan                            # fell back to _default
 
 
+def test_a_wrong_secret_hello_ends_the_link_it_arrived_on(tmp_path, monkeypatch):
+    """The join fence on the OUTBOUND-dial path (conformance E1,
+    03-transport#the-join-fence). The accept path drops a wrong-secret opener before
+    any link exists; a link WE dialled has already been established when the peer's
+    hello arrives, so the only way to refuse it is to end the pump.
+
+    The fence raises from inside a message handler, and ``_run_link`` deliberately
+    swallows what handlers raise so a malformed message can never drop a healthy
+    link. So the refusal has to be a type that guard re-raises: with a plain
+    exception the fence logs "dropped a message" and the link survives — the peer it
+    exists to exclude stays connected and its NEXT message is processed normally.
+    """
+    import asyncio
+    import json
+
+    monkeypatch.setenv("DIPLOMAT_MESH_SECRET", "correct-horse")
+    node = _fresh_node(tmp_path, monkeypatch)
+    assert config.secret() == "correct-horse", "the fence is only live with a secret set"
+
+    intruder = _peer_info("intruder", 1).to_dict()
+    lines = [
+        json.dumps({"t": "hello", "secret": "wrong", "node": intruder}).encode() + b"\n",
+        # Only ever read if the fence failed to end the link — and it presents the
+        # RIGHT secret, so if it is read the intruder binds as a peer.
+        json.dumps({"t": "hello", "secret": "correct-horse",
+                    "node": intruder}).encode() + b"\n",
+    ]
+
+    class _Reader:
+        def __init__(self): self.reads = 0
+        async def readline(self):
+            self.reads += 1
+            return lines.pop(0) if lines else b""
+
+    async def go():
+        w = _FakeWriter()
+        reader = _Reader()
+        await asyncio.wait_for(
+            node._run_link(reader, w, "9.9.9.9", authenticated=True), timeout=2.0)
+        assert reader.reads == 1, "the pump kept reading after a failed join fence"
+        assert node._peer_by_writer(w) is None
+        assert "intruder" not in node.peers
+
+    asyncio.run(go())
+
+
 if __name__ == "__main__":  # dependency-free smoke run
     import inspect
     import tempfile
