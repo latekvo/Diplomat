@@ -8,7 +8,6 @@ from one machine that way).
 
 from __future__ import annotations
 
-import json
 import os
 import platform as _platform
 import socket
@@ -17,7 +16,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from . import config, hardware
-from .atomicjson import write_atomic
+from .atomicjson import read_object, write_atomic
 
 # The manual token-override values. "auto" (the default) means "derive my ok/low/out
 # state from real local usage" (see usage.py); the other three pin it, as a
@@ -98,16 +97,9 @@ def load() -> LocalNode:
     ``strengthAuto`` flag is treated as a pin (back-compat: that's how a
     hand-written node.json expresses a chosen tier)."""
     _, _, default_tier = config.tier_bounds()
-    raw: dict = {}
-    try:
-        raw = json.loads(node_path().read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        pass
-    # A valid-JSON but non-object node.json (a bare scalar/array from a hand-edit or
-    # corruption) would make `in raw` / `raw.get` below raise Type/AttributeError and
-    # abort startup; fall back to defaults, exactly like trust/banned/peercache load.
-    if not isinstance(raw, dict):
-        raw = {}
+    # A missing / corrupt / non-object node.json falls back to defaults rather than
+    # aborting startup: `in raw` / `raw.get` below would raise on a bare scalar.
+    raw = read_object(node_path()) or {}
 
     # Default: auto unless the file explicitly pins a tier (older files) or says so.
     if "strengthAuto" in raw:

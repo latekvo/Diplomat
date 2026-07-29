@@ -19,12 +19,11 @@ malformed entry just falls back to LAN discovery or a manual paste.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 
 from . import identity
-from .atomicjson import write_atomic
+from .atomicjson import read_object, write_atomic
 
 
 def path() -> Path:
@@ -43,11 +42,8 @@ def load() -> dict[str, OnionEntry]:
     """The persisted cache: node id → :class:`OnionEntry`. Malformed entries (or a
     malformed/missing file) are dropped silently — the cache is an accelerator,
     never a correctness dependency (mirrors :mod:`peercache`)."""
-    try:
-        raw = json.loads(path().read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    if not isinstance(raw, dict):
+    raw = read_object(path())
+    if raw is None:
         return {}
     out: dict[str, OnionEntry] = {}
     for peer_id, entry in raw.items():

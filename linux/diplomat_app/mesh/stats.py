@@ -31,13 +31,12 @@ State persists to ``~/.diplomat/mesh/stats.json`` (machine-local; only the deriv
 
 from __future__ import annotations
 
-import json
 import math
 import time
 from dataclasses import dataclass, replace
 
 from . import config, identity
-from .atomicjson import write_atomic
+from .atomicjson import read_object, write_atomic
 from .usage import QuotaWindow
 
 _DAY_SECS = 86_400.0
@@ -169,15 +168,8 @@ def _default(now: float) -> NodeStats:
 def load(now: float | None = None) -> NodeStats:
     """Load (or initialise) this node's accounting, decayed to ``now``."""
     now = time.time() if now is None else now
-    raw: dict = {}
-    try:
-        raw = json.loads(stats_path().read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        pass
-    # A truthy valid-JSON non-object (a bare scalar/array/bool) makes raw.get below
-    # raise AttributeError — which the coercion except tuple doesn't catch — so guard
-    # the type here (empty/falsy already falls through to _default).
-    if not isinstance(raw, dict) or not raw:
+    raw = read_object(stats_path())
+    if not raw:  # absent, corrupt, not an object, or an empty one
         return _default(now)
     try:
         st = NodeStats(

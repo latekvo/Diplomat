@@ -17,14 +17,13 @@ spawn. ``DIPLOMAT_CONFIG`` relocates the file (tests, self-checks) exactly as
 
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 
 # The mesh's shared atomic writer rather than a seventh copy of tmp-file+rename
 # (see the dedup that introduced it). stdlib-only, so the node keeps its Qt-free
 # import graph.
-from .mesh.atomicjson import write_atomic
+from .mesh.atomicjson import read_object, write_atomic
 
 # Keys. Kept in sync with Swift's `AppConfig` (Sources/Diplomat/AppConfig.swift).
 REPO_ROOT = "repoRoot"
@@ -43,11 +42,7 @@ def path() -> Path:
 def read() -> dict:
     """The whole file, or ``{}`` when it's absent, unreadable or not a JSON object —
     a truncated or hand-edited file must degrade to defaults, never break a spawn."""
-    try:
-        data = json.loads(path().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    return data if isinstance(data, dict) else {}
+    return read_object(path()) or {}
 
 
 def get(key: str, default: str = "") -> str:

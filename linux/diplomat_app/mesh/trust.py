@@ -24,10 +24,9 @@ node keeps the set + level in memory and edits them through control commands so
 
 from __future__ import annotations
 
-import json
 
 from . import identity
-from .atomicjson import write_atomic
+from .atomicjson import read_object, write_atomic
 
 
 def trusted_path():
@@ -36,11 +35,7 @@ def trusted_path():
 
 def _read() -> dict:
     """The parsed store dict, or ``{}`` for a missing/corrupt file."""
-    try:
-        raw = json.loads(trusted_path().read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return raw if isinstance(raw, dict) else {}
+    return read_object(trusted_path()) or {}
 
 
 def load() -> dict[str, str]:

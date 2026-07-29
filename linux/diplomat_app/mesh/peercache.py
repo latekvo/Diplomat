@@ -18,11 +18,10 @@ whoever answers exactly as it does for a beacon-triggered dial.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from . import identity
-from .atomicjson import write_atomic
+from .atomicjson import read_object, write_atomic
 
 
 def path() -> Path:
@@ -33,11 +32,8 @@ def load() -> dict[str, tuple[str, int]]:
     """The persisted cache: id → (addr, tcpPort). Malformed entries (or a
     malformed/missing file) are dropped silently — the cache is an accelerator,
     never a correctness dependency."""
-    try:
-        raw = json.loads(path().read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    if not isinstance(raw, dict):
+    raw = read_object(path())
+    if raw is None:
         return {}
     out: dict[str, tuple[str, int]] = {}
     for peer_id, entry in raw.items():

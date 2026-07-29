@@ -23,13 +23,12 @@ Shape::
 
 from __future__ import annotations
 
-import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
 
 from . import identity
-from .atomicjson import write_atomic
+from .atomicjson import read_object, write_atomic
 from .protocol import PROTOCOL_VERSION
 
 
@@ -59,11 +58,7 @@ def read_state() -> dict | None:
     corrupt/hostile (unreadable, non-JSON, or valid JSON that is NOT an object).
     Every caller treats None as "no live node", so a bad file degrades instead of
     crashing them on ``state.get(...)`` / ``state.items()`` (mirrors appconfig.read)."""
-    try:
-        data = json.loads(state_path().read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    return data if isinstance(data, dict) else None
+    return read_object(state_path())
 
 
 def _pid_alive(pid: int) -> bool:
