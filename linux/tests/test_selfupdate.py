@@ -257,7 +257,6 @@ def test_relaunch_does_not_inherit_headless_markers(tmp_path, monkeypatch):
     headless updater (find itself up-to-date, exit) instead of the GUI — so newest-wins
     never swaps the applet onto the new code. Every headless-mode marker must be stripped
     from the child env, while the display env is still handed through."""
-    import subprocess
 
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))   # isolate the relaunch log write
     monkeypatch.setenv("DIPLOMAT_SELF_UPDATE", "1")

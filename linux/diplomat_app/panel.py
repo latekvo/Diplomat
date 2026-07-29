@@ -26,7 +26,7 @@ from PySide6.QtCore import QUrl
 
 import time
 
-from . import activity, bans, core, glyphs
+from . import activity, core, glyphs
 from .models import Fmt
 from .settingsview import SettingsView
 from .store import Store, tool_by_id

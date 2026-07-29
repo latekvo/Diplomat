@@ -500,7 +500,6 @@ def test_device_key_proof_of_possession(tmp_path, monkeypatch):
     assert not crypto.verify(k.public_b64, b"other", sig)   # wrong challenge fails
     # The whole point: an attacker who copies the advertised pubkey but signs the
     # challenge with a DIFFERENT key cannot be verified as that identity.
-    other = crypto.load_or_create.__globals__  # noqa: F841 - keep import side effects
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
     forged = crypto.DeviceKey(Ed25519PrivateKey.generate()).sign(nonce)
     assert not crypto.verify(k.public_b64, nonce, forged)   # spoof rejected

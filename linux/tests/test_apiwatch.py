@@ -256,6 +256,9 @@ def test_scan_prunes_recovered_pane(store, monkeypatch):
     store._apiwatch_scan_once()  # pane no longer erroring → pruned
     assert "%0" not in store._apiwatch_backoff
     assert "%0" not in store._apiwatch_seen_tail
+    # Exactly one nudge, on the second scan: the recovered pane must not draw
+    # another. Without this the test passes even if the watcher never nudges.
+    assert nudged == ["%0"]
 
 
 def test_scan_noop_when_disabled(store, monkeypatch):

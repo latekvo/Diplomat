@@ -387,7 +387,6 @@ def test_outbound_dial_fence_rejects_naked_dispatch(fleet, tmp_path):
     a hello/secret. The victim must run nothing and never link the attacker.
     (Before the fix, `_run_link` processed that dispatch and spawned an agent.)"""
     import socket
-    import struct
     import threading
 
     proto = _proto_env()
