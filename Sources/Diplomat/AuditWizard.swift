@@ -42,10 +42,7 @@ struct AuditWizardView: View {
     }
 
     var body: some View {
-        Group {
-            if scrolls { ScrollView { content } } else { content }
-        }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
+        content.wizardScroll(scrolls)
     }
 
     private var content: some View {
@@ -55,7 +52,7 @@ struct AuditWizardView: View {
             barRow
             toggles
             spawnButton
-            if let status { statusLine(status) }
+            if let status { WizardStatusLine(status) }
         }
         .padding(.trailing, 2)
         .animation(.easeInOut(duration: 0.22), value: fixIssues)
@@ -63,18 +60,11 @@ struct AuditWizardView: View {
     }
 
     private var titleRow: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "ladybug.fill").foregroundStyle(tint)
-            Text("Full E2E test").font(.subheadline.bold())
-            Spacer()
-        }
+        WizardTitle(systemImage: "ladybug.fill", title: "Full E2E test", tint: tint)
     }
 
     private var blurbRow: some View {
-        Text("Dispatches a massive swarm to end-to-end test the whole repo — every module, flow, build and test. By default it only finds and reports defects; nothing is changed.")
-            .font(.system(size: 10))
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
+        WizardBlurb("Dispatches a massive swarm to end-to-end test the whole repo — every module, flow, build and test. By default it only finds and reports defects; nothing is changed.")
     }
 
     /// Always-on reminder of the non-negotiable bar — every finding hard-reproduced
@@ -95,52 +85,25 @@ struct AuditWizardView: View {
     /// the swarm change code / GitHub state, well beyond the default find-only run.
     private var toggles: some View {
         VStack(alignment: .leading, spacing: 8) {
-            escalationToggle(
+            EscalationToggle(
                 isOn: $openPRs,
-                on: openPRs,
-                icon: "arrow.up.forward.square.fill",
+                systemImage: "arrow.up.forward.square.fill",
                 title: "Open PRs for every finding",
                 help: "Deliver each confirmed finding / fix as its own focused PR. Off: read-only audit that only reports findings.")
-            escalationToggle(
+            EscalationToggle(
                 isOn: $fixIssues,
-                on: fixIssues,
-                icon: "ant.fill",
+                systemImage: "ant.fill",
                 title: "Also fix open bug issues",
                 help: "Reproduce + fix the repo's open BUG issues too. Feature requests are always skipped.")
         }
     }
 
-    private func escalationToggle(isOn: Binding<Bool>, on: Bool, icon: String,
-                                  title: String, help: String) -> some View {
-        Toggle(isOn: isOn) {
-            HStack(spacing: 6) {
-                Image(systemName: icon).foregroundStyle(.orange)
-                Text(title).font(.caption.bold())
-                Spacer(minLength: 0)
-            }
-        }
-        .toggleStyle(.checkbox)
-        .padding(7)
-        .background(RoundedRectangle(cornerRadius: 7).fill(Color.orange.opacity(on ? 0.28 : 0.14)))
-        .overlay(RoundedRectangle(cornerRadius: 7).stroke(.orange.opacity(on ? 0.9 : 0.5), lineWidth: on ? 1.4 : 1))
-        .help(help)
-    }
-
     private var spawnButton: some View {
-        VStack(spacing: 6) {
-            MeshSpawnRow(duty: "audit", useMesh: $useMesh)
-            SpawnAgentButton(isValid: config.isValid && !meshDispatching,
-                             tint: tint,
-                             terminalTitle: AgentSpawner.resolved(store.terminal).title,
-                             action: spawn)
-        }
-    }
-
-    private func statusLine(_ msg: String) -> some View {
-        Text(msg)
-            .font(.system(size: 10, design: .monospaced))
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        WizardSpawnControls(duty: "audit", useMesh: $useMesh,
+                            isValid: config.isValid && !meshDispatching,
+                            tint: tint,
+                            terminalTitle: AgentSpawner.resolved(store.terminal).title,
+                            action: spawn)
     }
 
     /// A short label for the ongoing-processes list, e.g. "E2E · repo · +PRs".

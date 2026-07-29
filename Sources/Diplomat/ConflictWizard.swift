@@ -53,10 +53,7 @@ struct ConflictWizardView: View {
     }
 
     var body: some View {
-        Group {
-            if scrolls { ScrollView { content } } else { content }
-        }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
+        content.wizardScroll(scrolls)
     }
 
     private var content: some View {
@@ -66,7 +63,7 @@ struct ConflictWizardView: View {
             contextRow
             blurbRow
             spawnButton
-            if let status { statusLine(status) }
+            if let status { WizardStatusLine(status) }
         }
         .padding(.trailing, 2)
         // Animate the contextual input row reflowing as the target changes.
@@ -74,28 +71,11 @@ struct ConflictWizardView: View {
     }
 
     private var titleRow: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "arrow.triangle.merge").foregroundStyle(tint)
-            Text("Resolve conflicts").font(.subheadline.bold())
-            Spacer()
-        }
+        WizardTitle(systemImage: "arrow.triangle.merge", title: "Resolve conflicts", tint: tint)
     }
 
     private var targetRow: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Picker("", selection: $target) {
-                ForEach(ConflictConfig.Target.allCases) { t in
-                    Text(t.title).tag(t)
-                }
-            }
-            .labelsHidden()
-            .pickerStyle(.segmented)
-
-            if target == .mine, !store.effectiveMe.isEmpty {
-                Text("PRs authored by @\(store.effectiveMe)")
-                    .font(.caption2).foregroundStyle(.secondary)
-            }
-        }
+        WizardTargetPicker(target: $target, me: store.effectiveMe)
     }
 
     /// The someone-else's handle field or the single-PR number field — only the
@@ -104,11 +84,11 @@ struct ConflictWizardView: View {
     private var contextRow: some View {
         switch target {
         case .someone:
-            inputField(icon: "at", placeholder: "github username", text: $username)
+            WizardTextField(systemImage: "at", placeholder: "github username", text: $username)
                 .transition(rowTransition)
         case .specific:
             VStack(alignment: .leading, spacing: 3) {
-                inputField(icon: "number", placeholder: "PR # or URL", text: $specificPR)
+                WizardTextField(systemImage: "number", placeholder: "PR # or URL", text: $specificPR)
                     .help("Update just this one PR — paste its number or GitHub URL.")
                 if let warning = prWarning {
                     Text(warning)
@@ -129,39 +109,16 @@ struct ConflictWizardView: View {
         return "That PR isn't in \(owner)/\(repo)."
     }
 
-    private func inputField(icon: String, placeholder: String, text: Binding<String>) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: icon).font(.caption2).foregroundStyle(.secondary)
-            TextField(placeholder, text: text)
-                .textFieldStyle(.plain)
-                .font(.callout)
-        }
-        .padding(6)
-        .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.1)))
-    }
-
     private var blurbRow: some View {
-        Text("Merges the latest main into each PR; where that conflicts, resolves it and pushes the merge. Clean merges are left untouched.")
-            .font(.system(size: 10))
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
+        WizardBlurb("Merges the latest main into each PR; where that conflicts, resolves it and pushes the merge. Clean merges are left untouched.")
     }
 
     private var spawnButton: some View {
-        VStack(spacing: 6) {
-            MeshSpawnRow(duty: "conflicts", useMesh: $useMesh)
-            SpawnAgentButton(isValid: config.isValid && !meshDispatching,
-                             tint: tint,
-                             terminalTitle: AgentSpawner.resolved(store.terminal).title,
-                             action: spawn)
-        }
-    }
-
-    private func statusLine(_ msg: String) -> some View {
-        Text(msg)
-            .font(.system(size: 10, design: .monospaced))
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        WizardSpawnControls(duty: "conflicts", useMesh: $useMesh,
+                            isValid: config.isValid && !meshDispatching,
+                            tint: tint,
+                            terminalTitle: AgentSpawner.resolved(store.terminal).title,
+                            action: spawn)
     }
 
     /// A short label for the ongoing-processes list, e.g. "Resolve · #337".

@@ -1,8 +1,9 @@
 import SwiftUI
+import DiplomatCore
 
 // Small shared UI atoms. Each of these existed as 3-8 hand-copied blocks across
-// ContentView/SettingsView that had already started drifting (font sizes, opacities,
-// capsule colors); one definition freezes the drift.
+// ContentView/SettingsView and the three spawn wizards that had already started
+// drifting (font sizes, opacities, capsule colors); one definition freezes the drift.
 
 /// The recurring rounded icon tile: a bold white SF Symbol on a tinted rounded
 /// rectangle. `size` 22 is the row variant (font 11 / radius 5); 26 is the grid-card
@@ -142,5 +143,170 @@ struct GridCard<Trailing: View>: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Spawn-wizard chrome
+
+// The Review / Resolve-conflicts / Full-E2E wizards are three renderers over one
+// layout: title, contextual rows, a mesh row + SPAWN button, a status line. Each
+// of the pieces below was hand-copied into two or three of them, and the copies
+// had begun to disagree (the escalation toggle's fill alpha differed between the
+// audit's two toggles and the review's final-pass row). Each is a concrete little
+// View, deliberately not a generic scaffold: SwiftUI type-checks a ViewBuilder
+// body as one expression, and the app target only compiles in macOS CI, so a
+// clever wrapper that builds locally can still time out there.
+
+/// A wizard's heading: the tool's glyph in its tint, then the name.
+struct WizardTitle: View {
+    let systemImage: String
+    let title: String
+    let tint: Color
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: systemImage).foregroundStyle(tint)
+            Text(title).font(.subheadline.bold())
+            Spacer()
+        }
+    }
+}
+
+/// The grey explainer paragraph under a wizard's heading or a toggle.
+struct WizardBlurb: View {
+    let text: String
+
+    init(_ text: String) { self.text = text }
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 10))
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+/// The monospaced line under SPAWN that reports what the click did.
+struct WizardStatusLine: View {
+    let message: String
+
+    init(_ message: String) { self.message = message }
+
+    var body: some View {
+        Text(message)
+            .font(.system(size: 10, design: .monospaced))
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// One boxed text field with a leading glyph — the "github username" and
+/// "PR # or URL" inputs, which share a slot and never show together.
+struct WizardTextField: View {
+    let systemImage: String
+    let placeholder: String
+    @Binding var text: String
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: systemImage).font(.caption2).foregroundStyle(.secondary)
+            TextField(placeholder, text: $text)
+                .textFieldStyle(.plain)
+                .font(.callout)
+        }
+        .padding(6)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.1)))
+    }
+}
+
+/// The whose-PRs segmented picker, plus the @handle caption shown for "mine".
+/// Shared by the Review and Resolve-conflicts wizards, which sweep the same axis.
+struct WizardTargetPicker: View {
+    @Binding var target: PRTarget
+    /// The authenticated viewer login; the caption is omitted while it is empty.
+    let me: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Picker("", selection: $target) {
+                ForEach(PRTarget.allCases) { t in
+                    Text(t.title).tag(t)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+
+            if target == .mine, !me.isEmpty {
+                Text("PRs authored by @\(me)")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+/// A scope-escalating checkbox: highlighted because ticking it lets the swarm
+/// change code or GitHub state, well beyond the default read-only run. The box
+/// deepens and its border thickens while on.
+///
+/// `fill` is the only per-wizard difference — the review's final pass reads yellow,
+/// the audit's escalations orange. The alphas are shared: they used to differ by
+/// 0.02 between the two copies, which was drift, not design.
+struct EscalationToggle: View {
+    @Binding var isOn: Bool
+    let systemImage: String
+    let title: String
+    let help: String
+    var fill: Color = .orange
+
+    var body: some View {
+        Toggle(isOn: $isOn) {
+            HStack(spacing: 6) {
+                Image(systemName: systemImage).foregroundStyle(.orange)
+                Text(title).font(.caption.bold())
+                Spacer(minLength: 0)
+            }
+        }
+        .toggleStyle(.checkbox)
+        .padding(7)
+        .background(RoundedRectangle(cornerRadius: 7).fill(fill.opacity(isOn ? 0.28 : 0.14)))
+        .overlay(RoundedRectangle(cornerRadius: 7).stroke(.orange.opacity(isOn ? 0.9 : 0.5),
+                                                          lineWidth: isOn ? 1.4 : 1))
+        .help(help)
+    }
+}
+
+/// The dispatch controls every wizard ends with: the mesh-routing row (which
+/// hides itself unless a local node is live) above the SPAWN button.
+struct WizardSpawnControls: View {
+    let duty: String
+    @Binding var useMesh: Bool
+    /// SPAWN is live only for a valid config, and never while a mesh dispatch is
+    /// already in flight — a second click would double-dispatch.
+    let isValid: Bool
+    let tint: Color
+    let terminalTitle: String
+    let action: () -> Void
+
+    var body: some View {
+        VStack(spacing: 6) {
+            MeshSpawnRow(duty: duty, useMesh: $useMesh)
+            SpawnAgentButton(isValid: isValid, tint: tint,
+                             terminalTitle: terminalTitle, action: action)
+        }
+    }
+}
+
+extension View {
+    /// Wrap a wizard body in the results pane's ScrollView.
+    ///
+    /// `scrolls: false` is the headless renderer's escape hatch: `ImageRenderer`
+    /// cannot render ScrollView content, so a snapshot of a scrolling wizard comes
+    /// out blank.
+    @ViewBuilder
+    func wizardScroll(_ scrolls: Bool) -> some View {
+        Group {
+            if scrolls { ScrollView { self } } else { self }
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 }

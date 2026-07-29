@@ -57,12 +57,8 @@ enum AgentSpawner {
     /// fire-and-forget so a pending prompt never blocks startup.
     static func triggerAutomationPrompt(preferred: SpawnTerminal) {
         let term = resolved(preferred)
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        proc.arguments = ["-e", "tell application \"\(term.appName)\" to get version"]
-        proc.standardOutput = Pipe()
-        proc.standardError = Pipe()
-        try? proc.run()   // don't wait — the prompt itself is the point
+        // Don't wait — the prompt itself is the point, and it is modal.
+        OSAScript.fireAndForget("tell application \"\(term.appName)\" to get version")
     }
 
     enum SpawnError: LocalizedError {
@@ -269,23 +265,13 @@ enum AgentSpawner {
     /// Run an AppleScript, returning its stdout. Throws on a non-zero exit.
     @discardableResult
     private static func runOsascriptCapturing(_ script: String) throws -> String {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        proc.arguments = ["-e", script]
-        let outPipe = Pipe()
-        let errPipe = Pipe()
-        proc.standardOutput = outPipe
-        proc.standardError = errPipe
-        do { try proc.run() }
-        catch { throw SpawnError.osascript(code: -1, stderr: "\(error)") }
-        let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
-        proc.waitUntilExit()
-        if proc.terminationStatus != 0 {
-            let err = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(),
-                             encoding: .utf8) ?? ""
-            throw SpawnError.osascript(code: proc.terminationStatus, stderr: err)
+        guard let outcome = OSAScript.run(script) else {
+            throw SpawnError.osascript(code: -1, stderr: "could not launch osascript")
         }
-        return String(data: outData, encoding: .utf8) ?? ""
+        guard outcome.succeeded else {
+            throw SpawnError.osascript(code: outcome.status, stderr: outcome.stderr)
+        }
+        return outcome.stdout
     }
 }
 
@@ -418,10 +404,7 @@ struct ReviewWizardView: View {
     }
 
     var body: some View {
-        Group {
-            if scrolls { ScrollView { content } } else { content }
-        }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
+        content.wizardScroll(scrolls)
     }
 
     private var content: some View {
@@ -439,7 +422,7 @@ struct ReviewWizardView: View {
             // own work); hidden for the mine disposition.
             if config.canFinalPass { finalPassRow }
             spawnButton
-            if let status { statusLine(status) }
+            if let status { WizardStatusLine(status) }
         }
         .padding(.trailing, 2)
         // Animate contextual rows reflowing as the target/scope/author change.
@@ -523,28 +506,11 @@ struct ReviewWizardView: View {
     }
 
     private var titleRow: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "checklist").foregroundStyle(tint)
-            Text("Review PRs").font(.subheadline.bold())
-            Spacer()
-        }
+        WizardTitle(systemImage: "checklist", title: "Review PRs", tint: tint)
     }
 
     private var targetRow: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Picker("", selection: $target) {
-                ForEach(PRTarget.allCases) { t in
-                    Text(t.title).tag(t)
-                }
-            }
-            .labelsHidden()
-            .pickerStyle(.segmented)
-
-            if target == .mine, !store.effectiveMe.isEmpty {
-                Text("PRs authored by @\(store.effectiveMe)")
-                    .font(.caption2).foregroundStyle(.secondary)
-            }
-        }
+        WizardTargetPicker(target: $target, me: store.effectiveMe)
     }
 
     /// One field, one slot — the github-username box and the single-PR box share a
@@ -553,11 +519,11 @@ struct ReviewWizardView: View {
     private var contextRow: some View {
         switch contextRole {
         case .username:
-            contextField(icon: "at", placeholder: "github username", text: $username)
+            WizardTextField(systemImage: "at", placeholder: "github username", text: $username)
                 .transition(rowTransition)
         case .pr:
             VStack(alignment: .leading, spacing: 3) {
-                contextField(icon: "number", placeholder: "PR # or URL", text: $specificPR)
+                WizardTextField(systemImage: "number", placeholder: "PR # or URL", text: $specificPR)
                     .help("Review just this one PR — paste its number or GitHub URL.")
                 if let warning = prWarning {
                     Text(warning)
@@ -569,17 +535,6 @@ struct ReviewWizardView: View {
         case .none:
             EmptyView()
         }
-    }
-
-    private func contextField(icon: String, placeholder: String, text: Binding<String>) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: icon).font(.caption2).foregroundStyle(.secondary)
-            TextField(placeholder, text: text)
-                .textFieldStyle(.plain)
-                .font(.callout)
-        }
-        .padding(6)
-        .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.1)))
     }
 
     /// A hint under the PR field when a pasted URL points at a different repo.
@@ -649,36 +604,20 @@ struct ReviewWizardView: View {
     /// The escalation toggle — off by default, visually highlighted so it reads as
     /// the special "go all the way" option. Appends a final E2E + verdict block.
     private var finalPassRow: some View {
-        let highlight = Color.yellow
-        return Toggle(isOn: $finalPass) {
-            HStack(spacing: 6) {
-                Image(systemName: "sparkles").foregroundStyle(.orange)
-                Text("Final E2E pass + verdict").font(.caption.bold())
-                Spacer(minLength: 0)
-            }
-        }
-        .toggleStyle(.checkbox)
-        .padding(7)
-        .background(RoundedRectangle(cornerRadius: 7).fill(highlight.opacity(finalPass ? 0.30 : 0.16)))
-        .overlay(RoundedRectangle(cornerRadius: 7).stroke(.orange.opacity(finalPass ? 0.9 : 0.5), lineWidth: finalPass ? 1.4 : 1))
-        .help("One last full-E2E pass with big swarms: approve clean PRs, request changes on real blockers.")
+        EscalationToggle(
+            isOn: $finalPass,
+            systemImage: "sparkles",
+            title: "Final E2E pass + verdict",
+            help: "One last full-E2E pass with big swarms: approve clean PRs, request changes on real blockers.",
+            fill: .yellow)
     }
 
     private var spawnButton: some View {
-        VStack(spacing: 6) {
-            MeshSpawnRow(duty: "review", useMesh: $useMesh)
-            SpawnAgentButton(isValid: config.isValid && !meshDispatching,
-                             tint: tint,
-                             terminalTitle: AgentSpawner.resolved(store.terminal).title,
-                             action: spawn)
-        }
-    }
-
-    private func statusLine(_ msg: String) -> some View {
-        Text(msg)
-            .font(.system(size: 10, design: .monospaced))
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        WizardSpawnControls(duty: "review", useMesh: $useMesh,
+                            isValid: config.isValid && !meshDispatching,
+                            tint: tint,
+                            terminalTitle: AgentSpawner.resolved(store.terminal).title,
+                            action: spawn)
     }
 
     /// A short label for the ongoing-processes list, e.g. "Review · #337 · Deep".
