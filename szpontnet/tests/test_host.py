@@ -119,6 +119,26 @@ def test_reset_puts_the_defaults_back():
     assert isinstance(host.host(), host.Host)
 
 
+def test_the_suites_own_isolation_hands_a_registered_host_back(host_isolation):
+    """This suite runs every test against a bare node, which means taking the host
+    away from whatever registered one — and an application registers its host once,
+    at import, so there is no second chance to put it back.
+
+    Pinned here because the damage is silent and elsewhere: blanking instead of
+    restoring only shows up in a session that runs both suites, as failures in the
+    *other* one, on tests that never mention the host.
+    """
+    impl = _Recording()
+    host.set_host(impl)
+
+    with host_isolation():
+        assert type(host.host()) is host.Host
+        assert config.duty_ids() == ["review", "conflicts", "audit"]
+
+    assert host.host() is impl
+    assert config.duty_ids() == ["render"]
+
+
 # ---- the model overlay ---------------------------------------------------
 
 
