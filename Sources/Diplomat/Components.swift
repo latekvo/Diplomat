@@ -150,10 +150,10 @@ struct GridCard<Trailing: View>: View {
 
 // The Review / Resolve-conflicts / Full-E2E wizards are three renderers over one
 // layout: title, contextual rows, a mesh row + SPAWN button, a status line. Each
-// of the pieces below was hand-copied into two or three of them, and the copies
-// had begun to disagree (the escalation toggle's fill alpha differed between the
-// audit's two toggles and the review's final-pass row). Each is a concrete little
-// View, deliberately not a generic scaffold: SwiftUI type-checks a ViewBuilder
+// piece of that layout lives here once, so two wizards cannot disagree about it -
+// the kind of divergence that reads as a design choice and is not one. Each is a
+// concrete little View, deliberately not a generic scaffold: SwiftUI type-checks a
+// ViewBuilder
 // body as one expression, and the app target only compiles in macOS CI, so a
 // clever wrapper that builds locally can still time out there.
 
@@ -249,8 +249,8 @@ struct WizardTargetPicker: View {
 /// deepens and its border thickens while on.
 ///
 /// `fill` is the only per-wizard difference — the review's final pass reads yellow,
-/// the audit's escalations orange. The alphas are shared: they used to differ by
-/// 0.02 between the two copies, which was drift, not design.
+/// the audit's escalations orange. The alphas are deliberately NOT a parameter: a
+/// toggle that reads fainter than its neighbour is drift, not design.
 struct EscalationToggle: View {
     @Binding var isOn: Bool
     let systemImage: String

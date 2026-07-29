@@ -3,13 +3,12 @@
 Every mesh edit the panel offers (set an attribute, trust/untrust a device, lift
 a ban, re-place a duty) is the same routine around one ``ctl`` call: run it off
 the UI thread, put any :class:`ctl.CtlError` in ``mesh_error``, then re-read the
-topology so the edit shows. Five copies of that routine existed and none of them
-was tested, so a copy that forgot the refresh (screen keeps rendering pre-edit
-state) or the error assignment (a rejected edit looks like it worked) could ship
-silently.
+topology so the edit shows. Every step is invisible when it goes missing - drop
+the refresh and the screen keeps rendering pre-edit state, drop the error
+assignment and a rejected edit looks like it worked - so the five commands share
+one routine, ``Store._mesh_command``.
 
-``Store._mesh_command`` is that routine; these pin all three of its steps plus
-the arguments each of the five commands forwards.
+These pin all three of its steps plus the arguments each command forwards.
 """
 
 from __future__ import annotations

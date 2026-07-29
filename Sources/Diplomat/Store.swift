@@ -1449,10 +1449,10 @@ final class Store: ObservableObject {
     /// any `MeshCtlError` becomes `meshError` (the mesh screen renders it) and the
     /// topology is re-read so the edit shows immediately.
     ///
-    /// Five commands below were the same ten lines around a single `MeshBridge`
-    /// call. The shape is the load-bearing part — dropping the `meshTick()` leaves
-    /// the screen showing pre-edit state, and dropping the `meshError` assignment
-    /// makes a rejected edit look like it worked — so it lives once. Driven directly
+    /// Every step is load-bearing, which is why the five commands below share it
+    /// rather than each spelling it out: without the `meshTick()` the screen keeps
+    /// showing pre-edit state, and without the `meshError` assignment a rejected edit
+    /// looks like it worked. Driven directly
     /// by `MeshCommandTest`, which is why it isn't private. Twin of the Linux
     /// `store._mesh_command`.
     func meshCommand(_ body: @escaping (Int) throws -> Void) {

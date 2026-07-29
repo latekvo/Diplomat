@@ -50,11 +50,11 @@ def card_host(*, fill: str = CARD_FILL, padding: int = 7,
 def muted(size: int = 10, *, mono: bool = False, bold: bool = False) -> str:
     """The stylesheet for secondary text: dimmed to the theme's `palette(mid)`.
 
-    Every screen carries captions, hints and status lines in this one style, and Qt
-    stylesheets have no variables — so the string was written out literally in more
-    than forty places across the panel, the mesh screen, Settings and the wizards.
-    Building it here means "muted" has one definition and the per-screen sizes are
-    visible as arguments instead of hiding inside otherwise identical strings.
+    Every screen carries captions, hints and status lines in this one style — the
+    panel, the mesh screen, Settings, the wizards — and Qt stylesheets have no
+    variables to share it with. Building it here gives "muted" one definition and
+    puts the per-label size in an argument, where a screen that disagrees about it
+    is visible rather than buried in an otherwise identical string.
 
     `mono` for anything column-aligned (ids, counts, timings); `bold` for a muted
     heading over a group.
@@ -461,11 +461,11 @@ def dispatch_status_text(verdict: str, terminal_title: str) -> str:
 # ---- Spawn-wizard chrome --------------------------------------------------
 #
 # The Review / Resolve-conflicts / Full-E2E wizards are three renderers over one
-# layout: a title, contextual rows, a mesh row + SPAWN button, a status line.
-# Each piece below was hand-copied into two or three of them, with the styling
-# already diverging: the SPAWN button's fill rule was written out twice (Review,
-# Resolve-conflicts) and hardcoded a third time in the audit, whose config is
-# always valid. The macOS twins live in Components.swift.
+# layout: a title, contextual rows, a mesh row + SPAWN button, a status line. Each
+# piece of it lives here once, including the SPAWN button's fill rule — the audit's
+# config is always valid, so that wizard is the one most likely to end up with a
+# hardcoded fill that no longer matches its neighbours. The macOS twins live in
+# Components.swift.
 
 # The two chrome styles that are not plain muted text (see :func:`muted`).
 _TITLE_CSS = "font-weight: 700; font-size: 13px;"

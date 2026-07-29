@@ -1353,11 +1353,10 @@ class Store(QObject):
         a :class:`ctl.CtlError` becomes ``mesh_error`` (the mesh screen renders it)
         and the topology is re-read so the edit shows immediately.
 
-        Five commands below were the same nine lines around a single ``ctl`` call.
-        The shape is the load-bearing part — skipping the refresh leaves the screen
-        showing pre-edit state, and skipping the error assignment makes a rejected
-        edit look like it worked — so it lives once. Twin of ``meshCommand`` in
-        Store.swift.
+        Every step is load-bearing, which is why the five commands below share this
+        routine rather than each spelling it out: without the refresh the screen keeps
+        showing pre-edit state, and without the error assignment a rejected edit looks
+        like it worked. Twin of ``meshCommand`` in Store.swift.
         """
         from .mesh import ctl
 
@@ -1446,10 +1445,10 @@ class Store(QObject):
             url=None,
         )
 
-    # One row builder per tool: (rows for this data) -> the ordered source objects,
-    # then the two lines each row shows. Every branch used to spell out the same
-    # `out = []` / sorted() / append(DisplayItem(id=…, badge=f"#{n}", title=…, url=…))
-    # scaffolding around these three expressions.
+    # One row builder per tool: the ordered source objects, then the two lines each
+    # row shows. Everything else about a row — its id, its `#N` badge, its title and
+    # its url — is the same for all six, so `items_for` below owns that and each tool
+    # contributes only what actually differs.
     #
     # The row TEXT is duplicated across platforms by necessity — `ToolData.items` in
     # Sources/DiplomatCore/ToolKind.swift renders the same six lists for the macOS

@@ -2,12 +2,12 @@
 
 These files are all best-effort: a peer cache is an accelerator, a trust store
 that won't parse means "no entries", a snapshot that won't parse means "no live
-node". Each loader's docstring says so. But the reader bodies were hand-copied
-and had drifted: all but one caught ``(OSError, json.JSONDecodeError)``, which
-does not cover the ``UnicodeDecodeError`` that ``Path.read_text`` raises on
-non-UTF-8 bytes. A single corrupt byte in ``~/.diplomat/mesh/peers.json``
-therefore propagated out of ``peercache.load()`` and killed the node at startup
-— every restart, until the file was deleted by hand.
+node". Each loader's docstring says so, and the guard that has to hold it up is
+easy to write *almost* right: ``(OSError, json.JSONDecodeError)`` looks
+exhaustive but does not cover the ``UnicodeDecodeError`` that ``Path.read_text``
+raises on non-UTF-8 bytes. Under that guard a single corrupt byte in
+``~/.diplomat/mesh/peers.json`` propagates out of ``peercache.load()`` and kills
+the node at startup — every restart, until the file is deleted by hand.
 
 The loaders share :func:`diplomat_app.mesh.atomicjson.read_object` now. This is
 the end-to-end guard: drive each *real* loader over each way a file can be

@@ -1,8 +1,7 @@
 """What the three spawn wizards do, as opposed to how they look.
 
 Review, Resolve-conflicts and Full-E2E each collect different inputs, but from
-the SPAWN click onwards they are one routine, and it was written out three
-times:
+the SPAWN click onwards they are one routine, which lives here once:
 
 * if the mesh row is live and ticked, hand the prompt to the local node and let
   it place the job — disabling SPAWN so a second click can't double-dispatch;

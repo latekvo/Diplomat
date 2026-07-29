@@ -1,9 +1,9 @@
 """Behavioural tests for the three Qt spawn wizards.
 
-The Review / Resolve-conflicts / Full-E2E wizard widgets had no tests at all,
-while carrying three hand-copied versions of the same chrome and the same
-mesh-or-local dispatch branch. These pin what each wizard actually *does*, so
-the shared extraction underneath them is provable rather than eyeballed:
+The three wizards share their chrome and their mesh-or-local dispatch branch, so
+what is worth pinning is what each one actually *does* with the inputs it collects
+- that is where they genuinely differ, and it is what the sharing underneath must
+not flatten:
 
 * which contextual fields show for which target, and the repo-mismatch warning
   (asserted via ``isHidden()``: ``isVisible()`` is false for every child while the

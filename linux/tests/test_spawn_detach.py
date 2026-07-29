@@ -13,10 +13,10 @@ load-bearing rather than cosmetic:
   a tty it no longer owns, or the journal; a child inheriting it can block on a
   full pipe or scribble over the parent's own output.
 
-Those kwargs previously sat in three hand-copied ``Popen`` calls with nothing
-asserting them, so dropping one would have been silent. They are one helper now
-(:func:`review.popen_detached`) and these pin it, plus each caller's translation
-of a launch failure into its own error type.
+All three launch paths go through one helper (:func:`review.popen_detached`),
+because dropping any one of those kwargs fails silently - the child still starts,
+and only dies later, under a signal or a full pipe. These pin the helper, plus
+each caller's translation of a launch failure into its own error type.
 """
 
 from __future__ import annotations

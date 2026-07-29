@@ -70,9 +70,9 @@ enum BanList {
     /// POST /unban to the device-allocator daemon (which owns the ban list). True
     /// only when it answered 2xx.
     ///
-    /// The socket path comes from `DeviceAllocator` rather than a second copy here:
-    /// this file used to define its own, so moving the daemon's socket would have
-    /// left un-banning silently posting into a path nothing listens on.
+    /// The socket path comes from `DeviceAllocator`, never a second copy here: a
+    /// path that drifted from the daemon's would leave un-banning silently posting
+    /// where nothing listens.
     private static func unbanViaDaemon(_ login: String) -> Bool {
         DeviceAllocator.post("unban", body: ["login": login], timeoutSecs: 5)
     }

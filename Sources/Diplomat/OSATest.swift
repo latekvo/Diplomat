@@ -2,11 +2,11 @@ import Foundation
 
 /// Self-test for the shared AppleScript runner — `DIPLOMAT_OSA_TEST=1`.
 ///
-/// Every terminal-driving path in the applet goes through `OSAScript`, and the
-/// property that matters is the one the hand-copied versions used to get wrong:
-/// a script that *ran and printed nothing* must be distinguishable from one that
-/// *could not run*. Conflating them is how a revoked Automation permission read
-/// as "no terminal sessions" and the API-error watcher went quietly blind.
+/// Every terminal-driving path in the applet goes through `OSAScript`, and its
+/// load-bearing property is the easiest one to get wrong: a script that *ran and
+/// printed nothing* must stay distinguishable from one that *could not run*.
+/// Conflating them is how a revoked Automation permission reads as "no terminal
+/// sessions" and the API-error watcher goes quietly blind.
 ///
 /// The scripts here are pure AppleScript expressions — no `tell application` — so
 /// they need no Automation permission and run on a CI box with no windows open.

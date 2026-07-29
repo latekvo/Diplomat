@@ -1,10 +1,9 @@
 """Unit tests for the shared atomic-JSON reader and writer.
 
 The app's small state files (identity, peer + onion caches, trust, bans, stats,
-the public snapshot, the shared app config) each used to carry a hand-copied
-body for both directions; they share
+the public snapshot, the shared app config) all go through
 :func:`diplomat_app.mesh.atomicjson.write_atomic` and
-:func:`~diplomat_app.mesh.atomicjson.read_object` now.
+:func:`~diplomat_app.mesh.atomicjson.read_object`.
 
 The write tests pin the two behaviours the call sites relied on: the write is
 atomic (no lingering ``.tmp``, target replaced whole) and ``indent`` controls
@@ -115,8 +114,8 @@ def test_read_object_returns_none_for_non_utf8_bytes(tmp_path):
 
 
 def test_read_object_returns_none_for_valid_json_that_is_not_an_object(tmp_path):
-    """A bare scalar/array decodes fine but has no ``.get`` / ``.items``, which is
-    how a hand-edited file used to crash a caller one line later."""
+    """A bare scalar/array decodes fine but has no ``.get`` / ``.items``, so handing
+    one back would crash the caller a line later - a hand-edited file is enough."""
     for body in ("[1, 2, 3]", '"a string"', "42", "null", "true"):
         p = tmp_path / "s.json"
         p.write_text(body)

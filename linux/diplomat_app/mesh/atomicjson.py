@@ -14,11 +14,11 @@ means "no entries"), so a file that is missing, unreadable, not valid UTF-8, not
 valid JSON, or valid JSON that is not an *object* must degrade to "nothing here"
 rather than propagate out of a loader into the node's startup path.
 
-Both bodies were hand-copied across the call sites, and the read copies had
-already drifted apart: they caught ``(OSError, json.JSONDecodeError)``, which
-misses the ``UnicodeDecodeError`` that ``read_text`` raises on a non-UTF-8 file,
-so a corrupt state file crashed the node instead of resetting — while the one
-copy that caught ``ValueError`` handled it. One body per direction ends that.
+One body per direction, because the read guard is easy to get subtly wrong:
+``(OSError, json.JSONDecodeError)`` looks exhaustive and is not — it misses the
+``UnicodeDecodeError`` that ``read_text`` raises on a non-UTF-8 file, which is
+enough to crash the node on startup instead of resetting. ``ValueError`` is the
+base class that covers both.
 
 ``indent`` is a parameter because the snapshot and peer cache historically
 serialised with ``indent=1`` and the rest with ``indent=2`` — the default keeps
