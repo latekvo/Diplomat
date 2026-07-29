@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QPushButton,
     QSizePolicy,
     QVBoxLayout,
 )
@@ -417,3 +418,73 @@ def dispatch_status_text(verdict: str, terminal_title: str) -> str:
     if verdict == autofix.VERDICT_STAND_DOWN:
         return "Another mesh node originates this work."
     return "Spawn failed - see the activity feed."
+
+
+# ---- Spawn-wizard chrome --------------------------------------------------
+#
+# The Review / Resolve-conflicts / Full-E2E wizards are three renderers over one
+# layout: a title, contextual rows, a mesh row + SPAWN button, a status line.
+# Each piece below was hand-copied into two or three of them, with the styling
+# already diverging: the SPAWN button's fill rule was written out twice (Review,
+# Resolve-conflicts) and hardcoded a third time in the audit, whose config is
+# always valid. The macOS twins live in Components.swift.
+
+# Colour tokens for the shared chrome, so a font size or tint lives in one place
+# rather than in eighteen literal stylesheet strings.
+_MUTED_CSS = "color: palette(mid); font-size: 10px;"
+_TITLE_CSS = "font-weight: 700; font-size: 13px;"
+_STATUS_CSS = "color: palette(mid); font-family: monospace; font-size: 10px;"
+_WARNING_CSS = "color: #e0563f; font-size: 10px;"
+# The fill a SPAWN button takes while its config is not spawnable.
+SPAWN_DISABLED_TINT = "#888888"
+
+
+def wizard_title(glyph: str, text: str) -> QLabel:
+    """A wizard's heading: its glyph, then the tool name."""
+    label = QLabel(f"{glyph}  {text}")
+    label.setStyleSheet(_TITLE_CSS)
+    return label
+
+
+def wizard_blurb(text: str) -> QLabel:
+    """The grey explainer paragraph under a heading or a toggle."""
+    label = QLabel(text)
+    label.setWordWrap(True)
+    label.setStyleSheet(_MUTED_CSS)
+    return label
+
+
+def wizard_warning() -> QLabel:
+    """The red note under the single-PR field (starts empty and hidden)."""
+    label = QLabel("")
+    label.setWordWrap(True)
+    label.setStyleSheet(_WARNING_CSS)
+    return label
+
+
+def wizard_status() -> QLabel:
+    """The monospaced line under SPAWN that reports what the click did."""
+    label = QLabel("")
+    label.setStyleSheet(_STATUS_CSS)
+    label.setWordWrap(True)
+    return label
+
+
+def spawn_button(on_click) -> QPushButton:
+    """The SPAWN AGENT button. Style it with :func:`style_spawn_button`, which
+    every wizard must call whenever its validity can have changed."""
+    btn = QPushButton("▶  SPAWN AGENT")
+    btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    btn.clicked.connect(on_click)
+    return btn
+
+
+def style_spawn_button(btn: QPushButton, tint: str, is_valid: bool) -> None:
+    """Enable/disable the button and fill it with ``tint`` or the disabled grey,
+    so it never looks armed while a click would do nothing."""
+    btn.setEnabled(is_valid)
+    fill = tint if is_valid else SPAWN_DISABLED_TINT
+    btn.setStyleSheet(
+        f"QPushButton {{ background-color: {fill}; color: white; font-weight: 700;"
+        f" padding: 8px; border-radius: 7px; }}"
+    )

@@ -22,13 +22,32 @@ from .prtarget import PRTarget
 
 
 class RepoConfig:
-    """A config that targets the shared core repository."""
+    """A config that targets the shared core repository — by default the whole of
+    it, not one pull request."""
 
     @property
     def target_repo(self) -> tuple[str, str]:
         """The configured target repo (owner, repo), from the shared core config."""
         cfg = core.config()
         return cfg["owner"], cfg["repo"]
+
+    @property
+    def single_pr_number(self) -> int | None:
+        """The one PR this run is scoped to — the dispatch pipeline's dedup key, so
+        two agents can't land on the same PR. ``None`` when the run isn't scoped to
+        one (a whose-PRs sweep, a whole-repo audit); the pipeline then dedups on
+        nothing, which is right, because there is nothing to collide over."""
+        return None
+
+    @property
+    def single_pr_url(self) -> str | None:
+        """The canonical URL of :attr:`single_pr_number`, for the sessions list's
+        open-in-browser fallback. ``None`` in lockstep with it."""
+        number = self.single_pr_number
+        if number is None:
+            return None
+        owner, repo = self.target_repo
+        return f"https://github.com/{owner}/{repo}/pull/{number}"
 
 
 class PRSweepConfig(RepoConfig):
@@ -65,3 +84,9 @@ class PRSweepConfig(RepoConfig):
         checked against the target repo."""
         owner, repo = self.target_repo
         return parse_pr_ref(self.specific_pr, owner, repo)
+
+    @property
+    def single_pr_number(self) -> int | None:
+        """The PR this run is scoped to, in single-PR mode only. A sweep across
+        someone's PRs stays unscoped even when the PR field holds a leftover value."""
+        return self.pr_ref.number if self.is_single_pr else None

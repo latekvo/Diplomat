@@ -3,58 +3,49 @@
 The Linux analogue of AuditWizardView.swift. No target picker — it always tests the
 entire repository. Two toggles escalate the scope: open a PR for every confirmed
 finding, and also reproduce + fix the open BUG issues. Builds the prompt from the
-shared core/audit.json and opens a detached terminal running ``claude`` with it.
-Reuses the terminal spawner from :mod:`review`. Persistent widget (state survives
-data refreshes).
+shared core/audit.json; dispatching it is
+:class:`~diplomat_app.wizardbase.SpawnWizard`'s job. Persistent widget (state
+survives data refreshes).
 """
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QLabel,
-    QPushButton,
     QVBoxLayout,
-    QWidget,
 )
 
-from . import audit, glyphs, review
-from .meshspawn import MeshSpawnRow
+from . import audit, glyphs, widgets
 from .store import Store
+from .wizardbase import SpawnWizard
 
 _TINT = "#5856D6"  # indigo, matching the macOS Full-E2E-test card
 
 
-class AuditWizardView(QWidget):
+class AuditWizardView(SpawnWizard):
     def __init__(self, store: Store) -> None:
-        super().__init__()
-        self.store = store
+        super().__init__(store, kind="audit", tint=_TINT)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(10)
 
-        title = QLabel(f"{glyphs.G_AUDIT}  Full E2E test")
-        title.setStyleSheet("font-weight: 700; font-size: 13px;")
-        root.addWidget(title)
+        root.addWidget(widgets.wizard_title(glyphs.G_AUDIT, "Full E2E test"))
 
-        blurb = QLabel(
+        root.addWidget(widgets.wizard_blurb(
             "Dispatches a massive swarm to end-to-end test the whole repo — every "
             "module, flow, build and test. By default it only finds and reports "
             "defects; nothing is changed."
-        )
-        blurb.setWordWrap(True)
-        blurb.setStyleSheet("color: palette(mid); font-size: 10px;")
-        root.addWidget(blurb)
+        ))
 
         bar = QLabel(
             "✔  Every finding is hard-reproduced — 100% proof of existence, no guesses."
         )
         bar.setWordWrap(True)
         bar.setStyleSheet(
-            f"color: palette(mid); font-size: 10px; padding: 7px;"
-            f" background-color: rgba(88,86,214,0.10); border-radius: 7px;"
+            "color: palette(mid); font-size: 10px; padding: 7px;"
+            " background-color: rgba(88,86,214,0.10); border-radius: 7px;"
         )
         root.addWidget(bar)
 
@@ -78,23 +69,8 @@ class AuditWizardView(QWidget):
 
         # Mesh routing — the audit's spread means one Linux AND one macOS node
         # each run the bundle E2E (visible only while the mesh is enabled + running).
-        self.mesh_row = MeshSpawnRow(store, "audit")
-        self.mesh_row.dispatched.connect(self._mesh_done)
-        root.addWidget(self.mesh_row)
-
-        self.spawn_btn = QPushButton("▶  SPAWN AGENT")
-        self.spawn_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.spawn_btn.clicked.connect(self._spawn)
-        self.spawn_btn.setStyleSheet(
-            f"QPushButton {{ background-color: {_TINT}; color: white; font-weight: 700;"
-            f" padding: 8px; border-radius: 7px; }}"
-        )
-        root.addWidget(self.spawn_btn)
-
-        self.status = QLabel("")
-        self.status.setStyleSheet("color: palette(mid); font-family: monospace; font-size: 10px;")
-        self.status.setWordWrap(True)
-        root.addWidget(self.status)
+        self._add_dispatch_controls(root)
+        self._restyle_spawn()
 
         root.addStretch(1)
 
@@ -112,41 +88,11 @@ class AuditWizardView(QWidget):
             open_prs=self.open_prs.isChecked(),
         )
 
-    def refresh_identity(self) -> None:
-        """Kept for parity with the other wizards (the audit needs no identity to
-        validate, but the panel calls this on every data refresh)."""
-
-    def _spawn(self) -> None:
-        from . import activity, autofix, widgets
-
+    def _label(self) -> str:
+        """Names the escalations that are on, so the sessions list says what this
+        run is allowed to change."""
         cfg = self._config()
         extra = " · ".join(
-            x for x in (["issues"] if cfg.fix_issues else []) + (["open PRs"] if cfg.open_prs else []) if x
+            (["issues"] if cfg.fix_issues else []) + (["open PRs"] if cfg.open_prs else [])
         )
-        label = f"Full E2E audit{(' · ' + extra) if extra else ''}"
-        if self.mesh_row.use_mesh():
-            self.spawn_btn.setEnabled(False)
-            self.status.setText("Dispatching over the mesh…")
-            activity.log("panel", "audit", f"{label} · via mesh")
-            self.mesh_row.dispatch(cfg.build_prompt())
-            return
-        # Local: the SAME pipeline the auto-monitor rides - only the trigger (this
-        # click) and its policies differ. Audits aren't PR-scoped, so there is no
-        # dedup key (see autofix.dispatch_decide).
-        term = review.resolved(self.store.terminal)
-        verdict = self.store.dispatch_agent(
-            autofix.AgentJob(
-                kind="audit",
-                audit_action="audit",
-                label=label,
-                prompt=cfg.build_prompt(),
-                duty="audit",
-            ),
-            autofix.SOURCE_PANEL,
-        )
-        self.status.setText(widgets.dispatch_status_text(verdict, term.title))
-
-    def _mesh_done(self, results: list, err: str) -> None:
-        self.spawn_btn.setEnabled(True)
-        self.status.setText(MeshSpawnRow.summarize(results, err))
-        self.store.refresh_activity()
+        return f"Full E2E audit{(' · ' + extra) if extra else ''}"

@@ -1,44 +1,37 @@
 """Resolve-conflicts wizard — pick whose PRs to sweep, then SPAWN.
 
 The Linux analogue of ConflictWizardView.swift. Collects the same choice (mine /
-someone else's / one specific PR), builds the prompt from the shared
-core/conflicts.json, and opens a detached terminal running ``claude`` with it.
-Reuses the terminal spawner from :mod:`review`. Persistent widget (state survives
-data refreshes).
+someone else's / one specific PR) and builds the prompt from the shared
+core/conflicts.json. Dispatching it — over the mesh, or locally through the same
+gate the auto-fix monitor rides — is :class:`~diplomat_app.wizardbase.SpawnWizard`'s
+job. Persistent widget (state survives data refreshes).
 """
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
-    QLabel,
     QLineEdit,
-    QPushButton,
     QVBoxLayout,
-    QWidget,
 )
 
-from . import conflicts, glyphs, review
+from . import conflicts, glyphs, widgets
 from .conflicts import Target
-from .meshspawn import MeshSpawnRow
 from .store import Store
+from .wizardbase import SpawnWizard
 
 _TINT = "#32ADE6"  # cyan, matching the macOS Resolve-conflicts card
 
 
-class ConflictWizardView(QWidget):
+class ConflictWizardView(SpawnWizard):
     def __init__(self, store: Store) -> None:
-        super().__init__()
-        self.store = store
+        super().__init__(store, kind="conflicts", tint=_TINT)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(10)
 
-        title = QLabel(f"{glyphs.G_CONFLICT}  Resolve conflicts")
-        title.setStyleSheet("font-weight: 700; font-size: 13px;")
-        root.addWidget(title)
+        root.addWidget(widgets.wizard_title(glyphs.G_CONFLICT, "Resolve conflicts"))
 
         # Target: mine / someone else's / a specific PR.
         self.target = QComboBox()
@@ -57,33 +50,16 @@ class ConflictWizardView(QWidget):
         self.specific_pr.textChanged.connect(self._sync)
         root.addWidget(self.specific_pr)
 
-        self.pr_warning = QLabel("")
-        self.pr_warning.setWordWrap(True)
-        self.pr_warning.setStyleSheet("color: #e0563f; font-size: 10px;")
+        self.pr_warning = widgets.wizard_warning()
         root.addWidget(self.pr_warning)
 
-        blurb = QLabel(
+        root.addWidget(widgets.wizard_blurb(
             "Merges the latest main into each PR; where that conflicts, resolves it "
             "and pushes the merge. Clean merges are left untouched."
-        )
-        blurb.setWordWrap(True)
-        blurb.setStyleSheet("color: palette(mid); font-size: 10px;")
-        root.addWidget(blurb)
+        ))
 
         # Mesh routing (visible only while the LAN mesh is enabled + running).
-        self.mesh_row = MeshSpawnRow(store, "conflicts")
-        self.mesh_row.dispatched.connect(self._mesh_done)
-        root.addWidget(self.mesh_row)
-
-        self.spawn_btn = QPushButton("▶  SPAWN AGENT")
-        self.spawn_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.spawn_btn.clicked.connect(self._spawn)
-        root.addWidget(self.spawn_btn)
-
-        self.status = QLabel("")
-        self.status.setStyleSheet("color: palette(mid); font-family: monospace; font-size: 10px;")
-        self.status.setWordWrap(True)
-        root.addWidget(self.status)
+        self._add_dispatch_controls(root)
 
         root.addStretch(1)
         self._sync()
@@ -111,52 +87,8 @@ class ConflictWizardView(QWidget):
         else:
             self.pr_warning.setVisible(False)
 
-        self.spawn_btn.setEnabled(cfg.is_valid)
-        tint = _TINT if cfg.is_valid else "#888888"
-        self.spawn_btn.setStyleSheet(
-            f"QPushButton {{ background-color: {tint}; color: white; font-weight: 700;"
-            f" padding: 8px; border-radius: 7px; }}"
-        )
+        self._restyle_spawn()
 
-    def refresh_identity(self) -> None:
-        """Re-validate after the viewer login resolves (used as @handle for 'mine')."""
-        self._sync()
-
-    def _spawn(self) -> None:
-        from . import activity, autofix, widgets
-
-        cfg = self._config()
-        scope = cfg.specific_pr.strip() or "main"
-        label = f"Resolve conflicts · {scope}"
-        if self.mesh_row.use_mesh():
-            self.spawn_btn.setEnabled(False)
-            self.status.setText("Dispatching over the mesh…")
-            activity.log("panel", "conflicts", f"{label} · via mesh")
-            self.mesh_row.dispatch(cfg.build_prompt())
-            return
-        # Local: the SAME pipeline the auto-monitor rides - dedup, registration -
-        # only the trigger (this click) and its policies differ
-        # (see autofix.dispatch_decide).
-        term = review.resolved(self.store.terminal)
-        number = cfg.pr_ref.number if cfg.target == Target.SPECIFIC else None
-        owner, repo = cfg.target_repo
-        url = f"https://github.com/{owner}/{repo}/pull/{number}" if number else None
-        verdict = self.store.dispatch_agent(
-            autofix.AgentJob(
-                kind="conflicts",
-                audit_action="conflicts",
-                label=label,
-                prompt=cfg.build_prompt(),
-                pr_url=url,
-                pr_number=number,
-                duty="conflicts",
-            ),
-            autofix.SOURCE_PANEL,
-        )
-        self.status.setText(widgets.dispatch_status_text(verdict, term.title))
-
-    def _mesh_done(self, results: list, err: str) -> None:
-        self.spawn_btn.setEnabled(True)
-        self.status.setText(MeshSpawnRow.summarize(results, err))
-        self.store.refresh_activity()
-        self._sync()  # spawn_btn styling tracks validity
+    def _label(self) -> str:
+        scope = self._config().specific_pr.strip() or "main"
+        return f"Resolve conflicts · {scope}"

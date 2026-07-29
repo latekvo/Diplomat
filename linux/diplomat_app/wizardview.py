@@ -1,8 +1,11 @@
 """Review-PRs wizard — target, scope, depth, action toggles, then SPAWN.
 
-The Linux analogue of ReviewWizardView.swift. Collects the same choices, builds
-the prompt from the shared core/review.json, and opens a detached terminal
-running ``claude`` with it. Persistent widget (state survives data refreshes).
+The Linux analogue of ReviewWizardView.swift. Collects the same choices and builds
+the prompt from the shared core/review.json; dispatching it is
+:class:`~diplomat_app.wizardbase.SpawnWizard`'s job. This wizard adds the one input
+the others don't have — the debounced poll of a specific PR's author, which decides
+which action toggles apply and whose ban is checked. Persistent widget (state
+survives data refreshes).
 """
 
 from __future__ import annotations
@@ -16,30 +19,27 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QPushButton,
     QSlider,
     QVBoxLayout,
-    QWidget,
 )
 
-from . import glyphs, review
-from .meshspawn import MeshSpawnRow
+from . import glyphs, review, widgets
 from .prtarget import PRTarget
 from .review import SpecificAuthor
 from .store import Store
+from .wizardbase import SpawnWizard
 
 _TINT = "#FF2D78"  # pink, matching the macOS Review card
 
 
-class WizardView(QWidget):
+class WizardView(SpawnWizard):
     # Emitted (queued to the main thread) when a background author poll resolves.
     # Carries (pending_pr_text, author_login_or_empty) so the slot can ignore a
     # result superseded by newer keystrokes - mirrors the macOS `pending` guard.
     _author_resolved = Signal(str, str)
 
     def __init__(self, store: Store) -> None:
-        super().__init__()
-        self.store = store
+        super().__init__(store, kind="review", tint=_TINT)
         self._depths = review.depths()
 
         # Specific-PR author disposition (mine / theirs / unknown) + loading flag,
@@ -57,9 +57,7 @@ class WizardView(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(10)
 
-        title = QLabel(f"{glyphs.G_REVIEW}  Review PRs")
-        title.setStyleSheet("font-weight: 700; font-size: 13px;")
-        root.addWidget(title)
+        root.addWidget(widgets.wizard_title(glyphs.G_REVIEW, "Review PRs"))
 
         # Target: mine / someone else's / a specific PR (matches the Merge wizard).
         self.target = QComboBox()
@@ -84,9 +82,7 @@ class WizardView(QWidget):
         self.specific_pr.textChanged.connect(self._sync)
         root.addWidget(self.specific_pr)
 
-        self.pr_warning = QLabel("")
-        self.pr_warning.setWordWrap(True)
-        self.pr_warning.setStyleSheet("color: #e0563f; font-size: 10px;")
+        self.pr_warning = widgets.wizard_warning()
         root.addWidget(self.pr_warning)
 
         # A one-line note under the single-PR field: whose PR it is once polled, so
@@ -126,9 +122,7 @@ class WizardView(QWidget):
         self.slider.valueChanged.connect(self._sync)
         root.addWidget(self.slider)
 
-        self.depth_blurb = QLabel()
-        self.depth_blurb.setWordWrap(True)
-        self.depth_blurb.setStyleSheet("color: palette(mid); font-size: 10px;")
+        self.depth_blurb = widgets.wizard_blurb("")
         root.addWidget(self.depth_blurb)
 
         # Action toggles
@@ -163,21 +157,9 @@ class WizardView(QWidget):
         )
         root.addWidget(self.final_pass)
 
-        # Mesh routing (visible only while the LAN mesh is enabled + running).
-        self.mesh_row = MeshSpawnRow(store, "review")
-        self.mesh_row.dispatched.connect(self._mesh_done)
-        root.addWidget(self.mesh_row)
-
-        # Spawn
-        self.spawn_btn = QPushButton("▶  SPAWN AGENT")
-        self.spawn_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.spawn_btn.clicked.connect(self._spawn)
-        root.addWidget(self.spawn_btn)
-
-        self.status = QLabel("")
-        self.status.setStyleSheet("color: palette(mid); font-family: monospace; font-size: 10px;")
-        self.status.setWordWrap(True)
-        root.addWidget(self.status)
+        # Mesh routing (visible only while the LAN mesh is enabled + running),
+        # then SPAWN + its status line.
+        self._add_dispatch_controls(root)
 
         root.addStretch(1)
         self._sync()
@@ -251,12 +233,7 @@ class WizardView(QWidget):
         self.soft_approve.setVisible(cfg.can_soft_approve)
         self.final_pass.setVisible(cfg.can_final_pass)
 
-        self.spawn_btn.setEnabled(cfg.is_valid)
-        tint = _TINT if cfg.is_valid else "#888888"
-        self.spawn_btn.setStyleSheet(
-            f"QPushButton {{ background-color: {tint}; color: white; font-weight: 700;"
-            f" padding: 8px; border-radius: 7px; }}"
-        )
+        self._restyle_spawn()
 
     def _update_author_hint(self, is_specific: bool) -> None:
         """The whose-PR-is-it note under the single-PR field. Only shown for a
@@ -352,41 +329,12 @@ class WizardView(QWidget):
         self._author_pending = None
         self._sync()
 
-    def _spawn(self) -> None:
-        from . import activity, autofix, widgets
-
+    def _label(self) -> str:
         cfg = self._config()
         scope = cfg.specific_pr.strip() or "PRs"
-        label = f"Review · {scope} · {cfg.depth}"
-        if self.mesh_row.use_mesh():
-            self.spawn_btn.setEnabled(False)
-            self.status.setText("Dispatching over the mesh…")
-            activity.log("panel", "review", f"{label} · via mesh")
-            self.mesh_row.dispatch(cfg.build_prompt())
-            return
-        # Local: the SAME pipeline the auto-monitor rides - dedup, ban check,
-        # registration - only the trigger (this click) and its policies differ
-        # (see autofix.dispatch_decide).
-        term = review.resolved(self.store.terminal)
-        number = cfg.pr_ref.number if cfg.target == PRTarget.SPECIFIC else None
-        owner, repo = cfg.target_repo
-        url = f"https://github.com/{owner}/{repo}/pull/{number}" if number else None
-        verdict = self.store.dispatch_agent(
-            autofix.AgentJob(
-                kind="review",
-                audit_action="review",
-                label=label,
-                prompt=cfg.build_prompt(),
-                pr_url=url,
-                pr_number=number,
-                author_login=self._reviewed_author_login(),
-                duty="review",
-            ),
-            autofix.SOURCE_PANEL,
-        )
-        self.status.setText(widgets.dispatch_status_text(verdict, term.title))
+        return f"Review · {scope} · {cfg.depth}"
 
-    def _reviewed_author_login(self) -> str | None:
+    def _author_login(self) -> str | None:
         """Whose PRs this run would review, when known - the pipeline's ban
         dimension. My own PRs have none; a specific PR's author comes from the
         debounced poll (only trusted while its THEIRS disposition holds)."""
@@ -397,9 +345,3 @@ class WizardView(QWidget):
         if target == PRTarget.SPECIFIC and self._specific_author == SpecificAuthor.THEIRS:
             return self._specific_author_login
         return None
-
-    def _mesh_done(self, results: list, err: str) -> None:
-        self.spawn_btn.setEnabled(True)
-        self.status.setText(MeshSpawnRow.summarize(results, err))
-        self.store.refresh_activity()
-        self._sync()  # spawn_btn styling tracks validity
