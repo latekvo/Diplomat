@@ -202,8 +202,8 @@ nothing is changed. Two escalation toggles widen the blast radius:
 > Diplomat Mesh is the reference implementation of **SzpontNet**, a small leaderless
 > LAN protocol for self-discovery, resource advertisement, and work hand-off. The
 > full, independently-implementable specification (currently **v0.4.0**, wire `v: 1`)
-> is in [`docs/szpontnet/`](docs/szpontnet/README.md), and
-> [`tools/szpontnet-tester/`](tools/szpontnet-tester/README.md) is the black-box
+> is in [`szpontnet/docs/`](szpontnet/docs/README.md), and
+> [`szpontnet/conformance/`](szpontnet/conformance/README.md) is the black-box
 > conformance suite that makes "independently implementable" checkable: it launches
 > a candidate node as an opaque subprocess, joins it over real multicast + TCP, and
 > exits non-zero if any MUST fails.
@@ -303,7 +303,7 @@ There are three trust levels, not two:
 | Level | What a request from it does |
 |-------|------------------------------|
 | `personal` | runs directly, exactly as if you'd triggered it locally |
-| `foreign` | **declined** — unless a confinement runner is configured (`DIPLOMAT_MESH_FOREIGN_SPAWN`), in which case it runs sandboxed and *response-only*: the compute happens here, the result is routed back, and this node never takes a social action on it ([spec ch 13](docs/szpontnet/13-foreign-execution.md)) |
+| `foreign` | **declined** — unless a confinement runner is configured (`DIPLOMAT_MESH_FOREIGN_SPAWN`), in which case it runs sandboxed and *response-only*: the compute happens here, the result is routed back, and this node never takes a social action on it ([spec ch 13](szpontnet/docs/13-foreign-execution.md)) |
 | `banned` | declined outright, even with a confinement runner, and never picked as a dispatch target |
 
 **Foreign accountability.** A foreign device that *accepts* a job takes on a
@@ -689,8 +689,9 @@ linux/                         ← Linux Qt6/PySide6 tray applet (see linux/READ
   diplomat_app/mesh/           ← Diplomat Mesh node: stdlib-only Python (runs headless on macOS too) — LAN
                                  discovery, heartbeat links, gossip, deterministic duty assignment,
                                  dispatch with failover; model in core/mesh.json, state in ~/.diplomat/mesh/
-docs/szpontnet/                ← the normative SzpontNet protocol spec (15 chapters, v0.4.0)
-tools/szpontnet-tester/        ← black-box SzpontNet conformance tester: runs a candidate node as an opaque
+szpontnet/                     ← the SzpontNet module (see szpontnet/README.md)
+  docs/                        ← the normative SzpontNet protocol spec (15 chapters, v0.4.0)
+  conformance/                 ← black-box SzpontNet conformance tester: runs a candidate node as an opaque
                                  subprocess, joins over real multicast + TCP, exits non-zero on any MUST failure
 scripts/                       ← build-app, install/uninstall-autostart, install/uninstall-autoupdate
 .github/workflows/ci.yml       ← swift-macos · swift-core-linux · python-linux · node-device-allocator

@@ -3,7 +3,7 @@
 
 The auto-monitors on several machines all scan GitHub for the same work, route
 it to the best-surplus node, and lean on work-claims to run it *exactly once*
-with failover and retry (docs/szpontnet/12). That behaviour is impossible to
+with failover and retry (szpontnet/docs/12). That behaviour is impossible to
 judge from a single process, so this simulator stands up a **fleet of real
 ``python -m diplomat_app.mesh`` nodes** on loopback, injects **simulated work
 events** (a review request = a duty + a work key), and checks the invariants:

@@ -10,7 +10,7 @@ configure your node, run it.
 
 Usage (as the tester's --node-cmd):
 
-    python -m szpont --node-cmd "python tools/szpontnet-tester/adapters/reference.py"
+    python -m szpont --node-cmd "python szpontnet/conformance/adapters/reference.py"
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ import os
 import sys
 from pathlib import Path
 
-# repo/tools/szpontnet-tester/adapters/reference.py → repo root is parents[3].
+# repo/szpontnet/conformance/adapters/reference.py → repo root is parents[3].
 REPO = Path(__file__).resolve().parents[3]
 LINUX = REPO / "linux"
 

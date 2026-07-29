@@ -157,7 +157,7 @@ def foreign_spawn() -> str:
     Empty (the default) = **no foreign execution**: a foreign request is declined,
     exactly as before. A node only ever runs a stranger's compute when the operator
     has explicitly supplied the jail to run it in. See
-    docs/szpontnet/13-foreign-execution.md."""
+    szpontnet/docs/13-foreign-execution.md."""
     return os.environ.get("DIPLOMAT_MESH_FOREIGN_SPAWN", "")
 
 
@@ -167,7 +167,7 @@ def on_result() -> str:
     dispatched. This is where the **social action runs under the originator's own
     identity** (e.g. ``gh pr review``): ``{result_file}`` holds the executor's
     computed artifact plus the job metadata. Empty = the originator just records the
-    result (no automatic action). See docs/szpontnet/13-foreign-execution.md."""
+    result (no automatic action). See szpontnet/docs/13-foreign-execution.md."""
     return os.environ.get("DIPLOMAT_MESH_ON_RESULT", "")
 
 
@@ -183,7 +183,7 @@ def extend_decider() -> str:
 
     Empty (the default) = **no extension is ever granted**: a progress plea then
     cannot save a late executor, and it is banned — the zero-trust default. See
-    docs/szpontnet/13-foreign-execution.md#the-extension-decision."""
+    szpontnet/docs/13-foreign-execution.md#the-extension-decision."""
     return os.environ.get("DIPLOMAT_MESH_EXTEND_DECIDER", "")
 
 

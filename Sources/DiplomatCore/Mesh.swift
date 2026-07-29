@@ -376,7 +376,7 @@ public struct MeshPeer: Decodable, Equatable {
     /// "personal" | "foreign" | "banned" — the local allowlist's (and ban list's)
     /// verdict on the VERIFIED key (an empty allowlist classes everyone personal,
     /// preserving pre-trust behavior; "banned" = the device accepted a
-    /// SzpontRequest and failed to deliver it — see docs/szpontnet/13).
+    /// SzpontRequest and failed to deliver it — see szpontnet/docs/13).
     public let trust: String
     /// The peer's device-key fingerprint (proven if `verified`, else merely claimed;
     /// `""` for keyless peers).
@@ -451,7 +451,7 @@ public struct MeshTrustedEntry: Decodable, Equatable {
 /// node marked as having accepted a SzpontRequest and failed to deliver it (or one
 /// the operator banned manually). Machine-local (`~/.diplomat/mesh/banned.json`),
 /// never gossiped; `fingerprint` is empty for a keyless device (then `node` is the
-/// best-effort key). See docs/szpontnet/13-foreign-execution.md#the-ban.
+/// best-effort key). See szpontnet/docs/13-foreign-execution.md#the-ban.
 public struct MeshBannedEntry: Decodable, Equatable {
     public let fingerprint: String
     public let node: String

@@ -213,7 +213,7 @@ def main(argv: list[str] | None = None) -> int:
                     "(the dispatcher's own pick, no failover)")
     ap.add_argument("--claim", metavar="KEY", dest="claim_key",
                     help="run the origination claim gate for a work key without "
-                         "dispatching (docs/szpontnet/12) — exit 0 when this node "
+                         "dispatching (szpontnet/docs/12) — exit 0 when this node "
                          "should originate, 3 when a peer owns the work")
     ap.add_argument("--work-key", default="", metavar="KEY", dest="work_key",
                     help="origination-dedup key: claim it first, and stand down "

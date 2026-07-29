@@ -203,7 +203,7 @@ class Store(QObject):
         self._dispatching_prs: set[int] = set()
         self._dispatching_lock = threading.Lock()
         # Work keys a peer's agent already owns, so the "claimed elsewhere" note is
-        # logged once per key rather than every poll (docs/szpontnet/12).
+        # logged once per key rather than every poll (szpontnet/docs/12).
         self._mesh_suppressed_logged: set[str] = set()
 
         # Claude-API-error watcher: live-only runtime state (the toggle/count persist
@@ -666,7 +666,7 @@ class Store(QObject):
     # MARK: monitor dispatch + tracking
 
     def _route_via_mesh(self, job: "autofix.AgentJob") -> str | None:
-        """Route an auto job through the mesh (docs/szpontnet/12): claim-gated
+        """Route an auto job through the mesh (szpontnet/docs/12): claim-gated
         dispatch to the best-surplus node.
 
         Every machine scans GitHub independently, but the mesh runs each unit of

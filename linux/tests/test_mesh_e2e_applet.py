@@ -56,7 +56,7 @@ def _mesh_env(tmp: Path) -> dict:
         "DIPLOMAT_MESH_SPAWN": f"cp {{prompt_file}} {tmp}/spawned-self.txt",
         # Full-trust fleet: a set of the user's own machines that trust each other,
         # so peers accept each other's dispatches without per-device promotion (the
-        # shipped default is zero-trust/foreign — see docs/szpontnet/11).
+        # shipped default is zero-trust/foreign — see szpontnet/docs/11).
         "DIPLOMAT_MESH_DEFAULT_TRUST": "personal",
         "HOME": str(tmp / "home"),
     }

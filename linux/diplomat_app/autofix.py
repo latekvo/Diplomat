@@ -28,7 +28,7 @@ class PRSnapshot:
     threads_unresolved: int
     threads_i_owe: int
     # Head commit sha (headRefOid) — the "which push" part of the mesh work key,
-    # so two nodes observing the same commit derive the same key (docs/szpontnet/12).
+    # so two nodes observing the same commit derive the same key (szpontnet/docs/12).
     head_sha: str = ""
 
 
@@ -216,7 +216,7 @@ class VerdictPolicy:
 # MARK: - Mesh coordination for the auto-monitors (mirrors AutofixMesh in Autofix.swift)
 #
 # Two machines running this monitor poll the same GitHub state as the same user, so
-# each is an independent origin of the same work (docs/szpontnet/12-work-claims.md).
+# each is an independent origin of the same work (szpontnet/docs/12-work-claims.md).
 # Every machine scans; the Store routes each auto find through claim-gated DISPATCH
 # (`Store._route_via_mesh`): the mesh runs it once, on the best-surplus node, and
 # the EXECUTOR holds the work-key claim for its agent's lifetime — so a concurrent
@@ -231,7 +231,7 @@ WORK_CONFLICTS = "conflicts"  # conflict fixes on MY PRs → duty "conflicts"
 
 def work_key(kind: str, pr_url: str, head_sha: str) -> str:
     """The origination-dedup key for one unit of monitor work — the reference
-    convention from docs/szpontnet/12: ``<kind>:<host>/<owner>/<repo>#<n>@<sha>``.
+    convention from szpontnet/docs/12: ``<kind>:<host>/<owner>/<repo>#<n>@<sha>``.
 
     Derived from the PR's own URL so every node observing the same PR agrees
     byte-for-byte (the Swift twin must produce identical strings — see the parity

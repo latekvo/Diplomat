@@ -1,6 +1,6 @@
 # SzpontNet conformance tester
 
-A **black-box interoperability tester** for [SzpontNet](../../docs/szpontnet/),
+A **black-box interoperability tester** for [SzpontNet](../docs/),
 the LAN peer-to-peer resource-sharing protocol. It launches *your* node as an
 opaque subprocess, joins the mesh around it over **real UDP multicast + TCP
 sockets**, and checks — requirement by requirement — that it behaves exactly as
@@ -8,7 +8,7 @@ the specification mandates. The goal is a single, language-neutral gate: if a
 second implementation (Go, Rust, Swift, JS, …) passes this, it will interoperate
 byte-for-byte with any other implementation that also passes it.
 
-It speaks only the wire protocol from `docs/szpontnet/`; nothing here depends on
+It speaks only the wire protocol from `szpontnet/docs/`; nothing here depends on
 the reference node's source. Every check names the MUST/SHOULD requirement and
 the spec section it enforces. Coverage spans the core protocol (chapters 01–10)
 **chapter 11** — the trust / load-balancing layer and the server / API-key
@@ -39,7 +39,7 @@ re-sent until `job-ack`ed, plus the completion-deadline → `job-reminder` →
 ## Quick start
 
 ```bash
-cd tools/szpontnet-tester
+cd szpontnet/conformance
 
 # 1. Prove the tester's own codec + placement oracle are correct (no node needed):
 python -m szpont --selftest
@@ -96,13 +96,13 @@ wrapping it in a tiny launcher like [`adapters/reference.py`](adapters/reference
 | `SZPONTNET_NODE_ID` | the id this node must use (so the tester controls the fleet). |
 | `SZPONTNET_NODE_NAME`, `SZPONTNET_TIER`, `SZPONTNET_TOKENS`, `SZPONTNET_DUTIES` | advertised attributes (`SZPONTNET_DUTIES` is a JSON `{duty: bool}` map). |
 | `SZPONTNET_SPAWN` | command template a dispatch executes, with `{prompt_file}` substituted — how the tester observes that a job actually ran. |
-| `SZPONTNET_SERVER` | `1` → the accept-only [server role](../../docs/szpontnet/11-trust-and-balancing.md#the-server-role): the node runs work but never originates a dispatch to a peer (ch 11). |
-| `SZPONTNET_API_KEY` | per-node [API key](../../docs/szpontnet/11-trust-and-balancing.md#the-api-key): when set, inbound `ctl` and `dispatch` MUST present a matching `apiKey` (ch 11). |
+| `SZPONTNET_SERVER` | `1` → the accept-only [server role](../docs/11-trust-and-balancing.md#the-server-role): the node runs work but never originates a dispatch to a peer (ch 11). |
+| `SZPONTNET_API_KEY` | per-node [API key](../docs/11-trust-and-balancing.md#the-api-key): when set, inbound `ctl` and `dispatch` MUST present a matching `apiKey` (ch 11). |
 | `SZPONTNET_STATS` | JSON `{plan, quotaLeft, usageAvg}` seed for the node's advertised load-balancing stats, so `surplus-first` picks are meaningful (ch 11). |
-| `SZPONTNET_FOREIGN_SPAWN` | [confinement runner](../../docs/szpontnet/13-foreign-execution.md#confinement-the-executors-responsibility) command template (`{prompt_file}`/`{result_file}` substituted): its presence turns a foreign request from *declined* into *confined, response-only* execution; absent = no foreign execution (ch 13). |
-| `SZPONTNET_RESULT_RETRY_SECS`, `SZPONTNET_RESULT_MAX_SECS`, `SZPONTNET_FOREIGN_TIMEOUT_SECS` | foreign [reliable-delivery](../../docs/szpontnet/13-foreign-execution.md#reliable-delivery) timings: the `job-result` retry cadence, its give-up window, and the confined compute budget (ch 13). |
-| `SZPONTNET_COMPLETION_DEADLINE_SECS`, `SZPONTNET_REMINDER_GRACE_SECS` | v0.4.0 [accountability](../../docs/szpontnet/13-foreign-execution.md#accountability-deadline-reminder-ban) timings: the completion deadline a foreign `spawned` (without `direct: true`) arms, and the answer window after a `job-reminder` before the ban (ch 13). |
-| `SZPONTNET_EXTEND_DECIDER` | v0.4.0 [extension-decision](../../docs/szpontnet/13-foreign-execution.md#the-extension-decision) command template (`{job_file}` substituted): judges a late executor's `job-progress` plea — exit `0` extends (re-arms the full deadline window), anything else bans; unset = no extension is ever granted (ch 13). |
+| `SZPONTNET_FOREIGN_SPAWN` | [confinement runner](../docs/13-foreign-execution.md#confinement-the-executors-responsibility) command template (`{prompt_file}`/`{result_file}` substituted): its presence turns a foreign request from *declined* into *confined, response-only* execution; absent = no foreign execution (ch 13). |
+| `SZPONTNET_RESULT_RETRY_SECS`, `SZPONTNET_RESULT_MAX_SECS`, `SZPONTNET_FOREIGN_TIMEOUT_SECS` | foreign [reliable-delivery](../docs/13-foreign-execution.md#reliable-delivery) timings: the `job-result` retry cadence, its give-up window, and the confined compute budget (ch 13). |
+| `SZPONTNET_COMPLETION_DEADLINE_SECS`, `SZPONTNET_REMINDER_GRACE_SECS` | v0.4.0 [accountability](../docs/13-foreign-execution.md#accountability-deadline-reminder-ban) timings: the completion deadline a foreign `spawned` (without `direct: true`) arms, and the answer window after a `job-reminder` before the ban (ch 13). |
+| `SZPONTNET_EXTEND_DECIDER` | v0.4.0 [extension-decision](../docs/13-foreign-execution.md#the-extension-decision) command template (`{job_file}` substituted): judges a late executor's `job-progress` plea — exit `0` extends (re-arms the full deadline window), anything else bans; unset = no extension is ever granted (ch 13). |
 
 The chapter-11 and chapter-13 variables are optional and default off, so a node
 that implements only chapters 01–10 sees the exact same contract as before.
@@ -112,7 +112,7 @@ read your node's computed assignments. It tries, in order: a control session
 (`ctl` → `status` → `state`), then `SZPONTNET_DIR/state.json`. Expose at least
 one, or the placement/snapshot cases skip.
 
-**Roles.** Cases scale to the [roles](../../docs/szpontnet/10-conformance.md#roles)
+**Roles.** Cases scale to the [roles](../docs/10-conformance.md#roles)
 your node claims. Dispatch cases (D) that need a control session skip a pure
 Participant; the executor half (D1) is tested over a peer link. So a
 resource-offering-only node is judged only on what it promises.

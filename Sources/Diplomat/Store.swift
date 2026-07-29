@@ -555,7 +555,7 @@ final class Store: ObservableObject {
     private var autofixPollInFlight = false
 
     /// Work keys a peer's agent already owns, so the "claimed elsewhere" note is
-    /// logged once per key rather than every poll (docs/szpontnet/12).
+    /// logged once per key rather than every poll (szpontnet/docs/12).
     private var meshSuppressedLogged: Set<String> = []
 
     /// Set when the last monitor poll cycle failed (gh/auth/network), so persistent
@@ -834,7 +834,7 @@ final class Store: ObservableObject {
 
     enum MeshRoute { case standDown, spawned, local }
 
-    /// Route an AUTO job through the mesh (docs/szpontnet/12): claim-gated dispatch
+    /// Route an AUTO job through the mesh (szpontnet/docs/12): claim-gated dispatch
     /// to the best-surplus node. Mirrors the Linux store's `_route_via_mesh`.
     ///
     /// Every machine scans GitHub independently, but the mesh runs each unit of work
@@ -1484,7 +1484,7 @@ final class Store: ObservableObject {
     }
 
     /// Lift a ban on a peer's device — it was marked banned after accepting a
-    /// SzpontRequest and failing to deliver it (docs/szpontnet/13#the-ban), or
+    /// SzpontRequest and failing to deliver it (szpontnet/docs/13#the-ban), or
     /// manually. It returns to Foreign; promote via the trust toggle if it's yours.
     /// (Mirrors the Linux store's `mesh_unban`.)
     func meshUnban(fingerprint: String, node: String) {

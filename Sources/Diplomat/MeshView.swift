@@ -476,7 +476,7 @@ struct MeshView: View {
     /// prompt is dismissed). 'Personal' adds its proven fingerprint to the local
     /// allowlist; 'Foreign' removes it. Disabled until the peer proves a device key
     /// (trust must key on a verified fingerprint). A BANNED device (it accepted a
-    /// SzpontRequest of ours and failed to deliver — docs/szpontnet/13) gets a mark +
+    /// SzpontRequest of ours and failed to deliver — szpontnet/docs/13) gets a mark +
     /// an Unban escape hatch instead: it stays declined until the operator explicitly
     /// lifts the ban.
     private func trustToggle(_ peer: MeshPeer) -> some View {

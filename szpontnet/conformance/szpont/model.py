@@ -2,7 +2,7 @@
 
 Loaded from ``core/mesh.json`` when the tester runs inside the reference
 repository, and otherwise falls back to the canonical v1 defaults tabulated in
-``docs/szpontnet/appendix-b-constants.md``. Keeping a self-contained fallback
+``szpontnet/docs/appendix-b-constants.md``. Keeping a self-contained fallback
 means the tester is a single portable artifact: a second implementation in any
 language can copy this directory and run it without the reference repo present.
 

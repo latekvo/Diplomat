@@ -211,7 +211,7 @@ check(snap.peers[0].tokensSessionPct == 0.2 && snap.peers[0].tokensWeekPct == 0.
       "peer session/week quota decode")
 check(snap.peers[0].strengthAuto == false && snap.peers[0].uptimeSecs == 187.0, "peer strength/uptime")
 check(snap.peers[0].trust == "personal" && snap.peers[0].verified == true, "peer trust decode")
-// The ban-list mirror (foreign accountability, docs/szpontnet/13): who this node
+// The ban-list mirror (foreign accountability, szpontnet/docs/13): who this node
 // marked banned and why — the panel's mark + tooltip depend on these fields.
 check(snap.banned.count == 1, "banned list decodes")
 check(snap.banned[0].fingerprint == "ee22" && snap.banned[0].node == "ccc"
@@ -484,7 +484,7 @@ check(AgentDispatchGate.bumpsCounter(source: .auto, attemptNumber: 1)
 section("autofix mesh coordination")
 // PARITY fixtures: linux/tests/test_autofix.py asserts these exact strings — two
 // nodes only dedupe origination when their derivations agree byte-for-byte
-// (docs/szpontnet/12-work-claims.md).
+// (szpontnet/docs/12-work-claims.md).
 check(AutofixMesh.workKey(kind: "review", prURL: "https://github.com/acme/app/pull/123",
                           headSha: "abc123")
       == "review:github.com/acme/app#123@abc123", "work key reference convention")

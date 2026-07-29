@@ -27,7 +27,7 @@ public struct PRSnapshot: Equatable {
     /// reviewer. `threadsUnresolved` (raw count) still drives the edge-trigger.
     public let threadsIOwe: Int
     /// Head commit sha (`headRefOid`) — the "which push" part of the mesh work key,
-    /// so two nodes observing the same commit derive the same key (docs/szpontnet/12).
+    /// so two nodes observing the same commit derive the same key (szpontnet/docs/12).
     public let headSha: String
 
     public init(number: Int, title: String, url: String, isDraft: Bool,
@@ -168,7 +168,7 @@ public enum AgentDispatchGate {
 // MARK: - Mesh coordination for the auto-monitors (mirrors autofix.py's twin)
 //
 // Two machines running this monitor poll the same GitHub state as the same user, so
-// each is an independent origin of the same work (docs/szpontnet/12-work-claims.md).
+// each is an independent origin of the same work (szpontnet/docs/12-work-claims.md).
 // The Store gates every auto dispatch with:
 //   1. `standDown` — the duty is assigned to OTHER live nodes: their monitor
 //      originates there, ours stands down (assignment already tracks liveness);
@@ -180,7 +180,7 @@ public enum AutofixMesh {
     public static let kindConflicts = "conflicts"     // conflict fixes on MY PRs → duty "conflicts"
 
     /// The origination-dedup key for one unit of monitor work — the reference
-    /// convention from docs/szpontnet/12: `<kind>:<host>/<owner>/<repo>#<n>@<sha>`.
+    /// convention from szpontnet/docs/12: `<kind>:<host>/<owner>/<repo>#<n>@<sha>`.
     /// Derived from the PR's own URL so every node observing the same PR agrees
     /// byte-for-byte (the Python twin must produce identical strings — see the
     /// parity tests). Returns "" — claim gate skipped, the safe pre-claims

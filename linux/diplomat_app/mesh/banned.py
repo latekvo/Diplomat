@@ -3,7 +3,7 @@
 A **ban** is this node marking, for its operator, that a foreign device ACCEPTED
 a SzpontRequest (replied ``spawned``) and then failed to deliver its result
 within the completion deadline - giving no, or a non-fulfilling, answer to the
-readiness reminder (docs/szpontnet/13-foreign-execution.md#accountability-
+readiness reminder (szpontnet/docs/13-foreign-execution.md#accountability-
 deadline-reminder-ban). The operator can also ban manually. Like the trusted
 allowlist ([trust](trust.py)) it is **machine-local and never gossiped**: a ban
 is each operator's own mark, keyed on the device's *verified* Ed25519

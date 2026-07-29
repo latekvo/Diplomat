@@ -86,12 +86,12 @@ _ADVERT_CONTEXT = b"szpontnet-nodeinfo-v1:"
 _OVERRIDES_CONTEXT = b"szpontnet-overrides-v1:"
 # A gossiped work-claim (an origination lease on a unit of work) is signed the
 # same way, under its own tag — so a claim signature can't be lifted onto an
-# advert/override or vice versa. See docs/szpontnet/12-work-claims.md.
+# advert/override or vice versa. See szpontnet/docs/12-work-claims.md.
 _CLAIM_CONTEXT = b"szpontnet-workclaim-v1:"
 # A `job-result` — the computed artifact a **foreign** SzpontRequest returns to its
 # originator (who then performs any social action itself) — is signed under its own
 # tag so the originator can bind the result to the executor's key. Same canonical
-# construction. See docs/szpontnet/13-foreign-execution.md.
+# construction. See szpontnet/docs/13-foreign-execution.md.
 _RESULT_CONTEXT = b"szpontnet-jobresult-v1:"
 
 
@@ -416,7 +416,7 @@ class Job:
     requested_by: str  # node id
     requested_at: float
     # The origination-dedup key this job is an execution of, when it was routed
-    # with one (docs/szpontnet/12). The EXECUTOR claims it for the spawned agent's
+    # with one (szpontnet/docs/12). The EXECUTOR claims it for the spawned agent's
     # lifetime, so a re-observation of the same work is suppressed while it runs
     # and freed when it finishes. Empty = an undeduped dispatch (server/target/
     # manual "Run on mesh"). Additive: a pre-claims node just ignores it.
@@ -463,7 +463,7 @@ class ClaimRecord:
     yield, with no negotiation round. The claim is a **liveness-scoped lease** — it
     counts only while its claimant is a live node — so an owner that dies frees the
     work for a survivor without any timer of its own. See
-    docs/szpontnet/12-work-claims.md.
+    szpontnet/docs/12-work-claims.md.
 
     ``pubkey`` is carried inline so the record is **self-authenticating**: a
     receiver can verify ``sig`` (over the canonical bytes, [claim_signing_bytes])
@@ -649,7 +649,7 @@ def job_status(job_id: str, status: str, reason: str = "", node_id: str = "",
     """``direct`` (additive, omitted when false) marks a ``spawned`` job the
     executor ran on the PERSONAL path — fire-and-forget, no ``job-result`` will
     follow — so an accountability-tracking originator knows not to arm a
-    completion deadline for it. See docs/szpontnet/13-foreign-execution.md."""
+    completion deadline for it. See szpontnet/docs/13-foreign-execution.md."""
     msg = {"t": "job-status", "id": job_id, "status": status,
            "reason": reason, "node": node_id}
     if direct:
@@ -662,7 +662,7 @@ def job_result(job_id: str, node_id: str, result: dict, sig: str = "") -> dict:
     Carried back on the same link the dispatch arrived on, correlated by Job ``id``,
     re-sent until the originator ``job-ack``s it. ``sig`` (optional, additive) is the
     executor's signature over [result_signing_bytes]; a keyed executor signs, a
-    keyless one omits it. See docs/szpontnet/13-foreign-execution.md."""
+    keyless one omits it. See szpontnet/docs/13-foreign-execution.md."""
     msg = {"t": "job-result", "id": job_id, "node": node_id, "result": result}
     if sig:
         msg["sig"] = sig
@@ -685,7 +685,7 @@ def job_reminder(job_id: str, node_id: str) -> dict:
     passed its completion deadline without a result. The executor must answer with
     the ``job-result`` (if computed) or a [job_progress] (still running); silence,
     or an answer that doesn't fulfill the task, gets it banned. See
-    docs/szpontnet/13-foreign-execution.md."""
+    szpontnet/docs/13-foreign-execution.md."""
     return {"t": "job-reminder", "id": job_id, "node": node_id}
 
 

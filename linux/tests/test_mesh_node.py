@@ -1041,7 +1041,7 @@ def test_work_claim_dedupes_origination_and_frees_on_owner_death(fleet):
 
 def test_ctl_claim_verb_gates_origination_without_dispatch(fleet):
     """The stand-alone ctl `claim` verb — the auto-monitors' origination gate
-    (docs/szpontnet/04#claim--claim-result). Claiming marks this node the
+    (szpontnet/docs/04#claim--claim-result). Claiming marks this node the
     originator WITHOUT routing any job through the mesh; a peer's later claim of
     the same key is suppressed (exit 3, naming the owner); re-claiming one's own
     key is idempotent; and the key frees when the owner dies (liveness lease)."""

@@ -16,7 +16,7 @@ the untrusted prompt goes into the operator's own sandbox (named by
 ``DIPLOMAT_MESH_FOREIGN_SPAWN``), the result is written to a file the node returns
 to the originator, and the child's environment is scrubbed of host credentials so
 even a mis-built sandbox can't act under this machine's identity. See
-docs/szpontnet/13-foreign-execution.md.
+szpontnet/docs/13-foreign-execution.md.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ class JobSpawnError(RuntimeError):
 # contains one of these.
 #
 # This is DEFENCE IN DEPTH, NOT the credential boundary — the sandbox is
-# ([config.foreign_spawn], docs/szpontnet/13). It deliberately strips app secrets
+# ([config.foreign_spawn], szpontnet/docs/13). It deliberately strips app secrets
 # (API tokens, passwords, the mesh secret/API key) that no sandbox *launcher* ever
 # needs, while INTENTIONALLY leaving infrastructure-access vars a launcher may
 # require — `DOCKER_HOST` (reach the daemon), `SSH_AUTH_SOCK` (an `ssh sandbox-host`
@@ -103,7 +103,7 @@ def _spawn_override(prompt_file: str, template: str, done_path: str | None = Non
     env = None
     if done_path:
         # The executor watches this sentinel to free its work-claim when the agent
-        # finishes; a custom/test runner touches it on exit (docs/szpontnet/12).
+        # finishes; a custom/test runner touches it on exit (szpontnet/docs/12).
         env = {**os.environ, "DIPLOMAT_MESH_DONE_FILE": done_path}
     _detached(_fill(template, prompt_file=prompt_file), "DIPLOMAT_MESH_SPAWN", env=env)
 
@@ -127,7 +127,7 @@ def spawn_job(prompt: str, done_path: str | None = None) -> str:
     dispatcher then fails over to the next candidate).
 
     ``done_path`` (optional) is a completion sentinel the agent writes on exit —
-    how the executor learns its work-claim can be freed (docs/szpontnet/12). Every
+    how the executor learns its work-claim can be freed (szpontnet/docs/12). Every
     spawn path wires it: the shell runners append ``review.shell_command``'s
     exit-code write, and a custom ``DIPLOMAT_MESH_SPAWN`` runner is handed it as
     ``DIPLOMAT_MESH_DONE_FILE`` to touch itself."""

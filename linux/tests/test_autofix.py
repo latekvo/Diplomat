@@ -388,7 +388,7 @@ def test_build_prompt_failure_surfaces_as_poll_error_not_a_dead_worker(store, mo
 # The work-key / stand-down fixtures are PARITY fixtures: the Swift twin
 # (AutofixMesh, asserted in DiplomatCoreSmoke) must produce byte-identical
 # strings for the same inputs — the whole point of the key is that two nodes
-# observing the same work agree on it (docs/szpontnet/12).
+# observing the same work agree on it (szpontnet/docs/12).
 
 
 def test_work_key_reference_convention():

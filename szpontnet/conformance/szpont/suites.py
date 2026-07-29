@@ -1,6 +1,6 @@
 """The conformance suites: concrete TCP/UDP scenarios that check a candidate.
 
-Every case maps to the interop vectors in ``docs/szpontnet/10-conformance.md``
+Every case maps to the interop vectors in ``szpontnet/docs/10-conformance.md``
 and the MUST/SHOULD requirements of the chapters — the core protocol (01–10) in
 categories A–H, **chapter 11** (the trust / load-balancing layer and the
 server / API-key role) in categories **I** (trust & load balancing), **J**

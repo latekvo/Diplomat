@@ -40,14 +40,14 @@ OVERRIDES_CONTEXT = b"szpontnet-overrides-v1:"
 # A gossiped work-claim (an origination lease on a unit of work, ch 12) is signed
 # the same way under its OWN domain tag, so a claim signature can never be lifted
 # onto an advert/override or vice versa. Must match the reference's
-# ``protocol._CLAIM_CONTEXT`` byte-for-byte. See docs/szpontnet/12-work-claims.md.
+# ``protocol._CLAIM_CONTEXT`` byte-for-byte. See szpontnet/docs/12-work-claims.md.
 CLAIM_CONTEXT = b"szpontnet-workclaim-v1:"
 # A `job-result` — the computed artifact a FOREIGN, confined SzpontRequest returns
 # to its originator (who then performs any social action itself, ch 13) — is signed
 # under its OWN domain tag over the canonical ``{id,node,result}``, so a result
 # signature can never be lifted onto an advert/override/claim or vice versa. Must
 # match the reference's ``protocol._RESULT_CONTEXT`` byte-for-byte. See
-# docs/szpontnet/13-foreign-execution.md.
+# szpontnet/docs/13-foreign-execution.md.
 RESULT_CONTEXT = b"szpontnet-jobresult-v1:"
 
 

@@ -123,7 +123,7 @@ _MAX_TOMBSTONES = 64
 # signs this tag + the challenge nonce, never the bare nonce — so a captured
 # signature is meaningless outside SzpontNet's auth exchange and the device key
 # can't be coaxed into acting as a general signing oracle over attacker-chosen
-# bytes. The exact byte construction is normative (see docs/szpontnet/11).
+# bytes. The exact byte construction is normative (see szpontnet/docs/11).
 _AUTH_CONTEXT = b"szpontnet-auth-v1:"
 
 # Tor reconnect backoff — per known peer we hold an onion for but can't currently
@@ -193,7 +193,7 @@ class _PendingResult:
     heals). Past the deadline the entry becomes a **tombstone** (``gave_up``):
     retries stop, but the result is kept for the accountability window so a
     `job-reminder` from the originator revives its delivery instead of getting us
-    banned for work we actually did (docs/szpontnet/13)."""
+    banned for work we actually did (szpontnet/docs/13)."""
 
     msg: dict
     to_node: str
@@ -208,7 +208,7 @@ class _Awaiting:
     """An originator's record of one remote dispatch it will accept a
     ``job-result`` for — plus, when the executor is **foreign** and accepted
     (``spawned`` without ``direct``), the accountability clock over its promise
-    (docs/szpontnet/13#accountability-deadline-reminder-ban): the completion
+    (szpontnet/docs/13#accountability-deadline-reminder-ban): the completion
     ``deadline`` (armed = not None), when the "is this ready?" reminder went out,
     how many agent-approved extensions it has already received, and whether an
     extension decision is currently in flight."""
@@ -367,7 +367,7 @@ class MeshNode:
         # Work-claim book: work_key -> {claimant node id -> freshest ClaimRecord},
         # plus our own per-key seq counter. A claim is an origination lease; the
         # owner of a key is the lowest-id live+personal active claimant. See the
-        # work-claims section below and docs/szpontnet/12-work-claims.md.
+        # work-claims section below and szpontnet/docs/12-work-claims.md.
         self._claims: dict[str, dict[str, protocol.ClaimRecord]] = {}
         self._claim_seq: dict[str, int] = {}
         # work_key -> monotonic time we last emitted a 'released' self-claim. Drives
@@ -384,14 +384,14 @@ class MeshNode:
         # executor claims the key when it spawns the agent and releases it when the
         # agent's completion sentinel (`done`) appears — so a re-scan of the same
         # work is suppressed while it runs and freed when it finishes
-        # (docs/szpontnet/12). Presence is also the local idempotency guard: a
+        # (szpontnet/docs/12). Presence is also the local idempotency guard: a
         # second dispatch of a key we already run never spawns a duplicate.
         self._agents: dict[str, dict] = {}
         # Backstop: free an executor's claim if its completion sentinel is ever lost
         # (a SIGKILL'd terminal, say), so a claim can never pin a key forever. Well
         # above any real agent runtime; the sentinel is the normal path.
         self._agent_max_secs = float(os.environ.get("DIPLOMAT_MESH_AGENT_MAX_SECS", "7200"))
-        # Foreign zero-trust request/response bookkeeping (docs/szpontnet/13):
+        # Foreign zero-trust request/response bookkeeping (szpontnet/docs/13):
         #  - as EXECUTOR: results we computed for a foreign requester and owe back to
         #    it, keyed by job id, re-emitted until job-ack'd (reliable delivery);
         #  - as ORIGINATOR: remote dispatches we're still willing to receive a
@@ -1242,7 +1242,7 @@ class MeshNode:
             # at all. Peer LINKS (`hello`) legitimately arrive over Tor; control
             # sessions do not. An inbound Tor connection is tagged `tor` by
             # _on_tor_inbound BEFORE this runs, so refuse ctl on it outright. See
-            # docs/szpontnet/14#security-notes.
+            # szpontnet/docs/14#security-notes.
             if self._link_transport.get(writer) == "tor":
                 writer.close()
                 return
@@ -1336,7 +1336,7 @@ class MeshNode:
                     raise  # a real socket failure in a handler → tear the link down
                 except Exception as exc:  # noqa: BLE001
                     # A malformed/hostile message MUST NOT wedge or drop the link
-                    # (conformance rule 10 / docs/szpontnet/09). Handlers normalize
+                    # (conformance rule 10 / szpontnet/docs/09). Handlers normalize
                     # their own input, but this makes the "never crash on a peer's
                     # message" invariant structural rather than per-handler: any
                     # unexpected KeyError/TypeError/OverflowError/ValueError from one
@@ -1992,7 +1992,7 @@ class MeshNode:
         # and, since a refused new (workKey, claimant) never stores, starve EVERY genuine
         # personal claim thereafter — breaking origination dedup mesh-wide and violating
         # the spec's "a foreign or keyless node can never deny you work"
-        # (docs/szpontnet/12#security-properties). So at the cap an AUTHORITATIVE incoming
+        # (szpontnet/docs/12#security-properties). So at the cap an AUTHORITATIVE incoming
         # claim — one that can actually win ownership: a live, personal, key-bound
         # claimant — may EVICT one expendable stored record to make room: a `released`
         # tombstone, or a record that is not [authoritative](_claim_authoritative) (a
@@ -2192,7 +2192,7 @@ class MeshNode:
         returns a single ``suppressed`` slot instead of double-originating. Only
         the leaderless P2P path dedupes — a ``server`` node (runs locally) and an
         explicit ``target`` (the client overrode placement) bypass the claim. See
-        docs/szpontnet/12-work-claims.md.
+        szpontnet/docs/12-work-claims.md.
         """
         # The credential presented to an API-key-gated target: the per-request key
         # (from a control client / CLI) when given, else this node's own env key.
@@ -2220,7 +2220,7 @@ class MeshNode:
                          "status": "declined", "reason": "target is banned here"}]
             slots = [("target", [target])]
         else:
-            # Origination dedup (docs/szpontnet/12): only the leaderless surplus-first
+            # Origination dedup (szpontnet/docs/12): only the leaderless surplus-first
             # path can race a peer to the same external event, so the gate lives here
             # (not on the server/target paths). We do NOT claim on the dispatcher —
             # the EXECUTOR claims the key for its agent's lifetime, so the key stays
@@ -2281,7 +2281,7 @@ class MeshNode:
         # zero-trust node — running our request confined and returning the artifact
         # rather than acting on it — we recognize its later `job-result` and act on
         # it ourselves. Harmless for a personal executor that never responds: the
-        # entry just expires. (docs/szpontnet/13)
+        # entry just expires. (szpontnet/docs/13)
         self._register_awaiting(job.id, node_id, duty_id, prompt)
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
         self._job_futures[job.id] = (fut, node_id)
@@ -2327,7 +2327,7 @@ class MeshNode:
         """Arm the accountability clock over an acceptance: a **foreign** executor
         that replied ``spawned`` (without ``direct`` — the personal path never owes
         a result) now owes us a ``job-result`` within the completion deadline
-        (docs/szpontnet/13#the-completion-deadline). Personal executors are devices
+        (szpontnet/docs/13#the-completion-deadline). Personal executors are devices
         the operator vouched for — never tracked."""
         aw = self._awaiting_result.get(job_id)
         if aw is None or direct:
@@ -2374,7 +2374,7 @@ class MeshNode:
         - ``"confined"`` — the requester is **foreign** but we have a confinement
           runner configured, so we run the compute **sandboxed and response-only**
           and return the result for the requester to act on
-          ([_run_confined], docs/szpontnet/13);
+          ([_run_confined], szpontnet/docs/13);
         - ``"decline"`` — refuse (the dispatcher fails the slot over like a dead
           node): a **foreign** requester with **no** confinement runner (the safe
           v1 default), a **disabled** duty, or being **out of tokens**.
@@ -2385,7 +2385,7 @@ class MeshNode:
         work declines it outright rather than sandboxing it."""
         if trust_level == "banned":
             # A banned device broke the accountability contract; the confined path
-            # is a favor, and favors end here (docs/szpontnet/13#the-ban).
+            # is a favor, and favors end here (szpontnet/docs/13#the-ban).
             return "decline", "banned device"
         if not self.local.duty_enabled(job.duty):
             return "decline", f"duty {job.duty} disabled here"
@@ -2483,7 +2483,7 @@ class MeshNode:
             return "failed", str(exc), False
         if wk:
             # The executor owns the key for the agent's lifetime: claim it now, and
-            # free it when the agent's completion sentinel appears (docs/szpontnet/12).
+            # free it when the agent's completion sentinel appears (szpontnet/docs/12).
             self._agents[wk] = {"done": done_path, "at": time.monotonic()}
             self._emit_claim(wk, "active")
             with contextlib.suppress(RuntimeError):  # no running loop → tests w/o watch
@@ -2599,7 +2599,7 @@ class MeshNode:
     # which we return to the originator as a signed `job-result` (re-sent until
     # `job-ack`d — reliable delivery). The ORIGINATOR then performs any social action
     # itself, under its own identity. This realizes the normative foreign-execution
-    # security contract (docs/szpontnet/11 + the full flow in docs/szpontnet/13):
+    # security contract (szpontnet/docs/11 + the full flow in szpontnet/docs/13):
     # sandboxed compute, no host-identity action here, request-in / response-out.
 
     def _result_path(self, job_id: str, incoming: bool = False):
@@ -2635,7 +2635,7 @@ class MeshNode:
             # response-only, so decline rather than run a stranger's code for nobody.
             return "failed", "no verified requester for confined result", False
         wk = job.work_key
-        # Idempotency + the executor-claim (docs/szpontnet/12), mirroring _spawn_local:
+        # Idempotency + the executor-claim (szpontnet/docs/12), mirroring _spawn_local:
         # the executor that spawns the agent mints the work-claim and holds it for the
         # agent's lifetime. Without this the confined path spawned a fresh sandbox on
         # EVERY (re-)dispatch of the same key — so an originator's same-poll double
@@ -2649,7 +2649,7 @@ class MeshNode:
             return "spawned", "", True
         # Bound the in-flight confined set like the other two foreign maps
         # (_pending_results / _awaiting_result), so a burst of foreign dispatches within
-        # one job-timeout window can't grow it without limit (docs/szpontnet/13 — "both
+        # one job-timeout window can't grow it without limit (szpontnet/docs/13 — "both
         # ends bound their bookkeeping"). At the cap, decline so the originator fails over.
         if (job.id not in self._confined_running
                 and len(self._confined_running) >= _MAX_FOREIGN):
@@ -2663,7 +2663,7 @@ class MeshNode:
             return "failed", str(exc), False
         self._record_usage(config.job_cost_units())
         # Register the run so a `job-reminder` while it computes gets a truthful
-        # `job-progress` answer instead of silence (docs/szpontnet/13).
+        # `job-progress` answer instead of silence (szpontnet/docs/13).
         self._confined_running[job.id] = (requester_id, time.monotonic())
         if wk:
             # LOCAL idempotency only: track the confined agent in _agents so a repeat
@@ -2675,7 +2675,7 @@ class MeshNode:
             # gossiping a mesh-authoritative claim under our trusted device key would let a
             # foreign peer LAUNDER-suppress the personal mesh's own origination of any key it
             # names, violating "a foreign or keyless node can never deny you work"
-            # (docs/szpontnet/12#security-properties). We only compute the sandboxed result
+            # (szpontnet/docs/12#security-properties). We only compute the sandboxed result
             # and return it to the requester; we are NOT the originator of wk, so we must not
             # claim ownership of it on the mesh's behalf. Local dedup still prevents us
             # double-spawning the same key here.
@@ -2790,7 +2790,7 @@ class MeshNode:
     def _emit_result(self, job_id: str, to_node: str, result_payload: dict) -> None:
         """Build + sign the job-result and register it for reliable delivery to
         ``to_node``, sending the first copy now. Retried on the heartbeat tick until
-        acked or its deadline (docs/szpontnet/13)."""
+        acked or its deadline (szpontnet/docs/13)."""
         result_payload = self._fit_result(job_id, result_payload)
         sig = self._sign_result(job_id, result_payload)
         msg = protocol.job_result(job_id, self.local.id, result_payload, sig)
@@ -2918,7 +2918,7 @@ class MeshNode:
         if entry.reminded_at is not None and not bool(result.get("ok", False)):
             # We asked "is this ready?" after six-plus hours and the answer is a
             # failure — a response that does not fulfill the task is a broken
-            # promise (docs/szpontnet/13#resolution-fulfilled-extended-or-banned).
+            # promise (szpontnet/docs/13#resolution-fulfilled-extended-or-banned).
             # (A timely ok:false, before any reminder, is an honest answer and is
             # handled below like always.)
             self._ban_executor(entry, job_id,
@@ -2954,7 +2954,7 @@ class MeshNode:
     # MARK: - foreign accountability (deadline → reminder → extension or ban)
     #
     # An acceptance is the only promise a foreign device ever makes, and this
-    # section makes it binding (docs/szpontnet/13#accountability-deadline-
+    # section makes it binding (szpontnet/docs/13#accountability-deadline-
     # reminder-ban). ORIGINATOR side: a foreign `spawned` (without `direct`) arms
     # a completion deadline ([_maybe_arm_deadline]); the heartbeat tick checks it
     # ([_check_foreign_deadlines]); past it we send a `job-reminder`, and within
@@ -3275,7 +3275,7 @@ class MeshNode:
                                           target, api_key, work_key)
             return {"t": "dispatch-result", "duty": duty, "results": results}
         if t == "claim":
-            # The origination claim gate, stand-alone (docs/szpontnet/12): a client
+            # The origination claim gate, stand-alone (szpontnet/docs/12): a client
             # that will run the work ITSELF (e.g. the applet's auto-monitor spawning
             # a local, tracked agent) claims the key without dispatching. `owned`
             # False → a better live personal peer holds the lease; don't originate.
@@ -3492,7 +3492,7 @@ class MeshNode:
             # owning node id (the lowest-id live+personal active claimant). Lets a
             # UI/CLI show what work is already spoken for. Only owned keys appear.
             "claims": self._claim_owners(),
-            # Foreign zero-trust request/response in flight (docs/szpontnet/13):
+            # Foreign zero-trust request/response in flight (szpontnet/docs/13):
             # results we've computed and owe back to a foreign requester (unacked),
             # and remote dispatches we're still willing to receive a result for.
             "foreign": {"pendingResults": len(self._pending_results),

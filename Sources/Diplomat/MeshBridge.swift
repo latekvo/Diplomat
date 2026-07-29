@@ -200,7 +200,7 @@ enum MeshBridge {
     /// `workKey` (optional) opts the dispatch into origination dedup: the node
     /// claims the key, and if a live peer already owns the work returns a single
     /// `suppressed` slot instead of routing a second run. The EXECUTOR holds that
-    /// claim for its agent's lifetime (docs/szpontnet/12).
+    /// claim for its agent's lifetime (szpontnet/docs/12).
     static func dispatch(duty: String, prompt: String, target: String? = nil,
                          workKey: String = "", port: Int,
                          timeout: TimeInterval = 60) throws -> [[String: Any]] {
@@ -212,7 +212,7 @@ enum MeshBridge {
     }
 
     /// Run the origination claim gate for one unit of external work WITHOUT
-    /// dispatching (docs/szpontnet/12) — for the auto-monitor, which runs the work
+    /// dispatching (szpontnet/docs/12) — for the auto-monitor, which runs the work
     /// itself as a local tracked agent. `owned` false means a better live personal
     /// peer already holds the lease and the caller must NOT originate. Mirrors
     /// `ctl.claim_work`.

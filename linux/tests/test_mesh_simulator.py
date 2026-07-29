@@ -2,7 +2,7 @@
 
 Each scenario stands up a real multi-node fleet on loopback, injects simulated
 work events, and asserts a work-claim invariant the auto-monitors depend on:
-exactly-once, best-fit placement, no-drop, failover, and retry (docs/szpontnet/12).
+exactly-once, best-fit placement, no-drop, failover, and retry (szpontnet/docs/12).
 The simulator itself lives in ``tools/mesh_sim.py`` (also runnable as
 ``python -m tools.mesh_sim``); this module just wires its scenarios into pytest.
 

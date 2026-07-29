@@ -5,7 +5,7 @@ section it enforces (e.g. ``02-discovery#dial-rule``) and a MUST/SHOULD level.
 The runner prints a per-check pass/fail/skip line and an aggregate verdict; a
 SHOULD failure warns but does not fail the run, a MUST failure does. The exit
 code is non-zero iff any MUST check failed — so a second implementation can gate
-CI on ``szpontnet-tester``.
+CI on the conformance tester.
 """
 
 from __future__ import annotations

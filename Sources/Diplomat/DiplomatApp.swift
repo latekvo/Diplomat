@@ -553,7 +553,7 @@ enum Dump {
                                specificAuthor: .theirs).buildPrompt())
 
             // Mesh coordination: every machine scans and routes each find through
-            // claim-gated DISPATCH to the best-surplus node (docs/szpontnet/12) —
+            // claim-gated DISPATCH to the best-surplus node (szpontnet/docs/12) —
             // REAL node state, REAL claim verb probe, no spawn.
             print("\n== mesh coordination ==")
             let meshOn = UserDefaults.standard.object(forKey: "meshEnabled") as? Bool ?? false

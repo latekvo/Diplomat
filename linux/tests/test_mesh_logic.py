@@ -1425,7 +1425,7 @@ def test_gossip_cannot_hijack_a_pinned_node_id(tmp_path, monkeypatch):
 def test_own_link_hello_rekeys_past_a_forged_inflated_epoch(tmp_path, monkeypatch):
     """A forged GOSSIP advert for a peer's id, carrying an INFLATED epoch, must not
     permanently hijack the id→key pin. The real peer's own-link hello + proof of
-    possession still re-keys and verifies (docs/szpontnet/11 — only the own link may
+    possession still re-keys and verifies (szpontnet/docs/11 — only the own link may
     re-key), so it becomes personal once allowlisted. Regression: the re-key was
     gated behind `if fresh:`, and the forged epoch made the honest hello non-fresh,
     leaving the victim foreign forever."""
@@ -1956,7 +1956,7 @@ def test_confined_executor_dedups_locally_but_never_claims_the_work_key(tmp_path
     by the FOREIGN requester; a gossiped claim under our trusted device key would let that
     requester launder-suppress the personal mesh's own origination of any key it names,
     violating "a foreign or keyless node can never deny you work"
-    (docs/szpontnet/12#security-properties). We only compute the sandboxed result and
+    (szpontnet/docs/12#security-properties). We only compute the sandboxed result and
     return it — we are not the originator of wk, unlike the personal `_spawn_local` path
     (which DOES legitimately claim, and is covered separately).
 
@@ -2570,7 +2570,7 @@ def test_non_object_job_result_is_dropped_not_crashing(tmp_path, monkeypatch):
     """A correlated, authentic job-result whose `result` field is a non-object (a
     string/list/number) must be treated as a non-fulfilling answer and NOT raise
     AttributeError on `.get` — an uncaught AttributeError escapes _run_link's except
-    tuple and tears the link (docs/szpontnet/13: a malformed reply is simply dropped)."""
+    tuple and tears the link (szpontnet/docs/13: a malformed reply is simply dropped)."""
     if not crypto.AVAILABLE:
         return
     acted = []
@@ -2706,7 +2706,7 @@ def test_emit_claim_stores_own_claim_even_when_book_is_full(tmp_path, monkeypatc
 def test_foreign_flood_cannot_starve_a_personal_claim(tmp_path, monkeypatch):
     """A verified-but-foreign device (or any keyed intruder inside the join fence) that
     floods the claim book to the cap must NOT be able to deny a genuine PERSONAL claimant
-    its lease — docs/szpontnet/12 "a foreign or keyless node can never deny you work". At
+    its lease — szpontnet/docs/12 "a foreign or keyless node can never deny you work". At
     the cap an authoritative personal claim EVICTS an expendable (non-authoritative) flood
     record rather than being refused, so origination dedup never silently breaks."""
     if not crypto.AVAILABLE:
