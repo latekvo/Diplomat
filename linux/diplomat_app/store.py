@@ -40,6 +40,17 @@ from .models import API, Filters, Fmt, OpenIssue, OpenPR
 from .prtarget import PRTarget
 
 
+def _count(n: int, noun: str) -> str:
+    """``3 files`` / ``1 file`` — the pluralisation two row builders share."""
+    return f"{n} {noun}" if n == 1 else f"{n} {noun}s"
+
+
+def _installer_files(pr: OpenPR) -> list[str]:
+    """The installer-owned paths in a PR — counted in line2 and listed in line3,
+    so they must be the same set in both."""
+    return [f for f in pr.files if Filters.is_installer_file(f)]
+
+
 # MARK: - Value types
 
 
@@ -1337,79 +1348,51 @@ class Store(QObject):
 
         threading.Thread(target=work, daemon=True).start()
 
-    def mesh_set_attr(self, node_id: str, attrs: dict) -> None:
-        """Edit a node's attributes (self or a peer, forwarded over the mesh).
-        Runs on a daemon thread; a CtlError lands in `mesh_error` for the view."""
+    def _mesh_command(self, run, what: str) -> None:
+        """Run one mesh control round-trip on a daemon thread, then settle the view:
+        a :class:`ctl.CtlError` becomes ``mesh_error`` (the mesh screen renders it)
+        and the topology is re-read so the edit shows immediately.
+
+        Five commands below were the same nine lines around a single ``ctl`` call.
+        The shape is the load-bearing part — skipping the refresh leaves the screen
+        showing pre-edit state, and skipping the error assignment makes a rejected
+        edit look like it worked — so it lives once. Twin of ``meshCommand`` in
+        Store.swift.
+        """
         from .mesh import ctl
 
         def work() -> None:
             try:
-                ctl.set_attr(node_id, attrs)
+                run(ctl)
                 self.mesh_error = None
             except ctl.CtlError as exc:
                 self.mesh_error = str(exc)
             self.refresh_mesh_state()
 
-        threading.Thread(target=work, daemon=True).start()
+        threading.Thread(target=work, daemon=True, name=f"mesh-{what}").start()
+
+    def mesh_set_attr(self, node_id: str, attrs: dict) -> None:
+        """Edit a node's attributes (self or a peer, forwarded over the mesh)."""
+        self._mesh_command(lambda ctl: ctl.set_attr(node_id, attrs), "set-attr")
 
     def mesh_trust(self, fingerprint: str, label: str = "") -> None:
         """Mark a peer's device Personal — add its proven fingerprint to the local
         trusted allowlist (so its mesh requests run as if triggered here)."""
-        from .mesh import ctl
-
-        def work() -> None:
-            try:
-                ctl.trust_device(fingerprint, label)
-                self.mesh_error = None
-            except ctl.CtlError as exc:
-                self.mesh_error = str(exc)
-            self.refresh_mesh_state()
-
-        threading.Thread(target=work, daemon=True).start()
+        self._mesh_command(lambda ctl: ctl.trust_device(fingerprint, label), "trust")
 
     def mesh_untrust(self, fingerprint: str) -> None:
         """Mark a peer's device Foreign — remove its fingerprint from the allowlist."""
-        from .mesh import ctl
-
-        def work() -> None:
-            try:
-                ctl.untrust_device(fingerprint)
-                self.mesh_error = None
-            except ctl.CtlError as exc:
-                self.mesh_error = str(exc)
-            self.refresh_mesh_state()
-
-        threading.Thread(target=work, daemon=True).start()
+        self._mesh_command(lambda ctl: ctl.untrust_device(fingerprint), "untrust")
 
     def mesh_unban(self, fingerprint: str, node_id: str = "") -> None:
         """Lift a ban on a peer's device (it was marked banned after accepting a
         SzpontRequest and failing to deliver it — or manually). It returns to
         Foreign; promote it via the trust toggle if it is actually yours."""
-        from .mesh import ctl
-
-        def work() -> None:
-            try:
-                ctl.unban_device(fingerprint, node_id)
-                self.mesh_error = None
-            except ctl.CtlError as exc:
-                self.mesh_error = str(exc)
-            self.refresh_mesh_state()
-
-        threading.Thread(target=work, daemon=True).start()
+        self._mesh_command(lambda ctl: ctl.unban_device(fingerprint, node_id), "unban")
 
     def mesh_set_overrides(self, duty: str, placement: dict) -> None:
         """Edit one duty's mesh-wide placement (gossiped last-writer-wins)."""
-        from .mesh import ctl
-
-        def work() -> None:
-            try:
-                ctl.set_overrides(duty, placement)
-                self.mesh_error = None
-            except ctl.CtlError as exc:
-                self.mesh_error = str(exc)
-            self.refresh_mesh_state()
-
-        threading.Thread(target=work, daemon=True).start()
+        self._mesh_command(lambda ctl: ctl.set_overrides(duty, placement), "set-overrides")
 
     def mesh_dispatch(self, duty: str, prompt: str, done_callback=None) -> None:
         """Route a job through the mesh; `done_callback(results, error)` fires on
@@ -1463,116 +1446,74 @@ class Store(QObject):
             url=None,
         )
 
-    def items_for(self, tool_id: str) -> list[DisplayItem]:
-        if tool_id == "skillPRs":
-            out = []
-            for p in sorted(Filters.skill_prs(self.prs), key=lambda p: -p.number):
-                skills = ", ".join(
+    # One row builder per tool: (rows for this data) -> the ordered source objects,
+    # then the two lines each row shows. Every branch used to spell out the same
+    # `out = []` / sorted() / append(DisplayItem(id=…, badge=f"#{n}", title=…, url=…))
+    # scaffolding around these three expressions.
+    #
+    # The row TEXT is duplicated across platforms by necessity — `ToolData.items` in
+    # Sources/DiplomatCore/ToolKind.swift renders the same six lists for the macOS
+    # panel, and neither side can shell out to the other for something rebuilt on
+    # every render. `linux/tests/test_tooldata_parity.py` runs both over one fixture
+    # and diffs the rows, so a change to either has to be made to both.
+    def _row_specs(self) -> dict:
+        me = self.effective_me
+        return {
+            "skillPRs": (
+                lambda: sorted(Filters.skill_prs(self.prs), key=lambda p: -p.number),
+                lambda p: f"@{p.author} · {Fmt.age(p.created_at)} · "
+                          f"{'draft' if p.is_draft else 'ready'}",
+                lambda p: "skills: " + ", ".join(
                     Fmt.skill_name(f) for f in p.files if Filters.is_skill_file(f)
-                )
-                out.append(
-                    DisplayItem(
-                        id=p.number,
-                        badge=f"#{p.number}",
-                        title=p.title,
-                        url=p.url,
-                        line2=f"@{p.author} · {Fmt.age(p.created_at)} · {'draft' if p.is_draft else 'ready'}",
-                        line3=f"skills: {skills}",
-                    )
-                )
-            return out
+                ),
+            ),
+            "installerPRs": (
+                lambda: sorted(Filters.installer_prs(self.prs), key=lambda p: -p.number),
+                lambda p: f"@{p.author} · {Fmt.age(p.created_at)} · "
+                          f"{_count(len(_installer_files(p)), 'file')}",
+                lambda p: "\n".join(Fmt.short_path(f) for f in _installer_files(p)),
+            ),
+            "staleReady": (
+                lambda: sorted(Filters.stale_ready_prs(self.prs), key=lambda p: p.ready_at),
+                lambda p: f"@{p.author} · ready {Fmt.days(p.ready_at)}d · "
+                          f"{'born-ready' if p.ready_for_review_at is None else 'converted'}",
+                lambda p: None,
+            ),
+            "unaddressedIssues": (
+                lambda: sorted(Filters.unaddressed_external_issues(self.issues),
+                               key=lambda i: i.created_at),
+                lambda i: f"@{i.author} [{i.author_association}] · "
+                          f"{Fmt.age(i.created_at)} · {i.comment_count}c",
+                lambda i: f"labels: {', '.join(i.labels)}" if i.labels else None,
+            ),
+            "myApproved": (
+                lambda: sorted(Filters.my_approved_prs(self.prs, me), key=lambda p: -p.number),
+                lambda p: f"@{p.author} · {Fmt.age(p.created_at)} · approved · "
+                          f"{'draft' if p.is_draft else 'ready'}",
+                lambda p: None,
+            ),
+            "myUnaddressed": (
+                lambda: sorted(Filters.my_unaddressed_review_prs(self.prs, me),
+                               key=lambda p: -p.number),
+                lambda p: f"@{p.author} · {Fmt.age(p.created_at)} · "
+                          f"{_count(len(p.unaddressed_threads(me)), 'open thread')}",
+                lambda p: None,
+            ),
+        }
 
-        if tool_id == "installerPRs":
-            out = []
-            for p in sorted(Filters.installer_prs(self.prs), key=lambda p: -p.number):
-                fs = [f for f in p.files if Filters.is_installer_file(f)]
-                plural = "" if len(fs) == 1 else "s"
-                out.append(
-                    DisplayItem(
-                        id=p.number,
-                        badge=f"#{p.number}",
-                        title=p.title,
-                        url=p.url,
-                        line2=f"@{p.author} · {Fmt.age(p.created_at)} · {len(fs)} file{plural}",
-                        line3="\n".join(Fmt.short_path(f) for f in fs),
-                    )
-                )
-            return out
-
-        if tool_id == "staleReady":
-            out = []
-            for p in sorted(Filters.stale_ready_prs(self.prs), key=lambda p: p.ready_at):
-                d = Fmt.days(p.ready_at)
-                kind = "born-ready" if p.ready_for_review_at is None else "converted"
-                out.append(
-                    DisplayItem(
-                        id=p.number,
-                        badge=f"#{p.number}",
-                        title=p.title,
-                        url=p.url,
-                        line2=f"@{p.author} · ready {d}d · {kind}",
-                        line3=None,
-                    )
-                )
-            return out
-
-        if tool_id == "unaddressedIssues":
-            out = []
-            for i in sorted(
-                Filters.unaddressed_external_issues(self.issues),
-                key=lambda i: i.created_at,
-            ):
-                line3 = (
-                    f"labels: {', '.join(i.labels)}" if i.labels else None
-                )
-                out.append(
-                    DisplayItem(
-                        id=i.number,
-                        badge=f"#{i.number}",
-                        title=i.title,
-                        url=i.url,
-                        line2=f"@{i.author} [{i.author_association}] · {Fmt.age(i.created_at)} · {i.comment_count}c",
-                        line3=line3,
-                    )
-                )
-            return out
-
-        if tool_id == "myApproved":
-            out = []
-            for p in sorted(
-                Filters.my_approved_prs(self.prs, self.effective_me),
-                key=lambda p: -p.number,
-            ):
-                out.append(
-                    DisplayItem(
-                        id=p.number,
-                        badge=f"#{p.number}",
-                        title=p.title,
-                        url=p.url,
-                        line2=f"@{p.author} · {Fmt.age(p.created_at)} · approved · {'draft' if p.is_draft else 'ready'}",
-                        line3=None,
-                    )
-                )
-            return out
-
-        if tool_id == "myUnaddressed":
-            out = []
-            for p in sorted(
-                Filters.my_unaddressed_review_prs(self.prs, self.effective_me),
-                key=lambda p: -p.number,
-            ):
-                n = len(p.unaddressed_threads(self.effective_me))
-                plural = "" if n == 1 else "s"
-                out.append(
-                    DisplayItem(
-                        id=p.number,
-                        badge=f"#{p.number}",
-                        title=p.title,
-                        url=p.url,
-                        line2=f"@{p.author} · {Fmt.age(p.created_at)} · {n} open thread{plural}",
-                        line3=None,
-                    )
-                )
-            return out
-
-        return []
+    def items_for(self, tool_id: str) -> list[DisplayItem]:
+        spec = self._row_specs().get(tool_id)
+        if spec is None:
+            return []
+        source, line2, line3 = spec
+        return [
+            DisplayItem(
+                id=obj.number,
+                badge=f"#{obj.number}",
+                title=obj.title,
+                url=obj.url,
+                line2=line2(obj),
+                line3=line3(obj),
+            )
+            for obj in source()
+        ]

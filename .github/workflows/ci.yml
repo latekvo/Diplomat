@@ -30,13 +30,22 @@ jobs:
         run: swift run DiplomatCoreSmoke
       # Headless UI snapshot: renders the real two-column panel (seeded sessions,
       # devices, bans, audit feed) through ImageRenderer — a cheap whole-UI crash
-      # guard that needs no gh auth and no display. Render mode never persists
-      # (settings writes are render-guarded), so it can't touch any defaults.
+      # guard that needs no gh auth and no display. A headless mode never persists
+      # (settings writes are headless-guarded), so it can't touch any defaults.
       - name: Headless panel render
         run: |
           DIPLOMAT_RENDER=devices DIPLOMAT_RENDER_OUT="$RUNNER_TEMP/panel.png" \
             swift run Diplomat
           test -s "$RUNNER_TEMP/panel.png"
+      # The two shared-helper self-tests. Both are pure logic: OSA_TEST runs bare
+      # AppleScript expressions (no `tell application`, so no Automation permission),
+      # and MESH_CMD_TEST is pinned to a scratch state dir and a non-checkout so it
+      # can neither read a real mesh node nor start one.
+      - name: Headless helper self-tests
+        run: |
+          DIPLOMAT_OSA_TEST=1 swift run Diplomat
+          DIPLOMAT_MESH_DIR="$RUNNER_TEMP/mesh" DIPLOMAT_SELF_REPO=/nonexistent \
+            DIPLOMAT_MESH_CMD_TEST=1 swift run Diplomat
 
   # The shared core advertises "compiles on macOS *and* Linux". This guards that
   # invariant by building + running only the platform-agnostic core/smoke targets

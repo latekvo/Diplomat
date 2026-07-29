@@ -38,6 +38,15 @@ threshold in one file and both platforms pick it up; the golden-prompt tests
   Linux assets. These are rendering choices, not logic — both are kept here so
   the catalog stays a single list.
 - **`_comment` keys** are documentation only; loaders ignore unknown keys.
+- **The six tool lists are the one thing NOT single-sourced.** `ToolData.items`
+  (`Sources/DiplomatCore/ToolKind.swift`) and `Store.items_for`
+  (`linux/diplomat_app/store.py`) each render the same six lists, down to the text
+  of every row, because the lists are rebuilt on every render and neither side can
+  afford a shell-out per render the way prompt assembly can. What stands in for
+  single-sourcing is `linux/tests/test_tooldata_parity.py`: it drives both
+  implementations over one fixture (via `diplomat-core tool-data`) and diffs the
+  rows, so a format, filter, sort or pluralisation change on one platform fails CI
+  until it is made on the other. **Change one, change both.**
 - **Prompt assembly is single-sourced in Swift.** `buildPrompt` in `DiplomatCore`
   is the only implementation: the Linux applet does *not* re-implement it in
   Python, it shells out to the `diplomat-core` CLI

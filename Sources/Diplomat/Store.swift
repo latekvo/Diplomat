@@ -42,16 +42,26 @@ final class Store: ObservableObject {
 
     // MARK: persisted settings
 
-    /// Persist a settings value — EXCEPT in render mode. A headless render seeds this
-    /// Store with preview values through the same persisted properties the GUI uses,
-    /// and it shares the live app's defaults domain: an unguarded write would silently
-    /// flip the user's real settings (a past render turned the auto-approve opt-in ON).
-    /// Every UserDefaults-backed settings didSet must go through here. (The one
-    /// exception is `repoPathOverride`, which lives in the shared `AppConfig` file, not
-    /// UserDefaults — its didSet applies the same render guard inline.)
+    /// Persist a settings value — EXCEPT in a one-shot headless mode. A self-test seeds
+    /// this Store through the same persisted properties the GUI uses, and it shares the
+    /// live app's defaults domain: an unguarded write would silently flip the user's real
+    /// settings (a past render turned the auto-approve opt-in ON) or hand a monitor a
+    /// dry-run's edge-trigger state. Every UserDefaults-backed settings didSet must go
+    /// through here or `persistJSON`. (The one exception is `repoPathOverride`, which
+    /// lives in the shared `AppConfig` file, not UserDefaults — its didSet applies the
+    /// same guard inline.)
     private func persist(_ value: Any?, forKey key: String) {
-        guard !Headless.isRender else { return }
+        guard !Headless.active else { return }
         UserDefaults.standard.set(value, forKey: key)
+    }
+
+    /// JSON-encoded twin of `persist`, for the Codable caches (tracked processes, the
+    /// per-PR attempt maps, the auto-fix fingerprints). Same headless rule; an encode
+    /// failure leaves the previous value in place rather than clearing it.
+    private func persistJSON<T: Encodable>(_ value: T, forKey key: String) {
+        guard !Headless.active else { return }
+        guard let data = try? JSONEncoder().encode(value) else { return }
+        UserDefaults.standard.set(data, forKey: key)
     }
 
     @Published var usernameOverride: String {
@@ -72,10 +82,10 @@ final class Store: ObservableObject {
     ///
     /// The one setting NOT in UserDefaults: a mesh node spawns agents from its own
     /// stdlib-only process and can't read them, so it lives in the shared
-    /// `~/.diplomat/config.json` (see `AppConfig`). Render-guarded like the rest.
+    /// `~/.diplomat/config.json` (see `AppConfig`). Headless-guarded like the rest.
     @Published var repoPathOverride: String {
         didSet {
-            guard !Headless.isRender else { return }
+            guard !Headless.active else { return }
             AppConfig.set(AppConfig.repoRootKey, repoPathOverride)
         }
     }
@@ -84,7 +94,7 @@ final class Store: ObservableObject {
     @Published var prAutofixEnabled: Bool {
         didSet {
             persist(prAutofixEnabled, forKey: Keys.prAutofixEnabled)
-            if prAutofixEnabled && !oldValue && !Headless.isRender { Task { await runAutofixPollOnce() } }
+            if prAutofixEnabled && !oldValue && !Headless.active { Task { await runAutofixPollOnce() } }
         }
     }
 
@@ -94,7 +104,7 @@ final class Store: ObservableObject {
     @Published var reviewRequestsEnabled: Bool {
         didSet {
             persist(reviewRequestsEnabled, forKey: Keys.reviewRequestsEnabled)
-            if reviewRequestsEnabled && !oldValue && !Headless.isRender { Task { await runAutofixPollOnce() } }
+            if reviewRequestsEnabled && !oldValue && !Headless.active { Task { await runAutofixPollOnce() } }
         }
     }
 
@@ -143,7 +153,7 @@ final class Store: ObservableObject {
     @Published var meshEnabled: Bool {
         didSet {
             persist(meshEnabled, forKey: Keys.meshEnabled)
-            guard !Headless.isRender, meshEnabled != oldValue else { return }
+            guard !Headless.active, meshEnabled != oldValue else { return }
             if meshEnabled { ensureMeshRunning() } else { stopMesh() }
         }
     }
@@ -195,7 +205,7 @@ final class Store: ObservableObject {
     @Published var apiWatchEnabled: Bool {
         didSet {
             persist(apiWatchEnabled, forKey: Keys.apiWatchEnabled)
-            if apiWatchEnabled && !oldValue && !Headless.isRender { Task { await runApiErrorScanOnce() } }
+            if apiWatchEnabled && !oldValue && !Headless.active { Task { await runApiErrorScanOnce() } }
         }
     }
 
@@ -471,12 +481,7 @@ final class Store: ObservableObject {
     private var processPollTask: Task<Void, Never>?
 
     private func persistProcesses() {
-        // A headless render shares the live app's defaults domain; never let seeded
-        // preview rows overwrite the user's real tracked-process list.
-        guard !Headless.isRender else { return }
-        if let data = try? JSONEncoder().encode(processes) {
-            UserDefaults.standard.set(data, forKey: Keys.processes)
-        }
+        persistJSON(processes, forKey: Keys.processes)
     }
     private static func loadProcesses() -> [TrackedProcess] {
         guard let data = UserDefaults.standard.data(forKey: Keys.processes),
@@ -700,10 +705,7 @@ final class Store: ObservableObject {
         return decoded
     }
     private func saveMyConflictAttempts(_ map: [String: ReviewAttempt]) {
-        guard !Headless.isRender else { return }
-        if let data = try? JSONEncoder().encode(map) {
-            UserDefaults.standard.set(data, forKey: Keys.myConflictAttempts)
-        }
+        persistJSON(map, forKey: Keys.myConflictAttempts)
     }
 
     /// PRs that request MY review: dispatch the most-comprehensive review whenever I OWE
@@ -1069,10 +1071,7 @@ final class Store: ObservableObject {
         return decoded
     }
     private func saveReviewReqAttempts(_ map: [String: ReviewAttempt]) {
-        guard !Headless.isRender else { return }
-        if let data = try? JSONEncoder().encode(map) {
-            UserDefaults.standard.set(data, forKey: Keys.reviewReqAttempts)
-        }
+        persistJSON(map, forKey: Keys.reviewReqAttempts)
     }
 
     /// Spawn the appropriate action-button agent for a detected transition and track
@@ -1137,10 +1136,7 @@ final class Store: ObservableObject {
         return decoded
     }
     private func saveMyReviewAttempts(_ map: [String: ReviewAttempt]) {
-        guard !Headless.isRender else { return }
-        if let data = try? JSONEncoder().encode(map) {
-            UserDefaults.standard.set(data, forKey: Keys.myReviewAttempts)
-        }
+        persistJSON(map, forKey: Keys.myReviewAttempts)
     }
 
     private var coreRepo: (owner: String, repo: String) {
@@ -1209,11 +1205,9 @@ final class Store: ObservableObject {
         return Dictionary(uniqueKeysWithValues: decoded.compactMap { k, v in Int(k).map { ($0, v) } })
     }
     private func saveAutofixFingerprints(_ fps: [Int: PRFingerprint]) {
-        guard !Headless.isRender else { return }
-        let keyed = Dictionary(uniqueKeysWithValues: fps.map { (String($0.key), $0.value) })
-        if let data = try? JSONEncoder().encode(keyed) {
-            UserDefaults.standard.set(data, forKey: Keys.autofixFingerprints)
-        }
+        // JSON object keys must be strings; `loadAutofixFingerprints` parses them back to Int.
+        persistJSON(Dictionary(uniqueKeysWithValues: fps.map { (String($0.key), $0.value) }),
+                    forKey: Keys.autofixFingerprints)
     }
 
     // MARK: Claude API-error terminal watcher
@@ -1451,13 +1445,21 @@ final class Store: ObservableObject {
         }
     }
 
-    /// Edit a node's attributes (self or a peer, forwarded over the mesh). Runs the control
-    /// round-trip off-main; a `MeshCtlError` lands in `meshError` for the screen.
-    func meshSetAttr(nodeID: String, attrs: [String: Any]) {
+    /// Run one mesh control round-trip off the main actor, then settle the screen:
+    /// any `MeshCtlError` becomes `meshError` (the mesh screen renders it) and the
+    /// topology is re-read so the edit shows immediately.
+    ///
+    /// Five commands below were the same ten lines around a single `MeshBridge`
+    /// call. The shape is the load-bearing part — dropping the `meshTick()` leaves
+    /// the screen showing pre-edit state, and dropping the `meshError` assignment
+    /// makes a rejected edit look like it worked — so it lives once. Driven directly
+    /// by `MeshCommandTest`, which is why it isn't private. Twin of the Linux
+    /// `store._mesh_command`.
+    func meshCommand(_ body: @escaping (Int) throws -> Void) {
         let port = meshState?.tcpPort ?? 0
         Task { [weak self] in
             let err: String? = await Task.detached(priority: .userInitiated) {
-                do { try MeshBridge.setAttr(target: nodeID, attrs: attrs, port: port); return nil }
+                do { try body(port); return nil }
                 catch { return (error as? LocalizedError)?.errorDescription ?? "\(error)" }
             }.value
             guard let self else { return }
@@ -1466,21 +1468,18 @@ final class Store: ObservableObject {
         }
     }
 
+    /// Edit a node's attributes (self or a peer, forwarded over the mesh). Runs the control
+    /// round-trip off-main; a `MeshCtlError` lands in `meshError` for the screen.
+    func meshSetAttr(nodeID: String, attrs: [String: Any]) {
+        meshCommand { try MeshBridge.setAttr(target: nodeID, attrs: attrs, port: $0) }
+    }
+
     /// Mark a peer's device Personal (trust) or Foreign (untrust) — add/remove its proven
     /// fingerprint from the local allowlist. Mirrors the Linux `store.mesh_trust`/`mesh_untrust`.
     func meshSetTrust(fingerprint: String, label: String, trusted: Bool) {
-        let port = meshState?.tcpPort ?? 0
-        Task { [weak self] in
-            let err: String? = await Task.detached(priority: .userInitiated) {
-                do {
-                    if trusted { try MeshBridge.trust(fingerprint: fingerprint, label: label, port: port) }
-                    else { try MeshBridge.untrust(fingerprint: fingerprint, port: port) }
-                    return nil
-                } catch { return (error as? LocalizedError)?.errorDescription ?? "\(error)" }
-            }.value
-            guard let self else { return }
-            self.meshError = err
-            await self.meshTick()
+        meshCommand { port in
+            if trusted { try MeshBridge.trust(fingerprint: fingerprint, label: label, port: port) }
+            else { try MeshBridge.untrust(fingerprint: fingerprint, port: port) }
         }
     }
 
@@ -1489,34 +1488,14 @@ final class Store: ObservableObject {
     /// manually. It returns to Foreign; promote via the trust toggle if it's yours.
     /// (Mirrors the Linux store's `mesh_unban`.)
     func meshUnban(fingerprint: String, node: String) {
-        let port = meshState?.tcpPort ?? 0
-        Task { [weak self] in
-            let err: String? = await Task.detached(priority: .userInitiated) {
-                do {
-                    try MeshBridge.unban(fingerprint: fingerprint, node: node, port: port)
-                    return nil
-                } catch { return (error as? LocalizedError)?.errorDescription ?? "\(error)" }
-            }.value
-            guard let self else { return }
-            self.meshError = err
-            await self.meshTick()
-        }
+        meshCommand { try MeshBridge.unban(fingerprint: fingerprint, node: node, port: $0) }
     }
 
     /// Set the trust level applied to UNKNOWN (unlisted) devices — the mesh screen's
     /// default-trust toggle. `level` is "personal" or "foreign". Runs the control
     /// round-trip off-main; a `MeshCtlError` lands in `meshError` for the screen.
     func meshSetDefaultTrust(level: String) {
-        let port = meshState?.tcpPort ?? 0
-        Task { [weak self] in
-            let err: String? = await Task.detached(priority: .userInitiated) {
-                do { try MeshBridge.setDefaultTrust(level: level, port: port); return nil }
-                catch { return (error as? LocalizedError)?.errorDescription ?? "\(error)" }
-            }.value
-            guard let self else { return }
-            self.meshError = err
-            await self.meshTick()
-        }
+        meshCommand { try MeshBridge.setDefaultTrust(level: level, port: $0) }
     }
 
     /// Record that the user has decided on a newly-seen device (Personal or Keep Foreign),
@@ -1548,17 +1527,8 @@ final class Store: ObservableObject {
 
     /// Edit one duty's mesh-wide placement (gossiped last-writer-wins).
     func meshSetOverrides(duty: String, placement: MeshPlacement) {
-        let port = meshState?.tcpPort ?? 0
         let obj = placement.jsonObject()
-        Task { [weak self] in
-            let err: String? = await Task.detached(priority: .userInitiated) {
-                do { try MeshBridge.setOverrides(duty: duty, placement: obj, port: port); return nil }
-                catch { return (error as? LocalizedError)?.errorDescription ?? "\(error)" }
-            }.value
-            guard let self else { return }
-            self.meshError = err
-            await self.meshTick()
-        }
+        meshCommand { try MeshBridge.setOverrides(duty: duty, placement: obj, port: $0) }
     }
 
     // MARK: - self-update

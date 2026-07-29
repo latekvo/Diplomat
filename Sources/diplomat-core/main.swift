@@ -8,11 +8,22 @@ import Foundation
 //
 // Usage:
 //   diplomat-core build-prompt      < config.json    # prints the assembled prompt
+//   diplomat-core tool-data         < fixture.json   # prints the tool lists as JSON
 //
-// The JSON config's "kind" field ("review" | "conflicts" | "audit") selects the
-// builder; remaining fields mirror the Swift *Config structs (defaults applied when
-// a field is absent). Core assets are resolved via $DIPLOMAT_CORE (or the usual
-// relative fallbacks) — the caller should point it at the repo's core/ directory.
+// build-prompt: the JSON config's "kind" field ("review" | "conflicts" | "audit")
+// selects the builder; remaining fields mirror the Swift *Config structs (defaults
+// applied when a field is absent).
+//
+// tool-data: runs `ToolData.items` over a fixture of PRs/issues and prints one row
+// list per tool. The Linux front-end does NOT use this at runtime — it has its own
+// implementation of the same six lists, because they are rebuilt on every render and
+// a shell-out per render would be absurd. That leaves the two implementations free to
+// drift, which is what this subcommand exists to prevent: `test_tooldata_parity.py`
+// drives both over one fixture and diffs the rows, the same way the golden prompts
+// pin the one prompt builder.
+//
+// Core assets are resolved via $DIPLOMAT_CORE (or the usual relative fallbacks) — the
+// caller should point it at the repo's core/ directory.
 
 func die(_ msg: String, _ code: Int32) -> Never {
     FileHandle.standardError.write(Data(("diplomat-core: " + msg + "\n").utf8))
@@ -36,13 +47,18 @@ func specificAuthor(_ s: String?) -> SpecificAuthor {
 }
 
 let args = CommandLine.arguments
-guard args.count >= 2, args[1] == "build-prompt" else {
-    die("usage: diplomat-core build-prompt  (JSON config on stdin)", 1)
+guard args.count >= 2, ["build-prompt", "tool-data"].contains(args[1]) else {
+    die("usage: diplomat-core (build-prompt | tool-data)  (JSON on stdin)", 1)
 }
 
 let input = FileHandle.standardInput.readDataToEndOfFile()
 guard let obj = (try? JSONSerialization.jsonObject(with: input)) as? [String: Any] else {
     die("invalid JSON on stdin", 1)
+}
+
+if args[1] == "tool-data" {
+    ToolDataCommand.run(obj)
+    exit(0)
 }
 
 func str(_ key: String, _ def: String = "") -> String { obj[key] as? String ?? def }

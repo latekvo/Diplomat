@@ -115,6 +115,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if env["DIPLOMAT_OSA_TEST"] == "1" {
             exit(OSATest.run() ? 0 : 1)
         }
+        // Mesh-control self-test: proves the one routine behind every mesh edit surfaces
+        // a refusal and re-reads the topology, on success and on failure alike. Starts
+        // and contacts no node; needs DIPLOMAT_MESH_DIR on a scratch dir and
+        // DIPLOMAT_SELF_REPO on a non-checkout. Exit code = pass/fail.
+        if env["DIPLOMAT_MESH_CMD_TEST"] == "1" {
+            Task { @MainActor in exit(await MeshCommandTest.run() ? 0 : 1) }
+        }
     }
 }
 

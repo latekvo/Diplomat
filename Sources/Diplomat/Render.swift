@@ -122,7 +122,7 @@ enum Render {
             // Linux render.py `mesh` fixture): a macOS self node, one strong healthy
             // Linux peer, one weak dead peer, the three duties with one platform
             // shortfall — plus the trust/accounting fields the node gossips since the
-            // trust layer landed. Render mode never persists nor starts a node.
+            // trust layer landed. A headless mode never persists nor starts a node.
             // `mesh-blocked` additionally sets beaconBlocked, snapshotting the loud
             // "device is not discoverable" banner.
             let _ = seedMesh(store, blocked: m.contains("blocked"))
@@ -207,7 +207,7 @@ enum Render {
             let _ = seedProcessesIfNeeded(s, store: store)
             ContentView()
         default: // "panel" — the whole content view; "panel-procs" seeds the
-                 // ongoing-sessions list (persist is suppressed in render mode).
+                 // ongoing-sessions list (persist is suppressed in headless modes).
             let _ = seedProcessesIfNeeded(what, store: store)
             let _ = seedAutofix(store)
             ContentView().frame(height: 580)
@@ -218,8 +218,8 @@ enum Render {
     /// `_mesh_fixture`): a macOS self node, one strong healthy Linux peer, one weak
     /// dead peer, and the three duties with one platform shortfall — including the
     /// trust/accounting fields the node gossips since the trust layer landed. Our own
-    /// pid makes `nodeRunning` read "live". Render mode never persists the enable nor
-    /// starts a node (`Headless.isRender` guards in the Store).
+    /// pid makes `nodeRunning` read "live". A headless mode never persists the enable
+    /// nor starts a node (`Headless.active` guards in the Store).
     @discardableResult
     private static func seedMesh(_ store: Store, blocked: Bool = false) -> Bool {
         let selfID = "n-self-mbp", peerOK = "n-soft-strong", peerDead = "n-soft-weak"
@@ -269,7 +269,7 @@ enum Render {
                      "shortfall": [{"platform": "linux", "missing": 1}]}},
          "overrides": {"rev": 0, "updatedBy": "", "duties": {}}}
         """
-        store.meshEnabled = true  // render-guarded: persists nothing, starts nothing
+        store.meshEnabled = true  // headless-guarded: persists nothing, starts nothing
         store.meshState = MeshSnapshot.decode(json.data(using: .utf8)!)
         return true
     }
@@ -301,7 +301,7 @@ enum Render {
 
     /// Seed two approved PRs (one conflicting) + select the My-Approved tool so the
     /// per-row Merge / Resolve-conflicts buttons can be eyeballed. Clears hiddenTools
-    /// (in-memory only — persistence is render-guarded) so the snapshot can't silently
+    /// (in-memory only — persistence is headless-guarded) so the snapshot can't silently
     /// fall back to a different tool when the live defaults hide My Approved.
     @MainActor
     private static func seedApproved(_ store: Store) {
