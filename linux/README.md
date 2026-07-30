@@ -100,7 +100,14 @@ for the model. Enable it in ⚙ Settings; the panel then grows a collapsible
 topology column (live nodes, link states, per-node tier/token editors, per-duty
 strategy controls). The node is [SzpontNet](../szpontnet/README.md), an independent
 standard-library-only library the applet registers itself behind; it runs headless
-anywhere:
+anywhere.
+
+It is genuinely an **add-on**. With the library absent the applet starts and does
+everything that doesn't span machines; the ⬡ button, the Mesh screen and the
+topology poll are simply not built, and ⚙ Settings shows the toggle disabled with
+"SzpontNet not installed" rather than "Off". Nothing imports the library at module
+scope, and `tests/test_addon_optional.py` proves it by blocking the import in a
+real subprocess and rendering the panel anyway.
 
 ```bash
 # From this directory. `SZPONTNET_HOST` is what puts Diplomat behind the node —
@@ -170,9 +177,14 @@ python tests/test_logic.py        # the logic tests, dependency-free (no pytest)
   restart re-linking.
 - `tests/test_mesh_ctl_flush.py` / `tests/test_mesh_e2e_applet.py` - control-edit
   state flush, and the applet driving a real node end to end.
+- `tests/test_addon_optional.py` - Diplomat with SzpontNet taken away: a real
+  subprocess with the import blocked, rendering the panel anyway.
+- `tests/test_allocator_update.py` - when a launch installs the device allocator,
+  when it refreshes a stale one, and when it must leave an uninstall alone.
 - `tests/conftest.py` - redirects `QSettings`, the shared `~/.diplomat/config.json`
   and the activity feed to per-test temp dirs, so tests never read (or scribble on)
-  your live config.
+  your live config; also clears `DIPLOMAT_MESH_*` so a pre-rename variable in your
+  shell can't answer for a `SZPONTNET_*` one the tests mean to leave unset.
 
 ## Layout
 

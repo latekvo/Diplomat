@@ -273,7 +273,7 @@ def test_placement_for_falls_back_to_core_defaults():
 
 
 def test_identity_minted_and_persisted(tmp_path, monkeypatch):
-    monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
+    monkeypatch.setenv("SZPONTNET_DIR", str(tmp_path))
     n1 = identity.load()
     assert len(n1.id) == 32
     n2 = identity.load()
@@ -281,8 +281,8 @@ def test_identity_minted_and_persisted(tmp_path, monkeypatch):
 
 
 def test_apply_attrs_clamps_and_ignores_junk(tmp_path, monkeypatch):
-    monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
-    monkeypatch.setenv("DIPLOMAT_MESH_TIER", "3")  # deterministic auto-detect
+    monkeypatch.setenv("SZPONTNET_DIR", str(tmp_path))
+    monkeypatch.setenv("SZPONTNET_TIER", "3")  # deterministic auto-detect
     n = identity.load()
     lo, hi, _ = config.tier_bounds()
     assert n.tokens == "auto" and n.strength_auto  # fresh node: auto everything
@@ -316,7 +316,7 @@ def test_trust_allowlist_classifies():
 
 
 def test_trust_allowlist_persists(tmp_path, monkeypatch):
-    monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
+    monkeypatch.setenv("SZPONTNET_DIR", str(tmp_path))
     trust.save({"fp1": "mbp", "fp2": ""}, "foreign")
     loaded = trust.load()
     assert loaded == {"fp1": "mbp", "fp2": ""}
@@ -332,23 +332,23 @@ def test_trust_allowlist_persists(tmp_path, monkeypatch):
 def test_promotion_does_not_pin_env_baseline_default_trust(tmp_path, monkeypatch):
     """An allowlist edit must persist only the operator's EXPLICIT default-trust choice
     — never the boot-resolved env/mesh.json baseline. Otherwise promoting one device
-    while DIPLOMAT_MESH_DEFAULT_TRUST=personal pins 'personal' into trusted.json, and a
+    while SZPONTNET_DEFAULT_TRUST=personal pins 'personal' into trusted.json, and a
     later foreign lockdown (env→foreign) is silently ignored: the persisted value wins
     at the next boot, so an unlisted, unverified device stays classified personal
     (run-on-host / set-attr / can own work) despite the operator's intent."""
     from szpontnet.node import MeshNode
-    monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
+    monkeypatch.setenv("SZPONTNET_DIR", str(tmp_path))
     monkeypatch.setenv("HOME", str(tmp_path))
 
     # Boot #1: env baseline personal, no persisted defaultLevel; operator promotes a device.
-    monkeypatch.setenv("DIPLOMAT_MESH_DEFAULT_TRUST", "personal")
+    monkeypatch.setenv("SZPONTNET_DEFAULT_TRUST", "personal")
     node = MeshNode()
     assert node._default_trust == "personal"                 # resolved from the env baseline
     node.add_trusted("ABCDEF0123456789", "laptop")
     assert trust.load_default_level() == ""                  # baseline must NOT be pinned
 
     # Boot #2: operator flips env to foreign to lock the mesh down — it MUST take effect.
-    monkeypatch.setenv("DIPLOMAT_MESH_DEFAULT_TRUST", "foreign")
+    monkeypatch.setenv("SZPONTNET_DEFAULT_TRUST", "foreign")
     node2 = MeshNode()
     assert node2._default_trust == "foreign"
     assert trust.classify("UNKNOWN_FP", trust.load(), node2._default_trust) == "foreign"
@@ -358,9 +358,9 @@ def test_explicit_default_trust_choice_survives_allowlist_edits(tmp_path, monkey
     """Complement of the above: an EXPLICIT set_default_trust choice IS persisted, wins
     over env at the next boot, and survives later add/remove_trusted edits."""
     from szpontnet.node import MeshNode
-    monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
+    monkeypatch.setenv("SZPONTNET_DIR", str(tmp_path))
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("DIPLOMAT_MESH_DEFAULT_TRUST", "foreign")
+    monkeypatch.setenv("SZPONTNET_DEFAULT_TRUST", "foreign")
     node = MeshNode()
     assert node.set_default_trust("personal")                # explicit operator choice
     assert trust.load_default_level() == "personal"
@@ -396,7 +396,7 @@ def test_ban_list_newest_mark_wins_and_removal():
 
 
 def test_ban_list_persists_and_drops_junk(tmp_path, monkeypatch):
-    monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
+    monkeypatch.setenv("SZPONTNET_DIR", str(tmp_path))
     banned.save([banned.entry("fp1", "nodeA", label="box", reason="late", job_id="j1"),
                  {"label": "names nobody"},  # no fingerprint, no node → dropped
                  "not even a dict"])
@@ -463,7 +463,7 @@ def test_reminder_resends_across_the_grace_window(tmp_path, monkeypatch):
         return
     import time as _time
     from szpontnet import node as node_mod
-    monkeypatch.setenv("DIPLOMAT_MESH_REMINDER_GRACE_SECS", "60")
+    monkeypatch.setenv("SZPONTNET_REMINDER_GRACE_SECS", "60")
     node = _fresh_node(tmp_path, monkeypatch)
     node._trusted = {"someone-else": ""}  # boundary on → bob is foreign
     peer, w = _link_peer(node, "bob", _mk_key())
@@ -491,7 +491,7 @@ def test_reminder_resends_across_the_grace_window(tmp_path, monkeypatch):
 def test_device_key_proof_of_possession(tmp_path, monkeypatch):
     if not crypto.AVAILABLE:  # dependency-free run without `cryptography`
         return
-    monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
+    monkeypatch.setenv("SZPONTNET_DIR", str(tmp_path))
     k = crypto.load_or_create()
     assert crypto.fingerprint_of(k.public_b64) == k.fingerprint
     nonce = b"per-connection-nonce"
@@ -508,7 +508,7 @@ def test_device_key_proof_of_possession(tmp_path, monkeypatch):
 def test_device_key_is_stable_across_loads(tmp_path, monkeypatch):
     if not crypto.AVAILABLE:
         return
-    monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
+    monkeypatch.setenv("SZPONTNET_DIR", str(tmp_path))
     a = crypto.load_or_create()
     b = crypto.load_or_create()
     assert a.fingerprint == b.fingerprint  # minted once, persisted
@@ -538,7 +538,7 @@ def test_dispatch_strategy_and_plan_weights():
 def test_stats_ema_decays_over_time_constant(tmp_path, monkeypatch):
     import math
 
-    monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
+    monkeypatch.setenv("SZPONTNET_DIR", str(tmp_path))
     now, day = 1_000_000.0, 86_400.0
     st = stats.load(now=now)
     assert st.plan  # a default plan (from the model)
@@ -551,7 +551,7 @@ def test_stats_ema_decays_over_time_constant(tmp_path, monkeypatch):
 
 
 def test_stats_quota_is_account_type_aware_and_windowed(tmp_path, monkeypatch):
-    monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
+    monkeypatch.setenv("SZPONTNET_DIR", str(tmp_path))
     now, day = 1_000_000.0, 86_400.0
     st = stats.load(now=now)
     st = stats.apply_stat_attrs(st, {"plan": "max-20x"}, now=now)
@@ -564,7 +564,7 @@ def test_stats_quota_is_account_type_aware_and_windowed(tmp_path, monkeypatch):
 
 
 def test_stats_apply_attrs_edits_and_surplus(tmp_path, monkeypatch):
-    monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
+    monkeypatch.setenv("SZPONTNET_DIR", str(tmp_path))
     now = 1_000_000.0
     st = stats.apply_stat_attrs(stats.load(now=now),
                                 {"plan": "max-20x", "quotaLeft": 12.0, "usageAvg": 2.0},
@@ -585,7 +585,7 @@ def test_stats_apply_attrs_edits_and_surplus(tmp_path, monkeypatch):
 
 
 def test_stats_persist_roundtrip(tmp_path, monkeypatch):
-    monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
+    monkeypatch.setenv("SZPONTNET_DIR", str(tmp_path))
     now = 1_000_000.0
     st = stats.record(stats.load(now=now), 2.0, now=now)
     stats.save(st)
@@ -604,7 +604,7 @@ def test_stats_load_and_apply_reject_non_finite_floats(tmp_path, monkeypatch):
     is skipped (the max(0.0, x) clamp folds NaN but not +inf)."""
     import json
     import math
-    monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
+    monkeypatch.setenv("SZPONTNET_DIR", str(tmp_path))
     now = 1_000_000.0
     for bad in (float("inf"), float("nan"), float("-inf")):
         stats.stats_path().write_text(json.dumps(
@@ -634,7 +634,7 @@ def test_stats_apply_rejects_a_finite_input_that_overflows_the_field(tmp_path, m
     Round-16 fix: an input-only guard leaks acc=inf here."""
     import json
     import math
-    monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
+    monkeypatch.setenv("SZPONTNET_DIR", str(tmp_path))
     now = 1_000_000.0
     base = stats._default(now)
     # usageAvg: 1e307 is finite (passes an input-only guard) but 1e307 * 21.0 overflows to inf.
@@ -743,7 +743,7 @@ def test_nodeinfo_onion_is_covered_by_the_advert_signature(tmp_path, monkeypatch
     """The onion rides INSIDE the signed advert, so a relay cannot tamper with it
     to redirect a Tor dial: swapping the onion invalidates the signature and the
     advert is dropped by `_advert_authentic`, exactly as for any other field."""
-    monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
+    monkeypatch.setenv("SZPONTNET_DIR", str(tmp_path))
     monkeypatch.setenv("HOME", str(tmp_path))
     k = crypto.load_or_create()
     assert k is not None  # cryptography is a hard test dep
@@ -763,7 +763,7 @@ def test_nodeinfo_onion_is_covered_by_the_advert_signature(tmp_path, monkeypatch
 def test_onioncache_roundtrip_and_tolerates_garbage(tmp_path, monkeypatch):
     """The onion cache (onions.json) is a best-effort accelerator like peers.json:
     it roundtrips, and a malformed file or entry is dropped, never raised."""
-    monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
+    monkeypatch.setenv("SZPONTNET_DIR", str(tmp_path))
     from szpontnet import onioncache
 
     cache = {"peer-a": onioncache.OnionEntry(onion="a" * 56 + ".onion",
@@ -857,7 +857,7 @@ def test_surplus_bucket_clamps_a_hostile_out_of_range_advert_instead_of_crashing
 
 
 def test_advertise_quota_left_capped_by_real_binding_window(tmp_path, monkeypatch):
-    monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
+    monkeypatch.setenv("SZPONTNET_DIR", str(tmp_path))
     now = 1_000_000.0
     st = stats.apply_stat_attrs(stats.load(now=now), {"plan": "max-20x"}, now=now)
     assert st.quota_left() == 20.0  # bookkeeping alone: a full window
@@ -877,7 +877,7 @@ def test_surplus_first_avoids_host_with_drained_binding_window(tmp_path, monkeyp
     # The regression: a Max 20× host with 2% of its 5-hour session left (but 80%
     # of its week) must NOT win dispatch — it would run out mid-task. The session
     # window binds, and pacing it against its own near-term reset keeps it low.
-    monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
+    monkeypatch.setenv("SZPONTNET_DIR", str(tmp_path))
     now = 1_000_000.0
     big = stats.apply_stat_attrs(stats.load(now=now), {"plan": "max-20x"}, now=now)
     session = usage.QuotaWindow(0.02, now + 2.5 * 3600, 5 * 3600.0)  # 2%, half a window
@@ -904,7 +904,7 @@ def test_advertised_surplus_paces_the_local_window_when_the_probe_is_dark(
     """No real probe ⇒ no reset instants from the endpoint, but the bookkeeping
     window has its own start and a fixed span, so the node still advertises a
     comparable ratio rather than dropping out of the ranking."""
-    monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
+    monkeypatch.setenv("SZPONTNET_DIR", str(tmp_path))
     now, day = 1_000_000.0, 86_400.0
     st = stats.apply_stat_attrs(stats.load(now=now), {"plan": "max-20x"}, now=now)
     # Fresh window: all the budget, all the clock → exactly on pace.
@@ -1011,9 +1011,9 @@ def test_strength_score_maps_to_tier_bounds_inverted():
 
 def test_detect_tier_honours_env_override(monkeypatch):
     from szpontnet import hardware
-    monkeypatch.setenv("DIPLOMAT_MESH_TIER", "2")
+    monkeypatch.setenv("SZPONTNET_TIER", "2")
     assert hardware.detect_tier() == 2
-    monkeypatch.setenv("DIPLOMAT_MESH_TIER", "999")  # clamped to bounds
+    monkeypatch.setenv("SZPONTNET_TIER", "999")  # clamped to bounds
     _, hi, _ = config.tier_bounds()
     assert hardware.detect_tier() == hi
 
@@ -1090,7 +1090,7 @@ def test_token_state_falls_back_to_heuristic_when_probe_dark(tmp_path, monkeypat
 
 def test_quota_left_parses_utilization_and_caches(monkeypatch):
     from szpontnet import usage
-    monkeypatch.delenv("DIPLOMAT_MESH_OAUTH_PROBE", raising=False)
+    monkeypatch.delenv("SZPONTNET_OAUTH_PROBE", raising=False)
     calls = []
     payload = {"five_hour": {"utilization": 36.0}, "seven_day": {"utilization": 27}}
     monkeypatch.setattr(usage, "_fetch_usage_payload",
@@ -1112,7 +1112,7 @@ def test_probe_reads_the_reset_instant_each_window_reports(monkeypatch):
     """The endpoint's ``resets_at`` is what makes surplus relative — without it
     there is no clock to divide the remaining budget by."""
     from szpontnet import usage
-    monkeypatch.delenv("DIPLOMAT_MESH_OAUTH_PROBE", raising=False)
+    monkeypatch.delenv("SZPONTNET_OAUTH_PROBE", raising=False)
     payload = {
         "five_hour": {"utilization": 36.0,
                       "resets_at": "2026-07-20T19:09:59.816900+00:00"},
@@ -1152,7 +1152,7 @@ def test_quota_probe_disabled_by_env(monkeypatch):
     def _boom():
         raise AssertionError("probe must not run when disabled")
 
-    monkeypatch.setenv("DIPLOMAT_MESH_OAUTH_PROBE", "0")
+    monkeypatch.setenv("SZPONTNET_OAUTH_PROBE", "0")
     monkeypatch.setattr(usage, "_fetch_usage_payload", _boom)
     usage._reset_probe_cache()
     assert usage.quota_left() == (None, None)
@@ -1162,19 +1162,19 @@ def test_quota_probe_disabled_by_env(monkeypatch):
 
 
 def test_identity_auto_detects_strength_on_first_run(tmp_path, monkeypatch):
-    monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
-    monkeypatch.setenv("DIPLOMAT_MESH_TIER", "2")
+    monkeypatch.setenv("SZPONTNET_DIR", str(tmp_path))
+    monkeypatch.setenv("SZPONTNET_TIER", "2")
     n = identity.load()
     assert n.strength_auto and n.tier == 2 and n.tokens == "auto"
     # Persisted with the auto flag; a reload with a different detected tier follows it.
-    monkeypatch.setenv("DIPLOMAT_MESH_TIER", "4")
+    monkeypatch.setenv("SZPONTNET_TIER", "4")
     assert identity.load().tier == 4
 
 
 def test_identity_explicit_tier_in_file_is_a_pin(tmp_path, monkeypatch):
     import json as _json
-    monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
-    monkeypatch.setenv("DIPLOMAT_MESH_TIER", "1")  # would auto-detect strong…
+    monkeypatch.setenv("SZPONTNET_DIR", str(tmp_path))
+    monkeypatch.setenv("SZPONTNET_TIER", "1")  # would auto-detect strong…
     (tmp_path / "node.json").write_text(_json.dumps(
         {"id": "abc123", "name": "box", "tier": 5}))  # …but the file pins weak
     n = identity.load()
@@ -1185,12 +1185,12 @@ def test_identity_explicit_tier_in_file_is_a_pin(tmp_path, monkeypatch):
 
 
 def test_server_mode_and_api_key_config(monkeypatch):
-    monkeypatch.delenv("DIPLOMAT_MESH_SERVER", raising=False)
-    monkeypatch.delenv("DIPLOMAT_MESH_API_KEY", raising=False)
+    monkeypatch.delenv("SZPONTNET_SERVER", raising=False)
+    monkeypatch.delenv("SZPONTNET_API_KEY", raising=False)
     assert config.server_mode() is False
     assert config.api_key() == ""
-    monkeypatch.setenv("DIPLOMAT_MESH_SERVER", "1")
-    monkeypatch.setenv("DIPLOMAT_MESH_API_KEY", "sekret")
+    monkeypatch.setenv("SZPONTNET_SERVER", "1")
+    monkeypatch.setenv("SZPONTNET_API_KEY", "sekret")
     assert config.server_mode() is True
     assert config.api_key() == "sekret"
 
@@ -1209,7 +1209,7 @@ def test_dispatch_and_ctl_carry_api_key_only_when_set():
 def test_auth_signature_is_domain_separated(tmp_path, monkeypatch):
     if not crypto.AVAILABLE:  # dependency-free run without `cryptography`
         return
-    monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
+    monkeypatch.setenv("SZPONTNET_DIR", str(tmp_path))
     from szpontnet import node as node_mod
 
     k = crypto.load_or_create()
@@ -1225,7 +1225,7 @@ def test_auth_signature_is_domain_separated(tmp_path, monkeypatch):
 
 
 def _fresh_node(tmp_path, monkeypatch):
-    monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
+    monkeypatch.setenv("SZPONTNET_DIR", str(tmp_path))
     monkeypatch.setenv("HOME", str(tmp_path))
     from szpontnet.node import MeshNode
     return MeshNode()
@@ -1533,7 +1533,7 @@ def test_identity_load_tolerates_malformed_duties_enabled(tmp_path, monkeypatch)
     dict(None) TypeError."""
     import json
     from szpontnet import identity
-    monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
+    monkeypatch.setenv("SZPONTNET_DIR", str(tmp_path))
     for bad in (None, ["review"], 5):
         (tmp_path / "node.json").write_text(json.dumps(
             {"id": "n1", "name": "x", "tier": 3, "tokens": "auto",
@@ -1905,13 +1905,13 @@ def test_admit_confines_foreign_only_with_a_runner(tmp_path, monkeypatch):
     """The mode a request runs in: personal → run on host; foreign → confined iff a
     confinement runner is configured, else declined; duty/token refusals win first."""
     node = _fresh_node(tmp_path, monkeypatch)
-    monkeypatch.delenv("DIPLOMAT_MESH_FOREIGN_SPAWN", raising=False)
+    monkeypatch.delenv("SZPONTNET_FOREIGN_SPAWN", raising=False)
     assert node._admit(_job(), "personal") == ("run", "")
     # Foreign with no runner → the safe v1 decline.
     mode, reason = node._admit(_job(), "foreign")
     assert mode == "decline" and "foreign device" in reason
     # Foreign with a runner configured → confined, response-only.
-    monkeypatch.setenv("DIPLOMAT_MESH_FOREIGN_SPAWN", "sandbox {prompt_file} {result_file}")
+    monkeypatch.setenv("SZPONTNET_FOREIGN_SPAWN", "sandbox {prompt_file} {result_file}")
     assert node._admit(_job(), "foreign") == ("confined", "")
     # Duty/token refusals apply regardless of trust and take precedence.
     node.local = _dc_replace(node.local, duties_enabled={"review": False})
@@ -1925,7 +1925,7 @@ def test_run_confined_needs_a_requester_link(tmp_path, monkeypatch):
     """Response-only is meaningless with nobody to answer: a confined run without a
     verified requester fails outright rather than running a stranger's code for no one."""
     node = _fresh_node(tmp_path, monkeypatch)
-    monkeypatch.setenv("DIPLOMAT_MESH_FOREIGN_SPAWN", "sandbox {prompt_file} {result_file}")
+    monkeypatch.setenv("SZPONTNET_FOREIGN_SPAWN", "sandbox {prompt_file} {result_file}")
     assert node._run_confined(_job(), requester_id="")[0] == "failed"
 
 
@@ -2155,15 +2155,23 @@ def test_confined_env_is_scrubbed_of_host_credentials(monkeypatch):
     programmatically prevents a foreign agent from acting as us (using `gh`, cloud
     APIs, the mesh secret). Benign config survives; explicit overlays are applied."""
     creds = ("GH_TOKEN", "GITHUB_TOKEN", "ANTHROPIC_API_KEY",
-             "AWS_SECRET_ACCESS_KEY", "MY_SSH_KEY", "DIPLOMAT_MESH_SECRET",
-             "DIPLOMAT_MESH_API_KEY")
+             "AWS_SECRET_ACCESS_KEY", "MY_SSH_KEY", "SZPONTNET_SECRET",
+             "SZPONTNET_API_KEY",
+             # The pre-rename spellings, which a machine mid-migration still has in
+             # its environment. The scrub matches name *fragments*, so it catches
+             # both — but that is the property, not an accident to leave unpinned.
+             "DIPLOMAT_MESH_SECRET", "DIPLOMAT_MESH_API_KEY")
     for k in creds:
         monkeypatch.setenv(k, "SEKRIT")
     monkeypatch.setenv("PATH", "/usr/bin")            # benign — must survive
-    monkeypatch.setenv("DIPLOMAT_MESH_DIR", "/m")       # benign — must survive
-    env = spawnjob._scrubbed_env(DIPLOMAT_MESH_RESULT_FILE="/r")
-    assert env["PATH"] == "/usr/bin" and env["DIPLOMAT_MESH_DIR"] == "/m"
-    assert env["DIPLOMAT_MESH_RESULT_FILE"] == "/r"     # overlay applied
+    monkeypatch.setenv("SZPONTNET_DIR", "/m")       # benign — must survive
+    env = spawnjob._scrubbed_env(SZPONTNET_RESULT_FILE="/r")
+    assert env["PATH"] == "/usr/bin" and env["SZPONTNET_DIR"] == "/m"
+    assert env["SZPONTNET_RESULT_FILE"] == "/r"     # overlay applied
+    # And under its old name: the runner is a script on the operator's disk, so one
+    # written before the rename would otherwise find nothing and write its product
+    # nowhere. Handing over both is the only thing that can bridge a *writing* side.
+    assert env["DIPLOMAT_MESH_RESULT_FILE"] == "/r"
     for k in creds:
         assert k not in env, f"credential {k} leaked into the confined child"
 
@@ -2171,7 +2179,7 @@ def test_confined_env_is_scrubbed_of_host_credentials(monkeypatch):
 def test_fill_substitutes_tokens_and_quotes():
     """The command template substitutes {prompt_file}/{result_file} with shell-quoted
     values, and appends the prompt path when the template omits the token (the
-    back-compat shape DIPLOMAT_MESH_SPAWN has always accepted)."""
+    back-compat shape SZPONTNET_SPAWN has always accepted)."""
     from szpontnet import launch
 
     assert launch.fill("run {prompt_file} {result_file}",
@@ -2208,7 +2216,7 @@ def test_foreign_registries_expire_and_are_capped(tmp_path, monkeypatch):
 
 def test_peer_cache_round_trip_and_malformed_entries(tmp_path, monkeypatch):
     import json
-    monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
+    monkeypatch.setenv("SZPONTNET_DIR", str(tmp_path))
     from szpontnet import peercache
     assert peercache.load() == {}  # no file yet
     peercache.save({"bb": ("192.168.1.7", 40878), "cc": ("10.0.0.9", 40880)})
@@ -2429,8 +2437,8 @@ def test_rebuild_udp_sockets_swap_in_fresh_ones(tmp_path, monkeypatch):
     the verdict at socket creation), so the rebuilders must produce a fresh socket
     and close the old one — never leave the node socketless."""
     import asyncio
-    monkeypatch.setenv("DIPLOMAT_MESH_LOOPBACK", "1")
-    monkeypatch.setenv("DIPLOMAT_MESH_MCAST_PORT", str(44300 + os.getpid() % 400))
+    monkeypatch.setenv("SZPONTNET_LOOPBACK", "1")
+    monkeypatch.setenv("SZPONTNET_MCAST_PORT", str(44300 + os.getpid() % 400))
     node = _fresh_node(tmp_path, monkeypatch)
     node._rebuild_udp_send()  # no socket yet — builds the first one
     first = node._udp_send
@@ -2763,7 +2771,7 @@ def test_banned_and_trust_load_tolerate_scalar_values(tmp_path, monkeypatch):
     holds a non-iterable scalar (null/int/bool/float) must be treated as empty (the
     module contract), not raise an uncaught TypeError that aborts node startup — the
     `.get(key, [])` default does NOT cover a present-but-scalar value."""
-    monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
+    monkeypatch.setenv("SZPONTNET_DIR", str(tmp_path))
     monkeypatch.setenv("HOME", str(tmp_path))
     banned.banned_path().parent.mkdir(parents=True, exist_ok=True)
     for value in ("null", "5", "true", "3.14"):
@@ -2842,7 +2850,7 @@ def test_all_numeric_coercions_tolerate_overflow(tmp_path, monkeypatch):
     overflows); a JSON 1e999 literal parses to inf (int() of it overflows). Each of
     these real decoders must swallow both, never raise."""
     from szpontnet import usage
-    _fresh_node(tmp_path, monkeypatch)  # sets DIPLOMAT_MESH_DIR for banned.load()
+    _fresh_node(tmp_path, monkeypatch)  # sets SZPONTNET_DIR for banned.load()
     huge = 10 ** 400          # float(huge) -> OverflowError
     inf = float("inf")        # int(inf)   -> OverflowError
 
@@ -3058,7 +3066,7 @@ def test_identity_load_tolerates_non_dict_node_json(tmp_path, monkeypatch):
     corruption) must fall back to a minted default identity, not abort node startup with
     a TypeError/AttributeError — the same corrupt-file tolerance trust/banned/peercache
     already have."""
-    monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
+    monkeypatch.setenv("SZPONTNET_DIR", str(tmp_path))
     for payload in ("5", "3.14", '"hello"', "[1,2]"):
         (tmp_path / "node.json").write_text(payload)
         node = identity.load()                    # must not raise
@@ -3070,7 +3078,7 @@ def test_stats_load_tolerates_non_dict_stats_json(tmp_path, monkeypatch):
     which the coercion except tuple doesn't catch — aborting startup. stats.load must
     fall back to _default for any non-dict (the `if not raw` short-circuit only caught
     falsy values)."""
-    monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
+    monkeypatch.setenv("SZPONTNET_DIR", str(tmp_path))
     for payload in ("5", '"x"', "[1,2]", "true"):
         (tmp_path / "stats.json").write_text(payload)
         st = stats.load(now=1000.0)               # must not raise
@@ -3092,7 +3100,7 @@ def test_a_wrong_secret_hello_ends_the_link_it_arrived_on(tmp_path, monkeypatch)
     import asyncio
     import json
 
-    monkeypatch.setenv("DIPLOMAT_MESH_SECRET", "correct-horse")
+    monkeypatch.setenv("SZPONTNET_SECRET", "correct-horse")
     node = _fresh_node(tmp_path, monkeypatch)
     assert config.secret() == "correct-horse", "the fence is only live with a secret set"
 
@@ -3136,7 +3144,7 @@ if __name__ == "__main__":  # dependency-free smoke run
         try:
             if params:
                 with tempfile.TemporaryDirectory() as td:
-                    mp = unittest.mock.patch.dict(os.environ, {"DIPLOMAT_MESH_DIR": td})
+                    mp = unittest.mock.patch.dict(os.environ, {"SZPONTNET_DIR": td})
                     with mp:
                         class _MP:  # minimal monkeypatch stand-in
                             def __init__(self):

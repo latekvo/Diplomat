@@ -140,9 +140,10 @@ resource-offering-only node is judged only on what it promises.
 
 If your node already reads the `SZPONTNET_*` variables, point `--node-cmd` at it
 directly. Otherwise write a launcher that maps them onto your node's own
-configuration — `adapters/reference.py` is the worked example (≈50 lines): it
-writes the reference node's `node.json`, translates `SZPONTNET_*` →
-`DIPLOMAT_MESH_*`, and execs the node.
+configuration — `adapters/reference.py` is the worked example (≈40 lines). The
+reference node reads them directly, so what is left there is the part no contract
+can cover: turning the tester's chosen identity (and optionally its seeded quota
+figures) into whatever persisted form the node expects, then exec'ing it.
 
 ## Layout
 

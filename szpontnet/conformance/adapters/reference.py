@@ -2,11 +2,17 @@
 """Candidate adapter for the reference node (``szpontnet/szpontnet``).
 
 The conformance tester launches a candidate purely through the ``SZPONTNET_*``
-environment (the *candidate contract*). The reference node predates that contract
-and reads its own ``DIPLOMAT_MESH_*`` variables + a ``node.json`` identity file, so
-this thin adapter translates one into the other and then execs the real node. It
-is the worked example every other implementation copies: read ``SZPONTNET_*``,
+environment (the *candidate contract*). The reference node reads those same
+variables directly, so all this adapter does is the part the contract leaves to
+each implementation: turn the tester's chosen identity (and optional seeded
+quota stats) into whatever persisted form the node expects, then exec it. It is
+the worked example every other implementation copies: read ``SZPONTNET_*``,
 configure your node, run it.
+
+There used to be a translation table here, because the node read its variables
+under an older ``DIPLOMAT_MESH_*`` spelling from when it lived inside an
+application. That the table is gone is the point: the tester and the node now
+agree on one namespace, so nothing sits between them to disagree with the spec.
 
 Usage (as the tester's --node-cmd):
 
@@ -23,42 +29,6 @@ from pathlib import Path
 # repo/szpontnet/conformance/adapters/reference.py → repo root is parents[3].
 REPO = Path(__file__).resolve().parents[3]
 PROJECT = REPO / "szpontnet"  # the library's project dir, where `szpontnet` imports from
-
-# SZPONTNET_* → DIPLOMAT_MESH_* protocol/discovery knobs (names differ, values 1:1).
-_MAP = {
-    "SZPONTNET_LOOPBACK": "DIPLOMAT_MESH_LOOPBACK",
-    "SZPONTNET_MCAST_GROUP": "DIPLOMAT_MESH_MCAST_GROUP",
-    "SZPONTNET_MCAST_PORT": "DIPLOMAT_MESH_MCAST_PORT",
-    "SZPONTNET_TCP_BASE": "DIPLOMAT_MESH_TCP_BASE",
-    "SZPONTNET_TCP_SPAN": "DIPLOMAT_MESH_TCP_SPAN",
-    "SZPONTNET_BEACON_SECS": "DIPLOMAT_MESH_BEACON_SECS",
-    "SZPONTNET_HEARTBEAT_SECS": "DIPLOMAT_MESH_HEARTBEAT_SECS",
-    "SZPONTNET_STALE_SECS": "DIPLOMAT_MESH_STALE_SECS",
-    "SZPONTNET_TIMEOUT_SECS": "DIPLOMAT_MESH_TIMEOUT_SECS",
-    "SZPONTNET_ACK_SECS": "DIPLOMAT_MESH_ACK_SECS",
-    "SZPONTNET_STATE_SECS": "DIPLOMAT_MESH_STATE_SECS",
-    "SZPONTNET_SECRET": "DIPLOMAT_MESH_SECRET",
-    "SZPONTNET_PLATFORM": "DIPLOMAT_MESH_PLATFORM",
-    "SZPONTNET_SPAWN": "DIPLOMAT_MESH_SPAWN",
-    # Chapter-11 role knobs (11-trust-and-balancing).
-    "SZPONTNET_SERVER": "DIPLOMAT_MESH_SERVER",     # accept-only server role
-    "SZPONTNET_API_KEY": "DIPLOMAT_MESH_API_KEY",   # inbound ctl/dispatch gate
-    "SZPONTNET_DEFAULT_TRUST": "DIPLOMAT_MESH_DEFAULT_TRUST",  # default level for unlisted devices
-    # Chapter-13 foreign zero-trust execution: the confinement runner that turns a
-    # foreign request from declined into confined, response-only, plus fast foreign
-    # reliable-delivery timings so a loopback scenario observes retry/ack quickly.
-    "SZPONTNET_FOREIGN_SPAWN": "DIPLOMAT_MESH_FOREIGN_SPAWN",  # confinement runner
-    "SZPONTNET_RESULT_RETRY_SECS": "DIPLOMAT_MESH_RESULT_RETRY_SECS",
-    "SZPONTNET_RESULT_MAX_SECS": "DIPLOMAT_MESH_RESULT_MAX_SECS",
-    "SZPONTNET_FOREIGN_TIMEOUT_SECS": "DIPLOMAT_MESH_FOREIGN_TIMEOUT_SECS",
-    # Chapter-13 v0.4.0 foreign accountability: shrink the completion deadline /
-    # reminder grace so the accept → deadline → reminder → ban cycle is observable
-    # in seconds, and point the extension decision at a command (`{job_file}`
-    # substituted; exit 0 extends, anything else bans).
-    "SZPONTNET_COMPLETION_DEADLINE_SECS": "DIPLOMAT_MESH_COMPLETION_DEADLINE_SECS",
-    "SZPONTNET_REMINDER_GRACE_SECS": "DIPLOMAT_MESH_REMINDER_GRACE_SECS",
-    "SZPONTNET_EXTEND_DECIDER": "DIPLOMAT_MESH_EXTEND_DECIDER",
-}
 
 
 def main() -> None:
@@ -100,18 +70,18 @@ def main() -> None:
         except (ValueError, TypeError):
             pass
 
+    # Every SZPONTNET_* knob the tester set is already in this environment and is
+    # already the name the node reads, so it is inherited as-is; only the ones the
+    # adapter itself decides are set here.
     env = dict(os.environ)
-    for src, dst in _MAP.items():
-        if src in os.environ:
-            env[dst] = os.environ[src]
-    env["DIPLOMAT_MESH_DIR"] = str(work_dir)
+    env["SZPONTNET_DIR"] = str(work_dir)
     # Keep anything the node reads out of $HOME inside the scenario dir.
     env["HOME"] = str(work_dir)
     # A conformance candidate must be deterministic: no live OAuth quota probe.
     # (On macOS the Keychain resolves even under the sandboxed HOME, and a live
     # read would cap the advertised quotaLeft with this machine's real budget,
     # skewing seeded ch-11 stats.)
-    env["DIPLOMAT_MESH_OAUTH_PROBE"] = "0"
+    env["SZPONTNET_OAUTH_PROBE"] = "0"
     env["PYTHONPATH"] = os.pathsep.join(
         [str(PROJECT), env.get("PYTHONPATH", "")]).rstrip(os.pathsep)
 

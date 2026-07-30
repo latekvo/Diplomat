@@ -1,15 +1,15 @@
 """Mesh integration tests: real nodes, real sockets, one machine.
 
 Spins actual ``python -m szpontnet`` node processes on loopback
-(DIPLOMAT_MESH_LOOPBACK=1 keeps every socket on 127.0.0.1; multicast loops back
+(SZPONTNET_LOOPBACK=1 keeps every socket on 127.0.0.1; multicast loops back
 locally) with fast protocol timings, then asserts the behaviours the design
 promises: discovery convergence, deterministic cross-node assignment
 agreement, duty takeover when a node dies, remote attribute edits, LWW
 placement-override gossip, and per-slot dispatch with token failover.
 
-Each fake node gets its own DIPLOMAT_MESH_DIR (identity + state.json) and a
+Each fake node gets its own SZPONTNET_DIR (identity + state.json) and a
 platform override, so a single Linux CI runner hosts a mixed linux/macos
-fleet. Dispatch lands via DIPLOMAT_MESH_SPAWN (a `cp` template) instead of a
+fleet. Dispatch lands via SZPONTNET_SPAWN (a `cp` template) instead of a
 real terminal.
 """
 
@@ -86,20 +86,20 @@ def _host_env() -> dict:
 
 def _proto_env() -> dict:
     return {
-        "DIPLOMAT_MESH_LOOPBACK": "1",
+        "SZPONTNET_LOOPBACK": "1",
         # Offline + deterministic: never let a fleet node probe the real OAuth
         # usage endpoint (on macOS dev machines the Keychain token would resolve
         # even under a sandboxed HOME). Token states come from seeded logs/pins.
-        "DIPLOMAT_MESH_OAUTH_PROBE": "0",
-        "DIPLOMAT_MESH_MCAST_PORT": str(_PORT_BASE),
-        "DIPLOMAT_MESH_TCP_BASE": str(_PORT_BASE + 1),
-        "DIPLOMAT_MESH_TCP_SPAN": "12",
-        "DIPLOMAT_MESH_BEACON_SECS": "0.25",
-        "DIPLOMAT_MESH_HEARTBEAT_SECS": "0.25",
-        "DIPLOMAT_MESH_STALE_SECS": "1.0",
-        "DIPLOMAT_MESH_TIMEOUT_SECS": "2.0",
-        "DIPLOMAT_MESH_ACK_SECS": "4.0",
-        "DIPLOMAT_MESH_STATE_SECS": "0.25",
+        "SZPONTNET_OAUTH_PROBE": "0",
+        "SZPONTNET_MCAST_PORT": str(_PORT_BASE),
+        "SZPONTNET_TCP_BASE": str(_PORT_BASE + 1),
+        "SZPONTNET_TCP_SPAN": "12",
+        "SZPONTNET_BEACON_SECS": "0.25",
+        "SZPONTNET_HEARTBEAT_SECS": "0.25",
+        "SZPONTNET_STALE_SECS": "1.0",
+        "SZPONTNET_TIMEOUT_SECS": "2.0",
+        "SZPONTNET_ACK_SECS": "4.0",
+        "SZPONTNET_STATE_SECS": "0.25",
     }
 
 
@@ -124,20 +124,20 @@ class Fleet:
         env = dict(os.environ)
         env.update(_proto_env())
         env.update(_host_env())
-        env["DIPLOMAT_MESH_DIR"] = str(d)
-        env["DIPLOMAT_MESH_PLATFORM"] = platform
-        env["DIPLOMAT_MESH_SPAWN"] = f"cp {{prompt_file}} {self.root}/spawned/{name}.txt"
-        env["DIPLOMAT_MESH_SECRET"] = secret
+        env["SZPONTNET_DIR"] = str(d)
+        env["SZPONTNET_PLATFORM"] = platform
+        env["SZPONTNET_SPAWN"] = f"cp {{prompt_file}} {self.root}/spawned/{name}.txt"
+        env["SZPONTNET_SECRET"] = secret
         # A dedicated server never dispatches to peers; an API key (when set) gates
         # inbound control + dispatch. Both off by default so ordinary nodes are
         # unaffected.
-        env["DIPLOMAT_MESH_SERVER"] = "1" if server else ""
-        env["DIPLOMAT_MESH_API_KEY"] = api_key
+        env["SZPONTNET_SERVER"] = "1" if server else ""
+        env["SZPONTNET_API_KEY"] = api_key
         # Full-trust fleet mode: a fleet of the user's own machines that all trust
         # each other. Left unset, a node uses the shipped default (foreign), so the
         # trust-boundary tests still exercise zero-trust by default.
         if default_trust:
-            env["DIPLOMAT_MESH_DEFAULT_TRUST"] = default_trust
+            env["SZPONTNET_DEFAULT_TRUST"] = default_trust
         (d / "secret").write_text(secret)  # remembered for this node's CLI calls
         # Each fake node logs to the fleet dir, and must not scribble on the
         # real ~/.diplomat activity feed.
@@ -164,9 +164,9 @@ class Fleet:
         env = dict(os.environ)
         env.update(_proto_env())
         env.update(_host_env())
-        env["DIPLOMAT_MESH_DIR"] = str(self.dirs[node_id])
+        env["SZPONTNET_DIR"] = str(self.dirs[node_id])
         env["HOME"] = str(self.dirs[node_id])
-        env["DIPLOMAT_MESH_SECRET"] = (
+        env["SZPONTNET_SECRET"] = (
             secret if secret is not None
             else (self.dirs[node_id] / "secret").read_text()
         )
@@ -378,7 +378,7 @@ def test_mesh_discovery_assignment_failover_and_dispatch(fleet):
 
 
 def test_secret_fences_peers_and_control(fleet):
-    """With DIPLOMAT_MESH_SECRET set, a wrong-secret node never links (it can
+    """With SZPONTNET_SECRET set, a wrong-secret node never links (it can
     beacon all it wants) and a wrong-secret CLI can't drive the node."""
     fleet.start("aaaa", "lin", "linux", tier=4, secret="hunter2")
     fleet.start("bbbb", "mac", "macos", tier=1, secret="hunter2")
@@ -410,8 +410,8 @@ def test_outbound_dial_fence_rejects_naked_dispatch(fleet, tmp_path):
 
     proto = _proto_env()
     group = "239.83.77.7"  # the real default group; loopback multicast delivers it
-    mport = int(proto["DIPLOMAT_MESH_MCAST_PORT"])
-    # The bypass "wins" if the victim SPAWNS at all: its own DIPLOMAT_MESH_SPAWN
+    mport = int(proto["SZPONTNET_MCAST_PORT"])
+    # The bypass "wins" if the victim SPAWNS at all: its own SZPONTNET_SPAWN
     # stub (set by Fleet.start) copies the staged prompt here. The attacker
     # controls the prompt content, not the command — so the tell is that the
     # stub fired, not what it ran.
@@ -540,14 +540,14 @@ def test_foreign_request_runs_confined_and_routes_result_back(fleet):
     alice_acted = root / "acted" / "alice.json"
     on_result = f"cp {{result_file}} {alice_acted}"
     # Fast delivery timers so the response/ack loop resolves within the test window.
-    fast = {"DIPLOMAT_MESH_RESULT_RETRY_SECS": "0.5",
-            "DIPLOMAT_MESH_RESULT_MAX_SECS": "30",
-            "DIPLOMAT_MESH_FOREIGN_TIMEOUT_SECS": "20"}
+    fast = {"SZPONTNET_RESULT_RETRY_SECS": "0.5",
+            "SZPONTNET_RESULT_MAX_SECS": "30",
+            "SZPONTNET_FOREIGN_TIMEOUT_SECS": "20"}
 
     fleet.start("aaaa", "alice", "linux", tier=4,
-                extra_env={**fast, "DIPLOMAT_MESH_ON_RESULT": on_result})
+                extra_env={**fast, "SZPONTNET_ON_RESULT": on_result})
     fleet.start("bbbb", "bob", "macos", tier=1,
-                extra_env={**fast, "DIPLOMAT_MESH_FOREIGN_SPAWN": foreign_spawn})
+                extra_env={**fast, "SZPONTNET_FOREIGN_SPAWN": foreign_spawn})
     for nid in ("aaaa", "bbbb"):
         _wait_for(lambda nid=nid: _links_up(fleet.state(nid), 1), what=f"{nid} link")
 
@@ -590,11 +590,11 @@ def _accountability_env(deadline: str = "2", grace: str = "2") -> dict:
     """Fast accountability timings: the 6-hour completion deadline and 15-min
     reminder grace shrink to seconds so a test observes the whole
     accept → deadline → reminder → resolution cycle."""
-    return {"DIPLOMAT_MESH_COMPLETION_DEADLINE_SECS": deadline,
-            "DIPLOMAT_MESH_REMINDER_GRACE_SECS": grace,
-            "DIPLOMAT_MESH_RESULT_RETRY_SECS": "0.5",
-            "DIPLOMAT_MESH_RESULT_MAX_SECS": "30",
-            "DIPLOMAT_MESH_FOREIGN_TIMEOUT_SECS": "30"}
+    return {"SZPONTNET_COMPLETION_DEADLINE_SECS": deadline,
+            "SZPONTNET_REMINDER_GRACE_SECS": grace,
+            "SZPONTNET_RESULT_RETRY_SECS": "0.5",
+            "SZPONTNET_RESULT_MAX_SECS": "30",
+            "SZPONTNET_FOREIGN_TIMEOUT_SECS": "30"}
 
 
 def _make_bob_foreign_to_alice(fleet) -> str:
@@ -625,7 +625,7 @@ def test_foreign_acceptance_unfulfilled_reminder_bans_the_device(fleet):
                 extra_env=_accountability_env())
     fleet.start("bbbb", "bob", "macos", tier=1,
                 extra_env={**_accountability_env(),
-                           "DIPLOMAT_MESH_FOREIGN_SPAWN": slow_spawn})
+                           "SZPONTNET_FOREIGN_SPAWN": slow_spawn})
     for nid in ("aaaa", "bbbb"):
         _wait_for(lambda nid=nid: _links_up(fleet.state(nid), 1), what=f"{nid} link")
     bob_fp = _make_bob_foreign_to_alice(fleet)
@@ -679,7 +679,7 @@ def test_executor_that_vanishes_after_accepting_is_banned_for_silence(fleet):
                 extra_env=_accountability_env())
     fleet.start("bbbb", "bob", "macos", tier=1,
                 extra_env={**_accountability_env(),
-                           "DIPLOMAT_MESH_FOREIGN_SPAWN": slow_spawn})
+                           "SZPONTNET_FOREIGN_SPAWN": slow_spawn})
     for nid in ("aaaa", "bbbb"):
         _wait_for(lambda nid=nid: _links_up(fleet.state(nid), 1), what=f"{nid} link")
     bob_fp = _make_bob_foreign_to_alice(fleet)
@@ -713,11 +713,11 @@ def test_agent_decider_extends_a_late_but_working_executor(fleet):
     decider = f"sh -c 'cp {{job_file}} {decider_case}; exit 0'"
     fleet.start("aaaa", "alice", "linux", tier=4,
                 extra_env={**_accountability_env(deadline="2", grace="6"),
-                           "DIPLOMAT_MESH_ON_RESULT": f"cp {{result_file}} {alice_acted}",
-                           "DIPLOMAT_MESH_EXTEND_DECIDER": decider})
+                           "SZPONTNET_ON_RESULT": f"cp {{result_file}} {alice_acted}",
+                           "SZPONTNET_EXTEND_DECIDER": decider})
     fleet.start("bbbb", "bob", "macos", tier=1,
                 extra_env={**_accountability_env(deadline="2", grace="6"),
-                           "DIPLOMAT_MESH_FOREIGN_SPAWN": late_spawn})
+                           "SZPONTNET_FOREIGN_SPAWN": late_spawn})
     for nid in ("aaaa", "bbbb"):
         _wait_for(lambda nid=nid: _links_up(fleet.state(nid), 1), what=f"{nid} link")
     _make_bob_foreign_to_alice(fleet)
@@ -880,7 +880,7 @@ def test_pin_then_unpin_token_state_round_trips(fleet):
 
 
 def test_server_mode_runs_locally_and_never_dispatches_to_peers(fleet):
-    """A dedicated server (DIPLOMAT_MESH_SERVER=1) runs a request ITSELF and never
+    """A dedicated server (SZPONTNET_SERVER=1) runs a request ITSELF and never
     fans it out — even to a weaker worker that weakest-first would otherwise pick."""
     fleet.start("aaaa", "server", "linux", tier=1, server=True)
     fleet.start("bbbb", "worker", "linux", tier=4)  # weaker → the default pick
@@ -957,7 +957,7 @@ def test_spoofed_higher_epoch_beacon_does_not_evict_a_live_link(fleet):
 
     proto = _proto_env()
     group = "239.83.77.7"
-    mport = int(proto["DIPLOMAT_MESH_MCAST_PORT"])
+    mport = int(proto["SZPONTNET_MCAST_PORT"])
     tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     tx.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, 1)
     tx.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton("127.0.0.1"))
@@ -994,13 +994,13 @@ def test_redial_from_memory_relinks_without_beacons(fleet):
     (aa_dir / "peers.json").write_text(json.dumps(
         {"bb": {"addr": "127.0.0.1", "tcpPort": bb_tcp}}))
     fleet.start("bb", "bee", "linux", tier=3, extra_env={
-        "DIPLOMAT_MESH_MCAST_PORT": str(_PORT_BASE + 16),
-        "DIPLOMAT_MESH_TCP_BASE": str(bb_tcp), "DIPLOMAT_MESH_TCP_SPAN": "1",
+        "SZPONTNET_MCAST_PORT": str(_PORT_BASE + 16),
+        "SZPONTNET_TCP_BASE": str(bb_tcp), "SZPONTNET_TCP_SPAN": "1",
     })
     fleet.start("aa", "aye", "macos", tier=2, extra_env={
-        "DIPLOMAT_MESH_MCAST_PORT": str(_PORT_BASE + 17),
-        "DIPLOMAT_MESH_TCP_BASE": str(_PORT_BASE + 15), "DIPLOMAT_MESH_TCP_SPAN": "1",
-        "DIPLOMAT_MESH_REDIAL_SECS": "0.5",
+        "SZPONTNET_MCAST_PORT": str(_PORT_BASE + 17),
+        "SZPONTNET_TCP_BASE": str(_PORT_BASE + 15), "SZPONTNET_TCP_SPAN": "1",
+        "SZPONTNET_REDIAL_SECS": "0.5",
     })
     _wait_for(lambda: _links_up(fleet.state("aa"), 1) and _links_up(fleet.state("bb"), 1),
               what="aa↔bb linked via redial-from-memory with beacons isolated")

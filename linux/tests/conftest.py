@@ -37,6 +37,24 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
+def no_legacy_mesh_env(monkeypatch):
+    """Clear the pre-rename ``DIPLOMAT_MESH_*`` names out of the environment.
+
+    SzpontNet falls back to them when the ``SZPONTNET_*`` spelling is unset, which
+    is right for a machine mid-migration and wrong for a test: a developer whose
+    shell still exports ``DIPLOMAT_MESH_SECRET`` would have the mesh tests run
+    against a fenced node while CI runs them against an open one.
+
+    It clears the prefix wholesale, which includes Diplomat's own switches under it.
+    The only one this suite uses is ``DIPLOMAT_MESH_E2E``, read at *collection* in a
+    ``skipif`` — before any fixture runs — so the opt-in still works.
+    """
+    for key in [k for k in os.environ if k.startswith("DIPLOMAT_MESH_")]:
+        monkeypatch.delenv(key)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def isolated_qsettings(tmp_path):
     """Point QSettings at a fresh temp dir for the duration of each test."""
     QSettings.setDefaultFormat(QSettings.Format.IniFormat)
@@ -60,8 +78,8 @@ def no_host_agent_spawn(monkeypatch):
     ``_spawn_recorder`` in test_autofix.py); this is the backstop for the ones that
     reach it by accident.
 
-    The confined/override mesh runners (``DIPLOMAT_MESH_SPAWN``,
-    ``DIPLOMAT_MESH_FOREIGN_SPAWN``) are deliberately left alone: they are empty by
+    The confined/override mesh runners (``SZPONTNET_SPAWN``,
+    ``SZPONTNET_FOREIGN_SPAWN``) are deliberately left alone: they are empty by
     default and the mesh tests point them at a harmless ``cp`` template.
     """
     from diplomat_app import review, szponthost

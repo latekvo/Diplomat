@@ -10,10 +10,10 @@ This stub plays the same role deterministically so :mod:`mesh_sim` can watch it:
 - it **holds** — keeping the executor's work-claim in flight — until the
   simulator releases it (a ``<work>.finish`` file) or a max deadline elapses;
 - on exit it writes the completion **sentinel** the node hands it in
-  ``DIPLOMAT_MESH_DONE_FILE`` (when the patched node sets one), which is how the
+  ``SZPONTNET_DONE_FILE`` (when the patched node sets one), which is how the
   executor learns the agent finished and releases the claim.
 
-It is invoked through ``DIPLOMAT_MESH_SPAWN`` with the staged prompt file as its
+It is invoked through ``SZPONTNET_SPAWN`` with the staged prompt file as its
 final argument; the simulator bakes the per-node knobs in as flags. The injected
 prompt *is* the work identifier, so the stub logs the prompt verbatim as ``work``.
 
@@ -67,7 +67,7 @@ def main(argv: list[str] | None = None) -> int:
     except OSError:
         work = ""
 
-    done_file = os.environ.get("DIPLOMAT_MESH_DONE_FILE", "")
+    done_file = os.environ.get("SZPONTNET_DONE_FILE", "")
     pid = os.getpid()
     started = time.time()
     _append(args.runs, {"event": "start", "node": args.node, "work": work,

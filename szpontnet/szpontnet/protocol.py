@@ -277,7 +277,7 @@ class NodeInfo:
     # fingerprint against a LOCAL allowlist ([trust]), never on any claimed field.
     pubkey: str = ""
     # This node's permanent Tor v3 onion address ("<56-base32>.onion"), when it
-    # runs an onion service (DIPLOMAT_MESH_TOR). Additive and OMITTED from the wire
+    # runs an onion service (SZPONTNET_TOR). Additive and OMITTED from the wire
     # when empty, like pubkey/stats, so a LAN-only or older node interops unchanged.
     # It is the node's stable, NAT-independent reachability handle: a peer that met
     # this node on the LAN learns it here (in the very first signed hello) and can

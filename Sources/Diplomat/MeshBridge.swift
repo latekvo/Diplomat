@@ -24,11 +24,25 @@ struct MeshCtlError: LocalizedError {
 enum MeshBridge {
     private static var home: URL { FileManager.default.homeDirectoryForCurrentUser }
 
-    /// The node's state directory (`DIPLOMAT_MESH_DIR` override, else `~/.diplomat/mesh`) —
+    /// One of SzpontNet's own knobs, read the way the library reads it: `SZPONTNET_<name>`,
+    /// falling back to the pre-rename `DIPLOMAT_MESH_<name>`.
+    ///
+    /// The fallback is not decoration here. This app must resolve `DIR` and `SECRET` to
+    /// exactly what the node resolves them to — a different state dir and it reads a
+    /// topology nobody writes; a different token and every control session it opens is
+    /// refused by the node it just started. An environment still using the old spelling
+    /// has to move both of them or neither. Twin of `szpontnet.env.get`.
+    private static func szpontEnv(_ name: String) -> String? {
+        let env = ProcessInfo.processInfo.environment
+        if let v = env["SZPONTNET_" + name] { return v }
+        return env["DIPLOMAT_MESH_" + name]
+    }
+
+    /// The node's state directory (`SZPONTNET_DIR` override, else `~/.diplomat/mesh`) —
     /// matches what `szpontnet.identity.mesh_dir` resolves to under Diplomat's host.
     static var stateDir: URL {
-        if let env = ProcessInfo.processInfo.environment["DIPLOMAT_MESH_DIR"], !env.isEmpty {
-            return URL(fileURLWithPath: env)
+        if let dir = szpontEnv("DIR"), !dir.isEmpty {
+            return URL(fileURLWithPath: dir)
         }
         return home.appendingPathComponent(".diplomat/mesh")
     }
@@ -38,12 +52,12 @@ enum MeshBridge {
     /// `~/.diplomat/mesh`). The identity (`device.key`/`node.json`) is what peers pin
     /// trust to, so a fresh empty dir would mint a NEW identity and silently break this
     /// node fleet-wide. Merges without overwriting (a partially-created new dir must
-    /// neither block the move nor clobber newer data), skips when `DIPLOMAT_MESH_DIR`
+    /// neither block the move nor clobber newer data), skips when `SZPONTNET_DIR`
     /// redirects the path, and never throws — a migration hiccup must not stop launch.
     /// Only the mesh subdir is touched; `~/.argent` is shared with the separate Argent
     /// tool. Mirrors `diplomat_app.migrate.migrate_legacy_state_dir`.
     static func migrateLegacyStateDirIfNeeded() {
-        if let env = ProcessInfo.processInfo.environment["DIPLOMAT_MESH_DIR"], !env.isEmpty { return }
+        if let dir = szpontEnv("DIR"), !dir.isEmpty { return }
         let fm = FileManager.default
         let src = home.appendingPathComponent(".argent/mesh")
         let dst = home.appendingPathComponent(".diplomat/mesh")
@@ -65,9 +79,9 @@ enum MeshBridge {
         }
     }
 
-    /// Optional pre-shared join token (`DIPLOMAT_MESH_SECRET`), presented on every control
+    /// Optional pre-shared join token (`SZPONTNET_SECRET`), presented on every control
     /// session — mirrors `mesh.config.secret`. Empty (the default) = open mesh.
-    static var secret: String { ProcessInfo.processInfo.environment["DIPLOMAT_MESH_SECRET"] ?? "" }
+    static var secret: String { szpontEnv("SECRET") ?? "" }
 
     // MARK: - viewer
 

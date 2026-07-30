@@ -32,7 +32,7 @@ import os
 import platform as _platform
 import subprocess
 
-from . import config
+from . import config, env
 
 # Top of the strength_score scale: cpu class 4 + cores 2 + ram 1 + dgpu 1.
 _MAX_SCORE = 8
@@ -239,10 +239,10 @@ def _score_to_tier(score: int, lo: int, hi: int) -> int:
 
 def detect_tier() -> int:
     """This machine's auto-detected strength tier (``tiers.min``..``tiers.max``,
-    1 = strongest). ``DIPLOMAT_MESH_TIER`` forces a value (tests / manual pinning at
+    1 = strongest). ``SZPONTNET_TIER`` forces a value (tests / manual pinning at
     the process level); an undetectable box falls back to ``tiers.default``."""
     lo, hi, default = config.tier_bounds()
-    forced = os.environ.get("DIPLOMAT_MESH_TIER")
+    forced = env.get("TIER")
     if forced is not None:
         try:
             return max(lo, min(hi, int(forced)))

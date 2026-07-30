@@ -184,7 +184,7 @@ foreign check.
 What "run locally" *means* is implementation-defined and outside the wire protocol.
 Diplomat Mesh stages the `prompt` to a file and opens a terminal running an agent on
 it, exactly like a local spawn; a headless deployment substitutes its own runner
-(the reference honors an `DIPLOMAT_MESH_SPAWN` command template for exactly this).
+(the reference honors an `SZPONTNET_SPAWN` command template for exactly this).
 SzpontNet only requires that the node truthfully report `spawned` vs `failed`.
 
 > **v1 reports hand-off, not completion.** `spawned` means the node accepted and

@@ -80,10 +80,10 @@ def test_the_node_resolves_its_state_dir_through_the_host(monkeypatch, tmp_path)
     no explicit override is set."""
     from szpontnet import identity
 
-    monkeypatch.delenv("DIPLOMAT_MESH_DIR", raising=False)
+    monkeypatch.delenv("SZPONTNET_DIR", raising=False)
     assert identity.mesh_dir() == szponthost.DiplomatHost().state_dir()
 
-    monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
+    monkeypatch.setenv("SZPONTNET_DIR", str(tmp_path))
     assert identity.mesh_dir() == tmp_path  # an explicit override still wins
 
 
@@ -156,8 +156,8 @@ def test_a_machine_that_cannot_open_a_terminal_declines_the_job(host, monkeypatc
 
 def test_the_node_reaches_the_host_runner_when_no_template_is_set(monkeypatch):
     """``spawn_job`` only falls through to the host when the operator configured
-    no ``DIPLOMAT_MESH_SPAWN``; that fall-through is the whole integration."""
-    monkeypatch.delenv("DIPLOMAT_MESH_SPAWN", raising=False)
+    no ``SZPONTNET_SPAWN``; that fall-through is the whole integration."""
+    monkeypatch.delenv("SZPONTNET_SPAWN", raising=False)
     seen: list[tuple] = []
     monkeypatch.setattr(szponthost.DiplomatHost, "run_job",
                         lambda self, prompt, done: seen.append((prompt, done)) or "/p")

@@ -11,7 +11,7 @@ events** (a review request = a duty + a work key), and checks the invariants:
     exactly-once · best-fit placement · no-drop · failover · retry · race-safety
 
 A dispatched "agent" is the deterministic stub :mod:`mesh_sim_agent`, wired in
-through ``DIPLOMAT_MESH_SPAWN``: it records every run to a shared log (so a
+through ``SZPONTNET_SPAWN``: it records every run to a shared log (so a
 double-run or a drop is observable) and *holds* — keeping the executor's claim
 in flight — until the simulator releases it. That is what lets the simulator
 probe the forbidden second run while the first is still "running".
@@ -100,17 +100,17 @@ def _proto_env(port_base: int) -> dict:
     """Fast, deterministic, offline protocol timings — the same knobs the mesh
     integration fleet uses, so the simulator behaves like those tests."""
     return {
-        "DIPLOMAT_MESH_LOOPBACK": "1",
-        "DIPLOMAT_MESH_OAUTH_PROBE": "0",
-        "DIPLOMAT_MESH_MCAST_PORT": str(port_base),
-        "DIPLOMAT_MESH_TCP_BASE": str(port_base + 1),
-        "DIPLOMAT_MESH_TCP_SPAN": "16",
-        "DIPLOMAT_MESH_BEACON_SECS": "0.25",
-        "DIPLOMAT_MESH_HEARTBEAT_SECS": "0.25",
-        "DIPLOMAT_MESH_STALE_SECS": "1.0",
-        "DIPLOMAT_MESH_TIMEOUT_SECS": "2.0",
-        "DIPLOMAT_MESH_ACK_SECS": "4.0",
-        "DIPLOMAT_MESH_STATE_SECS": "0.25",
+        "SZPONTNET_LOOPBACK": "1",
+        "SZPONTNET_OAUTH_PROBE": "0",
+        "SZPONTNET_MCAST_PORT": str(port_base),
+        "SZPONTNET_TCP_BASE": str(port_base + 1),
+        "SZPONTNET_TCP_SPAN": "16",
+        "SZPONTNET_BEACON_SECS": "0.25",
+        "SZPONTNET_HEARTBEAT_SECS": "0.25",
+        "SZPONTNET_STALE_SECS": "1.0",
+        "SZPONTNET_TIMEOUT_SECS": "2.0",
+        "SZPONTNET_ACK_SECS": "4.0",
+        "SZPONTNET_STATE_SECS": "0.25",
     }
 
 
@@ -173,14 +173,14 @@ class Simulator:
         env = dict(os.environ)
         env.update(_proto_env(self.port_base))
         env.update(_host_env())
-        env["DIPLOMAT_MESH_DIR"] = str(d)
-        env["DIPLOMAT_MESH_PLATFORM"] = spec.platform
-        env["DIPLOMAT_MESH_SERVER"] = "1" if spec.server else ""
-        env["DIPLOMAT_MESH_DEFAULT_TRUST"] = spec.trust
+        env["SZPONTNET_DIR"] = str(d)
+        env["SZPONTNET_PLATFORM"] = spec.platform
+        env["SZPONTNET_SERVER"] = "1" if spec.server else ""
+        env["SZPONTNET_DEFAULT_TRUST"] = spec.trust
         # Every dispatched job lands in our deterministic agent stub, which
         # records the run and holds until released. The node hands it the
-        # completion sentinel via DIPLOMAT_MESH_DONE_FILE (patched node only).
-        env["DIPLOMAT_MESH_SPAWN"] = (
+        # completion sentinel via SZPONTNET_DONE_FILE (patched node only).
+        env["SZPONTNET_SPAWN"] = (
             f"{sys.executable} {_AGENT} --node {spec.name} --max-hold 15 "
             f"--runs {self.runs_file} --hold-dir {self.hold_dir} {{prompt_file}}"
         )
@@ -235,9 +235,9 @@ class Simulator:
         env = dict(os.environ)
         env.update(_proto_env(self.port_base))
         env.update(_host_env())
-        env["DIPLOMAT_MESH_DIR"] = str(self.dirs[node_id])
+        env["SZPONTNET_DIR"] = str(self.dirs[node_id])
         env["HOME"] = str(self.dirs[node_id])
-        env["DIPLOMAT_MESH_DEFAULT_TRUST"] = next(
+        env["SZPONTNET_DEFAULT_TRUST"] = next(
             (s.trust for s in self.specs if s.node_id == node_id), "personal")
         return subprocess.run(
             [sys.executable, "-m", "szpontnet", *args],

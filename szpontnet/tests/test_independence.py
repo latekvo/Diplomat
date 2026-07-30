@@ -63,7 +63,7 @@ def test_a_module_imports_only_the_standard_library(name):
 def _host_mentions(text: str) -> list[str]:
     """Lines naming the application this library happens to ship beside.
 
-    ``DIPLOMAT_MESH_*`` env-var spellings are stripped first: they are the node's
+    ``SZPONTNET_*`` env-var spellings are stripped first: they are the node's
     own configuration surface, still carrying the old namespace, and renaming them
     is its own change. Everything else — a file path, a state directory, a module
     — is the library reaching for something it must not know exists.
@@ -98,7 +98,7 @@ def test_the_host_scan_would_actually_catch_one():
     assert _host_mentions("# see core/mesh.json for the duty catalog")
     assert _host_mentions('DIR = Path.home() / ".diplomat" / "mesh"')
     assert _host_mentions("from diplomat_app import core")
-    assert not _host_mentions('os.environ.get("DIPLOMAT_MESH_DIR")')
+    assert not _host_mentions('os.environ.get("SZPONTNET_DIR")')
 
 
 def test_the_package_carries_its_own_network_model():

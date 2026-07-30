@@ -8,14 +8,13 @@ from one machine that way).
 
 from __future__ import annotations
 
-import os
 import platform as _platform
 import socket
 import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from . import config, hardware, host
+from . import config, env, hardware, host
 from .atomicjson import read_object, write_atomic
 
 # The manual token-override values. "auto" (the default) means "derive my ok/low/out
@@ -25,10 +24,10 @@ TOKEN_STATES = ("auto", "ok", "low", "out")
 
 
 def mesh_dir() -> Path:
-    """State directory: ``DIPLOMAT_MESH_DIR`` if set (tests give every fake node
+    """State directory: ``SZPONTNET_DIR`` if set (tests give every fake node
     its own), else whatever the host answers — see :meth:`.host.Host.state_dir`."""
-    env = os.environ.get("DIPLOMAT_MESH_DIR")
-    return Path(env) if env else host.host().state_dir()
+    override = env.get("DIR")
+    return Path(override) if override else host.host().state_dir()
 
 
 def node_path() -> Path:
@@ -36,9 +35,9 @@ def node_path() -> Path:
 
 
 def detect_platform() -> str:
-    env = os.environ.get("DIPLOMAT_MESH_PLATFORM")  # tests fake mixed-OS meshes
-    if env:
-        return env
+    override = env.get("PLATFORM")  # tests fake mixed-OS meshes
+    if override:
+        return override
     sys = _platform.system()
     if sys == "Darwin":
         return "macos"

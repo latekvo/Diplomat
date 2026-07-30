@@ -45,7 +45,7 @@ jobs:
       - name: Headless helper self-tests
         run: |
           DIPLOMAT_OSA_TEST=1 swift run Diplomat
-          DIPLOMAT_MESH_DIR="$RUNNER_TEMP/mesh" DIPLOMAT_SELF_REPO=/nonexistent \
+          SZPONTNET_DIR="$RUNNER_TEMP/mesh" DIPLOMAT_SELF_REPO=/nonexistent \
             DIPLOMAT_MESH_CMD_TEST=1 swift run Diplomat
           DIPLOMAT_ALLOCATOR_TEST=1 swift run Diplomat
 
@@ -114,6 +114,19 @@ jobs:
           QT_QPA_PLATFORM: offscreen
           DIPLOMAT_CORE_BIN: ${{ github.workspace }}/core-bin/diplomat-core
         run: pytest linux/tests -q
+      # A checkout with no SzpontNet in it at all. `test_addon_optional.py` above
+      # already blocks the import, but only this deletes the directory — so it is
+      # the one that catches something reading a *file* out of the library's tree
+      # rather than importing it. Destructive to the workspace, hence last.
+      - name: The applet starts from a Diplomat-only tree
+        env:
+          QT_QPA_PLATFORM: offscreen
+          DIPLOMAT_RENDER: panel
+          DIPLOMAT_RENDER_OUT: ${{ runner.temp }}/no-szpontnet.png
+        run: |
+          rm -rf szpontnet
+          cd linux && python -m diplomat_app
+          test -s "$DIPLOMAT_RENDER_OUT"
 
   # SzpontNet, on its own terms. Deliberately installs nothing but the library and
   # pytest: no Qt, no diplomat-core binary, no Diplomat on the import path. If the

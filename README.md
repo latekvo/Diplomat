@@ -280,12 +280,21 @@ and Diplomat's overlay - the duty catalog both panels render - in
 [`core/mesh.json`](core/mesh.json); node state in
 `~/.diplomat/mesh/` (`node.json` identity, `state.json` topology snapshot,
 `device.key` + `trusted.json` + `banned.json` for trust, `peers.json` to redial
-known peers — the device-allocator pattern; `DIPLOMAT_MESH_DIR` relocates it).
+known peers — the device-allocator pattern; `SZPONTNET_DIR` relocates it).
+
+Every knob the node itself reads is `SZPONTNET_*` — the library owns that
+namespace, and the conformance tester configures a candidate through no other
+channel. They were `DIPLOMAT_MESH_*` while the node lived inside this app, and the
+old spelling is still honoured when the new one is unset, so a shell profile that
+sets `DIPLOMAT_MESH_SECRET` keeps its mesh fenced rather than silently opening it.
+Diplomat's *own* mesh knobs keep their names (`DIPLOMAT_MESH_POLL_SECS`,
+`DIPLOMAT_MESH_CMD_TEST`, `DIPLOMAT_MESH_E2E`): they configure the applet, not the
+node.
 
 **Trust model.** The mesh is meant for a LAN you control (IPv4; discovery is
 multicast + subnet broadcast). Two independent fences:
 
-- **Join fence** — set the same `DIPLOMAT_MESH_SECRET=<token>` on every machine
+- **Join fence** — set the same `SZPONTNET_SECRET=<token>` on every machine
   (and in the applet's environment): a node with a secret refuses peers, control
   sessions, and dispatches that don't present the matching token. The token rides
   plaintext on the LAN, so it keeps a stray machine or a colleague's mesh from
@@ -301,7 +310,7 @@ multicast + subnet broadcast). Two independent fences:
   or the CLI:
   `python3 -m szpontnet --fingerprint` (print this machine's),
   `--trust <FP> [--label <name>]`, `--untrust <FP>`. The baseline itself is a
-  per-node knob (`--default-trust personal|foreign`, `DIPLOMAT_MESH_DEFAULT_TRUST`,
+  per-node knob (`--default-trust personal|foreign`, `SZPONTNET_DEFAULT_TRUST`,
   or `trust.default` in `core/mesh.json`) — set it to `personal` for the old
   full-altruism behaviour where every unlisted peer is trusted.
 
@@ -310,13 +319,13 @@ There are three trust levels, not two:
 | Level | What a request from it does |
 |-------|------------------------------|
 | `personal` | runs directly, exactly as if you'd triggered it locally |
-| `foreign` | **declined** — unless a confinement runner is configured (`DIPLOMAT_MESH_FOREIGN_SPAWN`), in which case it runs sandboxed and *response-only*: the compute happens here, the result is routed back, and this node never takes a social action on it ([spec ch 13](szpontnet/docs/13-foreign-execution.md)) |
+| `foreign` | **declined** — unless a confinement runner is configured (`SZPONTNET_FOREIGN_SPAWN`), in which case it runs sandboxed and *response-only*: the compute happens here, the result is routed back, and this node never takes a social action on it ([spec ch 13](szpontnet/docs/13-foreign-execution.md)) |
 | `banned` | declined outright, even with a confinement runner, and never picked as a dispatch target |
 
 **Foreign accountability.** A foreign device that *accepts* a job takes on a
 contract: deliver a result before the completion deadline (6 h by default). Miss it
 and the node sends a readiness reminder; an unhelpful or absent answer — judged by
-an agent you can point at with `DIPLOMAT_MESH_EXTEND_DECIDER`, which may grant an
+an agent you can point at with `SZPONTNET_EXTEND_DECIDER`, which may grant an
 extension instead — earns a **ban**, recorded machine-local in
 `~/.diplomat/mesh/banned.json` and never gossiped. Manage bans with
 `--ban <FP|ID> [--ban-reason …]` / `--unban`; the macOS Mesh screen surfaces them
@@ -642,11 +651,22 @@ other by failing a CI job. Both also run the full monitor stack; what stays
 macOS-only is the per-row **Merge** button and reading arbitrary terminal windows
 (the Linux watcher drives tmux panes instead).
 
-CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) is four jobs:
-`swift-macos` (build every target + the core smoke + a headless panel render),
-`swift-core-linux` (proves the core builds on Linux, and publishes a static
-`diplomat-core` binary), `python-linux` (pytest against that binary, so the
-golden-prompt parity is proven across languages), and `node-device-allocator`.
+This repository is a **monorepo of independent parts**, and CI is arranged to keep
+them independent rather than merely to say they are. Each of the two modules that
+could stand alone gets a job that installs *only* what that module needs, so a
+dependency creeping back in fails a build instead of going unnoticed:
+[`szpontnet/`](szpontnet/README.md) is tested with no Qt, no `diplomat-core` and
+no Diplomat on the import path, and [`device-allocator/`](device-allocator/README.md)
+with nothing but Node. Diplomat is checked from the other side — one step deletes
+`szpontnet/` outright and renders the applet from what remains.
+
+CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) is five jobs:
+`swift-macos` (build every target + the core smoke + a headless panel render +
+the helper self-tests), `swift-core-linux` (proves the core builds on Linux, and
+publishes a static `diplomat-core` binary), `python-linux` (pytest against that
+binary, so the golden-prompt parity is proven across languages, then the
+library-less start), `szpontnet` (the library's own tests plus a full conformance
+run against the reference node), and `node-device-allocator`.
 
 ```
 core/                          ← shared source of truth (see core/README.md)
@@ -710,7 +730,12 @@ szpontnet/                     ← the SzpontNet module: an independent library 
   szpontnet/                   ← the node: stdlib-only Python (runs headless on macOS too) — LAN discovery,
                                  heartbeat links, gossip, deterministic duty assignment, dispatch with
                                  failover; canonical v1 model in netmodel.json, `python -m szpontnet`
+    host.py                    ← the five questions a node asks whoever is running it; all five have
+                                 working defaults, so a node with no host is a valid node
+    env.py                     ← the SZPONTNET_* namespace, one accessor, one place the old names bridge
   docs/                        ← the normative SzpontNet protocol spec (15 chapters, v0.4.0)
+  tests/                       ← the library on its own terms — defaults, the host seam, the namespace,
+                                 and a scan that fails if a module so much as names its host
   conformance/                 ← black-box SzpontNet conformance tester: runs a candidate node as an opaque
                                  subprocess, joins over real multicast + TCP, exits non-zero on any MUST failure
 scripts/                       ← build-app, install/uninstall-autostart, install/uninstall-autoupdate

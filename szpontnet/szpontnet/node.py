@@ -45,8 +45,8 @@ from dataclasses import dataclass, replace
 
 from .host import log, work_already_running
 from . import (
-    assign, banned, config, crypto, identity, onioncache, peercache, protocol,
-    spawnjob, statefile, stats, tor, trust, usage,
+    assign, banned, config, crypto, env, identity, onioncache, peercache,
+    protocol, spawnjob, statefile, stats, tor, trust, usage,
 )
 from .config import PlacementOverrides
 from .protocol import Job, NodeInfo
@@ -353,7 +353,7 @@ class MeshNode:
         # from anywhere, no public IP or DNS. See onioncache / tor.py.
         self._onion_cache = onioncache.load()
         # The Tor transport (a persistent onion service + SOCKS dialer). Created in
-        # start() only when DIPLOMAT_MESH_TOR=1 and the `tor` binary is present;
+        # start() only when SZPONTNET_TOR=1 and the `tor` binary is present;
         # None keeps the node LAN-only, exactly as before.
         self.tor: tor.TorTransport | None = None
         # Onions currently being dialed over Tor (auto-redial or a manual paste),
@@ -404,7 +404,7 @@ class MeshNode:
         # Backstop: free an executor's claim if its completion sentinel is ever lost
         # (a SIGKILL'd terminal, say), so a claim can never pin a key forever. Well
         # above any real agent runtime; the sentinel is the normal path.
-        self._agent_max_secs = float(os.environ.get("DIPLOMAT_MESH_AGENT_MAX_SECS", "7200"))
+        self._agent_max_secs = float(env.get("AGENT_MAX_SECS", "7200"))
         # Foreign zero-trust request/response bookkeeping (szpontnet/docs/13):
         #  - as EXECUTOR: results we computed for a foreign requester and owe back to
         #    it, keyed by job id, re-emitted until job-ack'd (reliable delivery);
@@ -566,7 +566,7 @@ class MeshNode:
                                                     name="mesh-tor-redial"))
             else:
                 log("warn",
-                    "Mesh/Tor: DIPLOMAT_MESH_TOR=1 but no 'tor' binary "
+                    "Mesh/Tor: SZPONTNET_TOR=1 but no 'tor' binary "
                     "found — running LAN-only.")
         await self._refresh_tokens()  # seed the auto token state before the first advert
         self._last_token_refresh = time.monotonic()
@@ -1239,7 +1239,7 @@ class MeshNode:
         if not first:
             writer.close()
             return
-        # The join fence: with DIPLOMAT_MESH_SECRET set, an opener (peer OR control
+        # The join fence: with SZPONTNET_SECRET set, an opener (peer OR control
         # client) that doesn't present the token gets silently dropped.
         if first.get("t") in ("ctl", "hello") and not hmac.compare_digest(
                 _utf8(str(first.get("secret", ""))), _utf8(config.secret())):
@@ -2918,7 +2918,7 @@ class MeshNode:
     def _act_on_result(self, job_id: str, executor_id: str, duty: str,
                        result: dict) -> None:
         """Perform the social action for a returned foreign result under OUR identity
-        (the reference hands it to ``DIPLOMAT_MESH_ON_RESULT``, where e.g. `gh` runs).
+        (the reference hands it to ``SZPONTNET_ON_RESULT``, where e.g. `gh` runs).
         A failed compute is logged, not acted on."""
         if not bool(result.get("ok", False)):
             log("mesh-dispatch-failed",
@@ -3052,7 +3052,7 @@ class MeshNode:
 
     async def _decide_extension(self, job_id: str, note: str) -> None:
         """Judge a late executor's plea: hand the case to the operator's extension
-        decider (an agent — DIPLOMAT_MESH_EXTEND_DECIDER); exit 0 re-arms the full
+        decider (an agent — SZPONTNET_EXTEND_DECIDER); exit 0 re-arms the full
         deadline window, anything else — including no decider configured, a crash,
         or a timeout — bans. The verdict is the originator's alone."""
         aw = self._awaiting_result.get(job_id)
@@ -3321,7 +3321,7 @@ class MeshNode:
             if self.tor is None or self.tor.onion_address() is None:
                 return {"t": "error",
                         "reason": "the Tor transport is not enabled or not ready "
-                                  "on this node (set DIPLOMAT_MESH_TOR=1)"}
+                                  "on this node (set SZPONTNET_TOR=1)"}
             task = asyncio.get_running_loop().create_task(
                 self._tor_dial(onion), name="mesh-tor-connect")
             self._dial_tasks.add(task)
@@ -3341,7 +3341,7 @@ class MeshNode:
         # `load_default_level() or config.default_trust()`, so when the operator has
         # never toggled the default it holds the env/mesh.json BASELINE. Writing that
         # baseline here as `defaultLevel` would pin it — a later
-        # DIPLOMAT_MESH_DEFAULT_TRUST change (e.g. a foreign lockdown) is then silently
+        # SZPONTNET_DEFAULT_TRUST change (e.g. a foreign lockdown) is then silently
         # shadowed forever, since the persisted value wins over env at the next boot.
         # `load_default_level()` is "" unless the operator explicitly set the default
         # (set_default_trust), so an allowlist edit never converts a baseline into an

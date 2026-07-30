@@ -105,7 +105,7 @@ def test_terminate_stands_down_in_loopback_mode(monkeypatch):
     many isolated nodes legitimately share one uid, so the machine-level singleton
     must NOT fire — otherwise the nodes reap each other by identical argv. The scan
     is never even reached."""
-    monkeypatch.setenv("DIPLOMAT_MESH_LOOPBACK", "1")
+    monkeypatch.setenv("SZPONTNET_LOOPBACK", "1")
     monkeypatch.setattr(
         singleton, "_other_nodes",
         lambda: pytest.fail("loopback mode must not scan for or reap other nodes"),

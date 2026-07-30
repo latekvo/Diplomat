@@ -6,7 +6,7 @@ LAN address. That is the whole mesh as long as every machine is on the same
 network. The **Tor transport** lifts that restriction: once two nodes have met,
 they can keep talking from **anywhere**, with **no public IP and no domain name**.
 
-It is **opt-in** (`DIPLOMAT_MESH_TOR=1`) and **atomic**: with it off, or with no
+It is **opt-in** (`SZPONTNET_TOR=1`) and **atomic**: with it off, or with no
 `tor` binary present, the node is exactly the LAN-only node described in the rest
 of these docs. Nothing below changes the LAN path — the Tor transport is added
 *beside* it.
@@ -86,7 +86,7 @@ that actually *shares work* has already promoted the collaborating devices to
 work — [13](13-foreign-execution.md)), and those personal peers **do** auto-reconnect
 over Tor. To Tor-reconnect a pair you deliberately keep `foreign`, either promote one
 side (`--trust` / the panel), run the fleet in full-altruism
-(`DIPLOMAT_MESH_DEFAULT_TRUST=personal`), or reach across with a one-shot manual paste
+(`SZPONTNET_DEFAULT_TRUST=personal`), or reach across with a one-shot manual paste
 (below). A `foreign` server that takes work is reached the same way: its clients
 originate the dial, so a client promotes the server it chose to use.
 
@@ -110,7 +110,7 @@ ordinary mesh member and its onion is cached like any other.
 
 ## Lifecycle & degradation
 
-On start with `DIPLOMAT_MESH_TOR=1` and a `tor` binary present, the node spawns a
+On start with `SZPONTNET_TOR=1` and a `tor` binary present, the node spawns a
 private `tor` (its own `SocksPort`, `DataDirectory`, and `HiddenServiceDir`, all
 under `<mesh_dir>/tor/`, so several nodes on one host never collide). Bootstrap runs
 **in the background** — the node is fully usable on the LAN meanwhile — and the
@@ -136,7 +136,7 @@ the next node's Tor bring-up.
   still keys only on the **verified device fingerprint**
   ([11](11-trust-and-balancing.md)), so a Tor peer is `foreign` until its
   fingerprint is in your allowlist, exactly like a LAN peer.
-- The [join fence](03-transport.md#the-join-fence) (`DIPLOMAT_MESH_SECRET`) applies
+- The [join fence](03-transport.md#the-join-fence) (`SZPONTNET_SECRET`) applies
   unchanged over Tor: the secret check is transport-agnostic, and because a Tor
   circuit is encrypted the token is not exposed in transit (as it would be on the
   plaintext LAN).
@@ -157,12 +157,12 @@ the next node's Tor bring-up.
   internet. Note the corollary of the join fence: on an **open** mesh, a Tor peer can
   still *link* and (subject to [trust](11-trust-and-balancing.md)) exchange gossip and
   dispatch with you from the WAN, exactly as an unauthenticated LAN peer could on the
-  LAN. If that is not what you want, set a `DIPLOMAT_MESH_SECRET`.
+  LAN. If that is not what you want, set a `SZPONTNET_SECRET`.
 
 ## Configuration
 
 | Env | Meaning |
 |-----|---------|
-| `DIPLOMAT_MESH_TOR=1` | Enable the Tor transport (default off → LAN-only). |
-| `DIPLOMAT_MESH_TOR_BINARY` | Path to a non-PATH `tor` executable. |
-| `DIPLOMAT_MESH_TOR_BOOTSTRAP_SECS` | Bootstrap wait before giving up (default 90). |
+| `SZPONTNET_TOR=1` | Enable the Tor transport (default off → LAN-only). |
+| `SZPONTNET_TOR_BINARY` | Path to a non-PATH `tor` executable. |
+| `SZPONTNET_TOR_BOOTSTRAP_SECS` | Bootstrap wait before giving up (default 90). |

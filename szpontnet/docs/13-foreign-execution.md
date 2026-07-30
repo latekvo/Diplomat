@@ -93,7 +93,7 @@ An implementation that runs (rather than declines) a foreign request **MUST**:
    escaping the sandbox or acting under the requester's identity is not.
 
 > **The reference confinement.** The reference gates foreign execution on an
-> operator-supplied sandbox command, `DIPLOMAT_MESH_FOREIGN_SPAWN` (with
+> operator-supplied sandbox command, `SZPONTNET_FOREIGN_SPAWN` (with
 > `{prompt_file}`/`{result_file}` placeholders - e.g. a `docker run` wrapper).
 > **Its absence means no foreign execution**: a foreign request is declined, exactly
 > as the base protocol does. So a node only ever runs a stranger's compute when the
@@ -317,11 +317,11 @@ extensions it has already received, and the `job-progress` note - to a
 locally-configured **decider**, and the decider's verdict is final: extend
 (re-arm the full window) or ban.
 
-The reference exposes this as `DIPLOMAT_MESH_EXTEND_DECIDER`, a command template
+The reference exposes this as `SZPONTNET_EXTEND_DECIDER`, a command template
 run with `{job_file}` substituted by a JSON file carrying exactly that case; exit
 status `0` extends, anything else bans. The operator typically points it at an
-agent (the same pattern as `DIPLOMAT_MESH_FOREIGN_SPAWN` /
-`DIPLOMAT_MESH_ON_RESULT`). **Unset, no extension is ever granted**: a progress
+agent (the same pattern as `SZPONTNET_FOREIGN_SPAWN` /
+`SZPONTNET_ON_RESULT`). **Unset, no extension is ever granted**: a progress
 plea then cannot save the executor and resolution 2 collapses into a ban - the
 zero-trust default, consistent with every other opt-in in this chapter. A decider
 that crashes, times out (the reference bounds it by the grace window), or answers

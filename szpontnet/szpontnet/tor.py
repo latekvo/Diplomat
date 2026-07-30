@@ -29,7 +29,7 @@ process; if the ``tor`` binary is missing or bootstrap fails, ``start`` returns
 False and the node carries on LAN-only (the same graceful degradation as the
 keyless path when ``cryptography`` is absent).
 
-Enable with ``DIPLOMAT_MESH_TOR=1`` (see :mod:`config`).
+Enable with ``SZPONTNET_TOR=1`` (see :mod:`config`).
 """
 
 from __future__ import annotations
@@ -42,6 +42,7 @@ import shutil
 import signal
 from pathlib import Path
 
+from . import env
 from .host import log
 from . import protocol
 
@@ -83,8 +84,8 @@ def normalize_onion(addr: object) -> str:
 
 def binary() -> str | None:
     """The resolved ``tor`` executable path, or None if not installed. Honors
-    ``DIPLOMAT_MESH_TOR_BINARY`` for a non-PATH install."""
-    return shutil.which(os.environ.get("DIPLOMAT_MESH_TOR_BINARY", "tor"))
+    ``SZPONTNET_TOR_BINARY`` for a non-PATH install."""
+    return shutil.which(env.get("TOR_BINARY", "tor"))
 
 
 _PR_SET_PDEATHSIG = 1
@@ -122,7 +123,7 @@ def _write_torrc(tor_dir: Path, socks_port: int, forward_to_port: int) -> Path:
     """Render a minimal torrc for our own private Tor: a client SOCKS port for
     outbound dials, and one persistent onion service forwarding ONION_VIRTPORT to
     the node's loopback Tor forward-listener. Everything lives under ``tor_dir`` so
-    several nodes on one host (each its own DIPLOMAT_MESH_DIR) never collide."""
+    several nodes on one host (each its own SZPONTNET_DIR) never collide."""
     data_dir = tor_dir
     hs_dir = tor_dir / "onion"
     # Tor refuses a DataDirectory / HiddenServiceDir that is not 0700. Create them

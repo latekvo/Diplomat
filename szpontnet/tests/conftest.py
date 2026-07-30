@@ -68,7 +68,22 @@ def host_isolation():
 
 
 @pytest.fixture(autouse=True)
+def no_legacy_env(monkeypatch):
+    """Clear the pre-rename ``DIPLOMAT_MESH_*`` names out of the environment.
+
+    :mod:`szpontnet.env` falls back to them when the ``SZPONTNET_*`` spelling is
+    unset, which is right for a machine mid-migration and wrong for a test: a
+    developer whose shell still exports one would have every ``delenv`` of the new
+    name quietly resolve to their value instead of to the default it means to
+    exercise. Tests *about* the fallback set it themselves, after this.
+    """
+    for key in [k for k in os.environ if k.startswith("DIPLOMAT_MESH_")]:
+        monkeypatch.delenv(key)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def isolated_state_dir(tmp_path, monkeypatch):
     """Never touch a real node's identity, trust allowlist or snapshot."""
-    monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("SZPONTNET_DIR", str(tmp_path / "state"))
     yield

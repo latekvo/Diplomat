@@ -7,7 +7,7 @@ Claude Code OAuth access token (``~/.claude/.credentials.json``, or the macOS
 Keychain item ``Claude Code-credentials``), GETs the endpoint, and converts each
 window's utilization into a remaining fraction. Results are cached ~1 min and a
 last-good read outlives transient failures, so the node never hammers the
-endpoint nor flaps on a dropped packet. ``DIPLOMAT_MESH_OAUTH_PROBE=0`` disables
+endpoint nor flaps on a dropped packet. ``SZPONTNET_OAUTH_PROBE=0`` disables
 the probe entirely (the tests run offline and deterministic).
 
 Fallback — when no token is available (or the probe is disabled/offline for
@@ -19,14 +19,13 @@ accounts.tokensPerWeight``). That estimate is deliberately rough (real limits
 are dynamic and account-specific) — it exists so an offline node still degrades
 to *some* ok/low/out signal rather than none.
 
-Stdlib-only; honours ``HOME`` and ``DIPLOMAT_CLAUDE_DIR`` (so the tests, which
+Stdlib-only; honours ``HOME`` and ``SZPONTNET_CLAUDE_DIR`` (so the tests, which
 sandbox HOME, never read a developer's real logs or credentials).
 """
 
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 import time
@@ -34,7 +33,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import config
+from . import config, env
 
 _HOUR_SECS = 3600.0
 _DAY_SECS = 86_400.0
@@ -128,8 +127,8 @@ def _parse_reset(value: object) -> float | None:
 
 
 def probe_enabled() -> bool:
-    """DIPLOMAT_MESH_OAUTH_PROBE=0 turns the network probe off (tests, air-gapped)."""
-    return os.environ.get("DIPLOMAT_MESH_OAUTH_PROBE", "1") != "0"
+    """SZPONTNET_OAUTH_PROBE=0 turns the network probe off (tests, air-gapped)."""
+    return env.get("OAUTH_PROBE", "1") != "0"
 
 
 def _reset_probe_cache() -> None:
@@ -138,14 +137,14 @@ def _reset_probe_cache() -> None:
 
 
 def claude_dir() -> Path:
-    """Claude Code's home (credentials + transcripts). DIPLOMAT_CLAUDE_DIR overrides."""
-    override = os.environ.get("DIPLOMAT_CLAUDE_DIR")
+    """Claude Code's home (credentials + transcripts). SZPONTNET_CLAUDE_DIR overrides."""
+    override = env.get("CLAUDE_DIR")
     return Path(override) if override else Path.home() / ".claude"
 
 
 def _oauth_token() -> str | None:
     """The Claude Code OAuth access token: the credentials file where Claude Code
-    writes it (Linux, and any explicit DIPLOMAT_CLAUDE_DIR sandbox), else the macOS
+    writes it (Linux, and any explicit SZPONTNET_CLAUDE_DIR sandbox), else the macOS
     login-Keychain item. Claude Code refreshes the token as it runs, so re-reading
     per probe always picks up the freshest one. None when absent — probe skipped."""
     try:

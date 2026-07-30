@@ -4,7 +4,7 @@ Layers, weakest to strongest:
 
 1. the network model — ``netmodel.json`` (the canonical v1 constants and duty
    catalog) with the host's overlay merged over it, see :mod:`.host`;
-2. ``DIPLOMAT_MESH_*`` environment overrides for the protocol knobs — how the
+2. ``SZPONTNET_*`` environment overrides for the protocol knobs — how the
    tests run whole meshes on loopback with fast timeouts without touching the
    model;
 3. gossiped last-writer-wins *placement overrides* (per-duty strategy /
@@ -15,9 +15,9 @@ Layers, weakest to strongest:
 from __future__ import annotations
 
 import math
-import os
 from dataclasses import dataclass, field, replace
 
+from . import env
 from .host import model
 
 
@@ -38,33 +38,34 @@ def _has_non_finite(v: object) -> bool:
     return False
 
 
-# Env override names, mapped onto the network model's "protocol" keys. Values are
-# parsed with the type of the default they replace.
+# Env override suffixes (see :mod:`.env` for the ``SZPONTNET_`` prefix), mapped onto
+# the network model's "protocol" keys. Values are parsed with the type of the default
+# they replace.
 _ENV_KEYS = {
-    "DIPLOMAT_MESH_MCAST_GROUP": "multicastGroup",
-    "DIPLOMAT_MESH_MCAST_PORT": "multicastPort",
-    "DIPLOMAT_MESH_TCP_BASE": "tcpPortBase",
-    "DIPLOMAT_MESH_TCP_SPAN": "tcpPortSpan",
-    "DIPLOMAT_MESH_BEACON_SECS": "beaconIntervalSecs",
-    "DIPLOMAT_MESH_REDIAL_SECS": "redialIntervalSecs",
-    "DIPLOMAT_MESH_HEARTBEAT_SECS": "heartbeatIntervalSecs",
-    "DIPLOMAT_MESH_STALE_SECS": "peerStaleSecs",
-    "DIPLOMAT_MESH_TIMEOUT_SECS": "peerTimeoutSecs",
-    "DIPLOMAT_MESH_ACK_SECS": "dispatchAckTimeoutSecs",
-    "DIPLOMAT_MESH_STATE_SECS": "stateWriteIntervalSecs",
-    "DIPLOMAT_MESH_RESULT_RETRY_SECS": "foreignResultRetryIntervalSecs",
-    "DIPLOMAT_MESH_RESULT_MAX_SECS": "foreignResultMaxSecs",
-    "DIPLOMAT_MESH_FOREIGN_TIMEOUT_SECS": "foreignJobTimeoutSecs",
-    "DIPLOMAT_MESH_COMPLETION_DEADLINE_SECS": "foreignCompletionDeadlineSecs",
-    "DIPLOMAT_MESH_REMINDER_GRACE_SECS": "foreignReminderGraceSecs",
+    "MCAST_GROUP": "multicastGroup",
+    "MCAST_PORT": "multicastPort",
+    "TCP_BASE": "tcpPortBase",
+    "TCP_SPAN": "tcpPortSpan",
+    "BEACON_SECS": "beaconIntervalSecs",
+    "REDIAL_SECS": "redialIntervalSecs",
+    "HEARTBEAT_SECS": "heartbeatIntervalSecs",
+    "STALE_SECS": "peerStaleSecs",
+    "TIMEOUT_SECS": "peerTimeoutSecs",
+    "ACK_SECS": "dispatchAckTimeoutSecs",
+    "STATE_SECS": "stateWriteIntervalSecs",
+    "RESULT_RETRY_SECS": "foreignResultRetryIntervalSecs",
+    "RESULT_MAX_SECS": "foreignResultMaxSecs",
+    "FOREIGN_TIMEOUT_SECS": "foreignJobTimeoutSecs",
+    "COMPLETION_DEADLINE_SECS": "foreignCompletionDeadlineSecs",
+    "REMINDER_GRACE_SECS": "foreignReminderGraceSecs",
 }
 
 
 def protocol() -> dict:
-    """The protocol constants with any DIPLOMAT_MESH_* env overrides applied."""
+    """The protocol constants with any SZPONTNET_* env overrides applied."""
     out = dict(model()["protocol"])
-    for env, key in _ENV_KEYS.items():
-        raw = os.environ.get(env)
+    for suffix, key in _ENV_KEYS.items():
+        raw = env.get(suffix)
         if raw is None:
             continue
         default = out.get(key)
@@ -83,14 +84,14 @@ def protocol() -> dict:
 
 
 def loopback_only() -> bool:
-    """DIPLOMAT_MESH_LOOPBACK=1 keeps every socket on 127.0.0.1 — used by the
+    """SZPONTNET_LOOPBACK=1 keeps every socket on 127.0.0.1 — used by the
     integration tests (and demos) to run a whole mesh on one machine without
     touching the real LAN."""
-    return os.environ.get("DIPLOMAT_MESH_LOOPBACK") == "1"
+    return env.get("LOOPBACK") == "1"
 
 
 def secret() -> str:
-    """Optional pre-shared join token (DIPLOMAT_MESH_SECRET, same value on every
+    """Optional pre-shared join token (SZPONTNET_SECRET, same value on every
     machine + in the CLI/panel environment). A node with a secret refuses peer
     links, control sessions, and therefore dispatches that don't present it.
 
@@ -99,24 +100,24 @@ def secret() -> str:
     from joining yours and receiving jobs; it does not defend against a hostile
     network. Empty (the default) = open mesh, fine for a home LAN.
     """
-    return os.environ.get("DIPLOMAT_MESH_SECRET", "")
+    return env.get("SECRET", "")
 
 
 def tor_enabled() -> bool:
-    """DIPLOMAT_MESH_TOR=1 turns on the Tor onion-service transport: the node runs
+    """SZPONTNET_TOR=1 turns on the Tor onion-service transport: the node runs
     a persistent onion service (a permanent ``.onion`` it advertises) and dials
     known-but-unseen peers over Tor with exponential backoff — WAN reachability
     with no public IP or domain. Off by default; when off, or when the ``tor``
     binary is missing, the node is LAN-only exactly as before. See tor.py."""
-    return os.environ.get("DIPLOMAT_MESH_TOR") == "1"
+    return env.get("TOR") == "1"
 
 
 def tor_bootstrap_timeout() -> float:
     """How long to wait for Tor to bootstrap before giving up and staying LAN-only
-    (DIPLOMAT_MESH_TOR_BOOTSTRAP_SECS). Tor's first bootstrap can be slow; the node
+    (SZPONTNET_TOR_BOOTSTRAP_SECS). Tor's first bootstrap can be slow; the node
     stays fully usable on the LAN in the meantime."""
     try:
-        v = float(os.environ.get("DIPLOMAT_MESH_TOR_BOOTSTRAP_SECS", "90"))
+        v = float(env.get("TOR_BOOTSTRAP_SECS", "90"))
     except ValueError:
         return 90.0
     # Reject non-finite / non-positive (e.g. "inf" from 1e999, "nan", "-1", "0"): a
@@ -126,27 +127,27 @@ def tor_bootstrap_timeout() -> float:
 
 
 def server_mode() -> bool:
-    """DIPLOMAT_MESH_SERVER=1 makes this node a dedicated **server**: it accepts and
+    """SZPONTNET_SERVER=1 makes this node a dedicated **server**: it accepts and
     runs requests but NEVER originates a dispatch to peers. A request it is asked
     to route (via a control session or the CLI) runs on **itself** instead of
     being fanned out. Combined with :func:`api_key` this is the spec's
     accept-only, optionally API-key-authenticated server role — a beefy shared
     box that takes work but never pushes work onto anyone else."""
-    return os.environ.get("DIPLOMAT_MESH_SERVER") == "1"
+    return env.get("SERVER") == "1"
 
 
 def api_key() -> str:
-    """Optional per-node API key (DIPLOMAT_MESH_API_KEY). When set, this node
+    """Optional per-node API key (SZPONTNET_API_KEY). When set, this node
     requires a matching ``apiKey`` field on inbound control sessions and inbound
     dispatch requests, refusing any that lack it. It is **independent of** the
     mesh-wide join :func:`secret`: the secret fences who may *join* the mesh; the
     API key authenticates who may submit *work* to this (typically server) node,
     without granting mesh membership or device trust. Empty = no API-key gate."""
-    return os.environ.get("DIPLOMAT_MESH_API_KEY", "")
+    return env.get("API_KEY", "")
 
 
 def foreign_spawn() -> str:
-    """Optional **confinement runner** (DIPLOMAT_MESH_FOREIGN_SPAWN) — the command
+    """Optional **confinement runner** (SZPONTNET_FOREIGN_SPAWN) — the command
     template a node uses to run a *foreign* SzpontRequest under zero trust. Its
     presence is what turns a foreign request from **declined** into **confined,
     response-only execution**: the untrusted ``prompt`` runs inside the operator's
@@ -159,39 +160,39 @@ def foreign_spawn() -> str:
     exactly as before. A node only ever runs a stranger's compute when the operator
     has explicitly supplied the jail to run it in. See
     szpontnet/docs/13-foreign-execution.md."""
-    return os.environ.get("DIPLOMAT_MESH_FOREIGN_SPAWN", "")
+    return env.get("FOREIGN_SPAWN", "")
 
 
 def on_result() -> str:
-    """Optional **result handler** (DIPLOMAT_MESH_ON_RESULT) — the command template an
+    """Optional **result handler** (SZPONTNET_ON_RESULT) — the command template an
     originator runs when a foreign executor returns a ``job-result`` for a request it
     dispatched. This is where the **social action runs under the originator's own
     identity** (e.g. ``gh pr review``): ``{result_file}`` holds the executor's
     computed artifact plus the job metadata. Empty = the originator just records the
     result (no automatic action). See szpontnet/docs/13-foreign-execution.md."""
-    return os.environ.get("DIPLOMAT_MESH_ON_RESULT", "")
+    return env.get("ON_RESULT", "")
 
 
 def extend_decider() -> str:
-    """Optional **extension decider** (DIPLOMAT_MESH_EXTEND_DECIDER) — the command
+    """Optional **extension decider** (SZPONTNET_EXTEND_DECIDER) — the command
     template an originator runs to judge a late foreign executor's ``job-progress``
     plea: whether "still working" is a valid reason to extend its completion
     deadline. ``{job_file}`` is substituted with a JSON file carrying the case (the
     job, who the executor is, when it accepted, extensions so far, and the plea);
     exit status 0 extends (re-arms the full deadline window), anything else — a
     non-zero exit, a crash, or a timeout — bans. The operator typically points this
-    at an agent, the same pattern as DIPLOMAT_MESH_FOREIGN_SPAWN / ON_RESULT.
+    at an agent, the same pattern as SZPONTNET_FOREIGN_SPAWN / ON_RESULT.
 
     Empty (the default) = **no extension is ever granted**: a progress plea then
     cannot save a late executor, and it is banned — the zero-trust default. See
     szpontnet/docs/13-foreign-execution.md#the-extension-decision."""
-    return os.environ.get("DIPLOMAT_MESH_EXTEND_DECIDER", "")
+    return env.get("EXTEND_DECIDER", "")
 
 
 def default_trust() -> str:
     """The trust level a node applies to an **unknown** device — one whose proven
     fingerprint is not in the local allowlist (and to any unverified/keyless peer,
-    which can never match the allowlist). ``DIPLOMAT_MESH_DEFAULT_TRUST`` overrides the
+    which can never match the allowlist). ``SZPONTNET_DEFAULT_TRUST`` overrides the
     shipped baseline in the network model (``trust.default``).
 
     Ships as **foreign** (zero-trust by default): a device you have not explicitly
@@ -204,7 +205,7 @@ def default_trust() -> str:
     configurable. An unrecognised value falls back to ``foreign`` (the safe default).
     This is the node-wide baseline; the operator's live choice is persisted in
     ``trusted.json`` (:func:`trust.load_default_level`) and edited from the panel."""
-    raw = os.environ.get("DIPLOMAT_MESH_DEFAULT_TRUST", "").strip().lower()
+    raw = env.get("DEFAULT_TRUST", "").strip().lower()
     if raw in ("personal", "foreign"):
         return raw
     baseline = str(model().get("trust", {}).get("default", "foreign")).strip().lower()

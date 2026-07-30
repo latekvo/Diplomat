@@ -42,23 +42,23 @@ _PORT_BASE = 43000 + (os.getpid() % 400) * 20
 
 def _mesh_env(tmp: Path) -> dict:
     return {
-        "DIPLOMAT_MESH_LOOPBACK": "1",
-        "DIPLOMAT_MESH_MCAST_PORT": str(_PORT_BASE),
-        "DIPLOMAT_MESH_TCP_BASE": str(_PORT_BASE + 1),
-        "DIPLOMAT_MESH_TCP_SPAN": "12",
-        "DIPLOMAT_MESH_BEACON_SECS": "0.25",
-        "DIPLOMAT_MESH_HEARTBEAT_SECS": "0.25",
-        "DIPLOMAT_MESH_STALE_SECS": "1.0",
-        "DIPLOMAT_MESH_TIMEOUT_SECS": "2.0",
-        "DIPLOMAT_MESH_ACK_SECS": "4.0",
-        "DIPLOMAT_MESH_STATE_SECS": "0.25",
-        "DIPLOMAT_MESH_DIR": str(tmp / "mesh-self"),
-        "DIPLOMAT_MESH_PLATFORM": "linux",
-        "DIPLOMAT_MESH_SPAWN": f"cp {{prompt_file}} {tmp}/spawned-self.txt",
+        "SZPONTNET_LOOPBACK": "1",
+        "SZPONTNET_MCAST_PORT": str(_PORT_BASE),
+        "SZPONTNET_TCP_BASE": str(_PORT_BASE + 1),
+        "SZPONTNET_TCP_SPAN": "12",
+        "SZPONTNET_BEACON_SECS": "0.25",
+        "SZPONTNET_HEARTBEAT_SECS": "0.25",
+        "SZPONTNET_STALE_SECS": "1.0",
+        "SZPONTNET_TIMEOUT_SECS": "2.0",
+        "SZPONTNET_ACK_SECS": "4.0",
+        "SZPONTNET_STATE_SECS": "0.25",
+        "SZPONTNET_DIR": str(tmp / "mesh-self"),
+        "SZPONTNET_PLATFORM": "linux",
+        "SZPONTNET_SPAWN": f"cp {{prompt_file}} {tmp}/spawned-self.txt",
         # Full-trust fleet: a set of the user's own machines that trust each other,
         # so peers accept each other's dispatches without per-device promotion (the
         # shipped default is zero-trust/foreign — see szpontnet/docs/11).
-        "DIPLOMAT_MESH_DEFAULT_TRUST": "personal",
+        "SZPONTNET_DEFAULT_TRUST": "personal",
         "HOME": str(tmp / "home"),
     }
 
@@ -95,10 +95,10 @@ def test_applet_meshes_and_dispatches(tmp_path, monkeypatch):
         "SZPONTNET_HOST": "diplomat_app.szponthost",
         "PYTHONPATH": os.pathsep.join(
             [str(LINUX_DIR), os.environ.get("PYTHONPATH", "")]).rstrip(os.pathsep),
-        "DIPLOMAT_MESH_DIR": str(peer_dir),
-        "DIPLOMAT_MESH_PLATFORM": "macos",
-        "DIPLOMAT_MESH_SPAWN": f"cp {{prompt_file}} {tmp_path}/spawned-peer.txt",
-        "DIPLOMAT_MESH_DEFAULT_TRUST": "personal",  # full-trust fleet (see _mesh_env)
+        "SZPONTNET_DIR": str(peer_dir),
+        "SZPONTNET_PLATFORM": "macos",
+        "SZPONTNET_SPAWN": f"cp {{prompt_file}} {tmp_path}/spawned-peer.txt",
+        "SZPONTNET_DEFAULT_TRUST": "personal",  # full-trust fleet (see _mesh_env)
     })
     peer = subprocess.Popen(
         [sys.executable, "-m", "szpontnet"], cwd=SZPONTNET_DIR, env=peer_env,

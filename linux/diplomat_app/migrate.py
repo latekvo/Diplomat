@@ -30,9 +30,11 @@ def migrate_legacy_state_dir() -> None:
     Idempotent and best-effort: a no-op on a clean machine or once migrated, and a
     failure never prevents the app from launching.
     """
-    # A DIPLOMAT_MESH_DIR override means the caller owns the path (tests, custom
-    # deploys) — never migrate under it.
-    if os.environ.get("DIPLOMAT_MESH_DIR"):
+    # A SZPONTNET_DIR override means the caller owns the path (tests, custom
+    # deploys) — never migrate under it. Both spellings, because the library honours
+    # the pre-rename one too: reading only the new name here would move a real
+    # ~/.argent/mesh into a directory the node is not using.
+    if os.environ.get("SZPONTNET_DIR") or os.environ.get("DIPLOMAT_MESH_DIR"):
         return
     home = Path.home()
     _merge_move(home / ".argent" / "mesh", home / ".diplomat" / "mesh")

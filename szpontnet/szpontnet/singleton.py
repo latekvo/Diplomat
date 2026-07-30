@@ -76,10 +76,10 @@ def terminate_other_nodes() -> set[int]:
     clean asyncio ``stop()`` before a survivor is forced down, so the guarantee
     holds even against a wedged node rather than degrading to two.
 
-    Stands down entirely in loopback-only mode (``DIPLOMAT_MESH_LOOPBACK=1``): the
+    Stands down entirely in loopback-only mode (``SZPONTNET_LOOPBACK=1``): the
     singleton's whole premise is "one physical machine = one node", but loopback is
     a *single-host multi-node simulation* (the test fleet, a dev mesh) where many
-    isolated nodes — each with its own ``DIPLOMAT_MESH_DIR`` — legitimately share
+    isolated nodes — each with its own ``SZPONTNET_DIR`` — legitimately share
     one uid, and reaping by argv would make them murder each other. A real
     deployment is never loopback-only (it would never reach another machine), and
     the ghost this guards against was a genuine LAN node, so it is still reaped.

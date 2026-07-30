@@ -12,12 +12,12 @@ import Foundation
 /// So drive the routine with closures that succeed, throw a `MeshCtlError`, and throw
 /// something else — then drive all five real commands and check the same properties.
 ///
-///   DIPLOMAT_MESH_DIR=$(mktemp -d) DIPLOMAT_SELF_REPO=/nonexistent \
+///   SZPONTNET_DIR=$(mktemp -d) DIPLOMAT_SELF_REPO=/nonexistent \
 ///     DIPLOMAT_MESH_CMD_TEST=1 swift run Diplomat
 ///
 /// No node is contacted or started: the commands run against a snapshot with no control
 /// port, which `MeshBridge.request` rejects before it opens a socket. The two env vars are
-/// required (the test refuses to run without them) — `DIPLOMAT_MESH_DIR` so the
+/// required (the test refuses to run without them) — `SZPONTNET_DIR` so the
 /// `meshTick()` re-read sees a known-empty state dir instead of the developer's live node,
 /// and `DIPLOMAT_SELF_REPO` so a broken headless guard cannot double-fork a real daemon.
 /// Twin of `linux/tests/test_mesh_store_commands.py`.
@@ -56,9 +56,9 @@ enum MeshCommandTest {
 
         // The mesh dir has to be a scratch path, or `meshTick()` re-reads the developer's
         // live node and every "the topology was re-read" check below stops discriminating.
-        guard ProcessInfo.processInfo.environment["DIPLOMAT_MESH_DIR"] != nil,
+        guard ProcessInfo.processInfo.environment["SZPONTNET_DIR"] != nil,
               MeshBridge.readState() == nil else {
-            print("  FAIL  needs DIPLOMAT_MESH_DIR pointing at a directory with no state.json"
+            print("  FAIL  needs SZPONTNET_DIR pointing at a directory with no state.json"
                 + " (got \(MeshBridge.stateDir.path))")
             return false
         }
@@ -72,6 +72,40 @@ enum MeshCommandTest {
             print("  FAIL  needs DIPLOMAT_SELF_REPO pointing at a non-checkout, so a broken"
                 + " guard cannot spawn a real node (got \(RepoPaths.root.path))")
             return false
+        }
+
+        // 0. The two knobs this app and the node must resolve identically. Both live in
+        //    SzpontNet's namespace, and the node honours the pre-rename spelling when the
+        //    current one is unset — so this side has to as well. Disagree on `DIR` and the
+        //    panel renders a topology nobody writes; disagree on `SECRET` and every
+        //    control session below is refused by the node this app just started, with the
+        //    node perfectly healthy. Twin of `szpontnet/tests/test_env.py`.
+        do {
+            let scratchDir = ProcessInfo.processInfo.environment["SZPONTNET_DIR"]!
+            defer {  // this test's own preconditions depend on DIR; put it back
+                setenv("SZPONTNET_DIR", scratchDir, 1)
+                unsetenv("DIPLOMAT_MESH_DIR")
+                unsetenv("SZPONTNET_SECRET")
+            }
+
+            unsetenv("SZPONTNET_SECRET")
+            unsetenv("DIPLOMAT_MESH_SECRET")
+            check("no token set is an open mesh", MeshBridge.secret.isEmpty)
+
+            setenv("DIPLOMAT_MESH_SECRET", "from-an-old-profile", 1)
+            check("a token under the pre-rename name still fences this app",
+                  MeshBridge.secret == "from-an-old-profile", "got '\(MeshBridge.secret)'")
+
+            setenv("SZPONTNET_SECRET", "current", 1)
+            check("the current name wins when both are set",
+                  MeshBridge.secret == "current", "got '\(MeshBridge.secret)'")
+            unsetenv("DIPLOMAT_MESH_SECRET")
+
+            unsetenv("SZPONTNET_DIR")
+            setenv("DIPLOMAT_MESH_DIR", "/var/tmp/old-spelling", 1)
+            check("a state dir under the pre-rename name is honoured too",
+                  MeshBridge.stateDir.path == "/var/tmp/old-spelling",
+                  "got \(MeshBridge.stateDir.path)")
         }
 
         // Enabling the mesh is what un-gates `meshTick()`. In a headless mode it must

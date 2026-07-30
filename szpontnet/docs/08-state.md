@@ -13,7 +13,7 @@ target) so a concurrent reader never sees a torn file, and all are best-effort
 state).
 
 The reference paths live under `~/.diplomat/mesh/` (overridable via
-`DIPLOMAT_MESH_DIR`).
+`SZPONTNET_DIR`).
 
 ## `node.json`
 
@@ -110,7 +110,7 @@ optional) naming a device the operator has explicitly promoted to `personal`.
 `defaultLevel` (`"personal"`/`"foreign"`) is the operator's persisted **default trust
 level** for any device *not* in the allowlist; it ships **`foreign`** — a new device
 is zero-trust until promoted ([11](11-trust-and-balancing.md)). An **absent**
-`defaultLevel` falls back to the node baseline (`DIPLOMAT_MESH_DEFAULT_TRUST` /
+`defaultLevel` falls back to the node baseline (`SZPONTNET_DEFAULT_TRUST` /
 the shared model's `trust.default`, itself `foreign`). The running node keeps both the
 set and the level in memory and edits them live through the
 [`trust`/`untrust`/`set-default-trust`](04-messages.md#ctl) control commands, so a

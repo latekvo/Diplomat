@@ -3,7 +3,7 @@ library boundary.
 
 An agent is launched fire-and-forget from four places — the applet's terminal
 spawner, Diplomat's answer to "run a mesh job here", the node's own
-``DIPLOMAT_MESH_SPAWN`` runner, and the confined foreign runner. All four want the
+``SZPONTNET_SPAWN`` runner, and the confined foreign runner. All four want the
 same two properties from ``Popen``, and both are load-bearing rather than
 cosmetic:
 
@@ -150,9 +150,9 @@ def test_mesh_runner_failure_becomes_a_job_spawn_error(monkeypatch):
     monkeypatch.setattr(launch, "popen_detached", refuse)
 
     with pytest.raises(spawnjob.JobSpawnError) as exc:
-        launch.detached("some-runner /tmp/p", "DIPLOMAT_MESH_SPAWN")
+        launch.detached("some-runner /tmp/p", "SZPONTNET_SPAWN")
 
-    assert "DIPLOMAT_MESH_SPAWN" in str(exc.value)
+    assert "SZPONTNET_SPAWN" in str(exc.value)
 
 
 def test_host_macos_runner_failure_becomes_a_job_spawn_error(monkeypatch, tmp_path):
@@ -175,7 +175,7 @@ def test_host_macos_runner_failure_becomes_a_job_spawn_error(monkeypatch, tmp_pa
 
 
 def test_mesh_override_runner_is_detached(popen_spy):
-    launch.detached("some-runner /tmp/p", "DIPLOMAT_MESH_SPAWN")
+    launch.detached("some-runner /tmp/p", "SZPONTNET_SPAWN")
     (args, kwargs) = popen_spy[0]
     assert args[0] == "some-runner /tmp/p"
     assert kwargs["shell"] is True
@@ -197,7 +197,7 @@ def test_host_macos_runner_is_detached(popen_spy, monkeypatch, tmp_path):
 def test_confined_runner_is_detached_under_a_scrubbed_env(popen_spy, monkeypatch, tmp_path):
     """The foreign path must keep both the detachment contract and its scrubbed
     environment — the env is the credential defence, the session is the lifetime."""
-    monkeypatch.setenv("DIPLOMAT_MESH_FOREIGN_SPAWN", "sandbox {prompt_file} {result_file}")
+    monkeypatch.setenv("SZPONTNET_FOREIGN_SPAWN", "sandbox {prompt_file} {result_file}")
     monkeypatch.setenv("GITHUB_TOKEN", "ghp_secret")
     monkeypatch.setattr(spawnjob, "write_prompt", lambda prompt: str(tmp_path / "p.txt"))
 
@@ -207,4 +207,4 @@ def test_confined_runner_is_detached_under_a_scrubbed_env(popen_spy, monkeypatch
     assert kwargs["start_new_session"] is True
     assert kwargs["stdin"] == subprocess.DEVNULL
     assert "GITHUB_TOKEN" not in kwargs["env"]
-    assert kwargs["env"]["DIPLOMAT_MESH_CONFINED"] == "1"
+    assert kwargs["env"]["SZPONTNET_CONFINED"] == "1"

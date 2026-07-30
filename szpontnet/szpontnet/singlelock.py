@@ -1,7 +1,7 @@
 """One running node per state directory — a kernel-arbitrated startup guard.
 
 Two mesh node *processes* that share a state directory (see :meth:`.host.Host.state_dir`, or
-whatever ``DIPLOMAT_MESH_DIR`` points at) share one identity, one ``state.json``
+whatever ``SZPONTNET_DIR`` points at) share one identity, one ``state.json``
 and one ``peers.json`` — so they clobber each other's published snapshot, and
 only whichever instance a peer happens to dial is ever truly linked. The others
 are dark (they can neither beacon under a blocked send channel nor dial, being
@@ -24,7 +24,7 @@ holder and releases it automatically when that process dies — clean exit OR
 crash — so there is no stale-lock recovery to get wrong (the trap a pidfile
 falls into). A node takes it at process start and holds the fd for its whole
 life. The lock is keyed to the state dir, so the test/sim affordance of many
-nodes on one host is untouched: each gets its own ``DIPLOMAT_MESH_DIR`` → its
+nodes on one host is untouched: each gets its own ``SZPONTNET_DIR`` → its
 own lockfile → its own lock.
 """
 

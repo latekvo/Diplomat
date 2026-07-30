@@ -90,7 +90,7 @@ you.
 **Safe by default: a new device is foreign.** Out of the box a device you have not
 promoted can't run your requests, mutate your node, or own work - you grant trust one
 device at a time. The default level is operator-configurable per node (a panel toggle
-/ `--default-trust` / `DIPLOMAT_MESH_DEFAULT_TRUST`, persisted locally): set it to
+/ `--default-trust` / `SZPONTNET_DEFAULT_TRUST`, persisted locally): set it to
 **personal** for a fleet of machines you all own and every unlisted peer is trusted,
 exactly as the pre-trust core behaved. Trust is a purely local decision (never on the
 wire), so either default interoperates with any other node. The join fence

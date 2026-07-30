@@ -41,7 +41,7 @@ def _run_node() -> int:
     # identity and clobber one state.json — only whichever a peer dials is truly
     # linked, the rest overwrite the snapshot with an empty `sees`. This flock is the
     # single point that can't be raced; keyed to the state dir, so the tests'
-    # many-nodes-per-host affordance (a distinct DIPLOMAT_MESH_DIR each) is untouched.
+    # many-nodes-per-host affordance (a distinct SZPONTNET_DIR each) is untouched.
     lock = singlelock.acquire()
     if lock is None:
         print("mesh node already running for this state directory — exiting",
@@ -251,7 +251,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--tor-connect", metavar="ONION", dest="tor_connect",
                     help="dial a peer's v3 onion address over Tor to initiate "
                          "contact — works even if you never met on the LAN "
-                         "(the node needs DIPLOMAT_MESH_TOR=1)")
+                         "(the node needs SZPONTNET_TOR=1)")
     args = ap.parse_args(argv)
 
     if args.daemon:

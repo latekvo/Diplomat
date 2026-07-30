@@ -2,7 +2,7 @@
 
 A **personal** job resolves in two steps:
 
-1. ``DIPLOMAT_MESH_SPAWN`` — a command template (``{prompt_file}`` substituted,
+1. ``SZPONTNET_SPAWN`` — a command template (``{prompt_file}`` substituted,
    or the path appended). The deployment-independent way to say how this machine
    runs work: how tests, headless boxes and custom runners take dispatches.
 2. otherwise the host's own runner ([host.Host.run_job]). The mesh picks *which
@@ -12,7 +12,7 @@ A **personal** job resolves in two steps:
 
 A **foreign** job never takes either path. It runs [spawn_confined]: the
 untrusted prompt goes into the operator's own sandbox (named by
-``DIPLOMAT_MESH_FOREIGN_SPAWN``), the result is written to a file the node returns
+``SZPONTNET_FOREIGN_SPAWN``), the result is written to a file the node returns
 to the originator, and the child's environment is scrubbed of host credentials so
 even a mis-built sandbox can't act under this machine's identity. See
 szpontnet/docs/13-foreign-execution.md.
@@ -23,6 +23,9 @@ from __future__ import annotations
 import os
 
 from . import config, host
+# Imported as the accessor, not the module: `env` is this file's name for the
+# child environments it builds, and one of those is three lines from a read.
+from .env import get as env_get
 from .launch import JobSpawnError, detached, fill, write_prompt
 
 __all__ = ["JobSpawnError", "spawn_job", "spawn_confined", "run_result_handler"]
@@ -58,18 +61,32 @@ _CONFINED_PREAMBLE = (
     "identity — you hold none of its credentials and the host will reject such "
     "attempts. Confined side effects on this machine's own resources (running code, "
     "launching an emulator/simulator, building) are allowed. Produce your result "
-    "and write it to the file named by $DIPLOMAT_MESH_RESULT_FILE (write it in one shot "
+    "and write it to the file named by $SZPONTNET_RESULT_FILE (write it in one shot "
     "— ideally a temp file then rename — so the node reads a complete result); the "
     "node returns it to the requester, who performs any social action themselves.\n\n"
 )
 
 
+def _handed_over(**extra: str) -> dict:
+    """The ``SZPONTNET_*`` values a child is handed, each also under its pre-rename
+    ``DIPLOMAT_MESH_*`` name.
+
+    The read-side fallback in :mod:`.env` cannot help here, because this is the
+    *writing* side: an operator's confinement sandbox or result handler is a script
+    on their disk, and one written against the old names would find nothing at all
+    and quietly write its product nowhere. Both spellings until the old ones go.
+    """
+    return {k: v for name, v in extra.items()
+            for k in (name, name.replace("SZPONTNET_", "DIPLOMAT_MESH_", 1))}
+
+
 def _scrubbed_env(**extra: str) -> dict:
     """A copy of this process's environment with credential-bearing vars removed
-    and ``extra`` overlaid — the environment a confined foreign child runs under."""
+    and the handed-over values overlaid — the environment a confined foreign child
+    runs under."""
     env = {k: v for k, v in os.environ.items()
            if not any(frag in k.upper() for frag in _CREDENTIAL_FRAGMENTS)}
-    env.update(extra)
+    env.update(_handed_over(**extra))
     return env
 
 
@@ -78,8 +95,8 @@ def _spawn_override(prompt_file: str, template: str, done_path: str | None = Non
     if done_path:
         # The executor watches this sentinel to free its work-claim when the agent
         # finishes; a custom/test runner touches it on exit (szpontnet/docs/12).
-        env = {**os.environ, "DIPLOMAT_MESH_DONE_FILE": done_path}
-    detached(fill(template, prompt_file=prompt_file), "DIPLOMAT_MESH_SPAWN", env=env)
+        env = {**os.environ, **_handed_over(SZPONTNET_DONE_FILE=done_path)}
+    detached(fill(template, prompt_file=prompt_file), "SZPONTNET_SPAWN", env=env)
 
 
 def spawn_job(prompt: str, done_path: str | None = None) -> str:
@@ -89,11 +106,11 @@ def spawn_job(prompt: str, done_path: str | None = None) -> str:
 
     ``done_path`` (optional) is a completion sentinel the agent writes on exit —
     how the executor learns its work-claim can be freed (szpontnet/docs/12). Both
-    paths wire it: a ``DIPLOMAT_MESH_SPAWN`` runner is handed it as
-    ``DIPLOMAT_MESH_DONE_FILE`` to touch itself, and a host runner is passed it
+    paths wire it: a ``SZPONTNET_SPAWN`` runner is handed it as
+    ``SZPONTNET_DONE_FILE`` to touch itself, and a host runner is passed it
     directly.
     """
-    template = os.environ.get("DIPLOMAT_MESH_SPAWN")
+    template = env_get("SPAWN")
     if template:
         prompt_file = write_prompt(prompt)
         _spawn_override(prompt_file, template, done_path)
@@ -113,39 +130,39 @@ def spawn_job(prompt: str, done_path: str | None = None) -> str:
 def spawn_confined(prompt: str, result_file: str) -> str:
     """Run a **foreign** SzpontRequest under zero trust and return the staged prompt
     path. The untrusted ``prompt`` (prefixed with the response-only contract) runs
-    inside the operator's sandbox — ``DIPLOMAT_MESH_FOREIGN_SPAWN``, with
+    inside the operator's sandbox — ``SZPONTNET_FOREIGN_SPAWN``, with
     ``{prompt_file}``/``{result_file}`` substituted and also exported as
-    ``DIPLOMAT_MESH_PROMPT_FILE``/``DIPLOMAT_MESH_RESULT_FILE`` — under a credential-
+    ``SZPONTNET_PROMPT_FILE``/``SZPONTNET_RESULT_FILE`` — under a credential-
     scrubbed environment. The sandbox writes its product to ``result_file``, which
     the node returns to the originator.
 
     Raises :class:`JobSpawnError` when no confinement runner is configured (the
     caller must gate on [config.foreign_spawn] first) or the launch fails — the node
     then declines the request, never falling back to an unconfined host path."""
-    template = os.environ.get("DIPLOMAT_MESH_FOREIGN_SPAWN", "")
+    template = env_get("FOREIGN_SPAWN", "")
     if not template:
         # Belt and braces: the caller only reaches here when a runner is configured.
-        raise JobSpawnError("no confinement runner (DIPLOMAT_MESH_FOREIGN_SPAWN unset)")
+        raise JobSpawnError("no confinement runner (SZPONTNET_FOREIGN_SPAWN unset)")
     prompt_file = write_prompt(_CONFINED_PREAMBLE + prompt)
     env = _scrubbed_env(
-        DIPLOMAT_MESH_CONFINED="1",
-        DIPLOMAT_MESH_PROMPT_FILE=prompt_file,
-        DIPLOMAT_MESH_RESULT_FILE=result_file,
+        SZPONTNET_CONFINED="1",
+        SZPONTNET_PROMPT_FILE=prompt_file,
+        SZPONTNET_RESULT_FILE=result_file,
     )
     detached(fill(template, prompt_file=prompt_file, result_file=result_file),
-             "DIPLOMAT_MESH_FOREIGN_SPAWN", env=env)
+             "SZPONTNET_FOREIGN_SPAWN", env=env)
     return prompt_file
 
 
 def run_result_handler(result_file: str) -> None:
     """Hand a returned ``job-result`` to the originator's own result handler —
-    ``DIPLOMAT_MESH_ON_RESULT`` with ``{result_file}`` substituted (and exported as
-    ``DIPLOMAT_MESH_RESULT_FILE``). This is where the **social action runs under the
+    ``SZPONTNET_ON_RESULT`` with ``{result_file}`` substituted (and exported as
+    ``SZPONTNET_RESULT_FILE``). This is where the **social action runs under the
     originator's identity** (e.g. ``gh pr review``). Fire-and-forget, with the host's
     full environment (unlike a confined runner — this IS the trusted first party).
     Raises :class:`JobSpawnError` if the handler can't be launched."""
     template = config.on_result()
     if not template:
         return
-    detached(fill(template, result_file=result_file), "DIPLOMAT_MESH_ON_RESULT",
-             env={**os.environ, "DIPLOMAT_MESH_RESULT_FILE": result_file})
+    detached(fill(template, result_file=result_file), "SZPONTNET_ON_RESULT",
+             env={**os.environ, **_handed_over(SZPONTNET_RESULT_FILE=result_file)})

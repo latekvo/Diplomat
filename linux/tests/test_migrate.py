@@ -20,7 +20,7 @@ from diplomat_app.migrate import migrate_legacy_state_dir
 @pytest.fixture
 def fake_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.delenv("DIPLOMAT_MESH_DIR", raising=False)
+    monkeypatch.delenv("SZPONTNET_DIR", raising=False)
     # Path.home() caches nothing; it re-reads $HOME each call on POSIX.
     assert os.path.expanduser("~") == str(tmp_path)
     return tmp_path
@@ -89,9 +89,9 @@ def test_idempotent_and_noop_on_clean_machine(fake_home):
 
 
 def test_env_override_skips_migration(fake_home, monkeypatch):
-    # A DIPLOMAT_MESH_DIR override means the caller owns the path — never migrate.
+    # A SZPONTNET_DIR override means the caller owns the path — never migrate.
     _seed_legacy_mesh(fake_home)
-    monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(fake_home / "custom"))
+    monkeypatch.setenv("SZPONTNET_DIR", str(fake_home / "custom"))
     migrate_legacy_state_dir()
     assert (fake_home / ".argent" / "mesh" / "device.key").exists()  # left in place
     assert not (fake_home / ".diplomat").exists()

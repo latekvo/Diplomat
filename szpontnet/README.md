@@ -20,6 +20,14 @@ The library depends on nothing — not on the application that happens to ship i
 this repository, and not on any package outside the standard library (Ed25519
 device identity is an optional extra; without it a node runs keyless).
 
+Every knob it reads from the environment is `SZPONTNET_<NAME>`, through a single
+accessor ([`szpontnet/env.py`](szpontnet/env.py)) so that is a property of the code
+rather than a convention. These names are part of the spec: the conformance tester
+configures a candidate through them and has no other channel, so a node that reads
+its settings under some other spelling is one the tester cannot drive. The
+pre-rename `DIPLOMAT_MESH_<NAME>` spellings are still honoured when the new one is
+unset — see the module for when that can be dropped.
+
 The canonical v1 constants and duty catalog from
 [appendix B](docs/appendix-b-constants.md) ship as
 [`szpontnet/netmodel.json`](szpontnet/netmodel.json), so a bare node is conformant
@@ -48,6 +56,20 @@ class MyHost(szpontnet.host.Host):
 
 szpontnet.host.set_host(MyHost())
 ```
+
+## Its own tests
+
+```bash
+pip install -e ./szpontnet[trust] pytest
+pytest szpontnet/tests -q
+```
+
+Nothing here imports the application that ships the library, and CI runs this job
+with no Qt, no `diplomat-core` and no Diplomat on the import path — so a dependency
+creeping back in fails a build rather than going unnoticed. One of the tests
+enforces that directly: it scans every module for a mention of a host application,
+and another walks the package AST to catch an environment read that skips
+[`env.py`](szpontnet/env.py).
 
 ## Checking an implementation
 

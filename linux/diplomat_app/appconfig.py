@@ -12,7 +12,7 @@ So this one knob lives in the shared ``~/.diplomat`` tree, the way the ban list,
 the activity feed and the mesh snapshot already cross process *and* front-end
 boundaries. Readers re-read on use, so a change reaches a running node on its next
 spawn. ``DIPLOMAT_CONFIG`` relocates the file (tests, self-checks) exactly as
-``DIPLOMAT_MESH_DIR`` relocates the mesh state.
+``SZPONTNET_DIR`` relocates the mesh state.
 """
 
 from __future__ import annotations

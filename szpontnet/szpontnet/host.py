@@ -16,7 +16,7 @@ So the five questions it cannot answer alone are asked of a **host**:
   application's logging.
 * :meth:`Host.run_job` — run a *personal* job here. This is the whole point of a
   duty: the mesh decides **which machine**, the host decides **what running it
-  means**. Only reached when the operator configured no ``DIPLOMAT_MESH_SPAWN``
+  means**. Only reached when the operator configured no ``SZPONTNET_SPAWN``
   template, which is the deployment-independent way to say it.
 * :meth:`Host.work_already_running` — whether the work behind a key is already
   under way on this machine by some means the mesh never saw. Only the
@@ -40,9 +40,9 @@ from __future__ import annotations
 import functools
 import importlib
 import json
-import os
 from pathlib import Path
 
+from . import env
 from .launch import JobSpawnError
 
 _NETMODEL = Path(__file__).resolve().parent / "netmodel.json"
@@ -87,7 +87,7 @@ class Host:
         machine cannot take the job, so the dispatcher fails over to the next
         candidate. It is *not* an error condition to have no runner.
         """
-        raise NoRunner("no host runner (set DIPLOMAT_MESH_SPAWN, or register a host)")
+        raise NoRunner("no host runner (set SZPONTNET_SPAWN, or register a host)")
 
     def work_already_running(self, work_key: str) -> bool:
         """Whether this machine is already working on ``work_key`` by some route
@@ -144,7 +144,7 @@ def host() -> Host:
     """
     if _host is not None:
         return _host
-    name = os.environ.get("SZPONTNET_HOST", "").strip()
+    name = (env.get("HOST") or "").strip()
     if not name:
         return _NULL_HOST
     try:

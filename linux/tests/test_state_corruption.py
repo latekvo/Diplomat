@@ -39,7 +39,7 @@ def mesh_dir(tmp_path, monkeypatch):
     """Point every mesh state path at a throwaway directory."""
     d = tmp_path / "mesh"
     d.mkdir()
-    monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(d))
+    monkeypatch.setenv("SZPONTNET_DIR", str(d))
     return d
 
 

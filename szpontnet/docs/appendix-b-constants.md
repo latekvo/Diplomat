@@ -34,7 +34,7 @@ may place work differently ([09](09-extensibility.md#vocabulary-skew)).
 | down-peer retention | `300` s (reference) | [snapshot retention](08-state.md#down-peer-retention) |
 
 > Timing values are the reference defaults. An implementation MAY expose overrides
-> for testing (the reference reads `DIPLOMAT_MESH_*` env vars to run fast-timed
+> for testing (the reference reads `SZPONTNET_*` env vars to run fast-timed
 > meshes on loopback), but nodes on the *same* mesh must use compatible values -
 > in particular `peerTimeoutSecs` must exceed `heartbeatIntervalSecs` with margin,
 > and `peerStaleSecs` must sit between them.
@@ -130,8 +130,8 @@ empty (keyless). See [11 - authenticated gossip](11-trust-and-balancing.md#authe
 
 | Constant | Value | Meaning |
 |----------|-------|---------|
-| server mode via | `DIPLOMAT_MESH_SERVER=1` | node accepts work but never dispatches to peers ([11](11-trust-and-balancing.md#the-server-role)). |
-| API key via | `DIPLOMAT_MESH_API_KEY` | required `apiKey` on inbound `ctl`/`dispatch` ([11](11-trust-and-balancing.md#the-api-key)); empty = no gate. |
+| server mode via | `SZPONTNET_SERVER=1` | node accepts work but never dispatches to peers ([11](11-trust-and-balancing.md#the-server-role)). |
+| API key via | `SZPONTNET_API_KEY` | required `apiKey` on inbound `ctl`/`dispatch` ([11](11-trust-and-balancing.md#the-api-key)); empty = no gate. |
 
 The `apiKey` field is optional and additive (omitted when empty), and is
 orthogonal to the join `secret` and to device trust.
@@ -214,8 +214,8 @@ a node that omits them drops the `work-claim` message and keeps the link.
 | Constant | Value | Meaning |
 |----------|-------|---------|
 | job-result signing tag | `szpontnet-jobresult-v1:` | domain tag for a `job-result` `sig` ([13](13-foreign-execution.md#correlation-and-authenticity)). |
-| confinement runner via | `DIPLOMAT_MESH_FOREIGN_SPAWN` | operator's sandbox command (`{prompt_file}`/`{result_file}`); its presence enables confined foreign execution, absence = decline ([13](13-foreign-execution.md#confinement-the-executors-responsibility)). |
-| result handler via | `DIPLOMAT_MESH_ON_RESULT` | originator's own-identity action on a returned result (`{result_file}`); where e.g. `gh` runs. |
+| confinement runner via | `SZPONTNET_FOREIGN_SPAWN` | operator's sandbox command (`{prompt_file}`/`{result_file}`); its presence enables confined foreign execution, absence = decline ([13](13-foreign-execution.md#confinement-the-executors-responsibility)). |
+| result handler via | `SZPONTNET_ON_RESULT` | originator's own-identity action on a returned result (`{result_file}`); where e.g. `gh` runs. |
 | `foreignResultRetryIntervalSecs` | `5.0` | executor re-sends an unacked `job-result` this often. |
 | `foreignResultMaxSecs` | `120.0` | executor gives up delivering after this (originator presumed gone). |
 | `foreignJobTimeoutSecs` | `900.0` | confined compute budget before the executor returns an `ok:false` result. |
@@ -230,7 +230,7 @@ and declines foreign requests.
 |----------|-------|---------|
 | `foreignCompletionDeadlineSecs` | `21600.0` (6 h) | how long a **foreign** executor that replied `spawned` (without `direct: true`) has to deliver its `job-result` before the originator sends a [`job-reminder`](04-messages.md#job-reminder). A **floor** - the originator must not remind earlier; an approved extension re-arms the full window. |
 | `foreignReminderGraceSecs` | `900.0` | how long the executor has to answer the reminder (result / [`job-progress`](04-messages.md#job-progress)) before the originator **bans** it. |
-| extension decider via | `DIPLOMAT_MESH_EXTEND_DECIDER` | the originator's command template (`{job_file}`) that judges a late executor's `job-progress` plea - exit `0` extends, anything else bans. **Unset = no extensions** ([13](13-foreign-execution.md#the-extension-decision)). |
+| extension decider via | `SZPONTNET_EXTEND_DECIDER` | the originator's command template (`{job_file}`) that judges a late executor's `job-progress` plea - exit `0` extends, anything else bans. **Unset = no extensions** ([13](13-foreign-execution.md#the-extension-decision)). |
 | `job-status.direct` | `true` \| absent | additive flag on a `spawned` [`job-status`](04-messages.md#job-status): the executor ran the job on the personal path, no result will follow, no deadline is armed. |
 | `job-progress.note` cap | `4096` bytes | receiver-side truncation of the progress note. |
 | ban list | `~/.diplomat/mesh/banned.json` | machine-local, never gossiped ([08](08-state.md#bannedjson)); edited by the automatic ban and the [`ban`/`unban`](04-messages.md#ban--unban) control commands. |
@@ -246,7 +246,7 @@ answering reminders.
 The optional WAN transport: a persistent Tor v3 onion service the node advertises
 (inside the signed advert, as [`NodeInfo.onion`](04-messages.md#nodeinfo)), plus a SOCKS
 dialer that reconnects to known-but-unseen **personal** peers. Off unless
-`DIPLOMAT_MESH_TOR=1` **and** a `tor` binary is present; otherwise the node is LAN-only,
+`SZPONTNET_TOR=1` **and** a `tor` binary is present; otherwise the node is LAN-only,
 byte-identical to before. The backoff/tick values are node-local reconnect policy (peers
 need not agree on them); only `ONION_VIRTPORT` is shared. See
 [14-tor-transport](14-tor-transport.md).
@@ -254,7 +254,7 @@ need not agree on them); only `ONION_VIRTPORT` is shared. See
 | Name | Value | Where |
 |------|-------|-------|
 | `ONION_VIRTPORT` | `80` | the onion service's virtual port; the dialer and `HiddenServicePort` agree on it, and nothing on the host binds it ([14](14-tor-transport.md)). |
-| Tor bootstrap timeout | `90.0` s | wait for `Bootstrapped 100%` before giving up and staying LAN-only; override via `DIPLOMAT_MESH_TOR_BOOTSTRAP_SECS` (non-finite / non-positive → `90`). |
+| Tor bootstrap timeout | `90.0` s | wait for `Bootstrapped 100%` before giving up and staying LAN-only; override via `SZPONTNET_TOR_BOOTSTRAP_SECS` (non-finite / non-positive → `90`). |
 | redial tick | `5.0` s | how often the reconnect loop wakes to check which known peers are due (`_TOR_REDIAL_TICK_SECS`). |
 | dial timeout | `30.0` s | upper bound on one Tor dial + SOCKS handshake before it is abandoned - a cold onion connect can take double-digit seconds (`_TOR_DIAL_TIMEOUT_SECS`). |
 | backoff floor | `10.0` s | per-peer reconnect backoff minimum; the first miss schedules the next probe this far out (`_TOR_BACKOFF_MIN_SECS`). |
@@ -262,7 +262,7 @@ need not agree on them); only `ONION_VIRTPORT` is shared. See
 | backoff factor | `2.0` | geometric growth per missed probe; reset to the floor the moment a Tor link actually **binds** (`_TOR_BACKOFF_FACTOR`). |
 | onion key + data dir | `~/.diplomat/mesh/tor/` | this node's private Tor `DataDirectory`; the `HiddenServiceDir` is `tor/onion/` (`0700`), so the `.onion` is permanent across restarts. |
 | peer onion cache | `~/.diplomat/mesh/onions.json` | last-known peer onions, learned only from signed hellos and bounded like `peers.json` - the WAN sibling of the LAN redial cache. |
-| enable / binary via | `DIPLOMAT_MESH_TOR` / `DIPLOMAT_MESH_TOR_BINARY` | turn the transport on; point at a non-PATH `tor` ([14](14-tor-transport.md)). |
+| enable / binary via | `SZPONTNET_TOR` / `SZPONTNET_TOR_BINARY` | turn the transport on; point at a non-PATH `tor` ([14](14-tor-transport.md)). |
 
 ## Message types
 
@@ -294,7 +294,7 @@ reference: [04-messages](04-messages.md).
 | `~/.diplomat/mesh/state.json` | public topology snapshot ([08](08-state.md#the-statejson-snapshot)) |
 | `~/.diplomat/mesh/onions.json` | last-known peer onion addresses (never gossiped; learned from signed hellos, [14](14-tor-transport.md)) |
 | `~/.diplomat/mesh/tor/` | this node's private Tor data dir + `onion/` `HiddenServiceDir` (`0700`, permanent `.onion`, [14](14-tor-transport.md)) |
-| overridable via | `DIPLOMAT_MESH_DIR` |
-| join secret via | `DIPLOMAT_MESH_SECRET` ([03](03-transport.md#the-join-fence)) |
-| Tor transport via | `DIPLOMAT_MESH_TOR` / `DIPLOMAT_MESH_TOR_BINARY` / `DIPLOMAT_MESH_TOR_BOOTSTRAP_SECS` ([14](14-tor-transport.md)) |
-| server mode / API key via | `DIPLOMAT_MESH_SERVER` / `DIPLOMAT_MESH_API_KEY` ([11](11-trust-and-balancing.md#server-nodes--api-key-authentication)) |
+| overridable via | `SZPONTNET_DIR` |
+| join secret via | `SZPONTNET_SECRET` ([03](03-transport.md#the-join-fence)) |
+| Tor transport via | `SZPONTNET_TOR` / `SZPONTNET_TOR_BINARY` / `SZPONTNET_TOR_BOOTSTRAP_SECS` ([14](14-tor-transport.md)) |
+| server mode / API key via | `SZPONTNET_SERVER` / `SZPONTNET_API_KEY` ([11](11-trust-and-balancing.md#server-nodes--api-key-authentication)) |

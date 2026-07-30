@@ -39,7 +39,7 @@ def test_the_canonical_model_is_the_v1_catalog():
 
 
 def test_state_lives_under_the_librarys_own_name(monkeypatch):
-    monkeypatch.delenv("DIPLOMAT_MESH_DIR", raising=False)
+    monkeypatch.delenv("SZPONTNET_DIR", raising=False)
     assert host.Host().state_dir() == Path.home() / ".szpontnet"
     assert identity.mesh_dir() == Path.home() / ".szpontnet"
 
@@ -53,7 +53,7 @@ def test_narration_goes_nowhere():
 def test_a_machine_with_no_runner_declines_the_job(monkeypatch):
     """Not an error condition: it is how a node says "not me", and it is what makes
     the dispatcher fail over to the next candidate."""
-    monkeypatch.delenv("DIPLOMAT_MESH_SPAWN", raising=False)
+    monkeypatch.delenv("SZPONTNET_SPAWN", raising=False)
     with pytest.raises(spawnjob.JobSpawnError):
         spawnjob.spawn_job("do a thing")
 
@@ -88,8 +88,8 @@ class _Recording(host.Host):
 
 
 def test_a_registered_host_answers_all_five(monkeypatch):
-    monkeypatch.delenv("DIPLOMAT_MESH_DIR", raising=False)
-    monkeypatch.delenv("DIPLOMAT_MESH_SPAWN", raising=False)
+    monkeypatch.delenv("SZPONTNET_DIR", raising=False)
+    monkeypatch.delenv("SZPONTNET_SPAWN", raising=False)
     impl = _Recording()
     host.set_host(impl)
 
@@ -247,7 +247,7 @@ def test_a_host_runner_that_raises_arrives_as_a_decline(monkeypatch):
     """Anything a host raises has to reach the node as "can't take it", or it
     escapes into the peer link that delivered the dispatch and takes the session
     down with it."""
-    monkeypatch.delenv("DIPLOMAT_MESH_SPAWN", raising=False)
+    monkeypatch.delenv("SZPONTNET_SPAWN", raising=False)
     impl = host.Host()
     impl.run_job = lambda prompt, done: (_ for _ in ()).throw(ValueError("nope"))
     host.set_host(impl)

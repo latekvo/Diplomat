@@ -16,7 +16,7 @@ enum AppConfig {
     static let repoRootKey = "repoRoot"
 
     /// Overridable so a self-test can point at a scratch file instead of the real one —
-    /// same escape hatch as the mesh's `DIPLOMAT_MESH_DIR`.
+    /// same escape hatch as the mesh's `SZPONTNET_DIR`.
     static var url: URL {
         if let env = ProcessInfo.processInfo.environment["DIPLOMAT_CONFIG"], !env.isEmpty {
             return URL(fileURLWithPath: (env as NSString).expandingTildeInPath)
