@@ -108,6 +108,12 @@ class Reporter:
         # case as CONFORMANT. A case that could not run is a candidate failure, not a pass —
         # it blocks conformance exactly like a MUST failure.
         errored = [case for case in self.cases if case.error]
+        # A case that skipped WHOLE — an optional role, or a setup the candidate could
+        # not meet — records no checks at all, so it is invisible in the per-check
+        # tallies below. Counting it separately is what stops a case that quietly
+        # stopped running (a setup that drifted, a role that stopped being detected)
+        # from reading as a clean sweep.
+        not_run = [case for case in self.cases if case.skipped]
         for case in self.cases:
             for c in case.checks:
                 if c.result == PASS:
@@ -127,7 +133,12 @@ class Reporter:
         self._line(f"  SHOULD warn: {should_fail}", color=WARN if should_fail else None)
         self._line(f"  errored    : {len(errored)}", color=FAIL if errored else None)
         self._line(f"  skipped    : {skipped}", color=SKIP)
+        self._line(f"  cases n/a  : {len(not_run)}", color=SKIP)
 
+        if not_run:
+            self._line("\nCases that did not run (they certify nothing):", color=SKIP)
+            for case in not_run:
+                self._line(f"  - {case.id}: {case.skipped}", color=SKIP)
         if must_fail:
             failing = [
                 f"{case.id}: {c.name} ({c.spec})"

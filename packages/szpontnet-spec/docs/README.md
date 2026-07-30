@@ -1,6 +1,6 @@
 # SzpontNet - a LAN peer-to-peer resource-sharing protocol
 
-**Specification v0.4.0** (wire `v: 1`). This directory is the normative specification for
+**Specification v0.5.0** (wire `v: 1`). This directory is the normative specification for
 **SzpontNet**: a small, leaderless protocol that lets the machines on a local
 network find each other, **advertise the resources they have available**, and
 hand work to whichever machine is the best fit - with no central coordinator and
@@ -136,7 +136,7 @@ don't change behavior. The major stays `0` until the protocol is declared stable
 | **v0.2.0** | [work-claims](12-work-claims.md) — leaderless origination-dedup leases. |
 | **v0.3.0** | [foreign zero-trust execution](13-foreign-execution.md) — confined compute for a foreign request, with the result returned (`job-result`/`job-ack`) for the originator to act on. |
 | **v0.4.0** | [foreign accountability](13-foreign-execution.md#accountability-deadline-reminder-ban) — a foreign executor that accepts a SzpontRequest owes its result within a completion deadline (6 h floor); past it the originator asks "is this ready?" (`job-reminder`), an agent judges any "still working" plea (`job-progress`), and a device that goes silent or fails to deliver is **banned** (machine-local, marked for the operator; trust level `banned`, `ban`/`unban` commands). |
-| **v0.5.0** *(this revision)* | [Tor transport](14-tor-transport.md) — opt-in WAN reachability with no public IP or domain: each node runs a permanent v3 onion service, advertises its `.onion` inside its signed advert, and redials known-but-unseen peers over Tor with exponential backoff (or a manual `--tor-connect` paste). A Tor link runs the identical handshake/trust as a LAN link. Additive: `v` stays `1`, and a LAN-only node is wire-unchanged. |
+| **v0.5.0** *(this revision)* | [Tor transport](14-tor-transport.md) — opt-in WAN reachability with no public IP or domain: each node runs a permanent v3 onion service, advertises its `.onion` inside its signed advert, and redials known-but-unseen peers over Tor with exponential backoff (or a manual `--tor-connect` paste). A Tor link runs the identical handshake/trust as a LAN link. Additive: `v` stays `1`, and a LAN-only node is wire-unchanged. Also [claim re-assertion](12-work-claims.md#re-assertion) — a node re-announces its own active leases when a link binds and when an authoritative peer claims a key it owns, so two halves of a healed partition converge on one owner instead of both running the work. |
 
 This is **separate from the wire `v` field**, which every message carries
 ([04](04-messages.md)). That field is the **wire-compatibility version**, a single

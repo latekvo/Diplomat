@@ -1470,7 +1470,14 @@ def case_k_override_authentic(rep: Reporter, ctx: Context) -> None:
 # Setup uses candidate_id=ID_B so a probe at ID_A ("a"*32 < "b"*32) out-ranks the
 # candidate: its active claim, once adopted, makes it the lowest-id owner and the
 # candidate must stand down. That probe DIALS the candidate (smaller-id-dials), so
-# it links and is verified exactly like a category-I peer.
+# it links and is verified exactly like a category-I peer. A claim only counts when
+# its claimant is trusted-personal, so every case whose probe must be able to WIN
+# runs the candidate under `default_trust="personal"` — without it the probe links,
+# verifies, classifies foreign, and the case proves nothing.
+#
+# L5 turns the direction around: the CANDIDATE holds the lease (the probe is out of
+# tokens, so the claim-gated dispatch lands on the candidate itself) and a peer
+# rejoins on a new connection, which the candidate SHOULD answer by re-asserting.
 
 
 def _claim_owner(snap: dict | None, work_key: str):
@@ -1527,7 +1534,7 @@ def case_l_suppression(rep: Reporter, ctx: Context) -> None:
     rep.begin_case("L1", "A lower-id personal peer's active claim SUPPRESSES the candidate's dispatch (12)")
     # Candidate is ID_B; probe is ID_A (< candidate) so its claim wins ownership.
     scn = Scenario(ctx.node_cmd, ctx.model, candidate_id=ID_B, platform="linux", tier=4,
-                   loopback=ctx.loopback)
+                   loopback=ctx.loopback, default_trust="personal")
     scn.add_peer(id=ID_A, name="claimer", platform="macos", tier=1, trust_peer=True)
     with scn:
         if not _need_port(rep, scn):
@@ -1567,7 +1574,7 @@ def case_l_suppression(rep: Reporter, ctx: Context) -> None:
 def case_l_forgery_dropped(rep: Reporter, ctx: Context) -> None:
     rep.begin_case("L2", "A work-claim with an invalid sig is DROPPED, so it never suppresses (12)")
     scn = Scenario(ctx.node_cmd, ctx.model, candidate_id=ID_B, platform="linux", tier=4,
-                   loopback=ctx.loopback)
+                   loopback=ctx.loopback, default_trust="personal")
     scn.add_peer(id=ID_A, name="forger", platform="macos", tier=1, trust_peer=True)
     with scn:
         if not _need_port(rep, scn):
@@ -1687,6 +1694,55 @@ def case_l_relay_verbatim(rep: Reporter, ctx: Context) -> None:
                   "12-work-claims#the-claim-book",
                   "re-serialization would break the claimant's signature; the relay "
                   "MUST forward the exact received claim dict")
+
+
+def _claims_seen(peer, work_key: str, node_id: str) -> int:
+    """How many active work-claims the probe has been sent naming ``node_id`` as the
+    claimant of ``work_key`` — counted, not merely detected, so a test can tell a
+    fresh announcement from the one it already had."""
+    return sum(1 for m in peer.messages("work-claim")
+               if (m.get("claim") or {}).get("workKey") == work_key
+               and (m.get("claim") or {}).get("node") == node_id
+               and (m.get("claim") or {}).get("state", "active") == "active")
+
+
+def case_l_reassert_on_link(rep: Reporter, ctx: Context) -> None:
+    rep.begin_case("L5", "A link coming up re-asserts the candidate's own active claims (12)")
+    scn = Scenario(ctx.node_cmd, ctx.model, candidate_id=ID_B, platform="linux", tier=4,
+                   loopback=ctx.loopback, default_trust="personal")
+    # The probe is OUT of tokens, so it is never a routing target: the claim-gated
+    # dispatch lands on the candidate itself and the candidate mints the lease. It
+    # sorts below the candidate, so it dials — and redials itself after the drop.
+    scn.add_peer(id=ID_A, name="rejoiner", platform="macos", tier=1, tokens="out",
+                 trust_peer=True)
+    with scn:
+        if not _need_port(rep, scn):
+            return
+        if scn.candidate.ctl_status() is None:
+            rep.skip_case("candidate serves no control session — not a Dispatcher")
+            return
+        peer = scn.mesh.peers[0]
+        if not _wait_linked_verified(rep, scn, peer):
+            return
+        wk = "review:github.com/acme/app#5@eeee"
+        _dispatch_with_workkey(scn, wk)
+        if not wait_until(
+                lambda: _claim_owner(scn.candidate.snapshot(), wk) == ID_B, 10.0):
+            rep.skip_case("candidate never took a claim of its own — not an Originator")
+            return
+
+        told = _claims_seen(peer, wk, ID_B)
+        peer.drop()
+        if not (wait_until(lambda: not peer.linked, 8.0)
+                and wait_until(lambda: peer.linked, 15.0)):
+            rep.skip_case("the probe never re-linked after the drop")
+            return
+        again = wait_until(lambda: _claims_seen(peer, wk, ID_B) > told, 10.0)
+        rep.check("a rejoining peer is told about the lease the candidate holds",
+                  bool(again), "SHOULD", "12-work-claims#re-assertion",
+                  "a claim is gossiped only when it is minted, so without a "
+                  "re-assertion on a new link a machine that was away never learns "
+                  "the key is taken and originates the same work a second time")
 
 
 # MARK: - M. Foreign zero-trust execution (ch 13 — confined compute, response-back)
@@ -2224,7 +2280,7 @@ SUITES = {
     "K": [case_k_unsigned_keyed_dropped, case_k_tampered_dropped, case_k_wrong_key_dropped,
           case_k_advert_hijack_blocked, case_k_override_authentic],
     "L": [case_l_suppression, case_l_forgery_dropped, case_l_keyless_non_authoritative,
-          case_l_relay_verbatim],
+          case_l_relay_verbatim, case_l_reassert_on_link],
     "M": [case_m_unknown_dropped, case_m_confined_result],
     "N": [case_n_reminder_progress, case_n_result_revival, case_n_silent_ban,
           case_n_personal_direct],

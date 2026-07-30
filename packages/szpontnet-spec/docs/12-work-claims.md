@@ -219,17 +219,19 @@ Four rules, each load-bearing:
   device (or self). A **foreign** node's claim - even a perfectly valid signed one -
   is stored and relayed but **never owns** anything. This is the anti-starvation
   guard: a stranger cannot claim your work keys and then never run them to deny you
-  the work. With an **empty allowlist** every verified peer is `personal`
-  ([the full-trust default](11-trust-and-balancing.md)), so a home mesh dedupes
-  across all its nodes with no configuration.
+  the work. It also sets what a mesh must do to dedupe at all: the
+  [default trust level](11-trust-and-balancing.md#trust-is-never-derived-from-an-advertisement)
+  ships **`foreign`**, so until an operator promotes their machines - by
+  allowlisting their fingerprints, or by setting the node's default level to
+  `personal` - every claim is a stranger's and nothing is deduplicated.
 
 - **The claim must be signed by the claimant.** Trusting the *name* on a claim is
   not enough - a third party could put a trusted peer's id in the `node` field. So
   ownership additionally requires the record to carry that peer's **pinned key**
   (its signature having been verified under it): the claim is authoritative only if
   it was provably minted by the node it names. A **keyless** claim (no key to bind
-  to) is therefore never authoritative under *any* trust configuration - not even
-  the empty-allowlist full-trust default - and a keyless node participates without
+  to) is therefore never authoritative under *any* trust configuration - not even a
+  `personal` default trust level - and a keyless node participates without
   the power to suppress, exactly like a keyless advertiser is never `personal`.
 
 ## The liveness lease
@@ -304,7 +306,8 @@ MUST:
 So on a simultaneous double-claim, the higher-id node hears the lower-id claim,
 yields, and withdraws; the lower-id node hears the higher-id claim, stays owner, and
 continues. The mesh converges on the single lowest-id owner in one gossip round,
-with no bidding, no lock, and no leader.
+with no bidding, no lock, and no leader - provided both claims were seen, which
+[re-assertion](#re-assertion) is what makes true after a partition.
 
 > **The abort window.** Yielding cleanly aborts only work not yet side-effecting. If
 > a node has *already* launched the job before it learns it lost the race, a brief
@@ -314,6 +317,53 @@ with no bidding, no lock, and no leader.
 > double on simultaneous detection" into "**rarely** double"; they are a strong
 > deduplication, not an exactly-once guarantee (which remains
 > [out of scope](09-extensibility.md#non-goals-for-v1-explicitly-deferred)).
+
+## Re-assertion
+
+The yield rule reconciles the race, but it can only fire on a claim a node has
+**seen**, and a claim is gossiped when it is *minted* and never again. Two nodes
+that claimed the same key while they could not reach each other - a partition, a
+sleeping laptop, one simply started later - therefore each hold a book the other's
+claim never entered. Each reads its own book correctly, sees itself as the sole
+owner, and nothing after the mint ever tries again: both originate the work and
+stay that way, even once they are talking again.
+
+So a node **SHOULD re-assert** its own active claims - re-announce them with a
+bumped `seq`, exactly the [freshness](#the-claim-record) mechanism a withdrawal
+uses - at the two moments a peer may be missing one:
+
+1. **When a link comes up.** A first link, or a **reconnect onto a new
+   connection** - including one to a peer that never noticed the old link die, so
+   this is keyed to binding a connection and not to having previously declared the
+   peer `down`. A further `hello` on a connection already bound teaches nobody
+   anything and SHOULD NOT re-assert.
+2. **On hearing a competing active claim** for a key this node owns. A claimant
+   that mints from **behind a relay** (`A-B-C` with no `A-C` link, `C` claiming a
+   key `A` holds) reaches the owner without any link of the owner's coming up, and
+   a claimant whose copy of a re-assertion was simply lost is in the same position.
+   The claim itself is the owner's signal that the claimant is missing one. Answer
+   **only** a claimant that is [authoritative](#ownership) here and only while this
+   node is still the [owner](#ownership) - a foreign, dead or unbound claim cannot
+   take the key anyway, so answering it would gain an on-mesh flooder a broadcast
+   amplifier and nothing else.
+
+A node re-asserts **only its own** claims. Re-announcing the whole book would make
+every node an amplifier for whatever a flooder managed to store, and every other
+lease is already re-asserted by its own owner across that same link. Reach is not
+lost by the restriction: a re-assertion is adopted and
+[relayed](#the-claim-book) like any claim, so it crosses the new link and travels
+on to nodes behind it.
+
+This terminates. A re-assertion makes the losing side yield; a yield is a
+`released` record; a `released` record is not an active claim, so it is never
+answered with a further re-assertion.
+
+> **Why SHOULD and not MUST.** An implementation that never re-asserts is still
+> correct on the wire and still converges whenever both claims are seen - it simply
+> loses the deduplication across a healed partition, which is exactly the failure
+> work-claims exist to prevent. It is a SHOULD because the cost of skipping it is
+> a duplicated run, the same class of loss as the
+> [abort window](#origination-and-yield), and not a corrupted book anywhere.
 
 ## Integration with dispatch
 
@@ -401,7 +451,10 @@ not implement them; if it does, it MUST:
    `up`/`stale`; free it on `down`; drop a reaped claimant's records.
 6. **Gate and yield.** Stand down when a lower-id owner holds the key; announce
    before proceeding; on adopting a better peer's claim for a key it is originating,
-   withdraw and fire the loss hook.
+   withdraw and fire the loss hook. It SHOULD additionally
+   [re-assert](#re-assertion) its own active claims when a link binds and when an
+   authoritative peer claims a key it owns, so a healed partition deduplicates
+   rather than double-runs.
 7. **Scope the gate.** Apply it to the surplus-first origination path only, never to
    server-local or explicit-target dispatch.
 
@@ -429,7 +482,7 @@ other.
   slots and can never crowd out - and thereby silently defeat the dedup for - a
   genuine personal claim. The residual is a *trusted* peer griefing: with a
   **configured allowlist** the suppression set is exactly the devices you chose to
-  trust; with the **empty-allowlist full-trust default** you have declared every
+  trust; with a **`personal` default trust level** you have declared every
   joined, **keyed** device trusted, so fence the mesh (a [join
   secret](03-transport.md#the-join-fence) or an allowlist) if you don't trust
   everyone who can reach the LAN. A keyless intruder is powerless regardless.

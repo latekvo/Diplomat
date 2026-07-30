@@ -88,3 +88,16 @@ def isolated_state_dir(tmp_path, monkeypatch):
     """Never touch a real node's identity, trust allowlist or snapshot."""
     monkeypatch.setenv("SZPONTNET_DIR", str(tmp_path / "state"))
     yield
+
+
+@pytest.fixture
+def simnet(tmp_path, monkeypatch, no_host):
+    """A virtual LAN a test can run a whole mesh on — and break. See simnet.py.
+
+    Depends on ``no_host`` explicitly rather than relying on autouse ordering:
+    it registers a host of its own, and that registration has to happen inside
+    the isolation that later hands the previous host back.
+    """
+    import simnet as simnet_module
+
+    return simnet_module.build(tmp_path / "sim", monkeypatch)

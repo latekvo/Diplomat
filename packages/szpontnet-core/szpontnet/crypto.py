@@ -17,8 +17,9 @@ cannot forge without your private key.
 
 Ed25519 is provided by the ``cryptography`` package. If it is unavailable the
 node still runs, keyless: it advertises no public key, can never be verified, and
-so is treated as *foreign* by any peer that has configured a trust allowlist (and
-as *personal* only under the empty-allowlist full-trust fallback).
+so is treated as *foreign* by any peer on the shipped zero-trust default (and as
+*personal* only where the operator has set that node's default trust level to
+*personal*, which trusts every unlisted device alike).
 """
 
 from __future__ import annotations
