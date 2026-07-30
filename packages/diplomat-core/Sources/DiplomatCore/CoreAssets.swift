@@ -76,9 +76,17 @@ public enum CoreAssets {
     // MARK: - Directory resolution
 
     /// Candidate locations for `assets/`, in priority order: an explicit override,
-    /// the app bundle's Resources (the packaged `.app`), the current directory
-    /// (`swift run` from the package root), and the package layout relative to this
-    /// source file.
+    /// the app bundle's Resources (the packaged `.app`), the working directory —
+    /// both the package root and a checkout root — and last the package layout
+    /// relative to this source file.
+    ///
+    /// The two working-directory candidates are what a *relocated* binary has:
+    /// `diplomat-core` is built to be copied off the machine that compiled it (CI
+    /// builds it once, statically, and hands it to another job), and for such a
+    /// copy `#filePath` names a build tree that no longer exists. Without a cwd
+    /// candidate matching how it is actually invoked, it finds nothing and every
+    /// loader quietly falls back to its defaults — which is a wrong answer, not an
+    /// error. Twin of `core._candidate_dirs` on the Python side.
     private static func candidateDirs() -> [URL] {
         var dirs: [URL] = []
         if let env = ProcessInfo.processInfo.environment["DIPLOMAT_CORE"] {
@@ -87,8 +95,9 @@ public enum CoreAssets {
         if let res = Bundle.main.resourceURL {
             dirs.append(res.appendingPathComponent("assets"))
         }
-        dirs.append(URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-            .appendingPathComponent("assets"))
+        let cwd = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        dirs.append(cwd.appendingPathComponent("assets"))
+        dirs.append(cwd.appendingPathComponent("packages/diplomat-core/assets"))
         // diplomat-core/Sources/DiplomatCore/CoreAssets.swift -> the package root is three levels up.
         let here = URL(fileURLWithPath: #filePath)
         dirs.append(here.deletingLastPathComponent()

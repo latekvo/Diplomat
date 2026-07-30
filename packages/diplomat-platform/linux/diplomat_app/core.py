@@ -25,8 +25,11 @@ def _candidate_dirs() -> list[Path]:
     # Monorepo layout: packages/diplomat-platform/linux/diplomat_app/core.py, so
     # parents[3] is packages/ and the assets are in the diplomat-core package.
     cands.append(Path(__file__).resolve().parents[3] / "diplomat-core" / "assets")
-    # Fallback: an assets/ under the current working directory.
+    # Fallbacks for a copy of this package living outside a checkout: the working
+    # directory as the package root, then as a checkout root. Twin of the two cwd
+    # candidates in ``CoreAssets.candidateDirs``.
     cands.append(Path.cwd() / "assets")
+    cands.append(Path.cwd() / "packages" / "diplomat-core" / "assets")
     return cands
 
 
