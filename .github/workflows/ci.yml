@@ -37,11 +37,17 @@ jobs:
           DIPLOMAT_RENDER=devices DIPLOMAT_RENDER_OUT="$RUNNER_TEMP/panel.png" \
             swift run Diplomat
           test -s "$RUNNER_TEMP/panel.png"
-      # The shared-helper self-tests. All pure logic, and none of them touches the
-      # runner's real state: OSA_TEST runs bare AppleScript expressions (no `tell
-      # application`, so no Automation permission), MESH_CMD_TEST is pinned to a
-      # scratch state dir and a non-checkout so it can neither read a real mesh node
-      # nor start one, and ALLOCATOR_TEST shells no installer and reads no ~/.claude.
+      # The shared-helper self-tests that a runner can host. All pure logic, and none
+      # of them touches the runner's real state: OSA_TEST runs bare AppleScript
+      # expressions (no `tell application`, so no Automation permission),
+      # MESH_CMD_TEST is pinned to a scratch state dir and a non-checkout so it can
+      # neither read a real mesh node nor start one, and ALLOCATOR_TEST shells no
+      # installer and reads no ~/.claude.
+      #
+      # DIPLOMAT_TRACK_TEST and DIPLOMAT_SPAWN_FOCUS_TEST are the two that stay out,
+      # and not by oversight: both drive real throwaway iTerm/Terminal windows and
+      # need a granted "control <terminal>" Automation permission, which a headless
+      # runner has no way to hold. They are run by hand from the installed .app.
       - name: Headless helper self-tests
         run: |
           DIPLOMAT_OSA_TEST=1 swift run Diplomat
@@ -178,32 +184,10 @@ jobs:
       # broken/stale lockfile into a non-reproducible install.
       - name: Install dependencies
         run: npm ci
-      - name: Allocation logic (request/change/broken/reap/idle)
-        run: node test/integration.mjs
-      - name: Daemon singleton survives a stale-socket startup race
-        run: node test/daemon-singleton-race.mjs
-      - name: MCP protocol (handshake/tools/alwaysLoad/allocate)
-        run: node test/mcp-protocol.mjs
-      - name: Agent-kill on prompt injection
-        run: node test/agent-kill.mjs
-      # Everything the installer writes is a copy of something in the checkout, so
-      # this is the check that an already-deployed machine notices a `git pull`.
-      # Runs against a throwaway HOME — it never sees the runner's real ~/.claude.
-      - name: Installer drift detection + re-install
-        run: node test/install-drift.mjs
-      - name: Agent-kill spares a reparent supervisor
-        run: node test/agent-kill-spares-supervisor.mjs
-      - name: Report-injection capture stays off the event loop
-        run: node test/report-injection-nonblocking.mjs
-      - name: Report-injection evidence survives UTF-8 round-trip
-        run: node test/report-injection-utf8.mjs
-      - name: Idle sweep spares a device quarantined into repairing
-        run: node test/idle-sweep-repairing-race.mjs
-      - name: Repair completion re-checks allocation identity
-        run: node test/repair-completion-identity.mjs
-      - name: Device-id claim leases a still-booting device
-        run: node test/deviceid-claim-booting-lease.mjs
-      - name: Android wipe shuts a running instance down before erasing
-        run: node test/android-wipe-shuts-down-running-instance.mjs
-      - name: Android wipe fails honestly when the AVD lock never releases
-        run: node test/android-wipe-fails-when-lock-never-releases.mjs
+      # `npm test` discovers test/*.mjs from disk rather than naming them, so this
+      # is one step instead of a list CI has to keep in step with package.json.
+      # Those were two hand-written lists of the same files and they had drifted
+      # apart in both directions — a test can now only be skipped by not existing.
+      # The runner prints a banner per file, so a failure still names itself.
+      - name: Daemon, MCP, installer drift, agent-kill, repair and wipe tests
+        run: npm test

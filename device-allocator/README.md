@@ -101,3 +101,9 @@ No real simulators or emulators: `DA_FAKE_DEVICES` points enumeration at a JSON 
 so the full request / change / broken / free / reap / idle path runs on Linux CI.
 Each test drives the daemon over its real unix socket rather than importing it, so
 what is exercised is the process an agent actually talks to.
+
+[`test/run-all.mjs`](test/run-all.mjs) **discovers** `test/*.mjs` rather than listing
+them, and CI runs that same `npm test` — so there is no enumeration anywhere that a
+new test can be left out of, and a file dropped in `test/` runs from that moment. A
+test that exists but is never run is indistinguishable from one that passes, which is
+the failure mode worth designing out rather than watching for.
