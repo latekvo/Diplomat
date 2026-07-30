@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "szpont"
+version = "0.1.0"
+description = "Typed Python bindings for SzpontNet, the leaderless LAN peer-to-peer resource-sharing protocol"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Ignacy Łątka" }]
+keywords = ["szpontnet", "mesh", "peer-to-peer", "lan", "distributed", "bindings"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: System :: Distributed Computing",
+  "Topic :: System :: Networking",
+  "Typing :: Typed",
+]
+# The node itself. This package is bindings for it and has no independent
+# behaviour, so the dependency is required rather than an extra.
+dependencies = ["szpontnet>=0.4,<0.5"]
+
+[project.optional-dependencies]
+# Passed through to the library: Ed25519 device identity. Without it a node runs
+# keyless, advertises no public key, and is foreign to any peer with an allowlist.
+trust = ["szpontnet[trust]>=0.4,<0.5"]
+
+[project.urls]
+Homepage = "https://github.com/latekvo/Diplomat"
+Source = "https://github.com/latekvo/Diplomat/tree/main/packages/szpont"
+Specification = "https://github.com/latekvo/Diplomat/tree/main/packages/szpontnet-spec"
+
+[tool.setuptools]
+packages = ["szpont"]
+
+[tool.setuptools.package-data]
+szpont = ["py.typed"]
