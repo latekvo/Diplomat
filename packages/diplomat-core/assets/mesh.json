@@ -1,0 +1,97 @@
+{
+  "_comment": "Diplomat's mesh model — the deployment overlay SzpontNet merges over its own netmodel.json (szpontnet-core/szpontnet/netmodel.json, the canonical v1 constants). This half is what both front-ends RENDER: the duty catalog (which job classes the mesh routes, with per-duty platform spread — e.g. the audit's one-linux-plus-one-macos), the placement strategies, the platform/token/trust vocabularies and the tier labels. Wire constants and the quota accounting model are the node's business and live in netmodel.json; nothing here is read by the node that isn't also drawn on screen. Node-local attributes (tier, token state) live in ~/.diplomat/mesh/node.json on each machine; mesh-wide placement overrides are gossiped last-writer-wins and start from the defaults here.",
+
+  "platforms": [
+    { "id": "linux", "title": "Linux", "emoji": "🐧", "linuxGlyph": "⬢", "colorHex": "#FF9500" },
+    { "id": "macos", "title": "macOS", "emoji": "🍎", "linuxGlyph": "◆", "colorHex": "#0A84FF" }
+  ],
+
+  "tokens": [
+    { "id": "ok", "title": "tokens OK", "emoji": "🟢", "linuxGlyph": "●", "colorHex": "#34C759" },
+    { "id": "low", "title": "tokens low", "emoji": "🟡", "linuxGlyph": "◐", "colorHex": "#FF9500" },
+    { "id": "out", "title": "out of tokens", "emoji": "🔴", "linuxGlyph": "○", "colorHex": "#FF3B30" }
+  ],
+
+  "trust": {
+    "_comment": "How much a node trusts a PEER. Trust is NEVER derived from an advertised field (those are spoofable). Each device has an Ed25519 keypair; a peer must sign a fresh per-connection challenge to prove it holds the key it advertises, and trust keys on that verified key's fingerprint against a LOCAL, operator-managed allowlist (~/.diplomat/mesh/trusted.json), never gossiped. 'personal' = the peer's proven fingerprint is in my allowlist → a received SzpontRequest runs directly, as if I'd triggered it locally. 'foreign' = a device I have not marked personal → its requests are declined by default, or — with a confinement runner (SZPONTNET_FOREIGN_SPAWN) configured — run confined and response-only: the compute runs sandboxed and the result is routed back for the requester to act on (never a social action here). See szpontnet-spec/docs/13-foreign-execution.md. 'banned' = a device this node has marked as having broken the foreign-accountability contract (it ACCEPTED a SzpontRequest and failed to deliver its result within the completion deadline, then gave no — or a non-fulfilling — answer to the readiness reminder; see szpontnet-spec/docs/13-foreign-execution.md#accountability-deadline-reminder-ban). Banned is machine-local like the allowlist (~/.diplomat/mesh/banned.json, never gossiped): every request from a banned device is declined outright (even with a confinement runner) and it is never picked as a dispatch target. 'default' is the trust level for an UNKNOWN device (not in the allowlist, or unverified/keyless): it ships 'foreign' (zero-trust by default — a new device is untrusted until the operator promotes it to personal), and can be overridden per-node (SZPONTNET_DEFAULT_TRUST, or the panel's default-trust toggle, persisted in trusted.json). Set it to 'personal' to restore the pre-trust full-altruism mode where every unlisted peer is trusted.",
+    "levels": [
+      { "id": "personal", "title": "Personal (my device)", "linuxGlyph": "◈", "colorHex": "#34C759" },
+      { "id": "foreign", "title": "Foreign (untrusted)", "linuxGlyph": "◇", "colorHex": "#8E8E93" },
+      { "id": "banned", "title": "Banned (failed to deliver)", "linuxGlyph": "⊘", "colorHex": "#FF3B30" }
+    ],
+    "default": "foreign"
+  },
+
+  "tiers": {
+    "_comment": "Machine strength, 1 = strongest. 'weakest-first' keeps the strong machine free for interactive work by routing grunt jobs to the weakest eligible node. Auto-detected CPU-quality-first (Apple-Silicon variant / boost clock, then physical cores, RAM, dGPU — see szpontnet-core/szpontnet/hardware.py); a manual edit in the panel pins it. 'labels' give the UIs human words instead of a bare number.",
+    "min": 1,
+    "max": 5,
+    "default": 3,
+    "labels": {
+      "1": "Very strong",
+      "2": "Strong",
+      "3": "Medium",
+      "4": "Light",
+      "5": "Very light"
+    }
+  },
+
+  "strategies": [
+    {
+      "id": "weakest-first",
+      "title": "Weakest first",
+      "detail": "route to the weakest eligible machine — keeps the strong ones free"
+    },
+    {
+      "id": "strongest-first",
+      "title": "Strongest first",
+      "detail": "route to the strongest eligible machine — fastest wall-clock"
+    },
+    {
+      "id": "local-first",
+      "title": "Local first",
+      "detail": "run on the dispatching machine when eligible, else weakest-first"
+    },
+    {
+      "id": "surplus-first",
+      "title": "Most surplus first",
+      "detail": "route to the node with the most spare quota RELATIVE to its reset — budget left ÷ clock left; ties fall back to weakest-first"
+    }
+  ],
+  "_defaultStrategyComment": "surplus-first is the default: absent a reason to pin a duty elsewhere, work should follow spare capacity. Surplus is a burn-down RATIO (see accounts._surplusComment in szpontnet-core/szpontnet/netmodel.json), so the ordering is stable — it only moves when a node's standing against its own reset clock genuinely changes, not as raw percentages tick down.",
+  "defaultStrategy": "surplus-first",
+
+  "duties": [
+    {
+      "id": "review",
+      "title": "Review PRs",
+      "emoji": "✅",
+      "linuxGlyph": "☑",
+      "colorHex": "#FF2D78",
+      "placement": { "tokenAware": true, "spread": [] }
+    },
+    {
+      "id": "conflicts",
+      "title": "Resolve conflicts",
+      "emoji": "🔀",
+      "linuxGlyph": "⋔",
+      "colorHex": "#32ADE6",
+      "placement": { "tokenAware": true, "spread": [] }
+    },
+    {
+      "id": "audit",
+      "title": "Full E2E test",
+      "emoji": "🐞",
+      "linuxGlyph": "◉",
+      "colorHex": "#5856D6",
+      "placement": {
+        "_comment": "The bundle E2E runs on one Linux AND one macOS node — platform coverage beats machine preference here. No 'strategy' key, so it inherits defaultStrategy (surplus-first): within each platform slot the flusher node wins.",
+        "tokenAware": true,
+        "spread": [
+          { "platform": "linux", "count": 1 },
+          { "platform": "macos", "count": 1 }
+        ]
+      }
+    }
+  ]
+}

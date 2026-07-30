@@ -1,15 +1,18 @@
+# Swift (diplomat-core, diplomat-platform/macos)
 .build/
-.DS_Store
-*.xcodeproj
 .swiftpm/
+*.xcodeproj
 DerivedData/
+# The bundle build-app.sh produces, beside the macOS package it is built from.
 Diplomat.app/
 
-# Python (Linux applet, SzpontNet)
+# Python (diplomat-platform/linux, szpontnet-core, szpontnet-spec)
 __pycache__/
 *.py[cod]
 .pytest_cache/
 *.egg-info/
-# `pip install ./szpontnet` (non-editable) leaves a copy of the package here
-szpontnet/build/
+# A non-editable `pip install ./packages/szpontnet-core` leaves a copy here.
+packages/szpontnet-core/build/
 .venv/
+
+.DS_Store

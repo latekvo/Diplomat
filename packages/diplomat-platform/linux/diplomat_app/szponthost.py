@@ -1,0 +1,135 @@
+"""Diplomat's answers to the five questions a SzpontNet node asks its host.
+
+The node knows how to find machines and choose one; it does not know that a
+"duty" here means a Claude agent reviewing a pull request, that events belong in
+the applet's activity feed, or that an agent might already be up on this PR
+without the mesh having placed it. This module is where all five answers live —
+the whole of Diplomat inside SzpontNet, and the only file the library would need
+replacing to run under something else.
+
+Registered two ways, because the node runs in two places:
+
+* in this process — :func:`install`, called by whoever is about to read a
+  placement or drive a control command;
+* in the node daemon Diplomat spawns — ``SZPONTNET_HOST=diplomat_app.szponthost``
+  in its environment, which the library resolves through this module's
+  :func:`host` factory.
+"""
+
+from __future__ import annotations
+
+import platform
+import subprocess
+from pathlib import Path
+
+from szpontnet import host as szpont_host
+
+# Everything except the base class is imported inside the methods that need it.
+# `diplomat_app/__init__` installs this host, so this module is on the import path
+# of every entry point the package has, including the stdlib-only node daemon —
+# and a module that pulls the applet's world in at import time would put all of it
+# between the daemon's `python -m` and its first line of work.
+
+
+class DiplomatHost(szpont_host.Host):
+    """Diplomat behind a node."""
+
+    def model(self) -> dict:
+        """``assets/mesh.json`` — the duty catalog both front-ends render, which is
+        also the catalog this deployment routes."""
+        from . import core
+
+        return core.mesh()
+
+    def state_dir(self) -> Path:
+        """``~/.diplomat/mesh``, where this machine's node has always kept its
+        identity. Every peer's trust allowlist is keyed to the device keypair in
+        that directory, so it is not free to move: adopting the library's own
+        default would mint a fresh key and make this machine a stranger to its
+        own fleet."""
+        return Path.home() / ".diplomat" / "mesh"
+
+    def log(self, action: str, detail: str) -> None:
+        """Into the shared activity feed, under the ``mesh`` source — the same
+        file the macOS app and the device-allocator daemon append to, so a node
+        event lands in the panel's activity screen beside everything else."""
+        from . import activity
+
+        activity.log("mesh", action, detail)
+
+    def run_job(self, prompt: str, done_path: str | None) -> str:
+        """Open a terminal running ``claude`` on the staged prompt, exactly like a
+        local SPAWN AGENT.
+
+        macOS goes through ``osascript`` (Terminal.app on the same shell command
+        the Linux spawner builds); Linux uses the applet's own spawner, which
+        auto-detects an installed terminal emulator.
+        """
+        from . import review
+
+        if platform.system() == "Darwin":
+            return _spawn_macos(prompt, done_path)
+        try:
+            return review.spawn(prompt, None, done_path=done_path)
+        except review.SpawnError as exc:
+            raise szpont_host.NoRunner(str(exc)) from exc
+
+    def work_already_running(self, work_key: str) -> bool:
+        """Is a live ``claude`` agent for this work key's PR already up on THIS
+        machine? Reuses the ORIGINATING side's matcher (``live_pr_numbers``) so
+        both sides agree on what "an agent is on this PR" means. Keyed on the PR,
+        not the exact work key, so a fresh push (new ``@sha``) can't dodge it.
+
+        Fails OPEN — a ps error reads as "not seen" so a transient failure never
+        drops work — the same trade the store's ``_live_pr_agents`` makes.
+
+        ``ps -Ao args=`` is the portable spelling: on macOS ``-e`` prints the
+        environment, not every process, so the store's Linux-only ``-eo`` can't be
+        reused here (a node runs on both OSes).
+        """
+        from . import autofix
+
+        ref = autofix.parse_work_key(work_key)
+        if ref is None:
+            return False
+        _kind, owner, repo, number = ref
+        try:
+            out = subprocess.run(["ps", "-Ao", "args="],
+                                 capture_output=True, text=True, timeout=10).stdout
+        except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
+            # UnicodeDecodeError: text=True decodes strict UTF-8, so any process on the
+            # box with a non-UTF-8 byte in its argv makes `ps` output undecodable. It is a
+            # ValueError, not an OSError/SubprocessError, so without it here the exception
+            # escapes this fail-open guard — the same catch Store._live_pr_agents makes
+            # for its identical ps scan.
+            return False
+        return number in autofix.live_pr_numbers(out, owner, repo)
+
+
+def _spawn_macos(prompt: str, done_path: str | None) -> str:
+    """Terminal.app via ``osascript``, on the shell command the Linux spawner
+    builds. Returns the staged prompt path."""
+    from . import review
+
+    prompt_file = review.write_prompt(prompt)
+    shell_cmd = review.shell_command(prompt_file, done_path)
+    script = f'tell application "Terminal" to do script {_applescript_quote(shell_cmd)}'
+    try:
+        review.popen_detached(["osascript", "-e", script])
+    except OSError as exc:
+        raise szpont_host.NoRunner(f"osascript failed: {exc}") from exc
+    return prompt_file
+
+
+def _applescript_quote(s: str) -> str:
+    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def host() -> DiplomatHost:
+    """Factory for ``SZPONTNET_HOST=diplomat_app.szponthost``."""
+    return DiplomatHost()
+
+
+def install() -> None:
+    """Put Diplomat behind the node modules running in *this* process."""
+    szpont_host.set_host(DiplomatHost())

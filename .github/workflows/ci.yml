@@ -14,25 +14,35 @@ concurrency:
 permissions:
   contents: read
 
+# One job per package that can stand alone, each installing only what that package
+# needs. The monorepo's independence claims are load-bearing, so they are enforced
+# by what a job is *not* given rather than asserted in a README.
 jobs:
-  # The macOS app + shared core. `swift build` compiles every target (incl. the
-  # SwiftUI/AppKit `Diplomat` app); the smoke binary then asserts the shared
-  # core logic (filters, prompt assembly, PR-reference parsing, conflict prompts).
+  # The macOS app + the shared core it renders. Two packages, so two builds: the
+  # core (library, CLI and smoke binary) and the SwiftUI app that depends on it.
+  # The smoke binary then asserts the shared core logic (filters, prompt assembly,
+  # PR-reference parsing, conflict prompts).
   swift-macos:
     name: Swift (macOS) · build + core smoke
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v7
       - run: swift --version
-      - name: Build all targets
+      - name: Build the shared core
+        working-directory: packages/diplomat-core
+        run: swift build
+      - name: Build the macOS app
+        working-directory: packages/diplomat-platform/macos
         run: swift build
       - name: Run shared-core smoke test
+        working-directory: packages/diplomat-core
         run: swift run DiplomatCoreSmoke
       # Headless UI snapshot: renders the real two-column panel (seeded sessions,
       # devices, bans, audit feed) through ImageRenderer — a cheap whole-UI crash
       # guard that needs no gh auth and no display. A headless mode never persists
       # (settings writes are headless-guarded), so it can't touch any defaults.
       - name: Headless panel render
+        working-directory: packages/diplomat-platform/macos
         run: |
           DIPLOMAT_RENDER=devices DIPLOMAT_RENDER_OUT="$RUNNER_TEMP/panel.png" \
             swift run Diplomat
@@ -49,6 +59,7 @@ jobs:
       # need a granted "control <terminal>" Automation permission, which a headless
       # runner has no way to hold. They are run by hand from the installed .app.
       - name: Headless helper self-tests
+        working-directory: packages/diplomat-platform/macos
         run: |
           DIPLOMAT_OSA_TEST=1 swift run Diplomat
           SZPONTNET_DIR="$RUNNER_TEMP/mesh" DIPLOMAT_SELF_REPO=/nonexistent \
@@ -56,12 +67,15 @@ jobs:
           DIPLOMAT_ALLOCATOR_TEST=1 swift run Diplomat
 
   # The shared core advertises "compiles on macOS *and* Linux". This guards that
-  # invariant by building + running only the platform-agnostic core/smoke targets
-  # (the SwiftUI app target is macOS-only and is intentionally not built here).
+  # invariant by building + running the diplomat-core package on Linux (the SwiftUI
+  # app is a separate, macOS-only package and is intentionally not built here).
   swift-core-linux:
     name: Swift core (Linux) · cross-platform smoke
     runs-on: ubuntu-latest
     container: swift:6.0
+    defaults:
+      run:
+        working-directory: packages/diplomat-core
     steps:
       - uses: actions/checkout@v7
       - run: swift --version
@@ -81,7 +95,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: diplomat-core-linux
-          path: artifact/diplomat-core
+          path: packages/diplomat-core/artifact/diplomat-core
 
   # The Linux (Qt6/PySide6) front-end. Offline, headless regression tests over the
   # same shared-core logic the GUI renders.
@@ -97,7 +111,7 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
-          cache-dependency-path: linux/requirements.txt
+          cache-dependency-path: packages/diplomat-platform/linux/requirements.txt
       # Qt needs these shared libs present even under the offscreen platform plugin.
       - name: Install Qt runtime libraries
         run: |
@@ -107,7 +121,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r linux/requirements.txt pytest
+          pip install -r packages/diplomat-platform/linux/requirements.txt pytest
       - name: Download diplomat-core binary
         uses: actions/download-artifact@v4
         with:
@@ -119,9 +133,9 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
           DIPLOMAT_CORE_BIN: ${{ github.workspace }}/core-bin/diplomat-core
-        run: pytest linux/tests -q
+        run: pytest packages/diplomat-platform/linux/tests -q
       # A checkout with no SzpontNet in it at all. `test_addon_optional.py` above
-      # already blocks the import, but only this deletes the directory — so it is
+      # already blocks the import, but only this deletes the packages — so it is
       # the one that catches something reading a *file* out of the library's tree
       # rather than importing it. Destructive to the workspace, hence last.
       - name: The applet starts from a Diplomat-only tree
@@ -130,8 +144,8 @@ jobs:
           DIPLOMAT_RENDER: panel
           DIPLOMAT_RENDER_OUT: ${{ runner.temp }}/no-szpontnet.png
         run: |
-          rm -rf szpontnet
-          cd linux && python -m diplomat_app
+          rm -rf packages/szpontnet-core packages/szpontnet-spec
+          cd packages/diplomat-platform/linux && python -m diplomat_app
           test -s "$DIPLOMAT_RENDER_OUT"
 
   # SzpontNet, on its own terms. Deliberately installs nothing but the library and
@@ -148,20 +162,20 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install the library (with the trust extra) and pytest
-        run: pip install -e ./szpontnet[trust] pytest
+        run: pip install -e './packages/szpontnet-core[trust]' pytest
       - name: Unit + host-seam tests
-        run: pytest szpontnet/tests -q
+        run: pytest packages/szpontnet-core/tests -q
       # The tester's own codec and placement oracle, derived from the spec rather
       # than from the node — if this is wrong every verdict below is meaningless.
       - name: Conformance tester self-test
-        working-directory: szpontnet/conformance
+        working-directory: packages/szpontnet-spec/conformance
         run: python -m szpont --selftest
       # The reference node as an opaque subprocess, over real multicast + TCP on
       # loopback. Nothing here reads the node's source, so this is the check that
       # the spec in docs/ is implementable from the spec alone — and the one that
       # catches a MUST the unit tests are shaped around rather than against.
       - name: Conformance run against the reference node
-        working-directory: szpontnet/conformance
+        working-directory: packages/szpontnet-spec/conformance
         run: python -m szpont --node-cmd "python adapters/reference.py" --no-color
 
   # The device-allocator MCP server + daemon. Self-contained Node tests that drive
@@ -172,14 +186,14 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: device-allocator
+        working-directory: packages/device-allocator
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v6
         with:
           node-version: '24'
           cache: npm
-          cache-dependency-path: device-allocator/package-lock.json
+          cache-dependency-path: packages/device-allocator/package-lock.json
       # Strict `npm ci` only: the old `|| npm install` fallback silently degraded a
       # broken/stale lockfile into a non-reproducible install.
       - name: Install dependencies
