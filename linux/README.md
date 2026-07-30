@@ -175,8 +175,7 @@ python tests/test_logic.py        # the logic tests, dependency-free (no pytest)
 - `tests/test_mesh_node.py` - real node subprocesses on loopback: discovery,
   cross-node assignment agreement, dispatch, remote edits, death takeover,
   restart re-linking.
-- `tests/test_mesh_ctl_flush.py` / `tests/test_mesh_e2e_applet.py` - control-edit
-  state flush, and the applet driving a real node end to end.
+- `tests/test_mesh_e2e_applet.py` - the applet driving a real node end to end.
 - `tests/test_addon_optional.py` - Diplomat with SzpontNet taken away: a real
   subprocess with the import blocked, rendering the panel anyway.
 - `tests/test_allocator_update.py` - when a launch installs the device allocator,
@@ -185,6 +184,12 @@ python tests/test_logic.py        # the logic tests, dependency-free (no pytest)
   and the activity feed to per-test temp dirs, so tests never read (or scribble on)
   your live config; also clears `DIPLOMAT_MESH_*` so a pre-rename variable in your
   shell can't answer for a `SZPONTNET_*` one the tests mean to leave unset.
+
+Tests that need no part of Diplomat live with the library, in
+[`szpontnet/tests/`](../szpontnet/tests) - the Tor transport, the one-node-per-state-dir
+lock, the control-edit state flush, the host seam and the env namespace. They run in
+CI with no Qt and no Diplomat on the path, which is what makes "SzpontNet is
+independent" checkable rather than merely asserted.
 
 ## Layout
 

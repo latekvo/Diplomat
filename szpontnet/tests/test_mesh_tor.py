@@ -5,33 +5,33 @@ Tor link behaves exactly like a LAN one.
 Deterministic and offline: the node's Tor dialer is dependency-injected (a fake
 that connects to the peer's real loopback TCP port, standing in for the onion
 forward), so no real ``tor`` runs here. ``_own_addresses`` is patched to a fixed
-set so constructing a node never blocks on ``getaddrinfo``. The real-``tor``
-end-to-end proof is a separate, opt-in test below.
+set so constructing a node never blocks on ``getaddrinfo``.
 
-Run with ``python -m pytest linux/tests/test_mesh_tor.py``.
+What that leaves unproven is the one thing a fake dialer cannot cover: that a real
+onion service actually comes up and carries a link. There is no automated test for
+it — it needs a `tor` binary and a live circuit, so it is a by-hand run of two nodes
+on distinct multicast ports (they must not find each other on the LAN) with
+``SZPONTNET_TOR=1`` on both.
+
+Run with ``python -m pytest szpontnet/tests/test_mesh_tor.py``.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
-import os
-import sys
+from dataclasses import replace as _dc_replace
 
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
-from dataclasses import replace as _dc_replace  # noqa: E402
-
-from cryptography.hazmat.primitives.asymmetric.ed25519 import (  # noqa: E402
+from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey,
 )
 
-from szpontnet import (  # noqa: E402
+from szpontnet import (
     crypto, node as nodemod, onioncache, protocol, tor,
 )
-from szpontnet.protocol import NodeInfo  # noqa: E402
+from szpontnet.protocol import NodeInfo
 
 _ONION_A = "a" * 56 + ".onion"
 _ONION_B = "b" * 56 + ".onion"
@@ -47,8 +47,8 @@ def _no_getaddrinfo_hang(monkeypatch):
 def _fresh_node(tmp_path, monkeypatch, subdir="n", **env):
     d = tmp_path / subdir
     d.mkdir(exist_ok=True)
-    monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(d))
-    monkeypatch.setenv("DIPLOMAT_MESH_OAUTH_PROBE", "0")
+    monkeypatch.setenv("SZPONTNET_DIR", str(d))
+    monkeypatch.setenv("SZPONTNET_OAUTH_PROBE", "0")
     for k, v in env.items():
         monkeypatch.setenv(k, v)
     return nodemod.MeshNode()
@@ -212,7 +212,7 @@ def test_redial_targets_respects_dial_rule_liveness_and_backoff(tmp_path, monkey
 
     # default trust personal so the entries clear the "only auto-dial personal peers"
     # gate — this test isolates the dial-rule / liveness / backoff logic.
-    node = _fresh_node(tmp_path, monkeypatch, DIPLOMAT_MESH_DEFAULT_TRUST="personal")
+    node = _fresh_node(tmp_path, monkeypatch, SZPONTNET_DEFAULT_TRUST="personal")
     lo, hi = ("0" * 32, "z" * 32)  # one below our id, one above
     node.local = _dc_replace(node.local, id="m" * 32)
     node._onion_cache = {
@@ -240,7 +240,7 @@ def test_redial_loop_skips_dialing_while_the_onion_is_not_live(tmp_path, monkeyp
     SOCKS port forever. (The injected _FakeTor is always live, so this gate had no node-
     level test.)"""
     monkeypatch.setattr(nodemod, "_TOR_REDIAL_TICK_SECS", 0.01)
-    node = _fresh_node(tmp_path, monkeypatch, DIPLOMAT_MESH_DEFAULT_TRUST="personal")
+    node = _fresh_node(tmp_path, monkeypatch, SZPONTNET_DEFAULT_TRUST="personal")
     node.local = _dc_replace(node.local, id="0" * 32)  # sorts below the target
     target = "z" * 32
     node._onion_cache = {target: onioncache.OnionEntry(onion=_ONION_B)}
@@ -411,7 +411,7 @@ def test_unencodable_secret_or_apikey_closes_cleanly_not_crashes(tmp_path, monke
     assert w.closed
 
     # (b) ctl with a lone-surrogate apiKey on a node that requires an API key.
-    keyed = _fresh_node(tmp_path, monkeypatch, "k", DIPLOMAT_MESH_API_KEY="realkey")
+    keyed = _fresh_node(tmp_path, monkeypatch, "k", SZPONTNET_API_KEY="realkey")
     w2 = _RecWriter()
     ctl = protocol.encode({"t": "ctl", "apiKey": "\ud800"})
     asyncio.run(keyed._on_tcp_connection(_LineReader([ctl]), w2))  # must NOT raise
@@ -581,9 +581,9 @@ def test_tor_bootstrap_timeout_rejects_non_finite(monkeypatch):
     from szpontnet import config
 
     for bad in ("inf", "1e999", "-inf", "nan", "-1", "0"):
-        monkeypatch.setenv("DIPLOMAT_MESH_TOR_BOOTSTRAP_SECS", bad)
+        monkeypatch.setenv("SZPONTNET_TOR_BOOTSTRAP_SECS", bad)
         assert config.tor_bootstrap_timeout() == 90.0
-    monkeypatch.setenv("DIPLOMAT_MESH_TOR_BOOTSTRAP_SECS", "45")
+    monkeypatch.setenv("SZPONTNET_TOR_BOOTSTRAP_SECS", "45")
     assert config.tor_bootstrap_timeout() == 45.0
 
 
@@ -596,18 +596,18 @@ def test_manual_paste_links_over_tor_and_a_dispatch_runs_on_the_peer(
     LAN entirely), the link comes up with the identical hello/auth/trust handshake,
     and a dispatch A→B rides that link and executes on B — proving the Tor link
     behaves exactly like a LAN link. The only stand-in is the dialer."""
-    monkeypatch.setenv("DIPLOMAT_MESH_LOOPBACK", "1")
+    monkeypatch.setenv("SZPONTNET_LOOPBACK", "1")
     out_file = tmp_path / "landed.txt"
-    monkeypatch.setenv("DIPLOMAT_MESH_SPAWN", f"cp {{prompt_file}} {out_file}")
+    monkeypatch.setenv("SZPONTNET_SPAWN", f"cp {{prompt_file}} {out_file}")
 
     async def scenario():
         # B (executor): personal default trust so it runs A's request directly.
         b = _fresh_node(tmp_path, monkeypatch, "b",
-                        DIPLOMAT_MESH_DEFAULT_TRUST="personal")
+                        SZPONTNET_DEFAULT_TRUST="personal")
         await b._start_tcp()
         # A (dispatcher): reaches B only over its injected Tor dialer.
         a = _fresh_node(tmp_path, monkeypatch, "a",
-                        DIPLOMAT_MESH_DEFAULT_TRUST="personal")
+                        SZPONTNET_DEFAULT_TRUST="personal")
         await a._start_tcp()
         a.tor = _FakeTor(_ONION_B, connect_port=b.tcp_port)
 

@@ -25,10 +25,10 @@ from szpontnet.node import MeshNode
 def isolated_node(tmp_path, monkeypatch):
     """A never-started node whose identity/stats/state all live under tmp_path,
     with the snapshot loop's write interval pinned absurdly high."""
-    monkeypatch.setenv("DIPLOMAT_MESH_DIR", str(tmp_path))
-    monkeypatch.setenv("DIPLOMAT_MESH_LOOPBACK", "1")
+    monkeypatch.setenv("SZPONTNET_DIR", str(tmp_path))
+    monkeypatch.setenv("SZPONTNET_LOOPBACK", "1")
     # The only writer we permit during the test is the ctl flush.
-    monkeypatch.setenv("DIPLOMAT_MESH_STATE_SECS", "10000")
+    monkeypatch.setenv("SZPONTNET_STATE_SECS", "10000")
     node = MeshNode()
     # No start(): sockets and the snapshot loop never run.
     assert statefile.read_state() is None  # nothing on disk yet

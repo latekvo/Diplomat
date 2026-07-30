@@ -71,6 +71,11 @@ enforces that directly: it scans every module for a mention of a host applicatio
 and another walks the package AST to catch an environment read that skips
 [`env.py`](szpontnet/env.py).
 
+Beyond the unit and host-seam tests, the integration ones live here too: real nodes
+over loopback for the control-edit state flush, the one-node-per-state-dir startup
+lock, and the Tor transport (deterministic — the onion dialer is injected, so no
+real `tor` runs).
+
 ## Checking an implementation
 
 ```bash

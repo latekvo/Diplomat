@@ -7,19 +7,14 @@ second failing to bind. They then share one mesh_dir → one identity → one
 state.json, which they clobber, so the panel shows a one-way sighting. The lock
 makes the kernel arbitrate: exactly one holder per state dir.
 
-Offline, no sockets, no Qt. Run with ``python -m pytest linux/tests`` or
-dependency-free via ``python linux/tests/test_mesh_singlelock.py``.
+Offline, no sockets, no Qt — nothing here needs the application that ships the
+library. Run with ``python -m pytest szpontnet/tests``.
 """
 
 from __future__ import annotations
 
-import os
-import sys
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
-from szpontnet import singlelock  # noqa: E402
-from szpontnet import __main__ as mesh_main  # noqa: E402
+from szpontnet import singlelock
+from szpontnet import __main__ as mesh_main
 
 
 def test_second_acquire_in_same_dir_is_refused(tmp_path):
@@ -47,7 +42,7 @@ def test_release_frees_the_dir_for_the_next_node(tmp_path):
 
 def test_lock_is_keyed_per_state_dir(tmp_path):
     """Two DIFFERENT state dirs never contend — this is what keeps the tests'
-    and sim's many-nodes-on-one-host affordance (a distinct DIPLOMAT_MESH_DIR
+    and sim's many-nodes-on-one-host affordance (a distinct SZPONTNET_DIR
     each) working after the guard lands."""
     a, b = tmp_path / "node-a", tmp_path / "node-b"
     la = singlelock.acquire(a)
@@ -90,6 +85,7 @@ def test_run_node_backs_off_when_the_dir_is_locked(tmp_path, monkeypatch):
 
 
 if __name__ == "__main__":  # dependency-free run
+    import sys
     import tempfile
     from pathlib import Path
 

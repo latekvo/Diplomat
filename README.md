@@ -735,7 +735,8 @@ szpontnet/                     ← the SzpontNet module: an independent library 
     env.py                     ← the SZPONTNET_* namespace, one accessor, one place the old names bridge
   docs/                        ← the normative SzpontNet protocol spec (15 chapters, v0.4.0)
   tests/                       ← the library on its own terms — defaults, the host seam, the namespace,
-                                 and a scan that fails if a module so much as names its host
+                                 a scan that fails if a module so much as names its host, plus the
+                                 integration ones (Tor transport, the startup lock, control-edit flush)
   conformance/                 ← black-box SzpontNet conformance tester: runs a candidate node as an opaque
                                  subprocess, joins over real multicast + TCP, exits non-zero on any MUST failure
 scripts/                       ← build-app, install/uninstall-autostart, install/uninstall-autoupdate
