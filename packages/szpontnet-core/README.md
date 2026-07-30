@@ -7,9 +7,9 @@ owns each class of work. When one drops or runs dry, every survivor has already
 recomputed and the work has moved.
 
 This package is the **reference implementation**:
-[`szpontnet/`](szpontnet/__init__.py), a standard-library-only Python node run as
+[`szpontnet/`](https://github.com/latekvo/Diplomat/blob/main/packages/szpontnet-core/szpontnet/__init__.py), a standard-library-only Python node run as
 `python -m szpontnet`. The protocol it implements is specified next door, in
-[`szpontnet-spec`](../szpontnet-spec/README.md) — the normative chapters and the
+[`szpontnet-spec`](https://github.com/latekvo/Diplomat/blob/main/packages/szpontnet-spec/README.md) — the normative chapters and the
 black-box conformance tester that can judge any implementation, this one included.
 The split is the point: the spec is a document about a wire format, not
 documentation *of this code*, and it is versioned and read as such.
@@ -21,7 +21,7 @@ this repository, and not on any package outside the standard library (Ed25519
 device identity is an optional extra; without it a node runs keyless).
 
 Every knob it reads from the environment is `SZPONTNET_<NAME>`, through a single
-accessor ([`szpontnet/env.py`](szpontnet/env.py)) so that is a property of the code
+accessor ([`szpontnet/env.py`](https://github.com/latekvo/Diplomat/blob/main/packages/szpontnet-core/szpontnet/env.py)) so that is a property of the code
 rather than a convention. These names are part of the spec: the conformance tester
 configures a candidate through them and has no other channel, so a node that reads
 its settings under some other spelling is one the tester cannot drive. The
@@ -29,18 +29,18 @@ pre-rename `DIPLOMAT_MESH_<NAME>` spellings are still honoured when the new one 
 unset — see the module for when that can be dropped.
 
 The canonical v1 constants and duty catalog from
-[appendix B](../szpontnet-spec/docs/appendix-b-constants.md) ship as
-[`szpontnet/netmodel.json`](szpontnet/netmodel.json), so a bare node is conformant
+[appendix B](https://github.com/latekvo/Diplomat/blob/main/packages/szpontnet-spec/docs/appendix-b-constants.md) ship as
+[`szpontnet/netmodel.json`](https://github.com/latekvo/Diplomat/blob/main/packages/szpontnet-core/szpontnet/netmodel.json), so a bare node is conformant
 out of the box. The five things it *cannot* answer for itself — which duties this
 deployment routes, where a node's state lives, where its events go, what "running a
 job" means on this machine, and whether that work is already under way here — it
 asks of a **host**
-([`szpontnet/host.py`](szpontnet/host.py)). Every one has a working default, so a
+([`szpontnet/host.py`](https://github.com/latekvo/Diplomat/blob/main/packages/szpontnet-core/szpontnet/host.py)). Every one has a working default, so a
 node with no host runs the canonical model, keeps its state in `~/.szpontnet`,
 discards its log and declines work it has no runner for.
 
 Diplomat is one such host
-([`diplomat-platform/linux/diplomat_app/szponthost.py`](../diplomat-platform/linux/diplomat_app/szponthost.py)) and
+([`diplomat-platform/linux/diplomat_app/szponthost.py`](https://github.com/latekvo/Diplomat/blob/main/packages/diplomat-platform/linux/diplomat_app/szponthost.py)) and
 registers itself two ways: in-process, and by putting
 `SZPONTNET_HOST=diplomat_app.szponthost` in the environment of the node it spawns.
 
@@ -69,7 +69,7 @@ with no Qt, no `diplomat-core` and no Diplomat on the import path — so a depen
 creeping back in fails a build rather than going unnoticed. One of the tests
 enforces that directly: it scans every module for a mention of a host application,
 and another walks the package AST to catch an environment read that skips
-[`env.py`](szpontnet/env.py).
+[`env.py`](https://github.com/latekvo/Diplomat/blob/main/packages/szpontnet-core/szpontnet/env.py).
 
 Beyond the unit and host-seam tests, the integration ones live here too: real nodes
 over loopback for the control-edit state flush, the one-node-per-state-dir startup
@@ -85,4 +85,4 @@ python -m szpont --node-cmd "python adapters/reference.py"
 
 The tester speaks only the wire protocol from the spec; nothing in it reads this
 node's source. That is what makes "independently implementable" checkable rather
-than aspirational — see [`szpontnet-spec`](../szpontnet-spec/README.md).
+than aspirational — see [`szpontnet-spec`](https://github.com/latekvo/Diplomat/blob/main/packages/szpontnet-spec/README.md).

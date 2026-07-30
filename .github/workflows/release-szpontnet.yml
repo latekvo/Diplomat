@@ -1,0 +1,95 @@
+# Publish the SzpontNet library to PyPI, on a tag.
+#
+# Trusted Publishing: PyPI is told, once, that this repository's
+# `release-szpontnet.yml` may upload the `szpontnet` project, and the upload then
+# authenticates with a short-lived OIDC token minted per run. No API token exists
+# to leak, expire or rotate, and nothing in the repository is a secret.
+#
+# An upload is irreversible - a version, once on PyPI, can never be replaced or
+# reused - so everything that can be checked runs first, and a release that fails
+# any of it never reaches the index.
+name: Release szpontnet
+
+on:
+  push:
+    tags: ["szpontnet-v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Build, verify and publish
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write # mint the OIDC token PyPI trades for an upload
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      # The tag names the release; pyproject.toml names what actually gets built.
+      # They are edited at different times by different hands, and PyPI believes
+      # the second one - so `szpontnet-v0.5.0` over a pyproject still saying 0.4.0
+      # would publish 0.4.0 under a 0.5.0 tag, and 0.5.0 would then be permanently
+      # unclaimable. Cheapest possible gate against the one mistake that cannot be
+      # undone.
+      - name: The tag and the packaged version agree
+        run: |
+          tag_version="${GITHUB_REF_NAME#szpontnet-v}"
+          pkg_version="$(python -c "
+          import tomllib, pathlib
+          print(tomllib.loads(
+              pathlib.Path('packages/szpontnet-core/pyproject.toml').read_text()
+          )['project']['version'])
+          ")"
+          echo "tag=$tag_version  pyproject=$pkg_version"
+          if [ "$tag_version" != "$pkg_version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match pyproject version $pkg_version"
+            exit 1
+          fi
+
+      # The same job CI runs on every push, repeated here against the exact commit
+      # being published. CI having been green on the branch is not the same claim:
+      # a tag can point anywhere, including at a commit no CI run ever saw.
+      - name: Install the library (with the trust extra) and pytest
+        run: pip install -e './packages/szpontnet-core[trust]' pytest
+      - name: Unit + host-seam tests
+        run: pytest packages/szpontnet-core/tests -q
+
+      # The protocol's own gate. The library is a *reference* implementation, so a
+      # release that no longer satisfies the spec it points people at is a worse
+      # thing to publish than one that fails a unit test.
+      - name: Conformance tester self-test
+        working-directory: packages/szpontnet-spec/conformance
+        run: python -m szpont --selftest
+      - name: Conformance run against the reference node
+        working-directory: packages/szpontnet-spec/conformance
+        run: python -m szpont --node-cmd "python adapters/reference.py" --no-color
+
+      - name: Build the distribution
+        run: |
+          pip install build twine
+          python -m build --outdir dist packages/szpontnet-core
+          twine check --strict dist/*
+
+      # The artifact on its own terms, in a venv that has never seen the checkout:
+      # it must import, find the netmodel that ships beside it as package data, and
+      # answer as the console script. A module or data file left out of the wheel
+      # is invisible until someone installs it, and by then the version is spent.
+      - name: The built wheel installs, imports and runs
+        run: |
+          python -m venv /tmp/verify
+          /tmp/verify/bin/pip install dist/*.whl
+          /tmp/verify/bin/python -c "
+          import szpontnet.host as host
+          duties = [d['id'] for d in host.netmodel()['duties']]
+          assert duties, 'netmodel.json missing from the wheel'
+          print('wheel ok - duties:', duties)
+          "
+          SZPONTNET_DIR=/tmp/verify/state /tmp/verify/bin/szpontnet --fingerprint
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

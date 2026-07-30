@@ -13,6 +13,12 @@ license = { text = "MIT" }
 # detached daemon on a machine that has no application installed on it.
 dependencies = []
 
+[project.urls]
+Homepage = "https://github.com/latekvo/Diplomat/tree/main/packages/szpontnet-core"
+Source = "https://github.com/latekvo/Diplomat"
+Specification = "https://github.com/latekvo/Diplomat/tree/main/packages/szpontnet-spec"
+Issues = "https://github.com/latekvo/Diplomat/issues"
+
 [project.optional-dependencies]
 # Ed25519 device identity. Without it a node still runs, keyless - it advertises
 # no public key, can never be verified, and so is foreign to any peer with a trust
