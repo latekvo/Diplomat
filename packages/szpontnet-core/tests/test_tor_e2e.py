@@ -35,7 +35,7 @@ import socket
 import pytest
 
 import tornet as tornet_module
-from szpontnet import onioncache, protocol, tor
+from szpontnet import node as nodemod, onioncache, protocol, tor
 
 pytestmark = pytest.mark.tor_e2e
 
@@ -393,14 +393,15 @@ def test_two_nodes_off_each_others_lan_link_over_tor_and_run_a_dispatch(
     dispatcher = tornet.node("dispatcher").start().await_running()
     dispatcher.await_onion()  # both ends need a live tor before either can dial
 
-    # The manual introduction an operator makes: paste the peer's onion.
-    assert dispatcher.ctl({"t": "tor-connect", "onion": onion})["onion"] == onion
-
-    peer = dispatcher.await_linked(executor)
+    # The manual introduction an operator makes: paste the peer's onion (re-issued
+    # while the descriptor propagates — a paste is a one-shot, see the helper).
+    peer = dispatcher.tor_connect_until_linked(executor, onion)
     assert peer["transport"] == "tor", (
         f"linked, but not over Tor: {peer!r}")
     assert peer["addr"] == onion, "the peer's address should be the onion we dialed"
-    assert peer["verified"] is True, "device keys were not proven over the Tor link"
+    # Both ends prove their device keys — the same handshake a LAN link runs.
+    assert dispatcher.await_verified(executor)["verified"] is True
+    assert executor.await_verified(dispatcher)["verified"] is True
     # And the far side sees it as a Tor link too, not as the loopback it lands on.
     assert executor.await_linked(dispatcher)["transport"] == "tor"
 
@@ -436,9 +437,10 @@ def test_a_node_auto_redials_a_known_peer_over_tor_with_no_lan(tornet):
     dialer.start().await_running()
     dialer.await_onion()
 
-    peer = dialer.await_linked(executor)
+    peer = dialer.await_linked(executor, timeout=_redial_budget(tornet.backend))
     assert peer["transport"] == "tor"
-    assert peer["verified"] is True
+    # Trust is established over the onion exactly as it is over the LAN.
+    assert dialer.await_verified(executor)["transport"] == "tor"
 
 
 def test_a_peer_met_over_tor_has_its_onion_learned_and_persisted(tornet):
@@ -450,8 +452,7 @@ def test_a_peer_met_over_tor_has_its_onion_learned_and_persisted(tornet):
     opener = tornet.node("opener").start().await_running()
     opener_onion = opener.await_onion()
 
-    opener.ctl({"t": "tor-connect", "onion": accepter_onion})
-    opener.await_linked(accepter)
+    opener.tor_connect_until_linked(accepter, accepter_onion)
     accepter.await_linked(opener)
 
     # The ACCEPTER learned the opener's onion from the hello it received — it was
@@ -537,6 +538,33 @@ def test_the_operators_own_control_channel_is_still_served_on_loopback(tornet):
         reply = protocol.decode(sock.makefile("rb").readline(protocol.MAX_LINE_BYTES))
     assert reply and reply.get("t") == "state", reply
     assert reply["state"]["tor"]["ready"] is True
+
+
+_REDIAL_PROBES = 7
+
+
+def _redial_budget(backend) -> float:
+    """How long to allow the node's own Tor redial loop, against the real network.
+
+    Unlike a manual paste, auto-redial *does* retry — but on **geometric backoff**, so
+    patience does not buy attempts linearly: the probes fall at roughly 5s, 15s, 35s,
+    75s, 155s, 315s, 635s. A flat five-minute budget therefore buys only five of them,
+    and a real onion whose descriptor is slow to publish can miss all five and then
+    have nothing to do for the remaining two and a half minutes.
+
+    So the budget is computed from the node's own backoff constants rather than picked:
+    change them and this follows. It is a ceiling, not a wait — a run that links on the
+    second probe returns in fifteen seconds.
+    """
+    if not backend.is_real:
+        return backend.link  # the simulated directory answers the first probe
+    moment = nodemod._TOR_REDIAL_TICK_SECS
+    interval = nodemod._TOR_BACKOFF_MIN_SECS
+    for _ in range(_REDIAL_PROBES - 1):
+        moment += interval
+        interval = min(interval * nodemod._TOR_BACKOFF_FACTOR,
+                       nodemod._TOR_BACKOFF_MAX_SECS)
+    return moment + 60.0  # + the handshake the last probe still has to complete
 
 
 def _stranger_advert() -> dict:

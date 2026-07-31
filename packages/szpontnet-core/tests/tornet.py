@@ -40,6 +40,8 @@ its control channel — so nothing in the path is a test double.
 
 from __future__ import annotations
 
+import asyncio
+import atexit
 import contextlib
 import json
 import os
@@ -47,6 +49,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -64,6 +67,85 @@ SIM = "sim"
 REAL = "real"
 
 _SIGNAL_NUMBERS = {s.value for s in signal.Signals}
+
+
+# Tor's directory caches, kept from one bootstrap and seeded into every later
+# DataDirectory. Name-matched rather than listed exactly because the set differs by tor
+# version (`cached-microdescs` vs `.new`, `cached-consensus` vs `cached-microdesc-*`),
+# and a file this does not recognise costs one refetch, never a wrong answer.
+_CACHE_GLOB = "cached-*"
+
+# Built once per process, on first use by the real backend. A module global rather than
+# a fixture because it is keyed to nothing — one warm consensus serves every test — and
+# it must survive the per-test tmp_path it would otherwise be deleted with.
+#
+# The `_attempted` flag records a FAILED warm-up as firmly as a successful one: without
+# it, a machine whose tor cannot bootstrap would retry the full 180s wait once per test
+# — turning "the real backend is unavailable here" into an hour of hanging before it
+# said so.
+_WARM_CACHE: Path | None = None
+_WARM_CACHE_ATTEMPTED = False
+
+
+def _warm_real_tor_cache(binary: str) -> Path | None:
+    """Bootstrap one tor, keep its directory caches, and hand back where they live.
+
+    Without this, each of the ~20 daemons a real run starts gets an empty
+    ``DataDirectory`` and downloads a full consensus (tens of MB) from the directory
+    authorities — twenty cold starts in a few minutes, which is both the bulk of the
+    runtime and the one failure this suite actually saw: a bootstrap that did not
+    finish inside its timeout, on a network and a set of authorities nobody here
+    controls.
+
+    Seeded, a bootstrap is a cache read. A stale or partial cache is safe — tor
+    refetches what it cannot use — so the worst case is exactly the cold start this
+    replaces.
+    """
+    global _WARM_CACHE, _WARM_CACHE_ATTEMPTED
+    if _WARM_CACHE_ATTEMPTED:
+        return _WARM_CACHE
+    _WARM_CACHE_ATTEMPTED = True
+    from szpontnet import tor
+
+    warm = Path(tempfile.mkdtemp(prefix="szpontnet-tor-warm-"))
+    atexit.register(shutil.rmtree, warm, True)
+
+    async def bootstrap_once() -> bool:
+        transport = tor.TorTransport(warm, binary_path=binary)
+
+        async def _unused(_reader, _writer):
+            """Nothing dials this one — it exists to fill a cache."""
+
+        try:
+            return await transport.start(_unused, bootstrap_timeout=180.0)
+        finally:
+            await transport.stop()  # a clean exit is what makes tor flush its caches
+
+    if not asyncio.run(bootstrap_once()):
+        # No warm cache, so every daemon pays the cold start. Worth saying out loud:
+        # it is the difference between a slow run and a stuck one.
+        print("tornet: could not pre-bootstrap tor — real-backend tests will each "
+              "download their own consensus", file=sys.stderr)
+        return None
+    _WARM_CACHE = warm / "tor"
+    return _WARM_CACHE
+
+
+def _seed_tor_cache(tor_dir: Path, cache: Path | None) -> None:
+    """Copy the warm directory caches into a ``DataDirectory`` about to be used.
+
+    Created 0700 here for the same reason ``tor._write_torrc`` does it: tor refuses a
+    DataDirectory that is not, and this runs first.
+    """
+    if cache is None:
+        return
+    tor_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with contextlib.suppress(OSError):
+        os.chmod(tor_dir, 0o700)
+    for entry in cache.glob(_CACHE_GLOB):
+        if entry.is_file():
+            with contextlib.suppress(OSError):
+                shutil.copy2(entry, tor_dir / entry.name)
 
 
 def _clean_environ() -> dict:
@@ -159,6 +241,9 @@ class TorNet:
         # node's onion be dialable by another.
         self._net_dir = tmp_path / "tornet"
         self._net_dir.mkdir(parents=True, exist_ok=True)
+        # One bootstrap's worth of directory cache, shared by every daemon this world
+        # starts. Only the real backend has anything to download.
+        self._cache = _warm_real_tor_cache(self.binary) if backend.is_real else None
         for key, value in self.child_env().items():
             monkeypatch.setenv(key, value)
 
@@ -176,6 +261,7 @@ class TorNet:
 
         mesh_dir = self._tmp / "transports" / name
         mesh_dir.mkdir(parents=True, exist_ok=True)
+        _seed_tor_cache(mesh_dir / "tor", self._cache)
         return tor.TorTransport(mesh_dir, binary_path=self.binary)
 
     def node(self, name: str, **env: str) -> "NodeProcess":
@@ -216,6 +302,9 @@ class NodeProcess:
         self.log_path = self.dir / "node.log"
         self._proc: subprocess.Popen | None = None
         self._log_handle = None
+        # The node builds its own tor DataDirectory at <state>/tor; get the warm
+        # consensus in there before it does, or this node bootstraps from cold.
+        _seed_tor_cache(self.dir / "tor", net._cache)
         # Pinned "ok" rather than "auto": the auto state comes from probing the
         # OPERATOR's real usage logs, so on a developer's own machine an auto node
         # can advertise `out` and decline every dispatch in the test — a failure
@@ -419,6 +508,63 @@ class NodeProcess:
             lambda: (self.peer(other).get("link") in self._LINKED
                      and self.peer(other)),
             budget, f"never linked to {other.name}")
+
+    def await_verified(self, other: "NodeProcess", timeout: float | None = None) -> dict:
+        """Wait until ``other`` has PROVEN its device key on this link.
+
+        A separate event from linking, and later than it: the link binds on a valid
+        hello, and the fresh-nonce challenge that turns a claimed identity into a
+        proven one is a further round trip — over Tor, a further round trip through a
+        circuit. Asserting ``verified`` the instant a link appears is therefore a race
+        that passes on a fast day, which is why this is its own wait (and why simnet
+        keeps ``linked`` and ``all_verified`` apart for the LAN).
+        """
+        budget = self.net.backend.link if timeout is None else timeout
+        return self.until(
+            lambda: self.peer(other).get("verified") and self.peer(other),
+            budget, f"{other.name} never proved its device key")
+
+    # A re-paste every this often while waiting. Spaced, not tight: each paste opens
+    # a fresh Tor circuit, and hammering one would slow the very thing being waited on.
+    _PASTE_INTERVAL_SECS = 15.0
+
+    def tor_connect_until_linked(self, other: "NodeProcess", onion: str,
+                                 timeout: float | None = None) -> dict:
+        """Paste ``onion`` until a link to ``other`` binds, re-issuing as needed.
+
+        A manual ``tor-connect`` is a deliberate **one-shot**: the node dials once and,
+        if the onion is not reachable yet, reports nothing and schedules no retry (see
+        ``node._tor_dial`` — only peers already in the onion cache get the backoff
+        loop). Against a real Tor network the first paste routinely lands in exactly
+        that window, because a service publishes its descriptor to the HSDirs some tens
+        of seconds *after* it reports bootstrapped, so the peer is announcing an address
+        nobody can resolve yet.
+
+        Re-issuing is therefore what the operator does — the CLI says as much ("watch
+        --status for the peer") — and a test that pasted once would be asserting a
+        promise the node does not make, passing or failing on how fast the directory
+        happened to be that minute.
+        """
+        budget = self.net.backend.link if timeout is None else timeout
+        deadline = time.monotonic() + budget
+        last_paste = 0.0
+        while True:
+            entry = self.peer(other)
+            if entry.get("link") in self._LINKED:
+                return entry
+            if not self.alive:
+                raise AssertionError(
+                    f"{self.name} exited ({self._exit_description()}) while pasting "
+                    f"{other.name}'s onion\n--- {self.name} log ---\n{self.log_tail()}")
+            now = time.monotonic()
+            if now > deadline:
+                raise AssertionError(
+                    f"{self.name}: never linked to {other.name} after re-pasting its "
+                    f"onion for {budget:g}s\n--- {self.name} log ---\n{self.log_tail()}")
+            if now - last_paste >= self._PASTE_INTERVAL_SECS:
+                last_paste = now
+                assert self.ctl({"t": "tor-connect", "onion": onion})["onion"] == onion
+            time.sleep(0.2)
 
 
 def pytest_backend_params():
