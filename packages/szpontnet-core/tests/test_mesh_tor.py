@@ -7,11 +7,12 @@ that connects to the peer's real loopback TCP port, standing in for the onion
 forward), so no real ``tor`` runs here. ``_own_addresses`` is patched to a fixed
 set so constructing a node never blocks on ``getaddrinfo``.
 
-What that leaves unproven is the one thing a fake dialer cannot cover: that a real
-onion service actually comes up and carries a link. There is no automated test for
-it — it needs a `tor` binary and a live circuit, so it is a by-hand run of two nodes
-on distinct multicast ports (they must not find each other on the LAN) with
-``SZPONTNET_TOR=1`` on both.
+That injection is what makes these tests sharp — a backoff schedule, an eviction
+order or a refused ``ctl`` can be asserted exactly, with no daemon in the way — and
+it is also their limit: a fake dialer cannot show that an onion service comes up, or
+that the bytes the transport writes are the bytes a daemon expects.
+``test_tor_e2e.py`` covers that, against a real tor daemon (a simulated onion
+network by default, the live Tor network with ``SZPONTNET_TEST_TOR=real``).
 
 Run with ``python -m pytest packages/szpontnet-core/tests/test_mesh_tor.py``.
 """
@@ -568,6 +569,49 @@ def test_foreign_onion_churn_does_not_evict_a_personal_entry(tmp_path, monkeypat
         node._remember_onion(f"foreign-{i}", _mk_onion(i), "deadbeef")
     assert len(node._onion_cache) == nodemod._MAX_PEER_CACHE
     assert "peer-personal" in node._onion_cache  # personal survived the foreign flood
+
+
+# MARK: - config: the transport is on unless it is explicitly turned off
+
+
+def test_tor_runs_unless_it_is_explicitly_turned_off(monkeypatch):
+    """The transport is on by default — a mesh spanning several LANs is what the
+    node is for, and an operator should not have to discover a switch to get it.
+
+    So an unset variable means ON, and only the recognised off-spellings mean off.
+    The lenient list is the load-bearing half: for a default-ON knob an unrecognised
+    value fails the *wrong* way (a tor process the operator explicitly tried to
+    prevent), which is why ``false``/``no``/``off``/``""`` are honoured and not only
+    ``0``."""
+    from szpontnet import config
+
+    monkeypatch.delenv("SZPONTNET_TOR", raising=False)
+    assert config.tor_enabled() is True
+
+    for off in ("0", "false", "no", "off", "", "FALSE", " Off ", "No"):
+        monkeypatch.setenv("SZPONTNET_TOR", off)
+        assert config.tor_enabled() is False, f"{off!r} should disable Tor"
+
+    # Anything that isn't an off-spelling leaves it on — including the `1` that used
+    # to be the only way to get the transport at all.
+    for on in ("1", "true", "yes", "on", "enabled"):
+        monkeypatch.setenv("SZPONTNET_TOR", on)
+        assert config.tor_enabled() is True, f"{on!r} should leave Tor on"
+
+
+def test_the_legacy_env_name_can_still_turn_tor_off(monkeypatch):
+    """``DIPLOMAT_MESH_*`` is honoured wherever ``SZPONTNET_*`` is unset (see env.py),
+    and that has to include the off switch: a machine whose profile still exports the
+    old spelling to disable Tor would otherwise start running an onion service on an
+    upgrade, which is the one direction of this default that must never surprise."""
+    from szpontnet import config
+
+    monkeypatch.delenv("SZPONTNET_TOR", raising=False)
+    monkeypatch.setenv("DIPLOMAT_MESH_TOR", "0")
+    assert config.tor_enabled() is False
+    # The new name still wins when both are set.
+    monkeypatch.setenv("SZPONTNET_TOR", "1")
+    assert config.tor_enabled() is True
 
 
 # MARK: - config: the bootstrap timeout rejects non-finite / non-positive values

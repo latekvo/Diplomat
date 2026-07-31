@@ -24,6 +24,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from szpontnet import host  # noqa: E402
 
 
+def pytest_configure(config):
+    """Register the markers this suite uses, so a run is never noisy about them and
+    ``-m 'not tor_e2e'`` is a supported way to skip the slow, process-spawning half."""
+    config.addinivalue_line(
+        "markers",
+        "tor_e2e: drives real tor daemons and whole node processes (see tornet.py)")
+
+
 @contextlib.contextmanager
 def nobody_home():
     """No host for the duration — and whoever was behind the node before, put back.
@@ -88,3 +96,32 @@ def isolated_state_dir(tmp_path, monkeypatch):
     """Never touch a real node's identity, trust allowlist or snapshot."""
     monkeypatch.setenv("SZPONTNET_DIR", str(tmp_path / "state"))
     yield
+
+
+@pytest.fixture(autouse=True)
+def no_tor_by_default(monkeypatch):
+    """No test spawns a ``tor`` child unless it asked to.
+
+    The transport is on by default in a shipped node, which means every test that
+    reaches ``MeshNode.start()`` on a developer's machine would otherwise fork a real
+    tor, bind a SOCKS port and start bootstrapping against the live Tor network —
+    slow, non-deterministic, and network-dependent in a suite whose whole claim is
+    that it is none of those. The tests that ARE about Tor turn it back on
+    themselves (see ``tornet.py``), which is also what keeps them honest about
+    running against a tor daemon rather than against an ambient default.
+    """
+    monkeypatch.setenv("SZPONTNET_TOR", "0")
+    yield
+
+
+@pytest.fixture
+def simnet(tmp_path, monkeypatch, no_host):
+    """A virtual LAN a test can run a whole mesh on — and break. See simnet.py.
+
+    Depends on ``no_host`` explicitly rather than relying on autouse ordering:
+    it registers a host of its own, and that registration has to happen inside
+    the isolation that later hands the previous host back.
+    """
+    import simnet as simnet_module
+
+    return simnet_module.build(tmp_path / "sim", monkeypatch)

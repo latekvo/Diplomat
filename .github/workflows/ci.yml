@@ -164,7 +164,14 @@ jobs:
       - name: Install the library (with the trust extra) and pytest
         run: pip install -e './packages/szpontnet-core[trust]' pytest
       - name: Unit + host-seam tests
-        run: pytest packages/szpontnet-core/tests -q
+        run: pytest packages/szpontnet-core/tests -q -m 'not tor_e2e'
+      # The onion path against a real tor daemon — here the simulated one, which
+      # needs no network and no `tor` installed but still runs every line of the
+      # transport: a spawned daemon, a torrc it parses, SOCKS5 on a socket, and whole
+      # node processes that can only reach each other over an onion. The same tests
+      # run against the live Tor network in tor-e2e.yml.
+      - name: Tor transport end-to-end (simulated onion network)
+        run: pytest packages/szpontnet-core/tests/test_tor_e2e.py -q
       # The tester's own codec and placement oracle, derived from the spec rather
       # than from the node — if this is wrong every verdict below is meaningless.
       - name: Conformance tester self-test

@@ -29,7 +29,9 @@ process; if the ``tor`` binary is missing or bootstrap fails, ``start`` returns
 False and the node carries on LAN-only (the same graceful degradation as the
 keyless path when ``cryptography`` is absent).
 
-Enable with ``SZPONTNET_TOR=1`` (see :mod:`config`).
+On by default, disabled with ``SZPONTNET_TOR=0`` (see :func:`config.tor_enabled`) —
+the LAN is how peers on one network find each other, and this is how several such
+networks become one mesh.
 """
 
 from __future__ import annotations

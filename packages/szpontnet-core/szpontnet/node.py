@@ -552,10 +552,12 @@ class MeshNode:
             loop.create_task(self._snapshot_loop(), name="mesh-snapshot"),
         ]
         if config.tor_enabled():
-            # The WAN transport is an ATOMIC add-on: it brings up a persistent onion
-            # service (bootstrapped in the background so the LAN stays usable
-            # immediately) and a reconnect loop that Tor-dials known-but-unseen peers
-            # with exponential backoff. Nothing else in the node changes.
+            # The WAN transport is an ATOMIC add-on running BESIDE the LAN rather than
+            # instead of it: it brings up a persistent onion service (bootstrapped in
+            # the background so the LAN stays usable immediately) and a reconnect loop
+            # that Tor-dials known-but-unseen peers with exponential backoff. Nothing
+            # else in the node changes, and multicast discovery still owns every peer
+            # on this network.
             tor_binary = tor.binary()
             if tor_binary:
                 self.tor = tor.TorTransport(identity.mesh_dir(),
@@ -565,9 +567,13 @@ class MeshNode:
                 self._tasks.append(loop.create_task(self._tor_redial_loop(),
                                                     name="mesh-tor-redial"))
             else:
-                log("warn",
-                    "Mesh/Tor: SZPONTNET_TOR=1 but no 'tor' binary "
-                    "found — running LAN-only.")
+                # Not a warning: a box with no tor installed is an ordinary box, and
+                # the transport is on by default — warning here would fire on every
+                # start of every LAN-only machine. It still names what is out of reach
+                # rather than only reporting that something was skipped.
+                log("mesh-up",
+                    "Mesh/Tor: no 'tor' binary found — LAN-only, so peers on other "
+                    "networks are unreachable. Install tor for WAN reach.")
         await self._refresh_tokens()  # seed the auto token state before the first advert
         self._last_token_refresh = time.monotonic()
         self._recompute("start")
@@ -1692,6 +1698,11 @@ class MeshNode:
                     # Duplicate/zombie old link: keep the new one, close the old quietly.
                     with contextlib.suppress(Exception):
                         peer.writer.close()
+            # A connection we were not already bound to — a first link, or a
+            # reconnect onto a fresh socket (the branch above, where the old writer
+            # is a zombie we never noticed dying). Not a re-hello on the link we
+            # already hold, which teaches the other side nothing new.
+            came_up = peer.writer is not link_writer
             if peer.linked_since is None:
                 peer.linked_since = time.monotonic()  # link came up: start the uptime clock
             peer.writer = link_writer
@@ -1719,6 +1730,10 @@ class MeshNode:
             if peer.transport == "lan":
                 self._remember_peer(info.id, host, info.tcp_port)
             self._bump_and_gossip()  # our `sees` changed
+            if came_up:
+                # A machine we could not reach a moment ago can be holding — or be
+                # about to mint — a lease we already hold. See _reassert_own_claims.
+                self._reassert_own_claims()
         if fresh:
             # Relay a genuinely-newer advertisement learned via GOSSIP onward, so a
             # NodeInfo update converges across a multi-hop topology (A—B—C where A
@@ -1990,6 +2005,7 @@ class MeshNode:
         # freshness gate in _store_claim stops the echo from looping.
         self._broadcast(protocol.work_claim(raw))
         self._maybe_yield(rec.work_key)
+        self._maybe_reassert(rec)
 
     def _store_claim(self, rec: protocol.ClaimRecord) -> bool:
         """Merge a claim into the book by per-claimant freshness. Returns True iff
@@ -2120,6 +2136,60 @@ class MeshNode:
             if self.on_claim_lost is not None:
                 with contextlib.suppress(Exception):
                     self.on_claim_lost(work_key)
+
+    def _reassert_own_claims(self) -> None:
+        """Re-announce every active lease this node holds, because the mesh just
+        gained a machine that may never have heard of them.
+
+        A claim is gossiped when it is **minted** and never again, so two nodes
+        that claimed the same key while they could not reach each other — a
+        partition, a machine asleep, one simply started later — each hold a book
+        the other's claim never entered. Each reads its own book correctly and sees
+        itself as the sole owner, and the [yield](_maybe_yield) rule cannot fire on
+        a claim a node has never seen: both machines originate the same work and
+        stay that way, because nothing after the mint ever tries again. A link
+        coming up is precisely the moment that gap can exist, so both ends re-state
+        what they hold (a bumped ``seq`` — the same mechanism as a withdrawal) and
+        the losing side yields on the next round.
+
+        Only *our own* records: relaying the whole book on every link would make
+        every node an amplifier for a flooder's claims, and other nodes' leases are
+        already re-stated by their own owners on this same link. Reaching the far
+        side of the mesh needs no more than that — a re-assertion is adopted and
+        then relayed like any claim, so it crosses the new link and travels on."""
+        for work_key in list(self._claims):
+            rec = self._claims[work_key].get(self.local.id)
+            if rec is not None and rec.active:
+                self._emit_claim(work_key, "active")
+
+    def _maybe_reassert(self, rec: protocol.ClaimRecord) -> None:
+        """Answer a claimant that has just claimed a key this node already owns.
+
+        The same correction as [above](_reassert_own_claims), for the claimant a
+        link event did not reach: one that minted from **behind another node**
+        (A—B—C with no A—C link, C claiming a key A holds, so no link of A's ever
+        came up for it), or simply one whose copy of the re-assertion was lost.
+        Either way it announces a key we hold and hears nothing back, and both
+        machines run the work. That announcement is itself the signal that it is
+        missing our lease, so we re-state it there and then.
+
+        Only against a claimant whose claim could actually **win** here: a
+        foreign, dead or unbound one owns nothing either way, so answering it
+        would buy an on-mesh flooder a broadcast amplifier and nothing else.
+
+        This terminates in one exchange: our re-assertion makes the other node
+        yield, and a yield is a ``released`` record, which is not an active claim
+        and so is never answered with another re-assertion."""
+        if not rec.active or rec.node == self.local.id:
+            return
+        own = self._own_claim(rec.work_key)
+        if own is None or not own.active:
+            return  # nothing of ours to correct them with (incl. a claim we just yielded)
+        if not self._claim_authoritative(rec.node, rec):
+            return
+        if self._claim_holder(rec.work_key) != self.local.id:
+            return  # somebody better than both of us owns it; they will answer
+        self._emit_claim(rec.work_key, "active")
 
     def _forget_claims(self, node_id: str) -> None:
         """Drop every claim a now-reaped node held, and any book left empty. Called
@@ -2708,9 +2778,19 @@ class MeshNode:
                         # Non-empty and unchanged since the previous poll → fully written
                         # (guards against reading a still-growing file; a runner SHOULD
                         # also write atomically via a temp file + rename).
-                        output = await asyncio.to_thread(self._read_result_file, result_path)
+                        output, clipped = await asyncio.to_thread(
+                            self._read_result_file, result_path)
                         self._emit_result(job.id, requester_id, {
-                            "ok": True, "duty": job.duty, "output": output, "error": ""})
+                            "ok": True, "duty": job.duty, "output": output,
+                            # An artifact cut down to the size limit still succeeded,
+                            # but it is NOT the whole answer — say so, exactly as
+                            # _fit_result does for the wire-size cut. The originator
+                            # acts on this text under its own identity, and a clipped
+                            # review body that claims to be complete is worse than a
+                            # short one.
+                            "error": ("artifact truncated to the "
+                                      f"{_MAX_RESULT_BYTES} byte limit") if clipped
+                                     else ""})
                         return
                     last_size = size
                 await asyncio.sleep(poll)
@@ -2752,17 +2832,20 @@ class MeshNode:
                     f"Mesh: confined result watcher crashed: {exc!r}")
 
     @staticmethod
-    def _read_result_file(path) -> str:
-        """Read a confined artifact as text, truncated to the wire cap. Reads at most
-        ``_MAX_RESULT_BYTES + 1`` bytes rather than slurping the whole file: the sandbox
-        writes this file and its size is influenced by the (untrusted) foreign prompt, so
-        a hostile runner emitting a multi-GB artifact must not be pulled entirely into
-        memory just to be truncated away."""
+    def _read_result_file(path) -> tuple[str, bool]:
+        """A confined artifact as text, and whether it had to be cut short.
+
+        Reads at most ``_MAX_RESULT_BYTES + 1`` bytes rather than slurping the whole
+        file: the sandbox writes this file and its size is influenced by the (untrusted)
+        foreign prompt, so a hostile runner emitting a multi-GB artifact must not be
+        pulled entirely into memory just to be truncated away. The extra byte is what
+        distinguishes an artifact that exactly fills the limit from one that overran it."""
         with open(path, "rb") as f:
             raw = f.read(_MAX_RESULT_BYTES + 1)
-        if len(raw) > _MAX_RESULT_BYTES:
+        clipped = len(raw) > _MAX_RESULT_BYTES
+        if clipped:
             raw = raw[:_MAX_RESULT_BYTES]
-        return raw.decode("utf-8", errors="replace")
+        return raw.decode("utf-8", errors="replace"), clipped
 
     def _sign_result(self, job_id: str, result_payload: dict) -> str:
         """Sign a job-result over its canonical bytes so the originator can bind the
@@ -2944,7 +3027,11 @@ class MeshNode:
         try:
             path.write_text(json.dumps({
                 "jobId": job_id, "duty": duty, "from": executor_id,
-                "output": str(result.get("output", ""))}), encoding="utf-8")
+                "output": str(result.get("output", "")),
+                # Carried through because a successful result can still come with a
+                # caveat — an artifact clipped to a size limit — and the handler is
+                # what acts on it. Empty for the ordinary complete answer.
+                "error": str(result.get("error", ""))}), encoding="utf-8")
             spawnjob.run_result_handler(str(path))
         except (OSError, spawnjob.JobSpawnError) as exc:
             log("spawn-failed",
@@ -3436,7 +3523,8 @@ class MeshNode:
         peers = []
         for p in sorted(self.peers.values(), key=lambda p: (p.info.name, p.info.id)):
             d = p.info.to_dict()
-            d["link"] = p.link_state(stale, timeout)
+            link = p.link_state(stale, timeout)
+            d["link"] = link
             d["addr"] = p.addr
             d["lastSeenSecsAgo"] = round(now - p.last_seen, 1)
             # This node's view of the peer: whether it PROVED a key (verified), the
@@ -3450,9 +3538,15 @@ class MeshNode:
             d["trust"] = self._peer_trust(p)
             d["surplus"] = round(p.info.surplus(), 3)
             # Real connection uptime for the badge (seconds since the link came up);
-            # None while down, so the UI shows "last seen" instead.
+            # None while down, so the UI shows "last seen" instead. Keyed to the
+            # link state reported one line up, not to the socket: a peer whose
+            # heartbeats have timed out reads `down` from the moment the age
+            # passes, while its writer survives until the heartbeat tick reaps it
+            # — and for that window a socket-keyed uptime puts a live connection
+            # badge on a peer the same snapshot calls down.
             d["uptimeSecs"] = (round(now - p.linked_since, 1)
-                               if p.linked and p.linked_since is not None else None)
+                               if link != "down" and p.linked_since is not None
+                               else None)
             peers.append(d)
         me = self.info.to_dict()
         me["fingerprint"] = self.fingerprint

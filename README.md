@@ -292,8 +292,29 @@ Diplomat's *own* mesh knobs keep their names (`DIPLOMAT_MESH_POLL_SECS`,
 `DIPLOMAT_MESH_CMD_TEST`, `DIPLOMAT_MESH_E2E`): they configure the applet, not the
 node.
 
-**Trust model.** The mesh is meant for a LAN you control (IPv4; discovery is
-multicast + subnet broadcast). Two independent fences:
+**Beyond one LAN.** Discovery is link-local, so on its own the mesh stops at the
+subnet. The **Tor transport** ([spec ch 14](packages/szpontnet-spec/docs/14-tor-transport.md))
+is what joins several of them: each node runs a permanent v3 onion service,
+advertises its `.onion` inside its signed advert, and redials known-but-unseen
+*personal* peers over Tor — so a desk at home and a desk at the office are one mesh,
+with no public IP, no domain and no port forwarding. It is **on by default** and
+complementary to the LAN rather than a replacement for it: peers that share a
+network still find and reach each other by multicast and direct TCP. A node with no
+`tor` binary installed is simply LAN-only, and `SZPONTNET_TOR=0` turns it off.
+Reach a peer you have never shared a LAN with by pasting its address:
+`python3 -m szpontnet --tor-connect <hash>.onion`.
+
+**Trust model.** The mesh is designed around a LAN you control (IPv4; discovery is
+multicast + subnet broadcast), and — since the Tor transport is on by default — a
+node also publishes an onion that peers can reach it on from anywhere. The onion
+carries peer links only; the operator's control channel (`stop`, `trust`, `dispatch`,
+`set-attr`) is refused on any connection arriving over it. Note what that leaves: on
+an **open** mesh (no join secret) a peer holding your onion can link and, subject to
+trust, exchange gossip and dispatch from the WAN, where before it would have had to
+be on your LAN. The two fences below apply identically over either transport, and
+`SZPONTNET_TOR=0` removes the WAN surface entirely.
+
+Two independent fences:
 
 - **Join fence** — set the same `SZPONTNET_SECRET=<token>` on every machine
   (and in the applet's environment): a node with a secret refuses peers, control

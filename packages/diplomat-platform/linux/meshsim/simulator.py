@@ -102,6 +102,11 @@ def _proto_env(port_base: int) -> dict:
     return {
         "SZPONTNET_LOOPBACK": "1",
         "SZPONTNET_OAUTH_PROBE": "0",
+        # These scenarios are about the LAN this simulator controls, and Tor is on by
+        # default in a shipped node — so without this every simulated machine would
+        # fork a real `tor` and spend its bootstrap timeout reaching the live Tor
+        # network. "Offline" in the docstring above is a claim this line keeps.
+        "SZPONTNET_TOR": "0",
         "SZPONTNET_MCAST_PORT": str(port_base),
         "SZPONTNET_TCP_BASE": str(port_base + 1),
         "SZPONTNET_TCP_SPAN": "16",

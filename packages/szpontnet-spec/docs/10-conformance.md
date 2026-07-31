@@ -85,8 +85,10 @@ An Executor that implements the trust layer additionally **MUST**: verify a peer
 the peer's advertised `pubkey` - before treating that peer as `personal`; **classify
 the requester from that verified link identity**, never from the job's `requestedBy`
 (which is spoofable); **ignore a peer-link `set-attr` from a foreign device**
-(mutation is a personal-only action); and treat an **empty allowlist as full trust**
-(every verified peer `personal`). A **Server** with an API key **MUST** require a
+(mutation is a personal-only action); and classify a verified peer that is **not on
+the allowlist** by the node's [default trust level](11-trust-and-balancing.md), which
+**MUST** ship `foreign` and is operator-configurable to `personal` for a mesh whose
+owner trusts everything that can reach it. A **Server** with an API key **MUST** require a
 matching `apiKey` on inbound `ctl`/`dispatch`, and in server mode **MUST NOT**
 originate a dispatch to a peer. See
 [11-trust-and-balancing](11-trust-and-balancing.md) for the full conformance list.

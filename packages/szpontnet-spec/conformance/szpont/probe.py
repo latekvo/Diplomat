@@ -257,6 +257,21 @@ class ProbePeer:
         (03-transport link-state), not a clean EOF."""
         self._frozen = True
 
+    def drop(self) -> None:
+        """End the current link without stopping the probe. ``_dial_loop`` picks it
+        up and redials, so the candidate sees the same device return on a NEW
+        connection — the rejoin a link-up behaviour has to answer.
+
+        Shuts the socket down rather than closing it: the link thread is blocked in
+        a read on this same descriptor, and closing it from here would free the
+        number under that thread (a spurious bad-fd error, or worse a read against
+        whatever is opened next). A shutdown ends that read cleanly with EOF, and
+        ``_run_link`` closes the socket it owns on its way out."""
+        conn = self._conn
+        if conn is not None:
+            with contextlib.suppress(OSError):
+                conn.shutdown(socket.SHUT_RDWR)
+
     def _heartbeat_loop(self) -> None:
         interval = self.mesh.proto["heartbeatIntervalSecs"]
         while not self._stop:

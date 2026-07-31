@@ -169,13 +169,14 @@ caps. No flag day, no `v` bump required for the common cases - exactly the
 ## Non-goals for v1 (explicitly deferred)
 
 - **Cross-subnet / WAN operation.** The LAN path is single-subnet (link-local
-  multicast, subnet broadcast). WAN reachability **has landed** as the opt-in
+  multicast, subnet broadcast). WAN reachability **has landed** as the
   [Tor transport](14-tor-transport.md): each node runs a permanent v3 onion service,
   advertises its `.onion` inside its signed advert, and redials known-but-unseen
   peers over Tor with exponential backoff (or a manual `--tor-connect` paste) — no
   public IP or domain, and a Tor link runs the identical handshake/trust as a LAN
-  link. It is additive and off by default (LAN-only nodes are wire-unchanged).
-  Native cross-subnet federation *without* Tor remains future work.
+  link. It is additive and on by default; a node with it off, or on a machine with no
+  `tor`, is wire-unchanged. Native cross-subnet federation *without* Tor remains
+  future work.
 - **Foreign zero-trust execution.** The trust model (`personal`/`foreign`, keyed on
   a peer's **verified device fingerprint** against a local allowlist
   ([11](11-trust-and-balancing.md)), plus the v0.4.0 `banned`

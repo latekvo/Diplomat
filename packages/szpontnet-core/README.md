@@ -74,8 +74,54 @@ and another walks the package AST to catch an environment read that skips
 
 Beyond the unit and host-seam tests, the integration ones live here too: real nodes
 over loopback for the control-edit state flush, the one-node-per-state-dir startup
-lock, and the Tor transport (deterministic — the onion dialer is injected, so no
-real `tor` runs).
+lock, and the Tor transport at two altitudes — the node's Tor *decisions* against an
+injected dialer (deterministic, no daemon in the way), and the whole onion path
+against a real tor daemon.
+
+The second is `test_tor_e2e.py`, and it runs against either of two backends. By
+default a **simulated onion network**: `simtor.py`, a stand-in daemon speaking the
+exact contract `tor.py` depends on — it parses the torrc it is handed, logs a
+bootstrap to stdout, writes a hostname derived from a persisted key, and answers real
+SOCKS5 over a real socket, resolving onions through a descriptor directory on disk
+instead of the Tor network. Every line of the transport runs; only the network is
+simulated. With `SZPONTNET_TEST_TOR=real` the same tests run against the actual `tor`
+binary and the live Tor network (slower, and skipped when no `tor` is installed).
+
+Nodes there are whole processes on distinct multicast ports, so they cannot discover
+each other on the LAN at all — a link between them came over an onion, which is the
+claim the transport exists to make.
+
+### Whole meshes, on a network the test controls
+
+Most of what a mesh has to get right only happens when the network misbehaves, and
+loopback sockets have no way to drop a beacon or cut a link. So
+[`tests/simnet.py`](https://github.com/latekvo/Diplomat/blob/main/packages/szpontnet-core/tests/simnet.py)
+virtualizes the two transports — an in-memory switch behind `asyncio.open_connection`
+and a multicast bus behind the beacon sockets — and leaves everything above them the
+real node. A test then runs several nodes in one process and steers what reaches
+them:
+
+```python
+def test_a_partition_heals(simnet):
+    async def scenario():
+        a, b = await simnet.node("a"), await simnet.node("b")
+        await simnet.linked(a, b)
+        simnet.cut(a, b)                      # nothing is closed; delivery stops
+        await simnet.until(lambda: a.link_state(b) == "down", 4.0, "still up")
+        simnet.heal_all()
+        await simnet.linked(a, b)
+    simnet.run(scenario())
+```
+
+`cut` / `isolate` / `partition` for split brains, `drop_kind` for losing one message
+type on one path, `freeze` for a peer that dies without closing its socket,
+`stall_writes_from` for one that stops reading, plus per-node quotas, trust levels
+and protocol constants. On top of it: discovery and dial races, gossip convergence
+and the forgeries it has to refuse, dispatch and failover, simultaneous work-claims,
+foreign zero-trust execution with its accountability clock, and recovery.
+
+The suite is checked by mutation rather than by coverage — break a rule in the node,
+and it has to be a test that says so.
 
 ## Checking this node against the spec
 
