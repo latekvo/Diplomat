@@ -108,6 +108,31 @@ final class Store: ObservableObject {
         }
     }
 
+    /// How many automatic agents this machine runs at once — 2 by default.
+    ///
+    /// The monitors are level-triggered over everything GitHub currently owes, so
+    /// without a cap one poll of a busy day dispatches every pending unit in a single
+    /// pass: a terminal window and a `claude` session per conflicted PR and per owed
+    /// review, all at once, on one machine. Work over the cap is not dropped — the
+    /// poll that refuses it writes no attempt record, so the next tick offers it again
+    /// as soon as an agent finishes.
+    ///
+    /// The second setting NOT in UserDefaults, for the same reason as the repo root: a
+    /// mesh peer can route work here, and the node that spawns it is a separate
+    /// Qt-less Python process (see `AppConfig`). Headless-guarded like the rest.
+    @Published var autoTaskLimit: Int {
+        didSet {
+            // Normalise in memory as well as on disk. Clamping only on the way out
+            // would leave the gate comparing against a number the file — and so the
+            // mesh node behind it — does not have. (Assigning here does not re-enter
+            // this observer.)
+            let clamped = AgentDispatchGate.clampAutoTaskLimit(autoTaskLimit)
+            if clamped != autoTaskLimit { autoTaskLimit = clamped }
+            guard !Headless.active else { return }
+            AppConfig.setInt(AppConfig.autoTaskLimitKey, clamped)
+        }
+    }
+
     /// Latest state from the auto-fix monitor's own poll (nil until the first). Drives
     /// the top-of-panel status pill; freshness (`isLive`) decides active vs. offline.
     @Published var autofixStatus: AutofixStatus?
@@ -318,6 +343,7 @@ final class Store: ObservableObject {
         terminalChoice = defaults.string(forKey: Keys.terminalChoice)
             ?? (SpawnTerminal.iterm.isInstalled ? SpawnTerminal.iterm.rawValue : SpawnTerminal.terminal.rawValue)
         repoPathOverride = AppConfig.string(AppConfig.repoRootKey)
+        autoTaskLimit = AppConfig.autoTaskLimit
         // Default ON (absent key ⇒ true): the pill only lights up on a live heartbeat,
         // so defaulting on can't falsely claim "active" when no monitor is running.
         prAutofixEnabled = defaults.object(forKey: Keys.prAutofixEnabled) as? Bool ?? true
@@ -563,7 +589,8 @@ final class Store: ObservableObject {
         let p = TrackedProcess(kind: kind, label: label,
                                terminal: result.terminal.rawValue,
                                windowID: result.windowID, sessionID: result.sessionID,
-                               tty: result.tty, donePath: result.donePath, prURL: prURL)
+                               tty: result.tty, donePath: result.donePath, prURL: prURL,
+                               source: source)
         processes.append(p)
         AuditLog.log(source, auditAction ?? kind, label)
     }
@@ -885,6 +912,43 @@ final class Store: ObservableObject {
     /// dispatch gate) costs one subprocess, mirroring the Linux store.
     private var liveAgentsCache: (at: Date, refs: Set<Int>)?
 
+    /// How many automatic agents are up on this device right now — the number the cap
+    /// is compared against (`AgentDispatchGate.runningAutoTasks`).
+    ///
+    /// The tracked rows say WHO started each agent, the `ps` scan says which are
+    /// really alive; neither alone is enough, so the pure helper combines them.
+    private func autoTasksRunning() async -> Int {
+        var autoPRs = Set<Int>(), manualPRs = Set<Int>()
+        for p in processes where !p.done {
+            guard let n = p.prNumber else { continue }
+            if p.source == AgentDispatchGate.Source.panel.rawValue {
+                manualPRs.insert(n)
+            } else {
+                autoPRs.insert(n)
+            }
+        }
+        return AgentDispatchGate.runningAutoTasks(livePRs: await livePRAgents(),
+                                                  autoPRs: autoPRs,
+                                                  manualPRs: manualPRs)
+    }
+
+    /// Whether the "deferring auto work" note has been logged for the current
+    /// at-capacity episode.
+    private var capacityLogged = false
+
+    /// Note that automatic work is being held back — once per episode, not once per
+    /// PR per poll. Cleared the moment a dispatch finds room again, so the feed gets
+    /// one line when the device saturates and another when it drains.
+    private func logAtCapacity() {
+        guard !capacityLogged else { return }
+        capacityLogged = true
+        let limit = autoTaskLimit
+        AuditLog.log("auto", "at-capacity",
+                     "Deferring auto work — this machine already runs its cap of "
+                     + "\(limit) automatic task\(limit == 1 ? "" : "s")")
+        refreshAudit()
+    }
+
     /// The app the user is currently working in, so a background (auto-fix) spawn can
     /// bounce focus straight back to it instead of yanking them into a new terminal
     /// window. Read on the main actor (Store is @MainActor). nil when there is no
@@ -980,6 +1044,7 @@ final class Store: ObservableObject {
         case inFlight
         case banned
         case standDown
+        case atCapacity
         case failed(String)
         var didSpawn: Bool { if case .spawned = self { return true }; return false }
         /// The work is now being handled — spawned locally OR stood down to a peer
@@ -987,12 +1052,15 @@ final class Store: ObservableObject {
         /// start the retry backoff, mirroring the Python reference which treats
         /// `("spawned", VERDICT_STAND_DOWN)` as handled. `.failed` deliberately does
         /// NOT count (a transient spawn error retries next poll); nor do `.inFlight`
-        /// / `.banned`. Using `.didSpawn` here instead would re-dispatch peer-owned
-        /// work to the mesh on every poll, the backoff never engaging.
+        /// / `.banned` / `.atCapacity`. Using `.didSpawn` here instead would
+        /// re-dispatch peer-owned work to the mesh on every poll, the backoff never
+        /// engaging — and counting `.atCapacity` as handled would drop deferred work
+        /// into a 5m–3h cooldown instead of offering it again the moment an agent
+        /// finishes.
         var wasHandled: Bool {
             switch self {
             case .spawned, .standDown: return true
-            case .inFlight, .banned, .failed: return false
+            case .inFlight, .banned, .atCapacity, .failed: return false
             }
         }
     }
@@ -1005,6 +1073,9 @@ final class Store: ObservableObject {
     /// tracked rows OR a live `claude` visible in `ps` — the ground-truth floor
     /// that also catches agents whose local bookkeeping was lost and mesh jobs
     /// that landed on this very machine.
+    ///
+    /// An AUTO job is additionally capped at `autoTaskLimit` concurrent agents on
+    /// this device (`autoTasksRunning`); a panel click is never capped.
     @discardableResult
     func dispatchAgent(_ job: AgentJob, source: AgentDispatchGate.Source,
                        attemptNumber: Int = 1) async -> DispatchOutcome {
@@ -1021,8 +1092,21 @@ final class Store: ObservableObject {
                 agentOnPR = await livePRAgents().contains(n)
             }
         }
+        // Measured only for an auto job that would otherwise run: the count costs a
+        // `ps` scan, a panel click is never capped, and an in-flight PR spawns
+        // nothing either way — so in both of those the answer would be discarded.
+        // Finding room is also what re-arms the "deferring" note.
+        var atCapacity = false
+        if source == .auto, !agentOnPR {
+            atCapacity = await autoTasksRunning() >= autoTaskLimit
+            if !atCapacity { capacityLogged = false }
+        }
         switch AgentDispatchGate.decide(source: source, banned: banned,
-                                        agentOnPR: agentOnPR, meshStandsDown: false) {
+                                        agentOnPR: agentOnPR, meshStandsDown: false,
+                                        atCapacity: atCapacity) {
+        case .atCapacity:
+            logAtCapacity()
+            return .atCapacity
         case .banned:
             AuditLog.log(source.rawValue, "ban-skip",
                          "\(job.label) — author is banned (un-ban to review)")
@@ -1245,7 +1329,9 @@ final class Store: ObservableObject {
             self.error = "Resolve #\(number) failed to spawn — see the activity log."
         case .inFlight:
             self.error = "Resolve #\(number): an agent is already on this PR."
-        case .spawned, .banned, .standDown:
+        case .spawned, .banned, .standDown, .atCapacity:
+            // `.standDown` / `.atCapacity` are answers only a monitor gets — neither
+            // the mesh gate nor the automatic-task cap applies to a click.
             break
         }
     }

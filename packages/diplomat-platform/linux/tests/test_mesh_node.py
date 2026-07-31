@@ -142,6 +142,15 @@ class Fleet:
         # Each fake node logs to the fleet dir, and must not scribble on the
         # real ~/.diplomat activity feed.
         env["HOME"] = str(d)
+        # Pin the host's automatic-task cap out of the way. It is answered from a
+        # real `ps` scan of THIS machine, so left at its default an operator with
+        # two of their own Diplomat agents running would make every node here
+        # decline every dispatch - and these tests would pass or fail on what else
+        # happens to be open on the developer's desktop. Out of range on purpose:
+        # the gate clamps it to the maximum the UI offers.
+        cfg = d / "diplomat-config.json"
+        cfg.write_text(json.dumps({"autoTaskLimit": 999}))
+        env["DIPLOMAT_CONFIG"] = str(cfg)
         # Last so a test can override anything above (e.g. isolate a node's
         # beacon channel on its own multicast port).
         env.update(extra_env or {})

@@ -21,11 +21,12 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
-from . import apiwatch, core, deviceallocator, review, szpont
+from . import apiwatch, autofix, core, deviceallocator, review, szpont
 from .store import Store, tools
 from .widgets import IconChip, muted
 
@@ -341,7 +342,45 @@ class SettingsView(QWidget):
         approve.addWidget(soft_hint)
 
         col.addWidget(self._approve_container)
+        col.addLayout(self._auto_limit_row())
         return col
+
+    def _auto_limit_row(self) -> QVBoxLayout:
+        """The device-wide ceiling on concurrent automatic agents. Sits at the foot
+        of the section because it governs BOTH monitors above it — a poll of either
+        one can find any number of pending units at once, and this is what keeps
+        them from all opening at the same moment."""
+        col = QVBoxLayout()
+        col.setSpacing(2)
+
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        row.addWidget(QLabel("Run at most"))
+        self._auto_limit = QSpinBox()
+        self._auto_limit.setRange(
+            autofix.MIN_AUTO_TASK_LIMIT, autofix.MAX_AUTO_TASK_LIMIT
+        )
+        self._auto_limit.setValue(self.store.auto_task_limit)
+        self._auto_limit.valueChanged.connect(self._on_auto_limit_changed)
+        row.addWidget(self._auto_limit)
+        row.addWidget(QLabel("automatic tasks at a time"))
+        row.addStretch(1)
+        col.addLayout(row)
+
+        hint = QLabel(
+            "A hard cap for this machine, across both monitors above and any work a "
+            "mesh peer routes here. Agents you spawn yourself from the panel don't "
+            "count against it. Work over the cap isn't dropped — the next poll picks "
+            "it up as soon as a running agent finishes."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet(muted(10))
+        col.addWidget(hint)
+        return col
+
+    def _on_auto_limit_changed(self, value: int) -> None:
+        self.store.auto_task_limit = value
+        self.store.changed.emit()
 
     def _on_autofix_toggled(self, on: bool) -> None:
         self.store.pr_autofix_enabled = on

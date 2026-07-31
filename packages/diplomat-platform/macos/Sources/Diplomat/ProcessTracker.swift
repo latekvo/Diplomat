@@ -36,6 +36,11 @@ struct TrackedProcess: Identifiable, Codable, Equatable {
     /// The single PR this session concerns, if any — dedups agents per PR (the
     /// in-flight checks) and drives the merged-status probe.
     var prURL: String?
+    /// Which trigger opened this session: "panel" (a click) or "auto" (a monitor).
+    /// The automatic-task cap has to tell the two apart — a click spends none of the
+    /// automatic budget, while a monitor dispatch is exactly what the budget is for,
+    /// and `ps` cannot distinguish them.
+    var source: String
     var createdAt: Date
     /// Recomputed by the poller: true once `claude` has returned (sentinel present)
     /// or the window is gone. Persisted only as a cache; the next poll corrects it.
@@ -51,10 +56,16 @@ struct TrackedProcess: Identifiable, Codable, Equatable {
     /// persisted only as a cache, the next poll corrects it.
     var awaitingInput: Bool
 
+    /// `source` defaults to a panel spawn: the only callers that leave it out are the
+    /// fixture rows (the headless render, the tracking self-test), and a fixture stands
+    /// in for a session the operator opened. The real dispatch pipeline always passes
+    /// its own. (A record decoded from an older build defaults the other way — see the
+    /// decoder below, which is answering a different question.)
     init(id: UUID = UUID(), kind: String, label: String, terminal: String,
          windowID: String, sessionID: String, tty: String, donePath: String,
-         prURL: String?, createdAt: Date = Date(), done: Bool = false,
-         merged: Bool = false, awaitingInput: Bool = false) {
+         prURL: String?, source: String = AgentDispatchGate.Source.panel.rawValue,
+         createdAt: Date = Date(),
+         done: Bool = false, merged: Bool = false, awaitingInput: Bool = false) {
         self.id = id
         self.kind = kind
         self.label = label
@@ -64,6 +75,7 @@ struct TrackedProcess: Identifiable, Codable, Equatable {
         self.tty = tty
         self.donePath = donePath
         self.prURL = prURL
+        self.source = source
         self.createdAt = createdAt
         self.done = done
         self.merged = merged
@@ -73,6 +85,12 @@ struct TrackedProcess: Identifiable, Codable, Equatable {
     /// Tolerant decode: the recomputed cache flags (`done`, `merged`) may be absent
     /// in a record persisted by an older build, so default them to false rather than
     /// failing the whole list's decode.
+    ///
+    /// A record written before sessions carried a `source` defaults to "auto", the
+    /// conservative reading for the automatic-task cap: an agent whose trigger is
+    /// unknown counts against the budget rather than being exempted from it. The
+    /// alternative under-counts on exactly one launch — the first after an upgrade,
+    /// with agents already running.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(UUID.self, forKey: .id)
@@ -84,6 +102,8 @@ struct TrackedProcess: Identifiable, Codable, Equatable {
         tty = try c.decode(String.self, forKey: .tty)
         donePath = try c.decode(String.self, forKey: .donePath)
         prURL = try c.decodeIfPresent(String.self, forKey: .prURL)
+        source = try c.decodeIfPresent(String.self, forKey: .source)
+            ?? AgentDispatchGate.Source.auto.rawValue
         createdAt = try c.decode(Date.self, forKey: .createdAt)
         done = try c.decodeIfPresent(Bool.self, forKey: .done) ?? false
         merged = try c.decodeIfPresent(Bool.self, forKey: .merged) ?? false

@@ -638,18 +638,41 @@ def test_dispatch_gate_matrix_parity():
     the Swift smoke's AgentDispatchGate assertions: any new source asymmetry must
     be added there AND here first, or it's a bug."""
     for src in (autofix.SOURCE_PANEL, autofix.SOURCE_AUTO):
-        assert autofix.dispatch_decide(src, True, True, True) == autofix.VERDICT_BANNED
-        assert autofix.dispatch_decide(src, False, True, True) == autofix.VERDICT_IN_FLIGHT
-        assert autofix.dispatch_decide(src, False, False, False) == autofix.VERDICT_PROCEED
+        assert (
+            autofix.dispatch_decide(src, True, True, True, True)
+            == autofix.VERDICT_BANNED
+        )
+        assert (
+            autofix.dispatch_decide(src, False, True, True, True)
+            == autofix.VERDICT_IN_FLIGHT
+        )
+        assert (
+            autofix.dispatch_decide(src, False, False, False, False)
+            == autofix.VERDICT_PROCEED
+        )
     # The documented trigger asymmetries - and ONLY these:
     assert (
-        autofix.dispatch_decide(autofix.SOURCE_AUTO, False, False, True)
+        autofix.dispatch_decide(autofix.SOURCE_AUTO, False, False, True, False)
         == autofix.VERDICT_STAND_DOWN
     )
     assert (
-        autofix.dispatch_decide(autofix.SOURCE_PANEL, False, False, True)
+        autofix.dispatch_decide(autofix.SOURCE_PANEL, False, False, True, False)
         == autofix.VERDICT_PROCEED
     )  # a human's click already decided placement
+    assert (
+        autofix.dispatch_decide(autofix.SOURCE_AUTO, False, False, False, True)
+        == autofix.VERDICT_AT_CAPACITY
+    )
+    assert (
+        autofix.dispatch_decide(autofix.SOURCE_PANEL, False, False, False, True)
+        == autofix.VERDICT_PROCEED
+    )  # a human's click is one deliberate agent, not a queue being emptied
+    # Capacity outranks mesh: a saturated device must not take the claim for work
+    # it is about to refuse to start.
+    assert (
+        autofix.dispatch_decide(autofix.SOURCE_AUTO, False, False, True, True)
+        == autofix.VERDICT_AT_CAPACITY
+    )
     assert (
         autofix.dispatch_label(autofix.SOURCE_AUTO, "Review · #7", 2)
         == "Auto · Review · #7 · retry 2"
@@ -748,3 +771,191 @@ def test_autofix_poll_does_not_deadlock_on_dispatch(store, monkeypatch):
     assert done.wait(timeout=5.0), \
         "autofix worker deadlocked re-acquiring _autofix_lock (store.py dispatch_agent)"
     assert result["verdict"] == "spawned"
+
+
+# MARK: - the device's automatic-task cap
+
+
+def test_running_auto_tasks_combines_the_three_kinds_of_evidence():
+    """Live-but-untracked counts (an applet restart loses the book while the agents
+    run on); a tracked PANEL agent does not (a click is the operator's own act); a
+    tracked AUTO agent counts even before `ps` has caught up with it."""
+    run = autofix.running_auto_tasks
+    assert run(set(), set(), set()) == 0
+    assert run({1, 2}, set(), set()) == 2            # untracked ⇒ counted as automatic
+    assert run({1, 2}, set(), {1}) == 1              # …unless it is a known manual one
+    assert run(set(), {3}, set()) == 1               # spawned, not yet visible in ps
+    assert run({3}, {3}, set()) == 1                 # …and not counted twice once it is
+    assert run({1, 2, 3}, {4}, {2}) == 3             # 1, 3 and 4
+
+
+def test_clamp_auto_task_limit_holds_the_stepper_range():
+    assert autofix.DEFAULT_AUTO_TASK_LIMIT == 2
+    assert autofix.clamp_auto_task_limit(0) == autofix.MIN_AUTO_TASK_LIMIT == 1
+    assert autofix.clamp_auto_task_limit(-4) == 1
+    assert autofix.clamp_auto_task_limit(3) == 3
+    assert autofix.clamp_auto_task_limit(999) == autofix.MAX_AUTO_TASK_LIMIT == 16
+
+
+def test_auto_task_limit_persists_to_the_shared_config_file(store):
+    """It lives in ~/.diplomat/config.json, not QSettings, because the mesh node
+    that spawns peer-routed work is a separate Qt-less process reading the same
+    cap."""
+    from diplomat_app import appconfig
+
+    assert store.auto_task_limit == 2  # default, with nothing written
+    store.auto_task_limit = 4
+    assert appconfig.read()[appconfig.AUTO_TASK_LIMIT] == 4
+    assert store.auto_task_limit == 4
+    store.auto_task_limit = 0  # clamped on the way in, not just on the way out
+    assert appconfig.read()[appconfig.AUTO_TASK_LIMIT] == 1
+
+
+def test_a_poll_dispatches_only_up_to_the_cap(store, monkeypatch):
+    """THE regression: a level-triggered poll sees every unit GitHub currently owes
+    and used to dispatch all of them in one pass — five owed reviews, five terminal
+    windows, at once. The cap bounds the burst, and the rest are deferred, not
+    dropped: they carry no attempt record, so the very next poll offers them again
+    as soon as an agent finishes."""
+    store.pr_autofix_enabled = False
+    calls = _spawn_recorder(monkeypatch, finish=False)  # the agents stay running
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    reqs = [_req(number=n, requested_at="2026-01-02") for n in (1, 2, 3, 4, 5)]
+    monkeypatch.setattr(
+        "diplomat_app.autofixmonitor.fetch_review_requests", lambda *a, **k: reqs
+    )
+
+    store._poll_review_requests("o", "r")
+    assert len(calls) == store.auto_task_limit == 2
+
+    # A second poll while both are still running adds nothing.
+    store._poll_review_requests("o", "r")
+    assert len(calls) == 2
+
+    # Both agents finish → the cap frees up → the next poll takes the next two.
+    for c in calls:
+        with open(c["done"], "w") as fh:
+            fh.write("0")
+    store._poll_review_requests("o", "r")
+    assert len(calls) == 4
+
+
+def test_a_panel_spawn_does_not_spend_the_automatic_budget(store, monkeypatch):
+    """The cap is on AUTOMATIC tasks. A manually-spawned agent is just as visible in
+    `ps` as an automatic one, so only the tracked source tells them apart — without
+    that subtraction, two clicks would silently stop the monitor."""
+    from diplomat_app.store import Store
+
+    calls = _spawn_recorder(monkeypatch, finish=False)
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    store.auto_task_limit = 1
+
+    # A click, then the whole cap of 1 is still there for the monitor — even with
+    # the clicked agent live in `ps`, where it is indistinguishable from any other.
+    assert store.dispatch_agent(_job(number=1), autofix.SOURCE_PANEL) == "spawned"
+    monkeypatch.setattr(Store, "_live_pr_agents", lambda self: {1})
+    assert store.dispatch_agent(_job(number=2), autofix.SOURCE_AUTO) == "spawned"
+    # …and now the automatic budget is spent.
+    assert (
+        store.dispatch_agent(_job(number=3), autofix.SOURCE_AUTO)
+        == autofix.VERDICT_AT_CAPACITY
+    )
+    # A click is never capped, whatever else is running.
+    assert store.dispatch_agent(_job(number=4), autofix.SOURCE_PANEL) == "spawned"
+    assert len(calls) == 3
+
+
+def test_an_untracked_live_agent_counts_against_the_cap(store, monkeypatch):
+    """The tracked book dies with the applet while the agents run on, so a restart
+    would otherwise hand the monitor a fresh, empty budget on a machine that is
+    already saturated. The `ps` floor is what makes the cap survive that."""
+    from diplomat_app.store import Store
+
+    calls = _spawn_recorder(monkeypatch, finish=False)
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    monkeypatch.setattr(Store, "_live_pr_agents", lambda self: {101, 102})
+
+    assert (
+        store.dispatch_agent(_job(number=9), autofix.SOURCE_AUTO)
+        == autofix.VERDICT_AT_CAPACITY
+    )
+    assert calls == []
+    # One of them exits → room for one more.
+    monkeypatch.setattr(Store, "_live_pr_agents", lambda self: {101})
+    assert store.dispatch_agent(_job(number=9), autofix.SOURCE_AUTO) == "spawned"
+    assert len(calls) == 1
+
+
+def test_at_capacity_is_noted_once_per_episode(store, monkeypatch):
+    """One activity line when the machine saturates, not one per deferred PR per
+    poll — a 3-minute cadence over a long-running agent would otherwise bury the
+    feed under the same sentence."""
+    from diplomat_app import activity
+
+    _spawn_recorder(monkeypatch, finish=False)
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    store.auto_task_limit = 1
+    assert store.dispatch_agent(_job(number=1), autofix.SOURCE_AUTO) == "spawned"
+    for n in (2, 3, 4):
+        assert (
+            store.dispatch_agent(_job(number=n), autofix.SOURCE_AUTO)
+            == autofix.VERDICT_AT_CAPACITY
+        )
+    noted = [e for e in activity.read() if e.action == "at-capacity"]
+    assert len(noted) == 1
+    assert "cap of 1 automatic task" in noted[0].detail
+
+    # Room again → the next saturation is a new episode and is noted afresh.
+    store._autofix_inflight.clear()
+    assert store.dispatch_agent(_job(number=5), autofix.SOURCE_AUTO) == "spawned"
+    assert (
+        store.dispatch_agent(_job(number=6), autofix.SOURCE_AUTO)
+        == autofix.VERDICT_AT_CAPACITY
+    )
+    assert len([e for e in activity.read() if e.action == "at-capacity"]) == 2
+
+
+def test_capacity_refusal_never_consults_the_mesh(store, monkeypatch):
+    """A claim has gossip side effects and is held by the executor for its agent's
+    lifetime. A device that is about to refuse to start the work must not take one
+    on the way — every machine scans, so a peer with room finds the same unit."""
+    _spawn_recorder(monkeypatch, finish=False)
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    routed: list = []
+    monkeypatch.setattr(
+        store, "_route_via_mesh", lambda job: routed.append(job.work_key) or "spawned"
+    )
+    store.auto_task_limit = 1
+
+    assert store.dispatch_agent(_job(number=1), autofix.SOURCE_AUTO) == "spawned"
+    # The mesh took #1, so nothing is tracked locally — but the ps floor sees the
+    # agent the mesh placed on this very machine, and that is what fills the cap.
+    monkeypatch.setattr(type(store), "_live_pr_agents", lambda self: {1})
+    assert (
+        store.dispatch_agent(_job(number=2), autofix.SOURCE_AUTO)
+        == autofix.VERDICT_AT_CAPACITY
+    )
+    assert len(routed) == 1  # no second consult, no second claim
+
+
+def test_the_cap_spans_both_monitors(store, monkeypatch):
+    """It is the DEVICE's cap, not one per monitor. A poll cycle runs the conflict
+    reconciler and the review-request monitor back to back; each finds its own queue,
+    and between them they must still start no more than the machine allows."""
+    calls = _spawn_recorder(monkeypatch, finish=False)
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    monkeypatch.setattr(
+        "diplomat_app.autofixmonitor.fetch_snapshots",
+        lambda *a, **k: [_snap(number=n, mergeable="CONFLICTING") for n in (1, 2)],
+    )
+    monkeypatch.setattr(
+        "diplomat_app.autofixmonitor.fetch_review_requests",
+        lambda *a, **k: [_req(number=n, requested_at="2026-01-02") for n in (3, 4)],
+    )
+
+    store._autofix_poll_once()
+
+    assert len(calls) == store.auto_task_limit == 2
+    # Both of them came from the conflict reconciler, which ran first — the review
+    # monitor found the machine already full rather than a budget of its own.
+    assert all("conflicts" in c["prompt"] for c in calls)

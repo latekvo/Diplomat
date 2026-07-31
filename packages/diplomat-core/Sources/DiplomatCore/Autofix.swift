@@ -110,6 +110,9 @@ public enum AutofixDiff {
 /// The intended trigger asymmetries, in full (anything else is a bug):
 /// - focus: a panel spawn brings the terminal forward, an auto spawn never steals
 ///   focus (`stealsFocus`);
+/// - capacity: only auto work is held to the device's automatic-task cap — a
+///   human's click is one deliberate agent, not a monitor emptying its queue
+///   (`decide`);
 /// - mesh: only auto origination is mesh-gated — a human clicking THIS machine's
 ///   button has already decided placement (`decide`);
 /// - counters: only a monitor's FIRST dispatch counts as auto-handled work
@@ -135,17 +138,71 @@ public enum AgentDispatchGate {
         case banned
         /// Mesh: another live node originates this work (auto only).
         case standDown
+        /// This device already runs its cap of concurrent automatic agents
+        /// (auto only). Deferred, not dropped — see `decide`.
+        case atCapacity
     }
 
     /// The one decision both interfaces obey, in fixed precedence: ban, then
-    /// in-flight, then (auto only) mesh. Mesh comes last so a claim — which has
-    /// gossip side effects — is only attempted when the job would otherwise run.
+    /// in-flight, then (auto only) this device's concurrency cap, then (auto only)
+    /// mesh.
+    ///
+    /// Capacity outranks mesh so a saturated device never *originates*: the claim
+    /// that routing takes has gossip side effects, and a node holding the claim for
+    /// work it then refuses to start is worse than not asking. It is safe to leave
+    /// the work for a later poll — every machine scans, so on a mesh a peer with
+    /// room picks the same unit up, and off a mesh the reconciler retries it here on
+    /// the next tick (the refusal writes no attempt record, so no backoff engages).
     public static func decide(source: Source, banned: Bool, agentOnPR: Bool,
-                              meshStandsDown: Bool) -> Verdict {
+                              meshStandsDown: Bool, atCapacity: Bool) -> Verdict {
         if banned { return .banned }
         if agentOnPR { return .inFlight }
+        if source == .auto, atCapacity { return .atCapacity }
         if source == .auto, meshStandsDown { return .standDown }
         return .proceed
+    }
+
+    // MARK: - The device's automatic-task cap
+    //
+    // A poll finds every unit of pending work at once — N conflicted PRs, N reviews
+    // owed — and, before this cap existed, dispatched all of them in one pass: N
+    // terminal windows, N `claude` sessions, one machine. The cap is the device's,
+    // not the monitor's: it bounds how many automatic agents Diplomat has RUNNING
+    // here, so it holds across the review monitor, the conflict reconciler and work
+    // a mesh peer routes in (the node asks its host before it spawns).
+
+    public static let defaultAutoTaskLimit = 2
+    public static let minAutoTaskLimit = 1
+    public static let maxAutoTaskLimit = 16
+
+    /// The configured cap, held inside the range the UI offers. A stored 0 would
+    /// silently stop all automatic work while both monitor toggles still read "on",
+    /// so the floor is 1 — pausing is what those toggles are for.
+    public static func clampAutoTaskLimit(_ value: Int) -> Int {
+        max(minAutoTaskLimit, min(maxAutoTaskLimit, value))
+    }
+
+    /// How many automatic agents are running on this device, counted in PRs (one
+    /// agent per PR is what the in-flight dedup guarantees).
+    ///
+    /// Three inputs, because no single one of them is both complete and attributable:
+    ///
+    /// - `livePRs` — PRs with a live `claude` visible in `ps`. The ground truth, and
+    ///   the only evidence that survives an applet restart, but it cannot say who
+    ///   started an agent;
+    /// - `manualPRs` — PRs whose live agent this applet tracked as a *panel* spawn.
+    ///   Subtracted, because a click is the operator's own act and never spends the
+    ///   automatic budget;
+    /// - `autoPRs` — PRs with a tracked auto agent. Added, because a just-spawned
+    ///   agent takes a moment to appear in `ps` and would otherwise be counted zero
+    ///   times by the very poll that started it.
+    ///
+    /// An agent nobody tracked therefore counts as automatic. That is the safe way to
+    /// be wrong: the cost is deferring auto work behind an untracked agent for as long
+    /// as it runs, where the opposite error is the burst this cap exists to stop.
+    public static func runningAutoTasks(livePRs: Set<Int>, autoPRs: Set<Int>,
+                                        manualPRs: Set<Int>) -> Int {
+        livePRs.subtracting(manualPRs).union(autoPRs).count
     }
 
     /// Panel spawns come to the front; auto spawns must never steal focus.

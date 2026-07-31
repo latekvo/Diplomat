@@ -35,7 +35,8 @@ Targets `software-mansion/argent` and shells out to the authenticated `gh` CLI.
 > spawn, session tracking, and counters live in exactly one place per platform.
 > The only trigger asymmetries are the documented ones in `AgentDispatchGate`
 > (its Python twin `autofix.dispatch_decide`): manual spawns come to the
-> foreground (macOS) and are never mesh-gated, monitor dispatches get the
+> foreground (macOS), are never mesh-gated and never hit the
+> [automatic-task cap](#autonomous-monitors); monitor dispatches get the
 > `Auto · … · retry N` label, and only they bump the auto-handled counters.
 > Parity tests on both sides pin that matrix. A job arriving *over the mesh* is
 > the one spawn that bypasses the pipeline - it lands through the mesh node's own
@@ -387,11 +388,24 @@ immediate poll on wake/enable, not from a tight loop. Both cadences are
 overridable for tuning (`DIPLOMAT_AUTOFIX_SECS`, floor 60s on macOS / 30s on
 Linux; `DIPLOMAT_APIWATCH_SECS`, floor 5s).
 
-**With a mesh up, the monitors defer.** A duty the mesh has assigned to *other*
-nodes makes this machine's monitors stand down entirely for it - their agents
-originate over there instead - and for the remaining races (no assignee, takeover
-flaps) each unit of work is claimed by key first. Those show up as
-`mesh-standdown` / `mesh-resume` rows in the activity feed.
+**At most 2 automatic agents run at once** (Settings; 1-16). Both monitors above
+are level-triggered over everything GitHub currently owes, so one poll of a busy
+day would otherwise dispatch every pending unit in a single pass - a terminal
+window and a `claude` session per conflicted PR and per owed review, all at the
+same moment. The cap is the *machine's*, not a monitor's: it spans both monitors
+and any work a mesh peer routes here, and it counts agents that are really
+running (`ps`, so it survives an applet restart) rather than a tally that can
+drift. Agents *you* spawn from the panel don't count against it, and a click is
+never refused. Nothing is dropped - work over the cap gets no attempt record, so
+the next 3-minute tick offers it again as soon as an agent finishes. Saturation
+shows up as one `at-capacity` row in the activity feed per episode.
+
+**With a mesh up, each unit of work runs once.** Every machine scans GitHub
+independently; whoever finds a unit routes it by work key, and the node that
+takes it holds the claim for its agent's lifetime, so a concurrent or repeat scan
+elsewhere is suppressed (`mesh-suppressed` in the activity feed) and a node death
+frees the work for failover. A machine already at its cap declines what it is
+sent, and the dispatcher fails the slot over to one with room.
 
 ### Auto-approvals (default OFF)
 
@@ -438,6 +452,14 @@ to a settings screen:
   panel's status pill, not here.) Nested under the **review-requests** toggle -
   and visible only while it's on - the **auto-approve** master toggle and its
   three withhold-the-verdict suppressors (SKILL / installer / community).
+- **Run at most N automatic tasks at a time** - this machine's hard cap on
+  concurrent automatic agents (**default 2**, range 1-16), across both monitors
+  and any work a mesh peer routes here. Panel spawns are never capped and don't
+  count against it; work over the cap is deferred to the next poll, not dropped.
+  Like the repo root and for the same reason, it lives in the shared
+  `~/.diplomat/config.json` rather than UserDefaults - the node that runs
+  peer-routed work is a separate stdlib-only process, and a machine with two
+  answers to "how many at once" has no cap at all.
 - **Auto-continue agents on API errors** - the terminal watcher toggle, plus a
   count of nudges sent.
 - **Tools - color & visibility** - a **color well** to retint each tool plus a switch
@@ -719,7 +741,7 @@ packages/
         Components.swift           shared UI atoms (cards, chips, badges)
         ReviewWizard.swift         Review-PRs wizard + AgentSpawner (staged prompt file, done sentinel, iTerm/Terminal)
         ConflictWizard.swift / AuditWizard.swift   the Resolve-conflicts and Full-E2E-test wizards
-        SettingsView.swift         settings (username, repo root, monitors + auto-approve, watcher, tools, terminal, allocator)
+        SettingsView.swift         settings (username, repo root, monitors + auto-approve + task cap, watcher, tools, terminal, allocator)
         Store.swift                ObservableObject; settings + the monitor/watcher loops; logic in ToolData
         AutofixMonitor.swift       the monitors' GitHub reads (monitor-prs / review-requests queries)
         AutofixStatus.swift        the monitor heartbeat behind the status pill
@@ -741,9 +763,10 @@ packages/
         AppConfig.swift            the cross-process settings file (~/.diplomat/config.json) the mesh node shares
       install/                 ← build-app + the autostart / auto-update (un)installers (launchd)
     linux/                     ← Linux Qt6/PySide6 tray applet (see its README)
-      diplomat_app/szponthost.py   ← Diplomat's answers to the five questions a mesh node asks its host:
+      diplomat_app/szponthost.py   ← Diplomat's answers to the six questions a mesh node asks its host:
                                  the duty catalog, the state dir, where events go, how a job runs here,
-                                 and whether an agent is already up on that work
+                                 whether an agent is already up on that work, and whether this machine
+                                 has room for another
       install/                 ← build-core + the autostart / auto-update (un)installers (XDG + systemd)
       meshsim/                 ← the real-socket mesh simulator the mesh scenarios run through
 
@@ -751,7 +774,7 @@ packages/
     szpontnet/                   stdlib-only Python (runs headless on macOS too) — LAN discovery,
                                  heartbeat links, gossip, deterministic duty assignment, dispatch with
                                  failover; canonical v1 model in netmodel.json, `python -m szpontnet`
-      host.py                  ← the five questions a node asks whoever is running it; all five have
+      host.py                  ← the six questions a node asks whoever is running it; all six have
                                  working defaults, so a node with no host is a valid node
       env.py                   ← the SZPONTNET_* namespace, one accessor, one place the old names bridge
     tests/                     ← the library on its own terms — defaults, the host seam, the namespace,

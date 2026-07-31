@@ -454,22 +454,31 @@ section("unified dispatch gate")
 // and any new source asymmetry must be added HERE first, or it's a bug.
 for src in [AgentDispatchGate.Source.panel, .auto] {
     check(AgentDispatchGate.decide(source: src, banned: true, agentOnPR: true,
-                                   meshStandsDown: true) == .banned,
+                                   meshStandsDown: true, atCapacity: true) == .banned,
           "ban outranks everything for \(src.rawValue)")
     check(AgentDispatchGate.decide(source: src, banned: false, agentOnPR: true,
-                                   meshStandsDown: true) == .inFlight,
+                                   meshStandsDown: true, atCapacity: true) == .inFlight,
           "a live agent on the PR blocks \(src.rawValue) — never double-spawn")
     check(AgentDispatchGate.decide(source: src, banned: false, agentOnPR: false,
-                                   meshStandsDown: false) == .proceed,
+                                   meshStandsDown: false, atCapacity: false) == .proceed,
           "clear board proceeds for \(src.rawValue)")
 }
 // The documented trigger asymmetries — and ONLY these:
 check(AgentDispatchGate.decide(source: .auto, banned: false, agentOnPR: false,
-                               meshStandsDown: true) == .standDown,
+                               meshStandsDown: true, atCapacity: false) == .standDown,
       "mesh gates auto origination")
 check(AgentDispatchGate.decide(source: .panel, banned: false, agentOnPR: false,
-                               meshStandsDown: true) == .proceed,
+                               meshStandsDown: true, atCapacity: false) == .proceed,
       "a human's click already decided placement — panel is never mesh-gated")
+check(AgentDispatchGate.decide(source: .auto, banned: false, agentOnPR: false,
+                               meshStandsDown: false, atCapacity: true) == .atCapacity,
+      "the device's automatic-task cap gates auto dispatch")
+check(AgentDispatchGate.decide(source: .panel, banned: false, agentOnPR: false,
+                               meshStandsDown: false, atCapacity: true) == .proceed,
+      "a click is one deliberate agent, not a queue being emptied — never capped")
+check(AgentDispatchGate.decide(source: .auto, banned: false, agentOnPR: false,
+                               meshStandsDown: true, atCapacity: true) == .atCapacity,
+      "capacity outranks mesh — a saturated device takes no claim it would refuse")
 check(AgentDispatchGate.stealsFocus(.panel) && !AgentDispatchGate.stealsFocus(.auto),
       "panel comes forward, auto never steals focus")
 check(AgentDispatchGate.label(source: .auto, core: "Review · #7", attemptNumber: 2)
@@ -480,6 +489,29 @@ check(AgentDispatchGate.bumpsCounter(source: .auto, attemptNumber: 1)
       && !AgentDispatchGate.bumpsCounter(source: .auto, attemptNumber: 2)
       && !AgentDispatchGate.bumpsCounter(source: .panel, attemptNumber: 1),
       "only a monitor's first dispatch counts as auto-handled")
+
+section("the device's automatic-task cap")
+// PARITY: diplomat-platform/linux/tests/test_autofix.py asserts these exact numbers.
+check(AgentDispatchGate.defaultAutoTaskLimit == 2, "two automatic agents by default")
+check(AgentDispatchGate.clampAutoTaskLimit(0) == 1
+      && AgentDispatchGate.clampAutoTaskLimit(-4) == 1,
+      "a stored 0 would stop all auto work while the toggles still read on — floor is 1")
+check(AgentDispatchGate.clampAutoTaskLimit(3) == 3
+      && AgentDispatchGate.clampAutoTaskLimit(999) == 16,
+      "the cap is held inside the range the stepper offers")
+check(AgentDispatchGate.runningAutoTasks(livePRs: [], autoPRs: [], manualPRs: []) == 0,
+      "an idle machine runs nothing")
+check(AgentDispatchGate.runningAutoTasks(livePRs: [1, 2], autoPRs: [], manualPRs: []) == 2,
+      "a live agent nobody tracked counts as automatic (an applet restart loses the book)")
+check(AgentDispatchGate.runningAutoTasks(livePRs: [1, 2], autoPRs: [], manualPRs: [1]) == 1,
+      "…unless it is a known manual one — a click never spends the automatic budget")
+check(AgentDispatchGate.runningAutoTasks(livePRs: [], autoPRs: [3], manualPRs: []) == 1,
+      "a just-spawned agent counts before ps has caught up with it")
+check(AgentDispatchGate.runningAutoTasks(livePRs: [3], autoPRs: [3], manualPRs: []) == 1,
+      "…and is not counted twice once it has")
+check(AgentDispatchGate.runningAutoTasks(livePRs: [1, 2, 3], autoPRs: [4],
+                                         manualPRs: [2]) == 3,
+      "1, 3 and 4")
 
 section("autofix mesh coordination")
 // PARITY fixtures: diplomat-platform/linux/tests/test_autofix.py asserts these exact strings — two

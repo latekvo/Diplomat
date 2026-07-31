@@ -300,6 +300,9 @@ def parse_work_key(key: str) -> tuple[str, str, str, int] | None:
 # The intended trigger asymmetries, in full (anything else is a bug):
 # - focus: a panel spawn brings the terminal forward, an auto spawn must not
 #   steal focus (moot on Linux - review.spawn is always a new window);
+# - capacity: only auto work is held to the device's automatic-task cap - a
+#   human's click is one deliberate agent, not a monitor emptying its queue
+#   (dispatch_decide);
 # - mesh: only auto origination is mesh-gated - a human clicking THIS machine's
 #   button has already decided placement (dispatch_decide);
 # - counters: only a monitor's FIRST dispatch counts as auto-handled work
@@ -317,21 +320,81 @@ VERDICT_PROCEED = "proceed"
 VERDICT_IN_FLIGHT = "in_flight"  # an agent already works this PR - whoever asks
 VERDICT_BANNED = "banned"  # prompt-injection ban on the author - whoever asks
 VERDICT_STAND_DOWN = "stand_down"  # mesh: another node originates (auto only)
+VERDICT_AT_CAPACITY = "at_capacity"  # this device already runs its cap (auto only)
 
 
 def dispatch_decide(
-    source: str, banned: bool, agent_on_pr: bool, mesh_stands_down: bool
+    source: str,
+    banned: bool,
+    agent_on_pr: bool,
+    mesh_stands_down: bool,
+    at_capacity: bool,
 ) -> str:
     """The one decision both interfaces obey, in fixed precedence: ban, then
-    in-flight, then (auto only) mesh. Mesh comes last so a claim - which has
-    gossip side effects - is only attempted when the job would otherwise run."""
+    in-flight, then (auto only) this device's concurrency cap, then (auto only)
+    mesh.
+
+    Capacity outranks mesh so a saturated device never *originates*: the claim
+    that routing takes has gossip side effects, and a node holding the claim for
+    work it then refuses to start is worse than not asking. It is safe to leave
+    the work for a later poll — every machine scans, so on a mesh a peer with room
+    picks the same unit up, and off a mesh the reconciler retries it here on the
+    next tick (the refusal writes no attempt record, so no backoff engages)."""
     if banned:
         return VERDICT_BANNED
     if agent_on_pr:
         return VERDICT_IN_FLIGHT
+    if source == SOURCE_AUTO and at_capacity:
+        return VERDICT_AT_CAPACITY
     if source == SOURCE_AUTO and mesh_stands_down:
         return VERDICT_STAND_DOWN
     return VERDICT_PROCEED
+
+
+# MARK: - The device's automatic-task cap
+#
+# A poll finds every unit of pending work at once — N conflicted PRs, N reviews
+# owed — and, before this cap existed, dispatched all of them in one pass: N
+# terminal windows, N `claude` sessions, one machine. The cap is the device's,
+# not the monitor's: it bounds how many automatic agents Diplomat has RUNNING
+# here, so it holds across the review monitor, the conflict reconciler and work a
+# mesh peer routes in (szponthost.DiplomatHost.at_job_capacity, which is what
+# the node asks before it spawns).
+
+DEFAULT_AUTO_TASK_LIMIT = 2
+MIN_AUTO_TASK_LIMIT = 1
+MAX_AUTO_TASK_LIMIT = 16
+
+
+def clamp_auto_task_limit(value: int) -> int:
+    """The configured cap, held inside the range the UI offers. A stored 0 would
+    silently stop all automatic work while both monitor toggles still read "on",
+    so the floor is 1 — pausing is what those toggles are for."""
+    return max(MIN_AUTO_TASK_LIMIT, min(MAX_AUTO_TASK_LIMIT, value))
+
+
+def running_auto_tasks(
+    live_prs: set[int], auto_prs: set[int], manual_prs: set[int]
+) -> int:
+    """How many automatic agents are running on this device, counted in PRs (one
+    agent per PR is what the in-flight dedup guarantees).
+
+    Three inputs, because no single one of them is both complete and attributable:
+
+    - ``live_prs`` — PRs with a live ``claude`` visible in ``ps``. The ground truth,
+      and the only evidence that survives an applet restart, but it cannot say who
+      started an agent;
+    - ``manual_prs`` — PRs whose live agent this applet tracked as a *panel* spawn.
+      Subtracted, because a click is the operator's own act and never spends the
+      automatic budget;
+    - ``auto_prs`` — PRs with a tracked auto agent. Added, because a just-spawned
+      agent takes a moment to appear in ``ps`` and would otherwise be counted zero
+      times by the very poll that started it.
+
+    An agent nobody tracked therefore counts as automatic. That is the safe way to
+    be wrong: the cost is deferring auto work behind an untracked agent for as long
+    as it runs, where the opposite error is the burst this cap exists to stop."""
+    return len((live_prs - manual_prs) | auto_prs)
 
 
 def dispatch_label(source: str, core: str, attempt: int = 1) -> str:

@@ -33,11 +33,12 @@ The canonical v1 constants and duty catalog from
 [`szpontnet/netmodel.json`](https://github.com/latekvo/Diplomat/blob/main/packages/szpontnet-core/szpontnet/netmodel.json), so a bare node is conformant
 out of the box. The five things it *cannot* answer for itself — which duties this
 deployment routes, where a node's state lives, where its events go, what "running a
-job" means on this machine, and whether that work is already under way here — it
-asks of a **host**
+job" means on this machine, whether that work is already under way here, and how
+much of it this machine will run at once — it asks of a **host**
 ([`szpontnet/host.py`](https://github.com/latekvo/Diplomat/blob/main/packages/szpontnet-core/szpontnet/host.py)). Every one has a working default, so a
 node with no host runs the canonical model, keeps its state in `~/.szpontnet`,
-discards its log and declines work it has no runner for.
+discards its log, declines work it has no runner for, and accepts work without
+limit.
 
 Diplomat is one such host
 ([`diplomat-platform/linux/diplomat_app/szponthost.py`](https://github.com/latekvo/Diplomat/blob/main/packages/diplomat-platform/linux/diplomat_app/szponthost.py)) and

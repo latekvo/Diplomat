@@ -1,11 +1,11 @@
-"""Diplomat's answers to the five questions a SzpontNet node asks its host.
+"""Diplomat's answers to the six questions a SzpontNet node asks its host.
 
 The node knows how to find machines and choose one; it does not know that a
 "duty" here means a Claude agent reviewing a pull request, that events belong in
-the applet's activity feed, or that an agent might already be up on this PR
-without the mesh having placed it. This module is where all five answers live —
-the whole of Diplomat inside SzpontNet, and the only file the library would need
-replacing to run under something else.
+the applet's activity feed, that an agent might already be up on this PR without
+the mesh having placed it, or how many agents this machine will run at once. This
+module is where all six answers live — the whole of Diplomat inside SzpontNet,
+and the only file the library would need replacing to run under something else.
 
 Registered two ways, because the node runs in two places:
 
@@ -82,10 +82,6 @@ class DiplomatHost(szpont_host.Host):
 
         Fails OPEN — a ps error reads as "not seen" so a transient failure never
         drops work — the same trade the store's ``_live_pr_agents`` makes.
-
-        ``ps -Ao args=`` is the portable spelling: on macOS ``-e`` prints the
-        environment, not every process, so the store's Linux-only ``-eo`` can't be
-        reused here (a node runs on both OSes).
         """
         from . import autofix
 
@@ -93,17 +89,64 @@ class DiplomatHost(szpont_host.Host):
         if ref is None:
             return False
         _kind, owner, repo, number = ref
-        try:
-            out = subprocess.run(["ps", "-Ao", "args="],
-                                 capture_output=True, text=True, timeout=10).stdout
-        except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
-            # UnicodeDecodeError: text=True decodes strict UTF-8, so any process on the
-            # box with a non-UTF-8 byte in its argv makes `ps` output undecodable. It is a
-            # ValueError, not an OSError/SubprocessError, so without it here the exception
-            # escapes this fail-open guard — the same catch Store._live_pr_agents makes
-            # for its identical ps scan.
-            return False
-        return number in autofix.live_pr_numbers(out, owner, repo)
+        return number in autofix.live_pr_numbers(_ps_dump(), owner, repo)
+
+    def at_job_capacity(self, running_keys: list[str]) -> bool:
+        """Would starting one more agent here exceed this machine's cap on
+        concurrent automatic tasks (Settings → PR AUTO-FIX, 2 by default)?
+
+        The applet enforces the same cap on the work IT originates; this is the
+        other half — work a mesh peer routes in, which the applet never sees. Both
+        read the cap from the shared config file (:func:`appconfig.auto_task_limit`)
+        and both count in PRs, so a device cannot end up with one number for work
+        it found itself and another for work it was sent.
+
+        Counted from the ``ps`` scan unioned with the node's own live jobs: an agent
+        the node started seconds ago is in ``running_keys`` before it is in ``ps``,
+        and a burst of dispatches is precisely when that gap decides whether the cap
+        holds. Unlike the applet's count, this one cannot subtract agents the
+        operator started by hand from the panel — the node keeps no such book — so a
+        machine busy with manual work declines mesh work rather than piling on. The
+        peer just fails the slot over to a node with room.
+
+        An unreadable ``ps`` never stalls the node: the scan degrades to empty and
+        the answer falls back to what the node itself knows it is running — the same
+        fail-open direction :meth:`work_already_running` takes, for the same reason.
+        """
+        from . import appconfig, autofix, core
+
+        cfg = core.config()
+        mine = {
+            ref[3] for ref in (autofix.parse_work_key(k) for k in running_keys)
+            if ref is not None
+        }
+        live = autofix.live_pr_numbers(_ps_dump(), cfg["owner"], cfg["repo"])
+        return autofix.running_auto_tasks(live, mine, set()) >= appconfig.auto_task_limit()
+
+
+def _ps_dump() -> str:
+    """Every process's argv, one per line — the evidence behind both of the node's
+    ground-truth answers (is this work already running here, and is the machine at
+    its cap). One place for the portable spelling and for the fail-open error
+    handling, so the two answers cannot come to disagree about either.
+
+    ``ps -Ao args=`` is that portable spelling: on macOS ``-e`` prints the
+    environment, not every process, so the store's Linux-only ``-eo`` can't be
+    reused here (a node runs on both OSes).
+
+    Returns ``""`` on any failure, which is what lets both callers degrade rather
+    than raise into the executor's spawn path. ``UnicodeDecodeError`` is caught by
+    name: ``text=True`` decodes strict UTF-8, so any process on the box with a
+    non-UTF-8 byte in its argv makes the output undecodable, and it is a
+    ``ValueError`` — neither an ``OSError`` nor a ``SubprocessError`` — so without it
+    the exception escapes the guard. The same catch ``Store._live_pr_agents`` makes
+    for its identical scan.
+    """
+    try:
+        return subprocess.run(["ps", "-Ao", "args="],
+                              capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
+        return ""
 
 
 def _spawn_macos(prompt: str, done_path: str | None) -> str:

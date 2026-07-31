@@ -76,6 +76,14 @@ def test_applet_meshes_and_dispatches(tmp_path, monkeypatch):
 
     for k, v in _mesh_env(tmp_path).items():
         monkeypatch.setenv(k, v)
+    # Pin the host's automatic-task cap out of the way, for this process and every
+    # node it spawns. It is answered from a real `ps` scan of THIS machine, so left
+    # at its default an operator with two of their own Diplomat agents running would
+    # have both ends decline the dispatch this test is about. Out of range on
+    # purpose: the gate clamps it to the maximum the UI offers.
+    cfg = tmp_path / "diplomat-config.json"
+    cfg.write_text(json.dumps({"autoTaskLimit": 999}))
+    monkeypatch.setenv("DIPLOMAT_CONFIG", str(cfg))
     (tmp_path / "home").mkdir()
     (tmp_path / "mesh-self").mkdir()
     (tmp_path / "mesh-self" / "node.json").write_text(json.dumps(

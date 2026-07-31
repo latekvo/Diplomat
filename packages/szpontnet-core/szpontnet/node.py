@@ -43,7 +43,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 
-from .host import log, work_already_running
+from .host import at_job_capacity, log, work_already_running
 from . import (
     assign, banned, config, crypto, env, identity, onioncache, peercache,
     protocol, spawnjob, statefile, stats, tor, trust, usage,
@@ -2472,7 +2472,12 @@ class MeshNode:
         outcome because the personal path is fire-and-forget — no ``job-result`` ever
         follows — which [_take_job] reports as ``direct`` so a requester that happens
         to classify us foreign doesn't arm a completion deadline over a result we
-        never owed."""
+        never owed.
+
+        ``declined`` here means the machine is at its concurrency ceiling
+        ([Host.at_job_capacity]) — a refusal the dispatcher fails over exactly like
+        one from [_admit]. Everything the *duty* and the *requester* decide is
+        settled before this point; what is left is only how busy the machine is."""
         wk = job.work_key
         # Idempotency + the executor-claim's atomicity: if our own agent for this
         # key is already live, don't spawn a second one — report success (the work
@@ -2492,6 +2497,16 @@ class MeshNode:
             log("mesh-dedup",
                 f"Already running {job.duty} for this work here — not double-spawning")
             return "spawned", "", True  # deduped against a live host agent — owes no result
+        # Concurrency ceiling, asked LAST of the three: both checks above answer
+        # "we are already doing this exact work", and refusing that would be worse
+        # than useless — the dispatcher reads a decline as "this node can't", fails
+        # the slot over, and lands a SECOND agent on the work elsewhere. Only once
+        # the job is genuinely new does how busy the machine is decide it.
+        if at_job_capacity(list(self._agents)):
+            log("mesh-at-capacity",
+                f"Mesh: declined {job.duty} from "
+                f"{self._node_name(job.requested_by)} — this machine is at capacity")
+            return "declined", "at job capacity", False
         done_path = self._agent_done_path(wk) if wk else None
         try:
             spawnjob.spawn_job(job.prompt, done_path=done_path)

@@ -728,12 +728,19 @@ struct ReviewWizardView: View {
 
 /// The wizard status line for one dispatch outcome — shared by all three wizards
 /// so refusals read identically everywhere.
+///
+/// A wizard SPAWN is a `.panel` dispatch, and neither the mesh gate nor the
+/// automatic-task cap applies to a human's click, so `.standDown` and `.atCapacity`
+/// are answers only a monitor gets. They are spelled out rather than folded into a
+/// `default`, so adding an outcome keeps failing this switch until someone decides
+/// what the wizard should say about it.
 func statusText(for outcome: Store.DispatchOutcome, terminal: String) -> String {
     switch outcome {
     case .spawned: return "Launched \(terminal) · \(Fmt.clock(Date()))"
     case .inFlight: return "An agent is already on this PR — see its session above."
     case .banned: return "Author is banned for prompt injection — un-ban to review."
     case .standDown: return "Another mesh node originates this work."
+    case .atCapacity: return "This machine is at its cap of concurrent automatic tasks."
     case .failed(let msg): return "Failed: \(msg)"
     }
 }

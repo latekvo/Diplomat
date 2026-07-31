@@ -177,6 +177,31 @@ struct SettingsView: View {
             if store.reviewRequestsEnabled { unaddressedReviewsRow }
 
             if store.reviewRequestsEnabled { autoApproveBlock }
+
+            autoTaskLimitRow
+        }
+    }
+
+    /// The device-wide ceiling on concurrent automatic agents. Sits at the foot of the
+    /// section because it governs BOTH monitors above it — a poll of either one can
+    /// find any number of pending units at once, and this is what keeps them from all
+    /// opening at the same moment.
+    private var autoTaskLimitRow: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Stepper(value: $store.autoTaskLimit,
+                    in: AgentDispatchGate.minAutoTaskLimit...AgentDispatchGate.maxAutoTaskLimit) {
+                Text("Run at most \(store.autoTaskLimit) automatic task"
+                     + (store.autoTaskLimit == 1 ? "" : "s") + " at a time")
+                    .font(.caption)
+            }
+            .controlSize(.small)
+            .padding(.top, 2)
+            Text("A hard cap for this machine, across both monitors above and any work "
+                 + "a mesh peer routes here. Agents you spawn yourself from the panel "
+                 + "don't count against it. Work over the cap isn't dropped — the next "
+                 + "poll picks it up as soon as a running agent finishes.")
+                .font(.caption2).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
