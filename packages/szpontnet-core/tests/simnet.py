@@ -830,10 +830,15 @@ class SimNet:
             "DIR": str(state),
             "PLATFORM": platform,
             "DEFAULT_TRUST": trust,
+            # A simulated machine has no Tor: the transport spawns a real `tor`
+            # child and dials real sockets, neither of which this switch owns, so a
+            # simulated mesh would quietly grow one tor process per node and a
+            # transport reaching past the virtual LAN. Off explicitly rather than by
+            # omission — Tor is on by default, so leaving it unset would enable it.
+            "TOR": "0",
             # Explicitly unset, so a developer's own exported SZPONTNET_* values
             # can never leak into a simulated mesh.
             "LOOPBACK": None,
-            "TOR": None,
             "SECRET": None,
             "API_KEY": None,
             "SERVER": None,

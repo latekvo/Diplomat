@@ -1,0 +1,60 @@
+name: Tor E2E (real network)
+
+# The same tests CI already runs against the simulated onion network, run again
+# against the real `tor` binary and the live Tor network. Separate from ci.yml on
+# purpose: it is the only job here that depends on reaching the internet in a
+# particular way, so a Tor directory having a bad day must not be able to redden a
+# pull request that never touched the transport.
+#
+# It therefore runs where it is worth the minutes and the flake risk: on a push that
+# changes the transport, its tests, or the config knob that turns it on — and on
+# demand, which is what to reach for before cutting a release.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'packages/szpontnet-core/szpontnet/tor.py'
+      - 'packages/szpontnet-core/szpontnet/node.py'
+      - 'packages/szpontnet-core/szpontnet/config.py'
+      - 'packages/szpontnet-core/szpontnet/onioncache.py'
+      - 'packages/szpontnet-core/tests/test_tor_e2e.py'
+      - 'packages/szpontnet-core/tests/tornet.py'
+      - 'packages/szpontnet-core/tests/simtor.py'
+      - '.github/workflows/tor-e2e.yml'
+
+concurrency:
+  group: tor-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  real-tor:
+    name: SzpontNet · onion path over the live Tor network
+    runs-on: ubuntu-latest
+    # A cold bootstrap plus descriptor publication is tens of seconds per node, and
+    # the suite starts several. Generous, but bounded — a hung daemon should cost one
+    # job, not a runner.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install tor
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends tor
+          # The distro package starts a system-wide tor as a service. The node runs
+          # its OWN private tor (its own SocksPort, DataDirectory and
+          # HiddenServiceDir), so the packaged instance is only competition for the
+          # ports and the disk — stop it and leave the binary.
+          sudo systemctl stop tor || true
+          tor --version
+      - name: Install the library (with the trust extra) and pytest
+        run: pip install -e './packages/szpontnet-core[trust]' pytest
+      - name: Onion path end-to-end against the real Tor network
+        env:
+          SZPONTNET_TEST_TOR: real
+        run: pytest packages/szpontnet-core/tests/test_tor_e2e.py -q

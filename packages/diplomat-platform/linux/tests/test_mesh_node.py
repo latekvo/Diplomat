@@ -91,6 +91,12 @@ def _proto_env() -> dict:
         # usage endpoint (on macOS dev machines the Keychain token would resolve
         # even under a sandboxed HOME). Token states come from seeded logs/pins.
         "SZPONTNET_OAUTH_PROBE": "0",
+        # Same reason, the other outbound path: the Tor transport is on by default,
+        # so a fleet node on a machine with `tor` installed would fork one and
+        # bootstrap against the live Tor network. These scenarios are about the
+        # loopback LAN. (The onion path has its own suite — szpontnet-core's
+        # test_tor_e2e.py.)
+        "SZPONTNET_TOR": "0",
         "SZPONTNET_MCAST_PORT": str(_PORT_BASE),
         "SZPONTNET_TCP_BASE": str(_PORT_BASE + 1),
         "SZPONTNET_TCP_SPAN": "12",

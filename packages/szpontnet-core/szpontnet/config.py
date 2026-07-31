@@ -103,13 +103,30 @@ def secret() -> str:
     return env.get("SECRET", "")
 
 
+# Spellings that turn OFF a switch which is on by default. Deliberately lenient,
+# and only here: for an opt-in knob a misspelt value fails safe (the feature stays
+# off), but for a default-ON one it fails the wrong way — an operator who wrote
+# ``SZPONTNET_TOR=false`` and got a tor process anyway has no way to read that as
+# anything but a bug. The empty string counts: ``SZPONTNET_TOR=`` is how a unit file
+# or a wrapper script clears a variable it cannot unset.
+_OFF_VALUES = frozenset({"0", "false", "no", "off", ""})
+
+
 def tor_enabled() -> bool:
-    """SZPONTNET_TOR=1 turns on the Tor onion-service transport: the node runs
-    a persistent onion service (a permanent ``.onion`` it advertises) and dials
-    known-but-unseen peers over Tor with exponential backoff — WAN reachability
-    with no public IP or domain. Off by default; when off, or when the ``tor``
-    binary is missing, the node is LAN-only exactly as before. See tor.py."""
-    return env.get("TOR") == "1"
+    """Whether this node runs the Tor onion-service transport — **on by default**,
+    off only for an explicit ``SZPONTNET_TOR`` in :data:`_OFF_VALUES`.
+
+    The transport is complementary to the LAN, not an alternative to it: the node
+    runs a persistent onion service (a permanent ``.onion`` it advertises inside its
+    signed advert) and dials known-but-unseen personal peers over Tor with
+    exponential backoff, which is what joins several LANs into one wide-area mesh.
+    Multicast discovery and direct TCP links are untouched, and remain the path
+    between peers that share a network.
+
+    On is an *intent*, not a promise: a machine with no ``tor`` binary, or one whose
+    tor fails to bootstrap, is LAN-only — the transport degrades, it never stops a
+    node from starting. See tor.py."""
+    return (env.get("TOR", "1") or "").strip().lower() not in _OFF_VALUES
 
 
 def tor_bootstrap_timeout() -> float:

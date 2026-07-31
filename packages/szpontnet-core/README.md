@@ -73,8 +73,22 @@ and another walks the package AST to catch an environment read that skips
 
 Beyond the unit and host-seam tests, the integration ones live here too: real nodes
 over loopback for the control-edit state flush, the one-node-per-state-dir startup
-lock, and the Tor transport (deterministic — the onion dialer is injected, so no
-real `tor` runs).
+lock, and the Tor transport at two altitudes — the node's Tor *decisions* against an
+injected dialer (deterministic, no daemon in the way), and the whole onion path
+against a real tor daemon.
+
+The second is `test_tor_e2e.py`, and it runs against either of two backends. By
+default a **simulated onion network**: `simtor.py`, a stand-in daemon speaking the
+exact contract `tor.py` depends on — it parses the torrc it is handed, logs a
+bootstrap to stdout, writes a hostname derived from a persisted key, and answers real
+SOCKS5 over a real socket, resolving onions through a descriptor directory on disk
+instead of the Tor network. Every line of the transport runs; only the network is
+simulated. With `SZPONTNET_TEST_TOR=real` the same tests run against the actual `tor`
+binary and the live Tor network (slower, and skipped when no `tor` is installed).
+
+Nodes there are whole processes on distinct multicast ports, so they cannot discover
+each other on the LAN at all — a link between them came over an onion, which is the
+claim the transport exists to make.
 
 ### Whole meshes, on a network the test controls
 

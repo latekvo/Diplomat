@@ -6,10 +6,21 @@ LAN address. That is the whole mesh as long as every machine is on the same
 network. The **Tor transport** lifts that restriction: once two nodes have met,
 they can keep talking from **anywhere**, with **no public IP and no domain name**.
 
-It is **opt-in** (`SZPONTNET_TOR=1`) and **atomic**: with it off, or with no
-`tor` binary present, the node is exactly the LAN-only node described in the rest
-of these docs. Nothing below changes the LAN path — the Tor transport is added
-*beside* it.
+It is **on by default** and **atomic**. Complementary, not alternative: multicast
+discovery and direct TCP links remain the path between peers that share a network,
+and this is what makes several such networks one mesh. Nothing below changes the LAN
+path — the Tor transport is added *beside* it.
+
+Turned off with `SZPONTNET_TOR=0` (`false`/`no`/`off`/empty are honoured too), and
+absent whenever no `tor` binary is installed. In either case the node is exactly the
+LAN-only node described in the rest of these docs, wire-identical.
+
+> **A node running this transport publishes a stable onion service by default.** It
+> forwards only to the peer-link accept path — control sessions are refused
+> ([Security notes](#security-notes)) — but on an **open mesh** (no `SZPONTNET_SECRET`,
+> the documented home-LAN default) any peer holding the address can link from the
+> WAN, which on a LAN-only node would have required being on the LAN. Set a join
+> secret, or `SZPONTNET_TOR=0`, if that is not what you want.
 
 ## The idea in one paragraph
 
@@ -110,7 +121,7 @@ ordinary mesh member and its onion is cached like any other.
 
 ## Lifecycle & degradation
 
-On start with `SZPONTNET_TOR=1` and a `tor` binary present, the node spawns a
+On start, with a `tor` binary present, the node spawns a
 private `tor` (its own `SocksPort`, `DataDirectory`, and `HiddenServiceDir`, all
 under `<mesh_dir>/tor/`, so several nodes on one host never collide). Bootstrap runs
 **in the background** — the node is fully usable on the LAN meanwhile — and the
@@ -163,6 +174,20 @@ the next node's Tor bring-up.
 
 | Env | Meaning |
 |-----|---------|
-| `SZPONTNET_TOR=1` | Enable the Tor transport (default off → LAN-only). |
+| `SZPONTNET_TOR=0` | Disable the Tor transport → LAN-only. On by default; `false`/`no`/`off`/empty also disable. Any other value leaves it on. |
 | `SZPONTNET_TOR_BINARY` | Path to a non-PATH `tor` executable. |
 | `SZPONTNET_TOR_BOOTSTRAP_SECS` | Bootstrap wait before giving up (default 90). |
+
+## Conformance
+
+A node that never runs an onion service is still conformant — the transport is
+optional to *implement*, and everything above degrades to the LAN-only node in
+[02](02-discovery.md)/[03](03-transport.md). What is normative is what goes on the
+wire when it is implemented: `onion` inside the signed advert
+([04](04-messages.md#nodeinfo)), omitted when empty; `ONION_VIRTPORT`; and the
+refusal of `ctl` on a connection that arrived over the onion.
+
+The reference implementation's own coverage runs at two altitudes — the node's Tor
+decisions against an injected dialer, and the whole onion path against a real tor
+daemon (a simulated onion network by default, the live Tor network on request). See
+`szpontnet-core/tests/test_mesh_tor.py` and `test_tor_e2e.py`.

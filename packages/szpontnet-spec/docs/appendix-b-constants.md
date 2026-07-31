@@ -243,11 +243,12 @@ answering reminders.
 
 ## Tor transport (v0.5.0 vocabulary)
 
-The optional WAN transport: a persistent Tor v3 onion service the node advertises
+The WAN transport: a persistent Tor v3 onion service the node advertises
 (inside the signed advert, as [`NodeInfo.onion`](04-messages.md#nodeinfo)), plus a SOCKS
-dialer that reconnects to known-but-unseen **personal** peers. Off unless
-`SZPONTNET_TOR=1` **and** a `tor` binary is present; otherwise the node is LAN-only,
-byte-identical to before. The backoff/tick values are node-local reconnect policy (peers
+dialer that reconnects to known-but-unseen **personal** peers. On by default,
+requiring only that a `tor` binary is present; with `SZPONTNET_TOR=0`, or on a machine
+with no tor, the node is LAN-only and byte-identical to a node that has never
+implemented it. The backoff/tick values are node-local reconnect policy (peers
 need not agree on them); only `ONION_VIRTPORT` is shared. See
 [14-tor-transport](14-tor-transport.md).
 
@@ -262,7 +263,7 @@ need not agree on them); only `ONION_VIRTPORT` is shared. See
 | backoff factor | `2.0` | geometric growth per missed probe; reset to the floor the moment a Tor link actually **binds** (`_TOR_BACKOFF_FACTOR`). |
 | onion key + data dir | `~/.diplomat/mesh/tor/` | this node's private Tor `DataDirectory`; the `HiddenServiceDir` is `tor/onion/` (`0700`), so the `.onion` is permanent across restarts. |
 | peer onion cache | `~/.diplomat/mesh/onions.json` | last-known peer onions, learned only from signed hellos and bounded like `peers.json` - the WAN sibling of the LAN redial cache. |
-| enable / binary via | `SZPONTNET_TOR` / `SZPONTNET_TOR_BINARY` | turn the transport on; point at a non-PATH `tor` ([14](14-tor-transport.md)). |
+| disable / binary via | `SZPONTNET_TOR` / `SZPONTNET_TOR_BINARY` | `0` (or `false`/`no`/`off`/empty) turns the transport off — it is otherwise on; point at a non-PATH `tor` ([14](14-tor-transport.md)). |
 
 ## Message types
 

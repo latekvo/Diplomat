@@ -722,7 +722,8 @@ Ask the node to initiate a **Tor link** to a peer's onion address - reaching a p
 you may never have met on the LAN. The node dials the onion in the background (this
 reply returns immediately) and runs the identical hello/auth/trust handshake a LAN dial
 does; watch [`status`](#status) for the peer to appear. Requires the Tor transport
-enabled and bootstrapped (`SZPONTNET_TOR=1`). Unlike auto-redial, a manual paste
+bootstrapped on this node (it is on by default, absent `SZPONTNET_TOR=0` or a missing
+`tor` binary). Unlike auto-redial, a manual paste
 dials **unconditionally** - it bypasses the personal-only and smaller-id-dials fences (a
 deliberate one-shot introduction), though it is still deduped against an in-flight dial
 to the same onion. See [14-tor-transport](14-tor-transport.md).

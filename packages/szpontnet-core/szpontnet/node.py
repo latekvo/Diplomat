@@ -552,10 +552,12 @@ class MeshNode:
             loop.create_task(self._snapshot_loop(), name="mesh-snapshot"),
         ]
         if config.tor_enabled():
-            # The WAN transport is an ATOMIC add-on: it brings up a persistent onion
-            # service (bootstrapped in the background so the LAN stays usable
-            # immediately) and a reconnect loop that Tor-dials known-but-unseen peers
-            # with exponential backoff. Nothing else in the node changes.
+            # The WAN transport is an ATOMIC add-on running BESIDE the LAN rather than
+            # instead of it: it brings up a persistent onion service (bootstrapped in
+            # the background so the LAN stays usable immediately) and a reconnect loop
+            # that Tor-dials known-but-unseen peers with exponential backoff. Nothing
+            # else in the node changes, and multicast discovery still owns every peer
+            # on this network.
             tor_binary = tor.binary()
             if tor_binary:
                 self.tor = tor.TorTransport(identity.mesh_dir(),
@@ -565,9 +567,13 @@ class MeshNode:
                 self._tasks.append(loop.create_task(self._tor_redial_loop(),
                                                     name="mesh-tor-redial"))
             else:
-                log("warn",
-                    "Mesh/Tor: SZPONTNET_TOR=1 but no 'tor' binary "
-                    "found — running LAN-only.")
+                # Not a warning: a box with no tor installed is an ordinary box, and
+                # the transport is on by default — warning here would fire on every
+                # start of every LAN-only machine. It still names what is out of reach
+                # rather than only reporting that something was skipped.
+                log("mesh-up",
+                    "Mesh/Tor: no 'tor' binary found — LAN-only, so peers on other "
+                    "networks are unreachable. Install tor for WAN reach.")
         await self._refresh_tokens()  # seed the auto token state before the first advert
         self._last_token_refresh = time.monotonic()
         self._recompute("start")
