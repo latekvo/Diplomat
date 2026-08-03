@@ -165,6 +165,13 @@ python tests/test_logic.py        # the logic tests, dependency-free (no pytest)
 - `tests/test_apiwatch.py` - the API-error matcher + the tmux watcher's backoff
   and two-scan stall confirmation.
 - `tests/test_activity.py` - the audit feed: action → category taxonomy, filtering.
+- `tests/test_telemetry_parity.py` - one ledger folded through both the Swift core
+  and this applet, diffed field for field (floats included), so the two Telemetry
+  screens cannot disagree about what a ledger means. Needs `DIPLOMAT_CORE_BIN`.
+- `tests/test_telemetry.py` - the ledger's IO and the two gatherers: what a poll
+  records, what it clears, incremental transcript scanning, per-task attribution.
+- `tests/test_telemetry_view.py` - the screen's own judgement: the empty state, the
+  no-quota-readings fallback, the thin-sample warning, what a range flip re-scopes.
 - `tests/test_review_author.py` - the wizard's author poll and the toggles it hides.
 - `tests/test_selfupdate.py` - fetch/merge/rebuild/relaunch, incl. the divergence case.
 - `tests/test_migrate.py` - the one-time `~/.argent` → `~/.diplomat` state move.
@@ -180,9 +187,10 @@ python tests/test_logic.py        # the logic tests, dependency-free (no pytest)
   subprocess with the import blocked, rendering the panel anyway.
 - `tests/test_allocator_update.py` - when a launch installs the device allocator,
   when it refreshes a stale one, and when it must leave an uninstall alone.
-- `tests/conftest.py` - redirects `QSettings`, the shared `~/.diplomat/config.json`
-  and the activity feed to per-test temp dirs, so tests never read (or scribble on)
-  your live config; also clears `DIPLOMAT_MESH_*` so a pre-rename variable in your
+- `tests/conftest.py` - redirects `QSettings`, the shared `~/.diplomat/config.json`,
+  the activity feed and `~/.claude` to per-test temp dirs (and switches the quota
+  probe off), so tests never read your transcripts, spend your token on a live
+  request, or scribble on your config; also clears `DIPLOMAT_MESH_*` so a pre-rename variable in your
   shell can't answer for a `SZPONTNET_*` one the tests mean to leave unset.
 
 Tests that need no part of Diplomat live with the library, in
@@ -220,6 +228,10 @@ diplomat_app/
   szponthost.py   Diplomat's answers to the five questions a mesh node asks its host
   meshspawn.py    the wizards' "⬡ Run on mesh" row
   meshview.py     the ⬡ Mesh topology screen
+  telemetry.py    the append-only telemetry ledger + the arithmetic over it (twin of Telemetry.swift)
+  telemetryview.py  the Telemetry screen: the bell curve, the backlog series, the token split
+  usagescan.py    Claude Code transcript scanner: repo-vs-other tokens, per-task attribution
+  quota.py        the OAuth usage probe — what is left of the 5-hour and 7-day windows
   widgets.py      cards, chips, rows
   panel.py        the popup panel (header, search, grid, results, devices)
   settingsview.py two-pane settings screen

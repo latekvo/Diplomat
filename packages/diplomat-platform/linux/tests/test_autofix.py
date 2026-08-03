@@ -420,6 +420,33 @@ def test_work_key_safe_degradation():
     assert autofix.work_key("review", "", "x") == ""
 
 
+def test_ledger_key_is_the_claim_key_whenever_there_is_one():
+    """The mesh's claim and the telemetry ledger's task must name one job
+    identically, or the ledger cannot tell that the work a peer claimed is the work
+    this machine queued."""
+    for kind, url, sha in (
+        ("review", "https://github.com/acme/app/pull/123", "abc123"),
+        ("review-reply", "https://github.com/a/b/pull/9", "F00"),
+        ("conflicts", "https://GitHub.com/Acme/App/pull/5", "AbC"),
+    ):
+        assert autofix.ledger_key(kind, url, sha) == autofix.work_key(kind, url, sha)
+
+
+def test_ledger_key_survives_an_unknown_head_sha():
+    """Where the claim key degrades to "" the ledger key must not: skipping a claim
+    is safe, and skipping the ledger entry would drop dispatched work off every
+    figure on the Telemetry screen."""
+    assert (
+        autofix.ledger_key("review", "https://github.com/acme/app/pull/123", "")
+        == "review:github.com/acme/app#123"
+    )
+    # Nothing to name, though, is still nothing to name.
+    assert autofix.ledger_key("review", "https://github.com/acme/app/issues/5", "x") == ""
+    assert autofix.ledger_key("review", "https://github.com/acme/app", "x") == ""
+    assert autofix.ledger_key("review", "not a url", "x") == ""
+    assert autofix.ledger_key("review", "", "x") == ""
+
+
 def test_parse_work_key_round_trips_the_builder():
     # The executor's ps floor parses back exactly what work_key emits: kind,
     # owner, repo, pr — the sha is intentionally dropped (dedup is per-PR, so a

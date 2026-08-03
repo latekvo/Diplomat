@@ -130,6 +130,18 @@ enum Render {
             // "Don't show again" checkbox) so its layout is snapshot-verifiable headlessly.
             MeshView(isPresented: .constant(true),
                      seedTrustReminder: m.contains("reminder") ? "newbox" : nil)
+        case let s where s.hasPrefix("telemetry"):
+            // The Telemetry screen over a synthetic ledger (the macOS analogue of
+            // the Linux render.py `_telemetry_ledger_fixture`). "telemetry-panel"
+            // renders it inside the whole panel, proving the header button and the
+            // screen swap; plain "telemetry" renders the screen alone at its natural
+            // height so the charts are big enough to eyeball.
+            let _ = seedTelemetry(store)
+            if s.contains("panel") {
+                ContentView(showTelemetry: true)
+            } else {
+                TelemetryView(isPresented: .constant(true))
+            }
         case "unban-confirm":
             // Seed the ban list and open the inline "Unban @X?" confirmation on a row —
             // proving it renders inside the panel (not as a separate NSAlert window).
@@ -212,6 +224,95 @@ enum Render {
             let _ = seedAutofix(store)
             ContentView().frame(height: 580)
         }
+    }
+
+    /// A synthetic telemetry ledger so the Telemetry screen can be eyeballed: a
+    /// fortnight of quota samples burning down and refilling on the 5-hour cycle, and
+    /// forty-odd finished auto-tasks with a realistic right-skewed spread of costs —
+    /// most cheap, a few expensive — plus a handful still owed.
+    ///
+    /// Written through the real recorder into the real ledger path, first redirected
+    /// to a scratch directory: the screen folds the file, so seeding the Store
+    /// instead would test nothing the user will see. The redirect is load-bearing,
+    /// not tidiness — see `AuditLog.dirOverride`.
+    @MainActor
+    @discardableResult
+    private static func seedTelemetry(_ store: Store) -> Bool {
+        let scratch = FileManager.default.temporaryDirectory
+            .appendingPathComponent("diplomat-render-telemetry-\(getpid())")
+        try? FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        AuditLog.dirOverride = scratch
+
+        let now = Date().timeIntervalSince1970
+        let day = 86_400.0
+        var rng = SeededRandom(seed: 20_260_803)   // fixed: a render must be reproducible
+
+        // The whole fixture hangs off one number: what a 5-hour window is worth in
+        // tokens. The samples are generated so that `calibrate` recovers it, and the
+        // task costs are drawn against it, so the percentages on the screen are the
+        // ones these task sizes really imply instead of an unrelated pair of scales.
+        let sessionPrice = 6_000_000.0
+        let weekPrice = 20 * sessionPrice
+
+        // Quota samples every 15 minutes for a fortnight. The session window refills
+        // on its own 5-hour cycle while the token counters only ever climb — exactly
+        // the shape the calibration has to price a window out of, reset gaps and all.
+        var repo = 0.0, other = 0.0, sessionLeft = 1.0, weekLeft = 1.0
+        var at = now - 14 * day
+        while at < now {
+            // Idle overnight, busy by day: a flat burn would make every interval price
+            // the window identically and hide whether the weighting works at all.
+            let hour = at.truncatingRemainder(dividingBy: day) / 3600
+            let busy = hour < 7 ? 0.15 : 1.0
+            let burn = rng.uniform(0, 0.05) * busy
+            let spent = burn * sessionPrice
+            repo += spent * rng.uniform(0.5, 0.75)
+            other += spent * rng.uniform(0.25, 0.5)
+            sessionLeft -= burn
+            weekLeft -= spent / weekPrice
+            if sessionLeft <= 0.05 { sessionLeft = 1 }   // the 5-hour window refilled
+            if weekLeft <= 0.05 { weekLeft = 1 }
+            TelemetryLog.append(["at": at, "ev": "sample",
+                                 "sessionLeft": (sessionLeft * 10_000).rounded() / 10_000,
+                                 "weekLeft": (weekLeft * 10_000).rounded() / 10_000,
+                                 "repoTokens": repo, "otherTokens": other])
+            at += 900
+        }
+
+        let kinds = [("review", "review"), ("review-reply", "review"),
+                     ("conflicts", "conflicts")]
+        for i in 0..<44 {
+            let (kind, duty) = kinds[i % 3]
+            let key = "\(kind):github.com/software-mansion/argent#\(300 + i)@\(String(format: "%040x", i))"
+            let queued = now - 14 * day + rng.uniform(0, 13.5 * day)
+            // Most work is picked up on the next poll; a third of it waits out the
+            // reconciler's backoff or an applet that was off. Without that tail the
+            // pending chart is flat at zero, which is the truth for a machine that is
+            // never behind and a useless picture of the one feature it exists to show.
+            let wait = i % 3 != 0 ? rng.uniform(20, 400) : rng.uniform(2 * 3600, 30 * 3600)
+            let run = rng.logNormal(mu: 7.2, sigma: 0.6)
+            TelemetryLog.append(["at": queued, "ev": "queued", "key": key,
+                                 "duty": duty, "pr": 300 + i])
+            TelemetryLog.append(["at": queued + wait, "ev": "started", "key": key,
+                                 "remote": i % 11 == 0, "attempt": 1])
+            if i % 11 == 0 { continue }   // ran on a peer: no local sentinel, no cost
+            // Right-skewed, as real agent runs are: most around 2% of a window, a few
+            // several times that.
+            TelemetryLog.append(["at": queued + wait + run, "ev": "done", "key": key,
+                                 "tokens": rng.logNormal(mu: 11.6, sigma: 0.55)])
+        }
+
+        // Still owed, so the pending chart ends above zero and the "now" figures
+        // aren't both 0 in the snapshot.
+        for (n, pair) in [("review", "review"), ("review", "review"),
+                          ("conflicts", "conflicts")].enumerated() {
+            TelemetryLog.append([
+                "at": now - Double(n + 1) * 3600, "ev": "queued",
+                "key": "\(pair.0):github.com/software-mansion/argent#\(900 + n)@f\(n)",
+                "duty": pair.1, "pr": 900 + n])
+        }
+        store.refreshTelemetry()
+        return true
     }
 
     /// Synthetic mesh topology (the macOS analogue of the Linux render.py
@@ -429,5 +530,43 @@ enum Render {
                 version: "15", apiVersion: "35", handle: nil, status: "free",
                 owner: nil, allocatedAt: nil, idleMs: nil, brokenReason: nil, repairLog: nil, format: "phone"),
         ])
+    }
+}
+
+/// A reproducible source of randomness for the render fixtures. `SystemRandom` would
+/// make every snapshot of the same mode differ, which defeats the point of comparing
+/// one against the last; seeded SplitMix64 keeps a given `DIPLOMAT_RENDER` mode
+/// pixel-identical run to run.
+private struct SeededRandom {
+    private var state: UInt64
+    init(seed: UInt64) { state = seed }
+
+    private mutating func next() -> UInt64 {
+        state &+= 0x9E37_79B9_7F4A_7C15
+        var z = state
+        z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
+        z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+        return z ^ (z >> 31)
+    }
+
+    /// A double in [0, 1). 53 bits, the same mantissa width a Double can hold.
+    private mutating func unit() -> Double {
+        Double(next() >> 11) * (1.0 / 9_007_199_254_740_992.0)
+    }
+
+    mutating func uniform(_ low: Double, _ high: Double) -> Double {
+        low + (high - low) * unit()
+    }
+
+    /// Box-Muller, guarded against the log(0) a zero draw would produce.
+    private mutating func gauss() -> Double {
+        let u1 = max(unit(), 1e-12), u2 = unit()
+        return (-2 * log(u1)).squareRoot() * cos(2 * .pi * u2)
+    }
+
+    /// The right-skewed shape real agent runs and token counts have: a few times the
+    /// median is common, a tenth of it never happens.
+    mutating func logNormal(mu: Double, sigma: Double) -> Double {
+        exp(mu + sigma * gauss())
     }
 }

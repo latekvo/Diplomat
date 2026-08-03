@@ -9,6 +9,7 @@ import Foundation
 // Usage:
 //   diplomat-core build-prompt      < config.json    # prints the assembled prompt
 //   diplomat-core tool-data         < fixture.json   # prints the tool lists as JSON
+//   diplomat-core telemetry         < ledger.json    # prints the Telemetry screen's figures
 //
 // build-prompt: the JSON config's "kind" field ("review" | "conflicts" | "audit")
 // selects the builder; remaining fields mirror the Swift *Config structs (defaults
@@ -21,6 +22,11 @@ import Foundation
 // drift, which is what this subcommand exists to prevent: `test_tooldata_parity.py`
 // drives both over one fixture and diffs the rows, the same way the golden prompts
 // pin the one prompt builder.
+//
+// telemetry: folds a ledger fixture through `Telemetry` and prints every figure the
+// Telemetry screen shows. Same standing as tool-data — the screen recomputes on every
+// repaint, so the Linux applet has its own implementation, and `test_telemetry_parity.py`
+// is what keeps the two from disagreeing about what a task cost.
 //
 // Core assets are resolved via $DIPLOMAT_CORE (or the usual relative fallbacks) — the
 // caller should point it at the repo's core/ directory.
@@ -47,8 +53,8 @@ func specificAuthor(_ s: String?) -> SpecificAuthor {
 }
 
 let args = CommandLine.arguments
-guard args.count >= 2, ["build-prompt", "tool-data"].contains(args[1]) else {
-    die("usage: diplomat-core (build-prompt | tool-data)  (JSON on stdin)", 1)
+guard args.count >= 2, ["build-prompt", "tool-data", "telemetry"].contains(args[1]) else {
+    die("usage: diplomat-core (build-prompt | tool-data | telemetry)  (JSON on stdin)", 1)
 }
 
 let input = FileHandle.standardInput.readDataToEndOfFile()
@@ -58,6 +64,11 @@ guard let obj = (try? JSONSerialization.jsonObject(with: input)) as? [String: An
 
 if args[1] == "tool-data" {
     ToolDataCommand.run(obj)
+    exit(0)
+}
+
+if args[1] == "telemetry" {
+    TelemetryCommand.run(obj)
     exit(0)
 }
 

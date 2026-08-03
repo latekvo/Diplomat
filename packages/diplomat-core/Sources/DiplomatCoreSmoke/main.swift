@@ -508,7 +508,80 @@ check(AutofixMesh.workKey(kind: "review", prURL: "https://github.com/acme/app",
 check(AutofixMesh.workKey(kind: "review", prURL: "not a url", headSha: "x") == "")
 check(AutofixMesh.workKey(kind: "review", prURL: "", headSha: "x") == "")
 
+// The ledger key is the same string whenever the claim key exists, so the two
+// records of one job — the mesh's claim and the telemetry ledger's task — name it
+// identically. Where the claim degrades to "" for an unknown sha, the ledger key
+// does NOT: skipping a claim is safe, and skipping the ledger entry would drop
+// dispatched work off every figure on the Telemetry screen.
+check(AutofixMesh.ledgerKey(kind: "review", prURL: "https://github.com/acme/app/pull/123",
+                            headSha: "abc123")
+      == AutofixMesh.workKey(kind: "review", prURL: "https://github.com/acme/app/pull/123",
+                             headSha: "abc123"),
+      "ledger key must equal the claim key when the sha is known")
+check(AutofixMesh.ledgerKey(kind: "review", prURL: "https://github.com/acme/app/pull/123",
+                            headSha: "") == "review:github.com/acme/app#123",
+      "a missing sha must not cost the ledger its entry")
+check(AutofixMesh.ledgerKey(kind: "review", prURL: "https://github.com/acme/app/issues/5",
+                            headSha: "x") == "", "not a PR URL → nothing to name")
+check(AutofixMesh.ledgerKey(kind: "review", prURL: "not a url", headSha: "x") == "")
+
 print("autofix mesh coordination assertions passed")
+
+// ---- telemetry ----
+section("telemetry")
+// The cross-platform diff lives in tests/test_telemetry_parity.py; these are the
+// properties that hold whatever the other implementation does.
+let tNow = 1_785_000_000.0
+let tLines = [
+    // Two intervals price the window: 25% of it bought 2.5M tokens, so it is worth
+    // 10M. The third spans a RESET (more left than before), which prices nothing.
+    #"{"at": 1784900000, "ev": "sample", "sessionLeft": 1.0, "weekLeft": 1.0, "repoTokens": 0, "otherTokens": 0}"#,
+    #"{"at": 1784903600, "ev": "sample", "sessionLeft": 0.85, "weekLeft": 0.99, "repoTokens": 1000000, "otherTokens": 500000}"#,
+    #"{"at": 1784907200, "ev": "sample", "sessionLeft": 0.75, "weekLeft": 0.98, "repoTokens": 1600000, "otherTokens": 900000}"#,
+    #"{"at": 1784910800, "ev": "sample", "sessionLeft": 1.0, "weekLeft": 0.97, "repoTokens": 1800000, "otherTokens": 1000000}"#,
+    #"{"at": 1784920000, "ev": "queued", "key": "review:h/o/r#1@aa", "duty": "review", "pr": 1}"#,
+    #"{"at": 1784920600, "ev": "started", "key": "review:h/o/r#1@aa", "remote": false, "attempt": 1}"#,
+    // A retry appends a second `started`; first-wins keeps the measured wait honest.
+    #"{"at": 1784929000, "ev": "started", "key": "review:h/o/r#1@aa", "remote": false, "attempt": 2}"#,
+    #"{"at": 1784921800, "ev": "done", "key": "review:h/o/r#1@aa", "tokens": 500000}"#,
+    // Placed on a peer: started here, spent there.
+    #"{"at": 1784930000, "ev": "queued", "key": "conflicts:h/o/r#2@bb", "duty": "conflicts", "pr": 2}"#,
+    #"{"at": 1784930100, "ev": "started", "key": "conflicts:h/o/r#2@bb", "remote": true, "attempt": 1}"#,
+    // Still owed at `now`.
+    #"{"at": 1784996400, "ev": "queued", "key": "review:h/o/r#3@cc", "duty": "review", "pr": 3}"#,
+    // Junk a partially-written or newer-platform tail can hold.
+    "{not json",
+    #"{"at": 1784999000, "ev": "teleported", "key": "review:h/o/r#4@dd"}"#,
+]
+let ledger = Telemetry.fold(lines: tLines)
+check(ledger.samples.count == 4, "sample count")
+check(ledger.tasks.count == 3, "an unparseable or unknown line created a task")
+check(ledger.tasks[0].waitSecs == 600, "a retry moved the measured wait")
+check(Telemetry.calibrate(ledger.samples, session: true) == 10_000_000,
+      "the window must be priced from what was actually spent, reset intervals skipped")
+let summary = Telemetry.summarize(ledger, now: tNow, days: 14, steps: 56,
+                                  binCount: 12, z: 1.96)
+check(summary.startedCount == 2 && summary.remoteCount == 1)
+check(summary.perTask.count == 1, "a peer's agent was priced against our own window")
+check(summary.perTask.mean == 5, "500k of a 10M window is 5%")
+check(summary.pendingReviewsNow == 1 && summary.pendingConflictsNow == 0,
+      "started work is not still owed")
+check(summary.repoTokens == 1_800_000 && summary.otherTokens == 1_000_000)
+check(Telemetry.duration(0, samples: 0) == "—", "no samples must not read as instant")
+check(Telemetry.duration(90) == "1m 30s")
+check(Telemetry.duration(5400) == "1h 30m")
+check(Telemetry.percent(5) == "5.0%")
+check(Telemetry.tokens(1_800_000) == "1.8M")
+// A ledger with no quota readings can count tokens but cannot honestly turn them
+// into a share of a window — the screen shows tokens and says so.
+let unpriced = Telemetry.fold(lines: tLines.filter { !$0.contains("\"sample\"") })
+check(Telemetry.calibrate(unpriced.samples, session: true) == nil)
+let unpricedSummary = Telemetry.summarize(unpriced, now: tNow, days: 14, steps: 56,
+                                          binCount: 12, z: 1.96)
+check(unpricedSummary.sessionLimitTokens == nil)
+check(unpricedSummary.perTask.count == 0, "a percentage was invented without a price")
+check(unpricedSummary.perTaskTokensMean == 500_000, "the raw cost is still reported")
+print("telemetry assertions passed")
 
 // ---- known-mine single-PR review prompt (auto-fix monitor) ----
 section("known-mine review prompt")

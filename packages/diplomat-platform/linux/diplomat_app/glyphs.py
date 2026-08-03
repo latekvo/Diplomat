@@ -27,6 +27,8 @@ G_ACTIVITY = "▤" # activity feed section
 G_BAN = "⊘"      # banned author (no-entry)
 G_MESH = "⬡"     # mesh screen header / "run on mesh" toggle (matches the mesh
                  # activity category's linuxGlyph)
+G_TELEMETRY = "◫" # telemetry screen header (the per-figure glyphs live in
+                  # assets/telemetry.json, like the tool and category ones)
 
 # --- Action-card glyphs (grid actions) -------------------------------------
 G_REVIEW = "☑"   # Review-PRs action

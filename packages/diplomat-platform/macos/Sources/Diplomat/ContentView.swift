@@ -282,20 +282,22 @@ private struct ContentHeightKey: PreferenceKey {
 struct ContentView: View {
     @EnvironmentObject var store: Store
     @State private var query = ""
-    /// Which of the three screens the body shows: Actions ("main"), Settings, or Mesh.
+    /// Which of the four screens the body shows: Actions ("main"), Mesh, Telemetry
+    /// or Settings.
     @State private var screen: PanelScreen
 
-    /// The panel's three interchangeable body screens.
-    enum PanelScreen { case main, settings, mesh }
+    /// The panel's four interchangeable body screens.
+    enum PanelScreen { case main, mesh, telemetry, settings }
 
-    /// `showSettings` seeds the initial screen — used by the headless render
-    /// to snapshot the Settings screen in context. Defaults to the main view.
+    /// `showSettings` / `showTelemetry` seed the initial screen — used by the headless
+    /// render to snapshot those screens in context. Defaults to the main view.
     /// `seedPendingUnban` seeds the inline un-ban confirmation for a login (render only).
     /// `seedMutedAudit` pre-mutes Activity filter categories so the filtered feed can be
     /// snapshotted (render only).
-    init(showSettings: Bool = false, seedPendingUnban: String? = nil,
-         seedMutedAudit: Set<AuditCategory> = []) {
-        _screen = State(initialValue: showSettings ? .settings : .main)
+    init(showSettings: Bool = false, showTelemetry: Bool = false,
+         seedPendingUnban: String? = nil, seedMutedAudit: Set<AuditCategory> = []) {
+        _screen = State(initialValue: showSettings ? .settings
+                                    : (showTelemetry ? .telemetry : .main))
         _pendingUnban = State(initialValue: seedPendingUnban)
         _mutedAuditCategories = State(initialValue: seedMutedAudit)
     }
@@ -333,6 +335,9 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             case .mesh:
                 MeshView(isPresented: presenting(.mesh))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            case .telemetry:
+                TelemetryView(isPresented: presenting(.telemetry))
                     .frame(maxWidth: .infinity, alignment: .leading)
             case .main:
                 HStack(alignment: .top, spacing: 12) {
@@ -382,6 +387,10 @@ struct ContentView: View {
                 Image(systemName: screen == .mesh ? "hexagon.fill" : "hexagon")
                     .foregroundStyle(screen == .mesh ? Color.accentColor : .primary)
             }.buttonStyle(.borderless).help("Mesh management")
+            Button { withAnimation(.easeInOut(duration: 0.15)) { screen = screen == .telemetry ? .main : .telemetry } } label: {
+                Image(systemName: screen == .telemetry ? "chart.bar.xaxis" : "chart.bar")
+                    .foregroundStyle(screen == .telemetry ? Color.accentColor : .primary)
+            }.buttonStyle(.borderless).help("Telemetry")
             Button { withAnimation(.easeInOut(duration: 0.15)) { screen = screen == .settings ? .main : .settings } } label: {
                 Image(systemName: screen == .settings ? "gearshape.fill" : "gearshape")
                     .foregroundStyle(screen == .settings ? Color.accentColor : .primary)

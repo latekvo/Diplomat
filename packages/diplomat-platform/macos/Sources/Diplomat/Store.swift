@@ -216,6 +216,37 @@ final class Store: ObservableObject {
         didSet { persistProcesses() }
     }
 
+    /// The folded telemetry ledger the Telemetry screen draws. Republished when a
+    /// sample lands or an agent finishes, so an open screen follows the ledger
+    /// without a timer of its own.
+    @Published var telemetryLedger = Telemetry.Ledger()
+
+    /// One auto-dispatched agent whose completion is still to be recorded: the
+    /// ledger key to record against, the sentinel to watch, and the prompt that
+    /// identifies the agent's transcript.
+    ///
+    /// Deliberately in memory and NOT in `TrackedProcess`: that struct is persisted
+    /// to UserDefaults on every mutation, and a prompt is kilobytes of text. An
+    /// applet restart therefore forfeits the cost of the agents it had in flight,
+    /// which the screen reports as unattributed rather than as free.
+    ///
+    /// It also holds the sentinel path itself rather than looking it up in
+    /// `processes`, because a tracked row is removed the moment its terminal window
+    /// closes — and an agent that finished and then had its window closed inside one
+    /// poll would otherwise take its completion with it.
+    private struct TelemetryRun {
+        let key: String
+        let prompt: String
+        let donePath: String
+        let at: Double
+    }
+    private var telemetryInflight: [UUID: TelemetryRun] = [:]
+
+    /// A run whose sentinel never appears (window killed, machine slept) is given
+    /// up on after this long, so a stuck entry can't accumulate forever. Matches
+    /// the Linux applet's in-flight TTL.
+    private static let telemetryRunTTL: TimeInterval = 2 * 60 * 60
+
     private enum Keys {
         static let usernameOverride = "usernameOverride"
         static let hiddenTools = "hiddenTools"
@@ -558,12 +589,22 @@ final class Store: ObservableObject {
     /// is the verb written to the activity feed. They're decoupled so a review-reply agent
     /// can log a distinct `review-reply` action — feeding the Activity filter its own
     /// "Replies" category — while still rendering as a plain review session.
+    ///
+    /// `ledgerKey` + `prompt` are supplied only for a monitor dispatch, and are what
+    /// lets the sentinel that ends this session be turned into a telemetry
+    /// completion with a cost attached.
     func track(kind: String, label: String, prURL: String?, result: AgentSpawner.SpawnResult,
-               source: String = "panel", auditAction: String? = nil) {
+               source: String = "panel", auditAction: String? = nil,
+               ledgerKey: String = "", prompt: String = "") {
         let p = TrackedProcess(kind: kind, label: label,
                                terminal: result.terminal.rawValue,
                                windowID: result.windowID, sessionID: result.sessionID,
                                tty: result.tty, donePath: result.donePath, prURL: prURL)
+        if !ledgerKey.isEmpty, !p.donePath.isEmpty {
+            telemetryInflight[p.id] = TelemetryRun(key: ledgerKey, prompt: prompt,
+                                                   donePath: p.donePath,
+                                                   at: Date().timeIntervalSince1970)
+        }
         processes.append(p)
         AuditLog.log(source, auditAction ?? kind, label)
     }
@@ -686,6 +727,22 @@ final class Store: ObservableObject {
         let (events, fingerprints) = AutofixDiff.compute(prior: loadAutofixFingerprints(), now: snaps)
         for event in events { await dispatchAutofix(event) }
         saveAutofixFingerprints(fingerprints)
+        // Record what is owed BEFORE reconciling, so a unit of work is queued in the
+        // ledger before the same poll can start it — otherwise the first dispatch of
+        // every item would look like it came from nowhere and its time-to-start would
+        // be unmeasurable.
+        TelemetryLog.observeOwed(
+            kind: AutofixMesh.kindReviewReply, duty: "review",
+            owed: Dictionary(snaps.filter { $0.threadsIOwe > 0 }.map {
+                (AutofixMesh.ledgerKey(kind: AutofixMesh.kindReviewReply,
+                                       prURL: $0.url, headSha: $0.headSha), $0.number)
+            }, uniquingKeysWith: { first, _ in first }))
+        TelemetryLog.observeOwed(
+            kind: AutofixMesh.kindConflicts, duty: "conflicts",
+            owed: Dictionary(snaps.filter { $0.mergeable == "CONFLICTING" }.map {
+                (AutofixMesh.ledgerKey(kind: AutofixMesh.kindConflicts,
+                                       prURL: $0.url, headSha: $0.headSha), $0.number)
+            }, uniquingKeysWith: { first, _ in first }))
         await reconcileMyReviews(snaps: snaps, now: Date())
         await reconcileMyConflicts(snaps: snaps, now: Date())
         autofixStatus = AutofixStatus(
@@ -802,6 +859,16 @@ final class Store: ObservableObject {
             processes.contains(where: { $0.prURL == r.url && !$0.done })
                 || liveRefs.contains(r.number)
         }
+        // Before dispatching, so the ledger has a queue instant to measure the
+        // time-to-start against. A banned author's request is owed by GitHub's
+        // reckoning but will never be dispatched, so it is left out — counting it
+        // would show a review pending forever that nothing is meant to pick up.
+        TelemetryLog.observeOwed(
+            kind: AutofixMesh.kindReviewReq, duty: "review",
+            owed: Dictionary(owed.filter { !BanList.isBanned($0.author, in: banned) }.map {
+                (AutofixMesh.ledgerKey(kind: AutofixMesh.kindReviewReq,
+                                       prURL: $0.url, headSha: $0.headSha), $0.number)
+            }, uniquingKeysWith: { first, _ in first }))
         for r in owed {
             let key = String(r.number)
             let stamp = r.requestedAt ?? "-"
@@ -968,6 +1035,11 @@ final class Store: ObservableObject {
         var authorLogin: String?    // whose PR we'd be reviewing — the ban dimension (nil = none)
         var duty: String            // mesh duty, for auto-origination gating
         var workKey: String         // mesh claim key ("" = no claim)
+        /// Telemetry ledger identity ("" = not tracked). Equal to `workKey` whenever
+        /// that exists, but carried separately because it survives an unknown head
+        /// sha — where skipping the mesh *claim* is safe and skipping the ledger
+        /// entry would drop dispatched work off every figure on the screen.
+        var ledgerKey: String = ""
         var counter: AutoCounter?   // which auto-handled tally a monitor dispatch feeds
     }
 
@@ -1055,6 +1127,11 @@ final class Store: ObservableObject {
                              AgentDispatchGate.label(source: source, core: job.label,
                                                      attemptNumber: attemptNumber))
                 bumpAutoCounter(job, source: source, attemptNumber: attemptNumber)
+                // A mesh placement spends a PEER's quota and leaves no sentinel here,
+                // so it is flagged remote — counted as work started and taken off the
+                // backlog, kept out of the per-task cost and run-time figures.
+                recordTelemetryStart(job, source: source, remote: true,
+                                     attemptNumber: attemptNumber)
                 refreshAudit()
                 return .spawned(terminal: "mesh")
             case .local:
@@ -1068,12 +1145,15 @@ final class Store: ObservableObject {
             let result = try await Task.detached(priority: .userInitiated) {
                 try AgentSpawner.spawn(prompt, terminal: preferred, restoreFocusTo: restoreBID)
             }.value
+            let tracked = source == .auto ? job.ledgerKey : ""
             track(kind: job.kind,
                   label: AgentDispatchGate.label(source: source, core: job.label,
                                                  attemptNumber: attemptNumber),
                   prURL: job.prURL, result: result, source: source.rawValue,
-                  auditAction: job.auditAction)
+                  auditAction: job.auditAction, ledgerKey: tracked, prompt: job.prompt)
             bumpAutoCounter(job, source: source, attemptNumber: attemptNumber)
+            recordTelemetryStart(job, source: source, remote: false,
+                                 attemptNumber: attemptNumber)
             return .spawned(terminal: result.terminal.rawValue)
         } catch {
             let msg = (error as? LocalizedError)?.errorDescription ?? "\(error)"
@@ -1115,6 +1195,8 @@ final class Store: ObservableObject {
                            authorLogin: r.author, duty: "review",
                            workKey: AutofixMesh.workKey(kind: AutofixMesh.kindReviewReq,
                                                         prURL: r.url, headSha: r.headSha),
+                           ledgerKey: AutofixMesh.ledgerKey(kind: AutofixMesh.kindReviewReq,
+                                                            prURL: r.url, headSha: r.headSha),
                            counter: .reviewRequests)
         return await dispatchAgent(job, source: .auto, attemptNumber: attemptNumber).wasHandled
     }
@@ -1166,6 +1248,8 @@ final class Store: ObservableObject {
                            authorLogin: nil, duty: "conflicts",
                            workKey: AutofixMesh.workKey(kind: AutofixMesh.kindConflicts,
                                                         prURL: url, headSha: headSha),
+                           ledgerKey: AutofixMesh.ledgerKey(kind: AutofixMesh.kindConflicts,
+                                                            prURL: url, headSha: headSha),
                            counter: .conflicts)
         return await dispatchAgent(job, source: source, attemptNumber: attemptNumber)
     }
@@ -1184,6 +1268,8 @@ final class Store: ObservableObject {
                            authorLogin: nil, duty: "review",
                            workKey: AutofixMesh.workKey(kind: AutofixMesh.kindReviewReply,
                                                         prURL: s.url, headSha: s.headSha),
+                           ledgerKey: AutofixMesh.ledgerKey(kind: AutofixMesh.kindReviewReply,
+                                                            prURL: s.url, headSha: s.headSha),
                            counter: .myReviews)
         return await dispatchAgent(job, source: .auto, attemptNumber: attemptNumber).wasHandled
     }
@@ -1395,10 +1481,86 @@ final class Store: ObservableObject {
                 await self?.refreshDeviceState()
                 self?.refreshBanList()
                 self?.refreshAudit()
+                await self?.runTelemetrySampleOnce()
                 let ns = UInt64(Store.processPollInterval * 1_000_000_000)
                 try? await Task.sleep(nanoseconds: ns)
             }
         }
+    }
+
+    // MARK: - Telemetry
+
+    /// Re-fold the ledger for an open Telemetry screen. Cheap on a repaint:
+    /// `TelemetryLog.load` caches the fold until the file actually changes.
+    func refreshTelemetry() {
+        let next = TelemetryLog.load()
+        if next != telemetryLedger { telemetryLedger = next }
+    }
+
+    /// Record a monitor dispatch in the ledger. A wizard click is deliberately not
+    /// recorded: the screen measures the MONITORS, and an operator's own click has no
+    /// queue instant to be late against.
+    private func recordTelemetryStart(_ job: AgentJob, source: AgentDispatchGate.Source,
+                                      remote: Bool, attemptNumber: Int) {
+        guard source == .auto, !job.ledgerKey.isEmpty else { return }
+        TelemetryLog.started(key: job.ledgerKey, remote: remote, attempt: attemptNumber)
+        refreshTelemetry()
+    }
+
+    /// Turn finished agents into ledger completions, costed from their own Claude
+    /// transcripts.
+    ///
+    /// Driven by the completion sentinel rather than the tracked row's `done` flag,
+    /// which also goes true when a terminal window is closed — that is a session we
+    /// stopped being able to watch, not a run whose duration means anything. The
+    /// sentinel's mtime is when `claude` actually exited; `now` is whenever a poll got
+    /// round to looking, up to a poll period later, and would inflate every run time.
+    private func reconcileTelemetryCompletions() async {
+        guard !telemetryInflight.isEmpty else { return }
+        let now = Date().timeIntervalSince1970
+        var finished: [(key: String, prompt: String, at: Double, done: Double)] = []
+        for (id, run) in telemetryInflight {
+            guard let attrs = try? FileManager.default.attributesOfItem(atPath: run.donePath),
+                  let mtime = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970
+            else {
+                // No sentinel yet. Past the TTL there never will be one — the window
+                // was killed, or the machine slept through the run — and there is
+                // nothing honest left to record.
+                if now - run.at > Store.telemetryRunTTL { telemetryInflight[id] = nil }
+                continue
+            }
+            telemetryInflight[id] = nil
+            finished.append((run.key, run.prompt, run.at, mtime))
+        }
+        guard !finished.isEmpty else { return }
+        // Scanning transcripts walks ~/.claude, so it stays off the main actor.
+        await Task.detached(priority: .utility) {
+            for f in finished {
+                let tokens = UsageScan.taskTokens(prompt: f.prompt, startedAt: f.at,
+                                                  endedAt: f.done)
+                TelemetryLog.done(key: f.key, at: f.done, tokens: tokens)
+            }
+        }.value
+        refreshTelemetry()
+    }
+
+    /// Take one quota/token reading for the ledger, off the main actor.
+    ///
+    /// Rides the process poll but answers to its own pacing: the share of this
+    /// machine's tokens that goes on the monitored repo is worth knowing whether or
+    /// not the monitors are enabled, and pricing the rate-limit window needs an
+    /// unbroken sample series regardless. `TelemetryLog.sampleDue` does the pacing, so calling
+    /// this more often than the sample interval is free.
+    func runTelemetrySampleOnce() async {
+        await reconcileTelemetryCompletions()
+        guard TelemetryLog.sampleDue() else { return }
+        await Task.detached(priority: .utility) {
+            let quota = Quota.fractionsLeft()
+            let totals = UsageScan.totals()
+            TelemetryLog.sample(sessionLeft: quota.session, weekLeft: quota.week,
+                                repoTokens: totals.repo, otherTokens: totals.other)
+        }.value
+        refreshTelemetry()
     }
 
     /// Re-derive each session's `done` flag off the main thread (one `ps` call), drop

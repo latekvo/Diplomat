@@ -6,8 +6,8 @@ a real display by grabbing the widget's own pixels:
     DIPLOMAT_RENDER=panel DIPLOMAT_RENDER_OUT=/tmp/p.png \
         QT_QPA_PLATFORM=offscreen python -m diplomat_app
 
-what ∈ {panel, lookup, wizard, conflicts, settings, devices, mesh}. With
-DIPLOMAT_RENDER_LIVE=1 it fetches real data first; otherwise it uses a small
+what ∈ {panel, lookup, wizard, conflicts, settings, devices, mesh, telemetry}.
+With DIPLOMAT_RENDER_LIVE=1 it fetches real data first; otherwise it uses a small
 synthetic fixture.
 """
 
@@ -76,8 +76,10 @@ def _device_fixture(store: Store) -> None:
     }
 
 
-def _telemetry_fixture(store: Store) -> None:
-    """Synthetic activity feed + ban list so the left telemetry pane can be eyeballed."""
+def _left_pane_fixture(store: Store) -> None:
+    """Synthetic activity feed + ban list so the panel's left monitoring pane can
+    be eyeballed. Nothing to do with the Telemetry *screen* — that is
+    :func:`_telemetry_ledger_fixture` below."""
     from datetime import datetime, timedelta, timezone
 
     from . import activity, bans
@@ -101,6 +103,109 @@ def _telemetry_fixture(store: Store) -> None:
         bans.BannedAuthor("sketchy-bot", "prompt injection in PR body", "#391"),
         bans.BannedAuthor("evil-actor", "hidden instructions in the diff", None),
     ]
+
+
+def _telemetry_scratch() -> None:
+    """Point the shared ``~/.diplomat/pr-monitor`` directory at a scratch dir for
+    the rest of this render.
+
+    Load-bearing, not tidiness: the telemetry fixture below writes through the
+    real recorder, so without this a snapshot would append a fortnight of
+    invented events to the operator's actual ledger — and the screen would fold
+    their real one, putting real PR numbers and real spend into a PNG.
+    """
+    import tempfile
+    from pathlib import Path
+
+    from . import activity
+
+    scratch = Path(tempfile.mkdtemp(prefix="diplomat-render-telemetry-"))
+    activity._dir = lambda: scratch
+
+
+def _telemetry_ledger_fixture() -> None:
+    """A synthetic telemetry ledger so the ◫ Telemetry screen can be eyeballed:
+    a fortnight of quota samples burning down and refilling on the 5-hour cycle,
+    and forty-odd finished auto-tasks with a realistic right-skewed spread of
+    costs — most cheap, a few expensive — plus a handful still owed.
+
+    Written through the real recorder into the real ledger path, which the render
+    entry point has already pointed at a scratch directory: the screen folds the
+    file, so seeding the Store instead would test nothing the user will see.
+    """
+    import random
+
+    from . import telemetry
+
+    now = time.time()
+    day = 86400.0
+    rng = random.Random(20260803)  # fixed: a render must be reproducible
+
+    # The whole fixture hangs off one number: what a 5-hour window is worth in
+    # tokens. The samples are generated so that `calibrate` recovers it, and the
+    # task costs are drawn against it, so the percentages on the screen are the
+    # ones these task sizes really imply instead of an unrelated pair of scales.
+    session_price = 6_000_000.0
+    week_price = 20 * session_price
+
+    # Quota samples every 15 minutes for a fortnight. The session window refills on
+    # its own 5-hour cycle while the token counters only ever climb — exactly the
+    # shape the calibration has to price a window out of, reset gaps and all.
+    repo = other = 0.0
+    session_left = 1.0
+    week_left = 1.0
+    at = now - 14 * day
+    while at < now:
+        # Idle overnight, busy by day: a flat burn would make every interval price
+        # the window identically and hide whether the weighting works at all.
+        hour = (at % day) / 3600.0
+        busy = 0.15 if hour < 7 else 1.0
+        burn = rng.uniform(0.0, 0.05) * busy
+        spent = burn * session_price
+        repo += spent * rng.uniform(0.5, 0.75)
+        other += spent * rng.uniform(0.25, 0.5)
+        session_left -= burn
+        week_left -= spent / week_price
+        if session_left <= 0.05:
+            session_left = 1.0  # the 5-hour window rolled and refilled
+        if week_left <= 0.05:
+            week_left = 1.0
+        telemetry.append({"at": at, "ev": "sample",
+                          "sessionLeft": round(session_left, 4),
+                          "weekLeft": round(week_left, 4),
+                          "repoTokens": repo, "otherTokens": other})
+        at += 900.0
+
+    kinds = [("review", "review"), ("review-reply", "review"), ("conflicts", "conflicts")]
+    for i in range(44):
+        kind, duty = kinds[i % 3]
+        key = f"{kind}:github.com/software-mansion/argent#{300 + i}@{i:040x}"
+        queued = now - 14 * day + rng.uniform(0, 13.5 * day)
+        # Most work is picked up on the next poll; a third of it waits out the
+        # reconciler's backoff or an applet that was off. Without that tail the
+        # pending chart is flat at zero, which is the truth for a machine that is
+        # never behind and a useless picture of the one feature it exists to show.
+        wait = rng.uniform(20, 400) if i % 3 else rng.uniform(2 * 3600, 30 * 3600)
+        run = rng.lognormvariate(7.2, 0.6)
+        telemetry.append({"at": queued, "ev": "queued", "key": key,
+                          "duty": duty, "pr": 300 + i})
+        telemetry.append({"at": queued + wait, "ev": "started", "key": key,
+                          "remote": i % 11 == 0, "attempt": 1})
+        if i % 11 == 0:
+            continue  # ran on a peer: no local sentinel, no local cost
+        # Right-skewed, as real agent runs are: most around 2% of a window, a few
+        # several times that.
+        telemetry.append({"at": queued + wait + run, "ev": "done", "key": key,
+                          "tokens": rng.lognormvariate(11.6, 0.55)})
+
+    # Still owed, so the pending chart ends above zero and the "now" figures aren't
+    # both 0 in the snapshot.
+    for n, (kind, duty) in enumerate([("review", "review"), ("review", "review"),
+                                      ("conflicts", "conflicts")]):
+        telemetry.append({"at": now - (n + 1) * 3600, "ev": "queued",
+                          "key": f"{kind}:github.com/software-mansion/argent#{900 + n}@f{n}",
+                          "duty": duty, "pr": 900 + n})
+    telemetry._reset_cache()
 
 
 def _mesh_fixture(store: Store) -> None:
@@ -175,6 +280,12 @@ def run(what: str, out: str) -> int:
     ):
         _mesh_fixture(store)
 
+    # Also before Panel(): the Telemetry screen folds the ledger as it is built,
+    # so a fixture written afterwards would only show up on the next repaint.
+    if what == "telemetry":
+        _telemetry_scratch()
+        _telemetry_ledger_fixture()
+
     panel = Panel(store)
     if what == "lookup":
         panel.search.setText("389")
@@ -195,12 +306,14 @@ def run(what: str, out: str) -> int:
         # Fixture already applied above; open the Mesh screen and repaint from it.
         panel._toggle_mesh()
         store.mesh_changed.emit()
+    elif what == "telemetry":
+        panel._toggle_telemetry()
     else:  # panel
         _device_fixture(store)
-        _telemetry_fixture(store)
+        _left_pane_fixture(store)
         panel._rebuild_grid()
         panel._rebuild_devices()
-        panel._rebuild_telemetry()
+        panel._rebuild_left_pane()
         store.mesh_changed.emit()
         panel._update_results()
 

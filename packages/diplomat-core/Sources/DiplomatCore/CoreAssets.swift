@@ -73,6 +73,49 @@ public enum CoreAssets {
         public let blocks: [String: String]
     }
 
+    /// The Telemetry screen's model — the lookback ranges, the chart resolutions,
+    /// the confidence level, and one entry per figure (title, blurb, glyph, tint).
+    /// The arithmetic is `Telemetry`; this is only how it is presented, kept here so
+    /// the two screens describe the same number the same way.
+    public struct TelemetryModel: Decodable {
+        public struct Range: Decodable {
+            public let days: Int
+            public let title: String
+        }
+        public struct Series: Decodable {
+            public let steps: Int
+            public let bins: Int
+        }
+        public struct Confidence: Decodable {
+            public let level: Double
+            public let z: Double
+            public let title: String
+        }
+        public struct Metric: Decodable {
+            public let id: String
+            public let title: String
+            public let blurb: String
+            public let unit: String
+            public let emoji: String
+            public let linuxGlyph: String
+            public let sfSymbol: String
+            public let colorHex: String
+        }
+        public let ledgerFile: String
+        public let cursorFile: String
+        public let sampleIntervalSecs: Double
+        public let retainDays: Double
+        public let maxLedgerBytes: Int
+        public let ranges: [Range]
+        public let defaultRangeDays: Int
+        public let series: Series
+        public let confidence: Confidence
+        public let minSample: Int
+        public let metrics: [Metric]
+
+        public func metric(_ id: String) -> Metric? { metrics.first { $0.id == id } }
+    }
+
     // MARK: - Directory resolution
 
     /// Candidate locations for `assets/`, in priority order: an explicit override,
@@ -146,6 +189,7 @@ public enum CoreAssets {
     private static let _review = try? loadJSON("review.json", as: Review.self)
     private static let _conflicts = try? loadJSON("conflicts.json", as: Conflicts.self)
     private static let _audit = try? loadJSON("audit.json", as: Audit.self)
+    private static let _telemetry = try? loadJSON("telemetry.json", as: TelemetryModel.self)
 
     public static func config() throws -> Config {
         guard let c = _config else { return try loadJSON("config.json", as: Config.self) }
@@ -190,6 +234,13 @@ public enum CoreAssets {
     public static func audit() throws -> Audit {
         guard let a = _audit else { return try loadJSON("audit.json", as: Audit.self) }
         return a
+    }
+
+    /// The Telemetry screen's model from `telemetry.json`, shared verbatim with the
+    /// Linux front-end.
+    public static func telemetry() throws -> TelemetryModel {
+        guard let t = _telemetry else { return try loadJSON("telemetry.json", as: TelemetryModel.self) }
+        return t
     }
 
     public static func graphql(_ name: String) throws -> String {

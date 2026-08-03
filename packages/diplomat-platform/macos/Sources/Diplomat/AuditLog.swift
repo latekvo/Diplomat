@@ -18,8 +18,18 @@ struct AuditEntry: Codable, Equatable, Identifiable {
 }
 
 enum AuditLog {
+    /// Redirect for the headless render modes, which seed a synthetic telemetry
+    /// ledger through the real recorder: without it a snapshot would append a
+    /// fortnight of invented events to the operator's own files and fold their real
+    /// ones into a PNG. Set only by `Render`; nil in normal use.
+    static var dirOverride: URL?
+
+    /// Where everything the monitors write lives — the activity feed, the telemetry
+    /// ledger, the transcript-scan cursor.
     static var dir: URL {
-        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".diplomat/pr-monitor")
+        if let dirOverride { return dirOverride }
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".diplomat/pr-monitor")
     }
     static var fileURL: URL { dir.appendingPathComponent("audit.jsonl") }
 
