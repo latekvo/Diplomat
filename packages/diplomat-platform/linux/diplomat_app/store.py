@@ -360,8 +360,9 @@ class Store(QObject):
     @property
     def pr_autofix_enabled(self) -> bool:
         """Watch my open PRs and auto-resolve conflicts + address review threads.
-        On by default (matches macOS). The background poll no-ops when this and
-        review_requests_enabled are both off."""
+        On by default (matches macOS). Switched off, the poll keeps looking and
+        queues what it finds for the panel (:meth:`is_paused`); what stops is the
+        automatic start."""
         return self._settings.value("prAutofixEnabled", True, bool)
 
     @pr_autofix_enabled.setter
@@ -371,7 +372,8 @@ class Store(QObject):
     @property
     def review_requests_enabled(self) -> bool:
         """Full-E2E review PRs that request my review (read-only, never touches their
-        branch), retrying an unaddressed review until it lands. On by default."""
+        branch), retrying an unaddressed review until it lands. On by default;
+        switched off it queues rather than starts, like the toggle above."""
         return self._settings.value("reviewRequestsEnabled", True, bool)
 
     @review_requests_enabled.setter
