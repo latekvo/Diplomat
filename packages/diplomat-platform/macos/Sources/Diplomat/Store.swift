@@ -1965,9 +1965,14 @@ final class Store: ObservableObject {
             finished.append((run.key, run.prompt, run.at, mtime))
         }
         guard !finished.isEmpty else { return }
-        // Scanning transcripts walks ~/.claude, so it stays off the main actor.
+        // Scanning transcripts walks ~/.claude, so it stays off the main actor. The
+        // batch is bound to a `let` first because capturing a mutable var in
+        // concurrently-executing code is an error under the Swift 5.10 toolchain the
+        // macOS CI job builds with — 6.x proves the mutation is finished and accepts
+        // it, so this only ever fails away from the machine it was written on.
+        let completions = finished
         await Task.detached(priority: .utility) {
-            for f in finished {
+            for f in completions {
                 let tokens = UsageScan.taskTokens(prompt: f.prompt, startedAt: f.at,
                                                   endedAt: f.done)
                 TelemetryLog.done(key: f.key, at: f.done, tokens: tokens)
