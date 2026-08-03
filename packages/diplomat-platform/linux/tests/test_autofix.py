@@ -354,6 +354,12 @@ def test_unaddressed_count_and_ban_skip(store, monkeypatch):
 
 def test_poll_error_surfaced_and_recovers(store, monkeypatch):
     store.review_requests_enabled = False
+    # Both monitors fetch on every cycle whatever their toggles say, so the other
+    # one is stubbed too — otherwise it reaches the real `gh` and answers for the
+    # poll error this test is about.
+    monkeypatch.setattr(
+        "diplomat_app.autofixmonitor.fetch_review_requests", lambda *a, **k: []
+    )
 
     def boom(*a, **k):
         raise RuntimeError("gh exploded")
@@ -377,6 +383,9 @@ def test_build_prompt_failure_surfaces_as_poll_error_not_a_dead_worker(store, mo
     error never clears). Regression for the unguarded poll body (only fetch_* was wrapped)."""
     store.review_requests_enabled = False
     _spawn_recorder(monkeypatch, finish=True)  # the recovery poll DISPATCHES — never spawn for real
+    monkeypatch.setattr(  # the other monitor fetches too; keep it off the network
+        "diplomat_app.autofixmonitor.fetch_review_requests", lambda *a, **k: []
+    )
     snap = _snap(number=9, mergeable="CONFLICTING")           # a fresh conflict -> dispatch
     store._save_fingerprints({9: PRFingerprint("MERGEABLE", "", 0)})
     monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_snapshots", lambda *a, **k: [snap])
@@ -1121,6 +1130,9 @@ def test_one_poll_offering_a_task_twice_queues_the_backoff_aware_one(store, monk
     monkeypatch.setattr(type(store), "_live_pr_agents", lambda self: {90, 91})  # cap full
     snaps = [_snap(number=5, unresolved=3, i_owe=1)]
     monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_snapshots", lambda *a, **k: snaps)
+    monkeypatch.setattr(
+        "diplomat_app.autofixmonitor.fetch_review_requests", lambda *a, **k: []
+    )
     store._save_fingerprints({5: PRFingerprint("MERGEABLE", "", 0)})  # threads went up
     store._save_attempts(
         "myReviewAttempts",

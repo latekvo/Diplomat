@@ -98,6 +98,31 @@ def no_host_agent_spawn(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_github_reads(monkeypatch):
+    """Fail loudly instead of shelling out to the real ``gh``.
+
+    Every GitHub read in the applet funnels through :func:`gh.run`, and a test that
+    reaches it is a test whose answer depends on the operator's own PRs, their auth,
+    and the network — green here, red on a runner with no ``GH_TOKEN``, and slow and
+    rate-limit-consuming in both. It is easy to reach by accident: one poll drives
+    BOTH monitors, so stubbing one monitor's fetch leaves the other's live.
+
+    Tests that mean to exercise a fetch stub ``autofixmonitor.fetch_*`` (or
+    ``models.API``) themselves; this is the backstop for the ones that don't.
+    """
+    from diplomat_app import gh
+
+    def refuse(args, timeout=60.0):
+        raise AssertionError(
+            f"a test reached the real `gh` ({' '.join(args[:2])}…) — stub the fetch "
+            "it goes through (autofixmonitor.fetch_snapshots / fetch_review_requests)"
+        )
+
+    monkeypatch.setattr(gh, "run", refuse)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def isolated_activity_feed(tmp_path, monkeypatch):
     """Redirect the shared ``~/.diplomat/pr-monitor`` activity feed to a per-test temp
     dir so tests never scribble on the user's real audit.jsonl. The monitor + API-error
