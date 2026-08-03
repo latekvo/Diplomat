@@ -670,7 +670,8 @@ running. It's the unattended twin of the Settings **Update** button, and it logs
 
 Every mode runs the real pipeline once, prints, and exits - none of them start
 the monitors or touch a terminal (except `TRACK_TEST` and `SPAWN_FOCUS_TEST`, whose
-point is exactly that). `packages/diplomat-platform/macos/Sources/Diplomat/Headless.swift` is the one list that
+point is exactly that; and `RENDER=live`, which opens a window and stays up until
+you stop it). `packages/diplomat-platform/macos/Sources/Diplomat/Headless.swift` is the one list that
 decides what counts as headless:
 
 ```bash
@@ -681,8 +682,9 @@ DIPLOMAT_PRINT_PROMPT=mine swift run Diplomat # assemble + print a prompt: mine|
                                                      #   audit[-issues|-prs|-all]
 DIPLOMAT_SETTINGS_DUMP=1 ./Diplomat.app/Contents/MacOS/Diplomat  # resolved persisted settings
 DIPLOMAT_QUEUE_TEST=1 swift run Diplomat      # self-test: the queue behind the automatic-task cap
-                                                     #   (capture, dedup, arrangement, monitor pruning).
-                                                     #   Spawns nothing; redirects its own audit writes.
+                                                     #   (capture, dedup, arrangement, what a paused
+                                                     #   monitor holds, free slots). Spawns nothing;
+                                                     #   redirects its own audit writes.
 DIPLOMAT_RENDER=panel    ./Diplomat.app/Contents/MacOS/Diplomat  # snapshot a screen to PNG (out
                                                      #   path: DIPLOMAT_RENDER_OUT). States: panel|panel-procs
                                                      #   natural|settings|settings-live|approved|unban-confirm
@@ -695,6 +697,9 @@ DIPLOMAT_RENDER=panel    ./Diplomat.app/Contents/MacOS/Diplomat  # snapshot a sc
                                                      #   popover (REAL NSWindow snapshot incl. the legacy
                                                      #   scroller — pair with DIPLOMAT_POPOVER_CAP=400
                                                      #   to force the scrolling state)
+                                                     #   live (the real popover ON-SCREEN, left running, to
+                                                     #   drive the queue's drag + execute now with a mouse;
+                                                     #   its queued rows resolve in-flight, so no spawn)
 DIPLOMAT_TRACK_TEST=1    ...                     # E2E of session tracking via a real throwaway terminal
                                                      #   window; exits non-zero on failure
 DIPLOMAT_SPAWN_FOCUS_TEST=1 ...                  # E2E that background spawns keep focus and foreground ones
