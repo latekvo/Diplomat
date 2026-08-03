@@ -198,8 +198,10 @@ struct SettingsView: View {
             .padding(.top, 2)
             Text("A hard cap for this machine, across both monitors above and any work "
                  + "a mesh peer routes here. Agents you spawn yourself from the panel "
-                 + "don't count against it. Work over the cap isn't dropped — the next "
-                 + "poll picks it up as soon as a running agent finishes.")
+                 + "don't count against it. Work over the cap isn't dropped — it waits "
+                 + "in the Agent-tasks list, in the order you put it, and starts as soon "
+                 + "as a running agent finishes. The panel draws whatever is left of the "
+                 + "cap as empty slots.")
                 .font(.caption2).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -246,7 +248,8 @@ struct SettingsView: View {
         let base = "When someone requests my review on a PR, spawns the most thorough review "
             + "(Full E2E ×2, leaving inline comments) — read-only, never touches their branch. "
             + "A review left unaddressed (agent died, lost connection, window closed) is retried "
-            + "automatically until it lands."
+            + "automatically until it lands. Off, the requests still list under Agent tasks, "
+            + "queued for you to start by hand."
         let handled = store.reviewRequestsHandled > 0 ? "  Reviewed \(store.reviewRequestsHandled) so far." : ""
         return base + handled
     }
@@ -319,7 +322,7 @@ struct SettingsView: View {
                     .font(.caption2).foregroundStyle(live ? Color.green : Color.orange)
             }
         }
-        Text("When on, an agent watches your open PRs and automatically resolves merge conflicts and addresses new review threads. Turning it off pauses agent dispatch.")
+        Text("When on, an agent watches your open PRs and automatically resolves merge conflicts and addresses new review threads. Off, the monitor keeps looking and lists what it finds under Agent tasks — as queued work only you can start, with \u{201C}execute now\u{201D}.")
             .font(.caption2).foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
     }

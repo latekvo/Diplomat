@@ -8,8 +8,9 @@ import DiplomatCore
 /// (`AgentTaskQueue`); what this covers is the wiring around them, which is where
 /// a queue silently stops being one: that a refusal is captured rather than
 /// dropped, that one unit offered twice in a cycle is one task, that the operator's
-/// arrangement survives the poll that rebuilds the list, and that the list empties
-/// when nothing is watching for the work any more.
+/// arrangement survives the poll that rebuilds the list, that work GitHub stops
+/// owing falls out of it, and that a switched-off monitor's work is held rather
+/// than either run or dropped.
 ///
 /// It reaches the at-capacity branch honestly — a real `dispatchAgent` call against
 /// a real cap — so it never spawns an agent, needs no `gh` auth and no terminal
@@ -125,27 +126,79 @@ enum QueueTest {
         check("a unit no longer offered leaves the queue",
               store.queuedTasks.map(\.id) == ["review-req:4"])
 
-        // 6. A monitor switched off takes its queued work with it. That toggle is how
-        //    the operator pauses this work; unpruned, the drain still spawns an agent
-        //    per queued row of that monitor, minutes after they switched it off.
+        // 6. Only work a monitor will offer again may be queued. The queue is a view
+        //    of what the monitors owe, never a record of its own: a job no monitor
+        //    owns would sit there unpauseable, unrecorded, and never re-offered — so
+        //    it is refused at the door. Nothing builds one today; this is what keeps
+        //    that true when something does.
+        _ = await offer(Store.AgentJob(kind: "review", auditAction: "sweep",
+                                       label: "Sweep · #9", prompt: "",
+                                       prURL: "https://github.com/software-mansion/argent/pull/9",
+                                       prNumber: 9, authorLogin: nil, duty: "review",
+                                       workKey: "", counter: nil))
+        store.commitQueue()
+        check("work no monitor owns is not queued", store.queuedTasks.isEmpty)
+
+        // 7. A monitor switched off still queues its work — the panel is where the
+        //    operator sees what their PRs owe — but nothing automatic starts it. The
+        //    drain walks `drainableTasks`, so that list is where the rule lives: a
+        //    paused row in it is an agent spawned minutes after they switched it off.
         _ = await offer(job(4))
         _ = await offer(job(6, action: "conflicts", label: "Resolve · #6",
                             counter: .conflicts))
         store.commitQueue()
         check("both monitors on ⇒ both kinds queue",
               store.queuedTasks.map(\.id) == ["review-req:4", "conflicts:6"])
+        check("…and both are the drain's to run",
+              store.drainableTasks.map(\.id) == ["review-req:4", "conflicts:6"])
         store.prAutofixEnabled = false
-        store.pruneQueueToEnabledMonitors()
-        check("switching off PR auto-fix drops its queued work, not the other monitor's",
-              store.queuedTasks.map(\.id) == ["review-req:4"])
+        check("switching off PR auto-fix keeps its queued work on the list",
+              store.queuedTasks.map(\.id) == ["review-req:4", "conflicts:6"])
+        check("…but the drain will no longer start it",
+              store.drainableTasks.map(\.id) == ["review-req:4"])
 
-        // 7. Nothing polls ⇒ nothing is pending. Rows offering to run work that no
-        //    monitor is watching for would outlive the feature that produced them.
+        // 8. A switched-off monitor keeps FINDING work: the poll runs both monitors
+        //    either way and the queue is where the off one puts what it found. This is
+        //    the toggle's whole meaning now — who starts the work, not whether it is
+        //    known — so a poll that skipped the off monitor would empty its rows.
+        _ = await offer(job(4))
+        _ = await offer(job(6, action: "conflicts", label: "Resolve · #6",
+                            counter: .conflicts))
+        store.commitQueue()
+        check("a paused monitor's find is queued, not dropped",
+              store.queuedTasks.map(\.id) == ["review-req:4", "conflicts:6"])
         store.reviewRequestsEnabled = false
-        await store.runAutofixPollOnce()
-        check("turning both monitors off empties the queue", store.queuedTasks.isEmpty)
+        check("with both monitors off, nothing is the drain's to run",
+              store.drainableTasks.isEmpty)
+        check("…and the rows stay, for \"execute now\"",
+              store.queuedTasks.count == 2)
 
-        // 8. The redirect above is the only thing between a run of this test and the
+        // Room on the device is not permission. With slots free and the monitor off,
+        // the job must still be held — the alternative is an agent launching from a
+        // monitor the operator switched off, which is the one thing the toggle buys.
+        store.autoTaskLimit = 3     // one auto agent up ⇒ two slots free
+        check("a paused monitor's job is held even with the device idle",
+              await offer(job(8, action: "conflicts", label: "Resolve · #8",
+                              counter: .conflicts)) == .atCapacity)
+        store.autoTaskLimit = 1
+
+        // 9. The empty slots the panel draws under the tasks. The seeded agent is up
+        //    against a cap of one, so this device has no room; the panel must not
+        //    offer a bay the gate would refuse to fill.
+        store.pinAutoTasksMeasured(1)
+        check("a device at its cap draws no free slots", store.freeAutoSlots == 0)
+        store.autoTaskLimit = 3
+        check("raising the cap opens the slots it added", store.freeAutoSlots == 2)
+        store.processes = []
+        store.pinAutoTasksMeasured(0)
+        check("an idle device is all free slots", store.freeAutoSlots == 3)
+        // Reachable two ways: an untracked agent counts as automatic, and the cap can
+        // be lowered under agents that are already running.
+        store.pinAutoTasksMeasured(5)
+        check("more agents up than the cap allows is zero slots, never negative",
+              store.freeAutoSlots == 0)
+
+        // 10. The redirect above is the only thing between a run of this test and the
         //    operator's real activity log, so prove it caught the writes.
         check("the at-capacity lines it provoked went to the scratch feed",
               FileManager.default.fileExists(

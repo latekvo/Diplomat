@@ -9,10 +9,14 @@ assets — and it doesn't re-implement prompt assembly at all: it shells out to 
 `diplomat-core` Swift binary, so the two front-ends are identical by construction.
 
 **Still macOS-only:** the per-row **Merge** button; the **Agent tasks** list (the
-panel's spawned-sessions and deferred-work rows — a spawn here is a detached
-`Popen` with no window handle to track it by, so there is nothing to render a
-session row from, and with no list there is nowhere to put the deferred half
-either); and reading/typing into *arbitrary* terminal windows — Linux has no
+panel's spawned-sessions, queued-work and free-slot rows — a spawn here is a
+detached `Popen` with no window handle to track it by, so there is nothing to
+render a session row from, and with no list there is nowhere to put the rest).
+That difference reaches one behaviour, not just the view: with nowhere to queue
+work, a monitor switched off here stops polling for it, where on macOS it keeps
+polling and lists what it finds for you to start by hand. The cap and the dispatch
+gate themselves are shared, so both front-ends still *decide* identically.
+Also macOS-only: reading/typing into *arbitrary* terminal windows — Linux has no
 portable hook for that, so the API-error watcher drives **tmux panes** instead and
 is inert for agents not running inside tmux.
 

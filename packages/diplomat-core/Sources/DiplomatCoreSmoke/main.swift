@@ -515,11 +515,15 @@ check(AgentDispatchGate.runningAutoTasks(livePRs: [1, 2, 3], autoPRs: [4],
 
 section("the agent-task list and the queue behind the cap")
 // The list's reading order, which is also `ProcessRow`'s status precedence.
-check(AgentTaskStatus.allCases == [.merged, .done, .awaitingInput, .running, .queued],
-      "finished first, then what wants a human, then what doesn't, then what hasn't started")
+check(AgentTaskStatus.allCases == [.merged, .done, .awaitingInput, .running, .free, .queued],
+      "finished first, then what wants a human, then what doesn't, then this device's "
+      + "empty slots, then what hasn't started")
 check(AgentTaskStatus.merged < AgentTaskStatus.queued
       && AgentTaskStatus.awaitingInput < AgentTaskStatus.running,
       "the case order IS the sort order")
+check(AgentTaskStatus.running < AgentTaskStatus.free
+      && AgentTaskStatus.free < AgentTaskStatus.queued,
+      "an empty slot stands where a running agent would — under them, above the queue")
 check(AgentTaskStatus.ofSession(merged: true, done: true, awaitingInput: true) == .merged,
       "a landed PR is the definitive outcome — it outranks a local exit")
 check(AgentTaskStatus.ofSession(merged: false, done: true, awaitingInput: true) == .done,
@@ -528,8 +532,19 @@ check(AgentTaskStatus.ofSession(merged: false, done: false, awaitingInput: true)
       "a live session idling at the prompt wants a human")
 check(AgentTaskStatus.ofSession(merged: false, done: false, awaitingInput: false) == .running,
       "otherwise it is just running")
-check(AgentTaskStatus.queued.title == "queued" && AgentTaskStatus.awaitingInput.title == "awaiting input",
+check(AgentTaskStatus.queued.title == "queued" && AgentTaskStatus.awaitingInput.title == "awaiting input"
+      && AgentTaskStatus.free.title == "free slot",
       "the words the rows show")
+
+// The empty bays the panel draws for the rest of the device's cap.
+check(AgentTaskQueue.freeSlots(limit: 2, running: 0) == 2,
+      "an idle device is all free slots")
+check(AgentTaskQueue.freeSlots(limit: 2, running: 1) == 1,
+      "each running automatic agent takes one")
+check(AgentTaskQueue.freeSlots(limit: 2, running: 2) == 0,
+      "a device at its cap has none")
+check(AgentTaskQueue.freeSlots(limit: 1, running: 4) == 0,
+      "more agents up than the cap allows draws no slots, not negative ones")
 
 // Queue identity: two monitors owing the same PR are two tasks, and a push must
 // not lose the operator's place for either (so: not the sha-scoped mesh key).

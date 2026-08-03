@@ -278,9 +278,19 @@ enum Render {
     /// tasks so the whole Agent-tasks list can be eyeballed: every session status,
     /// the sort that puts finished work on top and the queue at the bottom, and the
     /// queued rows' drag grip and "execute now". No-op otherwise.
+    ///
+    /// The sessions are panel spawns (the fixture default), which spend none of the
+    /// automatic budget — so the device also draws its full cap of empty slots, and
+    /// one snapshot carries every row type the list has.
     @MainActor
     private static func seedProcessesIfNeeded(_ what: String, store: Store) -> Bool {
         guard what.lowercased().contains("proc") else { return false }
+        // Pinned, because a queued row says whether its monitor is switched off and a
+        // headless Store still READS the real defaults — unpinned, this snapshot would
+        // differ per machine. One monitor on and one off is also the pair of states a
+        // queued row has: held for a free slot, and held until you click.
+        store.prAutofixEnabled = true
+        store.reviewRequestsEnabled = false
         // Deliberately not in status order — the list's own sort is what's on trial.
         store.processes = [
             TrackedProcess(kind: "review", label: "Review · #337 · Deep", terminal: "iterm",

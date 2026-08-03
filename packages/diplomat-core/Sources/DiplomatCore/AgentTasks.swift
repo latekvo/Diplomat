@@ -18,11 +18,17 @@ import Foundation
 /// session that wants a human ("awaiting input") outranks one that doesn't need
 /// anything ("running"), and work that has not started yet is last. Finished rows
 /// sit at the top because they are the only ones asking to be read.
+///
+/// `free` is the one case that is not a task: it is a slot of the device's cap with
+/// nothing in it. It sorts with the running agents rather than with the queue
+/// because it stands where one of them would — the panel draws the cap as a row of
+/// bays, so how many are open is read at the same glance as what is in the rest.
 public enum AgentTaskStatus: Int, Comparable, CaseIterable {
     case merged = 0
     case done
     case awaitingInput
     case running
+    case free
     case queued
 
     public static func < (lhs: AgentTaskStatus, rhs: AgentTaskStatus) -> Bool {
@@ -30,7 +36,8 @@ public enum AgentTaskStatus: Int, Comparable, CaseIterable {
     }
 
     /// The status of a spawned session, from the three flags the tracker recomputes
-    /// on each sweep. A queued task has no session and is `.queued` by construction.
+    /// on each sweep. A queued task has no session and is `.queued` by construction;
+    /// an empty slot has no task at all and is `.free`.
     public static func ofSession(merged: Bool, done: Bool,
                                  awaitingInput: Bool) -> AgentTaskStatus {
         if merged { return .merged }
@@ -46,6 +53,7 @@ public enum AgentTaskStatus: Int, Comparable, CaseIterable {
         case .done:          return "done"
         case .awaitingInput: return "awaiting input"
         case .running:       return "running"
+        case .free:          return "free slot"
         case .queued:        return "queued"
         }
     }
@@ -70,6 +78,17 @@ public enum AgentTaskQueue {
     /// overwriting it.
     public static func key(auditAction: String, prNumber: Int) -> String {
         "\(auditAction):\(prNumber)"
+    }
+
+    /// Slots of the device's automatic-task cap with nothing running in them — the
+    /// empty bays the panel draws under the sessions.
+    ///
+    /// Clamped at zero because `running` can legitimately exceed the cap: it counts
+    /// agents this device did not necessarily start (an untracked `claude` in `ps`
+    /// counts as automatic), and lowering the cap while agents run leaves them
+    /// running. Both would otherwise render as a negative number of free slots.
+    public static func freeSlots(limit: Int, running: Int) -> Int {
+        max(0, limit - running)
     }
 
     /// The queue for this poll: everything still offered, in the order the operator

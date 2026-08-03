@@ -116,22 +116,32 @@ tint) is shared in [`assets/audit-categories.json`](packages/diplomat-core/asset
 
 ### Agent tasks
 
-One list for what the machine is doing and what it is about to do - the agents it
-has **spawned**, and the automatic work its [task cap](#autonomous-monitors) is
-**holding**. Rows read in status order: *merged*, *done*, *awaiting input*,
-*running*, *queued*, so finished work (the only kind asking to be read) sits at
-the top and everything not started yet is at the bottom.
+One list for what the machine is doing, what it is about to do, and how much room
+it has left - the agents it has **spawned**, the automatic work it is **holding**,
+and an empty bay per free slot of its [task cap](#autonomous-monitors). Rows read
+in status order: *merged*, *done*, *awaiting input*, *running*, *free slot*,
+*queued*, so finished work (the only kind asking to be read) sits at the top and
+everything not started yet is at the bottom. The list is always there: an idle
+machine with a cap of two reads `0 · 2 free` over two empty bays.
 
 - **Sessions** are every spawned agent, wizard- or monitor-launched. Click a row
   to focus its terminal window, ✕ to stop tracking it.
-- **Queued** rows are auto-fixes and auto-reviews the cap deferred. Switch a
-  monitor off and its queued rows go with it - that toggle is how you pause this
-  work. Each carries
-  **execute now** - start it immediately, past the cap - and a drag grip: drop a
-  row on another to set the order the queue runs in. That order is honoured at the
-  top of the next poll, *before* the monitors go looking for more work, so a slot
-  that just freed goes to whatever you put first rather than to whichever PR
-  GitHub happened to list first.
+- **Free slots** are the rest of the cap. Each running automatic agent takes one;
+  agents you spawn yourself from the panel take none. Queued work starts here on
+  the next poll.
+- **Queued** rows are auto-fixes and auto-reviews nothing has started yet. Each
+  carries **execute now** - start it immediately, past whatever is holding it -
+  and a drag grip: drop a row on another to set the order the queue runs in. That
+  order is honoured at the top of the next poll, *before* the monitors go looking
+  for more work, so a slot that just freed goes to whatever you put first rather
+  than to whichever PR GitHub happened to list first.
+
+Two things hold work. The cap holds what there is no slot for, and releases it as
+slots free. A **monitor you switched off** holds its own work indefinitely: it
+keeps polling and keeps listing what it finds (reading *queued · monitor off*),
+but nothing starts by itself - only *execute now* does. So the toggles decide who
+starts the work, not whether you get to see it, and turning both off does not stop
+the 3-minute GitHub poll.
 
 The queue is a view of what the monitors would re-offer, not a second copy of
 their state: it is rebuilt from live GitHub evidence on every 3-minute poll, so a
@@ -447,7 +457,8 @@ drift. Agents *you* spawn from the panel don't count against it, and a click is
 never refused. Nothing is dropped - work over the cap gets no attempt record, so
 the next 3-minute tick offers it again as soon as an agent finishes, and it waits
 visibly in the panel's [Agent tasks](#agent-tasks) list meanwhile, where it can be
-reordered or started by hand. Saturation shows up as one `at-capacity` row in the
+reordered or started by hand. Whatever is left of the cap shows there too, as an
+empty bay per free slot. Saturation shows up as one `at-capacity` row in the
 activity feed per episode.
 
 **With a mesh up, each unit of work runs once.** Every machine scans GitHub
@@ -499,7 +510,9 @@ to a settings screen:
 - **Auto-fix my PRs / Full-E2E review requests** - the two monitor toggles, with
   live status: PRs watched, reviews done so far, "N unaddressed reviews -
   retrying", and any poll failure. (The combined *fixed N* counter lives on the
-  panel's status pill, not here.) Nested under the **review-requests** toggle -
+  panel's status pill, not here.) A monitor switched off keeps polling and keeps
+  listing what it finds under [Agent tasks](#agent-tasks); what stops is the
+  automatic start. Nested under the **review-requests** toggle -
   and visible only while it's on - the **auto-approve** master toggle and its
   three withhold-the-verdict suppressors (SKILL / installer / community).
 - **Run at most N automatic tasks at a time** - this machine's hard cap on
@@ -732,8 +745,9 @@ assembled prompts byte-for-byte against `assets/golden-prompts/`, so they can on
 drift from each other by failing a CI job. Both also run the full monitor stack;
 what stays macOS-only is the per-row **Merge** button, the
 [Agent tasks](#agent-tasks) list (a Linux spawn is a detached `Popen` with no
-window handle to track a session by), and reading arbitrary terminal windows (the
-Linux watcher drives tmux panes instead).
+window handle to track a session by - and with no list, a monitor switched off
+there stops polling rather than queueing what it finds), and reading arbitrary
+terminal windows (the Linux watcher drives tmux panes instead).
 
 This repository is a **monorepo of independent parts**: everything lives in
 `packages/`, one directory per package, and CI is arranged to keep them
