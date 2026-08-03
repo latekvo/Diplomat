@@ -615,10 +615,12 @@ struct ContentView: View {
     private var agentTaskList: some View {
         let items = agentTaskItems
         let queued = store.queuedTasks.count
+        // Built outside the ViewBuilder: a builder call is where the type-checker is
+        // slowest, and CI's runner is slower than this machine.
+        let caption: String? = queued == 0 ? nil : "\(queued) queued"
         return VStack(alignment: .leading, spacing: 4) {
             SectionHeader(title: "AGENT TASKS", count: items.count, expanded: $tasksExpanded,
-                          icon: "antenna.radiowaves.left.and.right",
-                          caption: queued == 0 ? nil : "\(queued) queued")
+                          icon: "antenna.radiowaves.left.and.right", caption: caption)
             if tasksExpanded {
                 ForEach(items) { item in
                     switch item {
@@ -643,13 +645,7 @@ struct ContentView: View {
         .cardChrome()
     }
 
-    private func agentTaskTint(_ kind: String) -> Color {
-        switch kind {
-        case "conflicts": return .cyan
-        case "audit":     return .indigo
-        default:          return .pink
-        }
-    }
+    private func agentTaskTint(_ kind: String) -> Color { DiplomatUI.agentTaskTint(kind) }
 
     /// Click a tracked row: focus its window. If focus fails the window is gone and
     /// the session is dismissed by the store — nothing more to do here.
@@ -895,7 +891,28 @@ struct ContentView: View {
     }
 }
 
-// MARK: - Ongoing agent-session row
+/// How an agent task's kind reads, wherever it is drawn. One mapping per axis, so a
+/// task does not change glyph or colour at the moment it stops being queued and
+/// starts being a session.
+private enum DiplomatUI {
+    static func agentTaskIcon(_ kind: String) -> String {
+        switch kind {
+        case "conflicts": return "arrow.triangle.merge"
+        case "audit":     return "ladybug.fill"
+        default:          return "checklist"
+        }
+    }
+
+    static func agentTaskTint(_ kind: String) -> Color {
+        switch kind {
+        case "conflicts": return .cyan
+        case "audit":     return .indigo
+        default:          return .pink
+        }
+    }
+}
+
+// MARK: - Agent-session row
 
 private struct ProcessRow: View {
     let proc: TrackedProcess
@@ -903,14 +920,7 @@ private struct ProcessRow: View {
     let onTap: () -> Void
     let onRemove: () -> Void
 
-    /// The leading glyph, matched to the action that spawned the session.
-    private var kindIcon: String {
-        switch proc.kind {
-        case "conflicts": return "arrow.triangle.merge"
-        case "audit":     return "ladybug.fill"
-        default:          return "checklist"
-        }
-    }
+    private var kindIcon: String { DiplomatUI.agentTaskIcon(proc.kind) }
 
     var body: some View {
         HStack(spacing: 6) {
@@ -1000,15 +1010,10 @@ private struct QueuedTaskRow: View {
 
     @State private var targeted = false
 
-    /// The leading glyph, matched to the action that will spawn — the same mapping a
-    /// session row uses, so a task doesn't change shape when it starts running.
-    private var kindIcon: String {
-        switch task.job.kind {
-        case "conflicts": return "arrow.triangle.merge"
-        case "audit":     return "ladybug.fill"
-        default:          return "checklist"
-        }
-    }
+    private static let runHelp = "Start this agent now, without waiting for a free slot. "
+        + "It then counts against the cap like any automatic agent."
+
+    private var kindIcon: String { DiplomatUI.agentTaskIcon(task.job.kind) }
 
     /// The label it will run under, not the bare core: a queued task should read on
     /// the panel exactly as its session will once it starts.
@@ -1038,8 +1043,7 @@ private struct QueuedTaskRow: View {
                     .background(Capsule().fill(tint.opacity(0.16)))
             }
             .buttonStyle(.plain)
-            .help("Start this agent now, without waiting for a free slot. It then "
-                  + "counts against the cap like any automatic agent.")
+            .help(QueuedTaskRow.runHelp)
         }
         .padding(6)
         .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.06)))

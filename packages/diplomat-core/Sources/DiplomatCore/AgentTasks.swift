@@ -76,9 +76,12 @@ public enum AgentTaskQueue {
     /// last dragged it into, with tasks they have never arranged appended in the
     /// order the monitors found them.
     ///
-    /// Keys that are no longer offered fall out — the work was taken, resolved,
-    /// banned or claimed by a peer, and a queue that outlived its evidence would
-    /// hand "execute now" a task GitHub no longer owes.
+    /// Keys that are no longer offered fall out — the work was taken by an agent,
+    /// resolved, or its author banned — because a queue that outlived its evidence
+    /// would hand "execute now" a task GitHub no longer owes. (Not a mesh claim: the
+    /// cap outranks the mesh gate, so a device with anything queued is by definition
+    /// one that never asked a peer. Peer-owned work leaves the queue when the drain
+    /// reaches it and the mesh answers.)
     public static func order(offered: [String], saved: [String]) -> [String] {
         let live = Set(offered)
         var out: [String] = []

@@ -124,7 +124,9 @@ the top and everything not started yet is at the bottom.
 
 - **Sessions** are every spawned agent, wizard- or monitor-launched. Click a row
   to focus its terminal window, ✕ to stop tracking it.
-- **Queued** rows are auto-fixes and auto-reviews the cap deferred. Each carries
+- **Queued** rows are auto-fixes and auto-reviews the cap deferred. Switch a
+  monitor off and its queued rows go with it - that toggle is how you pause this
+  work. Each carries
   **execute now** - start it immediately, past the cap - and a drag grip: drop a
   row on another to set the order the queue runs in. That order is honoured at the
   top of the next poll, *before* the monitors go looking for more work, so a slot
@@ -133,9 +135,11 @@ the top and everything not started yet is at the bottom.
 
 The queue is a view of what the monitors would re-offer, not a second copy of
 their state: it is rebuilt from live GitHub evidence on every 3-minute poll, so a
-task drops out the moment the work is taken, resolved, or claimed by a mesh peer.
-Only your arrangement of it is remembered (it has to be - a poll can't
-reconstruct it). *Execute now* keeps the task automatic in every other respect:
+task drops out the moment the work is taken by an agent, resolved, or its author
+banned. (Not on a mesh claim: the cap outranks the mesh gate, so a machine with
+anything queued is one that never asked a peer - peer-owned work leaves when the
+drain reaches it and the mesh answers.) The key order is remembered, so your
+arrangement survives the rebuild and a restart; nothing else is. *Execute now* keeps the task automatic in every other respect:
 same `Auto · ` label, same auto-handled counter, and once running it occupies a
 slot like any other automatic agent, so the rest of the queue waits behind it.
 
@@ -663,6 +667,9 @@ DIPLOMAT_PRINT_PROMPT=mine swift run Diplomat # assemble + print a prompt: mine|
                                                      #   -final for the verdict pass), conflicts[-user|-single],
                                                      #   audit[-issues|-prs|-all]
 DIPLOMAT_SETTINGS_DUMP=1 ./Diplomat.app/Contents/MacOS/Diplomat  # resolved persisted settings
+DIPLOMAT_QUEUE_TEST=1 swift run Diplomat      # self-test: the queue behind the automatic-task cap
+                                                     #   (capture, dedup, arrangement, monitor pruning).
+                                                     #   Spawns nothing; redirects its own audit writes.
 DIPLOMAT_RENDER=panel    ./Diplomat.app/Contents/MacOS/Diplomat  # snapshot a screen to PNG (out
                                                      #   path: DIPLOMAT_RENDER_OUT). States: panel|panel-procs
                                                      #   natural|settings|settings-live|approved|unban-confirm
@@ -723,8 +730,10 @@ language-neutral GraphQL queries, the tool catalog, filter constants, and the
 prompt fragments for all three actions. Both front-ends load it and assert their
 assembled prompts byte-for-byte against `assets/golden-prompts/`, so they can only
 drift from each other by failing a CI job. Both also run the full monitor stack;
-what stays macOS-only is the per-row **Merge** button and reading arbitrary
-terminal windows (the Linux watcher drives tmux panes instead).
+what stays macOS-only is the per-row **Merge** button, the
+[Agent tasks](#agent-tasks) list (a Linux spawn is a detached `Popen` with no
+window handle to track a session by), and reading arbitrary terminal windows (the
+Linux watcher drives tmux panes instead).
 
 This repository is a **monorepo of independent parts**: everything lives in
 `packages/`, one directory per package, and CI is arranged to keep them

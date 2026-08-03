@@ -16,6 +16,11 @@ import DiplomatCore
 /// automation, and can run on a CI runner:
 ///
 ///   DIPLOMAT_QUEUE_TEST=1 swift run Diplomat
+///
+/// It does read `ps` and the ban list, and the refusal it provokes writes an
+/// `at-capacity` line — so it points `DIPLOMAT_AUDIT_DIR` at a scratch directory
+/// first. `Headless.active` covers UserDefaults, not the shared feed, and a
+/// self-test has no business in the operator's activity log.
 enum QueueTest {
     /// Returns overall pass/fail so the launcher can exit non-zero — a FAIL that
     /// still exits 0 can't gate anything.
@@ -28,7 +33,19 @@ enum QueueTest {
             if !ok { pass = false }
         }
 
+        // Before ANY Store call: the at-capacity branch logs, and `AuditLog.dir` is
+        // read per write, so redirecting it here is enough to keep the real feed clean.
+        let feed = FileManager.default.temporaryDirectory
+            .appendingPathComponent("diplomat-queuetest-\(UUID().uuidString)")
+        setenv("DIPLOMAT_AUDIT_DIR", feed.path, 1)
+        defer { try? FileManager.default.removeItem(at: feed) }
+
         let store = Store()
+        // A headless Store still READS the operator's real settings — pin every one
+        // this test's outcome depends on, or a machine with a monitor switched off
+        // fails assertions about work that monitor owns.
+        store.prAutofixEnabled = true       // headless-guarded: persists nothing, polls nothing
+        store.reviewRequestsEnabled = true
         // One automatic agent already up, and a cap of one: every auto job offered
         // below is over the cap, which is the branch under test. (The `ps` scan the
         // count also consults can only add to it, never subtract, so a developer's
@@ -42,22 +59,21 @@ enum QueueTest {
                            createdAt: Date(), done: false),
         ]
 
-        func job(_ number: Int, action: String = "review-req",
-                 label: String? = nil) -> Store.AgentJob {
+        func job(_ number: Int, action: String = "review-req", label: String? = nil,
+                 counter: Store.AutoCounter = .reviewRequests) -> Store.AgentJob {
             Store.AgentJob(kind: "review", auditAction: action,
                            label: label ?? "Review-req · #\(number)", prompt: "",
                            prURL: "https://github.com/software-mansion/argent/pull/\(number)",
                            prNumber: number, authorLogin: nil, duty: "review", workKey: "",
-                           counter: .reviewRequests,
+                           counter: counter,
                            attemptStamp: Store.AttemptStamp.unresolvedReview)
         }
         func offer(_ j: Store.AgentJob, attempt: Int = 1) async -> Store.DispatchOutcome {
             await store.dispatchAgent(j, source: .auto, attemptNumber: attempt)
         }
 
-        // 1. A refusal is queued, not dropped. Before this the poll returned
-        //    `.atCapacity` and forgot the job entirely; the panel had nothing to show
-        //    and no way to say what the machine was about to do next.
+        // 1. A refusal is queued, not dropped — the whole feature rests on the gate
+        //    handing the job over instead of returning `.atCapacity` and forgetting it.
         check("an over-cap auto job is refused", await offer(job(2)) == .atCapacity)
         store.commitQueue()
         check("…and lands in the queue rather than vanishing",
@@ -109,12 +125,31 @@ enum QueueTest {
         check("a unit no longer offered leaves the queue",
               store.queuedTasks.map(\.id) == ["review-req:4"])
 
-        // 6. Nothing polls ⇒ nothing is pending. Rows offering to run work that no
-        //    monitor is watching for would outlive the feature that produced them.
+        // 6. A monitor switched off takes its queued work with it. That toggle is how
+        //    the operator pauses this work; unpruned, the drain still spawns an agent
+        //    per queued row of that monitor, minutes after they switched it off.
+        _ = await offer(job(4))
+        _ = await offer(job(6, action: "conflicts", label: "Resolve · #6",
+                            counter: .conflicts))
+        store.commitQueue()
+        check("both monitors on ⇒ both kinds queue",
+              store.queuedTasks.map(\.id) == ["review-req:4", "conflicts:6"])
         store.prAutofixEnabled = false
+        store.pruneQueueToEnabledMonitors()
+        check("switching off PR auto-fix drops its queued work, not the other monitor's",
+              store.queuedTasks.map(\.id) == ["review-req:4"])
+
+        // 7. Nothing polls ⇒ nothing is pending. Rows offering to run work that no
+        //    monitor is watching for would outlive the feature that produced them.
         store.reviewRequestsEnabled = false
         await store.runAutofixPollOnce()
         check("turning both monitors off empties the queue", store.queuedTasks.isEmpty)
+
+        // 8. The redirect above is the only thing between a run of this test and the
+        //    operator's real activity log, so prove it caught the writes.
+        check("the at-capacity lines it provoked went to the scratch feed",
+              FileManager.default.fileExists(
+                  atPath: feed.appendingPathComponent("audit.jsonl").path))
 
         print(pass ? "\nQUEUE TEST OK" : "\nQUEUE TEST FAILED")
         return pass

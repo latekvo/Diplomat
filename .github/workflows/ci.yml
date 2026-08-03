@@ -53,9 +53,11 @@ jobs:
       # of them touches the runner's real state: OSA_TEST runs bare AppleScript
       # expressions (no `tell application`, so no Automation permission),
       # MESH_CMD_TEST is pinned to a scratch state dir and a non-checkout so it can
-      # neither read a real mesh node nor start one, ALLOCATOR_TEST shells no
-      # installer and reads no ~/.claude, and QUEUE_TEST reaches the automatic-task
-      # cap's refusal branch, which returns before any spawn or fetch.
+      # neither read a real mesh node nor start one, and ALLOCATOR_TEST shells no
+      # installer and reads no ~/.claude. QUEUE_TEST is the one that touches state at
+      # all: reaching the cap's refusal branch means a `ps` scan, a ban-list read and
+      # an `at-capacity` audit line, so it points DIPLOMAT_AUDIT_DIR at a scratch dir
+      # of its own. It returns before any spawn or fetch.
       #
       # DIPLOMAT_TRACK_TEST and DIPLOMAT_SPAWN_FOCUS_TEST are the two that stay out,
       # and not by oversight: both drive real throwaway iTerm/Terminal windows and

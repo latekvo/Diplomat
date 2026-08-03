@@ -207,7 +207,7 @@ enum Render {
             let _ = seedProcessesIfNeeded(s, store: store)
             ContentView()
         default: // "panel" — the whole content view; "panel-procs" seeds the
-                 // ongoing-sessions list (persist is suppressed in headless modes).
+                 // Agent-tasks list (persist is suppressed in headless modes).
             let _ = seedProcessesIfNeeded(what, store: store)
             let _ = seedAutofix(store)
             ContentView().frame(height: 580)
@@ -301,9 +301,10 @@ enum Render {
         ]
         store.queuedTasks = [
             queuedFixture(number: 512, kind: "review", auditAction: "review-req",
-                          label: "Review-req · #512 (@octocat) −verdict (auto-approvals off)"),
+                          label: "Review-req · #512 (@octocat) −verdict (auto-approvals off)",
+                          counter: .reviewRequests),
             queuedFixture(number: 508, kind: "conflicts", auditAction: "conflicts",
-                          label: "Resolve · #508", attemptNumber: 2),
+                          label: "Resolve · #508", counter: .conflicts, attemptNumber: 2),
         ]
         return true
     }
@@ -313,15 +314,15 @@ enum Render {
     /// of the golden ones.
     @MainActor
     private static func queuedFixture(number: Int, kind: String, auditAction: String,
-                                      label: String,
+                                      label: String, counter: Store.AutoCounter,
                                       attemptNumber: Int = 1) -> Store.QueuedAgentTask {
         let url = "https://github.com/software-mansion/argent/pull/\(number)"
         return Store.QueuedAgentTask(
             id: AgentTaskQueue.key(auditAction: auditAction, prNumber: number),
             job: Store.AgentJob(kind: kind, auditAction: auditAction, label: label,
                                 prompt: "", prURL: url, prNumber: number,
-                                authorLogin: nil, duty: kind, workKey: "", counter: nil),
-            attemptNumber: attemptNumber, queuedAt: Date())
+                                authorLogin: nil, duty: kind, workKey: "", counter: counter),
+            attemptNumber: attemptNumber)
     }
 
     /// Seed two approved PRs (one conflicting) + select the My-Approved tool so the

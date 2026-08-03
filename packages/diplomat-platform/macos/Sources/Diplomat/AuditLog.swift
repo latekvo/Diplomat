@@ -18,8 +18,18 @@ struct AuditEntry: Codable, Equatable, Identifiable {
 }
 
 enum AuditLog {
+    /// `DIPLOMAT_AUDIT_DIR` relocates the feed, the way `DIPLOMAT_CONFIG` relocates
+    /// the shared config and `SZPONTNET_DIR` the mesh state. A self-test that reaches
+    /// a logging path would otherwise append to the operator's own activity feed —
+    /// this file is the one piece of shared state `Headless.active` does not cover,
+    /// because the daemon appends here too and the guard belongs to UserDefaults.
     static var dir: URL {
-        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".diplomat/pr-monitor")
+        if let override = ProcessInfo.processInfo.environment["DIPLOMAT_AUDIT_DIR"],
+           !override.isEmpty {
+            return URL(fileURLWithPath: override)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".diplomat/pr-monitor")
     }
     static var fileURL: URL { dir.appendingPathComponent("audit.jsonl") }
 
