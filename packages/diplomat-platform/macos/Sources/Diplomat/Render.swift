@@ -18,6 +18,10 @@ enum Render {
             runWindow(out: out, store: store)
             return false
         }
+        if what.lowercased() == "live" {
+            runLiveWindow(store: store)
+            return false
+        }
 
         let body = view(for: what, store: store)
         let content = body
@@ -80,6 +84,46 @@ enum Render {
                 print("RENDER ERROR: \(error)")
             }
             exit(0)
+        }
+    }
+
+    /// `DIPLOMAT_RENDER=live` — the same real popover as `popover`, but **on-screen
+    /// and left running**, so the two things a snapshot can never answer get driven
+    /// by an actual mouse: does the queue's drag grip reorder rows, and does
+    /// *execute now* fire. It prints the window's rect in screen (top-left) points,
+    /// which is what `cliclick` and `screencapture -R` take.
+    ///
+    /// Not a CI mode — it needs a window server and Accessibility permission for the
+    /// synthetic clicks, like `DIPLOMAT_SPAWN_FOCUS_TEST`. It is a `DIPLOMAT_RENDER`
+    /// mode so it inherits `Headless.active`: the live menu-bar app is left alone
+    /// (no singleton kill), nothing is persisted (a drag here cannot reorder the
+    /// operator's real queue), and no poll or watcher runs.
+    ///
+    /// Its queued rows sit on the PRs the fixture's live sessions are already on, so
+    /// every *execute now* here resolves `.inFlight`: the click can be driven for
+    /// real without any chance of opening a terminal.
+    private static func runLiveWindow(store: Store) {
+        let _ = seedProcessesIfNeeded("procs", store: store)
+        let _ = seedAutofix(store)
+        store.queuedTasks = [
+            queuedFixture(number: 337, kind: "review", auditAction: "review-req",
+                          label: "Review-req · #337 (@octocat)", counter: .reviewRequests),
+            queuedFixture(number: 462, kind: "conflicts", auditAction: "conflicts",
+                          label: "Resolve · #462", counter: .conflicts, attemptNumber: 2),
+        ]
+        let hosting = NSHostingController(rootView: PopoverRoot().environmentObject(store))
+        let window = NSWindow(contentViewController: hosting)
+        window.title = "Diplomat (live UI test)"
+        window.setFrameOrigin(NSPoint(x: 200, y: 200))
+        window.orderFrontRegardless()
+        NSApp.activate(ignoringOtherApps: true)
+        // Report where it landed once AppKit has sized it to the content, in the
+        // top-left-origin points the automation tools use.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            let f = window.frame
+            let screenHeight = NSScreen.main?.frame.height ?? f.maxY
+            print("live window at x=\(Int(f.minX)) y=\(Int(screenHeight - f.maxY)) "
+                  + "w=\(Int(f.width)) h=\(Int(f.height))")
         }
     }
 

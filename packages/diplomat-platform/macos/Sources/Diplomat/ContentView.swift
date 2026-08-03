@@ -1037,12 +1037,19 @@ private struct QueuedTaskRow: View {
 
     @State private var targeted = false
 
+    // Resolved out of the ViewBuilder's way: a ternary over concatenations inside a
+    // `Text(...)`/`.help(...)` is what tips a SwiftUI file over the type-checker's
+    // time limit on a CI runner while still compiling on a dev machine.
+    private static let pausedHelp = """
+        Start this agent now. Its monitor is switched off, so nothing else will — but \
+        once running it counts against the cap like any automatic agent.
+        """
+    private static let heldHelp = """
+        Start this agent now, without waiting for a free slot. It then counts against \
+        the cap like any automatic agent.
+        """
     private var runHelp: String {
-        paused
-            ? "Start this agent now. Its monitor is switched off, so nothing else will — "
-                + "but once running it counts against the cap like any automatic agent."
-            : "Start this agent now, without waiting for a free slot. "
-                + "It then counts against the cap like any automatic agent."
+        paused ? QueuedTaskRow.pausedHelp : QueuedTaskRow.heldHelp
     }
 
     private var kindIcon: String { DiplomatUI.agentTaskIcon(task.job.kind) }
@@ -1105,6 +1112,11 @@ private struct QueuedTaskRow: View {
 /// shows rather than something the operator has to remember: an idle machine reads
 /// as two open bays waiting for work, and a full one has none.
 private struct FreeSlotRow: View {
+    private static let help = """
+        A free slot of this machine's automatic-task cap. The next poll starts queued \
+        work here, unless its monitor is switched off. The cap is in Settings.
+        """
+
     var body: some View {
         HStack(spacing: 8) {
             // The hollow twin of a session's IconBadge, at the same size, so every
@@ -1122,9 +1134,7 @@ private struct FreeSlotRow: View {
         .overlay(RoundedRectangle(cornerRadius: 6)
             .strokeBorder(Color.secondary.opacity(0.35),
                           style: StrokeStyle(lineWidth: 1, dash: [3, 3])))
-        .help("A free slot of this machine's automatic-task cap. The next poll starts "
-              + "queued work here, unless its monitor is switched off. The cap is in "
-              + "Settings.")
+        .help(FreeSlotRow.help)
     }
 }
 
