@@ -982,7 +982,11 @@ final class Store: ObservableObject {
         let n = AgentDispatchGate.runningAutoTasks(livePRs: await livePRAgents(),
                                                    autoPRs: autoPRs,
                                                    manualPRs: manualPRs)
-        autoTasksMeasured = n
+        // Assigned only on a change, like every other published value the 8-second
+        // sweep re-derives: `@Published` fires on assignment, not on difference, so
+        // an unconditional write would redraw the panel on every tick of an idle
+        // machine.
+        if autoTasksMeasured != n { autoTasksMeasured = n }
         return n
     }
 
