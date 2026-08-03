@@ -82,6 +82,21 @@ RETRY_BASE = 5 * 60.0  # 5 min between the 1st and 2nd attempt
 RETRY_MAX_BACKOFF = 3 * 60 * 60.0  # 3 h ceiling
 RE_REQUEST_COOLDOWN = 60 * 60.0  # 1 h suppression on a changed request stamp
 
+# The ``ReviewAttempt.requested_at`` stamp each monitor files its dispatches under.
+# The two level-triggered reconcilers have no GitHub timestamp to use — the PR
+# simply is or isn't in the state they watch — so a constant stands in. (A review
+# request has a real timestamp, and ``"-"`` is :func:`decide`'s unknown-stamp
+# sentinel for one that is missing.)
+#
+# Single-sourced because two places write the same stamp: the reconciler when it
+# dispatches, and the queue when it runs a dispatch the cap deferred
+# (``AgentJob.attempt_stamp``). Two spellings of "conflicting" would not fail
+# anything loudly — :func:`decide` would just read the queue's record as a
+# *different* request and hold the retry for the 1h re-request cooldown instead of
+# the 5m→3h ladder. Twin of ``Store.AttemptStamp`` on macOS.
+STAMP_UNRESOLVED_REVIEW = "unresolved"
+STAMP_CONFLICTING = "conflicting"
+
 
 def retry_delay(attempts: int) -> float:
     """Exponential backoff before the ``attempts``-th dispatch may retry: 5m, 10m,
@@ -159,6 +174,15 @@ class ReviewRequest:
         compare chronologically, so ``max`` picks the latest."""
         times = [t for t in (self.my_last_review_at, self.my_last_comment_at) if t]
         return max(times) if times else None
+
+    @property
+    def stamp(self) -> str:
+        """The ``ReviewAttempt.requested_at`` this request's dispatches are filed
+        under — its own request timestamp, or :func:`decide`'s unknown-stamp
+        sentinel when GitHub reported none. Read in two places (the monitor when it
+        dispatches, the queue when it runs a dispatch the cap deferred), which is
+        why it is one expression rather than two."""
+        return self.requested_at or "-"
 
     @property
     def owe_review(self) -> bool:
@@ -411,6 +435,91 @@ def dispatch_bumps_counter(source: str, attempt: int) -> bool:
     return source == SOURCE_AUTO and attempt == 1
 
 
+# MARK: - The queue behind the cap (mirrors AgentTasks.swift)
+#
+# The panel answers one question — what is this machine doing about my PRs — with
+# one list, so the automatic work its cap is HOLDING and the slots of that cap with
+# nothing in them are rows of the same list. Both the order those rows are shown in
+# and the order the queue is drained in are decided here, pure: the sequence the
+# operator reads off the panel and the sequence the monitor actually runs are then
+# the same rules, not two implementations of an intention.
+#
+# The queue is a *view* of what the monitors would re-offer, not a second copy of
+# their state: the cap defers work by writing no attempt record, so every poll
+# re-offers everything GitHub still owes and the list is rebuilt from that. Only the
+# operator's arrangement of it is remembered, because that is the one thing a poll
+# cannot reconstruct.
+
+
+def queue_key(audit_action: str, pr_number: int) -> str:
+    """A queued task's identity, stable across polls and applet restarts: the
+    monitor's verb plus the PR. Not the mesh work key — that one is scoped to a head
+    sha, so a push during the wait would read as a different task and lose the
+    operator's place for it.
+
+    The verb is part of the key because a PR can owe two different monitors at once
+    (a conflict *and* an unaddressed review); they are two tasks, and the one that
+    dispatches first makes the other read as in-flight rather than overwriting it."""
+    return f"{audit_action}:{pr_number}"
+
+
+def free_slots(limit: int, running: int) -> int:
+    """Slots of the device's automatic-task cap with nothing running in them — the
+    empty bays the panel draws under the queue.
+
+    Clamped at zero because ``running`` can legitimately exceed the cap: it counts
+    agents this device did not necessarily start (an untracked ``claude`` in ``ps``
+    counts as automatic), and lowering the cap while agents run leaves them running.
+    Both would otherwise render as a negative number of free slots."""
+    return max(0, limit - running)
+
+
+def queue_order(offered: list[str], saved: list[str]) -> list[str]:
+    """The queue for this poll: everything still offered, in the order the operator
+    last dragged it into, with tasks they have never arranged appended in the order
+    the monitors found them.
+
+    Keys that are no longer offered fall out — the work was taken by an agent,
+    resolved, or its author banned — because a queue that outlived its evidence
+    would hand "execute now" a task GitHub no longer owes. (Not a mesh claim: the
+    cap outranks the mesh gate, so a device with anything queued is by definition
+    one that never asked a peer. Peer-owned work leaves the queue when the drain
+    reaches it and the mesh answers.)"""
+    live = set(offered)
+    out: list[str] = []
+    seen: set[str] = set()
+    for key in saved:
+        if key in live and key not in seen:
+            out.append(key)
+            seen.add(key)
+    for key in offered:
+        if key not in seen:
+            out.append(key)
+            seen.add(key)
+    return out
+
+
+def queue_reorder(order: list[str], moving: str, onto: str) -> list[str]:
+    """One drag: ``moving`` lands where it was dropped relative to ``onto`` — after
+    it when it came from above, before it when it came from below.
+
+    Both directions are needed for every position to be reachable. An "always insert
+    before the row you dropped on" rule can never move a task to the end of the
+    queue, which is exactly the arrangement someone reaches for first (this one is
+    not urgent — run it last).
+
+    A drag onto a key that is not in the queue, or onto itself, is not a
+    rearrangement and leaves the order alone."""
+    if moving == onto or moving not in order or onto not in order:
+        return order
+    out = list(order)
+    from_i, to_i = out.index(moving), out.index(onto)
+    out.remove(moving)
+    anchor = out.index(onto)
+    out.insert(anchor + 1 if from_i < to_i else anchor, moving)
+    return out
+
+
 @dataclass(frozen=True)
 class AgentJob:
     """One agent job, whoever triggers it. The trigger supplies WHAT to run
@@ -428,6 +537,30 @@ class AgentJob:
     duty: str = ""  # mesh duty, for auto-origination gating
     work_key: str = ""  # mesh claim key ("" = no claim)
     counter: str | None = None  # "review_requests" | "my_reviews" | "conflicts"
+    # The stamp the monitor that owns this job records against the PR when an agent
+    # launches (``ReviewAttempt.requested_at``) — the request timestamp for a review
+    # request, one of the STAMP_* constants for the two level-triggered reconcilers.
+    # Carried on the job so a dispatch the *queue* runs later starts the same retry
+    # backoff the reconciler's own dispatch would have. Read only on that path: a
+    # panel spawn keeps no attempt record, and a job with no monitor behind it (the
+    # sweeps) has no stamp to carry.
+    attempt_stamp: str = ""
+
+
+@dataclass(frozen=True)
+class QueuedTask:
+    """One unit of automatic work nothing has started yet: the whole job, held by the
+    device's task cap or by its own monitor being switched off, until a slot frees or
+    the operator runs it. Rebuilt from live evidence on each poll — see
+    ``Store.queued_tasks``. Twin of Store.QueuedAgentTask on macOS."""
+
+    # :func:`queue_key` — stable across polls and applet restarts, which is what
+    # lets the operator's drag order outlive the list itself.
+    id: str
+    job: AgentJob
+    # The attempt number the monitor would have dispatched under, so a queued retry
+    # keeps its place on the 5m→3h backoff ladder instead of restarting it.
+    attempt: int
 
 
 _LIVE_AGENT_RE_TMPL = r"PR #(\d+) in {repo}"

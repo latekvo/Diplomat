@@ -26,7 +26,7 @@ from PySide6.QtCore import QUrl
 
 import time
 
-from . import activity, core, glyphs, szpont
+from . import activity, autofix, core, glyphs, szpont
 from .models import Fmt
 from .settingsview import SettingsView
 from .store import Store, tool_by_id
@@ -34,8 +34,10 @@ from .widgets import (
     ActionCard,
     ActivityRow,
     BanRow,
+    FreeSlotRow,
     GlyphLabel,
     IconChip,
+    QueuedTaskRow,
     ResultRow,
     SectionHeader,
     ToolCard,
@@ -84,6 +86,17 @@ def _icon_button(glyph: str, tooltip: str) -> QToolButton:
     return btn
 
 
+def _task_look(kind: str) -> tuple[str, str]:
+    """The glyph and tint one agent task wears, from ``AgentJob.kind``. The same pair
+    its action card carries in the grid, so a queued conflict fix reads as the
+    Resolve-conflicts action it is."""
+    if kind == "conflicts":
+        return glyphs.G_CONFLICT, _CONFLICT_TINT
+    if kind == "audit":
+        return glyphs.G_AUDIT, _AUDIT_TINT
+    return glyphs.G_REVIEW, _REVIEW_TINT
+
+
 def _device_badge(dev: dict, allocated: bool) -> tuple[str, str]:
     status = dev.get("status", "free")
     if status == "ready":
@@ -128,9 +141,10 @@ class Panel(QWidget):
         # instance so a poll-driven rebuild doesn't reset the user's collapse choice.
         self._inuse_expanded = True
         self._free_expanded = False
-        # Left-pane telemetry sections (both expanded by default).
+        # Left-pane telemetry sections (all expanded by default).
         self._activity_expanded = True
         self._bans_expanded = True
+        self._tasks_expanded = True
 
         self.setWindowFlags(
             Qt.WindowType.Tool
@@ -192,12 +206,15 @@ class Panel(QWidget):
         store.loading_changed.connect(self._on_loading)
         store.devices_changed.connect(self._rebuild_devices)
         store.activity_changed.connect(self._rebuild_telemetry)
+        store.tasks_changed.connect(self._rebuild_agent_tasks)
 
         # Poll the device-allocator state file + the shared activity/ban files on a
-        # light cadence (cheap file reads).
+        # light cadence (cheap file reads), and re-measure the running automatic
+        # agents on the same tick (a `ps` scan, so only while on screen).
         self._device_timer = QTimer(self)
         self._device_timer.timeout.connect(self.store.refresh_device_state)
         self._device_timer.timeout.connect(self.store.refresh_activity)
+        self._device_timer.timeout.connect(self._tasks_tick)
         self._device_timer.start(8000)
         self.store.refresh_device_state()
         self.store.refresh_activity()
@@ -222,6 +239,7 @@ class Panel(QWidget):
         self._rebuild_grid()
         self._rebuild_devices()
         self._rebuild_telemetry()
+        self._rebuild_agent_tasks()
         self._update_results()
 
     @staticmethod
@@ -288,13 +306,23 @@ class Panel(QWidget):
         layout.addWidget(self._build_right_pane(), 1)
 
     def _build_left_pane(self) -> QWidget:
-        """Telemetry column: device-allocator pool, activity feed, ban list. Each
-        section is rebuilt in place from the shared ~/.diplomat files and hidden when
-        empty. Wrapped in a scroll area so a busy feed scrolls within the pane."""
+        """Telemetry column: agent tasks, device-allocator pool, activity feed, ban
+        list. Each section is rebuilt in place — from the store's live queue, or from
+        the shared ~/.diplomat files — and every one but the tasks list is hidden
+        while empty. Wrapped in a scroll area so a busy feed scrolls within the pane.
+        """
         host = QWidget()
         col = QVBoxLayout(host)
         col.setContentsMargins(0, 0, 0, 0)
         col.setSpacing(8)
+
+        # Agent tasks: the automatic work this machine is holding, and an empty bay
+        # per free slot of its cap. The one section always drawn — a machine with
+        # nothing to do is still a machine with free slots, and this is where the
+        # panel says how many. It is also what keeps the pane from ever reading as
+        # empty on a quiet machine.
+        self.tasks_host, self.tasks_col = card_host(spacing=4)
+        col.addWidget(self.tasks_host)
 
         # Device-allocator pool (the shared simulators/emulators + who holds what).
         # Rebuilt in place from the daemon's state file; hidden when the pool is empty.
@@ -311,20 +339,6 @@ class Panel(QWidget):
         self.bans_host, self.bans_col = card_host(fill=CARD_FILL_ALERT, spacing=4)
         self.bans_host.setVisible(False)
         col.addWidget(self.bans_host)
-
-        # Shown only while all three sections are empty, so the pane reads as
-        # "nothing yet" rather than looking broken (the feed fills as you dispatch
-        # actions; devices/bans appear when the daemon reports them).
-        self.telemetry_empty = QLabel(
-            "No devices, activity, or bans yet.\n"
-            "Dispatch a review, conflict, or audit and it shows up here."
-        )
-        self.telemetry_empty.setWordWrap(True)
-        self.telemetry_empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.telemetry_empty.setStyleSheet(
-            muted(11) + " padding: 24px 8px;"
-        )
-        col.addWidget(self.telemetry_empty)
 
         col.addStretch(1)
 
@@ -494,7 +508,6 @@ class Panel(QWidget):
         devices = (state or {}).get("devices", [])
         if not devices:
             self.devices_host.setVisible(False)
-            self._update_telemetry_placeholder()
             return
         self.devices_host.setVisible(True)
 
@@ -522,16 +535,6 @@ class Panel(QWidget):
         if free:
             self._device_section("Free", "gray", self._free_expanded,
                                  free, self._toggle_free)
-        self._update_telemetry_placeholder()
-
-    def _update_telemetry_placeholder(self) -> None:
-        """Show the left-pane placeholder only when every telemetry section is empty."""
-        any_visible = (
-            not self.devices_host.isHidden()
-            or not self.activity_host.isHidden()
-            or not self.bans_host.isHidden()
-        )
-        self.telemetry_empty.setVisible(not any_visible)
 
     def _toggle_inuse(self) -> None:
         self._inuse_expanded = not self._inuse_expanded
@@ -541,12 +544,72 @@ class Panel(QWidget):
         self._free_expanded = not self._free_expanded
         self._rebuild_devices()
 
+    # MARK: agent tasks — the queue behind the cap, and the cap's free slots
+
+    def _rebuild_agent_tasks(self) -> None:
+        """The Agent-tasks list: what this machine is about to do, and how much room
+        it has left.
+
+        Free slots first, then the queue, so the bays stand where the agents that
+        will fill them do — above the work still waiting (the reading order
+        `AgentTaskStatus` fixes on macOS, minus the session rows a detached `Popen`
+        gives this front-end no way to draw).
+        """
+        _clear_layout(self.tasks_col)
+        queued = self.store.queued_tasks
+        free = self.store.free_auto_slots
+        running = self.store.auto_tasks_shown
+        # What is running explains what is not free: with no session rows to count,
+        # a machine with no bays left would otherwise say nothing about why.
+        parts = [f"{running} running" if running else "",
+                 f"{free} free" if free else ""]
+        caption = " · ".join(p for p in parts if p)
+
+        header = SectionHeader(glyph=glyphs.G_TASKS, title="Agent tasks",
+                               count=len(queued), caption=caption or None,
+                               expanded=self._tasks_expanded)
+        header.clicked.connect(self._toggle_tasks)
+        self.tasks_col.addWidget(header)
+        if not self._tasks_expanded:
+            return
+        for _ in range(free):
+            self.tasks_col.addWidget(FreeSlotRow())
+        for task in queued:
+            glyph, tint = _task_look(task.job.kind)
+            row = QueuedTaskRow(
+                task_id=task.id,
+                label=autofix.dispatch_label(
+                    autofix.SOURCE_AUTO, task.job.label, task.attempt
+                ),
+                glyph=glyph,
+                hex_color=tint,
+                paused=self.store.is_paused(task.job.counter),
+            )
+            row.run_requested.connect(
+                lambda tid=task.id: self.store.execute_queued_task_async(tid)
+            )
+            row.dropped.connect(
+                lambda dragged, tid=task.id: self.store.move_queued_task(dragged, tid)
+            )
+            self.tasks_col.addWidget(row)
+
+    def _toggle_tasks(self) -> None:
+        self._tasks_expanded = not self._tasks_expanded
+        self._rebuild_agent_tasks()
+
+    def _tasks_tick(self) -> None:
+        """Re-measure the running automatic agents while the panel is on screen, so a
+        finished agent frees its bay within a tick rather than at the next 3-minute
+        poll. Gated on visibility: nothing else reads the count, and the measurement
+        shells out to `ps`."""
+        if self.isVisible():
+            self.store.refresh_auto_task_count_async()
+
     # MARK: activity feed + bans
 
     def _rebuild_telemetry(self) -> None:
         self._rebuild_activity()
         self._rebuild_bans()
-        self._update_telemetry_placeholder()
 
     def _rebuild_activity(self) -> None:
         _clear_layout(self.activity_col)
@@ -868,6 +931,9 @@ class Panel(QWidget):
         # poll-cycle stale when the panel pops open.
         if self.store.mesh_enabled:
             self.store.refresh_mesh_state()
+        # Likewise the free bays: an agent that finished while the panel was hidden
+        # must not leave its slot drawn as taken until the next tick.
+        self.store.refresh_auto_task_count_async()
         super().showEvent(event)
 
     # MARK: window behaviour

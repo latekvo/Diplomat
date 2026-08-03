@@ -25,6 +25,9 @@ G_SEARCH = "⌕"   # reverse-lookup search
 G_DEVICES = "⧉"  # devices section
 G_ACTIVITY = "▤" # activity feed section
 G_BAN = "⊘"      # banned author (no-entry)
+G_TASKS = "◷"    # agent-tasks section header, and a queued task awaiting its turn
+G_FREE_SLOT = "◌"  # an empty bay: a slot of the task cap with nothing in it
+G_GRIP = "≡"     # the drag grip that orders the queue
 G_MESH = "⬡"     # mesh screen header / "run on mesh" toggle (matches the mesh
                  # activity category's linuxGlyph)
 

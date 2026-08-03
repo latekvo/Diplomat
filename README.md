@@ -125,7 +125,9 @@ everything not started yet is at the bottom. The list is always there: an idle
 machine with a cap of two reads `0 · 2 free` over two empty bays.
 
 - **Sessions** are every spawned agent, wizard- or monitor-launched. Click a row
-  to focus its terminal window, ✕ to stop tracking it.
+  to focus its terminal window, ✕ to stop tracking it. (macOS only - a Linux spawn
+  has no window handle to track a session by, so there the list is the queue and
+  the bays, and a running agent shows only as the slot it takes.)
 - **Free slots** are the rest of the cap. Each running automatic agent takes one;
   agents you spawn yourself from the panel take none. Queued work starts here on
   the next poll.
@@ -748,10 +750,10 @@ language-neutral GraphQL queries, the tool catalog, filter constants, and the
 prompt fragments for all three actions. Both front-ends load it and assert their
 assembled prompts byte-for-byte against `assets/golden-prompts/`, so they can only
 drift from each other by failing a CI job. Both also run the full monitor stack;
-what stays macOS-only is the per-row **Merge** button, the
+what stays macOS-only is the per-row **Merge** button, the *session* rows of the
 [Agent tasks](#agent-tasks) list (a Linux spawn is a detached `Popen` with no
-window handle to track a session by - and with no list, a monitor switched off
-there stops polling rather than queueing what it finds), and reading arbitrary
+window handle to track a session by, so a running agent shows there only as the
+slot it occupies - the queue and the free bays are on both), and reading arbitrary
 terminal windows (the Linux watcher drives tmux panes instead).
 
 This repository is a **monorepo of independent parts**: everything lives in

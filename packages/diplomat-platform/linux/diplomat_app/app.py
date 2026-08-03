@@ -90,7 +90,8 @@ class DiplomatApp:
         self.timer.start()
 
         # PR auto-fix monitor: poll on a background cadence, independent of the panel
-        # (matches the macOS monitor). The poll no-ops when both toggles are off.
+        # (matches the macOS monitor). It polls with the monitors switched off too —
+        # what they find is then queued for the panel rather than started.
         self.autofix_timer = QTimer()
         self.autofix_timer.setInterval(int(autofix_poll_secs() * 1000))
         self.autofix_timer.timeout.connect(self.store.run_autofix_poll_async)

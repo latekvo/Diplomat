@@ -258,8 +258,9 @@ class SettingsView(QWidget):
 
         hint = QLabel(
             "When on, an agent watches your open PRs and automatically resolves merge "
-            "conflicts and addresses new review threads. Turning it off pauses agent "
-            "dispatch."
+            "conflicts and addresses new review threads. Off, the monitor keeps "
+            "looking and lists what it finds under Agent tasks — as queued work only "
+            "you can start, with “execute now”."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet(muted(10))
@@ -370,8 +371,10 @@ class SettingsView(QWidget):
         hint = QLabel(
             "A hard cap for this machine, across both monitors above and any work a "
             "mesh peer routes here. Agents you spawn yourself from the panel don't "
-            "count against it. Work over the cap isn't dropped — the next poll picks "
-            "it up as soon as a running agent finishes."
+            "count against it. Work over the cap isn't dropped — it waits in the "
+            "Agent-tasks list, in the order you put it, and starts as soon as a "
+            "running agent finishes. The panel draws whatever is left of the cap as "
+            "empty slots."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet(muted(10))
@@ -385,6 +388,10 @@ class SettingsView(QWidget):
     def _on_autofix_toggled(self, on: bool) -> None:
         self.store.pr_autofix_enabled = on
         self.store.changed.emit()
+        # This monitor's queued rows say whether it is switched off, so they are
+        # stale the moment it is; an immediate poll would only redraw them 3 minutes
+        # later, and only if it succeeded.
+        self.store.tasks_changed.emit()
         self._refresh_autofix_ui()
         if on:
             self.store.run_autofix_poll_async()
@@ -392,6 +399,7 @@ class SettingsView(QWidget):
     def _on_review_req_toggled(self, on: bool) -> None:
         self.store.review_requests_enabled = on
         self.store.changed.emit()
+        self.store.tasks_changed.emit()
         self._refresh_autofix_ui()
         if on:
             self.store.run_autofix_poll_async()
@@ -436,7 +444,9 @@ class SettingsView(QWidget):
         self._review_req_hint.setText(
             "When someone requests my review, spawns the most thorough review (Full "
             "E2E, inline comments) — read-only, never touches their branch. A review "
-            "left unaddressed is retried automatically until it lands." + suffix
+            "left unaddressed is retried automatically until it lands. Off, the "
+            "requests still list under Agent tasks, queued for you to start by "
+            "hand." + suffix
         )
 
         n = self.store.unaddressed_reviews

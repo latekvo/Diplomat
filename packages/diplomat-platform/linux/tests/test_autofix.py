@@ -255,20 +255,32 @@ def test_an_unstubbed_spawn_is_refused_not_launched():
         review.spawn("prompt", None)
 
 
-def test_poll_noop_when_both_disabled(store, monkeypatch):
+def test_the_poll_still_runs_with_both_monitors_off(store, monkeypatch):
+    """Turning the monitors off stops the automatic START, not the looking: what my
+    PRs owe is worth seeing either way, and the panel's queue is where it is seen. So
+    the 3-minute GitHub poll keeps running and keeps listing — it just spawns
+    nothing."""
     store.pr_autofix_enabled = False
     store.review_requests_enabled = False
     calls = _spawn_recorder(monkeypatch)
-    called = []
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    fetched = []
     monkeypatch.setattr(
         "diplomat_app.autofixmonitor.fetch_snapshots",
-        lambda *a, **k: called.append(1) or [],
+        lambda *a, **k: fetched.append(1) or [_snap(number=8, mergeable="CONFLICTING")],
     )
+    monkeypatch.setattr(
+        "diplomat_app.autofixmonitor.fetch_review_requests", lambda *a, **k: []
+    )
+
     store.run_autofix_poll_async()
-    # Synchronous drain: the guard prevents overlap, so acquiring it means the
-    # worker finished. (run_autofix_poll_async returned before spawning since both
-    # toggles are off.)
-    assert called == [] and calls == []
+    # The worker holds the poll-overlap guard for its whole run, so taking it back is
+    # how a caller waits for the poll to finish.
+    assert store._poll_lock.acquire(timeout=5.0), "the poll worker never finished"
+    store._poll_lock.release()
+
+    assert fetched == [1] and calls == []
+    assert [t.id for t in store.queued_tasks] == ["conflicts:8"]
 
 
 def test_conflict_dispatch_and_backoff(store, monkeypatch):
@@ -683,7 +695,7 @@ def test_dispatch_gate_matrix_parity():
     assert not autofix.dispatch_bumps_counter(autofix.SOURCE_PANEL, 1)
 
 
-def _job(number=9, author=None):
+def _job(number=9, author=None, counter=None, stamp=""):
     return autofix.AgentJob(
         kind="review",
         audit_action="review",
@@ -693,6 +705,8 @@ def _job(number=9, author=None):
         pr_number=number,
         author_login=author,
         duty="review",
+        counter=counter,
+        attempt_stamp=stamp,
     )
 
 
@@ -959,3 +973,408 @@ def test_the_cap_spans_both_monitors(store, monkeypatch):
     # Both of them came from the conflict reconciler, which ran first — the review
     # monitor found the machine already full rather than a budget of its own.
     assert all("conflicts" in c["prompt"] for c in calls)
+
+
+# MARK: - the queue behind the cap
+
+
+def test_queue_key_names_the_monitor_and_the_pr():
+    """Stable across polls and restarts, which is what lets the operator's drag order
+    outlive the list. Not the mesh work key: that one is scoped to a head sha, so a
+    push during the wait would read as a different task."""
+    assert autofix.queue_key("conflicts", 7) == "conflicts:7"
+    # One PR can owe two monitors at once — a conflict AND an unaddressed review.
+    assert autofix.queue_key("review-req", 7) != autofix.queue_key("review-reply", 7)
+
+
+def test_free_slots_never_go_negative():
+    """`running` counts agents this device did not necessarily start, and lowering the
+    cap leaves running agents running — both would otherwise draw negative bays."""
+    assert autofix.free_slots(2, 0) == 2
+    assert autofix.free_slots(2, 1) == 1
+    assert autofix.free_slots(2, 2) == 0
+    assert autofix.free_slots(1, 4) == 0
+
+
+def test_queue_order_keeps_the_arrangement_and_drops_dead_work():
+    order = autofix.queue_order
+    assert order(["a", "b", "c"], []) == ["a", "b", "c"]  # never arranged
+    assert order(["a", "b", "c"], ["c", "a"]) == ["c", "a", "b"]  # new work lands behind
+    # A queue that outlived its evidence would hand "execute now" work GitHub no
+    # longer owes.
+    assert order(["b"], ["c", "a", "b"]) == ["b"]
+    assert order([], ["a"]) == []
+    assert order(["a", "a", "b"], ["b", "b"]) == ["b", "a"]  # one task, however offered
+
+
+def test_queue_reorder_can_reach_every_position():
+    """Both directions are needed: an insert-before rule alone can never send a task
+    to the end, which is the first arrangement anyone reaches for."""
+    ro = autofix.queue_reorder
+    assert ro(["a", "b", "c", "d"], "a", "c") == ["b", "c", "a", "d"]  # dragged down
+    assert ro(["a", "b", "c", "d"], "d", "b") == ["a", "d", "b", "c"]  # dragged up
+    assert ro(["a", "b", "c"], "a", "c") == ["b", "c", "a"]  # dropped on the last row
+    assert ro(["a", "b", "c"], "b", "b") == ["a", "b", "c"]  # onto itself
+    # A drag naming a task that left the queue mid-drag changes nothing.
+    assert ro(["a", "b"], "z", "a") == ["a", "b"]
+    assert ro(["a", "b"], "a", "z") == ["a", "b"]
+
+
+def test_work_over_the_cap_waits_in_the_queue(store, monkeypatch):
+    """The cap's refusals are what fill the list: five owed reviews, two started, and
+    the other three visible in the panel instead of silently deferred to a later
+    poll."""
+    store.pr_autofix_enabled = False
+    calls = _spawn_recorder(monkeypatch, finish=False)
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    reqs = [_req(number=n, requested_at="2026-01-02") for n in (1, 2, 3, 4, 5)]
+    monkeypatch.setattr(
+        "diplomat_app.autofixmonitor.fetch_review_requests", lambda *a, **k: reqs
+    )
+    monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_snapshots", lambda *a, **k: [])
+
+    store._autofix_poll_once()
+
+    assert len(calls) == 2
+    assert [t.id for t in store.queued_tasks] == [
+        autofix.queue_key("review-req", n) for n in (3, 4, 5)
+    ]
+    # Every slot of the cap is spent, so the panel draws no empty bays beside them.
+    assert store.free_auto_slots == 0
+    assert store.auto_tasks_shown == 2
+
+
+def test_a_switched_off_monitor_queues_what_it_finds(store, monkeypatch):
+    """The toggles decide who STARTS the work, not whether it is known: a monitor
+    switched off keeps polling, lists what it finds, and waits for a click."""
+    from diplomat_app import activity
+
+    store.pr_autofix_enabled = False
+    store.review_requests_enabled = False
+    calls = _spawn_recorder(monkeypatch, finish=False)
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    monkeypatch.setattr(
+        "diplomat_app.autofixmonitor.fetch_snapshots",
+        lambda *a, **k: [_snap(number=1, mergeable="CONFLICTING")],
+    )
+    monkeypatch.setattr(
+        "diplomat_app.autofixmonitor.fetch_review_requests",
+        lambda *a, **k: [_req(number=2, requested_at="2026-01-02")],
+    )
+
+    store._autofix_poll_once()
+
+    assert calls == []  # nothing starts by itself
+    assert {t.id for t in store.queued_tasks} == {"conflicts:1", "review-req:2"}
+    assert all(store.is_paused(t.job.counter) for t in store.queued_tasks)
+    assert store.drainable_tasks == []  # the drain may not touch a paused monitor's work
+
+    # …including the next cycle's drain, which is the first one that sees this work
+    # in the queue at all. A hold that only lasted until the following poll would be
+    # a 3-minute delay dressed as a switch.
+    store._autofix_poll_once()
+    assert calls == []
+    assert {t.id for t in store.queued_tasks} == {"conflicts:1", "review-req:2"}
+    # A paused monitor is not a saturated device: the cap's own bays are still open,
+    # and the feed says nothing about capacity.
+    assert store.free_auto_slots == 2
+    assert [e for e in activity.read() if e.action == "at-capacity"] == []
+
+
+def test_one_poll_offering_a_task_twice_queues_the_backoff_aware_one(store, monkeypatch):
+    """A PR whose thread count just went up is offered by the edge-trigger (always
+    attempt 1) and again by the reconciler that owns its retry ladder. They are one
+    task, and the one that should run is the reconciler's — queueing the edge's would
+    silently restart the ladder at 5 minutes."""
+    import time as _time
+
+    store.review_requests_enabled = False
+    _spawn_recorder(monkeypatch, finish=False)
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    monkeypatch.setattr(type(store), "_live_pr_agents", lambda self: {90, 91})  # cap full
+    snaps = [_snap(number=5, unresolved=3, i_owe=1)]
+    monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_snapshots", lambda *a, **k: snaps)
+    store._save_fingerprints({5: PRFingerprint("MERGEABLE", "", 0)})  # threads went up
+    store._save_attempts(
+        "myReviewAttempts",
+        {"5": ReviewAttempt(autofix.STAMP_UNRESOLVED_REVIEW, _time.time() - 3600, 1)},
+    )
+
+    store._autofix_poll_once()
+
+    assert [(t.id, t.attempt) for t in store.queued_tasks] == [("review-reply:5", 2)]
+
+
+def test_a_monitor_switched_back_on_drains_what_it_held(store, monkeypatch):
+    """The held work is the same work: turning the toggle back on starts it, without
+    waiting for GitHub to offer it again."""
+    store.pr_autofix_enabled = False
+    store.review_requests_enabled = False
+    calls = _spawn_recorder(monkeypatch, finish=False)
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_snapshots", lambda *a, **k: [])
+    monkeypatch.setattr(
+        "diplomat_app.autofixmonitor.fetch_review_requests",
+        lambda *a, **k: [_req(number=2, requested_at="2026-01-02")],
+    )
+    store._autofix_poll_once()
+    assert calls == [] and len(store.queued_tasks) == 1
+
+    store.review_requests_enabled = True
+    store._autofix_poll_once()
+    assert len(calls) == 1
+    assert store.queued_tasks == []  # started, so no longer waiting
+
+
+def test_the_drain_runs_the_queue_in_the_operators_order(store, monkeypatch):
+    """The whole point of the drag order: the slot that just freed goes to whatever
+    the operator put first, not to whichever PR this poll's fetch happens to list
+    first. The drain runs at the TOP of the cycle, before the monitors look again."""
+    store.pr_autofix_enabled = False
+    calls = _spawn_recorder(monkeypatch, finish=False)
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_snapshots", lambda *a, **k: [])
+    reqs = [_req(number=n, requested_at="2026-01-02") for n in (1, 2, 3, 4, 5)]
+    monkeypatch.setattr(
+        "diplomat_app.autofixmonitor.fetch_review_requests", lambda *a, **k: reqs
+    )
+    store._autofix_poll_once()
+    assert [c["prompt"] for c in calls] == ["PROMPT:review:1", "PROMPT:review:2"]
+
+    # Send the last of the three waiting tasks to the front, then free one slot.
+    store.move_queued_task("review-req:5", "review-req:3")
+    assert [t.id for t in store.queued_tasks] == [
+        "review-req:5", "review-req:3", "review-req:4",
+    ]
+    with open(calls[0]["done"], "w") as fh:
+        fh.write("0")
+
+    store._autofix_poll_once()
+    assert calls[-1]["prompt"] == "PROMPT:review:5"
+
+
+def test_a_queued_dispatch_records_the_attempt_the_monitor_would_have(store, monkeypatch):
+    """The retry ladder hangs off that record. Without it the very next poll after the
+    agent exits reads the PR as never attempted, and re-dispatches it every 3 minutes
+    with no backoff ever engaging."""
+    store.pr_autofix_enabled = False
+    calls = _spawn_recorder(monkeypatch, finish=False)
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_snapshots", lambda *a, **k: [])
+    reqs = [_req(number=n, requested_at="2026-01-02") for n in (1, 2, 3)]
+    monkeypatch.setattr(
+        "diplomat_app.autofixmonitor.fetch_review_requests", lambda *a, **k: reqs
+    )
+    store._autofix_poll_once()
+    assert len(calls) == 2 and [t.id for t in store.queued_tasks] == ["review-req:3"]
+
+    # Free both slots and let the drain take #3; its agent then finishes without
+    # leaving the review, so the PR is owed again on the next poll.
+    for c in calls:
+        with open(c["done"], "w") as fh:
+            fh.write("0")
+    store._autofix_poll_once()
+    assert calls[-1]["prompt"] == "PROMPT:review:3"
+    with open(calls[-1]["done"], "w") as fh:
+        fh.write("0")
+
+    record = store._load_attempts("reviewReqAttempts")["3"]
+    assert record.requested_at == "2026-01-02"  # the monitor's own stamp, not a second one
+    assert record.attempts == 1
+    # …so the 5-minute backoff is what holds the retry, rather than nothing at all.
+    before = len(calls)
+    store._autofix_poll_once()
+    assert len(calls) == before
+
+
+def test_execute_now_starts_a_queued_task_past_the_cap(store, monkeypatch):
+    """The operator overrides the cap and nothing else: it stays auto work — same
+    label, same counter — and once running it occupies a slot like any other."""
+    from diplomat_app import activity
+
+    store.pr_autofix_enabled = False
+    calls = _spawn_recorder(monkeypatch, finish=False)
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_snapshots", lambda *a, **k: [])
+    reqs = [_req(number=n, requested_at="2026-01-02") for n in (1, 2, 3)]
+    monkeypatch.setattr(
+        "diplomat_app.autofixmonitor.fetch_review_requests", lambda *a, **k: reqs
+    )
+    store._autofix_poll_once()
+    handled = store.review_requests_handled
+    assert len(calls) == 2 and store.free_auto_slots == 0
+
+    store._execute_queued_task(store.queued_tasks[0])
+
+    assert calls[-1]["prompt"] == "PROMPT:review:3"
+    assert store.review_requests_handled == handled + 1  # still auto-handled work
+    assert store.error is None
+    ran = [e for e in activity.read() if e.action == "queue-run"]
+    assert len(ran) == 1 and "ahead of the task cap" in ran[0].detail
+    # Three agents up under a cap of two: the override spends a slot like any other
+    # automatic agent, so the rest of the queue waits behind it.
+    assert store.auto_tasks_shown == 3 and store.free_auto_slots == 0
+
+
+def test_execute_now_says_why_when_nothing_opens(store, monkeypatch):
+    """The row vanished and no terminal opened; a refusal the operator can't see is
+    indistinguishable from a silent failure."""
+    entry = autofix.QueuedTask(
+        id="review:9", job=_job(number=9, counter="my_reviews"), attempt=1
+    )
+    _spawn_recorder(monkeypatch, finish=False)
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    monkeypatch.setattr(type(store), "_live_pr_agents", lambda self: {9})
+
+    store._execute_queued_task(entry)
+
+    assert store.error is not None and "already on this PR" in store.error
+
+
+def test_the_queue_is_rebuilt_from_live_evidence_every_poll(store, monkeypatch):
+    """It is a VIEW of what the monitors would re-offer, never a second copy of their
+    state — so work that was taken, resolved, or whose author was banned drops out on
+    its own."""
+    store.pr_autofix_enabled = False
+    _spawn_recorder(monkeypatch, finish=False)
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_snapshots", lambda *a, **k: [])
+    owed = [_req(number=n, requested_at="2026-01-02") for n in (1, 2, 3, 4)]
+    monkeypatch.setattr(
+        "diplomat_app.autofixmonitor.fetch_review_requests", lambda *a, **k: owed
+    )
+    store._autofix_poll_once()
+    assert [t.id for t in store.queued_tasks] == ["review-req:3", "review-req:4"]
+
+    # #3 gets its review by hand — GitHub stops offering it.
+    owed = [r for r in owed if r.number != 3]
+    store._autofix_poll_once()
+    assert [t.id for t in store.queued_tasks] == ["review-req:4"]
+
+
+def test_a_failed_cycle_freezes_the_queue_rather_than_emptying_it(store, monkeypatch):
+    """"We no longer know what is owed" is not "nothing is owed". A cycle that failed
+    part-way also must not drain: while `gh` is down the list can only go stale, and
+    a drain firing from it would spawn agents at work answered hours ago."""
+    store.pr_autofix_enabled = False
+    calls = _spawn_recorder(monkeypatch, finish=False)
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_snapshots", lambda *a, **k: [])
+    reqs = [_req(number=n, requested_at="2026-01-02") for n in (1, 2, 3)]
+    monkeypatch.setattr(
+        "diplomat_app.autofixmonitor.fetch_review_requests", lambda *a, **k: reqs
+    )
+    store._autofix_poll_once()
+    queued = list(store.queued_tasks)
+    assert [t.id for t in queued] == ["review-req:3"]
+
+    def boom(*a, **k):
+        raise RuntimeError("gh: not authenticated")
+
+    monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_review_requests", boom)
+    store._autofix_poll_once()
+    assert store.autofix_poll_error is not None
+    assert store.queued_tasks == queued  # a fetch that failed offered nothing, and
+    assert len(calls) == 2               # said nothing about what is still owed
+
+    # Both agents finish, so there is room now — but the list is frozen at whatever
+    # the last successful cycle saw, and a drain firing from it would spawn an agent
+    # at work that may have been answered by hand since.
+    for c in calls:
+        with open(c["done"], "w") as fh:
+            fh.write("0")
+    store._autofix_poll_once()
+    assert len(calls) == 2
+    assert store.queued_tasks == queued
+
+
+def test_the_arrangement_outlives_the_list_and_the_applet(store, monkeypatch):
+    """The keys are persisted, and only the keys: the queue itself is rebuilt from
+    GitHub, but the order the operator dragged it into cannot be."""
+    from diplomat_app.store import Store
+
+    store.pr_autofix_enabled = False
+    _spawn_recorder(monkeypatch, finish=False)
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_snapshots", lambda *a, **k: [])
+    reqs = [_req(number=n, requested_at="2026-01-02") for n in (1, 2, 3, 4, 5)]
+    monkeypatch.setattr(
+        "diplomat_app.autofixmonitor.fetch_review_requests", lambda *a, **k: reqs
+    )
+    store._autofix_poll_once()
+    store.move_queued_task("review-req:5", "review-req:3")
+
+    fresh = Store()  # the applet restarts: no queue, but the arrangement is there
+    fresh.me = "alice"
+    assert fresh.queued_tasks == []
+    assert fresh.queued_task_order[:3] == ["review-req:5", "review-req:3", "review-req:4"]
+    fresh.pr_autofix_enabled = False
+    monkeypatch.setattr(type(fresh), "_live_pr_agents", lambda self: {1, 2})
+    fresh._autofix_poll_once()
+    assert [t.id for t in fresh.queued_tasks] == [
+        "review-req:5", "review-req:3", "review-req:4",
+    ]
+
+
+def test_a_spawn_failure_stops_the_drain_rather_than_clearing_the_queue(store, monkeypatch):
+    """A spawn that fails means terminal automation is broken, not that this one task
+    was unlucky — and each entry leaves the list before it is tried, so walking the
+    whole queue into the same failure would empty the panel for a reason none of them
+    caused."""
+    store.pr_autofix_enabled = False
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_snapshots", lambda *a, **k: [])
+    reqs = [_req(number=n, requested_at="2026-01-02") for n in (1, 2, 3, 4)]
+    monkeypatch.setattr(
+        "diplomat_app.autofixmonitor.fetch_review_requests", lambda *a, **k: reqs
+    )
+    calls = _spawn_recorder(monkeypatch, finish=False)
+    store._autofix_poll_once()
+    assert len(calls) == 2 and len(store.queued_tasks) == 2
+
+    attempted: list = []
+
+    def refuse(prompt, preferred, done_path=None):
+        attempted.append(prompt)
+        raise review.SpawnError("no terminal emulator found")
+
+    monkeypatch.setattr(review, "spawn", refuse)
+    for c in calls:  # both agents finish → the drain has room for both queued tasks
+        with open(c["done"], "w") as fh:
+            fh.write("0")
+    store._drain_queued_tasks()
+
+    # The first was tried and failed; the second was never touched, so it is still in
+    # the panel rather than dropped alongside it.
+    assert attempted == ["PROMPT:review:3"]
+    assert [t.id for t in store.queued_tasks] == ["review-req:4"]
+
+
+def test_a_panel_spawn_is_never_queued(store, monkeypatch):
+    """A click is one deliberate agent: uncapped, unpaused, and nothing to defer."""
+    calls = _spawn_recorder(monkeypatch, finish=False)
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    store.auto_task_limit = 1
+    store.pr_autofix_enabled = False
+
+    assert store.dispatch_agent(_job(number=1), autofix.SOURCE_PANEL) == "spawned"
+    assert store.dispatch_agent(_job(number=2), autofix.SOURCE_PANEL) == "spawned"
+    store.commit_queue()
+    assert store.queued_tasks == []
+    assert len(calls) == 2
+
+
+def test_work_no_monitor_owns_is_not_queued(store, monkeypatch):
+    """The queue's contents are what the next poll would re-offer. A job with no
+    monitor behind it is re-offered by nothing, so queueing it would make the list the
+    only record of it — which is exactly what this list is not."""
+    _spawn_recorder(monkeypatch, finish=False)
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    monkeypatch.setattr(type(store), "_live_pr_agents", lambda self: {77, 78})
+
+    assert (
+        store.dispatch_agent(_job(number=1), autofix.SOURCE_AUTO)
+        == autofix.VERDICT_AT_CAPACITY
+    )
+    store.commit_queue()
+    assert store.queued_tasks == []

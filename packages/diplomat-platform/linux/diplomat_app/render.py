@@ -103,6 +103,45 @@ def _telemetry_fixture(store: Store) -> None:
     ]
 
 
+def _queue_fixture(store: Store) -> None:
+    """Synthetic deferred-work queue so the Agent-tasks list can be eyeballed: two
+    tasks the cap is holding, above the one bay a machine running a single automatic
+    agent has left.
+
+    Live-only, like every other fixture here — the monitor toggles a queued row reads
+    for its "monitor off" note are the operator's real ones, and a render must not
+    write to them.
+
+    The `ps` scan behind the free bays is pinned rather than run: it counts whatever
+    agents the developer happens to have open, so a snapshot would otherwise differ
+    per machine — and the panel re-measures on show, which in a one-shot render is a
+    background thread racing the grab.
+    """
+    from . import autofix
+
+    def task(number: int, kind: str, action: str, label: str, counter: str, attempt=1):
+        return autofix.QueuedTask(
+            id=autofix.queue_key(action, number),
+            job=autofix.AgentJob(
+                kind=kind, audit_action=action, label=label,
+                # No prompt: a render never dispatches, and an assembled one here
+                # would only be a second, drifting copy of the golden fixtures.
+                prompt="", pr_url=f"https://github.com/x/pull/{number}",
+                pr_number=number, duty=kind, counter=counter,
+            ),
+            attempt=attempt,
+        )
+
+    store.queued_tasks = [
+        task(512, "review", "review-req",
+             "Review-req · #512 (@octocat) −verdict (auto-approvals off)",
+             "review_requests"),
+        task(508, "conflicts", "conflicts", "Resolve · #508", "conflicts", attempt=2),
+    ]
+    store._live_pr_agents = lambda: {390}  # one automatic agent up, so one bay is left
+    store._auto_tasks_measured = 1
+
+
 def _mesh_fixture(store: Store) -> None:
     """Synthetic mesh topology so the ⬡ Mesh screen can be eyeballed: a Linux self
     node, one strong healthy macOS peer, one weak dead macOS peer, and the three
@@ -198,9 +237,11 @@ def run(what: str, out: str) -> int:
     else:  # panel
         _device_fixture(store)
         _telemetry_fixture(store)
+        _queue_fixture(store)
         panel._rebuild_grid()
         panel._rebuild_devices()
         panel._rebuild_telemetry()
+        panel._rebuild_agent_tasks()
         store.mesh_changed.emit()
         panel._update_results()
 

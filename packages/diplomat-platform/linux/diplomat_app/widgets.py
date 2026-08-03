@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetricsF, QIcon, QPainter, QPixmap
+from PySide6.QtCore import QMimeData, QPointF, QRectF, Qt, Signal
+from PySide6.QtGui import QColor, QDrag, QFont, QFontMetricsF, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
+    QApplication,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -406,6 +407,167 @@ class ActivityRow(QFrame):
             ts = QLabel(clock)
             ts.setStyleSheet(muted(9, mono=True))
             row.addWidget(ts, 0, Qt.AlignmentFlag.AlignTop)
+
+
+class QueuedTaskRow(QFrame):
+    """One unit of automatic work nothing has started yet.
+
+    It carries the two things the rest of the panel has no use for: a handle to start
+    it now regardless of what is holding it (``run_requested``), and a drag grip that
+    sets the order the queue drains in — drop this row on another and that one emits
+    ``dropped`` with the dragged row's queue key.
+    """
+
+    run_requested = Signal()
+    #: The queue key of the row dropped onto this one.
+    dropped = Signal(str)
+
+    _HELD_HELP = (
+        "Start this agent now, without waiting for a free slot. It then counts "
+        "against the cap like any automatic agent."
+    )
+    _PAUSED_HELP = (
+        "Start this agent now. Its monitor is switched off, so nothing else will — "
+        "but once running it counts against the cap like any automatic agent."
+    )
+
+    def __init__(self, *, task_id: str, label: str, glyph: str, hex_color: str,
+                 paused: bool) -> None:
+        super().__init__()
+        self._task_id = task_id
+        self._press: QPointF | None = None
+        self.setAcceptDrops(True)
+        self._set_targeted(False)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(6, 6, 6, 6)
+        row.setSpacing(8)
+
+        grip = GlyphLabel(glyphs.G_GRIP, 14, glyphs.MUTED, font_px=12)
+        grip.setToolTip("Drag onto another queued row to set the order the queue runs in.")
+        grip.setCursor(Qt.CursorShape.OpenHandCursor)
+        row.addWidget(grip, 0, Qt.AlignmentFlag.AlignVCenter)
+        # The panel's "off" chip (neutral fill, grey glyph), as the free devices and
+        # lookup misses wear — nothing has started yet.
+        row.addWidget(IconChip(glyph, hex_color, 22, active=False),
+                      0, Qt.AlignmentFlag.AlignVCenter)
+
+        col = QVBoxLayout()
+        col.setSpacing(1)
+        title = ElidedLabel(label, 10, "#d8dbde")
+        col.addWidget(title)
+        status = QLabel(
+            f"{glyphs.G_TASKS} queued" + (" · monitor off" if paused else "")
+        )
+        status.setStyleSheet(muted(9))
+        col.addWidget(status)
+        row.addLayout(col, 1)
+
+        run = QPushButton("execute now")
+        run.setCursor(Qt.CursorShape.PointingHandCursor)
+        run.setToolTip(self._PAUSED_HELP if paused else self._HELD_HELP)
+        run.setStyleSheet(
+            f"QPushButton {{ color: {hex_color}; background-color: {tint_bg(hex_color, 0.16)};"
+            " border: none; border-radius: 8px; padding: 2px 7px;"
+            " font-size: 9px; font-weight: 600; }"
+            f"QPushButton:hover {{ background-color: {tint_bg(hex_color, 0.30)}; }}"
+        )
+        run.clicked.connect(self.run_requested.emit)
+        row.addWidget(run, 0, Qt.AlignmentFlag.AlignVCenter)
+
+    # Drag out: the whole row is the handle (the grip says so), so a press-and-move
+    # anywhere on it starts the drag — except on the button, which gets the press first.
+    def mousePressEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._press = event.position()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        if self._press is not None and (
+            (event.position() - self._press).manhattanLength()
+            >= QApplication.startDragDistance()
+        ):
+            self._press = None
+            mime = QMimeData()
+            mime.setText(self._task_id)
+            drag = QDrag(self)
+            drag.setMimeData(mime)
+            drag.exec(Qt.DropAction.MoveAction)
+        super().mouseMoveEvent(event)
+
+    # Drop in: another queued row landed on this one. A drag this row refuses is one
+    # it never becomes a target for, so the highlight can only appear on a drop that
+    # would land (and the rebuild that follows one takes the row with it).
+    def dragEnterEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        if self._dragged_key(event) is None:
+            return
+        event.acceptProposedAction()
+        self._set_targeted(True)
+
+    def dragLeaveEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        self._set_targeted(False)
+
+    def dropEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        key = self._dragged_key(event)
+        if key is None:
+            return
+        event.acceptProposedAction()
+        self.dropped.emit(key)
+
+    def _set_targeted(self, targeted: bool) -> None:
+        """Outline the row while a drop would land on it."""
+        border = "palette(highlight)" if targeted else "transparent"
+        self.setStyleSheet(
+            "QueuedTaskRow { background-color: rgba(128,128,128,0.06);"
+            f" border-radius: 6px; border: 1px solid {border}; }}"
+        )
+
+    def _dragged_key(self, event) -> str | None:
+        """The queue key being dragged, or None when this drag is not one of ours.
+
+        A drop onto the row that is being dragged is not a rearrangement, so it is
+        refused here rather than reordering to the same list."""
+        mime = event.mimeData()
+        if not mime.hasText():
+            return None
+        key = mime.text()
+        return None if not key or key == self._task_id else key
+
+
+class FreeSlotRow(QFrame):
+    """One slot of this device's automatic-task cap with nothing running in it.
+
+    Drawn as an outline rather than left out, so the cap is something the panel shows
+    rather than something the operator has to remember: an idle machine reads as two
+    open bays waiting for work, and a full one has none.
+    """
+
+    _HELP = (
+        "A free slot of this machine's automatic-task cap. The next poll starts "
+        "queued work here, unless its monitor is switched off. The cap is in Settings."
+    )
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setToolTip(self._HELP)
+        self.setStyleSheet(
+            "FreeSlotRow { border: 1px dashed rgba(128,128,128,0.45);"
+            " border-radius: 6px; }"
+        )
+        row = QHBoxLayout(self)
+        row.setContentsMargins(6, 6, 6, 6)
+        row.setSpacing(8)
+        # The hollow twin of a queued row's IconChip, at the same size, so every row
+        # lines up down the left edge.
+        bay = QLabel()
+        bay.setFixedSize(22, 22)
+        bay.setStyleSheet(
+            "border: 1px dashed rgba(128,128,128,0.55); border-radius: 5px;"
+        )
+        row.addWidget(bay, 0, Qt.AlignmentFlag.AlignVCenter)
+        # The whole row is a status, so it wears a status line rather than a label.
+        text = QLabel(f"{glyphs.G_FREE_SLOT} free slot")
+        text.setStyleSheet(muted(9))
+        row.addWidget(text, 1)
 
 
 class BanRow(QFrame):

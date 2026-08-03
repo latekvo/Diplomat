@@ -8,21 +8,58 @@ screen, and settings. It's a thin UI renderer over the shared [`assets/`](../../
 assets — and it doesn't re-implement prompt assembly at all: it shells out to the
 `diplomat-core` Swift binary, so the two front-ends are identical by construction.
 
-**Still macOS-only:** the per-row **Merge** button; the **Agent tasks** list (the
-panel's spawned-sessions, queued-work and free-slot rows — a spawn here is a
-detached `Popen` with no window handle to track it by, so there is nothing to
-render a session row from, and with no list there is nowhere to put the rest).
-That difference reaches one behaviour, not just the view: with nowhere to queue
-work, a monitor switched off here stops polling for it, where on macOS it keeps
-polling and lists what it finds for you to start by hand. The cap and the dispatch
-gate themselves are shared, so both front-ends still *decide* identically.
-Also macOS-only: reading/typing into *arbitrary* terminal windows — Linux has no
-portable hook for that, so the API-error watcher drives **tmux panes** instead and
-is inert for agents not running inside tmux.
+**Still macOS-only:** the per-row **Merge** button; the **session rows** of the
+[Agent tasks](#agent-tasks) list — a spawn here is a detached `Popen` with no window
+handle to track it by, so a running agent has no row to click, only the slot it
+occupies. Also macOS-only: reading/typing into *arbitrary* terminal windows — Linux
+has no portable hook for that, so the API-error watcher drives **tmux panes**
+instead and is inert for agents not running inside tmux.
 
 Universal across desktops via Qt6's `QSystemTrayIcon` (StatusNotifierItem /
 XEmbed): works on **XFCE** (Notification Area / Status Notifier panel plugin),
 **KDE**, and **GNOME** (with an AppIndicator extension).
+
+## Agent tasks
+
+The left pane heads with what this machine is about to do and how much room it has
+left: the automatic work it is **holding**, and an empty bay per free slot of its
+[task cap](../../../README.md#autonomous-monitors). The section is always there. Its
+header counts the queued tasks and captions them with the machine's state — an idle
+one with a cap of two reads `0`, `2 free`, over two empty bays; a saturated one reads
+`3`, `2 running`, over the three tasks waiting behind them.
+
+- **Free slots** are the rest of the cap. Each running automatic agent takes one;
+  agents you spawn yourself from the panel take none. Queued work starts here on the
+  next poll.
+- **Queued** rows are auto-fixes and auto-reviews nothing has started yet. Each
+  carries **execute now** — start it immediately, past whatever is holding it — and a
+  drag grip: drop a row on another to set the order the queue runs in. That order is
+  honoured at the top of the next poll, *before* the monitors go looking for more
+  work, so a slot that just freed goes to whatever you put first rather than to
+  whichever PR GitHub happened to list first.
+
+Two things hold work. The cap holds what there is no slot for, and releases it as
+slots free. A **monitor you switched off** holds its own work indefinitely: it keeps
+polling and keeps listing what it finds (reading *queued · monitor off*), but nothing
+starts by itself — only *execute now* does. So the toggles decide who starts the
+work, not whether you get to see it, and turning both off does not stop the 3-minute
+GitHub poll.
+
+The queue is a view of what the monitors would re-offer, not a second copy of their
+state: it is rebuilt from live GitHub evidence on every poll, so a task drops out the
+moment the work is taken by an agent, resolved, or its author banned. Only the key
+order is remembered (in `QSettings`), so your arrangement survives the rebuild and a
+restart; nothing else is. *Execute now* keeps the task automatic in every other
+respect: same `Auto · ` label, same auto-handled counter, same retry record, and once
+running it occupies a slot like any other automatic agent, so the rest of the queue
+waits behind it.
+
+The rules the list obeys — the queue key, the arrangement, one drag, the free-slot
+count — are `AgentTaskQueue` in
+[`AgentTasks.swift`](../../diplomat-core/Sources/DiplomatCore/AgentTasks.swift), with
+a twin in `autofix.py` that the tests on both sides pin case for case. What macOS has
+on top is `AgentTaskStatus`, the sort that files spawned sessions above the bays;
+here there are no session rows to sort, so the bays come first and the queue after.
 
 ## Requirements
 
@@ -86,14 +123,17 @@ exceptions (see their bullets):
   status, and under the review-requests one the **auto-approve** master toggle
   plus its three withhold-the-verdict suppressors (SKILL / installer / community),
   and the **soft-approve** toggle (default ON — a clean comments-only review leaves
-  a friendly thank-you note, never an APPROVE action).
+  a friendly thank-you note, never an APPROVE action). A monitor switched off keeps
+  polling and keeps listing what it finds under [Agent tasks](#agent-tasks); what
+  stops is the automatic start.
 - **Run at most N automatic tasks at a time** — this machine's hard cap on
   concurrent automatic agents (default **2**, range 1–16), spanning both monitors
   above and any work a mesh peer routes here. Panel spawns are never capped and
-  don't count against it; work over the cap waits for the next poll rather than
-  being dropped. In `~/.diplomat/config.json` for the same reason as the repo
-  root — the node that runs peer-routed work has no Qt, and a machine with two
-  answers to "how many at once" has no cap at all.
+  don't count against it; work over the cap is not dropped — it waits in the
+  [Agent tasks](#agent-tasks) list, in the order you put it, and whatever is left of
+  the cap shows there as empty slots. In `~/.diplomat/config.json` for the same
+  reason as the repo root — the node that runs peer-routed work has no Qt, and a
+  machine with two answers to "how many at once" has no cap at all.
 - **Claude API errors** — the tmux watcher toggle, plus a count of nudges sent.
 - **Tools — colour & visibility** — retint or hide any tool card. (SKILL.md PRs
   and Installer/CLI PRs ship hidden.)
@@ -176,8 +216,11 @@ python tests/test_logic.py        # the logic tests, dependency-free (no pytest)
   shared `assets/golden-prompts/` files (generated by the Swift smoke test), so the
   bridge can only drift from Swift by failing CI. Needs `DIPLOMAT_CORE_BIN`.
 - `tests/test_autofix.py` - the monitors' pure decisions: the dispatch gate,
-  edge/level triggers, backoff, mesh routing, the device's automatic-task cap.
-  Pinned against the Swift twin.
+  edge/level triggers, backoff, mesh routing, the device's automatic-task cap, and
+  the queue behind that cap (what a refusal defers, what a switched-off monitor
+  holds, the drain order, "execute now"). Pinned against the Swift twin.
+- `tests/test_agent_tasks_panel.py` - the panel half of that queue: the rows it
+  draws, and the click and the drop that reach the store.
 - `tests/test_apiwatch.py` - the API-error matcher + the tmux watcher's backoff
   and two-scan stall confirmation.
 - `tests/test_activity.py` - the audit feed: action → category taxonomy, filtering.
@@ -223,7 +266,8 @@ diplomat_app/
   review.py       ReviewConfig + terminal spawner
   conflicts.py    ConflictConfig
   audit.py        AuditConfig - the Full E2E test
-  autofix.py      pure monitor decisions: dispatch gate, triggers, backoff, mesh, task cap
+  autofix.py      pure monitor decisions: dispatch gate, triggers, backoff, mesh,
+                  task cap, and the queue behind it (AgentTasks.swift's twin)
   autofixmonitor.py  the monitors' GitHub reads (monitor-prs / review-requests)
   apiwatch.py     "is this a Claude API error?" matcher + nudge bookkeeping
   tmuxwatch.py    tmux capture-pane / send-keys — the Linux stand-in for AppleScript
@@ -238,7 +282,7 @@ diplomat_app/
   meshspawn.py    the wizards' "⬡ Run on mesh" row
   meshview.py     the ⬡ Mesh topology screen
   widgets.py      cards, chips, rows
-  panel.py        the popup panel (header, search, grid, results, devices)
+  panel.py        the popup panel (header, search, grid, results, agent tasks, devices)
   settingsview.py two-pane settings screen
   wizardview.py   Review-PRs wizard
   conflictwizardview.py  Resolve-conflicts wizard

@@ -514,6 +514,12 @@ check(AgentDispatchGate.runningAutoTasks(livePRs: [1, 2, 3], autoPRs: [4],
       "1, 3 and 4")
 
 section("the agent-task list and the queue behind the cap")
+// PARITY: every `AgentTaskQueue` case below is asserted again, on the same inputs, by
+// diplomat-platform/linux/tests/test_autofix.py — the Linux applet queues, arranges
+// and drains the same work from its own twin of this type, so the two front-ends can
+// only disagree about what runs next by failing one of the two suites.
+// (`AgentTaskStatus` has no twin: a Linux spawn has no session row to sort.)
+//
 // The list's reading order, which is also `ProcessRow`'s status precedence.
 check(AgentTaskStatus.allCases == [.merged, .done, .awaitingInput, .running, .free, .queued],
       "finished first, then what wants a human, then what doesn't, then this device's "

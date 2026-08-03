@@ -129,6 +129,9 @@ class Store(QObject):
     update_changed = Signal()
     # Emitted after each PR auto-fix monitor poll (status pill, counts, poll error).
     autofix_changed = Signal()
+    # Emitted when the Agent-tasks list changes: the queue behind the automatic-task
+    # cap, or how many slots of that cap are standing empty.
+    tasks_changed = Signal()
     # Emitted after each Claude-API-error watcher scan (status pill + continue count).
     apiwatch_changed = Signal()
 
@@ -182,11 +185,34 @@ class Store(QObject):
         self._poll_error_this_cycle: str | None = None
         # In-flight agents [{url, number, done, at, source}] — dedups against
         # spawning a second agent on a PR one is already working, and tells the
-        # automatic-task cap which of them it is allowed to count.
+        # automatic-task cap which of them it is allowed to count. Registered and
+        # pruned from several threads (see _prune_inflight), so it has a mutex of its
+        # own; it is the shortest-held of the three and nests inside neither.
         self._autofix_inflight: list[dict] = []
+        self._inflight_lock = threading.Lock()
         # Whether the "deferring auto work" note has been logged for the current
         # at-capacity episode (see _log_at_capacity).
         self._capacity_logged = False
+        # Automatic work nothing has started yet — held by the task cap, or by its own
+        # monitor being switched off — in the order it will run. The panel's
+        # Agent-tasks list.
+        #
+        # Deliberately NOT persisted. A deferral writes no attempt record precisely so
+        # that every poll re-offers everything GitHub still owes, which means the queue
+        # is rebuilt from live evidence every 3 minutes; a stored copy would only ever
+        # be a staler answer to a question already being re-asked, and would hand
+        # "execute now" a prompt assembled against a PR that has since moved on. What
+        # IS persisted is `queued_task_order` — the operator's arrangement, the one
+        # thing a poll cannot reconstruct. Always REPLACED, never mutated in place: the
+        # poll worker writes it while the GUI thread reads it to draw the rows.
+        self.queued_tasks: list[autofix.QueuedTask] = []
+        # This poll's deferrals, published as `queued_tasks` only once the whole cycle
+        # has succeeded: a failed fetch means "we no longer know what is owed", which
+        # is not the same as "nothing is owed", and must not empty the list.
+        self._staged_queue: list[autofix.QueuedTask] = []
+        # The last count _auto_tasks_running measured, so the panel can draw the
+        # device's free slots without a `ps` scan of its own.
+        self._auto_tasks_measured = 0
         # Guards the _dispatching_prs set (below). MUST stay distinct from the
         # poll-overlap guard: run_autofix_poll_async holds that one across the whole
         # worker, and the worker's dispatch_agent re-takes THIS one — sharing a single
@@ -357,7 +383,8 @@ class Store(QObject):
         a single pass: a terminal window and a ``claude`` session per conflicted
         PR and per owed review, all at once, on one machine. Work over the cap is
         not dropped — the poll that refuses it writes no attempt record, so the
-        next tick offers it again as soon as an agent finishes.
+        next tick offers it again as soon as an agent finishes, and it waits
+        visibly in the panel's Agent-tasks list meanwhile.
 
         The second setting NOT in QSettings, for the same reason as the repo root:
         a mesh peer can route work here, and the node that spawns it is a separate
@@ -369,6 +396,20 @@ class Store(QObject):
         appconfig.set_int(
             appconfig.AUTO_TASK_LIMIT, autofix.clamp_auto_task_limit(int(value))
         )
+
+    @property
+    def queued_task_order(self) -> list[str]:
+        """The operator's drag order for the deferred-work queue, by queue key.
+
+        In QSettings, unlike the cap above it: the arrangement is this front-end's
+        view of its own list, and a mesh node has no queue to read it from. Pruned to
+        what is still offered on every commit, so it can't grow past the work it
+        describes."""
+        return [str(k) for k in (self._settings.value("queuedTaskOrder", [], list) or [])]
+
+    @queued_task_order.setter
+    def queued_task_order(self, value: list[str]) -> None:
+        self._settings.setValue("queuedTaskOrder", list(value))
 
     @property
     def auto_approve_enabled(self) -> bool:
@@ -557,10 +598,12 @@ class Store(QObject):
 
     def run_autofix_poll_async(self) -> None:
         """Kick one monitor poll on a worker thread (guarded against overlap). Safe to
-        call from a QTimer whether or not the panel is open; no-ops when both toggles
-        are off."""
-        if not (self.pr_autofix_enabled or self.review_requests_enabled):
-            return
+        call from a QTimer whether or not the panel is open.
+
+        It polls with the toggles off too: a switched-off monitor still finds what it
+        would have done and queues it, because the panel is where the operator sees
+        what their PRs owe and that question does not go away with the toggle that
+        answers it automatically."""
         if not self._poll_lock.acquire(blocking=False):
             return  # a poll is already running
 
@@ -585,10 +628,32 @@ class Store(QObject):
             else:
                 cfg = core.config()
                 owner, repo = cfg["owner"], cfg["repo"]
-                if self.pr_autofix_enabled:
-                    self._poll_my_prs(owner, repo)
-                if self.review_requests_enabled:
-                    self._poll_review_requests(owner, repo)
+                # The queue first, in the operator's order: a slot that freed since
+                # the last cycle belongs to work already waiting for it, not to
+                # whichever PR this poll's fetch happens to return first.
+                #
+                # Only on evidence a cycle actually confirmed. The queue survives a
+                # failed cycle deliberately (see _staged_queue), but surviving is not
+                # the same as being current: while `gh` is down the list freezes, and
+                # a drain that kept firing from it would spawn agents at work
+                # answered by hand hours ago.
+                if self.autofix_poll_error is None:
+                    self._drain_queued_tasks()
+                # Start this cycle's staging empty — the one place it is reset, so a
+                # cycle that failed part-way and never committed does not carry its
+                # offers into this one. They are re-offered by the cycle that
+                # succeeds, since the refusal that staged them wrote no attempt
+                # record.
+                self._staged_queue = []
+                # Both monitors run whatever their toggles say; a switched-off one
+                # queues what it finds instead of dispatching it (see is_paused).
+                self._poll_my_prs(owner, repo)
+                self._poll_review_requests(owner, repo)
+                # A cycle that failed part-way knows what it fetched, not what is
+                # owed — committing then would drop every task the failing half would
+                # have re-offered, and with it the operator's arrangement of them.
+                if self._poll_error_this_cycle is None:
+                    self.commit_queue()
         except Exception as exc:  # noqa: BLE001 — any poll failure surfaces, never kills the worker
             # The per-poll helpers guard only their fetch_* calls; a failure deeper in the
             # poll — notably a diplomat-core build-prompt subprocess error
@@ -633,10 +698,16 @@ class Store(QObject):
         for s in owed:
             k = str(s.number)
             action, val = autofix.decide(
-                attempts.get(k), "unresolved", self._in_flight(s.url), False, now
+                attempts.get(k),
+                autofix.STAMP_UNRESOLVED_REVIEW,
+                self._in_flight(s.url),
+                False,
+                now,
             )
             if action == "dispatch" and self._dispatch_my_review(s, int(val)):
-                attempts[k] = autofix.ReviewAttempt("unresolved", now, int(val))
+                attempts[k] = autofix.ReviewAttempt(
+                    autofix.STAMP_UNRESOLVED_REVIEW, now, int(val)
+                )
         owed_keys = {str(s.number) for s in owed}
         self._save_attempts(key, {k: v for k, v in attempts.items() if k in owed_keys})
 
@@ -650,12 +721,18 @@ class Store(QObject):
         for s in conflicted:
             k = str(s.number)
             action, val = autofix.decide(
-                attempts.get(k), "conflicting", self._in_flight(s.url), False, now
+                attempts.get(k),
+                autofix.STAMP_CONFLICTING,
+                self._in_flight(s.url),
+                False,
+                now,
             )
             if action == "dispatch" and self._dispatch_conflict_fix(
                 s.number, s.url, int(val), "auto", head_sha=s.head_sha
             ):
-                attempts[k] = autofix.ReviewAttempt("conflicting", now, int(val))
+                attempts[k] = autofix.ReviewAttempt(
+                    autofix.STAMP_CONFLICTING, now, int(val)
+                )
         keep = {str(s.number) for s in snaps if s.mergeable != "MERGEABLE"}
         self._save_attempts(key, {k: v for k, v in attempts.items() if k in keep})
 
@@ -674,7 +751,7 @@ class Store(QObject):
         owed = [r for r in reqs if r.owe_review]
         for r in owed:
             k = str(r.number)
-            stamp = r.requested_at or "-"
+            stamp = r.stamp
             action, val = autofix.decide(
                 attempts.get(k),
                 stamp,
@@ -751,7 +828,8 @@ class Store(QObject):
 
     # MARK: - the one dispatch pipeline (buttons and monitors are triggers, not paths)
 
-    def dispatch_agent(self, job: autofix.AgentJob, source: str, attempt: int = 1) -> str:
+    def dispatch_agent(self, job: autofix.AgentJob, source: str, attempt: int = 1,
+                       bypass_capacity: bool = False) -> str:
         """Run one agent job through the shared gate (``autofix.dispatch_decide`` -
         the pure, tested decision both platforms mirror) and, on proceed, spawn and
         register it. Returns the verdict: ``"spawned"``, an ``autofix.VERDICT_*``
@@ -764,8 +842,17 @@ class Store(QObject):
         overlapping poll and a click can't race two spawns onto one PR.
 
         An AUTO job is additionally capped at ``auto_task_limit`` concurrent
-        agents on this device (``_auto_tasks_running``); a panel click is never
-        capped."""
+        agents on this device (``_auto_tasks_running``), and held outright while
+        its own monitor is switched off (:meth:`is_paused`); a panel click is
+        subject to neither. Either refusal queues the job (:meth:`_stage_queued`),
+        which is what the panel's Agent-tasks list shows as *queued*.
+
+        ``bypass_capacity`` is for the two callers that have already answered the
+        capacity question themselves: the queue drain (which counted the free slot
+        it is filling, and skips paused work by construction) and "execute now"
+        (where the operator is overriding both holds deliberately). It skips the
+        measurement — not just its verdict — so neither pays for a second ``ps``
+        scan, and so a forced run cannot re-queue itself."""
         if job.pr_number is not None:
             with self._dispatching_lock:
                 if job.pr_number in self._dispatching_prs:
@@ -781,15 +868,28 @@ class Store(QObject):
             # PR spawns nothing either way — so in both of those the answer would
             # be discarded. Finding room is also what re-arms the "deferring" note.
             at_capacity = False
-            if source == autofix.SOURCE_AUTO and not agent_on_pr:
-                at_capacity = self._auto_tasks_running() >= self.auto_task_limit
-                if not at_capacity:
+            paused = False
+            if source == autofix.SOURCE_AUTO and not agent_on_pr and not bypass_capacity:
+                full = self._auto_tasks_running() >= self.auto_task_limit
+                if not full:
                     self._capacity_logged = False
+                # A switched-off monitor has no room for its own work, whatever the
+                # device's. Modelled as capacity because the answer is the same one
+                # in every respect that matters here — hold the job, write no attempt
+                # record, re-offer it next poll — which keeps a toggle that is the
+                # front-end's own out of the dispatch gate both front-ends mirror.
+                paused = self.is_paused(job.counter)
+                at_capacity = full or paused
             verdict = autofix.dispatch_decide(
                 source, banned, agent_on_pr, False, at_capacity
             )
             if verdict == autofix.VERDICT_AT_CAPACITY:
-                self._log_at_capacity()
+                # A paused monitor is not a saturated device: it queues silently,
+                # because the operator switched it off on purpose and the row says
+                # the rest.
+                if not paused:
+                    self._log_at_capacity()
+                self._stage_queued(job, attempt)
                 return verdict
             if verdict == autofix.VERDICT_BANNED:
                 activity.log(
@@ -865,6 +965,7 @@ class Store(QObject):
             duty="conflicts",
             work_key=autofix.work_key(autofix.WORK_CONFLICTS, url, head_sha),
             counter="conflicts",
+            attempt_stamp=autofix.STAMP_CONFLICTING,
         )
         return self.dispatch_agent(job, source, attempt) in ("spawned", autofix.VERDICT_STAND_DOWN)
 
@@ -888,6 +989,7 @@ class Store(QObject):
             duty="review",
             work_key=autofix.work_key(autofix.WORK_REVIEW_REPLY, s.url, s.head_sha),
             counter="my_reviews",
+            attempt_stamp=autofix.STAMP_UNRESOLVED_REVIEW,
         )
         return self.dispatch_agent(job, autofix.SOURCE_AUTO, attempt) in ("spawned", autofix.VERDICT_STAND_DOWN)
 
@@ -924,6 +1026,7 @@ class Store(QObject):
             duty="review",
             work_key=autofix.work_key(autofix.WORK_REVIEW_REQ, r.url, r.head_sha),
             counter="review_requests",
+            attempt_stamp=r.stamp,
         )
         return self.dispatch_agent(job, autofix.SOURCE_AUTO, attempt) in ("spawned", autofix.VERDICT_STAND_DOWN)
 
@@ -944,15 +1047,16 @@ class Store(QObject):
             review.spawn(prompt, self.terminal, done_path=done_path)
         except review.SpawnError:
             return False
-        self._autofix_inflight.append(
-            {
-                "url": url,
-                "number": number,
-                "done": done_path,
-                "at": time.time(),
-                "source": source,
-            }
-        )
+        with self._inflight_lock:
+            self._autofix_inflight.append(
+                {
+                    "url": url,
+                    "number": number,
+                    "done": done_path,
+                    "at": time.time(),
+                    "source": source,
+                }
+            )
         return True
 
     def _auto_tasks_running(self) -> int:
@@ -967,7 +1071,50 @@ class Store(QObject):
         for e in self._autofix_inflight:
             bucket = manual_prs if e["source"] == autofix.SOURCE_PANEL else auto_prs
             bucket.add(e["number"])
-        return autofix.running_auto_tasks(self._live_pr_agents(), auto_prs, manual_prs)
+        n = autofix.running_auto_tasks(self._live_pr_agents(), auto_prs, manual_prs)
+        self._auto_tasks_measured = n
+        return n
+
+    def refresh_auto_task_count(self) -> None:
+        """Re-measure for the display alone, signalling only on a change.
+
+        The panel calls it on its own tick, including the ticks where nothing is
+        tracked: an agent can be alive in ``ps`` with no in-flight record behind it
+        (an applet restart loses the book, not the agents), and that is exactly when
+        a wrongly-drawn free bay would be most misleading."""
+        before = self._auto_tasks_measured
+        self._auto_tasks_running()
+        if self._auto_tasks_measured != before:
+            self.tasks_changed.emit()
+
+    def refresh_auto_task_count_async(self) -> None:
+        """Measure off the UI thread — it shells out to ``ps`` (see
+        :meth:`_live_pr_agents`)."""
+        threading.Thread(target=self.refresh_auto_task_count, daemon=True).start()
+
+    @property
+    def auto_tasks_shown(self) -> int:
+        """How many automatic agents the panel counts as running on this device.
+
+        The higher of the last measurement and what the tracked records themselves
+        say. Each is only a lower bound on the truth — the measurement can predate a
+        spawn this very poll made, the records miss agents nobody tracked — and
+        between two lower bounds the larger is the safer: it errs towards drawing one
+        bay fewer, never towards offering a slot the gate would refuse."""
+        tracked = len(
+            {
+                e["number"]
+                for e in self._autofix_inflight
+                if e["source"] != autofix.SOURCE_PANEL
+            }
+        )
+        return max(self._auto_tasks_measured, tracked)
+
+    @property
+    def free_auto_slots(self) -> int:
+        """Slots of this device's cap with nothing in them, as the panel draws
+        them."""
+        return autofix.free_slots(self.auto_task_limit, self.auto_tasks_shown)
 
     def _log_at_capacity(self) -> None:
         """Note that automatic work is being held back — once per episode, not once
@@ -984,22 +1131,226 @@ class Store(QObject):
         )
         self.refresh_activity()
 
+    # MARK: - the queue behind the cap
+    #
+    # A refusal writes no attempt record, so every poll re-offers whatever GitHub
+    # still owes: that is where the queue's contents come from, and why nothing here
+    # is a second copy of monitor state. What the queue adds is a list the panel can
+    # show and the operator can arrange, drained in THEIR order at the top of a cycle,
+    # before the monitors go looking for more.
+    #
+    # Two holds put work here. The device's cap holds work it has no slot for, and the
+    # drain releases it as slots free. A switched-off monitor holds its own work
+    # indefinitely: it is queued so the panel can show what the PRs owe, and only a
+    # click ("execute now") or the toggle coming back on starts it.
+
+    def _stage_queued(self, job: autofix.AgentJob, attempt: int) -> None:
+        """Remember one at-capacity refusal as a queued task. Called from the single
+        dispatch gate, so every deferral is queued however it was triggered — the two
+        reconcilers, the review-request monitor, or the review edge-trigger. One poll
+        can offer the same key twice; which of the two runs is decided in
+        :meth:`commit_queue`."""
+        # Only PR-scoped work with a monitor behind it can be queued: a task nothing
+        # can name is one the next poll cannot recognise as the same one, and a task
+        # no monitor owns is one nothing would re-offer — the queue would be the only
+        # record of it, which is precisely what this list is not. (Every automatic job
+        # is both; the sweeps that are neither are panel-only, and a click is uncapped.)
+        if job.pr_number is None or job.counter is None:
+            return
+        entry = autofix.QueuedTask(
+            id=autofix.queue_key(job.audit_action, job.pr_number),
+            job=job,
+            attempt=attempt,
+        )
+        self._staged_queue = self._staged_queue + [entry]
+
+    def commit_queue(self) -> None:
+        """Publish this poll's deferrals as the queue, arranged by the operator's
+        saved order. Called only after a fully successful cycle — see
+        ``_staged_queue``.
+
+        The LAST offer of a key wins, and its place in the queue is where it was
+        first offered: within one poll the reconcilers run after the edge-trigger and
+        carry the backoff-aware attempt number, so theirs is the job that should run,
+        while the position is the same task's either way."""
+        staged = self._staged_queue
+        by_id = {e.id: e for e in staged}
+        ordered = autofix.queue_order([e.id for e in staged], self.queued_task_order)
+        self.queued_task_order = ordered
+        before = self.queued_tasks
+        self.queued_tasks = [by_id[k] for k in ordered]
+        if self.queued_tasks != before:
+            self.tasks_changed.emit()
+
+    def _drain_queued_tasks(self) -> None:
+        """Run the queue down into whatever room this device has, in the operator's
+        order. This is what makes the drag order mean anything: it runs at the TOP of
+        a poll, before the monitors offer their own finds, so a slot that freed since
+        the last cycle goes to the work already waiting for it rather than to whatever
+        this poll's fetch happens to list first.
+
+        Capacity is re-counted per task because each spawn fills a slot. A spawn
+        failure stops the drain: it means terminal automation is broken, not that this
+        one task was unlucky, and each entry is taken off the list before it is tried —
+        so walking the whole queue into the same failure would clear the panel of every
+        queued row at once, for a reason none of them caused."""
+        for entry in self.drainable_tasks:
+            if self._auto_tasks_running() >= self.auto_task_limit:
+                return
+            # Finding room here is what re-arms the saturation notice. The gate's own
+            # reset sits behind the capacity measurement this path skips, so without
+            # this the feed would carry one `at-capacity` line for an unbounded run of
+            # saturate-and-drain episodes instead of one apiece.
+            self._capacity_logged = False
+            self._drop_queued(entry.id)
+            if self._run_queued_task(entry) == "failed":
+                return
+
+    def is_paused(self, counter: str | None) -> bool:
+        """Whether the monitor that owns this work is switched off.
+
+        A switched-off monitor still finds its work and still queues it — what your
+        PRs owe is worth seeing whether or not this machine is set to act on it — but
+        nothing automatic starts it. It waits for "execute now", or for the toggle to
+        come back on. That is the whole difference the two toggles make: they decide
+        who starts the work, not whether it is known."""
+        if counter == "review_requests":
+            return not self.review_requests_enabled
+        if counter in ("my_reviews", "conflicts"):
+            return not self.pr_autofix_enabled
+        # Unreachable: a job with no monitor behind it is never queued (_stage_queued).
+        # Answering "not paused" keeps the unreachable case from being the one that
+        # silently holds work back.
+        return False
+
+    @property
+    def drainable_tasks(self) -> list[autofix.QueuedTask]:
+        """The queued tasks the drain may start, in the operator's order —
+        everything whose monitor is still on."""
+        return [e for e in self.queued_tasks if not self.is_paused(e.job.counter)]
+
+    def _drop_queued(self, task_id: str) -> None:
+        """Take one task off the published queue (it is being started)."""
+        remaining = [e for e in self.queued_tasks if e.id != task_id]
+        if len(remaining) != len(self.queued_tasks):
+            self.queued_tasks = remaining
+            self.tasks_changed.emit()
+
+    def _run_queued_task(self, entry: autofix.QueuedTask) -> str:
+        """Dispatch one queued task past the capacity check its caller already made,
+        and record the attempt its monitor would have recorded.
+
+        That record is not bookkeeping polish: the whole retry ladder hangs off it. A
+        queued dispatch that wrote none would look, to the very next poll after the
+        agent exits, exactly like work never attempted — so an agent that finishes
+        without clearing the conflict or leaving the review would be re-dispatched
+        three minutes later, and again, with no backoff ever engaging."""
+        verdict = self.dispatch_agent(
+            entry.job, autofix.SOURCE_AUTO, entry.attempt, bypass_capacity=True
+        )
+        if verdict in ("spawned", autofix.VERDICT_STAND_DOWN):
+            self._record_queued_attempt(entry)
+        return verdict
+
+    def _record_queued_attempt(self, entry: autofix.QueuedTask) -> None:
+        """Write the retry-backoff record for a task the queue dispatched, into the
+        same per-monitor ledger that monitor writes itself: ``AgentJob.counter`` names
+        the ledger, ``attempt_stamp`` is the stamp that monitor compares against."""
+        key = {
+            "review_requests": "reviewReqAttempts",
+            "my_reviews": "myReviewAttempts",
+            "conflicts": "myConflictAttempts",
+        }.get(entry.job.counter or "")
+        if key is None or entry.job.pr_number is None:
+            return
+        attempts = self._load_attempts(key)
+        attempts[str(entry.job.pr_number)] = autofix.ReviewAttempt(
+            entry.job.attempt_stamp, time.time(), entry.attempt
+        )
+        self._save_attempts(key, attempts)
+
+    def execute_queued_task_async(self, task_id: str) -> None:
+        """The queued row's "execute now": start this task immediately, past the cap.
+
+        It stays AUTO work — same ``Auto · `` label, same auto-handled counter, mesh
+        routing still applies, and once running it occupies a slot like any other
+        automatic agent, so the rest of the queue waits behind it. Of the four
+        asymmetries the gate draws between a click and a monitor tick (capacity, mesh,
+        counters, label) this borrows exactly one: the cap, which is the only one the
+        operator is overriding.
+
+        On a worker thread, like every other dispatch path: it assembles nothing but
+        it does spawn a terminal, and on a live mesh it waits on a node round-trip."""
+        entry = next((e for e in self.queued_tasks if e.id == task_id), None)
+        if entry is None:
+            return
+        self._drop_queued(entry.id)
+
+        def work() -> None:
+            self._execute_queued_task(entry)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _execute_queued_task(self, entry: autofix.QueuedTask) -> None:
+        """One "execute now", start to finish.
+
+        The feed line is written from the OUTCOME, never ahead of it: this is an auto
+        job, so a mesh peer can own the work, the PR can have gained an agent since
+        the list was built, and the spawn can fail — announcing "started" before
+        asking would report a launch that never happened in all three."""
+        verdict = self._run_queued_task(entry)
+        label = entry.job.label
+        if verdict == "spawned":
+            activity.log("panel", "queue-run",
+                         f"{label} — started ahead of the task cap")
+        # The rest are all logged by the step that decided them, but a feed line is
+        # not an answer to a click: the row vanished and nothing opened, so say why in
+        # the panel, as the wizards do for their own refusals.
+        elif verdict == "failed":
+            self.error = f"{label} failed to spawn — see the activity log."
+        elif verdict == autofix.VERDICT_IN_FLIGHT:
+            self.error = f"{label}: an agent is already on this PR."
+        elif verdict == autofix.VERDICT_STAND_DOWN:
+            self.error = f"{label}: a mesh peer's agent already owns this work."
+        elif verdict == autofix.VERDICT_BANNED:
+            self.error = f"{label}: the PR's author is banned (un-ban to review)."
+        if verdict != "spawned":
+            self.changed.emit()
+        self.refresh_activity()
+
+    def move_queued_task(self, task_id: str, onto: str) -> None:
+        """Reorder the queue by drag: ``task_id`` lands where it was dropped relative
+        to ``onto``. The arrangement is persisted, so it survives both the poll that
+        rebuilds the list and the restart that empties it."""
+        current = self.queued_tasks
+        ordered = autofix.queue_reorder([e.id for e in current], task_id, onto)
+        by_id = {e.id: e for e in current}
+        self.queued_task_order = ordered
+        self.queued_tasks = [by_id[k] for k in ordered]
+        self.tasks_changed.emit()
+
     def _prune_inflight(self) -> None:
         now = time.time()
-        live: list[dict] = []
-        for e in self._autofix_inflight:
-            done = e.get("done")
-            finished = bool(done) and os.path.exists(done)
-            if finished:
-                try:
-                    os.unlink(done)
-                except OSError:
-                    pass
-                continue
-            if now - e.get("at", 0) > self._AUTOFIX_INFLIGHT_TTL:
-                continue
-            live.append(e)
-        self._autofix_inflight = live
+        # Under the lock, because pruning REPLACES the list: three threads reach it
+        # (the poll worker, a panel click, and the sweep that re-measures the free
+        # slots), and a spawn registering itself against the list a prune has already
+        # copied would be dropped — leaving an agent nothing counts, which is a slot
+        # of the cap the machine can then spend twice.
+        with self._inflight_lock:
+            live: list[dict] = []
+            for e in self._autofix_inflight:
+                done = e.get("done")
+                finished = bool(done) and os.path.exists(done)
+                if finished:
+                    try:
+                        os.unlink(done)
+                    except OSError:
+                        pass
+                    continue
+                if now - e.get("at", 0) > self._AUTOFIX_INFLIGHT_TTL:
+                    continue
+                live.append(e)
+            self._autofix_inflight = live
 
     def _in_flight(self, url: str) -> bool:
         self._prune_inflight()
