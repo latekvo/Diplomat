@@ -141,8 +141,9 @@ enum QueueTest {
 
         // 7. A monitor switched off still queues its work — the panel is where the
         //    operator sees what their PRs owe — but nothing automatic starts it. The
-        //    drain walks `drainableTasks`, so that list is where the rule lives: a
-        //    paused row in it is an agent spawned minutes after they switched it off.
+        //    drain walks `drainableTasks`, so that list is where the rule lives — a
+        //    paused row appearing in it is an agent opening minutes after they
+        //    switched that monitor off.
         _ = await offer(job(4))
         _ = await offer(job(6, action: "conflicts", label: "Resolve · #6",
                             counter: .conflicts))
