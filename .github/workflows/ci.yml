@@ -37,22 +37,25 @@ jobs:
       - name: Run shared-core smoke test
         working-directory: packages/diplomat-core
         run: swift run DiplomatCoreSmoke
-      # Headless UI snapshot: renders the real two-column panel (seeded sessions,
-      # devices, bans, audit feed) through ImageRenderer — a cheap whole-UI crash
-      # guard that needs no gh auth and no display. A headless mode never persists
-      # (settings writes are headless-guarded), so it can't touch any defaults.
+      # Headless UI snapshot: renders the real two-column panel through ImageRenderer
+      # — a cheap whole-UI crash guard that needs no gh auth and no display. A
+      # headless mode never persists (settings writes are headless-guarded), so it
+      # can't touch any defaults. The `-procs` suffix seeds the Agent-tasks list
+      # (every session status plus queued rows) on top of the device pool, so both
+      # of the panel's row families are actually constructed.
       - name: Headless panel render
         working-directory: packages/diplomat-platform/macos
         run: |
-          DIPLOMAT_RENDER=devices DIPLOMAT_RENDER_OUT="$RUNNER_TEMP/panel.png" \
+          DIPLOMAT_RENDER=devices-procs DIPLOMAT_RENDER_OUT="$RUNNER_TEMP/panel.png" \
             swift run Diplomat
           test -s "$RUNNER_TEMP/panel.png"
       # The shared-helper self-tests that a runner can host. All pure logic, and none
       # of them touches the runner's real state: OSA_TEST runs bare AppleScript
       # expressions (no `tell application`, so no Automation permission),
       # MESH_CMD_TEST is pinned to a scratch state dir and a non-checkout so it can
-      # neither read a real mesh node nor start one, and ALLOCATOR_TEST shells no
-      # installer and reads no ~/.claude.
+      # neither read a real mesh node nor start one, ALLOCATOR_TEST shells no
+      # installer and reads no ~/.claude, and QUEUE_TEST reaches the automatic-task
+      # cap's refusal branch, which returns before any spawn or fetch.
       #
       # DIPLOMAT_TRACK_TEST and DIPLOMAT_SPAWN_FOCUS_TEST are the two that stay out,
       # and not by oversight: both drive real throwaway iTerm/Terminal windows and
@@ -65,6 +68,7 @@ jobs:
           SZPONTNET_DIR="$RUNNER_TEMP/mesh" DIPLOMAT_SELF_REPO=/nonexistent \
             DIPLOMAT_MESH_CMD_TEST=1 swift run Diplomat
           DIPLOMAT_ALLOCATOR_TEST=1 swift run Diplomat
+          DIPLOMAT_QUEUE_TEST=1 swift run Diplomat
 
   # The shared core advertises "compiles on macOS *and* Linux". This guards that
   # invariant by building + running the diplomat-core package on Linux (the SwiftUI

@@ -100,9 +100,7 @@ reports the PR conflicting, which spawns the fix agent for exactly that PR.
 monitor is enabled (heartbeat: PRs watched, conflicts/reviews handled; "offline"
 when polling stops for 15 minutes). The rest appear only when non-empty: the
 **banned authors** list (prompt-injection bans, with the captured evidence and an
-inline un-ban); the **agent sessions** list (every spawned agent, wizard- or
-monitor-launched, with a live *running / awaiting input / done / merged* state -
-click a row to focus its terminal window, ✕ to stop tracking); the **devices**
+inline un-ban); the collapsible **agent tasks** list (below); the **devices**
 pool (who holds which simulator/emulator, for how long, with a per-device kill -
 clicking an in-use device focuses the holding agent's terminal); and the
 **activity** log, one unified audit feed
@@ -116,6 +114,31 @@ rows. The taxonomy (which raw action verb maps to which category, plus its icon 
 tint) is shared in [`assets/audit-categories.json`](packages/diplomat-core/assets/audit-categories.json), with
 `packages/diplomat-core/Sources/DiplomatCore/AuditCategory.swift` as the Swift source of truth.
 
+### Agent tasks
+
+One list for what the machine is doing and what it is about to do - the agents it
+has **spawned**, and the automatic work its [task cap](#autonomous-monitors) is
+**holding**. Rows read in status order: *merged*, *done*, *awaiting input*,
+*running*, *queued*, so finished work (the only kind asking to be read) sits at
+the top and everything not started yet is at the bottom.
+
+- **Sessions** are every spawned agent, wizard- or monitor-launched. Click a row
+  to focus its terminal window, ✕ to stop tracking it.
+- **Queued** rows are auto-fixes and auto-reviews the cap deferred. Each carries
+  **execute now** - start it immediately, past the cap - and a drag grip: drop a
+  row on another to set the order the queue runs in. That order is honoured at the
+  top of the next poll, *before* the monitors go looking for more work, so a slot
+  that just freed goes to whatever you put first rather than to whichever PR
+  GitHub happened to list first.
+
+The queue is a view of what the monitors would re-offer, not a second copy of
+their state: it is rebuilt from live GitHub evidence on every 3-minute poll, so a
+task drops out the moment the work is taken, resolved, or claimed by a mesh peer.
+Only your arrangement of it is remembered (it has to be - a poll can't
+reconstruct it). *Execute now* keeps the task automatic in every other respect:
+same `Auto · ` label, same auto-handled counter, and once running it occupies a
+slot like any other automatic agent, so the rest of the queue waits behind it.
+
 ## Actions - Review PRs
 
 The grid carries a **Review PRs** card alongside the tools. Click it and the wizard
@@ -125,8 +148,8 @@ running a detached review session in your **repo root** (Settings; default
 `~/dev/<repo>`) that you watch and steer yourself. The prompt is staged to a
 file and the window runs
 `claude "$(cat <promptfile>)"; printf %s $? > <done>` - the trailing sentinel
-(under `~/.diplomat/pr-monitor/done/`) is how the sessions list knows the agent
-finished. The choices are baked into the prompt:
+(under `~/.diplomat/pr-monitor/done/`) is how the Agent-tasks list knows the
+agent finished. The choices are baked into the prompt:
 
 - **Target** — the same three-way selector the other wizards use: *Mine* (the
   resolved handle, see Settings), *Someone else's* (a handle field lights up), or
@@ -418,8 +441,10 @@ and any work a mesh peer routes here, and it counts agents that are really
 running (`ps`, so it survives an applet restart) rather than a tally that can
 drift. Agents *you* spawn from the panel don't count against it, and a click is
 never refused. Nothing is dropped - work over the cap gets no attempt record, so
-the next 3-minute tick offers it again as soon as an agent finishes. Saturation
-shows up as one `at-capacity` row in the activity feed per episode.
+the next 3-minute tick offers it again as soon as an agent finishes, and it waits
+visibly in the panel's [Agent tasks](#agent-tasks) list meanwhile, where it can be
+reordered or started by hand. Saturation shows up as one `at-capacity` row in the
+activity feed per episode.
 
 **With a mesh up, each unit of work runs once.** Every machine scans GitHub
 independently; whoever finds a unit routes it by work key, and the node that
@@ -547,7 +572,7 @@ DIPLOMAT_REFRESH_SECS=30 open ./Diplomat.app   # refresh every 30s
 ```
 
 Each refresh also re-checks every tracked, unmerged PR (one `gh pr view` apiece) so
-the sessions list can flip a row to *merged*. The [autonomous
+the Agent-tasks list can flip a row to *merged*. The [autonomous
 monitors](#autonomous-monitors) are separate, on their own 3-minute schedule.
 
 ## Run
@@ -643,7 +668,7 @@ DIPLOMAT_RENDER=panel    ./Diplomat.app/Contents/MacOS/Diplomat  # snapshot a sc
                                                      #   natural|settings|settings-live|approved|unban-confirm
                                                      #   activity[-filtered] (audit feed + its filter chips)
                                                      #   wizard[-other|-specific[-mine|-theirs]|-wrong|-banned]
-                                                     #   devices[-open]|conflicts[-other|-specific|-wrong]
+                                                     #   devices[-open|-procs]|conflicts[-other|-specific|-wrong]
                                                      #   audit[-issues|-prs|-all]
                                                      #   mesh (⬡ screen over a synthetic topology); mesh-blocked
                                                      #   (the not-discoverable banner); mesh-reminder (trust modal)
@@ -743,6 +768,7 @@ packages/
         Conflict.swift / Audit.swift  ConflictConfig + AuditConfig prompt builders (assets/conflicts.json, assets/audit.json)
         PRRef.swift / PRTarget.swift  single-PR reference parsing + the whose-PRs axis shared by the wizards
         Autofix.swift              PRSnapshot + the monitor's edge-trigger diff, AgentDispatchGate, AutofixMesh
+        AgentTasks.swift           the Agent-tasks list's sort order + the queue behind the task cap
         ReviewReconcile.swift      pure retry/backoff/dedup decisions for the monitors
         AgentActivity.swift        terminal-tail classification: running vs awaiting input
         ApiErrorMatch.swift        "is this a Claude API error?" matcher for the watcher
@@ -769,6 +795,7 @@ packages/
         ApiErrorWatcher.swift      iTerm/Terminal session reader + continue-nudge sender
         ProcessTracker.swift       tracked agent sessions (liveness, focus, done sentinel, merged)
         TrackTest.swift            E2E self-test of the tracking path (DIPLOMAT_TRACK_TEST)
+        QueueTest.swift            self-test of the deferred-task queue (DIPLOMAT_QUEUE_TEST)
         BanList.swift / AuditLog.swift   ban list (the daemon's banned.json) + the unified activity feed (audit.jsonl)
         DeviceAllocator.swift      allocator daemon state reader + installer bridge
         DeviceFocus.swift          click an in-use device → focus the holding agent's terminal

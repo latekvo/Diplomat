@@ -274,11 +274,14 @@ enum Render {
         return true
     }
 
-    /// For `DIPLOMAT_RENDER=panel-procs`, inject a couple of fake tracked
-    /// sessions so the ongoing-sessions list can be eyeballed. No-op otherwise.
+    /// For a render mode carrying `-procs`, inject fake tracked sessions and queued
+    /// tasks so the whole Agent-tasks list can be eyeballed: every session status,
+    /// the sort that puts finished work on top and the queue at the bottom, and the
+    /// queued rows' drag grip and "execute now". No-op otherwise.
     @MainActor
     private static func seedProcessesIfNeeded(_ what: String, store: Store) -> Bool {
         guard what.lowercased().contains("proc") else { return false }
+        // Deliberately not in status order — the list's own sort is what's on trial.
         store.processes = [
             TrackedProcess(kind: "review", label: "Review · #337 · Deep", terminal: "iterm",
                            windowID: "1", sessionID: "a", tty: "/dev/ttys991", donePath: "",
@@ -296,7 +299,29 @@ enum Render {
                            prURL: "https://github.com/software-mansion/argent/pull/312",
                            createdAt: Date(), done: true, merged: true),
         ]
+        store.queuedTasks = [
+            queuedFixture(number: 512, kind: "review", auditAction: "review-req",
+                          label: "Review-req · #512 (@octocat) −verdict (auto-approvals off)"),
+            queuedFixture(number: 508, kind: "conflicts", auditAction: "conflicts",
+                          label: "Resolve · #508", attemptNumber: 2),
+        ]
         return true
+    }
+
+    /// One queued-task fixture. The prompt is empty on purpose: a render never
+    /// dispatches, and an assembled prompt here would only be a second, drifting copy
+    /// of the golden ones.
+    @MainActor
+    private static func queuedFixture(number: Int, kind: String, auditAction: String,
+                                      label: String,
+                                      attemptNumber: Int = 1) -> Store.QueuedAgentTask {
+        let url = "https://github.com/software-mansion/argent/pull/\(number)"
+        return Store.QueuedAgentTask(
+            id: AgentTaskQueue.key(auditAction: auditAction, prNumber: number),
+            job: Store.AgentJob(kind: kind, auditAction: auditAction, label: label,
+                                prompt: "", prURL: url, prNumber: number,
+                                authorLogin: nil, duty: kind, workKey: "", counter: nil),
+            attemptNumber: attemptNumber, queuedAt: Date())
     }
 
     /// Seed two approved PRs (one conflicting) + select the My-Approved tool so the

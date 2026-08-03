@@ -513,6 +513,56 @@ check(AgentDispatchGate.runningAutoTasks(livePRs: [1, 2, 3], autoPRs: [4],
                                          manualPRs: [2]) == 3,
       "1, 3 and 4")
 
+section("the agent-task list and the queue behind the cap")
+// The list's reading order, which is also `ProcessRow`'s status precedence.
+check(AgentTaskStatus.allCases == [.merged, .done, .awaitingInput, .running, .queued],
+      "finished first, then what wants a human, then what doesn't, then what hasn't started")
+check(AgentTaskStatus.merged < AgentTaskStatus.queued
+      && AgentTaskStatus.awaitingInput < AgentTaskStatus.running,
+      "the case order IS the sort order")
+check(AgentTaskStatus.ofSession(merged: true, done: true, awaitingInput: true) == .merged,
+      "a landed PR is the definitive outcome — it outranks a local exit")
+check(AgentTaskStatus.ofSession(merged: false, done: true, awaitingInput: true) == .done,
+      "an exited session is done even though its last frame idles at a prompt")
+check(AgentTaskStatus.ofSession(merged: false, done: false, awaitingInput: true) == .awaitingInput,
+      "a live session idling at the prompt wants a human")
+check(AgentTaskStatus.ofSession(merged: false, done: false, awaitingInput: false) == .running,
+      "otherwise it is just running")
+check(AgentTaskStatus.queued.title == "queued" && AgentTaskStatus.awaitingInput.title == "awaiting input",
+      "the words the rows show")
+
+// Queue identity: two monitors owing the same PR are two tasks, and a push must
+// not lose the operator's place for either (so: not the sha-scoped mesh key).
+check(AgentTaskQueue.key(auditAction: "conflicts", prNumber: 7) == "conflicts:7",
+      "queue key is the monitor's verb plus the PR")
+check(AgentTaskQueue.key(auditAction: "review-req", prNumber: 7)
+      != AgentTaskQueue.key(auditAction: "review-reply", prNumber: 7),
+      "one PR can owe two monitors — two tasks, two keys")
+
+check(AgentTaskQueue.order(offered: ["a", "b", "c"], saved: []) == ["a", "b", "c"],
+      "never arranged ⇒ the order the monitors found it in")
+check(AgentTaskQueue.order(offered: ["a", "b", "c"], saved: ["c", "a"]) == ["c", "a", "b"],
+      "arranged tasks keep their place; a new one lands behind them")
+check(AgentTaskQueue.order(offered: ["b"], saved: ["c", "a", "b"]) == ["b"],
+      "work GitHub no longer owes drops out — the queue never outlives its evidence")
+check(AgentTaskQueue.order(offered: [], saved: ["a"]) == [],
+      "nothing offered ⇒ nothing queued")
+check(AgentTaskQueue.order(offered: ["a", "a", "b"], saved: ["b", "b"]) == ["b", "a"],
+      "a key offered or saved twice is still one task")
+
+// A drag has to be able to reach every position, including the end.
+check(AgentTaskQueue.reorder(["a", "b", "c", "d"], moving: "a", onto: "c")
+      == ["b", "c", "a", "d"], "dragged down ⇒ lands after the row it was dropped on")
+check(AgentTaskQueue.reorder(["a", "b", "c", "d"], moving: "d", onto: "b")
+      == ["a", "d", "b", "c"], "dragged up ⇒ lands before the row it was dropped on")
+check(AgentTaskQueue.reorder(["a", "b", "c"], moving: "a", onto: "c") == ["b", "c", "a"],
+      "dropping on the last row is how a task is sent to the back")
+check(AgentTaskQueue.reorder(["a", "b", "c"], moving: "b", onto: "b") == ["a", "b", "c"],
+      "a drop onto itself rearranges nothing")
+check(AgentTaskQueue.reorder(["a", "b"], moving: "z", onto: "a") == ["a", "b"]
+      && AgentTaskQueue.reorder(["a", "b"], moving: "a", onto: "z") == ["a", "b"],
+      "a drag naming a task that left the queue mid-drag changes nothing")
+
 section("autofix mesh coordination")
 // PARITY fixtures: diplomat-platform/linux/tests/test_autofix.py asserts these exact strings — two
 // nodes only dedupe origination when their derivations agree byte-for-byte

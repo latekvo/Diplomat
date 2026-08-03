@@ -8,10 +8,13 @@ screen, and settings. It's a thin UI renderer over the shared [`assets/`](../../
 assets — and it doesn't re-implement prompt assembly at all: it shells out to the
 `diplomat-core` Swift binary, so the two front-ends are identical by construction.
 
-**Still macOS-only:** the per-row **Merge** button, and reading/typing into
-*arbitrary* terminal windows — Linux has no portable hook for that, so the
-API-error watcher drives **tmux panes** instead and is inert for agents not
-running inside tmux.
+**Still macOS-only:** the per-row **Merge** button; the **Agent tasks** list (the
+panel's spawned-sessions and deferred-work rows — a spawn here is a detached
+`Popen` with no window handle to track it by, so there is nothing to render a
+session row from, and with no list there is nowhere to put the deferred half
+either); and reading/typing into *arbitrary* terminal windows — Linux has no
+portable hook for that, so the API-error watcher drives **tmux panes** instead and
+is inert for agents not running inside tmux.
 
 Universal across desktops via Qt6's `QSystemTrayIcon` (StatusNotifierItem /
 XEmbed): works on **XFCE** (Notification Area / Status Notifier panel plugin),
