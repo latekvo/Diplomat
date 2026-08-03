@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "szpontnet"
-version = "0.4.0"
+version = "0.5.0"
 description = "Leaderless LAN peer-to-peer resource sharing: self-discovery, resource advertisement and work hand-off"
 readme = "README.md"
 requires-python = ">=3.10"
