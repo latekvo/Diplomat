@@ -49,6 +49,7 @@ from .widgets import (
 )
 from .conflictwizardview import ConflictWizardView
 from .auditwizardview import AuditWizardView
+from .telemetryview import TelemetryView
 from .wizardview import WizardView
 # `.meshview` is imported in __init__ instead, behind `szpont.AVAILABLE`: it paints
 # SzpontNet's topology and so imports the library at its own top level, which up
@@ -141,7 +142,7 @@ class Panel(QWidget):
         # instance so a poll-driven rebuild doesn't reset the user's collapse choice.
         self._inuse_expanded = True
         self._free_expanded = False
-        # Left-pane telemetry sections (all expanded by default).
+        # Left-pane monitoring sections (all expanded by default).
         self._activity_expanded = True
         self._bans_expanded = True
         self._tasks_expanded = True
@@ -151,7 +152,7 @@ class Panel(QWidget):
             | Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
         )
-        # Two-pane layout (matching the macOS popover): a left telemetry column
+        # Two-pane layout (matching the macOS popover): a left monitoring column
         # (devices · activity · bans) beside the right interactive column (search ·
         # tool grid · results). Widened to give both panes room; height tracks the
         # screen's safe area (availableGeometry excludes the taskbar/panel).
@@ -177,6 +178,17 @@ class Panel(QWidget):
         self.main_page = QWidget()
         self._build_main_page()
         self._screens["main"] = self.body.addWidget(self.main_page)
+
+        # Page: telemetry (what the monitors cost and what they still owe). Sits
+        # between Mesh and Settings, matching the header button order.
+        self.telemetry_view = TelemetryView(store)
+        self.telemetry_view.done.connect(lambda: self._set_screen("main"))
+        telemetry_scroll = QScrollArea()
+        telemetry_scroll.setWidgetResizable(True)
+        telemetry_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        telemetry_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        telemetry_scroll.setWidget(self.telemetry_view)
+        self._screens["telemetry"] = self.body.addWidget(telemetry_scroll)
 
         # Page: settings
         self.settings_view = SettingsView(store)
@@ -205,7 +217,7 @@ class Panel(QWidget):
         store.changed.connect(self._on_data_changed)
         store.loading_changed.connect(self._on_loading)
         store.devices_changed.connect(self._rebuild_devices)
-        store.activity_changed.connect(self._rebuild_telemetry)
+        store.activity_changed.connect(self._rebuild_left_pane)
         store.tasks_changed.connect(self._rebuild_agent_tasks)
 
         # Poll the device-allocator state file + the shared activity/ban files on a
@@ -238,7 +250,7 @@ class Panel(QWidget):
 
         self._rebuild_grid()
         self._rebuild_devices()
-        self._rebuild_telemetry()
+        self._rebuild_left_pane()
         self._rebuild_agent_tasks()
         self._update_results()
 
@@ -287,6 +299,10 @@ class Panel(QWidget):
             self.mesh_btn.clicked.connect(self._toggle_mesh)
             row.addWidget(self.mesh_btn)
 
+        self.telemetry_btn = _icon_button(glyphs.G_TELEMETRY, "Telemetry")
+        self.telemetry_btn.clicked.connect(self._toggle_telemetry)
+        row.addWidget(self.telemetry_btn)
+
         self.settings_btn = _icon_button("⚙", "Settings")
         self.settings_btn.clicked.connect(self._toggle_settings)
         row.addWidget(self.settings_btn)
@@ -306,7 +322,7 @@ class Panel(QWidget):
         layout.addWidget(self._build_right_pane(), 1)
 
     def _build_left_pane(self) -> QWidget:
-        """Telemetry column: agent tasks, device-allocator pool, activity feed, ban
+        """Monitoring column: agent tasks, device-allocator pool, activity feed, ban
         list. Each section is rebuilt in place — from the store's live queue, or from
         the shared ~/.diplomat files — and every one but the tasks list is hidden
         while empty. Wrapped in a scroll area so a busy feed scrolls within the pane.
@@ -607,7 +623,7 @@ class Panel(QWidget):
 
     # MARK: activity feed + bans
 
-    def _rebuild_telemetry(self) -> None:
+    def _rebuild_left_pane(self) -> None:
         self._rebuild_activity()
         self._rebuild_bans()
 
@@ -746,13 +762,17 @@ class Panel(QWidget):
         self._update_results()
 
     def _set_screen(self, name: str) -> None:
-        """Flip the body to one of the screens: Actions ("main"), Settings, or —
-        when the mesh add-on is installed — Mesh management."""
+        """Flip the body to one of the screens: Actions ("main"), Telemetry,
+        Settings, or — when the mesh add-on is installed — Mesh management."""
         self._screen = name
         self.body.setCurrentIndex(self._screens[name])
         if name == "mesh" and self.store.mesh_enabled:
             # Fresh topology the moment the screen opens (the 2s poll follows).
             self.store.refresh_mesh_state()
+        if name == "telemetry":
+            # Re-fold on open. The screen is otherwise only repainted when a
+            # sample lands (every 15 min), and the monitors append between those.
+            self.telemetry_view.rebuild()
         if name == "main":
             self._rebuild_grid()
             self._update_results()
@@ -762,6 +782,9 @@ class Panel(QWidget):
 
     def _toggle_mesh(self) -> None:
         self._set_screen("main" if self._screen == "mesh" else "mesh")
+
+    def _toggle_telemetry(self) -> None:
+        self._set_screen("main" if self._screen == "telemetry" else "telemetry")
 
     def _focus_search(self) -> None:
         if self._screen != "main":

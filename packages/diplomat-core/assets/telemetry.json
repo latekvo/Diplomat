@@ -1,0 +1,114 @@
+{
+  "_comment": "The Telemetry screen's model, shared verbatim by both front-ends (macOS TelemetryView.swift, Linux telemetryview.py) and by the shared math in DiplomatCore/Telemetry.swift + diplomat_app/telemetry.py. Titles, blurbs, glyphs and colours live here so the two screens cannot describe the same number differently; the numbers themselves come from the ledger at ~/.diplomat/pr-monitor/<ledgerFile>.",
+
+  "ledgerFile": "telemetry.jsonl",
+  "cursorFile": "usage-cursor.json",
+
+  "_gatheringComment": "A poll runs every 3 minutes, which is far finer than any chart here needs and would grow the ledger by ~70KB a day. One sample every 15 minutes still leaves ~1300 usable intervals across a fortnight to price the rate-limit window from, and keeps two months of history under a megabyte. retainDays MUST be at least the longest range above, or the screen would offer a lookback the ledger no longer covers; the file is rewritten to that horizon once it passes maxLedgerBytes.",
+  "sampleIntervalSecs": 900,
+  "retainDays": 60,
+  "maxLedgerBytes": 4194304,
+
+  "_rangesComment": "The lookback the screen offers. 14 days is the default: a week is short enough that one quiet weekend halves every average, and 30+ smooths out exactly the regression you opened the screen to find.",
+  "ranges": [
+    { "days": 7, "title": "7d" },
+    { "days": 14, "title": "14d" },
+    { "days": 30, "title": "30d" },
+    { "days": 60, "title": "60d" }
+  ],
+  "defaultRangeDays": 14,
+
+  "_seriesComment": "steps = how many instants the pending-over-time series is sampled at across the whole range (evenly spaced, the last one being 'now'); bins = histogram buckets for the per-task spread. Both are fixed so the two platforms draw the same chart from the same ledger.",
+  "series": { "steps": 56, "bins": 12 },
+
+  "_confidenceComment": "A normal-approximation interval on the MEAN (z x sd / sqrt(n)), not a prediction interval for one task — the shaded band answers 'where does the average sit', which is what a budget is planned against. z is the two-sided normal quantile for the level.",
+  "confidence": { "level": 0.95, "z": 1.96, "title": "95% CI" },
+
+  "_minSampleComment": "Below this many finished tasks the spread is noise, and the screen says so instead of drawing a curve through three points.",
+  "minSample": 5,
+
+  "metrics": [
+    {
+      "id": "limitPerTask",
+      "title": "Limit per task",
+      "blurb": "Mean share of the 5-hour rate-limit window one auto-task consumes.",
+      "unit": "percent",
+      "emoji": "📊",
+      "linuxGlyph": "◴",
+      "sfSymbol": "gauge.medium",
+      "colorHex": "#FF9500"
+    },
+    {
+      "id": "limitSpread",
+      "title": "Spread",
+      "blurb": "How that share is distributed, with a confidence interval on the mean.",
+      "unit": "percent",
+      "emoji": "🔔",
+      "linuxGlyph": "◠",
+      "sfSymbol": "chart.bar.xaxis",
+      "colorHex": "#FFCC00"
+    },
+    {
+      "_comment": "The card head, which charts both series at once — so it is named for both. The two entries below are the SERIES: their titles key the legend and their colours the fills.",
+      "id": "pendingWork",
+      "title": "Owed work",
+      "blurb": "Work the monitors had found but that no agent had started yet.",
+      "unit": "count",
+      "emoji": "\ud83d\udcec",
+      "linuxGlyph": "\u2637",
+      "sfSymbol": "tray.full",
+      "colorHex": "#FF2D78"
+    },
+    {
+      "id": "pendingReviews",
+      "title": "Auto-reviews",
+      "blurb": "Reviews the monitor had found but not yet started, over time.",
+      "unit": "count",
+      "emoji": "✅",
+      "linuxGlyph": "☑",
+      "sfSymbol": "checklist",
+      "colorHex": "#FF2D78"
+    },
+    {
+      "id": "pendingFixes",
+      "title": "Conflict fixes",
+      "blurb": "Conflict fixes the monitor had found but not yet started, over time.",
+      "unit": "count",
+      "emoji": "🔀",
+      "linuxGlyph": "⋔",
+      "sfSymbol": "arrow.triangle.merge",
+      "colorHex": "#32ADE6"
+    },
+    {
+      "id": "completeTime",
+      "title": "Time to finish",
+      "blurb": "Mean wall-clock from an agent starting to its completion sentinel.",
+      "unit": "duration",
+      "emoji": "⏱",
+      "linuxGlyph": "⧗",
+      "sfSymbol": "hourglass",
+      "colorHex": "#34C759"
+    },
+    {
+      "id": "startLag",
+      "title": "Time to start",
+      "blurb": "Mean wait from the monitor first seeing the work to an agent taking it.",
+      "unit": "duration",
+      "emoji": "⏳",
+      "linuxGlyph": "⧖",
+      "sfSymbol": "clock.badge.exclamationmark",
+      "colorHex": "#AF52DE"
+    },
+    {
+      "_comment": "Named for what it actually measures: the split is by the cwd each Claude turn ran in, so it counts every session in the monitored repo — the agents this applet dispatches, and the operator's own work in the same checkout. Calling it 'Diplomat' would claim an attribution the cwd cannot make.",
+      "id": "tokenShare",
+      "title": "Spent on this repo",
+      "blurb": "Share of this machine's Claude tokens spent in the repo the agents work in (Settings \u2192 repo root, and its worktrees) rather than everywhere else.",
+      "unit": "percent",
+      "emoji": "⚖",
+      "linuxGlyph": "◑",
+      "sfSymbol": "chart.pie.fill",
+      "colorHex": "#5AC8FA"
+    }
+  ]
+}

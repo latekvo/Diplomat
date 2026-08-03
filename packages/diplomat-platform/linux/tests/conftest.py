@@ -113,6 +113,32 @@ def isolated_activity_feed(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def isolated_claude_dir(tmp_path, monkeypatch):
+    """Fence the telemetry gatherers off from the developer's own Claude Code state.
+
+    :mod:`usagescan` walks ``~/.claude/projects`` — every prompt and every reply the
+    operator has ever sent — and :mod:`quota` reads the OAuth token beside it and
+    spends it on a live request to Anthropic. Neither belongs in a test: the scan
+    would be slow and machine-dependent, and the probe would make the suite need the
+    network and a logged-in Claude Code.
+
+    Both honour ``DIPLOMAT_CLAUDE_DIR``; the probe additionally has an off switch, so
+    a test that reaches a sample path gets ``(None, None)`` instead of a socket. The
+    fold cache is cleared around each test because it is module state keyed on the
+    ledger's mtime and size — and a per-test temp ledger can land on both.
+    """
+    from diplomat_app import quota, telemetry
+
+    monkeypatch.setenv("DIPLOMAT_CLAUDE_DIR", str(tmp_path / "claude"))
+    monkeypatch.setenv("DIPLOMAT_QUOTA_PROBE", "0")
+    quota._reset_cache()
+    telemetry._reset_cache()
+    yield
+    quota._reset_cache()
+    telemetry._reset_cache()
+
+
+@pytest.fixture(autouse=True)
 def isolated_app_config(tmp_path, monkeypatch):
     """Redirect the shared ``~/.diplomat/config.json`` to a per-test temp file, for the
     same reason as the two fixtures above: it holds the repo root every spawn `cd`s

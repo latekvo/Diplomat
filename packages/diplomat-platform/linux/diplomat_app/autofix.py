@@ -253,6 +253,24 @@ WORK_REVIEW_REPLY = "review-reply"  # replies to reviews on MY PRs → duty "rev
 WORK_CONFLICTS = "conflicts"  # conflict fixes on MY PRs → duty "conflicts"
 
 
+def _pr_ref(pr_url: str) -> str | None:
+    """``<host>/<owner>/<repo>#<n>`` for a PR URL, or None when it isn't one. Split
+    out of :func:`work_key` so :func:`ledger_key` cannot parse a URL differently
+    from the claim key — the two identify the same unit of work and are compared
+    against each other in the telemetry ledger."""
+    from urllib.parse import urlparse
+
+    try:
+        u = urlparse(pr_url)
+    except ValueError:
+        return None
+    host = (u.hostname or "").lower()
+    parts = [p for p in (u.path or "").split("/") if p]
+    if not host or len(parts) != 4 or parts[2] != "pull" or not parts[3].isdigit():
+        return None
+    return f"{host}/{parts[0]}/{parts[1]}#{parts[3]}"
+
+
 def work_key(kind: str, pr_url: str, head_sha: str) -> str:
     """The origination-dedup key for one unit of monitor work — the reference
     convention from szpontnet-spec/docs/12: ``<kind>:<host>/<owner>/<repo>#<n>@<sha>``.
@@ -263,17 +281,26 @@ def work_key(kind: str, pr_url: str, head_sha: str) -> str:
     when the URL doesn't look like a PR URL or the head sha is unknown."""
     if not head_sha:
         return ""
-    from urllib.parse import urlparse
+    ref = _pr_ref(pr_url)
+    return f"{kind}:{ref}@{head_sha}" if ref else ""
 
-    try:
-        u = urlparse(pr_url)
-    except ValueError:
+
+def ledger_key(kind: str, pr_url: str, head_sha: str) -> str:
+    """The telemetry ledger's identity for one unit of work.
+
+    The claim key when a head sha is known — the same string, so the two records
+    of one job agree — and the same shape WITHOUT ``@sha`` when it isn't.
+    :func:`work_key` deliberately returns ``""`` there, because skipping the mesh
+    claim is the safe degradation for a *claim*; skipping the ledger entry is not,
+    since the work still gets dispatched and would then be missing from every
+    figure on the Telemetry screen. The cost of the fallback is that two pushes to
+    one PR fold into one ledger task while the sha is unknown, which understates
+    the count rather than inventing one.
+    """
+    ref = _pr_ref(pr_url)
+    if ref is None:
         return ""
-    host = (u.hostname or "").lower()
-    parts = [p for p in (u.path or "").split("/") if p]
-    if not host or len(parts) != 4 or parts[2] != "pull" or not parts[3].isdigit():
-        return ""
-    return f"{kind}:{host}/{parts[0]}/{parts[1]}#{parts[3]}@{head_sha}"
+    return f"{kind}:{ref}@{head_sha}" if head_sha else f"{kind}:{ref}"
 
 
 def parse_work_key(key: str) -> tuple[str, str, str, int] | None:
@@ -536,6 +563,10 @@ class AgentJob:
     author_login: str | None = None  # whose PR we'd review - the ban dimension
     duty: str = ""  # mesh duty, for auto-origination gating
     work_key: str = ""  # mesh claim key ("" = no claim)
+    # Telemetry ledger identity - the claim key, or its sha-less shape when the
+    # head sha is unknown (see ledger_key). Set for auto jobs only: the screen
+    # measures the MONITORS, and a wizard click is the operator's own doing.
+    ledger_key: str = ""
     counter: str | None = None  # "review_requests" | "my_reviews" | "conflicts"
     # The stamp the monitor that owns this job records against the PR when an agent
     # launches (``ReviewAttempt.requested_at``) — the request timestamp for a review

@@ -243,12 +243,35 @@ public enum AutofixMesh {
     /// parity tests). Returns "" — claim gate skipped, the safe pre-claims
     /// degradation — when the URL doesn't look like a PR URL or the sha is unknown.
     public static func workKey(kind: String, prURL: String, headSha: String) -> String {
-        guard !headSha.isEmpty,
-              let u = URL(string: prURL),
-              let host = u.host?.lowercased(), !host.isEmpty else { return "" }
+        guard !headSha.isEmpty, let ref = prRef(prURL) else { return "" }
+        return "\(kind):\(ref)@\(headSha)"
+    }
+
+    /// `<host>/<owner>/<repo>#<n>` for a PR URL, or nil when it isn't one. Split out
+    /// of `workKey` so the ledger key below cannot parse a URL differently from the
+    /// claim key — the two identify the same unit of work and are compared against
+    /// each other in the ledger.
+    private static func prRef(_ prURL: String) -> String? {
+        guard let u = URL(string: prURL),
+              let host = u.host?.lowercased(), !host.isEmpty else { return nil }
         let parts = u.pathComponents.filter { $0 != "/" }
         guard parts.count == 4, parts[2] == "pull",
-              parts[3].allSatisfy(\.isNumber), !parts[3].isEmpty else { return "" }
-        return "\(kind):\(host)/\(parts[0])/\(parts[1])#\(parts[3])@\(headSha)"
+              parts[3].allSatisfy(\.isNumber), !parts[3].isEmpty else { return nil }
+        return "\(host)/\(parts[0])/\(parts[1])#\(parts[3])"
+    }
+
+    /// The telemetry ledger's identity for one unit of work.
+    ///
+    /// The claim key when a head sha is known — same string, so the two records of
+    /// one job agree — and the same shape WITHOUT `@sha` when it isn't. `workKey`
+    /// deliberately returns "" there, because skipping the mesh claim is the safe
+    /// degradation for a *claim*; skipping the ledger entry is not, since the work
+    /// still gets dispatched and would then be missing from every figure on the
+    /// screen. The cost of the fallback is that two pushes to one PR fold into one
+    /// ledger task while the sha is unknown, which understates the count rather
+    /// than inventing one.
+    public static func ledgerKey(kind: String, prURL: String, headSha: String) -> String {
+        guard let ref = prRef(prURL) else { return "" }
+        return headSha.isEmpty ? "\(kind):\(ref)" : "\(kind):\(ref)@\(headSha)"
     }
 }

@@ -56,6 +56,19 @@ def autofix_poll_secs() -> float:
     return max(30.0, secs)
 
 
+def telemetry_poll_secs() -> float:
+    """Cadence at which the telemetry sampler is *offered* a turn. The ledger's own
+    interval (assets/telemetry.json) decides whether a sample is actually written,
+    so this only has to be finer than that; overridable with
+    DIPLOMAT_TELEMETRY_SECS, floored at 30s."""
+    raw = os.environ.get("DIPLOMAT_TELEMETRY_SECS")
+    try:
+        secs = float(raw) if raw else 5 * 60
+    except ValueError:
+        secs = 5 * 60
+    return max(30.0, secs)
+
+
 def apiwatch_poll_secs() -> float:
     """Cadence of the Claude-API-error watcher scan (matches the macOS 20s default).
     Overridable with DIPLOMAT_APIWATCH_SECS; floored at 5s."""
@@ -98,6 +111,20 @@ class DiplomatApp:
         self.autofix_timer.start()
         # First poll shortly after launch, once identity has had a moment to resolve.
         QTimer.singleShot(3000, self.store.run_autofix_poll_async)
+
+        # Telemetry sampler: read the account's remaining quota and this machine's
+        # cumulative token counters into the ledger. Independent of the monitor
+        # toggles — what share of this machine's tokens goes on the monitored
+        # repo is worth knowing either way, and pricing the rate-limit window needs
+        # an unbroken series. The sampler paces itself; this timer only offers it
+        # a turn.
+        self.telemetry_timer = QTimer()
+        self.telemetry_timer.setInterval(int(telemetry_poll_secs() * 1000))
+        self.telemetry_timer.timeout.connect(self.store.run_telemetry_sample_async)
+        self.telemetry_timer.start()
+        # One early sample so a fresh install starts its series at launch rather
+        # than five minutes in.
+        QTimer.singleShot(8000, self.store.run_telemetry_sample_async)
 
         # Claude-API-error watcher: scan tmux panes on a fast cadence (matches the
         # macOS 20s watcher). The scan no-ops when the toggle is off or tmux is absent.

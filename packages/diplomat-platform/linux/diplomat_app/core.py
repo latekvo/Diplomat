@@ -100,6 +100,17 @@ def mesh() -> dict:
 
 
 @functools.lru_cache(maxsize=1)
+def telemetry() -> dict:
+    """The Telemetry screen's model — lookback ranges, chart resolutions, the
+    confidence level, and the copy for each figure.
+
+    Mirrors ``CoreAssets.TelemetryModel``; see assets/telemetry.json. The
+    arithmetic over the ledger lives in :mod:`telemetry`, not here.
+    """
+    return _read_json("telemetry.json")
+
+
+@functools.lru_cache(maxsize=1)
 def audit_categories() -> dict:
     """The shared audit/activity taxonomy (categories + action→category map).
 

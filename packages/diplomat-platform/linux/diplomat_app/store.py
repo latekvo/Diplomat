@@ -35,6 +35,7 @@ from . import (
     deviceallocator,
     review,
     szpont,
+    telemetry,
     tmuxwatch,
 )
 from .models import API, Filters, Fmt, OpenIssue, OpenPR
@@ -134,6 +135,9 @@ class Store(QObject):
     tasks_changed = Signal()
     # Emitted after each Claude-API-error watcher scan (status pill + continue count).
     apiwatch_changed = Signal()
+    # Emitted when a telemetry sample lands, so an open Telemetry screen refreshes
+    # instead of waiting for the user to flip a range.
+    telemetry_changed = Signal()
 
     _ORG = "diplomat"
     _APP = "diplomat"
@@ -680,6 +684,18 @@ class Store(QObject):
             # _reconcile_my_conflicts sees the CONFLICTING state and handles it
             # (also covering conflicts that predate the baseline + failed spawns).
         self._save_fingerprints(fps)
+        # Record what is owed BEFORE reconciling, so a unit of work is queued in
+        # the ledger before the same poll can start it — otherwise the first
+        # dispatch of every item would look like it came from nowhere and its
+        # time-to-start would be unmeasurable.
+        telemetry.observe_owed(autofix.WORK_REVIEW_REPLY, "review", {
+            autofix.ledger_key(autofix.WORK_REVIEW_REPLY, s.url, s.head_sha): s.number
+            for s in snaps if s.threads_i_owe > 0
+        })
+        telemetry.observe_owed(autofix.WORK_CONFLICTS, "conflicts", {
+            autofix.ledger_key(autofix.WORK_CONFLICTS, s.url, s.head_sha): s.number
+            for s in snaps if s.mergeable == "CONFLICTING"
+        })
         self._reconcile_my_reviews(snaps, now)
         self._reconcile_my_conflicts(snaps, now)
         self.autofix_status = {
@@ -749,6 +765,14 @@ class Store(QObject):
         key = "reviewReqAttempts"
         attempts = self._load_attempts(key)
         owed = [r for r in reqs if r.owe_review]
+        # Before dispatching, so the ledger has a queue instant to measure the
+        # time-to-start against. A banned author's request is owed by GitHub's
+        # reckoning but will never be dispatched, so it is left out — counting it
+        # would show a review pending forever that nothing is meant to pick up.
+        telemetry.observe_owed(autofix.WORK_REVIEW_REQ, "review", {
+            autofix.ledger_key(autofix.WORK_REVIEW_REQ, r.url, r.head_sha): r.number
+            for r in owed if not bans.is_banned(r.author, banned)
+        })
         for r in owed:
             k = str(r.number)
             stamp = r.stamp
@@ -917,7 +941,8 @@ class Store(QObject):
             if routed == "spawned":
                 ok = True
             elif job.pr_url is not None and job.pr_number is not None:
-                ok = self._spawn_tracked(job.prompt, job.pr_url, job.pr_number, source)
+                ok = self._spawn_tracked(job.prompt, job.pr_url, job.pr_number,
+                                         source, job.ledger_key)
             else:
                 # Not PR-scoped (sweeps, audits): nothing to dedup against, so no
                 # registration - but the same spawn, label and audit shape.
@@ -933,6 +958,13 @@ class Store(QObject):
             activity.log(
                 source, job.audit_action, autofix.dispatch_label(source, job.label, attempt)
             )
+            # The telemetry ledger tracks the MONITORS, so only an auto dispatch is
+            # recorded — a wizard click is the operator's own doing and has no queue
+            # instant to be late against. A mesh placement spends a PEER's quota, so
+            # it is flagged and kept out of the per-task cost figures.
+            if source == autofix.SOURCE_AUTO and job.ledger_key:
+                telemetry.record_started(job.ledger_key,
+                                         remote=routed == "spawned", attempt=attempt)
             # Retries are re-dispatches, not new work handled - count once, and
             # only for the monitor (a manual run is the user's own action).
             if autofix.dispatch_bumps_counter(source, attempt):
@@ -964,6 +996,7 @@ class Store(QObject):
             pr_number=number,
             duty="conflicts",
             work_key=autofix.work_key(autofix.WORK_CONFLICTS, url, head_sha),
+            ledger_key=autofix.ledger_key(autofix.WORK_CONFLICTS, url, head_sha),
             counter="conflicts",
             attempt_stamp=autofix.STAMP_CONFLICTING,
         )
@@ -988,6 +1021,7 @@ class Store(QObject):
             pr_number=s.number,
             duty="review",
             work_key=autofix.work_key(autofix.WORK_REVIEW_REPLY, s.url, s.head_sha),
+            ledger_key=autofix.ledger_key(autofix.WORK_REVIEW_REPLY, s.url, s.head_sha),
             counter="my_reviews",
             attempt_stamp=autofix.STAMP_UNRESOLVED_REVIEW,
         )
@@ -1025,18 +1059,25 @@ class Store(QObject):
             author_login=r.author,
             duty="review",
             work_key=autofix.work_key(autofix.WORK_REVIEW_REQ, r.url, r.head_sha),
+            ledger_key=autofix.ledger_key(autofix.WORK_REVIEW_REQ, r.url, r.head_sha),
             counter="review_requests",
             attempt_stamp=r.stamp,
         )
         return self.dispatch_agent(job, autofix.SOURCE_AUTO, attempt) in ("spawned", autofix.VERDICT_STAND_DOWN)
 
-    def _spawn_tracked(self, prompt: str, url: str, number: int, source: str) -> bool:
+    def _spawn_tracked(self, prompt: str, url: str, number: int, source: str,
+                       ledger_key: str = "") -> bool:
         """Spawn an agent with a completion sentinel and record it in-flight. Returns
         whether the terminal launched.
 
         ``source`` is recorded because the automatic-task cap has to tell the two
         apart: a panel click spends none of the automatic budget, while a monitor
-        dispatch is exactly what the budget is for."""
+        dispatch is exactly what the budget is for.
+
+        The prompt is kept alongside the sentinel because it is what ties the run
+        back to its Claude transcript when it finishes (:func:`usagescan.task_tokens`)
+        — the transcript's opening user message IS this text.
+        """
         fd, done_path = tempfile.mkstemp(prefix="diplomat-autofix-done-", suffix=".txt")
         os.close(fd)
         try:
@@ -1055,6 +1096,8 @@ class Store(QObject):
                     "done": done_path,
                     "at": time.time(),
                     "source": source,
+                    "key": ledger_key,
+                    "prompt": prompt,
                 }
             )
         return True
@@ -1336,21 +1379,40 @@ class Store(QObject):
         # slots), and a spawn registering itself against the list a prune has already
         # copied would be dropped — leaving an agent nothing counts, which is a slot
         # of the cap the machine can then spend twice.
+        #
+        # What the finished ones cost is recorded AFTER the lock: the ledger write and
+        # the signal it fires are neither short nor free of re-entry (a slot that asks
+        # the store anything can land back in here), and this mutex is meant to be
+        # held for a list swap and nothing else.
+        finished: list[tuple[dict, float]] = []
         with self._inflight_lock:
             live: list[dict] = []
             for e in self._autofix_inflight:
                 done = e.get("done")
-                finished = bool(done) and os.path.exists(done)
-                if finished:
+                if bool(done) and os.path.exists(done):
+                    # The sentinel's mtime is when `claude` actually exited; `now` is
+                    # whenever a poll got round to looking, which is up to a poll
+                    # period later and would inflate every run time by a random few
+                    # minutes.
+                    try:
+                        finished_at = os.stat(done).st_mtime
+                    except OSError:
+                        finished_at = now
                     try:
                         os.unlink(done)
                     except OSError:
                         pass
+                    finished.append((e, finished_at))
                     continue
                 if now - e.get("at", 0) > self._AUTOFIX_INFLIGHT_TTL:
                     continue
                 live.append(e)
             self._autofix_inflight = live
+        for e, finished_at in finished:
+            if e.get("key"):
+                telemetry.record_completion(e["key"], e.get("prompt", ""),
+                                            e.get("at", finished_at), finished_at)
+                self.telemetry_changed.emit()
 
     def _in_flight(self, url: str) -> bool:
         self._prune_inflight()
@@ -1463,6 +1525,34 @@ class Store(QObject):
             for k, a in attempts.items()
         }
         self._settings.setValue(key, json.dumps(obj))
+
+    # MARK: telemetry samples
+
+    def run_telemetry_sample_async(self) -> None:
+        """Take one quota/token reading for the telemetry ledger, off the UI thread.
+
+        Driven by its own timer rather than off the back of the auto-fix poll,
+        because the two answer to different switches: the share of this machine's
+        tokens that goes on the monitored repo is worth knowing whether or not
+        the monitors are enabled, and pricing the rate-limit window needs an
+        unbroken sample series regardless. :func:`telemetry.sample_due` does the pacing, so calling
+        this more often than the sample interval is free.
+        """
+        if not telemetry.sample_due():
+            return
+
+        def work() -> None:
+            from . import quota, usagescan
+
+            try:
+                session, week = quota.fractions_left()
+                totals = usagescan.totals()
+            except OSError:
+                return  # an unreadable ~/.claude costs this sample, nothing else
+            telemetry.record_sample(session, week, totals.repo, totals.other)
+            self.telemetry_changed.emit()
+
+        threading.Thread(target=work, daemon=True).start()
 
     # MARK: Claude-API-error watcher
 

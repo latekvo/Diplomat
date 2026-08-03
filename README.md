@@ -283,7 +283,7 @@ currently routes): SPAWN AGENT then hands the job to the node instead of always
 opening a local terminal — on both front-ends.
 
 Both front-ends grow a **Mesh screen** (the ⬡ button in the panel header, beside
-Settings): the live node graph (link states), per-node tier/token editors (editing
+[Telemetry](#telemetry) and Settings): the live node graph (link states), per-node tier/token editors (editing
 a *remote* node forwards over the mesh, so one panel configures the whole fleet),
 per-duty strategy + token-awareness controls (gossiped last-writer-wins), and the
 whole **trust surface** — the `New devices: Personal / Foreign` default, a one-time
@@ -398,6 +398,73 @@ and quota-left figures; see `accounts` in `packages/szpontnet-core/szpontnet/net
 `surplus-first` ranking sends work to the machine that is most flush *relative to its
 reset*, and each executed job books usage on the executor.
 
+## Telemetry
+
+The panel's third screen (the header button between **⬡** and **⚙︎**) answers the
+question the monitors otherwise leave open: *what is all this costing, and is it
+keeping up?* Seven figures, over a lookback you pick (**7d / 14d / 30d / 60d**,
+default 14):
+
+- **Limit per task** - the share of one 5-hour rate-limit window an auto-task
+  consumes on average, plus a **bell curve** of how that is distributed, with a 95%
+  confidence interval on the mean drawn behind it (the histogram is the spread of
+  the tasks; the band is how well the *average* is known, and is much narrower).
+- **Owed work** over time - two filled series on one count axis, auto-reviews and
+  conflict fixes, of work the monitors had found but nobody had started yet. Work
+  picked up between two points on the chart never appears as a backlog, which is
+  the chart working rather than a gap in it.
+- **Time to start** - from the monitor first seeing a unit of work to an agent
+  taking it (the reconciler's backoff, an applet that was off, a busy PR).
+- **Time to finish** - from an agent starting to its completion sentinel.
+- **Spent on this repo** - how much of this machine's Claude spend went on the repo
+  the agents work in rather than everything else. Split by the `cwd` each turn ran
+  in, so it counts your own sessions in that checkout too - it is a repo split, not
+  an attribution to Diplomat's agents (that is what *limit per task* measures).
+
+### Where the numbers come from
+
+Four of these are time-series questions a counter cannot answer ("how many were owed
+last Tuesday?"), so the source is an **append-only ledger** at
+`~/.diplomat/pr-monitor/telemetry.jsonl` - one JSON object per line, opened
+`O_APPEND` like the activity feed so this applet, its counterpart on the other OS and
+a mesh node can all append to one file. The monitors write `queued` when they first
+see work owed, `cleared` if it stops being owed before anyone takes it, `started` on
+dispatch, `done` from the completion sentinel's own mtime (not when a poll noticed),
+and a `sample` every 15 minutes. It rewrites itself to the 60-day retention horizon
+once it passes 4 MB.
+
+Two gatherers fill in what GitHub doesn't know:
+
+- **Quota** (`quota.py` / `Quota.swift`) - one GET against the OAuth usage endpoint
+  with the token Claude Code already holds, i.e. the same data its `/usage` screen
+  shows. Deliberately Diplomat's own probe rather than a call into the mesh library:
+  the [mesh is an optional add-on](#diplomat-mesh-experimental--lan-p2p-duty-coordination),
+  so a screen that reached through it for numbers would blank on exactly the
+  machines least likely to have it. `DIPLOMAT_QUOTA_PROBE=0` turns it off.
+- **Token attribution** (`usagescan.py` / `UsageScan.swift`) - Claude Code appends
+  every turn to `~/.claude/projects/**/*.jsonl` with a `usage` block and the `cwd` it
+  ran in, which is enough for both token questions. The repo-vs-everything-else split
+  is that `cwd` (the checkout **and** its `-worktrees` siblings); a single task's cost
+  is the transcript whose *opening user message is that task's prompt verbatim* - an
+  exact identity that needs no new flag on the spawn path. Scanning is incremental
+  (a byte offset per file), and the first scan seeds every existing transcript at EOF
+  rather than reading gigabytes of history it could never attribute anyway.
+  `DIPLOMAT_CLAUDE_DIR` moves where it reads from.
+
+Anthropic publishes a **utilization percentage and never a token budget**, and the
+budget is dynamic - so "4% of the window" is not something that can be looked up. The
+5-hour window is instead **priced from what actually happened**: over an interval the
+account spent `Δutil` of its window while this machine logged `Δtokens`, so the window
+is worth `Δtokens / Δutil`, summed across every interval that didn't span a reset. Until
+two quota readings exist there is no price, and the screen says so and shows raw tokens
+per task rather than inventing a percentage. Work placed on a **mesh peer** spends that
+peer's quota, so it counts as started and is kept out of the cost and run-time figures.
+
+The arithmetic is shared: [`Telemetry.swift`](packages/diplomat-core/Sources/DiplomatCore/Telemetry.swift)
+and `diplomat_app/telemetry.py` are diffed field-for-field over one ledger by
+`tests/test_telemetry_parity.py`, so the two screens cannot disagree about what a
+ledger means.
+
 ## Autonomous monitors
 
 The applets don't just render lists - they act on them. Three background
@@ -493,8 +560,8 @@ it off to make clean reviews fully silent again.
 
 ## Settings
 
-The header **⚙︎** button (next to ↻, the **⬡** mesh button, and ⏻) swaps the panel
-to a settings screen:
+The header **⚙︎** button (next to ↻, the **⬡** mesh button, the Telemetry button
+and ⏻) swaps the panel to a settings screen:
 
 - **GitHub username** - override the handle used by the "My …" tools, the wizards
   and the monitors. Blank = the `gh`-authenticated user (`viewer.login`), resolved
@@ -696,6 +763,8 @@ DIPLOMAT_RENDER=panel    ./Diplomat.app/Contents/MacOS/Diplomat  # snapshot a sc
                                                      #   audit[-issues|-prs|-all]
                                                      #   mesh (⬡ screen over a synthetic topology); mesh-blocked
                                                      #   (the not-discoverable banner); mesh-reminder (trust modal)
+                                                     #   telemetry (the screen over a synthetic ledger, written to a
+                                                     #   scratch dir); telemetry-panel (the same inside the panel)
                                                      #   popover (REAL NSWindow snapshot incl. the legacy
                                                      #   scroller — pair with DIPLOMAT_POPOVER_CAP=400
                                                      #   to force the scrolling state)
@@ -768,8 +837,8 @@ Diplomat is checked from the other side — one step deletes both SzpontNet
 packages outright and renders the applet from what remains.
 
 CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) is five jobs:
-`swift-macos` (build both Swift packages + the core smoke + a headless panel
-render + the helper self-tests), `swift-core-linux` (proves the core builds on
+`swift-macos` (build both Swift packages + the core smoke + headless panel and
+telemetry renders + the helper self-tests), `swift-core-linux` (proves the core builds on
 Linux, and publishes a static `diplomat-core` binary), `python-linux` (pytest
 against that binary, so the golden-prompt parity is proven across languages, then
 the library-less start), `szpontnet` (the library's own tests plus a full
@@ -804,10 +873,13 @@ packages/
         ApiErrorMatch.swift        "is this a Claude API error?" matcher for the watcher
         AuditCategory.swift        audit action verb → activity-feed filter category (mirrors assets/audit-categories.json)
         Mesh.swift                 mesh model: decodes assets/mesh.json + ~/.diplomat/mesh/state.json, pure placement
+        Telemetry.swift            folds the telemetry ledger + every figure on the Telemetry screen: window
+                                   calibration, the distribution + its confidence interval, the pending series
       DiplomatCoreSmoke/       ← Linux-buildable core self-test (filters + prompts + golden files + live dump)
       DiplomatCoreCLI/         ← thin `build-prompt` CLI over the core (ships as the `diplomat-core` binary),
                                  so the Linux front-end shells out for Review/Conflicts/Audit prompts
-                                 instead of reimplementing them
+                                 instead of reimplementing them; `tool-data` and `telemetry` expose the two
+                                 engines the Linux side reimplements, so the parity tests can diff them
 
   diplomat-platform/           ← the platform wrappers: one UI each over that same core
     macos/                     ← macOS SwiftUI menu-bar app — thin UI over the core
@@ -835,6 +907,10 @@ packages/
         MeshBridge.swift           drives the local mesh node (spawn python3 -m szpontnet --daemon, NDJSON control)
         MeshView.swift             the ⬡ Mesh screen: node graph, tier/token/trust editors, duty table
         MeshSpawn.swift            the wizards' "⬡ Run on mesh" row + destination preview
+        TelemetryView.swift        the Telemetry screen: the bell curve, the backlog series, the token split
+        TelemetryLog.swift         writes/reads ~/.diplomat/pr-monitor/telemetry.jsonl (append-only, rotated)
+        UsageScan.swift            Claude Code transcript scanner: repo-vs-other tokens, per-task attribution
+        Quota.swift                the OAuth usage probe — what is left of the 5-hour and 7-day windows
         SelfUpdate.swift           fetch/merge upstream, rebuild, relaunch (Update button + the 06:00 run)
         RepoPaths.swift            locate this app's own checkout (DIPLOMAT_SELF_REPO → … → ~/dev/diplomat),
                                    the sibling packages it reaches for, and the agents' repo root

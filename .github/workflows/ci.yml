@@ -49,6 +49,17 @@ jobs:
           DIPLOMAT_RENDER=devices-procs DIPLOMAT_RENDER_OUT="$RUNNER_TEMP/panel.png" \
             swift run Diplomat
           test -s "$RUNNER_TEMP/panel.png"
+      # The Telemetry screen needs its own render: the panel above only builds the
+      # screen it shows, so nothing else on this job would so much as construct it.
+      # The Linux side gets this for free (its Panel builds every page up front, so
+      # every panel-building test covers it). The fixture writes through the real
+      # recorder into a scratch dir, never the runner's ~/.diplomat.
+      - name: Headless telemetry render
+        working-directory: packages/diplomat-platform/macos
+        run: |
+          DIPLOMAT_RENDER=telemetry DIPLOMAT_RENDER_OUT="$RUNNER_TEMP/telemetry.png" \
+            swift run Diplomat
+          test -s "$RUNNER_TEMP/telemetry.png"
       # The shared-helper self-tests that a runner can host. All pure logic, and none
       # of them touches the runner's real state: OSA_TEST runs bare AppleScript
       # expressions (no `tell application`, so no Automation permission),
