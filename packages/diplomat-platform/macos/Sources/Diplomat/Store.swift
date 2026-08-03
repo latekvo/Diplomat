@@ -108,6 +108,31 @@ final class Store: ObservableObject {
         }
     }
 
+    /// How many automatic agents this machine runs at once — 2 by default.
+    ///
+    /// The monitors are level-triggered over everything GitHub currently owes, so
+    /// without a cap one poll of a busy day dispatches every pending unit in a single
+    /// pass: a terminal window and a `claude` session per conflicted PR and per owed
+    /// review, all at once, on one machine. Work over the cap is not dropped — the
+    /// poll that refuses it writes no attempt record, so the next tick offers it again
+    /// as soon as an agent finishes.
+    ///
+    /// The second setting NOT in UserDefaults, for the same reason as the repo root: a
+    /// mesh peer can route work here, and the node that spawns it is a separate
+    /// Qt-less Python process (see `AppConfig`). Headless-guarded like the rest.
+    @Published var autoTaskLimit: Int {
+        didSet {
+            // Normalise in memory as well as on disk. Clamping only on the way out
+            // would leave the gate comparing against a number the file — and so the
+            // mesh node behind it — does not have. (Assigning here does not re-enter
+            // this observer.)
+            let clamped = AgentDispatchGate.clampAutoTaskLimit(autoTaskLimit)
+            if clamped != autoTaskLimit { autoTaskLimit = clamped }
+            guard !Headless.active else { return }
+            AppConfig.setInt(AppConfig.autoTaskLimitKey, clamped)
+        }
+    }
+
     /// Latest state from the auto-fix monitor's own poll (nil until the first). Drives
     /// the top-of-panel status pill; freshness (`isLive`) decides active vs. offline.
     @Published var autofixStatus: AutofixStatus?
@@ -247,6 +272,33 @@ final class Store: ObservableObject {
     /// the Linux applet's in-flight TTL.
     private static let telemetryRunTTL: TimeInterval = 2 * 60 * 60
 
+    /// Automatic work nothing has started yet — held by the task cap, or by its own
+    /// monitor being switched off — in the order it will run. The other half of the
+    /// panel's Agent-tasks list.
+    ///
+    /// Deliberately NOT persisted. A deferral writes no attempt record precisely so
+    /// that every poll re-offers everything GitHub still owes, which means the queue
+    /// is rebuilt from live evidence every 3 minutes; a stored copy would only ever
+    /// be a staler answer to a question already being re-asked, and would hand
+    /// "execute now" a prompt assembled against a PR that has since moved on. What
+    /// IS persisted is `queuedTaskOrder` — the operator's arrangement, the one thing
+    /// a poll cannot reconstruct.
+    @Published var queuedTasks: [QueuedAgentTask] = []
+
+    /// This poll's deferrals, published as `queuedTasks` only once the whole cycle
+    /// has succeeded: a failed fetch means "we no longer know what is owed", which
+    /// is not the same as "nothing is owed", and must not empty the list.
+    private var stagedQueue: [QueuedAgentTask] = []
+
+    /// The operator's drag order, by queue key. Pruned to what is still offered on
+    /// every commit, so it can't grow past the work it describes. Held in memory and
+    /// mirrored to disk, like every other persisted setting — a read-through property
+    /// would lose the arrangement for a whole session in the modes where writes are
+    /// suppressed.
+    private var queuedTaskOrder: [String] {
+        didSet { persist(queuedTaskOrder, forKey: Keys.queuedTaskOrder) }
+    }
+
     private enum Keys {
         static let usernameOverride = "usernameOverride"
         static let hiddenTools = "hiddenTools"
@@ -273,6 +325,7 @@ final class Store: ObservableObject {
         static let meshAckedDevices = "meshAckedDevices"
         static let meshTrustReminderSuppressed = "meshTrustReminderSuppressed"
         static let allocatorSetupDone = "allocatorSetupDone"
+        static let queuedTaskOrder = "queuedTaskOrder"
     }
 
     /// The persisted terminal choice, readable before a Store exists (the AppDelegate's
@@ -349,6 +402,7 @@ final class Store: ObservableObject {
         terminalChoice = defaults.string(forKey: Keys.terminalChoice)
             ?? (SpawnTerminal.iterm.isInstalled ? SpawnTerminal.iterm.rawValue : SpawnTerminal.terminal.rawValue)
         repoPathOverride = AppConfig.string(AppConfig.repoRootKey)
+        autoTaskLimit = AppConfig.autoTaskLimit
         // Default ON (absent key ⇒ true): the pill only lights up on a live heartbeat,
         // so defaulting on can't falsely claim "active" when no monitor is running.
         prAutofixEnabled = defaults.object(forKey: Keys.prAutofixEnabled) as? Bool ?? true
@@ -370,6 +424,7 @@ final class Store: ObservableObject {
         meshAckedDevices = Set(defaults.stringArray(forKey: Keys.meshAckedDevices) ?? [])
         meshTrustReminderSuppressed = defaults.bool(forKey: Keys.meshTrustReminderSuppressed)
         processes = Store.loadProcesses()
+        queuedTaskOrder = defaults.stringArray(forKey: Keys.queuedTaskOrder) ?? []
         if hiddenTools.contains(selected.rawValue),
            let first = ToolKind.allCases.first(where: { !hiddenTools.contains($0.rawValue) }) {
             selected = first
@@ -599,7 +654,8 @@ final class Store: ObservableObject {
         let p = TrackedProcess(kind: kind, label: label,
                                terminal: result.terminal.rawValue,
                                windowID: result.windowID, sessionID: result.sessionID,
-                               tty: result.tty, donePath: result.donePath, prURL: prURL)
+                               tty: result.tty, donePath: result.donePath, prURL: prURL,
+                               source: source)
         if !ledgerKey.isEmpty, !p.donePath.isEmpty {
             telemetryInflight[p.id] = TelemetryRun(key: ledgerKey, prompt: prompt,
                                                    donePath: p.donePath,
@@ -675,13 +731,16 @@ final class Store: ObservableObject {
     }
 
     /// One poll: fetch my open PRs, diff against saved fingerprints, and dispatch an
-    /// agent for each PR that just gained a conflict or new review work. No-op when
-    /// the feature is off or our login isn't known yet.
+    /// agent for each PR that just gained a conflict or new review work. No-op until
+    /// our login is known.
+    ///
+    /// Both monitors poll on every cycle, switched on or off. A switched-off one
+    /// still finds what it would have done and queues it (`isPaused`) — the panel is
+    /// where the operator sees what their PRs owe, and that question does not go away
+    /// with the toggle that answers it automatically. Nothing of a paused monitor's is
+    /// started here; only "execute now" starts it.
     func runAutofixPollOnce() async {
         guard !autofixPollInFlight else { return }
-        // Both features off ⇒ nothing polls; don't touch the error state either
-        // (a lingering error must not "recover" without a poll having run).
-        guard prAutofixEnabled || reviewRequestsEnabled else { return }
         autofixPollInFlight = true
         defer { autofixPollInFlight = false }
         pollErrorThisCycle = nil
@@ -693,8 +752,25 @@ final class Store: ObservableObject {
             pollErrorThisCycle = "GitHub login unknown — is `gh` installed and authenticated?"
         } else {
             let (owner, repo) = coreRepo
-            if prAutofixEnabled { await pollMyPRs(owner: owner, repo: repo) }
-            if reviewRequestsEnabled { await pollReviewRequests(owner: owner, repo: repo) }
+            // The queue first, in the operator's order: a slot that freed since the
+            // last cycle belongs to work already waiting for it, not to whichever PR
+            // this poll's fetch happens to return first.
+            //
+            // Only on evidence a cycle actually confirmed. The queue survives a failed
+            // cycle deliberately (see `stagedQueue`), but surviving is not the same as
+            // being current: while `gh` is down the list freezes, and a drain that kept
+            // firing from it would spawn agents at work answered by hand hours ago.
+            if autofixPollError == nil { await drainQueuedTasks() }
+            // Start this cycle's staging empty. A commit clears it too, so this is
+            // what discards the offers of a cycle that failed part-way and never
+            // committed — they are re-offered by the cycle that succeeds.
+            stagedQueue = []
+            await pollMyPRs(owner: owner, repo: repo)
+            await pollReviewRequests(owner: owner, repo: repo)
+            // A cycle that failed part-way knows what it fetched, not what is owed —
+            // committing then would drop every task the failing half would have
+            // re-offered, and with it the operator's arrangement of them.
+            if pollErrorThisCycle == nil { commitQueue() }
         }
         if let e = pollErrorThisCycle {
             // Audit only the transition into failure, not every 3-minute tick.
@@ -765,11 +841,12 @@ final class Store: ObservableObject {
             let key = String(s.number)
             let inFlight = processes.contains(where: { $0.prURL == s.url && !$0.done })
                 || liveRefs.contains(s.number)
-            let decision = ReviewReconcile.decide(prior: attempts[key], stamp: "unresolved",
+            let decision = ReviewReconcile.decide(prior: attempts[key],
+                                                  stamp: AttemptStamp.unresolvedReview,
                                                   inFlight: inFlight, banned: false, now: now)
             if case .dispatch(let attemptNumber) = decision {
                 if await dispatchMyReview(s, attemptNumber: attemptNumber) {
-                    attempts[key] = ReviewAttempt(requestedAt: "unresolved",
+                    attempts[key] = ReviewAttempt(requestedAt: AttemptStamp.unresolvedReview,
                                                   lastDispatchedAt: now, attempts: attemptNumber)
                 }
             }
@@ -796,13 +873,14 @@ final class Store: ObservableObject {
             let key = String(s.number)
             let inFlight = processes.contains(where: { $0.prURL == s.url && !$0.done })
                 || liveRefs.contains(s.number)
-            let decision = ReviewReconcile.decide(prior: attempts[key], stamp: "conflicting",
+            let decision = ReviewReconcile.decide(prior: attempts[key],
+                                                  stamp: AttemptStamp.conflicting,
                                                   inFlight: inFlight, banned: false, now: now)
             if case .dispatch(let attemptNumber) = decision {
                 if await dispatchConflictFix(number: s.number, url: s.url,
                                              attemptNumber: attemptNumber, source: .auto,
                                              headSha: s.headSha).wasHandled {
-                    attempts[key] = ReviewAttempt(requestedAt: "conflicting",
+                    attempts[key] = ReviewAttempt(requestedAt: AttemptStamp.conflicting,
                                                   lastDispatchedAt: now, attempts: attemptNumber)
                 }
             }
@@ -871,7 +949,7 @@ final class Store: ObservableObject {
             }, uniquingKeysWith: { first, _ in first }))
         for r in owed {
             let key = String(r.number)
-            let stamp = r.requestedAt ?? "-"
+            let stamp = AttemptStamp.reviewRequest(r)
             let decision = ReviewReconcile.decide(
                 prior: attempts[key], stamp: stamp, inFlight: inFlight(r),
                 banned: BanList.isBanned(r.author, in: banned), now: now)
@@ -952,6 +1030,294 @@ final class Store: ObservableObject {
     /// dispatch gate) costs one subprocess, mirroring the Linux store.
     private var liveAgentsCache: (at: Date, refs: Set<Int>)?
 
+    /// How many automatic agents are up on this device right now — the number the cap
+    /// is compared against (`AgentDispatchGate.runningAutoTasks`).
+    ///
+    /// The tracked rows say WHO started each agent, the `ps` scan says which are
+    /// really alive; neither alone is enough, so the pure helper combines them.
+    @discardableResult
+    private func autoTasksRunning() async -> Int {
+        var autoPRs = Set<Int>(), manualPRs = Set<Int>()
+        for p in processes where !p.done {
+            guard let n = p.prNumber else { continue }
+            if p.source == AgentDispatchGate.Source.panel.rawValue {
+                manualPRs.insert(n)
+            } else {
+                autoPRs.insert(n)
+            }
+        }
+        let n = AgentDispatchGate.runningAutoTasks(livePRs: await livePRAgents(),
+                                                   autoPRs: autoPRs,
+                                                   manualPRs: manualPRs)
+        // Assigned only on a change, like every other published value the 8-second
+        // sweep re-derives: `@Published` fires on assignment, not on difference, so
+        // an unconditional write would redraw the panel on every tick of an idle
+        // machine.
+        if autoTasksMeasured != n { autoTasksMeasured = n }
+        return n
+    }
+
+    /// The last count `autoTasksRunning` measured, published so the panel can draw
+    /// the device's free slots without a `ps` scan of its own. Refreshed by every
+    /// capacity decision and by the session sweep, so a finished agent frees its bay
+    /// on the panel within one sweep rather than at the next 3-minute poll.
+    @Published private(set) var autoTasksMeasured = 0
+
+    /// Re-measure for the display alone. The sweep calls it on every tick, including
+    /// the ticks where nothing is tracked: an agent can be alive in `ps` with no row
+    /// behind it (an applet restart loses the rows, not the agents), and that is
+    /// exactly when a wrongly-drawn free bay would be most misleading.
+    func refreshAutoTaskCount() async { await autoTasksRunning() }
+
+    /// Pin the measurement, for headless self-tests only. The real one scans `ps` on
+    /// whatever machine is running the test, so an assertion about free slots would
+    /// otherwise pass or fail on how many agents the developer happens to have open.
+    func pinAutoTasksMeasured(_ n: Int) {
+        guard Headless.active else { return }
+        autoTasksMeasured = n
+    }
+
+    /// Slots of this device's cap with nothing in them, as the panel draws them.
+    ///
+    /// Counted against the higher of the last measurement and what the tracked rows
+    /// themselves say. Each is only a lower bound on the truth — the measurement can
+    /// predate a spawn this very poll made, the rows miss agents nobody tracked — and
+    /// between two lower bounds the larger is the safer: it errs towards drawing one
+    /// bay fewer, never towards offering a slot the gate would refuse.
+    var freeAutoSlots: Int {
+        let tracked = Set(processes.filter {
+            !$0.done && $0.source != AgentDispatchGate.Source.panel.rawValue
+        }.compactMap(\.prNumber)).count
+        return AgentTaskQueue.freeSlots(limit: autoTaskLimit,
+                                        running: max(autoTasksMeasured, tracked))
+    }
+
+    /// Whether the "deferring auto work" note has been logged for the current
+    /// at-capacity episode.
+    private var capacityLogged = false
+
+    /// Note that automatic work is being held back — once per episode, not once per
+    /// PR per poll. Cleared the moment a dispatch finds room again, so the feed gets
+    /// one line when the device saturates and another when it drains.
+    private func logAtCapacity() {
+        guard !capacityLogged else { return }
+        capacityLogged = true
+        let limit = autoTaskLimit
+        AuditLog.log("auto", "at-capacity",
+                     "Deferring auto work — this machine already runs its cap of "
+                     + "\(limit) automatic task\(limit == 1 ? "" : "s")")
+        refreshAudit()
+    }
+
+    /// The `ReviewAttempt.requestedAt` stamp each monitor files its dispatches
+    /// under. The two level-triggered reconcilers have no GitHub timestamp to use —
+    /// the PR simply is or isn't in the state they watch — so a constant stands in.
+    ///
+    /// Single-sourced because two places write the same stamp: the reconciler when it
+    /// dispatches, and the queue when it runs a dispatch the cap deferred
+    /// (`AgentJob.attemptStamp`). Two spellings of "conflicting" would
+    /// not fail anything loudly — `ReviewReconcile` would just read the queue's
+    /// record as a *different* request and hold the retry for the 1h re-request
+    /// cooldown instead of the 5m→3h ladder.
+    enum AttemptStamp {
+        static let unresolvedReview = "unresolved"
+        static let conflicting = "conflicting"
+        /// A review request has a real timestamp; `"-"` is the unknown-stamp
+        /// sentinel `ReviewReconcile` already documents.
+        static func reviewRequest(_ r: AutofixMonitor.ReviewRequest) -> String {
+            r.requestedAt ?? "-"
+        }
+    }
+
+    // MARK: - The queue behind the cap
+    //
+    // A refusal writes no attempt record, so every poll re-offers whatever GitHub
+    // still owes: that is where the queue's contents come from, and why nothing here
+    // is a second copy of monitor state. What the queue adds is a list the panel can
+    // show and the operator can arrange, drained in THEIR order at the top of a cycle,
+    // before the monitors go looking for more.
+    //
+    // Two holds put work here. The device's cap holds work it has no slot for, and
+    // the drain releases it as slots free. A switched-off monitor holds its own work
+    // indefinitely: it is queued so the panel can show what the PRs owe, and only a
+    // click ("execute now") or the toggle coming back on starts it.
+
+    /// Remember one at-capacity refusal as a queued task. Called from the single
+    /// dispatch gate, so every deferral is queued exactly once however it was
+    /// triggered — the two reconcilers, the review-request monitor, or the review
+    /// edge-trigger.
+    ///
+    /// A second offer of the same key within one poll replaces the first: the
+    /// reconcilers run after the edge-trigger and carry the backoff-aware attempt
+    /// number, so theirs is the job that should run.
+    private func stageQueued(_ job: AgentJob, attemptNumber: Int) {
+        // Only PR-scoped work with a monitor behind it can be queued: a task nothing
+        // can name is one the next poll cannot recognise as the same one, and a task
+        // no monitor owns is one nothing would re-offer — the queue would be the only
+        // record of it, which is precisely what this list is not. (Every automatic job
+        // is both; the sweeps that are neither are panel-only, and a click is uncapped.)
+        guard let number = job.prNumber, job.counter != nil else { return }
+        let entry = QueuedAgentTask(
+            id: AgentTaskQueue.key(auditAction: job.auditAction, prNumber: number),
+            job: job, attemptNumber: attemptNumber)
+        if let i = stagedQueue.firstIndex(where: { $0.id == entry.id }) {
+            stagedQueue[i] = entry
+        } else {
+            stagedQueue.append(entry)
+        }
+    }
+
+    /// Publish this poll's deferrals as the queue, arranged by the operator's saved
+    /// order. Called only after a fully successful cycle — see `stagedQueue`.
+    ///
+    /// Not private: `QueueTest` commits a cycle directly, which is the only way to
+    /// exercise this without a live GitHub fetch.
+    ///
+    /// Committing also ENDS the cycle. Leaving the staging behind would carry this
+    /// poll's offers into the next one, where they would read as work still owed —
+    /// so a task would never leave the queue once it entered.
+    func commitQueue() {
+        let staged = stagedQueue
+        stagedQueue = []
+        let ordered = AgentTaskQueue.order(offered: staged.map(\.id), saved: queuedTaskOrder)
+        queuedTaskOrder = ordered
+        queuedTasks = ordered.compactMap { id in staged.first { $0.id == id } }
+    }
+
+    /// Run the queue down into whatever room this device has, in the operator's
+    /// order. This is what makes the drag order mean anything: it runs at the TOP of
+    /// a poll, before the monitors offer their own finds, so a slot that freed since
+    /// the last cycle goes to the work already waiting for it rather than to whatever
+    /// this poll's fetch happens to list first.
+    ///
+    /// Capacity is re-counted per task because each spawn fills a slot. A spawn
+    /// failure stops the drain: it means terminal automation is broken, not that this
+    /// one task was unlucky, and each entry is taken off the list before it is tried —
+    /// so walking the whole queue into the same failure would clear the panel of every
+    /// queued row at once, for a reason none of them caused.
+    private func drainQueuedTasks() async {
+        for entry in drainableTasks {
+            guard await autoTasksRunning() < autoTaskLimit else { return }
+            // Finding room here is what re-arms the saturation notice. The gate's own
+            // reset sits behind the capacity measurement this path skips, so without
+            // this the feed would carry one `at-capacity` line for an unbounded run of
+            // saturate-and-drain episodes instead of one apiece.
+            capacityLogged = false
+            queuedTasks.removeAll { $0.id == entry.id }
+            if case .failed = await runQueuedTask(entry) { return }
+        }
+    }
+
+    /// Whether the monitor that owns this work is switched off.
+    ///
+    /// A switched-off monitor still finds its work and still queues it — what your
+    /// PRs owe is worth seeing whether or not this machine is set to act on it — but
+    /// nothing automatic starts it. It waits for "execute now", or for the toggle to
+    /// come back on. That is the whole difference the two toggles make now: they
+    /// decide who starts the work, not whether it is known.
+    func isPaused(_ counter: AutoCounter?) -> Bool {
+        switch counter {
+        case .reviewRequests:        return !reviewRequestsEnabled
+        case .myReviews, .conflicts: return !prAutofixEnabled
+        // Unreachable: a job with no monitor behind it is never queued (`stageQueued`).
+        // Answering "not paused" keeps the unreachable case from being the one that
+        // silently holds work back.
+        case nil:                    return false
+        }
+    }
+
+    /// The queued tasks the drain may start, in the operator's order — everything
+    /// whose monitor is still on.
+    ///
+    /// Not private: this is the seam the queue self-test drives. Asserting on the
+    /// list the drain walks is how the "a paused monitor's work is held, not run"
+    /// rule gets a test at all — driving the drain itself would end in a real spawn.
+    var drainableTasks: [QueuedAgentTask] {
+        queuedTasks.filter { !isPaused($0.job.counter) }
+    }
+
+    /// Dispatch one queued task past the capacity check its caller already made, and
+    /// record the attempt its monitor would have recorded.
+    ///
+    /// That record is not bookkeeping polish: the whole retry ladder hangs off it. A
+    /// queued dispatch that wrote none would look, to the very next poll after the
+    /// agent exits, exactly like work never attempted — so an agent that finishes
+    /// without clearing the conflict or leaving the review would be re-dispatched
+    /// three minutes later, and again, with no backoff ever engaging.
+    @discardableResult
+    private func runQueuedTask(_ entry: QueuedAgentTask) async -> DispatchOutcome {
+        let outcome = await dispatchAgent(entry.job, source: .auto,
+                                          attemptNumber: entry.attemptNumber,
+                                          bypassCapacity: true)
+        if outcome.wasHandled { recordQueuedAttempt(entry) }
+        return outcome
+    }
+
+    /// Write the retry-backoff record for a task the queue dispatched, into the same
+    /// per-monitor ledger that monitor writes itself: `AgentJob.counter` names the
+    /// ledger, `attemptStamp` is the stamp that monitor compares against.
+    private func recordQueuedAttempt(_ entry: QueuedAgentTask) {
+        guard let number = entry.job.prNumber, let counter = entry.job.counter else { return }
+        let key = String(number)
+        let record = ReviewAttempt(requestedAt: entry.job.attemptStamp,
+                                   lastDispatchedAt: Date(), attempts: entry.attemptNumber)
+        switch counter {
+        case .reviewRequests:
+            var map = loadReviewReqAttempts(); map[key] = record; saveReviewReqAttempts(map)
+        case .myReviews:
+            var map = loadMyReviewAttempts(); map[key] = record; saveMyReviewAttempts(map)
+        case .conflicts:
+            var map = loadMyConflictAttempts(); map[key] = record; saveMyConflictAttempts(map)
+        }
+    }
+
+    /// The queued row's "execute now": start this task immediately, past the cap.
+    ///
+    /// It stays AUTO work — same `Auto · ` label, same auto-handled counter, mesh
+    /// routing still applies, and once running it occupies a slot like any other
+    /// automatic agent, so the rest of the queue waits behind it. Of the five
+    /// asymmetries the gate draws between a click and a monitor tick (focus, capacity,
+    /// mesh, counters, label) this borrows exactly one: the cap, which is the only one
+    /// the operator is overriding.
+    ///
+    /// The feed line is written from the OUTCOME, never ahead of it: this is an auto
+    /// job, so a mesh peer can own the work, the PR can have gained an agent since
+    /// the list was built, and the spawn can fail — announcing "started" before
+    /// asking would report a launch that never happened in all three.
+    func executeQueuedTask(_ id: String) async {
+        guard let entry = queuedTasks.first(where: { $0.id == id }) else { return }
+        queuedTasks.removeAll { $0.id == id }
+        switch await runQueuedTask(entry) {
+        case .spawned:
+            AuditLog.log("panel", "queue-run",
+                         "\(entry.job.label) — started ahead of the task cap")
+        // The rest are all logged by the step that decided them, but a feed line is
+        // not an answer to a click: the row vanished and nothing opened, so say why
+        // in the panel, as the per-row Resolve button does (`resolveConflicts`).
+        case .failed:
+            error = "\(entry.job.label) failed to spawn — see the activity log."
+        case .inFlight:
+            error = "\(entry.job.label): an agent is already on this PR."
+        case .standDown:
+            error = "\(entry.job.label): a mesh peer's agent already owns this work."
+        case .banned:
+            error = "\(entry.job.label): the PR's author is banned (un-ban to review)."
+        case .atCapacity:
+            break   // unreachable: the run bypasses the cap the operator overrode
+        }
+        refreshAudit()
+    }
+
+    /// Reorder the queue by drag: `id` lands where it was dropped relative to
+    /// `target`. The arrangement is persisted, so it survives both the poll that
+    /// rebuilds the list and the restart that empties it.
+    func moveQueuedTask(_ id: String, onto target: String) {
+        let current = queuedTasks
+        let ordered = AgentTaskQueue.reorder(current.map(\.id), moving: id, onto: target)
+        queuedTaskOrder = ordered
+        queuedTasks = ordered.compactMap { key in current.first { $0.id == key } }
+    }
+
     /// The app the user is currently working in, so a background (auto-fix) spawn can
     /// bounce focus straight back to it instead of yanking them into a new terminal
     /// window. Read on the main actor (Store is @MainActor). nil when there is no
@@ -1025,7 +1391,7 @@ final class Store: ObservableObject {
     /// → prompt, labels, PR identity); the pipeline owns everything that HAPPENS —
     /// the ban check, in-flight dedup, mesh policy, spawn, tracking, counters — so
     /// a button click and a monitor tick cannot behave differently by accident.
-    struct AgentJob {
+    struct AgentJob: Equatable {
         var kind: String            // tracked-row tint: "review" | "conflicts" | "audit"
         var auditAction: String     // activity-feed verb
         var label: String           // label core (source prefix / retry suffix added by the gate)
@@ -1041,9 +1407,31 @@ final class Store: ObservableObject {
         /// entry would drop dispatched work off every figure on the screen.
         var ledgerKey: String = ""
         var counter: AutoCounter?   // which auto-handled tally a monitor dispatch feeds
+        /// The stamp the monitor that owns this job records against the PR when an
+        /// agent launches (`ReviewAttempt.requestedAt`) — the request timestamp for a
+        /// review request, a constant for the two level-triggered reconcilers.
+        /// Carried on the job so a dispatch the *queue* runs later starts the same
+        /// retry backoff the reconciler's own dispatch would have. Read only on that
+        /// path: a panel spawn keeps no attempt record, and a job with no monitor
+        /// behind it (the sweeps) has no stamp to carry.
+        var attemptStamp: String = ""
     }
 
     enum AutoCounter { case reviewRequests, myReviews, conflicts }
+
+    /// One unit of automatic work nothing has started yet: the whole job, held by the
+    /// device's task cap or by its own monitor being switched off, until a slot frees
+    /// or the operator runs it. Rebuilt from live evidence on each poll — see
+    /// `queuedTasks`.
+    struct QueuedAgentTask: Identifiable, Equatable {
+        /// `AgentTaskQueue.key` — stable across polls and applet restarts, which is
+        /// what lets the operator's drag order outlive the list itself.
+        let id: String
+        var job: AgentJob
+        /// The attempt number the monitor would have dispatched under, so a queued
+        /// retry keeps its place on the 5m→3h backoff ladder instead of restarting it.
+        var attemptNumber: Int
+    }
 
     /// What one dispatch did — wizards surface it as status text; monitors only
     /// care whether it spawned.
@@ -1052,6 +1440,7 @@ final class Store: ObservableObject {
         case inFlight
         case banned
         case standDown
+        case atCapacity
         case failed(String)
         var didSpawn: Bool { if case .spawned = self { return true }; return false }
         /// The work is now being handled — spawned locally OR stood down to a peer
@@ -1059,12 +1448,15 @@ final class Store: ObservableObject {
         /// start the retry backoff, mirroring the Python reference which treats
         /// `("spawned", VERDICT_STAND_DOWN)` as handled. `.failed` deliberately does
         /// NOT count (a transient spawn error retries next poll); nor do `.inFlight`
-        /// / `.banned`. Using `.didSpawn` here instead would re-dispatch peer-owned
-        /// work to the mesh on every poll, the backoff never engaging.
+        /// / `.banned` / `.atCapacity`. Using `.didSpawn` here instead would
+        /// re-dispatch peer-owned work to the mesh on every poll, the backoff never
+        /// engaging — and counting `.atCapacity` as handled would drop deferred work
+        /// into a 5m–3h cooldown instead of offering it again the moment an agent
+        /// finishes.
         var wasHandled: Bool {
             switch self {
             case .spawned, .standDown: return true
-            case .inFlight, .banned, .failed: return false
+            case .inFlight, .banned, .atCapacity, .failed: return false
             }
         }
     }
@@ -1077,9 +1469,23 @@ final class Store: ObservableObject {
     /// tracked rows OR a live `claude` visible in `ps` — the ground-truth floor
     /// that also catches agents whose local bookkeeping was lost and mesh jobs
     /// that landed on this very machine.
+    ///
+    /// An AUTO job is additionally capped at `autoTaskLimit` concurrent agents on
+    /// this device (`autoTasksRunning`), and held outright while its own monitor is
+    /// switched off (`isPaused`); a panel click is subject to neither. Either refusal
+    /// queues the job (`stageQueued`), which is what the panel's Agent-tasks list
+    /// shows as *queued*.
+    ///
+    /// `bypassCapacity` is for the two callers that have already answered the
+    /// capacity question themselves: the queue drain (which counted the free slot it
+    /// is filling, and skips paused work by construction) and "execute now" (where
+    /// the operator is overriding both holds deliberately). It skips the measurement —
+    /// not just its verdict — so neither pays for a second `ps` scan, and so a forced
+    /// run cannot re-queue itself.
     @discardableResult
     func dispatchAgent(_ job: AgentJob, source: AgentDispatchGate.Source,
-                       attemptNumber: Int = 1) async -> DispatchOutcome {
+                       attemptNumber: Int = 1,
+                       bypassCapacity: Bool = false) async -> DispatchOutcome {
         if let n = job.prNumber {
             if resolvingPRs.contains(n) { return .inFlight }
             resolvingPRs.insert(n)
@@ -1093,8 +1499,31 @@ final class Store: ObservableObject {
                 agentOnPR = await livePRAgents().contains(n)
             }
         }
+        // Measured only for an auto job that would otherwise run: the count costs a
+        // `ps` scan, a panel click is never capped, and an in-flight PR spawns
+        // nothing either way — so in both of those the answer would be discarded.
+        // Finding room is also what re-arms the "deferring" note.
+        var atCapacity = false, paused = false
+        if source == .auto, !agentOnPR, !bypassCapacity {
+            let full = await autoTasksRunning() >= autoTaskLimit
+            if !full { capacityLogged = false }
+            // A switched-off monitor has no room for its own work, whatever the
+            // device's. Modelled as capacity because the answer is the same one in
+            // every respect that matters here — hold the job, write no attempt
+            // record, re-offer it next poll — which keeps a toggle that only this
+            // front-end has out of the dispatch gate both front-ends mirror.
+            paused = isPaused(job.counter)
+            atCapacity = full || paused
+        }
         switch AgentDispatchGate.decide(source: source, banned: banned,
-                                        agentOnPR: agentOnPR, meshStandsDown: false) {
+                                        agentOnPR: agentOnPR, meshStandsDown: false,
+                                        atCapacity: atCapacity) {
+        case .atCapacity:
+            // A paused monitor is not a saturated device: it queues silently, because
+            // the operator switched it off on purpose and the row says the rest.
+            if !paused { logAtCapacity() }
+            stageQueued(job, attemptNumber: attemptNumber)
+            return .atCapacity
         case .banned:
             AuditLog.log(source.rawValue, "ban-skip",
                          "\(job.label) — author is banned (un-ban to review)")
@@ -1197,7 +1626,7 @@ final class Store: ObservableObject {
                                                         prURL: r.url, headSha: r.headSha),
                            ledgerKey: AutofixMesh.ledgerKey(kind: AutofixMesh.kindReviewReq,
                                                             prURL: r.url, headSha: r.headSha),
-                           counter: .reviewRequests)
+                           counter: .reviewRequests, attemptStamp: AttemptStamp.reviewRequest(r))
         return await dispatchAgent(job, source: .auto, attemptNumber: attemptNumber).wasHandled
     }
 
@@ -1250,7 +1679,7 @@ final class Store: ObservableObject {
                                                         prURL: url, headSha: headSha),
                            ledgerKey: AutofixMesh.ledgerKey(kind: AutofixMesh.kindConflicts,
                                                             prURL: url, headSha: headSha),
-                           counter: .conflicts)
+                           counter: .conflicts, attemptStamp: AttemptStamp.conflicting)
         return await dispatchAgent(job, source: source, attemptNumber: attemptNumber)
     }
 
@@ -1270,7 +1699,7 @@ final class Store: ObservableObject {
                                                         prURL: s.url, headSha: s.headSha),
                            ledgerKey: AutofixMesh.ledgerKey(kind: AutofixMesh.kindReviewReply,
                                                             prURL: s.url, headSha: s.headSha),
-                           counter: .myReviews)
+                           counter: .myReviews, attemptStamp: AttemptStamp.unresolvedReview)
         return await dispatchAgent(job, source: .auto, attemptNumber: attemptNumber).wasHandled
     }
 
@@ -1331,7 +1760,9 @@ final class Store: ObservableObject {
             self.error = "Resolve #\(number) failed to spawn — see the activity log."
         case .inFlight:
             self.error = "Resolve #\(number): an agent is already on this PR."
-        case .spawned, .banned, .standDown:
+        case .spawned, .banned, .standDown, .atCapacity:
+            // `.standDown` / `.atCapacity` are answers only a monitor gets — neither
+            // the mesh gate nor the automatic-task cap applies to a click.
             break
         }
     }
@@ -1478,6 +1909,7 @@ final class Store: ObservableObject {
         processPollTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.refreshProcessStatuses()
+                await self?.refreshAutoTaskCount()
                 await self?.refreshDeviceState()
                 self?.refreshBanList()
                 self?.refreshAudit()

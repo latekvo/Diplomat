@@ -1,4 +1,4 @@
-"""Diplomat's answers to the five questions a SzpontNet node asks its host.
+"""Diplomat's answers to the six questions a SzpontNet node asks its host.
 
 The library ships a working default for every one of them, which is what makes
 this worth testing: a hook that silently stops being wired does not crash, it just
@@ -220,3 +220,66 @@ def test_a_host_that_raises_never_costs_the_node_the_job(monkeypatch):
 
     monkeypatch.setattr(szponthost.DiplomatHost, "work_already_running", boom)
     assert szpont_host.work_already_running("review:github.com/o/r#1@sha") is False
+
+
+# ---- at_job_capacity -----------------------------------------------------
+
+
+def _agents_on(monkeypatch, prs: set[int]):
+    """Pretend ``ps`` shows a live agent for each of ``prs`` (the matcher itself is
+    covered by ``live_pr_numbers``' own tests)."""
+    _ps_output(monkeypatch, "".join(f"claude … PR #{n} in o/r\n" for n in prs))
+    monkeypatch.setattr("diplomat_app.autofix.live_pr_numbers",
+                        lambda out, owner, repo: set(prs))
+
+
+def test_a_busy_machine_declines_peer_routed_work(host, monkeypatch):
+    """The applet caps the work it originates; this is the other half. Without it a
+    peer ranks us best-surplus (quota, not concurrency) and lands job after job on a
+    machine that is already running its cap."""
+    _agents_on(monkeypatch, {1, 2})
+    assert host.at_job_capacity([]) is True
+    _agents_on(monkeypatch, {1})
+    assert host.at_job_capacity([]) is False
+
+
+def test_the_nodes_own_fresh_jobs_count_before_ps_can_see_them(host, monkeypatch):
+    """A `claude` started seconds ago is not in `ps` yet, and a burst of dispatches
+    is exactly when that gap decides whether the cap holds — so the node hands its
+    own live work keys in."""
+    _agents_on(monkeypatch, set())
+    keys = ["review:github.com/o/r#5@aa", "conflicts:github.com/o/r#6@bb"]
+    assert host.at_job_capacity(keys) is True
+    # …and the same job seen from both sides is one job, not two.
+    _agents_on(monkeypatch, {5})
+    assert host.at_job_capacity(["review:github.com/o/r#5@aa"]) is False
+
+
+def test_the_cap_is_the_one_the_applet_writes(host, monkeypatch):
+    """Same file, same number: a device with two answers to "how many at once" has
+    no cap at all."""
+    from diplomat_app import appconfig
+
+    _agents_on(monkeypatch, {1, 2})
+    appconfig.set_int(appconfig.AUTO_TASK_LIMIT, 3)
+    assert host.at_job_capacity([]) is False
+    appconfig.set_int(appconfig.AUTO_TASK_LIMIT, 2)
+    assert host.at_job_capacity([]) is True
+
+
+def test_capacity_fails_open_on_an_unreadable_ps(host, monkeypatch):
+    """Same trade as ``work_already_running``: a cap whose accounting broke must not
+    become a node that refuses everything forever."""
+    def boom(*a, **k):
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+    monkeypatch.setattr(szponthost.subprocess, "run", boom)
+    assert host.at_job_capacity([]) is False
+
+
+def test_a_capacity_hook_that_raises_never_costs_the_node_the_job(monkeypatch):
+    def boom(self, running_keys):
+        raise RuntimeError("host is confused")
+
+    monkeypatch.setattr(szponthost.DiplomatHost, "at_job_capacity", boom)
+    assert szpont_host.at_job_capacity([]) is False

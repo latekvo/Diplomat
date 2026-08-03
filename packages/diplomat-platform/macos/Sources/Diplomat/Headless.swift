@@ -18,6 +18,7 @@ enum Headless {
             || env["DIPLOMAT_SETTINGS_DUMP"] == "1"
             || env["DIPLOMAT_RENDER"] != nil
             || env["DIPLOMAT_TRACK_TEST"] == "1"
+            || env["DIPLOMAT_QUEUE_TEST"] == "1"
             || env["DIPLOMAT_DEVICE_DUMP"] == "1"
             || env["DIPLOMAT_AUTOFIX_POLL"] == "1"
             || env["DIPLOMAT_APIWATCH_SCAN"] == "1"

@@ -62,6 +62,15 @@ def test_a_node_with_no_host_dedups_on_its_own_book_alone():
     assert host.work_already_running("review:github.com/o/r#1@sha") is False
 
 
+def test_a_node_with_no_host_accepts_work_without_limit():
+    """How many jobs a machine can stand at once is a deployment's policy, and a
+    library that guesses one would be capping deployments it knows nothing about.
+    With nobody home the node takes what it is sent, exactly as it did before there
+    was a seam to ask."""
+    assert host.at_job_capacity([]) is False
+    assert host.at_job_capacity(["a", "b", "c", "d", "e"]) is False
+
+
 # ---- registering in-process ----------------------------------------------
 
 
@@ -86,8 +95,11 @@ class _Recording(host.Host):
     def work_already_running(self, work_key):
         return work_key.startswith("render:")
 
+    def at_job_capacity(self, running_keys):
+        return len(running_keys) >= 2
 
-def test_a_registered_host_answers_all_five(monkeypatch):
+
+def test_a_registered_host_answers_all_six(monkeypatch):
     monkeypatch.delenv("SZPONTNET_DIR", raising=False)
     monkeypatch.delenv("SZPONTNET_SPAWN", raising=False)
     impl = _Recording()
@@ -100,6 +112,8 @@ def test_a_registered_host_answers_all_five(monkeypatch):
     assert spawnjob.spawn_job("work", done_path="/d") == "/staged/prompt.txt"
     assert impl.jobs == [("work", "/d")]
     assert host.work_already_running("render:job") is True
+    assert host.at_job_capacity(["one"]) is False
+    assert host.at_job_capacity(["one", "two"]) is True
 
 
 def test_registering_late_still_takes_effect():
@@ -241,6 +255,16 @@ def test_a_host_that_raises_never_costs_the_node_the_job():
     host.set_host(impl)
 
     assert host.work_already_running("review:github.com/o/r#1@sha") is False
+
+
+def test_a_capacity_hook_that_raises_leaves_the_machine_usable():
+    """Fails open the same way, for the mirror-image reason: a cap whose accounting
+    broke must not turn into a node that declines every dispatch forever."""
+    impl = host.Host()
+    impl.at_job_capacity = lambda keys: (_ for _ in ()).throw(RuntimeError("confused"))
+    host.set_host(impl)
+
+    assert host.at_job_capacity([]) is False
 
 
 def test_a_host_runner_that_raises_arrives_as_a_decline(monkeypatch):

@@ -35,7 +35,8 @@ Targets `software-mansion/argent` and shells out to the authenticated `gh` CLI.
 > spawn, session tracking, and counters live in exactly one place per platform.
 > The only trigger asymmetries are the documented ones in `AgentDispatchGate`
 > (its Python twin `autofix.dispatch_decide`): manual spawns come to the
-> foreground (macOS) and are never mesh-gated, monitor dispatches get the
+> foreground (macOS), are never mesh-gated and never hit the
+> [automatic-task cap](#autonomous-monitors); monitor dispatches get the
 > `Auto · … · retry N` label, and only they bump the auto-handled counters.
 > Parity tests on both sides pin that matrix. A job arriving *over the mesh* is
 > the one spawn that bypasses the pipeline - it lands through the mesh node's own
@@ -99,9 +100,7 @@ reports the PR conflicting, which spawns the fix agent for exactly that PR.
 monitor is enabled (heartbeat: PRs watched, conflicts/reviews handled; "offline"
 when polling stops for 15 minutes). The rest appear only when non-empty: the
 **banned authors** list (prompt-injection bans, with the captured evidence and an
-inline un-ban); the **agent sessions** list (every spawned agent, wizard- or
-monitor-launched, with a live *running / awaiting input / done / merged* state -
-click a row to focus its terminal window, ✕ to stop tracking); the **devices**
+inline un-ban); the collapsible **agent tasks** list (below); the **devices**
 pool (who holds which simulator/emulator, for how long, with a per-device kill -
 clicking an in-use device focuses the holding agent's terminal); and the
 **activity** log, one unified audit feed
@@ -115,6 +114,45 @@ rows. The taxonomy (which raw action verb maps to which category, plus its icon 
 tint) is shared in [`assets/audit-categories.json`](packages/diplomat-core/assets/audit-categories.json), with
 `packages/diplomat-core/Sources/DiplomatCore/AuditCategory.swift` as the Swift source of truth.
 
+### Agent tasks
+
+One list for what the machine is doing, what it is about to do, and how much room
+it has left - the agents it has **spawned**, the automatic work it is **holding**,
+and an empty bay per free slot of its [task cap](#autonomous-monitors). Rows read
+in status order: *merged*, *done*, *awaiting input*, *running*, *free slot*,
+*queued*, so finished work (the only kind asking to be read) sits at the top and
+everything not started yet is at the bottom. The list is always there: an idle
+machine with a cap of two reads `0 · 2 free` over two empty bays.
+
+- **Sessions** are every spawned agent, wizard- or monitor-launched. Click a row
+  to focus its terminal window, ✕ to stop tracking it.
+- **Free slots** are the rest of the cap. Each running automatic agent takes one;
+  agents you spawn yourself from the panel take none. Queued work starts here on
+  the next poll.
+- **Queued** rows are auto-fixes and auto-reviews nothing has started yet. Each
+  carries **execute now** - start it immediately, past whatever is holding it -
+  and a drag grip: drop a row on another to set the order the queue runs in. That
+  order is honoured at the top of the next poll, *before* the monitors go looking
+  for more work, so a slot that just freed goes to whatever you put first rather
+  than to whichever PR GitHub happened to list first.
+
+Two things hold work. The cap holds what there is no slot for, and releases it as
+slots free. A **monitor you switched off** holds its own work indefinitely: it
+keeps polling and keeps listing what it finds (reading *queued · monitor off*),
+but nothing starts by itself - only *execute now* does. So the toggles decide who
+starts the work, not whether you get to see it, and turning both off does not stop
+the 3-minute GitHub poll.
+
+The queue is a view of what the monitors would re-offer, not a second copy of
+their state: it is rebuilt from live GitHub evidence on every 3-minute poll, so a
+task drops out the moment the work is taken by an agent, resolved, or its author
+banned. (Not on a mesh claim: the cap outranks the mesh gate, so a machine with
+anything queued is one that never asked a peer - peer-owned work leaves when the
+drain reaches it and the mesh answers.) The key order is remembered, so your
+arrangement survives the rebuild and a restart; nothing else is. *Execute now* keeps the task automatic in every other respect:
+same `Auto · ` label, same auto-handled counter, and once running it occupies a
+slot like any other automatic agent, so the rest of the queue waits behind it.
+
 ## Actions - Review PRs
 
 The grid carries a **Review PRs** card alongside the tools. Click it and the wizard
@@ -124,8 +162,8 @@ running a detached review session in your **repo root** (Settings; default
 `~/dev/<repo>`) that you watch and steer yourself. The prompt is staged to a
 file and the window runs
 `claude "$(cat <promptfile>)"; printf %s $? > <done>` - the trailing sentinel
-(under `~/.diplomat/pr-monitor/done/`) is how the sessions list knows the agent
-finished. The choices are baked into the prompt:
+(under `~/.diplomat/pr-monitor/done/`) is how the Agent-tasks list knows the
+agent finished. The choices are baked into the prompt:
 
 - **Target** — the same three-way selector the other wizards use: *Mine* (the
   resolved handle, see Settings), *Someone else's* (a handle field lights up), or
@@ -475,11 +513,27 @@ immediate poll on wake/enable, not from a tight loop. Both cadences are
 overridable for tuning (`DIPLOMAT_AUTOFIX_SECS`, floor 60s on macOS / 30s on
 Linux; `DIPLOMAT_APIWATCH_SECS`, floor 5s).
 
-**With a mesh up, the monitors defer.** A duty the mesh has assigned to *other*
-nodes makes this machine's monitors stand down entirely for it - their agents
-originate over there instead - and for the remaining races (no assignee, takeover
-flaps) each unit of work is claimed by key first. Those show up as
-`mesh-standdown` / `mesh-resume` rows in the activity feed.
+**At most 2 automatic agents run at once** (Settings; 1-16). Both monitors above
+are level-triggered over everything GitHub currently owes, so one poll of a busy
+day would otherwise dispatch every pending unit in a single pass - a terminal
+window and a `claude` session per conflicted PR and per owed review, all at the
+same moment. The cap is the *machine's*, not a monitor's: it spans both monitors
+and any work a mesh peer routes here, and it counts agents that are really
+running (`ps`, so it survives an applet restart) rather than a tally that can
+drift. Agents *you* spawn from the panel don't count against it, and a click is
+never refused. Nothing is dropped - work over the cap gets no attempt record, so
+the next 3-minute tick offers it again as soon as an agent finishes, and it waits
+visibly in the panel's [Agent tasks](#agent-tasks) list meanwhile, where it can be
+reordered or started by hand. Whatever is left of the cap shows there too, as an
+empty bay per free slot. Saturation shows up as one `at-capacity` row in the
+activity feed per episode.
+
+**With a mesh up, each unit of work runs once.** Every machine scans GitHub
+independently; whoever finds a unit routes it by work key, and the node that
+takes it holds the claim for its agent's lifetime, so a concurrent or repeat scan
+elsewhere is suppressed (`mesh-suppressed` in the activity feed) and a node death
+frees the work for failover. A machine already at its cap declines what it is
+sent, and the dispatcher fails the slot over to one with room.
 
 ### Auto-approvals (default OFF)
 
@@ -523,9 +577,19 @@ and ⏻) swaps the panel to a settings screen:
 - **Auto-fix my PRs / Full-E2E review requests** - the two monitor toggles, with
   live status: PRs watched, reviews done so far, "N unaddressed reviews -
   retrying", and any poll failure. (The combined *fixed N* counter lives on the
-  panel's status pill, not here.) Nested under the **review-requests** toggle -
+  panel's status pill, not here.) A monitor switched off keeps polling and keeps
+  listing what it finds under [Agent tasks](#agent-tasks); what stops is the
+  automatic start. Nested under the **review-requests** toggle -
   and visible only while it's on - the **auto-approve** master toggle and its
   three withhold-the-verdict suppressors (SKILL / installer / community).
+- **Run at most N automatic tasks at a time** - this machine's hard cap on
+  concurrent automatic agents (**default 2**, range 1-16), across both monitors
+  and any work a mesh peer routes here. Panel spawns are never capped and don't
+  count against it; work over the cap is deferred to the next poll, not dropped.
+  Like the repo root and for the same reason, it lives in the shared
+  `~/.diplomat/config.json` rather than UserDefaults - the node that runs
+  peer-routed work is a separate stdlib-only process, and a machine with two
+  answers to "how many at once" has no cap at all.
 - **Auto-continue agents on API errors** - the terminal watcher toggle, plus a
   count of nudges sent.
 - **Tools - color & visibility** - a **color well** to retint each tool plus a switch
@@ -592,7 +656,7 @@ DIPLOMAT_REFRESH_SECS=30 open ./Diplomat.app   # refresh every 30s
 ```
 
 Each refresh also re-checks every tracked, unmerged PR (one `gh pr view` apiece) so
-the sessions list can flip a row to *merged*. The [autonomous
+the Agent-tasks list can flip a row to *merged*. The [autonomous
 monitors](#autonomous-monitors) are separate, on their own 3-minute schedule.
 
 ## Run
@@ -673,7 +737,8 @@ running. It's the unattended twin of the Settings **Update** button, and it logs
 
 Every mode runs the real pipeline once, prints, and exits - none of them start
 the monitors or touch a terminal (except `TRACK_TEST` and `SPAWN_FOCUS_TEST`, whose
-point is exactly that). `packages/diplomat-platform/macos/Sources/Diplomat/Headless.swift` is the one list that
+point is exactly that; and `RENDER=live`, which opens a window and stays up until
+you stop it). `packages/diplomat-platform/macos/Sources/Diplomat/Headless.swift` is the one list that
 decides what counts as headless:
 
 ```bash
@@ -683,12 +748,16 @@ DIPLOMAT_PRINT_PROMPT=mine swift run Diplomat # assemble + print a prompt: mine|
                                                      #   -final for the verdict pass), conflicts[-user|-single],
                                                      #   audit[-issues|-prs|-all]
 DIPLOMAT_SETTINGS_DUMP=1 ./Diplomat.app/Contents/MacOS/Diplomat  # resolved persisted settings
+DIPLOMAT_QUEUE_TEST=1 swift run Diplomat      # self-test: the queue behind the automatic-task cap
+                                                     #   (capture, dedup, arrangement, what a paused
+                                                     #   monitor holds, free slots). Spawns nothing;
+                                                     #   redirects its own audit writes.
 DIPLOMAT_RENDER=panel    ./Diplomat.app/Contents/MacOS/Diplomat  # snapshot a screen to PNG (out
                                                      #   path: DIPLOMAT_RENDER_OUT). States: panel|panel-procs
                                                      #   natural|settings|settings-live|approved|unban-confirm
                                                      #   activity[-filtered] (audit feed + its filter chips)
                                                      #   wizard[-other|-specific[-mine|-theirs]|-wrong|-banned]
-                                                     #   devices[-open]|conflicts[-other|-specific|-wrong]
+                                                     #   devices[-open|-procs]|conflicts[-other|-specific|-wrong]
                                                      #   audit[-issues|-prs|-all]
                                                      #   mesh (⬡ screen over a synthetic topology); mesh-blocked
                                                      #   (the not-discoverable banner); mesh-reminder (trust modal)
@@ -697,6 +766,9 @@ DIPLOMAT_RENDER=panel    ./Diplomat.app/Contents/MacOS/Diplomat  # snapshot a sc
                                                      #   popover (REAL NSWindow snapshot incl. the legacy
                                                      #   scroller — pair with DIPLOMAT_POPOVER_CAP=400
                                                      #   to force the scrolling state)
+                                                     #   live (the real popover ON-SCREEN, left running, to
+                                                     #   drive the queue's drag + execute now with a mouse;
+                                                     #   its queued rows resolve in-flight, so no spawn)
 DIPLOMAT_TRACK_TEST=1    ...                     # E2E of session tracking via a real throwaway terminal
                                                      #   window; exits non-zero on failure
 DIPLOMAT_SPAWN_FOCUS_TEST=1 ...                  # E2E that background spawns keep focus and foreground ones
@@ -745,7 +817,10 @@ language-neutral GraphQL queries, the tool catalog, filter constants, and the
 prompt fragments for all three actions. Both front-ends load it and assert their
 assembled prompts byte-for-byte against `assets/golden-prompts/`, so they can only
 drift from each other by failing a CI job. Both also run the full monitor stack;
-what stays macOS-only is the per-row **Merge** button and reading arbitrary
+what stays macOS-only is the per-row **Merge** button, the
+[Agent tasks](#agent-tasks) list (a Linux spawn is a detached `Popen` with no
+window handle to track a session by - and with no list, a monitor switched off
+there stops polling rather than queueing what it finds), and reading arbitrary
 terminal windows (the Linux watcher drives tmux panes instead).
 
 This repository is a **monorepo of independent parts**: everything lives in
@@ -790,6 +865,7 @@ packages/
         Conflict.swift / Audit.swift  ConflictConfig + AuditConfig prompt builders (assets/conflicts.json, assets/audit.json)
         PRRef.swift / PRTarget.swift  single-PR reference parsing + the whose-PRs axis shared by the wizards
         Autofix.swift              PRSnapshot + the monitor's edge-trigger diff, AgentDispatchGate, AutofixMesh
+        AgentTasks.swift           the Agent-tasks list's sort order + the queue behind the task cap
         ReviewReconcile.swift      pure retry/backoff/dedup decisions for the monitors
         AgentActivity.swift        terminal-tail classification: running vs awaiting input
         ApiErrorMatch.swift        "is this a Claude API error?" matcher for the watcher
@@ -812,13 +888,14 @@ packages/
         Components.swift           shared UI atoms (cards, chips, badges)
         ReviewWizard.swift         Review-PRs wizard + AgentSpawner (staged prompt file, done sentinel, iTerm/Terminal)
         ConflictWizard.swift / AuditWizard.swift   the Resolve-conflicts and Full-E2E-test wizards
-        SettingsView.swift         settings (username, repo root, monitors + auto-approve, watcher, tools, terminal, allocator)
+        SettingsView.swift         settings (username, repo root, monitors + auto-approve + task cap, watcher, tools, terminal, allocator)
         Store.swift                ObservableObject; settings + the monitor/watcher loops; logic in ToolData
         AutofixMonitor.swift       the monitors' GitHub reads (monitor-prs / review-requests queries)
         AutofixStatus.swift        the monitor heartbeat behind the status pill
         ApiErrorWatcher.swift      iTerm/Terminal session reader + continue-nudge sender
         ProcessTracker.swift       tracked agent sessions (liveness, focus, done sentinel, merged)
         TrackTest.swift            E2E self-test of the tracking path (DIPLOMAT_TRACK_TEST)
+        QueueTest.swift            self-test of the deferred-task queue (DIPLOMAT_QUEUE_TEST)
         BanList.swift / AuditLog.swift   ban list (the daemon's banned.json) + the unified activity feed (audit.jsonl)
         DeviceAllocator.swift      allocator daemon state reader + installer bridge
         DeviceFocus.swift          click an in-use device → focus the holding agent's terminal
@@ -838,9 +915,10 @@ packages/
         AppConfig.swift            the cross-process settings file (~/.diplomat/config.json) the mesh node shares
       install/                 ← build-app + the autostart / auto-update (un)installers (launchd)
     linux/                     ← Linux Qt6/PySide6 tray applet (see its README)
-      diplomat_app/szponthost.py   ← Diplomat's answers to the five questions a mesh node asks its host:
+      diplomat_app/szponthost.py   ← Diplomat's answers to the six questions a mesh node asks its host:
                                  the duty catalog, the state dir, where events go, how a job runs here,
-                                 and whether an agent is already up on that work
+                                 whether an agent is already up on that work, and whether this machine
+                                 has room for another
       install/                 ← build-core + the autostart / auto-update (un)installers (XDG + systemd)
       meshsim/                 ← the real-socket mesh simulator the mesh scenarios run through
 
@@ -848,7 +926,7 @@ packages/
     szpontnet/                   stdlib-only Python (runs headless on macOS too) — LAN discovery,
                                  heartbeat links, gossip, deterministic duty assignment, dispatch with
                                  failover; canonical v1 model in netmodel.json, `python -m szpontnet`
-      host.py                  ← the five questions a node asks whoever is running it; all five have
+      host.py                  ← the six questions a node asks whoever is running it; all six have
                                  working defaults, so a node with no host is a valid node
       env.py                   ← the SZPONTNET_* namespace, one accessor, one place the old names bridge
     tests/                     ← the library on its own terms — defaults, the host seam, the namespace,

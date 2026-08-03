@@ -184,9 +184,13 @@ class Store(QObject):
         self.autofix_poll_error_at: float | None = None
         self.unaddressed_reviews = 0
         self._poll_error_this_cycle: str | None = None
-        # In-flight auto-fix agents [{url, number, done, at}] — dedups against
-        # spawning a second agent on a PR one is already working.
+        # In-flight agents [{url, number, done, at, source}] — dedups against
+        # spawning a second agent on a PR one is already working, and tells the
+        # automatic-task cap which of them it is allowed to count.
         self._autofix_inflight: list[dict] = []
+        # Whether the "deferring auto work" note has been logged for the current
+        # at-capacity episode (see _log_at_capacity).
+        self._capacity_logged = False
         # Guards the _dispatching_prs set (below). MUST stay distinct from the
         # poll-overlap guard: run_autofix_poll_async holds that one across the whole
         # worker, and the worker's dispatch_agent re-takes THIS one — sharing a single
@@ -347,6 +351,28 @@ class Store(QObject):
     @review_requests_enabled.setter
     def review_requests_enabled(self, value: bool) -> None:
         self._settings.setValue("reviewRequestsEnabled", bool(value))
+
+    @property
+    def auto_task_limit(self) -> int:
+        """How many automatic agents this machine runs at once — 2 by default.
+
+        The monitors are level-triggered over everything GitHub currently owes,
+        so without a cap one poll of a busy day dispatches every pending unit in
+        a single pass: a terminal window and a ``claude`` session per conflicted
+        PR and per owed review, all at once, on one machine. Work over the cap is
+        not dropped — the poll that refuses it writes no attempt record, so the
+        next tick offers it again as soon as an agent finishes.
+
+        The second setting NOT in QSettings, for the same reason as the repo root:
+        a mesh peer can route work here, and the node that spawns it is a separate
+        Qt-less process (see :mod:`appconfig`)."""
+        return appconfig.auto_task_limit()
+
+    @auto_task_limit.setter
+    def auto_task_limit(self, value: int) -> None:
+        appconfig.set_int(
+            appconfig.AUTO_TASK_LIMIT, autofix.clamp_auto_task_limit(int(value))
+        )
 
     @property
     def auto_approve_enabled(self) -> bool:
@@ -759,7 +785,11 @@ class Store(QObject):
         ``ps`` - the ground-truth floor that also catches agents whose local
         bookkeeping was lost (applet restart) and mesh jobs that landed on this
         very machine. ``_dispatching_prs`` is held for the whole call so an
-        overlapping poll and a click can't race two spawns onto one PR."""
+        overlapping poll and a click can't race two spawns onto one PR.
+
+        An AUTO job is additionally capped at ``auto_task_limit`` concurrent
+        agents on this device (``_auto_tasks_running``); a panel click is never
+        capped."""
         if job.pr_number is not None:
             with self._dispatching_lock:
                 if job.pr_number in self._dispatching_prs:
@@ -770,7 +800,21 @@ class Store(QObject):
                 job.author_login, bans.read()
             )
             agent_on_pr = bool(job.pr_url) and self._in_flight(job.pr_url)
-            verdict = autofix.dispatch_decide(source, banned, agent_on_pr, False)
+            # Measured only for an auto job that would otherwise run: the count
+            # costs a `ps` scan, a panel click is never capped, and an in-flight
+            # PR spawns nothing either way — so in both of those the answer would
+            # be discarded. Finding room is also what re-arms the "deferring" note.
+            at_capacity = False
+            if source == autofix.SOURCE_AUTO and not agent_on_pr:
+                at_capacity = self._auto_tasks_running() >= self.auto_task_limit
+                if not at_capacity:
+                    self._capacity_logged = False
+            verdict = autofix.dispatch_decide(
+                source, banned, agent_on_pr, False, at_capacity
+            )
+            if verdict == autofix.VERDICT_AT_CAPACITY:
+                self._log_at_capacity()
+                return verdict
             if verdict == autofix.VERDICT_BANNED:
                 activity.log(
                     source, "ban-skip", f"{job.label} - author is banned (un-ban to review)"
@@ -798,7 +842,7 @@ class Store(QObject):
                 ok = True
             elif job.pr_url is not None and job.pr_number is not None:
                 ok = self._spawn_tracked(job.prompt, job.pr_url, job.pr_number,
-                                         job.ledger_key)
+                                         source, job.ledger_key)
             else:
                 # Not PR-scoped (sweeps, audits): nothing to dedup against, so no
                 # registration - but the same spawn, label and audit shape.
@@ -918,10 +962,14 @@ class Store(QObject):
         )
         return self.dispatch_agent(job, autofix.SOURCE_AUTO, attempt) in ("spawned", autofix.VERDICT_STAND_DOWN)
 
-    def _spawn_tracked(self, prompt: str, url: str, number: int,
+    def _spawn_tracked(self, prompt: str, url: str, number: int, source: str,
                        ledger_key: str = "") -> bool:
         """Spawn an agent with a completion sentinel and record it in-flight. Returns
         whether the terminal launched.
+
+        ``source`` is recorded because the automatic-task cap has to tell the two
+        apart: a panel click spends none of the automatic budget, while a monitor
+        dispatch is exactly what the budget is for.
 
         The prompt is kept alongside the sentinel because it is what ties the run
         back to its Claude transcript when it finishes (:func:`usagescan.task_tokens`)
@@ -938,10 +986,46 @@ class Store(QObject):
         except review.SpawnError:
             return False
         self._autofix_inflight.append(
-            {"url": url, "number": number, "done": done_path, "at": time.time(),
-             "key": ledger_key, "prompt": prompt}
+            {
+                "url": url,
+                "number": number,
+                "done": done_path,
+                "at": time.time(),
+                "source": source,
+                "key": ledger_key,
+                "prompt": prompt,
+            }
         )
         return True
+
+    def _auto_tasks_running(self) -> int:
+        """How many automatic agents are up on this device right now — the number
+        the cap is compared against (:func:`autofix.running_auto_tasks`).
+
+        The tracked rows say WHO started each agent, the ``ps`` scan says which are
+        really alive; neither alone is enough, so the pure helper combines them."""
+        self._prune_inflight()
+        auto_prs: set[int] = set()
+        manual_prs: set[int] = set()
+        for e in self._autofix_inflight:
+            bucket = manual_prs if e["source"] == autofix.SOURCE_PANEL else auto_prs
+            bucket.add(e["number"])
+        return autofix.running_auto_tasks(self._live_pr_agents(), auto_prs, manual_prs)
+
+    def _log_at_capacity(self) -> None:
+        """Note that automatic work is being held back — once per episode, not once
+        per PR per poll. Cleared the moment a dispatch finds room again, so the feed
+        gets one line when the device saturates and another when it drains."""
+        if self._capacity_logged:
+            return
+        self._capacity_logged = True
+        limit = self.auto_task_limit
+        activity.log(
+            "auto", "at-capacity",
+            f"Deferring auto work — this machine already runs its cap of "
+            f"{limit} automatic {'task' if limit == 1 else 'tasks'}",
+        )
+        self.refresh_activity()
 
     def _prune_inflight(self) -> None:
         now = time.time()

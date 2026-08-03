@@ -190,6 +190,15 @@ class Simulator:
             f"--runs {self.runs_file} --hold-dir {self.hold_dir} {{prompt_file}}"
         )
         env["HOME"] = str(d)  # keep the shared activity feed off the real ~/.diplomat
+        # Pin the host's automatic-task cap out of the way. It is answered from a
+        # real `ps` scan of THIS machine, so left at its default an operator with
+        # two of their own Diplomat agents running would make every simulated node
+        # decline every dispatch — the simulation would report on the desktop it
+        # happens to run on. Out of range on purpose: the gate clamps it to the
+        # maximum the UI offers.
+        cfg = d / "diplomat-config.json"
+        cfg.write_text(json.dumps({"autoTaskLimit": 999}))
+        env["DIPLOMAT_CONFIG"] = str(cfg)
         self.procs[spec.node_id] = subprocess.Popen(
             [sys.executable, "-m", "szpontnet"],
             cwd=SZPONTNET_DIR, env=env,

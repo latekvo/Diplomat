@@ -175,9 +175,21 @@ status) rather than running when any of:
 - the node is **out of tokens** (this is Bob refusing the job Alice sent anyway,
   which the protocol expressly allows).
 
-The dispatcher needs **no new logic** for this: its failover treats `declined`
-exactly like `failed` - any non-`spawned` outcome fails the slot over (or, for an
-[explicit target](#explicit-target), is reported as-is). See
+A node MAY also decline because it is **at its own concurrency ceiling** - already
+running as many jobs at once as its operator will allow. Routing ranks candidates
+on *quota* surplus, which says nothing about how many processes a box already has
+up, so without such a ceiling the machine with the fattest quota is exactly the one
+every dispatch in a burst lands on. This one is deliberately asked **last**, after
+the [executor's dedup](12-work-claims.md#integration-with-dispatch): a node that
+already holds the key, or that can otherwise see the work running here, means "we
+are already doing this exact work", and answering that with a decline is worse than
+useless - the dispatcher reads a decline as "this node
+can't", fails the slot over, and lands a *second* agent on the work elsewhere. Only
+genuinely new work is subject to the ceiling.
+
+The dispatcher needs **no new logic** for any of this: its failover treats
+`declined` exactly like `failed` - any non-`spawned` outcome fails the slot over
+(or, for an [explicit target](#explicit-target), is reported as-is). See
 [11 - Trust & balancing](11-trust-and-balancing.md) for the trust model behind the
 foreign check.
 

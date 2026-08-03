@@ -21,13 +21,24 @@ enum AuditLog {
     /// Redirect for the headless render modes, which seed a synthetic telemetry
     /// ledger through the real recorder: without it a snapshot would append a
     /// fortnight of invented events to the operator's own files and fold their real
-    /// ones into a PNG. Set only by `Render`; nil in normal use.
+    /// ones into a PNG. Set only by `Render`; nil in normal use, and it wins over
+    /// the environment because the render modes set it after the process has read
+    /// its environment.
     static var dirOverride: URL?
 
     /// Where everything the monitors write lives — the activity feed, the telemetry
-    /// ledger, the transcript-scan cursor.
+    /// ledger, the transcript-scan cursor. `DIPLOMAT_AUDIT_DIR` relocates the lot,
+    /// the way `DIPLOMAT_CONFIG` relocates the shared config and `SZPONTNET_DIR` the
+    /// mesh state. A self-test that reaches a logging path would otherwise append to
+    /// the operator's own activity feed — this file is the one piece of shared state
+    /// `Headless.active` does not cover, because the daemon appends here too and the
+    /// guard belongs to UserDefaults.
     static var dir: URL {
         if let dirOverride { return dirOverride }
+        if let override = ProcessInfo.processInfo.environment["DIPLOMAT_AUDIT_DIR"],
+           !override.isEmpty {
+            return URL(fileURLWithPath: override)
+        }
         return FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".diplomat/pr-monitor")
     }

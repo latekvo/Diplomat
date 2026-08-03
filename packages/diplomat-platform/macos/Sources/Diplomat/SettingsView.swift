@@ -177,6 +177,39 @@ struct SettingsView: View {
             if store.reviewRequestsEnabled { unaddressedReviewsRow }
 
             if store.reviewRequestsEnabled { autoApproveBlock }
+
+            autoTaskLimitRow
+        }
+    }
+
+    /// The device-wide ceiling on concurrent automatic agents. Sits at the foot of the
+    /// section because it governs BOTH monitors above it — a poll of either one can
+    /// find any number of pending units at once, and this is what keeps them from all
+    /// opening at the same moment.
+    /// Both strings are resolved before the ViewBuilder sees them. A concatenation or
+    /// a ternary inside a `Text(...)` in a builder is what tips this file over the
+    /// type-checker's time limit on a CI runner, while still compiling here.
+    private static let autoTaskLimitBlurb = """
+        A hard cap for this machine, across both monitors above and any work a mesh \
+        peer routes here. Agents you spawn yourself from the panel don't count \
+        against it. Work over the cap isn't dropped — it waits in the Agent-tasks \
+        list, in the order you put it, and starts as soon as a running agent \
+        finishes. The panel draws whatever is left of the cap as empty slots.
+        """
+
+    private var autoTaskLimitRow: some View {
+        let n = store.autoTaskLimit
+        let label: String = "Run at most \(n) automatic task\(n == 1 ? "" : "s") at a time"
+        return VStack(alignment: .leading, spacing: 2) {
+            Stepper(value: $store.autoTaskLimit,
+                    in: AgentDispatchGate.minAutoTaskLimit...AgentDispatchGate.maxAutoTaskLimit) {
+                Text(label).font(.caption)
+            }
+            .controlSize(.small)
+            .padding(.top, 2)
+            Text(SettingsView.autoTaskLimitBlurb)
+                .font(.caption2).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -217,13 +250,17 @@ struct SettingsView: View {
         }
     }
 
+    private static let reviewRequestsBase = """
+        When someone requests my review on a PR, spawns the most thorough review \
+        (Full E2E ×2, leaving inline comments) — read-only, never touches their \
+        branch. A review left unaddressed (agent died, lost connection, window \
+        closed) is retried automatically until it lands. Off, the requests still \
+        list under Agent tasks, queued for you to start by hand.
+        """
+
     private var reviewRequestsBlurb: String {
-        let base = "When someone requests my review on a PR, spawns the most thorough review "
-            + "(Full E2E ×2, leaving inline comments) — read-only, never touches their branch. "
-            + "A review left unaddressed (agent died, lost connection, window closed) is retried "
-            + "automatically until it lands."
         let handled = store.reviewRequestsHandled > 0 ? "  Reviewed \(store.reviewRequestsHandled) so far." : ""
-        return base + handled
+        return SettingsView.reviewRequestsBase + handled
     }
 
     /// Shown while the monitor's polls are failing (gh auth expired, network, GraphQL
@@ -294,7 +331,7 @@ struct SettingsView: View {
                     .font(.caption2).foregroundStyle(live ? Color.green : Color.orange)
             }
         }
-        Text("When on, an agent watches your open PRs and automatically resolves merge conflicts and addresses new review threads. Turning it off pauses agent dispatch.")
+        Text("When on, an agent watches your open PRs and automatically resolves merge conflicts and addresses new review threads. Off, the monitor keeps looking and lists what it finds under Agent tasks — as queued work only you can start, with \u{201C}execute now\u{201D}.")
             .font(.caption2).foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
     }

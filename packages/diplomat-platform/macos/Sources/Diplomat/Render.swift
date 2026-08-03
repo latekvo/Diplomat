@@ -18,6 +18,10 @@ enum Render {
             runWindow(out: out, store: store)
             return false
         }
+        if what.lowercased() == "live" {
+            runLiveWindow(store: store)
+            return false
+        }
 
         let body = view(for: what, store: store)
         let content = body
@@ -80,6 +84,46 @@ enum Render {
                 print("RENDER ERROR: \(error)")
             }
             exit(0)
+        }
+    }
+
+    /// `DIPLOMAT_RENDER=live` — the same real popover as `popover`, but **on-screen
+    /// and left running**, so the two things a snapshot can never answer get driven
+    /// by an actual mouse: does the queue's drag grip reorder rows, and does
+    /// *execute now* fire. It prints the window's rect in screen (top-left) points,
+    /// which is what `cliclick` and `screencapture -R` take.
+    ///
+    /// Not a CI mode — it needs a window server and Accessibility permission for the
+    /// synthetic clicks, like `DIPLOMAT_SPAWN_FOCUS_TEST`. It is a `DIPLOMAT_RENDER`
+    /// mode so it inherits `Headless.active`: the live menu-bar app is left alone
+    /// (no singleton kill), nothing is persisted (a drag here cannot reorder the
+    /// operator's real queue), and no poll or watcher runs.
+    ///
+    /// Its queued rows sit on the PRs the fixture's live sessions are already on, so
+    /// every *execute now* here resolves `.inFlight`: the click can be driven for
+    /// real without any chance of opening a terminal.
+    private static func runLiveWindow(store: Store) {
+        let _ = seedProcessesIfNeeded("procs", store: store)
+        let _ = seedAutofix(store)
+        store.queuedTasks = [
+            queuedFixture(number: 337, kind: "review", auditAction: "review-req",
+                          label: "Review-req · #337 (@octocat)", counter: .reviewRequests),
+            queuedFixture(number: 462, kind: "conflicts", auditAction: "conflicts",
+                          label: "Resolve · #462", counter: .conflicts, attemptNumber: 2),
+        ]
+        let hosting = NSHostingController(rootView: PopoverRoot().environmentObject(store))
+        let window = NSWindow(contentViewController: hosting)
+        window.title = "Diplomat (live UI test)"
+        window.setFrameOrigin(NSPoint(x: 200, y: 200))
+        window.orderFrontRegardless()
+        NSApp.activate(ignoringOtherApps: true)
+        // Report where it landed once AppKit has sized it to the content, in the
+        // top-left-origin points the automation tools use.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            let f = window.frame
+            let screenHeight = NSScreen.main?.frame.height ?? f.maxY
+            print("live window at x=\(Int(f.minX)) y=\(Int(screenHeight - f.maxY)) "
+                  + "w=\(Int(f.width)) h=\(Int(f.height))")
         }
     }
 
@@ -219,7 +263,7 @@ enum Render {
             let _ = seedProcessesIfNeeded(s, store: store)
             ContentView()
         default: // "panel" — the whole content view; "panel-procs" seeds the
-                 // ongoing-sessions list (persist is suppressed in headless modes).
+                 // Agent-tasks list (persist is suppressed in headless modes).
             let _ = seedProcessesIfNeeded(what, store: store)
             let _ = seedAutofix(store)
             ContentView().frame(height: 580)
@@ -375,11 +419,24 @@ enum Render {
         return true
     }
 
-    /// For `DIPLOMAT_RENDER=panel-procs`, inject a couple of fake tracked
-    /// sessions so the ongoing-sessions list can be eyeballed. No-op otherwise.
+    /// For a render mode carrying `-procs`, inject fake tracked sessions and queued
+    /// tasks so the whole Agent-tasks list can be eyeballed: every session status,
+    /// the sort that puts finished work on top and the queue at the bottom, and the
+    /// queued rows' drag grip and "execute now". No-op otherwise.
+    ///
+    /// The sessions are panel spawns (the fixture default), which spend none of the
+    /// automatic budget — so the device also draws its full cap of empty slots, and
+    /// one snapshot carries every row type the list has.
     @MainActor
     private static func seedProcessesIfNeeded(_ what: String, store: Store) -> Bool {
         guard what.lowercased().contains("proc") else { return false }
+        // Pinned, because a queued row says whether its monitor is switched off and a
+        // headless Store still READS the real defaults — unpinned, this snapshot would
+        // differ per machine. One monitor on and one off is also the pair of states a
+        // queued row has: held for a free slot, and held until you click.
+        store.prAutofixEnabled = true
+        store.reviewRequestsEnabled = false
+        // Deliberately not in status order — the list's own sort is what's on trial.
         store.processes = [
             TrackedProcess(kind: "review", label: "Review · #337 · Deep", terminal: "iterm",
                            windowID: "1", sessionID: "a", tty: "/dev/ttys991", donePath: "",
@@ -397,7 +454,30 @@ enum Render {
                            prURL: "https://github.com/software-mansion/argent/pull/312",
                            createdAt: Date(), done: true, merged: true),
         ]
+        store.queuedTasks = [
+            queuedFixture(number: 512, kind: "review", auditAction: "review-req",
+                          label: "Review-req · #512 (@octocat) −verdict (auto-approvals off)",
+                          counter: .reviewRequests),
+            queuedFixture(number: 508, kind: "conflicts", auditAction: "conflicts",
+                          label: "Resolve · #508", counter: .conflicts, attemptNumber: 2),
+        ]
         return true
+    }
+
+    /// One queued-task fixture. The prompt is empty on purpose: a render never
+    /// dispatches, and an assembled prompt here would only be a second, drifting copy
+    /// of the golden ones.
+    @MainActor
+    private static func queuedFixture(number: Int, kind: String, auditAction: String,
+                                      label: String, counter: Store.AutoCounter,
+                                      attemptNumber: Int = 1) -> Store.QueuedAgentTask {
+        let url = "https://github.com/software-mansion/argent/pull/\(number)"
+        return Store.QueuedAgentTask(
+            id: AgentTaskQueue.key(auditAction: auditAction, prNumber: number),
+            job: Store.AgentJob(kind: kind, auditAction: auditAction, label: label,
+                                prompt: "", prURL: url, prNumber: number,
+                                authorLogin: nil, duty: kind, workKey: "", counter: counter),
+            attemptNumber: attemptNumber)
     }
 
     /// Seed two approved PRs (one conflicting) + select the My-Approved tool so the

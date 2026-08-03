@@ -3,7 +3,7 @@
 SzpontNet routes work between machines. It has no opinion about *what* the work
 is, how a machine actually runs it, or where a node's events should be recorded —
 and it must not, or it stops being a library and becomes half of one application.
-So the five questions it cannot answer alone are asked of a **host**:
+So the six questions it cannot answer alone are asked of a **host**:
 
 * :meth:`Host.model` — the network model this deployment runs (its duty catalog,
   any retuned protocol constant). Merged over ``netmodel.json``, the canonical v1
@@ -21,10 +21,15 @@ So the five questions it cannot answer alone are asked of a **host**:
 * :meth:`Host.work_already_running` — whether the work behind a key is already
   under way on this machine by some means the mesh never saw. Only the
   application knows how to look.
+* :meth:`Host.at_job_capacity` — whether this machine is already running as much
+  work as it is willing to run at once. How many concurrent jobs a machine can
+  stand is a deployment's policy, and the processes that make them up are the
+  application's to count.
 
 Every one has a working default, so the package imports and a node runs with no
 host at all — it just advertises the v1 duties, discards its log, declines work
-it has no runner for, and dedups solely against its own book.
+it has no runner for, dedups solely against its own book, and accepts work
+without limit.
 
 Two ways to register:
 
@@ -98,6 +103,31 @@ class Host:
         from inside the protocol: the mesh sees claims, not processes. Default
         ``False`` — no host, no second opinion, so the claim book decides alone.
         Answer conservatively: a false ``True`` silently drops work.
+        """
+        return False
+
+    def at_job_capacity(self, running_keys: list[str]) -> bool:
+        """Whether this machine is already running as many jobs at once as it is
+        willing to, so a further dispatch should be declined and failed over to
+        another node rather than started here.
+
+        Asked immediately before every personal spawn. A ceiling on concurrent
+        work is a deployment's policy — how heavy one job is, how much of the
+        machine the operator is willing to give it — and the *processes* that make
+        it up belong to the application too, so neither half is the library's to
+        decide.
+
+        ``running_keys`` is the work keys of the jobs THIS NODE currently has live.
+        They are passed in rather than left for the host to discover because a job
+        started a moment ago may not be visible to the host's own accounting yet (a
+        spawned process takes a beat to appear in a process listing), and a burst of
+        dispatches — the very thing a cap exists for — is exactly when that gap is
+        wide. A host that only needs a number can take ``len(running_keys)``; one
+        that also counts work started outside the mesh uses them to avoid counting
+        the same job twice. Jobs dispatched without a work key are absent from it.
+
+        Default ``False`` — no host, no policy, so the node accepts what it is sent
+        exactly as it did before there was a seam to ask.
         """
         return False
 
@@ -176,6 +206,19 @@ def work_already_running(work_key: str) -> bool:
     """
     try:
         return bool(host().work_already_running(work_key))
+    except Exception:  # noqa: BLE001 - a broken host must not cost us the job
+        return False
+
+
+def at_job_capacity(running_keys: list[str]) -> bool:
+    """Ask the current host whether this machine has room for another job.
+
+    Fails **open** (``False``, i.e. there is room) if the host raises, for the same
+    reason as :func:`work_already_running`: a cap whose accounting broke must not
+    turn into a node that refuses everything forever.
+    """
+    try:
+        return bool(host().at_job_capacity(running_keys))
     except Exception:  # noqa: BLE001 - a broken host must not cost us the job
         return False
 

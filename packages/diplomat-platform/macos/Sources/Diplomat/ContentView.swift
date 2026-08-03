@@ -309,8 +309,10 @@ struct ContentView: View {
     }
     /// Which action wizard (if any) replaces the tool lists in the results pane.
     @State private var activeAction: ActionPanel?
-    /// Whether the prompt-injection ban list (above the sessions) is expanded.
+    /// Whether the prompt-injection ban list (above the agent tasks) is expanded.
     @State private var bannedExpanded = true
+    /// Whether the agent-tasks list (sessions + the queue) is expanded.
+    @State private var tasksExpanded = true
     /// Whether the activity/audit log is expanded.
     @State private var auditExpanded = true
     /// Activity categories the user has toggled OFF via the filter chips. Empty ⇒ show
@@ -349,6 +351,10 @@ struct ContentView: View {
         .padding(10)
         .background(cmdFCatcher)
         .animation(.easeInOut(duration: 0.18), value: store.processes)
+        .animation(.easeInOut(duration: 0.18), value: store.queuedTasks)
+        // An agent starting or finishing takes a slot's row with it; without this the
+        // bays pop in and out while the rows around them animate.
+        .animation(.easeInOut(duration: 0.18), value: store.freeAutoSlots)
         .onChange(of: store.bannedAuthors) { bans in
             // The pending "Unban @X?" confirmation must not outlive the ban itself
             // (un-banned elsewhere / list rewritten) — a stale login would open the
@@ -574,38 +580,103 @@ struct ContentView: View {
         }
     }
 
-    // MARK: ongoing agent sessions
+    // MARK: agent tasks — spawned sessions, the queue, and the cap's free slots
 
-    private var processList: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 5) {
-                Image(systemName: "antenna.radiowaves.left.and.right")
-                    .font(.system(size: 9)).foregroundStyle(.secondary)
-                Text("Agent sessions").font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(.secondary)
-                Text("\(store.processes.count)")
-                    .font(.system(size: 10).monospacedDigit()).foregroundStyle(.secondary)
-                Spacer()
+    /// One row of the Agent-tasks list. What this machine is doing, what it is about
+    /// to do, and how much room it has left are one question, so they are one list:
+    /// the agent sessions it has spawned, the automatic work it is holding, and a row
+    /// per empty slot of its cap.
+    private enum AgentTaskItem: Identifiable {
+        case session(TrackedProcess)
+        case queued(Store.QueuedAgentTask)
+        /// An empty slot of the device's cap. Carries its position only, which is all
+        /// that distinguishes one from another.
+        case freeSlot(Int)
+
+        /// Namespaced, because a session's UUID, a queue key and a slot index are
+        /// three alphabets sharing one `ForEach`.
+        var id: String {
+            switch self {
+            case .session(let p): return "s-\(p.id.uuidString)"
+            case .queued(let q):  return "q-\(q.id)"
+            case .freeSlot(let i): return "free-\(i)"
             }
-            ForEach(store.processes) { proc in
-                ProcessRow(
-                    proc: proc,
-                    tint: processTint(proc),
-                    onTap: { activate(proc) },
-                    onRemove: { store.removeProcess(proc.id) }
-                )
+        }
+
+        var status: AgentTaskStatus {
+            switch self {
+            case .session(let p):
+                return AgentTaskStatus.ofSession(merged: p.merged, done: p.done,
+                                                 awaitingInput: p.awaitingInput)
+            case .queued:   return .queued
+            case .freeSlot: return .free
+            }
+        }
+    }
+
+    /// The list in reading order: finished at the top, then the sessions that want a
+    /// human, then the ones that don't, then this device's empty slots, then what
+    /// hasn't started (`AgentTaskStatus`).
+    ///
+    /// Ties keep the order they came in — sessions oldest-first, the queue in its
+    /// execution order — which matters most for the queue, whose whole point is that
+    /// its order is the operator's. `sorted(by:)` makes no stability promise, so the
+    /// position is the tiebreak rather than an assumption about the sort.
+    private var agentTaskItems: [AgentTaskItem] {
+        let items = store.processes.map(AgentTaskItem.session)
+            + store.queuedTasks.map(AgentTaskItem.queued)
+            + (0..<store.freeAutoSlots).map(AgentTaskItem.freeSlot)
+        return items.enumerated()
+            .sorted { ($0.element.status, $0.offset) < ($1.element.status, $1.offset) }
+            .map(\.element)
+    }
+
+    /// Always rendered, empty or not: a machine with nothing running is still a
+    /// machine with free slots, and this list is where the panel says how many. An
+    /// idle device is a section of empty bays, not an absent section.
+    private var agentTaskList: some View {
+        let items = agentTaskItems
+        let queued = store.queuedTasks.count
+        let free = store.freeAutoSlots
+        // Built outside the ViewBuilder: a builder call is where the type-checker is
+        // slowest, and CI's runner is slower than this machine.
+        let parts = [queued > 0 ? "\(queued) queued" : nil, free > 0 ? "\(free) free" : nil]
+        let caption = parts.compactMap { $0 }.joined(separator: " · ")
+        return VStack(alignment: .leading, spacing: 4) {
+            // The count is the tasks; empty slots are not among them (a device with
+            // nothing to do reads "0", not "2").
+            SectionHeader(title: "AGENT TASKS",
+                          count: store.processes.count + queued, expanded: $tasksExpanded,
+                          icon: "antenna.radiowaves.left.and.right",
+                          caption: caption.isEmpty ? nil : caption)
+            if tasksExpanded {
+                ForEach(items) { item in
+                    switch item {
+                    case .session(let proc):
+                        ProcessRow(
+                            proc: proc,
+                            tint: agentTaskTint(proc.kind),
+                            onTap: { activate(proc) },
+                            onRemove: { store.removeProcess(proc.id) }
+                        )
+                    case .queued(let task):
+                        QueuedTaskRow(
+                            task: task,
+                            tint: agentTaskTint(task.job.kind),
+                            paused: store.isPaused(task.job.counter),
+                            onRun: { Task { await store.executeQueuedTask(task.id) } },
+                            onDropped: { store.moveQueuedTask($0, onto: task.id) }
+                        )
+                    case .freeSlot:
+                        FreeSlotRow()
+                    }
+                }
             }
         }
         .cardChrome()
     }
 
-    private func processTint(_ proc: TrackedProcess) -> Color {
-        switch proc.kind {
-        case "conflicts": return .cyan
-        case "audit":     return .indigo
-        default:          return .pink
-        }
-    }
+    private func agentTaskTint(_ kind: String) -> Color { DiplomatUI.agentTaskTint(kind) }
 
     /// Click a tracked row: focus its window. If focus fails the window is gone and
     /// the session is dismissed by the store — nothing more to do here.
@@ -690,13 +761,13 @@ struct ContentView: View {
 
     // MARK: two columns — lists on the left, interactive controls on the right
 
-    /// Left column: the monitoring lists — status pill, ban list, agent sessions,
+    /// Left column: the monitoring lists — status pill, ban list, agent tasks,
     /// devices, activity log. (Results/lookup live in the right column.)
     private var leftColumn: some View {
         VStack(alignment: .leading, spacing: 8) {
             autofixBanner
             if !store.bannedAuthors.isEmpty { bannedList(store.bannedAuthors) }
-            if !store.processes.isEmpty { processList }
+            agentTaskList
             if let ds = store.deviceState, !ds.devices.isEmpty {
                 DevicesView(ds: ds, tracked: store.processes,
                             onKill: { key in Task { await store.killDevice(key) } })
@@ -851,7 +922,28 @@ struct ContentView: View {
     }
 }
 
-// MARK: - Ongoing agent-session row
+/// How an agent task's kind reads, wherever it is drawn. One mapping per axis, so a
+/// task does not change glyph or colour at the moment it stops being queued and
+/// starts being a session.
+private enum DiplomatUI {
+    static func agentTaskIcon(_ kind: String) -> String {
+        switch kind {
+        case "conflicts": return "arrow.triangle.merge"
+        case "audit":     return "ladybug.fill"
+        default:          return "checklist"
+        }
+    }
+
+    static func agentTaskTint(_ kind: String) -> Color {
+        switch kind {
+        case "conflicts": return .cyan
+        case "audit":     return .indigo
+        default:          return .pink
+        }
+    }
+}
+
+// MARK: - Agent-session row
 
 private struct ProcessRow: View {
     let proc: TrackedProcess
@@ -859,14 +951,7 @@ private struct ProcessRow: View {
     let onTap: () -> Void
     let onRemove: () -> Void
 
-    /// The leading glyph, matched to the action that spawned the session.
-    private var kindIcon: String {
-        switch proc.kind {
-        case "conflicts": return "arrow.triangle.merge"
-        case "audit":     return "ladybug.fill"
-        default:          return "checklist"
-        }
-    }
+    private var kindIcon: String { DiplomatUI.agentTaskIcon(proc.kind) }
 
     var body: some View {
         HStack(spacing: 6) {
@@ -896,29 +981,169 @@ private struct ProcessRow: View {
         .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.06)))
     }
 
-    @ViewBuilder
     private var statusLine: some View {
         // "merged" is the definitive outcome — it outranks "done" (the local claude
         // process merely exited; the PR may still be open). A live session that has
         // finished its turn and is idling at the prompt reads "awaiting input" (amber,
-        // it needs you) rather than "running".
-        if proc.merged {
-            label("merged", "arrow.triangle.merge", .purple)
-        } else if proc.done {
-            label("done", "checkmark.circle.fill", .green)
-        } else if proc.awaitingInput {
-            label("awaiting input", "ellipsis.circle.fill", .orange)
-        } else {
-            label("running", "circle.fill", .blue)
+        // it needs you) rather than "running". That precedence is also the list's sort
+        // order, so it is decided once, in the core.
+        AgentTaskStatusLabel(
+            status: AgentTaskStatus.ofSession(merged: proc.merged, done: proc.done,
+                                              awaitingInput: proc.awaitingInput))
+    }
+}
+
+/// The status line every Agent-tasks row wears: the word from `AgentTaskStatus` and
+/// the glyph/tint that reads it at a glance.
+private struct AgentTaskStatusLabel: View {
+    let status: AgentTaskStatus
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Image(systemName: symbol).font(.system(size: 8))
+            Text(status.title).font(.system(size: 9))
+        }
+        .foregroundStyle(tint)
+    }
+
+    private var symbol: String {
+        switch status {
+        case .merged:        return "arrow.triangle.merge"
+        case .done:          return "checkmark.circle.fill"
+        case .awaitingInput: return "ellipsis.circle.fill"
+        case .running:       return "circle.fill"
+        case .free:          return "circle.dashed"
+        case .queued:        return "clock.fill"
         }
     }
 
-    private func label(_ text: String, _ symbol: String, _ color: Color) -> some View {
-        HStack(spacing: 3) {
-            Image(systemName: symbol).font(.system(size: 8))
-            Text(text).font(.system(size: 9))
+    private var tint: Color {
+        switch status {
+        case .merged:        return .purple
+        case .done:          return .green
+        case .awaitingInput: return .orange
+        case .running:       return .blue
+        case .free:          return .secondary
+        case .queued:        return .secondary
         }
-        .foregroundStyle(color)
+    }
+}
+
+// MARK: - Queued agent-task row
+
+/// Automatic work nothing has started yet. It carries the two things a session row
+/// has no use for: a handle to start it now regardless of what is holding it, and a
+/// drag grip that sets the order the queue drains in.
+private struct QueuedTaskRow: View {
+    let task: Store.QueuedAgentTask
+    let tint: Color
+    /// Its monitor is switched off, so nothing will start this by itself. Worth
+    /// saying on the row: "queued" otherwise promises a start that is never coming.
+    let paused: Bool
+    let onRun: () -> Void
+    /// The queue key of the row dropped onto this one.
+    let onDropped: (String) -> Void
+
+    @State private var targeted = false
+
+    // Resolved out of the ViewBuilder's way: a ternary over concatenations inside a
+    // `Text(...)`/`.help(...)` is what tips a SwiftUI file over the type-checker's
+    // time limit on a CI runner while still compiling on a dev machine.
+    private static let pausedHelp = """
+        Start this agent now. Its monitor is switched off, so nothing else will — but \
+        once running it counts against the cap like any automatic agent.
+        """
+    private static let heldHelp = """
+        Start this agent now, without waiting for a free slot. It then counts against \
+        the cap like any automatic agent.
+        """
+    private var runHelp: String {
+        paused ? QueuedTaskRow.pausedHelp : QueuedTaskRow.heldHelp
+    }
+
+    private var kindIcon: String { DiplomatUI.agentTaskIcon(task.job.kind) }
+
+    /// The label it will run under, not the bare core: a queued task should read on
+    /// the panel exactly as its session will once it starts.
+    private var label: String {
+        AgentDispatchGate.label(source: .auto, core: task.job.label,
+                                attemptNumber: task.attemptNumber)
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "line.3.horizontal")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(.secondary)
+                .help("Drag to set the order the queue runs in.")
+            // Dimmed against a session's solid badge — nothing is running yet.
+            IconBadge(symbol: kindIcon, tint: tint.opacity(0.45))
+            VStack(alignment: .leading, spacing: 1) {
+                Text(label).font(.caption).lineLimit(1)
+                HStack(spacing: 3) {
+                    AgentTaskStatusLabel(status: .queued)
+                    if paused {
+                        Text("· monitor off").font(.system(size: 9))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            Spacer(minLength: 4)
+            Button(action: onRun) {
+                Text("execute now")
+                    .font(.system(size: 9, weight: .medium))
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .foregroundStyle(tint)
+                    .background(Capsule().fill(tint.opacity(0.16)))
+            }
+            .buttonStyle(.plain)
+            .help(runHelp)
+        }
+        .padding(6)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.06)))
+        .overlay(RoundedRectangle(cornerRadius: 6)
+            .stroke(targeted ? Color.accentColor : .clear, lineWidth: 1))
+        .contentShape(Rectangle())
+        .draggable(task.id)
+        .dropDestination(for: String.self) { keys, _ in
+            guard let dragged = keys.first else { return false }
+            onDropped(dragged)
+            return true
+        } isTargeted: { targeted = $0 }
+    }
+}
+
+// MARK: - Free-slot row
+
+/// One slot of this device's automatic-task cap with nothing running in it.
+///
+/// Drawn as an outline rather than left out, so the cap is something the panel
+/// shows rather than something the operator has to remember: an idle machine reads
+/// as two open bays waiting for work, and a full one has none.
+private struct FreeSlotRow: View {
+    private static let help = """
+        A free slot of this machine's automatic-task cap. The next poll starts queued \
+        work here, unless its monitor is switched off. The cap is in Settings.
+        """
+
+    var body: some View {
+        HStack(spacing: 8) {
+            // The hollow twin of a session's IconBadge, at the same size, so every
+            // row lines up down the left edge.
+            RoundedRectangle(cornerRadius: 5)
+                .strokeBorder(Color.secondary.opacity(0.5),
+                              style: StrokeStyle(lineWidth: 1, dash: [2, 2]))
+                .frame(width: 22, height: 22)
+            // The whole row is a status, so it wears the same status line as the rest
+            // of the list rather than a label of its own.
+            AgentTaskStatusLabel(status: .free)
+            Spacer(minLength: 4)
+        }
+        .padding(6)
+        .overlay(RoundedRectangle(cornerRadius: 6)
+            .strokeBorder(Color.secondary.opacity(0.35),
+                          style: StrokeStyle(lineWidth: 1, dash: [3, 3])))
+        .help(FreeSlotRow.help)
     }
 }
 
