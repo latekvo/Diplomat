@@ -239,7 +239,7 @@ nothing is changed. Two escalation toggles widen the blast radius:
 
 > Diplomat Mesh is the reference implementation of **SzpontNet**, a small leaderless
 > LAN protocol for self-discovery, resource advertisement, and work hand-off. The
-> full, independently-implementable specification (currently **v0.4.0**, wire `v: 1`)
+> full, independently-implementable specification (currently **v0.5.0**, wire `v: 1`)
 > is in [`szpontnet-spec/docs/`](packages/szpontnet-spec/docs/README.md), and
 > [`szpontnet-spec/conformance/`](packages/szpontnet-spec/conformance/README.md) is the black-box
 > conformance suite that makes "independently implementable" checkable: it launches
@@ -858,7 +858,7 @@ packages/
                                  integration ones (Tor transport, the startup lock, control-edit flush)
 
   szpontnet-spec/              ← the protocol, kept apart from any implementation of it
-    docs/                      ← the normative SzpontNet spec (15 chapters, v0.4.0, wire v: 1)
+    docs/                      ← the normative SzpontNet spec (15 chapters, v0.5.0, wire v: 1)
     conformance/               ← black-box conformance tester: runs a candidate node as an opaque
                                  subprocess, joins over real multicast + TCP, exits non-zero on any MUST failure
 
