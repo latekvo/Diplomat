@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from diplomat_app import autofix, review
+from diplomat_app import autofix, review, telemetry
 from diplomat_app.autofix import (
     PRFingerprint,
     PRSnapshot,
@@ -530,6 +530,13 @@ def _spawned(node="mac"):
     return [{"slot": "any", "node": "n", "nodeName": node, "status": "spawned", "reason": ""}]
 
 
+def _spawned_here():
+    """The placement the mesh made back onto the machine that asked — the executor
+    id in the result is the one ``_mesh_store``'s snapshot calls ourselves."""
+    return [{"slot": "any", "node": "me-node", "nodeName": "mac", "status": "spawned",
+             "reason": ""}]
+
+
 def _suppressed(node="softoobox"):
     return [{"slot": "claim", "node": "p", "nodeName": node, "status": "suppressed",
              "reason": f"work already claimed by {node}"}]
@@ -616,6 +623,105 @@ def test_panel_spawn_never_routes_to_the_mesh(store, monkeypatch):
     local = _spawn_recorder(monkeypatch)
     assert store._dispatch_conflict_fix(4, "https://github.com/o/r/pull/4", 1, "panel") is True
     assert len(local) == 1
+
+
+# MARK: - a mesh placement that lands back here is an agent on THIS machine
+
+
+def test_a_mesh_run_placed_here_spends_a_slot(store, monkeypatch):
+    """The mesh's best node can be the machine that asked, and that run is on this
+    device's cap like any other — the applet only ever put the terminal on someone
+    else's screen, not the load.
+
+    Left unbooked, each dispatch of a poll measured the same idle machine: the cap
+    compared 0 against 2 every time and held nothing back at all."""
+    _mesh_store(monkeypatch, store, dispatch=_spawned_here())
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    local = _spawn_recorder(monkeypatch)
+    store.auto_task_limit = 1
+
+    assert store.dispatch_agent(_job(number=1, mesh=True), autofix.SOURCE_AUTO) == "spawned"
+    assert local == []                       # the node opened it, not us
+    assert store.auto_tasks_shown == 1 and store.free_auto_slots == 0
+    assert (
+        store.dispatch_agent(_job(number=2, mesh=True), autofix.SOURCE_AUTO)
+        == autofix.VERDICT_AT_CAPACITY
+    )
+
+
+def test_a_mesh_run_placed_on_a_peer_leaves_the_slot_free(store, monkeypatch):
+    """The other half of the same rule: a peer's machine runs it, so a slot HERE is
+    still free. Counting every mesh placement would idle a device for work it isn't
+    doing — which is the whole point of routing it away."""
+    _mesh_store(monkeypatch, store, dispatch=_spawned())  # executor id ≠ ours
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    store.auto_task_limit = 1
+
+    assert store.dispatch_agent(_job(number=1, mesh=True), autofix.SOURCE_AUTO) == "spawned"
+    assert store.auto_tasks_shown == 0 and store.free_auto_slots == 1
+    assert store.dispatch_agent(_job(number=2, mesh=True), autofix.SOURCE_AUTO) == "spawned"
+
+
+def test_a_burst_of_owed_reviews_stops_at_the_cap_on_the_mesh(store, monkeypatch):
+    """The failure as it was seen: six owed reviews in one poll, the mesh placing
+    every one of them back on this machine, five terminals opening behind a cap of
+    two. The cap is measured before the mesh is consulted, so the work that has no
+    slot never even takes a claim — it waits in the panel's queue."""
+    calls = _mesh_store(monkeypatch, store, dispatch=_spawned_here())
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    _spawn_recorder(monkeypatch)
+    monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_snapshots", lambda *a, **k: [])
+    monkeypatch.setattr(
+        "diplomat_app.autofixmonitor.fetch_review_requests",
+        lambda *a, **k: [_mesh_req(number=n, sha=f"s{n}") for n in range(1, 7)],
+    )
+
+    store._autofix_poll_once()
+
+    assert len(calls) == store.auto_task_limit == 2   # two placed, four never offered
+    assert len(store.queued_tasks) == 4
+    assert store.free_auto_slots == 0
+
+
+def test_a_mesh_agent_is_counted_until_ps_says_it_is_gone(store, monkeypatch):
+    """A mesh-placed agent has no completion sentinel of ours, so ``ps`` is what
+    retires it — and ``ps`` cannot see an agent whose terminal is still starting.
+    Until it is old enough for that to be a real answer, its own dispatch is the
+    evidence; after that, absence means it exited and the slot comes back."""
+    _mesh_store(monkeypatch, store, dispatch=_spawned_here())
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    _spawn_recorder(monkeypatch)
+
+    assert store.dispatch_agent(_job(number=1, mesh=True), autofix.SOURCE_AUTO) == "spawned"
+    # `ps` is blind here (the store fixture's default) — too young to be judged by it.
+    assert store._auto_tasks_running() == 1
+
+    store._autofix_inflight[0]["at"] -= store._MESH_AGENT_GRACE + 1
+    monkeypatch.setattr(type(store), "_live_pr_agents", lambda self: {1})
+    assert store._auto_tasks_running() == 1           # old enough, and still up
+
+    monkeypatch.setattr(type(store), "_live_pr_agents", lambda self: set())
+    assert store._auto_tasks_running() == 0           # gone from ps → gone
+    assert store._autofix_inflight == []
+    # ...and what it cost is booked, like any other agent that ran on this machine.
+    assert telemetry.load().tasks[0].done_at is not None
+
+
+def test_where_the_mesh_placed_a_run_is_what_prices_it(store, monkeypatch):
+    """The ledger keeps mesh work out of this machine's cost figures because a peer's
+    quota paid for it. That reasoning is about WHERE it ran, not about the mesh: a
+    placement that came back here spent ours."""
+    _mesh_store(monkeypatch, store, dispatch=_spawned_here())
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    _spawn_recorder(monkeypatch)
+    assert store.dispatch_agent(_job(number=1, mesh=True), autofix.SOURCE_AUTO) == "spawned"
+
+    _mesh_store(monkeypatch, store, dispatch=_spawned())  # this one lands on a peer
+    assert store.dispatch_agent(_job(number=2, mesh=True), autofix.SOURCE_AUTO) == "spawned"
+
+    priced = {t.key: t.remote for t in telemetry.load().tasks}
+    assert priced == {"review:github.com/o/r#1@sha": False,
+                      "review:github.com/o/r#2@sha": True}
 
 
 # MARK: - live-agent ps fallback (tracking-independent in-flight)
@@ -731,7 +837,9 @@ def test_dispatch_gate_matrix_parity():
     assert not autofix.dispatch_bumps_counter(autofix.SOURCE_PANEL, 1)
 
 
-def _job(number=9, author=None, counter=None, stamp=""):
+def _job(number=9, author=None, counter=None, stamp="", mesh=False):
+    """One dispatchable job. ``mesh`` gives it the work + ledger keys a job needs to
+    be routed through the mesh at all (both are minted from the PR's head sha)."""
     return autofix.AgentJob(
         kind="review",
         audit_action="review",
@@ -741,6 +849,8 @@ def _job(number=9, author=None, counter=None, stamp=""):
         pr_number=number,
         author_login=author,
         duty="review",
+        work_key=f"review:github.com/o/r#{number}@sha" if mesh else "",
+        ledger_key=f"review:github.com/o/r#{number}@sha" if mesh else "",
         counter=counter,
         attempt_stamp=stamp,
     )
@@ -973,13 +1083,15 @@ def test_capacity_refusal_never_consults_the_mesh(store, monkeypatch):
     monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
     routed: list = []
     monkeypatch.setattr(
-        store, "_route_via_mesh", lambda job: routed.append(job.work_key) or "spawned"
+        store, "_route_via_mesh",
+        lambda job: (routed.append(job.work_key) or "spawned", False),
     )
     store.auto_task_limit = 1
 
     assert store.dispatch_agent(_job(number=1), autofix.SOURCE_AUTO) == "spawned"
-    # The mesh took #1, so nothing is tracked locally — but the ps floor sees the
-    # agent the mesh placed on this very machine, and that is what fills the cap.
+    # A peer ran #1, so nothing is tracked here — but the ps floor sees an agent on
+    # this machine that nobody booked (one that outlived an applet restart, say),
+    # and that is what fills the cap.
     monkeypatch.setattr(type(store), "_live_pr_agents", lambda self: {1})
     assert (
         store.dispatch_agent(_job(number=2), autofix.SOURCE_AUTO)

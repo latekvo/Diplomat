@@ -463,7 +463,8 @@ enum Render {
                            windowID: "", sessionID: "", tty: "", donePath: "",
                            prURL: "https://github.com/software-mansion/argent/pull/489",
                            mesh: .init(node: "softoobox",
-                                       workKey: "conflicts:github.com/software-mansion/argent#489@ab12cd"),
+                                       workKey: "conflicts:github.com/software-mansion/argent#489@ab12cd",
+                                       onThisMachine: false),
                            source: AgentDispatchGate.Source.auto.rawValue,
                            createdAt: Date(), done: false),
         ]

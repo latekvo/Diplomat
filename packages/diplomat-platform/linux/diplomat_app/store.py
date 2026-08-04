@@ -147,6 +147,15 @@ class Store(QObject):
     # entry can't pin a PR as "in flight" forever.
     _AUTOFIX_INFLIGHT_TTL = 2 * 60 * 60
 
+    # How long a mesh-placed agent is counted on this machine's word alone. It has
+    # no sentinel here (the node owns that), so `ps` is what says it is still up —
+    # and `ps` cannot see it for the first moments of its life, while a terminal
+    # emulator, an interactive shell and `claude` itself start. Counting it anyway
+    # for that window is what stops one poll's burst of dispatches from measuring a
+    # free slot each time; the cost of erring long is a slot briefly held for an
+    # agent that died at once.
+    _MESH_AGENT_GRACE = 120
+
     def __init__(self) -> None:
         super().__init__()
         self.prs: list[OpenPR] = []
@@ -187,7 +196,7 @@ class Store(QObject):
         self.autofix_poll_error_at: float | None = None
         self.unaddressed_reviews = 0
         self._poll_error_this_cycle: str | None = None
-        # In-flight agents [{url, number, done, at, source}] — dedups against
+        # In-flight agents [{url, number, done, at, source, mesh}] — dedups against
         # spawning a second agent on a PR one is already working, and tells the
         # automatic-task cap which of them it is allowed to count. Registered and
         # pruned from several threads (see _prune_inflight), so it has a mutex of its
@@ -814,7 +823,7 @@ class Store(QObject):
 
     # MARK: monitor dispatch + tracking
 
-    def _route_via_mesh(self, job: "autofix.AgentJob") -> str | None:
+    def _route_via_mesh(self, job: "autofix.AgentJob") -> tuple[str | None, bool]:
         """Route an auto job through the mesh (szpontnet-spec/docs/12): claim-gated
         dispatch to the best-surplus node.
 
@@ -825,31 +834,42 @@ class Store(QObject):
         failover. No node stands down on a duty ASSIGNMENT anymore — that deferred
         to a node that might not be scanning at all, silently dropping the work.
 
-        Returns ``"spawned"`` (the mesh took it), ``VERDICT_STAND_DOWN`` (a peer's
-        agent already owns it), or ``None`` to fall through to a LOCAL spawn — the
-        fail-open path when the mesh is unavailable, so a wedged node never drops
-        the operator's work."""
+        Returns ``(verdict, ran_here)``. The verdict is ``"spawned"`` (the mesh took
+        it), ``VERDICT_STAND_DOWN`` (a peer's agent already owns it), or ``None`` to
+        fall through to a LOCAL spawn — the fail-open path when the mesh is
+        unavailable, so a wedged node never drops the operator's work.
+
+        ``ran_here`` says the placement landed on THIS machine — the best node the
+        mesh could find was the one that asked. Such a run is local in every way the
+        applet cares about (it burns this device's cap and this device's quota) and
+        differs from a local spawn only in who opened the terminal, so the caller
+        books it exactly like one. The node ids to compare are already in hand: the
+        dispatch result names its executor, and the snapshot names us."""
         if not self.mesh_enabled or not job.work_key:
-            return None
+            return None, False
 
         from szpontnet import ctl, statefile
 
         state = statefile.read_state()
         if not state or not statefile.node_running(state):
-            return None
+            return None, False
         try:
             results = ctl.dispatch(job.duty, job.prompt, work_key=job.work_key)
         except ctl.CtlError:
-            return None  # node unreachable → fail-open to a local tracked spawn
+            return None, False  # node unreachable → fail-open to a local tracked spawn
         if not results:
-            return None
+            return None, False
         statuses = [r.get("status") for r in results]
         if statuses and all(s == "suppressed" for s in statuses):
             self._log_mesh_suppressed(job.work_key, results)
-            return autofix.VERDICT_STAND_DOWN
+            return autofix.VERDICT_STAND_DOWN, False
         if all(s in ("spawned", "suppressed") for s in statuses):
-            return "spawned"  # ran on the mesh (the node logs where)
-        return None  # declined/failed on every slot → fall through to a local spawn
+            me = (state.get("self") or {}).get("id")
+            here = bool(me) and any(
+                r.get("status") == "spawned" and r.get("node") == me for r in results
+            )
+            return "spawned", here  # ran on the mesh (the node logs where)
+        return None, False  # declined/failed on every slot → fall through to a local spawn
 
     def _log_mesh_suppressed(self, work_key: str, results: list) -> None:
         """A peer's agent owns this work — note it once per key, not per poll."""
@@ -873,7 +893,7 @@ class Store(QObject):
 
         In-flight evidence is the tracked list OR a live ``claude`` visible in
         ``ps`` - the ground-truth floor that also catches agents whose local
-        bookkeeping was lost (applet restart) and mesh jobs that landed on this
+        bookkeeping was lost (applet restart) and peers' agents that landed on this
         very machine. ``_dispatching_prs`` is held for the whole call so an
         overlapping poll and a click can't race two spawns onto one PR.
 
@@ -882,6 +902,10 @@ class Store(QObject):
         its own monitor is switched off (:meth:`is_paused`); a panel click is
         subject to neither. Either refusal queues the job (:meth:`_stage_queued`),
         which is what the panel's Agent-tasks list shows as *queued*.
+
+        The cap counts an agent by where it RUNS, not by who dispatched it: work the
+        mesh places back on this machine is booked here (:meth:`_track_agent`) and
+        spends a slot, work it places on a peer spends that peer's.
 
         ``bypass_capacity`` is for the two callers that have already answered the
         capacity question themselves: the queue drain (which counted the free slot
@@ -947,11 +971,22 @@ class Store(QObject):
             # dedups via the executor's claim). A manual spawn — or a wedged/absent
             # mesh — runs and is tracked locally instead (fail-open). Both converge
             # on the shared audit/counter tail below.
-            routed = self._route_via_mesh(job) if source == autofix.SOURCE_AUTO else None
+            routed, ran_here = (
+                self._route_via_mesh(job) if source == autofix.SOURCE_AUTO
+                else (None, False)
+            )
             if routed == autofix.VERDICT_STAND_DOWN:
                 return routed  # a peer's agent owns it (logged once by the router)
             if routed == "spawned":
                 ok = True
+                if ran_here and job.pr_url is not None and job.pr_number is not None:
+                    # The mesh placed it back on this machine, so it is one of the
+                    # agents the cap counts — book it before the next job of this
+                    # poll asks how many are running. Left unbooked, every dispatch
+                    # of a burst measured the same empty machine and the cap held
+                    # back nothing at all.
+                    self._track_agent(job.pr_url, job.pr_number, source,
+                                      job.ledger_key, job.prompt, mesh=True)
             elif job.pr_url is not None and job.pr_number is not None:
                 ok = self._spawn_tracked(job.prompt, job.pr_url, job.pr_number,
                                          source, job.ledger_key)
@@ -972,11 +1007,14 @@ class Store(QObject):
             )
             # The telemetry ledger tracks the MONITORS, so only an auto dispatch is
             # recorded — a wizard click is the operator's own doing and has no queue
-            # instant to be late against. A mesh placement spends a PEER's quota, so
-            # it is flagged and kept out of the per-task cost figures.
+            # instant to be late against. A mesh placement on a PEER spends that
+            # peer's quota, so it is flagged and kept out of the per-task cost
+            # figures; one the mesh placed back here spent ours and is priced like
+            # any other agent that ran on this machine.
             if source == autofix.SOURCE_AUTO and job.ledger_key:
                 telemetry.record_started(job.ledger_key,
-                                         remote=routed == "spawned", attempt=attempt)
+                                         remote=routed == "spawned" and not ran_here,
+                                         attempt=attempt)
             # Retries are re-dispatches, not new work handled - count once, and
             # only for the monitor (a manual run is the user's own action).
             if autofix.dispatch_bumps_counter(source, attempt):
@@ -1100,19 +1138,30 @@ class Store(QObject):
             review.spawn(prompt, self.terminal, done_path=done_path)
         except review.SpawnError:
             return False
+        self._track_agent(url, number, source, ledger_key, prompt, done=done_path)
+        return True
+
+    def _track_agent(self, url: str, number: int, source: str, ledger_key: str,
+                     prompt: str, done: str | None = None, mesh: bool = False) -> None:
+        """Register one running agent as in-flight — the book behind both the
+        per-PR dedup and the automatic-task cap.
+
+        ``done`` is the completion sentinel for an agent this applet spawned, and is
+        absent for a ``mesh`` one: the node that placed it owns its sentinel, so what
+        says that agent is still up is ``ps`` (see :meth:`_prune_inflight`)."""
         with self._inflight_lock:
             self._autofix_inflight.append(
                 {
                     "url": url,
                     "number": number,
-                    "done": done_path,
+                    "done": done,
                     "at": time.time(),
                     "source": source,
                     "key": ledger_key,
                     "prompt": prompt,
+                    "mesh": mesh,
                 }
             )
-        return True
 
     def _auto_tasks_running(self) -> int:
         """How many automatic agents are up on this device right now — the number
@@ -1432,6 +1481,12 @@ class Store(QObject):
         self.queued_tasks = [by_id[k] for k in ordered]
         self.tasks_changed.emit()
 
+    def _mesh_agent_judgeable(self, entry: dict, now: float) -> bool:
+        """Is this a mesh-placed agent old enough for ``ps`` to be the honest answer
+        about whether it is still running? Before that, its own dispatch is the only
+        evidence there is — see :attr:`_MESH_AGENT_GRACE`."""
+        return bool(entry.get("mesh")) and now - entry.get("at", 0) > self._MESH_AGENT_GRACE
+
     def _prune_inflight(self) -> None:
         now = time.time()
         # Under the lock, because pruning REPLACES the list: three threads reach it
@@ -1445,9 +1500,22 @@ class Store(QObject):
         # the store anything can land back in here), and this mutex is meant to be
         # held for a list swap and nothing else.
         finished: list[tuple[dict, float]] = []
+        # A mesh-placed agent has no sentinel of ours to finish it, so `ps` does:
+        # once it is old enough to have appeared there, its absence means it exited.
+        # Scanned BEFORE the lock (it shells out, and this mutex is for a list swap)
+        # and only when such an entry is actually old enough to be judged, so the
+        # common case still costs nothing.
+        needs_scan = any(self._mesh_agent_judgeable(e, now) for e in self._autofix_inflight)
+        live_prs = self._live_pr_agents() if needs_scan else set()
         with self._inflight_lock:
             live: list[dict] = []
             for e in self._autofix_inflight:
+                if self._mesh_agent_judgeable(e, now) and e["number"] not in live_prs:
+                    # Finished at `now`, not at an exit we watched: the closest this
+                    # side can get is the scan that first missed it, which is one
+                    # `ps` cache away (5s) from the truth.
+                    finished.append((e, now))
+                    continue
                 done = e.get("done")
                 if bool(done) and os.path.exists(done):
                     # The sentinel's mtime is when `claude` actually exited; `now` is

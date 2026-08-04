@@ -35,6 +35,28 @@ struct TrackedProcess: Identifiable, Codable, Equatable {
         var node: String
         /// The origination lease this run holds while its agent lives.
         var workKey: String
+        /// Whether the mesh placed this run back on THIS machine — the best node it
+        /// could find was the one that asked. Such a run is a `claude` process here
+        /// like any other, so it spends this device's automatic-task budget; only the
+        /// terminal was opened by the node rather than by the applet.
+        var onThisMachine: Bool
+
+        init(node: String, workKey: String, onThisMachine: Bool) {
+            self.node = node
+            self.workKey = workKey
+            self.onThisMachine = onThisMachine
+        }
+
+        /// Tolerant decode, like the row that holds it: a run persisted before the
+        /// placement was recorded reads as a peer's. That is the reading which frees
+        /// a slot rather than holding one, and it self-corrects on the first sweep —
+        /// `ps` sees a local agent whoever started it.
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            node = try c.decode(String.self, forKey: .node)
+            workKey = try c.decode(String.self, forKey: .workKey)
+            onThisMachine = try c.decodeIfPresent(Bool.self, forKey: .onThisMachine) ?? false
+        }
     }
 
     let id: UUID
@@ -140,6 +162,12 @@ struct TrackedProcess: Identifiable, Codable, Equatable {
     /// This row stands for work running on a mesh node, not a session on this
     /// machine — so nothing local can be probed, focused or killed for it.
     var isMesh: Bool { mesh != nil }
+
+    /// Does this row's agent run on THIS machine? True for every session the applet
+    /// spawned, and for a mesh placement that landed back here; false only for a
+    /// peer's. What the automatic-task cap counts — the cap is about how much this
+    /// device runs at once, not about who dispatched it.
+    var runsHere: Bool { mesh.map(\.onThisMachine) ?? true }
 
     /// The tty as `ps` reports it (no `/dev/` prefix), or "" when untracked.
     var shortTTY: String {

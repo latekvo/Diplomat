@@ -34,9 +34,10 @@ a cap of two reads `0`, `2 free`, over two empty bays; a saturated one reads `3`
   from the moment it starts; when the spawn answers, an agent that landed here is
   counted in the header's `N running`, and one the mesh placed on a peer shows in the
   activity feed — there being no session row on this front-end to draw either as.
-- **Free slots** are the rest of the cap. Each running automatic agent takes one;
-  agents you spawn yourself from the panel take none. Queued work starts here on the
-  next poll.
+- **Free slots** are the rest of the cap. Each running automatic agent takes one —
+  including a job the mesh placed back on this machine, which is a `claude` process
+  here whoever opened its terminal; agents you spawn yourself from the panel take
+  none. Queued work starts here on the next poll.
 - **Queued** rows are auto-fixes and auto-reviews nothing has started yet. Each
   carries **execute now** — start it immediately, past whatever is holding it — and a
   drag grip: drop a row on another to set the order the queue runs in. That order is

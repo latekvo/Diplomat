@@ -703,12 +703,14 @@ final class Store: ObservableObject {
     ///
     /// Not private: the queue self-test builds a row here rather than through a real
     /// dispatch, which would need a live mesh node and a peer willing to run it.
-    func trackMeshRun(_ job: AgentJob, node: String, attemptNumber: Int) {
+    func trackMeshRun(_ job: AgentJob, node: String, attemptNumber: Int,
+                      onThisMachine: Bool = false) {
         // The key IS the row's identity here, so a job without one has no row to be:
         // every keyless row would answer to every other's lease. (`routeViaMesh` only
         // dispatches keyed jobs, so nothing in the app arrives here without one.)
         guard !job.workKey.isEmpty else { return }
-        let run = TrackedProcess.MeshRun(node: node, workKey: job.workKey)
+        let run = TrackedProcess.MeshRun(node: node, workKey: job.workKey,
+                                         onThisMachine: onThisMachine)
         if let i = processes.firstIndex(where: { $0.mesh?.workKey == job.workKey }) {
             processes[i].mesh = run
             return
@@ -1138,15 +1140,17 @@ final class Store: ObservableObject {
     /// The tracked rows say WHO started each agent, the `ps` scan says which are
     /// really alive; neither alone is enough, so the pure helper combines them.
     ///
-    /// Mesh rows are not counted: this cap is how many agents THIS machine runs, and
-    /// their agent is a process on another one. (A mesh dispatch the placement landed
-    /// back here is still counted — by the `ps` scan, which sees it like any other
-    /// local agent.) Counting them would spend this device's budget on work it is not
-    /// doing, and every peer-routed job would shrink the panel by a free slot.
+    /// A row counts by where its agent RUNS (`runsHere`), not by who dispatched it. A
+    /// peer's is not counted: this cap is how many agents THIS machine runs, and
+    /// counting them would spend the device's budget on work it is not doing, shrinking
+    /// the panel by a free slot for every job routed away. A placement the mesh landed
+    /// back here IS counted, from the moment it is made — `ps` alone cannot do that job,
+    /// because it takes seconds to see a new agent and a poll dispatches its whole
+    /// backlog in one pass, which is exactly when a cap of two started six agents.
     @discardableResult
     private func autoTasksRunning() async -> Int {
         var autoPRs = Set<Int>(), manualPRs = Set<Int>()
-        for p in processes where !p.done && !p.isMesh {
+        for p in processes where !p.done && p.runsHere {
             guard let n = p.prNumber else { continue }
             if p.source == AgentDispatchGate.Source.panel.rawValue {
                 manualPRs.insert(n)
@@ -1201,7 +1205,7 @@ final class Store: ObservableObject {
     /// more than the cap allows.
     var freeAutoSlots: Int {
         let tracked = Set(processes.filter {
-            !$0.done && !$0.isMesh && $0.source != AgentDispatchGate.Source.panel.rawValue
+            !$0.done && $0.runsHere && $0.source != AgentDispatchGate.Source.panel.rawValue
         }.compactMap(\.prNumber)).count
         return AgentTaskQueue.freeSlots(
             limit: autoTaskLimit,
@@ -1493,7 +1497,13 @@ final class Store: ObservableObject {
     /// Where an auto job went. Both mesh outcomes name the node whose agent has the
     /// work (empty when the mesh answered without naming one) — the panel draws a row
     /// for it either way, so "some peer took it" can never look like "it vanished".
-    enum MeshRoute { case standDown(node: String), spawned(node: String), local }
+    ///
+    /// `onThisMachine` says the placement came back to us: the mesh's best node was
+    /// the one that asked, which makes the run local in everything but who opened its
+    /// terminal.
+    enum MeshRoute {
+        case standDown(node: String), spawned(node: String, onThisMachine: Bool), local
+    }
 
     /// Route an AUTO job through the mesh (szpontnet-spec/docs/12): claim-gated dispatch
     /// to the best-surplus node. Mirrors the Linux store's `_route_via_mesh`.
@@ -1526,7 +1536,17 @@ final class Store: ObservableObject {
             // Ran on the mesh (the node logs where). The name comes back with the
             // dispatch and nowhere else: the claim book identifies the owner by node
             // id, and a snapshot carrying it is seconds away at best.
-            return .spawned(node: executorName(results, status: "spawned"))
+            //
+            // The id beside that name is what says whether the executor is us. Both
+            // sides of the comparison are already in hand — the result names its
+            // executor, the snapshot names this node — so a placement that came home
+            // can be booked as the local agent it is.
+            let me = snap.selfNode?.id
+            let here = me != nil && results.contains {
+                ($0["status"] as? String) == "spawned" && ($0["node"] as? String) == me
+            }
+            return .spawned(node: executorName(results, status: "spawned"),
+                            onThisMachine: here)
         }
         return .local  // declined/failed on every slot → fall through to a local spawn
     }
@@ -1740,16 +1760,19 @@ final class Store: ObservableObject {
                 // agent, saying whose.
                 trackMeshRun(job, node: node, attemptNumber: attemptNumber)
                 return .standDown
-            case .spawned(let node):
+            case .spawned(let node, let onThisMachine):
                 AuditLog.log(source.rawValue, job.auditAction,
                              AgentDispatchGate.label(source: source, core: job.label,
                                                      attemptNumber: attemptNumber))
-                trackMeshRun(job, node: node, attemptNumber: attemptNumber)
+                trackMeshRun(job, node: node, attemptNumber: attemptNumber,
+                             onThisMachine: onThisMachine)
                 bumpAutoCounter(job, source: source, attemptNumber: attemptNumber)
-                // A mesh placement spends a PEER's quota and leaves no sentinel here,
-                // so it is flagged remote — counted as work started and taken off the
-                // backlog, kept out of the per-task cost and run-time figures.
-                recordTelemetryStart(job, source: source, remote: true,
+                // A mesh placement on a PEER spends that peer's quota and leaves no
+                // sentinel here, so it is flagged remote — counted as work started and
+                // taken off the backlog, kept out of the per-task cost and run-time
+                // figures. One the mesh placed back here spent ours, and is priced
+                // like any other agent that ran on this machine.
+                recordTelemetryStart(job, source: source, remote: !onThisMachine,
                                      attemptNumber: attemptNumber)
                 refreshAudit()
                 return .spawned(terminal: "mesh")

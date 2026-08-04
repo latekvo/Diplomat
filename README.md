@@ -556,7 +556,10 @@ sent, and the dispatcher fails the slot over to one with room. That claim is als
 what the machine that *originated* the work watches: it keeps a
 [mesh row](#agent-tasks) on its own Agent-tasks list for as long as the claim is
 held, so work handed to a peer reads as a task in flight rather than as a task
-that disappeared.
+that disappeared. The best node is sometimes the machine that asked - a placement
+that lands back home is an agent here like any other, so it takes one of this
+machine's slots from the moment it is placed and is priced against this machine's
+quota; only its terminal was opened by the node rather than by the applet.
 
 ### Auto-approvals (default OFF)
 

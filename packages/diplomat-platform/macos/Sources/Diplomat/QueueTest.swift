@@ -334,6 +334,20 @@ enum QueueTest {
         store.pinAutoTasksMeasured(0)
         check("a mesh row takes none of this device's slots", store.freeAutoSlots == 2)
 
+        // 10b. The other placement the mesh can make: back onto the machine that asked.
+        //    That agent is a `claude` process HERE, so it spends a slot from the moment
+        //    it is placed. Waiting for `ps` to notice is what let a poll dispatch its
+        //    whole backlog into one cap — every gate in the burst measured the same
+        //    machine, seconds before any of its new agents were visible.
+        store.processes = []
+        var homeJob = job(78)
+        homeJob.workKey = "review:github.com/software-mansion/argent#78@abc123"
+        store.trackMeshRun(homeJob, node: "softoobox", attemptNumber: 1, onThisMachine: true)
+        check("a mesh run placed back here spends one of this device's slots",
+              store.freeAutoSlots == 1)
+        check("…and is still a mesh row, held by its lease like any other",
+              store.processes.first?.isMesh == true)
+
         // One timeline, so each step measures from the sighting before it — the whole
         // rule is that the clock restarts every time the lease is seen, not that a row
         // expires at some age.
@@ -364,7 +378,8 @@ enum QueueTest {
                            terminal: "", windowID: "", sessionID: "", tty: "",
                            donePath: "",
                            prURL: "https://github.com/software-mansion/argent/pull/77",
-                           mesh: .init(node: "softoobox", workKey: meshKey),
+                           mesh: .init(node: "softoobox", workKey: meshKey,
+                                       onThisMachine: false),
                            source: AgentDispatchGate.Source.auto.rawValue,
                            createdAt: at(-7200), done: false),
         ]
@@ -393,7 +408,8 @@ enum QueueTest {
                                     terminal: "", windowID: "", sessionID: "", tty: "",
                                     donePath: "",
                                     prURL: "https://github.com/software-mansion/argent/pull/77",
-                                    mesh: .init(node: "softoobox", workKey: meshKey),
+                                    mesh: .init(node: "softoobox", workKey: meshKey,
+                                                onThisMachine: false),
                                     source: AgentDispatchGate.Source.auto.rawValue,
                                     createdAt: t0.addingTimeInterval(-600), done: false)
         // Every local probe says gone: no window in the enumeration, no session dump,
