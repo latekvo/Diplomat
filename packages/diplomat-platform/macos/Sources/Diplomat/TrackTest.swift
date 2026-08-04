@@ -164,11 +164,31 @@ enum TrackTest {
         print("live: \(liveSessions.count) claude session(s) — \(liveBusy) running, "
             + "\(liveSessions.count - liveBusy) awaiting input")
 
-        // 3. Persistence round-trip (the exact path Store uses for UserDefaults).
+        // 3. Persistence round-trip (the exact path Store uses for UserDefaults). Both
+        //    row families go through it: a mesh row that decoded without its node and
+        //    work key would come back as a local session with no window — which the
+        //    sweep dismisses on sight, losing a run that is still going on a peer.
         let sample = proc(wid: "9", at: old)
-        let roundTrip = (try? JSONEncoder().encode([sample]))
+        var meshSample = proc(wid: "", at: old)
+        meshSample.terminal = ""
+        meshSample.mesh = .init(node: "softoobox", workKey: "review:github.com/a/b#7@sha")
+        let roundTrip = (try? JSONEncoder().encode([sample, meshSample]))
             .flatMap { try? JSONDecoder().decode([TrackedProcess].self, from: $0) }
         check("persistence round-trip preserves the record", roundTrip?.first == sample)
+        check("…including which mesh node a row's agent is on",
+              roundTrip?.last == meshSample && roundTrip?.last?.mesh?.node == "softoobox")
+        // And a record written before mesh rows existed still decodes — the whole
+        // list decodes as one value, so a strict `mesh` key would drop every session
+        // the operator had open at the moment they upgraded.
+        let legacy = """
+        [{"id":"\(UUID().uuidString)","kind":"review","label":"x","terminal":"iterm",
+          "windowID":"9","sessionID":"","tty":"","donePath":"",
+          "createdAt":\(old.timeIntervalSinceReferenceDate)}]
+        """
+        let decodedLegacy = try? JSONDecoder().decode([TrackedProcess].self,
+                                                      from: Data(legacy.utf8))
+        check("a record from before mesh rows still decodes, as a local session",
+              decodedLegacy?.count == 1 && decodedLegacy?.first?.isMesh == false)
 
         // 4. Focus script embeds the captured ids (so it targets the right window).
         let fs = ProcessMonitor.focusScript(term: .iterm, windowID: "999", sessionID: "SID")

@@ -199,7 +199,110 @@ enum QueueTest {
         check("more agents up than the cap allows is zero slots, never negative",
               store.freeAutoSlots == 0)
 
-        // 10. The redirect above is the only thing between a run of this test and the
+        // 10. A task the mesh runs on a peer is still a task this panel shows. Before
+        //    the mesh row existed, "execute now" on peer-routed work took the queued
+        //    row away and put nothing in its place, which reads exactly like the click
+        //    dropping the task. The row it leaves instead lives on the executor's
+        //    lease: held while the remote agent runs, gone when it finishes.
+        store.processes = []
+        let meshKey = "review:github.com/software-mansion/argent#77@abc123"
+        var meshJob = job(77)
+        meshJob.workKey = meshKey
+        store.trackMeshRun(meshJob, node: "softoobox", attemptNumber: 1)
+        check("a job the mesh took becomes a row, not a gap",
+              store.processes.count == 1 && store.processes.first?.isMesh == true)
+        check("…that names the node it runs on",
+              store.processes.first?.mesh?.node == "softoobox")
+        check("…under the label it would have run under here",
+              store.processes.first?.label == "Auto · Review-req · #77")
+        // The same key offered twice is the same run: a stand-down re-offered before
+        // the in-flight check can see the row must not draw a second one.
+        store.trackMeshRun(meshJob, node: "softoobox", attemptNumber: 1)
+        check("one lease is one row, however often the mesh answers for it",
+              store.processes.count == 1)
+
+        // It runs elsewhere, so it spends none of THIS device's budget — a peer-routed
+        // job that closed a local bay would cap the machine on work it isn't doing.
+        store.autoTaskLimit = 2
+        store.pinAutoTasksMeasured(0)
+        check("a mesh row takes none of this device's slots", store.freeAutoSlots == 2)
+
+        // One timeline, so each step measures from the sighting before it — the whole
+        // rule is that the clock restarts every time the lease is seen, not that a row
+        // expires at some age.
+        let t0 = Date()
+        func at(_ secs: TimeInterval) -> Date { t0.addingTimeInterval(secs) }
+        // The lease is present ⇒ the agent is up, however long the row has been there.
+        // An hour-long review is the normal case, not a stuck row.
+        store.reconcileMeshRuns(claims: [meshKey: "n-soft-strong"], now: at(3600))
+        check("a claimed key keeps its row, however old", store.processes.count == 1)
+        // Absence inside the settle window is snapshot lag, not a finished run — and
+        // it is measured from that last sighting, not from the dispatch.
+        store.reconcileMeshRuns(claims: [:], now: at(3600 + MeshAgentRun.claimSettle - 1))
+        check("an unseen claim inside the settle window does not end the row",
+              store.processes.count == 1)
+        // Past it, the executor has released: the run is over and there is nothing
+        // left here to focus, read or retry — so the row goes, as a closed terminal's
+        // does. Left behind it would also hold the PR in-flight forever.
+        store.reconcileMeshRuns(claims: [:], now: at(3600 + MeshAgentRun.claimSettle + 1))
+        check("a released lease takes the row with it", store.processes.isEmpty)
+
+        // A row reloaded after a restart has no sighting behind it and an age that can
+        // be hours — and for the first seconds of a launch the node's snapshot has not
+        // been read yet, so the claim book looks empty whatever a peer is running. Its
+        // window has to start at the first pass, or every restored row is dropped on
+        // the first poll of every launch.
+        store.processes = [
+            TrackedProcess(kind: "review", label: "Auto · Review-req · #77",
+                           terminal: "", windowID: "", sessionID: "", tty: "",
+                           donePath: "",
+                           prURL: "https://github.com/software-mansion/argent/pull/77",
+                           mesh: .init(node: "softoobox", workKey: meshKey),
+                           source: AgentDispatchGate.Source.auto.rawValue,
+                           createdAt: at(-7200), done: false),
+        ]
+        store.reconcileMeshRuns(claims: [:], now: at(0))
+        check("a row reloaded hours after its dispatch survives the first pass",
+              store.processes.count == 1)
+        store.reconcileMeshRuns(claims: [meshKey: "n-soft-strong"], now: at(1))
+        store.reconcileMeshRuns(claims: [:], now: at(MeshAgentRun.claimSettle))
+        check("…and then lives on sightings like any other",
+              store.processes.count == 1)
+
+        // The list now has two liveness sources walking it, and each must leave the
+        // other's rows alone. A local session outlives the mesh reconciler…
+        let local = TrackedProcess(kind: "review", label: "Review · #5", terminal: "iterm",
+                                   windowID: "5", sessionID: "", tty: "", donePath: "",
+                                   prURL: "https://github.com/software-mansion/argent/pull/5",
+                                   createdAt: t0, done: false)
+        store.processes = [local]
+        store.reconcileMeshRuns(claims: [:], now: at(MeshAgentRun.claimSettle + 1))
+        check("a local session is not the mesh reconciler's to remove",
+              store.processes.count == 1)
+        // …and a mesh row outlives the window sweep, which would otherwise read its
+        // missing window, tty and sentinel — none of which a remote run has — as a
+        // session that ended.
+        let remote = TrackedProcess(kind: "review", label: "Auto · Review-req · #77",
+                                    terminal: "", windowID: "", sessionID: "", tty: "",
+                                    donePath: "",
+                                    prURL: "https://github.com/software-mansion/argent/pull/77",
+                                    mesh: .init(node: "softoobox", workKey: meshKey),
+                                    source: AgentDispatchGate.Source.auto.rawValue,
+                                    createdAt: t0.addingTimeInterval(-600), done: false)
+        // Every local probe says gone: no window in the enumeration, no session dump,
+        // no process on the tty. Asking at all is the bug — a machine whose whole
+        // Agent-tasks list is peer-routed work would drive an AppleScript window
+        // enumeration every poll to learn nothing — so the resolver counts its calls.
+        var asked = 0
+        let swept = ProcessMonitor.sweep([remote], now: at(0),
+                                         openWindows: { _ in asked += 1; return [] },
+                                         sessionTails: [:], ttyElapsed: [:])
+        check("a mesh row is not the window sweep's to remove",
+              swept.closedIDs.isEmpty && swept.refreshed.first?.done == false)
+        check("…and the sweep never asks a terminal about one", asked == 0)
+        store.processes = []
+
+        // 11. The redirect above is the only thing between a run of this test and the
         //    operator's real activity log, so prove it caught the writes.
         check("the at-capacity lines it provoked went to the scratch feed",
               FileManager.default.fileExists(

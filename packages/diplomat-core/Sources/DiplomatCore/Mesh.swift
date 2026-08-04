@@ -522,6 +522,13 @@ public struct MeshSnapshot: Decodable, Equatable {
     public let defaultTrust: String
     public let assignments: [String: MeshAssignment]
     public let overrides: MeshOverrides?
+    /// The origination leases this node currently observes: work key → the id of the
+    /// node whose agent owns it (szpontnet-spec/docs/12). Only OWNED keys appear —
+    /// an executor holds its key for the agent's lifetime, so a key's presence is
+    /// this machine's one view of work running elsewhere, and its disappearance is
+    /// the only completion signal a dispatcher ever gets. Read by the Agent-tasks
+    /// list to keep a mesh row alive exactly as long as the run behind it.
+    public let claims: [String: String]
     /// Peers mid-handshake right now — drives the "linking to N…" scanning banner.
     public let linking: Int
     /// True while EVERY beacon send fails: the node is undiscoverable (typically an
@@ -536,7 +543,7 @@ public struct MeshSnapshot: Decodable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case pid, tcpPort, selfNode = "self", peers, trusted, banned, defaultTrust,
-             assignments, overrides,
+             assignments, overrides, claims,
              linking, beaconBlocked, beaconBlockReason
     }
 
@@ -551,6 +558,7 @@ public struct MeshSnapshot: Decodable, Equatable {
         defaultTrust = (try? c.decode(String.self, forKey: .defaultTrust)) ?? "foreign"
         assignments = (try? c.decode([String: MeshAssignment].self, forKey: .assignments)) ?? [:]
         overrides = try? c.decode(MeshOverrides.self, forKey: .overrides)
+        claims = (try? c.decode([String: String].self, forKey: .claims)) ?? [:]
         linking = (try? c.decode(Int.self, forKey: .linking)) ?? 0
         beaconBlocked = (try? c.decode(Bool.self, forKey: .beaconBlocked)) ?? false
         beaconBlockReason = (try? c.decode(String.self, forKey: .beaconBlockReason)) ?? ""

@@ -13,17 +13,37 @@ import DiplomatCore
 
 // MARK: - Tracked process model
 
-/// One dispatched agent session shown in the applet's ongoing-processes list.
-/// Persisted in UserDefaults so the list survives an applet restart (the daemon
-/// is rebuilt/relaunched often) — the tty / window / sentinel references are all
-/// OS-level and outlive this process.
+/// One dispatched agent task shown in the applet's ongoing-processes list: a
+/// session this machine spawned, or — with `mesh` set — work it handed to a mesh
+/// node, which has no local session behind it at all.
+///
+/// Persisted in UserDefaults so the list survives an applet restart (the daemon is
+/// rebuilt/relaunched often); the references it survives on outlive this process
+/// either way — a session's tty / window / sentinel are OS-level, and a mesh run's
+/// lease is held by the peer executing it.
 struct TrackedProcess: Identifiable, Codable, Equatable {
+    /// Where a row's agent actually runs, when it is not a terminal on this machine.
+    ///
+    /// A mesh-routed job leaves no local handle behind — no window, no tty, no
+    /// sentinel — so a row for one carries the two things that DO identify it: the
+    /// node the mesh placed it on, and the work key whose lease says it is still
+    /// going (`MeshAgentRun`).
+    struct MeshRun: Codable, Equatable {
+        /// The executor's node name, as the dispatch reported it. Empty when the
+        /// mesh answered without naming one — the row then says only that it is on
+        /// the mesh, which is still more than the work vanishing.
+        var node: String
+        /// The origination lease this run holds while its agent lives.
+        var workKey: String
+    }
+
     let id: UUID
     /// "review" or "conflicts" — drives the row's icon/tint.
     var kind: String
     /// Human label, e.g. "Review · #337 · Deep" or "Resolve · my PRs".
     var label: String
     /// The terminal it runs in ("iterm" / "terminal"), for the focus AppleScript.
+    /// Empty on a mesh row, which has no terminal on this machine.
     var terminal: String
     /// Terminal window id (string form) — the focus target.
     var windowID: String
@@ -33,6 +53,10 @@ struct TrackedProcess: Identifiable, Codable, Equatable {
     var tty: String
     /// Sentinel file the shell writes when `claude` returns (`…; printf … > done`).
     var donePath: String
+    /// Set when the mesh placed this work on a node instead of a local terminal; nil
+    /// for every session this machine spawned itself. The one test that tells the
+    /// two apart, because everything else about the row reads the same.
+    var mesh: MeshRun?
     /// The single PR this session concerns, if any — dedups agents per PR (the
     /// in-flight checks) and drives the merged-status probe.
     var prURL: String?
@@ -63,7 +87,8 @@ struct TrackedProcess: Identifiable, Codable, Equatable {
     /// decoder below, which is answering a different question.)
     init(id: UUID = UUID(), kind: String, label: String, terminal: String,
          windowID: String, sessionID: String, tty: String, donePath: String,
-         prURL: String?, source: String = AgentDispatchGate.Source.panel.rawValue,
+         prURL: String?, mesh: MeshRun? = nil,
+         source: String = AgentDispatchGate.Source.panel.rawValue,
          createdAt: Date = Date(),
          done: Bool = false, merged: Bool = false, awaitingInput: Bool = false) {
         self.id = id
@@ -75,6 +100,7 @@ struct TrackedProcess: Identifiable, Codable, Equatable {
         self.tty = tty
         self.donePath = donePath
         self.prURL = prURL
+        self.mesh = mesh
         self.source = source
         self.createdAt = createdAt
         self.done = done
@@ -102,6 +128,7 @@ struct TrackedProcess: Identifiable, Codable, Equatable {
         tty = try c.decode(String.self, forKey: .tty)
         donePath = try c.decode(String.self, forKey: .donePath)
         prURL = try c.decodeIfPresent(String.self, forKey: .prURL)
+        mesh = try c.decodeIfPresent(MeshRun.self, forKey: .mesh)
         source = try c.decodeIfPresent(String.self, forKey: .source)
             ?? AgentDispatchGate.Source.auto.rawValue
         createdAt = try c.decode(Date.self, forKey: .createdAt)
@@ -109,6 +136,10 @@ struct TrackedProcess: Identifiable, Codable, Equatable {
         merged = try c.decodeIfPresent(Bool.self, forKey: .merged) ?? false
         awaitingInput = try c.decodeIfPresent(Bool.self, forKey: .awaitingInput) ?? false
     }
+
+    /// This row stands for work running on a mesh node, not a session on this
+    /// machine — so nothing local can be probed, focused or killed for it.
+    var isMesh: Bool { mesh != nil }
 
     /// The tty as `ps` reports it (no `/dev/` prefix), or "" when untracked.
     var shortTTY: String {
@@ -215,23 +246,32 @@ enum ProcessMonitor {
     /// dump failed — it then can't veto anything. Injectable for deterministic tests.
     /// `ttyElapsed` (tty → its longest-lived process's elapsed seconds) is the
     /// second corroboration layer; nil = probe `ps` lazily. Injectable for tests.
+    ///
+    /// Mesh rows are passed through untouched: their agent runs on another machine,
+    /// so every probe here would be asking this one about a process it does not
+    /// have — and answering "no window, no tty, no shell" would dismiss a live run.
+    /// Their liveness is the executor's claim instead (`Store.reconcileMeshRuns`).
     static func sweep(_ procs: [TrackedProcess], now: Date = Date(),
                       openWindows: ((SpawnTerminal) -> Set<String>?)? = nil,
                       sessionTails: [String: String]? = nil,
                       ttyElapsed: [String: TimeInterval]? = nil) -> Sweep {
-        guard !procs.isEmpty else { return Sweep(refreshed: procs, closedIDs: []) }
+        let local = procs.filter { !$0.isMesh }
+        guard !local.isEmpty else { return Sweep(refreshed: procs, closedIDs: []) }
         let resolve = openWindows ?? { openWindowIDs(term: $0) }
         let fm = FileManager.default
         // One window-id query per distinct terminal app (nil = couldn't determine).
         var openByTerm: [String: Set<String>?] = [:]
-        for t in Set(procs.map { $0.terminal }) {
+        for t in Set(local.map { $0.terminal }) {
             openByTerm[t] = resolve(SpawnTerminal(rawValue: t) ?? .iterm)
         }
         // Probed at most once per sweep, and only when a window-gone verdict needs
         // corroborating.
         var elapsedProbe = ttyElapsed
         var closed = Set<UUID>()
-        let out = procs.map { p -> TrackedProcess in
+        // Every probe below asks the OS about a process on THIS machine, so only the
+        // local sessions walk it; the mesh rows are stitched back into place at the
+        // end, in their original order and exactly as they came in.
+        let swept = local.map { p -> TrackedProcess in
             var p = p
             let sentinel = !p.donePath.isEmpty && fm.fileExists(atPath: p.donePath)
             // Is this session's terminal window really gone? The window-id enumeration
@@ -289,7 +329,8 @@ enum ProcessMonitor {
             }
             return p
         }
-        return Sweep(refreshed: out, closedIDs: closed)
+        let byID = Dictionary(swept.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
+        return Sweep(refreshed: procs.map { byID[$0.id] ?? $0 }, closedIDs: closed)
     }
 
     /// Back-compat convenience: just the `done`-recomputed sessions (drops the

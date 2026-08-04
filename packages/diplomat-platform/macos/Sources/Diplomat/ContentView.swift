@@ -953,21 +953,33 @@ private struct ProcessRow: View {
 
     private var kindIcon: String { DiplomatUI.agentTaskIcon(proc.kind) }
 
+    // Resolved out of the ViewBuilder, where a ternary over concatenations is what
+    // tips this file past the type-checker's time limit on a CI runner.
+    private static let localHelp = "Bring this session's window to the front."
+    private static func meshHelp(_ node: String) -> String {
+        node.isEmpty
+            ? "Running on a mesh node. Nothing to focus here — the agent is on another machine."
+            : "Running on mesh node \(node). Nothing to focus here — the agent is on that machine."
+    }
+    /// The note beside the status word. Built here rather than in the `Text(...)`
+    /// itself: a ternary inside a ViewBuilder call is what has tipped this file past
+    /// the type-checker's time limit on CI's slower runner before.
+    private static func meshNote(_ node: String) -> String {
+        node.isEmpty ? "· on mesh" : "· on mesh @\(node)"
+    }
+
     var body: some View {
         HStack(spacing: 6) {
-            Button(action: onTap) {
-                HStack(spacing: 8) {
-                    IconBadge(symbol: kindIcon, tint: tint)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(proc.label).font(.caption).lineLimit(1)
-                        statusLine
-                    }
-                    Spacer(minLength: 4)
-                }
-                .contentShape(Rectangle())
+            // A mesh row's agent is a process on another machine: there is no window
+            // to raise, so it is content rather than a button. Offering the click and
+            // doing nothing would read as a session whose window had gone missing.
+            if let run = proc.mesh {
+                content.help(ProcessRow.meshHelp(run.node))
+            } else {
+                Button(action: onTap) { content.contentShape(Rectangle()) }
+                    .buttonStyle(.plain)
+                    .help(ProcessRow.localHelp)
             }
-            .buttonStyle(.plain)
-            .help("Bring this session's window to the front.")
 
             Button(action: onRemove) {
                 Image(systemName: "xmark.circle.fill")
@@ -981,15 +993,37 @@ private struct ProcessRow: View {
         .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.06)))
     }
 
+    private var content: some View {
+        HStack(spacing: 8) {
+            IconBadge(symbol: kindIcon, tint: tint)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(proc.label).font(.caption).lineLimit(1)
+                statusLine
+            }
+            Spacer(minLength: 4)
+        }
+    }
+
     private var statusLine: some View {
         // "merged" is the definitive outcome — it outranks "done" (the local claude
         // process merely exited; the PR may still be open). A live session that has
         // finished its turn and is idling at the prompt reads "awaiting input" (amber,
         // it needs you) rather than "running". That precedence is also the list's sort
         // order, so it is decided once, in the core.
-        AgentTaskStatusLabel(
-            status: AgentTaskStatus.ofSession(merged: proc.merged, done: proc.done,
-                                              awaitingInput: proc.awaitingInput))
+        HStack(spacing: 3) {
+            AgentTaskStatusLabel(
+                status: AgentTaskStatus.ofSession(merged: proc.merged, done: proc.done,
+                                                  awaitingInput: proc.awaitingInput))
+            // WHERE, next to what — the same shape the queued row uses for the note
+            // that its monitor is off. Without it a mesh row is indistinguishable
+            // from a local session whose window this machine has simply lost.
+            if let run = proc.mesh {
+                Text(ProcessRow.meshNote(run.node))
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
     }
 }
 

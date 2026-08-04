@@ -125,12 +125,22 @@ everything not started yet is at the bottom. The list is always there: an idle
 machine with a cap of two reads `0 · 2 free` over two empty bays.
 
 - **Sessions** are every spawned agent, wizard- or monitor-launched. Click a row
-  to focus its terminal window, ✕ to stop tracking it. (macOS only - a Linux spawn
-  has no window handle to track a session by, so there the list is the queue and
-  the bays, and a running agent shows only as the slot it takes.)
+  to focus its terminal window, ✕ to stop tracking it.
+- **Mesh rows** are the work this machine originated and the mesh is running
+  somewhere else, reading *running · on mesh @node*. Same row, same label, same
+  place in the list - there is just no window here to click, because the agent is
+  on that node. The row lives as long as the executor's
+  [work claim](#autonomous-monitors) does, and leaves when the remote agent
+  finishes.
+
+  (Both kinds are macOS only - a Linux spawn has no window handle to track a
+  session by, so there the list is the queue and the bays: a local agent shows as
+  the slot it takes, and one the mesh placed on a peer shows in the activity feed
+  rather than on the list.)
 - **Free slots** are the rest of the cap. Each running automatic agent takes one;
-  agents you spawn yourself from the panel take none. Queued work starts here on
-  the next poll.
+  agents you spawn yourself from the panel take none, and neither does work the
+  mesh placed on another machine - that spends the peer's capacity, not yours.
+  Queued work starts here on the next poll.
 - **Queued** rows are auto-fixes and auto-reviews nothing has started yet. Each
   carries **execute now** - start it immediately, past whatever is holding it -
   and a drag grip: drop a row on another to set the order the queue runs in. That
@@ -152,8 +162,10 @@ banned. (Not on a mesh claim: the cap outranks the mesh gate, so a machine with
 anything queued is one that never asked a peer - peer-owned work leaves when the
 drain reaches it and the mesh answers.) The key order is remembered, so your
 arrangement survives the rebuild and a restart; nothing else is. *Execute now* keeps the task automatic in every other respect:
-same `Auto · ` label, same auto-handled counter, and once running it occupies a
-slot like any other automatic agent, so the rest of the queue waits behind it.
+same `Auto · ` label, same auto-handled counter, same mesh routing - the cap is
+the one hold it overrides. So a click can land the agent on a peer rather than
+here, and what replaces the queued row is a mesh row saying which; it occupies a
+slot of this machine's cap only when it actually runs on this machine.
 
 ## Actions - Review PRs
 
@@ -535,7 +547,11 @@ independently; whoever finds a unit routes it by work key, and the node that
 takes it holds the claim for its agent's lifetime, so a concurrent or repeat scan
 elsewhere is suppressed (`mesh-suppressed` in the activity feed) and a node death
 frees the work for failover. A machine already at its cap declines what it is
-sent, and the dispatcher fails the slot over to one with room.
+sent, and the dispatcher fails the slot over to one with room. That claim is also
+what the machine that *originated* the work watches: it keeps a
+[mesh row](#agent-tasks) on its own Agent-tasks list for as long as the claim is
+held, so work handed to a peer reads as a task in flight rather than as a task
+that disappeared.
 
 ### Auto-approvals (default OFF)
 
@@ -752,7 +768,10 @@ DIPLOMAT_PRINT_PROMPT=mine swift run Diplomat # assemble + print a prompt: mine|
 DIPLOMAT_SETTINGS_DUMP=1 ./Diplomat.app/Contents/MacOS/Diplomat  # resolved persisted settings
 DIPLOMAT_QUEUE_TEST=1 swift run Diplomat      # self-test: the queue behind the automatic-task cap
                                                      #   (capture, dedup, arrangement, what a paused
-                                                     #   monitor holds, free slots). Spawns nothing;
+                                                     #   monitor holds, free slots) and the mesh row a
+                                                     #   peer-routed task leaves behind (its lease's
+                                                     #   lifetime, and that neither liveness source
+                                                     #   touches the other's rows). Spawns nothing;
                                                      #   redirects its own audit writes.
 DIPLOMAT_RENDER=panel    ./Diplomat.app/Contents/MacOS/Diplomat  # snapshot a screen to PNG (out
                                                      #   path: DIPLOMAT_RENDER_OUT). States: panel|panel-procs

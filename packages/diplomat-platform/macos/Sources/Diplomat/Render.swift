@@ -453,6 +453,17 @@ enum Render {
                            windowID: "3", sessionID: "c", tty: "/dev/ttys993", donePath: "",
                            prURL: "https://github.com/software-mansion/argent/pull/312",
                            createdAt: Date(), done: true, merged: true),
+            // Work this device handed to the mesh: it runs on a peer, so the row has
+            // no terminal handles at all and says where instead. Seeded here because
+            // it is the one row family whose whole point is a state no local session
+            // can reach — a running agent with nothing on this machine behind it.
+            TrackedProcess(kind: "conflicts", label: "Auto · Resolve · #489", terminal: "",
+                           windowID: "", sessionID: "", tty: "", donePath: "",
+                           prURL: "https://github.com/software-mansion/argent/pull/489",
+                           mesh: .init(node: "softoobox",
+                                       workKey: "conflicts:github.com/software-mansion/argent#489@ab12cd"),
+                           source: AgentDispatchGate.Source.auto.rawValue,
+                           createdAt: Date(), done: false),
         ]
         store.queuedTasks = [
             queuedFixture(number: 512, kind: "review", auditAction: "review-req",

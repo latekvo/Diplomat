@@ -552,6 +552,18 @@ check(AgentTaskQueue.freeSlots(limit: 2, running: 2) == 0,
 check(AgentTaskQueue.freeSlots(limit: 1, running: 4) == 0,
       "more agents up than the cap allows draws no slots, not negative ones")
 
+// A row for work running on a mesh peer lives exactly as long as the executor's
+// lease on it — the only completion signal a dispatcher ever gets.
+check(!MeshAgentRun.finished(sinceSeen: 0),
+      "a dispatch just made is not a run just finished")
+check(!MeshAgentRun.finished(sinceSeen: MeshAgentRun.claimSettle - 1),
+      "inside the settle window an unseen claim is lag, not an ended run")
+check(MeshAgentRun.finished(sinceSeen: MeshAgentRun.claimSettle),
+      "a lease unseen that long is one the executor released")
+check(MeshAgentRun.claimSettle >= 20,
+      "the window must outlast the node's state write plus the front-end's poll, "
+      + "or a live run reads as finished on the first tick that misses it")
+
 // Queue identity: two monitors owing the same PR are two tasks, and a push must
 // not lose the operator's place for either (so: not the sha-scoped mesh key).
 check(AgentTaskQueue.key(auditAction: "conflicts", prNumber: 7) == "conflicts:7",

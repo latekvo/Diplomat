@@ -59,6 +59,42 @@ public enum AgentTaskStatus: Int, Comparable, CaseIterable {
     }
 }
 
+/// A unit of work this device handed to the mesh, and how the panel knows it is
+/// still going.
+///
+/// The run is somebody else's process: there is no window to focus, no tty to probe
+/// and no completion sentinel on this disk. What this machine does have is the
+/// executor's origination lease — it claims the work key when it spawns the agent
+/// and releases it when the agent exits (szpontnet-spec/docs/12) — republished in
+/// every snapshot the local node writes. So a claimed key is a running agent, and a
+/// key that has stopped appearing is one that has finished.
+public enum MeshAgentRun {
+    /// How long a key may go unseen before the run behind it reads as over.
+    ///
+    /// Absence is only evidence once it has had time to be evidence. The claim
+    /// travels the executor's link *before* the dispatch ack, but reaches this
+    /// front-end through a file the node rewrites every couple of seconds, read by a
+    /// poll of its own — and a node restart empties the book until its peers
+    /// re-assert. This window is long enough to outlast all three and short enough
+    /// that a finished run leaves the list while the operator is still looking at it.
+    public static let claimSettle: TimeInterval = 45
+
+    /// Whether the remote agent is finished, given how long ago this device last saw
+    /// the executor's claim.
+    ///
+    /// Sightings are what the clock runs on, never the run's own age: a review that
+    /// takes an hour is a normal one, so a row is only ever ended by evidence going
+    /// missing. A row that has no sighting yet — just dispatched, or just reloaded
+    /// after a restart — starts its window from that moment, which is what makes the
+    /// answer safe on both edges: a fresh row survives the lag before the first
+    /// snapshot carries its key, and a run whose key is NEVER published (the executor
+    /// deduped our dispatch against an agent already running on its host, which holds
+    /// no lease) ends up removed rather than pinned to the panel for good.
+    public static func finished(sinceSeen: TimeInterval) -> Bool {
+        sinceSeen >= claimSettle
+    }
+}
+
 /// The order automatic work waits in.
 ///
 /// The queue is a *view* of what the monitors would re-offer, not a second copy of

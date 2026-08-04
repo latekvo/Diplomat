@@ -234,9 +234,12 @@ final class Store: ObservableObject {
         }
     }
 
-    /// The dispatched agent sessions shown in the ongoing-processes list. Persisted
-    /// so the list survives an applet restart — the tty/window/sentinel handles are
-    /// OS-level and outlive this process.
+    /// The dispatched agent tasks shown in the ongoing-processes list: the sessions
+    /// this machine spawned, plus the work it handed to a mesh node (`mesh` set —
+    /// same row, different liveness). Persisted so the list survives an applet
+    /// restart, which each kind outlives for its own reason: a session's
+    /// tty/window/sentinel handles are OS-level, and a mesh run's lease is held by
+    /// the peer executing it.
     @Published var processes: [TrackedProcess] {
         didSet { persistProcesses() }
     }
@@ -670,6 +673,92 @@ final class Store: ObservableObject {
         processes.removeAll { $0.id == id }
     }
 
+    // MARK: mesh rows (work this device handed to a peer)
+
+    /// Register a unit of work the mesh is running elsewhere, so the panel shows it
+    /// as a task in flight rather than as nothing at all.
+    ///
+    /// A mesh dispatch consumes the queued row and leaves no session behind it, so
+    /// without this the machine that originated the work has no trace of it — and
+    /// "execute now" on a peer-routed task is indistinguishable from a click that
+    /// silently dropped it. The row is the same row a local session gets — same
+    /// label, same kind, same place in the list — and says where it runs.
+    ///
+    /// Keyed by the work key, not the row id: one lease is one agent, so a second
+    /// dispatch of a key already on the list (a stand-down re-offered before the
+    /// in-flight check can see the row) updates that row instead of adding a twin.
+    ///
+    /// Not private: the queue self-test builds a row here rather than through a real
+    /// dispatch, which would need a live mesh node and a peer willing to run it.
+    func trackMeshRun(_ job: AgentJob, node: String, attemptNumber: Int) {
+        // The key IS the row's identity here, so a job without one has no row to be:
+        // every keyless row would answer to every other's lease. (`routeViaMesh` only
+        // dispatches keyed jobs, so nothing in the app arrives here without one.)
+        guard !job.workKey.isEmpty else { return }
+        let run = TrackedProcess.MeshRun(node: node, workKey: job.workKey)
+        if let i = processes.firstIndex(where: { $0.mesh?.workKey == job.workKey }) {
+            processes[i].mesh = run
+            return
+        }
+        processes.append(TrackedProcess(
+            kind: job.kind,
+            label: AgentDispatchGate.label(source: .auto, core: job.label,
+                                           attemptNumber: attemptNumber),
+            terminal: "", windowID: "", sessionID: "", tty: "", donePath: "",
+            prURL: job.prURL, mesh: run,
+            source: AgentDispatchGate.Source.auto.rawValue))
+        meshClaimSeen[job.workKey] = Date()
+    }
+
+    /// When each live mesh row's lease was last seen in the local node's snapshot.
+    /// In memory only: it is re-seeded from the row's own age on the first pass after
+    /// a restart, and persisting it would mean rewriting every row on every tick just
+    /// to record that nothing changed.
+    private var meshClaimSeen: [String: Date] = [:]
+
+    /// Re-derive the mesh rows' liveness from the origination leases the local node
+    /// publishes, and drop the ones whose agent has finished.
+    ///
+    /// Dropped, not left reading "done": a finished remote run is the case the sweep
+    /// already calls terminal-closed — there is no window to focus, no output to
+    /// read, nothing left this machine can do with the row — and the feed keeps the
+    /// record. Left on the list they would also hold the PR in-flight against the
+    /// monitors, so a run that failed on a peer could never be retried anywhere.
+    ///
+    /// Not private: the queue self-test drives it with a synthetic claim book, which
+    /// is the only way to exercise the lifecycle without a live mesh.
+    func reconcileMeshRuns(claims: [String: String], now: Date = Date()) {
+        let live = processes.filter(\.isMesh).compactMap { $0.mesh?.workKey }
+        guard !live.isEmpty else {
+            if !meshClaimSeen.isEmpty { meshClaimSeen = [:] }
+            return
+        }
+        var finished = Set<String>()
+        for key in live {
+            if claims[key] != nil { meshClaimSeen[key] = now; continue }
+            // A row restored from disk has no sighting behind it, so this pass becomes
+            // its first and the window runs from here. Its `createdAt` must NOT stand
+            // in: a row for an hour-long review reloads already older than any window,
+            // and `meshState` is still nil for the first couple of seconds after
+            // launch — so an age-based clock would drop every restored row on the
+            // first poll, before the node's snapshot could vouch for a single one.
+            let seen = meshClaimSeen[key] ?? now
+            if MeshAgentRun.finished(sinceSeen: now.timeIntervalSince(seen)) {
+                finished.insert(key)
+            } else {
+                meshClaimSeen[key] = seen
+            }
+        }
+        if !finished.isEmpty {
+            processes.removeAll { $0.mesh.map { finished.contains($0.workKey) } ?? false }
+        }
+        // Keys of rows that have left the list (finished here, or dismissed) stop
+        // being tracked — the map is bounded by the list it describes.
+        meshClaimSeen = meshClaimSeen.filter { key, _ in
+            live.contains(key) && !finished.contains(key)
+        }
+    }
+
     // MARK: PR auto-fix monitor
 
     /// How often the monitor polls GitHub. 3 min by default — the GraphQL rate limit
@@ -1035,10 +1124,16 @@ final class Store: ObservableObject {
     ///
     /// The tracked rows say WHO started each agent, the `ps` scan says which are
     /// really alive; neither alone is enough, so the pure helper combines them.
+    ///
+    /// Mesh rows are not counted: this cap is how many agents THIS machine runs, and
+    /// their agent is a process on another one. (A mesh dispatch the placement landed
+    /// back here is still counted — by the `ps` scan, which sees it like any other
+    /// local agent.) Counting them would spend this device's budget on work it is not
+    /// doing, and every peer-routed job would shrink the panel by a free slot.
     @discardableResult
     private func autoTasksRunning() async -> Int {
         var autoPRs = Set<Int>(), manualPRs = Set<Int>()
-        for p in processes where !p.done {
+        for p in processes where !p.done && !p.isMesh {
             guard let n = p.prNumber else { continue }
             if p.source == AgentDispatchGate.Source.panel.rawValue {
                 manualPRs.insert(n)
@@ -1086,7 +1181,7 @@ final class Store: ObservableObject {
     /// bay fewer, never towards offering a slot the gate would refuse.
     var freeAutoSlots: Int {
         let tracked = Set(processes.filter {
-            !$0.done && $0.source != AgentDispatchGate.Source.panel.rawValue
+            !$0.done && !$0.isMesh && $0.source != AgentDispatchGate.Source.panel.rawValue
         }.compactMap(\.prNumber)).count
         return AgentTaskQueue.freeSlots(limit: autoTaskLimit,
                                         running: max(autoTasksMeasured, tracked))
@@ -1291,6 +1386,11 @@ final class Store: ObservableObject {
         case .spawned:
             AuditLog.log("panel", "queue-run",
                          "\(entry.job.label) — started ahead of the task cap")
+        // A mesh peer's agent owns the work — which is a task now running, not a
+        // click that did nothing, and `dispatchAgent` has already put the row that
+        // says so where the queued one was. The router logs the peer's name.
+        case .standDown:
+            break
         // The rest are all logged by the step that decided them, but a feed line is
         // not an answer to a click: the row vanished and nothing opened, so say why
         // in the panel, as the per-row Resolve button does (`resolveConflicts`).
@@ -1298,8 +1398,6 @@ final class Store: ObservableObject {
             error = "\(entry.job.label) failed to spawn — see the activity log."
         case .inFlight:
             error = "\(entry.job.label): an agent is already on this PR."
-        case .standDown:
-            error = "\(entry.job.label): a mesh peer's agent already owns this work."
         case .banned:
             error = "\(entry.job.label): the PR's author is banned (un-ban to review)."
         case .atCapacity:
@@ -1326,7 +1424,10 @@ final class Store: ObservableObject {
         NSWorkspace.shared.frontmostApplication?.bundleIdentifier
     }
 
-    enum MeshRoute { case standDown, spawned, local }
+    /// Where an auto job went. Both mesh outcomes name the node whose agent has the
+    /// work (empty when the mesh answered without naming one) — the panel draws a row
+    /// for it either way, so "some peer took it" can never look like "it vanished".
+    enum MeshRoute { case standDown(node: String), spawned(node: String), local }
 
     /// Route an AUTO job through the mesh (szpontnet-spec/docs/12): claim-gated dispatch
     /// to the best-surplus node. Mirrors the Linux store's `_route_via_mesh`.
@@ -1353,12 +1454,30 @@ final class Store: ObservableObject {
         let statuses = results.map { ($0["status"] as? String) ?? "failed" }
         if statuses.allSatisfy({ $0 == "suppressed" }) {
             logMeshSuppressed(workKey, results)
-            return .standDown
+            return .standDown(node: executorName(results, status: "suppressed"))
         }
         if statuses.allSatisfy({ $0 == "spawned" || $0 == "suppressed" }) {
-            return .spawned  // ran on the mesh (the node logs where)
+            // Ran on the mesh (the node logs where). The name comes back with the
+            // dispatch and nowhere else: the claim book identifies the owner by node
+            // id, and a snapshot carrying it is seconds away at best.
+            return .spawned(node: executorName(results, status: "spawned"))
         }
         return .local  // declined/failed on every slot → fall through to a local spawn
+    }
+
+    /// The node the panel names for this dispatch: the first slot with the deciding
+    /// status that came back with a name. Empty when the mesh named none — a row that
+    /// says only "on mesh" still beats work that disappears.
+    ///
+    /// One name for what a multi-platform placement can spread over several slots. It
+    /// is the executors' shared work key that the row is really tracking, and exactly
+    /// one node holds that lease at a time, so a second name would be a second row for
+    /// one unit of work.
+    private func executorName(_ results: [[String: Any]], status: String) -> String {
+        let named = results.first {
+            ($0["status"] as? String) == status && ($0["nodeName"] as? String)?.isEmpty == false
+        }
+        return (named?["nodeName"] as? String) ?? ""
     }
 
     /// A peer's agent owns this work — note it once per key, not per poll.
@@ -1549,12 +1668,17 @@ final class Store: ObservableObject {
         // tracked locally instead (fail-open).
         if source == .auto {
             switch await routeViaMesh(job) {
-            case .standDown:
-                return .standDown   // a peer's agent owns it (logged once by the router)
-            case .spawned:
+            case .standDown(let node):
+                // A peer's agent owns it (logged once by the router). The work is
+                // running, just not here — so it gets a row like any other running
+                // agent, saying whose.
+                trackMeshRun(job, node: node, attemptNumber: attemptNumber)
+                return .standDown
+            case .spawned(let node):
                 AuditLog.log(source.rawValue, job.auditAction,
                              AgentDispatchGate.label(source: source, core: job.label,
                                                      attemptNumber: attemptNumber))
+                trackMeshRun(job, node: node, attemptNumber: attemptNumber)
                 bumpAutoCounter(job, source: source, attemptNumber: attemptNumber)
                 // A mesh placement spends a PEER's quota and leaves no sentinel here,
                 // so it is flagged remote — counted as work started and taken off the
@@ -2004,6 +2128,12 @@ final class Store: ObservableObject {
     /// any whose terminal window/tab was closed, then merge the rest back by id so a
     /// concurrent add/remove isn't clobbered.
     func refreshProcessStatuses() async {
+        // The mesh rows first: they are the ones the sweep below cannot speak for, and
+        // dropping a finished one before the sweep keeps the two liveness sources from
+        // reporting on the same tick's list in different states. With the mesh off
+        // there is no claim book to consult, so every row settles out — a machine that
+        // has stopped watching the mesh must not keep drawing its runs as live.
+        reconcileMeshRuns(claims: meshEnabled ? (meshState?.claims ?? [:]) : [:])
         let snapshot = processes
         guard !snapshot.isEmpty else { return }
         let sweep = await Task.detached(priority: .utility) {
