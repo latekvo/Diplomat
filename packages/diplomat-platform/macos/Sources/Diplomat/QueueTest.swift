@@ -347,6 +347,10 @@ enum QueueTest {
               store.freeAutoSlots == 1)
         check("…and is still a mesh row, held by its lease like any other",
               store.processes.first?.isMesh == true)
+        // Back to the peer-routed row, and to a sighting as fresh as its dispatch: the
+        // lifecycle below is one timeline over THAT key, and it starts here.
+        store.processes = []
+        store.trackMeshRun(meshJob, node: "softoobox", attemptNumber: 1)
 
         // One timeline, so each step measures from the sighting before it — the whole
         // rule is that the clock restarts every time the lease is seen, not that a row
