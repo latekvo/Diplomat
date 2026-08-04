@@ -213,9 +213,16 @@ def test_flipping_the_lookback_leaves_exactly_one_live_chart_per_card(store):
 def _session_fill_columns(chart, width: int = 400, height: int = 120) -> list[int]:
     """The x columns where the 5-hour window's fill was actually painted.
 
-    Picked out by hue: the fill is orange, the half-way rule is white (r == b) and
-    the 7-day line is purple (b > r), so "red well above blue" is the fill and only
-    the fill.
+    Picked out by hue AND by where it is looked for. The 30%-alpha orange fill lifts
+    red over blue by ~74 whatever grey it lands on (blending is linear, and a grey
+    background contributes nothing to the difference), while the half-way rule is
+    white and the 7-day line purple, both of which have blue at or above red.
+
+    Hue alone is not enough, though: a font stack that antialiases with LCD subpixel
+    filtering fringes its glyph edges red on one side and blue on the other, which
+    reads as a weak orange — so the axis labels would count as fill on some machines
+    and not others. The band scanned is therefore the lower middle of the chart,
+    which the fill always covers and no label is ever drawn in.
     """
     from PySide6.QtCore import Qt
     from PySide6.QtGui import QImage
@@ -224,10 +231,12 @@ def _session_fill_columns(chart, width: int = 400, height: int = 120) -> list[in
     image = QImage(chart.size(), QImage.Format.Format_ARGB32)
     image.fill(Qt.GlobalColor.transparent)
     chart.render(image)
+    band = range(int(height * 0.6), int(height * 0.85))
     return [
         x for x in range(width)
-        if any((lambda c: c.alpha() > 0 and c.red() > c.blue() + 20)(image.pixelColor(x, y))
-               for y in range(height))
+        if any((lambda c: c.alpha() > 0 and c.red() > c.blue() + 50 and
+                          c.green() > c.blue())(image.pixelColor(x, y))
+               for y in band)
     ]
 
 
