@@ -24,6 +24,7 @@ asserted against *both*, from one list, and a copy that drifts fails here.
 
 from __future__ import annotations
 
+import os
 import subprocess
 
 import pytest
@@ -192,6 +193,95 @@ def test_host_macos_runner_is_detached(popen_spy, monkeypatch, tmp_path):
     assert kwargs["shell"] is False
     assert kwargs["start_new_session"] is True
     assert kwargs["stdout"] == subprocess.DEVNULL
+
+
+# ---- the agent survives the user's own rc ---------------------------------
+#
+# The spawner runs the agent under the user's INTERACTIVE shell so a `claude` alias
+# resolves — which also hands the user's rc a chance to take the process over before
+# it reaches the `-c` command. The common "start every terminal inside tmux" snippet
+# does exactly that: guarded on an empty `$TMUX`, it ends in `exec tmux new-session`.
+# Under a bare `$SHELL -i -c` the exec wins, the agent never starts, and the window
+# shows an empty shell — while the spawn reports success and the task leaves the
+# queue. Opening the session ourselves satisfies that guard.
+
+
+@pytest.fixture
+def with_tmux(monkeypatch):
+    """A machine with tmux installed, whatever the one running the suite has."""
+    real_which = review.shutil.which
+    monkeypatch.setattr(review.shutil, "which",
+                        lambda n: "/usr/bin/tmux" if n == "tmux" else real_which(n))
+
+
+def test_the_agent_runs_under_an_interactive_shell_inside_its_own_tmux_session(
+    with_tmux, monkeypatch, tmp_path
+):
+    """The session is ours, and the interactive shell runs *inside* it — an rc that
+    hands off to tmux finds ``$TMUX`` already set and runs on to the aliases."""
+    import shlex
+
+    monkeypatch.setattr(review, "repo_path", lambda: str(tmp_path))
+    monkeypatch.setenv("DIPLOMAT_SHELL", "/usr/bin/zsh")
+
+    argv = review.agent_argv("/tmp/p.txt", "/tmp/done")
+
+    assert argv[:2] == ["tmux", "new-session"]
+    # `new-session` takes ONE shell-command argument and hands it to `sh -c`; the
+    # split is what that `sh` will do, so the whole command has to survive it intact.
+    assert len(argv) == 3
+    assert shlex.split(argv[2]) == [
+        "/usr/bin/zsh", "-i", "-c", review.shell_command("/tmp/p.txt", "/tmp/done")
+    ]
+
+
+def test_without_tmux_the_agent_runs_under_the_bare_interactive_shell(
+    monkeypatch, tmp_path
+):
+    """No tmux is no session to open and no pane for :mod:`tmuxwatch` to read, so
+    the shape that was there before stands rather than a broken `tmux` argv."""
+    real_which = review.shutil.which
+    monkeypatch.setattr(review.shutil, "which",
+                        lambda n: None if n == "tmux" else real_which(n))
+    monkeypatch.setattr(review, "repo_path", lambda: str(tmp_path))
+    monkeypatch.setenv("DIPLOMAT_SHELL", "/usr/bin/zsh")
+
+    assert review.agent_argv("/tmp/p.txt") == [
+        "/usr/bin/zsh", "-i", "-c", review.shell_command("/tmp/p.txt")
+    ]
+
+
+def test_a_spawn_never_hands_the_new_session_the_spawners_own_pane(monkeypatch):
+    """``tmux new-session`` refuses to nest, so a ``$TMUX`` inherited from whoever
+    launched the applet (or the node) would close the window on the spot."""
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,4321,7")
+    monkeypatch.setenv("TMUX_PANE", "%7")
+    monkeypatch.setenv("DIPLOMAT_KEEP_ME", "kept")
+
+    env = review.spawn_env()
+
+    assert "TMUX" not in env
+    assert "TMUX_PANE" not in env
+    # Everything else is passed through — this replaces the child's environment.
+    assert env["DIPLOMAT_KEEP_ME"] == "kept"
+    assert env["PATH"] == os.environ["PATH"]
+
+
+def test_the_terminal_is_handed_the_session_argv_and_a_pane_free_env(
+    with_tmux, popen_spy, monkeypatch, tmp_path
+):
+    """End of the wire: what the emulator is actually exec'd with."""
+    monkeypatch.setattr(review, "write_prompt", lambda prompt: str(tmp_path / "p.txt"))
+    monkeypatch.setattr(review, "repo_path", lambda: str(tmp_path))
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,4321,7")
+    term = review.default_terminal()
+
+    _real_spawn("prompt", term)
+
+    (args, kwargs) = popen_spy[0]
+    assert args[0][0] == term.exec_name
+    assert args[0][len(term.prefix) + 1:len(term.prefix) + 3] == ["tmux", "new-session"]
+    assert "TMUX" not in kwargs["env"]
 
 
 def test_confined_runner_is_detached_under_a_scrubbed_env(popen_spy, monkeypatch, tmp_path):

@@ -343,18 +343,55 @@ def shell_command(prompt_file: str, done_path: str | None = None) -> str:
     return f'cd {repo} 2>/dev/null; claude "$(cat {pf})"; {done}exec "$SHELL" -i'
 
 
+def agent_argv(prompt_file: str, done_path: str | None = None) -> list[str]:
+    """What the terminal is asked to run: the agent under the user's INTERACTIVE
+    shell (``-i``, so their rc is sourced and a `claude` alias resolves — a plain
+    `bash -c` gets neither), inside a tmux session of its own wherever tmux exists.
+
+    The interactive shell is also what lets an rc take the process over before it
+    reaches the ``-c`` command. The widespread "start every terminal inside tmux"
+    snippet ends in ``exec tmux new-session``, guarded on ``[[ -z "$TMUX" ]]``: under
+    a plain ``$SHELL -i -c``, that exec replaces the shell, the agent never runs, and
+    the window shows an empty session — a spawn that reports success and launched
+    nothing. Opening the session ourselves satisfies that guard, so such an rc runs
+    on to the aliases instead of handing off.
+
+    It is also the only way :mod:`tmuxwatch` can reach an agent: ``capture-pane`` and
+    ``send-keys`` are what the Claude-API-error watcher reads and types through on
+    Linux, and they only see panes. Without tmux installed there is no session to
+    open and no watcher to feed, so the bare interactive shell stands.
+    """
+    cmd = shell_command(prompt_file, done_path)
+    shell = user_shell()
+    if shutil.which("tmux") is None:
+        return [shell, "-i", "-c", cmd]
+    # One string, because that is the single shell-command argument `new-session`
+    # takes; tmux hands it to `sh -c`, which splits it back into the argv above.
+    return ["tmux", "new-session", f"{shlex.quote(shell)} -i -c {shlex.quote(cmd)}"]
+
+
+def spawn_env() -> dict:
+    """The environment a spawned agent gets: this process's, minus the variables
+    that say we are *already* inside a tmux pane.
+
+    Whoever launched the applet (or the mesh node) may have done so from one, and
+    ``tmux new-session`` inherits ``$TMUX`` from there and refuses to nest — the
+    window would open and close again on "sessions should be nested with care".
+    Dropping them costs the child nothing: it is about to be in a pane of its own,
+    which sets both to that pane's real values.
+    """
+    return {k: v for k, v in os.environ.items() if k not in ("TMUX", "TMUX_PANE")}
+
+
 def spawn(prompt: str, preferred: SpawnTerminal | None, done_path: str | None = None) -> str:
     """Stage the prompt, open a new terminal window, run claude. Returns the
     prompt file path. Fully detached from the applet. ``done_path`` (optional)
     receives claude's exit code on completion — see :func:`shell_command`."""
     term = resolved(preferred)
     file = write_prompt(prompt)
-    cmd = shell_command(file, done_path)
-    # Run under the user's INTERACTIVE shell (-i) so their rc is sourced and the
-    # `claude` alias + exported env are present — a plain `bash -c` gets neither.
-    argv = [term.exec_name, *term.prefix, user_shell(), "-i", "-c", cmd]
+    argv = [term.exec_name, *term.prefix, *agent_argv(file, done_path)]
     try:
-        popen_detached(argv)
+        popen_detached(argv, env=spawn_env())
     except OSError as exc:
         raise SpawnError(f"failed to launch {term.title}: {exc}") from exc
     return file
