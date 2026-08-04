@@ -514,8 +514,9 @@ nudge opens no window at all - it types into a session that already exists.)
   authors are never auto-reviewed.
 - **Claude API-error watcher** - every ~20s reads each agent session's visible
   tail (macOS: any iTerm/Terminal session; Linux: **tmux panes only** - there's no
-  portable way to read or type into an arbitrary Linux emulator, so an agent must
-  be running inside tmux to be watched). An agent stalled on a transient API error
+  portable way to read or type into an arbitrary Linux emulator, so the Linux
+  spawner opens each agent in a tmux session of its own and an agent started
+  outside one is not watched). An agent stalled on a transient API error
   (overloads, connection failures, bare `429` rate-limits, status-page errors) gets
   a continue nudge typed into that exact session, with a per-session 2m → 3h
   backoff so a persistently broken one isn't hammered. A single erroring scan never

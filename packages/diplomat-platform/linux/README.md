@@ -13,7 +13,8 @@ assets — and it doesn't re-implement prompt assembly at all: it shells out to 
 handle to track it by, so a running agent has no row to click, only the slot it
 occupies. Also macOS-only: reading/typing into *arbitrary* terminal windows — Linux
 has no portable hook for that, so the API-error watcher drives **tmux panes**
-instead and is inert for agents not running inside tmux.
+instead. Every SPAWN opens its agent in a tmux session of its own wherever tmux is
+installed, so the watcher reaches them; an agent started any other way is outside it.
 
 Universal across desktops via Qt6's `QSystemTrayIcon` (StatusNotifierItem /
 XEmbed): works on **XFCE** (Notification Area / Status Notifier panel plugin),
@@ -79,8 +80,14 @@ here there are no session rows to sort, so the list starts at that order's *star
   `DIPLOMAT_CORE_BIN` at a prebuilt one
 - A terminal emulator for the wizards' SPAWN (auto-detected:
   `x-terminal-emulator`, `xfce4-terminal`, `gnome-terminal`, `konsole`, `kitty`,
-  `alacritty`, `xterm`); **tmux** additionally, if you want the API-error watcher
-  to be able to see your agents
+  `alacritty`, `xterm`)
+- **tmux**, strongly recommended. A spawn runs the agent under your interactive
+  shell, so your rc is sourced and a `claude` alias resolves — which also means an
+  rc that starts every terminal inside tmux (`exec tmux new-session`, guarded on an
+  empty `$TMUX`) would replace the agent's command with an empty session. Diplomat
+  opens that session itself, which satisfies the guard and is also the only way the
+  API-error watcher can see the agent. Without tmux the agent runs directly under
+  `$SHELL -i`, and such an rc swallows it
 - Optional: the `cryptography` package, for mesh device keys
 
 ## Run
