@@ -687,6 +687,14 @@ check(summary.perTask.mean == 5, "500k of a 10M window is 5%")
 check(summary.pendingReviewsNow == 1 && summary.pendingConflictsNow == 0,
       "started work is not still owed")
 check(summary.repoTokens == 1_800_000 && summary.otherTokens == 1_000_000)
+// The quota readings are drawn as they were taken, not resampled onto a grid: the
+// 5-hour window's sawtooth is the shape worth seeing, and interpolating it would
+// smooth away the resets that give it its meaning.
+check(summary.quota.count == 4, "a quota reading was dropped or invented")
+check(summary.quota.map(\.sessionPct) == [100, 85, 75, 100],
+      "the readings moved off the instants they were measured at")
+check(summary.sessionLeftPct == 100 && summary.weekLeftPct == 97,
+      "the headline is the newest reading of each window")
 check(Telemetry.duration(0, samples: 0) == "—", "no samples must not read as instant")
 check(Telemetry.duration(90) == "1m 30s")
 check(Telemetry.duration(5400) == "1h 30m")
@@ -701,6 +709,17 @@ let unpricedSummary = Telemetry.summarize(unpriced, now: tNow, days: 14, steps: 
 check(unpricedSummary.sessionLimitTokens == nil)
 check(unpricedSummary.perTask.count == 0, "a percentage was invented without a price")
 check(unpricedSummary.perTaskTokensMean == 500_000, "the raw cost is still reported")
+// A probe that has been down for an hour must not blank a figure it measured
+// perfectly well an hour ago, and a missing reading is not a window at zero.
+let blind = Telemetry.fold(lines: tLines + [
+    #"{"at": 1784914400, "ev": "sample", "sessionLeft": null, "weekLeft": null, "repoTokens": 1800000, "otherTokens": 1000000}"#,
+])
+let blindSummary = Telemetry.summarize(blind, now: tNow, days: 14, steps: 56,
+                                       binCount: 12, z: 1.96)
+check(blindSummary.quota.count == 5, "a blind sample is still a sample taken")
+check(blindSummary.quota.last?.sessionPct == nil, "a gap was filled in")
+check(blindSummary.sessionLeftPct == 100 && blindSummary.weekLeftPct == 97,
+      "a silent probe blanked the last figure it did measure")
 print("telemetry assertions passed")
 
 // ---- known-mine single-PR review prompt (auto-fix monitor) ----

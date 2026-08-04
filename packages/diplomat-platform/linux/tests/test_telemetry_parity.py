@@ -71,10 +71,13 @@ def _ledger_lines() -> list[str]:
          "weekLeft": 0.94, "repoTokens": 1_200_000.0, "otherTokens": 600_000.0},
         {"at": NOW - 4 * DAY, "ev": "sample", "sessionLeft": 0.5, "weekLeft": 0.9,
          "repoTokens": 4_200_000.0, "otherTokens": 1_800_000.0},
-        # No quota reading (probe offline) — the counters still move.
-        {"at": NOW - 2 * DAY, "ev": "sample", "sessionLeft": None, "weekLeft": None,
+        {"at": NOW - 2 * DAY, "ev": "sample", "sessionLeft": 0.2, "weekLeft": 0.8,
          "repoTokens": 5_000_000.0, "otherTokens": 2_000_000.0},
-        {"at": NOW - 1 * DAY, "ev": "sample", "sessionLeft": 0.2, "weekLeft": 0.8,
+        # The NEWEST sample carries no quota reading (the probe was offline, or
+        # Claude Code was logged out). Deliberately last: the "what is left right
+        # now" figures must fall back to the newest reading that carried a value,
+        # and the chart must break its line here rather than plunge to zero.
+        {"at": NOW - 1 * DAY, "ev": "sample", "sessionLeft": None, "weekLeft": None,
          "repoTokens": 6_000_000.0, "otherTokens": 2_400_000.0},
     ]
 
@@ -219,6 +222,15 @@ def test_the_fixture_exercises_every_figure(both):
     assert p["avgRunSecs"] > 0 and p["avgWaitSecs"] > 0
     assert p["remoteCount"] == 1, "the mesh-placed task is missing"
     assert p["unattributedCount"] == 1, "the uncosted completion is missing"
+    assert p["quota"], "no quota readings — the rate-limit chart has nothing to draw"
+    assert any(q["sessionPct"] is None for q in p["quota"]), (
+        "the fixture has no probe-offline gap, so an implementation that dropped the "
+        "gap (or interpolated across it) would pass"
+    )
+    assert p["sessionLeftPct"] == 20 and p["weekLeftPct"] == 80, (
+        "the headline must be the last reading that CARRIED a value, not the last "
+        "sample — the fixture's newest sample is a probe-offline one"
+    )
     assert p["peakReviews"] > 0 and p["peakConflicts"] > 0
     assert p["pendingReviewsNow"] > 0 and p["pendingConflictsNow"] > 0, (
         "nothing owed at `now` — the series ends flat and its tail is untested"

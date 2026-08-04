@@ -1,7 +1,7 @@
 import Foundation
 
 /// The Telemetry screen's arithmetic: fold the append-only ledger into per-task
-/// records, then reduce those into the seven figures both front-ends render.
+/// records, then reduce those into the figures both front-ends render.
 ///
 /// **Why a ledger and not counters.** Four of the seven figures are about *time* —
 /// how long work waited, how long it ran, how much was owed on each of the last
@@ -24,10 +24,13 @@ import Foundation
 ///
 /// plus one `sample` per poll carrying the account's remaining quota fractions and
 /// this machine's cumulative Claude token counters, split monitored-repo vs
-/// everything else. Samples are what make tokens comparable to a *limit*: the pair
-/// (quota consumed, tokens spent) over an interval prices the rate-limit window in
-/// tokens, and a task's own token count then converts to a share of it. See
-/// `calibrate`.
+/// everything else.
+///
+/// The quota fractions are a measurement, and the screen draws them as one
+/// (`quotaSeries`): both rate-limit windows over the lookback, resets and all. They
+/// do double duty as the thing that makes *tokens* comparable to a limit — the pair
+/// (quota consumed, tokens spent) over an interval prices the window in tokens, and
+/// a task's own token count then converts to a share of it. See `calibrate`.
 ///
 /// Pure and `Foundation`-only, so it builds on Linux and is driven by
 /// `diplomat-core telemetry` — which is how `test_telemetry_parity.py` diffs it
@@ -338,6 +341,34 @@ public enum Telemetry {
         }
     }
 
+    // MARK: - Rate-limit windows over time
+
+    /// One quota reading: what fraction of each rate-limit window was still unspent.
+    public struct QuotaPoint: Equatable {
+        public let at: Double
+        /// Percent of the 5-hour window left, or nil when that reading is missing —
+        /// the probe was offline, or Claude Code was logged out. Nil is NOT zero, and
+        /// a chart must break its line rather than draw a plunge to the floor.
+        public let sessionPct: Double?
+        public let weekPct: Double?
+    }
+
+    /// The quota readings inside the range, oldest first.
+    ///
+    /// Unlike the pending series this is NOT resampled onto a fixed grid: these are
+    /// measurements, taken every `sampleIntervalSecs`, and the 5-hour window's
+    /// sawtooth is the shape worth seeing. Interpolating it onto 56 evenly spaced
+    /// instants would smooth away the resets that give it its meaning.
+    public static func quotaSeries(_ samples: [Sample], now: Double,
+                                   days: Double) -> [QuotaPoint] {
+        let start = now - days * 86_400
+        return samples.filter { $0.at >= start && $0.at <= now }.map {
+            QuotaPoint(at: $0.at,
+                       sessionPct: $0.sessionLeft.map { 100 * $0 },
+                       weekPct: $0.weekLeft.map { 100 * $0 })
+        }
+    }
+
     // MARK: - Token split
 
     /// Cumulative-counter deltas over the range, split monitored-repo vs everything
@@ -379,6 +410,12 @@ public enum Telemetry {
         public let avgWaitSecs: Double
         public let runSamples: Int
         public let waitSamples: Int
+
+        /// Every quota reading in the range, plus the latest of each window — what
+        /// is left right now, which is the number the reader checks first.
+        public let quota: [QuotaPoint]
+        public let sessionLeftPct: Double?
+        public let weekLeftPct: Double?
 
         public let pending: [PendingPoint]
         /// Owed right now, and the worst it got over the range.
@@ -445,6 +482,7 @@ public enum Telemetry {
         }
 
         let series = pendingSeries(ledger.tasks, now: now, days: days, steps: steps)
+        let quota = quotaSeries(ledger.samples, now: now, days: days)
         let (repo, other) = tokenSplit(samples)
         let total = repo + other
 
@@ -459,6 +497,12 @@ public enum Telemetry {
             avgWaitSecs: waits.isEmpty ? 0 : waits.reduce(0, +) / Double(waits.count),
             runSamples: runs.count,
             waitSamples: waits.count,
+            quota: quota,
+            // The LAST reading that actually carried a value, not the last sample:
+            // a probe that has been down for an hour must not blank a figure it
+            // measured perfectly well an hour ago.
+            sessionLeftPct: quota.last(where: { $0.sessionPct != nil })?.sessionPct,
+            weekLeftPct: quota.last(where: { $0.weekPct != nil })?.weekPct,
             pending: series,
             pendingReviewsNow: series.last?.reviews ?? 0,
             pendingConflictsNow: series.last?.conflicts ?? 0,

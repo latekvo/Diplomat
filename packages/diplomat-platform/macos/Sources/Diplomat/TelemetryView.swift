@@ -6,11 +6,12 @@ import DiplomatCore
 /// The macOS face of the ledger (`TelemetryLog`), and one of the panel's four
 /// screens: Actions · Mesh · **Telemetry** · Settings. It reads
 /// `~/.diplomat/pr-monitor/telemetry.jsonl`, folds it through the shared arithmetic
-/// (`DiplomatCore.Telemetry`), and draws seven figures:
+/// (`DiplomatCore.Telemetry`), and draws eight figures:
 ///
 /// * what share of the 5-hour rate-limit window one auto-task consumes, on average;
 /// * how that share is distributed, as a histogram with a fitted normal and a
 ///   confidence interval on the mean;
+/// * what the probe measured to be left of each rate-limit window, over the lookback;
 /// * how many auto-reviews were owed but unstarted, over the lookback;
 /// * the same for auto-fixes;
 /// * mean time from an agent starting to its completion sentinel;
@@ -52,8 +53,9 @@ struct TelemetryView: View {
     var body: some View {
         // Fold + summarize once per render: `TelemetryLog.load` caches until the file
         // changes, so a range flip re-does the arithmetic and not the parse.
+        let now = Date().timeIntervalSince1970
         let summary = Telemetry.summarize(
-            store.telemetryLedger, now: Date().timeIntervalSince1970, days: days,
+            store.telemetryLedger, now: now, days: days,
             steps: model?.series.steps ?? 56, binCount: model?.series.bins ?? 12,
             z: model?.confidence.z ?? 1.96)
         let hasData = !store.telemetryLedger.tasks.isEmpty
@@ -65,6 +67,7 @@ struct TelemetryView: View {
                 HStack(alignment: .top, spacing: 12) {
                     VStack(alignment: .leading, spacing: 10) {
                         costCard(summary)
+                        quotaCard(summary, now: now)
                         tokensCard(summary)
                     }
                     .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -193,6 +196,46 @@ struct TelemetryView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 note(blurb("limitSpread"))
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .cardChrome()
+    }
+
+    /// The one card here that is measured rather than derived: what the OAuth usage
+    /// probe says is left of each rate-limit window, drawn where it was sampled. It
+    /// stays truthful on a machine whose window was never priced, which is exactly
+    /// when `costCard` cannot show a percentage at all.
+    @ViewBuilder
+    private func quotaCard(_ s: Telemetry.Summary, now: Double) -> some View {
+        let sessionText = s.sessionLeftPct.map { Telemetry.percent($0) } ?? "—"
+        let weekText = s.weekLeftPct.map { Telemetry.percent($0) } ?? "—"
+        let gaps = s.quota.filter { $0.sessionPct == nil }.count
+        VStack(alignment: .leading, spacing: 6) {
+            cardHead("quotaLeft", sessionText)
+            note(blurb("quotaLeft"))
+            if s.quota.isEmpty {
+                note("No quota readings in this range. The probe uses the OAuth token "
+                     + "Claude Code already holds — is it logged in on this machine?")
+            } else {
+                // Two readings are the fewest that make a line; one is drawn as the
+                // headline alone rather than as an empty 120pt box.
+                if s.quota.count > 1 {
+                    QuotaChart(points: s.quota, days: days, now: now,
+                               sessionTint: tint("quotaLeft"),
+                               weekTint: tint("quotaWeek"))
+                        .frame(height: 120)
+                }
+                legend([(tint("quotaLeft"), "5-hour \(sessionText)"),
+                        (tint("quotaWeek"), "\(title("quotaWeek")) \(weekText)")])
+                // A gap is the probe failing to answer, not the window emptying. The
+                // chart breaks its line across one; saying how many keeps a blind
+                // stretch from reading as a quiet one.
+                if gaps > 0 {
+                    note("\(gaps) reading\(gaps == 1 ? "" : "s") missing of "
+                         + "\(s.quota.count) — the probe could not answer then, so the "
+                         + "line breaks rather than dropping to zero.")
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -431,6 +474,93 @@ private struct PendingChart: View {
             // y-axis eating the width.
             ctx.draw(axisText("peak \(top)"),
                      at: CGPoint(x: padL + 2, y: padT + 4), anchor: .leading)
+        }
+    }
+}
+
+/// Both rate-limit windows over the lookback, on a fixed 0-100% axis.
+///
+/// Nothing here is derived: these are the readings the OAuth usage probe returned,
+/// drawn where they were taken. The axis is pinned to 0-100 rather than scaled to the
+/// data, because "we never dropped below 60%" is the answer the chart exists to give,
+/// and an auto-scaled one would show that week and a week of exhaustion as the same
+/// picture.
+///
+/// The 5-hour window is drawn as a fill (it saws — it refills on its own cycle, so the
+/// shape matters more than any one value) and the 7-day as a line over it.
+private struct QuotaChart: View {
+    let points: [Telemetry.QuotaPoint]
+    /// The lookback the axis spans, and the instant it ends at. The axis is the
+    /// whole range rather than the span of the readings, so it lines up with the
+    /// owed-work chart beside it and a probe that stopped answering three days ago
+    /// leaves visible empty axis instead of a line that appears to reach `now`.
+    let days: Double
+    let now: Double
+    let sessionTint: Color
+    let weekTint: Color
+
+    /// The readings split into unbroken runs, cut at every gap. A missing reading is
+    /// not a zero — it is a probe that could not answer — so the line has to stop and
+    /// restart rather than dive to the floor and back, which would read as an
+    /// exhausted window that recovered.
+    private func runs(_ value: (Telemetry.QuotaPoint) -> Double?) -> [[(Double, Double)]] {
+        var out: [[(Double, Double)]] = []
+        var current: [(Double, Double)] = []
+        for p in points {
+            guard let v = value(p) else {
+                if current.count > 1 { out.append(current) }
+                current = []
+                continue
+            }
+            current.append((p.at, v))
+        }
+        if current.count > 1 { out.append(current) }
+        return out
+    }
+
+    var body: some View {
+        Canvas { ctx, size in
+            let span = days * 86_400
+            guard points.count > 1, span > 0 else { return }
+            let start = now - span
+            let padL: CGFloat = 4, padR: CGFloat = 4, padT: CGFloat = 8, padB: CGFloat = 16
+            let w = size.width - padL - padR
+            let h = size.height - padT - padB
+
+            func xOf(_ at: Double) -> CGFloat { padL + w * CGFloat((at - start) / span) }
+            func yOf(_ pct: Double) -> CGFloat {
+                padT + h * CGFloat(1 - min(100, max(0, pct)) / 100)
+            }
+
+            // The half-way rule, so a glance can place a run against "half spent".
+            var half = Path()
+            half.move(to: CGPoint(x: padL, y: yOf(50)))
+            half.addLine(to: CGPoint(x: padL + w, y: yOf(50)))
+            ctx.stroke(half, with: .color(.white.opacity(0.07)), lineWidth: 1)
+
+            for run in runs({ $0.sessionPct }) {
+                var fill = Path()
+                fill.move(to: CGPoint(x: xOf(run[0].0), y: padT + h))
+                for (at, pct) in run { fill.addLine(to: CGPoint(x: xOf(at), y: yOf(pct))) }
+                fill.addLine(to: CGPoint(x: xOf(run[run.count - 1].0), y: padT + h))
+                fill.closeSubpath()
+                ctx.fill(fill, with: .color(sessionTint.opacity(0.30)))
+            }
+
+            for run in runs({ $0.weekPct }) {
+                var line = Path()
+                for (i, point) in run.enumerated() {
+                    let p = CGPoint(x: xOf(point.0), y: yOf(point.1))
+                    if i == 0 { line.move(to: p) } else { line.addLine(to: p) }
+                }
+                ctx.stroke(line, with: .color(weekTint), lineWidth: 1.8)
+            }
+
+            ctx.draw(axisText("100%"), at: CGPoint(x: padL, y: padT + 4), anchor: .leading)
+            ctx.draw(axisText(dayLabel(start)),
+                     at: CGPoint(x: padL, y: padT + h + 8), anchor: .leading)
+            ctx.draw(axisText("now"),
+                     at: CGPoint(x: padL + w, y: padT + h + 8), anchor: .trailing)
         }
     }
 }

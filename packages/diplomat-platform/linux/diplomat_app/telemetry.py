@@ -7,7 +7,7 @@ writer that has no Swift counterpart here — macOS writes the same file from
 like the activity feed so two processes appending at once can't clobber each
 other.
 
-**Why a ledger and not counters.** Four of the screen's seven figures are about
+**Why a ledger and not counters.** Most of the screen's figures are about
 *time* — how long work waited, how long it ran, how much was owed on each of the
 last fourteen days — and a counter cannot be asked what it read last Tuesday. So
 the monitors record events and every figure is derived on read. Nothing in the
@@ -31,10 +31,14 @@ already the identity two machines agree on — :func:`autofix.work_key`):
 
 plus a ``sample`` every :data:`SAMPLE_INTERVAL_SECS` carrying the account's
 remaining quota fractions and this machine's cumulative Claude token counters,
-split monitored-repo vs everything else. Samples are what make tokens comparable
-to a *limit*: Anthropic publishes a utilization percentage and never a token
-budget, so the pair (quota consumed, tokens spent) over an interval is the only
-honest way to price the window — see :func:`calibrate`.
+split monitored-repo vs everything else.
+
+The quota fractions are a measurement, and the screen draws them as one
+(:func:`quota_series`): both rate-limit windows over the lookback, resets and
+all. They do double duty as the thing that makes *tokens* comparable to a limit —
+Anthropic publishes a utilization percentage and never a token budget, so the
+pair (quota consumed, tokens spent) over an interval is the only honest way to
+price the window in tokens; see :func:`calibrate`.
 
 The math half is a byte-for-byte twin of the Swift: ``diplomat-core telemetry``
 prints the same figures and ``tests/test_telemetry_parity.py`` diffs the two.
@@ -621,6 +625,40 @@ def pending_series(tasks: list[Task], *, now: float, days: float,
     return points
 
 
+# MARK: - Rate-limit windows over time
+
+
+@dataclass(frozen=True)
+class QuotaPoint:
+    at: float
+    #: Percent of the 5-hour window left, or None when that reading is missing —
+    #: the probe was offline, or Claude Code was logged out. None is NOT zero, and
+    #: a chart must break its line rather than draw a plunge to the floor.
+    session_pct: float | None
+    week_pct: float | None
+
+
+def quota_series(samples: list[Sample], *, now: float,
+                 days: float) -> list[QuotaPoint]:
+    """The quota readings inside the range, oldest first.
+
+    Unlike :func:`pending_series` this is NOT resampled onto a fixed grid: these
+    are measurements, taken every :data:`SAMPLE_INTERVAL_SECS`, and the 5-hour
+    window's sawtooth is the shape worth seeing. Interpolating it onto evenly
+    spaced instants would smooth away the resets that give it its meaning.
+    """
+    start = now - days * 86400
+    return [
+        QuotaPoint(
+            at=s.at,
+            session_pct=None if s.session_left is None else 100 * s.session_left,
+            week_pct=None if s.week_left is None else 100 * s.week_left,
+        )
+        for s in samples
+        if start <= s.at <= now
+    ]
+
+
 # MARK: - Token split
 
 
@@ -664,6 +702,12 @@ class Summary:
     avg_wait_secs: float = 0.0
     run_samples: int = 0
     wait_samples: int = 0
+
+    #: Every quota reading in the range, plus the latest of each window — what is
+    #: left right now, which is the number the reader checks first.
+    quota: tuple[QuotaPoint, ...] = ()
+    session_left_pct: float | None = None
+    week_left_pct: float | None = None
 
     pending: tuple[PendingPoint, ...] = ()
     pending_reviews_now: int = 0
@@ -721,6 +765,7 @@ def summarize(ledger: Ledger, *, now: float, days: float, steps: int,
         week_mean = sum(100 * tok / week_limit for tok in priced) / len(priced)
 
     series = pending_series(ledger.tasks, now=now, days=days, steps=steps)
+    quota = quota_series(ledger.samples, now=now, days=days)
     repo, other = token_split(samples)
     total = repo + other
 
@@ -734,6 +779,14 @@ def summarize(ledger: Ledger, *, now: float, days: float, steps: int,
         avg_wait_secs=sum(waits) / len(waits) if waits else 0.0,
         run_samples=len(runs),
         wait_samples=len(waits),
+        quota=tuple(quota),
+        # The LAST reading that actually carried a value, not the last sample: a
+        # probe that has been down for an hour must not blank a figure it measured
+        # perfectly well an hour ago.
+        session_left_pct=next((q.session_pct for q in reversed(quota)
+                               if q.session_pct is not None), None),
+        week_left_pct=next((q.week_pct for q in reversed(quota)
+                            if q.week_pct is not None), None),
         pending=tuple(series),
         pending_reviews_now=series[-1].reviews if series else 0,
         pending_conflicts_now=series[-1].conflicts if series else 0,
@@ -849,6 +902,11 @@ def parity_payload(ledger: Ledger, summary: Summary) -> dict:
         "avgWaitSecs": _r(summary.avg_wait_secs),
         "runSamples": summary.run_samples,
         "waitSamples": summary.wait_samples,
+        "quota": [{"at": _r(q.at), "sessionPct": _opt(q.session_pct),
+                   "weekPct": _opt(q.week_pct)}
+                  for q in summary.quota],
+        "sessionLeftPct": _opt(summary.session_left_pct),
+        "weekLeftPct": _opt(summary.week_left_pct),
         "pending": [{"at": _r(p.at), "reviews": p.reviews, "conflicts": p.conflicts}
                     for p in summary.pending],
         "pendingReviewsNow": summary.pending_reviews_now,

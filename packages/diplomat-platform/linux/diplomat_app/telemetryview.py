@@ -3,11 +3,12 @@
 The Linux face of the ledger (:mod:`telemetry`), and one of the panel's four
 screens: Actions · Mesh · **Telemetry** · Settings. It reads
 ``~/.diplomat/pr-monitor/telemetry.jsonl``, folds it through the shared
-arithmetic, and draws seven figures:
+arithmetic, and draws eight figures:
 
 * what share of the 5-hour rate-limit window one auto-task consumes, on average;
 * how that share is distributed, as a histogram with a fitted normal and a
   confidence interval on the mean;
+* what the probe measured to be left of each rate-limit window, over the lookback;
 * how many auto-reviews were owed but unstarted, over the lookback;
 * the same for auto-fixes;
 * mean time from an agent starting to its completion sentinel;
@@ -16,7 +17,7 @@ arithmetic, and draws seven figures:
   everything else.
 
 Read-only: the one control is the lookback, and flipping it recomputes from the
-same fold. The two charts are painted rather than assembled from widgets — a
+same fold. The three charts are painted rather than assembled from widgets — a
 histogram and a two-series time plot are one ``paintEvent`` each, and the
 alternative is a few hundred stacked QFrames that Qt lays out on every repaint.
 
@@ -92,6 +93,11 @@ def _legend(entries: list[tuple[str, str]]) -> QHBoxLayout:
 
 
 def _clear_layout(layout) -> None:
+    """Empty a card so its rebuild can refill it. Everything inside is destroyed,
+    charts included — which is why each ``_rebuild_*`` builds its own chart rather
+    than re-adding one held on the view. A held one survives the first refresh (Qt
+    defers the destruction to the next event-loop turn) and is a dangling wrapper by
+    the second."""
     while layout.count():
         item = layout.takeAt(0)
         w = item.widget()
@@ -291,6 +297,121 @@ class PendingChart(QWidget):
         painter.end()
 
 
+class QuotaChart(QWidget):
+    """Both rate-limit windows over the lookback, on a fixed 0-100% axis.
+
+    Nothing here is derived: these are the readings the OAuth usage probe returned,
+    drawn where they were taken. The axis is pinned to 0-100 rather than scaled to
+    the data, because "we never dropped below 60%" is the answer the chart exists to
+    give, and an auto-scaled one would show that week and a week of exhaustion as
+    the same picture.
+
+    The 5-hour window is drawn as a fill (it saws — it refills on its own cycle, so
+    the shape matters more than any one value) and the 7-day as a line over it.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setFixedHeight(120)
+        self._points: tuple[telemetry.QuotaPoint, ...] = ()
+        self._days = 14.0
+        self._now = 0.0
+
+    def set_series(self, points: tuple[telemetry.QuotaPoint, ...], days: float,
+                   now: float) -> None:
+        """``days`` and ``now`` are the axis, not the readings: it spans the whole
+        lookback rather than the span of what was sampled, so it lines up with the
+        owed-work chart beside it and a probe that stopped answering three days ago
+        leaves visible empty axis instead of a line that appears to reach now."""
+        self._points = points
+        self._days = days
+        self._now = now
+        self.update()
+
+    @staticmethod
+    def _runs(points, value_of) -> list[list[tuple[float, float]]]:
+        """Split the readings into unbroken runs, cutting at every gap.
+
+        A missing reading is not a zero — it is a probe that could not answer — so
+        the line has to stop and restart rather than dive to the floor and back,
+        which would read as an exhausted window that recovered.
+        """
+        runs: list[list[tuple[float, float]]] = []
+        current: list[tuple[float, float]] = []
+        for p in points:
+            value = value_of(p)
+            if value is None:
+                if len(current) > 1:
+                    runs.append(current)
+                current = []
+                continue
+            current.append((p.at, value))
+        if len(current) > 1:
+            runs.append(current)
+        return runs
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        pts = self._points
+        span = self._days * 86400
+        if len(pts) < 2 or span <= 0:
+            return
+        start = self._now - span
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+
+        pad_l, pad_r, pad_t, pad_b = 4.0, 4.0, 8.0, 16.0
+        w = self.width() - pad_l - pad_r
+        h = self.height() - pad_t - pad_b
+
+        def x_of(at: float) -> float:
+            return pad_l + w * (at - start) / span
+
+        def y_of(pct: float) -> float:
+            return pad_t + h * (1.0 - min(100.0, max(0.0, pct)) / 100.0)
+
+        # The half-way rule, so a glance can place a run against "half spent".
+        pen = QPen(QColor(255, 255, 255, 18))
+        pen.setWidthF(1.0)
+        painter.setPen(pen)
+        painter.drawLine(int(pad_l), int(y_of(50)), int(pad_l + w), int(y_of(50)))
+
+        session_runs = self._runs(pts, lambda p: p.session_pct)
+        for run in session_runs:
+            fill = QPainterPath()
+            fill.moveTo(x_of(run[0][0]), pad_t + h)
+            for at, pct in run:
+                fill.lineTo(x_of(at), y_of(pct))
+            fill.lineTo(x_of(run[-1][0]), pad_t + h)
+            fill.closeSubpath()
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(_qcolor(_tint("quotaLeft"), 0.30))
+            painter.drawPath(fill)
+
+        for run in self._runs(pts, lambda p: p.week_pct):
+            line = QPainterPath()
+            for i, (at, pct) in enumerate(run):
+                px, py = x_of(at), y_of(pct)
+                line.moveTo(px, py) if i == 0 else line.lineTo(px, py)
+            pen = QPen(QColor(_tint("quotaWeek")))
+            pen.setWidthF(1.8)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(pen)
+            painter.drawPath(line)
+
+        painter.setPen(QColor(glyphs.MUTED))
+        f = painter.font()
+        f.setPixelSize(8)
+        painter.setFont(f)
+        painter.drawText(QRectF(pad_l, pad_t - 1, 40, 12),
+                         int(Qt.AlignmentFlag.AlignLeft), "100%")
+        painter.drawText(QRectF(pad_l, pad_t + h + 2, 90, 12),
+                         int(Qt.AlignmentFlag.AlignLeft), _day_label(start))
+        painter.drawText(QRectF(pad_l + w - 90, pad_t + h + 2, 90, 12),
+                         int(Qt.AlignmentFlag.AlignRight), "now")
+        painter.end()
+
+
 #: Month names, spelled out rather than left to ``strftime("%b")`` — that follows
 #: the process locale, so on a machine set to anything but English the chart axis
 #: would come out in a different language from every other word on the screen.
@@ -356,6 +477,8 @@ class TelemetryView(QWidget):
         left.setSpacing(10)
         self.cost_host, self.cost_col = card_host()
         left.addWidget(self.cost_host)
+        self.quota_host, self.quota_col = card_host()
+        left.addWidget(self.quota_host)
         self.tokens_host, self.tokens_col = card_host()
         left.addWidget(self.tokens_host)
         left.addStretch(1)
@@ -379,13 +502,11 @@ class TelemetryView(QWidget):
         col.addStretch(1)
 
         for host, layout in ((self.cost_host, self.cost_col),
+                             (self.quota_host, self.quota_col),
                              (self.tokens_host, self.tokens_col),
                              (self.pending_host, self.pending_col),
                              (self.timing_host, self.timing_col)):
             host.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
-
-        self.spread_chart = SpreadChart()
-        self.pending_chart = PendingChart()
 
         store.telemetry_changed.connect(self.rebuild)
         self.rebuild()
@@ -442,8 +563,9 @@ class TelemetryView(QWidget):
         range flip and on every sample: :func:`telemetry.load` caches the fold
         until the file actually changes."""
         ledger = telemetry.load()
+        now = time.time()
         summary = telemetry.summarize(
-            ledger, now=time.time(), days=self._days, steps=self._steps,
+            ledger, now=now, days=self._days, steps=self._steps,
             bin_count=self._bins, z=self._z)
 
         has_data = bool(ledger.tasks) or bool(ledger.samples)
@@ -454,6 +576,7 @@ class TelemetryView(QWidget):
             return
 
         self._rebuild_cost(summary)
+        self._rebuild_quota(summary, now)
         self._rebuild_tokens(summary)
         self._rebuild_pending(summary)
         self._rebuild_timing(summary)
@@ -507,8 +630,9 @@ class TelemetryView(QWidget):
         if not priced:
             return
 
-        self.cost_col.addWidget(self.spread_chart)
-        self.spread_chart.set_distribution(d)
+        chart = SpreadChart()
+        self.cost_col.addWidget(chart)
+        chart.set_distribution(d)
 
         stats = QLabel(
             f"{self._ci_title} {telemetry.percent(d.ci_low)} – "
@@ -531,6 +655,56 @@ class TelemetryView(QWidget):
         note.setWordWrap(True)
         note.setStyleSheet(muted(9))
         self.cost_col.addWidget(note)
+
+    def _rebuild_quota(self, s: telemetry.Summary, now: float) -> None:
+        """The one figure on this screen that is measured rather than derived: what
+        the usage probe says is left of each rate-limit window, drawn as it was
+        sampled."""
+        _clear_layout(self.quota_col)
+        left = s.session_left_pct
+        self._card_head(
+            self.quota_col, "quotaLeft",
+            telemetry.percent(left) if left is not None else "—",
+            caption=_blurb("quotaLeft"))
+        if not s.quota:
+            hint = QLabel(
+                "No quota readings in this range. The probe uses the OAuth token "
+                "Claude Code already holds — is it logged in on this machine?"
+            )
+            hint.setWordWrap(True)
+            hint.setStyleSheet(muted(9))
+            self.quota_col.addWidget(hint)
+            return
+
+        # Two readings are the fewest that make a line; one is drawn as the
+        # headline alone rather than as a 120px empty box.
+        if len(s.quota) > 1:
+            chart = QuotaChart()
+            self.quota_col.addWidget(chart)
+            chart.set_series(s.quota, self._days, now)
+
+        week = s.week_left_pct
+        self.quota_col.addLayout(_legend([
+            (_tint("quotaLeft"),
+             f"5-hour {telemetry.percent(left) if left is not None else '—'}"),
+            (_tint("quotaWeek"),
+             f"{_title('quotaWeek')} "
+             + (telemetry.percent(week) if week is not None else "—")),
+        ]))
+
+        # A gap is the probe failing to answer, not the window emptying. The chart
+        # breaks its line across one; saying how many keeps a blind stretch from
+        # reading as a quiet one.
+        gaps = sum(1 for q in s.quota if q.session_pct is None)
+        if gaps:
+            note = QLabel(
+                f"{gaps} reading{'' if gaps == 1 else 's'} missing of "
+                f"{len(s.quota)} — the probe could not answer then, so the line "
+                f"breaks rather than dropping to zero."
+            )
+            note.setWordWrap(True)
+            note.setStyleSheet(muted(9))
+            self.quota_col.addWidget(note)
 
     def _rebuild_tokens(self, s: telemetry.Summary) -> None:
         _clear_layout(self.tokens_col)
@@ -561,8 +735,9 @@ class TelemetryView(QWidget):
             caption=f"owed right now: {_title('pendingReviews').lower()} / "
                     f"{_title('pendingFixes').lower()}")
 
-        self.pending_col.addWidget(self.pending_chart)
-        self.pending_chart.set_series(s.pending, self._days)
+        chart = PendingChart()
+        self.pending_col.addWidget(chart)
+        chart.set_series(s.pending, self._days)
 
         self.pending_col.addLayout(_legend([
             (_tint("pendingReviews"),

@@ -419,13 +419,20 @@ reset*, and each executed job books usage on the executor.
 
 The panel's third screen (the header button between **⬡** and **⚙︎**) answers the
 question the monitors otherwise leave open: *what is all this costing, and is it
-keeping up?* Seven figures, over a lookback you pick (**7d / 14d / 30d / 60d**,
+keeping up?* Eight figures, over a lookback you pick (**7d / 14d / 30d / 60d**,
 default 14):
 
 - **Limit per task** - the share of one 5-hour rate-limit window an auto-task
   consumes on average, plus a **bell curve** of how that is distributed, with a 95%
   confidence interval on the mean drawn behind it (the histogram is the spread of
   the tasks; the band is how well the *average* is known, and is much narrower).
+- **Rate limit left** - what the usage probe measured to be left of each window,
+  drawn where it was sampled rather than resampled onto a grid: the 5-hour one saws
+  (it refills on its own cycle), the 7-day one is the slower ceiling. The axis is
+  pinned to 0-100% rather than scaled to the data, so "we never dropped below 60%"
+  and a week of exhaustion cannot come out as the same picture. A missing reading is
+  a probe that could not answer, not an empty window, so the line breaks across one
+  instead of diving to the floor and back.
 - **Owed work** over time - two filled series on one count axis, auto-reviews and
   conflict fixes, of work the monitors had found but nobody had started yet. Work
   picked up between two points on the chart never appears as a backlog, which is
@@ -440,8 +447,9 @@ default 14):
 
 ### Where the numbers come from
 
-Four of these are time-series questions a counter cannot answer ("how many were owed
-last Tuesday?"), so the source is an **append-only ledger** at
+Five of these are time-series questions a counter cannot answer ("how many were owed
+last Tuesday?", "how close to the ceiling did we get?"), so the source is an
+**append-only ledger** at
 `~/.diplomat/pr-monitor/telemetry.jsonl` - one JSON object per line, opened
 `O_APPEND` like the activity feed so this applet, its counterpart on the other OS and
 a mesh node can all append to one file. The monitors write `queued` when they first
@@ -468,9 +476,11 @@ Two gatherers fill in what GitHub doesn't know:
   rather than reading gigabytes of history it could never attribute anyway.
   `DIPLOMAT_CLAUDE_DIR` moves where it reads from.
 
-Anthropic publishes a **utilization percentage and never a token budget**, and the
-budget is dynamic - so "4% of the window" is not something that can be looked up. The
-5-hour window is instead **priced from what actually happened**: over an interval the
+The probe reports **what is left of each window** on every sample, and that reading is
+what *rate limit left* draws - measured, not derived. What Anthropic never publishes is
+a **token budget**, and the budget is dynamic - so the figure that cannot be looked up
+is the *per-task* share, "4% of the window". The 5-hour window is instead **priced from
+what actually happened**: over an interval the
 account spent `Δutil` of its window while this machine logged `Δtokens`, so the window
 is worth `Δtokens / Δutil`, summed across every interval that didn't span a reset. Until
 two quota readings exist there is no price, and the screen says so and shows raw tokens
@@ -903,7 +913,8 @@ packages/
         AuditCategory.swift        audit action verb → activity-feed filter category (mirrors assets/audit-categories.json)
         Mesh.swift                 mesh model: decodes assets/mesh.json + ~/.diplomat/mesh/state.json, pure placement
         Telemetry.swift            folds the telemetry ledger + every figure on the Telemetry screen: window
-                                   calibration, the distribution + its confidence interval, the pending series
+                                   calibration, the distribution + its confidence interval, the quota readings,
+                                   the pending series
       DiplomatCoreSmoke/       ← Linux-buildable core self-test (filters + prompts + golden files + live dump)
       DiplomatCoreCLI/         ← thin `build-prompt` CLI over the core (ships as the `diplomat-core` binary),
                                  so the Linux front-end shells out for Review/Conflicts/Audit prompts
@@ -936,7 +947,7 @@ packages/
         MeshBridge.swift           drives the local mesh node (spawn python3 -m szpontnet --daemon, NDJSON control)
         MeshView.swift             the ⬡ Mesh screen: node graph, tier/token/trust editors, duty table
         MeshSpawn.swift            the wizards' "⬡ Run on mesh" row + destination preview
-        TelemetryView.swift        the Telemetry screen: the bell curve, the backlog series, the token split
+        TelemetryView.swift        the Telemetry screen: the bell curve, the rate-limit windows, the backlog series, the token split
         TelemetryLog.swift         writes/reads ~/.diplomat/pr-monitor/telemetry.jsonl (append-only, rotated)
         UsageScan.swift            Claude Code transcript scanner: repo-vs-other tokens, per-task attribution
         Quota.swift                the OAuth usage probe — what is left of the 5-hour and 7-day windows

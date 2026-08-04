@@ -246,7 +246,9 @@ python tests/test_logic.py        # the logic tests, dependency-free (no pytest)
 - `tests/test_telemetry.py` - the ledger's IO and the two gatherers: what a poll
   records, what it clears, incremental transcript scanning, per-task attribution.
 - `tests/test_telemetry_view.py` - the screen's own judgement: the empty state, the
-  no-quota-readings fallback, the thin-sample warning, what a range flip re-scopes.
+  no-quota-readings fallback, the thin-sample warning, what a range flip re-scopes,
+  the last reading a silent probe did take, and (by rendering the widget and reading
+  its pixels) the rate-limit axis spanning the lookback rather than the readings.
 - `tests/test_review_author.py` - the wizard's author poll and the toggles it hides.
 - `tests/test_selfupdate.py` - fetch/merge/rebuild/relaunch, incl. the divergence case.
 - `tests/test_migrate.py` - the one-time `~/.argent` → `~/.diplomat` state move.
@@ -306,7 +308,7 @@ diplomat_app/
   meshspawn.py    the wizards' "⬡ Run on mesh" row
   meshview.py     the ⬡ Mesh topology screen
   telemetry.py    the append-only telemetry ledger + the arithmetic over it (twin of Telemetry.swift)
-  telemetryview.py  the Telemetry screen: the bell curve, the backlog series, the token split
+  telemetryview.py  the Telemetry screen: the bell curve, the rate-limit windows, the backlog series, the token split
   usagescan.py    Claude Code transcript scanner: repo-vs-other tokens, per-task attribution
   quota.py        the OAuth usage probe — what is left of the 5-hour and 7-day windows
   widgets.py      cards, chips, rows

@@ -11,7 +11,9 @@ decides what a number *means* rather than what it is:
   them into a share of the limit, and must say so instead of inventing a
   percentage;
 * a small sample must be labelled as one, because a bell curve drawn through four
-  points looks exactly as authoritative as one drawn through four hundred.
+  points looks exactly as authoritative as one drawn through four hundred;
+* a probe that has been silent for an hour must not blank a rate-limit figure it
+  measured perfectly well an hour ago.
 
 Every test drives the real widget under the offscreen Qt platform, over a ledger
 written through the real recorder into the per-test temp dir.
@@ -119,6 +121,38 @@ def test_without_two_quota_readings_it_reports_tokens_not_a_percentage(store):
     assert "5-hour window priced at" not in text
 
 
+def test_the_rate_limit_card_shows_the_latest_reading_of_each_window(store):
+    """The quota percentages are measured, not derived — the probe reports them
+    every sample — so this card is the one that stays truthful on a machine whose
+    window was never priced."""
+    now = time.time()
+    telemetry.append({"at": now - 1800, "ev": "sample", "sessionLeft": 0.60,
+                      "weekLeft": 0.95, "repoTokens": 1000.0, "otherTokens": 1000.0})
+    telemetry.append({"at": now - 300, "ev": "sample", "sessionLeft": 0.42,
+                      "weekLeft": 0.91, "repoTokens": 2000.0, "otherTokens": 2000.0})
+    telemetry._reset_cache()
+    view = _view(store)
+    text = "\n".join(_labels(view))
+    assert "5-hour 42.0%" in text
+    assert "7-day 91.0%" in text
+
+
+def test_a_silent_probe_keeps_the_last_reading_it_did_take(store):
+    """A missing reading is the probe failing to answer, not the window emptying.
+    Blanking the figure — or worse, drawing a plunge to zero — would report an
+    exhaustion that never happened."""
+    now = time.time()
+    telemetry.append({"at": now - 1800, "ev": "sample", "sessionLeft": 0.42,
+                      "weekLeft": 0.91, "repoTokens": 1000.0, "otherTokens": 1000.0})
+    telemetry.append({"at": now - 300, "ev": "sample", "sessionLeft": None,
+                      "weekLeft": None, "repoTokens": 1000.0, "otherTokens": 1000.0})
+    telemetry._reset_cache()
+    view = _view(store)
+    text = "\n".join(_labels(view))
+    assert "5-hour 42.0%" in text
+    assert "1 reading missing" in text
+
+
 def test_a_thin_sample_is_labelled_as_one(store):
     """A bell curve through three points looks exactly as authoritative as one
     through three hundred, which is the whole reason for the warning."""
@@ -153,6 +187,76 @@ def test_the_lookback_changes_what_is_counted(store):
     assert any("1 started" in t for t in _labels(view))
     view._set_days(30)
     assert any("2 started" in t for t in _labels(view))
+
+
+def test_flipping_the_lookback_leaves_exactly_one_live_chart_per_card(store):
+    """Rebuilding a card destroys everything in it, charts included — Qt just defers
+    the destruction to the next event-loop turn. A chart held on the view therefore
+    survives the first refresh and is a dangling C++ wrapper by the second, so each
+    rebuild has to make its own."""
+    from PySide6.QtCore import QEvent
+    from PySide6.QtWidgets import QApplication, QWidget
+
+    _seed()
+    view = _view(store)
+    for days in (7, 30, 14, 60):
+        view._set_days(days)
+        # Qt flushes deferred deletes only when the event loop turns, which is what
+        # turns a re-added chart into a dangling wrapper; force it here.
+        QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        alive = sorted(type(w).__name__ for w in view.findChildren(QWidget)
+                       if type(w).__name__.endswith("Chart"))
+        assert alive == ["PendingChart", "QuotaChart", "SpreadChart"], (
+            f"at {days}d the cards held {alive}")
+
+
+def _session_fill_columns(chart, width: int = 400, height: int = 120) -> list[int]:
+    """The x columns where the 5-hour window's fill was actually painted.
+
+    Picked out by hue: the fill is orange, the half-way rule is white (r == b) and
+    the 7-day line is purple (b > r), so "red well above blue" is the fill and only
+    the fill.
+    """
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QImage
+
+    chart.resize(width, height)
+    image = QImage(chart.size(), QImage.Format.Format_ARGB32)
+    image.fill(Qt.GlobalColor.transparent)
+    chart.render(image)
+    return [
+        x for x in range(width)
+        if any((lambda c: c.alpha() > 0 and c.red() > c.blue() + 20)(image.pixelColor(x, y))
+               for y in range(height))
+    ]
+
+
+def test_the_quota_axis_spans_the_lookback_not_just_the_readings(store):
+    """A probe that stopped answering days ago must leave visible empty axis. Scaling
+    the axis to the readings instead would stretch two days of history across a 60-day
+    chart and label its right edge `now`, which reports a currency the data doesn't
+    have."""
+    from diplomat_app.telemetryview import QuotaChart
+
+    now = 1_785_000_000.0
+    day = 86400.0
+    # Two days of readings at the end of a sixty-day lookback.
+    points = tuple(
+        telemetry.QuotaPoint(at=now - 2 * day + i * 900, session_pct=80.0, week_pct=90.0)
+        for i in range(192)
+    )
+    chart = QuotaChart()
+    chart.set_series(points, 60.0, now)
+    columns = _session_fill_columns(chart)
+
+    assert columns, "the 5-hour window was not drawn at all"
+    # 2 of 60 days is the last 3.3% of the width — allow slack for the line width and
+    # antialiasing, but nothing near the left half.
+    assert min(columns) > 400 * 0.9, (
+        f"the fill starts at x={min(columns)} of 400 — the axis was scaled to the "
+        f"readings rather than to the 60-day lookback"
+    )
+    assert max(columns) >= 400 * 0.98, "the newest reading is not at the right edge"
 
 
 def test_work_running_on_a_peer_is_not_charged_to_this_machine(store):

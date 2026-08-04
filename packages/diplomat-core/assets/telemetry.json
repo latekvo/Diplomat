@@ -49,6 +49,27 @@
       "colorHex": "#FFCC00"
     },
     {
+      "_comment": "Not derived from anything: the OAuth usage probe reports what is left of each rate-limit window, every sample, and this is that reading drawn as it was measured. The percentages elsewhere on the screen are per-TASK, which needs the window priced in tokens first (see calibrate) — this one does not.",
+      "id": "quotaLeft",
+      "title": "Rate limit left",
+      "blurb": "What is left of each rate-limit window, as measured every sample. The 5-hour window saws — it refills on its own cycle; the 7-day one is the slower ceiling.",
+      "unit": "percent",
+      "emoji": "\ud83d\udd0b",
+      "linuxGlyph": "\u25d4",
+      "sfSymbol": "gauge.with.dots.needle.bottom.50percent",
+      "colorHex": "#FF9F0A"
+    },
+    {
+      "id": "quotaWeek",
+      "title": "7-day",
+      "blurb": "The weekly window, the slower of the two ceilings.",
+      "unit": "percent",
+      "emoji": "\ud83d\udcc5",
+      "linuxGlyph": "\u25d1",
+      "sfSymbol": "calendar",
+      "colorHex": "#BF5AF2"
+    },
+    {
       "_comment": "The card head, which charts both series at once — so it is named for both. The two entries below are the SERIES: their titles key the legend and their colours the fills.",
       "id": "pendingWork",
       "title": "Owed work",
