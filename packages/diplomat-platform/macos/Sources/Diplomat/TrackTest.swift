@@ -171,12 +171,18 @@ enum TrackTest {
         let sample = proc(wid: "9", at: old)
         var meshSample = proc(wid: "", at: old)
         meshSample.terminal = ""
-        meshSample.mesh = .init(node: "softoobox", workKey: "review:github.com/a/b#7@sha")
+        // Placed back on this machine, because that is the reading a round-trip can
+        // silently lose: a run that came home and reloads as a peer's frees a slot
+        // this device is in fact using, and the cap spends it twice.
+        meshSample.mesh = .init(node: "softoobox", workKey: "review:github.com/a/b#7@sha",
+                                onThisMachine: true)
         let roundTrip = (try? JSONEncoder().encode([sample, meshSample]))
             .flatMap { try? JSONDecoder().decode([TrackedProcess].self, from: $0) }
         check("persistence round-trip preserves the record", roundTrip?.first == sample)
         check("…including which mesh node a row's agent is on",
               roundTrip?.last == meshSample && roundTrip?.last?.mesh?.node == "softoobox")
+        check("…and whether that node is this machine",
+              roundTrip?.last?.runsHere == true)
         // And a record written before mesh rows existed still decodes — the whole
         // list decodes as one value, so a strict `mesh` key would drop every session
         // the operator had open at the moment they upgraded.
@@ -189,6 +195,20 @@ enum TrackTest {
                                                       from: Data(legacy.utf8))
         check("a record from before mesh rows still decodes, as a local session",
               decodedLegacy?.count == 1 && decodedLegacy?.first?.isMesh == false)
+        // Same for a mesh row from before the placement was recorded: it decodes, and
+        // as a peer's — the reading that frees a slot rather than holding one, and the
+        // `ps` scan corrects it within seconds if the agent is in fact here.
+        let legacyMesh = """
+        [{"id":"\(UUID().uuidString)","kind":"review","label":"x","terminal":"",
+          "windowID":"","sessionID":"","tty":"","donePath":"",
+          "mesh":{"node":"softoobox","workKey":"review:github.com/a/b#7@sha"},
+          "createdAt":\(old.timeIntervalSinceReferenceDate)}]
+        """
+        let decodedMesh = try? JSONDecoder().decode([TrackedProcess].self,
+                                                    from: Data(legacyMesh.utf8))
+        check("a mesh row from before placements were recorded decodes as a peer's",
+              decodedMesh?.count == 1 && decodedMesh?.first?.isMesh == true
+                  && decodedMesh?.first?.runsHere == false)
 
         // 4. Focus script embeds the captured ids (so it targets the right window).
         let fs = ProcessMonitor.focusScript(term: .iterm, windowID: "999", sessionID: "SID")
