@@ -19,6 +19,11 @@ import Foundation
 /// anything ("running"), and work that has not started yet is last. Finished rows
 /// sit at the top because they are the only ones asking to be read.
 ///
+/// `starting` is the span between the two halves of that list: a task taken off the
+/// queue whose spawn has not answered yet. It sorts directly under the running
+/// agents because that is where the session it becomes will be drawn, so the row
+/// that a click turns from queued into starting barely moves again.
+///
 /// `free` is the one case that is not a task: it is a slot of the device's cap with
 /// nothing in it. It sorts with the running agents rather than with the queue
 /// because it stands where one of them would — the panel draws the cap as a row of
@@ -28,6 +33,7 @@ public enum AgentTaskStatus: Int, Comparable, CaseIterable {
     case done
     case awaitingInput
     case running
+    case starting
     case free
     case queued
 
@@ -36,8 +42,9 @@ public enum AgentTaskStatus: Int, Comparable, CaseIterable {
     }
 
     /// The status of a spawned session, from the three flags the tracker recomputes
-    /// on each sweep. A queued task has no session and is `.queued` by construction;
-    /// an empty slot has no task at all and is `.free`.
+    /// on each sweep. A queued task has no session and is `.queued` by construction
+    /// (`.starting` while its dispatch runs); an empty slot has no task at all and
+    /// is `.free`.
     public static func ofSession(merged: Bool, done: Bool,
                                  awaitingInput: Bool) -> AgentTaskStatus {
         if merged { return .merged }
@@ -53,6 +60,7 @@ public enum AgentTaskStatus: Int, Comparable, CaseIterable {
         case .done:          return "done"
         case .awaitingInput: return "awaiting input"
         case .running:       return "running"
+        case .starting:      return "starting"
         case .free:          return "free slot"
         case .queued:        return "queued"
         }

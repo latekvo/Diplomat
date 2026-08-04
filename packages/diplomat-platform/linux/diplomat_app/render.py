@@ -106,9 +106,9 @@ def _left_pane_fixture(store: Store) -> None:
 
 
 def _queue_fixture(store: Store) -> None:
-    """Synthetic deferred-work queue so the Agent-tasks list can be eyeballed: two
-    tasks the cap is holding, above the one bay a machine running a single automatic
-    agent has left.
+    """Synthetic deferred-work queue so the Agent-tasks list can be eyeballed: the row
+    a task wears between the click and its spawn, the bay that leaves free on a
+    two-agent cap, and the two tasks the cap is holding under them.
 
     Live-only, like every other fixture here — the monitor toggles a queued row reads
     for its "monitor off" note are the operator's real ones, and a render must not
@@ -134,14 +134,23 @@ def _queue_fixture(store: Store) -> None:
             attempt=attempt,
         )
 
+    starting = task(497, "review", "review-req", "Review-req · #497 (@hubot)",
+                    "review_requests")
     store.queued_tasks = [
         task(512, "review", "review-req",
              "Review-req · #512 (@octocat) −verdict (auto-approvals off)",
              "review_requests"),
         task(508, "conflicts", "conflicts", "Resolve · #508", "conflicts", attempt=2),
+        starting,
     ]
-    store._live_pr_agents = lambda: {390}  # one automatic agent up, so one bay is left
-    store._auto_tasks_measured = 1
+    # Through the real transition rather than assigned: what the render is for is the
+    # state a click leaves behind, and seeding the band directly would prove the row
+    # draws without proving the queue lets go of it.
+    store._begin_starting(starting)
+    # Nothing else running, so the bay the started task holds is the one the cap is
+    # short — which is what leaves the machine's other bay drawn beside it.
+    store._live_pr_agents = lambda: set()
+    store._auto_tasks_measured = 0
 
 
 def _telemetry_scratch() -> None:

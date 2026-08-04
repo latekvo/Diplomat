@@ -288,6 +288,19 @@ final class Store: ObservableObject {
     /// a poll cannot reconstruct.
     @Published var queuedTasks: [QueuedAgentTask] = []
 
+    /// Queued work whose dispatch is under way: it has left the queue and its spawn
+    /// has not answered yet.
+    ///
+    /// That span is seconds long — a `ps` scan, a mesh round-trip, an AppleScript
+    /// terminal — and for all of it the task is neither queued nor yet a session. It
+    /// is held here so that it is a ROW throughout, saying what the click just did to
+    /// it, rather than a gap where the operator's task used to be.
+    ///
+    /// In memory only, like the queue it comes from: a start that outlived the applet
+    /// would be a spawn nothing is waiting on, and the work is re-offered by the next
+    /// poll either way.
+    @Published private(set) var startingTasks: [QueuedAgentTask] = []
+
     /// This poll's deferrals, published as `queuedTasks` only once the whole cycle
     /// has succeeded: a failed fetch means "we no longer know what is owed", which
     /// is not the same as "nothing is owed", and must not empty the list.
@@ -1179,12 +1192,21 @@ final class Store: ObservableObject {
     /// predate a spawn this very poll made, the rows miss agents nobody tracked — and
     /// between two lower bounds the larger is the safer: it errs towards drawing one
     /// bay fewer, never towards offering a slot the gate would refuse.
+    ///
+    /// Work that is starting is ADDED to that, not folded into it: its spawn has
+    /// registered with neither source, so it is one neither bound can account for.
+    /// Taking the higher of the two and stopping there would lose it whenever the
+    /// measurement is already the higher — and drawn as free, its bay would put a row
+    /// that is launching next to the empty slot it is launching into, which is one row
+    /// more than the cap allows.
     var freeAutoSlots: Int {
         let tracked = Set(processes.filter {
             !$0.done && !$0.isMesh && $0.source != AgentDispatchGate.Source.panel.rawValue
         }.compactMap(\.prNumber)).count
-        return AgentTaskQueue.freeSlots(limit: autoTaskLimit,
-                                        running: max(autoTasksMeasured, tracked))
+        return AgentTaskQueue.freeSlots(
+            limit: autoTaskLimit,
+            running: max(autoTasksMeasured, tracked) + startingTasks.count
+        )
     }
 
     /// Whether the "deferring auto work" note has been logged for the current
@@ -1276,7 +1298,15 @@ final class Store: ObservableObject {
         stagedQueue = []
         let ordered = AgentTaskQueue.order(offered: staged.map(\.id), saved: queuedTaskOrder)
         queuedTaskOrder = ordered
-        queuedTasks = ordered.compactMap { id in staged.first { $0.id == id } }
+        // Work already starting is still offered — the attempt record that stops it
+        // being offered is written when its spawn answers — so a poll landing mid-
+        // dispatch would draw it a second time, back in the queue it just left. It
+        // keeps its place in the saved ARRANGEMENT, because a start that fails is
+        // re-offered, and dropping the key here would send it to the back.
+        let starting = Set(startingTasks.map(\.id))
+        queuedTasks = ordered.compactMap { id in
+            starting.contains(id) ? nil : staged.first { $0.id == id }
+        }
     }
 
     /// Run the queue down into whatever room this device has, in the operator's
@@ -1292,13 +1322,17 @@ final class Store: ObservableObject {
     /// queued row at once, for a reason none of them caused.
     private func drainQueuedTasks() async {
         for entry in drainableTasks {
+            // The list moves under this loop: it awaits a spawn per task, and an
+            // "execute now" during one of those takes its row off the queue and
+            // starts it there and then. Re-reading the queue is what keeps the drain
+            // from dispatching that same task a second time when it reaches it.
+            guard queuedTasks.contains(where: { $0.id == entry.id }) else { continue }
             guard await autoTasksRunning() < autoTaskLimit else { return }
             // Finding room here is what re-arms the saturation notice. The gate's own
             // reset sits behind the capacity measurement this path skips, so without
             // this the feed would carry one `at-capacity` line for an unbounded run of
             // saturate-and-drain episodes instead of one apiece.
             capacityLogged = false
-            queuedTasks.removeAll { $0.id == entry.id }
             if case .failed = await runQueuedTask(entry) { return }
         }
     }
@@ -1339,13 +1373,43 @@ final class Store: ObservableObject {
     /// agent exits, exactly like work never attempted — so an agent that finishes
     /// without clearing the conflict or leaving the review would be re-dispatched
     /// three minutes later, and again, with no backoff ever engaging.
+    ///
+    /// This is also the one place a task crosses from the queue into the starting
+    /// band, whether the drain reached it or the operator clicked. The move out of
+    /// `queuedTasks` runs before the first suspension, so the panel shows the click
+    /// landing and a second click finds nothing to start; the move out of
+    /// `startingTasks` runs in the same actor turn as the row that replaces it
+    /// (`track` / `trackMeshRun` are called inside `dispatchAgent`, which then returns
+    /// without suspending again). Between them the task is a row the whole way: never
+    /// drawn twice, and never missing.
     @discardableResult
     private func runQueuedTask(_ entry: QueuedAgentTask) async -> DispatchOutcome {
+        beginStarting(entry)
         let outcome = await dispatchAgent(entry.job, source: .auto,
                                           attemptNumber: entry.attemptNumber,
                                           bypassCapacity: true)
+        endStarting(entry.id)
         if outcome.wasHandled { recordQueuedAttempt(entry) }
         return outcome
+    }
+
+    /// Move one task out of the queue and into the starting band, and back out of it
+    /// when its dispatch answers.
+    ///
+    /// Not private: these are the halves of the transition the queue self-test drives.
+    /// The middle of a real one is a suspension inside `dispatchAgent`, which a test
+    /// could only observe by racing the spawn it is suspended on.
+    ///
+    /// The band is keyed by queue key like the queue itself — one task cannot be
+    /// starting twice, and the panel draws its list `ForEach` that key.
+    func beginStarting(_ entry: QueuedAgentTask) {
+        queuedTasks.removeAll { $0.id == entry.id }
+        guard !startingTasks.contains(where: { $0.id == entry.id }) else { return }
+        startingTasks.append(entry)
+    }
+
+    func endStarting(_ id: String) {
+        startingTasks.removeAll { $0.id == id }
     }
 
     /// Write the retry-backoff record for a task the queue dispatched, into the same
@@ -1375,13 +1439,15 @@ final class Store: ObservableObject {
     /// mesh, counters, label) this borrows exactly one: the cap, which is the only one
     /// the operator is overriding.
     ///
-    /// The feed line is written from the OUTCOME, never ahead of it: this is an auto
-    /// job, so a mesh peer can own the work, the PR can have gained an agent since
-    /// the list was built, and the spawn can fail — announcing "started" before
+    /// The ROW answers the click at once — `runQueuedTask` moves it into the starting
+    /// band before it suspends, so it reads as starting from the frame after the
+    /// press, through the seconds the mesh round-trip and the terminal spawn take.
+    /// The FEED line is written from the outcome instead, never ahead of it: this is
+    /// an auto job, so a mesh peer can own the work, the PR can have gained an agent
+    /// since the list was built, and the spawn can fail — announcing "started" before
     /// asking would report a launch that never happened in all three.
     func executeQueuedTask(_ id: String) async {
         guard let entry = queuedTasks.first(where: { $0.id == id }) else { return }
-        queuedTasks.removeAll { $0.id == id }
         switch await runQueuedTask(entry) {
         case .spawned:
             AuditLog.log("panel", "queue-run",

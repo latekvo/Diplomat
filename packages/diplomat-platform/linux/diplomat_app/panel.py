@@ -40,6 +40,7 @@ from .widgets import (
     QueuedTaskRow,
     ResultRow,
     SectionHeader,
+    StartingTaskRow,
     ToolCard,
     CARD_FILL_ALERT,
     card_host,
@@ -566,13 +567,14 @@ class Panel(QWidget):
         """The Agent-tasks list: what this machine is about to do, and how much room
         it has left.
 
-        Free slots first, then the queue, so the bays stand where the agents that
-        will fill them do — above the work still waiting (the reading order
-        `AgentTaskStatus` fixes on macOS, minus the session rows a detached `Popen`
-        gives this front-end no way to draw).
+        What is starting first, then the free slots, then the queue — the reading
+        order `AgentTaskStatus` fixes on macOS, minus the session rows a detached
+        `Popen` gives this front-end no way to draw. A task being started stands where
+        those agents would, above the bays and the work still waiting.
         """
         _clear_layout(self.tasks_col)
         queued = self.store.queued_tasks
+        starting = self.store.starting_tasks
         free = self.store.free_auto_slots
         running = self.store.auto_tasks_shown
         # What is running explains what is not free: with no session rows to count,
@@ -581,13 +583,25 @@ class Panel(QWidget):
                  f"{free} free" if free else ""]
         caption = " · ".join(p for p in parts if p)
 
+        # A starting task counts, or clicking the last queued row would drop the
+        # count for as long as its spawn takes.
         header = SectionHeader(glyph=glyphs.G_TASKS, title="Agent tasks",
-                               count=len(queued), caption=caption or None,
+                               count=len(queued) + len(starting),
+                               caption=caption or None,
                                expanded=self._tasks_expanded)
         header.clicked.connect(self._toggle_tasks)
         self.tasks_col.addWidget(header)
         if not self._tasks_expanded:
             return
+        for task in starting:
+            glyph, tint = _task_look(task.job.kind)
+            self.tasks_col.addWidget(StartingTaskRow(
+                label=autofix.dispatch_label(
+                    autofix.SOURCE_AUTO, task.job.label, task.attempt
+                ),
+                glyph=glyph,
+                hex_color=tint,
+            ))
         for _ in range(free):
             self.tasks_col.addWidget(FreeSlotRow())
         for task in queued:

@@ -352,6 +352,9 @@ struct ContentView: View {
         .background(cmdFCatcher)
         .animation(.easeInOut(duration: 0.18), value: store.processes)
         .animation(.easeInOut(duration: 0.18), value: store.queuedTasks)
+        // The queued → starting → session move is the one the operator drives by
+        // hand, so it is the one that must read as a move rather than a jump.
+        .animation(.easeInOut(duration: 0.18), value: store.startingTasks)
         // An agent starting or finishing takes a slot's row with it; without this the
         // bays pop in and out while the rows around them animate.
         .animation(.easeInOut(duration: 0.18), value: store.freeAutoSlots)
@@ -589,6 +592,10 @@ struct ContentView: View {
     private enum AgentTaskItem: Identifiable {
         case session(TrackedProcess)
         case queued(Store.QueuedAgentTask)
+        /// Off the queue, spawn not yet answered. Still the queued task — the same
+        /// key, so the row keeps its identity across the change and animates into
+        /// its new place instead of one row vanishing as another appears.
+        case starting(Store.QueuedAgentTask)
         /// An empty slot of the device's cap. Carries its position only, which is all
         /// that distinguishes one from another.
         case freeSlot(Int)
@@ -599,6 +606,7 @@ struct ContentView: View {
             switch self {
             case .session(let p): return "s-\(p.id.uuidString)"
             case .queued(let q):  return "q-\(q.id)"
+            case .starting(let q): return "q-\(q.id)"
             case .freeSlot(let i): return "free-\(i)"
             }
         }
@@ -609,6 +617,7 @@ struct ContentView: View {
                 return AgentTaskStatus.ofSession(merged: p.merged, done: p.done,
                                                  awaitingInput: p.awaitingInput)
             case .queued:   return .queued
+            case .starting: return .starting
             case .freeSlot: return .free
             }
         }
@@ -624,6 +633,7 @@ struct ContentView: View {
     /// position is the tiebreak rather than an assumption about the sort.
     private var agentTaskItems: [AgentTaskItem] {
         let items = store.processes.map(AgentTaskItem.session)
+            + store.startingTasks.map(AgentTaskItem.starting)
             + store.queuedTasks.map(AgentTaskItem.queued)
             + (0..<store.freeAutoSlots).map(AgentTaskItem.freeSlot)
         return items.enumerated()
@@ -637,16 +647,19 @@ struct ContentView: View {
     private var agentTaskList: some View {
         let items = agentTaskItems
         let queued = store.queuedTasks.count
+        let starting = store.startingTasks.count
         let free = store.freeAutoSlots
         // Built outside the ViewBuilder: a builder call is where the type-checker is
         // slowest, and CI's runner is slower than this machine.
         let parts = [queued > 0 ? "\(queued) queued" : nil, free > 0 ? "\(free) free" : nil]
         let caption = parts.compactMap { $0 }.joined(separator: " · ")
         return VStack(alignment: .leading, spacing: 4) {
-            // The count is the tasks; empty slots are not among them (a device with
-            // nothing to do reads "0", not "2").
+            // The count is the tasks — a starting one among them, or clicking the
+            // last queued row would drop the count for as long as its spawn takes.
+            // Empty slots are not (a device with nothing to do reads "0", not "2").
             SectionHeader(title: "AGENT TASKS",
-                          count: store.processes.count + queued, expanded: $tasksExpanded,
+                          count: store.processes.count + queued + starting,
+                          expanded: $tasksExpanded,
                           icon: "antenna.radiowaves.left.and.right",
                           caption: caption.isEmpty ? nil : caption)
             if tasksExpanded {
@@ -667,6 +680,8 @@ struct ContentView: View {
                             onRun: { Task { await store.executeQueuedTask(task.id) } },
                             onDropped: { store.moveQueuedTask($0, onto: task.id) }
                         )
+                    case .starting(let task):
+                        StartingTaskRow(task: task, tint: agentTaskTint(task.job.kind))
                     case .freeSlot:
                         FreeSlotRow()
                     }
@@ -1046,6 +1061,8 @@ private struct AgentTaskStatusLabel: View {
         case .done:          return "checkmark.circle.fill"
         case .awaitingInput: return "ellipsis.circle.fill"
         case .running:       return "circle.fill"
+        // The wizard's SPAWN AGENT glyph: what this row is, is a spawn under way.
+        case .starting:      return "play.fill"
         case .free:          return "circle.dashed"
         case .queued:        return "clock.fill"
         }
@@ -1056,7 +1073,9 @@ private struct AgentTaskStatusLabel: View {
         case .merged:        return .purple
         case .done:          return .green
         case .awaitingInput: return .orange
-        case .running:       return .blue
+        // A task on its way to running, in running's colour: the click's answer is
+        // the row leaving the grey of the queue, before a word of it is read.
+        case .running, .starting: return .blue
         case .free:          return .secondary
         case .queued:        return .secondary
         }
@@ -1144,6 +1163,50 @@ private struct QueuedTaskRow: View {
             onDropped(dragged)
             return true
         } isTargeted: { targeted = $0 }
+    }
+}
+
+// MARK: - Starting agent-task row
+
+/// A queued task whose dispatch is under way — clicked, or reached by the drain —
+/// waiting on a mesh round-trip and a terminal spawn that take seconds between them.
+///
+/// It is the queued row minus the two handles that would now be lies (the order no
+/// longer decides when it runs; it is already running past the cap) and with the
+/// session's solid badge in place of the queue's dimmed one. Everything else — same
+/// label, same position in the list as the session it becomes — is deliberately the
+/// same, so what the operator watches is one row changing rather than rows appearing
+/// and disappearing under a click.
+private struct StartingTaskRow: View {
+    let task: Store.QueuedAgentTask
+    let tint: Color
+
+    private static let help = """
+        Starting this agent — waiting on the spawn. It is holding a slot of the cap \
+        already, like any automatic agent.
+        """
+
+    /// The label it will run under, as the queued row and the session both show it.
+    private var label: String {
+        AgentDispatchGate.label(source: .auto, core: task.job.label,
+                                attemptNumber: task.attemptNumber)
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            IconBadge(symbol: DiplomatUI.agentTaskIcon(task.job.kind), tint: tint)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(label).font(.caption).lineLimit(1)
+                AgentTaskStatusLabel(status: .starting)
+            }
+            Spacer(minLength: 4)
+            // Standing where the queued row's "execute now" was: the button has been
+            // pressed, and this is the thing it started, still going.
+            ProgressView().controlSize(.small)
+        }
+        .padding(6)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.06)))
+        .help(StartingTaskRow.help)
     }
 }
 

@@ -1268,6 +1268,122 @@ def test_execute_now_says_why_when_nothing_opens(store, monkeypatch):
     store._execute_queued_task(entry)
 
     assert store.error is not None and "already on this PR" in store.error
+    # …and nothing is left spinning: a refusal that kept its starting row would be a
+    # task waiting on a spawn that will never answer.
+    assert store.starting_tasks == []
+
+
+def test_execute_now_answers_the_press_before_the_worker_starts(store, monkeypatch):
+    """The dispatch is a worker thread's seconds-long round trip — a `ps` scan, a mesh
+    placement, a terminal. If the row only changed when that came back, the press would
+    look like it had done nothing (or, worse, deleted the task)."""
+    entry = autofix.QueuedTask(
+        id="review-req:3", job=_job(number=3, counter="review_requests"), attempt=1
+    )
+    store.queued_tasks = [entry]
+    # The worker is stubbed out entirely, so what is asserted below is the state the
+    # CALLING thread — the one that handled the click — left behind.
+    monkeypatch.setattr(type(store), "_execute_queued_task", lambda self, e: None)
+
+    store.execute_queued_task_async("review-req:3")
+
+    assert store.queued_tasks == [] and store.starting_tasks == [entry]
+
+
+def test_a_task_being_started_stays_on_the_panel(store, monkeypatch):
+    """Starting one takes seconds, and for all of them it is in neither list. Held in
+    neither, "execute now" reads as the click DELETING the row: it goes on the press,
+    and an agent appears in its place later, which is exactly what a dropped task
+    would look like."""
+    store.pr_autofix_enabled = False
+    _spawn_recorder(monkeypatch, finish=False)
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_snapshots", lambda *a, **k: [])
+    reqs = [_req(number=n, requested_at="2026-01-02") for n in (1, 2, 3, 4)]
+    monkeypatch.setattr(
+        "diplomat_app.autofixmonitor.fetch_review_requests", lambda *a, **k: reqs
+    )
+    store._autofix_poll_once()
+    assert [t.id for t in store.queued_tasks] == ["review-req:3", "review-req:4"]
+
+    starting = store.queued_tasks[0]
+    store._begin_starting(starting)
+    assert [t.id for t in store.queued_tasks] == ["review-req:4"]
+    assert [t.id for t in store.starting_tasks] == ["review-req:3"]
+    # Nor is it the drain's any more — it is already being started.
+    assert [t.id for t in store.drainable_tasks] == ["review-req:4"]
+
+    # The work stays owed until the spawn answers and the attempt is recorded, so the
+    # poll re-offers it. Published as queued as well, it would be two rows for one
+    # task — the second promising a start that is already under way.
+    store._autofix_poll_once()
+    assert [t.id for t in store.queued_tasks] == ["review-req:4"]
+    assert [t.id for t in store.starting_tasks] == ["review-req:3"]
+
+    # A start that comes to nothing is re-offered, so its key keeps its PLACE in the
+    # arrangement rather than coming back at the end of a queue the operator ordered.
+    store._end_starting(starting.id)
+    store._autofix_poll_once()
+    assert [t.id for t in store.queued_tasks] == ["review-req:3", "review-req:4"]
+
+
+def test_the_drain_skips_a_task_the_operator_started_under_it(store, monkeypatch):
+    """The drain waits on a spawn per task, so the list moves while it walks: an
+    "execute now" during one of those takes that row off the queue and starts it
+    there and then. Reaching it anyway would dispatch one unit of work twice."""
+    a = autofix.QueuedTask("review-req:3", _job(number=3, counter="review_requests"), 1)
+    b = autofix.QueuedTask("review-req:4", _job(number=4, counter="review_requests"), 1)
+    store.queued_tasks = [a, b]
+    ran = []
+
+    def fake_run(self, entry):
+        ran.append(entry.id)
+        self._begin_starting(b)  # the click lands while #3 is spawning
+        return "spawned"
+
+    monkeypatch.setattr(type(store), "_run_queued_task", fake_run)
+    monkeypatch.setattr(type(store), "_auto_tasks_running", lambda self: 0)
+
+    store._drain_queued_tasks()
+
+    assert ran == ["review-req:3"]
+
+
+def test_a_starting_task_holds_the_bay_it_is_about_to_fill(store):
+    """Drawn free, the panel would stand a row that is launching next to the empty
+    slot it is launching into — one row more than the cap allows."""
+    entry = autofix.QueuedTask(
+        id="review-req:3", job=_job(number=3, counter="review_requests"), attempt=1
+    )
+    store.queued_tasks = [entry]
+    assert store.auto_task_limit == 2 and store.free_auto_slots == 2
+
+    store._begin_starting(entry)
+    assert store.free_auto_slots == 1
+    store._end_starting(entry.id)
+    assert store.free_auto_slots == 2
+
+
+def test_a_dispatch_that_raises_leaves_no_row_starting(store, monkeypatch):
+    """The band is the one list a poll cannot rebuild — a starting key is left out of
+    the published queue on purpose — so the hand-off out of it has to survive a raise.
+    The dispatch reads files, scans `ps` and, on a live mesh, talks to a node; one of
+    those throwing would otherwise strand a row that never resolves, over work nothing
+    re-offers. The same throw before the band existed cost only the poll it was in."""
+    entry = autofix.QueuedTask(
+        id="review-req:3", job=_job(number=3, counter="review_requests"), attempt=1
+    )
+    store.queued_tasks = [entry]
+
+    def boom(*_a, **_k):
+        raise OSError("ps: cannot fork")
+
+    monkeypatch.setattr(type(store), "dispatch_agent", boom)
+
+    with pytest.raises(OSError):
+        store._run_queued_task(entry)
+
+    assert store.starting_tasks == []
 
 
 def test_the_queue_is_rebuilt_from_live_evidence_every_poll(store, monkeypatch):

@@ -533,6 +533,45 @@ class QueuedTaskRow(QFrame):
         return None if not key or key == self._task_id else key
 
 
+class StartingTaskRow(QFrame):
+    """A queued task whose dispatch is under way — clicked, or reached by the drain —
+    waiting on a mesh round-trip and a terminal spawn that take seconds between them.
+
+    It is the queued row minus the two handles that would now be lies (the order no
+    longer decides when it runs; it is already running past the cap) and with the lit
+    chip of the agent it is about to be. Everything else — same label, same list — is
+    deliberately the same, so what the operator watches is one row changing rather
+    than rows appearing and disappearing under a click.
+    """
+
+    _HELP = (
+        "Starting this agent — waiting on the spawn. It is holding a slot of the cap "
+        "already, like any automatic agent."
+    )
+
+    def __init__(self, *, label: str, glyph: str, hex_color: str) -> None:
+        super().__init__()
+        self.setToolTip(self._HELP)
+        self.setStyleSheet(
+            "StartingTaskRow { background-color: rgba(128,128,128,0.06);"
+            " border-radius: 6px; }"
+        )
+        row = QHBoxLayout(self)
+        row.setContentsMargins(6, 6, 6, 6)
+        row.setSpacing(8)
+        # Lit, where the queued row's is off: the first thing the click changes, read
+        # before a word of the row is.
+        row.addWidget(IconChip(glyph, hex_color, 22, active=True),
+                      0, Qt.AlignmentFlag.AlignVCenter)
+        col = QVBoxLayout()
+        col.setSpacing(1)
+        col.addWidget(ElidedLabel(label, 10, "#d8dbde"))
+        status = QLabel(f"{glyphs.G_STARTING} starting")
+        status.setStyleSheet(f"color: {glyphs.STARTING}; font-size: 9px;")
+        col.addWidget(status)
+        row.addLayout(col, 1)
+
+
 class FreeSlotRow(QFrame):
     """One slot of this device's automatic-task cap with nothing running in it.
 

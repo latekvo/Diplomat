@@ -210,6 +210,16 @@ class Store(QObject):
         # thing a poll cannot reconstruct. Always REPLACED, never mutated in place: the
         # poll worker writes it while the GUI thread reads it to draw the rows.
         self.queued_tasks: list[autofix.QueuedTask] = []
+        # Queued work whose dispatch is under way: it has left the queue and its spawn
+        # has not answered yet.
+        #
+        # That span is seconds long — a `ps` scan, a mesh round-trip, a terminal — and
+        # for all of it the task is neither queued nor yet an agent this panel counts.
+        # It is held here so that it stays a ROW throughout, saying what the click just
+        # did to it, rather than a gap where the operator's task used to be. In memory
+        # only, like the queue it comes from. Replaced, never mutated: the worker
+        # thread writes it while the GUI thread draws from it.
+        self.starting_tasks: list[autofix.QueuedTask] = []
         # This poll's deferrals, published as `queued_tasks` only once the whole cycle
         # has succeeded: a failed fetch means "we no longer know what is owed", which
         # is not the same as "nothing is owed", and must not empty the list.
@@ -1157,9 +1167,15 @@ class Store(QObject):
 
     @property
     def free_auto_slots(self) -> int:
-        """Slots of this device's cap with nothing in them, as the panel draws
-        them."""
-        return autofix.free_slots(self.auto_task_limit, self.auto_tasks_shown)
+        """Slots of this device's cap with nothing in them, as the panel draws them.
+
+        Work that is starting holds one. Its spawn has not registered anywhere yet,
+        but the bay is spoken for — and drawn as free it would put a row that is
+        launching next to the empty slot it is launching into, which is one row more
+        than the cap allows."""
+        return autofix.free_slots(
+            self.auto_task_limit, self.auto_tasks_shown + len(self.starting_tasks)
+        )
 
     def _log_at_capacity(self) -> None:
         """Note that automatic work is being held back — once per episode, not once
@@ -1217,13 +1233,21 @@ class Store(QObject):
         The LAST offer of a key wins, and its place in the queue is where it was
         first offered: within one poll the reconcilers run after the edge-trigger and
         carry the backoff-aware attempt number, so theirs is the job that should run,
-        while the position is the same task's either way."""
+        while the position is the same task's either way.
+
+        Work already starting is left out of the published list. It is still offered —
+        the attempt record that stops it being offered is written when its spawn
+        answers — so a poll landing mid-dispatch would draw it a second time, back in
+        the queue it just left. It keeps its place in the saved ARRANGEMENT, because a
+        start that fails is re-offered, and dropping the key would send it to the
+        back."""
         staged = self._staged_queue
         by_id = {e.id: e for e in staged}
         ordered = autofix.queue_order([e.id for e in staged], self.queued_task_order)
         self.queued_task_order = ordered
+        starting = {e.id for e in self.starting_tasks}
         before = self.queued_tasks
-        self.queued_tasks = [by_id[k] for k in ordered]
+        self.queued_tasks = [by_id[k] for k in ordered if k not in starting]
         if self.queued_tasks != before:
             self.tasks_changed.emit()
 
@@ -1240,6 +1264,12 @@ class Store(QObject):
         so walking the whole queue into the same failure would clear the panel of every
         queued row at once, for a reason none of them caused."""
         for entry in self.drainable_tasks:
+            # The list moves under this loop: it waits on a spawn per task, and an
+            # "execute now" during one of those takes its row off the queue and starts
+            # it there and then. Re-reading the queue is what keeps the drain from
+            # dispatching that same task a second time when it reaches it.
+            if not any(e.id == entry.id for e in self.queued_tasks):
+                continue
             if self._auto_tasks_running() >= self.auto_task_limit:
                 return
             # Finding room here is what re-arms the saturation notice. The gate's own
@@ -1247,7 +1277,6 @@ class Store(QObject):
             # this the feed would carry one `at-capacity` line for an unbounded run of
             # saturate-and-drain episodes instead of one apiece.
             self._capacity_logged = False
-            self._drop_queued(entry.id)
             if self._run_queued_task(entry) == "failed":
                 return
 
@@ -1274,11 +1303,25 @@ class Store(QObject):
         everything whose monitor is still on."""
         return [e for e in self.queued_tasks if not self.is_paused(e.job.counter)]
 
-    def _drop_queued(self, task_id: str) -> None:
-        """Take one task off the published queue (it is being started)."""
-        remaining = [e for e in self.queued_tasks if e.id != task_id]
-        if len(remaining) != len(self.queued_tasks):
-            self.queued_tasks = remaining
+    def _begin_starting(self, entry: autofix.QueuedTask) -> None:
+        """Move one task out of the queue and into the starting band, where it stays
+        for as long as its dispatch runs.
+
+        Idempotent, and keyed by queue key like the queue itself: "execute now" marks
+        the task on the GUI thread so the row answers the press, and the worker it
+        starts goes through here again."""
+        if any(e.id == entry.id for e in self.starting_tasks):
+            return
+        self.queued_tasks = [e for e in self.queued_tasks if e.id != entry.id]
+        self.starting_tasks = self.starting_tasks + [entry]
+        self.tasks_changed.emit()
+
+    def _end_starting(self, task_id: str) -> None:
+        """The spawn answered: the task is a running agent, or it is nothing. Either
+        way the panel has its own row for what happened next."""
+        remaining = [e for e in self.starting_tasks if e.id != task_id]
+        if len(remaining) != len(self.starting_tasks):
+            self.starting_tasks = remaining
             self.tasks_changed.emit()
 
     def _run_queued_task(self, entry: autofix.QueuedTask) -> str:
@@ -1289,10 +1332,23 @@ class Store(QObject):
         queued dispatch that wrote none would look, to the very next poll after the
         agent exits, exactly like work never attempted — so an agent that finishes
         without clearing the conflict or leaving the review would be re-dispatched
-        three minutes later, and again, with no backoff ever engaging."""
-        verdict = self.dispatch_agent(
-            entry.job, autofix.SOURCE_AUTO, entry.attempt, bypass_capacity=True
-        )
+        three minutes later, and again, with no backoff ever engaging.
+
+        This is also the one place a task crosses from the queue into the starting
+        band, whether the drain reached it or the operator clicked: it is a row on the
+        panel the whole way across, never drawn twice and never missing."""
+        self._begin_starting(entry)
+        try:
+            verdict = self.dispatch_agent(
+                entry.job, autofix.SOURCE_AUTO, entry.attempt, bypass_capacity=True
+            )
+        finally:
+            # Paired with the line above whatever the dispatch does, because the band
+            # is the one list a poll cannot rebuild: :meth:`commit_queue` leaves a
+            # starting key out of the published queue deliberately. A raise that got
+            # past here would leave a row that never resolves, over work nothing
+            # re-offers — where the same raise costs only the poll it happened in.
+            self._end_starting(entry.id)
         if verdict in ("spawned", autofix.VERDICT_STAND_DOWN):
             self._record_queued_attempt(entry)
         return verdict
@@ -1325,11 +1381,13 @@ class Store(QObject):
         operator is overriding.
 
         On a worker thread, like every other dispatch path: it assembles nothing but
-        it does spawn a terminal, and on a live mesh it waits on a node round-trip."""
+        it does spawn a terminal, and on a live mesh it waits on a node round-trip.
+        The row is moved into the starting band HERE, on the GUI thread, so it answers
+        the press in the same repaint rather than a worker's round-trip later."""
         entry = next((e for e in self.queued_tasks if e.id == task_id), None)
         if entry is None:
             return
-        self._drop_queued(entry.id)
+        self._begin_starting(entry)
 
         def work() -> None:
             self._execute_queued_task(entry)

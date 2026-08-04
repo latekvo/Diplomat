@@ -4,8 +4,9 @@ bays of that cap standing empty.
 The store's half of this is pinned in ``test_autofix.py``; what is asserted here is
 the part a passing store cannot promise — that the rows are actually drawn, that the
 row a *paused* monitor owns says so (a bare "queued" would promise a start that is
-never coming), and that the two handles a queued row carries reach the store: the
-click that runs it past the cap, and the drop that reorders the queue.
+never coming), that a task whose spawn is under way keeps a row of its own rather
+than leaving a gap, and that the two handles a queued row carries reach the store:
+the click that runs it past the cap, and the drop that reorders the queue.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ import pytest
 from diplomat_app import autofix
 from diplomat_app.panel import Panel
 from diplomat_app.store import Store
-from diplomat_app.widgets import FreeSlotRow, QueuedTaskRow
+from diplomat_app.widgets import FreeSlotRow, QueuedTaskRow, StartingTaskRow
 
 pytest.importorskip("PySide6")
 
@@ -108,6 +109,42 @@ def test_a_row_reads_as_the_session_it_will_become(panel):
     )
 
 
+def test_a_starting_task_keeps_a_row_where_its_agent_will_be(panel):
+    """The seconds between the click and the spawn are the whole complaint: with no
+    row for them the task vanishes on the press and reappears later, which is what a
+    dropped task looks like. It stands above the bays and the queue, where the agent
+    it becomes will be — and carries neither handle, since the order no longer decides
+    when it runs and it is already running past the cap."""
+    task = _queued(512)
+    panel.store.queued_tasks = [task, _queued(508)]
+    panel.store._begin_starting(task)
+    panel._rebuild_agent_tasks()
+
+    rows = _rows(panel, StartingTaskRow)
+    assert len(rows) == 1
+    assert "Auto · Review-req · #512 (@octocat)" in _row_text(rows[0])
+    assert "starting" in _row_text(rows[0])
+    from PySide6.QtWidgets import QPushButton
+
+    assert rows[0].findChildren(QPushButton) == []
+    assert [t.id for t in panel.store.queued_tasks] == ["review-req:508"]
+    # One bay left of the cap of two, because the starting task holds the other.
+    assert _row_kinds(panel) == ["StartingTaskRow", "FreeSlotRow", "QueuedTaskRow"]
+
+
+def test_the_task_count_carries_a_starting_row(panel):
+    """Clicking the last queued row would otherwise drop the count to zero for as
+    long as its spawn takes."""
+    task = _queued(512)
+    panel.store.queued_tasks = [task]
+    panel._rebuild_agent_tasks()
+    assert _task_count(panel) == 1
+
+    panel.store._begin_starting(task)
+    panel._rebuild_agent_tasks()
+    assert _task_count(panel) == 1
+
+
 def test_execute_now_asks_the_store_to_run_that_task(panel):
     ran = []
     panel.store.execute_queued_task_async = ran.append
@@ -144,6 +181,29 @@ def test_a_row_refuses_a_drop_of_itself(app):
     assert dropped == ["review-req:508"]
     assert mime_self.text() and mime_other.text()  # kept alive: the event borrows them
     row.deleteLater()
+
+
+def _row_kinds(panel) -> list[str]:
+    """The task rows in the order the list draws them."""
+    layout = panel.tasks_col
+    kinds = (StartingTaskRow, FreeSlotRow, QueuedTaskRow)
+    return [
+        type(layout.itemAt(i).widget()).__name__
+        for i in range(layout.count())
+        if isinstance(layout.itemAt(i).widget(), kinds)
+    ]
+
+
+def _task_count(panel) -> int:
+    """The number in the section header's count capsule."""
+    from diplomat_app.widgets import SectionHeader
+
+    header = _rows(panel, SectionHeader)[0]
+    from PySide6.QtWidgets import QLabel
+
+    return int(
+        next(c.text() for c in header.findChildren(QLabel) if c.text().isdigit())
+    )
 
 
 def _row_text(row) -> str:

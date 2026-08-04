@@ -41,8 +41,9 @@ jobs:
       # — a cheap whole-UI crash guard that needs no gh auth and no display. A
       # headless mode never persists (settings writes are headless-guarded), so it
       # can't touch any defaults. The `-procs` suffix seeds the Agent-tasks list
-      # (every session status plus queued rows) on top of the device pool, so both
-      # of the panel's row families are actually constructed.
+      # (every session status, the row a task wears while its spawn runs, and queued
+      # rows) on top of the device pool, so both of the panel's row families are
+      # actually constructed.
       - name: Headless panel render
         working-directory: packages/diplomat-platform/macos
         run: |

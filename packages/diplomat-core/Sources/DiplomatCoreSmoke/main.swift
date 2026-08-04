@@ -521,15 +521,20 @@ section("the agent-task list and the queue behind the cap")
 // (`AgentTaskStatus` has no twin: a Linux spawn has no session row to sort.)
 //
 // The list's reading order, which is also `ProcessRow`'s status precedence.
-check(AgentTaskStatus.allCases == [.merged, .done, .awaitingInput, .running, .free, .queued],
-      "finished first, then what wants a human, then what doesn't, then this device's "
-      + "empty slots, then what hasn't started")
+check(AgentTaskStatus.allCases
+      == [.merged, .done, .awaitingInput, .running, .starting, .free, .queued],
+      "finished first, then what wants a human, then what doesn't, then what is "
+      + "spawning, then this device's empty slots, then what hasn't started")
 check(AgentTaskStatus.merged < AgentTaskStatus.queued
       && AgentTaskStatus.awaitingInput < AgentTaskStatus.running,
       "the case order IS the sort order")
 check(AgentTaskStatus.running < AgentTaskStatus.free
       && AgentTaskStatus.free < AgentTaskStatus.queued,
       "an empty slot stands where a running agent would — under them, above the queue")
+check(AgentTaskStatus.running < AgentTaskStatus.starting
+      && AgentTaskStatus.starting < AgentTaskStatus.free,
+      "a task whose spawn is in flight is drawn where its session will be, not down "
+      + "in the queue it just left")
 check(AgentTaskStatus.ofSession(merged: true, done: true, awaitingInput: true) == .merged,
       "a landed PR is the definitive outcome — it outranks a local exit")
 check(AgentTaskStatus.ofSession(merged: false, done: true, awaitingInput: true) == .done,
@@ -539,7 +544,7 @@ check(AgentTaskStatus.ofSession(merged: false, done: false, awaitingInput: true)
 check(AgentTaskStatus.ofSession(merged: false, done: false, awaitingInput: false) == .running,
       "otherwise it is just running")
 check(AgentTaskStatus.queued.title == "queued" && AgentTaskStatus.awaitingInput.title == "awaiting input"
-      && AgentTaskStatus.free.title == "free slot",
+      && AgentTaskStatus.free.title == "free slot" && AgentTaskStatus.starting.title == "starting",
       "the words the rows show")
 
 // The empty bays the panel draws for the rest of the device's cap.

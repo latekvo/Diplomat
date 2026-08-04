@@ -119,10 +119,10 @@ tint) is shared in [`assets/audit-categories.json`](packages/diplomat-core/asset
 One list for what the machine is doing, what it is about to do, and how much room
 it has left - the agents it has **spawned**, the automatic work it is **holding**,
 and an empty bay per free slot of its [task cap](#autonomous-monitors). Rows read
-in status order: *merged*, *done*, *awaiting input*, *running*, *free slot*,
-*queued*, so finished work (the only kind asking to be read) sits at the top and
-everything not started yet is at the bottom. The list is always there: an idle
-machine with a cap of two reads `0 · 2 free` over two empty bays.
+in status order: *merged*, *done*, *awaiting input*, *running*, *starting*,
+*free slot*, *queued*, so finished work (the only kind asking to be read) sits at
+the top and everything not started yet is at the bottom. The list is always there:
+an idle machine with a cap of two reads `0 · 2 free` over two empty bays.
 
 - **Sessions** are every spawned agent, wizard- or monitor-launched. Click a row
   to focus its terminal window, ✕ to stop tracking it.
@@ -137,6 +137,11 @@ machine with a cap of two reads `0 · 2 free` over two empty bays.
   session by, so there the list is the queue and the bays: a local agent shows as
   the slot it takes, and one the mesh placed on a peer shows in the activity feed
   rather than on the list.)
+- **Starting** is a task between the queue and its agent: the click (or the drain)
+  has taken it, and the spawn - a `ps` scan, a mesh placement, a terminal - has not
+  answered yet. Seconds, and a row for all of them, so *execute now* never reads as
+  the click deleting the task. It holds a bay from the moment it starts, and the
+  session or mesh row that replaces it takes its place in the list.
 - **Free slots** are the rest of the cap. Each running automatic agent takes one;
   agents you spawn yourself from the panel take none, and neither does work the
   mesh placed on another machine - that spends the peer's capacity, not yours.
@@ -164,7 +169,7 @@ drain reaches it and the mesh answers.) The key order is remembered, so your
 arrangement survives the rebuild and a restart; nothing else is. *Execute now* keeps the task automatic in every other respect:
 same `Auto · ` label, same auto-handled counter, same mesh routing - the cap is
 the one hold it overrides. So a click can land the agent on a peer rather than
-here, and what replaces the queued row is a mesh row saying which; it occupies a
+here, and what the starting row becomes is a mesh row saying which; it occupies a
 slot of this machine's cap only when it actually runs on this machine.
 
 ## Actions - Review PRs
@@ -768,7 +773,8 @@ DIPLOMAT_PRINT_PROMPT=mine swift run Diplomat # assemble + print a prompt: mine|
 DIPLOMAT_SETTINGS_DUMP=1 ./Diplomat.app/Contents/MacOS/Diplomat  # resolved persisted settings
 DIPLOMAT_QUEUE_TEST=1 swift run Diplomat      # self-test: the queue behind the automatic-task cap
                                                      #   (capture, dedup, arrangement, what a paused
-                                                     #   monitor holds, free slots) and the mesh row a
+                                                     #   monitor holds, free slots, what a task being
+                                                     #   started is while its spawn runs) and the mesh row a
                                                      #   peer-routed task leaves behind (its lease's
                                                      #   lifetime, and that neither liveness source
                                                      #   touches the other's rows). Spawns nothing;
@@ -841,8 +847,8 @@ drift from each other by failing a CI job. Both also run the full monitor stack;
 what stays macOS-only is the per-row **Merge** button, the *session* rows of the
 [Agent tasks](#agent-tasks) list (a Linux spawn is a detached `Popen` with no
 window handle to track a session by, so a running agent shows there only as the
-slot it occupies - the queue and the free bays are on both), and reading arbitrary
-terminal windows (the Linux watcher drives tmux panes instead).
+slot it occupies - the queue, what is starting, and the free bays are on both), and
+reading arbitrary terminal windows (the Linux watcher drives tmux panes instead).
 
 This repository is a **monorepo of independent parts**: everything lives in
 `packages/`, one directory per package, and CI is arranged to keep them

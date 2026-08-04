@@ -199,7 +199,114 @@ enum QueueTest {
         check("more agents up than the cap allows is zero slots, never negative",
               store.freeAutoSlots == 0)
 
-        // 10. A task the mesh runs on a peer is still a task this panel shows. Before
+        // 10. Starting a task takes seconds — a `ps` scan, a mesh round-trip, an
+        //    AppleScript terminal — and for all of them it belongs to neither list.
+        //    Held in neither, "execute now" reads as the click DELETING the row: it
+        //    goes on the press, and a session appears in its place later, which is
+        //    indistinguishable from a task that was dropped.
+        //
+        //    The cap is one again with one agent up, so every offer below queues. The
+        //    commit is what clears section 8's last offer, which was deliberately left
+        //    staged: uncommitted, it would land in the first commit this section makes.
+        store.autoTaskLimit = 1
+        store.prAutofixEnabled = true
+        store.reviewRequestsEnabled = true
+        store.commitQueue()
+        store.processes = [
+            TrackedProcess(kind: "review", label: "Auto · Review · #1", terminal: "iterm",
+                           windowID: "1", sessionID: "", tty: "", donePath: "",
+                           prURL: "https://github.com/software-mansion/argent/pull/1",
+                           source: AgentDispatchGate.Source.auto.rawValue,
+                           createdAt: Date(), done: false),
+        ]
+        func offerBoth() async {
+            _ = await offer(job(4))
+            _ = await offer(job(6, action: "conflicts", label: "Resolve · #6",
+                                counter: .conflicts))
+        }
+        await offerBoth()
+        store.commitQueue()
+        check("two tasks queued, ready to start",
+              store.queuedTasks.map(\.id) == ["review-req:4", "conflicts:6"])
+        let starting = store.queuedTasks[0]
+        store.beginStarting(starting)
+        check("a task being started leaves the queue…",
+              store.queuedTasks.map(\.id) == ["conflicts:6"])
+        check("…for the band that keeps it a row while it spawns",
+              store.startingTasks.map(\.id) == ["review-req:4"])
+        check("…and the drain no longer sees it either",
+              store.drainableTasks.map(\.id) == ["conflicts:6"])
+
+        // The work stays owed until the spawn answers and the attempt is recorded, so
+        // a poll committing mid-dispatch re-offers it. Published as queued as well, it
+        // would be two rows for one task — the second promising a start that is
+        // already under way.
+        await offerBoth()
+        store.commitQueue()
+        check("a poll landing mid-dispatch does not put the row back in the queue",
+              store.queuedTasks.map(\.id) == ["conflicts:6"])
+        check("…and it is still starting", store.startingTasks.map(\.id) == ["review-req:4"])
+
+        // A start that comes to nothing is re-offered by the next poll, so its key has
+        // to keep its PLACE in the arrangement, rather than coming back at the end of a
+        // queue the operator ordered by hand.
+        store.endStarting(starting.id)
+        check("the spawn answering ends the starting band", store.startingTasks.isEmpty)
+        await offerBoth()
+        store.commitQueue()
+        check("a start that did not take comes back where it was, not at the back",
+              store.queuedTasks.map(\.id) == ["review-req:4", "conflicts:6"])
+
+        // Its bay is spoken for from the moment it starts. Drawn free, the panel would
+        // stand a row that is launching next to the empty slot it is launching into —
+        // one row more than the cap allows. (Raised after the offers above: with room
+        // to spare they would spawn rather than queue. Re-pinned too — every offer
+        // re-measures, and the `ps` scan behind that is the developer's own machine.)
+        store.autoTaskLimit = 3
+        store.pinAutoTasksMeasured(1)
+        check("one agent up under a cap of three leaves two bays", store.freeAutoSlots == 2)
+        store.beginStarting(store.queuedTasks[0])
+        check("…and a task starting takes one of them", store.freeAutoSlots == 1)
+        store.endStarting("review-req:4")
+
+        // The `ps` count and the rows are each a lower bound on what is running, and a
+        // starting task is outside BOTH — nothing has registered its spawn anywhere. So
+        // it is added to the higher of them rather than counted among them: one agent
+        // alive with no row behind it (the applet restart the measurement is there for)
+        // is enough to put `ps` ahead, and folded in there the starting task would
+        // vanish into the same number and hand its bay back as free.
+        store.pinAutoTasksMeasured(2)
+        check("a `ps` count ahead of the rows is what the bays are drawn from",
+              store.freeAutoSlots == 1)
+        let unrowed = store.queuedTasks[0]
+        store.beginStarting(unrowed)
+        check("…and a task starting takes one on top of it, not one of it",
+              store.freeAutoSlots == 0)
+        store.endStarting(unrowed.id)
+
+        // The whole click, honestly. #7 is queued, and by the time the operator gets to
+        // it an agent is already on that PR: the dispatch is refused, and a refusal
+        // that left its row starting would be a task spinning at a spawn that will
+        // never answer.
+        store.autoTaskLimit = 1
+        _ = await offer(job(7))
+        store.commitQueue()
+        check("#7 is queued", store.queuedTasks.map(\.id) == ["review-req:7"])
+        store.processes.append(
+            TrackedProcess(kind: "review", label: "Auto · Review-req · #7", terminal: "iterm",
+                           windowID: "7", sessionID: "", tty: "", donePath: "",
+                           prURL: "https://github.com/software-mansion/argent/pull/7",
+                           source: AgentDispatchGate.Source.auto.rawValue,
+                           createdAt: Date(), done: false))
+        await store.executeQueuedTask("review-req:7")
+        check("a refused start leaves no row spinning behind it",
+              store.startingTasks.isEmpty && store.queuedTasks.isEmpty)
+        check("…and says why nothing opened",
+              store.error?.contains("already on this PR") == true)
+        store.error = nil
+        store.processes = []
+
+        // 11. A task the mesh runs on a peer is still a task this panel shows. Before
         //    the mesh row existed, "execute now" on peer-routed work took the queued
         //    row away and put nothing in its place, which reads exactly like the click
         //    dropping the task. The row it leaves instead lives on the executor's
@@ -302,7 +409,7 @@ enum QueueTest {
         check("…and the sweep never asks a terminal about one", asked == 0)
         store.processes = []
 
-        // 11. The redirect above is the only thing between a run of this test and the
+        // 12. The redirect above is the only thing between a run of this test and the
         //    operator's real activity log, so prove it caught the writes.
         check("the at-capacity lines it provoked went to the scratch feed",
               FileManager.default.fileExists(

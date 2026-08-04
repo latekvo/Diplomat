@@ -24,10 +24,16 @@ XEmbed): works on **XFCE** (Notification Area / Status Notifier panel plugin),
 The left pane heads with what this machine is about to do and how much room it has
 left: the automatic work it is **holding**, and an empty bay per free slot of its
 [task cap](../../../README.md#autonomous-monitors). The section is always there. Its
-header counts the queued tasks and captions them with the machine's state — an idle
-one with a cap of two reads `0`, `2 free`, over two empty bays; a saturated one reads
-`3`, `2 running`, over the three tasks waiting behind them.
+header counts the tasks and captions them with the machine's state — an idle one with
+a cap of two reads `0`, `2 free`, over two empty bays; a saturated one reads `3`,
+`2 running`, over the three tasks waiting behind them.
 
+- **Starting** is a task between the queue and its agent: the click (or the drain)
+  has taken it, and the spawn has not answered yet. Seconds, and a row for all of
+  them, so *execute now* never reads as the click deleting the task. It holds a bay
+  from the moment it starts; when the spawn answers, an agent that landed here is
+  counted in the header's `N running`, and one the mesh placed on a peer shows in the
+  activity feed — there being no session row on this front-end to draw either as.
 - **Free slots** are the rest of the cap. Each running automatic agent takes one;
   agents you spawn yourself from the panel take none. Queued work starts here on the
   next poll.
@@ -59,7 +65,8 @@ count — are `AgentTaskQueue` in
 [`AgentTasks.swift`](../../diplomat-core/Sources/DiplomatCore/AgentTasks.swift), with
 a twin in `autofix.py` that the tests on both sides pin case for case. What macOS has
 on top is `AgentTaskStatus`, the sort that files spawned sessions above the bays;
-here there are no session rows to sort, so the bays come first and the queue after.
+here there are no session rows to sort, so the list starts at that order's *starting*
+— what is spawning, then the bays, then the queue.
 
 ## Requirements
 
@@ -218,7 +225,8 @@ python tests/test_logic.py        # the logic tests, dependency-free (no pytest)
 - `tests/test_autofix.py` - the monitors' pure decisions: the dispatch gate,
   edge/level triggers, backoff, mesh routing, the device's automatic-task cap, and
   the queue behind that cap (what a refusal defers, what a switched-off monitor
-  holds, the drain order, "execute now"). Pinned against the Swift twin.
+  holds, the drain order, "execute now", and what a task being started is while its
+  spawn runs). Pinned against the Swift twin.
 - `tests/test_agent_tasks_panel.py` - the panel half of that queue: the rows it
   draws, and the click and the drop that reach the store.
 - `tests/test_apiwatch.py` - the API-error matcher + the tmux watcher's backoff

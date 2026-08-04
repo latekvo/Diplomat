@@ -421,12 +421,14 @@ enum Render {
 
     /// For a render mode carrying `-procs`, inject fake tracked sessions and queued
     /// tasks so the whole Agent-tasks list can be eyeballed: every session status,
-    /// the sort that puts finished work on top and the queue at the bottom, and the
-    /// queued rows' drag grip and "execute now". No-op otherwise.
+    /// the sort that puts finished work on top and the queue at the bottom, the
+    /// queued rows' drag grip and "execute now", and the row a task wears between the
+    /// two — clicked, spawn not yet answered. No-op otherwise.
     ///
     /// The sessions are panel spawns (the fixture default), which spend none of the
-    /// automatic budget — so the device also draws its full cap of empty slots, and
-    /// one snapshot carries every row type the list has.
+    /// automatic budget — so the device also draws the empty slots of its cap (all but
+    /// the one the starting task holds), and one snapshot carries every row type the
+    /// list has.
     @MainActor
     private static func seedProcessesIfNeeded(_ what: String, store: Store) -> Bool {
         guard what.lowercased().contains("proc") else { return false }
@@ -465,13 +467,21 @@ enum Render {
                            source: AgentDispatchGate.Source.auto.rawValue,
                            createdAt: Date(), done: false),
         ]
+        let starting = queuedFixture(number: 497, kind: "review", auditAction: "review-req",
+                                     label: "Review-req · #497 (@hubot)",
+                                     counter: .reviewRequests)
         store.queuedTasks = [
             queuedFixture(number: 512, kind: "review", auditAction: "review-req",
                           label: "Review-req · #512 (@octocat) −verdict (auto-approvals off)",
                           counter: .reviewRequests),
             queuedFixture(number: 508, kind: "conflicts", auditAction: "conflicts",
                           label: "Resolve · #508", counter: .conflicts, attemptNumber: 2),
+            starting,
         ]
+        // Through the real transition rather than assigned: what the snapshot is for
+        // is the state a click leaves behind, and seeding the band directly would
+        // prove the row draws without proving the queue lets go of it.
+        store.beginStarting(starting)
         return true
     }
 
