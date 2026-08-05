@@ -1,11 +1,16 @@
-"""Pure Claude-API-error detection + backoff logic — the Linux port of
-DiplomatCore's ApiErrorMatch.swift (plus the backoff constants that live in
-Store.swift on macOS).
+"""Pure predicates over a Claude CLI pane's visible buffer — the Linux port of
+DiplomatCore's ApiErrorMatch.swift and AgentActivity.swift (plus the backoff
+constants that live in Store.swift on macOS).
+
+Two questions are asked of the same tail, and both are answered here because both
+are read off the CLI's own status bar: whether the session is *stalled on an API
+error* (and how long to wait before nudging it again), and whether it is *working
+at all* — a session that has finished its turn sits at its prompt indefinitely,
+which is neither an error nor a reason to keep holding a slot of the task cap.
 
 Kept deterministic and side-effect-free so it's unit-testable in isolation: the
 terminal reads/writes live in :mod:`tmuxwatch`, and the scan/dispatch/persistence
-in the Store. This module only decides *whether* a tail looks like a stalled agent
-and *how long* to wait before nudging the same pane again.
+in the Store.
 """
 
 from __future__ import annotations
@@ -100,6 +105,33 @@ def is_confirmed_stall(previous_tail: str | None, current_tail: str) -> bool:
     mid auto-retry with a live countdown. ``previous_tail`` is None the first scan a pane
     is seen erroring, which is never a confirmed stall."""
     return looks_like_api_error(current_tail) and previous_tail == current_tail
+
+
+# The interrupt hint the CLI renders only while a turn is actually in flight —
+# verbatim from AgentActivity.swift, so both front-ends read the same marker.
+BUSY_MARKER = "esc to interrupt"
+
+# How many non-empty visible lines from the bottom carry the LIVE status bar. Far
+# shorter than SCANNED_TAIL_LINES: an error banner sits well above the prompt box and
+# has to be reached for, but the interrupt hint is always the last line or two, and
+# reaching further would match the same hint left in scrollback by an earlier turn —
+# reading a finished agent as busy for as long as its window stays open, which is the
+# one mistake this must not make (mirrors AgentActivity.scannedTailLines).
+BUSY_TAIL_LINES = 5
+
+
+def looks_busy(visible: str) -> bool:
+    """True when a pane shows the CLI mid-turn — its interrupt hint is on the live
+    status bar. False means the turn ended and the session is back at its prompt,
+    awaiting input (mirrors AgentActivity.looksBusy).
+
+    An agent is spawned into an INTERACTIVE session (``review.shell_command``), so
+    finishing its work is not an exit: the process lives on at the prompt until a
+    human closes the window. Absence of the hint is the only thing that separates
+    those two states from the outside — ``ps`` shows the same live ``claude`` for
+    both, and the completion sentinel only ever fires on exit.
+    """
+    return BUSY_MARKER in last_lines(visible, BUSY_TAIL_LINES).lower()
 
 
 def next_backoff(prev_interval: float | None) -> float:

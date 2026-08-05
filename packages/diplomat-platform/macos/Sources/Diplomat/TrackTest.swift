@@ -155,6 +155,42 @@ enum TrackTest {
                                                      repo: "argent", psOutput: psDump)
         check("live-agent scan finds review + conflict agents, ignores the rest",
               refs == [436, 369])
+        // …and still does so on a dump with no tty column, which is what this fixture
+        // is: the argv scan predates the tty and must not start depending on it.
+        check("a tty-less dump still yields its agents",
+              ProcessMonitor.idleAgentPRNumbers(owner: "software-mansion", repo: "argent",
+                                                sessionTails: ["s013": "at the prompt"],
+                                                psOutput: psDump).isEmpty)
+
+        // 2g. Idle-agent scan: of those live agents, the ones back at their prompt.
+        //     An agent is spawned into an INTERACTIVE session, so finishing its work is
+        //     not exiting — it waits at the prompt, `ps` shows it either way, and only
+        //     the session's own buffer separates the two. Its bay must come back; the
+        //     working one's must not.
+        let ttyDump = """
+        s013     claude Review PR #436 in software-mansion/argent. Use the `gh` CLI to fetch it.
+        s014     claude Take PR #369 in software-mansion/argent. Use the `gh` CLI to fetch it.
+        s015     claude Review PR #512 in software-mansion/argent. Use the `gh` CLI to fetch it.
+        """
+        let busyTail = "● Reading files…\n⏵⏵ bypass permissions on · esc to interrupt · ← for agents"
+        let idleTail = "● Posted the review.\n❯\n⏵⏵ bypass permissions on (shift+tab to cycle)"
+        let idlePRs = ProcessMonitor.idleAgentPRNumbers(
+            owner: "software-mansion", repo: "argent",
+            // Spelled as the terminal apps report it, against a `ps` that does not:
+            // both sides normalise, or every lookup would miss and no bay would return.
+            sessionTails: ["/dev/ttys013": busyTail, "/dev/ttys014": idleTail],
+            psOutput: ttyDump)
+        check("only the agent whose own session shows it at the prompt reads idle",
+              idlePRs == [369])
+        check("an agent with no readable session is never idle (s015 had none)",
+              !idlePRs.contains(512))
+        check("no session dump at all frees nothing",
+              ProcessMonitor.idleAgentPRNumbers(owner: "software-mansion", repo: "argent",
+                                                sessionTails: nil,
+                                                psOutput: ttyDump).isEmpty)
+        check("every spelling of one tty lands on the same key",
+              ProcessMonitor.canonicalTTY("/dev/ttys013") == ProcessMonitor.canonicalTTY("s013")
+                && ProcessMonitor.canonicalTTY("ttys013") == ProcessMonitor.canonicalTTY("s013"))
 
         // 2d. Live classification (informational): the REAL production dump + predicate
         //     against whatever terminals are open right now, for eyeballing.

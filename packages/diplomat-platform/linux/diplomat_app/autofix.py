@@ -425,12 +425,13 @@ def clamp_auto_task_limit(value: int) -> int:
 
 
 def running_auto_prs(
-    live_prs: set[int], auto_prs: set[int], manual_prs: set[int]
+    live_prs: set[int], auto_prs: set[int], manual_prs: set[int],
+    idle_prs: set[int] | None = None,
 ) -> set[int]:
-    """Which PRs have an automatic agent running on this device (one agent per PR is
-    what the in-flight dedup guarantees, so a PR *is* an agent here).
+    """Which PRs have an automatic agent *working* on this device (one agent per PR
+    is what the in-flight dedup guarantees, so a PR *is* an agent here).
 
-    Three inputs, because no single one of them is both complete and attributable:
+    Four inputs, because no single one of them is both complete and attributable:
 
     - ``live_prs`` — PRs with a live ``claude`` visible in ``ps``. The ground truth,
       and the only evidence that survives an applet restart, but it cannot say who
@@ -442,21 +443,39 @@ def running_auto_prs(
       agent takes a moment to appear in ``ps`` and would otherwise be counted zero
       times by the very poll that started it.
 
+    - ``idle_prs`` — PRs whose agent has finished its turn and is sitting at its
+      prompt (:func:`apiwatch.looks_busy`). Subtracted LAST, from the union, because
+      an idle agent is idle however it was found: a tracked ``auto_prs`` entry that
+      went quiet has to leave too, or re-adding it here would hold the very slot the
+      subtraction is for.
+
     An agent nobody tracked therefore counts as automatic. That is the safe way to
     be wrong: the cost is deferring auto work behind an untracked agent for as long
     as it runs, where the opposite error is the burst this cap exists to stop.
 
+    Idleness is subtracted rather than merely labelled because an agent is spawned
+    into an INTERACTIVE session, which does not exit when its work is done — it waits
+    at the prompt for a human who may not come for hours. The cap exists to bound
+    concurrent LOAD, and a session waiting on input is spending none; left counted, a
+    finished agent holds its slot until someone closes the window, and a machine whose
+    every bay is held that way defers automatic work indefinitely while doing nothing.
+
+    Only positive evidence of idleness qualifies (a pane that was read and showed no
+    interrupt hint): an agent with no readable pane counts as working, so the failure
+    direction stays the deferral, never the burst.
+
     The set, not just its size, because the panel draws a row per running agent and
     a row needs to say *which* PR it is on (``Store.running_tasks``)."""
-    return (live_prs - manual_prs) | auto_prs
+    return ((live_prs - manual_prs) | auto_prs) - (idle_prs or set())
 
 
 def running_auto_tasks(
-    live_prs: set[int], auto_prs: set[int], manual_prs: set[int]
+    live_prs: set[int], auto_prs: set[int], manual_prs: set[int],
+    idle_prs: set[int] | None = None,
 ) -> int:
-    """How many automatic agents are running on this device — the number the cap is
+    """How many automatic agents are working on this device — the number the cap is
     compared against, and the size of :func:`running_auto_prs`."""
-    return len(running_auto_prs(live_prs, auto_prs, manual_prs))
+    return len(running_auto_prs(live_prs, auto_prs, manual_prs, idle_prs))
 
 
 def dispatch_label(source: str, core: str, attempt: int = 1) -> str:
@@ -628,6 +647,11 @@ class RunningAgent:
     tracked: bool
     started_at: float = 0.0  # epoch seconds; 0 when untracked (nothing to date it by)
     mesh: bool = False  # the mesh placed this job back on this machine
+    # The session finished its turn and sits at its prompt (`apiwatch.looks_busy` read
+    # its pane and found no interrupt hint). Such a row keeps its place in the list —
+    # it is the one thing on screen that says why a window is still open — but it has
+    # given its bay back, so a free slot is drawn alongside it.
+    awaiting_input: bool = False
 
 
 _LIVE_AGENT_RE_TMPL = r"PR #(\d+) in {repo}"
@@ -644,13 +668,68 @@ def live_pr_numbers(ps_output: str, owner: str, repo: str) -> set[int]:
     in-memory ``_autofix_inflight`` list (an applet restart wipes it while the
     agents run on). Only lines containing ``claude`` count: the spawning shell's
     argv holds the unexpanded ``$(cat …)``, never the prompt text."""
+    return {pr for _tty, pr in _agent_lines(ps_output, owner, repo)}
+
+
+def agent_ttys(ps_output: str, owner: str, repo: str) -> set[str]:
+    """The ttys the live agents of :func:`live_pr_numbers` are running on, spelled as
+    ``ps`` spells them (``pts/13``, no ``/dev/``).
+
+    Which panes are worth capturing, and nothing more: reading every tmux pane to
+    find two agents would put a ``capture-pane`` per pane on the panel's 8-second
+    tick, where this puts one per agent. A process with no controlling tty appears
+    as ``?``, matches no pane, and is simply never asked about."""
+    return {tty for tty, _pr in _agent_lines(ps_output, owner, repo)}
+
+
+def idle_pr_numbers(
+    ps_output: str, pane_tails: dict[str, str], owner: str, repo: str
+) -> set[int]:
+    """Of the agents alive in ``ps``, the PR numbers whose session has finished its
+    turn and is waiting at its prompt.
+
+    ``ps_output`` must be a ``tty=,args=`` dump (``live_pr_numbers`` reads the same
+    lines — the regex finds the prompt wherever on the line it sits — so one scan
+    answers both). ``pane_tails`` maps a tty to that pane's visible buffer, spelled
+    as ``ps`` spells a tty (:func:`tmuxwatch.pane_tails_for_ttys`).
+
+    The tty is the join: an agent runs inside a tmux pane (``review.agent_argv``), so
+    the pane on the same tty as the ``claude`` process IS that agent's screen, and
+    :func:`apiwatch.looks_busy` reads the CLI's own status bar off it.
+
+    An agent whose tty has no pane is absent from the result, never idle in it —
+    a session outside tmux, a capture that failed, a pane that closed between the two
+    reads. Each is missing evidence, and this answer only ever REMOVES an agent from
+    the cap's count, so silence has to mean "still working".
+    """
+    from . import apiwatch
+
+    out: set[int] = set()
+    for tty, pr in _agent_lines(ps_output, owner, repo):
+        tail = pane_tails.get(tty)
+        if tail is not None and not apiwatch.looks_busy(tail):
+            out.add(pr)
+    return out
+
+
+def _agent_lines(ps_output: str, owner: str, repo: str):
+    """Yield ``(tty, pr_number)`` for every live agent in a ``ps`` dump — the one
+    parse the three answers above are each a projection of, so they can never come to
+    disagree about what counts as an agent.
+
+    The tty is whatever leads the line, normalised free of ``/dev/`` (``ps`` omits it,
+    tmux does not). On a bare ``args=`` dump — which the argv scan predates the tty by
+    and must keep working on — that first token is the start of the command instead,
+    and so simply matches no pane: a garbage tty can only ever fail to find evidence,
+    never manufacture it.
+    """
     import re
 
     pat = re.compile(_LIVE_AGENT_RE_TMPL.format(repo=re.escape(f"{owner}/{repo}")))
-    out: set[int] = set()
     for line in ps_output.splitlines():
         if "claude" not in line:
             continue
+        tty, _, _rest = line.strip().partition(" ")
+        tty = tty.removeprefix("/dev/")
         for m in pat.finditer(line):
-            out.add(int(m.group(1)))
-    return out
+            yield tty, int(m.group(1))

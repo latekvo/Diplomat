@@ -239,6 +239,9 @@ class Store(QObject):
         # and two agents swapping which PRs they are on is a redraw the count alone
         # would miss (see refresh_auto_task_count).
         self._auto_tasks_measured: set[int] = set()
+        # Those of the above whose session has finished its turn and is waiting at its
+        # prompt: still a row, no longer a bay (see _auto_tasks_running).
+        self._auto_tasks_idle: set[int] = set()
         # Guards the _dispatching_prs set (below). MUST stay distinct from the
         # poll-overlap guard: run_autofix_poll_async holds that one across the whole
         # worker, and the worker's dispatch_agent re-takes THIS one — sharing a single
@@ -249,9 +252,9 @@ class Store(QObject):
         # thread and released by the worker (see run_autofix_poll_async), so it must
         # be a plain Lock (cross-thread release), never nested with _autofix_lock.
         self._poll_lock = threading.Lock()
-        # Brief cache over the `ps` live-agent scan (autofix.live_pr_numbers) so one
-        # poll cycle costs one subprocess: (at, pr numbers).
-        self._live_agents_cache: tuple[float, set[int]] | None = None
+        # Brief cache over the `ps` dump both agent scans read (live_pr_numbers and
+        # idle_pr_numbers) so one poll cycle costs one subprocess: (at, output).
+        self._ps_dump_cache: tuple[float, str] | None = None
         # PR numbers with a dispatch_agent call in flight - a click and an
         # overlapping poll can't race two spawns onto one PR. Guarded by its own
         # short mutex: _autofix_lock is the whole-poll overlap guard (held for the
@@ -1179,20 +1182,29 @@ class Store(QObject):
             )
 
     def _auto_tasks_running(self) -> int:
-        """How many automatic agents are up on this device right now — the number
-        the cap is compared against (:func:`autofix.running_auto_tasks`).
+        """How many automatic agents are WORKING on this device right now — the
+        number the cap is compared against (:func:`autofix.running_auto_tasks`).
 
         The tracked rows say WHO started each agent, the ``ps`` scan says which are
-        really alive; neither alone is enough, so the pure helper combines them."""
+        really alive, the pane scan says which of those are actually doing anything;
+        no one of the three is enough, so the pure helper combines them.
+
+        Both sets are kept, not just the count: the agents that are *up* are the rows
+        the panel draws, and the idle ones among them are the rows that say so — and
+        that no longer hold a bay (:attr:`running_tasks`)."""
         self._prune_inflight()
         auto_prs: set[int] = set()
         manual_prs: set[int] = set()
         for e in self._autofix_inflight:
             bucket = manual_prs if e["source"] == autofix.SOURCE_PANEL else auto_prs
             bucket.add(e["number"])
-        prs = autofix.running_auto_prs(self._live_pr_agents(), auto_prs, manual_prs)
-        self._auto_tasks_measured = prs
-        return len(prs)
+        live = self._live_pr_agents()
+        up = autofix.running_auto_prs(live, auto_prs, manual_prs)
+        working = autofix.running_auto_prs(live, auto_prs, manual_prs,
+                                           self._idle_pr_agents())
+        self._auto_tasks_measured = up
+        self._auto_tasks_idle = up - working  # the pure helper owns the subtraction
+        return len(working)
 
     def refresh_auto_task_count(self) -> None:
         """Re-measure for the display alone, signalling only on a change.
@@ -1203,10 +1215,12 @@ class Store(QObject):
         a wrongly-drawn free bay would be most misleading.
 
         A change is a change of PRs, not of their number: one agent finishing as
-        another starts leaves the count alone while both rows are now wrong."""
-        before = self._auto_tasks_measured
+        another starts leaves the count alone while both rows are now wrong. An agent
+        going quiet is such a change too — the row it leaves reads the same until the
+        idle set moves, and the bay it hands back is drawn from that same measure."""
+        before = (self._auto_tasks_measured, self._auto_tasks_idle)
         self._auto_tasks_running()
-        if self._auto_tasks_measured != before:
+        if (self._auto_tasks_measured, self._auto_tasks_idle) != before:
             self.tasks_changed.emit()
 
     def refresh_auto_task_count_async(self) -> None:
@@ -1237,6 +1251,7 @@ class Store(QObject):
             # First wins: the dedup allows one agent per PR, so a second record for
             # the same number is a stale one the prune has not reached yet.
             tracked.setdefault(e["number"], e)
+        idle = self._auto_tasks_idle
         rows = [
             autofix.RunningAgent(
                 pr_number=number,
@@ -1245,6 +1260,7 @@ class Store(QObject):
                 tracked=True,
                 started_at=e["at"],
                 mesh=e["mesh"],
+                awaiting_input=number in idle,
             )
             for number, e in tracked.items()
         ]
@@ -1252,7 +1268,8 @@ class Store(QObject):
         # nothing here recorded, so the row wears the default look rather than
         # guessing at one (``panel._task_look``).
         rows += [
-            autofix.RunningAgent(pr_number=number, label="", kind="", tracked=False)
+            autofix.RunningAgent(pr_number=number, label="", kind="", tracked=False,
+                                 awaiting_input=number in idle)
             for number in self._auto_tasks_measured
             if number not in tracked
         ]
@@ -1262,9 +1279,14 @@ class Store(QObject):
 
     @property
     def auto_tasks_shown(self) -> int:
-        """How many automatic agents the panel counts as running on this device —
-        one per row of :attr:`running_tasks`, which is where the reasoning lives."""
-        return len(self.running_tasks)
+        """How many bays of this device's cap the drawn agents hold — the rows of
+        :attr:`running_tasks` that are still working, which is where the reasoning
+        lives.
+
+        Not every row: a session waiting at its prompt keeps its place in the list
+        and gives its bay back, so the list is longer than the cap exactly as often
+        as a finished window is left open."""
+        return sum(1 for r in self.running_tasks if not r.awaiting_input)
 
     @property
     def free_auto_slots(self) -> int:
@@ -1608,16 +1630,50 @@ class Store(QObject):
 
     def _live_pr_agents(self) -> set[int]:
         """PR numbers with a live claude agent visible in ``ps`` right now (see
-        :func:`autofix.live_pr_numbers`), cached briefly so one poll cycle costs
-        one subprocess. Fails open to an empty set — the tracked list still
-        dedups the common case."""
+        :func:`autofix.live_pr_numbers`). Fails open to an empty set — the tracked
+        list still dedups the common case.
+
+        "Live" here is only "the process exists": an agent that finished its turn is
+        alive by this measure for as long as its window stays open, which is exactly
+        what the in-flight dedup wants (a second agent must not be dispatched onto a
+        PR whose session is still sitting there, holding the context, ready to be
+        typed at). What the *cap* wants is the narrower :meth:`_idle_pr_agents`."""
+        cfg = core.config()
+        return autofix.live_pr_numbers(self._ps_dump(), cfg["owner"], cfg["repo"])
+
+    def _idle_pr_agents(self) -> set[int]:
+        """PR numbers whose agent is alive but back at its prompt, having finished
+        its turn — the agents that no longer hold a bay of the cap.
+
+        Reads the tail of each agent's own tmux pane and joins it back to the ``ps``
+        scan on the tty (:func:`autofix.idle_pr_numbers`); a tmux that is absent or
+        unreadable yields no evidence, so nothing is freed and the machine behaves as
+        it did before the pane could be read.
+
+        Only the agents' panes are captured, not every pane on the box: this runs on
+        the panel's 8-second tick, where a dump of a developer's full tmux server
+        would be most of a subprocess per pane per tick."""
+        cfg = core.config()
+        dump = self._ps_dump()
+        tails = tmuxwatch.pane_tails_for_ttys(
+            autofix.agent_ttys(dump, cfg["owner"], cfg["repo"])
+        )
+        return autofix.idle_pr_numbers(dump, tails, cfg["owner"], cfg["repo"])
+
+    def _ps_dump(self) -> str:
+        """One ``ps`` pass behind both agent scans, cached briefly so a poll cycle
+        costs one subprocess however many times it asks.
+
+        ``tty=`` leads the format because the tty is what joins a ``claude`` process
+        to the tmux pane showing it (:meth:`_idle_pr_agents`); it costs the argv scan
+        nothing, which finds its prompt wherever on the line it falls."""
         now = time.time()
-        cached = self._live_agents_cache
+        cached = self._ps_dump_cache
         if cached is not None and now - cached[0] < 5:
             return cached[1]
         try:
             out = subprocess.run(
-                ["ps", "-eo", "args="], capture_output=True, text=True, timeout=10
+                ["ps", "-eo", "tty=,args="], capture_output=True, text=True, timeout=10
             ).stdout
         except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
             # UnicodeDecodeError: text=True decodes strict UTF-8, and any process on
@@ -1625,10 +1681,8 @@ class Store(QObject):
             # It is a ValueError, not an OSError/SubprocessError, so it must be caught
             # explicitly or it escapes this fail-open guard and wedges the poll worker.
             out = ""
-        cfg = core.config()
-        refs = autofix.live_pr_numbers(out, cfg["owner"], cfg["repo"])
-        self._live_agents_cache = (now, refs)
-        return refs
+        self._ps_dump_cache = (now, out)
+        return out
 
     # MARK: monitor persistence + poll-error state
 

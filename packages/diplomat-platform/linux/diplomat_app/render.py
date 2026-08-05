@@ -152,15 +152,26 @@ def _queue_fixture(store: Store) -> None:
     # state a click leaves behind, and seeding the band directly would prove the row
     # draws without proving the queue lets go of it.
     store._begin_starting(starting)
-    # Two agents up: one this applet dispatched and still holds the record for, one
-    # visible only to the `ps` scan (what an applet restart leaves behind). With the
-    # starting task's bay that is three of four, so the fourth is drawn free.
+    # Three agents up, one per way the panel can know of one: one this applet
+    # dispatched and still holds the record for, one visible only to the `ps` scan
+    # (what an applet restart leaves behind), and one that finished its turn and sits
+    # at its prompt. That third is the arrangement worth having a picture of — it is
+    # drawn as a row and yet holds no bay, so four rows stand above the free one
+    # rather than the three a cap of four would otherwise allow.
     store._track_agent("https://github.com/x/pull/402", 402, autofix.SOURCE_AUTO,
                        ledger_key="", prompt="",
                        label="Auto · Review-req · #402 (@t0tl)", kind="review")
     store._autofix_inflight[-1]["at"] = time.time() - 23 * 60
-    store._live_pr_agents = lambda: {402, 351}
-    store._auto_tasks_measured = {402, 351}
+    store._track_agent("https://github.com/x/pull/377", 377, autofix.SOURCE_AUTO,
+                       ledger_key="", prompt="",
+                       label="Auto · Resolve · #377 (@t0tl)", kind="conflicts")
+    store._autofix_inflight[-1]["at"] = time.time() - 4 * 60 * 60
+    store._live_pr_agents = lambda: {402, 351, 377}
+    # Pinned for the same reason as the scan above: read for real it would report
+    # whichever of the developer's own terminals happen to be idle.
+    store._idle_pr_agents = lambda: {377}
+    store._auto_tasks_measured = {402, 351, 377}
+    store._auto_tasks_idle = {377}
 
 
 def _telemetry_scratch() -> None:

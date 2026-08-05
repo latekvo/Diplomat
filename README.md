@@ -134,11 +134,12 @@ an idle machine with a cap of two reads `0 · 2 free` over two empty bays.
   finishes.
 
   (Both kinds are macOS only - a Linux spawn is a detached `Popen` with no window
-  handle to track a session by. Linux draws a local agent as a *running* row all
-  the same, from the in-flight book and a `ps` scan: the bay it took, labelled with
-  the work it is on and how long it has been going, but with no window to click and
-  no *awaiting input* / *done* to tell apart. One the mesh placed on a peer shows in
-  the activity feed rather than on the list.)
+  handle to track a session by. Linux draws a local agent as a row all the same,
+  from the in-flight book and a `ps` scan: the bay it took, labelled with the work
+  it is on and how long it has been going, but with no window to click and no
+  *done* to tell apart - that one needs to see the window close. *Awaiting input*
+  it does read, off the agent's own tmux pane. One the mesh placed on a peer shows
+  in the activity feed rather than on the list.)
 - **Starting** is a task between the queue and its agent: the click (or the drain)
   has taken it, and the spawn - a `ps` scan, a mesh placement, a terminal - has not
   answered yet. Seconds, and a row for all of them, so *execute now* never reads as
@@ -556,8 +557,23 @@ same moment. The cap is the *machine's*, not a monitor's: it spans both monitors
 and any work a mesh peer routes here, and it counts agents that are really
 running (`ps`, so it survives an applet restart) rather than a tally that can
 drift. Agents *you* spawn from the panel don't count against it, and a click is
-never refused. Nothing is dropped - work over the cap gets no attempt record, so
-the next 3-minute tick offers it again as soon as an agent finishes, and it waits
+never refused.
+
+An agent is spawned into an *interactive* session, so finishing its work is not
+exiting - it waits at its prompt until someone closes the window, and `ps` shows
+it either way. What frees its bay is therefore the terminal, not the process: an
+agent whose session shows the CLI back at its prompt reads *awaiting input*, and
+gives its slot back while keeping its row. Both front-ends read that the same
+way, off the CLI's own status bar (`AgentActivity`), from whatever each platform
+can see of a terminal - iTerm/Terminal sessions on macOS, tmux panes on Linux.
+(Only positive evidence counts. An agent whose terminal can't be read - one
+outside tmux, or a dump that failed - keeps its bay: the failure direction is
+deferring work, never doubling up on it. Its PR stays in-flight regardless, since
+that session still holds the context, so nothing else is dispatched onto the same
+PR.)
+
+Nothing is dropped - work over the cap gets no attempt record, so
+the next 3-minute tick offers it again as soon as a bay comes back, and it waits
 visibly in the panel's [Agent tasks](#agent-tasks) list meanwhile, where it can be
 reordered or started by hand. Whatever is left of the cap shows there too, as an
 empty bay per free slot. Saturation shows up as one `at-capacity` row in the
@@ -866,9 +882,10 @@ drift from each other by failing a CI job. Both also run the full monitor stack;
 what stays macOS-only is the per-row **Merge** button, the clickable *session* rows
 of the [Agent tasks](#agent-tasks) list (a Linux spawn is a detached `Popen` with no
 window handle, so a running agent gets a row there but not a window to focus, and
-none of the *awaiting input* / *done* / *merged* statuses that reading a session's
-terminal is what yields), and reading arbitrary terminal windows (the Linux watcher
-drives tmux panes instead).
+neither of the *done* / *merged* statuses that watching a session's window is what
+yields), and reading arbitrary terminal windows (the Linux watcher drives tmux panes
+instead - which is also how Linux reads *awaiting input*, the one session status it
+does not need a window handle for).
 
 This repository is a **monorepo of independent parts**: everything lives in
 `packages/`, one directory per package, and CI is arranged to keep them

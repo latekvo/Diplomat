@@ -101,17 +101,23 @@ def _task_look(kind: str) -> tuple[str, str]:
 
 
 def _running_detail(agent: autofix.RunningAgent) -> str:
-    """The status line under a running agent's label: how long it has been up, and
-    whatever else this machine knows about where it came from.
+    """The status line under a running agent's label: what it is doing, how long it
+    has been up, and whatever else this machine knows about where it came from.
+
+    "awaiting input" is the one state the operator has to act on: the agent finished
+    its turn and the window is waiting on a human. Saying it is the whole reason the
+    row outlives the work — the bay is already back (`Store.auto_tasks_shown`), so
+    without the word the row would look like a slot being held for nothing.
 
     An untracked agent says so instead of ageing: its record was lost (a restart, or
     it was never this applet's to begin with), so there is no honest start time to
     count from — and the row's label is a bare PR number, which without the word
     would read as a dispatch that forgot its own name.
     """
+    state = "awaiting input" if agent.awaiting_input else "running"
     if not agent.tracked:
-        return "running · untracked"
-    parts = ["running"]
+        return f"{state} · untracked"
+    parts = [state]
     # Under a minute Fmt gives "just now", which is not how long a thing has been
     # running — the first minute simply says "running".
     age = Fmt.duration(time.time() - agent.started_at)
@@ -596,8 +602,14 @@ class Panel(QWidget):
         What is running first, then what is starting, then the free slots, then the
         queue — the reading order `AgentTaskStatus` fixes on macOS, for the statuses
         this front-end can tell apart. A detached `Popen` gives it no window handle,
-        so a running agent is a status and not a session: no *awaiting input*, no
-        *done*, nothing to click. What it is, and that it holds a bay, it says.
+        so a running agent is a status and not a session: nothing to click, and no
+        *done* (this side never learns that a window was closed, only that its
+        process left). *Awaiting input* it does have — the agents run in tmux panes,
+        which can be read (`Store._idle_pr_agents`).
+
+        So the list can be longer than the cap: an agent waiting at its prompt keeps
+        its row AND gives its bay back, which draws both. That pair is the point —
+        the free bay says work can start, the row above it says what is still open.
         """
         _clear_layout(self.tasks_col)
         queued = self.store.queued_tasks
@@ -627,6 +639,7 @@ class Panel(QWidget):
                 glyph=glyph,
                 hex_color=tint,
                 tracked=agent.tracked,
+                awaiting_input=agent.awaiting_input,
             ))
         for task in starting:
             glyph, tint = _task_look(task.job.kind)

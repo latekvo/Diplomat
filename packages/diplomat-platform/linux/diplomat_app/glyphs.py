@@ -35,6 +35,10 @@ G_TASKS = "◷"    # agent-tasks section header, and a queued task awaiting its 
 G_FREE_SLOT = "◌"  # an empty bay: a slot of the task cap with nothing in it
 G_STARTING = "◍"  # a task whose spawn is under way (the bay filling in)
 G_RUNNING = "●"   # an agent up and running in the bay it took
+# A session that finished its turn and waits at its prompt: still on screen, no
+# longer holding its bay — so it draws part-full, between the running ● it was and
+# the empty ◌ it handed back.
+G_AWAITING = "◔"
 G_GRIP = "≡"     # the drag grip that orders the queue
 G_MESH = "⬡"     # mesh screen header / "run on mesh" toggle (matches the mesh
                  # activity category's linuxGlyph)

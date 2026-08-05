@@ -546,18 +546,26 @@ class RunningTaskRow(QFrame):
 
     _HELP = (
         "An automatic agent running on this machine. It holds a slot of the "
-        "automatic-task cap until it exits."
+        "automatic-task cap while it works."
     )
     _UNTRACKED_HELP = (
         "A Claude agent running on this machine, found by scanning processes — this "
         "applet has no record of starting it (a restart loses the record, not the "
-        "agent). It counts against the automatic-task cap while it runs."
+        "agent). It counts against the automatic-task cap while it works."
+    )
+    _AWAITING_HELP = (
+        "This agent has finished its turn and is waiting at its prompt — an agent is "
+        "spawned into an interactive session, which stays open until you close it. "
+        "Its slot of the automatic-task cap has already been given back."
     )
 
     def __init__(self, *, label: str, detail: str, glyph: str, hex_color: str,
-                 tracked: bool) -> None:
+                 tracked: bool, awaiting_input: bool = False) -> None:
         super().__init__()
-        self.setToolTip(self._HELP if tracked else self._UNTRACKED_HELP)
+        if awaiting_input:
+            self.setToolTip(self._AWAITING_HELP)
+        else:
+            self.setToolTip(self._HELP if tracked else self._UNTRACKED_HELP)
         self.setStyleSheet(
             "RunningTaskRow { background-color: rgba(128,128,128,0.06);"
             " border-radius: 6px; }"
@@ -566,14 +574,22 @@ class RunningTaskRow(QFrame):
         row.setContentsMargins(6, 6, 6, 6)
         row.setSpacing(8)
         # Lit, like the starting row it replaces: the chip is on for as long as
-        # there is an agent behind it.
+        # there is an agent behind it — including one that is only waiting, which is
+        # a window still open and still holding its context.
         row.addWidget(IconChip(glyph, hex_color, 22, active=True),
                       0, Qt.AlignmentFlag.AlignVCenter)
         col = QVBoxLayout()
         col.setSpacing(1)
         col.addWidget(ElidedLabel(label, 10, "#d8dbde"))
-        status = QLabel(f"{glyphs.G_RUNNING} {detail}")
-        status.setStyleSheet(f"color: {glyphs.AGENT_LIVE}; font-size: 9px;")
+        # The status line is where the two part: live blue is what the panel uses for
+        # work in progress, and an agent waiting on a human is not that. Grey, against
+        # the free bay now drawn beside it, is the pair the operator reads as "this
+        # one is done with, and its slot is already back".
+        status = QLabel(
+            f"{glyphs.G_AWAITING if awaiting_input else glyphs.G_RUNNING} {detail}"
+        )
+        tint = glyphs.MUTED if awaiting_input else glyphs.AGENT_LIVE
+        status.setStyleSheet(f"color: {tint}; font-size: 9px;")
         col.addWidget(status)
         row.addLayout(col, 1)
 

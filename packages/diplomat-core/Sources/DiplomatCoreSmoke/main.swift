@@ -512,6 +512,31 @@ check(AgentDispatchGate.runningAutoTasks(livePRs: [3], autoPRs: [3], manualPRs: 
 check(AgentDispatchGate.runningAutoTasks(livePRs: [1, 2, 3], autoPRs: [4],
                                          manualPRs: [2]) == 3,
       "1, 3 and 4")
+// An agent is spawned into an INTERACTIVE session, so finishing its work is not
+// exiting: it waits at its prompt, `ps` keeps showing it, and the bay it took is never
+// given back. Seen 2026-08-05 on a Linux box — two agents idle since the previous
+// evening, both bays of a cap of 2 held, automatic work still being deferred 12h later.
+// PARITY: the same six cases run against the Python twin in
+// diplomat-platform/linux/tests/test_autofix.py.
+check(AgentDispatchGate.runningAutoTasks(livePRs: [1, 2], autoPRs: [], manualPRs: [],
+                                         idlePRs: [1]) == 1,
+      "an untracked agent back at its prompt gives its bay back")
+check(AgentDispatchGate.runningAutoTasks(livePRs: [1, 2], autoPRs: [], manualPRs: [],
+                                         idlePRs: [1, 2]) == 0,
+      "…and a machine of them is a machine with an empty cap")
+check(AgentDispatchGate.runningAutoTasks(livePRs: [1], autoPRs: [1], manualPRs: [],
+                                         idlePRs: [1]) == 0,
+      "a TRACKED agent that went quiet leaves too — idle is subtracted from the union, "
+      + "or `autoPRs` would re-add the very agent being let go")
+check(AgentDispatchGate.runningAutoTasks(livePRs: [1, 2], autoPRs: [], manualPRs: [],
+                                         idlePRs: []) == 2,
+      "nothing idle changes nothing")
+check(AgentDispatchGate.runningAutoTasks(livePRs: [1, 2], autoPRs: [], manualPRs: [],
+                                         idlePRs: [9]) == 2,
+      "an idle PR nobody is running here is not this machine's business")
+check(AgentDispatchGate.runningAutoTasks(livePRs: [1, 2], autoPRs: [], manualPRs: []) == 2,
+      "no evidence at all (the default) frees nothing — a terminal that cannot be read "
+      + "must cost a deferral, never a burst")
 
 section("the agent-task list and the queue behind the cap")
 // PARITY: every `AgentTaskQueue` case below is asserted again, on the same inputs, by

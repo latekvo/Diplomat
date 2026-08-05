@@ -109,41 +109,58 @@ class DiplomatHost(szpont_host.Host):
         machine busy with manual work declines mesh work rather than piling on. The
         peer just fails the slot over to a node with room.
 
+        An agent waiting at its prompt is not counted, exactly as the applet does not
+        count one (:meth:`Store._auto_tasks_running`): an interactive session does not
+        exit when its work is done, so without that subtraction a node whose finished
+        windows are still open declines every peer's work for as long as they stay
+        open — hours, and with nothing running to justify it.
+
         An unreadable ``ps`` never stalls the node: the scan degrades to empty and
         the answer falls back to what the node itself knows it is running — the same
         fail-open direction :meth:`work_already_running` takes, for the same reason.
+        An unreadable tmux degrades the other way, to "everything is working", so a
+        node that cannot see its panes declines work rather than piling it on.
         """
-        from . import appconfig, autofix, core
+        from . import appconfig, autofix, core, tmuxwatch
 
         cfg = core.config()
         mine = {
             ref[3] for ref in (autofix.parse_work_key(k) for k in running_keys)
             if ref is not None
         }
-        live = autofix.live_pr_numbers(_ps_dump(), cfg["owner"], cfg["repo"])
-        return autofix.running_auto_tasks(live, mine, set()) >= appconfig.auto_task_limit()
+        dump = _ps_dump()
+        live = autofix.live_pr_numbers(dump, cfg["owner"], cfg["repo"])
+        tails = tmuxwatch.pane_tails_for_ttys(
+            autofix.agent_ttys(dump, cfg["owner"], cfg["repo"])
+        )
+        idle = autofix.idle_pr_numbers(dump, tails, cfg["owner"], cfg["repo"])
+        return (autofix.running_auto_tasks(live, mine, set(), idle)
+                >= appconfig.auto_task_limit())
 
 
 def _ps_dump() -> str:
-    """Every process's argv, one per line — the evidence behind both of the node's
-    ground-truth answers (is this work already running here, and is the machine at
-    its cap). One place for the portable spelling and for the fail-open error
+    """Every process's tty and argv, one per line — the evidence behind both of the
+    node's ground-truth answers (is this work already running here, and is the machine
+    at its cap). One place for the portable spelling and for the fail-open error
     handling, so the two answers cannot come to disagree about either.
 
-    ``ps -Ao args=`` is that portable spelling: on macOS ``-e`` prints the
+    ``ps -Ao tty=,args=`` is that portable spelling: on macOS ``-e`` prints the
     environment, not every process, so the store's Linux-only ``-eo`` can't be
-    reused here (a node runs on both OSes).
+    reused here (a node runs on both OSes). The tty leads because it is what joins a
+    ``claude`` process to the tmux pane showing it (:func:`autofix.idle_pr_numbers`);
+    the argv scan is indifferent to it, finding its prompt wherever on the line it
+    falls.
 
     Returns ``""`` on any failure, which is what lets both callers degrade rather
     than raise into the executor's spawn path. ``UnicodeDecodeError`` is caught by
     name: ``text=True`` decodes strict UTF-8, so any process on the box with a
     non-UTF-8 byte in its argv makes the output undecodable, and it is a
     ``ValueError`` — neither an ``OSError`` nor a ``SubprocessError`` — so without it
-    the exception escapes the guard. The same catch ``Store._live_pr_agents`` makes
-    for its identical scan.
+    the exception escapes the guard. The same catch ``Store._ps_dump`` makes for its
+    identical scan.
     """
     try:
-        return subprocess.run(["ps", "-Ao", "args="],
+        return subprocess.run(["ps", "-Ao", "tty=,args="],
                               capture_output=True, text=True, timeout=10).stdout
     except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
         return ""

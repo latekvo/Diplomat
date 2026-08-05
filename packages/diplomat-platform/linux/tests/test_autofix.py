@@ -223,10 +223,12 @@ def store(monkeypatch):
         "diplomat_app.promptcore.build_prompt",
         lambda cfg: f"PROMPT:{cfg.get('kind')}:{cfg.get('specificPR')}",
     )
-    # The ps live-agent fallback would see this MACHINE's real processes —
-    # neutralize it so tests exercise only the tracked-list dedup (the
-    # fallback-specific tests override this).
+    # The two scans behind the cap would read this MACHINE's real processes and its
+    # real tmux panes — neutralize both so tests exercise only the tracked-list dedup
+    # (the scan-specific tests override them). Nothing live and nothing idle is the
+    # empty machine every other test here assumes.
     monkeypatch.setattr(Store, "_live_pr_agents", lambda self: set())
+    monkeypatch.setattr(Store, "_idle_pr_agents", lambda self: set())
     return st
 
 
@@ -769,19 +771,25 @@ def test_in_flight_falls_back_to_live_ps_agents(store, monkeypatch):
 
 
 def test_live_pr_agents_fails_open_on_undecodable_ps_output(store, monkeypatch):
-    """`ps -eo args=` renders every process's argv; a single process on the box with a
-    non-UTF-8 byte in its arguments makes text=True raise UnicodeDecodeError — a
+    """`ps -eo tty=,args=` renders every process's argv; a single process on the box
+    with a non-UTF-8 byte in its arguments makes text=True raise UnicodeDecodeError — a
     ValueError, NOT an OSError/SubprocessError. It must be caught, or it escapes this
     fail-open guard and wedges the autofix poll worker every cycle (the raise precedes
-    the cache write, so every subsequent poll re-runs ps and re-raises)."""
+    the cache write, so every subsequent poll re-runs ps and re-raises).
+
+    Both scans over that dump have to survive it, not just the one that predates the
+    other: the idle scan runs on the same poll, and an exception from it would wedge
+    the worker just as thoroughly."""
     import diplomat_app.store as storemod
 
     def boom(*a, **k):
         raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
 
     monkeypatch.setattr(storemod.subprocess, "run", boom)
-    store._live_agents_cache = None
+    store._ps_dump_cache = None
     assert store._live_pr_agents() == set()  # fails open to empty, never raises
+    store._ps_dump_cache = None
+    assert storemod.Store._idle_pr_agents(store) == set()
 
 
 # MARK: - unified dispatch pipeline (buttons and monitors are triggers, not paths)
@@ -949,6 +957,73 @@ def test_running_auto_tasks_combines_the_three_kinds_of_evidence():
     assert run({1, 2, 3}, {4}, {2}) == 3             # 1, 3 and 4
 
 
+def test_an_agent_waiting_at_its_prompt_does_not_hold_a_bay():
+    """The wedge this subtraction exists for: an agent is spawned into an INTERACTIVE
+    session, so finishing its work is not an exit. It sits at its prompt, `ps` keeps
+    showing it, and the bay it took is never given back — a machine whose finished
+    windows are left open defers automatic work for as long as they stay open (seen
+    2026-08-05: two agents idle since the previous evening, both bays of a cap of 2
+    held, auto work deferred 12h later).
+
+    Idle is subtracted from the UNION, not from `live_prs`: a tracked auto agent that
+    goes quiet is re-added by `| auto_prs` otherwise, and the tracked ones are exactly
+    the agents this applet started."""
+    run = autofix.running_auto_tasks
+    assert run({1, 2}, set(), set(), {1}) == 1        # untracked and idle ⇒ freed
+    assert run({1, 2}, set(), set(), {1, 2}) == 0     # both idle ⇒ the cap is empty
+    assert run({1}, {1}, set(), {1}) == 0             # tracked and idle ⇒ freed too
+    assert run({1, 2}, set(), set(), set()) == 2      # nothing idle ⇒ unchanged
+    assert run({1, 2}, set(), set(), {9}) == 2        # an idle PR nobody is running
+    assert run({1, 2}, set(), set(), None) == 2       # no evidence ⇒ nothing freed
+
+
+def test_idle_pr_numbers_reads_the_pane_on_the_agents_own_tty():
+    """Which live agents are back at their prompt: the tty joins the `ps` line to the
+    tmux pane showing that session, and the CLI's own interrupt hint says whether the
+    turn is still running.
+
+    Evidence is required to free a bay, never to hold one — an agent whose pane could
+    not be read is absent from the result, so the cap keeps counting it."""
+    dump = "\n".join(
+        [
+            "pts/1    claude Review PR #11 in software-mansion/argent. Use the `gh` CLI.",
+            "pts/2    claude Review PR #22 in software-mansion/argent. Use the `gh` CLI.",
+            "pts/3    claude Review PR #33 in software-mansion/argent. Use the `gh` CLI.",
+            # The spawning shell holds the unexpanded $(cat …), never the prompt.
+            "pts/2    /bin/zsh -i -c cd '/x'; claude \"$(cat '/tmp/p.txt')\"",
+            "?        grep PR #44 in software-mansion/argent",
+        ]
+    )
+    working = "● Reading files…\n⏵⏵ bypass permissions on · esc to interrupt · ← for agents"
+    at_prompt = "● Posted the review.\n❯\n⏵⏵ bypass permissions on (shift+tab to cycle)"
+    tails = {"pts/1": working, "pts/2": at_prompt}  # pts/3 has no pane at all
+
+    idle = autofix.idle_pr_numbers(dump, tails, "software-mansion", "argent")
+    assert idle == {22}, "only the agent whose own pane shows it at the prompt"
+    # No panes at all (tmux absent, or the dump failed) frees nothing.
+    assert autofix.idle_pr_numbers(dump, {}, "software-mansion", "argent") == set()
+    # A pane on a tty whose agent is on some other repo is not this repo's business.
+    assert autofix.idle_pr_numbers(dump, tails, "other-org", "other-repo") == set()
+    # Only the agents' own panes are worth capturing — the tick that runs this must
+    # not pay a `capture-pane` for every pane the developer happens to have open.
+    assert autofix.agent_ttys(dump, "software-mansion", "argent") == {"pts/1", "pts/2",
+                                                                     "pts/3"}
+    # The argv scan reads the very same lines, so one `ps` pass answers both.
+    assert autofix.live_pr_numbers(dump, "software-mansion", "argent") == {11, 22, 33}
+
+
+def test_the_agent_scans_still_read_a_ps_dump_with_no_tty_column():
+    """``live_pr_numbers`` predates the tty and is called on macOS through the mesh
+    node's own ``ps``; a dump whose first token is the command rather than a tty must
+    still yield its PRs, and must not invent a tty that could match a real pane."""
+    dump = "claude Review PR #11 in software-mansion/argent. Use the `gh` CLI.\n"
+    assert autofix.live_pr_numbers(dump, "software-mansion", "argent") == {11}
+    assert autofix.agent_ttys(dump, "software-mansion", "argent") == {"claude"}
+    # …and "claude" matches no pane, so nothing is ever read as idle off it.
+    assert autofix.idle_pr_numbers(dump, {"pts/1": "at the prompt"},
+                                   "software-mansion", "argent") == set()
+
+
 def test_clamp_auto_task_limit_holds_the_stepper_range():
     assert autofix.DEFAULT_AUTO_TASK_LIMIT == 2
     assert autofix.clamp_auto_task_limit(0) == autofix.MIN_AUTO_TASK_LIMIT == 1
@@ -1044,6 +1119,61 @@ def test_an_untracked_live_agent_counts_against_the_cap(store, monkeypatch):
     monkeypatch.setattr(Store, "_live_pr_agents", lambda self: {101})
     assert store.dispatch_agent(_job(number=9), autofix.SOURCE_AUTO) == "spawned"
     assert len(calls) == 1
+
+
+def test_a_finished_agent_at_its_prompt_gives_its_bay_back(store, monkeypatch):
+    """The wedge, end to end through the store: an agent that finished its work is
+    still a live `claude` in `ps` — it was spawned into an interactive session, which
+    waits at its prompt instead of exiting — so nothing else here ever retires it. Its
+    sentinel does not fire (no exit), and the in-flight TTL cannot help, because the
+    `ps` floor re-adds it the moment the record lapses.
+
+    Read as idle, it stops holding a bay while KEEPING its row: the operator has to be
+    able to see which window is still open, and a row that vanished while its terminal
+    sat there would be the same blindness in the other direction."""
+    from diplomat_app.store import Store
+
+    calls = _spawn_recorder(monkeypatch, finish=False)
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    monkeypatch.setattr(Store, "_live_pr_agents", lambda self: {101, 102})
+
+    assert store.auto_task_limit == 2
+    assert (
+        store.dispatch_agent(_job(number=9), autofix.SOURCE_AUTO)
+        == autofix.VERDICT_AT_CAPACITY
+    )
+    assert store.free_auto_slots == 0 and calls == []
+
+    # Both windows are left open at the prompt — the state the machine was found in.
+    monkeypatch.setattr(Store, "_idle_pr_agents", lambda self: {101, 102})
+    assert store.dispatch_agent(_job(number=9), autofix.SOURCE_AUTO) == "spawned"
+    assert len(calls) == 1
+    # The bays come back, and the two finished agents are still on the panel saying
+    # why their terminals are open — 2 idle rows + 1 working, against a cap of 2.
+    rows = {r.pr_number: r.awaiting_input for r in store.running_tasks}
+    assert rows == {101: True, 102: True, 9: False}
+    assert store.auto_tasks_shown == 1 and store.free_auto_slots == 1
+
+
+def test_a_finished_agent_still_blocks_a_second_agent_on_its_own_pr(store, monkeypatch):
+    """Freeing the bay must not free the PR. That session is still up, still holding
+    the whole context of the work, and still one keystroke from continuing it — a
+    second agent dispatched onto the same PR would duplicate its review, which is what
+    the in-flight dedup exists to stop. The cap asks "is this machine busy", the dedup
+    asks "is anyone on this PR", and only the first answer changes when a turn ends."""
+    from diplomat_app.store import Store
+
+    calls = _spawn_recorder(monkeypatch, finish=False)
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    monkeypatch.setattr(Store, "_live_pr_agents", lambda self: {101})
+    monkeypatch.setattr(Store, "_idle_pr_agents", lambda self: {101})
+
+    assert store.free_auto_slots == 2  # idle ⇒ the machine is free
+    assert (
+        store.dispatch_agent(_job(number=101), autofix.SOURCE_AUTO)
+        == autofix.VERDICT_IN_FLIGHT
+    )
+    assert calls == []
 
 
 def test_at_capacity_is_noted_once_per_episode(store, monkeypatch):

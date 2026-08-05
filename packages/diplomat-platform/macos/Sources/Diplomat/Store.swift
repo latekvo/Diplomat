@@ -1134,11 +1134,37 @@ final class Store: ObservableObject {
     /// dispatch gate) costs one subprocess, mirroring the Linux store.
     private var liveAgentsCache: (at: Date, refs: Set<Int>)?
 
+    /// PR numbers whose agent is alive but back at its prompt, having finished its
+    /// turn — the agents that no longer hold a bay of the cap
+    /// (`ProcessMonitor.idleAgentPRNumbers`).
+    ///
+    /// Reads the same session dump the sweep and the API-error scan already share, so
+    /// asking costs no extra AppleEvent traffic. A dump that failed yields no evidence,
+    /// so nothing is freed and the machine behaves as it did before it could be read.
+    private func idlePRAgents() async -> Set<Int> {
+        let (owner, repo) = coreRepo
+        return await Task.detached(priority: .utility) {
+            guard let sessions = ApiErrorWatcher.dumpSessionsCached() else { return [] }
+            let tails = Dictionary(sessions.map { ($0.tty, $0.tail) },
+                                   uniquingKeysWith: { first, _ in first })
+            return ProcessMonitor.idleAgentPRNumbers(owner: owner, repo: repo,
+                                                     sessionTails: tails)
+        }.value
+    }
+
     /// How many automatic agents are up on this device right now — the number the cap
     /// is compared against (`AgentDispatchGate.runningAutoTasks`).
     ///
     /// The tracked rows say WHO started each agent, the `ps` scan says which are
-    /// really alive; neither alone is enough, so the pure helper combines them.
+    /// really alive, the session dump says which of those are actually doing
+    /// anything; no one of the three is enough, so the pure helper combines them.
+    ///
+    /// An agent waiting at its prompt is not counted. An interactive session does not
+    /// exit when its work is done, so without that subtraction a machine whose
+    /// finished windows are still open defers automatic work for as long as they stay
+    /// open — hours, with nothing running to justify it. The row stays on the list
+    /// (reading `awaiting input`, so the operator can see which window it is); what it
+    /// gives back is the bay.
     ///
     /// A row counts by where its agent RUNS (`runsHere`), not by who dispatched it. A
     /// peer's is not counted: this cap is how many agents THIS machine runs, and
@@ -1160,7 +1186,8 @@ final class Store: ObservableObject {
         }
         let n = AgentDispatchGate.runningAutoTasks(livePRs: await livePRAgents(),
                                                    autoPRs: autoPRs,
-                                                   manualPRs: manualPRs)
+                                                   manualPRs: manualPRs,
+                                                   idlePRs: await idlePRAgents())
         // Assigned only on a change, like every other published value the 8-second
         // sweep re-derives: `@Published` fires on assignment, not on difference, so
         // an unconditional write would redraw the panel on every tick of an idle
@@ -1203,9 +1230,15 @@ final class Store: ObservableObject {
     /// measurement is already the higher — and drawn as free, its bay would put a row
     /// that is launching next to the empty slot it is launching into, which is one row
     /// more than the cap allows.
+    ///
+    /// A row that is `awaitingInput` is excluded from BOTH bounds — the measurement
+    /// subtracts it, and so must this side, or the `max` would simply hand the bay
+    /// straight back to the agent that just gave it up. It keeps its row regardless:
+    /// what the operator needs to see is which finished window is still open.
     var freeAutoSlots: Int {
         let tracked = Set(processes.filter {
-            !$0.done && $0.runsHere && $0.source != AgentDispatchGate.Source.panel.rawValue
+            !$0.done && !$0.awaitingInput && $0.runsHere
+                && $0.source != AgentDispatchGate.Source.panel.rawValue
         }.compactMap(\.prNumber)).count
         return AgentTaskQueue.freeSlots(
             limit: autoTaskLimit,

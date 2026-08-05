@@ -112,6 +112,29 @@ def test_a_running_agent_holds_the_bay_it_took(panel):
     assert _row_kinds(panel) == ["RunningTaskRow", "FreeSlotRow"]
 
 
+def test_a_finished_agent_keeps_its_row_and_gives_the_bay_back(panel):
+    """An agent runs in an interactive session, so finishing its work leaves the
+    window open at a prompt rather than closing it. Both halves have to be on screen:
+    the bay comes back (there is nothing running in it), and the row stays to say what
+    the open terminal is — a row that vanished would leave the operator a window with
+    no explanation, which is how the wedge went unnoticed for twelve hours.
+
+    So this is the one case where the rows outnumber the cap, and it says why."""
+    panel.store._track_agent("https://github.com/o/r/pull/512", 512,
+                             autofix.SOURCE_AUTO, "", "P",
+                             label="Auto · Review-req · #512 (@octocat)", kind="review")
+    panel.store._auto_tasks_idle = {512}
+    panel._rebuild_agent_tasks()
+
+    rows = _rows(panel, RunningTaskRow)
+    assert len(rows) == 1
+    assert "awaiting input" in _row_text(rows[0])
+    assert "running" not in _row_text(rows[0])
+    # Cap of two with nothing working: BOTH bays are free, under the row that explains
+    # the terminal still on screen.
+    assert _row_kinds(panel) == ["RunningTaskRow", "FreeSlotRow", "FreeSlotRow"]
+
+
 def test_every_bay_of_the_cap_is_drawn_whatever_is_in_it(panel):
     """Running, starting and free are three states of the same bay, so their rows
     always add up to the cap. Drop any one of them and the list stops being a picture

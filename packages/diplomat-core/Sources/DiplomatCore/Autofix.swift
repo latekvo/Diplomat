@@ -182,10 +182,10 @@ public enum AgentDispatchGate {
         max(minAutoTaskLimit, min(maxAutoTaskLimit, value))
     }
 
-    /// How many automatic agents are running on this device, counted in PRs (one
+    /// How many automatic agents are *working* on this device, counted in PRs (one
     /// agent per PR is what the in-flight dedup guarantees).
     ///
-    /// Three inputs, because no single one of them is both complete and attributable:
+    /// Four inputs, because no single one of them is both complete and attributable:
     ///
     /// - `livePRs` — PRs with a live `claude` visible in `ps`. The ground truth, and
     ///   the only evidence that survives an applet restart, but it cannot say who
@@ -197,12 +197,31 @@ public enum AgentDispatchGate {
     ///   agent takes a moment to appear in `ps` and would otherwise be counted zero
     ///   times by the very poll that started it.
     ///
+    /// - `idlePRs` — PRs whose agent has finished its turn and is sitting at its
+    ///   prompt (`AgentActivity.looksBusy` over that session's visible buffer).
+    ///   Subtracted LAST, from the union, because an idle agent is idle however it was
+    ///   found: a tracked `autoPRs` entry that went quiet has to leave too, or
+    ///   re-adding it here would hold the very slot the subtraction is for.
+    ///
     /// An agent nobody tracked therefore counts as automatic. That is the safe way to
     /// be wrong: the cost is deferring auto work behind an untracked agent for as long
     /// as it runs, where the opposite error is the burst this cap exists to stop.
+    ///
+    /// Idleness is subtracted rather than merely labelled because an agent is spawned
+    /// into an INTERACTIVE session, which does not exit when its work is done — it
+    /// waits at the prompt for a human who may not come for hours. The cap exists to
+    /// bound concurrent LOAD, and a session waiting on input is spending none; left
+    /// counted, a finished agent holds its slot until someone closes the window, and a
+    /// machine whose every bay is held that way defers automatic work indefinitely
+    /// while doing nothing.
+    ///
+    /// Only positive evidence of idleness qualifies (a session whose buffer was read
+    /// and showed no interrupt hint): an agent whose terminal could not be read counts
+    /// as working, so the failure direction stays the deferral, never the burst.
     public static func runningAutoTasks(livePRs: Set<Int>, autoPRs: Set<Int>,
-                                        manualPRs: Set<Int>) -> Int {
-        livePRs.subtracting(manualPRs).union(autoPRs).count
+                                        manualPRs: Set<Int>,
+                                        idlePRs: Set<Int> = []) -> Int {
+        livePRs.subtracting(manualPRs).union(autoPRs).subtracting(idlePRs).count
     }
 
     /// Panel spawns come to the front; auto spawns must never steal focus.

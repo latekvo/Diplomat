@@ -63,6 +63,33 @@ def test_confirmed_stall_requires_two_identical_scans():
     assert apiwatch.is_confirmed_stall("clean", "clean") is False
 
 
+# MARK: - looks_busy (working vs waiting at the prompt)
+
+
+# The status bar the CLI draws under its prompt box, in both of its states. Verbatim
+# from a real session (2026-08-05), because the whole signal is one substring of it.
+_BUSY_BAR = "⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ← for agents"
+_IDLE_BAR = "⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents"
+_PROMPT_BOX = "─" * 40 + "\n❯ \n" + "─" * 40
+
+
+def test_looks_busy_reads_the_live_status_bar():
+    assert apiwatch.looks_busy(f"● Reading files…\n{_PROMPT_BOX}\n{_BUSY_BAR}") is True
+    # The same session one moment later: turn over, hint gone, prompt still there.
+    assert apiwatch.looks_busy(f"● Posted the review.\n{_PROMPT_BOX}\n{_IDLE_BAR}") is False
+    assert apiwatch.looks_busy("") is False
+
+
+def test_looks_busy_ignores_the_hint_left_in_scrollback():
+    """The reason this scans a far shorter tail than the error watcher: every finished
+    turn leaves its own interrupt hint in the buffer above the prompt. Reaching past
+    the live status bar would read every finished agent as busy forever — which is the
+    bug this whole path exists to end."""
+    stale = "\n".join([_BUSY_BAR] + [f"line {i}" for i in range(10)] + [_IDLE_BAR])
+    assert apiwatch.looks_busy(stale) is False
+    assert apiwatch.BUSY_TAIL_LINES < apiwatch.SCANNED_TAIL_LINES
+
+
 # MARK: - next_backoff schedule
 
 
@@ -106,6 +133,56 @@ def test_dump_panes_parses_and_captures(monkeypatch):
     assert [p.pane_id for p in panes] == ["%0", "%3"]
     assert panes[0].tty == "/dev/pts/1"
     assert "API Error: 529 on %0" in panes[0].tail
+
+
+def test_pane_tails_for_ttys_captures_only_the_ttys_asked_for(monkeypatch):
+    """The cap's idle scan runs on the panel's 8-second tick and wants the two panes
+    its agents are on. Capturing every pane would put a subprocess per pane on that
+    tick — so the listing is read once and only the matching panes are captured.
+
+    Keys and lookups are the `ps` spelling of a tty; tmux's `/dev/` prefix is dropped
+    on the way in, or every lookup would miss and no agent would ever read as idle."""
+    captured: list[str] = []
+
+    def fake_run(argv):
+        if argv[:2] == ["tmux", "list-panes"]:
+            return "\n".join(f"%{n}{tmuxwatch._UNIT}/dev/pts/{n}" for n in (1, 2, 3))
+        if argv[:2] == ["tmux", "capture-pane"]:
+            pane = argv[argv.index("-t") + 1]
+            captured.append(pane)
+            return f"tail of {pane}\n"
+        return ""
+
+    monkeypatch.setattr(tmuxwatch.shutil, "which", lambda _: "/usr/bin/tmux")
+    monkeypatch.setattr(tmuxwatch, "_run", fake_run)
+
+    tails = tmuxwatch.pane_tails_for_ttys({"pts/2"})
+    assert tails == {"pts/2": "tail of %2"}
+    assert captured == ["%2"], "one capture per agent, not per pane"
+
+    # Nothing to ask about ⇒ tmux is never run at all.
+    captured.clear()
+    assert tmuxwatch.pane_tails_for_ttys(set()) == {}
+    assert captured == []
+
+
+def test_pane_tails_for_ttys_never_raises_into_its_callers(monkeypatch):
+    """Its callers are the autofix poll worker and the mesh node's capacity hook.
+    An exception would kill the poll for the applet's remaining life (the way a
+    strict decode once killed the watcher) or fail a peer's job over an unreadable
+    screen. Every failure has to read as "nothing is idle" instead, which costs at
+    most a bay that stays held."""
+    monkeypatch.setattr(tmuxwatch.shutil, "which", lambda _: "/usr/bin/tmux")
+
+    def boom(argv):
+        raise RuntimeError("tmux server went away mid-scan")
+
+    monkeypatch.setattr(tmuxwatch, "_run", boom)
+    assert tmuxwatch.pane_tails_for_ttys({"pts/1"}) == {}
+
+    # A tmux that simply is not installed is the same answer by a quieter route.
+    monkeypatch.setattr(tmuxwatch.shutil, "which", lambda _: None)
+    assert tmuxwatch.pane_tails_for_ttys({"pts/1"}) == {}
 
 
 def test_run_survives_non_utf8_pane_bytes_and_still_scans():

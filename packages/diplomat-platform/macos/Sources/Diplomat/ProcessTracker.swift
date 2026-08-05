@@ -426,30 +426,93 @@ enum ProcessMonitor {
     /// deterministic tests; nil = run `ps`.
     static func liveAgentPRNumbers(owner: String, repo: String,
                                    psOutput: String? = nil) -> Set<Int> {
+        // A closure, not a `\.pr` key path: Swift has no key paths into tuple elements.
+        Set(agentLines(owner: owner, repo: repo, psOutput: psOutput).map { $0.pr })
+    }
+
+    /// Of those live agents, the PRs whose session has finished its turn and is
+    /// waiting at its prompt — the agents that no longer hold a bay of the task cap
+    /// (`AgentDispatchGate.runningAutoTasks`).
+    ///
+    /// An agent is spawned into an INTERACTIVE session, so finishing its work is not
+    /// exiting: it sits at the prompt until a human closes the window, and `ps` shows
+    /// the same live `claude` either way. The session's own visible buffer is the only
+    /// thing that tells the two apart, and `sessionTails` (tty → buffer, from
+    /// `ApiErrorWatcher.dumpSessions`) is where it comes from.
+    ///
+    /// The tty is the join. An agent whose tty has no session in the dump is absent
+    /// from the result, never idle in it — a dump that failed, an agent in a terminal
+    /// neither script can read, a window closed between the two reads. Each is missing
+    /// evidence, and this answer only ever REMOVES an agent from the cap's count, so
+    /// silence has to mean "still working".
+    static func idleAgentPRNumbers(owner: String, repo: String,
+                                   sessionTails: [String: String]?,
+                                   psOutput: String? = nil) -> Set<Int> {
+        guard let sessionTails, !sessionTails.isEmpty else { return [] }
+        var byTTY: [String: String] = [:]
+        for (tty, tail) in sessionTails { byTTY[canonicalTTY(tty)] = tail }
+        var out = Set<Int>()
+        for line in agentLines(owner: owner, repo: repo, psOutput: psOutput) {
+            guard let tail = byTTY[line.tty], !AgentActivity.looksBusy(tail) else { continue }
+            out.insert(line.pr)
+        }
+        return out
+    }
+
+    /// Every live agent as `(tty, pr)` — the one parse the two answers above are each
+    /// a projection of, so they can never come to disagree about what counts as an
+    /// agent.
+    ///
+    /// The tty is whatever leads the line. On a dump with no tty column — which
+    /// `liveAgentPRNumbers` predates the tty by, and which its tests still feed it —
+    /// that first token is the start of the command instead, and so simply matches no
+    /// session: a garbage tty can only ever fail to find evidence, never manufacture
+    /// it.
+    static func agentLines(owner: String, repo: String,
+                           psOutput: String? = nil) -> [(tty: String, pr: Int)] {
         let dump = psOutput ?? fullCommands()
         guard !dump.isEmpty,
               let re = try? NSRegularExpression(
                 pattern: "PR #(\\d+) in \(NSRegularExpression.escapedPattern(for: "\(owner)/\(repo)"))")
         else { return [] }
-        var out = Set<Int>()
+        var out: [(tty: String, pr: Int)] = []
         for line in dump.split(separator: "\n") {
             // Only a real agent process carries the phrase: the spawning shell's
             // argv holds the unexpanded `$(cat …)`, not the prompt text.
             guard line.contains("claude") else { continue }
             let s = String(line)
+            let tty = canonicalTTY(String(s.trimmingCharacters(in: .whitespaces)
+                                           .prefix { !$0.isWhitespace }))
             let range = NSRange(s.startIndex..., in: s)
             for m in re.matches(in: s, range: range) {
-                if let r = Range(m.range(at: 1), in: s), let n = Int(s[r]) { out.insert(n) }
+                if let r = Range(m.range(at: 1), in: s), let n = Int(s[r]) {
+                    out.append((tty: tty, pr: n))
+                }
             }
         }
         return out
     }
 
-    /// Full argv of every process (`ps -axo command=`), one per line.
+    /// One spelling of a tty, because the two sources that have to meet on it do not
+    /// agree: `ps` reports a bare device name, the terminal apps report the full
+    /// `/dev/…` path, and which of `ttys013` / `s013` a given `ps` prints is a detail
+    /// worth being indifferent to. Both prefixes are stripped, so every spelling of
+    /// one tty lands on the same key.
+    static func canonicalTTY(_ raw: String) -> String {
+        var t = raw
+        if t.hasPrefix("/dev/") { t = String(t.dropFirst(5)) }
+        if t.hasPrefix("tty") { t = String(t.dropFirst(3)) }
+        return t
+    }
+
+    /// Full argv of every process, with the tty it runs on, one per line
+    /// (`ps -axo tty=,command=`). The tty leads because it is what joins a `claude`
+    /// process to the terminal session showing it (`idleAgentPRNumbers`); the argv
+    /// scan is indifferent to it, finding its prompt wherever on the line it falls.
     private static func fullCommands() -> String {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/bin/ps")
-        proc.arguments = ["-axo", "command="]
+        proc.arguments = ["-axo", "tty=,command="]
         let pipe = Pipe()
         proc.standardOutput = pipe
         proc.standardError = Pipe()
