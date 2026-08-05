@@ -1,22 +1,31 @@
-"""The panel's Agent-tasks list: the queue behind the automatic-task cap, and the
-bays of that cap standing empty.
+"""The panel's Agent-tasks list: the agents filling the bays of this machine's
+automatic-task cap, the queue behind it, and the bays standing empty.
 
 The store's half of this is pinned in ``test_autofix.py``; what is asserted here is
-the part a passing store cannot promise — that the rows are actually drawn, that the
-row a *paused* monitor owns says so (a bare "queued" would promise a start that is
-never coming), that a task whose spawn is under way keeps a row of its own rather
-than leaving a gap, and that the two handles a queued row carries reach the store:
-the click that runs it past the cap, and the drop that reorders the queue.
+the part a passing store cannot promise — that the rows are actually drawn, that an
+agent that IS running holds a row where its bay was rather than emptying the section
+at the moment the machine is busiest, that the row a *paused* monitor owns says so (a
+bare "queued" would promise a start that is never coming), that a task whose spawn is
+under way keeps a row of its own rather than leaving a gap, and that the two handles a
+queued row carries reach the store: the click that runs it past the cap, and the drop
+that reorders the queue.
 """
 
 from __future__ import annotations
+
+import time
 
 import pytest
 
 from diplomat_app import autofix
 from diplomat_app.panel import Panel
 from diplomat_app.store import Store
-from diplomat_app.widgets import FreeSlotRow, QueuedTaskRow, StartingTaskRow
+from diplomat_app.widgets import (
+    FreeSlotRow,
+    QueuedTaskRow,
+    RunningTaskRow,
+    StartingTaskRow,
+)
 
 pytest.importorskip("PySide6")
 
@@ -77,12 +86,107 @@ def test_an_idle_machine_shows_its_empty_bays(panel):
 
 def test_a_queued_task_gets_a_row_and_a_bay_for_each_slot_left(panel):
     panel.store.queued_tasks = [_queued(512)]
-    panel.store._auto_tasks_measured = 1
+    panel.store._auto_tasks_measured = {404}
     panel._rebuild_agent_tasks()
 
     rows = _rows(panel, QueuedTaskRow)
     assert len(rows) == 1
     assert len(_rows(panel, FreeSlotRow)) == 1  # cap 2, one agent up
+
+
+def test_a_running_agent_holds_the_bay_it_took(panel):
+    """The complaint this list was failing: a bay that reads *free slot* while empty
+    and then vanishes with nothing in its place the moment an agent starts, so the
+    section empties out exactly when the machine is busiest. The agent stands in the
+    bay it spent, above the free ones."""
+    panel.store._track_agent("https://github.com/o/r/pull/512", 512,
+                             autofix.SOURCE_AUTO, "", "P",
+                             label="Auto · Review-req · #512 (@octocat)", kind="review")
+    panel._rebuild_agent_tasks()
+
+    rows = _rows(panel, RunningTaskRow)
+    assert len(rows) == 1
+    assert "Auto · Review-req · #512 (@octocat)" in _row_text(rows[0])
+    assert "running" in _row_text(rows[0])
+    # Cap of two: the agent takes one bay and the other is still drawn free.
+    assert _row_kinds(panel) == ["RunningTaskRow", "FreeSlotRow"]
+
+
+def test_every_bay_of_the_cap_is_drawn_whatever_is_in_it(panel):
+    """Running, starting and free are three states of the same bay, so their rows
+    always add up to the cap. Drop any one of them and the list stops being a picture
+    of the machine's capacity."""
+    panel.store.auto_task_limit = 3  # one bay per state
+    panel.store._track_agent("https://github.com/o/r/pull/512", 512,
+                             autofix.SOURCE_AUTO, "", "P", label="Auto · #512")
+    task = _queued(508)
+    panel.store.queued_tasks = [task]
+    panel.store._begin_starting(task)
+    panel._rebuild_agent_tasks()
+
+    assert _row_kinds(panel) == ["RunningTaskRow", "StartingTaskRow", "FreeSlotRow"]
+
+
+def test_an_agent_only_ps_can_see_is_still_given_a_row(panel):
+    """An applet restart loses the book, not the agents — and such an agent counts
+    against the cap for as long as it runs. Drawn from its PR number alone, and
+    saying so: a bare "#512" beside a dispatched row's label would otherwise read as
+    a dispatch that lost its own name."""
+    panel.store._auto_tasks_measured = {512}
+    panel._rebuild_agent_tasks()
+
+    rows = _rows(panel, RunningTaskRow)
+    assert len(rows) == 1
+    assert "#512" in _row_text(rows[0])
+    assert "running · untracked" in _row_text(rows[0])
+
+
+def test_a_running_row_says_how_long_it_has_been_going(panel):
+    """Whether an agent has been up two minutes or two hours is the difference
+    between waiting for it and going to look at it."""
+    panel.store._track_agent("https://github.com/o/r/pull/512", 512,
+                             autofix.SOURCE_AUTO, "", "P", label="Auto · #512")
+    panel.store._autofix_inflight[-1]["at"] = time.time() - 95 * 60
+    panel._rebuild_agent_tasks()
+
+    assert "running · for 1h 35m" in _row_text(_rows(panel, RunningTaskRow)[0])
+
+
+def test_a_run_the_mesh_placed_here_says_where_it_came_from(panel):
+    """It spends this machine's bay like any other agent, but nothing on this screen
+    dispatched it — without the note, an agent appears in a bay the operator watched
+    the mesh route away."""
+    panel.store._track_agent("https://github.com/o/r/pull/512", 512,
+                             autofix.SOURCE_AUTO, "", "P", mesh=True,
+                             label="Auto · #512", kind="review")
+    panel._rebuild_agent_tasks()
+
+    assert "via mesh" in _row_text(_rows(panel, RunningTaskRow)[0])
+
+
+def test_a_manual_spawn_takes_no_bay_and_gets_no_row(panel):
+    """A panel click spends none of the automatic budget, so it has no bay of the cap
+    to stand in. A row for it would claim a slot that is still free."""
+    panel.store._track_agent("https://github.com/o/r/pull/512", 512,
+                             autofix.SOURCE_PANEL, "", "P", label="Review · #512")
+    panel._rebuild_agent_tasks()
+
+    assert _rows(panel, RunningTaskRow) == []
+    assert len(_rows(panel, FreeSlotRow)) == panel.store.auto_task_limit
+
+
+def test_the_task_count_covers_what_is_running(panel):
+    """The count is the tasks, wherever they are in their life — bays standing empty
+    are not tasks. A count that dropped as work STARTED would read as work lost."""
+    task = _queued(512)
+    panel.store.queued_tasks = [task]
+    panel._rebuild_agent_tasks()
+    assert _task_count(panel) == 1
+
+    panel.store._track_agent("https://github.com/o/r/pull/508", 508,
+                             autofix.SOURCE_AUTO, "", "P", label="Auto · #508")
+    panel._rebuild_agent_tasks()
+    assert _task_count(panel) == 2
 
 
 def test_a_paused_monitors_row_says_nothing_will_start_it(panel):
@@ -186,7 +290,7 @@ def test_a_row_refuses_a_drop_of_itself(app):
 def _row_kinds(panel) -> list[str]:
     """The task rows in the order the list draws them."""
     layout = panel.tasks_col
-    kinds = (StartingTaskRow, FreeSlotRow, QueuedTaskRow)
+    kinds = (RunningTaskRow, StartingTaskRow, FreeSlotRow, QueuedTaskRow)
     return [
         type(layout.itemAt(i).widget()).__name__
         for i in range(layout.count())

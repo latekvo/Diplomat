@@ -533,6 +533,51 @@ class QueuedTaskRow(QFrame):
         return None if not key or key == self._task_id else key
 
 
+class RunningTaskRow(QFrame):
+    """An automatic agent that is up: a slot of this device's cap with something in
+    it, drawn where the free bay it took would be.
+
+    A spawn here is a detached ``Popen`` in a terminal this applet does not own, so
+    the row is a *status* and nothing else — there is no window handle to click and
+    nothing to stop tracking. What it can say it says: which work, how long it has
+    been going, and — when the record behind it was lost to a restart — that the PR
+    number is all this machine still knows about it.
+    """
+
+    _HELP = (
+        "An automatic agent running on this machine. It holds a slot of the "
+        "automatic-task cap until it exits."
+    )
+    _UNTRACKED_HELP = (
+        "A Claude agent running on this machine, found by scanning processes — this "
+        "applet has no record of starting it (a restart loses the record, not the "
+        "agent). It counts against the automatic-task cap while it runs."
+    )
+
+    def __init__(self, *, label: str, detail: str, glyph: str, hex_color: str,
+                 tracked: bool) -> None:
+        super().__init__()
+        self.setToolTip(self._HELP if tracked else self._UNTRACKED_HELP)
+        self.setStyleSheet(
+            "RunningTaskRow { background-color: rgba(128,128,128,0.06);"
+            " border-radius: 6px; }"
+        )
+        row = QHBoxLayout(self)
+        row.setContentsMargins(6, 6, 6, 6)
+        row.setSpacing(8)
+        # Lit, like the starting row it replaces: the chip is on for as long as
+        # there is an agent behind it.
+        row.addWidget(IconChip(glyph, hex_color, 22, active=True),
+                      0, Qt.AlignmentFlag.AlignVCenter)
+        col = QVBoxLayout()
+        col.setSpacing(1)
+        col.addWidget(ElidedLabel(label, 10, "#d8dbde"))
+        status = QLabel(f"{glyphs.G_RUNNING} {detail}")
+        status.setStyleSheet(f"color: {glyphs.AGENT_LIVE}; font-size: 9px;")
+        col.addWidget(status)
+        row.addLayout(col, 1)
+
+
 class StartingTaskRow(QFrame):
     """A queued task whose dispatch is under way — clicked, or reached by the drain —
     waiting on a mesh round-trip and a terminal spawn that take seconds between them.
@@ -567,7 +612,7 @@ class StartingTaskRow(QFrame):
         col.setSpacing(1)
         col.addWidget(ElidedLabel(label, 10, "#d8dbde"))
         status = QLabel(f"{glyphs.G_STARTING} starting")
-        status.setStyleSheet(f"color: {glyphs.STARTING}; font-size: 9px;")
+        status.setStyleSheet(f"color: {glyphs.AGENT_LIVE}; font-size: 9px;")
         col.addWidget(status)
         row.addLayout(col, 1)
 

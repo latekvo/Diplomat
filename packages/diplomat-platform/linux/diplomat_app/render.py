@@ -106,20 +106,25 @@ def _left_pane_fixture(store: Store) -> None:
 
 
 def _queue_fixture(store: Store) -> None:
-    """Synthetic deferred-work queue so the Agent-tasks list can be eyeballed: the row
-    a task wears between the click and its spawn, the bay that leaves free on a
-    two-agent cap, and the two tasks the cap is holding under them.
+    """Synthetic Agent-tasks list so every state one bay of the task cap can be in is
+    eyeballable at once: an agent running in it, one the applet has no record of
+    starting, a task between the click and its spawn, and a bay standing empty — with
+    the two tasks the cap is holding queued under them.
 
     Live-only, like every other fixture here — the monitor toggles a queued row reads
     for its "monitor off" note are the operator's real ones, and a render must not
-    write to them.
+    write to them. The cap is the one exception, overridden through the *reader* so
+    nothing is stored: four bays is what it takes to draw four states, and the
+    operator's own setting is likelier to be the default two.
 
-    The `ps` scan behind the free bays is pinned rather than run: it counts whatever
+    The `ps` scan behind the bays is pinned rather than run: it counts whatever
     agents the developer happens to have open, so a snapshot would otherwise differ
     per machine — and the panel re-measures on show, which in a one-shot render is a
     background thread racing the grab.
     """
-    from . import autofix
+    from . import appconfig, autofix
+
+    appconfig.auto_task_limit = lambda: 4
 
     def task(number: int, kind: str, action: str, label: str, counter: str, attempt=1):
         return autofix.QueuedTask(
@@ -147,10 +152,15 @@ def _queue_fixture(store: Store) -> None:
     # state a click leaves behind, and seeding the band directly would prove the row
     # draws without proving the queue lets go of it.
     store._begin_starting(starting)
-    # Nothing else running, so the bay the started task holds is the one the cap is
-    # short — which is what leaves the machine's other bay drawn beside it.
-    store._live_pr_agents = lambda: set()
-    store._auto_tasks_measured = 0
+    # Two agents up: one this applet dispatched and still holds the record for, one
+    # visible only to the `ps` scan (what an applet restart leaves behind). With the
+    # starting task's bay that is three of four, so the fourth is drawn free.
+    store._track_agent("https://github.com/x/pull/402", 402, autofix.SOURCE_AUTO,
+                       ledger_key="", prompt="",
+                       label="Auto · Review-req · #402 (@t0tl)", kind="review")
+    store._autofix_inflight[-1]["at"] = time.time() - 23 * 60
+    store._live_pr_agents = lambda: {402, 351}
+    store._auto_tasks_measured = {402, 351}
 
 
 def _telemetry_scratch() -> None:

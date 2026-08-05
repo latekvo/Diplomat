@@ -133,10 +133,12 @@ an idle machine with a cap of two reads `0 · 2 free` over two empty bays.
   [work claim](#autonomous-monitors) does, and leaves when the remote agent
   finishes.
 
-  (Both kinds are macOS only - a Linux spawn has no window handle to track a
-  session by, so there the list is the queue and the bays: a local agent shows as
-  the slot it takes, and one the mesh placed on a peer shows in the activity feed
-  rather than on the list.)
+  (Both kinds are macOS only - a Linux spawn is a detached `Popen` with no window
+  handle to track a session by. Linux draws a local agent as a *running* row all
+  the same, from the in-flight book and a `ps` scan: the bay it took, labelled with
+  the work it is on and how long it has been going, but with no window to click and
+  no *awaiting input* / *done* to tell apart. One the mesh placed on a peer shows in
+  the activity feed rather than on the list.)
 - **Starting** is a task between the queue and its agent: the click (or the drain)
   has taken it, and the spawn - a `ps` scan, a mesh placement, a terminal - has not
   answered yet. Seconds, and a row for all of them, so *execute now* never reads as
@@ -858,11 +860,12 @@ language-neutral GraphQL queries, the tool catalog, filter constants, and the
 prompt fragments for all three actions. Both front-ends load it and assert their
 assembled prompts byte-for-byte against `assets/golden-prompts/`, so they can only
 drift from each other by failing a CI job. Both also run the full monitor stack;
-what stays macOS-only is the per-row **Merge** button, the *session* rows of the
-[Agent tasks](#agent-tasks) list (a Linux spawn is a detached `Popen` with no
-window handle to track a session by, so a running agent shows there only as the
-slot it occupies - the queue, what is starting, and the free bays are on both), and
-reading arbitrary terminal windows (the Linux watcher drives tmux panes instead).
+what stays macOS-only is the per-row **Merge** button, the clickable *session* rows
+of the [Agent tasks](#agent-tasks) list (a Linux spawn is a detached `Popen` with no
+window handle, so a running agent gets a row there but not a window to focus, and
+none of the *awaiting input* / *done* / *merged* statuses that reading a session's
+terminal is what yields), and reading arbitrary terminal windows (the Linux watcher
+drives tmux panes instead).
 
 This repository is a **monorepo of independent parts**: everything lives in
 `packages/`, one directory per package, and CI is arranged to keep them

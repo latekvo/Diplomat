@@ -18,9 +18,10 @@ from __future__ import annotations
 MUTED = "#9AA0A6"  # grey glyph for an inactive/"off" chip
 # Opaque neutral fill for an inactive/"off" icon chip (free devices, lookup misses).
 CHIP_OFF = "#3A3D42"
-# A task on its way to running, in the blue macOS gives a running agent's status
-# (AgentTaskStatus): the click's answer is the row leaving the grey of the queue.
-STARTING = "#0A84FF"
+# A live agent, and a task on its way to being one — one blue for both, as macOS
+# gives them (AgentTaskStatus): the click's answer is the row leaving the grey of
+# the queue, before a word of it is read.
+AGENT_LIVE = "#0A84FF"
 
 # --- Chrome glyphs (header, search, section headers) -----------------------
 G_APP = "⚒"      # wrench header / tray icon
@@ -29,8 +30,11 @@ G_DEVICES = "⧉"  # devices section
 G_ACTIVITY = "▤" # activity feed section
 G_BAN = "⊘"      # banned author (no-entry)
 G_TASKS = "◷"    # agent-tasks section header, and a queued task awaiting its turn
-G_STARTING = "◍"  # a task whose spawn is under way (the bay filling in)
+# The three states of one bay of the task cap, drawn as one filling up: empty,
+# filling (a spawn under way), full (an agent running in it).
 G_FREE_SLOT = "◌"  # an empty bay: a slot of the task cap with nothing in it
+G_STARTING = "◍"  # a task whose spawn is under way (the bay filling in)
+G_RUNNING = "●"   # an agent up and running in the bay it took
 G_GRIP = "≡"     # the drag grip that orders the queue
 G_MESH = "⬡"     # mesh screen header / "run on mesh" toggle (matches the mesh
                  # activity category's linuxGlyph)

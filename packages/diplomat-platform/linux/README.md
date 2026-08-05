@@ -8,10 +8,11 @@ screen, and settings. It's a thin UI renderer over the shared [`assets/`](../../
 assets — and it doesn't re-implement prompt assembly at all: it shells out to the
 `diplomat-core` Swift binary, so the two front-ends are identical by construction.
 
-**Still macOS-only:** the per-row **Merge** button; the **session rows** of the
-[Agent tasks](#agent-tasks) list — a spawn here is a detached `Popen` with no window
-handle to track it by, so a running agent has no row to click, only the slot it
-occupies. Also macOS-only: reading/typing into *arbitrary* terminal windows — Linux
+**Still macOS-only:** the per-row **Merge** button; the **clickable session rows** of
+the [Agent tasks](#agent-tasks) list — a spawn here is a detached `Popen` with no
+window handle to track it by, so a running agent gets a row but no window to focus,
+and none of the *awaiting input* / *done* / *merged* statuses that come from reading
+a session's terminal. Also macOS-only: reading/typing into *arbitrary* terminal windows — Linux
 has no portable hook for that, so the API-error watcher drives **tmux panes**
 instead. Every SPAWN opens its agent in a tmux session of its own wherever tmux is
 installed, so the watcher reaches them; an agent started any other way is outside it.
@@ -22,19 +23,32 @@ XEmbed): works on **XFCE** (Notification Area / Status Notifier panel plugin),
 
 ## Agent tasks
 
-The left pane heads with what this machine is about to do and how much room it has
-left: the automatic work it is **holding**, and an empty bay per free slot of its
+The left pane heads with what this machine is doing, what it is about to do, and how
+much room it has left: the automatic agents it is **running**, the work it is
+**holding**, and an empty bay per free slot of its
 [task cap](../../../README.md#autonomous-monitors). The section is always there. Its
 header counts the tasks and captions them with the machine's state — an idle one with
-a cap of two reads `0`, `2 free`, over two empty bays; a saturated one reads `3`,
-`2 running`, over the three tasks waiting behind them.
+a cap of two reads `0`, `2 free`, over two empty bays; a saturated one with three
+more owed reads `5`, `3 queued`, over two running agents and the queue behind them.
 
+Rows read in the order of the bay's own filling: **running**, **starting**, **free
+slot**, then the **queue** that has no bay yet.
+
+- **Running** is an automatic agent up on this machine, drawn in the bay it took,
+  with the label its dispatch logged and how long it has been going. A spawn here is
+  a detached `Popen` in a terminal the applet does not own, so the row is a status
+  and nothing more — there is no window to click, and none of the *awaiting
+  input* / *done* / *merged* macOS reads off a session. A job the mesh placed **back
+  on this machine** is one of these like any other; one it placed on a peer shows in
+  the activity feed instead, having taken no bay here.
+
+  An agent found only by the `ps` scan — no in-flight record behind it, which is
+  what an applet restart leaves — still gets a row, marked *untracked* and drawn by
+  its PR number, because it still holds a bay for as long as it runs.
 - **Starting** is a task between the queue and its agent: the click (or the drain)
   has taken it, and the spawn has not answered yet. Seconds, and a row for all of
   them, so *execute now* never reads as the click deleting the task. It holds a bay
-  from the moment it starts; when the spawn answers, an agent that landed here is
-  counted in the header's `N running`, and one the mesh placed on a peer shows in the
-  activity feed — there being no session row on this front-end to draw either as.
+  from the moment it starts, and the running row it becomes takes its place.
 - **Free slots** are the rest of the cap. Each running automatic agent takes one —
   including a job the mesh placed back on this machine, which is a `claude` process
   here whoever opened its terminal; agents you spawn yourself from the panel take

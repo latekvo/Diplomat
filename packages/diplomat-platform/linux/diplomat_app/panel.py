@@ -39,6 +39,7 @@ from .widgets import (
     IconChip,
     QueuedTaskRow,
     ResultRow,
+    RunningTaskRow,
     SectionHeader,
     StartingTaskRow,
     ToolCard,
@@ -97,6 +98,28 @@ def _task_look(kind: str) -> tuple[str, str]:
     if kind == "audit":
         return glyphs.G_AUDIT, _AUDIT_TINT
     return glyphs.G_REVIEW, _REVIEW_TINT
+
+
+def _running_detail(agent: autofix.RunningAgent) -> str:
+    """The status line under a running agent's label: how long it has been up, and
+    whatever else this machine knows about where it came from.
+
+    An untracked agent says so instead of ageing: its record was lost (a restart, or
+    it was never this applet's to begin with), so there is no honest start time to
+    count from — and the row's label is a bare PR number, which without the word
+    would read as a dispatch that forgot its own name.
+    """
+    if not agent.tracked:
+        return "running · untracked"
+    parts = ["running"]
+    # Under a minute Fmt gives "just now", which is not how long a thing has been
+    # running — the first minute simply says "running".
+    age = Fmt.duration(time.time() - agent.started_at)
+    if age != "just now":
+        parts.append(f"for {age}")
+    if agent.mesh:
+        parts.append("via mesh")
+    return " · ".join(parts)
 
 
 def _device_badge(dev: dict, allocated: bool) -> tuple[str, str]:
@@ -232,10 +255,13 @@ class Panel(QWidget):
         self.store.refresh_device_state()
         self.store.refresh_activity()
 
-        # Advance the "held" durations on in-use devices even when the pool itself
-        # hasn't changed (allocatedAt is fixed; the elapsed time is not).
+        # Advance the elapsed times that nothing else redraws: how long an in-use
+        # device has been held, and how long a running agent has been up. Both are
+        # counted from a fixed instant (allocatedAt, the agent's start), so the tick
+        # that changes is the clock's, not the store's.
         self._duration_timer = QTimer(self)
         self._duration_timer.timeout.connect(self._rebuild_devices)
+        self._duration_timer.timeout.connect(self._rebuild_agent_tasks)
         self._duration_timer.start(30000)
 
         # Mesh should feel live: poll the topology snapshot on a tight 2s cadence,
@@ -333,11 +359,11 @@ class Panel(QWidget):
         col.setContentsMargins(0, 0, 0, 0)
         col.setSpacing(8)
 
-        # Agent tasks: the automatic work this machine is holding, and an empty bay
-        # per free slot of its cap. The one section always drawn — a machine with
-        # nothing to do is still a machine with free slots, and this is where the
-        # panel says how many. It is also what keeps the pane from ever reading as
-        # empty on a quiet machine.
+        # Agent tasks: the automatic agents this machine is running, the work it is
+        # holding, and an empty bay per free slot of its cap. The one section always
+        # drawn — a machine with nothing to do is still a machine with free slots,
+        # and this is where the panel says how many. It is also what keeps the pane
+        # from ever reading as empty on a quiet machine.
         self.tasks_host, self.tasks_col = card_host(spacing=4)
         col.addWidget(self.tasks_host)
 
@@ -561,38 +587,47 @@ class Panel(QWidget):
         self._free_expanded = not self._free_expanded
         self._rebuild_devices()
 
-    # MARK: agent tasks — the queue behind the cap, and the cap's free slots
+    # MARK: agent tasks — the bays of the cap, filled and free, and the queue behind
 
     def _rebuild_agent_tasks(self) -> None:
-        """The Agent-tasks list: what this machine is about to do, and how much room
-        it has left.
+        """The Agent-tasks list: what this machine is doing, what it is about to do,
+        and how much room it has left.
 
-        What is starting first, then the free slots, then the queue — the reading
-        order `AgentTaskStatus` fixes on macOS, minus the session rows a detached
-        `Popen` gives this front-end no way to draw. A task being started stands where
-        those agents would, above the bays and the work still waiting.
+        What is running first, then what is starting, then the free slots, then the
+        queue — the reading order `AgentTaskStatus` fixes on macOS, for the statuses
+        this front-end can tell apart. A detached `Popen` gives it no window handle,
+        so a running agent is a status and not a session: no *awaiting input*, no
+        *done*, nothing to click. What it is, and that it holds a bay, it says.
         """
         _clear_layout(self.tasks_col)
         queued = self.store.queued_tasks
         starting = self.store.starting_tasks
         free = self.store.free_auto_slots
-        running = self.store.auto_tasks_shown
-        # What is running explains what is not free: with no session rows to count,
-        # a machine with no bays left would otherwise say nothing about why.
-        parts = [f"{running} running" if running else "",
+        running = self.store.running_tasks
+        parts = [f"{len(queued)} queued" if queued else "",
                  f"{free} free" if free else ""]
         caption = " · ".join(p for p in parts if p)
 
-        # A starting task counts, or clicking the last queued row would drop the
-        # count for as long as its spawn takes.
+        # The tasks — a starting one among them, or clicking the last queued row
+        # would drop the count for as long as its spawn takes. Empty bays are not:
+        # a device with nothing to do reads "0", not "2".
         header = SectionHeader(glyph=glyphs.G_TASKS, title="Agent tasks",
-                               count=len(queued) + len(starting),
+                               count=len(running) + len(starting) + len(queued),
                                caption=caption or None,
                                expanded=self._tasks_expanded)
         header.clicked.connect(self._toggle_tasks)
         self.tasks_col.addWidget(header)
         if not self._tasks_expanded:
             return
+        for agent in running:
+            glyph, tint = _task_look(agent.kind)
+            self.tasks_col.addWidget(RunningTaskRow(
+                label=agent.label or f"#{agent.pr_number}",
+                detail=_running_detail(agent),
+                glyph=glyph,
+                hex_color=tint,
+                tracked=agent.tracked,
+            ))
         for task in starting:
             glyph, tint = _task_look(task.job.kind)
             self.tasks_col.addWidget(StartingTaskRow(

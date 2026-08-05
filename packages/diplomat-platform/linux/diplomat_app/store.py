@@ -233,9 +233,12 @@ class Store(QObject):
         # has succeeded: a failed fetch means "we no longer know what is owed", which
         # is not the same as "nothing is owed", and must not empty the list.
         self._staged_queue: list[autofix.QueuedTask] = []
-        # The last count _auto_tasks_running measured, so the panel can draw the
-        # device's free slots without a `ps` scan of its own.
-        self._auto_tasks_measured = 0
+        # The PRs _auto_tasks_running last measured an automatic agent on, so the
+        # panel can draw the device's bays — filled and free — without a `ps` scan of
+        # its own. The set rather than its size: a row has to name the PR it is on,
+        # and two agents swapping which PRs they are on is a redraw the count alone
+        # would miss (see refresh_auto_task_count).
+        self._auto_tasks_measured: set[int] = set()
         # Guards the _dispatching_prs set (below). MUST stay distinct from the
         # poll-overlap guard: run_autofix_poll_async holds that one across the whole
         # worker, and the worker's dispatch_agent re-takes THIS one — sharing a single
@@ -966,6 +969,10 @@ class Store(QObject):
                     )
                     self.refresh_activity()
                 return verdict
+            # What this dispatch is called wherever it is named: the activity line it
+            # writes, and — while it runs — the row it wears in the Agent-tasks list.
+            # One string, so a retry cannot read as a first attempt in one of them.
+            row_label = autofix.dispatch_label(source, job.label, attempt)
             # An AUTO job on a live mesh runs on the best-surplus node via
             # claim-gated dispatch (every machine scans; the mesh runs it once and
             # dedups via the executor's claim). A manual spawn — or a wedged/absent
@@ -986,10 +993,12 @@ class Store(QObject):
                     # of a burst measured the same empty machine and the cap held
                     # back nothing at all.
                     self._track_agent(job.pr_url, job.pr_number, source,
-                                      job.ledger_key, job.prompt, mesh=True)
+                                      job.ledger_key, job.prompt, mesh=True,
+                                      label=row_label, kind=job.kind)
             elif job.pr_url is not None and job.pr_number is not None:
                 ok = self._spawn_tracked(job.prompt, job.pr_url, job.pr_number,
-                                         source, job.ledger_key)
+                                         source, job.ledger_key,
+                                         label=row_label, kind=job.kind)
             else:
                 # Not PR-scoped (sweeps, audits): nothing to dedup against, so no
                 # registration - but the same spawn, label and audit shape.
@@ -1002,9 +1011,7 @@ class Store(QObject):
                 activity.log(source, "spawn-failed", f"{job.label} failed to spawn")
                 self.refresh_activity()
                 return "failed"
-            activity.log(
-                source, job.audit_action, autofix.dispatch_label(source, job.label, attempt)
-            )
+            activity.log(source, job.audit_action, row_label)
             # The telemetry ledger tracks the MONITORS, so only an auto dispatch is
             # recorded — a wizard click is the operator's own doing and has no queue
             # instant to be late against. A mesh placement on a PEER spends that
@@ -1116,7 +1123,7 @@ class Store(QObject):
         return self.dispatch_agent(job, autofix.SOURCE_AUTO, attempt) in ("spawned", autofix.VERDICT_STAND_DOWN)
 
     def _spawn_tracked(self, prompt: str, url: str, number: int, source: str,
-                       ledger_key: str = "") -> bool:
+                       ledger_key: str = "", label: str = "", kind: str = "") -> bool:
         """Spawn an agent with a completion sentinel and record it in-flight. Returns
         whether the terminal launched.
 
@@ -1138,17 +1145,23 @@ class Store(QObject):
             review.spawn(prompt, self.terminal, done_path=done_path)
         except review.SpawnError:
             return False
-        self._track_agent(url, number, source, ledger_key, prompt, done=done_path)
+        self._track_agent(url, number, source, ledger_key, prompt, done=done_path,
+                          label=label, kind=kind)
         return True
 
     def _track_agent(self, url: str, number: int, source: str, ledger_key: str,
-                     prompt: str, done: str | None = None, mesh: bool = False) -> None:
+                     prompt: str, done: str | None = None, mesh: bool = False,
+                     label: str = "", kind: str = "") -> None:
         """Register one running agent as in-flight — the book behind both the
         per-PR dedup and the automatic-task cap.
 
         ``done`` is the completion sentinel for an agent this applet spawned, and is
         absent for a ``mesh`` one: the node that placed it owns its sentinel, so what
-        says that agent is still up is ``ps`` (see :meth:`_prune_inflight`)."""
+        says that agent is still up is ``ps`` (see :meth:`_prune_inflight`).
+
+        ``label`` and ``kind`` are what the agent's row reads as while it runs
+        (:attr:`running_tasks`) — the dispatch's own label, so the row, the queued row
+        it was a moment ago and the activity line all say the same thing."""
         with self._inflight_lock:
             self._autofix_inflight.append(
                 {
@@ -1160,6 +1173,8 @@ class Store(QObject):
                     "key": ledger_key,
                     "prompt": prompt,
                     "mesh": mesh,
+                    "label": label,
+                    "kind": kind,
                 }
             )
 
@@ -1175,9 +1190,9 @@ class Store(QObject):
         for e in self._autofix_inflight:
             bucket = manual_prs if e["source"] == autofix.SOURCE_PANEL else auto_prs
             bucket.add(e["number"])
-        n = autofix.running_auto_tasks(self._live_pr_agents(), auto_prs, manual_prs)
-        self._auto_tasks_measured = n
-        return n
+        prs = autofix.running_auto_prs(self._live_pr_agents(), auto_prs, manual_prs)
+        self._auto_tasks_measured = prs
+        return len(prs)
 
     def refresh_auto_task_count(self) -> None:
         """Re-measure for the display alone, signalling only on a change.
@@ -1185,7 +1200,10 @@ class Store(QObject):
         The panel calls it on its own tick, including the ticks where nothing is
         tracked: an agent can be alive in ``ps`` with no in-flight record behind it
         (an applet restart loses the book, not the agents), and that is exactly when
-        a wrongly-drawn free bay would be most misleading."""
+        a wrongly-drawn free bay would be most misleading.
+
+        A change is a change of PRs, not of their number: one agent finishing as
+        another starts leaves the count alone while both rows are now wrong."""
         before = self._auto_tasks_measured
         self._auto_tasks_running()
         if self._auto_tasks_measured != before:
@@ -1197,22 +1215,56 @@ class Store(QObject):
         threading.Thread(target=self.refresh_auto_task_count, daemon=True).start()
 
     @property
-    def auto_tasks_shown(self) -> int:
-        """How many automatic agents the panel counts as running on this device.
+    def running_tasks(self) -> list[autofix.RunningAgent]:
+        """The automatic agents the panel draws as the filled bays of this device's
+        cap — one row each, in the order they started.
 
-        The higher of the last measurement and what the tracked records themselves
-        say. Each is only a lower bound on the truth — the measurement can predate a
-        spawn this very poll made, the records miss agents nobody tracked — and
-        between two lower bounds the larger is the safer: it errs towards drawing one
-        bay fewer, never towards offering a slot the gate would refuse."""
-        tracked = len(
-            {
-                e["number"]
-                for e in self._autofix_inflight
-                if e["source"] != autofix.SOURCE_PANEL
-            }
-        )
-        return max(self._auto_tasks_measured, tracked)
+        Two sources, united rather than picked between, because each is only a lower
+        bound on the truth: the last measurement misses a spawn made since (and is
+        blind to who started anything), the tracked records miss every agent nobody
+        tracked. Their union errs towards drawing one bay fewer than free, never
+        towards offering a slot the gate would then refuse.
+
+        A tracked record wins where both know a PR — it is the one that carries a
+        label, a start time and the mesh flag. What is left is drawn from its number
+        alone: that is all ``ps`` yields, and a row that says only which PR is still
+        a great deal more than the blank the operator gets otherwise.
+        """
+        tracked: dict[int, dict] = {}
+        for e in self._autofix_inflight:
+            if e["source"] == autofix.SOURCE_PANEL:
+                continue
+            # First wins: the dedup allows one agent per PR, so a second record for
+            # the same number is a stale one the prune has not reached yet.
+            tracked.setdefault(e["number"], e)
+        rows = [
+            autofix.RunningAgent(
+                pr_number=number,
+                label=e["label"],
+                kind=e["kind"],
+                tracked=True,
+                started_at=e["at"],
+                mesh=e["mesh"],
+            )
+            for number, e in tracked.items()
+        ]
+        # No kind either: what the untracked agent is doing on its PR is exactly what
+        # nothing here recorded, so the row wears the default look rather than
+        # guessing at one (``panel._task_look``).
+        rows += [
+            autofix.RunningAgent(pr_number=number, label="", kind="", tracked=False)
+            for number in self._auto_tasks_measured
+            if number not in tracked
+        ]
+        # Oldest first, so a row keeps its place as agents come and go; the untracked
+        # ones have no start time, so they sort together at the end by PR.
+        return sorted(rows, key=lambda r: (not r.tracked, r.started_at, r.pr_number))
+
+    @property
+    def auto_tasks_shown(self) -> int:
+        """How many automatic agents the panel counts as running on this device —
+        one per row of :attr:`running_tasks`, which is where the reasoning lives."""
+        return len(self.running_tasks)
 
     @property
     def free_auto_slots(self) -> int:

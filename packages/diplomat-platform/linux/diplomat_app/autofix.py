@@ -424,11 +424,11 @@ def clamp_auto_task_limit(value: int) -> int:
     return max(MIN_AUTO_TASK_LIMIT, min(MAX_AUTO_TASK_LIMIT, value))
 
 
-def running_auto_tasks(
+def running_auto_prs(
     live_prs: set[int], auto_prs: set[int], manual_prs: set[int]
-) -> int:
-    """How many automatic agents are running on this device, counted in PRs (one
-    agent per PR is what the in-flight dedup guarantees).
+) -> set[int]:
+    """Which PRs have an automatic agent running on this device (one agent per PR is
+    what the in-flight dedup guarantees, so a PR *is* an agent here).
 
     Three inputs, because no single one of them is both complete and attributable:
 
@@ -444,8 +444,19 @@ def running_auto_tasks(
 
     An agent nobody tracked therefore counts as automatic. That is the safe way to
     be wrong: the cost is deferring auto work behind an untracked agent for as long
-    as it runs, where the opposite error is the burst this cap exists to stop."""
-    return len((live_prs - manual_prs) | auto_prs)
+    as it runs, where the opposite error is the burst this cap exists to stop.
+
+    The set, not just its size, because the panel draws a row per running agent and
+    a row needs to say *which* PR it is on (``Store.running_tasks``)."""
+    return (live_prs - manual_prs) | auto_prs
+
+
+def running_auto_tasks(
+    live_prs: set[int], auto_prs: set[int], manual_prs: set[int]
+) -> int:
+    """How many automatic agents are running on this device — the number the cap is
+    compared against, and the size of :func:`running_auto_prs`."""
+    return len(running_auto_prs(live_prs, auto_prs, manual_prs))
 
 
 def dispatch_label(source: str, core: str, attempt: int = 1) -> str:
@@ -592,6 +603,31 @@ class QueuedTask:
     # The attempt number the monitor would have dispatched under, so a queued retry
     # keeps its place on the 5m→3h backoff ladder instead of restarting it.
     attempt: int
+
+
+@dataclass(frozen=True)
+class RunningAgent:
+    """One automatic agent up on this device right now — a slot of the cap with
+    something in it, and the row the panel draws where a free bay would be.
+
+    Not a session: this front-end spawns a detached ``Popen`` and keeps no window
+    handle, so what a row can say is what the *bookkeeping* knows, and how much of
+    that there is differs per agent. A tracked one carries the label its dispatch
+    logged and the moment it started; an agent found only in ``ps`` (``tracked`` is
+    False) has neither — an applet restart loses the book while the agents run on —
+    and is drawn by its PR alone, which is the whole of what ``ps`` yields.
+    """
+
+    pr_number: int
+    # The label the activity feed and the queued row carried — already through
+    # dispatch_label, so a retry keeps its "retry N". Empty for an untracked agent.
+    label: str
+    # AgentJob.kind, for the row's glyph and tint. Empty for an untracked agent,
+    # which takes whatever look an unrecognised kind gets.
+    kind: str
+    tracked: bool
+    started_at: float = 0.0  # epoch seconds; 0 when untracked (nothing to date it by)
+    mesh: bool = False  # the mesh placed this job back on this machine
 
 
 _LIVE_AGENT_RE_TMPL = r"PR #(\d+) in {repo}"
