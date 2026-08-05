@@ -447,7 +447,7 @@ def test_audit_prompt_toggles_gate_blocks():
     assert "DRAFT" in prs
     # Dedup against existing PRs by actual code, not titles.
     assert "DUPLICATE" in prs and "gh pr diff" in prs
-    # Low/nitpick fixes only earn a PR when the diff is under 20 lines.
+    # LOW fixes only earn a PR when the diff is under 20 lines.
     assert "20 lines" in prs
     assert "No AI attribution" in prs
     assert "READ-ONLY audit" not in prs

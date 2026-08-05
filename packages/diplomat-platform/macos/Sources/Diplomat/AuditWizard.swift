@@ -67,12 +67,13 @@ struct AuditWizardView: View {
         WizardBlurb("Dispatches a massive swarm to end-to-end test the whole repo — every module, flow, build and test. By default it only finds and reports defects; nothing is changed.")
     }
 
-    /// Always-on reminder of the non-negotiable bar — every finding hard-reproduced
-    /// with a 100%-certainty repro. Styled to read as a guarantee, not an option.
+    /// Always-on reminder of the non-negotiable bar — every HIGH / MEDIUM finding
+    /// hard-reproduced with a 100%-certainty repro (a LOW earns one short check
+    /// instead). Styled to read as a guarantee, not an option.
     private var barRow: some View {
         HStack(spacing: 6) {
             Image(systemName: "checkmark.seal.fill").font(.caption2).foregroundStyle(tint)
-            Text("Every finding is hard-reproduced — 100% proof of existence, no guesses.")
+            Text("Every HIGH / MEDIUM finding is hard-reproduced — 100% proof, no guesses.")
                 .font(.system(size: 10)).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)

@@ -10,7 +10,7 @@ import Foundation
 ///   - `fixIssues` — also reproduce + fix the repo's OPEN BUG issues (never feature
 ///     requests), in addition to auditing the existing code.
 ///   - `openPRs`   — open a focused PR for every confirmed finding / fix. When off
-///     the run is a read-only audit that only reports its hard-reproduced findings.
+///     the run is a read-only audit that only reports its confirmed findings.
 public struct AuditConfig {
     /// Also reproduce + fix the repo's open BUG issues (feature requests excluded).
     public var fixIssues: Bool

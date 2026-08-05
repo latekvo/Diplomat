@@ -411,7 +411,7 @@ let aPRs = AuditConfig(openPRs: true)
 check(aPRs.buildPrompt().contains("focused pull request"))
 check(aPRs.buildPrompt().contains("DRAFT"))   // every opened PR must be a draft
 check(aPRs.buildPrompt().contains("DUPLICATE") && aPRs.buildPrompt().contains("gh pr diff"))
-check(aPRs.buildPrompt().contains("20 lines"))   // Low/nitpick PRs only when fix < 20 LOC
+check(aPRs.buildPrompt().contains("20 lines"))   // LOW findings earn a PR only when fix < 20 LOC
 check(aPRs.buildPrompt().contains("No AI attribution"))
 check(!aPRs.buildPrompt().contains("READ-ONLY audit"))
 // Both on: issue-handling + PRs together.
@@ -760,7 +760,7 @@ check(kt.contains("SOMEONE ELSE'S"), "review-only framing")
 check(kt.contains("ABSOLUTELY DO NOT touch their branch"), "reviewOnly block present")
 check(kt.contains("POST a pull-request review"), "leaveReviews block present")
 check(kt.contains("Do NOT mark this PR ready"), "otherNoMarkReady present")
-check(kt.contains("SECOND, independent verification"), "max-depth fragment present")
+check(kt.contains("that single clean pass ends the loop"), "max-depth fragment present")
 // Soft-approve: no hard verdict, but a friendly clean comment — never an APPROVE action.
 check(kt.contains("Do NOT submit an APPROVE"), "soft-approve still withholds the APPROVE verdict")
 check(kt.contains("Thank you for contributing"), "soft-approve clean thank-you comment present")

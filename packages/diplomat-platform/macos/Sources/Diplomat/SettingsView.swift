@@ -252,7 +252,7 @@ struct SettingsView: View {
 
     private static let reviewRequestsBase = """
         When someone requests my review on a PR, spawns the most thorough review \
-        (Full E2E ×2, leaving inline comments) — read-only, never touches their \
+        (Full E2E · max, leaving inline comments) — read-only, never touches their \
         branch. A review left unaddressed (agent died, lost connection, window \
         closed) is retried automatically until it lands. Off, the requests still \
         list under Agent tasks, queued for you to start by hand.

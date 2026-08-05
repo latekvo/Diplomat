@@ -193,7 +193,7 @@ agent finished. The choices are baked into the prompt:
   default; hidden for a specific PR, which is already one exact PR). Untick both
   and SPAWN greys out - there'd be nothing left to review.
 - **Review depth** — a slider from a quick static read → standard swarm →
-  swarm + hard reproductions → full E2E with a second double-pass verification.
+  swarm + hard reproductions → full E2E, swarming until one clean pass.
 - **Mark clean PRs ready for review** — *(never on someone else's)* flip
   perfectly-clean drafts to ready.
 - **Leave reviews (CLAUDE.md format)** — *(never on my own)* post formal per-line reviews.
@@ -202,7 +202,7 @@ agent finished. The choices are baked into the prompt:
   unknown-author PRs only - never my own, there is no self-approval)* appends a
   culminating full-E2E pass on the real binaries with big swarms: APPROVE
   perfectly-clean PRs (after confirming past issues are resolved),
-  APPROVE-with-nitpicks when there are only minor asks, or leave **changes
+  APPROVE-with-comments when only LOW findings are left, or leave **changes
   requested** on real blockers.
 
 Contextual controls (the action checkboxes, the someone-else's handle field, and the
@@ -240,17 +240,20 @@ appears only for the target it applies to.
 ## Actions - Full E2E test
 
 The third card spawns a whole-repo audit: a swarm end-to-end tests every module,
-flow, build and test in the target repo, hard-reproducing every finding before
-reporting it (prompt model in `assets/audit.json`). Every confirmed finding is
-**classified HIGH / MEDIUM / LOW** by real impact, and that label rides through to
-the report - that part is always on. By default the run only finds and reports;
-nothing is changed. Two escalation toggles widen the blast radius:
+flow, build and test in the target repo, hard-reproducing every HIGH / MEDIUM
+finding before reporting it (prompt model in `assets/audit.json`). Every confirmed
+finding is **classified HIGH / MEDIUM / LOW** by real impact, and that label rides
+through to the report - that part is always on. The proof scales with the label:
+a HIGH or MEDIUM earns the full first-hand device reproduction, a LOW earns one
+short adversarial check and never a booted device or a swarm, and a nitpick is
+dropped on sight without being verified at all. By default the run only finds
+and reports; nothing is changed. Two escalation toggles widen the blast radius:
 
 - **Open PRs for every finding** — one focused PR per fix, **always as a draft**,
   and only after checking the repo's open PRs (by real `gh pr diff` content, not
   titles) so it never files a duplicate. PRs are severity-gated: HIGH and MEDIUM
-  always get one, a LOW/nitpick only when its fix is under 20 lines of diff -
-  anything bigger is reported, not PR'd. Off = a strictly read-only audit.
+  always get one, a LOW only when its fix is under 20 lines of diff - anything
+  bigger is reported, not PR'd. Off = a strictly read-only audit.
 - **Also fix open bug issues** — reproduce + fix the repo's open BUG issues, never
   feature requests.
 
@@ -516,7 +519,7 @@ nudge opens no window at all - it types into a session that already exists.)
   level-triggered now (the edge event is a deliberate no-op) and retry on the
   plain 3-minute tick; the backoff ladder is the review path's.
 - **Review requests** - polls PRs requesting *my* review and dispatches the most
-  thorough review the wizard can express: Full E2E ×2 depth, formal per-line
+  thorough review the wizard can express: Full E2E · max depth, formal per-line
   comments, hands strictly off the branch. "Owed" comes from GitHub's own
   timestamps (request newer than my last review), so a genuine re-request
   re-qualifies, and a review left unaddressed (agent died, window closed) is

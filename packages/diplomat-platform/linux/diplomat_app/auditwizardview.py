@@ -40,7 +40,7 @@ class AuditWizardView(SpawnWizard):
         ))
 
         bar = QLabel(
-            "✔  Every finding is hard-reproduced — 100% proof of existence, no guesses."
+            "✔  Every HIGH / MEDIUM finding is hard-reproduced — 100% proof, no guesses."
         )
         bar.setWordWrap(True)
         bar.setStyleSheet(
