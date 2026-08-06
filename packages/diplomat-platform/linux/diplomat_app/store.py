@@ -142,9 +142,12 @@ class Store(QObject):
     _ORG = "diplomat"
     _APP = "diplomat"
 
-    # A tracked auto-fix agent whose completion sentinel never appears (window
-    # killed, machine slept) is considered finished after this long, so a stuck
-    # entry can't pin a PR as "in flight" forever.
+    # How long a tracked auto-fix agent is believed on its record alone. Past this,
+    # `ps` decides: an agent still visible there keeps its entry for as long as it
+    # runs, and one that is not is considered finished, so a record whose completion
+    # sentinel never appeared (window killed, machine slept) can't pin a PR as "in
+    # flight" forever. Reviews outrun this bound routinely — it is the age at which a
+    # record stops being evidence by itself, not a cap on how long an agent may run.
     _AUTOFIX_INFLIGHT_TTL = 2 * 60 * 60
 
     # How long a mesh-placed agent is counted on this machine's word alone. It has
@@ -1561,6 +1564,11 @@ class Store(QObject):
         evidence there is — see :attr:`_MESH_AGENT_GRACE`."""
         return bool(entry.get("mesh")) and now - entry.get("at", 0) > self._MESH_AGENT_GRACE
 
+    def _past_ttl(self, entry: dict, now: float) -> bool:
+        """Is this record too old to be believed on its own? See
+        :attr:`_AUTOFIX_INFLIGHT_TTL` — past it, ``ps`` is what keeps it."""
+        return now - entry.get("at", 0) > self._AUTOFIX_INFLIGHT_TTL
+
     def _prune_inflight(self) -> None:
         now = time.time()
         # Under the lock, because pruning REPLACES the list: three threads reach it
@@ -1574,12 +1582,14 @@ class Store(QObject):
         # the store anything can land back in here), and this mutex is meant to be
         # held for a list swap and nothing else.
         finished: list[tuple[dict, float]] = []
-        # A mesh-placed agent has no sentinel of ours to finish it, so `ps` does:
-        # once it is old enough to have appeared there, its absence means it exited.
-        # Scanned BEFORE the lock (it shells out, and this mutex is for a list swap)
-        # and only when such an entry is actually old enough to be judged, so the
-        # common case still costs nothing.
-        needs_scan = any(self._mesh_agent_judgeable(e, now) for e in self._autofix_inflight)
+        # `ps` is what retires the two kinds of entry no sentinel of ours will: a
+        # mesh-placed agent (the node that placed it owns its sentinel) once it is old
+        # enough to have appeared there, and any entry past its TTL. Scanned BEFORE
+        # the lock (it shells out, and this mutex is for a list swap) and only when
+        # some entry actually turns on the answer, so the common case still costs
+        # nothing — and the scan itself is the poll's own `ps` dump, cached.
+        needs_scan = any(self._mesh_agent_judgeable(e, now) or self._past_ttl(e, now)
+                         for e in self._autofix_inflight)
         live_prs = self._live_pr_agents() if needs_scan else set()
         with self._inflight_lock:
             live: list[dict] = []
@@ -1606,7 +1616,11 @@ class Store(QObject):
                         pass
                     finished.append((e, finished_at))
                     continue
-                if now - e.get("at", 0) > self._AUTOFIX_INFLIGHT_TTL:
+                # An old entry is dropped for want of evidence, not for its age: the
+                # record is the only place its agent's label, kind, start time and
+                # mesh flag live, and a working agent whose record went is redrawn as
+                # an anonymous "untracked" row that has forgotten its own name.
+                if self._past_ttl(e, now) and e["number"] not in live_prs:
                     continue
                 live.append(e)
             self._autofix_inflight = live
@@ -1620,11 +1634,10 @@ class Store(QObject):
         self._prune_inflight()
         if any(e["url"] == url for e in self._autofix_inflight):
             return True
-        # The in-memory list dies with the applet while the agents run on (and its
-        # TTL can lapse under a long-running agent) — any slip used to guarantee a
-        # duplicate dispatch, since the retry backoff (minutes) is far shorter than
-        # an agent's runtime (an hour). A live `claude` whose argv references this
-        # PR is in-flight no matter what our bookkeeping remembers.
+        # The in-memory list dies with the applet while the agents run on, and a slip
+        # there guarantees a duplicate dispatch: the retry backoff (minutes) is far
+        # shorter than an agent's runtime (an hour). A live `claude` whose argv
+        # references this PR is in-flight no matter what our bookkeeping remembers.
         m = re.search(r"/pull/(\d+)", url)
         return m is not None and int(m.group(1)) in self._live_pr_agents()
 

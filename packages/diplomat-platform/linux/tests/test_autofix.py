@@ -3,6 +3,8 @@ Store orchestration (poll → diff → dispatch → reconcile, with dedup + back
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from diplomat_app import autofix, review, telemetry
@@ -748,8 +750,8 @@ def test_live_pr_numbers_parses_agents_only():
 
 def test_in_flight_falls_back_to_live_ps_agents(store, monkeypatch):
     """An applet restart wipes the in-memory in-flight list while its agents run
-    on (and the TTL can lapse under a long-running one) — the ps live-agent scan
-    must still dedup, or the retry backoff re-spawns onto a working PR."""
+    on — the ps live-agent scan must still dedup, or the retry backoff re-spawns
+    onto a working PR."""
     from diplomat_app.store import Store
 
     store.review_requests_enabled = False
@@ -1174,6 +1176,76 @@ def test_a_finished_agent_still_blocks_a_second_agent_on_its_own_pr(store, monke
         == autofix.VERDICT_IN_FLIGHT
     )
     assert calls == []
+
+
+# MARK: - what ends a record: the agent, not the clock
+
+
+def test_a_run_past_the_ttl_keeps_its_name_while_ps_still_sees_it(
+    store, monkeypatch, tmp_path
+):
+    """The record is the only place a row's label, kind, age and mesh flag live, so
+    dropping one on age alone turns a working agent into an anonymous "untracked" row
+    — while it runs on, with hours of work left. Reviews here routinely outlive any
+    TTL a lost sentinel needs, so a record is ended by evidence its agent is gone, not
+    by the clock reaching a number.
+
+    The sentinel is the shape a live local spawn leaves it in: staged, not yet
+    written, because ``claude`` has not returned."""
+    from diplomat_app.store import Store
+
+    store._track_agent("https://github.com/o/r/pull/512", 512, autofix.SOURCE_AUTO,
+                       "", "P", done=str(tmp_path / "done"),
+                       label="Auto · Review-req · #512", kind="review")
+    started = time.time() - 3 * store._AUTOFIX_INFLIGHT_TTL
+    store._autofix_inflight[-1]["at"] = started
+    monkeypatch.setattr(Store, "_live_pr_agents", lambda self: {512})
+
+    store.refresh_auto_task_count()
+
+    (row,) = store.running_tasks
+    assert row.tracked and row.pr_number == 512
+    assert row.label == "Auto · Review-req · #512" and row.kind == "review"
+    assert row.started_at == started  # what the row's age counts from
+
+
+def test_the_ttl_still_ends_a_record_whose_agent_is_gone(store, monkeypatch, tmp_path):
+    """The other half, and the whole reason the TTL exists: an agent that left without
+    firing its sentinel (a killed window, a machine that slept) is invisible to every
+    other test the prune makes. Kept anyway, its record would hold a bay of the cap
+    and refuse its PR a fresh agent for the rest of the applet's life."""
+    from diplomat_app.store import Store
+
+    store._track_agent("https://github.com/o/r/pull/512", 512, autofix.SOURCE_AUTO,
+                       "", "P", done=str(tmp_path / "done"), label="Auto · #512")
+    store._autofix_inflight[-1]["at"] = time.time() - 3 * store._AUTOFIX_INFLIGHT_TTL
+    monkeypatch.setattr(Store, "_live_pr_agents", lambda self: set())
+
+    store.refresh_auto_task_count()
+
+    assert store._autofix_inflight == []
+    assert store.running_tasks == [] and store.free_auto_slots == 2
+
+
+def test_a_long_manual_run_never_starts_spending_the_automatic_budget(
+    store, monkeypatch, tmp_path
+):
+    """A click is the operator's own act and spends none of the automatic budget —
+    for the whole life of the agent it started, not for its first two hours. The
+    exemption lives in the record, so a record ended under a running agent hands the
+    ``ps`` floor an agent nobody claims, and an untracked automatic row appears in a
+    bay the operator never gave to automatic work."""
+    from diplomat_app.store import Store
+
+    store._track_agent("https://github.com/o/r/pull/512", 512, autofix.SOURCE_PANEL,
+                       "", "P", done=str(tmp_path / "done"), label="Review · #512")
+    store._autofix_inflight[-1]["at"] = time.time() - 3 * store._AUTOFIX_INFLIGHT_TTL
+    monkeypatch.setattr(Store, "_live_pr_agents", lambda self: {512})
+
+    store.refresh_auto_task_count()
+
+    assert store.running_tasks == []  # not automatic work, so not a row here
+    assert store.free_auto_slots == 2  # …and not a bay of the automatic cap
 
 
 def test_at_capacity_is_noted_once_per_episode(store, monkeypatch):
