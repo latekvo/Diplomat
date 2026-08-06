@@ -626,6 +626,48 @@ check(AgentTaskQueue.reorder(["a", "b"], moving: "z", onto: "a") == ["a", "b"]
       && AgentTaskQueue.reorder(["a", "b"], moving: "a", onto: "z") == ["a", "b"],
       "a drag naming a task that left the queue mid-drag changes nothing")
 
+// PARITY: diplomat-platform/linux/tests/test_autofix.py asserts the same arrangements —
+// the band is the one rule that outranks the operator's, so the two front-ends must
+// not disagree about where a conflict fix waits.
+check(AgentTaskQueue.band("conflicts:1") == 1 && AgentTaskQueue.band("review-req:2") == 0
+      && AgentTaskQueue.band("a") == 0,
+      "a conflict fix bands last; everything else — including a verbless key — bands first")
+check(AgentTaskQueue.order(offered: ["conflicts:1", "review-req:2"], saved: [])
+      == ["review-req:2", "conflicts:1"],
+      "a conflict fix waits behind a review however the monitors found them")
+check(AgentTaskQueue.order(offered: ["conflicts:1", "review-req:2"],
+                           saved: ["conflicts:1", "review-req:2"])
+      == ["review-req:2", "conflicts:1"],
+      "the band outranks the arrangement — 'last' is not a default a drag can undo")
+check(AgentTaskQueue.order(offered: ["conflicts:1", "conflicts:2", "review-req:3", "review-req:4"],
+                           saved: ["review-req:4", "conflicts:2"])
+      == ["review-req:4", "review-req:3", "conflicts:2", "conflicts:1"],
+      "within a band the arrangement still decides")
+check(AgentTaskQueue.reorder(["review-req:1", "review-req:2", "conflicts:3"],
+                             moving: "conflicts:3", onto: "review-req:1")
+      == ["review-req:1", "review-req:2", "conflicts:3"]
+      && AgentTaskQueue.reorder(["review-req:1", "review-req:2", "conflicts:3"],
+                                moving: "review-req:1", onto: "conflicts:3")
+      == ["review-req:1", "review-req:2", "conflicts:3"],
+      "a drag across the band boundary is refused, not landed and sprung back")
+check(AgentTaskQueue.reorder(["conflicts:1", "conflicts:2"],
+                             moving: "conflicts:1", onto: "conflicts:2")
+      == ["conflicts:2", "conflicts:1"],
+      "within the conflict band a drag works like any other")
+
+check(AgentTaskQueue.stillOwed(auditAction: "conflicts", prNumber: 8,
+                               conflicting: [7], owingReply: [8]) == false,
+      "a conflict fix on a PR this fetch no longer calls conflicting is work already done")
+check(AgentTaskQueue.stillOwed(auditAction: "conflicts", prNumber: 7,
+                               conflicting: [7], owingReply: []),
+      "…and one the fetch still calls conflicting is dispatched")
+check(AgentTaskQueue.stillOwed(auditAction: "review-reply", prNumber: 8,
+                               conflicting: [8], owingReply: []) == false,
+      "a reply on a PR whose threads are answered is work already done")
+check(AgentTaskQueue.stillOwed(auditAction: "review-req", prNumber: 3,
+                               conflicting: [], owingReply: []),
+      "a review requested of me is not in this fetch to check — unanswerable is not stale")
+
 section("autofix mesh coordination")
 // PARITY fixtures: diplomat-platform/linux/tests/test_autofix.py asserts these exact strings — two
 // nodes only dedupe origination when their derivations agree byte-for-byte

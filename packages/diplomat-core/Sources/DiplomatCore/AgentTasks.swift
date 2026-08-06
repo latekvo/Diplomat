@@ -124,6 +124,53 @@ public enum AgentTaskQueue {
         "\(auditAction):\(prNumber)"
     }
 
+    /// The one verb whose work waits behind every other. Matched off the queue key
+    /// rather than the job, because the operator's saved arrangement is a list of
+    /// keys and has to be banded the same way after a restart, with no job to
+    /// consult (`order`).
+    public static let lastAction = "conflicts"
+
+    /// Which band of the queue a task waits in: 0 for everything, 1 for a conflict
+    /// fix. Bands outrank the operator's arrangement; within one, the arrangement
+    /// decides.
+    ///
+    /// Resolving a conflict is the one unit of automatic work that another agent's
+    /// run routinely makes unnecessary: a review-reply agent works the same branch
+    /// and lands its own merge on the way, and a review of someone else's PR can
+    /// leave this one behind a rebase. Run first, a conflict fix spends a bay of the
+    /// cap on the state of the branch as it was BEFORE the work in front of it
+    /// landed — and often on a conflict that no longer exists by the time it opens
+    /// the diff. It is also the cheapest to re-derive: the reconciler re-offers it
+    /// every poll for as long as GitHub still calls the PR conflicting, so a fix
+    /// deferred is never a fix lost.
+    public static func band(_ key: String) -> Int {
+        (key.prefix(while: { $0 != ":" }) == lastAction) ? 1 : 0
+    }
+
+    /// Does the evidence of THIS poll still owe a task the queue is holding?
+    ///
+    /// A queued task carries the prompt and the verdict of the poll that staged it,
+    /// which can be a whole poll period old by the time a slot frees — and in that
+    /// gap the agent ahead of it in the queue was working the very branch it is
+    /// about to open. So the drain asks again before it spends a bay: a conflict fix
+    /// on a PR GitHub no longer calls conflicting, or a reply on a PR whose threads
+    /// are answered, is work somebody already did.
+    ///
+    /// Only the two verbs that fetch covers are answerable — both are jobs on MY
+    /// PRs, and `snapshots` is the fetch of exactly those. A review requested of me
+    /// lives in the other fetch, and nothing on this machine can retire it early
+    /// anyway: it is owed until I review it, which is what the agent is for.
+    /// Unanswerable is not stale, so it stands.
+    public static func stillOwed(auditAction: String, prNumber: Int,
+                                 conflicting: Set<Int>,
+                                 owingReply: Set<Int>) -> Bool {
+        switch auditAction {
+        case "conflicts":    return conflicting.contains(prNumber)
+        case "review-reply": return owingReply.contains(prNumber)
+        default:             return true
+        }
+    }
+
     /// Slots of the device's automatic-task cap with nothing running in them — the
     /// empty bays the panel draws under the sessions.
     ///
@@ -145,6 +192,12 @@ public enum AgentTaskQueue {
     /// cap outranks the mesh gate, so a device with anything queued is by definition
     /// one that never asked a peer. Peer-owned work leaves the queue when the drain
     /// reaches it and the mesh answers.)
+    ///
+    /// Conflict fixes then fall to the back whatever order they were found in
+    /// (`band`). The monitors find them mid-cycle — the conflict reconciler runs
+    /// before the review-request fetch even begins — so without the band a poll's own
+    /// sequence would decide, and the work most likely to be made unnecessary would
+    /// be the work that ran first.
     public static func order(offered: [String], saved: [String]) -> [String] {
         let live = Set(offered)
         var out: [String] = []
@@ -157,7 +210,10 @@ public enum AgentTaskQueue {
             out.append(key)
             seen.insert(key)
         }
-        return out
+        // Banded by a stable partition rather than `sort`, which is not guaranteed
+        // stable in the standard library: everything above keeps its place within
+        // the band it lands in, and that order is the operator's arrangement.
+        return out.filter { band($0) == 0 } + out.filter { band($0) != 0 }
     }
 
     /// One drag: `moving` lands where it was dropped relative to `onto` — after it
@@ -168,10 +224,15 @@ public enum AgentTaskQueue {
     /// the end of the queue, which is exactly the arrangement someone reaches for
     /// first (this one is not urgent — run it last).
     ///
-    /// A drag onto a key that is not in the queue, or onto itself, is not a
-    /// rearrangement and leaves the order alone.
+    /// A drag onto a key that is not in the queue, onto itself, or across the band
+    /// boundary is not a rearrangement and leaves the order alone. The last of those
+    /// is the same answer as the first two rather than a partial move, because a
+    /// conflict fix dragged above a review would be re-banded on the next poll and
+    /// snap back: a drag that cannot survive one poll is better refused than shown
+    /// landing.
     public static func reorder(_ order: [String], moving id: String,
                                onto target: String) -> [String] {
+        guard band(id) == band(target) else { return order }
         guard id != target,
               let from = order.firstIndex(of: id),
               let to = order.firstIndex(of: target) else { return order }

@@ -104,7 +104,9 @@ enum QueueTest {
         _ = await offer(job(4))
         store.commitQueue()
         check("one PR owing two monitors is two tasks",
-              store.queuedTasks.map(\.id) == ["review-req:2", "conflicts:2", "review-req:4"])
+              store.queuedTasks.map(\.id) == ["review-req:2", "review-req:4", "conflicts:2"])
+        // …and the conflict fix is last though it was offered second: the band
+        // outranks the order the monitors found things in (`AgentTaskQueue.band`).
 
         // 4. The drag order is the execution order, and it survives the poll that
         //    rebuilds the list — the queue is re-derived from GitHub every cycle, so an
@@ -429,7 +431,51 @@ enum QueueTest {
         check("…and the sweep never asks a terminal about one", asked == 0)
         store.processes = []
 
-        // 12. The redirect above is the only thing between a run of this test and the
+        // 12. The refresh the drain makes before it starts anything. A queued task
+        //    carries the verdict of the poll that staged it, and by the time a bay
+        //    frees an agent working the same branch has been and gone — so the list is
+        //    re-checked against THIS cycle's fetch, and work already done leaves it
+        //    instead of spawning. (At capacity throughout, so the drain refreshes and
+        //    then returns without starting anything.)
+        store.autoTaskLimit = 1
+        store.prAutofixEnabled = true
+        store.reviewRequestsEnabled = true
+        store.processes = [
+            TrackedProcess(kind: "review", label: "Auto · Review · #1", terminal: "iterm",
+                           windowID: "1", sessionID: "", tty: "", donePath: "",
+                           prURL: "https://github.com/software-mansion/argent/pull/1",
+                           source: AgentDispatchGate.Source.auto.rawValue,
+                           createdAt: Date(), done: false),
+        ]
+        _ = await offer(job(21, action: "conflicts", label: "Resolve · #21",
+                            counter: .conflicts))
+        _ = await offer(job(22, action: "conflicts", label: "Resolve · #22",
+                            counter: .conflicts))
+        _ = await offer(job(23))
+        store.commitQueue()
+        check("three tasks queued, two of them conflict fixes",
+              store.queuedTasks.map(\.id) == ["review-req:23", "conflicts:21", "conflicts:22"])
+        func snap(_ number: Int, mergeable: String, iOwe: Int = 0) -> PRSnapshot {
+            PRSnapshot(number: number, title: "t",
+                       url: "https://github.com/software-mansion/argent/pull/\(number)",
+                       isDraft: false, mergeable: mergeable, reviewDecision: "",
+                       threadsUnresolved: 0, threadsIOwe: iOwe, headSha: "")
+        }
+        // #21 is still conflicting; #22 came out of conflict while it waited.
+        await store.drainQueuedTasks(snaps: [snap(21, mergeable: "CONFLICTING"),
+                                             snap(22, mergeable: "MERGEABLE")])
+        check("a conflict fix the branch no longer needs leaves the list",
+              store.queuedTasks.map(\.id) == ["review-req:23", "conflicts:21"])
+        check("…and one it still needs keeps its place",
+              store.queuedTasks.contains { $0.id == "conflicts:21" })
+        // A review requested of me is not in that fetch at all. Read as answered, every
+        // review request on the panel would vanish the first time the drain ran.
+        check("a review request is not retired by a fetch that cannot see it",
+              store.queuedTasks.contains { $0.id == "review-req:23" })
+        store.processes = []
+        store.queuedTasks = []
+
+        // 13. The redirect above is the only thing between a run of this test and the
         //    operator's real activity log, so prove it caught the writes.
         check("the at-capacity lines it provoked went to the scratch feed",
               FileManager.default.fileExists(

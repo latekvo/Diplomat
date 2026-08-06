@@ -662,6 +662,13 @@ class Store(QObject):
             else:
                 cfg = core.config()
                 owner, repo = cfg["owner"], cfg["repo"]
+                # One fetch of my PRs per cycle, taken before anything acts on it:
+                # the drain re-checks the waiting queue against it and the
+                # reconcilers below diff from the same list. Fetching it here rather
+                # than inside the monitor is what lets the queue be checked at all —
+                # the drain runs first, and the whole point of the check is that it
+                # reads THIS cycle's evidence, not the one the queue was built from.
+                snaps = self._fetch_my_snapshots(owner, repo)
                 # The queue first, in the operator's order: a slot that freed since
                 # the last cycle belongs to work already waiting for it, not to
                 # whichever PR this poll's fetch happens to return first.
@@ -670,9 +677,10 @@ class Store(QObject):
                 # failed cycle deliberately (see _staged_queue), but surviving is not
                 # the same as being current: while `gh` is down the list freezes, and
                 # a drain that kept firing from it would spawn agents at work
-                # answered by hand hours ago.
-                if self.autofix_poll_error is None:
-                    self._drain_queued_tasks()
+                # answered by hand hours ago. A fetch that failed just now is the
+                # same blindness one cycle earlier, so it holds the drain too.
+                if self.autofix_poll_error is None and snaps is not None:
+                    self._drain_queued_tasks(snaps)
                 # Start this cycle's staging empty — the one place it is reset, so a
                 # cycle that failed part-way and never committed does not carry its
                 # offers into this one. They are re-offered by the cycle that
@@ -681,7 +689,8 @@ class Store(QObject):
                 self._staged_queue = []
                 # Both monitors run whatever their toggles say; a switched-off one
                 # queues what it finds instead of dispatching it (see is_paused).
-                self._poll_my_prs(owner, repo)
+                if snaps is not None:
+                    self._poll_my_prs(snaps)
                 self._poll_review_requests(owner, repo)
                 # A cycle that failed part-way knows what it fetched, not what is
                 # owed — committing then would drop every task the failing half would
@@ -699,12 +708,16 @@ class Store(QObject):
             self._note_poll_failure(exc)
         self._settle_poll_error()
 
-    def _poll_my_prs(self, owner: str, repo: str) -> None:
+    def _fetch_my_snapshots(self, owner: str, repo: str) -> list | None:
+        """This cycle's read of my open PRs, or ``None`` if the read failed — in which
+        case the failure is already noted and every consumer of it stands down."""
         try:
-            snaps = autofixmonitor.fetch_snapshots(owner, repo, self.effective_me)
+            return autofixmonitor.fetch_snapshots(owner, repo, self.effective_me)
         except Exception as exc:  # noqa: BLE001 — any failure is a poll failure
             self._note_poll_failure(exc)
-            return
+            return None
+
+    def _poll_my_prs(self, snaps: list) -> None:
         now = time.time()
         events, fps = autofix.compute_diff(self._load_fingerprints(), snaps)
         for kind, snap in events:
@@ -1377,18 +1390,41 @@ class Store(QObject):
         if self.queued_tasks != before:
             self.tasks_changed.emit()
 
-    def _drain_queued_tasks(self) -> None:
+    def _drain_queued_tasks(self, snaps: list) -> None:
         """Run the queue down into whatever room this device has, in the operator's
         order. This is what makes the drag order mean anything: it runs at the TOP of
         a poll, before the monitors offer their own finds, so a slot that freed since
         the last cycle goes to the work already waiting for it rather than to whatever
         this poll's fetch happens to list first.
 
+        The list is re-checked against ``snaps`` — this cycle's read of my PRs —
+        before any of it is run: a queued task carries the verdict of the poll that
+        staged it, which is as old as a whole poll period by the time a bay frees, and
+        what filled that bay in the meantime was an agent working one of these same
+        branches. Work the fetch no longer owes leaves the list instead of spawning
+        (:func:`autofix.still_owed`).
+
+        That pass covers the whole queue, not the part the drain reaches: a row
+        standing for work somebody already did is wrong on the panel exactly as it is
+        wrong to start, and it is the rows of a machine with no room — which returns
+        below on its first entry — that sit there longest.
+
         Capacity is re-counted per task because each spawn fills a slot. A spawn
         failure stops the drain: it means terminal automation is broken, not that this
         one task was unlucky, and each entry is taken off the list before it is tried —
         so walking the whole queue into the same failure would clear the panel of every
         queued row at once, for a reason none of them caused."""
+        conflicting = {s.number for s in snaps if s.mergeable == "CONFLICTING"}
+        owing_reply = {s.number for s in snaps if s.threads_i_owe > 0}
+        # Dropped here rather than left for this cycle's commit to omit: the commit is
+        # the far side of two monitor runs, and a row already known to be answered
+        # should not be sitting in the list underneath them, one "execute now" away
+        # from spawning. Paused work is swept too — a switched-off monitor's row is
+        # still a claim about what the PR owes.
+        for entry in list(self.queued_tasks):
+            if not autofix.still_owed(entry.job.audit_action, entry.job.pr_number,
+                                      conflicting, owing_reply):
+                self._drop_queued_task(entry.id)
         for entry in self.drainable_tasks:
             # The list moves under this loop: it waits on a spawn per task, and an
             # "execute now" during one of those takes its row off the queue and starts
@@ -1405,6 +1441,17 @@ class Store(QObject):
             self._capacity_logged = False
             if self._run_queued_task(entry) == "failed":
                 return
+
+    def _drop_queued_task(self, task_id: str) -> None:
+        """Take one task off the queue without starting it — the work it stands for
+        is already done. Its place in the saved arrangement is left alone: that list
+        drops keys nothing offers on the next commit (:func:`autofix.queue_order`),
+        and a task that turns out to be owed after all should come back where the
+        operator put it, not at the end."""
+        remaining = [e for e in self.queued_tasks if e.id != task_id]
+        if len(remaining) != len(self.queued_tasks):
+            self.queued_tasks = remaining
+            self.tasks_changed.emit()
 
     def is_paused(self, counter: str | None) -> bool:
         """Whether the monitor that owns this work is switched off.

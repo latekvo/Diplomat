@@ -856,6 +856,13 @@ final class Store: ObservableObject {
             pollErrorThisCycle = "GitHub login unknown — is `gh` installed and authenticated?"
         } else {
             let (owner, repo) = coreRepo
+            // One fetch of my PRs per cycle, taken before anything acts on it: the
+            // drain re-checks the waiting queue against it and the reconcilers below
+            // diff from the same list. Fetching it here rather than inside the monitor
+            // is what lets the queue be checked at all — the drain runs first, and the
+            // whole point of the check is that it reads THIS cycle's evidence, not the
+            // one the queue was built from.
+            let snaps = await fetchMySnapshots(owner: owner, repo: repo)
             // The queue first, in the operator's order: a slot that freed since the
             // last cycle belongs to work already waiting for it, not to whichever PR
             // this poll's fetch happens to return first.
@@ -863,13 +870,15 @@ final class Store: ObservableObject {
             // Only on evidence a cycle actually confirmed. The queue survives a failed
             // cycle deliberately (see `stagedQueue`), but surviving is not the same as
             // being current: while `gh` is down the list freezes, and a drain that kept
-            // firing from it would spawn agents at work answered by hand hours ago.
-            if autofixPollError == nil { await drainQueuedTasks() }
+            // firing from it would spawn agents at work answered by hand hours ago. A
+            // fetch that failed just now is the same blindness one cycle earlier, so it
+            // holds the drain too.
+            if autofixPollError == nil, let snaps { await drainQueuedTasks(snaps: snaps) }
             // Start this cycle's staging empty. A commit clears it too, so this is
             // what discards the offers of a cycle that failed part-way and never
             // committed — they are re-offered by the cycle that succeeds.
             stagedQueue = []
-            await pollMyPRs(owner: owner, repo: repo)
+            if let snaps { await pollMyPRs(snaps: snaps) }
             await pollReviewRequests(owner: owner, repo: repo)
             // A cycle that failed part-way knows what it fetched, not what is owed —
             // committing then would drop every task the failing half would have
@@ -892,18 +901,22 @@ final class Store: ObservableObject {
         }
     }
 
+    /// This cycle's read of my open PRs, or `nil` if the read failed — in which case
+    /// the failure is already noted and every consumer of it stands down.
+    private func fetchMySnapshots(owner: String, repo: String) async -> [PRSnapshot]? {
+        do {
+            return try await AutofixMonitor.fetchSnapshots(owner: owner, repo: repo, me: effectiveMe)
+        } catch {
+            notePollFailure(error)   // leave state as-is, retry next tick
+            return nil
+        }
+    }
+
     /// My own PRs: dispatch on new conflicts / new review work. Edge-triggered for the
     /// real-time case (a transition observed live), plus a level-triggered reconcile pass
     /// so a review that landed while we were offline — and so was already present the first
     /// time we saw the PR (which the edge-trigger silently baselines) — still gets an agent.
-    private func pollMyPRs(owner: String, repo: String) async {
-        let snaps: [PRSnapshot]
-        do {
-            snaps = try await AutofixMonitor.fetchSnapshots(owner: owner, repo: repo, me: effectiveMe)
-        } catch {
-            notePollFailure(error)   // leave state as-is, retry next tick
-            return
-        }
+    private func pollMyPRs(snaps: [PRSnapshot]) async {
         let (events, fingerprints) = AutofixDiff.compute(prior: loadAutofixFingerprints(), now: snaps)
         for event in events { await dispatchAutofix(event) }
         saveAutofixFingerprints(fingerprints)
@@ -1352,12 +1365,47 @@ final class Store: ObservableObject {
     /// the last cycle goes to the work already waiting for it rather than to whatever
     /// this poll's fetch happens to list first.
     ///
+    /// The list is re-checked against `snaps` — this cycle's read of my PRs — before
+    /// any of it is run: a queued task carries the verdict of the poll that staged it,
+    /// which is as old as a whole poll period by the time a bay frees, and what filled
+    /// that bay in the meantime was an agent working one of these same branches. Work
+    /// the fetch no longer owes leaves the list instead of spawning
+    /// (`AgentTaskQueue.stillOwed`).
+    ///
+    /// That pass covers the whole queue, not the part the drain reaches: a row
+    /// standing for work somebody already did is wrong on the panel exactly as it is
+    /// wrong to start, and it is the rows of a machine with no room — which returns
+    /// below on its first entry — that sit there longest.
+    ///
     /// Capacity is re-counted per task because each spawn fills a slot. A spawn
     /// failure stops the drain: it means terminal automation is broken, not that this
     /// one task was unlucky, and each entry is taken off the list before it is tried —
     /// so walking the whole queue into the same failure would clear the panel of every
     /// queued row at once, for a reason none of them caused.
-    private func drainQueuedTasks() async {
+    ///
+    /// Not private: the refresh pass is what `QueueTest` drives. It runs before the
+    /// capacity guard and starts nothing by itself, so a self-test at capacity — the
+    /// state that whole test sets up — exercises it without a spawn.
+    func drainQueuedTasks(snaps: [PRSnapshot]) async {
+        let conflicting = Set(snaps.filter { $0.mergeable == "CONFLICTING" }.map(\.number))
+        let owingReply = Set(snaps.filter { $0.threadsIOwe > 0 }.map(\.number))
+        // Dropped here rather than left for this cycle's commit to omit: the commit is
+        // the far side of two monitor runs, and a row already known to be answered
+        // should not be sitting in the list underneath them, one "execute now" away
+        // from spawning. Paused work is swept too — a switched-off monitor's row is
+        // still a claim about what the PR owes.
+        //
+        // A queued task always carries its PR (`stageQueued` stages nothing without
+        // one); one there were no way to ask about stands, which is the answer
+        // `stillOwed` gives a verb this fetch does not cover.
+        let answered = queuedTasks.filter { entry in
+            guard let number = entry.job.prNumber else { return false }
+            return !AgentTaskQueue.stillOwed(auditAction: entry.job.auditAction,
+                                             prNumber: number,
+                                             conflicting: conflicting,
+                                             owingReply: owingReply)
+        }
+        for entry in answered { dropQueuedTask(entry.id) }
         for entry in drainableTasks {
             // The list moves under this loop: it awaits a spawn per task, and an
             // "execute now" during one of those takes its row off the queue and
@@ -1447,6 +1495,17 @@ final class Store: ObservableObject {
 
     func endStarting(_ id: String) {
         startingTasks.removeAll { $0.id == id }
+    }
+
+    /// Take one task off the queue without starting it — the work it stands for is
+    /// already done.
+    ///
+    /// Its place in the saved arrangement is left alone: that list drops keys nothing
+    /// offers on the next commit (`AgentTaskQueue.order`), and a task that turns out
+    /// to be owed after all should come back where the operator put it, not at the
+    /// end.
+    func dropQueuedTask(_ id: String) {
+        queuedTasks.removeAll { $0.id == id }
     }
 
     /// Write the retry-backoff record for a task the queue dispatched, into the same

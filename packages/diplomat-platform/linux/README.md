@@ -59,6 +59,12 @@ slot**, then the **queue** that has no bay yet.
   honoured at the top of the next poll, *before* the monitors go looking for more
   work, so a slot that just freed goes to whatever you put first rather than to
   whichever PR GitHub happened to list first.
+- **Resolve-conflicts** rows run after every auto-fix and auto-review, whatever order
+  the monitors found them in, and no drag lifts one above a review (that drag is
+  refused rather than sprung back on the next poll). An agent working the same branch
+  lands its own merge on the way, so a conflict fix is the work most often made
+  unnecessary by the work ahead of it — and the poll re-offers it for as long as
+  GitHub still calls the PR conflicting, so waiting costs it nothing.
 
 Two things hold work. The cap holds what there is no slot for, and releases it as
 slots free. A **monitor you switched off** holds its own work indefinitely: it keeps
@@ -69,7 +75,10 @@ GitHub poll.
 
 The queue is a view of what the monitors would re-offer, not a second copy of their
 state: it is rebuilt from live GitHub evidence on every poll, so a task drops out the
-moment the work is taken by an agent, resolved, or its author banned. Only the key
+moment the work is taken by an agent, resolved, or its author banned. Every poll also
+re-checks the rows it is about to run against the fetch it has just made — a conflict
+fix on a PR GitHub no longer calls conflicting, or a reply on threads that have been
+answered, leaves the list instead of opening an agent on work somebody already did. Only the key
 order is remembered (in `QSettings`), so your arrangement survives the rebuild and a
 restart; nothing else is. *Execute now* keeps the task automatic in every other
 respect: same `Auto · ` label, same auto-handled counter, same retry record, and once

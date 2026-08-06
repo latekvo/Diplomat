@@ -296,13 +296,13 @@ def test_conflict_dispatch_and_backoff(store, monkeypatch):
     store._save_fingerprints({42: PRFingerprint("MERGEABLE", "", 0)})
     monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_snapshots", lambda *a, **k: snaps)
 
-    store._poll_my_prs("o", "r")
+    store._poll_my_prs(snaps)
     assert len(calls) == 1
     assert "conflicts" in calls[0]["prompt"]  # kind=conflicts
     assert store.autofix_conflicts_handled == 1
 
     # An immediate second poll must NOT re-dispatch (ReviewReconcile 5-min backoff).
-    store._poll_my_prs("o", "r")
+    store._poll_my_prs(snaps)
     assert len(calls) == 1
     assert store.autofix_conflicts_handled == 1
 
@@ -314,8 +314,8 @@ def test_in_flight_dedup(store, monkeypatch):
     store._save_fingerprints({9: PRFingerprint("MERGEABLE", "", 0)})
     monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_snapshots", lambda *a, **k: snaps)
 
-    store._poll_my_prs("o", "r")
-    store._poll_my_prs("o", "r")  # sentinel still absent → still in flight
+    store._poll_my_prs(snaps)
+    store._poll_my_prs(snaps)  # sentinel still absent → still in flight
     assert len(calls) == 1  # not re-spawned while the first agent runs
 
 
@@ -764,11 +764,11 @@ def test_in_flight_falls_back_to_live_ps_agents(store, monkeypatch):
     )
     assert store._autofix_inflight == []  # nothing remembered locally…
     monkeypatch.setattr(Store, "_live_pr_agents", lambda self: {9})
-    store._poll_my_prs("o", "r")
+    store._poll_my_prs([snap])
     assert calls == []  # …yet the agent visible in ps suppressed the dispatch
     # And with no live agent either, the dispatch goes through.
     monkeypatch.setattr(Store, "_live_pr_agents", lambda self: set())
-    store._poll_my_prs("o", "r")
+    store._poll_my_prs([snap])
     assert len(calls) == 1
 
 
@@ -847,12 +847,14 @@ def test_dispatch_gate_matrix_parity():
     assert not autofix.dispatch_bumps_counter(autofix.SOURCE_PANEL, 1)
 
 
-def _job(number=9, author=None, counter=None, stamp="", mesh=False):
+def _job(number=9, author=None, counter=None, stamp="", mesh=False, action="review"):
     """One dispatchable job. ``mesh`` gives it the work + ledger keys a job needs to
-    be routed through the mesh at all (both are minted from the PR's head sha)."""
+    be routed through the mesh at all (both are minted from the PR's head sha).
+    ``action`` is the activity-feed verb, which is also what the queue keys and bands
+    a task by."""
     return autofix.AgentJob(
         kind="review",
-        audit_action="review",
+        audit_action=action,
         label=f"Review · #{number}",
         prompt="PROMPT",
         pr_url=f"https://github.com/o/r/pull/{number}",
@@ -1357,6 +1359,23 @@ def test_queue_order_keeps_the_arrangement_and_drops_dead_work():
     assert order(["a", "a", "b"], ["b", "b"]) == ["b", "a"]  # one task, however offered
 
 
+def test_a_conflict_fix_sorts_last_whatever_the_arrangement_says():
+    """The band outranks the arrangement — "always last" is not a default the operator
+    can drag away from, because the next poll would re-band it and take it back."""
+    order = autofix.queue_order
+    assert order(["conflicts:1", "review-req:2"], []) == ["review-req:2", "conflicts:1"]
+    assert (order(["conflicts:1", "review-req:2"], ["conflicts:1", "review-req:2"])
+            == ["review-req:2", "conflicts:1"])
+    # Within a band the arrangement still decides, and conflict fixes keep their own
+    # order relative to each other.
+    assert (order(["conflicts:1", "conflicts:2", "review-req:3", "review-req:4"],
+                  ["review-req:4", "conflicts:2"])
+            == ["review-req:4", "review-req:3", "conflicts:2", "conflicts:1"])
+    # A key with no verb (nothing the queue mints, but the saved list is read off
+    # disk) bands with the ordinary work rather than sorting somewhere of its own.
+    assert autofix.queue_band("a") == 0
+
+
 def test_queue_reorder_can_reach_every_position():
     """Both directions are needed: an insert-before rule alone can never send a task
     to the end, which is the first arrangement anyone reaches for."""
@@ -1368,6 +1387,15 @@ def test_queue_reorder_can_reach_every_position():
     # A drag naming a task that left the queue mid-drag changes nothing.
     assert ro(["a", "b"], "z", "a") == ["a", "b"]
     assert ro(["a", "b"], "a", "z") == ["a", "b"]
+    # Nor does one across the band boundary, in either direction: the arrangement it
+    # would write down is one `queue_order` undoes on the next poll, so the drag is
+    # refused outright instead of landing and springing back.
+    both = ["review-req:1", "review-req:2", "conflicts:3"]
+    assert ro(both, "conflicts:3", "review-req:1") == both
+    assert ro(both, "review-req:1", "conflicts:3") == both
+    # Within the conflict band a drag works like any other.
+    assert (ro(["conflicts:1", "conflicts:2"], "conflicts:1", "conflicts:2")
+            == ["conflicts:2", "conflicts:1"])
 
 
 def test_work_over_the_cap_waits_in_the_queue(store, monkeypatch):
@@ -1429,6 +1457,133 @@ def test_a_switched_off_monitor_queues_what_it_finds(store, monkeypatch):
     # and the feed says nothing about capacity.
     assert store.free_auto_slots == 2
     assert [e for e in activity.read() if e.action == "at-capacity"] == []
+
+
+def test_a_conflict_fix_queues_behind_every_review_however_it_was_found(store, monkeypatch):
+    """The order the monitors run in is not a priority: the conflict reconciler is
+    part of the my-PRs poll, which finishes before the review-request fetch begins, so
+    a conflict found this cycle would otherwise sit above every review of it. It is
+    the one task another agent's run routinely makes unnecessary, so it goes last."""
+    _spawn_recorder(monkeypatch, finish=False)
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    monkeypatch.setattr(type(store), "_live_pr_agents", lambda self: {90, 91})  # cap full
+    monkeypatch.setattr(
+        "diplomat_app.autofixmonitor.fetch_snapshots",
+        lambda *a, **k: [_snap(number=1, mergeable="CONFLICTING"),
+                         _snap(number=2, unresolved=3, i_owe=1)],
+    )
+    monkeypatch.setattr(
+        "diplomat_app.autofixmonitor.fetch_review_requests",
+        lambda *a, **k: [_req(number=3, requested_at="2026-01-02")],
+    )
+
+    store._autofix_poll_once()
+
+    # The reply and the review requested of me first, in the order they were found;
+    # the conflict fix last, though its monitor ran before both of them.
+    assert [t.id for t in store.queued_tasks] == [
+        "review-reply:2", "review-req:3", "conflicts:1",
+    ]
+
+
+def test_the_drain_drops_a_conflict_fix_the_work_ahead_of_it_already_did(store, monkeypatch):
+    """The whole reason conflict fixes go last: the agent in front of them is working
+    the same branch, and lands its own merge on the way. A queued task carries the
+    verdict of the poll that staged it, so by the time a bay frees the conflict it
+    names can be gone — and starting it then spends a bay opening a diff that has
+    nothing in it, on a branch a second agent is about to touch."""
+    calls = _spawn_recorder(monkeypatch, finish=False)  # #7's agent holds the one bay
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    monkeypatch.setattr(
+        "diplomat_app.autofixmonitor.fetch_review_requests", lambda *a, **k: []
+    )
+    store.auto_task_limit = 1
+    both = [_snap(number=7, mergeable="CONFLICTING"), _snap(number=8, mergeable="CONFLICTING")]
+    monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_snapshots", lambda *a, **k: both)
+
+    store._autofix_poll_once()
+    assert [c["prompt"] for c in calls] == ["PROMPT:conflicts:7"]
+    assert [t.id for t in store.queued_tasks] == ["conflicts:8"]
+    with open(calls[0]["done"], "w") as fh:
+        fh.write("0")  # #7's agent exits → the bay the queue was waiting for
+
+    # #8 came out of conflict while it waited (its author pushed, or the agent on #7
+    # merged main into both). The next cycle's fetch says so — the queue is still the
+    # old cycle's answer, and the drain reads it first.
+    monkeypatch.setattr(
+        "diplomat_app.autofixmonitor.fetch_snapshots",
+        lambda *a, **k: [_snap(number=7, mergeable="CONFLICTING"), _snap(number=8)],
+    )
+
+    store._autofix_poll_once()
+
+    assert [c["prompt"] for c in calls] == ["PROMPT:conflicts:7"]  # nothing new spawned
+    assert store.queued_tasks == []  # and the row went with it
+
+
+def test_the_queue_is_refreshed_even_with_no_room_to_start_anything(store, monkeypatch):
+    """The rows of a busy machine are the ones that sit longest — the drain returns on
+    its first entry — so the refresh has to run over the whole queue before the
+    capacity guard, not over the part a free bay happens to let it reach."""
+    store.queued_tasks = [
+        autofix.QueuedTask("conflicts:8",
+                           _job(number=8, action="conflicts", counter="conflicts"), 1),
+        autofix.QueuedTask("conflicts:7",
+                           _job(number=7, action="conflicts", counter="conflicts"), 1),
+    ]
+    monkeypatch.setattr(type(store), "_auto_tasks_running", lambda self: 99)  # no bays
+
+    # #8 came out of conflict; #7 has not. (A spawn here would hit the conftest
+    # backstop, so "started nothing" is asserted by the test running at all.)
+    store._drain_queued_tasks([_snap(number=7, mergeable="CONFLICTING"), _snap(number=8)])
+
+    assert [t.id for t in store.queued_tasks] == ["conflicts:7"]
+
+
+def test_the_drain_still_starts_a_conflict_fix_the_branch_still_needs(store, monkeypatch):
+    """The other half: the check is evidence, not a way of never running the work.
+    A PR the fetch still calls conflicting is dispatched the moment a bay frees."""
+    calls = _spawn_recorder(monkeypatch, finish=False)
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    monkeypatch.setattr(
+        "diplomat_app.autofixmonitor.fetch_review_requests", lambda *a, **k: []
+    )
+    store.auto_task_limit = 1
+    both = [_snap(number=7, mergeable="CONFLICTING"), _snap(number=8, mergeable="CONFLICTING")]
+    monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_snapshots", lambda *a, **k: both)
+
+    store._autofix_poll_once()
+    assert [t.id for t in store.queued_tasks] == ["conflicts:8"]
+    with open(calls[0]["done"], "w") as fh:
+        fh.write("0")
+
+    store._autofix_poll_once()
+
+    assert [c["prompt"] for c in calls] == ["PROMPT:conflicts:7", "PROMPT:conflicts:8"]
+
+
+def test_a_review_request_is_drained_on_evidence_this_fetch_does_not_carry(store, monkeypatch):
+    """A review requested of me is owed until I review it — nothing another agent on
+    this machine does retires it, and it is not in the my-PRs fetch to check against.
+    Unanswerable must read as "still owed": checked against that fetch, every review
+    request would look answered and none would ever start."""
+    calls = _spawn_recorder(monkeypatch, finish=False)
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_snapshots", lambda *a, **k: [])
+    monkeypatch.setattr(
+        "diplomat_app.autofixmonitor.fetch_review_requests",
+        lambda *a, **k: [_req(number=n, requested_at="2026-01-02") for n in (3, 4)],
+    )
+    store.auto_task_limit = 1
+
+    store._autofix_poll_once()
+    assert [t.id for t in store.queued_tasks] == ["review-req:4"]
+    with open(calls[0]["done"], "w") as fh:
+        fh.write("0")
+
+    store._autofix_poll_once()
+
+    assert [c["prompt"] for c in calls] == ["PROMPT:review:3", "PROMPT:review:4"]
 
 
 def test_one_poll_offering_a_task_twice_queues_the_backoff_aware_one(store, monkeypatch):
@@ -1658,7 +1813,7 @@ def test_the_drain_skips_a_task_the_operator_started_under_it(store, monkeypatch
     monkeypatch.setattr(type(store), "_run_queued_task", fake_run)
     monkeypatch.setattr(type(store), "_auto_tasks_running", lambda self: 0)
 
-    store._drain_queued_tasks()
+    store._drain_queued_tasks([])  # a review request is not in this fetch to check
 
     assert ran == ["review-req:3"]
 
@@ -1811,7 +1966,7 @@ def test_a_spawn_failure_stops_the_drain_rather_than_clearing_the_queue(store, m
     for c in calls:  # both agents finish → the drain has room for both queued tasks
         with open(c["done"], "w") as fh:
             fh.write("0")
-    store._drain_queued_tasks()
+    store._drain_queued_tasks([])
 
     # The first was tried and failed; the second was never touched, so it is still in
     # the panel rather than dropped alongside it.
