@@ -366,3 +366,24 @@ def test_a_probes_standing_survives_the_answer_passing_through():
     a wrapper that dropped the value would blind the resolver rather than inform it."""
     obs = A.Observation.present({1: 2})
     assert probes._note("processes", obs, T0) is obs
+
+
+def test_a_machine_that_never_ran_a_mesh_node_is_unsupported_not_broken(monkeypatch):
+    """Otherwise every machine without a mesh gets told its mesh is down, every minute,
+    forever — and a channel that cries wolf is a channel the operator stops reading."""
+    import sys
+    import types
+
+    fake = types.ModuleType("szpontnet.statefile")
+    fake.read_state = lambda: None
+    fake.node_running = lambda s: False
+    pkg = types.ModuleType("szpontnet")
+    pkg.statefile = fake
+    monkeypatch.setitem(sys.modules, "szpontnet", pkg)
+    monkeypatch.setitem(sys.modules, "szpontnet.statefile", fake)
+    assert probes.mesh_claims().status == A.UNSUPPORTED
+
+    # One that HAS run and is now down is a real gap: a peer's run ends on a released
+    # claim, so a node we cannot ask must not read as one that released it.
+    fake.read_state = lambda: {"self": {"id": "me"}}
+    assert probes.mesh_claims().status == A.UNAVAILABLE

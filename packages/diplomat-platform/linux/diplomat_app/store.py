@@ -10,6 +10,7 @@ Qt-less mesh node can read it too.
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -1205,7 +1206,7 @@ class Store(QObject):
         wrong, and an agent going quiet moves no count at all while the bay it hands
         back is drawn from that same measure."""
         before = self._state_signature()
-        self._agent_tick()
+        self._settle_agents()
         if self._state_signature() != before:
             self.tasks_changed.emit()
 
@@ -1571,29 +1572,45 @@ class Store(QObject):
     # MARK: - the one tick every agent question is a projection of
 
     def _agent_tick(self) -> agentstate.Tick:
-        """Resolve every registered run against one pass of evidence.
+        """Resolve every registered run against one pass of evidence. READ-ONLY.
 
         This is the single place the applet asks what its agents are doing. The dedup,
         the cap, the panel rows and the retirement are all projections of the result
         (:mod:`diplomat_app.agentstate`), so they cannot come to disagree — which is
         what four independent re-derivations of the same question did.
 
-        Deliberately NOT cached at this level. The expensive part is the I/O, and that
-        is already cached where it happens (:mod:`diplomat_app.probes`), so resolving
+        Nothing here writes, retires or logs. The panel asks for the rows and the free
+        slots on every repaint, so a read with consequences means a screenshot retires
+        records and a redraw writes to the operator's activity feed — which is exactly
+        what it did until this was split (found by rendering the panel headlessly and
+        finding the warnings in the real feed afterwards). What the consequences are,
+        and when they happen, is :meth:`_settle_agents`.
+
+        Deliberately not cached either. The expensive part is the I/O, and that is
+        already cached where it happens (:mod:`diplomat_app.probes`), so resolving
         again costs a file read and some set arithmetic. A cache here would instead buy
         a staleness window in which an agent that just finished still holds its bay —
         the exact class of wrong answer this whole mechanism exists to remove.
         """
         now = time.time()
-        loaded = agentregistry.load()
-        records = agentregistry.adopt_pids(loaded)
+        records = agentregistry.adopt_pids(agentregistry.load())
         evidence, live = probes.gather(records, now, merged=self._merged_prs)
         t = agentstate.tick(records, evidence, live, now, self.auto_task_limit)
-        self._persist_run_changes(loaded, t)
-        self._retire_finished(t)
-        self._note_silent_probes()
         with self._tick_lock:
             self._tick = t
+        return t
+
+    def _settle_agents(self) -> agentstate.Tick:
+        """One tick, and the consequences of it: write back what was learned, retire
+        what has ended, and report a probe that has gone quiet.
+
+        Called from the poll and the display refresh — the two ticks that are meant to
+        move the world on — and from nowhere that merely draws.
+        """
+        t = self._agent_tick()
+        self._persist_run_changes(t)
+        self._retire_finished(t)
+        self._note_silent_probes()
         return t
 
     def _note_silent_probes(self) -> None:
@@ -1647,18 +1664,36 @@ class Store(QObject):
                      f"now reads as idle and the task cap will not hold")
         self.refresh_activity()
 
-    def _persist_run_changes(self, before: list, t: agentstate.Tick) -> None:
-        """Write back the two things a tick learns about a run: the pid its shell has
-        since written, and the moment its mesh claim was last seen.
+    def _persist_run_changes(self, t: agentstate.Tick) -> None:
+        """Write back the three things a tick learns about a run: the pid its shell has
+        since written, the tty its process turned out to be on, and when its mesh claim
+        was last seen.
 
-        Only on an actual change — this runs every few seconds, and the book is only
-        interesting when it moves. Synthesized rows are dropped rather than saved: a
-        run nobody dispatched is re-derived from the process table every tick and has
-        nothing to persist.
+        Merged into whatever is on disk NOW rather than replacing the book with this
+        tick's copy of it. A spawn that registered while this tick was resolving would
+        otherwise be dropped — an agent nothing counts, which is a bay of the cap the
+        machine can then spend twice.
+
+        Synthesized rows are not written at all: a run nobody dispatched is re-derived
+        from the process table every tick and has nothing to persist.
         """
-        keep = [r for r in t.records if not r.untracked]
-        if keep != before:
-            agentregistry.save(keep)
+        learned = {r.run_id: r for r in t.records if not r.untracked}
+        out, changed = [], False
+        for r in agentregistry.load():
+            fresh = learned.get(r.run_id)
+            if fresh is None:
+                out.append(r)
+                continue
+            merged = dataclasses.replace(
+                r,
+                pid=r.pid if r.pid is not None else fresh.pid,
+                tty=r.tty or fresh.tty,
+                claim_seen_at=fresh.claim_seen_at or r.claim_seen_at,
+            )
+            changed = changed or merged != r
+            out.append(merged)
+        if changed:
+            agentregistry.save(out)
 
     def _retire_finished(self, t: agentstate.Tick) -> None:
         """Price what has ended and drop it from the book.

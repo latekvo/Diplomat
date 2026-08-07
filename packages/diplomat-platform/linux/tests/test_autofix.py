@@ -804,6 +804,9 @@ def test_a_mesh_run_is_judged_by_where_it_actually_runs(store, monkeypatch):
     assert store._auto_tasks_running() == 1
     fake_probes(monkeypatch, processes={})
     assert store._auto_tasks_running() == 0
+    # Retiring it is the settle pass's job, not a read's — the panel asks for the cap
+    # on every repaint, and a read with consequences retires records off a screenshot.
+    store.refresh_auto_task_count()
     assert agentregistry.load() == []
     # ...and what it cost is booked, like any other agent that ran on this machine.
     assert telemetry.load().tasks[0].done_at is not None
@@ -2156,3 +2159,54 @@ def test_work_no_monitor_owns_is_not_queued(store, monkeypatch):
     )
     store.commit_queue()
     assert store.queued_tasks == []
+
+
+# MARK: - reading what the agents are doing must not change it
+
+
+def test_drawing_the_rows_retires_nothing_and_writes_nothing(store, monkeypatch,
+                                                             tmp_path):
+    """The panel asks for the rows and the free slots on every repaint. When those
+    reads had consequences, a headless render retired records and wrote probe warnings
+    into the operator's real activity feed — found by rendering the panel and then
+    finding the lines in ~/.diplomat afterwards."""
+    from diplomat_app import activity, agentregistry
+
+    register_run(512, pid=4242, tty="pts/3", ledger_key="review:512:abc",
+                 dispatched_at=time.time() - 600)
+    fake_probes(monkeypatch, processes={})  # its process is gone: retirable
+    before = len(activity.read(500))
+
+    # Every read the panel performs, several times over.
+    for _ in range(5):
+        store.running_tasks
+        store.free_auto_slots
+        store.auto_tasks_shown
+        store._in_flight("https://github.com/o/r/pull/512")
+
+    assert agentregistry.load(), "a read retired the run"
+    assert len(activity.read(500)) == before, "a read wrote to the activity feed"
+
+    # The settle pass is what is allowed to act on it.
+    store.refresh_auto_task_count()
+    assert agentregistry.load() == []
+
+
+def test_a_spawn_during_a_tick_is_not_dropped_by_the_write_back(store, monkeypatch):
+    """The tick resolves against the book as it was; writing its own copy back would
+    drop a run registered in between — an agent nothing counts, which is a bay the
+    machine then spends twice."""
+    from diplomat_app import agentregistry
+
+    slow = register_run(101, pid=1, tty="pts/1", dispatched_at=time.time())
+    fake_probes(monkeypatch, processes={1: __import__(
+        "diplomat_app.agentstate", fromlist=["x"]).ProcInfo(
+            tty="pts/1", elapsed=5.0, is_agent=True)})
+    t = store._agent_tick()
+
+    # A second dispatch lands after the tick resolved and before it is written back.
+    register_run(202, pid=2, tty="pts/2", dispatched_at=time.time())
+    store._persist_run_changes(t)
+
+    assert sorted(r.pr_number for r in agentregistry.load()) == [101, 202]
+    assert slow.run_id in {r.run_id for r in agentregistry.load()}

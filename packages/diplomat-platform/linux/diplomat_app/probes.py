@@ -226,7 +226,14 @@ def mesh_claims() -> Observation:
         state = statefile.read_state()
     except OSError as exc:
         return Observation.unavailable(f"are unreadable ({type(exc).__name__})")
-    if not state or not statefile.node_running(state):
+    # No snapshot at all means no node has ever run here, which is an ordinary machine
+    # rather than a broken one — UNSUPPORTED, so it is never reported as a probe that
+    # has gone quiet. A machine that HAS run one and is not running it now is a real
+    # gap, because a peer's run is retired by a released claim and a node we cannot ask
+    # must not be mistaken for one that released it.
+    if not state:
+        return Observation.unsupported("are unavailable (no mesh node has run here)")
+    if not statefile.node_running(state):
         return Observation.unavailable("are unavailable (the mesh node is not running)")
     claims = state.get("claims")
     if not isinstance(claims, dict):
