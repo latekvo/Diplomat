@@ -175,6 +175,30 @@ def isolated_app_config(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def isolated_agent_registry(tmp_path, monkeypatch):
+    """Redirect the run registry (``~/.diplomat/agents``) to a per-test temp dir.
+
+    Same reasoning as the fixtures above, with sharper teeth: :func:`agentregistry.forget`
+    deletes run directories, so a test running against the real one would delete the
+    operator's live agents' prompts and pid files. Uses the ``DIPLOMAT_AGENTS_DIR`` hook
+    so the redirect reaches a spawned mesh node too, which reads the same book to answer
+    whether this machine has room."""
+    monkeypatch.setenv("DIPLOMAT_AGENTS_DIR", str(tmp_path / "agents"))
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _reset_probe_cache():
+    """Drop the shared ``ps`` cache between tests — it is module state, and a test that
+    stubs the process table would otherwise be answered from the previous test's real
+    one (or vice versa)."""
+    from diplomat_app import probes
+    probes.reset_cache()
+    yield
+    probes.reset_cache()
+
+
+@pytest.fixture(autouse=True)
 def _drain_qt_widgets():
     """After each test, delete any leftover top-level widgets and drain the
     event loop, so no QTimer/QObject survives into the next test's event loop.

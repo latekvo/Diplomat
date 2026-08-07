@@ -130,9 +130,12 @@ class DiplomatHost(szpont_host.Host):
         }
         dump = _ps_dump()
         live = autofix.live_pr_numbers(dump, cfg["owner"], cfg["repo"])
+        # `or {}` is the "everything is working" degradation this docstring promises:
+        # tmux answering `None` means it could not be read, and no tty then resolves
+        # to a tail, so nothing is subtracted as idle.
         tails = tmuxwatch.pane_tails_for_ttys(
             autofix.agent_ttys(dump, cfg["owner"], cfg["repo"])
-        )
+        ) or {}
         idle = autofix.idle_pr_numbers(dump, tails, cfg["owner"], cfg["repo"])
         return (autofix.running_auto_tasks(live, mine, set(), idle)
                 >= appconfig.auto_task_limit())

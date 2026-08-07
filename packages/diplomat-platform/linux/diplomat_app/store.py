@@ -1717,7 +1717,7 @@ class Store(QObject):
         dump = self._ps_dump()
         tails = tmuxwatch.pane_tails_for_ttys(
             autofix.agent_ttys(dump, cfg["owner"], cfg["repo"])
-        )
+        ) or {}
         return autofix.idle_pr_numbers(dump, tails, cfg["owner"], cfg["repo"])
 
     def _ps_dump(self) -> str:

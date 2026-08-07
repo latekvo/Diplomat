@@ -325,7 +325,8 @@ def user_shell() -> str:
     return os.environ.get("DIPLOMAT_SHELL") or os.environ.get("SHELL") or "/bin/bash"
 
 
-def shell_command(prompt_file: str, done_path: str | None = None) -> str:
+def shell_command(prompt_file: str, done_path: str | None = None,
+                  pid_path: str | None = None) -> str:
     """``cd '<repo>' 2>/dev/null; claude "$(cat '<file>')"; [printf %s $? > done;] exec "$SHELL" -i``
 
     Run (via :func:`user_shell`, interactively) so the user's rc is sourced and
@@ -333,17 +334,37 @@ def shell_command(prompt_file: str, done_path: str | None = None) -> str:
     the user's shell after the session ends.
 
     When ``done_path`` is given, the agent's exit code is written there the moment
-    ``claude`` returns — an existence-based completion sentinel the PR auto-fix
-    monitor polls to tell a still-running agent from a finished one (the Linux
-    analogue of the macOS TrackedProcess done-file).
+    ``claude`` returns — an existence-based completion sentinel. It only ever fires on
+    EXIT, and an agent is spawned interactively: finishing its work is not exiting, so
+    the sentinel says nothing at all for the hours a finished session sits at its
+    prompt. That is what ``pid_path`` is for.
+
+    When ``pid_path`` is given the agent runs one shell deeper —
+    ``"$SHELL" -i -c 'printf %s $$ > <pid>; exec claude "$(cat <file>)"'`` — and the
+    pid recorded is the AGENT'S OWN: the inner shell writes its own ``$$`` and then
+    ``exec``s, which replaces the process image without changing the pid. The applet
+    then identifies a run by that pid instead of by matching ``PR #<n> in
+    <owner>/<repo>`` against prompt text in ``ps`` output, which could not tell two
+    runs on one PR apart, matched any unrelated session that mentioned the number, and
+    matched the wrapper shell and tmux client as readily as the agent.
+
+    The inner shell is interactive for the same reason the outer one is: a `claude`
+    alias from the user's rc has to resolve, and aliases do not survive into a
+    non-interactive child. ``$?`` after it is still the agent's own exit code, because
+    ``exec`` made them the same process.
     """
     repo = shlex.quote(repo_path())
     pf = shlex.quote(prompt_file)
     done = f"printf %s $? > {shlex.quote(done_path)}; " if done_path else ""
-    return f'cd {repo} 2>/dev/null; claude "$(cat {pf})"; {done}exec "$SHELL" -i'
+    if pid_path is None:
+        return f'cd {repo} 2>/dev/null; claude "$(cat {pf})"; {done}exec "$SHELL" -i'
+    inner = f'printf %s $$ > {shlex.quote(pid_path)}; exec claude "$(cat {pf})"'
+    agent = f"{shlex.quote(user_shell())} -i -c {shlex.quote(inner)}"
+    return f"cd {repo} 2>/dev/null; {agent}; {done}exec \"$SHELL\" -i"
 
 
-def agent_argv(prompt_file: str, done_path: str | None = None) -> list[str]:
+def agent_argv(prompt_file: str, done_path: str | None = None,
+               pid_path: str | None = None) -> list[str]:
     """What the terminal is asked to run: the agent under the user's INTERACTIVE
     shell (``-i``, so their rc is sourced and a `claude` alias resolves — a plain
     `bash -c` gets neither), inside a tmux session of its own wherever tmux exists.
@@ -361,7 +382,7 @@ def agent_argv(prompt_file: str, done_path: str | None = None) -> list[str]:
     Linux, and they only see panes. Without tmux installed there is no session to
     open and no watcher to feed, so the bare interactive shell stands.
     """
-    cmd = shell_command(prompt_file, done_path)
+    cmd = shell_command(prompt_file, done_path, pid_path)
     shell = user_shell()
     if shutil.which("tmux") is None:
         return [shell, "-i", "-c", cmd]
@@ -383,13 +404,18 @@ def spawn_env() -> dict:
     return {k: v for k, v in os.environ.items() if k not in ("TMUX", "TMUX_PANE")}
 
 
-def spawn(prompt: str, preferred: SpawnTerminal | None, done_path: str | None = None) -> str:
+def spawn(prompt: str, preferred: SpawnTerminal | None, done_path: str | None = None,
+          pid_path: str | None = None, prompt_file: str | None = None) -> str:
     """Stage the prompt, open a new terminal window, run claude. Returns the
-    prompt file path. Fully detached from the applet. ``done_path`` (optional)
-    receives claude's exit code on completion — see :func:`shell_command`."""
+    prompt file path. Fully detached from the applet.
+
+    ``done_path`` receives claude's exit code on completion and ``pid_path`` receives
+    the agent's own pid the moment it starts — see :func:`shell_command`.
+    ``prompt_file`` skips the staging when the caller has already written the prompt
+    somewhere it wants to keep it (the run directory in :mod:`.agentregistry`)."""
     term = resolved(preferred)
-    file = write_prompt(prompt)
-    argv = [term.exec_name, *term.prefix, *agent_argv(file, done_path)]
+    file = prompt_file or write_prompt(prompt)
+    argv = [term.exec_name, *term.prefix, *agent_argv(file, done_path, pid_path)]
     try:
         popen_detached(argv, env=spawn_env())
     except OSError as exc:

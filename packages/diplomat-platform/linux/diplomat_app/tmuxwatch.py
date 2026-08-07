@@ -82,10 +82,10 @@ def dump_panes() -> list[Pane] | None:
     return out
 
 
-def pane_tails_for_ttys(ttys: set[str]) -> dict[str, str]:
+def pane_tails_for_ttys(ttys: set[str]) -> dict[str, str] | None:
     """The visible tail of each pane running on one of ``ttys``, keyed by that tty —
     the join column between a tmux pane and the ``claude`` process ``ps`` reports on
-    that same tty.
+    that same tty. ``None`` when tmux could not be asked at all.
 
     Selective on purpose, unlike :func:`dump_panes`: this runs on the panel's
     8-second tick, and the callers want two panes out of however many the developer
@@ -95,24 +95,28 @@ def pane_tails_for_ttys(ttys: set[str]) -> dict[str, str]:
     differently: tmux gives ``/dev/pts/13``, ``ps`` gives ``pts/13``. Normalising here
     means the callers can pass and read a tty as ``ps`` spells it.
 
-    A failed or absent tmux collapses to ``{}`` — no evidence rather than false
-    evidence. Every caller reads a missing tty as "still working", so a tmux that
-    cannot be read costs an idle agent's slot rather than freeing a busy one's.
+    The ``None`` matters, and used to be a ``{}`` shared with "no pane matched": those
+    are "we could not look" and "we looked and this agent has no pane", and reading
+    the first as the second is how an agent whose screen went unreadable was mistaken
+    for one sitting idle at its prompt. :func:`probes.pane_tails` turns the
+    distinction into an Observation and the resolver acts on it.
 
-    ANY failure collapses that way, not just the ones :func:`_run` knows to expect.
+    ANY failure collapses to ``None``, not just the ones :func:`_run` knows to expect.
     The callers are a poll worker and the mesh node's capacity hook, and neither can
     afford an exception: one would silently die for the rest of the applet's life (the
     way the watcher itself once did — see :func:`_run`), the other would fail a peer's
-    job over a screen it could not read. Both would rather be told nothing is idle.
+    job over a screen it could not read.
     """
-    if not ttys or shutil.which("tmux") is None:
+    if shutil.which("tmux") is None:
+        return None
+    if not ttys:
         return {}
     try:
         listing = _run(
             ["tmux", "list-panes", "-a", "-F", f"#{{pane_id}}{_UNIT}#{{pane_tty}}"]
         )
         if listing is None:
-            return {}
+            return None
         out: dict[str, str] = {}
         for line in listing.splitlines():
             if _UNIT not in line:
@@ -126,7 +130,7 @@ def pane_tails_for_ttys(ttys: set[str]) -> dict[str, str]:
                 out[tty] = last_lines(captured)
         return out
     except Exception:  # noqa: BLE001 - see above; no tmux failure is worth either cost
-        return {}
+        return None
 
 
 def send_continue(pane_id: str, message: str) -> bool:

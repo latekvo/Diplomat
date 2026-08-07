@@ -170,19 +170,35 @@ def test_pane_tails_for_ttys_never_raises_into_its_callers(monkeypatch):
     """Its callers are the autofix poll worker and the mesh node's capacity hook.
     An exception would kill the poll for the applet's remaining life (the way a
     strict decode once killed the watcher) or fail a peer's job over an unreadable
-    screen. Every failure has to read as "nothing is idle" instead, which costs at
-    most a bay that stays held."""
+    screen. Every failure has to read as ``None`` — "could not look" — instead."""
     monkeypatch.setattr(tmuxwatch.shutil, "which", lambda _: "/usr/bin/tmux")
 
     def boom(argv):
         raise RuntimeError("tmux server went away mid-scan")
 
     monkeypatch.setattr(tmuxwatch, "_run", boom)
-    assert tmuxwatch.pane_tails_for_ttys({"pts/1"}) == {}
+    assert tmuxwatch.pane_tails_for_ttys({"pts/1"}) is None
 
     # A tmux that simply is not installed is the same answer by a quieter route.
     monkeypatch.setattr(tmuxwatch.shutil, "which", lambda _: None)
+    assert tmuxwatch.pane_tails_for_ttys({"pts/1"}) is None
+
+
+def test_a_failed_capture_is_distinguishable_from_an_agent_with_no_pane(monkeypatch):
+    """The distinction this return type exists for. Both used to be ``{}``, and
+    reading "could not look" as "this agent has no pane" is how an agent whose screen
+    went unreadable was mistaken for one idling at its prompt — and had its bay of the
+    task cap taken back while it was still working."""
+    monkeypatch.setattr(tmuxwatch.shutil, "which", lambda _: "/usr/bin/tmux")
+
+    # tmux answered, and this agent's tty genuinely has no pane.
+    monkeypatch.setattr(tmuxwatch, "_run",
+                        lambda argv: "" if argv[:2] == ["tmux", "list-panes"] else None)
     assert tmuxwatch.pane_tails_for_ttys({"pts/1"}) == {}
+
+    # tmux could not be asked.
+    monkeypatch.setattr(tmuxwatch, "_run", lambda argv: None)
+    assert tmuxwatch.pane_tails_for_ttys({"pts/1"}) is None
 
 
 def test_run_survives_non_utf8_pane_bytes_and_still_scans():
