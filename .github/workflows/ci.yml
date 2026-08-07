@@ -203,6 +203,46 @@ jobs:
         working-directory: packages/szpontnet-spec/conformance
         run: python -m szpont --node-cmd "python adapters/reference.py" --no-color
 
+  # The Python bindings, in a job of their own so what they are allowed to import
+  # is visible: the library and pytest, nothing else. The bindings exist to have no
+  # behaviour the library does not — a dependency creeping in here would mean they
+  # had started being a second implementation rather than a reading of the first.
+  szpont:
+    name: szpont · Python bindings
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install the bindings, the library and pytest
+        run: pip install -e ./packages/szpontnet-core -e ./packages/szpont pytest
+      - name: Tests
+        run: pytest packages/szpont/tests -q
+      # The distribution as PyPI would see it. Catches the metadata faults that are
+      # invisible until an upload is rejected — an unrenderable README, a missing
+      # package-data file, a version the index will not accept.
+      - name: Build the distribution and check its metadata
+        run: |
+          pip install build twine
+          python -m build --outdir dist/szpont packages/szpont
+          twine check --strict dist/szpont/*
+      # The wheel on its own terms: installed from the built artifact rather than
+      # from the checkout, so a module left out of `packages` fails here instead of
+      # for whoever installs it.
+      - name: The built wheel imports and carries its type marker
+        run: |
+          python -m venv /tmp/wheel-check
+          /tmp/wheel-check/bin/pip install ./packages/szpontnet-core dist/szpont/*.whl
+          /tmp/wheel-check/bin/python -c "
+          import szpont, pathlib
+          assert szpont.__version__, 'no version'
+          assert (pathlib.Path(szpont.__file__).parent / 'py.typed').is_file(), 'py.typed missing from the wheel'
+          for name in szpont.__all__:
+              getattr(szpont, name)
+          print('wheel ok:', szpont.__version__, len(szpont.__all__), 'exports')
+          "
+
   # The device-allocator MCP server + daemon. Self-contained Node tests that drive
   # the allocator over its unix socket against a synthetic device pool (DA_FAKE_DEVICES),
   # so they need no real simulators/emulators and run on Linux.
