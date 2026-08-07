@@ -2208,3 +2208,47 @@ def test_a_spawn_during_a_tick_is_not_dropped_by_the_write_back(store, monkeypat
 
     assert sorted(r.pr_number for r in agentregistry.load()) == [101, 202]
     assert slow.run_id in {r.run_id for r in agentregistry.load()}
+
+
+def test_the_poll_settles_the_agents_even_with_the_panel_shut(store, monkeypatch):
+    """Diplomat is a TRAY applet: its panel is shut most of the time, and the panel's
+    own tick is gated on being visible. If retirement rides only on that tick, a
+    finished agent's record is never dropped, its bay never comes back, its PR stays
+    deduped and its cost never reaches the ledger — on precisely the machines that
+    leave the tray alone. Seen live with three runs and the panel closed.
+
+    So the 3-minute poll settles them, whatever is on screen."""
+    from diplomat_app import agentregistry
+
+    register_run(512, pid=4242, tty="pts/3", dispatched_at=time.time() - 600)
+    fake_probes(monkeypatch, processes={})  # its process is gone
+    monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_snapshots",
+                        lambda *a, **k: [])
+    monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_review_requests",
+                        lambda *a, **k: [])
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+
+    store._autofix_poll_once()
+
+    assert agentregistry.load() == [], "the poll must retire what has ended"
+
+
+def test_the_poll_writes_back_what_the_tick_learned(store, monkeypatch):
+    """The same gate cost the write-back too: a run's pid and tty are learned by a
+    tick, and if only a visible panel ever ticked, they were never persisted — so the
+    pane probe kept asking about a tty nobody had recorded."""
+    from diplomat_app import agentregistry
+    from diplomat_app import agentstate as A
+
+    register_run(512, dispatched_at=time.time())  # no pid, no tty yet
+    fake_probes(monkeypatch, live_prs={512})
+    monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_snapshots",
+                        lambda *a, **k: [])
+    monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_review_requests",
+                        lambda *a, **k: [])
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+
+    store._autofix_poll_once()
+
+    (kept,) = agentregistry.load()
+    assert kept.tty == "pts/512", "the tty the scan found must be persisted"

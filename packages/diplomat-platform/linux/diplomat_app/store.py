@@ -640,6 +640,14 @@ class Store(QObject):
 
     def _autofix_poll_once(self) -> None:
         self._poll_error_this_cycle = None
+        # Settle the agents before anything reads them. This is the one pass that runs
+        # whatever the operator is looking at: the panel's own tick is gated on the
+        # panel being VISIBLE, and this is a tray applet whose panel is shut most of
+        # the time — so with retirement only on that tick, a finished agent's record
+        # was never dropped, its bay never came back, its PR stayed deduped and its
+        # cost never reached the ledger, on exactly the machines that leave the tray
+        # alone. (Seen live: three runs, panel closed, nothing retiring.)
+        self._settle_agents()
         try:
             if not self.effective_me:
                 self.fetch_me()
