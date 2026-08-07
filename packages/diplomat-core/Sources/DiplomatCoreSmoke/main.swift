@@ -414,6 +414,24 @@ check(aPRs.buildPrompt().contains("DUPLICATE") && aPRs.buildPrompt().contains("g
 check(aPRs.buildPrompt().contains("20 lines"))   // LOW findings earn a PR only when fix < 20 LOC
 check(aPRs.buildPrompt().contains("No AI attribution"))
 check(!aPRs.buildPrompt().contains("READ-ONLY audit"))
+// The four-point self-review gate every generated PR clears before it opens. Named
+// point by point for the same reason as the review moves above: the goldens are
+// regenerated from this text, so a gate point deleted here is re-blessed rather than
+// caught, and it is the gate that decides whether the PRs this tool opens carry a
+// discriminating test at all.
+let gate = aPRs.buildPrompt()
+check(gate.contains("SELF-REVIEW GATE"), "self-review gate present")
+check(gate.contains("REGRESSION TEST THAT DISTINGUISHES FIXED FROM BROKEN"),
+      "gate (1): a test the unfixed code would fail")
+check(gate.contains("FIX THE CLASS, NOT THE INSTANCE"),
+      "gate (2): every sibling call site of the same shape")
+check(gate.contains("DOC / COMMENT / RATIONALE RIPPLE"),
+      "gate (3): prose brought into agreement with the new behaviour")
+check(gate.contains("NO DEAD CODE THE FIX INTRODUCED"),
+      "gate (4): unreachable branches the fix created")
+// The gate rides on openPRs, so the read-only default must not carry it.
+check(!aBase.buildPrompt().contains("SELF-REVIEW GATE"),
+      "no PRs to open ⇒ no self-review gate")
 // Both on: issue-handling + PRs together.
 let aBoth = AuditConfig(fixIssues: true, openPRs: true)
 check(aBoth.buildPrompt().contains("OPEN ISSUES") && aBoth.buildPrompt().contains("focused pull request"))
@@ -861,6 +879,37 @@ check(ktv.contains("still APPROVE"), "trusted author ⇒ finalPass APPROVE-verdi
 check(!ktv.contains("Do NOT submit an APPROVE"), "trusted author ⇒ no no-verdict block")
 check(!ktv.contains("Thank you for contributing"), "hard verdict outranks soft-approve")
 print("known-theirs (trusted author) review prompt assertions passed")
+
+// ---- The method every swarm depth dispatches across ----
+// The golden prompts are regenerated FROM these fragments, so they re-bless whatever the
+// fragments happen to say: they catch Swift/Python drift and cannot catch a fragment that
+// quietly stopped asking for half the method. Deleting the absence pass from all three
+// depths and re-running `DIPLOMAT_GOLDEN_WRITE=1` leaves the whole suite green, which is
+// how a review depth could ship naming no moves at all. These name the method itself.
+//
+// Asserted on the `.mine` prompt because it carries no softApprove block, and that block
+// quotes the move names in its example comment — on a `.theirs` prompt a move deleted
+// from the fragment would still be found there.
+section("review moves + absence pass")
+let moves = ["claims vs code", "nearest twin", "non-happy paths",
+             "inputs, reachability both ways", "what outlives the call"]
+let absencePass = ["a sibling that has it", "prose that promises it", "symmetry",
+                   "and the mutation"]
+for swarmDepth in ["standard", "deep", "max"] {
+    let p = ReviewConfig(depth: swarmDepth, me: "latekvo").buildPrompt()
+    for move in moves {
+        check(p.contains(move), "\(swarmDepth) depth names the '\(move)' move")
+    }
+    for part in absencePass {
+        check(p.contains(part), "\(swarmDepth) depth carries the absence pass — '\(part)'")
+    }
+}
+// `quick` is the depth that dispatches no swarm. Without this the loop above would pass
+// just as well on fragments that appended the move list to every depth indiscriminately.
+let quickPrompt = ReviewConfig(depth: "quick", me: "latekvo").buildPrompt()
+check(!quickPrompt.contains("nearest twin"), "quick depth runs no swarm and names no moves")
+check(!quickPrompt.contains("a sibling that has it"), "quick depth carries no absence pass")
+print("review moves + absence pass assertions passed")
 
 // ---- Auto-review verdict policy (skill / installer / community suppressors) ----
 section("verdict policy")
