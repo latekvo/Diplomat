@@ -684,6 +684,99 @@ check(AgentTaskQueue.stillOwed(auditAction: "review-req", prNumber: 3,
                                conflicting: [], owingReply: []),
       "a review requested of me is not in this fetch to check — unanswerable is not stale")
 
+section("agent state: what every dispatched run resolves to")
+// PARITY: the whole scenario table lives in
+// diplomat-platform/linux/tests/test_agent_state.py and is driven through BOTH
+// implementations by test_agent_state_parity.py (via `diplomat-core agent-state`),
+// reason strings included. What is asserted here is the handful of rungs that must
+// never regress even if that binary is not built — above all the two directions in
+// which this resolver replaced a front-end that guessed.
+do {
+    let now: TimeInterval = 1_000_000
+    func rec(_ id: String, pid: Int? = 4242, tty: String = "pts/3",
+             age: TimeInterval = 60,
+             placement: AgentState.Placement = .local,
+             source: String = AgentDispatchGate.Source.auto.rawValue,
+             workKey: String = "", seen: TimeInterval? = nil) -> AgentState.RunRecord {
+        AgentState.RunRecord(runID: id, dispatchedAt: now - age, prNumber: 337,
+                             source: source, placement: placement,
+                             workKey: workKey, pid: pid, tty: tty, claimSeenAt: seen)
+    }
+    let alive = [4242: AgentState.ProcInfo(tty: "pts/3", elapsed: 60, isAgent: true)]
+    let working = "● Reading…\n⏵⏵ bypass permissions on · esc to interrupt · ← for agents"
+    let atPrompt = "● Posted the review.\n❯\n⏵⏵ bypass permissions on (shift+tab to cycle)"
+
+    func state(_ r: AgentState.RunRecord, _ e: AgentState.Evidence) -> AgentState.RunState {
+        AgentState.resolveOne(r, evidence: e, now: now).state
+    }
+    // The rule the whole ladder exists for: a probe that could not answer never
+    // yields `.finished`. Both front-ends used to read an unreadable process table
+    // and an unreadable tmux as evidence that the agent was gone.
+    check(state(rec("a"), AgentState.Evidence(
+        processes: .unavailable("ps would not decode"), sentinels: .present([]),
+        tails: .present([:]), claims: .present([]), mergedPRs: .present([]))) == .unknown,
+      "an unreadable process table leaves a local run UNKNOWN, never finished")
+    check(state(rec("b", placement: .meshPeer, workKey: "w", seen: now - 10),
+                AgentState.Evidence(
+        processes: .present([:]), sentinels: .present([]), tails: .present([:]),
+        claims: .unavailable("mesh node down"), mergedPRs: .present([]))) == .unknown,
+      "an unreadable claim book leaves a peer's run UNKNOWN, never finished")
+    // A peer's agent is a process on somebody else's box, so a local `ps` is not
+    // evidence about it at all. The Linux front-end used to retire every peer run
+    // 120s after dispatch on exactly this reasoning.
+    check(state(rec("c", pid: nil, tty: "", age: 3600, placement: .meshPeer,
+                    workKey: "w", seen: now - 10),
+                AgentState.Evidence(
+        processes: .present([:]), sentinels: .present([]), tails: .present([:]),
+        claims: .present(["w"]), mergedPRs: .present([]))) == .running,
+      "an empty local process table never retires a run held on a peer's claim")
+    // The pid IS the identity. A table we did read, without it, is positive evidence.
+    check(state(rec("d"), AgentState.Evidence(
+        processes: .present([:]), sentinels: .present([]), tails: .present([:]),
+        claims: .present([]), mergedPRs: .present([]))) == .finished,
+      "a pid missing from a table we DID read has finished")
+    let live = AgentState.Evidence(processes: .present(alive), sentinels: .present([]),
+                                   tails: .present(["pts/3": atPrompt]),
+                                   claims: .present([]), mergedPRs: .present([]))
+    check(state(rec("e"), live) == .awaitingInput,
+      "a live agent whose screen shows the prompt is awaiting input")
+    check(state(rec("f"), AgentState.Evidence(
+        processes: .present(alive), sentinels: .present([]),
+        tails: .unavailable("no tmux server"), claims: .present([]),
+        mergedPRs: .present([]))) == .running,
+      "…but an unreadable screen leaves it RUNNING — a bay costed, never a bay freed")
+    check(state(rec("g"), AgentState.Evidence(
+        processes: .present(alive), sentinels: .present([]),
+        tails: .present(["pts/3": working]), claims: .present([]),
+        mergedPRs: .present([]))) == .running,
+      "the interrupt hint on the live status bar means mid-turn")
+    // The two sets the cap and the dedup read, which are deliberately different.
+    check(AgentState.occupying.contains(.awaitingInput) == false,
+      "a session at its prompt gives its bay back — the cap bounds LOAD")
+    check(AgentState.blocking.contains(.awaitingInput),
+      "…but still blocks a second agent: it holds the PR's context, waiting to be typed at")
+    check(AgentState.occupying.contains(.unknown) && AgentState.blocking.contains(.unknown),
+      "a run nothing is known about keeps both its bay and its dedup")
+    // The projections, on one mixed tick.
+    let mixed = [rec("auto"), rec("clicked", pid: 7, tty: "pts/9",
+                                  source: AgentDispatchGate.Source.panel.rawValue),
+                 rec("peer", pid: nil, tty: "", placement: .meshPeer, workKey: "w",
+                     seen: now - 10)]
+    let t = AgentState.tick(records: mixed, evidence: AgentState.Evidence(
+        processes: .present(alive.merging([7: AgentState.ProcInfo(tty: "pts/9",
+                                                                  elapsed: 60,
+                                                                  isAgent: true)]) { a, _ in a }),
+        sentinels: .present([]), tails: .present(["pts/3": working, "pts/9": working]),
+        claims: .present(["w"]), mergedPRs: .present([])),
+        livePRs: .unavailable("not probed"), now: now, limit: 2)
+    check(t.capLoad == ["auto"],
+      "the cap counts automatic agents that run HERE — not a click, not a peer's")
+    check(t.freeSlots == 1, "one of two bays filled")
+    check(t.inFlight(prNumber: 337), "and the PR they are all on reads in-flight")
+    check(t.retirable.isEmpty, "nothing retires while every run is live")
+    print("agent state assertions passed")
+}
+
 section("autofix mesh coordination")
 // PARITY fixtures: diplomat-platform/linux/tests/test_autofix.py asserts these exact strings — two
 // nodes only dedupe origination when their derivations agree byte-for-byte
