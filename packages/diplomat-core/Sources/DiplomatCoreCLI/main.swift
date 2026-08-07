@@ -11,6 +11,7 @@ import Foundation
 //   diplomat-core tool-data         < fixture.json   # prints the tool lists as JSON
 //   diplomat-core telemetry         < ledger.json    # prints the Telemetry screen's figures
 //   diplomat-core agent-state       < fixture.json   # prints what every agent run resolves to
+//   diplomat-core agent-registry    < runs.json      # round-trips the run book on disk
 //
 // build-prompt: the JSON config's "kind" field ("review" | "conflicts" | "audit")
 // selects the builder; remaining fields mirror the Swift *Config structs (defaults
@@ -55,9 +56,10 @@ func specificAuthor(_ s: String?) -> SpecificAuthor {
 
 let args = CommandLine.arguments
 guard args.count >= 2,
-      ["build-prompt", "tool-data", "telemetry", "agent-state"].contains(args[1]) else {
-    die("usage: diplomat-core (build-prompt | tool-data | telemetry | agent-state)"
-        + "  (JSON on stdin)", 1)
+      ["build-prompt", "tool-data", "telemetry", "agent-state",
+       "agent-registry"].contains(args[1]) else {
+    die("usage: diplomat-core (build-prompt | tool-data | telemetry | agent-state"
+        + " | agent-registry)  (JSON on stdin)", 1)
 }
 
 let input = FileHandle.standardInput.readDataToEndOfFile()
@@ -77,6 +79,11 @@ if args[1] == "telemetry" {
 
 if args[1] == "agent-state" {
     AgentStateCommand.run(obj)
+    exit(0)
+}
+
+if args[1] == "agent-registry" {
+    AgentRegistryCommand.run(obj)
     exit(0)
 }
 

@@ -2320,11 +2320,20 @@ final class Store: ObservableObject {
         let sweep = await Task.detached(priority: .utility) {
             // One osascript dump of every session's visible buffer (tty → tail) lets the
             // sweep tell a working agent from one idling at the prompt (awaiting input).
-            // Cached/shared with the API-error scan; nil (dump failed) degrades to "no
-            // tails" — the sweep then can't compute awaiting-input but still sweeps.
-            let sessions = ApiErrorWatcher.dumpSessionsCached() ?? []
-            let tails = Dictionary(sessions.map { ($0.tty, $0.tail) },
-                                   uniquingKeysWith: { first, _ in first })
+            // Cached/shared with the API-error scan.
+            //
+            // nil is passed STRAIGHT THROUGH, never flattened to an empty map. The two
+            // mean different things and `sweep` acts on the difference: an empty map is
+            // "we read the terminals and this session was not among them", which lets a
+            // window-gone verdict stand, while nil is "we could not read them at all",
+            // which vetoes nothing. Collapsing them — as `?? [:]` did — made the whole
+            // nil path dead code, so a revoked automation permission or an AppleEvent
+            // timeout quietly downgraded every row's liveness evidence instead of
+            // suspending judgement on it.
+            let tails = ApiErrorWatcher.dumpSessionsCached().map { sessions in
+                Dictionary(sessions.map { ($0.tty, $0.tail) },
+                           uniquingKeysWith: { first, _ in first })
+            }
             return ProcessMonitor.sweep(snapshot, sessionTails: tails)
         }.value
         var stateByID: [UUID: (done: Bool, awaiting: Bool)] = [:]
