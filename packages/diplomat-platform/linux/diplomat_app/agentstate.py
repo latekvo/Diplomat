@@ -510,6 +510,34 @@ def _classify_activity(record: RunRecord, evidence: Evidence, done,
 # MARK: - Untracked agents
 
 
+def adopt_ttys(records: list[RunRecord], processes: Observation) -> list[RunRecord]:
+    """Fill in each run's tty from the process its pid names.
+
+    Nothing tells the applet a run's tty at spawn time — it opens a terminal and
+    walks away — so the only place it exists is on the agent process itself, and the
+    pid is what reaches it. Without this a tracked run has no tty, no tty means no
+    screen, and no screen means it reads as working from the moment it starts until
+    the moment its window closes: exactly the "still running" verdict on an agent that
+    finished hours ago.
+
+    A tty is adopted once and then left alone: it is a property of the process, and a
+    process does not change ttys. The first tick after a spawn has no tty and so
+    cannot classify activity, which costs one poll of "running" on an agent that could
+    not have finished its turn yet anyway.
+    """
+    if not processes.ok:
+        return records
+    table = processes.value
+    out = []
+    for r in records:
+        proc = table.get(r.pid) if r.pid is not None else None
+        if r.tty or proc is None or not proc.tty:
+            out.append(r)
+        else:
+            out.append(replace(r, tty=proc.tty))
+    return out
+
+
 def synthesize_untracked(records: list[RunRecord], live_agents: Observation,
                          now: float) -> list[RunRecord]:
     """Records for live agents nobody dispatched, so they are deduped against and
@@ -626,13 +654,15 @@ def tick(records: list[RunRecord], evidence: Evidence, live_agents: Observation,
     """Fold one pass of evidence into every answer, in the one order that is correct.
 
     The order is the reason this is a function rather than a convention each caller
-    repeats: claims are observed BEFORE resolving, so a sighting taken this tick
-    counts this tick rather than a tick late; and untracked agents are synthesized
-    AFTER, so a live agent that already has a record is not drawn twice. Both
-    front-ends and the parity CLI go through here, so neither can get the sequence
-    subtly different from the other.
+    repeats: claims are observed and ttys adopted BEFORE resolving, so both count this
+    tick rather than a tick late; and untracked agents are synthesized AFTER, so a
+    live agent that already has a record is not drawn twice — and so it keeps the tty
+    the scan found it on rather than having one adopted for a pid it does not have.
+    Both front-ends and the parity CLI go through here, so neither can get the
+    sequence subtly different from the other.
     """
     records = observe_claims(records, evidence.claims, now)
+    records = adopt_ttys(records, evidence.processes)
     records = synthesize_untracked(records, live_agents, now)
     states = resolve(records, evidence, now)
     load = cap_load(records, states)

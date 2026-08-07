@@ -399,3 +399,46 @@ def test_a_probe_missing_from_the_payload_reads_as_unavailable():
     for a machine where that probe looked and saw nothing."""
     assert A.Observation.from_json(None).status == A.UNAVAILABLE
     assert A.Evidence.from_json({}).processes.status == A.UNAVAILABLE
+
+
+# MARK: - Adopting the tty from the process the pid names
+
+
+def test_a_tracked_run_learns_its_tty_from_its_own_process():
+    """Nothing tells the applet a run's tty at spawn — it opens a terminal and walks
+    away. Without adopting one, a tracked run has no screen to read, so it reads as
+    working from the moment it starts until its window closes: the "still running"
+    verdict on an agent that finished hours ago."""
+    out = A.adopt_ttys([rec(tty="")],
+                       A.Observation.present({4242: proc(tty="pts/9")}))
+    assert out[0].tty == "pts/9"
+    states = A.resolve(out, ev(processes={4242: proc(tty="pts/9")},
+                               tails={"pts/9": AT_PROMPT}), T0)
+    assert states["r1"].state == A.AWAITING_INPUT
+
+
+def test_an_adopted_tty_is_not_overwritten_later():
+    out = A.adopt_ttys([rec(tty="pts/3")],
+                       A.Observation.present({4242: proc(tty="pts/9")}))
+    assert out[0].tty == "pts/3"
+
+
+def test_no_tty_is_adopted_from_a_table_that_could_not_be_read():
+    out = A.adopt_ttys([rec(tty="")], A.Observation.unavailable("ps failed"))
+    assert out[0].tty == ""
+
+
+def test_a_run_with_no_pid_adopts_nothing():
+    out = A.adopt_ttys([rec(tty="", pid=None)],
+                       A.Observation.present({4242: proc(tty="pts/9")}))
+    assert out[0].tty == ""
+
+
+def test_the_tick_adopts_a_tty_before_it_classifies_activity():
+    """The ordering claim: within ONE tick a fresh run must be able to reach
+    `awaiting input`, not on the tick after."""
+    t = A.tick([rec(tty="")], ev(processes={4242: proc(tty="pts/9")},
+                                 tails={"pts/9": AT_PROMPT}),
+               A.Observation.present({}), T0, 2)
+    assert t.states["r1"].state == A.AWAITING_INPUT
+    assert t.records[0].tty == "pts/9", "and the tty is written back for the probe"

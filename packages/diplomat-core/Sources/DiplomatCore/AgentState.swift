@@ -430,6 +430,31 @@ public enum AgentState {
 
     // MARK: - Untracked agents
 
+    /// Fill in each run's tty from the process its pid names.
+    ///
+    /// Nothing tells the applet a run's tty at spawn time — it opens a terminal and walks
+    /// away — so the only place it exists is on the agent process itself, and the pid is
+    /// what reaches it. Without this a tracked run has no tty, no tty means no screen, and
+    /// no screen means it reads as working from the moment it starts until the moment its
+    /// window closes: exactly the "still running" verdict on an agent that finished hours
+    /// ago.
+    ///
+    /// A tty is adopted once and then left alone: it is a property of the process, and a
+    /// process does not change ttys. The first tick after a spawn has no tty and so cannot
+    /// classify activity, which costs one poll of "running" on an agent that could not
+    /// have finished its turn yet anyway.
+    public static func adoptTTYs(_ records: [RunRecord],
+                                 processes: Observation<[Int: ProcInfo]>) -> [RunRecord] {
+        guard let table = processes.value else { return records }
+        return records.map { r in
+            guard r.tty.isEmpty, let pid = r.pid, let proc = table[pid],
+                  !proc.tty.isEmpty else { return r }
+            var out = r
+            out.tty = proc.tty
+            return out
+        }
+    }
+
     /// Records for live agents nobody dispatched, so they are deduped against and drawn
     /// rather than merely subtracted from a slot count.
     ///
@@ -552,15 +577,17 @@ public enum AgentState {
     /// Fold one pass of evidence into every answer, in the one order that is correct.
     ///
     /// The order is the reason this is a function rather than a convention each caller
-    /// repeats: claims are observed BEFORE resolving, so a sighting taken this tick
-    /// counts this tick rather than a tick late; and untracked agents are synthesized
-    /// AFTER, so a live agent that already has a record is not drawn twice. Both
+    /// repeats: claims are observed and ttys adopted BEFORE resolving, so both count this
+    /// tick rather than a tick late; and untracked agents are synthesized AFTER, so a live
+    /// agent that already has a record is not drawn twice — and so it keeps the tty the
+    /// scan found it on rather than having one adopted for a pid it does not have. Both
     /// front-ends and the parity CLI go through here, so neither can get the sequence
     /// subtly different from the other.
     public static func tick(records: [RunRecord], evidence: Evidence,
                             liveAgents: Observation<[Int: String]>, now: TimeInterval,
                             limit: Int) -> Tick {
         var recs = observeClaims(records, claims: evidence.claims, now: now)
+        recs = adoptTTYs(recs, processes: evidence.processes)
         recs = synthesizeUntracked(recs, liveAgents: liveAgents, now: now)
         let states = resolve(records: recs, evidence: evidence, now: now)
         let load = capLoad(records: recs, states: states)

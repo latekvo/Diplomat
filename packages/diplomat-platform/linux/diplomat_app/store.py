@@ -145,6 +145,11 @@ class Store(QObject):
     _ORG = "diplomat"
     _APP = "diplomat"
 
+    # How many agent screens must be read without once showing the CLI's interrupt
+    # hint before that is worth reporting. High, because a quiet machine legitimately
+    # produces the same reading: every agent really can be sitting at its prompt.
+    _MARKER_SAMPLE = 40
+
     def __init__(self) -> None:
         super().__init__()
         self.prs: list[OpenPR] = []
@@ -196,6 +201,10 @@ class Store(QObject):
         # carry the answer forward (UNAVAILABLE until the first one runs).
         self._merged_prs = agentstate.Observation.unavailable(
             "have not been probed yet")
+        # Which probes have already been reported silent, so the feed gets one line
+        # per episode rather than one per tick, and another when they come back.
+        self._probe_warned: dict[str, bool] = {}
+        self._marker_warned = False
         # Whether the "deferring auto work" note has been logged for the current
         # at-capacity episode (see _log_at_capacity).
         self._capacity_logged = False
@@ -1582,9 +1591,61 @@ class Store(QObject):
         t = agentstate.tick(records, evidence, live, now, self.auto_task_limit)
         self._persist_run_changes(loaded, t)
         self._retire_finished(t)
+        self._note_silent_probes()
         with self._tick_lock:
             self._tick = t
         return t
+
+    def _note_silent_probes(self) -> None:
+        """Say out loud when a probe has stopped answering.
+
+        This is the failure with no symptom of its own. Every other bug here shows up
+        as a wrong row; a probe going quiet shows up as rows that are merely *less
+        certain*, which looks exactly like an applet working correctly. Left unsaid,
+        the operator sees agents pile up holding bays and has no way to know that the
+        reason is a tmux server that died an hour ago.
+
+        Once per probe per episode, cleared when it answers again — the same shape as
+        the at-capacity note, for the same reason.
+        """
+        for h in probes.health():
+            was = self._probe_warned.get(h.name, False)
+            if h.silent and not was:
+                self._probe_warned[h.name] = True
+                activity.log("auto", "probe-silent",
+                             f"Agent {h.name} {h.reason or 'cannot be read'} — agent "
+                             f"rows will read “unknown” and keep their slots until it "
+                             f"answers again")
+                self.refresh_activity()
+            elif not h.silent and was:
+                self._probe_warned[h.name] = False
+                activity.log("auto", "probe-recovered", f"Agent {h.name} readable again")
+                self.refresh_activity()
+        self._note_stale_busy_marker()
+
+    def _note_stale_busy_marker(self) -> None:
+        """Say out loud when the CLI's interrupt hint has never once matched.
+
+        Telling a working agent from one waiting at its prompt rests on a literal
+        string borrowed from someone else's UI (``apiwatch.BUSY_MARKER``). If Claude
+        Code rewords its status bar, every agent reads as idle at once: every bay of
+        the cap frees, and the monitors dispatch a burst onto a machine that is
+        already full. Nothing else on this screen would look wrong.
+
+        So a machine that has read plenty of agent screens and never seen the hint on
+        any of them is reported. It is not proof — every agent really can be idle —
+        which is why the threshold is high and the wording says what was measured
+        rather than what it means.
+        """
+        read, seen = probes.marker_stats()
+        if seen or read < self._MARKER_SAMPLE or self._marker_warned:
+            return
+        self._marker_warned = True
+        activity.log("auto", "warn",
+                     f"Read {read} agent screens without once seeing “"
+                     f"{apiwatch.BUSY_MARKER}” — if the CLI reworded it, every agent "
+                     f"now reads as idle and the task cap will not hold")
+        self.refresh_activity()
 
     def _persist_run_changes(self, before: list, t: agentstate.Tick) -> None:
         """Write back the two things a tick learns about a run: the pid its shell has

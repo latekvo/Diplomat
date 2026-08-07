@@ -207,8 +207,11 @@ def test_a_tmux_that_answers_with_no_matching_pane_is_present_and_empty(monkeypa
 def test_the_pane_probe_asks_only_about_the_ttys_of_tracked_runs(monkeypatch):
     asked = {}
     monkeypatch.setattr(probes.shutil, "which", lambda _: "/usr/bin/tmux")
-    monkeypatch.setattr(probes.tmuxwatch, "pane_tails_for_ttys",
-                        lambda ttys: asked.setdefault("ttys", ttys) or {})
+    def record_and_answer(ttys):
+        asked["ttys"] = ttys
+        return {}
+
+    monkeypatch.setattr(probes.tmuxwatch, "pane_tails_for_ttys", record_and_answer)
     probes.pane_tails([rec(run_id="a", tty="pts/3"), rec(run_id="b", tty=""),
                        rec(run_id="c", tty="pts/9")])
     assert asked["ttys"] == {"pts/3", "pts/9"}
@@ -306,3 +309,60 @@ def test_a_real_agent_is_tracked_from_spawn_to_exit(tmp_path):
     assert not t.in_flight(337)
     R.forget({r.run_id for r in t.retirable})
     assert R.load() == []
+
+
+# MARK: - Probe health: the failure with no symptom of its own
+
+
+def test_a_probe_that_keeps_failing_is_eventually_called_silent():
+    """A probe going quiet shows up only as rows that are *less certain*, which looks
+    exactly like an applet working correctly. It has to be said out loud, or the
+    operator sees agents pile up holding bays with no way to know why."""
+    for _ in range(probes._SILENT_AFTER):
+        probes._note("screens", A.Observation.unavailable("no tmux server"), T0)
+    (h,) = [h for h in probes.health() if h.name == "screens"]
+    assert h.silent and h.reason == "no tmux server"
+
+
+def test_a_probe_that_answers_again_stops_being_silent():
+    for _ in range(probes._SILENT_AFTER):
+        probes._note("screens", A.Observation.unavailable("no tmux server"), T0)
+    probes._note("screens", A.Observation.present({}), T0 + 1)
+    (h,) = [h for h in probes.health() if h.name == "screens"]
+    assert not h.silent and h.last_ok_at == T0 + 1
+
+
+def test_an_unsupported_probe_is_never_called_silent():
+    """A machine without tmux, or without the mesh add-on, is an ordinary machine.
+    Warning about it every few minutes trains the operator to ignore the channel."""
+    for _ in range(probes._SILENT_AFTER * 3):
+        probes._note("mesh claims", A.Observation.unsupported("no add-on"), T0)
+    (h,) = [h for h in probes.health() if h.name == "mesh claims"]
+    assert not h.silent
+
+
+def test_the_busy_marker_is_counted_against_the_screens_it_was_looked_for_in(
+        monkeypatch):
+    """Telling a working agent from an idle one rests on a literal string from someone
+    else's UI. If it stops matching, every agent reads as idle at once and the cap
+    stops holding — and nothing else on screen would look wrong, so the ratio is the
+    only warning there could be."""
+    from diplomat_app import apiwatch
+
+    busy = f"● Reading…\n⏵⏵ bypass permissions on · {apiwatch.BUSY_MARKER} · ←"
+    idle = "● Done.\n❯\n⏵⏵ bypass permissions on (shift+tab to cycle)"
+    monkeypatch.setattr(probes.shutil, "which", lambda _: "/usr/bin/tmux")
+    monkeypatch.setattr(probes.tmuxwatch, "pane_tails_for_ttys",
+                        lambda ttys: {"pts/1": busy, "pts/2": idle})
+
+    probes.pane_tails([rec(run_id="a", tty="pts/1"), rec(run_id="b", tty="pts/2")],
+                      now=T0)
+
+    assert probes.marker_stats() == (2, 1)
+
+
+def test_a_probes_standing_survives_the_answer_passing_through():
+    """`_note` is on the path of every probe answer, so it must return it unchanged —
+    a wrapper that dropped the value would blind the resolver rather than inform it."""
+    obs = A.Observation.present({1: 2})
+    assert probes._note("processes", obs, T0) is obs

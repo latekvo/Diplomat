@@ -17,9 +17,10 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+from dataclasses import dataclass
 
-from . import autofix, core, tmuxwatch
-from .agentstate import Evidence, Observation, ProcInfo, RunRecord
+from . import apiwatch, autofix, core, tmuxwatch
+from .agentstate import UNAVAILABLE, Evidence, Observation, ProcInfo, RunRecord
 
 #: How long a probe's answer is reused. The resolver re-runs for every question the
 #: applet asks — that is deliberate, so no answer is ever stale — which makes THIS the
@@ -29,6 +30,71 @@ _CACHE_SECS = 5
 
 _ps_cache: tuple[float, str] | None = None
 _tails_cache: tuple[float, frozenset, Observation] | None = None
+
+#: How each probe last answered, and how long it has been failing. A probe that goes
+#: quiet is the failure mode with no symptom of its own — the applet keeps drawing
+#: rows and simply believes something untrue — so the fact is kept and reported
+#: rather than left to be inferred from behaviour.
+_health: dict[str, "ProbeHealth"] = {}
+
+#: How many agent screens have been read, and how many of them showed the CLI's
+#: interrupt hint. The hint is a literal string from someone else's UI
+#: (:data:`apiwatch.BUSY_MARKER`), and if it ever stops matching, every agent reads as
+#: idle at once: the cap empties and the monitors burst. Nothing else would say so —
+#: the applet would look like it was working perfectly — so the ratio is counted.
+_tails_read = 0
+_marker_seen = 0
+
+
+@dataclass
+class ProbeHealth:
+    """One probe's standing: what it last said, and for how long."""
+
+    name: str
+    status: str = UNAVAILABLE
+    reason: str = ""
+    last_ok_at: float | None = None
+    consecutive_failures: int = 0
+
+    @property
+    def silent(self) -> bool:
+        """Has this probe failed for long enough to be worth saying out loud?
+
+        UNSUPPORTED never counts: a machine without tmux, or without the mesh add-on,
+        is an ordinary machine and warning about it every few minutes would be noise
+        that trains the operator to ignore the channel.
+        """
+        return self.status == UNAVAILABLE and self.consecutive_failures >= _SILENT_AFTER
+
+
+#: Consecutive failed ticks before a probe is called silent. The panel resolves every
+#: few seconds, so this is under a minute — long enough that a tmux restart or a
+#: momentary `ps` failure passes unremarked.
+_SILENT_AFTER = 10
+
+
+def _note(name: str, obs: Observation, now: float) -> Observation:
+    """Record how a probe answered, and pass the answer through."""
+    h = _health.setdefault(name, ProbeHealth(name=name))
+    h.status, h.reason = obs.status, obs.reason
+    if obs.ok:
+        h.last_ok_at = now
+        h.consecutive_failures = 0
+    elif obs.status == UNAVAILABLE:
+        h.consecutive_failures += 1
+    else:
+        h.consecutive_failures = 0
+    return obs
+
+
+def health() -> list[ProbeHealth]:
+    """Every probe's standing, in a stable order."""
+    return [_health[k] for k in sorted(_health)]
+
+
+def marker_stats() -> tuple[int, int]:
+    """``(screens read, screens that showed the interrupt hint)``."""
+    return _tails_read, _marker_seen
 
 
 def _ps_dump(now: float) -> Observation:
@@ -54,11 +120,14 @@ def _ps_dump(now: float) -> Observation:
 
 
 def reset_cache() -> None:
-    """Drop every probe cache — for tests that change the machine between assertions
-    inside one cache window."""
-    global _ps_cache, _tails_cache
+    """Drop every probe cache and every counter — for tests that change the machine
+    between assertions inside one cache window."""
+    global _ps_cache, _tails_cache, _tails_read, _marker_seen
     _ps_cache = None
     _tails_cache = None
+    _tails_read = 0
+    _marker_seen = 0
+    _health.clear()
 
 
 def process_table(dump: Observation) -> Observation:
@@ -130,9 +199,14 @@ def pane_tails(records: list[RunRecord], now: float = 0.0) -> Observation:
             and now - _tails_cache[0] < _CACHE_SECS):
         return _tails_cache[2]
     tails = tmuxwatch.pane_tails_for_ttys(set(ttys))
-    obs = (Observation.unavailable("is unreadable (no tmux server, or it would not "
-                                   "answer)")
-           if tails is None else Observation.present(tails))
+    if tails is None:
+        obs = Observation.unavailable("is unreadable (no tmux server, or it would "
+                                      "not answer)")
+    else:
+        obs = Observation.present(tails)
+        global _tails_read, _marker_seen
+        _tails_read += len(tails)
+        _marker_seen += sum(1 for t in tails.values() if apiwatch.looks_busy(t))
     _tails_cache = (now, ttys, obs)
     return obs
 
@@ -197,13 +271,22 @@ def gather(records: list[RunRecord], now: float, *,
     """
     from . import agentregistry
 
+    from . import agentstate
+
     dump = _ps_dump(now)
+    table = _note("processes", process_table(dump), now)
+    # Which panes are worth capturing is decided from the process table, not from the
+    # records as they arrived: a run's tty lives on its agent process, and a run
+    # spawned since the last tick has not adopted one yet. Asking the records alone
+    # would capture nothing for exactly the run that just started, and it would then
+    # read as working for a whole tick longer than it was.
+    looked_up = agentstate.adopt_ttys(records, table)
     return (
         Evidence(
-            processes=process_table(dump),
-            sentinels=agentregistry.sentinels(records),
-            tails=pane_tails(records, now),
-            claims=mesh_claims(),
+            processes=table,
+            sentinels=_note("sentinels", agentregistry.sentinels(records), now),
+            tails=_note("screens", pane_tails(looked_up, now), now),
+            claims=_note("mesh claims", mesh_claims(), now),
             merged_prs=merged or Observation.unavailable("have not been probed yet"),
         ),
         live_agents(dump),
