@@ -214,6 +214,16 @@ def test_verdict_withhold_reasons():
 # MARK: - Store orchestration
 
 
+# The real probe layer, captured before any fixture replaces it — for the one test
+# that is about a probe's own failure handling rather than about a machine's state.
+from diplomat_app.probes import gather as REAL_GATHER  # noqa: E402
+
+# Real CLI buffers: the interrupt hint on the live status bar means mid-turn, its
+# absence means the session is back at its prompt.
+WORKING = "● Reading files…\n⏵⏵ bypass permissions on · esc to interrupt · ← for agents"
+AT_PROMPT = "● Posted the review.\n❯\n⏵⏵ bypass permissions on (shift+tab to cycle)"
+
+
 @pytest.fixture
 def store(monkeypatch):
     from diplomat_app.store import Store
@@ -225,13 +235,82 @@ def store(monkeypatch):
         "diplomat_app.promptcore.build_prompt",
         lambda cfg: f"PROMPT:{cfg.get('kind')}:{cfg.get('specificPR')}",
     )
-    # The two scans behind the cap would read this MACHINE's real processes and its
-    # real tmux panes — neutralize both so tests exercise only the tracked-list dedup
-    # (the scan-specific tests override them). Nothing live and nothing idle is the
-    # empty machine every other test here assumes.
-    monkeypatch.setattr(Store, "_live_pr_agents", lambda self: set())
-    monkeypatch.setattr(Store, "_idle_pr_agents", lambda self: set())
+    # The probes would read this MACHINE's real processes, tmux panes and mesh —
+    # neutralize them so a test exercises the registry and the resolver rather than
+    # the developer's box. The default is an empty machine that WAS successfully
+    # looked at; a scan-specific test overrides with `fake_probes(...)`.
+    fake_probes(monkeypatch)
     return st
+
+
+def fake_probes(monkeypatch, *, processes=None, claims=None, merged=None,
+                live_prs=None, idle_prs=(), tails=None):
+    """Replace the whole evidence layer with a literal.
+
+    This is the seam the old `monkeypatch.setattr(Store, "_live_pr_agents", …)` became.
+    It sits one layer lower and is typed: a test says what the machine looked like,
+    including which probes could not answer, and the resolver does the rest. Anything
+    not named is PRESENT-and-empty — a machine that was looked at and had nothing on
+    it, which is the opposite of a probe that failed.
+
+    ``live_prs`` are PRs with an agent this applet has no record of, as the legacy
+    prompt-text scan finds them; each is given a tty and a screen, because without a
+    screen such an agent can never be seen to finish its turn. ``idle_prs`` are the
+    ones sitting at their prompt.
+    """
+    from diplomat_app import agentregistry
+    from diplomat_app import agentstate as A
+    from diplomat_app import probes
+
+    def obs(v, empty):
+        if v is None:
+            return A.Observation.present(empty)
+        return v if isinstance(v, A.Observation) else A.Observation.present(v)
+
+    live = None if live_prs is None else {pr: f"pts/{pr}" for pr in live_prs}
+    screens = {} if live_prs is None else {
+        f"pts/{pr}": (AT_PROMPT if pr in idle_prs else WORKING) for pr in live_prs}
+    screens.update(tails or {})
+
+    def gather(records, now, merged=None):
+        return (
+            A.Evidence(
+                processes=obs(processes, {}),
+                # Real, because it reads the run directories the test itself created.
+                sentinels=agentregistry.sentinels(records),
+                tails=obs(screens, {}),
+                claims=obs(claims, set()),
+                merged_prs=obs(merged, set()),
+            ),
+            obs(live, {}),
+        )
+
+    monkeypatch.setattr(probes, "gather", gather)
+
+
+def register_run(number, *, source=autofix.SOURCE_AUTO, pid=None, tty="",
+                 dispatched_at=None, label="", kind="review", ledger_key="",
+                 placement=None, node="", work_key="", prompt="P"):
+    """Put one run in the registry, as a dispatch would. Returns the record."""
+    import time as _time
+
+    from diplomat_app import agentregistry
+    from diplomat_app import agentstate as A
+
+    now = _time.time() if dispatched_at is None else dispatched_at
+    return agentregistry.create_run(
+        A.RunRecord(run_id=agentregistry.new_run_id(now), dispatched_at=now,
+                    pr_number=number, pr_url=f"https://github.com/o/r/pull/{number}",
+                    kind=kind, label=label, source=source,
+                    placement=placement or A.PLACEMENT_LOCAL, node=node,
+                    work_key=work_key, ledger_key=ledger_key, pid=pid, tty=tty),
+        prompt)
+
+
+def agent_alive(pid, *, tty="pts/1", elapsed=5.0):
+    """One live agent for `fake_probes(processes=…)`."""
+    from diplomat_app import agentstate as A
+    return {pid: A.ProcInfo(tty=tty, elapsed=elapsed, is_agent=True)}
 
 
 def _spawn_recorder(monkeypatch, finish=False):
@@ -239,12 +318,13 @@ def _spawn_recorder(monkeypatch, finish=False):
     simulating an agent that finished immediately so the in-flight guard clears)."""
     calls = []
 
-    def fake_spawn(prompt, preferred, done_path=None):
-        calls.append({"prompt": prompt, "done": done_path})
+    def fake_spawn(prompt, preferred, done_path=None, pid_path=None, prompt_file=None):
+        calls.append({"prompt": prompt, "done": done_path, "pid": pid_path,
+                      "prompt_file": prompt_file})
         if finish and done_path:
             with open(done_path, "w") as fh:
                 fh.write("0")
-        return "/tmp/prompt.txt"
+        return prompt_file or "/tmp/prompt.txt"
 
     monkeypatch.setattr(review, "spawn", fake_spawn)
     return calls
@@ -612,11 +692,21 @@ def test_my_review_and_conflicts_route_their_own_duties_and_keys(store, monkeypa
         mergeable="CONFLICTING", review_decision="", threads_unresolved=1,
         threads_i_owe=1, head_sha="beef",
     )
+    # Two PRs, not one: a second agent on a PR that already has one is refused by the
+    # in-flight dedup (which now sees the peer's run too), and that rule is asserted
+    # elsewhere. What is under test here is that each monitor routes its OWN duty and
+    # derives its OWN work key.
+    other = PRSnapshot(
+        number=4, title="t", url="https://github.com/o/r/pull/4", is_draft=False,
+        mergeable="CONFLICTING", review_decision="", threads_unresolved=1,
+        threads_i_owe=1, head_sha="cafe",
+    )
     assert store._dispatch_my_review(snap, 1) is True
-    assert store._dispatch_conflict_fix(3, snap.url, 1, "auto", head_sha=snap.head_sha) is True
+    assert store._dispatch_conflict_fix(4, other.url, 1, "auto",
+                                        head_sha=other.head_sha) is True
     assert calls == [
         ("review", "review-reply:github.com/o/r#3@beef"),
-        ("conflicts", "conflicts:github.com/o/r#3@beef"),
+        ("conflicts", "conflicts:github.com/o/r#4@cafe"),
     ]
 
 
@@ -687,28 +777,69 @@ def test_a_burst_of_owed_reviews_stops_at_the_cap_on_the_mesh(store, monkeypatch
     assert store.free_auto_slots == 0
 
 
-def test_a_mesh_agent_is_counted_until_ps_says_it_is_gone(store, monkeypatch):
-    """A mesh-placed agent has no completion sentinel of ours, so ``ps`` is what
-    retires it — and ``ps`` cannot see an agent whose terminal is still starting.
-    Until it is old enough for that to be a real answer, its own dispatch is the
-    evidence; after that, absence means it exited and the slot comes back."""
+def test_a_mesh_run_is_judged_by_where_it_actually_runs(store, monkeypatch):
+    """A placement that came back to this machine is a process here like any other, so
+    its pid decides. A placement on a PEER is not: no probe on this box can see a
+    process on that one, and judging it by a local process table — which this applet
+    used to do, 120s after dispatch — retires every peer run the moment its grace
+    expires, while the agent is still working."""
+    from diplomat_app import agentregistry
+    from diplomat_app import agentstate as A
+
     _mesh_store(monkeypatch, store, dispatch=_spawned_here())
     monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
     _spawn_recorder(monkeypatch)
 
     assert store.dispatch_agent(_job(number=1, mesh=True), autofix.SOURCE_AUTO) == "spawned"
-    # `ps` is blind here (the store fixture's default) — too young to be judged by it.
+    (booked,) = agentregistry.load()
+    assert booked.placement == A.PLACEMENT_MESH_HERE
+    assert store._auto_tasks_running() == 1  # inside the spawn grace, nothing to see yet
+
+    # It landed here, so it is judged by its pid — and an empty process table we DID
+    # read is positive evidence that it is over.
+    agentregistry.save([A.RunRecord(**{**booked.__dict__, "pid": 4242,
+                                       "dispatched_at": time.time() - 300})])
+    fake_probes(monkeypatch, processes={4242: A.ProcInfo(tty="pts/1", elapsed=300.0,
+                                                         is_agent=True)})
     assert store._auto_tasks_running() == 1
-
-    store._autofix_inflight[0]["at"] -= store._MESH_AGENT_GRACE + 1
-    monkeypatch.setattr(type(store), "_live_pr_agents", lambda self: {1})
-    assert store._auto_tasks_running() == 1           # old enough, and still up
-
-    monkeypatch.setattr(type(store), "_live_pr_agents", lambda self: set())
-    assert store._auto_tasks_running() == 0           # gone from ps → gone
-    assert store._autofix_inflight == []
+    fake_probes(monkeypatch, processes={})
+    assert store._auto_tasks_running() == 0
+    assert agentregistry.load() == []
     # ...and what it cost is booked, like any other agent that ran on this machine.
     assert telemetry.load().tasks[0].done_at is not None
+
+
+def test_a_peer_run_is_never_retired_by_this_machines_process_table(store, monkeypatch):
+    """The bug the placement split exists for. `ps` here says nothing whatever about a
+    process there, so only the executor's origination claim can end the run."""
+    from diplomat_app import agentstate as A
+
+    register_run(1, placement=A.PLACEMENT_MESH_PEER, node="brick",
+                 work_key="review:1:sha", dispatched_at=time.time() - 3600)
+
+    # An empty local process table, and the claim still held: still running.
+    fake_probes(monkeypatch, processes={}, claims={"review:1:sha"})
+    assert store._auto_tasks_running() == 0, "a peer's agent spends the peer's budget"
+    (row,) = store.running_tasks
+    assert row.state == "running" and "brick" in row.reason
+    assert store._in_flight("https://github.com/o/r/pull/1")
+
+    # The node we ask is down: unknown, and still not retired.
+    fake_probes(monkeypatch, processes={},
+                claims=A.Observation.unavailable("the mesh node is not running"))
+    (row,) = store.running_tasks
+    assert row.state == "unknown"
+    assert store._in_flight("https://github.com/o/r/pull/1")
+
+    # The claim is released. Absence is measured from the last sighting — which the
+    # assertions above just refreshed — so it is over once the settle window passes.
+    from diplomat_app import agentregistry
+    (held,) = agentregistry.load()
+    agentregistry.save([A.RunRecord(**{**held.__dict__,
+                                       "claim_seen_at": time.time() - 120})])
+    fake_probes(monkeypatch, processes={}, claims=set())
+    assert store.running_tasks == []
+    assert not store._in_flight("https://github.com/o/r/pull/1")
 
 
 def test_where_the_mesh_placed_a_run_is_what_prices_it(store, monkeypatch):
@@ -762,36 +893,44 @@ def test_in_flight_falls_back_to_live_ps_agents(store, monkeypatch):
     monkeypatch.setattr(
         "diplomat_app.autofixmonitor.fetch_snapshots", lambda *a, **k: [snap]
     )
-    assert store._autofix_inflight == []  # nothing remembered locally…
-    monkeypatch.setattr(Store, "_live_pr_agents", lambda self: {9})
+    from diplomat_app import agentregistry
+    assert agentregistry.load() == []  # nothing remembered locally…
+    fake_probes(monkeypatch, live_prs={9})
     store._poll_my_prs([snap])
     assert calls == []  # …yet the agent visible in ps suppressed the dispatch
     # And with no live agent either, the dispatch goes through.
-    monkeypatch.setattr(Store, "_live_pr_agents", lambda self: set())
+    fake_probes(monkeypatch, live_prs=set())
     store._poll_my_prs([snap])
     assert len(calls) == 1
 
 
-def test_live_pr_agents_fails_open_on_undecodable_ps_output(store, monkeypatch):
-    """`ps -eo tty=,args=` renders every process's argv; a single process on the box
-    with a non-UTF-8 byte in its arguments makes text=True raise UnicodeDecodeError — a
-    ValueError, NOT an OSError/SubprocessError. It must be caught, or it escapes this
-    fail-open guard and wedges the autofix poll worker every cycle (the raise precedes
-    the cache write, so every subsequent poll re-runs ps and re-raises).
+def test_an_undecodable_ps_dump_leaves_runs_unknown_rather_than_wedging(store,
+                                                                          monkeypatch):
+    """`ps` renders every process's argv; a single process on the box with a non-UTF-8
+    byte in its arguments makes text=True raise UnicodeDecodeError — a ValueError, NOT
+    an OSError/SubprocessError. Uncaught it escapes the probe and wedges the autofix
+    poll worker every cycle.
 
-    Both scans over that dump have to survive it, not just the one that predates the
-    other: the idle scan runs on the same poll, and an exception from it would wedge
-    the worker just as thoroughly."""
-    import diplomat_app.store as storemod
+    Caught, it becomes an UNAVAILABLE observation, and the difference from the old
+    fail-open-to-empty is the whole point: empty would have retired every run on the
+    machine at once."""
+    from diplomat_app import agentregistry
+    from diplomat_app import probes
+
+    register_run(512, pid=4242, tty="pts/3", dispatched_at=time.time() - 600)
 
     def boom(*a, **k):
         raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
 
-    monkeypatch.setattr(storemod.subprocess, "run", boom)
-    store._ps_dump_cache = None
-    assert store._live_pr_agents() == set()  # fails open to empty, never raises
-    store._ps_dump_cache = None
-    assert storemod.Store._idle_pr_agents(store) == set()
+    monkeypatch.setattr(probes, "gather", REAL_GATHER)  # the `store` fixture stubs it
+    monkeypatch.setattr(probes.subprocess, "run", boom)
+    probes.reset_cache()
+
+    store.refresh_auto_task_count()  # must not raise
+
+    (row,) = store.running_tasks
+    assert row.state == "unknown"
+    assert agentregistry.load(), "an unreadable table must not retire anything"
 
 
 # MARK: - unified dispatch pipeline (buttons and monitors are triggers, not paths)
@@ -1092,7 +1231,7 @@ def test_a_panel_spawn_does_not_spend_the_automatic_budget(store, monkeypatch):
     # A click, then the whole cap of 1 is still there for the monitor — even with
     # the clicked agent live in `ps`, where it is indistinguishable from any other.
     assert store.dispatch_agent(_job(number=1), autofix.SOURCE_PANEL) == "spawned"
-    monkeypatch.setattr(Store, "_live_pr_agents", lambda self: {1})
+    fake_probes(monkeypatch, live_prs={1})
     assert store.dispatch_agent(_job(number=2), autofix.SOURCE_AUTO) == "spawned"
     # …and now the automatic budget is spent.
     assert (
@@ -1112,7 +1251,7 @@ def test_an_untracked_live_agent_counts_against_the_cap(store, monkeypatch):
 
     calls = _spawn_recorder(monkeypatch, finish=False)
     monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
-    monkeypatch.setattr(Store, "_live_pr_agents", lambda self: {101, 102})
+    fake_probes(monkeypatch, live_prs={101, 102})
 
     assert (
         store.dispatch_agent(_job(number=9), autofix.SOURCE_AUTO)
@@ -1120,7 +1259,7 @@ def test_an_untracked_live_agent_counts_against_the_cap(store, monkeypatch):
     )
     assert calls == []
     # One of them exits → room for one more.
-    monkeypatch.setattr(Store, "_live_pr_agents", lambda self: {101})
+    fake_probes(monkeypatch, live_prs={101})
     assert store.dispatch_agent(_job(number=9), autofix.SOURCE_AUTO) == "spawned"
     assert len(calls) == 1
 
@@ -1139,7 +1278,7 @@ def test_a_finished_agent_at_its_prompt_gives_its_bay_back(store, monkeypatch):
 
     calls = _spawn_recorder(monkeypatch, finish=False)
     monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
-    monkeypatch.setattr(Store, "_live_pr_agents", lambda self: {101, 102})
+    fake_probes(monkeypatch, live_prs={101, 102})
 
     assert store.auto_task_limit == 2
     assert (
@@ -1149,7 +1288,7 @@ def test_a_finished_agent_at_its_prompt_gives_its_bay_back(store, monkeypatch):
     assert store.free_auto_slots == 0 and calls == []
 
     # Both windows are left open at the prompt — the state the machine was found in.
-    monkeypatch.setattr(Store, "_idle_pr_agents", lambda self: {101, 102})
+    fake_probes(monkeypatch, live_prs={101, 102}, idle_prs={101, 102})
     assert store.dispatch_agent(_job(number=9), autofix.SOURCE_AUTO) == "spawned"
     assert len(calls) == 1
     # The bays come back, and the two finished agents are still on the panel saying
@@ -1169,8 +1308,7 @@ def test_a_finished_agent_still_blocks_a_second_agent_on_its_own_pr(store, monke
 
     calls = _spawn_recorder(monkeypatch, finish=False)
     monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
-    monkeypatch.setattr(Store, "_live_pr_agents", lambda self: {101})
-    monkeypatch.setattr(Store, "_idle_pr_agents", lambda self: {101})
+    fake_probes(monkeypatch, live_prs={101}, idle_prs={101})
 
     assert store.free_auto_slots == 2  # idle ⇒ the machine is free
     assert (
@@ -1183,71 +1321,86 @@ def test_a_finished_agent_still_blocks_a_second_agent_on_its_own_pr(store, monke
 # MARK: - what ends a record: the agent, not the clock
 
 
-def test_a_run_past_the_ttl_keeps_its_name_while_ps_still_sees_it(
-    store, monkeypatch, tmp_path
-):
-    """The record is the only place a row's label, kind, age and mesh flag live, so
-    dropping one on age alone turns a working agent into an anonymous "untracked" row
-    — while it runs on, with hours of work left. Reviews here routinely outlive any
-    TTL a lost sentinel needs, so a record is ended by evidence its agent is gone, not
-    by the clock reaching a number.
+def test_an_old_record_keeps_its_name_while_its_agent_is_alive(store, monkeypatch):
+    """The record is the only place a row's label, kind and age live, so dropping one
+    on age alone turns a working agent into an anonymous "untracked" row — while it
+    runs on, with hours of work left. Reviews here routinely outlive any TTL, so a
+    record is ended by evidence its agent is gone, never by the clock reaching a
+    number. There is no TTL any more; this is what replaced it."""
+    from diplomat_app import agentstate as A
 
-    The sentinel is the shape a live local spawn leaves it in: staged, not yet
-    written, because ``claude`` has not returned."""
-    from diplomat_app.store import Store
-
-    store._track_agent("https://github.com/o/r/pull/512", 512, autofix.SOURCE_AUTO,
-                       "", "P", done=str(tmp_path / "done"),
-                       label="Auto · Review-req · #512", kind="review")
-    started = time.time() - 3 * store._AUTOFIX_INFLIGHT_TTL
-    store._autofix_inflight[-1]["at"] = started
-    monkeypatch.setattr(Store, "_live_pr_agents", lambda self: {512})
+    started = time.time() - 6 * 60 * 60  # six hours in
+    register_run(512, pid=4242, tty="pts/3", dispatched_at=started,
+                 label="Auto · Review-req · #512", kind="review")
+    fake_probes(monkeypatch,
+                processes={4242: A.ProcInfo(tty="pts/3", elapsed=6 * 60 * 60,
+                                            is_agent=True)})
 
     store.refresh_auto_task_count()
 
     (row,) = store.running_tasks
-    assert row.tracked and row.pr_number == 512
+    assert row.tracked and row.pr_number == 512 and row.state == "running"
     assert row.label == "Auto · Review-req · #512" and row.kind == "review"
     assert row.started_at == started  # what the row's age counts from
 
 
-def test_the_ttl_still_ends_a_record_whose_agent_is_gone(store, monkeypatch, tmp_path):
-    """The other half, and the whole reason the TTL exists: an agent that left without
-    firing its sentinel (a killed window, a machine that slept) is invisible to every
-    other test the prune makes. Kept anyway, its record would hold a bay of the cap
-    and refuse its PR a fresh agent for the rest of the applet's life."""
-    from diplomat_app.store import Store
-
-    store._track_agent("https://github.com/o/r/pull/512", 512, autofix.SOURCE_AUTO,
-                       "", "P", done=str(tmp_path / "done"), label="Auto · #512")
-    store._autofix_inflight[-1]["at"] = time.time() - 3 * store._AUTOFIX_INFLIGHT_TTL
-    monkeypatch.setattr(Store, "_live_pr_agents", lambda self: set())
+def test_a_record_ends_when_its_process_is_gone_from_a_table_we_read(store, monkeypatch):
+    """The other half. An agent that left without firing its sentinel — a killed
+    window, a machine that slept — used to need the TTL to be noticed at all. Its pid
+    being absent from a process table we successfully read is positive evidence, and
+    needs no clock."""
+    register_run(512, pid=4242, tty="pts/3",
+                 dispatched_at=time.time() - 6 * 60 * 60, label="Auto · #512")
+    fake_probes(monkeypatch, processes={})
 
     store.refresh_auto_task_count()
 
-    assert store._autofix_inflight == []
+    from diplomat_app import agentregistry
+    assert agentregistry.load() == []
     assert store.running_tasks == [] and store.free_auto_slots == 2
 
 
-def test_a_long_manual_run_never_starts_spending_the_automatic_budget(
-    store, monkeypatch, tmp_path
-):
-    """A click is the operator's own act and spends none of the automatic budget —
-    for the whole life of the agent it started, not for its first two hours. The
-    exemption lives in the record, so a record ended under a running agent hands the
-    ``ps`` floor an agent nobody claims, and an untracked automatic row appears in a
-    bay the operator never gave to automatic work."""
-    from diplomat_app.store import Store
+def test_a_record_is_never_ended_by_a_table_we_could_not_read(store, monkeypatch):
+    """The distinction the whole resolver is built on, at the store level: an
+    unreadable process table is not an empty one. The run holds its bay, keeps its
+    name, keeps its PR, and says why."""
+    from diplomat_app import agentregistry
+    from diplomat_app import agentstate as A
 
-    store._track_agent("https://github.com/o/r/pull/512", 512, autofix.SOURCE_PANEL,
-                       "", "P", done=str(tmp_path / "done"), label="Review · #512")
-    store._autofix_inflight[-1]["at"] = time.time() - 3 * store._AUTOFIX_INFLIGHT_TTL
-    monkeypatch.setattr(Store, "_live_pr_agents", lambda self: {512})
+    register_run(512, pid=4242, tty="pts/3", dispatched_at=time.time() - 600,
+                 label="Auto · #512")
+    fake_probes(monkeypatch,
+                processes=A.Observation.unavailable("could not be read (OSError)"))
 
     store.refresh_auto_task_count()
 
-    assert store.running_tasks == []  # not automatic work, so not a row here
-    assert store.free_auto_slots == 2  # …and not a bay of the automatic cap
+    assert [r.run_id for r in agentregistry.load()] != []
+    (row,) = store.running_tasks
+    assert row.state == "unknown" and "could not be read" in row.reason
+    assert store.free_auto_slots == 1  # the bay is held, not handed back
+    assert store._in_flight("https://github.com/o/r/pull/512")
+
+
+def test_a_long_manual_run_never_starts_spending_the_automatic_budget(
+    store, monkeypatch
+):
+    """A click is the operator's own act and spends none of the automatic budget —
+    for the whole life of the agent it started, not for its first two hours. The
+    exemption lives in the record, which is why the record now outlives a restart:
+    lost, its agent reappears as an untracked one, and untracked counts as automatic."""
+    from diplomat_app import agentstate as A
+
+    register_run(512, source=autofix.SOURCE_PANEL, pid=4242, tty="pts/3",
+                 dispatched_at=time.time() - 6 * 60 * 60, label="Review · #512")
+    fake_probes(monkeypatch,
+                processes={4242: A.ProcInfo(tty="pts/3", elapsed=6 * 60 * 60,
+                                            is_agent=True)})
+
+    store.refresh_auto_task_count()
+
+    (row,) = store.running_tasks  # it is on the panel — every run is
+    assert row.state == "running" and not row.mesh
+    assert store.free_auto_slots == 2  # …but it is not a bay of the automatic cap
 
 
 def test_at_capacity_is_noted_once_per_episode(store, monkeypatch):
@@ -1270,7 +1423,8 @@ def test_at_capacity_is_noted_once_per_episode(store, monkeypatch):
     assert "cap of 1 automatic task" in noted[0].detail
 
     # Room again → the next saturation is a new episode and is noted afresh.
-    store._autofix_inflight.clear()
+    from diplomat_app import agentregistry
+    agentregistry.save([])
     assert store.dispatch_agent(_job(number=5), autofix.SOURCE_AUTO) == "spawned"
     assert (
         store.dispatch_agent(_job(number=6), autofix.SOURCE_AUTO)
@@ -1288,15 +1442,15 @@ def test_capacity_refusal_never_consults_the_mesh(store, monkeypatch):
     routed: list = []
     monkeypatch.setattr(
         store, "_route_via_mesh",
-        lambda job: (routed.append(job.work_key) or "spawned", False),
+        lambda job: (routed.append(job.work_key) or "spawned", False, "brick"),
     )
     store.auto_task_limit = 1
 
     assert store.dispatch_agent(_job(number=1), autofix.SOURCE_AUTO) == "spawned"
-    # A peer ran #1, so nothing is tracked here — but the ps floor sees an agent on
-    # this machine that nobody booked (one that outlived an applet restart, say),
-    # and that is what fills the cap.
-    monkeypatch.setattr(type(store), "_live_pr_agents", lambda self: {1})
+    # A peer ran #1, so it spends the peer's budget, not this machine's. What fills
+    # the cap here is an agent nobody booked — one that outlived an applet restart,
+    # say — which the legacy prompt scan is still what finds.
+    fake_probes(monkeypatch, live_prs={99})
     assert (
         store.dispatch_agent(_job(number=2), autofix.SOURCE_AUTO)
         == autofix.VERDICT_AT_CAPACITY
@@ -1466,7 +1620,7 @@ def test_a_conflict_fix_queues_behind_every_review_however_it_was_found(store, m
     the one task another agent's run routinely makes unnecessary, so it goes last."""
     _spawn_recorder(monkeypatch, finish=False)
     monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
-    monkeypatch.setattr(type(store), "_live_pr_agents", lambda self: {90, 91})  # cap full
+    fake_probes(monkeypatch, live_prs={90, 91})  # cap full
     monkeypatch.setattr(
         "diplomat_app.autofixmonitor.fetch_snapshots",
         lambda *a, **k: [_snap(number=1, mergeable="CONFLICTING"),
@@ -1596,7 +1750,7 @@ def test_one_poll_offering_a_task_twice_queues_the_backoff_aware_one(store, monk
     store.review_requests_enabled = False
     _spawn_recorder(monkeypatch, finish=False)
     monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
-    monkeypatch.setattr(type(store), "_live_pr_agents", lambda self: {90, 91})  # cap full
+    fake_probes(monkeypatch, live_prs={90, 91})  # cap full
     snaps = [_snap(number=5, unresolved=3, i_owe=1)]
     monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_snapshots", lambda *a, **k: snaps)
     monkeypatch.setattr(
@@ -1732,7 +1886,7 @@ def test_execute_now_says_why_when_nothing_opens(store, monkeypatch):
     )
     _spawn_recorder(monkeypatch, finish=False)
     monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
-    monkeypatch.setattr(type(store), "_live_pr_agents", lambda self: {9})
+    fake_probes(monkeypatch, live_prs={9})
 
     store._execute_queued_task(entry)
 
@@ -1933,7 +2087,7 @@ def test_the_arrangement_outlives_the_list_and_the_applet(store, monkeypatch):
     assert fresh.queued_tasks == []
     assert fresh.queued_task_order[:3] == ["review-req:5", "review-req:3", "review-req:4"]
     fresh.pr_autofix_enabled = False
-    monkeypatch.setattr(type(fresh), "_live_pr_agents", lambda self: {1, 2})
+    fake_probes(monkeypatch, live_prs={1, 2})
     fresh._autofix_poll_once()
     assert [t.id for t in fresh.queued_tasks] == [
         "review-req:5", "review-req:3", "review-req:4",
@@ -1958,7 +2112,7 @@ def test_a_spawn_failure_stops_the_drain_rather_than_clearing_the_queue(store, m
 
     attempted: list = []
 
-    def refuse(prompt, preferred, done_path=None):
+    def refuse(prompt, preferred, done_path=None, pid_path=None, prompt_file=None):
         attempted.append(prompt)
         raise review.SpawnError("no terminal emulator found")
 
@@ -1994,7 +2148,7 @@ def test_work_no_monitor_owns_is_not_queued(store, monkeypatch):
     only record of it — which is exactly what this list is not."""
     _spawn_recorder(monkeypatch, finish=False)
     monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
-    monkeypatch.setattr(type(store), "_live_pr_agents", lambda self: {77, 78})
+    fake_probes(monkeypatch, live_prs={77, 78})
 
     assert (
         store.dispatch_agent(_job(number=1), autofix.SOURCE_AUTO)

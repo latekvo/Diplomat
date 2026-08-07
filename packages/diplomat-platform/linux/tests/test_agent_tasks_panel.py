@@ -20,6 +20,7 @@ import pytest
 from diplomat_app import autofix
 from diplomat_app.panel import Panel
 from diplomat_app.store import Store
+from test_autofix import AT_PROMPT, WORKING, fake_probes, register_run
 from diplomat_app.widgets import (
     FreeSlotRow,
     QueuedTaskRow,
@@ -37,13 +38,30 @@ def app():
     return QApplication.instance() or QApplication([])
 
 
+def _live(monkeypatch, *records, idle=False, elapsed=60.0):
+    """Make the machine agree that these registered runs are live processes.
+
+    A record alone is not an agent: the resolver asks the process table whether its pid
+    is there, and the screen whether that pid is working or waiting. Both are said
+    here, so a row's state is the resolver's answer rather than something the test
+    poked into the store."""
+    from diplomat_app import agentstate as A
+
+    fake_probes(
+        monkeypatch,
+        processes={r.pid: A.ProcInfo(tty=r.tty, elapsed=elapsed, is_agent=True)
+                   for r in records},
+        tails={r.tty: (AT_PROMPT if idle else WORKING) for r in records},
+    )
+
+
 @pytest.fixture
 def panel(app, monkeypatch):
     # Opening the panel otherwise shells the allocator installer, starts a mesh node
     # and scans `ps`; none of that belongs in a test about the rows it draws.
     monkeypatch.setattr(Store, "refresh_allocator_install_async", lambda self: None)
     monkeypatch.setattr(Store, "refresh_update_status_async", lambda self: None)
-    monkeypatch.setattr(Store, "_live_pr_agents", lambda self: set())
+    fake_probes(monkeypatch)
     store = Store()
     store.me = "alice"
     p = Panel(store)
@@ -84,9 +102,9 @@ def test_an_idle_machine_shows_its_empty_bays(panel):
     assert _rows(panel, QueuedTaskRow) == []
 
 
-def test_a_queued_task_gets_a_row_and_a_bay_for_each_slot_left(panel):
+def test_a_queued_task_gets_a_row_and_a_bay_for_each_slot_left(panel, monkeypatch):
     panel.store.queued_tasks = [_queued(512)]
-    panel.store._auto_tasks_measured = {404}
+    fake_probes(monkeypatch, live_prs={404})
     panel._rebuild_agent_tasks()
 
     rows = _rows(panel, QueuedTaskRow)
@@ -94,14 +112,14 @@ def test_a_queued_task_gets_a_row_and_a_bay_for_each_slot_left(panel):
     assert len(_rows(panel, FreeSlotRow)) == 1  # cap 2, one agent up
 
 
-def test_a_running_agent_holds_the_bay_it_took(panel):
+def test_a_running_agent_holds_the_bay_it_took(panel, monkeypatch):
     """The complaint this list was failing: a bay that reads *free slot* while empty
     and then vanishes with nothing in its place the moment an agent starts, so the
     section empties out exactly when the machine is busiest. The agent stands in the
     bay it spent, above the free ones."""
-    panel.store._track_agent("https://github.com/o/r/pull/512", 512,
-                             autofix.SOURCE_AUTO, "", "P",
-                             label="Auto · Review-req · #512 (@octocat)", kind="review")
+    _live(monkeypatch, register_run(
+        512, pid=5121, tty="pts/1",
+        label="Auto · Review-req · #512 (@octocat)", kind="review"))
     panel._rebuild_agent_tasks()
 
     rows = _rows(panel, RunningTaskRow)
@@ -112,7 +130,7 @@ def test_a_running_agent_holds_the_bay_it_took(panel):
     assert _row_kinds(panel) == ["RunningTaskRow", "FreeSlotRow"]
 
 
-def test_a_finished_agent_keeps_its_row_and_gives_the_bay_back(panel):
+def test_a_finished_agent_keeps_its_row_and_gives_the_bay_back(panel, monkeypatch):
     """An agent runs in an interactive session, so finishing its work leaves the
     window open at a prompt rather than closing it. Both halves have to be on screen:
     the bay comes back (there is nothing running in it), and the row stays to say what
@@ -120,10 +138,9 @@ def test_a_finished_agent_keeps_its_row_and_gives_the_bay_back(panel):
     no explanation, which is how the wedge went unnoticed for twelve hours.
 
     So this is the one case where the rows outnumber the cap, and it says why."""
-    panel.store._track_agent("https://github.com/o/r/pull/512", 512,
-                             autofix.SOURCE_AUTO, "", "P",
-                             label="Auto · Review-req · #512 (@octocat)", kind="review")
-    panel.store._auto_tasks_idle = {512}
+    _live(monkeypatch, register_run(
+        512, pid=5121, tty="pts/1",
+        label="Auto · Review-req · #512 (@octocat)", kind="review"), idle=True)
     panel._rebuild_agent_tasks()
 
     rows = _rows(panel, RunningTaskRow)
@@ -135,13 +152,12 @@ def test_a_finished_agent_keeps_its_row_and_gives_the_bay_back(panel):
     assert _row_kinds(panel) == ["RunningTaskRow", "FreeSlotRow", "FreeSlotRow"]
 
 
-def test_every_bay_of_the_cap_is_drawn_whatever_is_in_it(panel):
+def test_every_bay_of_the_cap_is_drawn_whatever_is_in_it(panel, monkeypatch):
     """Running, starting and free are three states of the same bay, so their rows
     always add up to the cap. Drop any one of them and the list stops being a picture
     of the machine's capacity."""
     panel.store.auto_task_limit = 3  # one bay per state
-    panel.store._track_agent("https://github.com/o/r/pull/512", 512,
-                             autofix.SOURCE_AUTO, "", "P", label="Auto · #512")
+    _live(monkeypatch, register_run(512, pid=5121, tty="pts/1", label="Auto · #512"))
     task = _queued(508)
     panel.store.queued_tasks = [task]
     panel.store._begin_starting(task)
@@ -150,12 +166,12 @@ def test_every_bay_of_the_cap_is_drawn_whatever_is_in_it(panel):
     assert _row_kinds(panel) == ["RunningTaskRow", "StartingTaskRow", "FreeSlotRow"]
 
 
-def test_an_agent_only_ps_can_see_is_still_given_a_row(panel):
+def test_an_agent_only_ps_can_see_is_still_given_a_row(panel, monkeypatch):
     """An applet restart loses the book, not the agents — and such an agent counts
     against the cap for as long as it runs. Drawn from its PR number alone, and
     saying so: a bare "#512" beside a dispatched row's label would otherwise read as
     a dispatch that lost its own name."""
-    panel.store._auto_tasks_measured = {512}
+    fake_probes(monkeypatch, live_prs={512})
     panel._rebuild_agent_tasks()
 
     rows = _rows(panel, RunningTaskRow)
@@ -164,41 +180,45 @@ def test_an_agent_only_ps_can_see_is_still_given_a_row(panel):
     assert "running · untracked" in _row_text(rows[0])
 
 
-def test_a_running_row_says_how_long_it_has_been_going(panel):
+def test_a_running_row_says_how_long_it_has_been_going(panel, monkeypatch):
     """Whether an agent has been up two minutes or two hours is the difference
     between waiting for it and going to look at it."""
-    panel.store._track_agent("https://github.com/o/r/pull/512", 512,
-                             autofix.SOURCE_AUTO, "", "P", label="Auto · #512")
-    panel.store._autofix_inflight[-1]["at"] = time.time() - 95 * 60
+    _live(monkeypatch, register_run(512, pid=5121, tty="pts/1", label="Auto · #512",
+                                    dispatched_at=time.time() - 95 * 60),
+          elapsed=95 * 60)
     panel._rebuild_agent_tasks()
 
     assert "running · for 1h 35m" in _row_text(_rows(panel, RunningTaskRow)[0])
 
 
-def test_a_run_the_mesh_placed_here_says_where_it_came_from(panel):
+def test_a_run_the_mesh_placed_here_says_where_it_came_from(panel, monkeypatch):
     """It spends this machine's bay like any other agent, but nothing on this screen
     dispatched it — without the note, an agent appears in a bay the operator watched
     the mesh route away."""
-    panel.store._track_agent("https://github.com/o/r/pull/512", 512,
-                             autofix.SOURCE_AUTO, "", "P", mesh=True,
-                             label="Auto · #512", kind="review")
+    from diplomat_app import agentstate as A
+    _live(monkeypatch, register_run(512, pid=5121, tty="pts/1", label="Auto · #512",
+                                    kind="review",
+                                    placement=A.PLACEMENT_MESH_HERE))
     panel._rebuild_agent_tasks()
 
     assert "via mesh" in _row_text(_rows(panel, RunningTaskRow)[0])
 
 
-def test_a_manual_spawn_takes_no_bay_and_gets_no_row(panel):
-    """A panel click spends none of the automatic budget, so it has no bay of the cap
-    to stand in. A row for it would claim a slot that is still free."""
-    panel.store._track_agent("https://github.com/o/r/pull/512", 512,
-                             autofix.SOURCE_PANEL, "", "P", label="Review · #512")
+def test_a_manual_spawn_gets_a_row_but_takes_no_bay(panel, monkeypatch):
+    """A panel click spends none of the automatic budget, so every bay of the cap is
+    still free. It is drawn anyway: the list answers "what is this machine doing about
+    my PRs", and an agent the operator started by hand is part of that answer. Hiding
+    it was this front-end's own divergence — macOS always drew one — and it meant the
+    rows and the cap were answering different questions."""
+    _live(monkeypatch, register_run(512, source=autofix.SOURCE_PANEL, pid=5121,
+                                    tty="pts/1", label="Review · #512"))
     panel._rebuild_agent_tasks()
 
-    assert _rows(panel, RunningTaskRow) == []
+    assert len(_rows(panel, RunningTaskRow)) == 1
     assert len(_rows(panel, FreeSlotRow)) == panel.store.auto_task_limit
 
 
-def test_the_task_count_covers_what_is_running(panel):
+def test_the_task_count_covers_what_is_running(panel, monkeypatch):
     """The count is the tasks, wherever they are in their life — bays standing empty
     are not tasks. A count that dropped as work STARTED would read as work lost."""
     task = _queued(512)
@@ -206,8 +226,7 @@ def test_the_task_count_covers_what_is_running(panel):
     panel._rebuild_agent_tasks()
     assert _task_count(panel) == 1
 
-    panel.store._track_agent("https://github.com/o/r/pull/508", 508,
-                             autofix.SOURCE_AUTO, "", "P", label="Auto · #508")
+    _live(monkeypatch, register_run(508, pid=5081, tty="pts/1", label="Auto · #508"))
     panel._rebuild_agent_tasks()
     assert _task_count(panel) == 2
 

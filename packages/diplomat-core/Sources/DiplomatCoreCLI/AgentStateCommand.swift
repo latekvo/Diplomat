@@ -22,7 +22,7 @@ import Foundation
 /// { "now": 1000000.0, "limit": 2,
 ///   "records": [ {"runId": …, "dispatchedAt": …, "pid": …, …} ],
 ///   "evidence": { "processes": {"status": "present", "value": {"4242": {…}}}, … },
-///   "livePrs": {"status": "present", "value": [404]} }
+///   "liveAgents": {"status": "present", "value": {"404": "pts/3"}} }
 /// ```
 /// Output: the resolved rows in display order, the four projections, and the records as
 /// the pipeline left them — so a claim sighting written by the wrong step is a diff.
@@ -33,7 +33,15 @@ enum AgentStateCommand {
         let evidence = decodeEvidence(obj["evidence"] as? [String: Any] ?? [:])
         let records = (obj["records"] as? [[String: Any]] ?? []).map(decodeRecord)
         let t = AgentState.tick(records: records, evidence: evidence,
-                                livePRs: decodeObs(obj["livePrs"], { intSet($0) }),
+                                liveAgents: decodeObs(obj["liveAgents"]) { v in
+                                    guard let m = v as? [String: Any] else { return nil }
+                                    var out: [Int: String] = [:]
+                                    for (k, tty) in m {
+                                        guard let pr = Int(k) else { continue }
+                                        out[pr] = tty as? String ?? ""
+                                    }
+                                    return out
+                                },
                                 now: now, limit: limit)
 
         var inFlight: [String: Bool] = [:]

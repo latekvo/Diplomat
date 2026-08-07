@@ -100,6 +100,19 @@ def _task_look(kind: str) -> tuple[str, str]:
     return glyphs.G_REVIEW, _REVIEW_TINT
 
 
+#: What each resolved state reads as on a row. "unknown" is the one word that used
+#: not to exist: the applet would pick "running" or drop the row entirely rather than
+#: admit a probe had failed, which is how a wrong verdict became invisible.
+_STATE_WORD = {
+    "running": "running",
+    "awaiting_input": "awaiting input",
+    "starting": "starting",
+    "unknown": "unknown",
+    "finished": "finished",
+    "merged": "merged",
+}
+
+
 def _running_detail(agent: autofix.RunningAgent) -> str:
     """The status line under a running agent's label: what it is doing, how long it
     has been up, and whatever else this machine knows about where it came from.
@@ -109,12 +122,18 @@ def _running_detail(agent: autofix.RunningAgent) -> str:
     row outlives the work — the bay is already back (`Store.auto_tasks_shown`), so
     without the word the row would look like a slot being held for nothing.
 
+    "unknown" is the one state that needs its reason spelled out beside it. It means a
+    probe could not answer, the run is holding its bay on purpose, and which probe
+    failed is the difference between "install tmux" and "your mesh node is down".
+
     An untracked agent says so instead of ageing: its record was lost (a restart, or
     it was never this applet's to begin with), so there is no honest start time to
     count from — and the row's label is a bare PR number, which without the word
     would read as a dispatch that forgot its own name.
     """
-    state = "awaiting input" if agent.awaiting_input else "running"
+    state = _STATE_WORD.get(agent.state, agent.state)
+    if agent.state == "unknown" and agent.reason:
+        state = f"{state} · {agent.reason}"
     if not agent.tracked:
         return f"{state} · untracked"
     parts = [state]

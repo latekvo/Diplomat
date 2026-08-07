@@ -238,7 +238,7 @@ def test_a_ps_dump_is_reused_across_one_tick(monkeypatch):
     probes._ps_dump(T0 + 1)
     probes._ps_dump(T0 + 2)
     assert len(calls) == 1
-    probes._ps_dump(T0 + probes._PS_CACHE_SECS + 1)
+    probes._ps_dump(T0 + probes._CACHE_SECS + 1)
     assert len(calls) == 2
 
 

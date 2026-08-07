@@ -704,12 +704,21 @@ class RunningAgent:
     kind: str
     tracked: bool
     started_at: float = 0.0  # epoch seconds; 0 when untracked (nothing to date it by)
-    mesh: bool = False  # the mesh placed this job back on this machine
-    # The session finished its turn and sits at its prompt (`apiwatch.looks_busy` read
-    # its pane and found no interrupt hint). Such a row keeps its place in the list —
-    # it is the one thing on screen that says why a window is still open — but it has
-    # given its bay back, so a free slot is drawn alongside it.
-    awaiting_input: bool = False
+    mesh: bool = False  # the mesh placed this job somewhere other than a local spawn
+    # What the run resolved to this tick (`agentstate.RunState`) and the one fact that
+    # decided it. The reason is on the row because the states this list can now show
+    # include "unknown", and a row that says only "unknown" invites exactly the
+    # guesswork this whole mechanism replaced.
+    state: str = "running"
+    reason: str = ""
+
+    @property
+    def awaiting_input(self) -> bool:
+        """The session finished its turn and sits at its prompt. Such a row keeps its
+        place in the list — it is the one thing on screen that says why a window is
+        still open — but it has given its bay back, so a free slot is drawn beside
+        it."""
+        return self.state == "awaiting_input"
 
 
 _LIVE_AGENT_RE_TMPL = r"PR #(\d+) in {repo}"
@@ -726,7 +735,7 @@ def live_pr_numbers(ps_output: str, owner: str, repo: str) -> set[int]:
     in-memory ``_autofix_inflight`` list (an applet restart wipes it while the
     agents run on). Only lines containing ``claude`` count: the spawning shell's
     argv holds the unexpanded ``$(cat …)``, never the prompt text."""
-    return {pr for _tty, pr in _agent_lines(ps_output, owner, repo)}
+    return {pr for _tty, pr in agent_lines(ps_output, owner, repo)}
 
 
 def agent_ttys(ps_output: str, owner: str, repo: str) -> set[str]:
@@ -737,7 +746,7 @@ def agent_ttys(ps_output: str, owner: str, repo: str) -> set[str]:
     find two agents would put a ``capture-pane`` per pane on the panel's 8-second
     tick, where this puts one per agent. A process with no controlling tty appears
     as ``?``, matches no pane, and is simply never asked about."""
-    return {tty for tty, _pr in _agent_lines(ps_output, owner, repo)}
+    return {tty for tty, _pr in agent_lines(ps_output, owner, repo)}
 
 
 def idle_pr_numbers(
@@ -763,16 +772,16 @@ def idle_pr_numbers(
     from . import apiwatch
 
     out: set[int] = set()
-    for tty, pr in _agent_lines(ps_output, owner, repo):
+    for tty, pr in agent_lines(ps_output, owner, repo):
         tail = pane_tails.get(tty)
         if tail is not None and not apiwatch.looks_busy(tail):
             out.add(pr)
     return out
 
 
-def _agent_lines(ps_output: str, owner: str, repo: str):
+def agent_lines(ps_output: str, owner: str, repo: str):
     """Yield ``(tty, pr_number)`` for every live agent in a ``ps`` dump — the one
-    parse the three answers above are each a projection of, so they can never come to
+    parse the answers above are each a projection of, so they can never come to
     disagree about what counts as an agent.
 
     The tty is whatever leads the line, normalised free of ``/dev/`` (``ps`` omits it,

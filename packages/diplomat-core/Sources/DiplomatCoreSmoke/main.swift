@@ -768,7 +768,7 @@ do {
                                                                   isAgent: true)]) { a, _ in a }),
         sentinels: .present([]), tails: .present(["pts/3": working, "pts/9": working]),
         claims: .present(["w"]), mergedPRs: .present([])),
-        livePRs: .unavailable("not probed"), now: now, limit: 2)
+        liveAgents: .unavailable("not probed"), now: now, limit: 2)
     check(t.capLoad == ["auto"],
       "the cap counts automatic agents that run HERE — not a click, not a peer's")
     check(t.freeSlots == 1, "one of two bays filled")

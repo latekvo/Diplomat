@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 
 from PySide6.QtWidgets import QApplication
 
-from . import szpont
+from . import agentregistry, agentstate, probes, szpont
 from .models import OpenIssue, OpenPR
 from .panel import Panel
 from .store import Store
@@ -158,20 +158,45 @@ def _queue_fixture(store: Store) -> None:
     # at its prompt. That third is the arrangement worth having a picture of — it is
     # drawn as a row and yet holds no bay, so four rows stand above the free one
     # rather than the three a cap of four would otherwise allow.
-    store._track_agent("https://github.com/x/pull/402", 402, autofix.SOURCE_AUTO,
-                       ledger_key="", prompt="",
-                       label="Auto · Review-req · #402 (@t0tl)", kind="review")
-    store._autofix_inflight[-1]["at"] = time.time() - 23 * 60
-    store._track_agent("https://github.com/x/pull/377", 377, autofix.SOURCE_AUTO,
-                       ledger_key="", prompt="",
-                       label="Auto · Resolve · #377 (@t0tl)", kind="conflicts")
-    store._autofix_inflight[-1]["at"] = time.time() - 4 * 60 * 60
-    store._live_pr_agents = lambda: {402, 351, 377}
-    # Pinned for the same reason as the scan above: read for real it would report
-    # whichever of the developer's own terminals happen to be idle.
-    store._idle_pr_agents = lambda: {377}
-    store._auto_tasks_measured = {402, 351, 377}
-    store._auto_tasks_idle = {377}
+    now = time.time()
+    for number, kind, label, age, pid, tty in (
+        (402, "review", "Auto · Review-req · #402 (@t0tl)", 23 * 60, 4021, "pts/40"),
+        (377, "conflicts", "Auto · Resolve · #377 (@t0tl)", 4 * 60 * 60, 3771, "pts/37"),
+    ):
+        agentregistry.create_run(
+            agentstate.RunRecord(
+                run_id=agentregistry.new_run_id(now - age), dispatched_at=now - age,
+                pr_number=number, pr_url=f"https://github.com/x/pull/{number}",
+                kind=kind, label=label, source=autofix.SOURCE_AUTO, pid=pid, tty=tty),
+            "")
+    # Pinned rather than probed: read for real, this would report whichever of the
+    # developer's own agents and terminals happen to be up when the snapshot is taken.
+    busy = "● Reading…\n⏵⏵ bypass permissions on · esc to interrupt · ← for agents"
+    at_prompt = "● Done.\n❯\n⏵⏵ bypass permissions on (shift+tab to cycle)"
+
+    def _fixed_probes(records, now, merged=None):
+        return (
+            agentstate.Evidence(
+                processes=agentstate.Observation.present({
+                    4021: agentstate.ProcInfo(tty="pts/40", elapsed=23 * 60,
+                                              is_agent=True),
+                    3771: agentstate.ProcInfo(tty="pts/37", elapsed=4 * 60 * 60,
+                                              is_agent=True),
+                }),
+                sentinels=agentstate.Observation.present(set()),
+                tails=agentstate.Observation.present({"pts/40": busy,
+                                                      "pts/37": at_prompt,
+                                                      "pts/35": busy}),
+                claims=agentstate.Observation.present(set()),
+                merged_prs=agentstate.Observation.present(set()),
+            ),
+            # #351 is the third way the panel learns of an agent: one nothing here
+            # dispatched, found only by the prompt scan (what an applet restart or a
+            # hand-started session leaves behind).
+            agentstate.Observation.present({351: "pts/35"}),
+        )
+
+    probes.gather = _fixed_probes
 
 
 def _telemetry_scratch() -> None:

@@ -277,7 +277,7 @@ def test_poll_dispatch_does_not_self_deadlock_on_the_overlap_lock():
     s = Store()
     s.me = "latekvo"
     # Keep dispatch offline and deterministic: no mesh, no real terminal spawn.
-    s._route_via_mesh = lambda job: (None, False)
+    s._route_via_mesh = lambda job: (None, False, "")
     s._spawn_tracked = (
         lambda prompt, url, number, source, ledger_key="", label="", kind="": True
     )

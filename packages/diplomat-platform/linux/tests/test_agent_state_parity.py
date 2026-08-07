@@ -48,7 +48,7 @@ def _payload(records, evidence, live_prs=None, now=T0, limit=LIMIT) -> dict:
         "limit": limit,
         "records": [r.to_json() for r in records],
         "evidence": evidence.to_json(),
-        "livePrs": (live_prs or A.Observation.unavailable("not probed")).to_json(),
+        "liveAgents": (live_prs or A.Observation.unavailable("not probed")).to_json(),
     }
 
 
@@ -125,7 +125,7 @@ def _mixed():
         claims={"review:306:sha"},
         merged={305},
     )
-    return records, evidence, A.Observation.present({404})
+    return records, evidence, A.Observation.present({404: "pts/8"})
 
 
 @pytest.fixture(scope="module")

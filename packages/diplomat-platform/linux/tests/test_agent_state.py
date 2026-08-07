@@ -187,15 +187,20 @@ CASES = [
 
     # --- untracked agents ---------------------------------------------------
     ("an untracked agent found in the table is running",
-     rec(run_id="untracked:337", pid=None, tty="", untracked=True,
+     rec(run_id="untracked:337", pid=None, tty="pts/3", untracked=True,
          dispatched_at=T0),
-     ev(processes={}),
+     ev(processes={}, tails={"pts/3": WORKING}),
      A.RUNNING, "found in process table"),
     ("an untracked agent is never aged out for having no pid",
-     rec(run_id="untracked:337", pid=None, tty="", untracked=True,
+     rec(run_id="untracked:337", pid=None, tty="pts/3", untracked=True,
          dispatched_at=T0 - 99999),
-     ev(processes={}),
+     ev(processes={}, tails={"pts/3": WORKING}),
      A.RUNNING, "found in process table"),
+    ("an untracked agent at its prompt gives its bay back like any other",
+     rec(run_id="untracked:337", pid=None, tty="pts/3", untracked=True,
+         dispatched_at=T0),
+     ev(processes={}, tails={"pts/3": AT_PROMPT}),
+     A.AWAITING_INPUT, "found in process table; at the prompt"),
 
     # --- an hour-long local run ---------------------------------------------
     ("an hour-long local run is not ended by its own age",
@@ -246,13 +251,25 @@ def test_an_unreadable_claim_book_ages_nothing_out():
 
 
 def test_a_live_pr_with_no_record_becomes_an_untracked_run():
-    out = A.synthesize_untracked([], A.Observation.present({404}), T0)
+    out = A.synthesize_untracked([], A.Observation.present({404: "pts/7"}), T0)
     assert [r.run_id for r in out] == ["untracked:404"]
     assert out[0].untracked and out[0].source == A.SOURCE_AUTO
 
 
+def test_an_untracked_run_carries_the_tty_its_agent_was_found_on():
+    """Without it nothing can read that agent's screen, so it would count as working
+    until its window closed however long ago it finished — a bay held for nothing,
+    which is the state the cap exists to prevent."""
+    out = A.synthesize_untracked([], A.Observation.present({404: "pts/7"}), T0)
+    assert out[0].tty == "pts/7"
+    states = A.resolve(out, ev(tails={"pts/7": AT_PROMPT}), T0)
+    assert states["untracked:404"].state == A.AWAITING_INPUT
+    assert A.cap_load(out, states) == set(), "an idle untracked agent gives its bay back"
+
+
 def test_a_live_pr_that_already_has_a_record_is_not_duplicated():
-    out = A.synthesize_untracked([rec(pr_number=404)], A.Observation.present({404}), T0)
+    out = A.synthesize_untracked([rec(pr_number=404)],
+                                 A.Observation.present({404: "pts/7"}), T0)
     assert [r.run_id for r in out] == ["r1"]
 
 

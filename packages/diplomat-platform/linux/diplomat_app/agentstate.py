@@ -510,10 +510,15 @@ def _classify_activity(record: RunRecord, evidence: Evidence, done,
 # MARK: - Untracked agents
 
 
-def synthesize_untracked(records: list[RunRecord], live_prs: Observation,
+def synthesize_untracked(records: list[RunRecord], live_agents: Observation,
                          now: float) -> list[RunRecord]:
     """Records for live agents nobody dispatched, so they are deduped against and
     drawn rather than merely subtracted from a slot count.
+
+    ``live_agents`` maps a PR number to the tty its agent runs on. The tty is what
+    lets one of these be classified as working or idle at all — without it every
+    untracked agent would read as running and hold a bay until its window closed,
+    which is the state the cap exists to prevent.
 
     Three things produce one: an applet upgraded while agents ran, an agent a peer's
     node started on this box, and a session the operator opened by hand. They are
@@ -524,14 +529,15 @@ def synthesize_untracked(records: list[RunRecord], live_prs: Observation,
     They count as automatic. An agent whose trigger is unknown spending a bay defers
     work; the opposite error dispatches a second agent onto a PR that has one.
     """
-    if not live_prs.ok:
+    if not live_agents.ok:
         return records
     known = {r.pr_number for r in records if r.pr_number is not None}
     out = list(records)
-    for pr in sorted(live_prs.value - known):
+    for pr in sorted(set(live_agents.value) - known):
         out.append(RunRecord(run_id=f"untracked:{pr}", dispatched_at=now,
                              pr_number=pr, source=SOURCE_AUTO,
-                             placement=PLACEMENT_LOCAL, untracked=True))
+                             placement=PLACEMENT_LOCAL,
+                             tty=live_agents.value[pr], untracked=True))
     return out
 
 
@@ -615,7 +621,7 @@ class Tick:
         return in_flight(self.records, self.states, pr_number)
 
 
-def tick(records: list[RunRecord], evidence: Evidence, live_prs: Observation,
+def tick(records: list[RunRecord], evidence: Evidence, live_agents: Observation,
          now: float, limit: int) -> Tick:
     """Fold one pass of evidence into every answer, in the one order that is correct.
 
@@ -627,7 +633,7 @@ def tick(records: list[RunRecord], evidence: Evidence, live_prs: Observation,
     subtly different from the other.
     """
     records = observe_claims(records, evidence.claims, now)
-    records = synthesize_untracked(records, live_prs, now)
+    records = synthesize_untracked(records, live_agents, now)
     states = resolve(records, evidence, now)
     load = cap_load(records, states)
     return Tick(records=records, states=states, rows=rows(records, states),

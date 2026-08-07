@@ -433,6 +433,11 @@ public enum AgentState {
     /// Records for live agents nobody dispatched, so they are deduped against and drawn
     /// rather than merely subtracted from a slot count.
     ///
+    /// `liveAgents` maps a PR number to the tty its agent runs on. The tty is what lets
+    /// one of these be classified as working or idle at all — without it every untracked
+    /// agent would read as running and hold a bay until its window closed, which is the
+    /// state the cap exists to prevent.
+    ///
     /// Three things produce one: an applet upgraded while agents ran, an agent a peer's
     /// node started on this box, and a session the operator opened by hand. They are
     /// found the old way — the prompt's `PR #<n> in <owner>/<repo>` in the process table
@@ -442,16 +447,17 @@ public enum AgentState {
     /// They count as automatic. An agent whose trigger is unknown spending a bay defers
     /// work; the opposite error dispatches a second agent onto a PR that has one.
     public static func synthesizeUntracked(_ records: [RunRecord],
-                                           livePRs: Observation<Set<Int>>,
+                                           liveAgents: Observation<[Int: String]>,
                                            now: TimeInterval) -> [RunRecord] {
-        guard let live = livePRs.value else { return records }
+        guard let live = liveAgents.value else { return records }
         let known = Set(records.compactMap { $0.prNumber })
         var out = records
-        for pr in live.subtracting(known).sorted() {
+        for pr in Set(live.keys).subtracting(known).sorted() {
             out.append(RunRecord(runID: "untracked:\(pr)", dispatchedAt: now,
                                  prNumber: pr,
                                  source: AgentDispatchGate.Source.auto.rawValue,
-                                 placement: .local, untracked: true))
+                                 placement: .local, tty: live[pr] ?? "",
+                                 untracked: true))
         }
         return out
     }
@@ -552,10 +558,10 @@ public enum AgentState {
     /// front-ends and the parity CLI go through here, so neither can get the sequence
     /// subtly different from the other.
     public static func tick(records: [RunRecord], evidence: Evidence,
-                            livePRs: Observation<Set<Int>>, now: TimeInterval,
+                            liveAgents: Observation<[Int: String]>, now: TimeInterval,
                             limit: Int) -> Tick {
         var recs = observeClaims(records, claims: evidence.claims, now: now)
-        recs = synthesizeUntracked(recs, livePRs: livePRs, now: now)
+        recs = synthesizeUntracked(recs, liveAgents: liveAgents, now: now)
         let states = resolve(records: recs, evidence: evidence, now: now)
         let load = capLoad(records: recs, states: states)
         return Tick(records: recs, states: states,

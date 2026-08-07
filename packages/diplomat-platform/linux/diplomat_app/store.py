@@ -25,6 +25,8 @@ import time
 
 from . import (
     activity,
+    agentregistry,
+    agentstate,
     apiwatch,
     appconfig,
     autofix,
@@ -33,6 +35,7 @@ from . import (
     conflicts,
     core,
     deviceallocator,
+    probes,
     review,
     szpont,
     telemetry,
@@ -142,23 +145,6 @@ class Store(QObject):
     _ORG = "diplomat"
     _APP = "diplomat"
 
-    # How long a tracked auto-fix agent is believed on its record alone. Past this,
-    # `ps` decides: an agent still visible there keeps its entry for as long as it
-    # runs, and one that is not is considered finished, so a record whose completion
-    # sentinel never appeared (window killed, machine slept) can't pin a PR as "in
-    # flight" forever. Reviews outrun this bound routinely — it is the age at which a
-    # record stops being evidence by itself, not a cap on how long an agent may run.
-    _AUTOFIX_INFLIGHT_TTL = 2 * 60 * 60
-
-    # How long a mesh-placed agent is counted on this machine's word alone. It has
-    # no sentinel here (the node owns that), so `ps` is what says it is still up —
-    # and `ps` cannot see it for the first moments of its life, while a terminal
-    # emulator, an interactive shell and `claude` itself start. Counting it anyway
-    # for that window is what stops one poll's burst of dispatches from measuring a
-    # free slot each time; the cost of erring long is a slot briefly held for an
-    # agent that died at once.
-    _MESH_AGENT_GRACE = 120
-
     def __init__(self) -> None:
         super().__init__()
         self.prs: list[OpenPR] = []
@@ -199,13 +185,17 @@ class Store(QObject):
         self.autofix_poll_error_at: float | None = None
         self.unaddressed_reviews = 0
         self._poll_error_this_cycle: str | None = None
-        # In-flight agents [{url, number, done, at, source, mesh}] — dedups against
-        # spawning a second agent on a PR one is already working, and tells the
-        # automatic-task cap which of them it is allowed to count. Registered and
-        # pruned from several threads (see _prune_inflight), so it has a mutex of its
-        # own; it is the shortest-held of the three and nests inside neither.
-        self._autofix_inflight: list[dict] = []
-        self._inflight_lock = threading.Lock()
+        # The last resolved tick — what every agent question is answered from (the
+        # dedup, the cap, the rows, the retirement). None until the first one.
+        # Replaced, never mutated: the poll worker writes it while the GUI thread
+        # draws from it. Its own short mutex guards the swap and the cache stamp.
+        self._tick: agentstate.Tick | None = None
+        self._tick_lock = threading.Lock()
+        # What the last merged-status probe found. It costs a `gh` call per PR, so it
+        # rides the slow refresh rather than the 8-second tick, and the fast ticks
+        # carry the answer forward (UNAVAILABLE until the first one runs).
+        self._merged_prs = agentstate.Observation.unavailable(
+            "have not been probed yet")
         # Whether the "deferring auto work" note has been logged for the current
         # at-capacity episode (see _log_at_capacity).
         self._capacity_logged = False
@@ -236,15 +226,6 @@ class Store(QObject):
         # has succeeded: a failed fetch means "we no longer know what is owed", which
         # is not the same as "nothing is owed", and must not empty the list.
         self._staged_queue: list[autofix.QueuedTask] = []
-        # The PRs _auto_tasks_running last measured an automatic agent on, so the
-        # panel can draw the device's bays — filled and free — without a `ps` scan of
-        # its own. The set rather than its size: a row has to name the PR it is on,
-        # and two agents swapping which PRs they are on is a redraw the count alone
-        # would miss (see refresh_auto_task_count).
-        self._auto_tasks_measured: set[int] = set()
-        # Those of the above whose session has finished its turn and is waiting at its
-        # prompt: still a row, no longer a bay (see _auto_tasks_running).
-        self._auto_tasks_idle: set[int] = set()
         # Guards the _dispatching_prs set (below). MUST stay distinct from the
         # poll-overlap guard: run_autofix_poll_async holds that one across the whole
         # worker, and the worker's dispatch_agent re-takes THIS one — sharing a single
@@ -255,9 +236,6 @@ class Store(QObject):
         # thread and released by the worker (see run_autofix_poll_async), so it must
         # be a plain Lock (cross-thread release), never nested with _autofix_lock.
         self._poll_lock = threading.Lock()
-        # Brief cache over the `ps` dump both agent scans read (live_pr_numbers and
-        # idle_pr_numbers) so one poll cycle costs one subprocess: (at, output).
-        self._ps_dump_cache: tuple[float, str] | None = None
         # PR numbers with a dispatch_agent call in flight - a click and an
         # overlapping poll can't race two spawns onto one PR. Guarded by its own
         # short mutex: _autofix_lock is the whole-poll overlap guard (held for the
@@ -845,7 +823,7 @@ class Store(QObject):
 
     # MARK: monitor dispatch + tracking
 
-    def _route_via_mesh(self, job: "autofix.AgentJob") -> tuple[str | None, bool]:
+    def _route_via_mesh(self, job: "autofix.AgentJob") -> tuple[str | None, bool, str]:
         """Route an auto job through the mesh (szpontnet-spec/docs/12): claim-gated
         dispatch to the best-surplus node.
 
@@ -856,42 +834,46 @@ class Store(QObject):
         failover. No node stands down on a duty ASSIGNMENT anymore — that deferred
         to a node that might not be scanning at all, silently dropping the work.
 
-        Returns ``(verdict, ran_here)``. The verdict is ``"spawned"`` (the mesh took
-        it), ``VERDICT_STAND_DOWN`` (a peer's agent already owns it), or ``None`` to
-        fall through to a LOCAL spawn — the fail-open path when the mesh is
+        Returns ``(verdict, ran_here, node)``. The verdict is ``"spawned"`` (the mesh
+        took it), ``VERDICT_STAND_DOWN`` (a peer's agent already owns it), or ``None``
+        to fall through to a LOCAL spawn — the fail-open path when the mesh is
         unavailable, so a wedged node never drops the operator's work.
 
         ``ran_here`` says the placement landed on THIS machine — the best node the
         mesh could find was the one that asked. Such a run is local in every way the
         applet cares about (it burns this device's cap and this device's quota) and
-        differs from a local spawn only in who opened the terminal, so the caller
-        books it exactly like one. The node ids to compare are already in hand: the
-        dispatch result names its executor, and the snapshot names us."""
+        differs from a local spawn only in who opened the terminal. The node ids to
+        compare are already in hand: the dispatch result names its executor, and the
+        snapshot names us.
+
+        ``node`` is that executor's name, and it is what a peer-placed run is judged
+        by afterwards: no probe on this machine can see a process on that one, so the
+        run's liveness is the executor's origination claim and nothing else."""
         if not self.mesh_enabled or not job.work_key:
-            return None, False
+            return None, False, ""
 
         from szpontnet import ctl, statefile
 
         state = statefile.read_state()
         if not state or not statefile.node_running(state):
-            return None, False
+            return None, False, ""
         try:
             results = ctl.dispatch(job.duty, job.prompt, work_key=job.work_key)
         except ctl.CtlError:
-            return None, False  # node unreachable → fail-open to a local tracked spawn
+            return None, False, ""  # node unreachable → fail-open to a local spawn
         if not results:
-            return None, False
+            return None, False, ""
         statuses = [r.get("status") for r in results]
         if statuses and all(s == "suppressed" for s in statuses):
             self._log_mesh_suppressed(job.work_key, results)
-            return autofix.VERDICT_STAND_DOWN, False
+            return autofix.VERDICT_STAND_DOWN, False, ""
         if all(s in ("spawned", "suppressed") for s in statuses):
             me = (state.get("self") or {}).get("id")
-            here = bool(me) and any(
-                r.get("status") == "spawned" and r.get("node") == me for r in results
-            )
-            return "spawned", here  # ran on the mesh (the node logs where)
-        return None, False  # declined/failed on every slot → fall through to a local spawn
+            spawned = [r for r in results if r.get("status") == "spawned"]
+            here = bool(me) and any(r.get("node") == me for r in spawned)
+            node = next((r.get("nodeName") or r.get("node") or "" for r in spawned), "")
+            return "spawned", here, node  # ran on the mesh (the node logs where)
+        return None, False, ""  # declined everywhere → fall through to a local spawn
 
     def _log_mesh_suppressed(self, work_key: str, results: list) -> None:
         """A peer's agent owns this work — note it once per key, not per poll."""
@@ -997,23 +979,26 @@ class Store(QObject):
             # dedups via the executor's claim). A manual spawn — or a wedged/absent
             # mesh — runs and is tracked locally instead (fail-open). Both converge
             # on the shared audit/counter tail below.
-            routed, ran_here = (
+            routed, ran_here, node = (
                 self._route_via_mesh(job) if source == autofix.SOURCE_AUTO
-                else (None, False)
+                else (None, False, "")
             )
             if routed == autofix.VERDICT_STAND_DOWN:
                 return routed  # a peer's agent owns it (logged once by the router)
             if routed == "spawned":
                 ok = True
-                if ran_here and job.pr_url is not None and job.pr_number is not None:
-                    # The mesh placed it back on this machine, so it is one of the
-                    # agents the cap counts — book it before the next job of this
-                    # poll asks how many are running. Left unbooked, every dispatch
-                    # of a burst measured the same empty machine and the cap held
-                    # back nothing at all.
-                    self._track_agent(job.pr_url, job.pr_number, source,
-                                      job.ledger_key, job.prompt, mesh=True,
-                                      label=row_label, kind=job.kind)
+                if job.pr_url is not None and job.pr_number is not None:
+                    # Booked wherever the mesh put it. A placement back on this
+                    # machine is one of the agents the cap counts, and must be booked
+                    # before the next job of this poll asks how many are running —
+                    # left unbooked, every dispatch of a burst measured the same empty
+                    # machine and the cap held back nothing at all. A placement on a
+                    # peer spends that peer's budget, but it is still work this device
+                    # is waiting on, so it gets a row rather than leaving a gap.
+                    self._track_mesh_run(job.pr_url, job.pr_number, source,
+                                         job.ledger_key, job.prompt, node=node,
+                                         work_key=job.work_key, here=ran_here,
+                                         label=row_label, kind=job.kind)
             elif job.pr_url is not None and job.pr_number is not None:
                 ok = self._spawn_tracked(job.prompt, job.pr_url, job.pr_number,
                                          source, job.ledger_key,
@@ -1143,166 +1128,135 @@ class Store(QObject):
 
     def _spawn_tracked(self, prompt: str, url: str, number: int, source: str,
                        ledger_key: str = "", label: str = "", kind: str = "") -> bool:
-        """Spawn an agent with a completion sentinel and record it in-flight. Returns
-        whether the terminal launched.
+        """Register a run, then spawn its agent into it. Returns whether the terminal
+        launched.
 
-        ``source`` is recorded because the automatic-task cap has to tell the two
-        apart: a panel click spends none of the automatic budget, while a monitor
-        dispatch is exactly what the budget is for.
+        The record is written BEFORE the spawn, not after. A terminal takes seconds to
+        open and the poll that dispatched it can ask about the same PR again inside
+        that window; a run booked only on success is a PR that reads free while its
+        agent is starting.
 
-        The prompt is kept alongside the sentinel because it is what ties the run
-        back to its Claude transcript when it finishes (:func:`usagescan.task_tokens`)
-        — the transcript's opening user message IS this text.
+        The agent's shell writes its own pid into the run directory and then execs, so
+        what identifies this run afterwards is that pid rather than the wording of its
+        prompt (:func:`review.shell_command`).
         """
-        fd, done_path = tempfile.mkstemp(prefix="diplomat-autofix-done-", suffix=".txt")
-        os.close(fd)
+        now = time.time()
+        record = agentregistry.create_run(
+            agentstate.RunRecord(
+                run_id=agentregistry.new_run_id(now), dispatched_at=now,
+                pr_number=number, pr_url=url, kind=kind, label=label, source=source,
+                placement=agentstate.PLACEMENT_LOCAL, ledger_key=ledger_key),
+            prompt)
         try:
-            os.unlink(done_path)  # existence of this path later == the agent finished
-        except OSError:
-            pass
-        try:
-            review.spawn(prompt, self.terminal, done_path=done_path)
+            review.spawn(prompt, self.terminal,
+                         done_path=str(agentregistry.done_path(record.run_id)),
+                         pid_path=str(agentregistry.pid_path(record.run_id)),
+                         prompt_file=str(agentregistry.prompt_path(record.run_id)))
         except review.SpawnError:
+            agentregistry.forget({record.run_id})
             return False
-        self._track_agent(url, number, source, ledger_key, prompt, done=done_path,
-                          label=label, kind=kind)
         return True
 
-    def _track_agent(self, url: str, number: int, source: str, ledger_key: str,
-                     prompt: str, done: str | None = None, mesh: bool = False,
-                     label: str = "", kind: str = "") -> None:
-        """Register one running agent as in-flight — the book behind both the
-        per-PR dedup and the automatic-task cap.
+    def _track_mesh_run(self, url: str, number: int, source: str, ledger_key: str,
+                        prompt: str, node: str, work_key: str, here: bool,
+                        label: str = "", kind: str = "") -> None:
+        """Book a run the mesh placed, which this applet did not spawn itself.
 
-        ``done`` is the completion sentinel for an agent this applet spawned, and is
-        absent for a ``mesh`` one: the node that placed it owns its sentinel, so what
-        says that agent is still up is ``ps`` (see :meth:`_prune_inflight`).
-
-        ``label`` and ``kind`` are what the agent's row reads as while it runs
-        (:attr:`running_tasks`) — the dispatch's own label, so the row, the queued row
-        it was a moment ago and the activity line all say the same thing."""
-        with self._inflight_lock:
-            self._autofix_inflight.append(
-                {
-                    "url": url,
-                    "number": number,
-                    "done": done,
-                    "at": time.time(),
-                    "source": source,
-                    "key": ledger_key,
-                    "prompt": prompt,
-                    "mesh": mesh,
-                    "label": label,
-                    "kind": kind,
-                }
-            )
+        There is no pid to record: the executor opened the terminal. A placement that
+        landed back HERE is still a process on this box, so it spends a bay and the
+        untracked scan will find it; one on a peer is judged only by the executor's
+        origination claim, which is the sole evidence that crosses the machine
+        boundary.
+        """
+        now = time.time()
+        agentregistry.create_run(
+            agentstate.RunRecord(
+                run_id=agentregistry.new_run_id(now), dispatched_at=now,
+                pr_number=number, pr_url=url, kind=kind, label=label, source=source,
+                placement=(agentstate.PLACEMENT_MESH_HERE if here
+                           else agentstate.PLACEMENT_MESH_PEER),
+                node=node, work_key=work_key, ledger_key=ledger_key),
+            prompt)
 
     def _auto_tasks_running(self) -> int:
-        """How many automatic agents are WORKING on this device right now — the
-        number the cap is compared against (:func:`autofix.running_auto_tasks`).
-
-        The tracked rows say WHO started each agent, the ``ps`` scan says which are
-        really alive, the pane scan says which of those are actually doing anything;
-        no one of the three is enough, so the pure helper combines them.
-
-        Both sets are kept, not just the count: the agents that are *up* are the rows
-        the panel draws, and the idle ones among them are the rows that say so — and
-        that no longer hold a bay (:attr:`running_tasks`)."""
-        self._prune_inflight()
-        auto_prs: set[int] = set()
-        manual_prs: set[int] = set()
-        for e in self._autofix_inflight:
-            bucket = manual_prs if e["source"] == autofix.SOURCE_PANEL else auto_prs
-            bucket.add(e["number"])
-        live = self._live_pr_agents()
-        up = autofix.running_auto_prs(live, auto_prs, manual_prs)
-        working = autofix.running_auto_prs(live, auto_prs, manual_prs,
-                                           self._idle_pr_agents())
-        self._auto_tasks_measured = up
-        self._auto_tasks_idle = up - working  # the pure helper owns the subtraction
-        return len(working)
+        """How many bays of this device's cap are held right now — the number the cap
+        is compared against."""
+        return len(self._agent_tick().cap_load)
 
     def refresh_auto_task_count(self) -> None:
-        """Re-measure for the display alone, signalling only on a change.
+        """Re-resolve for the display alone, signalling only on a change.
 
         The panel calls it on its own tick, including the ticks where nothing is
-        tracked: an agent can be alive in ``ps`` with no in-flight record behind it
-        (an applet restart loses the book, not the agents), and that is exactly when
-        a wrongly-drawn free bay would be most misleading.
+        registered: an agent can be alive with no record behind it (one this applet
+        never spawned), and that is exactly when a wrongly-drawn free bay would be
+        most misleading.
 
-        A change is a change of PRs, not of their number: one agent finishing as
-        another starts leaves the count alone while both rows are now wrong. An agent
-        going quiet is such a change too — the row it leaves reads the same until the
-        idle set moves, and the bay it hands back is drawn from that same measure."""
-        before = (self._auto_tasks_measured, self._auto_tasks_idle)
-        self._auto_tasks_running()
-        if (self._auto_tasks_measured, self._auto_tasks_idle) != before:
+        A change is a change of the resolved states, not of their number: one agent
+        finishing as another starts leaves the count alone while both rows are now
+        wrong, and an agent going quiet moves no count at all while the bay it hands
+        back is drawn from that same measure."""
+        before = self._state_signature()
+        self._agent_tick()
+        if self._state_signature() != before:
             self.tasks_changed.emit()
 
+    def _state_signature(self) -> frozenset:
+        """What "the agent picture changed" means, for the redraw: every run and the
+        state it is in. A count would miss two agents swapping PRs, and an agent
+        going quiet."""
+        t = self._tick
+        if t is None:
+            return frozenset()
+        return frozenset((r.run_id, s.state) for r, s in t.rows)
+
     def refresh_auto_task_count_async(self) -> None:
-        """Measure off the UI thread — it shells out to ``ps`` (see
-        :meth:`_live_pr_agents`)."""
+        """Resolve off the UI thread — the probes shell out (see
+        :mod:`diplomat_app.probes`)."""
         threading.Thread(target=self.refresh_auto_task_count, daemon=True).start()
 
     @property
     def running_tasks(self) -> list[autofix.RunningAgent]:
-        """The automatic agents the panel draws as the filled bays of this device's
-        cap — one row each, in the order they started.
+        """Every agent run the panel draws, in reading order.
 
-        Two sources, united rather than picked between, because each is only a lower
-        bound on the truth: the last measurement misses a spawn made since (and is
-        blind to who started anything), the tracked records miss every agent nobody
-        tracked. Their union errs towards drawing one bay fewer than free, never
-        towards offering a slot the gate would then refuse.
+        Every one — both sources and both placements, tracked or not. The two
+        front-ends used to disagree about this list (this one hid panel spawns and
+        drew untracked agents; macOS did the reverse), which meant the rows and the
+        cap were answering different questions about the same machine.
 
-        A tracked record wins where both know a PR — it is the one that carries a
-        label, a start time and the mesh flag. What is left is drawn from its number
-        alone: that is all ``ps`` yields, and a row that says only which PR is still
-        a great deal more than the blank the operator gets otherwise.
+        A record carries the label, kind and start time its dispatch logged. A run
+        nobody dispatched has none of those and is drawn by its PR alone, which is
+        still a great deal more than the blank the operator gets otherwise.
+
+        Runs that are over are left out. The same tick that resolves one retires it
+        (:meth:`_retire_finished`), so drawing it would put a row on screen for one
+        redraw and then take it away again — and which redraw catches it depends on
+        when the poll happened to land, which is exactly the kind of answer this
+        module exists to stop producing. What a finished run leaves behind is its
+        activity line and its ledger entry.
         """
-        tracked: dict[int, dict] = {}
-        for e in self._autofix_inflight:
-            if e["source"] == autofix.SOURCE_PANEL:
-                continue
-            # First wins: the dedup allows one agent per PR, so a second record for
-            # the same number is a stale one the prune has not reached yet.
-            tracked.setdefault(e["number"], e)
-        idle = self._auto_tasks_idle
-        rows = [
+        return [
             autofix.RunningAgent(
-                pr_number=number,
-                label=e["label"],
-                kind=e["kind"],
-                tracked=True,
-                started_at=e["at"],
-                mesh=e["mesh"],
-                awaiting_input=number in idle,
+                pr_number=r.pr_number or 0,
+                label=r.label,
+                kind=r.kind,
+                tracked=not r.untracked,
+                started_at=0.0 if r.untracked else r.dispatched_at,
+                mesh=r.placement != agentstate.PLACEMENT_LOCAL,
+                state=s.state,
+                reason=s.reason,
             )
-            for number, e in tracked.items()
+            for r, s in self._agent_tick().rows
+            if s.state not in (agentstate.FINISHED, agentstate.MERGED)
         ]
-        # No kind either: what the untracked agent is doing on its PR is exactly what
-        # nothing here recorded, so the row wears the default look rather than
-        # guessing at one (``panel._task_look``).
-        rows += [
-            autofix.RunningAgent(pr_number=number, label="", kind="", tracked=False,
-                                 awaiting_input=number in idle)
-            for number in self._auto_tasks_measured
-            if number not in tracked
-        ]
-        # Oldest first, so a row keeps its place as agents come and go; the untracked
-        # ones have no start time, so they sort together at the end by PR.
-        return sorted(rows, key=lambda r: (not r.tracked, r.started_at, r.pr_number))
 
     @property
     def auto_tasks_shown(self) -> int:
-        """How many bays of this device's cap the drawn agents hold — the rows of
-        :attr:`running_tasks` that are still working, which is where the reasoning
-        lives.
+        """How many bays of this device's cap the drawn agents hold.
 
         Not every row: a session waiting at its prompt keeps its place in the list
         and gives its bay back, so the list is longer than the cap exactly as often
         as a finished window is left open."""
-        return sum(1 for r in self.running_tasks if not r.awaiting_input)
+        return len(self._agent_tick().cap_load)
 
     @property
     def free_auto_slots(self) -> int:
@@ -1605,144 +1559,93 @@ class Store(QObject):
         self.queued_tasks = [by_id[k] for k in ordered]
         self.tasks_changed.emit()
 
-    def _mesh_agent_judgeable(self, entry: dict, now: float) -> bool:
-        """Is this a mesh-placed agent old enough for ``ps`` to be the honest answer
-        about whether it is still running? Before that, its own dispatch is the only
-        evidence there is — see :attr:`_MESH_AGENT_GRACE`."""
-        return bool(entry.get("mesh")) and now - entry.get("at", 0) > self._MESH_AGENT_GRACE
+    # MARK: - the one tick every agent question is a projection of
 
-    def _past_ttl(self, entry: dict, now: float) -> bool:
-        """Is this record too old to be believed on its own? See
-        :attr:`_AUTOFIX_INFLIGHT_TTL` — past it, ``ps`` is what keeps it."""
-        return now - entry.get("at", 0) > self._AUTOFIX_INFLIGHT_TTL
+    def _agent_tick(self) -> agentstate.Tick:
+        """Resolve every registered run against one pass of evidence.
 
-    def _prune_inflight(self) -> None:
+        This is the single place the applet asks what its agents are doing. The dedup,
+        the cap, the panel rows and the retirement are all projections of the result
+        (:mod:`diplomat_app.agentstate`), so they cannot come to disagree — which is
+        what four independent re-derivations of the same question did.
+
+        Deliberately NOT cached at this level. The expensive part is the I/O, and that
+        is already cached where it happens (:mod:`diplomat_app.probes`), so resolving
+        again costs a file read and some set arithmetic. A cache here would instead buy
+        a staleness window in which an agent that just finished still holds its bay —
+        the exact class of wrong answer this whole mechanism exists to remove.
+        """
         now = time.time()
-        # Under the lock, because pruning REPLACES the list: three threads reach it
-        # (the poll worker, a panel click, and the sweep that re-measures the free
-        # slots), and a spawn registering itself against the list a prune has already
-        # copied would be dropped — leaving an agent nothing counts, which is a slot
-        # of the cap the machine can then spend twice.
-        #
-        # What the finished ones cost is recorded AFTER the lock: the ledger write and
-        # the signal it fires are neither short nor free of re-entry (a slot that asks
-        # the store anything can land back in here), and this mutex is meant to be
-        # held for a list swap and nothing else.
-        finished: list[tuple[dict, float]] = []
-        # `ps` is what retires the two kinds of entry no sentinel of ours will: a
-        # mesh-placed agent (the node that placed it owns its sentinel) once it is old
-        # enough to have appeared there, and any entry past its TTL. Scanned BEFORE
-        # the lock (it shells out, and this mutex is for a list swap) and only when
-        # some entry actually turns on the answer, so the common case still costs
-        # nothing — and the scan itself is the poll's own `ps` dump, cached.
-        needs_scan = any(self._mesh_agent_judgeable(e, now) or self._past_ttl(e, now)
-                         for e in self._autofix_inflight)
-        live_prs = self._live_pr_agents() if needs_scan else set()
-        with self._inflight_lock:
-            live: list[dict] = []
-            for e in self._autofix_inflight:
-                if self._mesh_agent_judgeable(e, now) and e["number"] not in live_prs:
-                    # Finished at `now`, not at an exit we watched: the closest this
-                    # side can get is the scan that first missed it, which is one
-                    # `ps` cache away (5s) from the truth.
-                    finished.append((e, now))
-                    continue
-                done = e.get("done")
-                if bool(done) and os.path.exists(done):
-                    # The sentinel's mtime is when `claude` actually exited; `now` is
-                    # whenever a poll got round to looking, which is up to a poll
-                    # period later and would inflate every run time by a random few
-                    # minutes.
-                    try:
-                        finished_at = os.stat(done).st_mtime
-                    except OSError:
-                        finished_at = now
-                    try:
-                        os.unlink(done)
-                    except OSError:
-                        pass
-                    finished.append((e, finished_at))
-                    continue
-                # An old entry is dropped for want of evidence, not for its age: the
-                # record is the only place its agent's label, kind, start time and
-                # mesh flag live, and a working agent whose record went is redrawn as
-                # an anonymous "untracked" row that has forgotten its own name.
-                if self._past_ttl(e, now) and e["number"] not in live_prs:
-                    continue
-                live.append(e)
-            self._autofix_inflight = live
-        for e, finished_at in finished:
-            if e.get("key"):
-                telemetry.record_completion(e["key"], e.get("prompt", ""),
-                                            e.get("at", finished_at), finished_at)
-                self.telemetry_changed.emit()
+        loaded = agentregistry.load()
+        records = agentregistry.adopt_pids(loaded)
+        evidence, live = probes.gather(records, now, merged=self._merged_prs)
+        t = agentstate.tick(records, evidence, live, now, self.auto_task_limit)
+        self._persist_run_changes(loaded, t)
+        self._retire_finished(t)
+        with self._tick_lock:
+            self._tick = t
+        return t
+
+    def _persist_run_changes(self, before: list, t: agentstate.Tick) -> None:
+        """Write back the two things a tick learns about a run: the pid its shell has
+        since written, and the moment its mesh claim was last seen.
+
+        Only on an actual change — this runs every few seconds, and the book is only
+        interesting when it moves. Synthesized rows are dropped rather than saved: a
+        run nobody dispatched is re-derived from the process table every tick and has
+        nothing to persist.
+        """
+        keep = [r for r in t.records if not r.untracked]
+        if keep != before:
+            agentregistry.save(keep)
+
+    def _retire_finished(self, t: agentstate.Tick) -> None:
+        """Price what has ended and drop it from the book.
+
+        Only on positive evidence that the agent ended — never on a record's age. The
+        prompt comes out of the run directory, so an applet that restarted mid-agent
+        can still attribute the run to its transcript; the in-memory list could not,
+        and every such run landed in the ledger unpriced.
+        """
+        gone = [r for r in t.retirable if not r.untracked]
+        if not gone:
+            return
+        agentregistry.forget({r.run_id for r in gone})
+        priced = False
+        for r in gone:
+            if not r.ledger_key:
+                continue
+            # The sentinel's mtime is when the agent actually exited; now() is
+            # whenever a poll got round to looking, which is up to a poll period later
+            # and would inflate every recorded run time by a random few minutes.
+            finished_at = agentregistry.finished_at(r.run_id) or time.time()
+            try:
+                prompt = agentregistry.prompt_path(r.run_id).read_text(encoding="utf-8")
+            except OSError:
+                prompt = ""
+            telemetry.record_completion(r.ledger_key, prompt, r.dispatched_at,
+                                        finished_at)
+            priced = True
+        if priced:
+            self.telemetry_changed.emit()
 
     def _in_flight(self, url: str) -> bool:
-        self._prune_inflight()
-        if any(e["url"] == url for e in self._autofix_inflight):
-            return True
-        # The in-memory list dies with the applet while the agents run on, and a slip
-        # there guarantees a duplicate dispatch: the retry backoff (minutes) is far
-        # shorter than an agent's runtime (an hour). A live `claude` whose argv
-        # references this PR is in-flight no matter what our bookkeeping remembers.
+        """Does this PR already have an agent? Every state that is not over counts,
+        including one waiting at its prompt (that session holds the PR's context) and
+        one nothing is known about (releasing a PR on missing evidence is how two
+        agents end up on it)."""
         m = re.search(r"/pull/(\d+)", url)
-        return m is not None and int(m.group(1)) in self._live_pr_agents()
+        return m is not None and self._agent_tick().in_flight(int(m.group(1)))
 
-    def _live_pr_agents(self) -> set[int]:
-        """PR numbers with a live claude agent visible in ``ps`` right now (see
-        :func:`autofix.live_pr_numbers`). Fails open to an empty set — the tracked
-        list still dedups the common case.
+    def refresh_merged_statuses(self) -> None:
+        """Ask GitHub which of the tracked PRs have landed — the one terminal outcome
+        that outranks whatever a process is doing.
 
-        "Live" here is only "the process exists": an agent that finished its turn is
-        alive by this measure for as long as its window stays open, which is exactly
-        what the in-flight dedup wants (a second agent must not be dispatched onto a
-        PR whose session is still sitting there, holding the context, ready to be
-        typed at). What the *cap* wants is the narrower :meth:`_idle_pr_agents`."""
-        cfg = core.config()
-        return autofix.live_pr_numbers(self._ps_dump(), cfg["owner"], cfg["repo"])
-
-    def _idle_pr_agents(self) -> set[int]:
-        """PR numbers whose agent is alive but back at its prompt, having finished
-        its turn — the agents that no longer hold a bay of the cap.
-
-        Reads the tail of each agent's own tmux pane and joins it back to the ``ps``
-        scan on the tty (:func:`autofix.idle_pr_numbers`); a tmux that is absent or
-        unreadable yields no evidence, so nothing is freed and the machine behaves as
-        it did before the pane could be read.
-
-        Only the agents' panes are captured, not every pane on the box: this runs on
-        the panel's 8-second tick, where a dump of a developer's full tmux server
-        would be most of a subprocess per pane per tick."""
-        cfg = core.config()
-        dump = self._ps_dump()
-        tails = tmuxwatch.pane_tails_for_ttys(
-            autofix.agent_ttys(dump, cfg["owner"], cfg["repo"])
-        ) or {}
-        return autofix.idle_pr_numbers(dump, tails, cfg["owner"], cfg["repo"])
-
-    def _ps_dump(self) -> str:
-        """One ``ps`` pass behind both agent scans, cached briefly so a poll cycle
-        costs one subprocess however many times it asks.
-
-        ``tty=`` leads the format because the tty is what joins a ``claude`` process
-        to the tmux pane showing it (:meth:`_idle_pr_agents`); it costs the argv scan
-        nothing, which finds its prompt wherever on the line it falls."""
-        now = time.time()
-        cached = self._ps_dump_cache
-        if cached is not None and now - cached[0] < 5:
-            return cached[1]
-        try:
-            out = subprocess.run(
-                ["ps", "-eo", "tty=,args="], capture_output=True, text=True, timeout=10
-            ).stdout
-        except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
-            # UnicodeDecodeError: text=True decodes strict UTF-8, and any process on
-            # the box with a non-UTF-8 byte in its argv makes `ps` output undecodable.
-            # It is a ValueError, not an OSError/SubprocessError, so it must be caught
-            # explicitly or it escapes this fail-open guard and wedges the poll worker.
-            out = ""
-        self._ps_dump_cache = (now, out)
-        return out
+        On the slow refresh, not the 8-second tick: it costs a ``gh`` call per PR. The
+        answer is carried forward by the fast ticks in between.
+        """
+        prs = {r.pr_number for r in agentregistry.load() if r.pr_number is not None}
+        self._merged_prs = probes.merged_prs(prs)
 
     # MARK: monitor persistence + poll-error state
 

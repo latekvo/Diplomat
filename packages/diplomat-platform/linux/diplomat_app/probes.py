@@ -21,11 +21,14 @@ import subprocess
 from . import autofix, core, tmuxwatch
 from .agentstate import Evidence, Observation, ProcInfo, RunRecord
 
-#: How long one ``ps`` pass is reused. A tick asks for the process table, the agent
-#: ttys and the legacy PR scan, and all three are projections of the same dump.
-_PS_CACHE_SECS = 5
+#: How long a probe's answer is reused. The resolver re-runs for every question the
+#: applet asks — that is deliberate, so no answer is ever stale — which makes THIS the
+#: only place the cost is paid. Short enough that a poll never acts on an old machine,
+#: long enough that one cycle spawns one ``ps`` and one ``tmux`` rather than a dozen.
+_CACHE_SECS = 5
 
 _ps_cache: tuple[float, str] | None = None
+_tails_cache: tuple[float, frozenset, Observation] | None = None
 
 
 def _ps_dump(now: float) -> Observation:
@@ -39,7 +42,7 @@ def _ps_dump(now: float) -> Observation:
     long as one such pane existed.
     """
     global _ps_cache
-    if _ps_cache is not None and now - _ps_cache[0] < _PS_CACHE_SECS:
+    if _ps_cache is not None and now - _ps_cache[0] < _CACHE_SECS:
         return Observation.present(_ps_cache[1])
     try:
         out = subprocess.run(["ps", "-eo", "pid=,tty=,etimes=,args="],
@@ -51,10 +54,11 @@ def _ps_dump(now: float) -> Observation:
 
 
 def reset_cache() -> None:
-    """Drop the ``ps`` cache — for tests that change the process table between
-    assertions inside one cache window."""
-    global _ps_cache
+    """Drop every probe cache — for tests that change the machine between assertions
+    inside one cache window."""
+    global _ps_cache, _tails_cache
     _ps_cache = None
+    _tails_cache = None
 
 
 def process_table(dump: Observation) -> Observation:
@@ -82,22 +86,29 @@ def process_table(dump: Observation) -> Observation:
     return Observation.present(table)
 
 
-def live_pr_numbers(dump: Observation) -> Observation:
-    """PR numbers of agents visible in ``ps`` by their prompt text.
+def live_agents(dump: Observation) -> Observation:
+    """PR number -> the tty of an agent visible in ``ps`` by its prompt text.
 
     The pre-registry identity mechanism, kept for exactly one job: finding agents this
     applet has no record of (:func:`agentstate.synthesize_untracked`). It cannot tell
     two runs on one PR apart and it matches any session that merely mentions the
     number, which is why nothing else is decided by it any more.
+
+    The tty rides along because it is the only handle such an agent has: without it
+    nothing can read its screen, so it would count as working until its window closed
+    however long ago it finished. First sighting of a PR wins — a set of PR numbers is
+    all this scan can honestly produce.
     """
     if not dump.ok:
         return Observation.unavailable(dump.reason)
     cfg = core.config()
-    return Observation.present(
-        autofix.live_pr_numbers(dump.value, cfg["owner"], cfg["repo"]))
+    out: dict[int, str] = {}
+    for tty, pr in autofix.agent_lines(dump.value, cfg["owner"], cfg["repo"]):
+        out.setdefault(pr, tty)
+    return Observation.present(out)
 
 
-def pane_tails(records: list[RunRecord]) -> Observation:
+def pane_tails(records: list[RunRecord], now: float = 0.0) -> Observation:
     """tty → the visible buffer of the pane on it, for the runs we are tracking.
 
     Selective on purpose: this runs on the panel's 8-second tick, so it is one
@@ -109,13 +120,21 @@ def pane_tails(records: list[RunRecord]) -> Observation:
     UNAVAILABLE, so every live agent reads "running" rather than being mistaken for
     idle and having its bay taken back. Only a real capture is PRESENT.
     """
+    global _tails_cache
     if shutil.which("tmux") is None:
         return Observation.unsupported("is not available (tmux is not installed)")
-    tails = tmuxwatch.pane_tails_for_ttys({r.tty for r in records if r.tty})
-    if tails is None:
-        return Observation.unavailable("is unreadable (no tmux server, or it would "
-                                       "not answer)")
-    return Observation.present(tails)
+    ttys = frozenset(r.tty for r in records if r.tty)
+    # Keyed on the ttys as well as the clock: a run that appeared since the last pass
+    # would otherwise be answered from a capture that never asked about it.
+    if (_tails_cache is not None and _tails_cache[1] == ttys
+            and now - _tails_cache[0] < _CACHE_SECS):
+        return _tails_cache[2]
+    tails = tmuxwatch.pane_tails_for_ttys(set(ttys))
+    obs = (Observation.unavailable("is unreadable (no tmux server, or it would not "
+                                   "answer)")
+           if tails is None else Observation.present(tails))
+    _tails_cache = (now, ttys, obs)
+    return obs
 
 
 def mesh_claims() -> Observation:
@@ -166,10 +185,10 @@ def merged_prs(pr_numbers: set[int]) -> Observation:
 
 def gather(records: list[RunRecord], now: float, *,
            merged: Observation | None = None) -> tuple[Evidence, Observation]:
-    """One pass of every cheap probe, plus the legacy live-PR scan.
+    """One pass of every cheap probe, plus the legacy live-agent scan.
 
-    Returns the bundle and the live-PR observation separately because they are used at
-    different points of the tick — the second only synthesizes rows for agents that
+    Returns the bundle and the live-agent observation separately because they are used
+    at different points of the tick — the second only synthesizes rows for agents that
     have no record.
 
     ``merged`` is passed in rather than probed here: it costs a ``gh`` call per PR and
@@ -183,9 +202,9 @@ def gather(records: list[RunRecord], now: float, *,
         Evidence(
             processes=process_table(dump),
             sentinels=agentregistry.sentinels(records),
-            tails=pane_tails(records),
+            tails=pane_tails(records, now),
             claims=mesh_claims(),
             merged_prs=merged or Observation.unavailable("have not been probed yet"),
         ),
-        live_pr_numbers(dump),
+        live_agents(dump),
     )
