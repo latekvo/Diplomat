@@ -340,25 +340,31 @@ def shell_command(prompt_file: str, done_path: str | None = None,
     prompt. That is what ``pid_path`` is for.
 
     When ``pid_path`` is given the agent runs one shell deeper —
-    ``"$SHELL" -i -c 'printf %s $$ > <pid>; exec claude "$(cat <file>)"'`` — and the
-    pid recorded is the AGENT'S OWN: the inner shell writes its own ``$$`` and then
-    ``exec``s, which replaces the process image without changing the pid. The applet
-    then identifies a run by that pid instead of by matching ``PR #<n> in
+    ``"$SHELL" -i -c 'printf %s $$ > <pid>; claude "$(cat <file>)"'`` — and the pid
+    recorded is the AGENT'S OWN: the inner shell writes its own ``$$`` first, then
+    execs the agent over itself, which replaces the process image without changing the
+    pid. The applet identifies a run by that pid instead of by matching ``PR #<n> in
     <owner>/<repo>`` against prompt text in ``ps`` output, which could not tell two
     runs on one PR apart, matched any unrelated session that mentioned the number, and
     matched the wrapper shell and tmux client as readily as the agent.
 
-    The inner shell is interactive for the same reason the outer one is: a `claude`
-    alias from the user's rc has to resolve, and aliases do not survive into a
-    non-interactive child. ``$?`` after it is still the agent's own exit code, because
-    ``exec`` made them the same process.
+    That exec is the shell's own, on the last command of a ``-c`` string, and must NOT
+    be written out as the `exec` keyword: alias expansion applies to the first word of
+    a simple command, so under an explicit ``exec claude`` the word checked is `exec`
+    and the user's `claude` alias never expands. It is the alias that carries
+    ``--dangerously-skip-permissions``, so spelling the exec out costs an agent its
+    permissions and it stops at a prompt on every tool call.
+
+    The inner shell is interactive for the same reason the outer one is: that alias
+    has to resolve, and aliases do not survive into a non-interactive child. ``$?``
+    after it is still the agent's own exit code — the exec made them one process.
     """
     repo = shlex.quote(repo_path())
     pf = shlex.quote(prompt_file)
     done = f"printf %s $? > {shlex.quote(done_path)}; " if done_path else ""
     if pid_path is None:
         return f'cd {repo} 2>/dev/null; claude "$(cat {pf})"; {done}exec "$SHELL" -i'
-    inner = f'printf %s $$ > {shlex.quote(pid_path)}; exec claude "$(cat {pf})"'
+    inner = f'printf %s $$ > {shlex.quote(pid_path)}; claude "$(cat {pf})"'
     agent = f"{shlex.quote(user_shell())} -i -c {shlex.quote(inner)}"
     return f"cd {repo} 2>/dev/null; {agent}; {done}exec \"$SHELL\" -i"
 
