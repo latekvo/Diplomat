@@ -317,6 +317,17 @@ diplomat_app/
   audit.py        AuditConfig - the Full E2E test
   autofix.py      pure monitor decisions: dispatch gate, triggers, backoff, mesh,
                   task cap, and the queue behind it (AgentTasks.swift's twin)
+  agentstate.py   the one resolver: typed evidence -> a state per agent run, and the four
+                  projections over it (per-PR dedup, the cap, the panel rows, retirement).
+                  Pure - no clock, no subprocess, no filesystem (AgentState.swift's twin)
+  probes.py       the only thing that LOOKS: ps, tmux panes, mesh claims, gh merge state,
+                  each answering present / unavailable / unsupported so a failure to look
+                  is never mistaken for an answer. Tracks its own health
+  agentregistry.py  the durable run book at ~/.diplomat/agents — one record per dispatched
+                  run, plus each run's prompt, pid and completion sentinel. Same on-disk
+                  format as AgentRegistry.swift, byte for byte
+  agentdump.py    DIPLOMAT_AGENTS=1 — every record, every probe's raw answer, every verdict
+                  and the one fact that decided it
   autofixmonitor.py  the monitors' GitHub reads (monitor-prs / review-requests)
   apiwatch.py     "is this a Claude API error?" matcher + nudge bookkeeping
   tmuxwatch.py    tmux capture-pane / send-keys — the Linux stand-in for AppleScript

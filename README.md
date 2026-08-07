@@ -31,8 +31,8 @@ Targets `software-mansion/argent` and shells out to the authenticated `gh` CLI.
 > **One pipeline, two triggers.** A wizard's SPAWN button and an auto-monitor's
 > poll tick are two *triggers* for the very same dispatch pipeline
 > (`Store.dispatchAgent` / `store.dispatch_agent`): the ban check, in-flight
-> dedup (tracked sessions plus a `ps` ground-truth scan), mesh coordination,
-> spawn, session tracking, and counters live in exactly one place per platform.
+> dedup, mesh coordination, spawn, run registration, and counters live in exactly
+> one place per platform.
 > The only trigger asymmetries are the documented ones in `AgentDispatchGate`
 > (its Python twin `autofix.dispatch_decide`): manual spawns come to the
 > foreground (macOS), are never mesh-gated and never hit the
@@ -40,7 +40,22 @@ Targets `software-mansion/argent` and shells out to the authenticated `gh` CLI.
 > `Auto · … · retry N` label, and only they bump the auto-handled counters.
 > Parity tests on both sides pin that matrix. A job arriving *over the mesh* is
 > the one spawn that bypasses the pipeline - it lands through the mesh node's own
-> runner, and the `ps` ground-truth scan is what re-attaches it afterwards.
+> runner, and the untracked-agent scan is what re-attaches it afterwards.
+>
+> **One answer about what the agents are doing.** Whether a PR is in flight, how
+> many bays of the device's [task cap](#autonomous-monitors) are full, which rows
+> the panel draws and which record is retired are four *projections* of a single
+> resolved tick (`AgentState` / `agentstate.py`), not four derivations that can
+> drift apart. Evidence reaches it typed - each probe answers *present*,
+> *unavailable* or *unsupported* - and the ladder never reads "I could not look"
+> as "it is gone": a run ends only on positive evidence (its sentinel, its pid
+> missing from a process table that was actually read, or its mesh claim
+> released), and anything else resolves to `unknown`, which keeps its slot and
+> says so. A run is identified by its agent's own pid, written into
+> `~/.diplomat/agents/<run-id>/pid` by the shell that then `exec`s the agent, and
+> the book survives a restart on both platforms. `DIPLOMAT_AGENTS=1 python -m
+> diplomat_app` prints the whole chain: every record, every probe's raw answer,
+> every verdict and the one fact that decided it.
 
 ## ⚠️ Billing and usage - read this first
 
@@ -941,6 +956,9 @@ packages/
         AgentTasks.swift           the Agent-tasks list's sort order + the queue behind the task cap
         ReviewReconcile.swift      pure retry/backoff/dedup decisions for the monitors
         AgentActivity.swift        terminal-tail classification: running vs awaiting input
+        AgentState.swift           the one resolver: typed evidence -> a state per agent run,
+                                   and the four projections (dedup, cap, rows, retirement)
+        AgentRegistry.swift        the durable run book both applets read/write (~/.diplomat/agents)
         ApiErrorMatch.swift        "is this a Claude API error?" matcher for the watcher
         AuditCategory.swift        audit action verb → activity-feed filter category (mirrors assets/audit-categories.json)
         Mesh.swift                 mesh model: decodes assets/mesh.json + ~/.diplomat/mesh/state.json, pure placement
