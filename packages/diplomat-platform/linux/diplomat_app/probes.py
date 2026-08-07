@@ -15,11 +15,12 @@ bays, never an agent declared finished.
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
 
-from . import apiwatch, autofix, core, tmuxwatch
+from . import apiwatch, core, tmuxwatch
 from .agentstate import UNAVAILABLE, Evidence, Observation, ProcInfo, RunRecord
 
 #: How long a probe's answer is reused. The resolver re-runs for every question the
@@ -158,10 +159,14 @@ def process_table(dump: Observation) -> Observation:
 def live_agents(dump: Observation) -> Observation:
     """PR number -> the tty of an agent visible in ``ps`` by its prompt text.
 
-    The pre-registry identity mechanism, kept for exactly one job: finding agents this
-    applet has no record of (:func:`agentstate.synthesize_untracked`). It cannot tell
-    two runs on one PR apart and it matches any session that merely mentions the
-    number, which is why nothing else is decided by it any more.
+    The pre-registry identity mechanism, kept for the two questions a pid cannot
+    answer: agents this applet has no record of at all
+    (:func:`agentstate.synthesize_untracked`), and records whose agent has no pid to
+    match — a placement the mesh routed back here, where the NODE opened the terminal
+    and wrote the pid file into a run directory this applet never created.
+
+    It cannot tell two runs on one PR apart and it matches any session that merely
+    mentions the number, which is why it decides nothing that a pid can decide.
 
     The tty rides along because it is the only handle such an agent has: without it
     nothing can read its screen, so it would count as working until its window closed
@@ -171,9 +176,26 @@ def live_agents(dump: Observation) -> Observation:
     if not dump.ok:
         return Observation.unavailable(dump.reason)
     cfg = core.config()
+    pattern = re.compile(
+        r"PR #(\d+) in " + re.escape(f"{cfg['owner']}/{cfg['repo']}"))
     out: dict[int, str] = {}
-    for tty, pr in autofix.agent_lines(dump.value, cfg["owner"], cfg["repo"]):
-        out.setdefault(pr, tty)
+    # Parsed here against THIS dump's columns rather than through
+    # `autofix.agent_lines`, which reads the tty as the first token of a
+    # `tty=,args=` dump. That is still right for its own caller (the mesh node's
+    # capacity hook, which spells `ps` the portable way), and was silently wrong
+    # here the moment this probe started asking for a pid column too: every agent
+    # came back keyed to a tty that was really a pid, so no screen could ever be
+    # found for one and no untracked agent ever gave its bay back.
+    for line in dump.value.splitlines():
+        if "claude" not in line:
+            continue
+        parts = line.split(maxsplit=3)
+        if len(parts) < 4:
+            continue
+        _pid, tty, _elapsed, args = parts
+        for m in pattern.finditer(args):
+            out.setdefault(int(m.group(1)),
+                           "" if tty == "?" else tty.removeprefix("/dev/"))
     return Observation.present(out)
 
 
@@ -265,12 +287,8 @@ def merged_prs(pr_numbers: set[int]) -> Observation:
 
 
 def gather(records: list[RunRecord], now: float, *,
-           merged: Observation | None = None) -> tuple[Evidence, Observation]:
-    """One pass of every cheap probe, plus the legacy live-agent scan.
-
-    Returns the bundle and the live-agent observation separately because they are used
-    at different points of the tick — the second only synthesizes rows for agents that
-    have no record.
+           merged: Observation | None = None) -> Evidence:
+    """One pass of every cheap probe.
 
     ``merged`` is passed in rather than probed here: it costs a ``gh`` call per PR and
     belongs to the slow refresh, so the fast tick carries forward whatever the last
@@ -287,14 +305,13 @@ def gather(records: list[RunRecord], now: float, *,
     # spawned since the last tick has not adopted one yet. Asking the records alone
     # would capture nothing for exactly the run that just started, and it would then
     # read as working for a whole tick longer than it was.
-    looked_up = agentstate.adopt_ttys(records, table)
-    return (
-        Evidence(
-            processes=table,
-            sentinels=_note("sentinels", agentregistry.sentinels(records), now),
-            tails=_note("screens", pane_tails(looked_up, now), now),
-            claims=_note("mesh claims", mesh_claims(), now),
-            merged_prs=merged or Observation.unavailable("have not been probed yet"),
-        ),
-        live_agents(dump),
+    scan = _note("agent scan", live_agents(dump), now)
+    looked_up = agentstate.adopt_ttys(records, table, scan)
+    return Evidence(
+        processes=table,
+        sentinels=_note("sentinels", agentregistry.sentinels(records), now),
+        tails=_note("screens", pane_tails(looked_up, now), now),
+        claims=_note("mesh claims", mesh_claims(), now),
+        merged_prs=merged or Observation.unavailable("have not been probed yet"),
+        live_agents=scan,
     )

@@ -750,6 +750,27 @@ do {
         tails: .present(["pts/3": working]), claims: .present([]),
         mergedPRs: .present([]))) == .running,
       "the interrupt hint on the live status bar means mid-turn")
+    // A placement the mesh routed back here: the NODE opened the terminal, so there is
+    // no pid file this applet can read, ever. Judged on the prompt scan instead, or it
+    // reads "unknown" for ever and its bay is never given back.
+    check(state(rec("h", pid: nil, tty: "", age: 600, placement: .meshHere),
+                AgentState.Evidence(
+        processes: .present([:]), sentinels: .present([]),
+        tails: .present(["pts/5": working]), claims: .present([]),
+        mergedPRs: .present([]), liveAgents: .present([337: "pts/5"]))) == .running,
+      "a pid-less run whose PR has a live agent is running, not unknown")
+    check(state(rec("i", pid: nil, tty: "", age: 600, placement: .meshHere),
+                AgentState.Evidence(
+        processes: .present([:]), sentinels: .present([]), tails: .present([:]),
+        claims: .present([]), mergedPRs: .present([]),
+        liveAgents: .present([:]))) == .finished,
+      "...and one whose PR has no agent in a scan that WORKED has finished")
+    check(state(rec("j", pid: nil, tty: "", age: 600, placement: .meshHere),
+                AgentState.Evidence(
+        processes: .present([:]), sentinels: .present([]), tails: .present([:]),
+        claims: .present([]), mergedPRs: .present([]),
+        liveAgents: .unavailable("ps could not be read"))) == .unknown,
+      "...but a scan that failed ends nothing")
     // The two sets the cap and the dedup read, which are deliberately different.
     check(AgentState.occupying.contains(.awaitingInput) == false,
       "a session at its prompt gives its bay back — the cap bounds LOAD")
@@ -767,8 +788,8 @@ do {
                                                                   elapsed: 60,
                                                                   isAgent: true)]) { a, _ in a }),
         sentinels: .present([]), tails: .present(["pts/3": working, "pts/9": working]),
-        claims: .present(["w"]), mergedPRs: .present([])),
-        liveAgents: .unavailable("not probed"), now: now, limit: 2)
+        claims: .present(["w"]), mergedPRs: .present([]), liveAgents: .present([:])),
+        now: now, limit: 2)
     check(t.capLoad == ["auto"],
       "the cap counts automatic agents that run HERE — not a click, not a peer's")
     check(t.freeSlots == 1, "one of two bays filled")

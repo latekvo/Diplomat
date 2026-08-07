@@ -175,25 +175,23 @@ def _queue_fixture(store: Store) -> None:
     at_prompt = "● Done.\n❯\n⏵⏵ bypass permissions on (shift+tab to cycle)"
 
     def _fixed_probes(records, now, merged=None):
-        return (
-            agentstate.Evidence(
-                processes=agentstate.Observation.present({
-                    4021: agentstate.ProcInfo(tty="pts/40", elapsed=23 * 60,
-                                              is_agent=True),
-                    3771: agentstate.ProcInfo(tty="pts/37", elapsed=4 * 60 * 60,
-                                              is_agent=True),
-                }),
-                sentinels=agentstate.Observation.present(set()),
-                tails=agentstate.Observation.present({"pts/40": busy,
-                                                      "pts/37": at_prompt,
-                                                      "pts/35": busy}),
-                claims=agentstate.Observation.present(set()),
-                merged_prs=agentstate.Observation.present(set()),
-            ),
+        return agentstate.Evidence(
+            processes=agentstate.Observation.present({
+                4021: agentstate.ProcInfo(tty="pts/40", elapsed=23 * 60,
+                                          is_agent=True),
+                3771: agentstate.ProcInfo(tty="pts/37", elapsed=4 * 60 * 60,
+                                          is_agent=True),
+            }),
+            sentinels=agentstate.Observation.present(set()),
+            tails=agentstate.Observation.present({"pts/40": busy,
+                                                  "pts/37": at_prompt,
+                                                  "pts/35": busy}),
+            claims=agentstate.Observation.present(set()),
+            merged_prs=agentstate.Observation.present(set()),
             # #351 is the third way the panel learns of an agent: one nothing here
-            # dispatched, found only by the prompt scan (what an applet restart or a
-            # hand-started session leaves behind).
-            agentstate.Observation.present({351: "pts/35"}),
+            # dispatched, found only by the prompt scan (what an applet restart or
+            # a hand-started session leaves behind).
+            live_agents=agentstate.Observation.present({351: "pts/35"}),
         )
 
     probes.gather = _fixed_probes

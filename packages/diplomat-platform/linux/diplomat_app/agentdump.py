@@ -20,9 +20,9 @@ from . import agentregistry, agentstate, apiwatch, probes
 def run() -> int:
     now = time.time()
     records = agentregistry.adopt_pids(agentregistry.load())
-    evidence, live = probes.gather(records, now)
+    evidence = probes.gather(records, now)
     limit = _limit()
-    t = agentstate.tick(records, evidence, live, now, limit)
+    t = agentstate.tick(records, evidence, now, limit)
 
     print(f"registry: {agentregistry.runs_path()}")
     print(f"{len(records)} registered run(s), cap {limit}\n")
@@ -33,7 +33,7 @@ def run() -> int:
                       ("screens", evidence.tails),
                       ("mesh claims", evidence.claims),
                       ("merged PRs", evidence.merged_prs),
-                      ("untracked scan", live)):
+                      ("agent scan", evidence.live_agents)):
         print(f"  {name:<15} {_describe(obs)}")
     read, seen = probes.marker_stats()
     if read:

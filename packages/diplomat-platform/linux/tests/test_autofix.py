@@ -273,16 +273,14 @@ def fake_probes(monkeypatch, *, processes=None, claims=None, merged=None,
     screens.update(tails or {})
 
     def gather(records, now, merged=None):
-        return (
-            A.Evidence(
-                processes=obs(processes, {}),
-                # Real, because it reads the run directories the test itself created.
-                sentinels=agentregistry.sentinels(records),
-                tails=obs(screens, {}),
-                claims=obs(claims, set()),
-                merged_prs=obs(merged, set()),
-            ),
-            obs(live, {}),
+        return A.Evidence(
+            processes=obs(processes, {}),
+            # Real, because it reads the run directories the test itself created.
+            sentinels=agentregistry.sentinels(records),
+            tails=obs(screens, {}),
+            claims=obs(claims, set()),
+            merged_prs=obs(merged, set()),
+            live_agents=obs(live, {}),
         )
 
     monkeypatch.setattr(probes, "gather", gather)

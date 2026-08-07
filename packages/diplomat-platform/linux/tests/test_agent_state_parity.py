@@ -42,13 +42,12 @@ pytestmark = pytest.mark.skipif(
 LIMIT = 2
 
 
-def _payload(records, evidence, live_prs=None, now=T0, limit=LIMIT) -> dict:
+def _payload(records, evidence, now=T0, limit=LIMIT) -> dict:
     return {
         "now": now,
         "limit": limit,
         "records": [r.to_json() for r in records],
         "evidence": evidence.to_json(),
-        "liveAgents": (live_prs or A.Observation.unavailable("not probed")).to_json(),
     }
 
 
@@ -61,9 +60,8 @@ def _swift(payload: dict) -> dict:
     return json.loads(proc_.stdout)
 
 
-def _python(records, evidence, live_prs=None, now=T0, limit=LIMIT) -> dict:
-    t = A.tick(records, evidence,
-               live_prs or A.Observation.unavailable("not probed"), now, limit)
+def _python(records, evidence, now=T0, limit=LIMIT) -> dict:
+    t = A.tick(records, evidence, now, limit)
     return {
         "rows": [{"runId": r.run_id, "state": s.state, "reason": s.reason}
                  for r, s in t.rows],
@@ -114,25 +112,30 @@ def _mixed():
         rec(run_id="mesh-here", placement=A.PLACEMENT_MESH_HERE, pid=5, tty="pts/7",
             work_key="review:308:sha", dispatched_at=T0 - 1000, pr_number=308),
         rec(run_id="just-spawned", pid=None, dispatched_at=T0 - 3, pr_number=309),
-        rec(run_id="lost", pid=None, dispatched_at=T0 - 5000, pr_number=310),
+        # No pid AND no PR: neither mechanism can look for it, so its absence is not
+        # evidence — the fixture's one `unknown`.
+        rec(run_id="lost", pid=None, tty="", dispatched_at=T0 - 5000, pr_number=None),
+        # A pid-less run the mesh placed back here, found by the prompt scan.
+        rec(run_id="mesh-no-pid", pid=None, tty="", placement=A.PLACEMENT_MESH_HERE,
+            dispatched_at=T0 - 5000, pr_number=311),
     ]
     evidence = ev(
         processes={1: proc(elapsed=300), 2: proc(elapsed=400, tty="pts/4"),
                    3: proc(elapsed=500, tty="pts/5"), 4: proc(elapsed=700, tty="pts/6"),
                    5: proc(elapsed=1000, tty="pts/7")},
         tails={"pts/3": WORKING, "pts/4": AT_PROMPT, "pts/5": WORKING,
-               "pts/6": WORKING, "pts/7": AT_PROMPT},
+               "pts/6": WORKING, "pts/7": AT_PROMPT, "pts/9": WORKING},
         claims={"review:306:sha"},
         merged={305},
+        live_agents={404: "pts/8", 311: "pts/9"},
     )
-    return records, evidence, A.Observation.present({404: "pts/8"})
+    return records, evidence
 
 
 @pytest.fixture(scope="module")
 def mixed_results():
-    records, evidence, live = _mixed()
-    return (_swift(_payload(records, evidence, live)),
-            _python(records, evidence, live))
+    records, evidence = _mixed()
+    return _swift(_payload(records, evidence)), _python(records, evidence)
 
 
 def test_the_whole_tick_agrees(mixed_results):

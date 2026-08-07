@@ -301,13 +301,20 @@ class Evidence:
     #: PR numbers GitHub reports as MERGED.
     merged_prs: Observation = field(
         default_factory=lambda: Observation.unavailable("not probed"))
+    #: PR number → the tty of an agent found by its prompt text in the process table.
+    #: The pre-registry identity mechanism, and still the only evidence about a run
+    #: whose terminal this applet did not open — a mesh placement that landed back
+    #: here, whose pid file belongs to the node that spawned it.
+    live_agents: Observation = field(
+        default_factory=lambda: Observation.unavailable("not probed"))
 
     def to_json(self) -> dict:
         return {"processes": self.processes.to_json(),
                 "sentinels": self.sentinels.to_json(),
                 "tails": self.tails.to_json(),
                 "claims": self.claims.to_json(),
-                "mergedPrs": self.merged_prs.to_json()}
+                "mergedPrs": self.merged_prs.to_json(),
+                "liveAgents": self.live_agents.to_json()}
 
     @staticmethod
     def from_json(obj: dict) -> "Evidence":
@@ -321,6 +328,9 @@ class Evidence:
             claims=Observation.from_json(obj.get("claims"), lambda v: set(v or [])),
             merged_prs=Observation.from_json(obj.get("mergedPrs"),
                                              lambda v: {int(n) for n in (v or [])}),
+            live_agents=Observation.from_json(
+                obj.get("liveAgents"),
+                lambda v: {int(k): str(t) for k, t in (v or {}).items()}),
         )
 
 
@@ -462,11 +472,7 @@ def _resolve_local(record: RunRecord, evidence: Evidence, now: float,
         # and no dispatch stamp to be young against; it is alive by construction.
         if record.untracked:
             return _classify_activity(record, evidence, done, "found in process table")
-        if age <= SPAWN_GRACE:
-            return done(STARTING, f"dispatched {age:.0f}s ago, no pid yet")
-        # NOT finished: a spawn that never landed and a pid file not yet read look
-        # identical from here, and only one of them is over.
-        return done(UNKNOWN, f"no pid recorded {age:.0f}s after dispatch")
+        return _resolve_without_pid(record, evidence, age, done)
 
     proc = table.get(record.pid)
     if proc is None:
@@ -480,6 +486,43 @@ def _resolve_local(record: RunRecord, evidence: Evidence, now: float,
                     f"pid {record.pid} is {proc.elapsed:.0f}s old but the run is "
                     f"{age:.0f}s old")
     return _classify_activity(record, evidence, done, f"pid {record.pid} alive")
+
+
+def _resolve_without_pid(record: RunRecord, evidence: Evidence, age: float,
+                         done) -> Resolution:
+    """A run this applet booked but has no pid for.
+
+    Two things produce one. A spawn whose shell has not written its pid file yet — the
+    ordinary first seconds of a run. And a placement the mesh routed back to this
+    machine, where the NODE opened the terminal, so the pid file it wrote belongs to a
+    run directory this applet never created and never will.
+
+    The second is why this rung is not simply "unknown until a pid appears". A
+    mesh-here run has no pid ever, so that answer would hold its bay and refuse its PR
+    a fresh agent for the rest of the applet's life — the exact wedge this module
+    exists to remove, arriving by a different road. Seen in production the first time
+    the monitors ran: two conflict fixes the mesh placed back here, both reading
+    "unknown", both bays held, nothing able to retire either.
+
+    So the fallback is the pre-registry evidence: the agent's own prompt in the process
+    table. It cannot tell two runs on one PR apart, which is exactly why it is the
+    fallback and not the identity — but "an agent for this PR is up" and "no agent for
+    this PR is up" are both positive answers, and the second is what finally ends the
+    run.
+    """
+    if not evidence.live_agents.ok:
+        return done(UNKNOWN,
+                    f"no pid, and the agent scan {evidence.live_agents.reason or 'failed'}")
+    if record.pr_number is not None and record.pr_number in evidence.live_agents.value:
+        return _classify_activity(record, evidence, done,
+                                  f"an agent is up on PR #{record.pr_number}")
+    if age <= SPAWN_GRACE:
+        return done(STARTING, f"dispatched {age:.0f}s ago, no pid yet")
+    if record.pr_number is None:
+        # Nothing to look for: a run with neither a pid nor a PR cannot be found by
+        # either mechanism, so its absence is not evidence of anything.
+        return done(UNKNOWN, f"no pid recorded {age:.0f}s after dispatch")
+    return done(FINISHED, f"no agent for PR #{record.pr_number} in the process table")
 
 
 def _classify_activity(record: RunRecord, evidence: Evidence, done,
@@ -510,31 +553,34 @@ def _classify_activity(record: RunRecord, evidence: Evidence, done,
 # MARK: - Untracked agents
 
 
-def adopt_ttys(records: list[RunRecord], processes: Observation) -> list[RunRecord]:
-    """Fill in each run's tty from the process its pid names.
+def adopt_ttys(records: list[RunRecord], processes: Observation,
+               live_agents: Observation) -> list[RunRecord]:
+    """Fill in each run's tty, from whichever source can reach its agent.
 
-    Nothing tells the applet a run's tty at spawn time — it opens a terminal and
-    walks away — so the only place it exists is on the agent process itself, and the
-    pid is what reaches it. Without this a tracked run has no tty, no tty means no
-    screen, and no screen means it reads as working from the moment it starts until
-    the moment its window closes: exactly the "still running" verdict on an agent that
-    finished hours ago.
+    Nothing tells the applet a run's tty at spawn time — it opens a terminal and walks
+    away — so the only place it exists is on the agent process itself. Without it a run
+    has no screen, and no screen means it reads as working from the moment it starts
+    until the moment its window closes: exactly the "still running" verdict on an agent
+    that finished hours ago.
+
+    Two sources, because two kinds of run reach their agent differently. A run with a
+    pid takes the tty off that process, which is exact. A run WITHOUT one — a placement
+    the mesh routed back here, where the node opened the terminal — has only the prompt
+    scan, which is looser but is the same evidence that says it is alive at all.
 
     A tty is adopted once and then left alone: it is a property of the process, and a
-    process does not change ttys. The first tick after a spawn has no tty and so
-    cannot classify activity, which costs one poll of "running" on an agent that could
-    not have finished its turn yet anyway.
+    process does not change ttys.
     """
-    if not processes.ok:
-        return records
-    table = processes.value
+    table = processes.value if processes.ok else {}
+    scan = live_agents.value if live_agents.ok else {}
     out = []
     for r in records:
-        proc = table.get(r.pid) if r.pid is not None else None
-        if r.tty or proc is None or not proc.tty:
+        if r.tty:
             out.append(r)
-        else:
-            out.append(replace(r, tty=proc.tty))
+            continue
+        proc = table.get(r.pid) if r.pid is not None else None
+        found = proc.tty if proc is not None else scan.get(r.pr_number, "")
+        out.append(replace(r, tty=found) if found else r)
     return out
 
 
@@ -649,8 +695,8 @@ class Tick:
         return in_flight(self.records, self.states, pr_number)
 
 
-def tick(records: list[RunRecord], evidence: Evidence, live_agents: Observation,
-         now: float, limit: int) -> Tick:
+def tick(records: list[RunRecord], evidence: Evidence, now: float,
+         limit: int) -> Tick:
     """Fold one pass of evidence into every answer, in the one order that is correct.
 
     The order is the reason this is a function rather than a convention each caller
@@ -662,8 +708,8 @@ def tick(records: list[RunRecord], evidence: Evidence, live_agents: Observation,
     sequence subtly different from the other.
     """
     records = observe_claims(records, evidence.claims, now)
-    records = adopt_ttys(records, evidence.processes)
-    records = synthesize_untracked(records, live_agents, now)
+    records = adopt_ttys(records, evidence.processes, evidence.live_agents)
+    records = synthesize_untracked(records, evidence.live_agents, now)
     states = resolve(records, evidence, now)
     load = cap_load(records, states)
     return Tick(records=records, states=states, rows=rows(records, states),

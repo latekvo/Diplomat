@@ -249,13 +249,13 @@ def test_gather_never_leaves_a_probe_undeclared():
     """A bundle with a field left at its default would be UNAVAILABLE — correct, but it
     must be so because the probe said so, not because gather forgot to call it."""
     R.create_run(rec(), "p")
-    evidence, live = probes.gather(R.load(), T0)
+    evidence = probes.gather(R.load(), T0)
     assert evidence.processes.status in (A.PRESENT, A.UNAVAILABLE)
     assert evidence.sentinels.ok
     assert evidence.tails.status in (A.PRESENT, A.UNAVAILABLE, A.UNSUPPORTED)
     assert evidence.claims.status in (A.PRESENT, A.UNAVAILABLE, A.UNSUPPORTED)
     assert evidence.merged_prs.status == A.UNAVAILABLE  # not probed on the fast tick
-    assert live.status in (A.PRESENT, A.UNAVAILABLE)
+    assert evidence.live_agents.status in (A.PRESENT, A.UNAVAILABLE)
 
 
 # MARK: - The whole loop, against a real process
@@ -288,8 +288,9 @@ def test_a_real_agent_is_tracked_from_spawn_to_exit(tmp_path):
                               sentinels=R.sentinels(records),
                               tails=A.Observation.unavailable("not probed"),
                               claims=A.Observation.unsupported("no mesh"),
-                              merged_prs=A.Observation.present(set()))
-        t = A.tick(records, evidence, A.Observation.present(set()), now, 2)
+                              merged_prs=A.Observation.present(set()),
+                              live_agents=A.Observation.present({}))
+        t = A.tick(records, evidence, now, 2)
         assert t.states["r1"].state == A.RUNNING
         assert t.cap_load == {"r1"} and t.free_slots == 1
         assert t.in_flight(337)
@@ -302,8 +303,9 @@ def test_a_real_agent_is_tracked_from_spawn_to_exit(tmp_path):
                           sentinels=R.sentinels(R.load()),
                           tails=A.Observation.unavailable("not probed"),
                           claims=A.Observation.unsupported("no mesh"),
-                          merged_prs=A.Observation.present(set()))
-    t = A.tick(R.adopt_pids(R.load()), evidence, A.Observation.present(set()), now, 2)
+                          merged_prs=A.Observation.present(set()),
+                          live_agents=A.Observation.present({}))
+    t = A.tick(R.adopt_pids(R.load()), evidence, now, 2)
     assert t.states["r1"].state == A.FINISHED
     assert t.cap_load == set() and t.free_slots == 2
     assert not t.in_flight(337)
@@ -387,3 +389,35 @@ def test_a_machine_that_never_ran_a_mesh_node_is_unsupported_not_broken(monkeypa
     # claim, so a node we cannot ask must not read as one that released it.
     fake.read_state = lambda: {"self": {"id": "me"}}
     assert probes.mesh_claims().status == A.UNAVAILABLE
+
+
+def test_the_agent_scan_reads_the_tty_column_of_this_dump(monkeypatch):
+    """A column-order regression with no symptom of its own.
+
+    This probe's dump gained a pid column, and the scan it used to borrow reads the
+    tty as the FIRST token. Every agent then came back keyed to a tty that was really
+    a pid, so no screen could ever be found for one — and an agent whose screen cannot
+    be read counts as working until its window closes, which is the wedge the whole
+    module exists to remove. Caught only by running it against a real machine.
+    """
+    monkeypatch.setattr(probes, "_ps_dump", lambda now: A.Observation.present(
+        "  345772 pts/3    89 /opt/claude/bin/claude Resolve PR #712 in software-mansion/argent now\n"
+        "  345787 ?        89 /opt/claude/bin/claude Review PR #611 in software-mansion/argent now\n"
+        "  999999 pts/9    12 grep PR #712 in software-mansion/argent\n"))
+    monkeypatch.setattr(probes.core, "config",
+                        lambda: {"owner": "software-mansion", "repo": "argent"})
+
+    found = probes.live_agents(probes._ps_dump(T0)).value
+
+    assert found[712] == "pts/3", "the tty column, not the pid"
+    assert found[611] == "", "a process with no controlling tty carries none"
+    assert 712 in found and found[712] != "345772"
+
+
+def test_the_agent_scan_ignores_a_line_that_is_not_an_agent(monkeypatch):
+    """`grep` for a PR number is not an agent on it."""
+    monkeypatch.setattr(probes, "_ps_dump", lambda now: A.Observation.present(
+        "  1 pts/1 5 grep PR #712 in software-mansion/argent\n"))
+    monkeypatch.setattr(probes.core, "config",
+                        lambda: {"owner": "software-mansion", "repo": "argent"})
+    assert probes.live_agents(probes._ps_dump(T0)).value == {}

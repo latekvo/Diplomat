@@ -51,7 +51,7 @@ def proc(elapsed: float = 60.0, tty: str = "pts/3", is_agent: bool = True):
 
 
 def ev(*, processes=None, sentinels=None, tails=None, claims=None,
-       merged=None) -> A.Evidence:
+       merged=None, live_agents=None) -> A.Evidence:
     """An evidence bundle where anything not named is PRESENT-and-empty.
 
     Empty, not unavailable: these cases are about a machine that was successfully
@@ -69,6 +69,7 @@ def ev(*, processes=None, sentinels=None, tails=None, claims=None,
         tails=obs(tails, {}),
         claims=obs(claims, set()),
         merged_prs=obs(merged, set()),
+        live_agents=obs(live_agents, {}),
     )
 
 
@@ -110,8 +111,33 @@ CASES = [
     ("a just-dispatched run with no pid yet is starting",
      rec(dispatched_at=T0 - 5, pid=None), ev(),
      A.STARTING, "no pid yet"),
-    ("a run with no pid long after dispatch is unknown, NOT finished",
-     rec(dispatched_at=T0 - 600, pid=None), ev(),
+    # --- a run whose agent this applet did not open ------------------------
+    # The mesh routes a job and the NODE opens the terminal, so the pid file it
+    # writes belongs to a run directory this applet never created. Judged on the
+    # prompt scan instead, or such a run reads "unknown" for ever, holds its bay
+    # for ever, and can never be retired — seen in production, twice, the first
+    # time the monitors ran.
+    # tty as `adopt_ttys` leaves it: for a pid-less run that is whatever tty the
+    # prompt scan found its agent on, which is what makes its screen readable at all.
+    ("a pid-less run whose PR has a live agent is running",
+     rec(placement=A.PLACEMENT_MESH_HERE, pid=None, tty="pts/5",
+         dispatched_at=T0 - 600),
+     ev(live_agents={337: "pts/5"}, tails={"pts/5": WORKING}),
+     A.RUNNING, "an agent is up on PR #337; working"),
+    ("a pid-less run whose agent is at its prompt gives its bay back too",
+     rec(placement=A.PLACEMENT_MESH_HERE, pid=None, tty="pts/5",
+         dispatched_at=T0 - 600),
+     ev(live_agents={337: "pts/5"}, tails={"pts/5": AT_PROMPT}),
+     A.AWAITING_INPUT, "an agent is up on PR #337; at the prompt"),
+    ("a pid-less run whose PR has no agent in a scan that WORKED has finished",
+     rec(pid=None, dispatched_at=T0 - 600), ev(live_agents={}),
+     A.FINISHED, "no agent for PR #337 in the process table"),
+    ("a pid-less run is not ended by a scan that failed",
+     rec(pid=None, dispatched_at=T0 - 600),
+     ev(live_agents=A.Observation.unavailable("ps could not be read")),
+     A.UNKNOWN, "ps could not be read"),
+    ("a pid-less run with no PR either cannot be looked for at all",
+     rec(pid=None, pr_number=None, dispatched_at=T0 - 600), ev(live_agents={}),
      A.UNKNOWN, "no pid recorded"),
 
     # --- missing evidence never means finished ------------------------------
@@ -343,7 +369,7 @@ def test_rows_draw_every_run_and_read_finished_first():
     records = [
         rec(run_id="running", pid=1, dispatched_at=T0 - 10),
         rec(run_id="clicked", pid=2, source=A.SOURCE_PANEL, dispatched_at=T0 - 20),
-        rec(run_id="over", pid=None, dispatched_at=T0 - 600),
+        rec(run_id="over", pid=None, dispatched_at=T0 - 600, pr_number=None),
         rec(run_id="landed", pid=3, pr_number=500, dispatched_at=T0 - 30),
     ]
     _r, states = _resolved(records, ev(processes={1: proc(), 2: proc(), 3: proc()},
@@ -358,7 +384,8 @@ def test_rows_draw_every_run_and_read_finished_first():
 
 def test_only_positive_evidence_retires_a_record():
     records = [
-        rec(run_id="gone", pid=None, dispatched_at=T0 - 600),        # unknown
+        rec(run_id="gone", pid=None, pr_number=None,
+            dispatched_at=T0 - 600),                                  # unknown
         rec(run_id="exited", pid=7),                                  # finished
         rec(run_id="landed", pid=1, pr_number=500),                   # merged
         rec(run_id="alive", pid=1),                                   # running
@@ -410,7 +437,8 @@ def test_a_tracked_run_learns_its_tty_from_its_own_process():
     working from the moment it starts until its window closes: the "still running"
     verdict on an agent that finished hours ago."""
     out = A.adopt_ttys([rec(tty="")],
-                       A.Observation.present({4242: proc(tty="pts/9")}))
+                       A.Observation.present({4242: proc(tty="pts/9")}),
+                       A.Observation.present({}))
     assert out[0].tty == "pts/9"
     states = A.resolve(out, ev(processes={4242: proc(tty="pts/9")},
                                tails={"pts/9": AT_PROMPT}), T0)
@@ -419,18 +447,35 @@ def test_a_tracked_run_learns_its_tty_from_its_own_process():
 
 def test_an_adopted_tty_is_not_overwritten_later():
     out = A.adopt_ttys([rec(tty="pts/3")],
-                       A.Observation.present({4242: proc(tty="pts/9")}))
+                       A.Observation.present({4242: proc(tty="pts/9")}),
+                       A.Observation.present({}))
     assert out[0].tty == "pts/3"
 
 
 def test_no_tty_is_adopted_from_a_table_that_could_not_be_read():
-    out = A.adopt_ttys([rec(tty="")], A.Observation.unavailable("ps failed"))
+    out = A.adopt_ttys([rec(tty="")], A.Observation.unavailable("ps failed"),
+                       A.Observation.present({}))
     assert out[0].tty == ""
 
 
-def test_a_run_with_no_pid_adopts_nothing():
+def test_a_pid_less_run_adopts_the_tty_the_prompt_scan_found_it_on():
+    """The mesh-placed case: no pid to look up, so the scan that says it is alive is
+    also the only thing that says where its screen is. Without this it has no screen,
+    and no screen means it reads as working until its window closes."""
     out = A.adopt_ttys([rec(tty="", pid=None)],
-                       A.Observation.present({4242: proc(tty="pts/9")}))
+                       A.Observation.present({4242: proc(tty="pts/9")}),
+                       A.Observation.present({337: "pts/5"}))
+    assert out[0].tty == "pts/5"
+    states = A.resolve(out, ev(processes={}, live_agents={337: "pts/5"},
+                               tails={"pts/5": AT_PROMPT}), T0)
+    assert states["r1"].state == A.AWAITING_INPUT
+    assert A.cap_load(out, states) == set(), "and it gives its bay back like any other"
+
+
+def test_a_run_with_neither_a_pid_nor_a_sighting_adopts_nothing():
+    out = A.adopt_ttys([rec(tty="", pid=None, pr_number=None)],
+                       A.Observation.present({4242: proc(tty="pts/9")}),
+                       A.Observation.present({337: "pts/5"}))
     assert out[0].tty == ""
 
 
@@ -438,7 +483,6 @@ def test_the_tick_adopts_a_tty_before_it_classifies_activity():
     """The ordering claim: within ONE tick a fresh run must be able to reach
     `awaiting input`, not on the tick after."""
     t = A.tick([rec(tty="")], ev(processes={4242: proc(tty="pts/9")},
-                                 tails={"pts/9": AT_PROMPT}),
-               A.Observation.present({}), T0, 2)
+                                 tails={"pts/9": AT_PROMPT}), T0, 2)
     assert t.states["r1"].state == A.AWAITING_INPUT
     assert t.records[0].tty == "pts/9", "and the tty is written back for the probe"

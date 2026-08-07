@@ -224,6 +224,11 @@ public enum AgentState {
         public var claims: Observation<Set<String>>
         /// PR numbers GitHub reports as MERGED.
         public var mergedPRs: Observation<Set<Int>>
+        /// PR number → the tty of an agent found by its prompt text in the process
+        /// table. The pre-registry identity mechanism, and still the only evidence
+        /// about a run whose terminal this applet did not open — a mesh placement that
+        /// landed back here, whose pid file belongs to the node that spawned it.
+        public var liveAgents: Observation<[Int: String]>
 
         /// Defaults are `.unavailable` rather than empty, so a caller that forgets to
         /// wire a probe gets rows reading "unknown" instead of a machine that
@@ -232,12 +237,14 @@ public enum AgentState {
                     sentinels: Observation<Set<String>> = .unavailable("not probed"),
                     tails: Observation<[String: String]> = .unavailable("not probed"),
                     claims: Observation<Set<String>> = .unavailable("not probed"),
-                    mergedPRs: Observation<Set<Int>> = .unavailable("not probed")) {
+                    mergedPRs: Observation<Set<Int>> = .unavailable("not probed"),
+                    liveAgents: Observation<[Int: String]> = .unavailable("not probed")) {
             self.processes = processes
             self.sentinels = sentinels
             self.tails = tails
             self.claims = claims
             self.mergedPRs = mergedPRs
+            self.liveAgents = liveAgents
         }
     }
 
@@ -374,12 +381,7 @@ public enum AgentState {
                 return classifyActivity(record, evidence: evidence, done: done,
                                         aliveReason: "found in process table")
             }
-            if age <= spawnGrace {
-                return done(.starting, "dispatched \(secs(age)) ago, no pid yet")
-            }
-            // NOT finished: a spawn that never landed and a pid file not yet read look
-            // identical from here, and only one of them is over.
-            return done(.unknown, "no pid recorded \(secs(age)) after dispatch")
+            return resolveWithoutPid(record, evidence: evidence, age: age, done: done)
         }
         guard let proc = table[pid] else {
             return done(.finished, "pid \(pid) absent from the process table")
@@ -395,6 +397,48 @@ public enum AgentState {
         }
         return classifyActivity(record, evidence: evidence, done: done,
                                 aliveReason: "pid \(pid) alive")
+    }
+
+    /// A run this applet booked but has no pid for.
+    ///
+    /// Two things produce one. A spawn whose shell has not written its pid file yet —
+    /// the ordinary first seconds of a run. And a placement the mesh routed back to
+    /// this machine, where the NODE opened the terminal, so the pid file it wrote
+    /// belongs to a run directory this applet never created and never will.
+    ///
+    /// The second is why this rung is not simply "unknown until a pid appears". A
+    /// mesh-here run has no pid ever, so that answer would hold its bay and refuse its
+    /// PR a fresh agent for the rest of the applet's life — the exact wedge this
+    /// module exists to remove, arriving by a different road. Seen in production the
+    /// first time the monitors ran: two conflict fixes the mesh placed back here, both
+    /// reading "unknown", both bays held, nothing able to retire either.
+    ///
+    /// So the fallback is the pre-registry evidence: the agent's own prompt in the
+    /// process table. It cannot tell two runs on one PR apart, which is exactly why it
+    /// is the fallback and not the identity — but "an agent for this PR is up" and "no
+    /// agent for this PR is up" are both positive answers, and the second is what
+    /// finally ends the run.
+    private static func resolveWithoutPid(_ record: RunRecord, evidence: Evidence,
+                                          age: TimeInterval,
+                                          done: (RunState, String) -> Resolution) -> Resolution {
+        guard let live = evidence.liveAgents.value else {
+            let why = evidence.liveAgents.reason.isEmpty
+                ? "failed" : evidence.liveAgents.reason
+            return done(.unknown, "no pid, and the agent scan \(why)")
+        }
+        if let pr = record.prNumber, live[pr] != nil {
+            return classifyActivity(record, evidence: evidence, done: done,
+                                    aliveReason: "an agent is up on PR #\(pr)")
+        }
+        if age <= spawnGrace {
+            return done(.starting, "dispatched \(secs(age)) ago, no pid yet")
+        }
+        guard let pr = record.prNumber else {
+            // Nothing to look for: a run with neither a pid nor a PR cannot be found by
+            // either mechanism, so its absence is not evidence of anything.
+            return done(.unknown, "no pid recorded \(secs(age)) after dispatch")
+        }
+        return done(.finished, "no agent for PR #\(pr) in the process table")
     }
 
     /// Working, or finished its turn and waiting at the prompt?
@@ -430,27 +474,39 @@ public enum AgentState {
 
     // MARK: - Untracked agents
 
-    /// Fill in each run's tty from the process its pid names.
+    /// Fill in each run's tty, from whichever source can reach its agent.
     ///
     /// Nothing tells the applet a run's tty at spawn time — it opens a terminal and walks
-    /// away — so the only place it exists is on the agent process itself, and the pid is
-    /// what reaches it. Without this a tracked run has no tty, no tty means no screen, and
-    /// no screen means it reads as working from the moment it starts until the moment its
-    /// window closes: exactly the "still running" verdict on an agent that finished hours
-    /// ago.
+    /// away — so the only place it exists is on the agent process itself. Without it a run
+    /// has no screen, and no screen means it reads as working from the moment it starts
+    /// until the moment its window closes: exactly the "still running" verdict on an agent
+    /// that finished hours ago.
+    ///
+    /// Two sources, because two kinds of run reach their agent differently. A run with a
+    /// pid takes the tty off that process, which is exact. A run WITHOUT one — a placement
+    /// the mesh routed back here, where the node opened the terminal — has only the prompt
+    /// scan, which is looser but is the same evidence that says it is alive at all.
     ///
     /// A tty is adopted once and then left alone: it is a property of the process, and a
-    /// process does not change ttys. The first tick after a spawn has no tty and so cannot
-    /// classify activity, which costs one poll of "running" on an agent that could not
-    /// have finished its turn yet anyway.
+    /// process does not change ttys.
     public static func adoptTTYs(_ records: [RunRecord],
-                                 processes: Observation<[Int: ProcInfo]>) -> [RunRecord] {
-        guard let table = processes.value else { return records }
+                                 processes: Observation<[Int: ProcInfo]>,
+                                 liveAgents: Observation<[Int: String]>) -> [RunRecord] {
+        let table = processes.value ?? [:]
+        let scan = liveAgents.value ?? [:]
         return records.map { r in
-            guard r.tty.isEmpty, let pid = r.pid, let proc = table[pid],
-                  !proc.tty.isEmpty else { return r }
+            guard r.tty.isEmpty else { return r }
+            let found: String
+            if let pid = r.pid, let proc = table[pid] {
+                found = proc.tty
+            } else if let pr = r.prNumber {
+                found = scan[pr] ?? ""
+            } else {
+                found = ""
+            }
+            guard !found.isEmpty else { return r }
             var out = r
-            out.tty = proc.tty
+            out.tty = found
             return out
         }
     }
@@ -584,11 +640,11 @@ public enum AgentState {
     /// front-ends and the parity CLI go through here, so neither can get the sequence
     /// subtly different from the other.
     public static func tick(records: [RunRecord], evidence: Evidence,
-                            liveAgents: Observation<[Int: String]>, now: TimeInterval,
-                            limit: Int) -> Tick {
+                            now: TimeInterval, limit: Int) -> Tick {
         var recs = observeClaims(records, claims: evidence.claims, now: now)
-        recs = adoptTTYs(recs, processes: evidence.processes)
-        recs = synthesizeUntracked(recs, liveAgents: liveAgents, now: now)
+        recs = adoptTTYs(recs, processes: evidence.processes,
+                         liveAgents: evidence.liveAgents)
+        recs = synthesizeUntracked(recs, liveAgents: evidence.liveAgents, now: now)
         let states = resolve(records: recs, evidence: evidence, now: now)
         let load = capLoad(records: recs, states: states)
         return Tick(records: recs, states: states,

@@ -21,8 +21,8 @@ import Foundation
 /// ```
 /// { "now": 1000000.0, "limit": 2,
 ///   "records": [ {"runId": …, "dispatchedAt": …, "pid": …, …} ],
-///   "evidence": { "processes": {"status": "present", "value": {"4242": {…}}}, … },
-///   "liveAgents": {"status": "present", "value": {"404": "pts/3"}} }
+///   "evidence": { "processes": {"status": "present", "value": {"4242": {…}}},
+///                 "liveAgents": {"status": "present", "value": {"404": "pts/3"}}, … } }
 /// ```
 /// Output: the resolved rows in display order, the four projections, and the records as
 /// the pipeline left them — so a claim sighting written by the wrong step is a diff.
@@ -33,15 +33,6 @@ enum AgentStateCommand {
         let evidence = decodeEvidence(obj["evidence"] as? [String: Any] ?? [:])
         let records = (obj["records"] as? [[String: Any]] ?? []).map(decodeRecord)
         let t = AgentState.tick(records: records, evidence: evidence,
-                                liveAgents: decodeObs(obj["liveAgents"]) { v in
-                                    guard let m = v as? [String: Any] else { return nil }
-                                    var out: [Int: String] = [:]
-                                    for (k, tty) in m {
-                                        guard let pr = Int(k) else { continue }
-                                        out[pr] = tty as? String ?? ""
-                                    }
-                                    return out
-                                },
                                 now: now, limit: limit)
 
         var inFlight: [String: Bool] = [:]
@@ -109,7 +100,16 @@ enum AgentStateCommand {
             sentinels: decodeObs(d["sentinels"]) { ($0 as? [String]).map(Set.init) },
             tails: decodeObs(d["tails"]) { $0 as? [String: String] },
             claims: decodeObs(d["claims"]) { ($0 as? [String]).map(Set.init) },
-            mergedPRs: decodeObs(d["mergedPrs"]) { intSet($0) })
+            mergedPRs: decodeObs(d["mergedPrs"]) { intSet($0) },
+            liveAgents: decodeObs(d["liveAgents"]) { v in
+                guard let m = v as? [String: Any] else { return nil }
+                var out: [Int: String] = [:]
+                for (k, tty) in m {
+                    guard let pr = Int(k) else { continue }
+                    out[pr] = tty as? String ?? ""
+                }
+                return out
+            })
     }
 
     private static func decodeRecord(_ d: [String: Any]) -> AgentState.RunRecord {

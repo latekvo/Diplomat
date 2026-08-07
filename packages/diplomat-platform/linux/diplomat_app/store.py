@@ -1594,8 +1594,8 @@ class Store(QObject):
         """
         now = time.time()
         records = agentregistry.adopt_pids(agentregistry.load())
-        evidence, live = probes.gather(records, now, merged=self._merged_prs)
-        t = agentstate.tick(records, evidence, live, now, self.auto_task_limit)
+        evidence = probes.gather(records, now, merged=self._merged_prs)
+        t = agentstate.tick(records, evidence, now, self.auto_task_limit)
         with self._tick_lock:
             self._tick = t
         return t
