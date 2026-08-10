@@ -119,6 +119,15 @@ enum AgentSpawner {
         return parseCapture(captured)
     }
 
+    /// Open a terminal window on one command a *human* is meant to drive — the runner's
+    /// provider-login wizard. Unlike a spawn there is no run to register and no handle
+    /// worth keeping, so the captured ids are dropped and a failure to open is not
+    /// raised into the Settings sheet: the visible outcome either way is a window that
+    /// did or did not appear.
+    static func openTerminal(command: String, terminal preferred: SpawnTerminal) {
+        _ = try? runSpawn(command: command, terminal: resolved(preferred))
+    }
+
     static func writePrompt(_ prompt: String) throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("diplomat-review-\(UUID().uuidString).txt")
@@ -139,12 +148,18 @@ enum AgentSpawner {
         return dir.appendingPathComponent("diplomat-done-\(UUID().uuidString).txt").path
     }
 
-    /// `cd '<repo>' 2>/dev/null; claude "$(cat '<promptfile>')"; printf %s $? > '<done>'`
+    /// `cd '<repo>' 2>/dev/null; <agent>; printf %s $? > '<done>'`
     ///
-    /// The trailing `printf … > done` writes a sentinel the moment `claude` returns,
-    /// so the applet can mark the session complete even while its window stays open.
+    /// `<agent>` is `AgentRunner.agentCommand` — `claude "$(cat '<promptfile>')"` or the
+    /// OpenCode spelling of the same thing. Everything around it is identical for both,
+    /// because everything around it is what a run is *identified* by.
+    ///
+    /// The trailing `printf … > done` writes a sentinel the moment the agent returns, so
+    /// the applet can mark the session complete even while its window stays open.
     static func shellCommand(promptFile: URL, donePath: String) -> String {
-        "cd \(shq(repoPath)) 2>/dev/null; claude \"$(cat \(shq(promptFile.path)))\"; printf %s $? > \(shq(donePath))"
+        let agent = AppConfig.agentRunner.agentCommand(promptFile: promptFile.path,
+                                                       model: AppConfig.opencodeModel)
+        return "cd \(shq(repoPath)) 2>/dev/null; \(agent); printf %s $? > \(shq(donePath))"
     }
 
     /// Wrap the shell command in an "open a new window, settle, run this, and report

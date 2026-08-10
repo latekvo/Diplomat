@@ -39,6 +39,7 @@ from . import (
     deviceallocator,
     probes,
     review,
+    runner,
     szpont,
     telemetry,
     tmuxwatch,
@@ -348,6 +349,28 @@ class Store(QObject):
     @repo_path_override.setter
     def repo_path_override(self, value: str) -> None:
         appconfig.set_value(appconfig.REPO_ROOT, value)
+
+    @property
+    def agent_runner(self) -> str:
+        """Which agent CLI a spawn runs (Settings → AGENT RUNNER). In
+        :mod:`appconfig` rather than QSettings for the same reason the repo root is:
+        a mesh node spawns agents from a process with no Qt to ask."""
+        return runner.selected()
+
+    @agent_runner.setter
+    def agent_runner(self, value: str) -> None:
+        appconfig.set_value(appconfig.AGENT_RUNNER, value)
+
+    @property
+    def opencode_model(self) -> str:
+        """The ``provider/model`` the OpenCode runner is pinned to; empty leaves the
+        choice to OpenCode's own picker. A model id, never a credential — those live
+        in OpenCode's provider store."""
+        return appconfig.get(appconfig.OPENCODE_MODEL)
+
+    @opencode_model.setter
+    def opencode_model(self, value: str) -> None:
+        appconfig.set_value(appconfig.OPENCODE_MODEL, value)
 
     @property
     def allocator_setup_done(self) -> bool:
@@ -1717,15 +1740,15 @@ class Store(QObject):
         self._note_stale_busy_marker()
 
     def _note_stale_busy_marker(self) -> None:
-        """Say out loud when the CLI's interrupt hint has never once matched.
+        """Say out loud when no CLI's interrupt hint has ever once matched.
 
-        Telling a working agent from one waiting at its prompt rests on a literal
-        string borrowed from someone else's UI (``apiwatch.BUSY_MARKER``). If Claude
-        Code rewords its status bar, every agent reads as idle at once: every bay of
-        the cap frees, and the monitors dispatch a burst onto a machine that is
+        Telling a working agent from one waiting at its prompt rests on literal
+        strings borrowed from someone else's UI (``apiwatch.BUSY_MARKERS``). If the
+        runner in use rewords its status bar, every agent reads as idle at once: every
+        bay of the cap frees, and the monitors dispatch a burst onto a machine that is
         already full. Nothing else on this screen would look wrong.
 
-        So a machine that has read plenty of agent screens and never seen the hint on
+        So a machine that has read plenty of agent screens and never seen a hint on
         any of them is reported. It is not proof — every agent really can be idle —
         which is why the threshold is high and the wording says what was measured
         rather than what it means.
@@ -1734,10 +1757,11 @@ class Store(QObject):
         if seen or read < self._MARKER_SAMPLE or self._marker_warned:
             return
         self._marker_warned = True
+        markers = " / ".join(f"“{m}”" for m in apiwatch.BUSY_MARKERS)
         activity.log("auto", "warn",
-                     f"Read {read} agent screens without once seeing “"
-                     f"{apiwatch.BUSY_MARKER}” — if the CLI reworded it, every agent "
-                     f"now reads as idle and the task cap will not hold")
+                     f"Read {read} agent screens without once seeing {markers} — if "
+                     f"the CLI reworded it, every agent now reads as idle and the "
+                     f"task cap will not hold")
         self.refresh_activity()
 
     def _persist_run_changes(self, t: agentstate.Tick) -> None:

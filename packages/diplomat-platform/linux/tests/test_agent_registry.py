@@ -351,7 +351,7 @@ def test_the_busy_marker_is_counted_against_the_screens_it_was_looked_for_in(
     only warning there could be."""
     from diplomat_app import apiwatch
 
-    busy = f"● Reading…\n⏵⏵ bypass permissions on · {apiwatch.BUSY_MARKER} · ←"
+    busy = f"● Reading…\n⏵⏵ bypass permissions on · {apiwatch.BUSY_MARKERS[0]} · ←"
     idle = "● Done.\n❯\n⏵⏵ bypass permissions on (shift+tab to cycle)"
     monkeypatch.setattr(probes.shutil, "which", lambda _: "/usr/bin/tmux")
     monkeypatch.setattr(probes.tmuxwatch, "pane_tails_for_ttys",

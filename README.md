@@ -60,9 +60,10 @@ Targets `software-mansion/argent` and shells out to the authenticated `gh` CLI.
 
 ## ⚠️ Billing and usage - read this first
 
-> **This software may be used _only_ with usage-based Anthropic API billing** - an
-> **Anthropic API key** from the [Anthropic Console](https://console.anthropic.com),
-> metered per token and governed by Anthropic's
+> **Under the Claude Code runner, this software may be used _only_ with usage-based
+> Anthropic API billing** - an **Anthropic API key** from the
+> [Anthropic Console](https://console.anthropic.com), metered per token and governed
+> by Anthropic's
 > [**Commercial Terms of Service**](https://www.anthropic.com/legal/commercial-terms).
 > Point the spawned agents at it via `ANTHROPIC_API_KEY` (Claude Code prefers an API
 > key in the environment over any logged-in subscription).
@@ -71,9 +72,16 @@ Targets `software-mansion/argent` and shells out to the authenticated `gh` CLI.
 > **Claude Free / Pro / Max** plans, governed by Anthropic's
 > [**Consumer Terms of Service**](https://www.anthropic.com/legal/consumer-terms).
 > Diplomat exists to spawn **automated, unattended agents** - background monitors that
-> open `claude` windows and push to your branches with no human in the loop. That is
+> open agent windows and push to your branches with no human in the loop. That is
 > programmatic / headless / service-style use, which belongs on the API, not on a
 > personal subscription.
+>
+> **Under the [OpenCode runner](#agent-runner), the bill and the terms are whichever
+> provider you connected** - OpenRouter, an Anthropic API key, a hosted Ollama, a
+> model on your own machine. Diplomat neither holds that credential nor meters it;
+> read the terms of the provider you pick. The unattended-use point above is about
+> *automation*, not about Anthropic specifically, so it applies whatever you run: a
+> plan sold for interactive personal use is the wrong place for a background monitor.
 >
 > **No warranty, no responsibility.** This software is provided **"as is"**, without
 > warranty of any kind. **The author accepts no responsibility and no liability** for
@@ -299,7 +307,8 @@ AGENT** - it opens a fresh terminal window (iTerm if installed, else Terminal)
 running a detached review session in your **repo root** (Settings; default
 `~/dev/<repo>`) that you watch and steer yourself. The prompt is staged to a
 file and the window runs
-`claude "$(cat <promptfile>)"; printf %s $? > <done>` - the trailing sentinel
+`<agent> "$(cat <promptfile>)"; printf %s $? > <done>` - where `<agent>` is the
+[agent runner](#agent-runner) you picked, and the trailing sentinel
 (under `~/.diplomat/pr-monitor/done/`) is how the Agent-tasks list knows the
 agent finished. The choices are baked into the prompt:
 
@@ -413,7 +422,7 @@ moved. Duties are the three spawn actions, each with a configurable placement:
 default).)
 
 Dispatching routes a staged prompt to the chosen node over the mesh; the
-receiving machine opens its own terminal running `claude` exactly like a local
+receiving machine opens its own terminal running its own agent runner exactly like a local
 SPAWN AGENT (dispatches are the `📤/📥 mesh` rows in the activity feed). If the
 first target declines — gone, or out of tokens — the dispatch fails over to the
 next candidate by rank. While the mesh is live, the three wizards grow a
@@ -632,7 +641,7 @@ ledger means.
 
 The applets don't just render lists - they act on them. Three background
 monitors ship **ON by default** (opt out in Settings). Know what that means
-before running it: they **spawn real terminal windows** running `claude` agents,
+before running it: they **spawn real terminal windows** running agents,
 and the auto-fix agents **push to your PR branches**. Those background windows
 open **without stealing focus** - a monitor spawn opens the terminal behind
 whatever you're working in and bounces focus straight back; only a spawn *you*
@@ -658,7 +667,10 @@ nudge opens no window at all - it types into a session that already exists.)
   dedup: a push re-stamps the review request, which would double-spawn - a new
   request within 1h of a dispatch is treated as churn and suppressed. Banned
   authors are never auto-reviewed.
-- **Claude API-error watcher** - every ~20s reads each agent session's visible
+- **Claude API-error watcher** - Claude Code runs only; the banners it matches are
+  Claude Code's, and an OpenCode agent that errors reads as idle instead, frees its
+  task-cap slot, and is dispatched again by whichever monitor owed the work. Every
+  ~20s it reads each agent session's visible
   tail (macOS: any iTerm/Terminal session; Linux: **tmux panes only** - there's no
   portable way to read or type into an arbitrary Linux emulator, so the Linux
   spawner opens each agent in a tmux session of its own and an agent started
@@ -682,7 +694,7 @@ Linux; `DIPLOMAT_APIWATCH_SECS`, floor 5s).
 **At most 2 automatic agents run at once** (Settings; 1-16). Both monitors above
 are level-triggered over everything GitHub currently owes, so one poll of a busy
 day would otherwise dispatch every pending unit in a single pass - a terminal
-window and a `claude` session per conflicted PR and per owed review, all at the
+window and an agent session per conflicted PR and per owed review, all at the
 same moment. The cap is the *machine's*, not a monitor's: it spans both monitors
 and any work a mesh peer routes here, and it counts agents that are really
 running (`ps`, so it survives an applet restart) rather than a tally that can
@@ -752,6 +764,28 @@ and ⏻) swaps the panel to a settings screen:
 - **GitHub username** - override the handle used by the "My …" tools, the wizards
   and the monitors. Blank = the `gh`-authenticated user (`viewer.login`), resolved
   eagerly at launch so it's the default everywhere.
+- <a id="agent-runner"></a>**Agent runner** - which agent CLI a spawn runs:
+  **Claude Code** (the default, and what every existing install keeps) or
+  **OpenCode**. Only the agent word changes; the prompt, the staged file, the
+  completion sentinel, the pid a run is identified by and every monitor above it
+  are the same either way, which is the point of having one setting rather than a
+  second pipeline. Like the repo root it lives in the shared
+  `~/.diplomat/config.json`, so a running mesh node picks it up on its next spawn.
+  - **Model** (OpenCode only) - a `provider/model` id such as
+    `openrouter/moonshotai/kimi-k2` or `ollama-cloud/glm-5.2`. Blank leaves the
+    choice to OpenCode's own picker rather than overriding it with a guess.
+  - **Connect a provider…** (OpenCode only) - opens OpenCode's own login wizard in
+    a terminal. Diplomat deliberately has no API-key field: OpenCode already knows
+    its whole provider catalog, which entries take OAuth rather than a key, and
+    where each one's credentials belong - and it writes them to the store the agent
+    reads from anyway. **No provider credential is ever stored by Diplomat**, which
+    matters because `~/.diplomat/config.json` is world-readable and copied around by
+    the mesh.
+  - What does *not* carry over: the [Claude API-error watcher](#autonomous-monitors)
+    (its banners are Claude Code's) and per-task token attribution, which reads
+    Claude Code's own transcripts. An OpenCode agent that errors reads as idle, so
+    it gives its task-cap slot back and the monitor that owed the work dispatches it
+    again.
 - **Repo root** - the local checkout every spawned agent `cd`s into, with a
   **Choose…** directory picker (type a path if you prefer; a leading `~` expands).
   Blank = `~/dev/<repo>` for whichever repo [`assets/config.json`](packages/diplomat-core/assets/config.json)

@@ -8,8 +8,8 @@ the Swift struct's inputs and derived toggles, including the specific-PR author
 disposition (mine / theirs / unknown), which the wizard resolves via ``gh``.
 
 The terminal spawner is the Linux analogue of the macOS AppleScript/iTerm path:
-it opens a new terminal-emulator window running ``claude "<prompt>"`` detached
-from the applet.
+it opens a new terminal-emulator window running the configured agent CLI on the
+staged prompt (:mod:`runner`), detached from the applet.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ import tempfile
 from dataclasses import dataclass
 from enum import Enum
 
-from . import appconfig, core
+from . import appconfig, core, runner
 from .configbase import PRSweepConfig
 from .prtarget import PRTarget
 
@@ -327,44 +327,51 @@ def user_shell() -> str:
 
 def shell_command(prompt_file: str, done_path: str | None = None,
                   pid_path: str | None = None) -> str:
-    """``cd '<repo>' 2>/dev/null; claude "$(cat '<file>')"; [printf %s $? > done;] exec "$SHELL" -i``
+    """``cd '<repo>' 2>/dev/null; <agent>; [printf %s $? > done;] exec "$SHELL" -i``
 
-    Run (via :func:`user_shell`, interactively) so the user's rc is sourced and
-    `claude` resolves to their alias. The trailing ``exec`` keeps the window open in
-    the user's shell after the session ends.
+    ``<agent>`` is :func:`runner.agent_command` — ``claude "$(cat '<file>')"`` or the
+    OpenCode spelling of the same thing. Everything around it is identical for both,
+    because everything around it is what a run is *identified* by.
 
-    When ``done_path`` is given, the agent's exit code is written there the moment
-    ``claude`` returns — an existence-based completion sentinel. It only ever fires on
+    Run (via :func:`user_shell`, interactively) so the user's rc is sourced: that is
+    what resolves a `claude` alias, and equally what puts a per-user install of either
+    CLI on ``PATH``. The trailing ``exec`` keeps the window open in the user's shell
+    after the session ends.
+
+    When ``done_path`` is given, the agent's exit code is written there the moment the
+    agent returns — an existence-based completion sentinel. It only ever fires on
     EXIT, and an agent is spawned interactively: finishing its work is not exiting, so
     the sentinel says nothing at all for the hours a finished session sits at its
     prompt. That is what ``pid_path`` is for.
 
     When ``pid_path`` is given the agent runs one shell deeper —
-    ``"$SHELL" -i -c 'printf %s $$ > <pid>; claude "$(cat <file>)"'`` — and the pid
-    recorded is the AGENT'S OWN: the inner shell writes its own ``$$`` first, then
-    execs the agent over itself, which replaces the process image without changing the
-    pid. The applet identifies a run by that pid instead of by matching ``PR #<n> in
-    <owner>/<repo>`` against prompt text in ``ps`` output, which could not tell two
-    runs on one PR apart, matched any unrelated session that mentioned the number, and
-    matched the wrapper shell and tmux client as readily as the agent.
+    ``"$SHELL" -i -c 'printf %s $$ > <pid>; <agent>'`` — and the pid recorded is the
+    AGENT'S OWN: the inner shell writes its own ``$$`` first, then execs the agent over
+    itself, which replaces the process image without changing the pid. The applet
+    identifies a run by that pid instead of by matching ``PR #<n> in <owner>/<repo>``
+    against prompt text in ``ps`` output, which could not tell two runs on one PR
+    apart, matched any unrelated session that mentioned the number, and matched the
+    wrapper shell and tmux client as readily as the agent.
 
     That exec is the shell's own, on the last command of a ``-c`` string, and must NOT
-    be written out as the `exec` keyword: alias expansion applies to the first word of
-    a simple command, so under an explicit ``exec claude`` the word checked is `exec`
-    and the user's `claude` alias never expands. It is the alias that carries
-    ``--dangerously-skip-permissions``, so spelling the exec out costs an agent its
-    permissions and it stops at a prompt on every tool call.
+    be written out as the `exec` keyword. Both runners need it left implicit, for
+    reasons that happen to differ: alias expansion applies to the first word of a
+    simple command, so under an explicit ``exec claude`` the word checked is `exec`,
+    the user's `claude` alias never expands, and the agent loses the
+    ``--dangerously-skip-permissions`` that alias carries; and the shell only elides
+    the fork for a command it recognises as the last one, which is what makes the
+    written pid the agent's rather than the wrapper shell's under either CLI.
 
-    The inner shell is interactive for the same reason the outer one is: that alias
-    has to resolve, and aliases do not survive into a non-interactive child. ``$?``
-    after it is still the agent's own exit code — the exec made them one process.
+    The inner shell is interactive for the same reason the outer one is: an alias has
+    to resolve, and aliases do not survive into a non-interactive child. ``$?`` after
+    it is still the agent's own exit code — the exec made them one process.
     """
     repo = shlex.quote(repo_path())
-    pf = shlex.quote(prompt_file)
+    agent_cmd = runner.agent_command(prompt_file)
     done = f"printf %s $? > {shlex.quote(done_path)}; " if done_path else ""
     if pid_path is None:
-        return f'cd {repo} 2>/dev/null; claude "$(cat {pf})"; {done}exec "$SHELL" -i'
-    inner = f'printf %s $$ > {shlex.quote(pid_path)}; claude "$(cat {pf})"'
+        return f'cd {repo} 2>/dev/null; {agent_cmd}; {done}exec "$SHELL" -i'
+    inner = f'printf %s $$ > {shlex.quote(pid_path)}; {agent_cmd}'
     agent = f"{shlex.quote(user_shell())} -i -c {shlex.quote(inner)}"
     return f"cd {repo} 2>/dev/null; {agent}; {done}exec \"$SHELL\" -i"
 
@@ -384,39 +391,69 @@ def agent_argv(prompt_file: str, done_path: str | None = None,
     on to the aliases instead of handing off.
 
     It is also the only way :mod:`tmuxwatch` can reach an agent: ``capture-pane`` and
-    ``send-keys`` are what the Claude-API-error watcher reads and types through on
-    Linux, and they only see panes. Without tmux installed there is no session to
-    open and no watcher to feed, so the bare interactive shell stands.
+    ``send-keys`` are what the API-error watcher reads and types through on Linux, and
+    they only see panes. Without tmux installed there is no session to open and no
+    watcher to feed, so the bare interactive shell stands.
     """
-    cmd = shell_command(prompt_file, done_path, pid_path)
+    return terminal_argv(shell_command(prompt_file, done_path, pid_path))
+
+
+def terminal_argv(command: str) -> list[str]:
+    """One shell command, wrapped the way everything Diplomat opens a window on is
+    wrapped: the user's interactive shell, inside a tmux session wherever tmux exists.
+
+    Shared by the agent spawn and the runner's own provider-login wizard, because the
+    reasons are the same for both — an rc that has to be sourced, and the tmux
+    hand-off guard described in :func:`agent_argv`.
+    """
     shell = user_shell()
     if shutil.which("tmux") is None:
-        return [shell, "-i", "-c", cmd]
+        return [shell, "-i", "-c", command]
     # One string, because that is the single shell-command argument `new-session`
     # takes; tmux hands it to `sh -c`, which splits it back into the argv above.
-    return ["tmux", "new-session", f"{shlex.quote(shell)} -i -c {shlex.quote(cmd)}"]
+    return ["tmux", "new-session", f"{shlex.quote(shell)} -i -c {shlex.quote(command)}"]
+
+
+def open_terminal(command: str, preferred: SpawnTerminal | None) -> None:
+    """Open a new terminal window on one shell command, detached from the applet.
+
+    The window is left sitting in the user's shell afterwards: this runs things a
+    human is meant to read the outcome of, and a wizard whose window vanishes the
+    instant it finishes has reported nothing.
+    """
+    term = resolved(preferred)
+    argv = [term.exec_name, *term.prefix, *terminal_argv(f'{command}; exec "$SHELL" -i')]
+    try:
+        popen_detached(argv, env=spawn_env())
+    except OSError as exc:
+        raise SpawnError(f"failed to launch {term.title}: {exc}") from exc
 
 
 def spawn_env() -> dict:
-    """The environment a spawned agent gets: this process's, minus the variables
-    that say we are *already* inside a tmux pane.
+    """The environment the *launcher* gets: this process's, minus the variables that
+    say we are already inside a tmux pane.
 
     Whoever launched the applet (or the mesh node) may have done so from one, and
     ``tmux new-session`` inherits ``$TMUX`` from there and refuses to nest — the
     window would open and close again on "sessions should be nested with care".
     Dropping them costs the child nothing: it is about to be in a pane of its own,
     which sets both to that pane's real values.
+
+    Note the launcher, not the agent. Where tmux is in play this environment reaches
+    the tmux *client* and stops there: the session's command is started by the
+    already-running server, with the server's environment. Anything the agent itself
+    must see belongs in the command (:func:`runner.agent_command`), not here.
     """
     return {k: v for k, v in os.environ.items() if k not in ("TMUX", "TMUX_PANE")}
 
 
 def spawn(prompt: str, preferred: SpawnTerminal | None, done_path: str | None = None,
           pid_path: str | None = None, prompt_file: str | None = None) -> str:
-    """Stage the prompt, open a new terminal window, run claude. Returns the
+    """Stage the prompt, open a new terminal window, run the agent. Returns the
     prompt file path. Fully detached from the applet.
 
-    ``done_path`` receives claude's exit code on completion and ``pid_path`` receives
-    the agent's own pid the moment it starts — see :func:`shell_command`.
+    ``done_path`` receives the agent's exit code on completion and ``pid_path``
+    receives its own pid the moment it starts — see :func:`shell_command`.
     ``prompt_file`` skips the staging when the caller has already written the prompt
     somewhere it wants to keep it (the run directory in :mod:`.agentregistry`)."""
     term = resolved(preferred)

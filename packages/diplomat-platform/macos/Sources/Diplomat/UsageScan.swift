@@ -203,7 +203,7 @@ enum UsageScan {
 
     /// Tokens spent by the agent that ran `prompt`, or nil if it can't be found.
     ///
-    /// The link is the prompt itself. Every agent is launched as
+    /// The link is the prompt itself. A Claude Code agent is launched as
     /// `claude "$(cat <staged prompt>)"`, so the transcript's opening user message is
     /// that prompt verbatim — an exact identity, needing no new CLI flag on the spawn
     /// path (where a wrong guess would break the applet's actual job, not just its
@@ -211,8 +211,10 @@ enum UsageScan {
     /// name.
     ///
     /// Returning nil is normal and expected — the applet restarting mid-agent loses
-    /// the prompt — and the screen reports those as unattributed rather than
-    /// pretending they were free.
+    /// the prompt, and a run under a different `AgentRunner` writes no such transcript
+    /// at all, OpenCode keeping its sessions in a store of its own. The screen reports
+    /// both as unattributed rather than pretending they were free, which is the
+    /// reading that stays honest whichever runner spawned the run.
     static func taskTokens(prompt: String, startedAt: TimeInterval,
                            endedAt: TimeInterval) -> Double? {
         let wanted = prompt.trimmingCharacters(in: .whitespacesAndNewlines)

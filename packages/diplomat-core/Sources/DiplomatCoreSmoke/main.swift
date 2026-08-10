@@ -384,6 +384,41 @@ check(cSingle.buildPrompt().contains("Merge the latest `origin/main`"))
 check(cMine.buildPrompt().contains("No AI attribution"))
 print("conflict prompt assertions passed")
 
+section("agent runner")
+// The runner is chosen in ONE config file that both front-ends read, so a machine
+// can hand a mesh job to the other platform and must get the same agent out of it.
+// These are the exact strings `tests/test_runner.py` pins on the Python side; the
+// two are compared literally, because a difference here is two applets spawning
+// different CLIs from one setting.
+check(AgentRunner.from("") == .claude, "an unset runner must be Claude Code")
+check(AgentRunner.from("gpt-cli") == .claude, "an unknown runner must degrade, not fail")
+check(AgentRunner.from("opencode") == .opencode)
+check(AgentRunner.claude.agentCommand(promptFile: "/tmp/p.txt", model: "ignored")
+        == "claude \"$(cat '/tmp/p.txt')\"",
+      "the Claude command is what every existing install is mid-flight on")
+check(AgentRunner.opencode.agentCommand(promptFile: "/tmp/p.txt")
+        == "\(AgentRunner.permissionEnv)='\(AgentRunner.permissionValue)' "
+         + "opencode --prompt \"$(cat '/tmp/p.txt')\"")
+check(AgentRunner.opencode.agentCommand(promptFile: "/tmp/p.txt", model: "openrouter/moonshotai/kimi-k2")
+        .hasSuffix("opencode -m 'openrouter/moonshotai/kimi-k2' --prompt \"$(cat '/tmp/p.txt')\""),
+      "a configured model must reach the agent")
+check(!AgentRunner.opencode.agentCommand(promptFile: "/tmp/p.txt", model: "  ").contains(" -m "),
+      "a blank model must leave OpenCode's own choice alone")
+// Every scan that counts, adopts or reaps an agent goes through this: a runner it
+// cannot see is an agent that burns quota while holding no bay of the task cap.
+check(AgentRunner.isAgentLine("501 ttys000 30 opencode --prompt Review PR #7 in o/r"))
+check(AgentRunner.isAgentLine("501 ttys000 30 claude Review PR #7 in o/r"))
+check(!AgentRunner.isAgentLine("501 ttys000 30 vim notes.txt"))
+// Both interrupt hints, captured from the real CLIs. Neither string contains the
+// other, so matching one spelling reads every agent of the other runner as idle.
+check(AgentActivity.looksBusy("  Build  GLM-5.2\n  ⬝⬝⬝  esc interrupt      ctrl+p commands"),
+      "an OpenCode pane mid-turn must read as busy")
+check(AgentActivity.looksBusy("⏵⏵ bypass permissions on · esc to interrupt · ←"),
+      "a Claude Code pane mid-turn must read as busy")
+check(!AgentActivity.looksBusy("  Build  GLM-5.2\n     27.4K (3%)  ctrl+p commands"),
+      "a finished OpenCode pane must give its bay back")
+print("agent runner assertions passed")
+
 section("audit prompts")
 // A whole-repo E2E audit needs no input (always valid), and the hard-repro bar is
 // present in every variant. The two toggles independently gate the optional blocks.

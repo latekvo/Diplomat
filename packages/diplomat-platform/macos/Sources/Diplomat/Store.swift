@@ -89,6 +89,24 @@ final class Store: ObservableObject {
             AppConfig.set(AppConfig.repoRootKey, repoPathOverride)
         }
     }
+    /// Which agent CLI a spawn runs (Settings → AGENT RUNNER). In `AppConfig` rather
+    /// than UserDefaults for the same reason the repo root is: a mesh node spawns
+    /// agents from a process with no UserDefaults to ask.
+    @Published var agentRunner: AgentRunner {
+        didSet {
+            guard !Headless.active else { return }
+            AppConfig.set(AppConfig.agentRunnerKey, agentRunner.rawValue)
+        }
+    }
+    /// The `provider/model` the OpenCode runner is pinned to; empty leaves the choice
+    /// to OpenCode's own picker. A model id, never a credential — those live in
+    /// OpenCode's provider store.
+    @Published var opencodeModel: String {
+        didSet {
+            guard !Headless.active else { return }
+            AppConfig.set(AppConfig.opencodeModelKey, opencodeModel)
+        }
+    }
     /// Whether the in-process PR auto-fix monitor is on. Persisted; when turned on we
     /// kick an immediate poll rather than waiting for the next tick.
     @Published var prAutofixEnabled: Bool {
@@ -453,6 +471,8 @@ final class Store: ObservableObject {
         terminalChoice = defaults.string(forKey: Keys.terminalChoice)
             ?? (SpawnTerminal.iterm.isInstalled ? SpawnTerminal.iterm.rawValue : SpawnTerminal.terminal.rawValue)
         repoPathOverride = AppConfig.string(AppConfig.repoRootKey)
+        agentRunner = AppConfig.agentRunner
+        opencodeModel = AppConfig.opencodeModel
         autoTaskLimit = AppConfig.autoTaskLimit
         autoBudgetGate = AppConfig.autoBudgetGate
         autoBudgetConfidence = AppConfig.autoBudgetConfidence

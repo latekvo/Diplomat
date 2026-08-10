@@ -20,7 +20,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 
-from . import apiwatch, core, tmuxwatch
+from . import apiwatch, core, runner, tmuxwatch
 from .agentstate import UNAVAILABLE, Evidence, Observation, ProcInfo, RunRecord
 
 #: How long a probe's answer is reused. The resolver re-runs for every question the
@@ -38,11 +38,11 @@ _tails_cache: tuple[float, frozenset, Observation] | None = None
 #: rather than left to be inferred from behaviour.
 _health: dict[str, "ProbeHealth"] = {}
 
-#: How many agent screens have been read, and how many of them showed the CLI's
-#: interrupt hint. The hint is a literal string from someone else's UI
-#: (:data:`apiwatch.BUSY_MARKER`), and if it ever stops matching, every agent reads as
-#: idle at once: the cap empties and the monitors burst. Nothing else would say so —
-#: the applet would look like it was working perfectly — so the ratio is counted.
+#: How many agent screens have been read, and how many of them showed a CLI's
+#: interrupt hint. The hints are literal strings from someone else's UI
+#: (:data:`apiwatch.BUSY_MARKERS`), and if they ever stop matching, every agent reads
+#: as idle at once: the cap empties and the monitors burst. Nothing else would say so
+#: — the applet would look like it was working perfectly — so the ratio is counted.
 _tails_read = 0
 _marker_seen = 0
 
@@ -135,9 +135,10 @@ def process_table(dump: Observation) -> Observation:
     """pid → what the process table says about it.
 
     ``etimes`` (whole seconds since start) is what the resolver's pid-adoption guard
-    compares against a run's age; the argv decides ``is_agent``, using the same
-    "the line mentions claude" test the legacy scan used, because a wrapper shell and
-    an agent both carrying the word is exactly what the age half of the guard is for.
+    compares against a run's age; the argv decides ``is_agent``, using the same loose
+    "the line mentions a runner's CLI" test the legacy scan used, because a wrapper
+    shell and an agent both carrying the word is exactly what the age half of the
+    guard is for.
     """
     if not dump.ok:
         return Observation.unavailable(dump.reason)
@@ -152,7 +153,7 @@ def process_table(dump: Observation) -> Observation:
         except ValueError:
             continue
         table[pid] = ProcInfo(tty=tty.removeprefix("/dev/") if tty != "?" else "",
-                              elapsed=elapsed, is_agent="claude" in args)
+                              elapsed=elapsed, is_agent=runner.is_agent_line(args))
     return Observation.present(table)
 
 
@@ -187,7 +188,7 @@ def live_agents(dump: Observation) -> Observation:
     # came back keyed to a tty that was really a pid, so no screen could ever be
     # found for one and no untracked agent ever gave its bay back.
     for line in dump.value.splitlines():
-        if "claude" not in line:
+        if not runner.is_agent_line(line):
             continue
         parts = line.split(maxsplit=3)
         if len(parts) < 4:

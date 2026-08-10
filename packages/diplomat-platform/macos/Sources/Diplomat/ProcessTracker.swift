@@ -479,7 +479,7 @@ enum ProcessMonitor {
         for line in dump.split(separator: "\n") {
             // Only a real agent process carries the phrase: the spawning shell's
             // argv holds the unexpanded `$(cat …)`, not the prompt text.
-            guard line.contains("claude") else { continue }
+            guard AgentRunner.isAgentLine(String(line)) else { continue }
             let s = String(line)
             let tty = canonicalTTY(String(s.trimmingCharacters(in: .whitespaces)
                                            .prefix { !$0.isWhitespace }))

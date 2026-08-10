@@ -37,8 +37,9 @@ def run() -> int:
         print(f"  {name:<15} {_describe(obs)}")
     read, seen = probes.marker_stats()
     if read:
+        markers = " / ".join(f"“{m}”" for m in apiwatch.BUSY_MARKERS)
         print(f"  {'busy marker':<15} seen on {seen} of {read} screen(s) read "
-              f"(“{apiwatch.BUSY_MARKER}”)")
+              f"({markers})")
     print()
 
     print("RUNS")
