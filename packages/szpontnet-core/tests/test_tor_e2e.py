@@ -141,7 +141,13 @@ def test_a_dial_carries_bytes_end_to_end_through_the_onion(tornet):
             await writer.drain()
             answer = await asyncio.wait_for(reader.readline(), timeout=30.0)
             assert answer == b"answered\n"
-            assert listener.seen == [b"over the onion\n"]
+            # Only the connections that carried something: against the real network
+            # _dial_with_patience retries through the descriptor race, and an attempt
+            # whose circuit dies after the SOCKS CONNECT is accepted still reaches the
+            # listener as a connection that EOFs before sending. Those are the dial
+            # behaviour under test, not deliveries — what must hold is that the
+            # payload crossed exactly once.
+            assert [line for line in listener.seen if line] == [b"over the onion\n"]
             writer.close()
         finally:
             await client.stop()
