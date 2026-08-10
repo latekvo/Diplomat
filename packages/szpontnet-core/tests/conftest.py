@@ -26,10 +26,15 @@ from szpontnet import host  # noqa: E402
 
 def pytest_configure(config):
     """Register the markers this suite uses, so a run is never noisy about them and
-    ``-m 'not tor_e2e'`` is a supported way to skip the slow, process-spawning half."""
+    ``-m 'not tor_e2e and not iroh_e2e'`` is a supported way to skip the slow half."""
     config.addinivalue_line(
         "markers",
         "tor_e2e: drives real tor daemons and whole node processes (see tornet.py)")
+    config.addinivalue_line(
+        "markers",
+        "iroh_e2e: binds real iroh endpoints and USES THE NETWORK — n0 discovery "
+        "and, where a direct path can't be punched, an n0 relay (see "
+        "test_iroh_e2e.py)")
 
 
 @contextlib.contextmanager
@@ -99,17 +104,19 @@ def isolated_state_dir(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def no_tor_by_default(monkeypatch):
-    """No test spawns a ``tor`` child unless it asked to.
+def no_wan_by_default(monkeypatch):
+    """No test reaches the WAN unless it asked to.
 
-    The transport is on by default in a shipped node, which means every test that
-    reaches ``MeshNode.start()`` on a developer's machine would otherwise fork a real
-    tor, bind a SOCKS port and start bootstrapping against the live Tor network —
-    slow, non-deterministic, and network-dependent in a suite whose whole claim is
-    that it is none of those. The tests that ARE about Tor turn it back on
-    themselves (see ``tornet.py``), which is also what keeps them honest about
-    running against a tor daemon rather than against an ambient default.
+    iroh is on by default in a shipped node, which means every test that reaches
+    ``MeshNode.start()`` on a developer's machine would otherwise bind a real
+    endpoint and publish it to the n0 discovery service; Tor is worse still, forking
+    a real tor and bootstrapping against the live Tor network. Slow,
+    non-deterministic and network-dependent, in a suite whose whole claim is that it
+    is none of those. The tests that ARE about a transport turn it back on themselves
+    (see ``tornet.py``, ``test_iroh_e2e.py``), which is also what keeps them honest
+    about running against the real thing rather than an ambient default.
     """
+    monkeypatch.setenv("SZPONTNET_IROH", "0")
     monkeypatch.setenv("SZPONTNET_TOR", "0")
     yield
 

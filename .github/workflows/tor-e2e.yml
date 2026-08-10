@@ -16,7 +16,7 @@ on:
       - 'packages/szpontnet-core/szpontnet/tor.py'
       - 'packages/szpontnet-core/szpontnet/node.py'
       - 'packages/szpontnet-core/szpontnet/config.py'
-      - 'packages/szpontnet-core/szpontnet/onioncache.py'
+      - 'packages/szpontnet-core/szpontnet/wancache.py'
       - 'packages/szpontnet-core/tests/test_tor_e2e.py'
       - 'packages/szpontnet-core/tests/tornet.py'
       - 'packages/szpontnet-core/tests/simtor.py'

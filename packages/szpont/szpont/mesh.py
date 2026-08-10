@@ -187,13 +187,20 @@ class Mesh:
 
     # ---- transport and lifecycle ---------------------------------------
 
-    def tor_connect(self, onion: str, timeout: float = 10.0) -> str:
-        """Reach a peer at its ``.onion`` address, whether or not you ever met it
-        on the LAN. Returns the normalized address the node is dialing.
+    def iroh_connect(self, endpoint: str, timeout: float = 10.0) -> str:
+        """Reach a peer at its iroh endpoint id, whether or not you ever met it on
+        the LAN. Returns the normalized address the node is dialing.
 
         The dial happens in the background: the peer shows up in a later
-        :meth:`status`, not in this return value. Needs a node started with
-        ``SZPONTNET_TOR=1``.
+        :meth:`status`, not in this return value.
+        """
+        self._require_node()
+        with _translated():
+            return ctl.iroh_connect(endpoint, timeout=timeout)
+
+    def tor_connect(self, onion: str, timeout: float = 10.0) -> str:
+        """The :meth:`iroh_connect` twin for the DEPRECATED Tor transport. Needs a
+        node started with ``SZPONTNET_TOR=1``.
         """
         self._require_node()
         with _translated():

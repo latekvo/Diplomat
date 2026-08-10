@@ -248,9 +248,12 @@ def main(argv: list[str] | None = None) -> int:
                     choices=("personal", "foreign"),
                     help="set the trust level for UNKNOWN devices (personal|foreign); "
                     "ships foreign (a new device is untrusted until you promote it)")
+    ap.add_argument("--iroh-connect", metavar="ENDPOINT", dest="iroh_connect",
+                    help="dial a peer's iroh endpoint id to initiate contact — works "
+                         "even if you never met on the LAN "
+                         "(the node needs SZPONTNET_IROH unset or 1)")
     ap.add_argument("--tor-connect", metavar="ONION", dest="tor_connect",
-                    help="dial a peer's v3 onion address over Tor to initiate "
-                         "contact — works even if you never met on the LAN "
+                    help="the --iroh-connect twin for the DEPRECATED Tor transport "
                          "(the node needs SZPONTNET_TOR=1)")
     args = ap.parse_args(argv)
 
@@ -295,6 +298,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.default_trust:
             ctl.set_default_trust(args.default_trust)
             print(f"default trust for new devices → {args.default_trust}")
+            return 0
+        if args.iroh_connect:
+            endpoint = ctl.iroh_connect(args.iroh_connect)
+            print(f"dialing {endpoint} over iroh… (watch --status for the peer)")
             return 0
         if args.tor_connect:
             onion = ctl.tor_connect(args.tor_connect)

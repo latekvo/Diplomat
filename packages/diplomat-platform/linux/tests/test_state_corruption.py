@@ -19,7 +19,7 @@ from __future__ import annotations
 import pytest
 
 from diplomat_app import appconfig
-from szpontnet import identity, onioncache, peercache, statefile, stats, trust
+from szpontnet import identity, wancache, peercache, statefile, stats, trust
 
 # The ways a state file goes bad in the field: a truncated write, a hand-edit
 # that left the wrong shape, and bytes that aren't UTF-8 at all (a partially
@@ -50,9 +50,9 @@ def test_peer_cache_resets_instead_of_raising(mesh_dir, body):
 
 
 @pytest.mark.parametrize("body", CORRUPT_BODIES)
-def test_onion_cache_resets_instead_of_raising(mesh_dir, body):
-    (mesh_dir / "onions.json").write_bytes(body)
-    assert onioncache.load() == {}
+def test_wan_cache_resets_instead_of_raising(mesh_dir, body):
+    (mesh_dir / "wan.json").write_bytes(body)
+    assert wancache.load() == {}
 
 
 @pytest.mark.parametrize("body", CORRUPT_BODIES)

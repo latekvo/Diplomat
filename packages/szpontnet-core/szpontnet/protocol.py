@@ -276,15 +276,22 @@ class NodeInfo:
     # private key ([crypto]/[node] handshake). Trust then keys on this key's
     # fingerprint against a LOCAL allowlist ([trust]), never on any claimed field.
     pubkey: str = ""
-    # This node's permanent Tor v3 onion address ("<56-base32>.onion"), when it
-    # runs an onion service (SZPONTNET_TOR). Additive and OMITTED from the wire
-    # when empty, like pubkey/stats, so a LAN-only or older node interops unchanged.
-    # It is the node's stable, NAT-independent reachability handle: a peer that met
-    # this node on the LAN learns it here (in the very first signed hello) and can
-    # redial it over Tor from anywhere. Carried INSIDE the signed advert, so it is
-    # bound to the device key end to end — a relay cannot swap it to redirect a Tor
-    # dial (the onion is self-authenticating too, but the handshake still re-proves
-    # the device key, so a wrong onion just lands foreign). See tor.py.
+    # This node's permanent iroh endpoint id (64 lowercase hex, an Ed25519 public
+    # key), when it runs the iroh transport (SZPONTNET_IROH). Additive and OMITTED
+    # from the wire when empty, like pubkey/stats, so a LAN-only or older node
+    # interops unchanged. It is the node's stable, NAT-independent reachability
+    # handle: a peer that met this node on the LAN learns it here (in the very first
+    # signed hello) and can redial it from anywhere. Carried INSIDE the signed advert,
+    # so it is bound to the device key end to end — a relay cannot swap it to redirect
+    # a dial. Deliberately NOT the same key as `pubkey`: iroh signs its TLS handshake
+    # with the endpoint key while the mesh signs nonce challenges with the device key,
+    # and the handshake re-proves the device key regardless, so a wrong endpoint just
+    # lands foreign. See irohnet.py.
+    endpoint: str = ""
+    # This node's permanent Tor v3 onion address ("<56-base32>.onion"), when it runs
+    # the DEPRECATED onion-service transport (SZPONTNET_TOR). Additive and omitted
+    # when empty, exactly like `endpoint`, whose documentation applies to it in full.
+    # See tor.py.
     onion: str = ""
     # Load-balancing accounting, additive: {"plan", "usageAvg", "quotaLeft",
     # "surplus"} — surplus is the burn-down ratio ranked on, the rest display-only.
@@ -325,6 +332,8 @@ class NodeInfo:
             d["tokensWeekPct"] = round(self.tokens_week_pct, 3)
         if self.pubkey:
             d["pubkey"] = self.pubkey
+        if self.endpoint:
+            d["endpoint"] = self.endpoint
         if self.onion:
             d["onion"] = self.onion
         if self.stats:
@@ -353,6 +362,7 @@ class NodeInfo:
                 sees=tuple(str(s) for s in d.get("sees", [])),
                 duties_enabled=_finite_duties(d.get("dutiesEnabled", {})),
                 pubkey=str(d.get("pubkey", "")),
+                endpoint=str(d.get("endpoint", "")),
                 onion=str(d.get("onion", "")),
                 stats=_finite_stats(d.get("stats")),
                 sig=str(d.get("sig", "")),

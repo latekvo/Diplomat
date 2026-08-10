@@ -1,4 +1,13 @@
-# 14 — Tor transport (WAN reachability)
+# 14 — Tor transport (WAN reachability) — DEPRECATED
+
+> **Deprecated in favour of [15 — the iroh transport](15-iroh-transport.md), and
+> scheduled for removal.** Both reach the same peers with no public IP or domain, but
+> an onion costs a local `tor` daemon, a multi-minute bootstrap and a rendezvous
+> circuit per dial, to buy an anonymity property the mesh never asks for. This
+> transport is now **off by default** (`SZPONTNET_TOR=1` opts back in) and exists so
+> an established Tor mesh keeps working while its peers migrate. A node running both
+> prefers iroh. Everything below still describes it accurately for as long as it
+> ships.
 
 v1 is single-LAN ([02](02-discovery.md), [03](03-transport.md)): discovery is
 link-local multicast/broadcast, and a link is a direct TCP connection to a peer's
@@ -6,13 +15,14 @@ LAN address. That is the whole mesh as long as every machine is on the same
 network. The **Tor transport** lifts that restriction: once two nodes have met,
 they can keep talking from **anywhere**, with **no public IP and no domain name**.
 
-It is **on by default** and **atomic**. Complementary, not alternative: multicast
+It is **atomic**, and — since the deprecation above — **off by default**. Complementary, not alternative: multicast
 discovery and direct TCP links remain the path between peers that share a network,
 and this is what makes several such networks one mesh. Nothing below changes the LAN
 path — the Tor transport is added *beside* it.
 
-Turned off with `SZPONTNET_TOR=0` (`false`/`no`/`off`/empty are honoured too), and
-absent whenever no `tor` binary is installed. In either case the node is exactly the
+Turned on with `SZPONTNET_TOR=1` (`true`/`yes`/`on` are honoured too; every other
+value, including a typo, leaves it off), and absent whenever no `tor` binary is
+installed. In either case the node is exactly the
 LAN-only node described in the rest of these docs, wire-identical.
 
 > **A node running this transport publishes a stable onion service by default.** It
@@ -20,7 +30,7 @@ LAN-only node described in the rest of these docs, wire-identical.
 > ([Security notes](#security-notes)) — but on an **open mesh** (no `SZPONTNET_SECRET`,
 > the documented home-LAN default) any peer holding the address can link from the
 > WAN, which on a LAN-only node would have required being on the LAN. Set a join
-> secret, or `SZPONTNET_TOR=0`, if that is not what you want.
+> secret, or leave `SZPONTNET_TOR` unset, if that is not what you want.
 
 ## The idea in one paragraph
 
@@ -64,9 +74,11 @@ public key — but the transport does not lean on that: after connecting, the pe
 still proves its **device** key with the normal nonce `auth`, so a wrong or hijacked
 onion simply lands the connection as an unverified, `foreign` peer.)
 
-A node persists the onions it learns in `onions.json` (keyed by node id, with the
-device fingerprint it was paired with) — the WAN sibling of the LAN
-`peers.json` redial cache ([08](08-state.md)). It is a best-effort accelerator: a
+A node persists the onions it learns in `wan.json`, the shared WAN address cache
+described in [15](15-iroh-transport.md#address-exchange) (keyed by node id, with the
+device fingerprint it was paired with) — the WAN sibling of the LAN `peers.json`
+redial cache ([08](08-state.md)). A node upgrading from a Tor-only release reads its
+former `onions.json` once, so it does not forget peers it already knew. It is a best-effort accelerator: a
 missing or stale entry costs at most a fenced dial.
 
 ## Reconnecting: reachability with backoff
@@ -174,7 +186,7 @@ the next node's Tor bring-up.
 
 | Env | Meaning |
 |-----|---------|
-| `SZPONTNET_TOR=0` | Disable the Tor transport → LAN-only. On by default; `false`/`no`/`off`/empty also disable. Any other value leaves it on. |
+| `SZPONTNET_TOR=1` | Enable the deprecated Tor transport. Off by default; `true`/`yes`/`on` also enable, and every other value leaves it off. |
 | `SZPONTNET_TOR_BINARY` | Path to a non-PATH `tor` executable. |
 | `SZPONTNET_TOR_BOOTSTRAP_SECS` | Bootstrap wait before giving up (default 90). |
 

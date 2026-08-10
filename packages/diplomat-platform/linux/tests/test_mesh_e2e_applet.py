@@ -46,6 +46,7 @@ def _mesh_env(tmp: Path) -> dict:
         # The Tor transport is on by default; this test is about the applet over a
         # loopback LAN, so keep it off rather than fork a `tor` per node and wait on
         # the live Tor network. See szpontnet-core's test_tor_e2e.py for the onion.
+        "SZPONTNET_IROH": "0",
         "SZPONTNET_TOR": "0",
         "SZPONTNET_MCAST_PORT": str(_PORT_BASE),
         "SZPONTNET_TCP_BASE": str(_PORT_BASE + 1),

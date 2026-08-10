@@ -96,6 +96,7 @@ def _proto_env() -> dict:
         # bootstrap against the live Tor network. These scenarios are about the
         # loopback LAN. (The onion path has its own suite — szpontnet-core's
         # test_tor_e2e.py.)
+        "SZPONTNET_IROH": "0",
         "SZPONTNET_TOR": "0",
         "SZPONTNET_MCAST_PORT": str(_PORT_BASE),
         "SZPONTNET_TCP_BASE": str(_PORT_BASE + 1),

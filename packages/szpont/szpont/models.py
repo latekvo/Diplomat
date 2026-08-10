@@ -125,6 +125,7 @@ class Node:
     strength_auto: bool = True
     fingerprint: str = ""
     pubkey: str = ""
+    endpoint: str = ""
     onion: str = ""
     duties_enabled: dict = field(default_factory=dict)
     quota: Quota = field(default_factory=Quota)
@@ -169,6 +170,7 @@ def _node_fields(d: dict) -> dict:
         "strength_auto": bool(d.get("strengthAuto", True)),
         "fingerprint": _str(d, "fingerprint"),
         "pubkey": _str(d, "pubkey"),
+        "endpoint": _str(d, "endpoint"),
         "onion": _str(d, "onion"),
         "duties_enabled": _dict(d, "dutiesEnabled"),
         "quota": Quota.from_dict(_dict(d, "stats")),
@@ -396,9 +398,30 @@ class Claim:
 
 
 @dataclass(frozen=True, kw_only=True)
+class Iroh:
+    """The node's iroh transport: whether it is on, whether the endpoint is online
+    yet, and the address to hand a peer for a manual dial."""
+
+    enabled: bool = False
+    ready: bool = False
+    endpoint: str | None = None
+
+    @classmethod
+    def from_dict(cls, d: dict | None) -> "Iroh":
+        d = d or {}
+        endpoint = d.get("endpoint")
+        return cls(
+            enabled=bool(d.get("enabled")),
+            ready=bool(d.get("ready")),
+            endpoint=endpoint if isinstance(endpoint, str) else None,
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
 class Tor:
-    """The node's Tor transport: whether it is on, whether the onion service is
-    live yet, and the address to hand a peer for a manual dial."""
+    """The node's DEPRECATED Tor transport, the :class:`Iroh` twin: whether it is
+    on, whether the onion service is live yet, and the address to hand a peer for a
+    manual dial."""
 
     enabled: bool = False
     ready: bool = False
@@ -455,6 +478,7 @@ class Snapshot:
     trusted: tuple[Device, ...] = ()
     banned: tuple[Device, ...] = ()
     default_trust: str = "foreign"
+    iroh: Iroh = field(default_factory=Iroh)
     tor: Tor = field(default_factory=Tor)
     tcp_port: int = 0
     pid: int = 0
@@ -509,6 +533,7 @@ class Snapshot:
             trusted=tuple(Device.from_dict(e) for e in _objects(d, "trusted")),
             banned=tuple(Device.from_dict(e) for e in _objects(d, "banned")),
             default_trust=_str(d, "defaultTrust", "foreign"),
+            iroh=Iroh.from_dict(_dict(d, "iroh")),
             tor=Tor.from_dict(_dict(d, "tor")),
             tcp_port=_int(d, "tcpPort"),
             pid=_int(d, "pid"),

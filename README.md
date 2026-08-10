@@ -379,26 +379,35 @@ Diplomat's *own* mesh knobs keep their names (`DIPLOMAT_MESH_POLL_SECS`,
 node.
 
 **Beyond one LAN.** Discovery is link-local, so on its own the mesh stops at the
-subnet. The **Tor transport** ([spec ch 14](packages/szpontnet-spec/docs/14-tor-transport.md))
-is what joins several of them: each node runs a permanent v3 onion service,
-advertises its `.onion` inside its signed advert, and redials known-but-unseen
-*personal* peers over Tor — so a desk at home and a desk at the office are one mesh,
-with no public IP, no domain and no port forwarding. It is **on by default** and
-complementary to the LAN rather than a replacement for it: peers that share a
-network still find and reach each other by multicast and direct TCP. A node with no
-`tor` binary installed is simply LAN-only, and `SZPONTNET_TOR=0` turns it off.
-Reach a peer you have never shared a LAN with by pasting its address:
-`python3 -m szpontnet --tor-connect <hash>.onion`.
+subnet. The **iroh transport** ([spec ch 15](packages/szpontnet-spec/docs/15-iroh-transport.md))
+is what joins several of them: each node binds a permanent QUIC endpoint whose id is
+an Ed25519 public key, advertises that id inside its signed advert, and redials
+known-but-unseen *personal* peers **by identity, not by address** — so a desk at home
+and a desk at the office are one mesh, with no public IP, no domain and no port
+forwarding. It is **on by default** and complementary to the LAN rather than a
+replacement for it: peers that share a network still find and reach each other by
+multicast and direct TCP. A node without the optional `iroh` package
+(`pip install 'szpontnet[wan]'`) is simply LAN-only, and `SZPONTNET_IROH=0` turns it
+off. Reach a peer you have never shared a LAN with by pasting its address:
+`python3 -m szpontnet --iroh-connect <64-hex>`.
+
+The older **Tor transport** ([spec ch 14](packages/szpontnet-spec/docs/14-tor-transport.md))
+does the same job through a v3 onion service and is **deprecated**: it is off unless
+`SZPONTNET_TOR=1`, and it will be removed. It cost a local `tor` daemon, a
+multi-minute bootstrap and a fresh circuit per dial, to buy an anonymity property
+this mesh never asked for. A node may run both while its peers migrate, and prefers
+iroh when a peer is reachable either way.
 
 **Trust model.** The mesh is designed around a LAN you control (IPv4; discovery is
-multicast + subnet broadcast), and — since the Tor transport is on by default — a
-node also publishes an onion that peers can reach it on from anywhere. The onion
-carries peer links only; the operator's control channel (`stop`, `trust`, `dispatch`,
-`set-attr`) is refused on any connection arriving over it. Note what that leaves: on
-an **open** mesh (no join secret) a peer holding your onion can link and, subject to
-trust, exchange gossip and dispatch from the WAN, where before it would have had to
-be on your LAN. The two fences below apply identically over either transport, and
-`SZPONTNET_TOR=0` removes the WAN surface entirely.
+multicast + subnet broadcast), and — since the iroh transport is on by default — a
+node also publishes an endpoint that peers can reach it on from anywhere. A WAN
+address carries peer links only; the operator's control channel (`stop`, `trust`,
+`dispatch`, `set-attr`) is refused on any connection that did not arrive on the LAN.
+Note what that leaves: on an **open** mesh (no join secret) a peer holding your
+endpoint can link and, subject to trust, exchange gossip and dispatch from the WAN,
+where before it would have had to be on your LAN. The two fences below apply
+identically over every transport, and `SZPONTNET_IROH=0` removes the WAN surface
+entirely.
 
 Two independent fences:
 

@@ -17,8 +17,10 @@ documentation *of this code*, and it is versioned and read as such.
 ## Standing on its own
 
 The library depends on nothing — not on the application that happens to ship it in
-this repository, and not on any package outside the standard library (Ed25519
-device identity is an optional extra; without it a node runs keyless).
+this repository, and not on any package outside the standard library. Two optional
+extras buy reach rather than function, and a node without either degrades instead of
+failing: `trust` (Ed25519 device identity; without it a node runs keyless) and `wan`
+(iroh WAN reachability; without it a node runs LAN-only).
 
 Every knob it reads from the environment is `SZPONTNET_<NAME>`, through a single
 accessor ([`szpontnet/env.py`](https://github.com/latekvo/Diplomat/blob/main/packages/szpontnet-core/szpontnet/env.py)) so that is a property of the code
@@ -74,11 +76,16 @@ and another walks the package AST to catch an environment read that skips
 
 Beyond the unit and host-seam tests, the integration ones live here too: real nodes
 over loopback for the control-edit state flush, the one-node-per-state-dir startup
-lock, and the Tor transport at two altitudes — the node's Tor *decisions* against an
-injected dialer (deterministic, no daemon in the way), and the whole onion path
-against a real tor daemon.
+lock, and each WAN transport at two altitudes — the node's *decisions* against an
+injected dialer (deterministic, nothing in the way), and the whole path against the
+real thing.
 
-The second is `test_tor_e2e.py`, and it runs against either of two backends. By
+For iroh that second altitude is `test_iroh_e2e.py`: real endpoints, dialed by key
+alone, up to two whole mesh nodes that link over QUIC and run a dispatch across it.
+It uses the network (discovery, and a relay where no direct path can be punched), so
+it is marked `iroh_e2e` and excluded from the default run.
+
+For Tor it is `test_tor_e2e.py`, and it runs against either of two backends. By
 default a **simulated onion network**: `simtor.py`, a stand-in daemon speaking the
 exact contract `tor.py` depends on — it parses the torrc it is handed, logs a
 bootstrap to stdout, writes a hostname derived from a persisted key, and answers real
@@ -88,8 +95,8 @@ simulated. With `SZPONTNET_TEST_TOR=real` the same tests run against the actual 
 binary and the live Tor network (slower, and skipped when no `tor` is installed).
 
 Nodes there are whole processes on distinct multicast ports, so they cannot discover
-each other on the LAN at all — a link between them came over an onion, which is the
-claim the transport exists to make.
+each other on the LAN at all — a link between them came over the transport under
+test, which is the claim it exists to make.
 
 ### Whole meshes, on a network the test controls
 
