@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "szpont"
-version = "0.1.0"
+version = "0.2.0"
 description = "Typed Python bindings for SzpontNet, the leaderless LAN peer-to-peer resource-sharing protocol"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -26,7 +26,7 @@ classifiers = [
 ]
 # The node itself. This package is bindings for it and has no independent
 # behaviour, so the dependency is required rather than an extra.
-dependencies = ["szpontnet>=0.5,<0.6"]
+dependencies = ["szpontnet>=0.6,<0.7"]
 
 [project.optional-dependencies]
 # Passed through to the library: Ed25519 device identity. Without it a node runs
