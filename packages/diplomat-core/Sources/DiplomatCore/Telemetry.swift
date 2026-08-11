@@ -371,10 +371,10 @@ public enum Telemetry {
 
     // MARK: - Token split
 
-    /// Cumulative-counter deltas over the range, split monitored-repo vs everything
-    /// else. A counter that went DOWN between two samples means the scanner's cursor
-    /// file was lost and it restarted from zero, so that pair contributes nothing
-    /// rather than a huge negative.
+    /// Cumulative-counter deltas across the samples given, split monitored-repo vs
+    /// everything else. A counter that went DOWN between two samples means the
+    /// scanner's cursor file was lost and it restarted from zero, so that pair
+    /// contributes nothing rather than a huge negative.
     public static func tokenSplit(_ samples: [Sample]) -> (repo: Double, other: Double) {
         var repo = 0.0, other = 0.0
         for i in 1..<max(samples.count, 1) {
@@ -450,7 +450,17 @@ public enum Telemetry {
     public static func summarize(_ ledger: Ledger, now: Double, days: Double,
                                  steps: Int, binCount: Int, z: Double) -> Summary {
         let start = now - days * 86_400
-        let samples = ledger.samples.filter { $0.at >= start && $0.at <= now }
+        // The token counters are cumulative, so what the range spent is the rise
+        // since the last reading taken BEFORE it opened. Starting from the first
+        // reading INSIDE it drops everything spent between those two — a whole
+        // sample interval, which on a bursty day is a sixth of what a 1-day range
+        // is being asked about.
+        let inside = ledger.samples.indices.filter {
+            ledger.samples[$0].at >= start && ledger.samples[$0].at <= now
+        }
+        let samples = inside.isEmpty
+            ? []
+            : Array(ledger.samples[max(0, inside[0] - 1)...inside[inside.count - 1]])
 
         // What a rate-limit window is worth in tokens is a property of the ACCOUNT,
         // not of the lookback the reader happens to have selected — so it is priced
