@@ -182,12 +182,18 @@ jobs:
       - name: Install the library (with the trust extra) and pytest
         run: pip install -e './packages/szpontnet-core[trust]' pytest
       - name: Unit + host-seam tests
-        run: pytest packages/szpontnet-core/tests -q -m 'not tor_e2e'
+        run: pytest packages/szpontnet-core/tests -q -m 'not tor_e2e and not iroh_e2e'
       # The onion path against a real tor daemon — here the simulated one, which
       # needs no network and no `tor` installed but still runs every line of the
       # transport: a spawned daemon, a torrc it parses, SOCKS5 on a socket, and whole
       # node processes that can only reach each other over an onion. The same tests
       # run against the live Tor network in tor-e2e.yml.
+      #
+      # The iroh transport has no simulated backend to run here: its endpoints reach
+      # a real discovery service, so `iroh_e2e` is excluded above and runs in
+      # iroh-e2e.yml instead. What this job does cover is that nothing in the library
+      # hard-requires the optional package — it installs without the `wan` extra, so
+      # an import that stopped being lazy would fail the run above outright.
       - name: Tor transport end-to-end (simulated onion network)
         run: pytest packages/szpontnet-core/tests/test_tor_e2e.py -q
       # The tester's own codec and placement oracle, derived from the spec rather

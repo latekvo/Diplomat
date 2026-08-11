@@ -103,13 +103,53 @@ def secret() -> str:
     return env.get("SECRET", "")
 
 
-# Spellings that turn OFF a switch which is on by default. Deliberately lenient,
-# and only here: for an opt-in knob a misspelt value fails safe (the feature stays
-# off), but for a default-ON one it fails the wrong way — an operator who wrote
+# Spellings that turn OFF a switch which is on by default. Deliberately lenient:
+# for an opt-in knob a misspelt value fails safe (the feature stays off), but for a
+# default-ON one it fails the wrong way — an operator who wrote
 # ``SZPONTNET_TOR=false`` and got a tor process anyway has no way to read that as
 # anything but a bug. The empty string counts: ``SZPONTNET_TOR=`` is how a unit file
 # or a wrapper script clears a variable it cannot unset.
 _OFF_VALUES = frozenset({"0", "false", "no", "off", ""})
+
+# The mirror of :data:`_OFF_VALUES`, for a switch that is OFF by default. An opt-in
+# knob must recognise only these: anything else — a typo, a stray quote, the word
+# "enabled" — leaves the feature off, which is the direction that fails safe.
+_ON_VALUES = frozenset({"1", "true", "yes", "on"})
+
+
+def iroh_enabled() -> bool:
+    """Whether this node runs the iroh QUIC transport — off by default, on only for
+    an explicit ``SZPONTNET_IROH`` in :data:`_ON_VALUES`.
+
+    The transport is complementary to the LAN, not an alternative to it: the node
+    binds a permanent endpoint (an Ed25519 public key it advertises inside its signed
+    advert) and dials known-but-unseen personal peers by that key with exponential
+    backoff, which is what joins several LANs into one wide-area mesh. Multicast
+    discovery and direct TCP links are untouched, and remain the path between peers
+    that share a network.
+
+    It reaches the same peers as the Tor transport (:func:`tor_enabled`) without a
+    daemon, a multi-minute bootstrap, or a rendezvous circuit per dial, and a node
+    running both prefers it. A node may run either, both, or neither.
+
+    On is an *intent*, not a promise: a machine without the optional ``iroh`` package,
+    or one whose endpoint never comes online, simply does not get this transport — it
+    degrades, it never stops a node from starting. See irohnet.py."""
+    return (env.get("IROH", "") or "").strip().lower() in _ON_VALUES
+
+
+def iroh_online_timeout() -> float:
+    """How long to wait for the iroh endpoint to come online before giving up and
+    staying LAN-only (SZPONTNET_IROH_ONLINE_SECS). The node stays fully usable on the
+    LAN in the meantime."""
+    try:
+        v = float(env.get("IROH_ONLINE_SECS", "30"))
+    except ValueError:
+        return 30.0
+    # Reject non-finite / non-positive: a non-finite timeout makes the wait block
+    # FOREVER — the opposite of "give up and stay LAN-only" — and a non-positive one
+    # is meaningless.
+    return v if math.isfinite(v) and v > 0 else 30.0
 
 
 def tor_enabled() -> bool:
@@ -124,8 +164,8 @@ def tor_enabled() -> bool:
     between peers that share a network.
 
     On is an *intent*, not a promise: a machine with no ``tor`` binary, or one whose
-    tor fails to bootstrap, is LAN-only — the transport degrades, it never stops a
-    node from starting. See tor.py."""
+    tor fails to bootstrap, simply does not get this transport — it degrades, it
+    never stops a node from starting. See tor.py."""
     return (env.get("TOR", "1") or "").strip().lower() not in _OFF_VALUES
 
 

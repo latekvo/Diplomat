@@ -47,7 +47,7 @@ from .hosting import (Host, NoRunner, build_host, duty_model, register_host,
                       unregister_host)
 from .mesh import DEFAULT_DISPATCH_TIMEOUT, DEFAULT_TIMEOUT, Mesh
 from .models import (NEUTRAL_SURPLUS, Assignment, Claim, Device, Dispatch, Node,
-                     Peer, Quota, Shortfall, Slot, Snapshot, Tor)
+                     Iroh, Peer, Quota, Shortfall, Slot, Snapshot, Tor)
 
 __version__ = "0.2.0"
 
@@ -59,7 +59,7 @@ __all__ = [
     "SzpontError", "NodeUnavailable", "CommandRejected",
     # models
     "Snapshot", "Node", "Peer", "Quota", "Assignment", "Shortfall", "Dispatch",
-    "Slot", "Claim", "Device", "Tor", "NEUTRAL_SURPLUS",
+    "Slot", "Claim", "Device", "Iroh", "Tor", "NEUTRAL_SURPLUS",
     # hosting
     "Host", "NoRunner", "build_host", "register_host", "unregister_host",
     "duty_model",

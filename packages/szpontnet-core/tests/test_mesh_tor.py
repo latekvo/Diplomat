@@ -30,7 +30,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 )
 
 from szpontnet import (
-    crypto, node as nodemod, onioncache, protocol, tor,
+    crypto, node as nodemod, wancache, protocol, tor,
 )
 from szpontnet.protocol import NodeInfo
 
@@ -71,17 +71,33 @@ class _FakeWriter:
         return default
 
 
+def _install_tor(node, impl):
+    """Register an injected Tor transport on ``node`` the way ``MeshNode.start()``
+    would, and return the :class:`node._Wan` record the generic WAN path takes.
+    Tests inject a fake transport rather than reaching the real one, so they must
+    also register it — the node dials through ``_wan``, not through ``node.tor``."""
+    node.tor = impl
+    record = nodemod._Wan(name="tor", impl=impl, field="onion",
+                          normalize=tor.normalize_onion)
+    node._wan = [record]
+    return record
+
+
 class _FakeTor:
     """An injected Tor dialer: ``dial`` connects to a real loopback TCP port,
-    standing in for the onion service's local forward. ``onion_address`` returns a
-    fixed onion so the ctl/redial gates that check readiness pass."""
+    standing in for the onion service's local forward. ``address`` returns a fixed
+    onion so the ctl/redial gates that check readiness pass."""
 
     def __init__(self, onion: str, connect_port: int):
         self._onion = onion
         self._port = connect_port
 
-    def onion_address(self):
+    def address(self):
         return self._onion
+
+    # The transport's own public name for the same thing, kept so this fake stays a
+    # faithful stand-in for TorTransport (which the node reaches via `address`).
+    onion_address = address
 
     async def dial(self, _onion):
         return await asyncio.open_connection(
@@ -105,7 +121,7 @@ def _signed_advert(key, node_id, onion="", **kw):
 
 def test_node_advertises_its_onion_inside_the_signed_advert(tmp_path, monkeypatch):
     node = _fresh_node(tmp_path, monkeypatch)
-    node.tor = _FakeTor(_ONION_A, connect_port=0)
+    _install_tor(node, _FakeTor(_ONION_A, connect_port=0))
     raw = node.info.to_dict()
     assert raw["onion"] == _ONION_A
     # It is signed: the node's own advert verifies, and tampering the onion breaks it.
@@ -113,6 +129,7 @@ def test_node_advertises_its_onion_inside_the_signed_advert(tmp_path, monkeypatc
     assert not node._advert_authentic(dict(raw, onion=_ONION_B))
     # With Tor off, no onion is advertised (LAN-only nodes stay wire-identical).
     node.tor = None
+    node._wan = []
     assert "onion" not in node.info.to_dict()
 
 
@@ -126,9 +143,9 @@ def test_learns_and_persists_a_peer_onion_from_its_hello(tmp_path, monkeypatch):
     info = NodeInfo.from_dict(braw)
     node._learn_node(info, "192.168.1.9", _FakeWriter(), raw=braw)
     # The onion is cached in memory and persisted, keyed to the proven fingerprint.
-    assert node._onion_cache["peer-b"].onion == _ONION_B
-    assert node._onion_cache["peer-b"].fingerprint == bkey.fingerprint
-    assert onioncache.load()["peer-b"].onion == _ONION_B
+    assert node._wan_cache["peer-b"].onion == _ONION_B
+    assert node._wan_cache["peer-b"].fingerprint == bkey.fingerprint
+    assert wancache.load()["peer-b"].onion == _ONION_B
     # The LAN address cache is unaffected — both transports coexist.
     assert node._peer_cache["peer-b"] == ("192.168.1.9", 40901)
 
@@ -145,7 +162,7 @@ def test_a_tor_link_never_enters_the_lan_redial_cache(tmp_path, monkeypatch):
     fw = _FakeWriter()
     node._link_transport[fw] = "tor"  # this link is over Tor (inbound lands on loopback)
     node._learn_node(NodeInfo.from_dict(braw), "127.0.0.1", fw, raw=braw)
-    assert node._onion_cache["peer-b"].onion == _ONION_B  # onion remembered…
+    assert node._wan_cache["peer-b"].onion == _ONION_B  # onion remembered…
     assert "peer-b" not in node._peer_cache                # …LAN cache untouched
     assert node.peers["peer-b"].transport == "tor"
 
@@ -159,7 +176,7 @@ def test_gossiped_onion_is_not_remembered_only_a_direct_link(tmp_path, monkeypat
     bkey = crypto.DeviceKey(Ed25519PrivateKey.generate())
     braw = _signed_advert(bkey, "peer-b", onion=_ONION_B, tcp_port=40901)
     node._learn_node(NodeInfo.from_dict(braw), "10.0.0.2", None, raw=braw)  # gossip relay
-    assert "peer-b" not in node._onion_cache
+    assert "peer-b" not in node._wan_cache
 
 
 def test_a_forged_or_tampered_onion_advert_is_not_learned(tmp_path, monkeypatch):
@@ -177,13 +194,13 @@ def test_a_forged_or_tampered_onion_advert_is_not_learned(tmp_path, monkeypatch)
     tampered = _signed_advert(bkey, "peer-b", onion=_ONION_B, tcp_port=40901)
     tampered["onion"] = _ONION_A  # sig covers _ONION_B; the wire now says _ONION_A
     assert node._on_message({"t": "hello", "node": tampered}, "127.0.0.1", fw) is None
-    assert node._onion_cache == {}  # forged advert dropped whole — nothing learned
+    assert node._wan_cache == {}  # forged advert dropped whole — nothing learned
 
     # (b) the sig is stripped off an otherwise-keyed advert → likewise rejected.
     unsigned = _signed_advert(bkey, "peer-b", onion=_ONION_B, tcp_port=40901)
     unsigned.pop("sig", None)
     assert node._on_message({"t": "hello", "node": unsigned}, "127.0.0.1", fw) is None
-    assert node._onion_cache == {}
+    assert node._wan_cache == {}
 
 
 # MARK: - backoff
@@ -191,21 +208,21 @@ def test_a_forged_or_tampered_onion_advert_is_not_learned(tmp_path, monkeypatch)
 
 def test_backoff_grows_geometrically_and_resets(tmp_path, monkeypatch):
     node = _fresh_node(tmp_path, monkeypatch)
-    node._tor_grow_backoff("p")
-    first = node._tor_backoff["p"]
-    assert first.interval == nodemod._TOR_BACKOFF_MIN_SECS * nodemod._TOR_BACKOFF_FACTOR
+    node._wan_grow_backoff("p")
+    first = node._wan_backoff["p"]
+    assert first.interval == nodemod._WAN_BACKOFF_MIN_SECS * nodemod._WAN_BACKOFF_FACTOR
     assert first.next_attempt > 0
-    node._tor_grow_backoff("p")
-    assert node._tor_backoff["p"].interval == (
-        nodemod._TOR_BACKOFF_MIN_SECS * nodemod._TOR_BACKOFF_FACTOR ** 2)
+    node._wan_grow_backoff("p")
+    assert node._wan_backoff["p"].interval == (
+        nodemod._WAN_BACKOFF_MIN_SECS * nodemod._WAN_BACKOFF_FACTOR ** 2)
     # …never past the ceiling.
     for _ in range(20):
-        node._tor_grow_backoff("p")
-    assert node._tor_backoff["p"].interval == nodemod._TOR_BACKOFF_MAX_SECS
+        node._wan_grow_backoff("p")
+    assert node._wan_backoff["p"].interval == nodemod._WAN_BACKOFF_MAX_SECS
     # A bound Tor link (not a bare SOCKS answer) clears the schedule, so a reachable
     # peer that flaps reconnects fast — see test_tor_dial_answer_without_a_link_keeps...
-    node._tor_reset_backoff("p")
-    assert "p" not in node._tor_backoff
+    node._wan_reset_backoff("p")
+    assert "p" not in node._wan_backoff
 
 
 def test_redial_targets_respects_dial_rule_liveness_and_backoff(tmp_path, monkeypatch):
@@ -216,21 +233,22 @@ def test_redial_targets_respects_dial_rule_liveness_and_backoff(tmp_path, monkey
     node = _fresh_node(tmp_path, monkeypatch, SZPONTNET_DEFAULT_TRUST="personal")
     lo, hi = ("0" * 32, "z" * 32)  # one below our id, one above
     node.local = _dc_replace(node.local, id="m" * 32)
-    node._onion_cache = {
-        hi: onioncache.OnionEntry(onion=_ONION_B),   # we dial (our id sorts below)
-        lo: onioncache.OnionEntry(onion=_ONION_A),   # they dial us — never a target
+    node._wan_cache = {
+        hi: wancache.WanEntry(onion=_ONION_B),   # we dial (our id sorts below)
+        lo: wancache.WanEntry(onion=_ONION_A),   # they dial us — never a target
     }
+    _install_tor(node, _FakeTor(_ONION_A, connect_port=0))
     now = _time.monotonic()
-    assert [pid for pid, _ in node._tor_redial_targets(now)] == [hi]
+    assert [pid for pid, _w, _a in node._wan_redial_targets(now)] == [hi]
     # A live link to the dialable peer removes it — no aggressive switching.
     node.peers[hi] = nodemod.Peer(NodeInfo.from_dict(
         {"id": hi, "name": hi, "platform": "linux", "tier": 3, "tokens": "ok"}), "x")
     node.peers[hi].writer = _FakeWriter()
-    assert node._tor_redial_targets(now) == []
+    assert node._wan_redial_targets(now) == []
     # And an un-due backoff also holds it back.
     del node.peers[hi]
-    node._tor_backoff[hi] = nodemod._TorBackoff(next_attempt=now + 100, interval=20)
-    assert node._tor_redial_targets(now) == []
+    node._wan_backoff[hi] = nodemod._WanBackoff(next_attempt=now + 100, interval=20)
+    assert node._wan_redial_targets(now) == []
 
 
 def test_redial_loop_skips_dialing_while_the_onion_is_not_live(tmp_path, monkeypatch):
@@ -240,32 +258,32 @@ def test_redial_loop_skips_dialing_while_the_onion_is_not_live(tmp_path, monkeyp
     None the loop must dial NOTHING — else a node whose tor died dials out through a dead
     SOCKS port forever. (The injected _FakeTor is always live, so this gate had no node-
     level test.)"""
-    monkeypatch.setattr(nodemod, "_TOR_REDIAL_TICK_SECS", 0.01)
+    monkeypatch.setattr(nodemod, "_WAN_REDIAL_TICK_SECS", 0.01)
     node = _fresh_node(tmp_path, monkeypatch, SZPONTNET_DEFAULT_TRUST="personal")
     node.local = _dc_replace(node.local, id="0" * 32)  # sorts below the target
     target = "z" * 32
-    node._onion_cache = {target: onioncache.OnionEntry(onion=_ONION_B)}
+    node._wan_cache = {target: wancache.WanEntry(onion=_ONION_B)}
     dialed: list[str | None] = []
 
-    async def _fake_dial(onion, peer_id=None):
+    async def _fake_dial(_w, _address, peer_id=None):
         dialed.append(peer_id)
 
-    monkeypatch.setattr(node, "_tor_dial", _fake_dial)
+    monkeypatch.setattr(node, "_wan_dial", _fake_dial)
 
     class _TorLiveness:
         def __init__(self, onion):
             self._onion = onion
 
-        def onion_address(self):
+        def address(self):
             return self._onion
 
     async def run_briefly():
-        node.tor = _TorLiveness(None)  # tor present but the onion is not live yet
-        t = asyncio.get_running_loop().create_task(node._tor_redial_loop())
+        _install_tor(node, _TorLiveness(None))  # present, onion not live yet
+        t = asyncio.get_running_loop().create_task(node._wan_redial_loop())
         try:
             await asyncio.sleep(0.05)   # several ticks with a dead onion
             assert dialed == []          # not live → dials nothing, despite a due target
-            node.tor = _TorLiveness(_ONION_B)  # onion comes up
+            _install_tor(node, _TorLiveness(_ONION_B))  # onion comes up
             await _await_until(lambda: target in dialed, 2.0,
                                "a due personal target was not dialed once the onion was live")
         finally:
@@ -283,7 +301,7 @@ def test_tor_dial_backs_off_when_the_socks_handshake_dies(tmp_path, monkeypatch)
     node = _fresh_node(tmp_path, monkeypatch)
 
     class _Broken:
-        def onion_address(self):
+        def address(self):
             return _ONION_B
 
         async def dial(self, _onion):
@@ -292,10 +310,10 @@ def test_tor_dial_backs_off_when_the_socks_handshake_dies(tmp_path, monkeypatch)
         async def stop(self):
             pass
 
-    node.tor = _Broken()
-    asyncio.run(node._tor_dial(_ONION_B, peer_id="p"))  # must NOT raise
-    assert "p" in node._tor_backoff and node._tor_backoff["p"].next_attempt > 0
-    assert _ONION_B not in node._tor_dialing  # in-flight guard released
+    w = _install_tor(node, _Broken())
+    asyncio.run(node._wan_dial(w, _ONION_B, peer_id="p"))  # must NOT raise
+    assert "p" in node._wan_backoff and node._wan_backoff["p"].next_attempt > 0
+    assert _ONION_B not in node._wan_dialing  # in-flight guard released
 
 
 def test_tor_dial_drain_failure_does_not_leak_the_transport_map(tmp_path, monkeypatch):
@@ -309,7 +327,7 @@ def test_tor_dial_drain_failure_does_not_leak_the_transport_map(tmp_path, monkey
             raise ConnectionError("flush failed")
 
     class _Tor:
-        def onion_address(self):
+        def address(self):
             return _ONION_B
 
         async def dial(self, _onion):
@@ -318,10 +336,10 @@ def test_tor_dial_drain_failure_does_not_leak_the_transport_map(tmp_path, monkey
         async def stop(self):
             pass
 
-    node.tor = _Tor()
-    asyncio.run(node._tor_dial(_ONION_B, peer_id="p"))
+    w = _install_tor(node, _Tor())
+    asyncio.run(node._wan_dial(w, _ONION_B, peer_id="p"))
     assert node._link_transport == {}          # writer popped despite early return
-    assert _ONION_B not in node._tor_dialing
+    assert _ONION_B not in node._wan_dialing
 
 
 def test_tor_inbound_closing_before_a_hello_does_not_leak_the_transport_map(
@@ -337,7 +355,7 @@ def test_tor_inbound_closing_before_a_hello_does_not_leak_the_transport_map(
             return b""
 
     fw = _FakeWriter()
-    asyncio.run(node._on_tor_inbound(_EOFReader(), fw))
+    asyncio.run(node._on_wan_inbound("tor", _EOFReader(), fw))
     assert node._link_transport == {}
 
 
@@ -430,7 +448,7 @@ def test_tor_dial_answer_without_a_link_keeps_the_backoff(tmp_path, monkeypatch)
     node = _fresh_node(tmp_path, monkeypatch)
 
     class _AnswerNoLinkTor:
-        def onion_address(self):
+        def address(self):
             return _ONION_B
 
         async def dial(self, _onion):
@@ -439,14 +457,14 @@ def test_tor_dial_answer_without_a_link_keeps_the_backoff(tmp_path, monkeypatch)
         async def stop(self):
             pass
 
-    node.tor = _AnswerNoLinkTor()
-    asyncio.run(node._tor_dial(_ONION_B, peer_id="p"))
+    w = _install_tor(node, _AnswerNoLinkTor())
+    asyncio.run(node._wan_dial(w, _ONION_B, peer_id="p"))
     # Pre-scheduled once (interval doubled off the floor) and NOT reset by the answer.
-    assert "p" in node._tor_backoff
-    assert node._tor_backoff["p"].interval == (
-        nodemod._TOR_BACKOFF_MIN_SECS * nodemod._TOR_BACKOFF_FACTOR)
-    assert node._tor_backoff["p"].next_attempt > 0
-    assert _ONION_B not in node._tor_dialing  # in-flight guard released
+    assert "p" in node._wan_backoff
+    assert node._wan_backoff["p"].interval == (
+        nodemod._WAN_BACKOFF_MIN_SECS * nodemod._WAN_BACKOFF_FACTOR)
+    assert node._wan_backoff["p"].next_attempt > 0
+    assert _ONION_B not in node._wan_dialing  # in-flight guard released
 
 
 def test_a_bound_tor_link_resets_the_backoff(tmp_path, monkeypatch):
@@ -455,12 +473,12 @@ def test_a_bound_tor_link_resets_the_backoff(tmp_path, monkeypatch):
     node = _fresh_node(tmp_path, monkeypatch, "a")
     bkey = crypto.DeviceKey(Ed25519PrivateKey.generate())
     braw = _signed_advert(bkey, "peer-b", onion=_ONION_B, tcp_port=40901)
-    node._tor_backoff["peer-b"] = nodemod._TorBackoff(next_attempt=9e9, interval=300)
+    node._wan_backoff["peer-b"] = nodemod._WanBackoff(next_attempt=9e9, interval=300)
     fw = _FakeWriter()
     node._link_transport[fw] = "tor"
     node._learn_node(NodeInfo.from_dict(braw), "127.0.0.1", fw, raw=braw)
     assert node.peers["peer-b"].transport == "tor"
-    assert "peer-b" not in node._tor_backoff  # bind cleared the schedule
+    assert "peer-b" not in node._wan_backoff  # bind cleared the schedule
 
 
 # MARK: - lifecycle: bootstrap fails fast if the stdout pump dies
@@ -548,11 +566,12 @@ def test_only_personal_onions_are_auto_redial_targets(tmp_path, monkeypatch):
     node.local = _dc_replace(node.local, id="0" * 32)  # sorts below both peers
     pk = crypto.DeviceKey(Ed25519PrivateKey.generate())
     node.add_trusted(pk.fingerprint, "friend")
-    node._onion_cache = {
-        "peer-personal": onioncache.OnionEntry(onion=_ONION_A, fingerprint=pk.fingerprint),
-        "peer-foreign": onioncache.OnionEntry(onion=_ONION_B, fingerprint="deadbeef"),
+    node._wan_cache = {
+        "peer-personal": wancache.WanEntry(onion=_ONION_A, fingerprint=pk.fingerprint),
+        "peer-foreign": wancache.WanEntry(onion=_ONION_B, fingerprint="deadbeef"),
     }
-    targets = [pid for pid, _ in node._tor_redial_targets(_time.monotonic())]
+    _install_tor(node, _FakeTor(_ONION_A, connect_port=0))
+    targets = [pid for pid, _w, _a in node._wan_redial_targets(_time.monotonic())]
     assert targets == ["peer-personal"]  # the foreign onion is never auto-dialed
 
 
@@ -564,25 +583,26 @@ def test_foreign_onion_churn_does_not_evict_a_personal_entry(tmp_path, monkeypat
     node = _fresh_node(tmp_path, monkeypatch)  # default trust: foreign
     pk = crypto.DeviceKey(Ed25519PrivateKey.generate())
     node.add_trusted(pk.fingerprint, "friend")
-    node._remember_onion("peer-personal", _ONION_A, pk.fingerprint)  # a personal entry
+    node._remember_wan("peer-personal", "", _ONION_A, pk.fingerprint)  # a personal entry
     for i in range(nodemod._MAX_PEER_CACHE + 50):  # overflow the cache with foreign
-        node._remember_onion(f"foreign-{i}", _mk_onion(i), "deadbeef")
-    assert len(node._onion_cache) == nodemod._MAX_PEER_CACHE
-    assert "peer-personal" in node._onion_cache  # personal survived the foreign flood
+        node._remember_wan(f"foreign-{i}", "", _mk_onion(i), "deadbeef")
+    assert len(node._wan_cache) == nodemod._MAX_PEER_CACHE
+    assert "peer-personal" in node._wan_cache  # personal survived the foreign flood
 
 
-# MARK: - config: the transport is on unless it is explicitly turned off
+# MARK: - config: the transport is off unless it is explicitly turned on
 
 
 def test_tor_runs_unless_it_is_explicitly_turned_off(monkeypatch):
-    """The transport is on by default — a mesh spanning several LANs is what the
+    """Tor is the default WAN transport — a mesh spanning several LANs is what the
     node is for, and an operator should not have to discover a switch to get it.
 
     So an unset variable means ON, and only the recognised off-spellings mean off.
     The lenient list is the load-bearing half: for a default-ON knob an unrecognised
     value fails the *wrong* way (a tor process the operator explicitly tried to
-    prevent), which is why ``false``/``no``/``off``/``""`` are honoured and not only
-    ``0``."""
+    prevent), which is why ``false``/``no``/``off``/``""`` are honoured, not only
+    ``0``. (``SZPONTNET_IROH`` is the opt-in knob, and recognises only the
+    on-spellings for the mirror-image reason — see test_mesh_iroh.py.)"""
     from szpontnet import config
 
     monkeypatch.delenv("SZPONTNET_TOR", raising=False)
@@ -653,9 +673,9 @@ def test_manual_paste_links_over_tor_and_a_dispatch_runs_on_the_peer(
         a = _fresh_node(tmp_path, monkeypatch, "a",
                         SZPONTNET_DEFAULT_TRUST="personal")
         await a._start_tcp()
-        a.tor = _FakeTor(_ONION_B, connect_port=b.tcp_port)
+        w = _install_tor(a, _FakeTor(_ONION_B, connect_port=b.tcp_port))
 
-        dial = asyncio.get_running_loop().create_task(a._tor_dial(_ONION_B))
+        dial = asyncio.get_running_loop().create_task(a._wan_dial(w, _ONION_B))
         try:
             await _await_until(
                 lambda: (b.local.id in a.peers and a.peers[b.local.id].linked

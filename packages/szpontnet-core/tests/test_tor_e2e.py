@@ -35,7 +35,7 @@ import socket
 import pytest
 
 import tornet as tornet_module
-from szpontnet import node as nodemod, onioncache, protocol, tor
+from szpontnet import node as nodemod, wancache, protocol, tor
 
 pytestmark = pytest.mark.tor_e2e
 
@@ -141,7 +141,13 @@ def test_a_dial_carries_bytes_end_to_end_through_the_onion(tornet):
             await writer.drain()
             answer = await asyncio.wait_for(reader.readline(), timeout=30.0)
             assert answer == b"answered\n"
-            assert listener.seen == [b"over the onion\n"]
+            # Only the connections that carried something: against the real network
+            # _dial_with_patience retries through the descriptor race, and an attempt
+            # whose circuit dies after the SOCKS CONNECT is accepted still reaches the
+            # listener as a connection that EOFs before sending. Those are the dial
+            # behaviour under test, not deliveries — what must hold is that the
+            # payload crossed exactly once.
+            assert [line for line in listener.seen if line] == [b"over the onion\n"]
             writer.close()
         finally:
             await client.stop()
@@ -429,7 +435,7 @@ def test_a_node_auto_redials_a_known_peer_over_tor_with_no_lan(tornet):
     # What a prior LAN meeting leaves behind: the peer's permanent onion, paired
     # with the device fingerprint it was signed by.
     dialer = tornet.node("near", node_id="a" * 32)
-    (dialer.dir / "onions.json").write_text(json.dumps({
+    (dialer.dir / "wan.json").write_text(json.dumps({
         executor.id: {"onion": onion,
                       "fingerprint": executor.snapshot()["self"]["fingerprint"]},
     }), encoding="utf-8")
@@ -462,7 +468,7 @@ def test_a_peer_met_over_tor_has_its_onion_learned_and_persisted(tornet):
     def learned() -> dict:
         try:
             return json.loads(
-                (accepter.dir / "onions.json").read_text(encoding="utf-8"))
+                (accepter.dir / "wan.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return {}
 
@@ -473,7 +479,7 @@ def test_a_peer_met_over_tor_has_its_onion_learned_and_persisted(tornet):
     # Persisted against the fingerprint it was signed by, not merely the id.
     assert entry["fingerprint"] == opener.snapshot()["self"]["fingerprint"]
     # And it loads back as the cache the redial loop reads.
-    assert onioncache.OnionEntry(**entry).onion == opener_onion
+    assert wancache.WanEntry(**entry).onion == opener_onion
 
 
 def test_the_onion_serves_peer_links_but_refuses_operator_control(tornet):
@@ -558,12 +564,12 @@ def _redial_budget(backend) -> float:
     """
     if not backend.is_real:
         return backend.link  # the simulated directory answers the first probe
-    moment = nodemod._TOR_REDIAL_TICK_SECS
-    interval = nodemod._TOR_BACKOFF_MIN_SECS
+    moment = nodemod._WAN_REDIAL_TICK_SECS
+    interval = nodemod._WAN_BACKOFF_MIN_SECS
     for _ in range(_REDIAL_PROBES - 1):
         moment += interval
-        interval = min(interval * nodemod._TOR_BACKOFF_FACTOR,
-                       nodemod._TOR_BACKOFF_MAX_SECS)
+        interval = min(interval * nodemod._WAN_BACKOFF_FACTOR,
+                       nodemod._WAN_BACKOFF_MAX_SECS)
     return moment + 60.0  # + the handshake the last probe still has to complete
 
 

@@ -1,5 +1,10 @@
 # 14 — Tor transport (WAN reachability)
 
+> [15 — the iroh transport](15-iroh-transport.md) reaches the same peers without a
+> `tor` daemon, a multi-minute bootstrap or a rendezvous circuit per dial, and is the
+> other WAN transport a node can run. It is opt-in; this one is the default. A node
+> running both prefers iroh per peer, and either alone is a complete WAN path.
+
 v1 is single-LAN ([02](02-discovery.md), [03](03-transport.md)): discovery is
 link-local multicast/broadcast, and a link is a direct TCP connection to a peer's
 LAN address. That is the whole mesh as long as every machine is on the same
@@ -12,8 +17,9 @@ and this is what makes several such networks one mesh. Nothing below changes the
 path — the Tor transport is added *beside* it.
 
 Turned off with `SZPONTNET_TOR=0` (`false`/`no`/`off`/empty are honoured too), and
-absent whenever no `tor` binary is installed. In either case the node is exactly the
-LAN-only node described in the rest of these docs, wire-identical.
+absent whenever no `tor` binary is installed. In either case this transport is gone;
+the node is the LAN-only node described in the rest of these docs unless it also runs
+[15](15-iroh-transport.md), and wire-identical to one when it does not.
 
 > **A node running this transport publishes a stable onion service by default.** It
 > forwards only to the peer-link accept path — control sessions are refused
@@ -64,9 +70,11 @@ public key — but the transport does not lean on that: after connecting, the pe
 still proves its **device** key with the normal nonce `auth`, so a wrong or hijacked
 onion simply lands the connection as an unverified, `foreign` peer.)
 
-A node persists the onions it learns in `onions.json` (keyed by node id, with the
-device fingerprint it was paired with) — the WAN sibling of the LAN
-`peers.json` redial cache ([08](08-state.md)). It is a best-effort accelerator: a
+A node persists the onions it learns in `wan.json`, the shared WAN address cache
+described in [15](15-iroh-transport.md#address-exchange) (keyed by node id, with the
+device fingerprint it was paired with) — the WAN sibling of the LAN `peers.json`
+redial cache ([08](08-state.md)). A node upgrading from a Tor-only release reads its
+former `onions.json` once, so it does not forget peers it already knew. It is a best-effort accelerator: a
 missing or stale entry costs at most a fenced dial.
 
 ## Reconnecting: reachability with backoff
@@ -174,7 +182,7 @@ the next node's Tor bring-up.
 
 | Env | Meaning |
 |-----|---------|
-| `SZPONTNET_TOR=0` | Disable the Tor transport → LAN-only. On by default; `false`/`no`/`off`/empty also disable. Any other value leaves it on. |
+| `SZPONTNET_TOR=0` | Disable the Tor transport. On by default; `false`/`no`/`off`/empty also disable. Any other value leaves it on. |
 | `SZPONTNET_TOR_BINARY` | Path to a non-PATH `tor` executable. |
 | `SZPONTNET_TOR_BOOTSTRAP_SECS` | Bootstrap wait before giving up (default 90). |
 

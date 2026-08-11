@@ -170,9 +170,9 @@ caps. No flag day, no `v` bump required for the common cases - exactly the
 
 - **Cross-subnet / WAN operation.** The LAN path is single-subnet (link-local
   multicast, subnet broadcast). WAN reachability **has landed** as the
-  [Tor transport](14-tor-transport.md): each node runs a permanent v3 onion service,
-  advertises its `.onion` inside its signed advert, and redials known-but-unseen
-  peers over Tor with exponential backoff (or a manual `--tor-connect` paste) — no
+  [iroh transport](15-iroh-transport.md): each node binds a permanent QUIC endpoint,
+  advertises its id inside its signed advert, and redials known-but-unseen
+  peers by that id with exponential backoff (or a manual `--iroh-connect` paste) — no
   public IP or domain, and a Tor link runs the identical handshake/trust as a LAN
   link. It is additive and on by default; a node with it off, or on a machine with no
   `tor`, is wire-unchanged. Native cross-subnet federation *without* Tor remains

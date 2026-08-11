@@ -106,6 +106,7 @@ def _proto_env(port_base: int) -> dict:
         # default in a shipped node — so without this every simulated machine would
         # fork a real `tor` and spend its bootstrap timeout reaching the live Tor
         # network. "Offline" in the docstring above is a claim this line keeps.
+        "SZPONTNET_IROH": "0",
         "SZPONTNET_TOR": "0",
         "SZPONTNET_MCAST_PORT": str(port_base),
         "SZPONTNET_TCP_BASE": str(port_base + 1),

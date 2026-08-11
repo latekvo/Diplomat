@@ -760,26 +760,25 @@ def test_nodeinfo_onion_is_covered_by_the_advert_signature(tmp_path, monkeypatch
         tampered["pubkey"], protocol.advert_signing_bytes(tampered), tampered["sig"])
 
 
-def test_onioncache_roundtrip_and_tolerates_garbage(tmp_path, monkeypatch):
-    """The onion cache (onions.json) is a best-effort accelerator like peers.json:
+def test_wancache_roundtrip_and_tolerates_garbage(tmp_path, monkeypatch):
+    """The WAN address cache (wan.json) is a best-effort accelerator like peers.json:
     it roundtrips, and a malformed file or entry is dropped, never raised."""
     monkeypatch.setenv("SZPONTNET_DIR", str(tmp_path))
-    from szpontnet import onioncache
+    from szpontnet import wancache
 
-    cache = {"peer-a": onioncache.OnionEntry(onion="a" * 56 + ".onion",
-                                             fingerprint="ff00"),
-             "peer-b": onioncache.OnionEntry(onion="b" * 56 + ".onion")}
-    onioncache.save(cache)
-    assert onioncache.load() == cache
-    # A malformed entry (no onion) and a non-dict entry are dropped silently.
-    onioncache.path().write_text(
+    cache = {"peer-a": wancache.WanEntry(endpoint="a" * 64, fingerprint="ff00"),
+             "peer-b": wancache.WanEntry(onion="b" * 56 + ".onion")}
+    wancache.save(cache)
+    assert wancache.load() == cache
+    # An entry naming no address at all, and a non-dict entry, are dropped silently.
+    wancache.path().write_text(
         '{"ok": {"onion": "z.onion"}, "bad": {"fingerprint": "x"}, "junk": 5}',
         encoding="utf-8")
-    loaded = onioncache.load()
+    loaded = wancache.load()
     assert set(loaded) == {"ok"} and loaded["ok"].onion == "z.onion"
     # A wholly malformed file is an empty cache, not a crash.
-    onioncache.path().write_text("not json", encoding="utf-8")
-    assert onioncache.load() == {}
+    wancache.path().write_text("not json", encoding="utf-8")
+    assert wancache.load() == {}
 
 
 def test_legacy_stats_without_a_surplus_field_rank_neutrally():

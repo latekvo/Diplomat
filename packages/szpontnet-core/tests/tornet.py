@@ -151,9 +151,9 @@ def _seed_tor_cache(tor_dir: Path, cache: Path | None) -> None:
 def _clean_environ() -> dict:
     """This process's environment with every SzpontNet knob stripped out.
 
-    A node started from it reads exactly what its test gave it and nothing else —
-    including, deliberately, no ``SZPONTNET_TOR``, so a node that comes up with an
-    onion did so on the shipped default rather than because a test asked.
+    A node started from it reads exactly what its test gave it and nothing else, so
+    a node that comes up with an onion did so on the configuration this harness set
+    rather than on something the developer's shell happened to export.
     """
     return {k: v for k, v in os.environ.items()
             if not k.startswith(("SZPONTNET_", "DIPLOMAT_MESH_"))}
@@ -314,12 +314,11 @@ class NodeProcess:
             "strengthAuto": False, "dutiesEnabled": {},
         }), encoding="utf-8")
         self.env = {
-            # A clean namespace, not the test process's. Two things would otherwise
-            # ride in: a developer's own exported SZPONTNET_SECRET or SZPONTNET_HOST
-            # (which would fence or re-home a node this test believes it configured),
-            # and — the one that would quietly gut this file — the suite-wide
-            # SZPONTNET_TOR=0 that conftest sets, which would start every node here
-            # LAN-only while the tests waited for onions that were never coming.
+            # A clean namespace, not the test process's, so a developer's own
+            # exported SZPONTNET_SECRET or SZPONTNET_HOST cannot fence or re-home a
+            # node this test believes it configured. It also drops the suite-wide
+            # off-switches conftest sets, which is why both transports are named
+            # explicitly below rather than left to a default.
             **_clean_environ(),
             **net.child_env(),
             "SZPONTNET_DIR": str(self.dir),
@@ -332,6 +331,11 @@ class NodeProcess:
             "SZPONTNET_DEFAULT_TRUST": "personal",
             "SZPONTNET_OAUTH_PROBE": "0",  # never touch the network to price a quota
             "SZPONTNET_STATE_SECS": "0.2",  # a snapshot a test can poll
+            # This file is about the onion path: iroh off, so these nodes cannot
+            # reach each other by any route but the one under test (and so a Tor
+            # test never depends on a real discovery service being up).
+            "SZPONTNET_IROH": "0",
+            "SZPONTNET_TOR": "1",  # the clean namespace above dropped conftest's off
             "SZPONTNET_TOR_BOOTSTRAP_SECS": str(net.backend.bootstrap),
             # Puts the node's narration on stderr instead of the null host's floor,
             # so a failure carries the node's own account of what went wrong. See

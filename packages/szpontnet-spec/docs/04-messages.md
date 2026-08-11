@@ -89,7 +89,8 @@ The resource advertisement for one node. Appears inside `hello` and `node`, and
 | `sees` | array<string> | no (`[]`) | ids of peers this node currently holds a link to (for topology display + partition awareness). |
 | `dutiesEnabled` | object<string,bool> | no (`{}`) | per-duty opt-out; a duty absent from the map is **enabled** by default. |
 | `pubkey` | string | no | the node's advertised base64 Ed25519 public key. Advertising it grants **nothing** - a peer must prove possession by signing the [`hello`](#hello)/[`auth`](#auth) challenge before it is believed to hold this key. Trust then keys on its fingerprint `sha256(pubkey)` against a local allowlist. See [11-trust-and-balancing](11-trust-and-balancing.md). |
-| `onion` | string | no (omitted) | this node's permanent Tor v3 onion address (`<56-base32>.onion`) when it runs an onion service (`SZPONTNET_TOR`). Its stable, NAT-independent WAN reachability handle: a peer that met this node learns it here (in the first signed [`hello`](#hello)) and can redial it over Tor from anywhere. Covered by `sig` like every other field, so a relay cannot swap it to redirect a dial. See [14-tor-transport](14-tor-transport.md). |
+| `endpoint` | string | no (omitted) | this node's permanent iroh endpoint id (64 lowercase hex, an Ed25519 public key) when it runs the iroh transport (`SZPONTNET_IROH`). Its stable, NAT-independent WAN reachability handle: a peer that met this node learns it here (in the first signed [`hello`](#hello)) and can redial it from anywhere. Covered by `sig` like every other field, so a relay cannot swap it to redirect a dial. Deliberately not the same key as `pubkey`. See [15-iroh-transport](15-iroh-transport.md). |
+| `onion` | string | no (omitted) | this node's permanent Tor v3 onion address (`<56-base32>.onion`) when it runs the onion-service transport (`SZPONTNET_TOR`). The `endpoint` twin in every respect, including being covered by `sig`. See [14-tor-transport](14-tor-transport.md). |
 | `stats` | object | no (`{}`) | load-balancing accounting: `{"plan", "usageAvg", "quotaLeft", "surplus"}`. Routing ranks on `surplus` (a burn-down ratio); `usageAvg`/`quotaLeft` are plan-relative display figures. See [05-resources](05-resources.md#per-node-stats-account-aware-load-balancing) and [11](11-trust-and-balancing.md#the-load-balancer). |
 | `sig` | string | no | base64 Ed25519 signature by this node's device key over the advert's canonical bytes, authenticating it end to end across relays. A **keyed** advert (one with a `pubkey`) MUST carry a valid `sig` or be dropped; a keyless advert carries none. See [11 - authenticated gossip](11-trust-and-balancing.md#authenticated-gossip). |
 | `v` | int | no (`1`) | protocol version of this advertisement. |
@@ -716,17 +717,24 @@ A [`dispatch`](#dispatch) with a `workKey` runs this same gate internally and
 reports `suppressed`; the stand-alone verb exists so origination dedup does not
 require routing the execution through the mesh.
 
+### `iroh-connect`
+
+Ask the node to initiate a **WAN link** to a peer's iroh endpoint id - reaching a peer
+you may never have met on the LAN. The node dials in the background (this reply returns
+immediately) and runs the identical hello/auth/trust handshake a LAN dial does; watch
+[`status`](#status) for the peer to appear. Requires the iroh transport online on this
+node (`SZPONTNET_IROH=1` and the iroh library present). Unlike
+auto-redial, a manual paste dials **unconditionally** - it bypasses the personal-only
+and smaller-id-dials fences (a deliberate one-shot introduction), though it is still
+deduped against an in-flight dial to the same address. See
+[15-iroh-transport](15-iroh-transport.md).
+
 ### `tor-connect`
 
-Ask the node to initiate a **Tor link** to a peer's onion address - reaching a peer
-you may never have met on the LAN. The node dials the onion in the background (this
-reply returns immediately) and runs the identical hello/auth/trust handshake a LAN dial
-does; watch [`status`](#status) for the peer to appear. Requires the Tor transport
-bootstrapped on this node (it is on by default, absent `SZPONTNET_TOR=0` or a missing
-`tor` binary). Unlike auto-redial, a manual paste
-dials **unconditionally** - it bypasses the personal-only and smaller-id-dials fences (a
-deliberate one-shot introduction), though it is still deduped against an in-flight dial
-to the same onion. See [14-tor-transport](14-tor-transport.md).
+The [`iroh-connect`](#iroh-connect) twin for the Tor transport, taking an `onion`
+where that takes an `endpoint`. Requires the Tor transport online on this node (it is
+on by default, absent `SZPONTNET_TOR=0` or a missing `tor` binary) and a bootstrapped
+onion service. See [14-tor-transport](14-tor-transport.md).
 
 ```json
 {"t": "tor-connect", "onion": "<56-base32>.onion", "v": 1}

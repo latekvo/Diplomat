@@ -92,6 +92,7 @@ def main() -> None:
     # so a tester that does want to drive the transport keeps the last word: every
     # other SZPONTNET_* knob it set is inherited as-is, and this must not be the one
     # exception.
+    env.setdefault("SZPONTNET_IROH", "0")
     env.setdefault("SZPONTNET_TOR", "0")
     env["PYTHONPATH"] = os.pathsep.join(
         [str(PROJECT), env.get("PYTHONPATH", "")]).rstrip(os.pathsep)

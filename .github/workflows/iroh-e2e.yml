@@ -1,0 +1,52 @@
+name: Iroh E2E (real network)
+
+# The iroh transport against real endpoints: two of them dialed by key alone, and
+# two whole mesh nodes that link over QUIC and run a dispatch across it. Separate
+# from ci.yml on purpose — unlike the Tor transport, iroh has no simulated backend
+# here, so these tests reach the n0 discovery service (and a relay where the runner
+# cannot be hole-punched). That dependency must not be able to redden a pull request
+# that never touched the transport.
+#
+# It therefore runs where it is worth the minutes and the flake risk: on a push that
+# changes the transport, its tests, or the config knob that turns it on — and on
+# demand, which is what to reach for before cutting a release.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'packages/szpontnet-core/szpontnet/irohnet.py'
+      - 'packages/szpontnet-core/szpontnet/node.py'
+      - 'packages/szpontnet-core/szpontnet/config.py'
+      - 'packages/szpontnet-core/szpontnet/wancache.py'
+      - 'packages/szpontnet-core/tests/test_iroh_e2e.py'
+      - '.github/workflows/iroh-e2e.yml'
+
+concurrency:
+  group: iroh-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  real-iroh:
+    name: SzpontNet · QUIC path over real iroh endpoints
+    runs-on: ubuntu-latest
+    # Sub-second per dial once an endpoint is online; the budget is for a cold
+    # runner reaching discovery, and for the relay fallback when the runner's egress
+    # cannot be punched through. Generous, but bounded.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install the library (with the trust and wan extras) and pytest
+        run: pip install -e './packages/szpontnet-core[trust,wan]' pytest
+      # Fail loudly here rather than as a skip inside the suite: the tests skip
+      # themselves when iroh is absent, which is right on a developer's machine and
+      # exactly wrong in the job whose whole purpose is to exercise it.
+      - name: The wan extra actually installed
+        run: python -c "import iroh; from szpontnet import irohnet; assert irohnet.available()"
+      - name: QUIC path end-to-end against real endpoints
+        run: pytest packages/szpontnet-core/tests/test_iroh_e2e.py -q

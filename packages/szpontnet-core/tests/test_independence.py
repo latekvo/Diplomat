@@ -22,10 +22,11 @@ import pytest
 
 PACKAGE = Path(__file__).resolve().parents[1] / "szpontnet"
 
-# Declared in pyproject as the optional `trust` extra, and imported behind a guard
-# that degrades a node to keyless. Nothing else may be added here without also
-# adding it to the project's dependencies and saying so in the README.
-OPTIONAL_EXTRAS = {"cryptography"}
+# Declared in pyproject as optional extras, and each imported behind a guard that
+# degrades the node rather than failing it: `trust` (cryptography) leaves it keyless,
+# `wan` (iroh) leaves it LAN-only. Nothing else may be added here without also adding
+# it to the project's dependencies and saying so in the README.
+OPTIONAL_EXTRAS = {"cryptography", "iroh"}
 
 MODULES = sorted(p.name for p in PACKAGE.glob("*.py"))
 

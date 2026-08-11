@@ -44,7 +44,7 @@ import shutil
 import signal
 from pathlib import Path
 
-from . import env
+from . import config, env
 from .host import log
 from . import protocol
 
@@ -186,10 +186,15 @@ class TorTransport:
             return None  # tor has exited — the onion is no longer served
         return self._onion
 
+    def address(self) -> str | None:
+        """The WAN-transport seam's name for :meth:`onion_address` — what the node
+        calls on every transport alike (see :class:`node._Wan`)."""
+        return self.onion_address()
+
     # MARK: - lifecycle
 
     async def start(self, inbound_handler, *,
-                    bootstrap_timeout: float = 90.0) -> bool:
+                    bootstrap_timeout: float | None = None) -> bool:
         """Spawn Tor behind a private onion service and return True once it is usable
         (onion known, SOCKS live); False on any failure — the caller then runs
         LAN-only. Never raises.
@@ -201,6 +206,8 @@ class TorTransport:
         link on the shared listener."""
         if not self._binary:
             return False
+        if bootstrap_timeout is None:
+            bootstrap_timeout = config.tor_bootstrap_timeout()
         self._socks_port = _free_port()
         try:
             self._forward_server = await asyncio.start_server(

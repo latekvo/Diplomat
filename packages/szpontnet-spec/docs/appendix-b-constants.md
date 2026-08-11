@@ -241,29 +241,37 @@ drops the `job-reminder`/`job-progress` messages and keeps the link - but an
 executor on a mesh with accountability-tracking originators keeps its standing by
 answering reminders.
 
-## Tor transport (v0.5.0 vocabulary)
+## WAN transports (v0.6.0 vocabulary)
 
-The WAN transport: a persistent Tor v3 onion service the node advertises
-(inside the signed advert, as [`NodeInfo.onion`](04-messages.md#nodeinfo)), plus a SOCKS
-dialer that reconnects to known-but-unseen **personal** peers. On by default,
-requiring only that a `tor` binary is present; with `SZPONTNET_TOR=0`, or on a machine
-with no tor, the node is LAN-only and byte-identical to a node that has never
-implemented it. The backoff/tick values are node-local reconnect policy (peers
-need not agree on them); only `ONION_VIRTPORT` is shared. See
-[14-tor-transport](14-tor-transport.md).
+Reachability off the local network: a permanent, NAT-independent address the node
+advertises inside its signed advert, plus a dialer that reconnects to
+known-but-unseen **personal** peers. Two are specified — the Tor onion service
+([`NodeInfo.onion`](04-messages.md#nodeinfo), on by default,
+[14](14-tor-transport.md)) and **iroh**
+([`NodeInfo.endpoint`](04-messages.md#nodeinfo), opt-in,
+[15](15-iroh-transport.md)). With both off, or on a machine missing what they need,
+the node is LAN-only and byte-identical to a node that has never implemented either.
+A node running both prefers iroh per peer.
+
+The reconnect policy below is shared by both transports and is node-local (peers need
+not agree on it); one dial per due peer per tick goes out over its most preferred
+available transport. Only `ONION_VIRTPORT` and the `szpontnet/1` ALPN are on the wire.
 
 | Name | Value | Where |
 |------|-------|-------|
+| iroh ALPN | `szpontnet/1` | the application protocol QUIC negotiates; a mismatch is refused before any bytes are read ([15](15-iroh-transport.md)). |
+| iroh online timeout | `30.0` s | wait for the endpoint to come online before giving up and staying LAN-only; override via `SZPONTNET_IROH_ONLINE_SECS` (non-finite / non-positive → `30`). |
 | `ONION_VIRTPORT` | `80` | the onion service's virtual port; the dialer and `HiddenServicePort` agree on it, and nothing on the host binds it ([14](14-tor-transport.md)). |
 | Tor bootstrap timeout | `90.0` s | wait for `Bootstrapped 100%` before giving up and staying LAN-only; override via `SZPONTNET_TOR_BOOTSTRAP_SECS` (non-finite / non-positive → `90`). |
-| redial tick | `5.0` s | how often the reconnect loop wakes to check which known peers are due (`_TOR_REDIAL_TICK_SECS`). |
-| dial timeout | `30.0` s | upper bound on one Tor dial + SOCKS handshake before it is abandoned - a cold onion connect can take double-digit seconds (`_TOR_DIAL_TIMEOUT_SECS`). |
-| backoff floor | `10.0` s | per-peer reconnect backoff minimum; the first miss schedules the next probe this far out (`_TOR_BACKOFF_MIN_SECS`). |
-| backoff ceiling | `600.0` s | backoff maximum; the interval doubles per miss up to here (`_TOR_BACKOFF_MAX_SECS`). |
-| backoff factor | `2.0` | geometric growth per missed probe; reset to the floor the moment a Tor link actually **binds** (`_TOR_BACKOFF_FACTOR`). |
+| redial tick | `5.0` s | how often the reconnect loop wakes to check which known peers are due (`_WAN_REDIAL_TICK_SECS`). |
+| dial timeout | `30.0` s | upper bound on one WAN dial before it is abandoned - sized for the slowest transport, since a cold onion connect can take double-digit seconds (`_WAN_DIAL_TIMEOUT_SECS`). |
+| backoff floor | `10.0` s | per-peer reconnect backoff minimum; the first miss schedules the next probe this far out (`_WAN_BACKOFF_MIN_SECS`). |
+| backoff ceiling | `600.0` s | backoff maximum; the interval doubles per miss up to here (`_WAN_BACKOFF_MAX_SECS`). |
+| backoff factor | `2.0` | geometric growth per missed probe; reset to the floor the moment a WAN link actually **binds** (`_WAN_BACKOFF_FACTOR`). |
+| iroh endpoint key | `~/.diplomat/mesh/iroh/endpoint.key` | this node's Ed25519 endpoint secret (`0600` in a `0700` dir), so the endpoint id is permanent across restarts. Not the device key. |
 | onion key + data dir | `~/.diplomat/mesh/tor/` | this node's private Tor `DataDirectory`; the `HiddenServiceDir` is `tor/onion/` (`0700`), so the `.onion` is permanent across restarts. |
-| peer onion cache | `~/.diplomat/mesh/onions.json` | last-known peer onions, learned only from signed hellos and bounded like `peers.json` - the WAN sibling of the LAN redial cache. |
-| disable / binary via | `SZPONTNET_TOR` / `SZPONTNET_TOR_BINARY` | `0` (or `false`/`no`/`off`/empty) turns the transport off — it is otherwise on; point at a non-PATH `tor` ([14](14-tor-transport.md)). |
+| peer WAN cache | `~/.diplomat/mesh/wan.json` | last-known peer `endpoint`/`onion` addresses, learned only from signed hellos and bounded like `peers.json` - the WAN sibling of the LAN redial cache. A former `onions.json` is read once on upgrade. |
+| enable / disable via | `SZPONTNET_TOR` / `SZPONTNET_IROH` / `SZPONTNET_TOR_BINARY` | Tor is on unless `0` (or `false`/`no`/`off`/empty); iroh is off unless `1` (or `true`/`yes`/`on`); point at a non-PATH `tor` ([14](14-tor-transport.md), [15](15-iroh-transport.md)). |
 
 ## Message types
 
@@ -293,9 +301,11 @@ reference: [04-messages](04-messages.md).
 | `~/.diplomat/mesh/banned.json` | local ban list (never gossiped, [08](08-state.md#bannedjson)) |
 | `~/.diplomat/mesh/stats.json` | local load-balancing accounting (never gossiped, [08](08-state.md#statsjson)) |
 | `~/.diplomat/mesh/state.json` | public topology snapshot ([08](08-state.md#the-statejson-snapshot)) |
-| `~/.diplomat/mesh/onions.json` | last-known peer onion addresses (never gossiped; learned from signed hellos, [14](14-tor-transport.md)) |
+| `~/.diplomat/mesh/wan.json` | last-known peer WAN addresses, `endpoint` + `onion` (never gossiped; learned from signed hellos, [15](15-iroh-transport.md)) |
+| `~/.diplomat/mesh/iroh/` | this node's Ed25519 endpoint secret (`0700` dir, permanent endpoint id, [15](15-iroh-transport.md)) |
 | `~/.diplomat/mesh/tor/` | this node's private Tor data dir + `onion/` `HiddenServiceDir` (`0700`, permanent `.onion`, [14](14-tor-transport.md)) |
 | overridable via | `SZPONTNET_DIR` |
 | join secret via | `SZPONTNET_SECRET` ([03](03-transport.md#the-join-fence)) |
+| iroh transport via | `SZPONTNET_IROH` / `SZPONTNET_IROH_ONLINE_SECS` ([15](15-iroh-transport.md)) |
 | Tor transport via | `SZPONTNET_TOR` / `SZPONTNET_TOR_BINARY` / `SZPONTNET_TOR_BOOTSTRAP_SECS` ([14](14-tor-transport.md)) |
 | server mode / API key via | `SZPONTNET_SERVER` / `SZPONTNET_API_KEY` ([11](11-trust-and-balancing.md#server-nodes--api-key-authentication)) |
