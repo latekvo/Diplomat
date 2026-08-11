@@ -1,0 +1,27 @@
+{
+  "name": "szpont",
+  "version": "0.2.0",
+  "type": "module",
+  "description": "Install-and-run for Diplomat (Szpont Yon): fetches the checkout, builds it, and starts the applet.",
+  "keywords": ["diplomat", "szpont", "szpontnet", "launcher", "menu-bar", "tray"],
+  "license": "MIT",
+  "author": "Ignacy Łątka",
+  "homepage": "https://github.com/latekvo/Diplomat",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/latekvo/Diplomat.git",
+    "directory": "packages/szpont-npm"
+  },
+  "bugs": "https://github.com/latekvo/Diplomat/issues",
+  "bin": {
+    "szpont": "src/cli.js"
+  },
+  "files": ["src", "README.md"],
+  "engines": {
+    "node": ">=18"
+  },
+  "os": ["darwin", "linux"],
+  "scripts": {
+    "test": "node test/run-all.mjs"
+  }
+}

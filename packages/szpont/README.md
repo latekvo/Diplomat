@@ -95,6 +95,22 @@ pip install 'szpont[trust]' # ... with Ed25519 device identity
 Without the `trust` extra a node still runs, keyless: it advertises no public key,
 can never be verified, and so is foreign to any peer with a trust allowlist.
 
+## The command of the same name
+
+The distribution also installs `szpont`, which fetches, builds and starts
+**[Diplomat](../../README.md#install)** - the applet this protocol was written for.
+`szpont --plan` prints what it would do without doing any of it.
+
+```bash
+pip install szpont && szpont      # the same thing `npx szpont` does
+```
+
+It is `szpont_launcher.py`, a top-level module rather than part of this package,
+and it imports nothing outside the standard library: starting an applet has no use
+for the protocol library, and `import szpont` has no use for a launcher. Its twin
+is [`packages/szpont-npm`](../szpont-npm/README.md), which publishes the same
+command to npm; the two are held to the same plan by a parity test.
+
 ## What it does not do
 
 Wrap what already has a good shape. The node itself, its CLI (`python -m
@@ -116,9 +132,13 @@ pass while doing it - so the transport is removed and reaching it is the failure
 
 ## Note on the name
 
-The name `szpont` is also used by the
-[conformance tester](../szpontnet-spec/conformance/README.md), which is run as
-`python -m szpont` from its own directory. The two do not currently collide: the
-tester is never installed, and the working directory precedes site-packages on
-`sys.path`, so it wins from where it is run. Publishing the tester under this name
-is what the two could not share.
+`szpont` names three things, and they share the namespace rather than compete for
+it: this import package (`import szpont`), the launcher installed as the `szpont`
+command, and the [conformance tester](../szpontnet-spec/conformance/README.md), run
+as `python -m szpont` from its own directory.
+
+Only the last is precarious. The tester is never installed, and the working
+directory precedes site-packages on `sys.path`, so it wins from where it is run -
+but publishing *it* under this name is what the three could not share. The console
+script cannot collide with either: an entry point is a file in `bin/`, not a name
+on the import path.
