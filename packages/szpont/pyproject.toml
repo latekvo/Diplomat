@@ -5,12 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "szpont"
 version = "0.2.0"
-description = "Typed Python bindings for SzpontNet, the leaderless LAN peer-to-peer resource-sharing protocol"
+description = "Install-and-run for Diplomat, and typed Python bindings for SzpontNet, the leaderless LAN peer-to-peer resource-sharing protocol"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "Ignacy Łątka" }]
-keywords = ["szpontnet", "mesh", "peer-to-peer", "lan", "distributed", "bindings"]
+keywords = ["diplomat", "szpontnet", "mesh", "peer-to-peer", "lan", "distributed", "bindings", "launcher"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
@@ -33,6 +33,12 @@ dependencies = ["szpontnet>=0.6,<0.7"]
 # keyless, advertises no public key, and is foreign to any peer with an allowlist.
 trust = ["szpontnet[trust]>=0.5,<0.6"]
 
+[project.scripts]
+# `pip install szpont` then `szpont`. The launcher is a top-level module rather
+# than part of the package on purpose - see its docstring; nothing about starting
+# an applet needs the protocol library that importing `szpont` would pull in.
+szpont = "szpont_launcher:main"
+
 [project.urls]
 Homepage = "https://github.com/latekvo/Diplomat"
 Source = "https://github.com/latekvo/Diplomat/tree/main/packages/szpont"
@@ -40,6 +46,7 @@ Specification = "https://github.com/latekvo/Diplomat/tree/main/packages/szpontne
 
 [tool.setuptools]
 packages = ["szpont"]
+py-modules = ["szpont_launcher"]
 
 [tool.setuptools.package-data]
 szpont = ["py.typed"]

@@ -113,6 +113,8 @@ public enum AutofixDiff {
 /// - capacity: only auto work is held to the device's automatic-task cap — a
 ///   human's click is one deliberate agent, not a monitor emptying its queue
 ///   (`decide`);
+/// - budget: only auto work is held to what is left of the rate-limit windows —
+///   a human spending their own last 5% is their call to make (`decide`);
 /// - mesh: only auto origination is mesh-gated — a human clicking THIS machine's
 ///   button has already decided placement (`decide`);
 /// - counters: only a monitor's FIRST dispatch counts as auto-handled work
@@ -141,11 +143,14 @@ public enum AgentDispatchGate {
         /// This device already runs its cap of concurrent automatic agents
         /// (auto only). Deferred, not dropped — see `decide`.
         case atCapacity
+        /// Too little of the rate-limit windows is left to cover another automatic
+        /// task (auto only). Deferred, not dropped — see `decide`.
+        case unaffordable
     }
 
     /// The one decision both interfaces obey, in fixed precedence: ban, then
     /// in-flight, then (auto only) this device's concurrency cap, then (auto only)
-    /// mesh.
+    /// its rate-limit budget, then (auto only) mesh.
     ///
     /// Capacity outranks mesh so a saturated device never *originates*: the claim
     /// that routing takes has gossip side effects, and a node holding the claim for
@@ -153,11 +158,20 @@ public enum AgentDispatchGate {
     /// the work for a later poll — every machine scans, so on a mesh a peer with
     /// room picks the same unit up, and off a mesh the reconciler retries it here on
     /// the next tick (the refusal writes no attempt record, so no backoff engages).
+    ///
+    /// The budget sits between the two for the same reason and with the same
+    /// consequence: an account with no window left cannot finish the agent it would
+    /// claim the work for, and holding the job costs nothing but the wait for the
+    /// 5-hour window to refill. It ranks BELOW capacity only because capacity is the
+    /// measurement already in hand — a saturated device has no slot to spend a
+    /// budget on, so the probe is never worth taking.
     public static func decide(source: Source, banned: Bool, agentOnPR: Bool,
-                              meshStandsDown: Bool, atCapacity: Bool) -> Verdict {
+                              meshStandsDown: Bool, atCapacity: Bool,
+                              unaffordable: Bool = false) -> Verdict {
         if banned { return .banned }
         if agentOnPR { return .inFlight }
         if source == .auto, atCapacity { return .atCapacity }
+        if source == .auto, unaffordable { return .unaffordable }
         if source == .auto, meshStandsDown { return .standDown }
         return .proceed
     }
@@ -222,6 +236,155 @@ public enum AgentDispatchGate {
                                         manualPRs: Set<Int>,
                                         idlePRs: Set<Int> = []) -> Int {
         livePRs.subtracting(manualPRs).union(autoPRs).subtracting(idlePRs).count
+    }
+
+    // MARK: - The device's rate-limit budget
+    //
+    // The cap above bounds how many automatic agents run at once; this bounds
+    // whether any of them should start at all. A machine can have three empty bays
+    // and 4% of its 5-hour window left, and spending that on an auto-review is how
+    // the operator finds the limit gone the next time they sit down to work.
+    //
+    // What a task costs is a measurement, not a guess: the telemetry ledger prices
+    // every finished agent against the window it was spent from (`Telemetry.summarize`
+    // → `perTask`, a share-of-window distribution). So the question "can we afford
+    // one more" has a statistical answer — and the one worth asking is about the
+    // NEXT task, not about the average one. Half of all tasks cost more than the
+    // mean, and the distribution is right-skewed (most small, a few enormous), so a
+    // gate set at the mean would wave through the expensive tail every time.
+    //
+    // Hence a one-sided upper PREDICTION bound: the cost that one more task will
+    // come in under, with the configured confidence. That is what `autoBudgetConfidence`
+    // buys — at 95%, roughly one auto-task in twenty may still overrun what it was
+    // gated on.
+    //
+    // Python twin: the same names in `autofix.py`.
+
+    /// Supported confidence levels (percent) and their ONE-SIDED standard-normal
+    /// quantiles. One-sided because only the upper tail is a budget question:
+    /// nothing goes wrong when a task turns out cheaper than predicted. (The
+    /// Telemetry screen's own band is a different statistic — a two-sided interval
+    /// on the MEAN, z = 1.96 — and the two are not interchangeable.)
+    public static let budgetConfidenceZ: [Int: Double] = [
+        50: 0.0, 80: 0.8416, 90: 1.2816, 95: 1.6449, 99: 2.3263,
+    ]
+
+    public static let defaultBudgetConfidence = 95
+    /// Share of a window to keep in hand when the ledger cannot price a task yet.
+    public static let defaultBudgetFloorPct = 20.0
+    /// A prediction bound needs a spread, and the sample standard deviation of one
+    /// observation is 0 — which would report a single cheap task as certainty. Below
+    /// this the ledger has no answer and the floor stands in, however the caller's
+    /// own minimum is configured.
+    public static let minBudgetSamples = 2
+
+    public static let windowSession = "session"   // the 5-hour rate-limit window
+    public static let windowWeek = "week"         // the 7-day one
+
+    /// The configured confidence, snapped to a level `budgetConfidenceZ` has a
+    /// quantile for.
+    ///
+    /// Rounds UP to the next supported level rather than to the nearest, so a
+    /// hand-edited file lands on the stricter of the two neighbours: a value this
+    /// table cannot honour should hold work back, never wave it through on a looser
+    /// bound than was asked for.
+    public static func clampBudgetConfidence(_ value: Int) -> Int {
+        let levels = budgetConfidenceZ.keys.sorted()
+        return levels.first(where: { $0 >= value }) ?? levels[levels.count - 1]
+    }
+
+    /// The one-sided normal quantile for a confidence level (percent).
+    public static func budgetZ(_ confidence: Int) -> Double {
+        budgetConfidenceZ[clampBudgetConfidence(confidence)] ?? 0
+    }
+
+    /// The configured floor, held to a real share of a window. 0 is allowed and
+    /// means "spend it to the last drop while the ledger is still thin".
+    public static func clampBudgetFloorPct(_ value: Double) -> Double {
+        guard value.isFinite else { return defaultBudgetFloorPct }
+        return max(0, min(100, value))
+    }
+
+    /// What one more auto-task will cost at most, as a share of the window
+    /// `mean`/`sd` are shares of — the upper end of a one-sided prediction
+    /// interval, `mean + z·sd·√(1 + 1/n)`.
+    ///
+    /// The `√(1 + 1/n)` is what makes this a bound on the NEXT observation rather
+    /// than on the mean: it carries the spread of the tasks themselves plus the
+    /// uncertainty in where their average sits, and so stops narrowing as the ledger
+    /// fills. (The interval the Telemetry screen draws is the other one, `z·sd/√n`,
+    /// and converges on the mean — a gate built from it would end up approving the
+    /// average task, which by construction half of them cost more than.)
+    ///
+    /// nil when the ledger cannot answer: fewer finished-and-priced tasks than the
+    /// caller's minimum, or a non-finite figure from an unusable one. The caller
+    /// then falls back to the configured floor.
+    public static func taskCostBound(mean: Double, sd: Double, count: Int,
+                                     z: Double, minSample: Int) -> Double? {
+        if count < max(minBudgetSamples, minSample) { return nil }
+        guard mean.isFinite, sd.isFinite, z.isFinite else { return nil }
+        return mean + z * sd * (1.0 + 1.0 / Double(count)).squareRoot()
+    }
+
+    /// Whether what is left of the rate-limit windows covers one more auto-task,
+    /// and the arithmetic that decided it — the numbers the activity feed quotes
+    /// back when work is held.
+    public struct Budget: Equatable {
+        public let affordable: Bool
+        /// The window the verdict came from: the one with the LEAST headroom,
+        /// whether it refused or not, so the same field explains an approval and a
+        /// refusal. Empty when neither window had a reading and nothing was decided.
+        public let window: String
+        /// What that window had left, and what a task was required to fit inside,
+        /// both as percentages of it.
+        public let leftPct: Double
+        public let neededPct: Double
+        /// True when `neededPct` was priced from the ledger, false when the
+        /// telemetry was too thin and the configured floor stood in for it.
+        public let measured: Bool
+
+        public init(affordable: Bool, window: String = "", leftPct: Double = 0,
+                    neededPct: Double = 0, measured: Bool = false) {
+            self.affordable = affordable
+            self.window = window
+            self.leftPct = leftPct
+            self.neededPct = neededPct
+            self.measured = measured
+        }
+    }
+
+    /// Can one more automatic task be afforded right now?
+    ///
+    /// Both windows gate, because either can be the one that runs out: the 5-hour
+    /// window is what stops work this afternoon, and the 7-day window is the ceiling
+    /// a busy week walks into. A task has to fit inside what is left of each.
+    ///
+    /// A window with no cost measurement falls back to `floorPct` — "keep this much
+    /// of the limit in hand" — which is the whole of the answer on a machine whose
+    /// ledger has not priced a task yet.
+    ///
+    /// A window with **no reading at all** is skipped, and a call where neither
+    /// window has one is affordable. That is deliberate: the usage probe can be
+    /// switched off (`DIPLOMAT_QUOTA_PROBE=0`), logged out, or simply offline, and a
+    /// gate that read silence as "no budget" would take a machine's automatic work
+    /// with it every time the network dropped. The gate exists to spend a *measured*
+    /// limit carefully; with nothing measured it has no opinion, and the task cap is
+    /// still in front of it.
+    public static func budgetDecide(sessionLeftPct: Double?, weekLeftPct: Double?,
+                                    sessionCostPct: Double?, weekCostPct: Double?,
+                                    floorPct: Double) -> Budget {
+        var tightest: Budget?
+        for (window, left, cost) in [(windowSession, sessionLeftPct, sessionCostPct),
+                                     (windowWeek, weekLeftPct, weekCostPct)] {
+            guard let left = left else { continue }
+            let needed = cost ?? floorPct
+            if let best = tightest, left - needed >= best.leftPct - best.neededPct {
+                continue   // the other window is the binding one; session wins a tie
+            }
+            tightest = Budget(affordable: left >= needed, window: window,
+                              leftPct: left, neededPct: needed, measured: cost != nil)
+        }
+        return tightest ?? Budget(affordable: true)
     }
 
     /// Panel spawns come to the front; auto spawns must never steal focus.

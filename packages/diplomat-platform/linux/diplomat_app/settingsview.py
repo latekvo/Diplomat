@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QColorDialog,
     QComboBox,
+    QDoubleSpinBox,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -26,7 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import apiwatch, autofix, core, deviceallocator, review, szpont
+from . import apiwatch, appconfig, autofix, core, deviceallocator, review, szpont
 from .store import Store, tools
 from .widgets import IconChip, muted
 
@@ -344,6 +345,7 @@ class SettingsView(QWidget):
 
         col.addWidget(self._approve_container)
         col.addLayout(self._auto_limit_row())
+        col.addLayout(self._auto_budget_rows())
         return col
 
     def _auto_limit_row(self) -> QVBoxLayout:
@@ -383,6 +385,82 @@ class SettingsView(QWidget):
 
     def _on_auto_limit_changed(self, value: int) -> None:
         self.store.auto_task_limit = value
+        self.store.changed.emit()
+
+    def _auto_budget_rows(self) -> QVBoxLayout:
+        """The rate-limit budget: whether automatic work waits when the account is
+        running low, how sure of that it has to be, and what to keep in hand while the
+        ledger cannot yet price a task.
+
+        Under the task cap because they are the two halves of one question — the cap
+        bounds how many automatic agents run at once, this bounds whether any of them
+        should start at all — and the confidence and floor are meaningless with the
+        gate off, so they are disabled with it."""
+        col = QVBoxLayout()
+        col.setSpacing(2)
+
+        self._cb_budget = QCheckBox("Hold automatic work when the rate limit runs low")
+        self._cb_budget.setChecked(appconfig.auto_budget_gate())
+        self._cb_budget.toggled.connect(self._on_budget_gate_toggled)
+        col.addWidget(self._cb_budget)
+
+        self._budget_knobs = QWidget()
+        knobs = QVBoxLayout(self._budget_knobs)
+        knobs.setContentsMargins(18, 0, 0, 0)
+        knobs.setSpacing(2)
+
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        row.addWidget(QLabel("Start one only when"))
+        self._budget_confidence = QComboBox()
+        for level in sorted(autofix.BUDGET_CONFIDENCE_Z):
+            self._budget_confidence.addItem(f"{level}%", level)
+        self._budget_confidence.setCurrentIndex(
+            self._budget_confidence.findData(appconfig.auto_budget_confidence())
+        )
+        self._budget_confidence.currentIndexChanged.connect(
+            self._on_budget_confidence_changed
+        )
+        row.addWidget(self._budget_confidence)
+        row.addWidget(QLabel("sure it fits, and keep"))
+        self._budget_floor = QDoubleSpinBox()
+        self._budget_floor.setRange(0.0, 100.0)
+        self._budget_floor.setSingleStep(5.0)
+        self._budget_floor.setDecimals(1)
+        self._budget_floor.setSuffix("%")
+        self._budget_floor.setValue(appconfig.auto_budget_floor_pct())
+        self._budget_floor.valueChanged.connect(self._on_budget_floor_changed)
+        row.addWidget(self._budget_floor)
+        row.addWidget(QLabel("in hand until then"))
+        row.addStretch(1)
+        knobs.addLayout(row)
+
+        hint = QLabel(
+            "Priced from Telemetry → limit per task, against both rate-limit windows: "
+            "higher confidence is stricter. Held work isn't dropped — it waits in the "
+            "Agent-tasks list until a window refills, and “execute now” overrides it. "
+            "Nothing is held while the usage probe can't read a window at all."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet(muted(10))
+        knobs.addWidget(hint)
+
+        col.addWidget(self._budget_knobs)
+        self._budget_knobs.setEnabled(self._cb_budget.isChecked())
+        return col
+
+    def _on_budget_gate_toggled(self, on: bool) -> None:
+        appconfig.set_bool(appconfig.AUTO_BUDGET_GATE, on)
+        self._budget_knobs.setEnabled(on)
+        self.store.changed.emit()
+
+    def _on_budget_confidence_changed(self, index: int) -> None:
+        appconfig.set_int(appconfig.AUTO_BUDGET_CONFIDENCE,
+                          int(self._budget_confidence.itemData(index)))
+        self.store.changed.emit()
+
+    def _on_budget_floor_changed(self, value: float) -> None:
+        appconfig.set_float(appconfig.AUTO_BUDGET_FLOOR_PCT, float(value))
         self.store.changed.emit()
 
     def _on_autofix_toggled(self, on: bool) -> None:

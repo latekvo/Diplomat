@@ -1,0 +1,140 @@
+# Publish `szpont` to PyPI and to npm, on a tag.
+#
+# One name, two indexes, one tag: `npm i -g szpont` and `pip install szpont` are
+# meant to be the same command, so they are released together from the same commit
+# and can never be a version apart.
+#
+# PyPI goes out over Trusted Publishing - PyPI is told, once, that this
+# repository's `release-szpont.yml` may upload the `szpont` project, and the
+# upload authenticates with a short-lived OIDC token minted per run. npm publishes
+# the same way when a trusted publisher is configured for the package; until then
+# it falls back to the NPM_TOKEN secret. Neither needs a secret in the repository.
+#
+# An upload is irreversible - a version, once on an index, can never be replaced or
+# reused - so everything that can be checked runs first, in a job both publishes
+# wait on, and a release that fails any of it reaches neither index.
+name: Release szpont
+
+on:
+  push:
+    tags: ["szpont-v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      # The tag names the release; four files in the tree name what actually gets
+      # built. They are edited at different times by different hands, and the
+      # indexes believe the files - so `szpont-v0.3.0` over a pyproject still
+      # saying 0.2.0 would publish 0.2.0 under a 0.3.0 tag, and 0.3.0 would then be
+      # permanently unclaimable. The four are pinned against each other by
+      # test_launcher.py; this pins the tag against them.
+      - name: The tag and the packaged versions agree
+        run: |
+          tag_version="${GITHUB_REF_NAME#szpont-v}"
+          pkg_version="$(node -p "require('./packages/szpont-npm/package.json').version")"
+          py_version="$(python -c "
+          import re, pathlib
+          print(re.search(r'^version = \"(.+)\"$',
+                pathlib.Path('packages/szpont/pyproject.toml').read_text(), re.M).group(1))
+          ")"
+          echo "tag=$tag_version  pyproject=$py_version  package.json=$pkg_version"
+          if [ "$tag_version" != "$py_version" ] || [ "$tag_version" != "$pkg_version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match pyproject ($py_version) / package.json ($pkg_version)"
+            exit 1
+          fi
+
+      # The same jobs CI runs on every push, repeated against the exact commit
+      # being published. CI having been green on the branch is not the same claim:
+      # a tag can point anywhere, including at a commit no CI run ever saw.
+      - name: Install the bindings, the library and pytest
+        run: pip install -e ./packages/szpontnet-core -e ./packages/szpont pytest
+      - name: Bindings + launcher tests
+        run: pytest packages/szpont/tests -q
+      - name: Launcher tests, and that the two implementations plan alike
+        working-directory: packages/szpont-npm
+        run: npm test
+
+  pypi:
+    name: Publish to PyPI
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write # mint the OIDC token PyPI trades for an upload
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Build the distribution
+        run: |
+          pip install build twine
+          python -m build --outdir dist packages/szpont
+          twine check --strict dist/*
+      # The artifact on its own terms, in a venv that has never seen the checkout:
+      # the console script must be installed, runnable, and answer for a machine it
+      # is not going to touch. A module left out of the wheel is invisible until
+      # someone installs it, and by then the version is spent.
+      - name: The built wheel installs, imports and runs
+        run: |
+          python -m venv /tmp/verify
+          /tmp/verify/bin/pip install ./packages/szpontnet-core dist/*.whl
+          /tmp/verify/bin/python -c "
+          import szpont
+          for name in szpont.__all__:
+              getattr(szpont, name)
+          print('bindings ok:', szpont.__version__, len(szpont.__all__), 'exports')
+          "
+          /tmp/verify/bin/szpont --version
+          HOME="$RUNNER_TEMP/nowhere" /tmp/verify/bin/szpont --plan | python -c "
+          import json, sys
+          plan = json.load(sys.stdin)['plan']
+          assert [s['id'] for s in plan['steps']][0] == 'clone', plan
+          print('launcher ok:', [s['id'] for s in plan['steps']])
+          "
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+  npm:
+    name: Publish to npm
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      id-token: write # OIDC, for provenance and for npm Trusted Publishing
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+      # The tarball on its own terms, installed from the artifact rather than from
+      # the checkout - a file left out of `files` fails here instead of for whoever
+      # runs `npx szpont`.
+      - name: The packed tarball installs and runs
+        working-directory: packages/szpont-npm
+        run: |
+          npm pack --pack-destination "$RUNNER_TEMP"
+          npm i -g --prefix "$RUNNER_TEMP/global" "$RUNNER_TEMP"/szpont-*.tgz
+          "$RUNNER_TEMP/global/bin/szpont" --version
+      - name: Publish to npm
+        working-directory: packages/szpont-npm
+        # Trusted Publishing is used when the package has a publisher configured
+        # for this workflow; NODE_AUTH_TOKEN covers the first release, before there
+        # is a package to configure one on.
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --provenance --access public

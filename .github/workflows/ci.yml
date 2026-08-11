@@ -213,8 +213,11 @@ jobs:
   # is visible: the library and pytest, nothing else. The bindings exist to have no
   # behaviour the library does not — a dependency creeping in here would mean they
   # had started being a second implementation rather than a reading of the first.
+  # The `szpont` console script rides in the same distribution and is tested here
+  # too; it is a top-level module that imports only the standard library, so it
+  # costs this job's independence claim nothing.
   szpont:
-    name: szpont · Python bindings
+    name: szpont · Python bindings + launcher
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -236,7 +239,7 @@ jobs:
       # The wheel on its own terms: installed from the built artifact rather than
       # from the checkout, so a module left out of `packages` fails here instead of
       # for whoever installs it.
-      - name: The built wheel imports and carries its type marker
+      - name: The built wheel imports, carries its type marker and installs the command
         run: |
           python -m venv /tmp/wheel-check
           /tmp/wheel-check/bin/pip install ./packages/szpontnet-core dist/szpont/*.whl
@@ -248,6 +251,48 @@ jobs:
               getattr(szpont, name)
           print('wheel ok:', szpont.__version__, len(szpont.__all__), 'exports')
           "
+          # `pip install szpont` then `szpont` is the claim on the front of the
+          # README; this is the only place it is made from a built artifact.
+          /tmp/wheel-check/bin/szpont --version
+      # What `import szpont` costs, checked where it is cheap to check. The
+      # launcher is in the distribution but not in the package, so that starting an
+      # applet never loads the protocol library — and so that this job's "the
+      # bindings import the library and nothing else" claim stays about the
+      # bindings.
+      - name: The launcher stands alone
+        run: |
+          python -c "
+          import subprocess, sys
+          out = subprocess.run([sys.executable, '-c',
+              'import szpont_launcher, sys; print(\"szpontnet\" in sys.modules)'],
+              capture_output=True, text=True, cwd='packages/szpont')
+          assert out.stdout.strip() == 'False', out
+          print('the launcher imports without the library')
+          "
+
+  # `npx szpont`: the same launcher, published to the other index. Node and Python
+  # both, because the job's real subject is the parity test between them — two
+  # files in two languages under one name, and nothing but that test to keep them
+  # meaning the same thing.
+  szpont-npm:
+    name: szpont · npm launcher + twin parity
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/szpont-npm
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      # No dependencies to install: the launcher is standard-library-only on both
+      # sides, and `npm ci` would need a lockfile for a package that has nothing to
+      # lock. The tests discover themselves from test/.
+      - name: Plan, CLI, end-to-end clone/build/launch, and Python parity
+        run: npm test
 
   # The device-allocator MCP server + daemon. Self-contained Node tests that drive
   # the allocator over its unix socket against a synthetic device pool (DA_FAKE_DEVICES),

@@ -9,6 +9,7 @@
 - Auto resolve all conflicts on your PRs
 - Enforces one device per agent
 - Manually review all PRs of the given person
+- `npx szpont` (or `pip install szpont`) installs and starts it — [Install](#install)
 
 ## Details
 
@@ -80,6 +81,39 @@ Targets `software-mansion/argent` and shells out to the authenticated `gh` CLI.
 > and pushes made to your repositories, or agents spawned on your machines. **You alone
 > are responsible** for your API key and your spend, and for ensuring your use complies
 > with Anthropic's applicable terms.
+
+## Install
+
+```bash
+npx szpont                       # or:  pip install szpont && szpont
+```
+
+macOS and Linux, and the same steps either way: clone this repository into
+`~/.diplomat/checkout` if it isn't already there, build the front-end for the
+platform, start the applet. Every step of it runs a script already in this
+repository, one a human would otherwise type; nothing is packaged, because
+Diplomat is built out of the checkout it runs from and [updates itself](#settings)
+as one.
+
+You need **git**, a **Swift toolchain** (Xcode on macOS, [swiftly](https://swift.org/install)
+on Linux) and an authenticated [`gh`](https://cli.github.com). If one is missing,
+`szpont` names it and points at it before anything is downloaded.
+
+```bash
+szpont --plan          # print what it would do, as JSON, and do none of it
+szpont --no-update     # start the checkout as it stands, without fast-forwarding it
+szpont -- --dump       # everything after -- is passed to the applet
+```
+
+Already have a checkout? `DIPLOMAT_SELF_REPO=~/dev/diplomat szpont` starts *that*
+one, and never pulls it — a working copy may have work in it. Or skip the launcher
+entirely and [run it from the checkout](#run) as before.
+
+The two packages are the same launcher published under one name to two indexes
+([`packages/szpont`](packages/szpont/README.md),
+[`packages/szpont-npm`](packages/szpont-npm/README.md)); a parity test holds them to
+the same plan on every machine shape either can meet. On PyPI the name also carries
+the typed SzpontNet bindings, which is what `import szpont` means.
 
 ## The library
 
@@ -177,12 +211,70 @@ an idle machine with a cap of two reads `0 · 2 free` over two empty bays.
   often made unnecessary by the work ahead of it - and the poll re-offers it for
   as long as GitHub still calls the PR conflicting, so waiting costs it nothing.
 
-Two things hold work. The cap holds what there is no slot for, and releases it as
-slots free. A **monitor you switched off** holds its own work indefinitely: it
-keeps polling and keeps listing what it finds (reading *queued · monitor off*),
-but nothing starts by itself - only *execute now* does. So the toggles decide who
-starts the work, not whether you get to see it, and turning both off does not stop
-the 3-minute GitHub poll.
+Three things hold work. The cap holds what there is no slot for, and releases it as
+slots free. The **rate-limit budget** (below) holds everything when the account is
+too low to afford another agent, and releases it when a window refills. A
+**monitor you switched off** holds its own work indefinitely: it keeps polling and
+keeps listing what it finds (reading *queued · monitor off*), but nothing starts by
+itself - only *execute now* does. So the toggles decide who starts the work, not
+whether you get to see it, and turning both off does not stop the 3-minute GitHub
+poll.
+
+### The rate-limit budget
+
+The cap bounds how many automatic agents run at once. The budget bounds whether any
+of them should start at all - because a machine can have three empty bays and 4% of
+its 5-hour window left, and spending that on an auto-review is how you find the
+limit gone the next time you sit down to work.
+
+What a task costs is measured, not guessed. The Telemetry ledger already prices
+every finished agent as a share of the window it was spent from (*Limit per task*),
+so the question has a statistical answer - and the one worth asking is about the
+**next** task, not the average one. Half of all tasks cost more than the mean, and
+the distribution is right-skewed (most small, a few enormous), so a gate set at the
+mean would wave the expensive tail through every time. Diplomat therefore computes a
+one-sided upper **prediction bound**, `mean + z·sd·√(1 + 1/n)`: the cost one more
+task will come in under, at the confidence you pick. At the default 95%, roughly one
+auto-task in twenty may still overrun what it was gated on.
+
+Both windows gate - a task has to fit inside what is left of the 5-hour one *and*
+the 7-day one, since either can be the one that runs out. The weekly figure is the
+same tasks rescaled by the ratio of the two calibrations, so the two can never
+disagree about how big a task is. What is *left* comes from the live usage probe
+rather than the ledger's last sample: samples are 15 minutes apart, and several
+agents' worth of spending fits in that gap.
+
+Three knobs, in **Settings → PR AUTO-FIX**, and in `~/.diplomat/config.json` beside
+the task cap so the mesh node reads the same ones:
+
+- **Hold automatic work when the rate limit runs low** (`autoBudgetGate`, on) - the
+  master switch.
+- **Confidence** (`autoBudgetConfidence`, `95`) - 50 / 80 / 90 / 95 / 99. Higher is
+  stricter. A hand-edited value the table has no quantile for rounds *up*, never
+  down.
+- **Kept in hand** (`autoBudgetFloorPct`, `20`) - what a window must still have left
+  while the ledger is too thin to price a task. Until at least five auto-tasks have
+  finished and been priced, this is the whole of the answer, so a fresh install
+  spends down to 20% and no further.
+
+Two failure directions, both deliberate:
+
+- **No reading at all is no opinion.** The usage probe can be off
+  (`DIPLOMAT_QUOTA_PROBE=0`), logged out, or simply offline. Nothing is held then -
+  a gate that read silence as "no budget" would take a machine's automatic work down
+  with the network every time it dropped.
+- **A refusal defers, it never drops.** Held work writes no attempt record, so the
+  next poll offers it again; it sits in the Agent-tasks list and starts when the
+  window refills. *Execute now* overrides the budget exactly as it overrides the
+  cap - you are looking at the row and know something the ledger does not. A wizard
+  SPAWN is never gated at all: spending your own last slice of the limit is your
+  call.
+
+The feed carries one `no-budget` line per episode, quoting which window is short and
+against what, and another when the next episode begins - not one per PR per poll.
+A **mesh peer's job routed here** is declined for the same reason and the slot fails
+over: the mesh ranks peers surplus-first, so the node with limit to spend is exactly
+the one that picks it up.
 
 The queue is a view of what the monitors would re-offer, not a second copy of
 their state: it is rebuilt from live GitHub evidence on every 3-minute poll, so a
@@ -194,8 +286,8 @@ agent on work somebody already did. (Not on a mesh claim: the cap outranks the m
 anything queued is one that never asked a peer - peer-owned work leaves when the
 drain reaches it and the mesh answers.) The key order is remembered, so your
 arrangement survives the rebuild and a restart; nothing else is. *Execute now* keeps the task automatic in every other respect:
-same `Auto · ` label, same auto-handled counter, same mesh routing - the cap is
-the one hold it overrides. So a click can land the agent on a peer rather than
+same `Auto · ` label, same auto-handled counter, same mesh routing - the cap and
+the rate-limit budget are the two holds it overrides. So a click can land the agent on a peer rather than
 here, and what the starting row becomes is a mesh row saying which; it occupies a
 slot of this machine's cap only when it actually runs on this machine.
 
@@ -686,6 +778,16 @@ and ⏻) swaps the panel to a settings screen:
   `~/.diplomat/config.json` rather than UserDefaults - the node that runs
   peer-routed work is a separate stdlib-only process, and a machine with two
   answers to "how many at once" has no cap at all.
+- **Hold automatic work when the rate limit runs low** - the
+  [rate-limit budget](#the-rate-limit-budget) (**default on**), with the confidence
+  it must reach that a task fits (**default 95%**, one-sided) and the share of a
+  window to keep in hand while the ledger cannot price a task yet (**default 20%**).
+  Priced from the same per-task figure the [Telemetry](#telemetry) screen shows,
+  against both rate-limit windows. Held work waits under
+  [Agent tasks](#agent-tasks) and starts when a window refills; *execute now*
+  overrides it, panel spawns are never gated, and nothing is held at all while the
+  usage probe cannot read a window. In `~/.diplomat/config.json` for the same reason
+  as the cap above.
 - **Auto-continue agents on API errors** - the terminal watcher toggle, plus a
   count of nudges sent.
 - **Tools - color & visibility** - a **color well** to retint each tool plus a switch
@@ -756,6 +858,9 @@ the Agent-tasks list can flip a row to *merged*. The [autonomous
 monitors](#autonomous-monitors) are separate, on their own 3-minute schedule.
 
 ## Run
+
+From a checkout you already have. (No checkout? [`npx szpont`](#install) makes one
+and does everything below for you.)
 
 ```bash
 cd ~/dev/diplomat/packages/diplomat-platform/macos
@@ -936,13 +1041,16 @@ creeping back in fails a build instead of going unnoticed:
 Diplomat is checked from the other side — one step deletes both SzpontNet
 packages outright and renders the applet from what remains.
 
-CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) is five jobs:
+CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) is seven jobs:
 `swift-macos` (build both Swift packages + the core smoke + headless panel and
 telemetry renders + the helper self-tests), `swift-core-linux` (proves the core builds on
 Linux, and publishes a static `diplomat-core` binary), `python-linux` (pytest
 against that binary, so the golden-prompt parity is proven across languages, then
 the library-less start), `szpontnet` (the library's own tests plus a full
-conformance run against the reference node), and `node-device-allocator`.
+conformance run against the reference node), `szpont` (the bindings, the
+launcher, and the built wheel installed into a venv that has never seen the
+checkout), `szpont-npm` (the same launcher in JavaScript, held to the Python one's
+plan machine shape for machine shape), and `node-device-allocator`.
 
 ```
 packages/
@@ -966,7 +1074,8 @@ packages/
         Review.swift               ReviewDepth + ReviewConfig prompt builder + VerdictPolicy (assets/review.json)
         Conflict.swift / Audit.swift  ConflictConfig + AuditConfig prompt builders (assets/conflicts.json, assets/audit.json)
         PRRef.swift / PRTarget.swift  single-PR reference parsing + the whose-PRs axis shared by the wizards
-        Autofix.swift              PRSnapshot + the monitor's edge-trigger diff, AgentDispatchGate, AutofixMesh
+        Autofix.swift              PRSnapshot + the monitor's edge-trigger diff, AgentDispatchGate
+                                   (the task cap and the rate-limit budget), AutofixMesh
         AgentTasks.swift           the Agent-tasks list's sort order + the queue behind the task cap
         ReviewReconcile.swift      pure retry/backoff/dedup decisions for the monitors
         AgentActivity.swift        terminal-tail classification: running vs awaiting input
@@ -994,7 +1103,7 @@ packages/
         Components.swift           shared UI atoms (cards, chips, badges)
         ReviewWizard.swift         Review-PRs wizard + AgentSpawner (staged prompt file, done sentinel, iTerm/Terminal)
         ConflictWizard.swift / AuditWizard.swift   the Resolve-conflicts and Full-E2E-test wizards
-        SettingsView.swift         settings (username, repo root, monitors + auto-approve + task cap, watcher, tools, terminal, allocator)
+        SettingsView.swift         settings (username, repo root, monitors + auto-approve + task cap + rate-limit budget, watcher, tools, terminal, allocator)
         Store.swift                ObservableObject; settings + the monitor/watcher loops; logic in ToolData
         AutofixMonitor.swift       the monitors' GitHub reads (monitor-prs / review-requests queries)
         AutofixStatus.swift        the monitor heartbeat behind the status pill
@@ -1015,6 +1124,7 @@ packages/
         TelemetryLog.swift         writes/reads ~/.diplomat/pr-monitor/telemetry.jsonl (append-only, rotated)
         UsageScan.swift            Claude Code transcript scanner: repo-vs-other tokens, per-task attribution
         Quota.swift                the OAuth usage probe — what is left of the 5-hour and 7-day windows
+        AutoBudget.swift           ledger + probe + knobs -> may another automatic task start here?
         SelfUpdate.swift           fetch/merge upstream, rebuild, relaunch (Update button + the 06:00 run)
         RepoPaths.swift            locate this app's own checkout (DIPLOMAT_SELF_REPO → … → ~/dev/diplomat),
                                    the sibling packages it reaches for, and the agents' repo root
@@ -1024,7 +1134,7 @@ packages/
       diplomat_app/szponthost.py   ← Diplomat's answers to the six questions a mesh node asks its host:
                                  the duty catalog, the state dir, where events go, how a job runs here,
                                  whether an agent is already up on that work, and whether this machine
-                                 has room for another
+                                 has room for another and the rate limit to afford it
       install/                 ← build-core + the autostart / auto-update (un)installers (XDG + systemd)
       meshsim/                 ← the real-socket mesh simulator the mesh scenarios run through
 
@@ -1044,5 +1154,18 @@ packages/
     conformance/               ← black-box conformance tester: runs a candidate node as an opaque
                                  subprocess, joins over real multicast + TCP, exits non-zero on any MUST failure
 
-.github/workflows/ci.yml       ← swift-macos · swift-core-linux · python-linux · szpontnet · node-device-allocator
+  szpont/                      ← what `szpont` means on PyPI (see its README): typed Python bindings for
+                                 SzpontNet — the wire format bound to types, adding nothing to the protocol
+    szpont_launcher.py         ← and the `szpont` command: clone/build/launch Diplomat. A top-level module,
+                                 not part of the package, so starting an applet never imports the library
+
+  szpont-npm/                  ← what `szpont` means on npm (see its README): the same launcher, in
+                                 JavaScript, for `npx szpont`
+    test/scenarios.mjs         ← the machine shapes both launchers are held to; parity-with-python.mjs
+                                 runs every one of them through both and demands the same plan
+
+.github/workflows/ci.yml       ← swift-macos · swift-core-linux · python-linux · szpontnet · szpont ·
+                                 szpont-npm · node-device-allocator
+.github/workflows/release-szpont.yml     ← tag szpont-v* → PyPI + npm, from one verified commit
+.github/workflows/release-szpontnet.yml  ← tag szpontnet-v* → PyPI
 ```

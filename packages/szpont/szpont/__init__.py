@@ -49,7 +49,7 @@ from .mesh import DEFAULT_DISPATCH_TIMEOUT, DEFAULT_TIMEOUT, Mesh
 from .models import (NEUTRAL_SURPLUS, Assignment, Claim, Device, Dispatch, Node,
                      Iroh, Peer, Quota, Shortfall, Slot, Snapshot, Tor)
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "__version__",

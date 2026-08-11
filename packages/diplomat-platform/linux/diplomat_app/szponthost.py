@@ -92,14 +92,29 @@ class DiplomatHost(szpont_host.Host):
         return number in autofix.live_pr_numbers(_ps_dump(), owner, repo)
 
     def at_job_capacity(self, running_keys: list[str]) -> bool:
-        """Would starting one more agent here exceed this machine's cap on
-        concurrent automatic tasks (Settings → PR AUTO-FIX, 2 by default)?
+        """Should a dispatch routed here be declined and failed over to another
+        node? Two reasons say yes, and the library asks for them as one question:
+        this machine is already at its cap on concurrent automatic tasks (Settings →
+        PR AUTO-FIX, 2 by default), or it has too little rate limit left to afford
+        the job (:mod:`autobudget`).
 
-        The applet enforces the same cap on the work IT originates; this is the
-        other half — work a mesh peer routes in, which the applet never sees. Both
-        read the cap from the shared config file (:func:`appconfig.auto_task_limit`)
-        and both count in PRs, so a device cannot end up with one number for work
-        it found itself and another for work it was sent.
+        The applet enforces both on the work IT originates; this is the other half —
+        work a mesh peer routes in, which the applet never sees and which spends
+        this machine's cap and this machine's limit just the same. Every input comes
+        from the shared config file and the shared ledger
+        (:func:`appconfig.auto_task_limit`, :func:`autobudget.decide`), so a device
+        cannot end up with one answer for work it found itself and another for work
+        it was sent.
+
+        A budget decline is logged here rather than left to the node's own
+        `mesh-at-capacity` line, which can only say the machine is busy — it is the
+        difference between a peer waiting minutes for an agent to finish and waiting
+        hours for a window to refill, and the operator reading the feed is the one
+        who needs to know which.
+
+        Failing the slot over is the right outcome for both: the mesh ranks peers
+        surplus-first, so the node with limit to spend is exactly the one that picks
+        this up.
 
         Counted from the ``ps`` scan unioned with the node's own live jobs: an agent
         the node started seconds ago is in ``running_keys`` before it is in ``ps``,
@@ -121,7 +136,14 @@ class DiplomatHost(szpont_host.Host):
         An unreadable tmux degrades the other way, to "everything is working", so a
         node that cannot see its panes declines work rather than piling it on.
         """
-        from . import appconfig, autofix, core, tmuxwatch
+        from . import appconfig, autobudget, autofix, core, tmuxwatch
+
+        if autobudget.enabled():
+            budget = autobudget.decide()
+            if not budget.affordable:
+                self.log("mesh-no-budget",
+                         f"Declined a peer's job — {autobudget.shortfall(budget)}")
+                return True
 
         cfg = core.config()
         mine = {

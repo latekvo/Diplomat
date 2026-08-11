@@ -356,6 +356,85 @@ def test_an_unmatched_prompt_reports_nothing_rather_than_zero(scanner):
     assert usagescan.task_tokens("", time.time() - 60, time.time()) is None
 
 
+# MARK: - Retiring a run, which is what actually prices it
+
+
+def test_retiring_a_run_prices_it_from_the_transcript_its_prompt_names(ledger, scanner):
+    """The pricing inputs live in the run directory that retirement deletes, so both
+    have to be read before it goes. Every figure on the screen that is per-task comes
+    through here: a retirement that reads the directory afterwards prices nothing at
+    all, and the ledger fills with completions the screen can only count."""
+    from diplomat_app import agentregistry, agentstate
+    from diplomat_app.store import Store
+
+    repo, projects = scanner
+    prompt = "review PR #41 please"
+    dispatched_at = time.time() - 900
+    exited_at = dispatched_at + 300
+    transcript = projects / "s" / "mine.jsonl"
+    _session(transcript, prompt, str(repo), [1000, 500])
+    os.utime(transcript, (exited_at, exited_at))  # last turn written as the agent exits
+
+    record = agentstate.RunRecord(run_id="r1", dispatched_at=dispatched_at,
+                                  pr_number=41, kind="review",
+                                  ledger_key="review:o/r#41@aa")
+    agentregistry.create_run(record, prompt)
+    sentinel = agentregistry.done_path("r1")
+    sentinel.write_text("0", encoding="utf-8")
+    os.utime(sentinel, (exited_at, exited_at))
+
+    telemetry.record_started(record.ledger_key)
+    Store()._retire_finished(agentstate.Tick(records=[], states={}, rows=[],
+                                             cap_load=set(), retirable=[record],
+                                             free_slots=0))
+
+    telemetry._reset_cache()
+    task = telemetry.load().tasks[0]
+    assert task.tokens == 1500, "the run was retired without being priced"
+    assert task.done_at == exited_at, "the exit time came from the poll, not the agent"
+
+# MARK: - What a range's token split measures
+
+
+def _sample(at: float, repo: float, other: float = 0.0) -> telemetry.Sample:
+    return telemetry.Sample(at=at, session_left=None, week_left=None,
+                            repo_tokens=repo, other_tokens=other)
+
+
+def _summarize(samples: list, *, now: float, days: float) -> telemetry.Summary:
+    return telemetry.summarize(telemetry.Ledger(tasks=[], samples=samples),
+                               now=now, days=days, steps=2, bin_count=4, z=1.96)
+
+
+def test_a_range_counts_the_spend_since_the_reading_before_it_opened():
+    """The counters are cumulative and the readings are 15 minutes apart, so a range
+    boundary almost never lands on one. Measuring from the first reading INSIDE the
+    range charges nothing for the interval that straddles the boundary — and that
+    interval holds real spend, which on the live ledger was a sixth of a 1-day total.
+    """
+    now = 1_785_000_000.0
+    s = _summarize([_sample(now - 7200, 1000.0),   # before the range opens
+                    _sample(now - 1800, 5000.0),
+                    _sample(now - 600, 6000.0)],
+                   now=now, days=1 / 24)
+    assert s.repo_tokens == 5000.0, "the straddling interval was dropped"
+
+
+def test_a_range_with_no_earlier_reading_starts_at_its_first_one():
+    """Nothing before the range means nothing to measure from, so the first reading
+    in it is the baseline — the ledger's own beginning, not a boundary artefact."""
+    now = 1_785_000_000.0
+    s = _summarize([_sample(now - 1800, 1000.0), _sample(now - 600, 4000.0)],
+                   now=now, days=1 / 24)
+    assert s.repo_tokens == 3000.0
+
+
+def test_a_range_with_no_readings_in_it_counts_nothing():
+    now = 1_785_000_000.0
+    s = _summarize([_sample(now - 8 * 86400, 1000.0)], now=now, days=1.0)
+    assert s.repo_tokens == 0.0 and s.other_tokens == 0.0
+
+
 # MARK: - The quota probe
 
 
