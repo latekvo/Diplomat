@@ -58,6 +58,16 @@ def _installer_files(pr: OpenPR) -> list[str]:
     return [f for f in pr.files if Filters.is_installer_file(f)]
 
 
+def _run_prompt(run_id: str) -> str:
+    """What a run was asked — the string :func:`usagescan.task_tokens` matches
+    transcripts against. Empty when the run directory is gone, which prices the run
+    as unattributed rather than as some other agent's transcript."""
+    try:
+        return agentregistry.prompt_path(run_id).read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
 # MARK: - Value types
 
 
@@ -1772,23 +1782,22 @@ class Store(QObject):
         gone = [r for r in t.retirable if not r.untracked]
         if not gone:
             return
+        # Both pricing inputs come out of the run directory, so they must be read
+        # before `forget` deletes it.
+        #
+        # The sentinel's mtime is when the agent actually exited; now() is whenever a
+        # poll got round to looking, which is up to a poll period later and would
+        # inflate every recorded run time by a random few minutes.
+        retired = [
+            (r, agentregistry.finished_at(r.run_id) or time.time(),
+             _run_prompt(r.run_id))
+            for r in gone if r.ledger_key
+        ]
         agentregistry.forget({r.run_id for r in gone})
-        priced = False
-        for r in gone:
-            if not r.ledger_key:
-                continue
-            # The sentinel's mtime is when the agent actually exited; now() is
-            # whenever a poll got round to looking, which is up to a poll period later
-            # and would inflate every recorded run time by a random few minutes.
-            finished_at = agentregistry.finished_at(r.run_id) or time.time()
-            try:
-                prompt = agentregistry.prompt_path(r.run_id).read_text(encoding="utf-8")
-            except OSError:
-                prompt = ""
+        for r, finished_at, prompt in retired:
             telemetry.record_completion(r.ledger_key, prompt, r.dispatched_at,
                                         finished_at)
-            priced = True
-        if priced:
+        if retired:
             self.telemetry_changed.emit()
 
     def _in_flight(self, url: str) -> bool:
