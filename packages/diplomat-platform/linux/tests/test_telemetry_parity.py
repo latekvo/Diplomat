@@ -59,8 +59,13 @@ def _ledger_lines() -> list[str]:
     # the window comes out negative; the fourth has no quota reading at all, which
     # still carries token counters for the repo/other split.
     events += [
-        {"at": NOW - 5 * DAY, "ev": "sample", "sessionLeft": 1.0, "weekLeft": 1.0,
+        # OUTSIDE the range, and the token counters have already moved by the time
+        # the range opens. The split is measured from here, so an implementation
+        # that baselines on the first sample INSIDE the range instead reports less.
+        {"at": NOW - 20 * DAY, "ev": "sample", "sessionLeft": None, "weekLeft": None,
          "repoTokens": 0.0, "otherTokens": 0.0},
+        {"at": NOW - 5 * DAY, "ev": "sample", "sessionLeft": 1.0, "weekLeft": 1.0,
+         "repoTokens": 250_000.0, "otherTokens": 100_000.0},
         {"at": NOW - 5 * DAY + 3600, "ev": "sample", "sessionLeft": 0.9,
          "weekLeft": 0.98, "repoTokens": 400_000.0, "otherTokens": 200_000.0},
         {"at": NOW - 5 * DAY + 7200, "ev": "sample", "sessionLeft": 0.75,
@@ -236,6 +241,11 @@ def test_the_fixture_exercises_every_figure(both):
         "nothing owed at `now` — the series ends flat and its tail is untested"
     )
     assert p["repoTokens"] > 0 and p["otherTokens"] > 0, "the token split is one-sided"
+    assert p["repoTokens"] == 6_000_000 and p["otherTokens"] == 2_400_000, (
+        "the split must run from the reading BEFORE the range to the newest one — "
+        "these are the fixture's outermost counters, and anything less means the "
+        "interval straddling the range boundary was dropped"
+    )
 
 
 def test_a_retry_does_not_move_the_measured_wait(both):

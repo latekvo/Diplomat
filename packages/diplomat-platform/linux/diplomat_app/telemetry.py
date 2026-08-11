@@ -663,9 +663,9 @@ def quota_series(samples: list[Sample], *, now: float,
 
 
 def token_split(samples: list[Sample]) -> tuple[float, float]:
-    """Cumulative-counter deltas over the range, split monitored-repo vs everything
-    else. A counter that went DOWN between two samples means the scanner's cursor
-    file was lost and it restarted from zero, so that pair contributes nothing
+    """Cumulative-counter deltas across the samples given, split monitored-repo vs
+    everything else. A counter that went DOWN between two samples means the scanner's
+    cursor file was lost and it restarted from zero, so that pair contributes nothing
     rather than a huge negative."""
     repo = other = 0.0
     for a, b in zip(samples, samples[1:]):
@@ -737,7 +737,12 @@ def summarize(ledger: Ledger, *, now: float, days: float, steps: int,
     so the two implementations — and the tests — agree on where the range ends.
     """
     start = now - days * 86400
-    samples = [s for s in ledger.samples if start <= s.at <= now]
+    # The token counters are cumulative, so what the range spent is the rise since the
+    # last reading taken BEFORE it opened. Starting from the first reading INSIDE it
+    # drops everything spent between those two — a whole sample interval, which on a
+    # bursty day is a sixth of what a 1-day range is being asked about.
+    inside = [i for i, s in enumerate(ledger.samples) if start <= s.at <= now]
+    samples = ledger.samples[max(0, inside[0] - 1):inside[-1] + 1] if inside else []
 
     # What a rate-limit window is worth in tokens is a property of the ACCOUNT, not
     # of the lookback the reader happens to have selected — so it is priced from
