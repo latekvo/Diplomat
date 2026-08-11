@@ -239,10 +239,18 @@ class Panel(QWidget):
         telemetry_scroll.setWidget(self.telemetry_view)
         self._screens["telemetry"] = self.body.addWidget(telemetry_scroll)
 
-        # Page: settings
+        # Page: settings. Scrolled like the two screens above, and for the same
+        # reason: its left column is a stack of toggles each carrying the paragraph
+        # that says what it does, and on a short window Qt buys the space back by
+        # squeezing those paragraphs into each other rather than by hiding anything.
         self.settings_view = SettingsView(store)
         self.settings_view.done.connect(lambda: self._set_screen("main"))
-        self._screens["settings"] = self.body.addWidget(self.settings_view)
+        settings_scroll = QScrollArea()
+        settings_scroll.setWidgetResizable(True)
+        settings_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        settings_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        settings_scroll.setWidget(self.settings_view)
+        self._screens["settings"] = self.body.addWidget(settings_scroll)
 
         # Page: mesh management (topology graph, node cards, duty routing) —
         # present only when the add-on is.

@@ -717,6 +717,15 @@ def dispatch_status_text(verdict: str, terminal_title: str) -> str:
         return "Author is banned for prompt injection - un-ban to review."
     if verdict == autofix.VERDICT_STAND_DOWN:
         return "Another mesh node originates this work."
+    # A wizard SPAWN is a panel dispatch, so none of the mesh gate, the task cap and
+    # the rate-limit budget applies to it. Spelled out anyway, and matching the Swift
+    # twin word for word, because the fallback below reads every unknown verdict as a
+    # spawn failure — the one answer that would send someone looking at a terminal
+    # that was never asked to open.
+    if verdict == autofix.VERDICT_AT_CAPACITY:
+        return "This machine is at its cap of concurrent automatic tasks."
+    if verdict == autofix.VERDICT_UNAFFORDABLE:
+        return "Too little rate limit left for automatic work."
     return "Spawn failed - see the activity feed."
 
 
