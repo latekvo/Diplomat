@@ -133,6 +133,41 @@ final class Store: ObservableObject {
         }
     }
 
+    /// The rate-limit budget's three knobs — same file, same reason as the cap above:
+    /// a mesh node spends this machine's limit on work this app never sees.
+    ///
+    /// Each normalises in memory as well as on disk, so the gate here and the node
+    /// behind the file are never comparing against different numbers. Changing any of
+    /// them drops the cached verdict, because it was computed under the old ones and
+    /// would otherwise stand for another 20 seconds.
+    @Published var autoBudgetGate: Bool {
+        didSet {
+            AutoBudget.resetCache()
+            guard !Headless.active else { return }
+            AppConfig.setBool(AppConfig.autoBudgetGateKey, autoBudgetGate)
+        }
+    }
+
+    @Published var autoBudgetConfidence: Int {
+        didSet {
+            let clamped = AgentDispatchGate.clampBudgetConfidence(autoBudgetConfidence)
+            if clamped != autoBudgetConfidence { autoBudgetConfidence = clamped }
+            AutoBudget.resetCache()
+            guard !Headless.active else { return }
+            AppConfig.setInt(AppConfig.autoBudgetConfidenceKey, clamped)
+        }
+    }
+
+    @Published var autoBudgetFloorPct: Double {
+        didSet {
+            let clamped = AgentDispatchGate.clampBudgetFloorPct(autoBudgetFloorPct)
+            if clamped != autoBudgetFloorPct { autoBudgetFloorPct = clamped }
+            AutoBudget.resetCache()
+            guard !Headless.active else { return }
+            AppConfig.setDouble(AppConfig.autoBudgetFloorPctKey, clamped)
+        }
+    }
+
     /// Latest state from the auto-fix monitor's own poll (nil until the first). Drives
     /// the top-of-panel status pill; freshness (`isLive`) decides active vs. offline.
     @Published var autofixStatus: AutofixStatus?
@@ -419,6 +454,9 @@ final class Store: ObservableObject {
             ?? (SpawnTerminal.iterm.isInstalled ? SpawnTerminal.iterm.rawValue : SpawnTerminal.terminal.rawValue)
         repoPathOverride = AppConfig.string(AppConfig.repoRootKey)
         autoTaskLimit = AppConfig.autoTaskLimit
+        autoBudgetGate = AppConfig.autoBudgetGate
+        autoBudgetConfidence = AppConfig.autoBudgetConfidence
+        autoBudgetFloorPct = AppConfig.autoBudgetFloorPct
         // Default ON (absent key ⇒ true): the pill only lights up on a live heartbeat,
         // so defaulting on can't falsely claim "active" when no monitor is running.
         prAutofixEnabled = defaults.object(forKey: Keys.prAutofixEnabled) as? Bool ?? true
@@ -1260,8 +1298,23 @@ final class Store: ObservableObject {
     }
 
     /// Whether the "deferring auto work" note has been logged for the current
-    /// at-capacity episode.
+    /// at-capacity episode, and for the current out-of-budget one. Two flags, not one:
+    /// a machine can saturate and drain several times over inside a single spell of
+    /// having no rate limit left, and each episode is worth one line of its own.
     private var capacityLogged = false
+    private var budgetLogged = false
+
+    /// Note that automatic work is being held for want of rate limit — once per
+    /// episode, like `logAtCapacity`, and cleared the moment a dispatch finds the
+    /// window has refilled. Without that, a machine sitting under its floor would write
+    /// one of these per owed PR per poll, for hours.
+    private func logUnaffordable(_ budget: AgentDispatchGate.Budget) {
+        guard !budgetLogged else { return }
+        budgetLogged = true
+        AuditLog.log("auto", "no-budget",
+                     "Deferring auto work — " + AutoBudget.shortfall(budget))
+        refreshAudit()
+    }
 
     /// Note that automatic work is being held back — once per episode, not once per
     /// PR per poll. Cleared the moment a dispatch finds room again, so the feed gets
@@ -1418,7 +1471,15 @@ final class Store: ObservableObject {
             // this the feed would carry one `at-capacity` line for an unbounded run of
             // saturate-and-drain episodes instead of one apiece.
             capacityLogged = false
-            if case .failed = await runQueuedTask(entry) { return }
+            switch await runQueuedTask(entry, forced: false) {
+            case .failed: return
+            // Every remaining entry would be priced against the same windows and get
+            // the same answer, and the dispatch has already re-staged this one for the
+            // commit at the end of the cycle. Draining on would cost a round of
+            // refusals to no end.
+            case .unaffordable: return
+            default: break
+            }
         }
     }
 
@@ -1453,6 +1514,11 @@ final class Store: ObservableObject {
     /// Dispatch one queued task past the capacity check its caller already made, and
     /// record the attempt its monitor would have recorded.
     ///
+    /// `forced` is the operator's "execute now", and is the only thing that also
+    /// overrides the rate-limit budget. The drain does not: it is the machine starting
+    /// its own automatic work, and a task that could not be afforded when it was found
+    /// is not afforded by having waited in a list.
+    ///
     /// That record is not bookkeeping polish: the whole retry ladder hangs off it. A
     /// queued dispatch that wrote none would look, to the very next poll after the
     /// agent exits, exactly like work never attempted — so an agent that finishes
@@ -1468,11 +1534,12 @@ final class Store: ObservableObject {
     /// without suspending again). Between them the task is a row the whole way: never
     /// drawn twice, and never missing.
     @discardableResult
-    private func runQueuedTask(_ entry: QueuedAgentTask) async -> DispatchOutcome {
+    private func runQueuedTask(_ entry: QueuedAgentTask,
+                               forced: Bool) async -> DispatchOutcome {
         beginStarting(entry)
         let outcome = await dispatchAgent(entry.job, source: .auto,
                                           attemptNumber: entry.attemptNumber,
-                                          bypassCapacity: true)
+                                          bypassCapacity: true, bypassBudget: forced)
         endStarting(entry.id)
         if outcome.wasHandled { recordQueuedAttempt(entry) }
         return outcome
@@ -1526,14 +1593,17 @@ final class Store: ObservableObject {
         }
     }
 
-    /// The queued row's "execute now": start this task immediately, past the cap.
+    /// The queued row's "execute now": start this task immediately, past the two holds
+    /// that are the machine's own judgement.
     ///
     /// It stays AUTO work — same `Auto · ` label, same auto-handled counter, mesh
     /// routing still applies, and once running it occupies a slot like any other
-    /// automatic agent, so the rest of the queue waits behind it. Of the five
+    /// automatic agent, so the rest of the queue waits behind it. Of the six
     /// asymmetries the gate draws between a click and a monitor tick (focus, capacity,
-    /// mesh, counters, label) this borrows exactly one: the cap, which is the only one
-    /// the operator is overriding.
+    /// budget, mesh, counters, label) this borrows exactly two: the cap and the
+    /// rate-limit budget, which are the two the operator is overriding. Both are
+    /// estimates of what this machine should do next, and the operator looking at the
+    /// row knows something they do not.
     ///
     /// The ROW answers the click at once — `runQueuedTask` moves it into the starting
     /// band before it suspends, so it reads as starting from the frame after the
@@ -1544,7 +1614,7 @@ final class Store: ObservableObject {
     /// asking would report a launch that never happened in all three.
     func executeQueuedTask(_ id: String) async {
         guard let entry = queuedTasks.first(where: { $0.id == id }) else { return }
-        switch await runQueuedTask(entry) {
+        switch await runQueuedTask(entry, forced: true) {
         case .spawned:
             AuditLog.log("panel", "queue-run",
                          "\(entry.job.label) — started ahead of the task cap")
@@ -1562,8 +1632,8 @@ final class Store: ObservableObject {
             error = "\(entry.job.label): an agent is already on this PR."
         case .banned:
             error = "\(entry.job.label): the PR's author is banned (un-ban to review)."
-        case .atCapacity:
-            break   // unreachable: the run bypasses the cap the operator overrode
+        case .atCapacity, .unaffordable:
+            break   // unreachable: the run bypasses both holds the operator overrode
         }
         refreshAudit()
     }
@@ -1738,6 +1808,7 @@ final class Store: ObservableObject {
         case banned
         case standDown
         case atCapacity
+        case unaffordable
         case failed(String)
         var didSpawn: Bool { if case .spawned = self { return true }; return false }
         /// The work is now being handled — spawned locally OR stood down to a peer
@@ -1745,15 +1816,15 @@ final class Store: ObservableObject {
         /// start the retry backoff, mirroring the Python reference which treats
         /// `("spawned", VERDICT_STAND_DOWN)` as handled. `.failed` deliberately does
         /// NOT count (a transient spawn error retries next poll); nor do `.inFlight`
-        /// / `.banned` / `.atCapacity`. Using `.didSpawn` here instead would
-        /// re-dispatch peer-owned work to the mesh on every poll, the backoff never
-        /// engaging — and counting `.atCapacity` as handled would drop deferred work
-        /// into a 5m–3h cooldown instead of offering it again the moment an agent
-        /// finishes.
+        /// / `.banned` / `.atCapacity` / `.unaffordable`. Using `.didSpawn` here
+        /// instead would re-dispatch peer-owned work to the mesh on every poll, the
+        /// backoff never engaging — and counting either deferral as handled would drop
+        /// held work into a 5m–3h cooldown instead of offering it again the moment an
+        /// agent finishes or the window refills.
         var wasHandled: Bool {
             switch self {
             case .spawned, .standDown: return true
-            case .inFlight, .banned, .atCapacity, .failed: return false
+            case .inFlight, .banned, .atCapacity, .unaffordable, .failed: return false
             }
         }
     }
@@ -1768,10 +1839,11 @@ final class Store: ObservableObject {
     /// that landed on this very machine.
     ///
     /// An AUTO job is additionally capped at `autoTaskLimit` concurrent agents on
-    /// this device (`autoTasksRunning`), and held outright while its own monitor is
-    /// switched off (`isPaused`); a panel click is subject to neither. Either refusal
-    /// queues the job (`stageQueued`), which is what the panel's Agent-tasks list
-    /// shows as *queued*.
+    /// this device (`autoTasksRunning`), held outright while its own monitor is
+    /// switched off (`isPaused`), and held again when what is left of the rate-limit
+    /// windows will not cover it (`AutoBudget`); a panel click is subject to none of
+    /// the three. Every one of those refusals queues the job (`stageQueued`), which is
+    /// what the panel's Agent-tasks list shows as *queued*.
     ///
     /// `bypassCapacity` is for the two callers that have already answered the
     /// capacity question themselves: the queue drain (which counted the free slot it
@@ -1779,10 +1851,16 @@ final class Store: ObservableObject {
     /// the operator is overriding both holds deliberately). It skips the measurement —
     /// not just its verdict — so neither pays for a second `ps` scan, and so a forced
     /// run cannot re-queue itself.
+    ///
+    /// `bypassBudget` is only the second of those. The drain runs the machine's own
+    /// automatic work, and work that could not be afforded when it was found cannot be
+    /// afforded by having waited in a list; only the operator pressing "execute now"
+    /// overrides the budget, exactly as only they override the cap.
     @discardableResult
     func dispatchAgent(_ job: AgentJob, source: AgentDispatchGate.Source,
                        attemptNumber: Int = 1,
-                       bypassCapacity: Bool = false) async -> DispatchOutcome {
+                       bypassCapacity: Bool = false,
+                       bypassBudget: Bool = false) async -> DispatchOutcome {
         if let n = job.prNumber {
             if resolvingPRs.contains(n) { return .inFlight }
             resolvingPRs.insert(n)
@@ -1812,15 +1890,30 @@ final class Store: ObservableObject {
             paused = isPaused(job.counter)
             atCapacity = full || paused
         }
+        // Measured after capacity and under the same conditions: a device with no free
+        // bay has nothing to spend a budget on, so the probe and the ledger fold are
+        // work that would be thrown away. The drain reaches here with `bypassCapacity`
+        // set and this one clear — that is the whole difference between deferring work
+        // and forcing it.
+        var budget = AgentDispatchGate.Budget(affordable: true)
+        if source == .auto, !agentOnPR, !bypassBudget, !atCapacity, AutoBudget.enabled {
+            budget = AutoBudget.decide()
+            if budget.affordable { budgetLogged = false }
+        }
         switch AgentDispatchGate.decide(source: source, banned: banned,
                                         agentOnPR: agentOnPR, meshStandsDown: false,
-                                        atCapacity: atCapacity) {
+                                        atCapacity: atCapacity,
+                                        unaffordable: !budget.affordable) {
         case .atCapacity:
             // A paused monitor is not a saturated device: it queues silently, because
             // the operator switched it off on purpose and the row says the rest.
             if !paused { logAtCapacity() }
             stageQueued(job, attemptNumber: attemptNumber)
             return .atCapacity
+        case .unaffordable:
+            logUnaffordable(budget)
+            stageQueued(job, attemptNumber: attemptNumber)
+            return .unaffordable
         case .banned:
             AuditLog.log(source.rawValue, "ban-skip",
                          "\(job.label) — author is banned (un-ban to review)")
@@ -2065,9 +2158,9 @@ final class Store: ObservableObject {
             self.error = "Resolve #\(number) failed to spawn — see the activity log."
         case .inFlight:
             self.error = "Resolve #\(number): an agent is already on this PR."
-        case .spawned, .banned, .standDown, .atCapacity:
-            // `.standDown` / `.atCapacity` are answers only a monitor gets — neither
-            // the mesh gate nor the automatic-task cap applies to a click.
+        case .spawned, .banned, .standDown, .atCapacity, .unaffordable:
+            // The last three are answers only a monitor gets — none of the mesh gate,
+            // the automatic-task cap and the rate-limit budget applies to a click.
             break
         }
     }

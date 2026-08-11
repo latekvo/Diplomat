@@ -179,7 +179,58 @@ struct SettingsView: View {
             if store.reviewRequestsEnabled { autoApproveBlock }
 
             autoTaskLimitRow
+
+            autoBudgetBlock
         }
+    }
+
+    /// The rate-limit budget: whether automatic work waits when the account is running
+    /// low, how sure of that it has to be, and what to keep in hand while the ledger
+    /// cannot yet price a task.
+    ///
+    /// Under the task cap because they are the two halves of one question — the cap
+    /// bounds how many automatic agents run at once, this bounds whether any of them
+    /// should start at all.
+    private static let autoBudgetBlurb = """
+        Priced from Telemetry → limit per task, against both rate-limit windows: \
+        higher confidence is stricter. Held work isn't dropped — it waits in the \
+        Agent-tasks list until a window refills, and "execute now" overrides it. \
+        Nothing is held while the usage probe can't read a window at all.
+        """
+
+    private var autoBudgetBlock: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Toggle(isOn: $store.autoBudgetGate) {
+                Text("Hold automatic work when the rate limit runs low").font(.caption)
+            }
+            .toggleStyle(.switch).controlSize(.small)
+            .padding(.top, 2)
+            Text(SettingsView.autoBudgetBlurb)
+                .font(.caption2).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if store.autoBudgetGate { autoBudgetKnobs }
+        }
+    }
+
+    /// Both strings are resolved before the ViewBuilder sees them, for the reason
+    /// `autoTaskLimitBlurb` documents: an interpolation inside a `Text(...)` in a
+    /// builder is what tips this file over the type-checker's time limit on CI.
+    private var autoBudgetKnobs: some View {
+        let floor = store.autoBudgetFloorPct
+        let floorLabel: String = "Keep \(Telemetry.percent(floor)) in hand until then"
+        return VStack(alignment: .leading, spacing: 2) {
+            Picker("Start one only when", selection: $store.autoBudgetConfidence) {
+                ForEach(AgentDispatchGate.budgetConfidenceZ.keys.sorted(), id: \.self) {
+                    Text("\($0)% sure it fits").tag($0)
+                }
+            }
+            .controlSize(.small)
+            Stepper(value: $store.autoBudgetFloorPct, in: 0...100, step: 5) {
+                Text(floorLabel).font(.caption)
+            }
+            .controlSize(.small)
+        }
+        .padding(.leading, 18)
     }
 
     /// The device-wide ceiling on concurrent automatic agents. Sits at the foot of the

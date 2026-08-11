@@ -40,6 +40,12 @@ enum QueueTest {
             .appendingPathComponent("diplomat-queuetest-\(UUID().uuidString)")
         setenv("DIPLOMAT_AUDIT_DIR", feed.path, 1)
         defer { try? FileManager.default.removeItem(at: feed) }
+        // Same reason, one layer further out: an auto dispatch that is NOT over the cap
+        // asks the rate-limit budget, and that probe would otherwise spend the
+        // developer's own OAuth token on a live request to Anthropic — and answer
+        // differently depending on how much of their window was left when they ran the
+        // suite. Off, it reports no reading, which the gate treats as no opinion.
+        setenv("DIPLOMAT_QUOTA_PROBE", "0", 1)
 
         let store = Store()
         // A headless Store still READS the operator's real settings — pin every one
@@ -47,6 +53,13 @@ enum QueueTest {
         // fails assertions about work that monitor owns.
         store.prAutofixEnabled = true       // headless-guarded: persists nothing, polls nothing
         store.reviewRequestsEnabled = true
+        // The budget's own knobs come from the shared config file, so an operator who
+        // raised their floor would otherwise change what this suite asserts. Left ON
+        // deliberately: with the probe off above, every dispatch below runs through the
+        // real gate and its fail-open rather than around them.
+        store.autoBudgetGate = true
+        store.autoBudgetConfidence = AgentDispatchGate.defaultBudgetConfidence
+        store.autoBudgetFloorPct = AgentDispatchGate.defaultBudgetFloorPct
         // One automatic agent already up, and a cap of one: every auto job offered
         // below is over the cap, which is the branch under test. (The `ps` scan the
         // count also consults can only add to it, never subtract, so a developer's
