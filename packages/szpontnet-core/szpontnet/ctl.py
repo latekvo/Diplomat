@@ -152,8 +152,8 @@ def iroh_connect(endpoint: str, timeout: float = 10.0) -> str:
 
 
 def tor_connect(onion: str, timeout: float = 10.0) -> str:
-    """The :func:`iroh_connect` twin for the deprecated Tor transport, which the node
-    only answers while ``SZPONTNET_TOR`` is on."""
+    """The :func:`iroh_connect` twin for the Tor transport, which the node only
+    answers while ``SZPONTNET_TOR`` is on."""
     reply = request({"t": "tor-connect", "onion": onion}, timeout=timeout)
     return str(reply.get("onion", ""))
 

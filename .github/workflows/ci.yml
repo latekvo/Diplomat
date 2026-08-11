@@ -191,9 +191,9 @@ jobs:
       #
       # The iroh transport has no simulated backend to run here: its endpoints reach
       # a real discovery service, so `iroh_e2e` is excluded above and runs in
-      # iroh-e2e.yml instead. What this job does cover is that the node behaves
-      # correctly WITHOUT the optional package — the default install has no `iroh`,
-      # so every LAN-only degradation path is exercised by the run above.
+      # iroh-e2e.yml instead. What this job does cover is that nothing in the library
+      # hard-requires the optional package — it installs without the `wan` extra, so
+      # an import that stopped being lazy would fail the run above outright.
       - name: Tor transport end-to-end (simulated onion network)
         run: pytest packages/szpontnet-core/tests/test_tor_e2e.py -q
       # The tester's own codec and placement oracle, derived from the spec rather

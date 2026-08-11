@@ -251,10 +251,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--iroh-connect", metavar="ENDPOINT", dest="iroh_connect",
                     help="dial a peer's iroh endpoint id to initiate contact — works "
                          "even if you never met on the LAN "
-                         "(the node needs SZPONTNET_IROH unset or 1)")
+                         "(the node needs SZPONTNET_IROH=1)")
     ap.add_argument("--tor-connect", metavar="ONION", dest="tor_connect",
-                    help="the --iroh-connect twin for the DEPRECATED Tor transport "
-                         "(the node needs SZPONTNET_TOR=1)")
+                    help="the --iroh-connect twin for the Tor transport "
+                         "(the node needs SZPONTNET_TOR unset or 1)")
     args = ap.parse_args(argv)
 
     if args.daemon:

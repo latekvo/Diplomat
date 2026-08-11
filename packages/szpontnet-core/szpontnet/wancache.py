@@ -2,8 +2,8 @@
 
 The sibling of :mod:`peercache`, for the WAN. ``peers.json`` remembers a peer's
 last *LAN* address (an IP that changes with the network); this remembers the
-permanent addresses that do not: an iroh ``endpoint`` id and, for as long as the
-deprecated Tor transport lives, an ``onion``. A node learns them from an
+permanent addresses that do not: an iroh ``endpoint`` id and a Tor ``onion``, one
+per WAN transport. A node learns them from an
 authenticated ``hello`` (the signed advert carries both, so they are bound to the
 peer's device key — never taken from a spoofable beacon) and persists them here,
 so that once two nodes have met — on the LAN, or by a manual paste — either can

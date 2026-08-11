@@ -373,9 +373,9 @@ class MeshNode:
         # (on the LAN, or by a manual paste) either can redial the other from
         # anywhere, no public IP or DNS. See wancache / irohnet.py.
         self._wan_cache = wancache.load()
-        # The WAN transports this node runs, in PREFERENCE order (iroh first, then
-        # the deprecated Tor). Populated in start(); empty keeps the node LAN-only,
-        # exactly as before.
+        # The WAN transports this node runs, in PREFERENCE order (iroh first: its
+        # dial is sub-second where Tor's builds a rendezvous circuit). Populated in
+        # start(); empty keeps the node LAN-only.
         self._wan: list[_Wan] = []
         # The concrete transports, also exposed for --status and the manual-paste
         # ctl commands. None when the transport is off or unavailable.
@@ -596,28 +596,27 @@ class MeshNode:
                                       field="endpoint",
                                       normalize=irohnet.normalize_endpoint))
             else:
-                # Not a warning: a box without the optional `iroh` package is an
-                # ordinary box, and the transport is on by default — warning here
-                # would fire on every start of every LAN-only machine. It still names
-                # what is out of reach rather than only that something was skipped.
+                # A warning, unlike the Tor twin below: the operator asked for iroh
+                # explicitly, so an absent package defeats what they set. Neither
+                # message says "LAN-only" — the other transport may well be up, and
+                # only the caller knows which of the two it asked for.
                 log("mesh-up",
-                    "Mesh/Iroh: the 'iroh' package is not installed — LAN-only, so "
-                    "peers on other networks are unreachable. Install "
-                    "szpontnet[wan] for WAN reach.")
+                    "Mesh/Iroh: SZPONTNET_IROH is set but the 'iroh' package is not "
+                    "installed — no WAN reach over iroh. Install szpontnet[wan].")
         if config.tor_enabled():
             tor_binary = tor.binary()
             if tor_binary:
-                log("mesh-up",
-                    "Mesh/Tor: the Tor transport is DEPRECATED and will be removed; "
-                    "iroh replaces it (unset SZPONTNET_TOR to stop running it).")
                 self.tor = tor.TorTransport(identity.mesh_dir(),
                                             binary_path=tor_binary)
                 self._wan.append(_Wan(name="tor", impl=self.tor, field="onion",
                                       normalize=tor.normalize_onion))
             else:
+                # Not a warning: a box with no tor installed is an ordinary box, and
+                # this transport is on by default — warning here would fire on every
+                # start of every machine that never wanted WAN reach.
                 log("mesh-up",
-                    "Mesh/Tor: no 'tor' binary found — the deprecated Tor transport "
-                    "stays off.")
+                    "Mesh/Tor: no 'tor' binary found — no WAN reach over Tor. "
+                    "Install tor, or set SZPONTNET_IROH=1 (needs szpontnet[wan]).")
         for w in self._wan:
             self._tasks.append(loop.create_task(
                 self._wan_serve(w), name=f"mesh-{w.name}-serve"))
@@ -1193,8 +1192,8 @@ class MeshNode:
         """The transport this peer should be dialed over right now, with the address
         to use: the first READY transport in preference order that the entry names an
         address for. None when we hold no usable address — a peer advertising only an
-        onion is still reachable while the deprecated Tor transport is running, and
-        stops being a target the moment it is not."""
+        onion is still reachable while this node runs Tor, and stops being a target
+        the moment it does not."""
         for w in self._wan:
             if w.impl.address() is None:
                 continue  # this transport isn't up yet (or died) — it can't dial
@@ -3656,8 +3655,6 @@ class MeshNode:
                 "ready": self.iroh is not None and self.iroh.address() is not None,
                 "endpoint": self.iroh.address() if self.iroh is not None else None,
             },
-            # Deprecated alongside the transport itself; kept so an existing panel
-            # keeps rendering while Tor is still shipped.
             "tor": {
                 "enabled": config.tor_enabled(),
                 "ready": self.tor is not None and self.tor.address() is not None,

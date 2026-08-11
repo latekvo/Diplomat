@@ -1,13 +1,9 @@
-# 14 — Tor transport (WAN reachability) — DEPRECATED
+# 14 — Tor transport (WAN reachability)
 
-> **Deprecated in favour of [15 — the iroh transport](15-iroh-transport.md), and
-> scheduled for removal.** Both reach the same peers with no public IP or domain, but
-> an onion costs a local `tor` daemon, a multi-minute bootstrap and a rendezvous
-> circuit per dial, to buy an anonymity property the mesh never asks for. This
-> transport is now **off by default** (`SZPONTNET_TOR=1` opts back in) and exists so
-> an established Tor mesh keeps working while its peers migrate. A node running both
-> prefers iroh. Everything below still describes it accurately for as long as it
-> ships.
+> [15 — the iroh transport](15-iroh-transport.md) reaches the same peers without a
+> `tor` daemon, a multi-minute bootstrap or a rendezvous circuit per dial, and is the
+> other WAN transport a node can run. It is opt-in; this one is the default. A node
+> running both prefers iroh per peer, and either alone is a complete WAN path.
 
 v1 is single-LAN ([02](02-discovery.md), [03](03-transport.md)): discovery is
 link-local multicast/broadcast, and a link is a direct TCP connection to a peer's
@@ -15,22 +11,22 @@ LAN address. That is the whole mesh as long as every machine is on the same
 network. The **Tor transport** lifts that restriction: once two nodes have met,
 they can keep talking from **anywhere**, with **no public IP and no domain name**.
 
-It is **atomic**, and — since the deprecation above — **off by default**. Complementary, not alternative: multicast
+It is **on by default** and **atomic**. Complementary, not alternative: multicast
 discovery and direct TCP links remain the path between peers that share a network,
 and this is what makes several such networks one mesh. Nothing below changes the LAN
 path — the Tor transport is added *beside* it.
 
-Turned on with `SZPONTNET_TOR=1` (`true`/`yes`/`on` are honoured too; every other
-value, including a typo, leaves it off), and absent whenever no `tor` binary is
-installed. In either case the node is exactly the
-LAN-only node described in the rest of these docs, wire-identical.
+Turned off with `SZPONTNET_TOR=0` (`false`/`no`/`off`/empty are honoured too), and
+absent whenever no `tor` binary is installed. In either case this transport is gone;
+the node is the LAN-only node described in the rest of these docs unless it also runs
+[15](15-iroh-transport.md), and wire-identical to one when it does not.
 
 > **A node running this transport publishes a stable onion service by default.** It
 > forwards only to the peer-link accept path — control sessions are refused
 > ([Security notes](#security-notes)) — but on an **open mesh** (no `SZPONTNET_SECRET`,
 > the documented home-LAN default) any peer holding the address can link from the
 > WAN, which on a LAN-only node would have required being on the LAN. Set a join
-> secret, or leave `SZPONTNET_TOR` unset, if that is not what you want.
+> secret, or `SZPONTNET_TOR=0`, if that is not what you want.
 
 ## The idea in one paragraph
 
@@ -186,7 +182,7 @@ the next node's Tor bring-up.
 
 | Env | Meaning |
 |-----|---------|
-| `SZPONTNET_TOR=1` | Enable the deprecated Tor transport. Off by default; `true`/`yes`/`on` also enable, and every other value leaves it off. |
+| `SZPONTNET_TOR=0` | Disable the Tor transport. On by default; `false`/`no`/`off`/empty also disable. Any other value leaves it on. |
 | `SZPONTNET_TOR_BINARY` | Path to a non-PATH `tor` executable. |
 | `SZPONTNET_TOR_BOOTSTRAP_SECS` | Bootstrap wait before giving up (default 90). |
 

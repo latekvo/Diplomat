@@ -189,7 +189,8 @@ class Mesh:
 
     def iroh_connect(self, endpoint: str, timeout: float = 10.0) -> str:
         """Reach a peer at its iroh endpoint id, whether or not you ever met it on
-        the LAN. Returns the normalized address the node is dialing.
+        the LAN. Returns the normalized address the node is dialing. Needs a node
+        started with ``SZPONTNET_IROH=1``.
 
         The dial happens in the background: the peer shows up in a later
         :meth:`status`, not in this return value.
@@ -199,8 +200,8 @@ class Mesh:
             return ctl.iroh_connect(endpoint, timeout=timeout)
 
     def tor_connect(self, onion: str, timeout: float = 10.0) -> str:
-        """The :meth:`iroh_connect` twin for the DEPRECATED Tor transport. Needs a
-        node started with ``SZPONTNET_TOR=1``.
+        """The :meth:`iroh_connect` twin for the Tor transport. Needs a node whose
+        ``SZPONTNET_TOR`` is unset or on.
         """
         self._require_node()
         with _translated():

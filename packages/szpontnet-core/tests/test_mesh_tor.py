@@ -593,41 +593,45 @@ def test_foreign_onion_churn_does_not_evict_a_personal_entry(tmp_path, monkeypat
 # MARK: - config: the transport is off unless it is explicitly turned on
 
 
-def test_tor_stays_off_unless_it_is_explicitly_turned_on(monkeypatch):
-    """Tor is DEPRECATED and off by default — iroh reaches the same peers without a
-    daemon, so an operator who never asks for Tor must never get a tor process.
+def test_tor_runs_unless_it_is_explicitly_turned_off(monkeypatch):
+    """Tor is the default WAN transport — a mesh spanning several LANs is what the
+    node is for, and an operator should not have to discover a switch to get it.
 
-    That makes it an opt-in knob, and an opt-in knob recognises only the on-spellings:
-    anything else — a typo, a stray quote, the word ``enabled`` — leaves it off, which
-    is the direction that fails safe. (The default-ON knob it used to be honoured a
-    lenient off-list for the mirror-image reason; that role is now
-    ``SZPONTNET_IROH`` — see test_mesh_iroh.py.)"""
+    So an unset variable means ON, and only the recognised off-spellings mean off.
+    The lenient list is the load-bearing half: for a default-ON knob an unrecognised
+    value fails the *wrong* way (a tor process the operator explicitly tried to
+    prevent), which is why ``false``/``no``/``off``/``""`` are honoured, not only
+    ``0``. (``SZPONTNET_IROH`` is the opt-in knob, and recognises only the
+    on-spellings for the mirror-image reason — see test_mesh_iroh.py.)"""
     from szpontnet import config
 
     monkeypatch.delenv("SZPONTNET_TOR", raising=False)
-    assert config.tor_enabled() is False
-
-    for on in ("1", "true", "yes", "on", "TRUE", " On ", "Yes"):
-        monkeypatch.setenv("SZPONTNET_TOR", on)
-        assert config.tor_enabled() is True, f"{on!r} should enable Tor"
-
-    for off in ("0", "false", "no", "off", "", "enabled", "sure", "2"):
-        monkeypatch.setenv("SZPONTNET_TOR", off)
-        assert config.tor_enabled() is False, f"{off!r} should leave Tor off"
-
-
-def test_the_legacy_env_name_can_still_turn_tor_on(monkeypatch):
-    """``DIPLOMAT_MESH_*`` is honoured wherever ``SZPONTNET_*`` is unset (see env.py),
-    and that has to include this switch: a machine whose profile still exports the old
-    spelling is how an existing Tor mesh keeps running while its peers migrate."""
-    from szpontnet import config
-
-    monkeypatch.delenv("SZPONTNET_TOR", raising=False)
-    monkeypatch.setenv("DIPLOMAT_MESH_TOR", "1")
     assert config.tor_enabled() is True
-    # The new name still wins when both are set.
-    monkeypatch.setenv("SZPONTNET_TOR", "0")
+
+    for off in ("0", "false", "no", "off", "", "FALSE", " Off ", "No"):
+        monkeypatch.setenv("SZPONTNET_TOR", off)
+        assert config.tor_enabled() is False, f"{off!r} should disable Tor"
+
+    # Anything that isn't an off-spelling leaves it on — including the `1` that used
+    # to be the only way to get the transport at all.
+    for on in ("1", "true", "yes", "on", "enabled"):
+        monkeypatch.setenv("SZPONTNET_TOR", on)
+        assert config.tor_enabled() is True, f"{on!r} should leave Tor on"
+
+
+def test_the_legacy_env_name_can_still_turn_tor_off(monkeypatch):
+    """``DIPLOMAT_MESH_*`` is honoured wherever ``SZPONTNET_*`` is unset (see env.py),
+    and that has to include the off switch: a machine whose profile still exports the
+    old spelling to disable Tor would otherwise start running an onion service on an
+    upgrade, which is the one direction of this default that must never surprise."""
+    from szpontnet import config
+
+    monkeypatch.delenv("SZPONTNET_TOR", raising=False)
+    monkeypatch.setenv("DIPLOMAT_MESH_TOR", "0")
     assert config.tor_enabled() is False
+    # The new name still wins when both are set.
+    monkeypatch.setenv("SZPONTNET_TOR", "1")
+    assert config.tor_enabled() is True
 
 
 # MARK: - config: the bootstrap timeout rejects non-finite / non-positive values

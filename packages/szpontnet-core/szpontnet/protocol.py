@@ -289,7 +289,7 @@ class NodeInfo:
     # lands foreign. See irohnet.py.
     endpoint: str = ""
     # This node's permanent Tor v3 onion address ("<56-base32>.onion"), when it runs
-    # the DEPRECATED onion-service transport (SZPONTNET_TOR). Additive and omitted
+    # the onion-service transport (SZPONTNET_TOR). Additive and omitted
     # when empty, exactly like `endpoint`, whose documentation applies to it in full.
     # See tor.py.
     onion: str = ""

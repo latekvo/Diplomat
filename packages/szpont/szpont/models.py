@@ -419,9 +419,9 @@ class Iroh:
 
 @dataclass(frozen=True, kw_only=True)
 class Tor:
-    """The node's DEPRECATED Tor transport, the :class:`Iroh` twin: whether it is
-    on, whether the onion service is live yet, and the address to hand a peer for a
-    manual dial."""
+    """The node's Tor transport, the :class:`Iroh` twin: whether it is on, whether
+    the onion service is live yet, and the address to hand a peer for a manual
+    dial."""
 
     enabled: bool = False
     ready: bool = False
