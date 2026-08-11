@@ -356,6 +356,44 @@ def test_an_unmatched_prompt_reports_nothing_rather_than_zero(scanner):
     assert usagescan.task_tokens("", time.time() - 60, time.time()) is None
 
 
+# MARK: - Retiring a run, which is what actually prices it
+
+
+def test_retiring_a_run_prices_it_from_the_transcript_its_prompt_names(ledger, scanner):
+    """The pricing inputs live in the run directory that retirement deletes, so both
+    have to be read before it goes. Every figure on the screen that is per-task comes
+    through here: a retirement that reads the directory afterwards prices nothing at
+    all, and the ledger fills with completions the screen can only count."""
+    from diplomat_app import agentregistry, agentstate
+    from diplomat_app.store import Store
+
+    repo, projects = scanner
+    prompt = "review PR #41 please"
+    dispatched_at = time.time() - 900
+    exited_at = dispatched_at + 300
+    transcript = projects / "s" / "mine.jsonl"
+    _session(transcript, prompt, str(repo), [1000, 500])
+    os.utime(transcript, (exited_at, exited_at))  # last turn written as the agent exits
+
+    record = agentstate.RunRecord(run_id="r1", dispatched_at=dispatched_at,
+                                  pr_number=41, kind="review",
+                                  ledger_key="review:o/r#41@aa")
+    agentregistry.create_run(record, prompt)
+    sentinel = agentregistry.done_path("r1")
+    sentinel.write_text("0", encoding="utf-8")
+    os.utime(sentinel, (exited_at, exited_at))
+
+    telemetry.record_started(record.ledger_key)
+    Store()._retire_finished(agentstate.Tick(records=[], states={}, rows=[],
+                                             cap_load=set(), retirable=[record],
+                                             free_slots=0))
+
+    telemetry._reset_cache()
+    task = telemetry.load().tasks[0]
+    assert task.tokens == 1500, "the run was retired without being priced"
+    assert task.done_at == exited_at, "the exit time came from the poll, not the agent"
+
+
 # MARK: - The quota probe
 
 
