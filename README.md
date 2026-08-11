@@ -9,6 +9,7 @@
 - Auto resolve all conflicts on your PRs
 - Enforces one device per agent
 - Manually review all PRs of the given person
+- `npx szpont` (or `pip install szpont`) installs and starts it — [Install](#install)
 
 ## Details
 
@@ -80,6 +81,39 @@ Targets `software-mansion/argent` and shells out to the authenticated `gh` CLI.
 > and pushes made to your repositories, or agents spawned on your machines. **You alone
 > are responsible** for your API key and your spend, and for ensuring your use complies
 > with Anthropic's applicable terms.
+
+## Install
+
+```bash
+npx szpont                       # or:  pip install szpont && szpont
+```
+
+macOS and Linux, and the same steps either way: clone this repository into
+`~/.diplomat/checkout` if it isn't already there, build the front-end for the
+platform, start the applet. Every step of it runs a script already in this
+repository, one a human would otherwise type; nothing is packaged, because
+Diplomat is built out of the checkout it runs from and [updates itself](#settings)
+as one.
+
+You need **git**, a **Swift toolchain** (Xcode on macOS, [swiftly](https://swift.org/install)
+on Linux) and an authenticated [`gh`](https://cli.github.com). If one is missing,
+`szpont` names it and points at it before anything is downloaded.
+
+```bash
+szpont --plan          # print what it would do, as JSON, and do none of it
+szpont --no-update     # start the checkout as it stands, without fast-forwarding it
+szpont -- --dump       # everything after -- is passed to the applet
+```
+
+Already have a checkout? `DIPLOMAT_SELF_REPO=~/dev/diplomat szpont` starts *that*
+one, and never pulls it — a working copy may have work in it. Or skip the launcher
+entirely and [run it from the checkout](#run) as before.
+
+The two packages are the same launcher published under one name to two indexes
+([`packages/szpont`](packages/szpont/README.md),
+[`packages/szpont-npm`](packages/szpont-npm/README.md)); a parity test holds them to
+the same plan on every machine shape either can meet. On PyPI the name also carries
+the typed SzpontNet bindings, which is what `import szpont` means.
 
 ## The library
 
@@ -743,6 +777,9 @@ monitors](#autonomous-monitors) are separate, on their own 3-minute schedule.
 
 ## Run
 
+From a checkout you already have. (No checkout? [`npx szpont`](#install) makes one
+and does everything below for you.)
+
 ```bash
 cd ~/dev/diplomat/packages/diplomat-platform/macos
 swift run Diplomat    # launches the menu-bar app (no Dock icon)
@@ -922,13 +959,16 @@ creeping back in fails a build instead of going unnoticed:
 Diplomat is checked from the other side — one step deletes both SzpontNet
 packages outright and renders the applet from what remains.
 
-CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) is five jobs:
+CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) is seven jobs:
 `swift-macos` (build both Swift packages + the core smoke + headless panel and
 telemetry renders + the helper self-tests), `swift-core-linux` (proves the core builds on
 Linux, and publishes a static `diplomat-core` binary), `python-linux` (pytest
 against that binary, so the golden-prompt parity is proven across languages, then
 the library-less start), `szpontnet` (the library's own tests plus a full
-conformance run against the reference node), and `node-device-allocator`.
+conformance run against the reference node), `szpont` (the bindings, the
+launcher, and the built wheel installed into a venv that has never seen the
+checkout), `szpont-npm` (the same launcher in JavaScript, held to the Python one's
+plan machine shape for machine shape), and `node-device-allocator`.
 
 ```
 packages/
@@ -1030,5 +1070,18 @@ packages/
     conformance/               ← black-box conformance tester: runs a candidate node as an opaque
                                  subprocess, joins over real multicast + TCP, exits non-zero on any MUST failure
 
-.github/workflows/ci.yml       ← swift-macos · swift-core-linux · python-linux · szpontnet · node-device-allocator
+  szpont/                      ← what `szpont` means on PyPI (see its README): typed Python bindings for
+                                 SzpontNet — the wire format bound to types, adding nothing to the protocol
+    szpont_launcher.py         ← and the `szpont` command: clone/build/launch Diplomat. A top-level module,
+                                 not part of the package, so starting an applet never imports the library
+
+  szpont-npm/                  ← what `szpont` means on npm (see its README): the same launcher, in
+                                 JavaScript, for `npx szpont`
+    test/scenarios.mjs         ← the machine shapes both launchers are held to; parity-with-python.mjs
+                                 runs every one of them through both and demands the same plan
+
+.github/workflows/ci.yml       ← swift-macos · swift-core-linux · python-linux · szpontnet · szpont ·
+                                 szpont-npm · node-device-allocator
+.github/workflows/release-szpont.yml     ← tag szpont-v* → PyPI + npm, from one verified commit
+.github/workflows/release-szpontnet.yml  ← tag szpontnet-v* → PyPI
 ```
