@@ -3,6 +3,7 @@ Store orchestration (poll → diff → dispatch → reconcile, with dedup + back
 
 from __future__ import annotations
 
+import math
 import time
 
 import pytest
@@ -977,6 +978,23 @@ def test_dispatch_gate_matrix_parity():
         autofix.dispatch_decide(autofix.SOURCE_AUTO, False, False, True, True)
         == autofix.VERDICT_AT_CAPACITY
     )
+    # The rate-limit budget: auto only, below capacity, above mesh.
+    assert (
+        autofix.dispatch_decide(autofix.SOURCE_AUTO, False, False, False, False, True)
+        == autofix.VERDICT_UNAFFORDABLE
+    )
+    assert (
+        autofix.dispatch_decide(autofix.SOURCE_PANEL, False, False, False, False, True)
+        == autofix.VERDICT_PROCEED
+    )  # spending your own last of the limit is the operator's call
+    assert (
+        autofix.dispatch_decide(autofix.SOURCE_AUTO, False, False, False, True, True)
+        == autofix.VERDICT_AT_CAPACITY
+    )  # no free bay to spend a budget on — the probe is not worth taking
+    assert (
+        autofix.dispatch_decide(autofix.SOURCE_AUTO, False, False, True, False, True)
+        == autofix.VERDICT_UNAFFORDABLE
+    )
     assert (
         autofix.dispatch_label(autofix.SOURCE_AUTO, "Review · #7", 2)
         == "Auto · Review · #7 · retry 2"
@@ -1174,6 +1192,117 @@ def test_clamp_auto_task_limit_holds_the_stepper_range():
     assert autofix.clamp_auto_task_limit(-4) == 1
     assert autofix.clamp_auto_task_limit(3) == 3
     assert autofix.clamp_auto_task_limit(999) == autofix.MAX_AUTO_TASK_LIMIT == 16
+
+
+# MARK: - the device's rate-limit budget
+#
+# PARITY: every number below is asserted again, on the same inputs, by the Swift
+# smoke's "the device's rate-limit budget" section — the two front-ends decide
+# whether to spend the same account's limit, so a disagreement here is one machine
+# gating what the other starts.
+
+
+def test_budget_defaults_and_confidence_table_parity():
+    assert autofix.DEFAULT_BUDGET_CONFIDENCE == 95
+    assert autofix.DEFAULT_BUDGET_FLOOR_PCT == 20.0
+    # One-sided, NOT the Telemetry screen's two-sided 1.96 on the mean.
+    assert autofix.budget_z(95) == 1.6449
+    assert autofix.budget_z(95) != 1.96
+
+
+def test_an_unsupported_confidence_rounds_up_to_the_stricter_neighbour():
+    """A table that cannot honour a hand-edited value must hold work back, never
+    wave it through on a looser bound than was asked for."""
+    assert autofix.clamp_budget_confidence(93) == 95
+    assert autofix.clamp_budget_confidence(96) == 99
+    assert autofix.clamp_budget_confidence(1) == 50
+    assert autofix.clamp_budget_confidence(95) == 95  # a supported level is untouched
+    # Above the table it is the strictest level, not a fallback to the default.
+    assert autofix.clamp_budget_confidence(100) == 99
+    assert autofix.clamp_budget_confidence(999) == 99
+    # Every level the clamp can return has a quantile behind it.
+    for level in autofix.BUDGET_CONFIDENCE_Z:
+        assert autofix.budget_z(level) == autofix.BUDGET_CONFIDENCE_Z[level]
+
+
+def test_clamp_budget_floor_holds_a_real_share_of_a_window():
+    assert autofix.clamp_budget_floor_pct(-1) == 0.0
+    assert autofix.clamp_budget_floor_pct(140) == 100.0
+    assert autofix.clamp_budget_floor_pct(0) == 0.0  # spend it to the last drop
+    assert autofix.clamp_budget_floor_pct(float("nan")) == 20.0
+
+
+def test_task_cost_bound_is_a_prediction_interval_not_one_on_the_mean():
+    """The gate needs what the NEXT task costs, not what the average one costs:
+    the distribution is right-skewed, so a bound that converged on the mean would
+    wave the expensive tail through every time."""
+    z = autofix.budget_z(95)
+    # One observation has no spread — the sample sd of n=1 is 0, and reporting a
+    # single cheap task as certainty is exactly the trap the minimum exists for.
+    assert autofix.task_cost_bound(2.0, 1.0, 1, z=z, min_sample=1) is None
+    assert autofix.task_cost_bound(2.0, 1.0, 4, z=z, min_sample=5) is None
+    bound = autofix.task_cost_bound(2.0, 1.0, 4, z=z, min_sample=2)
+    assert bound == pytest.approx(2.0 + z * math.sqrt(1.25))
+    # The √(1 + 1/n) inflation puts it above the plain z·sd, and — unlike the
+    # screen's z·sd/√n band — it does NOT collapse onto the mean as n grows.
+    assert bound > 2.0 + z
+    assert autofix.task_cost_bound(2.0, 1.0, 10_000, z=z, min_sample=2) > 2.0 + z
+    assert autofix.task_cost_bound(2.0, float("nan"), 9, z=z, min_sample=2) is None
+
+
+def test_budget_decide_gates_on_whichever_window_is_tighter():
+    def decide(session_left, week_left, session_cost, week_cost, floor=20.0):
+        return autofix.budget_decide(session_left, week_left,
+                                     session_cost, week_cost, floor)
+
+    assert decide(50.0, 50.0, 10.0, 2.0).affordable
+    broke = decide(5.0, 50.0, 10.0, 2.0)
+    assert not broke.affordable
+    assert broke.window == autofix.WINDOW_SESSION
+    assert (broke.left_pct, broke.needed_pct, broke.measured) == (5.0, 10.0, True)
+    # A full 5-hour window does not buy a spent weekly one.
+    week_broke = decide(90.0, 1.0, 10.0, 2.0)
+    assert not week_broke.affordable
+    assert week_broke.window == autofix.WINDOW_WEEK
+    # An exact tie is decided the same way every time, so a log line is stable.
+    assert decide(30.0, 30.0, 10.0, 10.0).window == autofix.WINDOW_SESSION
+
+
+def test_an_unpriced_ledger_falls_back_to_the_floor():
+    floored = autofix.budget_decide(15.0, None, None, None, 20.0)
+    assert not floored.affordable
+    assert not floored.measured
+    assert floored.needed_pct == 20.0
+    assert autofix.budget_decide(25.0, None, None, None, 20.0).affordable
+    # Priced against the 5-hour window but not the weekly one: each window answers
+    # with what it has, rather than one blanking the other.
+    mixed = autofix.budget_decide(50.0, 10.0, 8.0, None, 20.0)
+    assert not mixed.affordable
+    assert mixed.window == autofix.WINDOW_WEEK
+    assert not mixed.measured
+
+
+def test_no_quota_reading_is_no_opinion_not_a_refusal():
+    """THE fail-open. The usage probe can be switched off (DIPLOMAT_QUOTA_PROBE=0),
+    logged out, or offline; a gate that read silence as "no budget" would take the
+    machine's automatic work down with the network every time."""
+    blind = autofix.budget_decide(None, None, None, None, 20.0)
+    assert blind.affordable
+    assert blind.window == ""
+    # Even with a floor that nothing could satisfy.
+    assert autofix.budget_decide(None, None, None, None, 100.0).affordable
+    # One window readable and the other not still decides on the one that is.
+    half = autofix.budget_decide(None, 5.0, None, None, 20.0)
+    assert not half.affordable
+    assert half.window == autofix.WINDOW_WEEK
+
+
+def test_a_window_exactly_at_what_a_task_needs_is_affordable():
+    """The boundary is >=, not >: a task that fits precisely is a task that fits,
+    and the alternative is a machine that can never spend its last measured slice."""
+    assert autofix.budget_decide(10.0, None, 10.0, None, 20.0).affordable
+    assert not autofix.budget_decide(9.99, None, 10.0, None, 20.0).affordable
+    assert autofix.budget_decide(20.0, None, None, None, 20.0).affordable
 
 
 def test_auto_task_limit_persists_to_the_shared_config_file(store):
@@ -1960,7 +2089,7 @@ def test_the_drain_skips_a_task_the_operator_started_under_it(store, monkeypatch
     store.queued_tasks = [a, b]
     ran = []
 
-    def fake_run(self, entry):
+    def fake_run(self, entry, *, forced):
         ran.append(entry.id)
         self._begin_starting(b)  # the click lands while #3 is spawning
         return "spawned"
@@ -2005,7 +2134,7 @@ def test_a_dispatch_that_raises_leaves_no_row_starting(store, monkeypatch):
     monkeypatch.setattr(type(store), "dispatch_agent", boom)
 
     with pytest.raises(OSError):
-        store._run_queued_task(entry)
+        store._run_queued_task(entry, forced=False)
 
     assert store.starting_tasks == []
 

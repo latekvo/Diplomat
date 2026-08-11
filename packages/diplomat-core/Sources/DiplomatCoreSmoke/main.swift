@@ -495,6 +495,22 @@ check(AgentDispatchGate.decide(source: .panel, banned: false, agentOnPR: false,
 check(AgentDispatchGate.decide(source: .auto, banned: false, agentOnPR: false,
                                meshStandsDown: true, atCapacity: true) == .atCapacity,
       "capacity outranks mesh — a saturated device takes no claim it would refuse")
+check(AgentDispatchGate.decide(source: .auto, banned: false, agentOnPR: false,
+                               meshStandsDown: false, atCapacity: false,
+                               unaffordable: true) == .unaffordable,
+      "the device's rate-limit budget gates auto dispatch")
+check(AgentDispatchGate.decide(source: .panel, banned: false, agentOnPR: false,
+                               meshStandsDown: false, atCapacity: false,
+                               unaffordable: true) == .proceed,
+      "spending your own last of the limit is the operator's call — panel is never gated")
+check(AgentDispatchGate.decide(source: .auto, banned: false, agentOnPR: false,
+                               meshStandsDown: false, atCapacity: true,
+                               unaffordable: true) == .atCapacity,
+      "capacity outranks the budget — the probe is not worth taking with no free bay")
+check(AgentDispatchGate.decide(source: .auto, banned: false, agentOnPR: false,
+                               meshStandsDown: true, atCapacity: false,
+                               unaffordable: true) == .unaffordable,
+      "the budget outranks mesh, for the reason capacity does")
 check(AgentDispatchGate.stealsFocus(.panel) && !AgentDispatchGate.stealsFocus(.auto),
       "panel comes forward, auto never steals focus")
 check(AgentDispatchGate.label(source: .auto, core: "Review · #7", attemptNumber: 2)
@@ -553,6 +569,81 @@ check(AgentDispatchGate.runningAutoTasks(livePRs: [1, 2], autoPRs: [], manualPRs
 check(AgentDispatchGate.runningAutoTasks(livePRs: [1, 2], autoPRs: [], manualPRs: []) == 2,
       "no evidence at all (the default) frees nothing — a terminal that cannot be read "
       + "must cost a deferral, never a burst")
+
+section("the device's rate-limit budget")
+// PARITY: diplomat-platform/linux/tests/test_autofix.py asserts these exact numbers
+// and bounds — the two front-ends decide whether to spend the same account's limit,
+// so a disagreement here is one machine gating what the other starts.
+check(AgentDispatchGate.defaultBudgetConfidence == 95
+      && AgentDispatchGate.defaultBudgetFloorPct == 20,
+      "95% sure, and 20% of a window kept in hand until the ledger can price a task")
+check(AgentDispatchGate.budgetZ(95) == 1.6449,
+      "95% one-sided — NOT the screen's two-sided 1.96 on the mean")
+check(AgentDispatchGate.clampBudgetConfidence(93) == 95
+      && AgentDispatchGate.clampBudgetConfidence(96) == 99
+      && AgentDispatchGate.clampBudgetConfidence(1) == 50,
+      "an unsupported level rounds UP — a table that cannot honour a value holds "
+      + "work back rather than waving it through on a looser bound")
+check(AgentDispatchGate.clampBudgetConfidence(100) == 99
+      && AgentDispatchGate.clampBudgetConfidence(999) == 99,
+      "…and above the table it is the strictest level, not a fallback to the default")
+check(AgentDispatchGate.clampBudgetFloorPct(-1) == 0
+      && AgentDispatchGate.clampBudgetFloorPct(140) == 100
+      && AgentDispatchGate.clampBudgetFloorPct(.nan) == 20,
+      "the floor is a real share of a window")
+
+// A prediction bound, not the screen's interval on the mean: it carries the spread
+// of the tasks and does NOT converge on the mean as n grows.
+check(AgentDispatchGate.taskCostBound(mean: 2, sd: 1, count: 1,
+                                      z: 1.6449, minSample: 1) == nil,
+      "one observation has no spread — the ledger cannot price a task from it")
+check(AgentDispatchGate.taskCostBound(mean: 2, sd: 1, count: 4,
+                                      z: 1.6449, minSample: 5) == nil,
+      "…nor can it below the caller's own minimum")
+if let bound = AgentDispatchGate.taskCostBound(mean: 2, sd: 1, count: 4,
+                                               z: 1.6449, minSample: 2) {
+    check(abs(bound - (2 + 1.6449 * (1.25 as Double).squareRoot())) < 1e-12,
+          "mean + z·sd·√(1 + 1/n)")
+    check(bound > 2 + 1.6449, "the √(1 + 1/n) inflation is above the plain z·sd")
+} else {
+    check(false, "a priced ledger must yield a bound")
+}
+
+// Both windows gate, the tighter one answers, and no reading at all is no opinion.
+check(AgentDispatchGate.budgetDecide(sessionLeftPct: 50, weekLeftPct: 50,
+                                     sessionCostPct: 10, weekCostPct: 2,
+                                     floorPct: 20).affordable,
+      "room in both windows proceeds")
+let broke = AgentDispatchGate.budgetDecide(sessionLeftPct: 5, weekLeftPct: 50,
+                                           sessionCostPct: 10, weekCostPct: 2,
+                                           floorPct: 20)
+check(!broke.affordable && broke.window == AgentDispatchGate.windowSession
+      && broke.measured && broke.leftPct == 5 && broke.neededPct == 10,
+      "the 5-hour window refuses, and says what it had against what was needed")
+let weekBroke = AgentDispatchGate.budgetDecide(sessionLeftPct: 90, weekLeftPct: 1,
+                                               sessionCostPct: 10, weekCostPct: 2,
+                                               floorPct: 20)
+check(!weekBroke.affordable && weekBroke.window == AgentDispatchGate.windowWeek,
+      "a full 5-hour window does not buy a spent weekly one")
+let floored = AgentDispatchGate.budgetDecide(sessionLeftPct: 15, weekLeftPct: nil,
+                                             sessionCostPct: nil, weekCostPct: nil,
+                                             floorPct: 20)
+check(!floored.affordable && !floored.measured && floored.neededPct == 20,
+      "an unpriced ledger holds the floor instead")
+check(AgentDispatchGate.budgetDecide(sessionLeftPct: 25, weekLeftPct: nil,
+                                     sessionCostPct: nil, weekCostPct: nil,
+                                     floorPct: 20).affordable,
+      "…and above the floor it proceeds")
+let noReading = AgentDispatchGate.budgetDecide(sessionLeftPct: nil, weekLeftPct: nil,
+                                               sessionCostPct: nil, weekCostPct: nil,
+                                               floorPct: 20)
+check(noReading.affordable && noReading.window.isEmpty,
+      "no reading is no opinion — a probe that is off or offline must not take the "
+      + "machine's automatic work down with it")
+let tie = AgentDispatchGate.budgetDecide(sessionLeftPct: 30, weekLeftPct: 30,
+                                         sessionCostPct: 10, weekCostPct: 10,
+                                         floorPct: 20)
+check(tie.window == AgentDispatchGate.windowSession, "session wins an exact tie")
 
 section("the agent-task list and the queue behind the cap")
 // PARITY: every `AgentTaskQueue` case below is asserted again, on the same inputs, by

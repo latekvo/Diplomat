@@ -30,6 +30,7 @@ from . import (
     agentstate,
     apiwatch,
     appconfig,
+    autobudget,
     autofix,
     autofixmonitor,
     bans,
@@ -207,11 +208,15 @@ class Store(QObject):
         self._probe_warned: dict[str, bool] = {}
         self._marker_warned = False
         # Whether the "deferring auto work" note has been logged for the current
-        # at-capacity episode (see _log_at_capacity).
+        # at-capacity episode (see _log_at_capacity), and for the current
+        # out-of-budget one (see _log_unaffordable). Two flags, not one: a machine
+        # can saturate and drain several times over inside a single spell of having
+        # no rate limit left, and each episode is worth one line of its own.
         self._capacity_logged = False
-        # Automatic work nothing has started yet — held by the task cap, or by its own
-        # monitor being switched off — in the order it will run. The panel's
-        # Agent-tasks list.
+        self._budget_logged = False
+        # Automatic work nothing has started yet — held by the task cap, by the
+        # rate-limit budget, or by its own monitor being switched off — in the order
+        # it will run. The panel's Agent-tasks list.
         #
         # Deliberately NOT persisted. A deferral writes no attempt record precisely so
         # that every poll re-offers everything GitHub still owes, which means the queue
@@ -907,7 +912,8 @@ class Store(QObject):
     # MARK: - the one dispatch pipeline (buttons and monitors are triggers, not paths)
 
     def dispatch_agent(self, job: autofix.AgentJob, source: str, attempt: int = 1,
-                       bypass_capacity: bool = False) -> str:
+                       bypass_capacity: bool = False,
+                       bypass_budget: bool = False) -> str:
         """Run one agent job through the shared gate (``autofix.dispatch_decide`` -
         the pure, tested decision both platforms mirror) and, on proceed, spawn and
         register it. Returns the verdict: ``"spawned"``, an ``autofix.VERDICT_*``
@@ -920,10 +926,12 @@ class Store(QObject):
         overlapping poll and a click can't race two spawns onto one PR.
 
         An AUTO job is additionally capped at ``auto_task_limit`` concurrent
-        agents on this device (``_auto_tasks_running``), and held outright while
-        its own monitor is switched off (:meth:`is_paused`); a panel click is
-        subject to neither. Either refusal queues the job (:meth:`_stage_queued`),
-        which is what the panel's Agent-tasks list shows as *queued*.
+        agents on this device (``_auto_tasks_running``), held outright while its own
+        monitor is switched off (:meth:`is_paused`), and held again when what is
+        left of the rate-limit windows will not cover it (:mod:`autobudget`); a
+        panel click is subject to none of the three. Every one of those refusals
+        queues the job (:meth:`_stage_queued`), which is what the panel's
+        Agent-tasks list shows as *queued*.
 
         The cap counts an agent by where it RUNS, not by who dispatched it: work the
         mesh places back on this machine is booked here (:meth:`_track_agent`) and
@@ -934,7 +942,12 @@ class Store(QObject):
         it is filling, and skips paused work by construction) and "execute now"
         (where the operator is overriding both holds deliberately). It skips the
         measurement — not just its verdict — so neither pays for a second ``ps``
-        scan, and so a forced run cannot re-queue itself."""
+        scan, and so a forced run cannot re-queue itself.
+
+        ``bypass_budget`` is only the second of those. The drain runs the machine's
+        own automatic work, and work that could not be afforded when it was found
+        cannot be afforded by having waited in a list; only the operator pressing
+        "execute now" overrides the budget, exactly as only they override the cap."""
         if job.pr_number is not None:
             with self._dispatching_lock:
                 if job.pr_number in self._dispatching_prs:
@@ -962,8 +975,21 @@ class Store(QObject):
                 # front-end's own out of the dispatch gate both front-ends mirror.
                 paused = self.is_paused(job.counter)
                 at_capacity = full or paused
+            # Measured after capacity and under the same conditions: a device with
+            # no free bay has nothing to spend a budget on, so the probe and the
+            # ledger fold are work that would be thrown away. The drain reaches here
+            # with `bypass_capacity` set and this one clear — that is the whole
+            # difference between deferring work and forcing it.
+            budget = autofix.Budget(affordable=True)
+            if (source == autofix.SOURCE_AUTO and not agent_on_pr
+                    and not bypass_budget and not at_capacity
+                    and autobudget.enabled()):
+                budget = autobudget.decide()
+                if budget.affordable:
+                    self._budget_logged = False
             verdict = autofix.dispatch_decide(
-                source, banned, agent_on_pr, False, at_capacity
+                source, banned, agent_on_pr, False, at_capacity,
+                not budget.affordable,
             )
             if verdict == autofix.VERDICT_AT_CAPACITY:
                 # A paused monitor is not a saturated device: it queues silently,
@@ -971,6 +997,10 @@ class Store(QObject):
                 # the rest.
                 if not paused:
                     self._log_at_capacity()
+                self._stage_queued(job, attempt)
+                return verdict
+            if verdict == autofix.VERDICT_UNAFFORDABLE:
+                self._log_unaffordable(budget)
                 self._stage_queued(job, attempt)
                 return verdict
             if verdict == autofix.VERDICT_BANNED:
@@ -1303,6 +1333,18 @@ class Store(QObject):
         )
         self.refresh_activity()
 
+    def _log_unaffordable(self, budget: autofix.Budget) -> None:
+        """Note that automatic work is being held for want of rate limit — once per
+        episode, like :meth:`_log_at_capacity`, and cleared the moment a dispatch
+        finds the window has refilled. Without that, a machine sitting under its
+        floor would write one of these per owed PR per poll, for hours."""
+        if self._budget_logged:
+            return
+        self._budget_logged = True
+        activity.log("auto", "no-budget",
+                     f"Deferring auto work — {autobudget.shortfall(budget)}")
+        self.refresh_activity()
+
     # MARK: - the queue behind the cap
     #
     # A refusal writes no attempt record, so every poll re-offers whatever GitHub
@@ -1411,7 +1453,14 @@ class Store(QObject):
             # this the feed would carry one `at-capacity` line for an unbounded run of
             # saturate-and-drain episodes instead of one apiece.
             self._capacity_logged = False
-            if self._run_queued_task(entry) == "failed":
+            verdict = self._run_queued_task(entry, forced=False)
+            if verdict == "failed":
+                return
+            # Every remaining entry would be priced against the same windows and get
+            # the same answer, and the dispatch has already re-staged this one for the
+            # commit at the end of the cycle. Draining on would cost a round of
+            # refusals to no end.
+            if verdict == autofix.VERDICT_UNAFFORDABLE:
                 return
 
     def _drop_queued_task(self, task_id: str) -> None:
@@ -1469,9 +1518,14 @@ class Store(QObject):
             self.starting_tasks = remaining
             self.tasks_changed.emit()
 
-    def _run_queued_task(self, entry: autofix.QueuedTask) -> str:
+    def _run_queued_task(self, entry: autofix.QueuedTask, *, forced: bool) -> str:
         """Dispatch one queued task past the capacity check its caller already made,
         and record the attempt its monitor would have recorded.
+
+        ``forced`` is the operator's "execute now", and is the only thing that also
+        overrides the rate-limit budget. The drain does not: it is the machine
+        starting its own automatic work, and a task that could not be afforded when
+        it was found is not afforded by having waited in a list.
 
         That record is not bookkeeping polish: the whole retry ladder hangs off it. A
         queued dispatch that wrote none would look, to the very next poll after the
@@ -1485,7 +1539,8 @@ class Store(QObject):
         self._begin_starting(entry)
         try:
             verdict = self.dispatch_agent(
-                entry.job, autofix.SOURCE_AUTO, entry.attempt, bypass_capacity=True
+                entry.job, autofix.SOURCE_AUTO, entry.attempt, bypass_capacity=True,
+                bypass_budget=forced,
             )
         finally:
             # Paired with the line above whatever the dispatch does, because the band
@@ -1516,14 +1571,17 @@ class Store(QObject):
         self._save_attempts(key, attempts)
 
     def execute_queued_task_async(self, task_id: str) -> None:
-        """The queued row's "execute now": start this task immediately, past the cap.
+        """The queued row's "execute now": start this task immediately, past the two
+        holds that are the machine's own judgement.
 
         It stays AUTO work — same ``Auto · `` label, same auto-handled counter, mesh
         routing still applies, and once running it occupies a slot like any other
-        automatic agent, so the rest of the queue waits behind it. Of the four
-        asymmetries the gate draws between a click and a monitor tick (capacity, mesh,
-        counters, label) this borrows exactly one: the cap, which is the only one the
-        operator is overriding.
+        automatic agent, so the rest of the queue waits behind it. Of the five
+        asymmetries the gate draws between a click and a monitor tick (capacity,
+        budget, mesh, counters, label) this borrows exactly two: the cap and the
+        rate-limit budget, which are the two the operator is overriding. Both are
+        estimates of what this machine should do next, and the operator looking at
+        the row knows something they do not.
 
         On a worker thread, like every other dispatch path: it assembles nothing but
         it does spawn a terminal, and on a live mesh it waits on a node round-trip.
@@ -1546,7 +1604,7 @@ class Store(QObject):
         job, so a mesh peer can own the work, the PR can have gained an agent since
         the list was built, and the spawn can fail — announcing "started" before
         asking would report a launch that never happened in all three."""
-        verdict = self._run_queued_task(entry)
+        verdict = self._run_queued_task(entry, forced=True)
         label = entry.job.label
         if verdict == "spawned":
             activity.log("panel", "queue-run",
