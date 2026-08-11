@@ -56,6 +56,16 @@ function digestOf(file) {
   }
 }
 
+// A directory, not merely something with that name — the Python twin asks
+// `is_dir()` here, and the two have to answer alike about the same disk.
+function isDir(p) {
+  try {
+    return fs.statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 function readText(file) {
   try {
     return fs.readFileSync(file, 'utf8').trim();
@@ -86,7 +96,7 @@ export function probe(appArgs = [], { update = true, env = process.env } = {}) {
 
   let state;
   if (!fs.existsSync(checkout)) state = 'absent';
-  else if (fs.existsSync(path.join(checkout, 'packages', 'diplomat-platform'))) state = 'checkout';
+  else if (isDir(path.join(checkout, 'packages', 'diplomat-platform'))) state = 'checkout';
   else state = 'foreign';
 
   const venv = path.join(home, STATE_DIR, 'venv');

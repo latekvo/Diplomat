@@ -10,10 +10,9 @@ Settings ▸ Update button, the 06:00 timer and the commit the panel reports are
 git operations on it. A wheel carrying a copy would be a second Diplomat that no
 update could ever reach.
 
-So what an index can usefully carry is the twenty lines in between: fetch the
-checkout when it isn't there, then run the platform's own build and launch
-scripts - the same ones `README.md` tells a human to type. Nothing here builds
-anything itself.
+So what an index can usefully carry is the steps in between: fetch the checkout
+when it isn't there, then run the platform's own build and launch scripts - the
+same ones `README.md` tells a human to type. Nothing here builds anything itself.
 
 ``packages/szpont-npm`` is these same steps in JavaScript, for ``npx szpont``. The
 two agree by construction on :func:`plan`, a pure function from what was probed to
