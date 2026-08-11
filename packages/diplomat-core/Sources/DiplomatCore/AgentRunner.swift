@@ -24,12 +24,14 @@ import Foundation
 public enum AgentRunner: String, CaseIterable, Sendable {
     case claude
     case opencode
+    case hermes
 
     /// What Settings shows for each.
     public var label: String {
         switch self {
         case .claude: return "Claude Code"
         case .opencode: return "OpenCode"
+        case .hermes: return "Hermes"
         }
     }
 
@@ -78,12 +80,20 @@ public enum AgentRunner: String, CaseIterable, Sendable {
     /// tracked by its screen.
     public func agentCommand(promptFile: String, model: String = "", port: Int = 0) -> String {
         let prompt = "\"$(cat \(Self.shq(promptFile)))\""
+        let trimmed = model.trimmingCharacters(in: .whitespaces)
+        let flag = trimmed.isEmpty ? "" : " -m \(Self.shq(trimmed))"
         switch self {
         case .claude:
             return "claude \(prompt)"
+        case .hermes:
+            // `--yolo` bypasses the approval prompts, the same autonomy the Claude
+            // alias carries and `OPENCODE_PERMISSION` grants below. `-q` submits the
+            // prompt into the TUI, so this is a windowed agent the user can watch and
+            // type into, and the query is stored verbatim as the session's opening
+            // message — which is how `HermesStore` tells this run's session from a
+            // sibling's in the same checkout.
+            return "hermes chat --tui --yolo\(flag) -q \(prompt)"
         case .opencode:
-            let trimmed = model.trimmingCharacters(in: .whitespaces)
-            let flag = trimmed.isEmpty ? "" : " -m \(Self.shq(trimmed))"
             // OpenCode's default hostname is loopback, so this exposes the run to other
             // users of this machine and to nothing else. It cannot also be
             // password-protected: the server takes one, but OpenCode's own TUI sends
@@ -115,14 +125,21 @@ public enum AgentRunner: String, CaseIterable, Sendable {
         allCases.contains { line.contains($0.rawValue) }
     }
 
-    /// The command that lets a user connect a provider to OpenCode.
+    /// The command that lets a user connect a provider to this runner.
     ///
-    /// Diplomat deliberately does not ask for a provider and an API key itself.
-    /// OpenCode ships a wizard that knows its whole provider catalog, which entries
-    /// take an OAuth flow rather than a key, and where each one's credentials belong —
-    /// and it writes them to the store the agent reads from anyway. A second key field
-    /// here would be a worse copy of it that also puts a secret in Diplomat's config.
-    public static let setupCommand = "opencode providers login; opencode providers list"
+    /// Diplomat deliberately does not ask for a provider and an API key itself. Both
+    /// foreign runners ship a wizard that knows their whole provider catalog, which
+    /// entries take an OAuth flow rather than a key, and where each one's credentials
+    /// belong — and each writes them to the store its agent reads from anyway. A key
+    /// field here would be a worse copy of that which also put a secret in Diplomat's
+    /// config.
+    ///
+    /// The listing command runs after, so the window the user is left looking at states
+    /// what is now connected rather than making them trust that it worked.
+    public var setupCommand: String {
+        self == .hermes ? "hermes setup; hermes status"
+                        : "opencode providers login; opencode providers list"
+    }
 
     /// Single-quote for the shell, the same way `ReviewWizard.shq` does.
     static func shq(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }

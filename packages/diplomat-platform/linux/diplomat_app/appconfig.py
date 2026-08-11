@@ -4,8 +4,8 @@ Nearly every setting belongs to one front-end and lives in that front-end's own
 store (``QSettings`` here, ``UserDefaults`` on macOS). A few can't: the repo root
 every spawn ``cd``s into, the cap on how many automatic agents may run here at
 once, the three knobs of the rate-limit budget those agents are started against,
-and which agent CLI a spawn runs (with the model, when that CLI is OpenCode). Each
-is consumed by whichever process picks the work up, and one of those is a **mesh
+and which agent CLI a spawn runs (with the model it is pinned to). Each is
+consumed by whichever process picks the work up, and one of those is a **mesh
 node** — a separate process that is stdlib-only by design (the root README
 advertises joining a mesh with "no Qt needed") and that outlives the applet, so it
 can neither read a Qt/UserDefaults store nor be handed the value in its
@@ -38,9 +38,9 @@ AUTO_BUDGET_CONFIDENCE = "autoBudgetConfidence"
 AUTO_BUDGET_FLOOR_PCT = "autoBudgetFloorPct"
 #: Which agent CLI a spawn runs — see :mod:`runner`, which owns the values.
 AGENT_RUNNER = "agentRunner"
-#: The ``provider/model`` the OpenCode runner is pinned to; "" lets OpenCode pick.
-#: A model id, never a credential: those stay in OpenCode's own provider store.
-OPENCODE_MODEL = "opencodeModel"
+#: The model the selected runner is pinned to; "" lets that runner pick. A model id,
+#: never a credential: those stay in the runner's own provider store.
+AGENT_MODEL = "agentModel"
 
 
 def path() -> Path:

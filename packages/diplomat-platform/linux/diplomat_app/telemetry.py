@@ -207,13 +207,14 @@ def record_cleared(key: str) -> None:
 
 
 def record_completion(key: str, prompt: str, started_at: float, done_at: float,
-                      session_id: str = "") -> None:
+                      session_id: str = "", agent_runner: str = "") -> None:
     """Record a finished agent, pricing it from its own transcript.
 
     Which transcript depends on what ran it, and the run says which by what it left
-    behind: an OpenCode session id means an OpenCode run, whose spend lives in
-    OpenCode's own store and is asked for through its exporter. Everything else is a
-    Claude Code run, found in ``~/.claude`` by the prompt it opened with.
+    behind. A matched session id under a foreign runner is priced by that runner's own
+    store — OpenCode through its exporter, Hermes from the session row it keeps
+    running totals on. Everything else is a Claude Code run, found in ``~/.claude`` by
+    the prompt it opened with.
 
     Attribution can fail either way — the applet restarting mid-agent loses the prompt
     the match needs, and a session whose window was closed before it was matched has
@@ -221,11 +222,15 @@ def record_completion(key: str, prompt: str, started_at: float, done_at: float,
     skipped, so the run/wait times still count it and the screen can say how many
     finished tasks it could not price.
     """
-    from . import usagescan
+    from . import hermesstore, runner, usagescan
 
     try:
-        tokens = (usagescan.opencode_task_tokens(session_id) if session_id
-                  else usagescan.task_tokens(prompt, started_at, done_at))
+        if session_id and agent_runner == runner.HERMES:
+            tokens = hermesstore.session_tokens(session_id)
+        elif session_id and agent_runner == runner.OPENCODE:
+            tokens = usagescan.opencode_task_tokens(session_id)
+        else:
+            tokens = usagescan.task_tokens(prompt, started_at, done_at)
     except OSError:
         tokens = None
     record_done(key, done_at, tokens)

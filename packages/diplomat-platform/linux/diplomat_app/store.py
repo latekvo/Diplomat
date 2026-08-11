@@ -362,15 +362,15 @@ class Store(QObject):
         appconfig.set_value(appconfig.AGENT_RUNNER, value)
 
     @property
-    def opencode_model(self) -> str:
-        """The ``provider/model`` the OpenCode runner is pinned to; empty leaves the
-        choice to OpenCode's own picker. A model id, never a credential — those live
-        in OpenCode's provider store."""
-        return appconfig.get(appconfig.OPENCODE_MODEL)
+    def agent_model(self) -> str:
+        """The model the selected runner is pinned to; empty leaves the choice to that
+        runner's own picker. A model id, never a credential — those live in the
+        runner's provider store."""
+        return appconfig.get(appconfig.AGENT_MODEL)
 
-    @opencode_model.setter
-    def opencode_model(self, value: str) -> None:
-        appconfig.set_value(appconfig.OPENCODE_MODEL, value)
+    @agent_model.setter
+    def agent_model(self, value: str) -> None:
+        appconfig.set_value(appconfig.AGENT_MODEL, value)
 
     @property
     def allocator_setup_done(self) -> bool:
@@ -1221,10 +1221,12 @@ class Store(QObject):
         what identifies this run afterwards is that pid rather than the wording of its
         prompt (:func:`review.shell_command`).
 
-        An OpenCode run also gets a port reserved for its own server, which is what
-        lets the applet ask that agent what it is doing. A port that cannot be had is
-        not a failure to spawn — the run goes ahead without one and is read off its
-        screen, exactly as a Claude Code run is.
+        Which runner is spawned is written down here rather than re-read later: the
+        setting is what the NEXT spawn will use, so a run started under one runner and
+        asked about after the operator switched would be interrogated through the
+        wrong store. An OpenCode run also gets a port reserved for its own server. A
+        port that cannot be had is not a failure to spawn — the run goes ahead without
+        one and is read off its screen, exactly as a Claude Code run is.
         """
         now = time.time()
         record = agentregistry.create_run(
@@ -1233,8 +1235,9 @@ class Store(QObject):
                 pr_number=number, pr_url=url, kind=kind, label=label, source=source,
                 placement=agentstate.PLACEMENT_LOCAL, ledger_key=ledger_key),
             prompt)
+        chosen = agentregistry.stage_runner(record.run_id)
         port = (agentregistry.stage_port(record.run_id)
-                if runner.selected() == runner.OPENCODE else None)
+                if chosen == runner.OPENCODE else None)
         try:
             review.spawn(prompt, self.terminal,
                          done_path=str(agentregistry.done_path(record.run_id)),
@@ -1822,13 +1825,15 @@ class Store(QObject):
         # inflate every recorded run time by a random few minutes.
         retired = [
             (r, agentregistry.finished_at(r.run_id) or time.time(),
-             _run_prompt(r.run_id), agentregistry.bound_session(r.run_id))
+             _run_prompt(r.run_id), agentregistry.bound_session(r.run_id),
+             agentregistry.run_runner(r.run_id))
             for r in gone if r.ledger_key
         ]
         agentregistry.forget({r.run_id for r in gone})
-        for r, finished_at, prompt, session_id in retired:
+        for r, finished_at, prompt, session_id, agent_runner in retired:
             telemetry.record_completion(r.ledger_key, prompt, r.dispatched_at,
-                                        finished_at, session_id=session_id)
+                                        finished_at, session_id=session_id,
+                                        agent_runner=agent_runner)
         if retired:
             self.telemetry_changed.emit()
 

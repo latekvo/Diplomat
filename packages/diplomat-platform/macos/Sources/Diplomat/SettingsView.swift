@@ -510,17 +510,18 @@ struct SettingsView: View {
             }
             .pickerStyle(.segmented).labelsHidden()
 
-            if store.agentRunner == .opencode {
+            if store.agentRunner != .claude {
+                let runnerName = store.agentRunner.label
                 HStack(spacing: 6) {
                     Image(systemName: "cpu").font(.caption).foregroundStyle(.secondary)
-                    TextField("provider/model — blank lets OpenCode choose",
-                              text: $store.opencodeModel)
+                    TextField("model — blank lets \(runnerName) choose",
+                              text: $store.agentModel)
                         .textFieldStyle(.plain).font(.callout).lineLimit(1)
                     Button("Connect a provider…") { openProviderSetup() }
                         .buttonStyle(.bordered).controlSize(.small)
-                        .help("Open OpenCode's own login wizard: it knows every provider "
-                              + "in its catalog and stores the credential itself. "
-                              + "Diplomat never holds an API key.")
+                        .help("Open \(runnerName)'s own login wizard: it knows every "
+                              + "provider in its catalog and stores the credential "
+                              + "itself. Diplomat never holds an API key.")
                 }
                 .padding(8)
                 .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.1)))
@@ -539,13 +540,16 @@ struct SettingsView: View {
         case .opencode:
             return "SPAWN AGENT runs `opencode`. Its model and provider are OpenCode's own — "
                  + "connect one above; the credential is stored by OpenCode, never here."
+        case .hermes:
+            return "SPAWN AGENT runs `hermes chat --tui`. Its model and provider are Hermes' "
+                 + "own — connect one above; the credential is stored by Hermes, never here."
         }
     }
 
-    /// Hand the user to OpenCode's provider wizard, in a terminal window of the kind
+    /// Hand the user to the runner's provider wizard, in a terminal window of the kind
     /// they already picked for agents — it is interactive, so it needs a real one.
     private func openProviderSetup() {
-        AgentSpawner.openTerminal(command: AgentRunner.setupCommand,
+        AgentSpawner.openTerminal(command: store.agentRunner.setupCommand,
                                   terminal: store.terminal)
     }
 

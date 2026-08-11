@@ -619,10 +619,11 @@ Two gatherers fill in what GitHub doesn't know:
   exact identity that needs no new flag on the spawn path. Scanning is incremental
   (a byte offset per file), and the first scan seeds every existing transcript at EOF
   rather than reading gigabytes of history it could never attribute anyway.
-  `DIPLOMAT_CLAUDE_DIR` moves where it reads from. An [OpenCode](#agent-runner) run
-  writes no such transcript; it is priced from `opencode export <session>` instead,
-  summed over every message (OpenCode reports a turn's cost per message) and counting
-  the same three fields, so one ledger holds both runners in one unit.
+  `DIPLOMAT_CLAUDE_DIR` moves where it reads from. A [foreign runner](#agent-runner)
+  writes no such transcript, so each is priced from its own store instead - OpenCode
+  summed over every message of `opencode export <session>` (it reports a turn's cost
+  per message), Hermes read off the running totals on its session row - both counting
+  the same three fields, so one ledger holds every runner in one unit.
 
 The probe reports **what is left of each window** on every sample, and that reading is
 what *rate limit left* draws - measured, not derived. What Anthropic never publishes is
@@ -768,36 +769,48 @@ and ⏻) swaps the panel to a settings screen:
   and the monitors. Blank = the `gh`-authenticated user (`viewer.login`), resolved
   eagerly at launch so it's the default everywhere.
 - <a id="agent-runner"></a>**Agent runner** - which agent CLI a spawn runs:
-  **Claude Code** (the default, and what every existing install keeps) or
-  **OpenCode**. Only the agent word changes; the prompt, the staged file, the
-  completion sentinel, the pid a run is identified by and every monitor above it
-  are the same either way, which is the point of having one setting rather than a
-  second pipeline. Like the repo root it lives in the shared
-  `~/.diplomat/config.json`, so a running mesh node picks it up on its next spawn.
-  - **Model** (OpenCode only) - a `provider/model` id such as
+  **Claude Code** (the default, and what every existing install keeps), **OpenCode**
+  or **Hermes**. Only the agent word and its flags change; the prompt, the staged
+  file, the completion sentinel, the pid a run is identified by and every monitor
+  above it are the same whichever it is, which is the point of having one setting
+  rather than a second pipeline. All three are windowed, so a run can be watched and
+  typed into. Like the repo root the setting lives in the shared
+  `~/.diplomat/config.json`, so a running mesh node picks it up on its next spawn -
+  and which runner a given run *started* under is written into its run directory, so
+  switching mid-flight can't interrogate a live agent through the wrong store.
+  - **Model** (OpenCode, Hermes) - a model id such as
     `openrouter/moonshotai/kimi-k2` or `ollama-cloud/glm-5.2`. Blank leaves the
-    choice to OpenCode's own picker rather than overriding it with a guess.
-  - **Connect a provider…** (OpenCode only) - opens OpenCode's own login wizard in
-    a terminal. Diplomat deliberately has no API-key field: OpenCode already knows
-    its whole provider catalog, which entries take OAuth rather than a key, and
-    where each one's credentials belong - and it writes them to the store the agent
-    reads from anyway. **No provider credential is ever stored by Diplomat**, which
-    matters because `~/.diplomat/config.json` is world-readable and copied around by
-    the mesh.
-  - **How a run is watched, and priced.** An OpenCode agent is spawned with
+    choice to that runner's own picker rather than overriding it with a guess.
+  - **Connect a provider…** (OpenCode, Hermes) - opens that runner's own login wizard
+    in a terminal (`opencode providers login`, `hermes setup`). Diplomat deliberately
+    has no API-key field: each runner already knows its whole provider catalog, which
+    entries take OAuth rather than a key, and where each one's credentials belong -
+    and each writes them to the store its agent reads from anyway. **No provider
+    credential is ever stored by Diplomat**, which matters because
+    `~/.diplomat/config.json` is world-readable and copied around by the mesh.
+  - **How a run is watched.** Both foreign runners are *asked* whether their turn is
+    over rather than having it read off their status bar - positive evidence, instead
+    of whether someone else's `esc interrupt` hint happened to be drawn when the poll
+    looked. They answer from different places. An OpenCode agent is spawned with
     `--port <n>` on a port Diplomat reserved for it, so it serves its own session on
-    loopback while it works and can simply be *asked* whether its turn is over -
-    positive evidence, rather than reading the CLI's `esc interrupt` hint off its
-    status bar. Its session is matched to the run by the staged prompt, which
-    OpenCode submits verbatim as the session's opening message; the port is
-    unauthenticated (OpenCode's server takes a password but its own TUI sends none),
-    so it is reachable by other users of the same machine and nothing else. A run
-    with no port - the port was taken, or the applet predates it - falls back to the
-    status bar exactly as a Claude Code run does. Pricing goes the other way round:
-    a turn's cost is per-message, so a finished run is summed from
-    `opencode export <session>` when it ends, not from the poll.
+    loopback while it works; the port is unauthenticated (OpenCode's server takes a
+    password but its own TUI sends none), so it is reachable by other users of the
+    same machine and nothing else. Hermes serves no such port, and needs none: it
+    writes every session and message to `~/.hermes/state.db` as it goes, which
+    Diplomat opens read-only, and a turn is over exactly when the agent stamps its own
+    message `finish_reason` (`tool_calls` is mid-turn, `stop` is the end). Either way
+    the session is matched to the run by the staged prompt, which both runners store
+    verbatim as the session's opening message - the only exact key, since both keep
+    one session store for the whole machine. A run that cannot be reached - the port
+    was taken, the server has not come up, the store is not there - falls back to the
+    status bar exactly as a Claude Code run does.
+  - **How a run is priced.** OpenCode reports a turn's cost per message, so a
+    finished run is summed from `opencode export <session>` when it ends, not from the
+    poll. Hermes keeps running totals on the session row, so it is simply read. Both
+    count input + output + cache *writes*, the same three the Claude Code transcript
+    scan sums, so one ledger holds every runner in one unit.
   - What does *not* carry over: the [Claude API-error watcher](#autonomous-monitors)
-    - its banners are Claude Code's. An OpenCode agent that errors reads as idle, so
+    - its banners are Claude Code's. A foreign agent that errors reads as idle, so
     it gives its task-cap slot back and the monitor that owed the work dispatches it
     again.
 - **Repo root** - the local checkout every spawned agent `cd`s into, with a
@@ -1129,6 +1142,7 @@ packages/
         AgentActivity.swift        terminal-tail classification: running vs awaiting input
         AgentRunner.swift          which agent CLI a spawn runs, and the one command that runs it
         OpenCodeAPI.swift          reading an OpenCode run's own session: whose it is, mid-turn or not, spend
+        HermesStore.swift          the same, for a Hermes run's session in its SQLite store
         AgentState.swift           the one resolver: typed evidence -> a state per agent run,
                                    and the four projections (dedup, cap, rows, retirement)
         AgentRegistry.swift        the durable run book both applets read/write (~/.diplomat/agents)
@@ -1159,7 +1173,9 @@ packages/
         AutofixStatus.swift        the monitor heartbeat behind the status pill
         ApiErrorWatcher.swift      iTerm/Terminal session reader + continue-nudge sender
         ProcessTracker.swift       tracked agent sessions (liveness, focus, done sentinel, merged)
+        AgentSessionProbe.swift    asks each run's own agent what it is doing, through its runner's store
         OpenCodeProbe.swift        dials an OpenCode run's own server: free port, session list, messages
+        HermesProbe.swift          reads a Hermes run's session out of ~/.hermes/state.db, read-only
         TrackTest.swift            E2E self-test of the tracking path (DIPLOMAT_TRACK_TEST)
         QueueTest.swift            self-test of the deferred-task queue (DIPLOMAT_QUEUE_TEST)
         SweepTest.swift            self-test of working-vs-at-the-prompt (DIPLOMAT_SWEEP_TEST)

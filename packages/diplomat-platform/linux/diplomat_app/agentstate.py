@@ -213,15 +213,16 @@ class SessionState:
 
     The typed answer to the question :func:`_classify_activity` otherwise has to read
     off a status bar. An OpenCode agent serves its session over loopback while it
-    works (:mod:`diplomat_app.opencodeapi`); Claude Code serves nothing, so its runs
+    works (:mod:`diplomat_app.opencodeapi`) and a Hermes agent writes its own to
+    SQLite (:mod:`diplomat_app.hermesstore`); Claude Code serves nothing, so its runs
     are absent from the evidence and are still read from the screen.
 
     Only the one fact, because it is the only one this evidence can carry honestly:
-    what a run SPENT is a sum over its whole transcript, and the poll reads one
-    message. :mod:`diplomat_app.usagescan` prices a finished run instead.
+    an OpenCode run's spend is a sum over its whole transcript and the poll reads one
+    message. A finished run is priced from its runner's own store instead.
     """
 
-    #: Is a turn in flight? A turn with no completion stamp has not ended.
+    #: Is a turn in flight? Whichever way its runner says so.
     busy: bool
 
     def to_json(self) -> dict:

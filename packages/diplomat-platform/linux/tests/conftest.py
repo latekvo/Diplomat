@@ -171,6 +171,19 @@ def isolated_claude_dir(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def isolated_hermes_store(tmp_path, monkeypatch):
+    """Fence the Hermes reader off from the developer's own ``~/.hermes/state.db``.
+
+    Same reasoning as the Claude Code redirect above: that file is every session the
+    operator has ever run, so a test reaching :mod:`hermesstore` would match a run
+    against their real work and answer differently on every machine. The path points
+    at a file that does not exist, which is the "no store" case every reader already
+    degrades to; a test that wants a store writes one there."""
+    monkeypatch.setenv("DIPLOMAT_HERMES_DB", str(tmp_path / "hermes" / "state.db"))
+    yield
+
+
+@pytest.fixture(autouse=True)
 def isolated_app_config(tmp_path, monkeypatch):
     """Redirect the shared ``~/.diplomat/config.json`` to a per-test temp file, for the
     same reason as the two fixtures above: it holds the repo root every spawn `cd`s

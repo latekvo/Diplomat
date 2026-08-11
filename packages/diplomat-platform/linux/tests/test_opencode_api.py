@@ -212,6 +212,7 @@ def staged(run_id: str, port: int, prompt: str = PROMPT, dispatched: float = T0)
     record = RunRecord(run_id=run_id, dispatched_at=dispatched, pr_number=7,
                        pid=4242, tty="pts/3")
     agentregistry.create_run(record, prompt)
+    agentregistry.runner_path(run_id).write_text(runner.OPENCODE, encoding="utf-8")
     agentregistry.port_path(run_id).write_text(str(port), encoding="utf-8")
     return record
 

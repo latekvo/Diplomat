@@ -130,6 +130,29 @@ def test_a_finish_time_comes_from_the_sentinel_not_from_the_poll():
     assert R.finished_at("never-existed") is None
 
 
+@pytest.mark.parametrize("session_id", [
+    "ses_00d61ec0cffefgWHOvzctXSTtB",   # OpenCode
+    "20260812_002140_b0e4d4",           # Hermes
+])
+def test_every_runner_spells_a_session_id_its_own_way(session_id):
+    """A shape check that only accepted one runner's spelling would look harmless: the
+    poll still answers, because the id it just found is used within that same call. It
+    is the NEXT tick that pays — the search runs again — and retirement that breaks,
+    because the run is priced with no session and lands in the ledger unattributed."""
+    R.create_run(rec(), "p")
+    R.bind_session("r1", session_id)
+    assert R.bound_session("r1") == session_id
+
+
+@pytest.mark.parametrize("body", ["", "   ", "\n", "ses_a ses_b", "x" * 400])
+def test_a_session_file_that_is_not_one_id_binds_nothing(body):
+    """A torn write or a stray file must leave the run looking unmatched, so the
+    search runs again — not become an id every later tick queries."""
+    R.create_run(rec(), "p")
+    R.session_path("r1").write_text(body, encoding="utf-8")
+    assert R.bound_session("r1") == ""
+
+
 def test_forgetting_a_run_takes_its_directory_with_it():
     R.create_run(rec(), "p")
     R.done_path("r1").write_text("0")

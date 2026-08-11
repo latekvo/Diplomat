@@ -60,6 +60,14 @@ def opencode(monkeypatch, tmp_path):
     return runner.OPENCODE
 
 
+@pytest.fixture
+def hermes(monkeypatch, tmp_path):
+    """The same, for Hermes."""
+    appconfig.set_value(appconfig.AGENT_RUNNER, runner.HERMES)
+    monkeypatch.setattr(review, "repo_path", lambda: str(tmp_path))
+    return runner.HERMES
+
+
 # MARK: - Which CLI a spawn runs
 
 
@@ -87,9 +95,41 @@ def test_a_configured_model_is_passed_and_an_unset_one_is_not(opencode):
     """OpenCode already remembers a model per install. Passing a guess when the user
     picked none would silently move them off the model their own picker selected."""
     assert " -m " not in runner.agent_command("/tmp/p.txt")
-    appconfig.set_value(appconfig.OPENCODE_MODEL, "openrouter/moonshotai/kimi-k2")
+    appconfig.set_value(appconfig.AGENT_MODEL, "openrouter/moonshotai/kimi-k2")
     assert runner.agent_command("/tmp/p.txt").endswith(
         'opencode -m openrouter/moonshotai/kimi-k2 --prompt "$(cat /tmp/p.txt)"')
+
+
+def test_the_hermes_runner_opens_a_window_the_operator_can_watch(hermes):
+    """Spelled out rather than built from parts, and spelled out identically in
+    ``DiplomatCoreSmoke``: one config file picks the runner for both front-ends, and a
+    machine can hand a mesh job to the other platform.
+
+    ``--tui`` is what makes this a windowed agent rather than a headless one — the
+    operator can watch it and type into it, exactly as with the other two. ``--yolo``
+    is the autonomy the Claude alias carries and ``OPENCODE_PERMISSION`` grants; an
+    agent that stops to ask in an unwatched window holds a bay of the task cap until a
+    human notices. ``-q`` is what stores the prompt verbatim as the session's opening
+    message, which is the key :mod:`hermesstore` matches a run to its session by."""
+    assert runner.agent_command("/tmp/p.txt") == (
+        'hermes chat --tui --yolo -q "$(cat /tmp/p.txt)"')
+
+
+def test_hermes_takes_the_configured_model_and_no_port(hermes):
+    """A port would be meaningless — Hermes serves no per-run server, and answers the
+    same question from its own session store."""
+    appconfig.set_value(appconfig.AGENT_MODEL, "openai/gpt-5.2")
+    cmd = runner.agent_command("/tmp/p.txt", port=47910)
+    assert cmd == 'hermes chat --tui --yolo -m openai/gpt-5.2 -q "$(cat /tmp/p.txt)"'
+
+
+def test_each_runner_hands_the_user_to_its_own_provider_wizard(hermes):
+    """Diplomat holds no API key for either runner: each ships a wizard that knows its
+    whole provider catalog and writes the credential to its own store. Sending a Hermes
+    user to OpenCode's wizard would connect a provider the agent never reads."""
+    assert runner.setup_command() == "hermes setup; hermes status"
+    appconfig.set_value(appconfig.AGENT_RUNNER, runner.OPENCODE)
+    assert runner.setup_command() == "opencode providers login; opencode providers list"
 
 
 def test_a_prompt_path_with_a_space_survives_the_hand_off(opencode):
@@ -165,6 +205,7 @@ def test_a_claude_spawn_is_left_exactly_as_it_was(monkeypatch, tmp_path):
 @pytest.mark.parametrize("line, seen", [
     ("2 pts/1 30 opencode --prompt Review PR #7 in o/r", True),
     ("2 pts/1 30 claude Review PR #7 in o/r", True),
+    ("2 pts/1 30 hermes chat --tui --yolo -q Review PR #7 in o/r", True),
     ("2 pts/1 30 vim notes.txt", False),
 ])
 def test_every_runner_is_visible_to_the_scans_that_count_agents(line, seen):

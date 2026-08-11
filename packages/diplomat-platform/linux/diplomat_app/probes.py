@@ -235,81 +235,140 @@ def pane_tails(records: list[RunRecord], now: float = 0.0) -> Observation:
 
 
 #: Most sessions considered when matching a run to its own. Ordinarily there is one —
-#: the filters in :func:`opencodeapi.candidates` are narrow — and the cap only bites
-#: when a run never binds at all, where it is what stops a fruitless search costing
-#: one message fetch per stale session on every tick, forever.
+#: each runner's ``candidates`` filters are narrow — and the cap only bites when a run
+#: never binds at all, where it is what stops a fruitless search costing one opening
+#: message read per stale session on every tick, forever.
 _MAX_CANDIDATES = 4
 
 
 def agent_sessions(records: list[RunRecord], directory: str) -> Observation:
-    """run id → what that run's OpenCode agent says it is doing.
+    """run id → what that run's own agent says it is doing.
 
-    Positive evidence where the pane gives an inference: a turn's completion stamp
-    rather than whether someone else's status bar happened to have its interrupt hint
-    drawn when we looked. It carries the turn's price too, which is the only place an
-    OpenCode run's cost exists — :mod:`usagescan` reads Claude Code's transcripts,
-    and an OpenCode run writes none.
+    Positive evidence where the pane gives an inference: a turn the runner itself
+    marks finished, rather than whether someone else's status bar happened to have its
+    interrupt hint drawn when we looked.
+
+    Two runners answer, from different places — OpenCode over the loopback port its
+    spawn reserved (:mod:`opencodeapi`), Hermes out of the SQLite store it keeps every
+    session in (:mod:`hermesstore`) — and both come back as the same typed answer, so
+    nothing downstream learns which runner it is looking at.
 
     A run missing from the answer is a run this cannot reach: every Claude Code run,
     an OpenCode run spawned without a port, one whose server has not come up yet, one
-    whose window is gone. The resolver reads its screen instead, so absence here costs
-    the older evidence and never a verdict.
+    whose session has not been written to yet. The resolver reads its screen instead,
+    so absence here costs the older evidence and never a verdict.
 
-    UNSUPPORTED when no tracked run has a port at all — a machine running Claude Code
-    is an ordinary machine, not one whose probe has gone quiet.
+    UNSUPPORTED when no tracked run has such a session at all — a machine running
+    Claude Code is an ordinary machine, not one whose probe has gone quiet.
     """
-    from . import agentregistry, opencodeapi
+    from . import agentregistry
 
-    ports = {r.run_id: agentregistry.port(r.run_id) for r in records}
-    ports = {run_id: p for run_id, p in ports.items() if p is not None}
-    if not ports:
-        return Observation.unsupported("are unavailable (no run has an OpenCode "
-                                       "server)")
-    by_run = {r.run_id: r for r in records}
-    taken = {agentregistry.bound_session(run_id) for run_id in ports}
+    asking = [(r, agentregistry.run_runner(r.run_id)) for r in records]
+    asking = [(r, name) for r, name in asking if name in _BACKENDS]
+    if not asking:
+        return Observation.unsupported("are unavailable (no run serves a session of "
+                                       "its own)")
+    taken = {agentregistry.bound_session(r.run_id) for r, _ in asking}
     taken.discard("")
-    out: dict[str, opencodeapi.SessionState] = {}
-    for run_id, port in ports.items():
-        session_id = agentregistry.bound_session(run_id)
+    out = {}
+    # In dispatch order, so the runs that have already matched a session are out of the
+    # way before a newer one goes looking — `taken` is only a useful filter if it is
+    # filled in the order the sessions were created.
+    for record, name in sorted(asking, key=lambda pair: pair[0].dispatched_at):
+        backend = _BACKENDS[name]
+        session_id = agentregistry.bound_session(record.run_id)
         if not session_id:
-            session_id = _bind_session(by_run[run_id], port, directory, taken)
+            session_id = backend.bind(record, directory, taken)
             if not session_id:
                 continue
-            agentregistry.bind_session(run_id, session_id)
+            agentregistry.bind_session(record.run_id, session_id)
             taken.add(session_id)
-        state = opencodeapi.state_of(
-            opencodeapi.messages(port, session_id, limit=1) or [])
+        state = backend.state(record, session_id)
         if state is not None:
-            out[run_id] = state
+            out[record.run_id] = state
     return Observation.present(out)
 
 
-def _bind_session(record: RunRecord, port: int, directory: str,
-                  taken: set[str]) -> str:
-    """Which session on this run's server is this run's, by its opening prompt.
+class _OpenCodeBackend:
+    """A run's own OpenCode server, on the port its spawn reserved."""
 
-    Every run has its own server but they share one session store, so the port alone
-    narrows nothing — ``GET /session`` lists the whole machine's history whichever
-    port it is asked on. The prompt is what makes the match exact, and exact is worth
-    the fetch: the applet runs several agents in one checkout at a time, so two
-    sessions a second apart in the same directory is the ordinary case, not the
-    pathological one.
-    """
-    from . import agentregistry, opencodeapi
+    @staticmethod
+    def bind(record: RunRecord, directory: str, taken: set[str]) -> str:
+        """Which session on this run's server is this run's, by its opening prompt.
 
-    listing = opencodeapi.sessions(port)
-    if listing is None:
+        Every run has its own server but they share one session store, so the port
+        alone narrows nothing — ``GET /session`` lists the whole machine's history
+        whichever port it is asked on. The prompt is what makes the match exact, and
+        exact is worth the fetch: the applet runs several agents in one checkout at a
+        time, so two sessions a second apart in the same directory is the ordinary
+        case, not the pathological one.
+        """
+        from . import agentregistry, opencodeapi
+
+        port = agentregistry.port(record.run_id)
+        if port is None:
+            return ""
+        listing = opencodeapi.sessions(port)
+        if listing is None:
+            return ""
+        prompt = _staged_prompt(record.run_id)
+        if prompt is None:
+            return ""
+        found = opencodeapi.candidates(listing, directory,
+                                       record.dispatched_at * 1000.0, taken)
+        for session_id in found[:_MAX_CANDIDATES]:
+            if opencodeapi.is_ours(opencodeapi.messages(port, session_id) or [],
+                                   prompt):
+                return session_id
         return ""
+
+    @staticmethod
+    def state(record: RunRecord, session_id: str):
+        from . import agentregistry, opencodeapi
+
+        port = agentregistry.port(record.run_id)
+        if port is None:
+            return None
+        return opencodeapi.state_of(
+            opencodeapi.messages(port, session_id, limit=1) or [])
+
+
+class _HermesBackend:
+    """Hermes' own session store, which it writes as it works."""
+
+    @staticmethod
+    def bind(record: RunRecord, directory: str, taken: set[str]) -> str:
+        from . import hermesstore
+
+        prompt = _staged_prompt(record.run_id)
+        if prompt is None:
+            return ""
+        for session_id in hermesstore.candidates(
+                directory, record.dispatched_at, taken)[:_MAX_CANDIDATES]:
+            if hermesstore.is_ours(session_id, prompt):
+                return session_id
+        return ""
+
+    @staticmethod
+    def state(record: RunRecord, session_id: str):
+        from . import hermesstore
+
+        return hermesstore.state_of(session_id)
+
+
+def _staged_prompt(run_id: str) -> str | None:
+    from . import agentregistry
+
     try:
-        prompt = agentregistry.prompt_path(record.run_id).read_text(encoding="utf-8")
+        return agentregistry.prompt_path(run_id).read_text(encoding="utf-8")
     except OSError:
-        return ""
-    found = opencodeapi.candidates(listing, directory,
-                                   record.dispatched_at * 1000.0, taken)
-    for session_id in found[:_MAX_CANDIDATES]:
-        if opencodeapi.is_ours(opencodeapi.messages(port, session_id) or [], prompt):
-            return session_id
-    return ""
+        return None
+
+
+#: Which store answers for which runner. A runner absent from here serves nothing and
+#: is read off its screen — that is Claude Code, and a run whose runner was never
+#: recorded.
+_BACKENDS = {runner.OPENCODE: _OpenCodeBackend, runner.HERMES: _HermesBackend}
 
 
 def mesh_claims() -> Observation:

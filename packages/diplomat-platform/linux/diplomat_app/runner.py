@@ -2,25 +2,31 @@
 
 Diplomat opens a terminal window and runs an agent in it. *Which* agent is one
 setting, because the applet's whole job — dispatch, track, price, reap — is the
-same either way:
+same whichever it is:
 
 * ``claude`` — Claude Code, the default and what every existing run used;
 * ``opencode`` — OpenCode, whose model comes from whichever provider the user
-  configured in OpenCode itself (Anthropic, OpenRouter, a local Ollama, …).
+  configured in OpenCode itself (Anthropic, OpenRouter, a local Ollama, …);
+* ``hermes`` — Hermes Agent, likewise.
 
-Only the *agent word* differs. Everything the spawn is built out of — the
-interactive shell, the ``$(cat …)`` prompt hand-off, the pid file written before
-the shell execs the agent over itself, the completion sentinel — is identical,
-and deliberately so: those mechanisms are what :mod:`agentregistry` and
-:mod:`probes` identify a run by, and a second spawn shape would be a second set
-of them to keep true.
+Only the *agent word and its flags* differ. Everything the spawn is built out of
+— the interactive shell, the ``$(cat …)`` prompt hand-off, the pid file written
+before the shell execs the agent over itself, the completion sentinel — is
+identical, and deliberately so: those mechanisms are what :mod:`agentregistry`
+and :mod:`probes` identify a run by, and a second spawn shape would be a second
+set of them to keep true.
 
-Credentials are the one thing this module refuses to hold. OpenCode has its own
-provider store and its own login wizard (``opencode providers login``), and that
-is where a key belongs — not in ``~/.diplomat/config.json``, which is
-world-readable by default, is copied around by the mesh, and would then need a
-second secret-handling story per provider. Diplomat stores the *choice* of
-runner and model; OpenCode stores the secret.
+What each of the two foreign runners is *doing* is asked of the runner rather than
+read off its screen, and each answers from a different place: OpenCode over a
+loopback port of its own (:mod:`opencodeapi`), Hermes out of the SQLite store it
+keeps every session in (:mod:`hermesstore`). Both come back as the same typed
+answer, so :mod:`agentstate` never learns which runner it is looking at.
+
+Credentials are the one thing this module refuses to hold. Each runner has its own
+provider store and its own login wizard, and that is where a key belongs — not in
+``~/.diplomat/config.json``, which is world-readable by default, is copied around
+by the mesh, and would then need a secret-handling story per provider. Diplomat
+stores the *choice* of runner and model; the runner stores the secret.
 
 Stdlib-only, like :mod:`appconfig` and :mod:`autofix`, because a mesh node spawns
 agents from its own Qt-free process and has to reach the same answer.
@@ -34,14 +40,15 @@ from __future__ import annotations
 
 import shlex
 
-#: The two runners, by the name of the CLI each one runs. The value is also what
-#: ``ps`` shows, which is what :func:`is_agent_line` matches on.
+#: The runners, by the name of the CLI each one runs. The value is also what ``ps``
+#: shows, which is what :func:`is_agent_line` matches on.
 CLAUDE = "claude"
 OPENCODE = "opencode"
-RUNNERS = (CLAUDE, OPENCODE)
+HERMES = "hermes"
+RUNNERS = (CLAUDE, OPENCODE, HERMES)
 
 #: What Settings shows for each.
-LABELS = {CLAUDE: "Claude Code", OPENCODE: "OpenCode"}
+LABELS = {CLAUDE: "Claude Code", OPENCODE: "OpenCode", HERMES: "Hermes"}
 
 #: OpenCode's permission gate, opened for a spawned agent.
 #:
@@ -81,16 +88,17 @@ def selected() -> str:
     return value if value in RUNNERS else CLAUDE
 
 
-def opencode_model() -> str:
-    """The ``provider/model`` OpenCode is pinned to, or "" to let it pick.
+def model() -> str:
+    """The model the selected runner is pinned to, or "" to let it pick.
 
-    Empty is a real choice, not a missing one: OpenCode already remembers a default
-    model per install, and overriding it with a guess would silently move a user off
-    the model they configured in OpenCode's own picker.
+    Empty is a real choice, not a missing one: both OpenCode and Hermes already
+    remember a default model per install, and overriding it with a guess would
+    silently move a user off the model their own picker selected. Claude Code takes
+    no such flag here and ignores it.
     """
     from . import appconfig
 
-    return appconfig.get(appconfig.OPENCODE_MODEL).strip()
+    return appconfig.get(appconfig.AGENT_MODEL).strip()
 
 
 def agent_command(prompt_file: str, port: int | None = None) -> str:
@@ -111,15 +119,25 @@ def agent_command(prompt_file: str, port: int | None = None) -> str:
 
     ``port`` puts an OpenCode run's own server on a port the applet already knows,
     which is what lets :mod:`opencodeapi` ask the agent what it is doing instead of
-    reading it off the agent's screen. It is ignored by the Claude runner, which has
-    no such server. Omitting it is a supported spawn, not a broken one: the run works
-    exactly as before and is tracked by its screen.
+    reading it off the agent's screen. It is ignored by the other two, which have no
+    such server — Hermes answers the same question from its own session store.
+    Omitting it is a supported spawn, not a broken one: the run works exactly as
+    before and is tracked by its screen.
     """
     pf = shlex.quote(prompt_file)
-    if selected() != OPENCODE:
+    chosen = selected()
+    if chosen == CLAUDE:
         return f'claude "$(cat {pf})"'
-    model = opencode_model()
-    flag = f" -m {shlex.quote(model)}" if model else ""
+    pinned = model()
+    flag = f" -m {shlex.quote(pinned)}" if pinned else ""
+    if chosen == HERMES:
+        # `--yolo` bypasses the approval prompts, the same autonomy the Claude alias
+        # carries and `OPENCODE_PERMISSION` grants below. `-q` submits the prompt into
+        # the TUI, so this is a windowed agent the user can watch and type into, and
+        # the query is stored verbatim as the session's opening message — which is how
+        # `hermesstore.is_ours` tells this run's session from a sibling's in the same
+        # checkout.
+        return f'hermes chat --tui --yolo{flag} -q "$(cat {pf})"'
     # OpenCode's default hostname is loopback, so this exposes the run to other users
     # of this machine and to nothing else. It cannot also be password-protected: the
     # server takes one, but OpenCode's own TUI sends none, so a run started with
@@ -136,18 +154,20 @@ def agent_command(prompt_file: str, port: int | None = None) -> str:
 
 
 def setup_command() -> str:
-    """The command that lets a user connect a provider to OpenCode.
+    """The command that lets a user connect a provider to the selected runner.
 
-    Diplomat deliberately does not ask for a provider and an API key itself.
-    OpenCode ships a wizard that knows its whole provider catalog, which entries take
-    an OAuth flow rather than a key, and where each one's credentials belong — and it
-    writes them to its own store, the only place the agent reads them from anyway. A
-    second key field here would be a worse copy of it that also puts a secret in
-    Diplomat's config file.
+    Diplomat deliberately does not ask for a provider and an API key itself. Both
+    foreign runners ship a wizard that knows their whole provider catalog, which
+    entries take an OAuth flow rather than a key, and where each one's credentials
+    belong — and each writes them to its own store, the only place its agent reads
+    them from anyway. A key field here would be a worse copy of that which also put a
+    secret in Diplomat's config file.
 
-    ``providers list`` runs after, so the window the user is left looking at states
+    The listing command runs after, so the window the user is left looking at states
     what is now connected rather than making them trust that it worked.
     """
+    if selected() == HERMES:
+        return "hermes setup; hermes status"
     return "opencode providers login; opencode providers list"
 
 

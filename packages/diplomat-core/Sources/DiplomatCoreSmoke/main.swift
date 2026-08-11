@@ -393,6 +393,7 @@ section("agent runner")
 check(AgentRunner.from("") == .claude, "an unset runner must be Claude Code")
 check(AgentRunner.from("gpt-cli") == .claude, "an unknown runner must degrade, not fail")
 check(AgentRunner.from("opencode") == .opencode)
+check(AgentRunner.from("hermes") == .hermes)
 check(AgentRunner.claude.agentCommand(promptFile: "/tmp/p.txt", model: "ignored")
         == "claude \"$(cat '/tmp/p.txt')\"",
       "the Claude command is what every existing install is mid-flight on")
@@ -404,6 +405,15 @@ check(AgentRunner.opencode.agentCommand(promptFile: "/tmp/p.txt", model: "openro
       "a configured model must reach the agent")
 check(!AgentRunner.opencode.agentCommand(promptFile: "/tmp/p.txt", model: "  ").contains(" -m "),
       "a blank model must leave OpenCode's own choice alone")
+// Hermes is windowed like the other two: `--tui` is what the operator watches and types
+// into, and `-q` is what makes the prompt the session's opening message — the key
+// `HermesStore.isOurs` matches a run to its session by.
+check(AgentRunner.hermes.agentCommand(promptFile: "/tmp/p.txt")
+        == "hermes chat --tui --yolo -q \"$(cat '/tmp/p.txt')\"")
+check(AgentRunner.hermes.agentCommand(promptFile: "/tmp/p.txt", model: "openai/gpt-5.2")
+        == "hermes chat --tui --yolo -m 'openai/gpt-5.2' -q \"$(cat '/tmp/p.txt')\"")
+check(AgentRunner.hermes.setupCommand == "hermes setup; hermes status",
+      "each runner's provider wizard is its own; Diplomat holds no key for either")
 // Every scan that counts, adopts or reaps an agent goes through this: a runner it
 // cannot see is an agent that burns quota while holding no bay of the task cap.
 check(AgentRunner.isAgentLine("501 ttys000 30 opencode --prompt Review PR #7 in o/r"))
@@ -426,6 +436,8 @@ check(AgentRunner.opencode.agentCommand(promptFile: "/tmp/p.txt", port: 47_910)
 check(AgentRunner.claude.agentCommand(promptFile: "/tmp/p.txt", port: 47_910)
         == "claude \"$(cat '/tmp/p.txt')\"",
       "Claude Code serves no session, so a port must not reach its command")
+check(!AgentRunner.hermes.agentCommand(promptFile: "/tmp/p.txt", port: 47_910).contains("47910"),
+      "Hermes serves no port either; it answers from its own store")
 check(!AgentRunner.opencode.agentCommand(promptFile: "/tmp/p.txt", port: 0).contains("--port"),
       "a run with no port must spawn exactly as it did before, not with --port 0")
 print("agent runner assertions passed")
@@ -485,6 +497,33 @@ let exported: [[String: Any]] = [
 check(OpenCodeAPI.sessionTokens(exported) == 248)
 check(OpenCodeAPI.sessionTokens([]) == 0)
 print("opencode session assertions passed")
+
+section("hermes sessions")
+// The same two questions, answered from Hermes' own SQLite store instead of a port —
+// and the same cases `tests/test_hermes_store.py` pins. A turn is over only when the
+// agent itself says so.
+check(HermesStore.stateOf(role: nil, finishReason: nil) == nil,
+      "a session not yet written to is not idle; it has not started")
+check(HermesStore.stateOf(role: "assistant", finishReason: "stop")?.busy == false)
+check(HermesStore.stateOf(role: "assistant", finishReason: "tool_calls")?.busy == true,
+      "asking for a tool is the middle of a turn, not the end of one")
+check(HermesStore.stateOf(role: "tool", finishReason: nil)?.busy == true,
+      "a tool result nobody has answered yet is a turn still in flight")
+check(HermesStore.stateOf(role: "user", finishReason: "stop")?.busy == true,
+      "a query not picked up yet must not read as a finished turn")
+// `-q` stores the query verbatim, so the match is equality — the same exactness
+// `--prompt` buys under OpenCode, and the only thing separating two agents in one
+// checkout.
+check(HermesStore.isOurs(role: "user", content: ours, prompt: ours))
+check(!HermesStore.isOurs(role: "user", content: ours, prompt: "Review PR #8 in o/r"))
+check(!HermesStore.isOurs(role: "assistant", content: ours, prompt: ours),
+      "an assistant message is never the message a run was submitted as")
+// Input + output + cache WRITES, never the cache reads beside them — the same three
+// `OpenCodeAPI.sessionTokens` and the Claude Code transcript scan sum, so one ledger
+// holds every runner in one unit.
+check(HermesStore.sessionTokens(input: 100, output: 20, cacheWrite: 5) == 125)
+check(HermesStore.sessionTokens(input: nil, output: nil, cacheWrite: nil) == 0)
+print("hermes session assertions passed")
 
 section("audit prompts")
 // A whole-repo E2E audit needs no input (always valid), and the hard-repro bar is

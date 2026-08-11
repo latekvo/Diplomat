@@ -98,13 +98,13 @@ final class Store: ObservableObject {
             AppConfig.set(AppConfig.agentRunnerKey, agentRunner.rawValue)
         }
     }
-    /// The `provider/model` the OpenCode runner is pinned to; empty leaves the choice
-    /// to OpenCode's own picker. A model id, never a credential — those live in
-    /// OpenCode's provider store.
-    @Published var opencodeModel: String {
+    /// The model the selected runner is pinned to; empty leaves the choice to that
+    /// runner's own picker. A model id, never a credential — those live in the
+    /// runner's provider store.
+    @Published var agentModel: String {
         didSet {
             guard !Headless.active else { return }
-            AppConfig.set(AppConfig.opencodeModelKey, opencodeModel)
+            AppConfig.set(AppConfig.agentModelKey, agentModel)
         }
     }
     /// Whether the in-process PR auto-fix monitor is on. Persisted; when turned on we
@@ -320,9 +320,11 @@ final class Store: ObservableObject {
         let prompt: String
         let donePath: String
         let at: Double
-        /// The OpenCode session this run turned out to own, learned by the sweep after
-        /// the run started and copied here so it survives the row: what prices a run is
-        /// read when the run ENDS, which is the same moment its row is removed.
+        /// Which agent CLI ran it, so the right store is asked what it spent.
+        let runner: String
+        /// The session this run turned out to own, learned by the sweep after the run
+        /// started and copied here so it survives the row: what prices a run is read when
+        /// the run ENDS, which is the same moment its row is removed.
         var sessionID: String = ""
     }
     private var telemetryInflight: [UUID: TelemetryRun] = [:]
@@ -476,7 +478,7 @@ final class Store: ObservableObject {
             ?? (SpawnTerminal.iterm.isInstalled ? SpawnTerminal.iterm.rawValue : SpawnTerminal.terminal.rawValue)
         repoPathOverride = AppConfig.string(AppConfig.repoRootKey)
         agentRunner = AppConfig.agentRunner
-        opencodeModel = AppConfig.opencodeModel
+        agentModel = AppConfig.agentModel
         autoTaskLimit = AppConfig.autoTaskLimit
         autoBudgetGate = AppConfig.autoBudgetGate
         autoBudgetConfidence = AppConfig.autoBudgetConfidence
@@ -733,12 +735,13 @@ final class Store: ObservableObject {
                                terminal: result.terminal.rawValue,
                                windowID: result.windowID, sessionID: result.sessionID,
                                tty: result.tty, donePath: result.donePath, prURL: prURL,
-                               source: source, port: result.port,
+                               source: source, runner: result.runner, port: result.port,
                                promptFile: result.promptFile.path)
         if !ledgerKey.isEmpty, !p.donePath.isEmpty {
             telemetryInflight[p.id] = TelemetryRun(key: ledgerKey, prompt: prompt,
                                                    donePath: p.donePath,
-                                                   at: Date().timeIntervalSince1970)
+                                                   at: Date().timeIntervalSince1970,
+                                                   runner: result.runner)
         }
         processes.append(p)
         AuditLog.log(source, auditAction ?? kind, label)
@@ -2374,7 +2377,7 @@ final class Store: ObservableObject {
         guard !telemetryInflight.isEmpty else { return }
         let now = Date().timeIntervalSince1970
         var finished: [(key: String, prompt: String, at: Double, done: Double,
-                        session: String)] = []
+                        session: String, runner: String)] = []
         for (id, run) in telemetryInflight {
             guard let attrs = try? FileManager.default.attributesOfItem(atPath: run.donePath),
                   let mtime = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970
@@ -2386,7 +2389,7 @@ final class Store: ObservableObject {
                 continue
             }
             telemetryInflight[id] = nil
-            finished.append((run.key, run.prompt, run.at, mtime, run.sessionID))
+            finished.append((run.key, run.prompt, run.at, mtime, run.sessionID, run.runner))
         }
         guard !finished.isEmpty else { return }
         // Scanning transcripts walks ~/.claude, so it stays off the main actor. The
@@ -2398,12 +2401,18 @@ final class Store: ObservableObject {
         await Task.detached(priority: .utility) {
             for f in completions {
                 // Which transcript prices it depends on what ran it, and the run says
-                // which by what it left behind: a session id means OpenCode, whose spend
-                // lives in OpenCode's own store. Everything else is a Claude Code run,
-                // found in ~/.claude by the prompt it opened with.
-                let tokens = f.session.isEmpty
-                    ? UsageScan.taskTokens(prompt: f.prompt, startedAt: f.at, endedAt: f.done)
-                    : UsageScan.opencodeTaskTokens(sessionID: f.session)
+                // which by what it left behind. A matched session under a foreign runner
+                // is priced by that runner's own store — OpenCode through its exporter,
+                // Hermes from the session row it keeps running totals on. Everything else
+                // is a Claude Code run, found in ~/.claude by the prompt it opened with.
+                let tokens: Double?
+                switch (f.session.isEmpty, AgentRunner(rawValue: f.runner)) {
+                case (false, .hermes): tokens = HermesProbe.sessionTokens(sessionID: f.session)
+                case (false, .opencode): tokens = UsageScan.opencodeTaskTokens(sessionID: f.session)
+                default:
+                    tokens = UsageScan.taskTokens(prompt: f.prompt, startedAt: f.at,
+                                                  endedAt: f.done)
+                }
                 TelemetryLog.done(key: f.key, at: f.done, tokens: tokens)
             }
         }.value

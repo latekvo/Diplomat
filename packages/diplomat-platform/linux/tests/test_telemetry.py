@@ -232,8 +232,24 @@ def test_an_opencode_completion_is_priced_by_the_exporter(ledger, tmp_path,
     _stub_opencode(tmp_path, monkeypatch,
                    "#!/bin/sh\ncat <<'JSON'\n" + json.dumps(EXPORTED) + "\nJSON\n")
     telemetry.record_completion("review:h/o/r#1@aa", "a prompt no transcript holds",
-                                time.time() - 60, time.time(), session_id="ses_ours")
+                                time.time() - 60, time.time(), session_id="ses_ours",
+                                agent_runner="opencode")
     assert telemetry.load().tasks[0].tokens == 248
+
+
+def test_a_hermes_completion_is_priced_from_its_own_session_row(ledger, tmp_path,
+                                                                monkeypatch):
+    """The third arm of the same fork. Hermes keeps running totals on the session row,
+    so nothing is summed and nothing is shelled out to — but sending it to OpenCode's
+    exporter instead would price every Hermes run at nothing."""
+    from test_hermes_store import FINISHED, OURS, PROMPT, store, user
+
+    _stub_opencode(tmp_path, monkeypatch, "#!/bin/sh\necho SHOULD_NOT_RUN >&2\nexit 3\n")
+    store({OURS: [user(PROMPT), FINISHED]})
+    telemetry.record_completion("review:h/o/r#1@aa", "a prompt no transcript holds",
+                                time.time() - 60, time.time(), session_id=OURS,
+                                agent_runner="hermes")
+    assert telemetry.load().tasks[0].tokens == 125
 
 
 def test_a_claude_completion_is_still_priced_by_its_own_transcript(ledger, scanner,
@@ -269,8 +285,8 @@ def test_a_run_is_priced_before_its_directory_is_deleted(ledger, monkeypatch):
 
     seen = {}
     monkeypatch.setattr(telemetry, "record_completion",
-                        lambda key, prompt, started, at, session_id="":
-                            seen.update(prompt=prompt, at=at))
+                        lambda key, prompt, started, at, session_id="",
+                        agent_runner="": seen.update(prompt=prompt, at=at))
     tick = agentstate.tick([record], agentstate.Evidence(
         processes=agentstate.Observation.present({}),
         sentinels=agentstate.Observation.present({record.run_id})), time.time(), 2)

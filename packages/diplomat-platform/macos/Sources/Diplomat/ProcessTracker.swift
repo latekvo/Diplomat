@@ -98,22 +98,32 @@ struct TrackedProcess: Identifiable, Codable, Equatable {
     var merged: Bool
     /// Recomputed by the poller: true when the agent has finished its turn and is idling
     /// at the prompt rather than actively working — from its own session where it serves
-    /// one (`port`), and otherwise from whether the CLI's interrupt hint is on the live
+    /// one (`runner`), and otherwise from whether the CLI's interrupt hint is on the live
     /// status bar. Meaningful only while `!done`; persisted only as a cache, the next
     /// poll corrects it.
     var awaitingInput: Bool
+    /// Which agent CLI this run was spawned as (`AgentRunner.rawValue`), or "" for a run
+    /// started before the applet recorded it. Written at spawn rather than re-read from
+    /// the setting later, because the setting is what the NEXT spawn will use: a run
+    /// started under one runner and asked about after the operator switched would
+    /// otherwise be interrogated through the wrong store.
+    ///
+    /// "" is not Claude Code, it is "unknown" — and both are read off the screen, the
+    /// only evidence such a run ever had.
+    var runner: String
     /// Where this run's OpenCode server answers, or 0 for a run that has none — every
-    /// Claude Code run, and any OpenCode run no port could be reserved for. What makes
-    /// `awaitingInput` an answer from the agent rather than a reading of its window.
+    /// Claude Code and Hermes run, and any OpenCode run no port could be reserved for.
     var port: Int
-    /// Which OpenCode session on that port turned out to be this run's, or "" before one
-    /// has been matched. Found once, by the prompt (`OpenCodeAPI.isOurs`), and kept: the
-    /// search reads a session's opening message, while asking a matched one what it is
-    /// doing reads a single message.
+    /// Which of its runner's sessions turned out to be this run's, or "" before one has
+    /// been matched. Found once, by the prompt, and kept: the search reads a session's
+    /// opening message, while asking a matched one what it is doing reads a single
+    /// message. What makes `awaitingInput` an answer from the agent rather than a
+    /// reading of its window.
     var agentSessionID: String
     /// The staged prompt this run was launched on. Kept because it is what the match
-    /// above compares against — OpenCode's own store is global, so a port narrows the
-    /// session list to nothing and the prompt is the only exact key.
+    /// above compares against — both foreign runners keep one session store for the
+    /// whole machine, so nothing narrows it to this run and the prompt is the only exact
+    /// key.
     var promptFile: String
 
     /// `source` defaults to a panel spawn: the only callers that leave it out are the
@@ -127,7 +137,8 @@ struct TrackedProcess: Identifiable, Codable, Equatable {
          source: String = AgentDispatchGate.Source.panel.rawValue,
          createdAt: Date = Date(),
          done: Bool = false, merged: Bool = false, awaitingInput: Bool = false,
-         port: Int = 0, agentSessionID: String = "", promptFile: String = "") {
+         runner: String = "", port: Int = 0, agentSessionID: String = "",
+         promptFile: String = "") {
         self.id = id
         self.kind = kind
         self.label = label
@@ -143,6 +154,7 @@ struct TrackedProcess: Identifiable, Codable, Equatable {
         self.done = done
         self.merged = merged
         self.awaitingInput = awaitingInput
+        self.runner = runner
         self.port = port
         self.agentSessionID = agentSessionID
         self.promptFile = promptFile
@@ -175,8 +187,9 @@ struct TrackedProcess: Identifiable, Codable, Equatable {
         done = try c.decodeIfPresent(Bool.self, forKey: .done) ?? false
         merged = try c.decodeIfPresent(Bool.self, forKey: .merged) ?? false
         awaitingInput = try c.decodeIfPresent(Bool.self, forKey: .awaitingInput) ?? false
-        // A row persisted before runs had a server has no port, which is the same state
-        // as a Claude Code run: nothing to ask, so its window is read instead.
+        // A row persisted before runs recorded their runner has none, which is the same
+        // state as a Claude Code run: nothing to ask, so its window is read instead.
+        runner = try c.decodeIfPresent(String.self, forKey: .runner) ?? ""
         port = try c.decodeIfPresent(Int.self, forKey: .port) ?? 0
         agentSessionID = try c.decodeIfPresent(String.self, forKey: .agentSessionID) ?? ""
         promptFile = try c.decodeIfPresent(String.self, forKey: .promptFile) ?? ""
@@ -306,10 +319,10 @@ enum ProcessMonitor {
                       openWindows: ((SpawnTerminal) -> Set<String>?)? = nil,
                       sessionTails: [String: String]? = nil,
                       ttyElapsed: [String: TimeInterval]? = nil,
-                      agentSessions: (([TrackedProcess]) -> [UUID: OpenCodeProbe.AgentSession])? = nil) -> Sweep {
+                      agentSessions: (([TrackedProcess]) -> [UUID: AgentSessionProbe.AgentSession])? = nil) -> Sweep {
         let local = procs.filter { !$0.isMesh }
         guard !local.isEmpty else { return Sweep(refreshed: procs, closedIDs: []) }
-        let answers = (agentSessions ?? { OpenCodeProbe.states(for: $0) })(local)
+        let answers = (agentSessions ?? { AgentSessionProbe.states(for: $0) })(local)
         let resolve = openWindows ?? { openWindowIDs(term: $0) }
         let fm = FileManager.default
         // One window-id query per distinct terminal app (nil = couldn't determine).

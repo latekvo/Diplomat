@@ -176,18 +176,17 @@ class SettingsView(QWidget):
             combo.setCurrentIndex(idx)
         col.addWidget(combo)
 
-        self._model_field = QLineEdit(self.store.opencode_model)
-        self._model_field.setPlaceholderText("provider/model — blank lets OpenCode choose")
+        self._model_field = QLineEdit(self.store.agent_model)
         self._model_field.setClearButtonEnabled(True)
         self._model_field.textChanged.connect(
-            lambda text: setattr(self.store, "opencode_model", text)
+            lambda text: setattr(self.store, "agent_model", text)
         )
         col.addWidget(self._model_field)
 
         self._providers_button = QPushButton("Connect a provider…")
         self._providers_button.setToolTip(
-            "Open OpenCode's own login wizard: it knows every provider in its catalog "
-            "and stores the credential itself. Diplomat never holds an API key."
+            "Open the runner's own login wizard: it knows every provider in its "
+            "catalog and stores the credential itself. Diplomat never holds an API key."
         )
         self._providers_button.clicked.connect(self._open_provider_setup)
         col.addWidget(self._providers_button)
@@ -205,16 +204,18 @@ class SettingsView(QWidget):
         return col
 
     def _refresh_runner_ui(self) -> None:
-        """Show the OpenCode-only controls only under OpenCode, and say which CLI has
-        to be on PATH.
+        """Show the model and provider controls only for a runner that has them, and
+        say which CLI has to be on PATH.
 
         A missing binary is otherwise near-silent: the window opens, the shell prints
         "command not found", the completion sentinel takes the 127 straight away, and
         the applet records a run that finished in a second without doing anything."""
         chosen = self.store.agent_runner
-        is_opencode = chosen == runner.OPENCODE
-        self._model_field.setVisible(is_opencode)
-        self._providers_button.setVisible(is_opencode)
+        label = runner.LABELS.get(chosen, chosen)
+        foreign = chosen != runner.CLAUDE
+        self._model_field.setVisible(foreign)
+        self._model_field.setPlaceholderText(f"model — blank lets {label} choose")
+        self._providers_button.setVisible(foreign)
         found = shutil.which(chosen)
         if found:
             where = f"Spawns run `{chosen}` ({found})."
@@ -222,8 +223,8 @@ class SettingsView(QWidget):
             where = (f"`{chosen}` is not on this app's PATH. Agents run under your "
                      f"login shell, so an rc-only install still works — but check it "
                      f"if spawned runs finish instantly without doing anything.")
-        extra = (" Its model and provider are OpenCode's own — connect one above; the "
-                 "credential is stored by OpenCode, never here." if is_opencode else "")
+        extra = (f" Its model and provider are {label}'s own — connect one above; the "
+                 f"credential is stored by {label}, never here." if foreign else "")
         self._runner_hint.setText(where + extra)
 
     def _open_provider_setup(self) -> None:
