@@ -15,6 +15,8 @@ also how the tests get an isolated one):
     <run-id>/prompt.txt  what the agent was asked (also its transcript's first message)
     <run-id>/pid         the agent's real pid, written by the agent's own shell
     <run-id>/done        its exit code, written when it returns
+    <run-id>/port        the loopback port its OpenCode server answers on
+    <run-id>/session     which OpenCode session turned out to be this run's
 
 The per-run directory is what makes identity exact. The shell that runs the agent
 writes its own ``$$`` into ``pid`` and then ``exec``s the agent, so the pid in that
@@ -70,6 +72,14 @@ def pid_path(run_id: str) -> Path:
 
 def done_path(run_id: str) -> Path:
     return run_dir(run_id) / "done"
+
+
+def port_path(run_id: str) -> Path:
+    return run_dir(run_id) / "port"
+
+
+def session_path(run_id: str) -> Path:
+    return run_dir(run_id) / "session"
 
 
 def new_run_id(now: float) -> str:
@@ -173,6 +183,72 @@ def _read_pid(run_id: str) -> int | None:
     except ValueError:
         return None
     return pid if pid > 0 else None
+
+
+# MARK: - The run's OpenCode server
+
+
+def stage_port(run_id: str) -> int | None:
+    """Reserve the port this run's OpenCode server will answer on, and record it.
+
+    The applet picks it rather than the agent, because the applet is the one that
+    puts it on the agent's command line — a port only discoverable once the server
+    is up is a port nothing can ask about while the run is starting, which is when
+    the first questions are asked.
+
+    ``None`` means the run is spawned without a port and read off its screen instead.
+    Both failures land here: no port could be reserved, and one was reserved but
+    could not be written down. Recording it is what makes it useful, so an
+    unrecorded port is the same as none.
+    """
+    from . import opencodeapi
+
+    port = opencodeapi.free_port()
+    if port is None:
+        return None
+    try:
+        port_path(run_id).write_text(str(port), encoding="utf-8")
+    except OSError:
+        return None
+    return port
+
+
+def port(run_id: str) -> int | None:
+    """The port this run's OpenCode server answers on, or ``None`` for a run that
+    has none — every Claude Code run, and any OpenCode run whose port could not be
+    reserved."""
+    try:
+        raw = port_path(run_id).read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if 0 < value < 65536 else None
+
+
+def bound_session(run_id: str) -> str:
+    """Which OpenCode session was found to be this run's, or "" before one was.
+
+    Kept on disk rather than in memory so the search survives the applet restart
+    this whole module exists for — and because the search is the expensive half:
+    matching a session to a run reads its opening message, while asking a bound one
+    what it is doing reads a single message.
+    """
+    try:
+        value = session_path(run_id).read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+    return value if value.startswith("ses") else ""
+
+
+def bind_session(run_id: str, session_id: str) -> None:
+    """Record which session is this run's."""
+    try:
+        session_path(run_id).write_text(session_id, encoding="utf-8")
+    except OSError:
+        pass
 
 
 def sentinels(records: list[RunRecord]) -> Observation:

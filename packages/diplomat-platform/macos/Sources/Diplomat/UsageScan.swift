@@ -211,10 +211,10 @@ enum UsageScan {
     /// name.
     ///
     /// Returning nil is normal and expected — the applet restarting mid-agent loses
-    /// the prompt, and a run under a different `AgentRunner` writes no such transcript
-    /// at all, OpenCode keeping its sessions in a store of its own. The screen reports
-    /// both as unattributed rather than pretending they were free, which is the
-    /// reading that stays honest whichever runner spawned the run.
+    /// the prompt the match needs. An OpenCode run writes no such transcript at all,
+    /// keeping its sessions in a store of its own, and is priced by
+    /// `opencodeTaskTokens`; the screen reports whatever neither can attribute as
+    /// unattributed rather than pretending it was free.
     static func taskTokens(prompt: String, startedAt: TimeInterval,
                            endedAt: TimeInterval) -> Double? {
         let wanted = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -227,6 +227,55 @@ enum UsageScan {
             return chunk.repo + chunk.other
         }
         return nil
+    }
+
+    /// How long `opencode export` may take. It reads one session out of a local store,
+    /// so this is generous — but it runs on the poll that retires a run, and a wedged
+    /// CLI must cost that run its price rather than the poll.
+    private static let exportTimeout: TimeInterval = 20
+
+    /// Tokens spent by one OpenCode session, or nil if it cannot be read.
+    ///
+    /// An OpenCode run leaves nothing in `~/.claude`, so `taskTokens` cannot see it and
+    /// every such run used to land in the ledger unpriced. Its own transcript is
+    /// reachable through `opencode export`, which is asked for rather than read off
+    /// disk: the store behind it is an internal SQLite schema, while the command is
+    /// part of the CLI's published surface and already knows where the store lives.
+    ///
+    /// Read at retirement, not on the poll — a turn's price is per-message, so a run's
+    /// is a sum over every message it produced, and the live probe (`OpenCodeAPI`)
+    /// deliberately fetches one. By then the run's own server is gone, which is why
+    /// this goes through the CLI rather than the port.
+    ///
+    /// Summed the same way Claude Code's transcripts are: input, output and cache
+    /// *writes*, never cache reads. Two runners priced against different yardsticks
+    /// would make the per-task figure on the telemetry screen mean two things at once.
+    static func opencodeTaskTokens(sessionID: String) -> Double? {
+        guard !sessionID.isEmpty,
+              let out = shell(["opencode", "export", sessionID]),
+              let root = (try? JSONSerialization.jsonObject(with: out)) as? [String: Any],
+              let messages = root["messages"] as? [[String: Any]] else { return nil }
+        return OpenCodeAPI.sessionTokens(messages)
+    }
+
+    /// Run a command and return its stdout, or nil if it could not be run or exited
+    /// non-zero. `/usr/bin/env` resolves the CLI on PATH the same way the spawn does.
+    private static func shell(_ argv: [String]) -> Data? {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        proc.arguments = argv
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = FileHandle.nullDevice
+        guard (try? proc.run()) != nil else { return nil }
+        // Read before waiting: a session large enough to fill the pipe buffer would
+        // otherwise deadlock — the child blocks on a full pipe, and the wait never
+        // returns.
+        let out = pipe.fileHandleForReading.readDataToEndOfFile()
+        let deadline = Date().addingTimeInterval(exportTimeout)
+        while proc.isRunning, Date() < deadline { usleep(50_000) }
+        if proc.isRunning { proc.terminate(); return nil }
+        return proc.terminationStatus == 0 ? out : nil
     }
 
     /// Transcripts that could belong to a run spanning `[startedAt, endedAt]`, newest

@@ -1220,6 +1220,11 @@ class Store(QObject):
         The agent's shell writes its own pid into the run directory and then execs, so
         what identifies this run afterwards is that pid rather than the wording of its
         prompt (:func:`review.shell_command`).
+
+        An OpenCode run also gets a port reserved for its own server, which is what
+        lets the applet ask that agent what it is doing. A port that cannot be had is
+        not a failure to spawn — the run goes ahead without one and is read off its
+        screen, exactly as a Claude Code run is.
         """
         now = time.time()
         record = agentregistry.create_run(
@@ -1228,11 +1233,14 @@ class Store(QObject):
                 pr_number=number, pr_url=url, kind=kind, label=label, source=source,
                 placement=agentstate.PLACEMENT_LOCAL, ledger_key=ledger_key),
             prompt)
+        port = (agentregistry.stage_port(record.run_id)
+                if runner.selected() == runner.OPENCODE else None)
         try:
             review.spawn(prompt, self.terminal,
                          done_path=str(agentregistry.done_path(record.run_id)),
                          pid_path=str(agentregistry.pid_path(record.run_id)),
-                         prompt_file=str(agentregistry.prompt_path(record.run_id)))
+                         prompt_file=str(agentregistry.prompt_path(record.run_id)),
+                         port=port)
         except review.SpawnError:
             agentregistry.forget({record.run_id})
             return False
@@ -1806,21 +1814,21 @@ class Store(QObject):
         gone = [r for r in t.retirable if not r.untracked]
         if not gone:
             return
-        # Both pricing inputs come out of the run directory, so they must be read
-        # before `forget` deletes it.
+        # Every pricing input comes out of the run directory, so all of them must be
+        # read before `forget` deletes it.
         #
         # The sentinel's mtime is when the agent actually exited; now() is whenever a
         # poll got round to looking, which is up to a poll period later and would
         # inflate every recorded run time by a random few minutes.
         retired = [
             (r, agentregistry.finished_at(r.run_id) or time.time(),
-             _run_prompt(r.run_id))
+             _run_prompt(r.run_id), agentregistry.bound_session(r.run_id))
             for r in gone if r.ledger_key
         ]
         agentregistry.forget({r.run_id for r in gone})
-        for r, finished_at, prompt in retired:
+        for r, finished_at, prompt, session_id in retired:
             telemetry.record_completion(r.ledger_key, prompt, r.dispatched_at,
-                                        finished_at)
+                                        finished_at, session_id=session_id)
         if retired:
             self.telemetry_changed.emit()
 

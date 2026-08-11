@@ -93,7 +93,7 @@ def opencode_model() -> str:
     return appconfig.get(appconfig.OPENCODE_MODEL).strip()
 
 
-def agent_command(prompt_file: str) -> str:
+def agent_command(prompt_file: str, port: int | None = None) -> str:
     """The one command that runs the agent: ``<cli> <prompt-bearing args>``.
 
     This is the *whole* of what a runner changes about a spawn, and it is a shell
@@ -108,18 +108,31 @@ def agent_command(prompt_file: str) -> str:
     written to the run's ``pid`` file is the agent's own. A leading variable
     assignment keeps both properties — the shell still execs the command it prefixes,
     so the recorded pid stays the agent's.
+
+    ``port`` puts an OpenCode run's own server on a port the applet already knows,
+    which is what lets :mod:`opencodeapi` ask the agent what it is doing instead of
+    reading it off the agent's screen. It is ignored by the Claude runner, which has
+    no such server. Omitting it is a supported spawn, not a broken one: the run works
+    exactly as before and is tracked by its screen.
     """
     pf = shlex.quote(prompt_file)
     if selected() != OPENCODE:
         return f'claude "$(cat {pf})"'
     model = opencode_model()
     flag = f" -m {shlex.quote(model)}" if model else ""
+    # OpenCode's default hostname is loopback, so this exposes the run to other users
+    # of this machine and to nothing else. It cannot also be password-protected: the
+    # server takes one, but OpenCode's own TUI sends none, so a run started with
+    # `OPENCODE_SERVER_PASSWORD` set exits on `Unauthorized` before doing any work.
+    listen = f" --port {int(port)}" if port else ""
     grant = f"{OPENCODE_PERMISSION_ENV}={shlex.quote(OPENCODE_PERMISSION_VALUE)}"
     # `--prompt` starts the TUI with the prompt already submitted, which is what
     # makes this a windowed agent the user can watch and type into — the same
     # affordance the Claude runner has. `opencode run` would be headless and leave
-    # no session to attach to.
-    return f'{grant} opencode{flag} --prompt "$(cat {pf})"'
+    # no session to attach to. It also lands verbatim as the session's opening
+    # message, which is how `opencodeapi.is_ours` tells this run's session from a
+    # sibling's in the same checkout.
+    return f'{grant} opencode{listen}{flag} --prompt "$(cat {pf})"'
 
 
 def setup_command() -> str:

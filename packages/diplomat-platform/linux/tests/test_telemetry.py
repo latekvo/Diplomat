@@ -173,6 +173,113 @@ def test_a_completion_with_no_matching_transcript_is_still_recorded(ledger):
     assert task.tokens is None
 
 
+# MARK: - What a run is priced from, and when it is read
+
+
+def _stub_opencode(tmp_path, monkeypatch, body: str) -> None:
+    """A fake ``opencode`` on PATH — the exporter is reached by name, so a stub that
+    answers to that name is what proves the argv is right as well as the parsing."""
+    exe = tmp_path / "bin" / "opencode"
+    exe.parent.mkdir(parents=True, exist_ok=True)
+    exe.write_text(body, encoding="utf-8")
+    exe.chmod(0o755)
+    monkeypatch.setenv("PATH", str(exe.parent) + os.pathsep + os.environ["PATH"])
+
+
+EXPORTED = {"info": {"id": "ses_ours"}, "messages": [
+    {"info": {"role": "user"}},
+    {"info": {"role": "assistant", "cost": 0.038403,
+              "tokens": {"total": 30000, "input": 3, "output": 84, "reasoning": 9,
+                         "cache": {"read": 29000, "write": 40}}}},
+    {"info": {"role": "assistant", "cost": 0.0032179,
+              "tokens": {"total": 30505, "input": 7, "output": 8, "reasoning": 0,
+                         "cache": {"read": 30384, "write": 106}}}},
+]}
+
+
+def test_an_opencode_run_is_priced_from_its_whole_session(tmp_path, monkeypatch):
+    """Every message, not the last one: OpenCode reports a turn's spend per message,
+    so a run's is the sum. Reading only the last would price a two-hour review at
+    whatever its closing sentence cost.
+
+    Input + output + cache WRITES, never cache reads — the same three the Claude Code
+    scan sums. This session reports 60505 tokens of ``total``, almost all of it cache
+    reads; counting those would make the per-task figure on the telemetry screen mean
+    one thing for one runner and another for the other.
+
+    The same numbers are asserted in ``DiplomatCoreSmoke``: both front-ends price runs
+    into one ledger, and a machine can hand a mesh job to the other platform."""
+    _stub_opencode(tmp_path, monkeypatch,
+                   "#!/bin/sh\ncat <<'JSON'\n" + json.dumps(EXPORTED) + "\nJSON\n")
+    assert usagescan.opencode_task_tokens("ses_ours") == 3 + 84 + 40 + 7 + 8 + 106
+
+
+def test_a_session_the_exporter_cannot_produce_is_unpriced_not_free(tmp_path,
+                                                                    monkeypatch):
+    _stub_opencode(tmp_path, monkeypatch, "#!/bin/sh\necho 'no such session' >&2\nexit 1\n")
+    assert usagescan.opencode_task_tokens("ses_gone") is None
+
+
+def test_a_run_with_no_session_is_never_sent_to_the_exporter(tmp_path, monkeypatch):
+    """A Claude Code run has no session id, and asking OpenCode about one would price
+    every such run at nothing rather than by its own transcript."""
+    _stub_opencode(tmp_path, monkeypatch, "#!/bin/sh\necho SHOULD_NOT_RUN >&2\nexit 3\n")
+    assert usagescan.opencode_task_tokens("") is None
+
+
+def test_an_opencode_completion_is_priced_by_the_exporter(ledger, tmp_path,
+                                                          monkeypatch):
+    _stub_opencode(tmp_path, monkeypatch,
+                   "#!/bin/sh\ncat <<'JSON'\n" + json.dumps(EXPORTED) + "\nJSON\n")
+    telemetry.record_completion("review:h/o/r#1@aa", "a prompt no transcript holds",
+                                time.time() - 60, time.time(), session_id="ses_ours")
+    assert telemetry.load().tasks[0].tokens == 248
+
+
+def test_a_claude_completion_is_still_priced_by_its_own_transcript(ledger, scanner,
+                                                                   tmp_path,
+                                                                   monkeypatch):
+    """The other half of the same fork, and the one that breaks quietly: a Claude Code
+    run has no session id, so sending it to the exporter anyway prices every one of
+    them at nothing — which looks exactly like the attribution failures the screen is
+    already designed to report."""
+    repo, projects = scanner
+    _stub_opencode(tmp_path, monkeypatch, "#!/bin/sh\necho SHOULD_NOT_RUN >&2\nexit 3\n")
+    _session(projects / "s" / "mine.jsonl", "review PR #41 please", str(repo), [1000, 500])
+    telemetry.record_completion("review:h/o/r#41@aa", "review PR #41 please",
+                                time.time() - 300, time.time())
+    assert telemetry.load().tasks[0].tokens == 1500
+
+
+def test_a_run_is_priced_before_its_directory_is_deleted(ledger, monkeypatch):
+    """Retiring a run deletes the directory its prompt and its completion sentinel
+    live in. Read after the delete, the prompt comes back empty and the sentinel's
+    mtime is gone — so a run is priced against a transcript it can no longer be
+    matched to, and stamped with the moment a poll noticed instead of the moment the
+    agent exited."""
+    from diplomat_app import agentregistry, agentstate
+    from diplomat_app.store import Store
+    from test_autofix import register_run
+
+    exited_at = time.time() - 300
+    record = register_run(7, ledger_key="review:h/o/r#7@aa", prompt="the real prompt")
+    done = agentregistry.done_path(record.run_id)
+    done.write_text("0", encoding="utf-8")
+    os.utime(done, (exited_at, exited_at))
+
+    seen = {}
+    monkeypatch.setattr(telemetry, "record_completion",
+                        lambda key, prompt, started, at, session_id="":
+                            seen.update(prompt=prompt, at=at))
+    tick = agentstate.tick([record], agentstate.Evidence(
+        processes=agentstate.Observation.present({}),
+        sentinels=agentstate.Observation.present({record.run_id})), time.time(), 2)
+    Store._retire_finished(Store(), tick)
+
+    assert seen["prompt"] == "the real prompt"
+    assert seen["at"] == pytest.approx(exited_at, abs=1)
+
+
 # MARK: - The transcript scanner
 
 

@@ -417,7 +417,74 @@ check(AgentActivity.looksBusy("⏵⏵ bypass permissions on · esc to interrupt 
       "a Claude Code pane mid-turn must read as busy")
 check(!AgentActivity.looksBusy("  Build  GLM-5.2\n     27.4K (3%)  ctrl+p commands"),
       "a finished OpenCode pane must give its bay back")
+// The port is what lets the applet ASK an OpenCode agent what it is doing instead of
+// reading its status bar. Pinned literally for the same reason the rest of the command
+// is: the two front-ends must spawn one server, not two different ones.
+check(AgentRunner.opencode.agentCommand(promptFile: "/tmp/p.txt", port: 47_910)
+        == "\(AgentRunner.permissionEnv)='\(AgentRunner.permissionValue)' "
+         + "opencode --port 47910 --prompt \"$(cat '/tmp/p.txt')\"")
+check(AgentRunner.claude.agentCommand(promptFile: "/tmp/p.txt", port: 47_910)
+        == "claude \"$(cat '/tmp/p.txt')\"",
+      "Claude Code serves no session, so a port must not reach its command")
+check(!AgentRunner.opencode.agentCommand(promptFile: "/tmp/p.txt", port: 0).contains("--port"),
+      "a run with no port must spawn exactly as it did before, not with --port 0")
 print("agent runner assertions passed")
+
+section("opencode sessions")
+// OpenCode keeps ONE session store for the whole machine, so a run's own server lists
+// every session on the box. These are the filters that get from that list to the one
+// session a run owns — and the same cases `tests/test_opencode_api.py` pins.
+let ours = "Review PR #7 in o/r"
+let listing: [[String: Any]] = [
+    ["id": "ses_a", "directory": "/repo", "time": ["created": 2_000.0]],
+    ["id": "ses_b", "directory": "/repo", "time": ["created": 3_000.0]],
+    ["id": "ses_old", "directory": "/repo", "time": ["created": 500.0]],
+    ["id": "ses_elsewhere", "directory": "/other", "time": ["created": 3_000.0]],
+]
+check(OpenCodeAPI.candidates(listing, directory: "/repo", sinceMs: 1_000, taken: [])
+        == ["ses_a", "ses_b"],
+      "another checkout's sessions, and ones older than the run, are not candidates")
+check(OpenCodeAPI.candidates(listing, directory: "/repo", sinceMs: 1_000, taken: ["ses_a"])
+        == ["ses_b"],
+      "a session another run already owns must never be taken twice")
+// The prompt is submitted verbatim, so the match is equality — which is what tells two
+// runs apart when both are working in the same checkout, the ordinary case under the
+// task cap.
+let opening: [[String: Any]] = [["info": ["role": "user"], "parts": [["type": "text", "text": ours]]]]
+check(OpenCodeAPI.isOurs(opening, prompt: ours))
+check(!OpenCodeAPI.isOurs(opening, prompt: "Review PR #8 in o/r"))
+check(!OpenCodeAPI.isOurs([], prompt: ours), "a session with no messages is nobody's")
+// Busy/idle, and the price. A turn with no completion stamp has not ended — which is
+// also the right reading of a provider retry.
+check(OpenCodeAPI.stateOf([]) == nil,
+      "a session not yet written to is not idle; it has not started")
+let working: [[String: Any]] = [["info": ["role": "assistant", "time": ["created": 1.0]]]]
+check(OpenCodeAPI.stateOf(working)?.busy == true)
+let finished: [[String: Any]] = [["info": [
+    "role": "assistant", "time": ["created": 1.0, "completed": 2.0]]]]
+check(OpenCodeAPI.stateOf(finished)?.busy == false)
+// A stamp that is not a time is not a stamp. The one direction that must not be
+// reachable by accident is a gap reading as a finished turn.
+let halfStamped: [[String: Any]] = [["info": [
+    "role": "assistant", "time": ["created": 1.0, "completed": "soon"]]]]
+check(OpenCodeAPI.stateOf(halfStamped)?.busy == true)
+// What a run SPENT is a sum over every message, because OpenCode prices a turn per
+// message — and it counts input, output and cache WRITES only. This session reports
+// 60505 tokens of `total`, nearly all of it cache reads; counting those would make the
+// per-task figure on the telemetry screen mean one thing for one runner and another
+// for the other. Same numbers as `tests/test_telemetry.py`.
+let exported: [[String: Any]] = [
+    ["info": ["role": "user"]],
+    ["info": ["role": "assistant", "tokens": ["total": 30_000.0, "input": 3.0,
+                                              "output": 84.0, "reasoning": 9.0,
+                                              "cache": ["read": 29_000.0, "write": 40.0]]]],
+    ["info": ["role": "assistant", "tokens": ["total": 30_505.0, "input": 7.0,
+                                              "output": 8.0, "reasoning": 0.0,
+                                              "cache": ["read": 30_384.0, "write": 106.0]]]],
+]
+check(OpenCodeAPI.sessionTokens(exported) == 248)
+check(OpenCodeAPI.sessionTokens([]) == 0)
+print("opencode session assertions passed")
 
 section("audit prompts")
 // A whole-repo E2E audit needs no input (always valid), and the hard-repro bar is

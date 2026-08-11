@@ -326,7 +326,7 @@ def user_shell() -> str:
 
 
 def shell_command(prompt_file: str, done_path: str | None = None,
-                  pid_path: str | None = None) -> str:
+                  pid_path: str | None = None, port: int | None = None) -> str:
     """``cd '<repo>' 2>/dev/null; <agent>; [printf %s $? > done;] exec "$SHELL" -i``
 
     ``<agent>`` is :func:`runner.agent_command` — ``claude "$(cat '<file>')"`` or the
@@ -365,9 +365,13 @@ def shell_command(prompt_file: str, done_path: str | None = None,
     The inner shell is interactive for the same reason the outer one is: an alias has
     to resolve, and aliases do not survive into a non-interactive child. ``$?`` after
     it is still the agent's own exit code — the exec made them one process.
+
+    ``port`` is where an OpenCode run's own server answers, so :mod:`opencodeapi` can
+    ask the agent whether it is working rather than inferring it from the pane. The
+    Claude runner ignores it.
     """
     repo = shlex.quote(repo_path())
-    agent_cmd = runner.agent_command(prompt_file)
+    agent_cmd = runner.agent_command(prompt_file, port)
     done = f"printf %s $? > {shlex.quote(done_path)}; " if done_path else ""
     if pid_path is None:
         return f'cd {repo} 2>/dev/null; {agent_cmd}; {done}exec "$SHELL" -i'
@@ -377,7 +381,7 @@ def shell_command(prompt_file: str, done_path: str | None = None,
 
 
 def agent_argv(prompt_file: str, done_path: str | None = None,
-               pid_path: str | None = None) -> list[str]:
+               pid_path: str | None = None, port: int | None = None) -> list[str]:
     """What the terminal is asked to run: the agent under the user's INTERACTIVE
     shell (``-i``, so their rc is sourced and a `claude` alias resolves — a plain
     `bash -c` gets neither), inside a tmux session of its own wherever tmux exists.
@@ -395,7 +399,7 @@ def agent_argv(prompt_file: str, done_path: str | None = None,
     they only see panes. Without tmux installed there is no session to open and no
     watcher to feed, so the bare interactive shell stands.
     """
-    return terminal_argv(shell_command(prompt_file, done_path, pid_path))
+    return terminal_argv(shell_command(prompt_file, done_path, pid_path, port))
 
 
 def terminal_argv(command: str) -> list[str]:
@@ -448,17 +452,19 @@ def spawn_env() -> dict:
 
 
 def spawn(prompt: str, preferred: SpawnTerminal | None, done_path: str | None = None,
-          pid_path: str | None = None, prompt_file: str | None = None) -> str:
+          pid_path: str | None = None, prompt_file: str | None = None,
+          port: int | None = None) -> str:
     """Stage the prompt, open a new terminal window, run the agent. Returns the
     prompt file path. Fully detached from the applet.
 
-    ``done_path`` receives the agent's exit code on completion and ``pid_path``
-    receives its own pid the moment it starts — see :func:`shell_command`.
-    ``prompt_file`` skips the staging when the caller has already written the prompt
-    somewhere it wants to keep it (the run directory in :mod:`.agentregistry`)."""
+    ``done_path`` receives the agent's exit code on completion, ``pid_path`` receives
+    its own pid the moment it starts, and ``port`` is where an OpenCode run's server
+    will answer — see :func:`shell_command`. ``prompt_file`` skips the staging when
+    the caller has already written the prompt somewhere it wants to keep it (the run
+    directory in :mod:`.agentregistry`)."""
     term = resolved(preferred)
     file = prompt_file or write_prompt(prompt)
-    argv = [term.exec_name, *term.prefix, *agent_argv(file, done_path, pid_path)]
+    argv = [term.exec_name, *term.prefix, *agent_argv(file, done_path, pid_path, port)]
     try:
         popen_detached(argv, env=spawn_env())
     except OSError as exc:

@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -279,11 +280,10 @@ def task_tokens(prompt: str, started_at: float, ended_at: float) -> float | None
     Only transcripts touched during the agent's life are opened, and only their
     first few lines until one matches, so the search is bounded by how many
     sessions ran alongside it. Returning None is normal and expected — the applet
-    restarting mid-agent loses the prompt, and a run under a different agent runner
-    (:mod:`runner`) writes no such transcript at all, OpenCode keeping its sessions
-    in a store of its own. The screen reports both as unattributed rather than
-    pretending they were free, which is the reading that stays honest whichever
-    runner spawned the run.
+    restarting mid-agent loses the prompt the match needs. An OpenCode run writes no
+    such transcript at all, keeping its sessions in a store of its own, and is
+    priced by :func:`opencode_task_tokens`; the screen reports whatever neither can
+    attribute as unattributed rather than pretending it was free.
     """
     wanted = (prompt or "").strip()
     if not wanted:
@@ -365,3 +365,51 @@ def _file_tokens(path: Path, roots: list[Path]) -> float:
         return 0.0
     repo, other, _consumed = _scan_chunk(data, roots)
     return repo + other
+
+
+# MARK: - The other runner's transcript
+
+
+#: How long ``opencode export`` may take. It reads one session out of a local store,
+#: so this is generous — but it runs on the poll that retires a run, and a wedged CLI
+#: must cost that run its price rather than the poll.
+_EXPORT_TIMEOUT = 20.0
+
+
+def opencode_task_tokens(session_id: str) -> float | None:
+    """Tokens spent by one OpenCode session, or None if it cannot be read.
+
+    An OpenCode run leaves nothing in ``~/.claude``, so :func:`task_tokens` cannot see
+    it and every such run used to land in the ledger unpriced. Its own transcript is
+    reachable through ``opencode export``, which is asked for rather than read off
+    disk: the store behind it is an internal SQLite schema, while the command is part
+    of the CLI's published surface and already knows where the store lives.
+
+    Read at retirement, not on the poll — a turn's price is per-message, so a run's is
+    a sum over every message it produced, and the live probe
+    (:mod:`diplomat_app.opencodeapi`) deliberately fetches one. By then the run's own
+    server is gone, which is why this goes through the CLI rather than the port.
+
+    How a session's messages add up is :func:`opencodeapi.session_tokens`, shared with
+    the Swift front-end so the two cannot price the same run differently.
+    """
+    from . import opencodeapi
+
+    if not session_id:
+        return None
+    try:
+        out = subprocess.run(  # noqa: S603, S607 - fixed argv, no shell
+            ["opencode", "export", session_id],
+            capture_output=True, text=True, timeout=_EXPORT_TIMEOUT)
+    except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
+        return None
+    if out.returncode != 0:
+        return None
+    try:
+        session = json.loads(out.stdout)
+    except ValueError:
+        return None
+    messages = session.get("messages") if isinstance(session, dict) else None
+    if not isinstance(messages, list):
+        return None
+    return opencodeapi.session_tokens(messages)

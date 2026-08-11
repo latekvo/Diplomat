@@ -70,7 +70,13 @@ public enum AgentRunner: String, CaseIterable, Sendable {
     ///
     /// `model` is a `provider/model` id, or empty to let OpenCode use the one its own
     /// picker already remembers — passing a guess would silently move the user off it.
-    public func agentCommand(promptFile: String, model: String = "") -> String {
+    ///
+    /// `port` puts an OpenCode run's own server on a port the applet already knows, which
+    /// is what lets `OpenCodeAPI` ask the agent what it is doing instead of reading it off
+    /// the agent's screen. The Claude runner has no such server and ignores it. Omitting
+    /// it is a supported spawn, not a broken one: the run works exactly as before and is
+    /// tracked by its screen.
+    public func agentCommand(promptFile: String, model: String = "", port: Int = 0) -> String {
         let prompt = "\"$(cat \(Self.shq(promptFile)))\""
         switch self {
         case .claude:
@@ -78,11 +84,20 @@ public enum AgentRunner: String, CaseIterable, Sendable {
         case .opencode:
             let trimmed = model.trimmingCharacters(in: .whitespaces)
             let flag = trimmed.isEmpty ? "" : " -m \(Self.shq(trimmed))"
+            // OpenCode's default hostname is loopback, so this exposes the run to other
+            // users of this machine and to nothing else. It cannot also be
+            // password-protected: the server takes one, but OpenCode's own TUI sends
+            // none, so a run started with `OPENCODE_SERVER_PASSWORD` set exits on
+            // `Unauthorized` before doing any work.
+            let listen = port > 0 ? " --port \(port)" : ""
             let grant = "\(Self.permissionEnv)=\(Self.shq(Self.permissionValue))"
             // `--prompt` starts the TUI with the prompt already submitted, which is
             // what makes this a windowed agent the user can watch and type into — the
             // same affordance the Claude runner has. `opencode run` would be headless.
-            return "\(grant) opencode\(flag) --prompt \(prompt)"
+            // It also lands verbatim as the session's opening message, which is how
+            // `OpenCodeAPI.isOurs` tells this run's session from a sibling's in the
+            // same checkout.
+            return "\(grant) opencode\(listen)\(flag) --prompt \(prompt)"
         }
     }
 

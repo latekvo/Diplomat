@@ -206,18 +206,26 @@ def record_cleared(key: str) -> None:
     append({"at": time.time(), "ev": "cleared", "key": key})
 
 
-def record_completion(key: str, prompt: str, started_at: float, done_at: float) -> None:
+def record_completion(key: str, prompt: str, started_at: float, done_at: float,
+                      session_id: str = "") -> None:
     """Record a finished agent, pricing it from its own transcript.
 
-    Attribution can fail — the applet restarting mid-agent loses the prompt the
-    match needs — and that is recorded honestly as a completion with no tokens
-    rather than skipped, so the run/wait times still count it and the screen can
-    say how many finished tasks it could not price.
+    Which transcript depends on what ran it, and the run says which by what it left
+    behind: an OpenCode session id means an OpenCode run, whose spend lives in
+    OpenCode's own store and is asked for through its exporter. Everything else is a
+    Claude Code run, found in ``~/.claude`` by the prompt it opened with.
+
+    Attribution can fail either way — the applet restarting mid-agent loses the prompt
+    the match needs, and a session whose window was closed before it was matched has
+    no id — and that is recorded honestly as a completion with no tokens rather than
+    skipped, so the run/wait times still count it and the screen can say how many
+    finished tasks it could not price.
     """
     from . import usagescan
 
     try:
-        tokens = usagescan.task_tokens(prompt, started_at, done_at)
+        tokens = (usagescan.opencode_task_tokens(session_id) if session_id
+                  else usagescan.task_tokens(prompt, started_at, done_at))
     except OSError:
         tokens = None
     record_done(key, done_at, tokens)
