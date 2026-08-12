@@ -6,6 +6,13 @@
     { "id": "macos", "title": "macOS", "emoji": "🍎", "linuxGlyph": "◆", "colorHex": "#0A84FF" }
   ],
 
+  "_transportsComment": "How an EDGE between two nodes runs. Peers that share a network link over the 'lan' (a direct TCP connection to a LAN address, the path multicast discovery finds); peers that do not link over a WAN transport, which gives each node a permanent, NAT-independent address it advertises inside its signed advert — an iroh endpoint id or a v3 onion (szpontnet-spec/docs/15, /14). Every edge runs over exactly ONE of these, never two: a link is one connection, and the WAN one an edge uses is the most-preferred transport BOTH ends run. That preference is picked mesh-wide from the Mesh screen and gossiped last-writer-wins beside the duty placements ('wan' in the overrides record); it ORDERS, it does not exclude, so a peer that runs only the other transport is still reached over that one — and a pair that shares neither has no way back once they leave the LAN, which is what the screen flags. Preference reorders future dials only: a live link is never torn down to move it.",
+  "transports": [
+    { "id": "lan", "title": "LAN", "emoji": "🏠", "linuxGlyph": "⌂", "colorHex": "#8E8E93", "wan": false, "detail": "A direct TCP link to the peer's address on this network" },
+    { "id": "iroh", "title": "Iroh", "emoji": "⚡", "linuxGlyph": "⌁", "colorHex": "#5E5CE6", "wan": true, "detail": "QUIC to a peer's endpoint id — hole-punched where both networks allow it, relayed where they don't. No daemon, and a dial resolves in well under a second." },
+    { "id": "tor", "title": "Tor", "emoji": "🧅", "linuxGlyph": "◍", "colorHex": "#7D4698", "wan": true, "detail": "A v3 onion service — costs a local tor daemon and a multi-minute bootstrap, and needs nothing installed beyond it." }
+  ],
+
   "tokens": [
     { "id": "ok", "title": "tokens OK", "emoji": "🟢", "linuxGlyph": "●", "colorHex": "#34C759" },
     { "id": "low", "title": "tokens low", "emoji": "🟡", "linuxGlyph": "◐", "colorHex": "#FF9500" },

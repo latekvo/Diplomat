@@ -115,10 +115,25 @@ public struct MeshCatalog: Decodable, Equatable {
         init(from decoder: Decoder) throws { value = try? SpreadDTO(from: decoder) }
     }
 
+    /// How an edge between two nodes runs: the `lan` (peers that share a network) or
+    /// one of the WAN transports (peers that do not). `wan` false marks the LAN entry,
+    /// which is never something the operator picks — it is simply where two machines
+    /// on one network meet. Optional so an older assets dir still decodes the catalog.
+    public struct Transport: Decodable, Equatable {
+        public let id: String
+        public let title: String
+        public let emoji: String
+        public let linuxGlyph: String?
+        public let colorHex: String
+        public let wan: Bool?
+        public let detail: String?
+    }
+
     public let platforms: [Platform]
     public let tokens: [Token]
     public let tiers: Tiers
     public let trust: Trust?
+    public let transports: [Transport]?
     public let strategies: [Strategy]
     public let duties: [Duty]
     public let defaultStrategy: String
@@ -138,6 +153,12 @@ public struct MeshCatalog: Decodable, Equatable {
     public func token(_ id: String) -> Token? { tokens.first { $0.id == id } }
     public func duty(_ id: String) -> Duty? { duties.first { $0.id == id } }
     public func trustLevel(_ id: String) -> TrustLevel? { trust?.levels.first { $0.id == id } }
+    public func transport(_ id: String) -> Transport? { transports?.first { $0.id == id } }
+
+    /// The transports an operator can pick between — the WAN ones, in model order.
+    /// The LAN is not among them: it is where two machines on one network meet, not
+    /// a choice. Mirrors the Linux front-end's `_WAN_TRANSPORTS`.
+    public var wanTransports: [Transport] { (transports ?? []).filter { $0.wan == true } }
 
     /// The effective placement for a duty: the gossiped override if present, else the
     /// `assets/mesh.json` default. Mirrors `config.placement_for`.
@@ -389,11 +410,20 @@ public struct MeshPeer: Decodable, Equatable {
     public let surplus: Double
     /// Advertised quota accounting; nil until the peer gossips stats.
     public let stats: MeshStats?
+    /// What the CURRENT link runs over: "lan" (a direct connection on this network)
+    /// or a WAN transport name. "lan" while down, and from a node too old to report it.
+    public let transport: String
+    /// The WAN transport this EDGE agrees on — the most-preferred one both ends run
+    /// — or "" when the two share none, meaning this pair cannot re-form once they
+    /// leave the network they are on. Distinct from `transport`, which is how the
+    /// link runs right now: a peer on the LAN has "lan" there and its off-LAN answer
+    /// here.
+    public let wan: String
 
     enum CodingKeys: String, CodingKey {
         case id, name, platform, tier, tokens, link, addr, lastSeenSecsAgo, sees,
              strengthAuto, tokensAuto, tokensPct, tokensSessionPct, tokensWeekPct,
-             uptimeSecs, trust, fingerprint, verified, surplus, stats
+             uptimeSecs, trust, fingerprint, verified, surplus, stats, transport, wan
     }
 
     public init(from decoder: Decoder) throws {
@@ -418,6 +448,8 @@ public struct MeshPeer: Decodable, Equatable {
         verified = (try? c.decode(Bool.self, forKey: .verified)) ?? false
         surplus = (try? c.decode(Double.self, forKey: .surplus)) ?? MeshStats.neutralSurplus
         stats = try? c.decode(MeshStats.self, forKey: .stats)
+        transport = (try? c.decode(String.self, forKey: .transport)) ?? "lan"
+        wan = (try? c.decode(String.self, forKey: .wan)) ?? ""
     }
 
     /// `lastSeenSecsAgo`/`uptimeSecs` tick on every snapshot write, so they're excluded
@@ -430,6 +462,7 @@ public struct MeshPeer: Decodable, Equatable {
             && a.strengthAuto == b.strengthAuto && a.tokensAuto == b.tokensAuto
             && a.trust == b.trust && a.verified == b.verified && a.fingerprint == b.fingerprint
             && a.tokensSessionPct == b.tokensSessionPct && a.tokensWeekPct == b.tokensWeekPct
+            && a.transport == b.transport && a.wan == b.wan
     }
 }
 
@@ -500,6 +533,46 @@ public struct MeshAssignment: Decodable, Equatable {
     }
 }
 
+/// One WAN transport's state on THIS machine: whether the operator asked for it,
+/// whether it is live yet, and the permanent address peers dial it at. `address` is
+/// what the operator hands another machine for a manual `connect`; nil until ready
+/// (Tor's bootstrap runs into minutes).
+public struct MeshWanTransport: Decodable, Equatable {
+    public let enabled: Bool
+    public let ready: Bool
+    public let address: String?
+
+    enum CodingKeys: String, CodingKey { case enabled, ready, address }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = (try? c.decode(Bool.self, forKey: .enabled)) ?? false
+        ready = (try? c.decode(Bool.self, forKey: .ready)) ?? false
+        address = try? c.decode(String.self, forKey: .address)
+    }
+}
+
+/// Reaching machines off this network: the mesh's gossiped transport pick, and what
+/// each transport is doing here. Keyed by transport id, so a UI walks the catalog
+/// vocabulary rather than naming iroh and tor itself.
+public struct MeshWan: Decodable, Equatable {
+    public let preferred: String
+    public let transports: [String: MeshWanTransport]
+
+    enum CodingKeys: String, CodingKey { case preferred, transports }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        preferred = (try? c.decode(String.self, forKey: .preferred)) ?? ""
+        transports = (try? c.decode([String: MeshWanTransport].self, forKey: .transports)) ?? [:]
+    }
+
+    public func transport(_ id: String) -> MeshWanTransport? { transports[id] }
+    /// Transports with a live address right now — what this machine can dial FROM,
+    /// and what it has an id to hand out for.
+    public var ready: [String] {
+        transports.filter { $0.value.address?.isEmpty == false }.map(\.key).sorted()
+    }
+}
+
 /// The public topology snapshot the node rewrites atomically every couple of seconds.
 /// Mirrors the shape documented in `szpontnet.statefile`.
 public struct MeshSnapshot: Decodable, Equatable {
@@ -540,11 +613,14 @@ public struct MeshSnapshot: Decodable, Equatable {
     /// can fix) or "network-down" (the stack itself is gone). Empty when up, and empty
     /// from an older node that predates the field → treated as the Local-Network case.
     public let beaconBlockReason: String
+    /// Reaching machines off this network — the mesh's preferred transport and this
+    /// machine's state on each. nil from a node with no WAN transport support at all.
+    public let wan: MeshWan?
 
     enum CodingKeys: String, CodingKey {
         case pid, tcpPort, selfNode = "self", peers, trusted, banned, defaultTrust,
              assignments, overrides, claims,
-             linking, beaconBlocked, beaconBlockReason
+             linking, beaconBlocked, beaconBlockReason, wan
     }
 
     public init(from decoder: Decoder) throws {
@@ -562,6 +638,7 @@ public struct MeshSnapshot: Decodable, Equatable {
         linking = (try? c.decode(Int.self, forKey: .linking)) ?? 0
         beaconBlocked = (try? c.decode(Bool.self, forKey: .beaconBlocked)) ?? false
         beaconBlockReason = (try? c.decode(String.self, forKey: .beaconBlockReason)) ?? ""
+        wan = try? c.decode(MeshWan.self, forKey: .wan)
     }
 
     /// Decode a snapshot from raw JSON bytes; nil for garbage/absent, matching

@@ -340,9 +340,9 @@ def test_a_node_brings_up_its_onion_with_no_configuration_at_all(tornet):
 
     assert tor.is_onion(onion), onion
     state = node.snapshot()
-    assert state["tor"]["enabled"] is True
-    assert state["tor"]["ready"] is True
-    assert state["tor"]["onion"] == onion
+    assert state["wan"]["transports"]["tor"]["enabled"] is True
+    assert state["wan"]["transports"]["tor"]["ready"] is True
+    assert state["wan"]["transports"]["tor"]["address"] == onion
     # The advert peers receive carries it — the field that makes the address
     # learnable at all.
     assert state["self"]["onion"] == onion
@@ -355,9 +355,9 @@ def test_a_node_told_not_to_run_tor_stays_lan_only(tornet):
     node = tornet.node("lanonly", SZPONTNET_TOR="0").start().await_running()
 
     state = node.snapshot()
-    assert state["tor"]["enabled"] is False
-    assert state["tor"]["ready"] is False
-    assert state["tor"]["onion"] is None
+    assert state["wan"]["transports"]["tor"]["enabled"] is False
+    assert state["wan"]["transports"]["tor"]["ready"] is False
+    assert state["wan"]["transports"]["tor"]["address"] is None
     assert "onion" not in state["self"]
 
 
@@ -375,9 +375,9 @@ def test_a_node_on_a_machine_with_no_tor_installed_still_runs(tornet):
     ).start().await_running()
 
     state = node.snapshot()
-    assert state["tor"]["enabled"] is True     # the operator did not turn it off…
-    assert state["tor"]["ready"] is False      # …there is simply no daemon to run
-    assert state["tor"]["onion"] is None
+    assert state["wan"]["transports"]["tor"]["enabled"] is True     # the operator did not turn it off…
+    assert state["wan"]["transports"]["tor"]["ready"] is False      # …there is simply no daemon to run
+    assert state["wan"]["transports"]["tor"]["address"] is None
     assert "onion" not in state["self"]
     # And it is a working node: it answers control, and it is serving on its port.
     assert state["tcpPort"] > 0
@@ -527,7 +527,7 @@ def test_the_onion_serves_peer_links_but_refuses_operator_control(tornet):
     # And the node is still there and still answering: `snapshot()` IS a ctl session,
     # over loopback. So (a) refused control without the node having stopped serving
     # it — and without the refused session having taken the node down with it.
-    assert node.snapshot()["tor"]["ready"] is True
+    assert node.snapshot()["wan"]["transports"]["tor"]["ready"] is True
 
 
 def test_the_operators_own_control_channel_is_still_served_on_loopback(tornet):
@@ -543,7 +543,7 @@ def test_the_operators_own_control_channel_is_still_served_on_loopback(tornet):
         sock.sendall(protocol.encode({"t": "ctl"}) + protocol.encode({"t": "status"}))
         reply = protocol.decode(sock.makefile("rb").readline(protocol.MAX_LINE_BYTES))
     assert reply and reply.get("t") == "state", reply
-    assert reply["state"]["tor"]["ready"] is True
+    assert reply["state"]["wan"]["transports"]["tor"]["ready"] is True
 
 
 _REDIAL_PROBES = 7

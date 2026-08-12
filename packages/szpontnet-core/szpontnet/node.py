@@ -260,6 +260,36 @@ class _WanBackoff:
 
 
 @dataclass(frozen=True)
+class _WanKind:
+    """What a WAN transport looks like from the outside, whether or not it is running.
+
+    ``field`` is the attribute its address lives under on BOTH a
+    :class:`wancache.WanEntry` and a :class:`NodeInfo`. The control paths read this
+    registry rather than the running transports, which is what lets a pasted onion be
+    answered with "Tor is not running here" rather than "unrecognised address"."""
+
+    field: str
+    normalize: Callable[[object], str]
+    enabled: Callable[[], bool]
+    address_desc: str
+    enable_hint: str
+
+
+# Every WAN transport this build can run, by the name it is known by everywhere else
+# (the model vocabulary, the gossiped preference, the link tag).
+_WAN_KINDS: dict[str, _WanKind] = {
+    "iroh": _WanKind(field="endpoint", normalize=irohnet.normalize_endpoint,
+                     enabled=config.iroh_enabled,
+                     address_desc="a 64-hex endpoint id",
+                     enable_hint="set SZPONTNET_IROH=1 and install szpontnet[wan]"),
+    "tor": _WanKind(field="onion", normalize=tor.normalize_onion,
+                    enabled=config.tor_enabled,
+                    address_desc="a v3 .onion address",
+                    enable_hint="install a tor binary and leave SZPONTNET_TOR unset"),
+}
+
+
+@dataclass(frozen=True)
 class _Wan:
     """One active WAN transport, as the generic reconnect path sees it.
 
@@ -294,9 +324,9 @@ class Peer:
         # challenge). None until verified. Trust keys on this, never on info.pubkey
         # alone - a peer can advertise any pubkey but only sign for its own.
         self.verified_fp: str | None = None
-        # Which transport the CURRENT link runs over: "lan" (direct TCP) or "tor"
-        # (an onion circuit). Set when the link binds; display/diagnostic only —
-        # trust and behavior are transport-agnostic.
+        # Which transport the CURRENT link runs over: "lan" (direct TCP) or a WAN
+        # transport name ("iroh", "tor"). Set when the link binds; display/diagnostic
+        # only — trust and behavior are transport-agnostic.
         self.transport = "lan"
 
     @property
@@ -373,12 +403,13 @@ class MeshNode:
         # (on the LAN, or by a manual paste) either can redial the other from
         # anywhere, no public IP or DNS. See wancache / irohnet.py.
         self._wan_cache = wancache.load()
-        # The WAN transports this node runs, in PREFERENCE order (iroh first: its
-        # dial is sub-second where Tor's builds a rendezvous circuit). Populated in
-        # start(); empty keeps the node LAN-only.
+        # The WAN transports this node runs. Populated in start(); empty keeps the
+        # node LAN-only. Dials walk them in the MESH's preferred order, which is
+        # gossiped and can change under a running node — see _wan_ordered.
         self._wan: list[_Wan] = []
-        # The concrete transports, also exposed for --status and the manual-paste
-        # ctl commands. None when the transport is off or unavailable.
+        # The concrete transports, as the node's named handles on them. None when the
+        # transport is off or unavailable; every dial and every published field goes
+        # through `_wan`, which is what a transport added later has to join.
         self.iroh: irohnet.IrohTransport | None = None
         self.tor: tor.TorTransport | None = None
         # WAN addresses currently being dialed (auto-redial or a manual paste), so a
@@ -388,11 +419,11 @@ class MeshNode:
         self._wan_dialing: set[str] = set()
         # Per-peer WAN reconnect backoff, keyed by peer id (see _WanBackoff).
         self._wan_backoff: dict[str, _WanBackoff] = {}
-        # Transport of each live link, keyed by its writer ("lan" default, "tor" for
-        # an onion circuit) — set on dial / Tor-inbound accept, read when the link
-        # binds a peer, cleared on teardown. It is what lets an INBOUND Tor link
-        # (which lands on loopback) be told apart from a loopback LAN link, so a Tor
-        # link's address never pollutes the LAN redial cache.
+        # Transport of each live link, keyed by its writer ("lan" default, else a WAN
+        # transport name) — set on dial / WAN-inbound accept, read when the link binds
+        # a peer, cleared on teardown. It is what lets an INBOUND WAN link (which lands
+        # on loopback for Tor) be told apart from a loopback LAN link, so a WAN link's
+        # address never pollutes the LAN redial cache.
         self._link_transport: dict[asyncio.StreamWriter, str] = {}
         # Whether the last beacon tick failed EVERY send — the node is then
         # undiscoverable and says so (activity feed + snapshot) instead of failing
@@ -588,13 +619,12 @@ class MeshNode:
         # background, so the LAN stays usable immediately) and they share one
         # reconnect loop that dials known-but-unseen peers with exponential backoff.
         # Nothing else in the node changes, and multicast discovery still owns every
-        # peer on this network. Registered in PREFERENCE order.
+        # peer on this network. Which one an edge uses is the mesh's gossiped
+        # preference, applied per dial (_wan_ordered), not the order they start in.
         if config.iroh_enabled():
             if irohnet.available():
                 self.iroh = irohnet.IrohTransport(identity.mesh_dir())
-                self._wan.append(_Wan(name="iroh", impl=self.iroh,
-                                      field="endpoint",
-                                      normalize=irohnet.normalize_endpoint))
+                self._add_wan("iroh", self.iroh)
             else:
                 # A warning, unlike the Tor twin below: the operator asked for iroh
                 # explicitly, so an absent package defeats what they set. Neither
@@ -608,8 +638,7 @@ class MeshNode:
             if tor_binary:
                 self.tor = tor.TorTransport(identity.mesh_dir(),
                                             binary_path=tor_binary)
-                self._wan.append(_Wan(name="tor", impl=self.tor, field="onion",
-                                      normalize=tor.normalize_onion))
+                self._add_wan("tor", self.tor)
             else:
                 # Not a warning: a box with no tor installed is an ordinary box, and
                 # this transport is on by default — warning here would fire on every
@@ -1089,6 +1118,45 @@ class MeshNode:
 
     # MARK: - WAN transports (reachability off the local network)
 
+    def _add_wan(self, name: str, impl: object) -> None:
+        """Register a started transport under the generic reconnect path."""
+        kind = _WAN_KINDS[name]
+        self._wan.append(_Wan(name=name, impl=impl, field=kind.field,
+                              normalize=kind.normalize))
+
+    def _wan_state(self, name: str) -> dict:
+        """One transport's published state. ``enabled`` is the OPERATOR's switch, not
+        the live transport, so one asked for but unavailable (an absent library, no
+        ``tor`` binary) reads as enabled-but-not-ready rather than never requested."""
+        kind = _WAN_KINDS.get(name)
+        address = self._wan_address(name) or None
+        return {"enabled": kind is not None and kind.enabled(),
+                "ready": address is not None,
+                "address": address}
+
+    @staticmethod
+    def _wan_normalize(name: str, raw: object) -> str:
+        """A pasted address canonicalised for the named transport, or ``""``."""
+        kind = _WAN_KINDS.get(name)
+        return kind.normalize(raw) if kind is not None else ""
+
+    def _start_manual_connect(self, name: str, address: str) -> str:
+        """Dial a pasted peer address over the named transport, as a background
+        one-shot: UNCONDITIONALLY (bypassing smaller-id-dials — a deliberate
+        introduction to a peer we may never have met on the LAN), and the caller's
+        reply returns immediately, the operator watching for the peer to appear.
+
+        Returns ``""`` once the dial is under way, else why it cannot start."""
+        w = next((x for x in self._wan if x.name == name), None)
+        if w is None or w.impl.address() is None:
+            return (f"the {name} transport is not running on this node — "
+                    f"{_WAN_KINDS[name].enable_hint}")
+        task = asyncio.get_running_loop().create_task(
+            self._wan_dial(w, address), name=f"mesh-{name}-connect")
+        self._dial_tasks.add(task)
+        task.add_done_callback(self._dial_tasks.discard)
+        return ""
+
     async def _wan_serve(self, w: _Wan) -> None:
         """Bring one WAN transport up in the background, then advertise its address.
         The node is fully usable on the LAN while a transport comes up (which can
@@ -1188,16 +1256,35 @@ class MeshNode:
         b.interval = min(b.interval * _WAN_BACKOFF_FACTOR, _WAN_BACKOFF_MAX_SECS)
         self._wan_backoff[peer_id] = b
 
-    def _wan_transport_for(self, entry: wancache.WanEntry) -> tuple[_Wan, str] | None:
-        """The transport this peer should be dialed over right now, with the address
-        to use: the first READY transport in preference order that the entry names an
-        address for. None when we hold no usable address — a peer advertising only an
-        onion is still reachable while this node runs Tor, and stops being a target
-        the moment it does not."""
-        for w in self._wan:
+    def _wan_ordered(self) -> list[_Wan]:
+        """The WAN transports this node runs, in the MESH's preferred order — the
+        gossiped choice (:attr:`PlacementOverrides.wan`) first, the rest behind it.
+
+        Read live off ``self.overrides`` rather than fixed at start, so an operator's
+        pick reaches every node the moment it gossips. It reorders future dials only:
+        a live link is never torn down to move it onto the newly-preferred transport
+        (the same no-aggressive-switching rule that leaves a WAN link alone when the
+        peer reappears on the LAN)."""
+        order = config.wan_order(self.overrides)
+        # A transport the model no longer names sorts to the back, never to the front.
+        return sorted(self._wan, key=lambda w: (order.index(w.name)
+                                                if w.name in order else len(order)))
+
+    def _wan_transport_for(self, addrs: object) -> tuple[_Wan, str] | None:
+        """The transport an edge to this peer should use right now, with the address
+        to dial: the first READY transport in the mesh's preferred order that ``addrs``
+        names an address for. None when we hold no usable address — a peer advertising
+        only an onion is still reachable while this node runs Tor, and stops being a
+        target the moment it does not.
+
+        ``addrs`` is anything naming its WAN addresses under the same attributes
+        :attr:`_Wan.field` does — a :class:`wancache.WanEntry` (what we remembered, for
+        a redial) or a live :class:`NodeInfo` (what the peer advertises now, for the
+        snapshot's per-edge transport)."""
+        for w in self._wan_ordered():
             if w.impl.address() is None:
                 continue  # this transport isn't up yet (or died) — it can't dial
-            address = w.normalize(getattr(entry, w.field, ""))
+            address = w.normalize(getattr(addrs, w.field, ""))
             if address:
                 return w, address
         return None
@@ -1950,12 +2037,31 @@ class MeshNode:
     def set_overrides_duty(self, duty_id: str, placement_dict: dict) -> None:
         """A local edit (panel/CLI): bump the LWW rev, sign it, and gossip."""
         placement = config.Placement.from_dict(placement_dict)
-        ov = self.overrides.with_duty(duty_id, placement, by=self.local.id)
+        self._publish_overrides(self.overrides.with_duty(duty_id, placement,
+                                                         by=self.local.id))
+        self._recompute("overrides edited")
+
+    def set_overrides_wan(self, transport: str) -> bool:
+        """Pick the mesh's preferred WAN transport (panel/CLI) and gossip it, the same
+        LWW record a duty edit rides. False for a name this build has no transport for
+        (the caller reports it) — the pick must stay a name every node can honour.
+
+        Nothing is recomputed and no link is disturbed: the pick reorders the
+        transports a WAN dial tries, so it lands on the next dial each node makes."""
+        if transport not in config.wan_transports():
+            return False
+        self._publish_overrides(self.overrides.with_wan(transport, by=self.local.id))
+        log("mesh-up", f"Mesh: preferred WAN transport → {transport}")
+        return True
+
+    def _publish_overrides(self, ov: PlacementOverrides) -> None:
+        """Sign a locally-edited overrides record and gossip it — the tail every
+        mesh-wide edit shares, so a new setting can never ship unsigned (peers drop
+        an unsigned edit from a keyed node) or unsent."""
         if self.key is not None:
             ov = ov.signed(self.key.sign(protocol.overrides_signing_bytes(ov.to_dict())))
         self.overrides = ov
         self._broadcast(protocol.overrides_update(self.overrides.to_dict()))
-        self._recompute("overrides edited")
 
     def apply_local_attrs(self, attrs: dict) -> None:
         changed = False
@@ -3486,30 +3592,38 @@ class MeshNode:
                 return {"t": "error", "reason": "level must be 'personal' or 'foreign'"}
             self._flush_state()
             return {"t": "ok"}
+        if t == "set-wan":
+            transport = str(msg.get("transport", "")).strip().lower()
+            if not self.set_overrides_wan(transport):
+                known = " | ".join(config.wan_transports())
+                return {"t": "error", "reason": f"transport must be one of {known}"}
+            self._flush_state()
+            return {"t": "ok", "transport": transport}
         if t in ("iroh-connect", "tor-connect"):
-            # Manual paste: initiate a WAN link to a peer's address, even one we never
-            # met on the LAN. Dials unconditionally (bypasses smaller-id-dials), as a
-            # background one-shot so this reply returns immediately — the operator
-            # watches --status for the peer to appear.
             name = "iroh" if t == "iroh-connect" else "tor"
-            key = "endpoint" if name == "iroh" else "onion"
-            normalize = (irohnet.normalize_endpoint if name == "iroh"
-                         else tor.normalize_onion)
-            address = normalize(msg.get(key))
+            kind = _WAN_KINDS[name]
+            key = kind.field
+            address = self._wan_normalize(name, msg.get(key))
             if not address:
-                expected = ("a 64-hex endpoint id" if name == "iroh"
-                            else "a valid v3 onion address")
-                return {"t": "error", "reason": f"{t} needs {expected}"}
-            w = next((x for x in self._wan if x.name == name), None)
-            if w is None or w.impl.address() is None:
-                return {"t": "error",
-                        "reason": f"the {name} transport is not enabled or not ready "
-                                  f"on this node (set SZPONTNET_{name.upper()}=1)"}
-            task = asyncio.get_running_loop().create_task(
-                self._wan_dial(w, address), name=f"mesh-{name}-connect")
-            self._dial_tasks.add(task)
-            task.add_done_callback(self._dial_tasks.discard)
-            return {"t": "ok", key: address}
+                return {"t": "error", "reason": f"{t} needs {kind.address_desc}"}
+            error = self._start_manual_connect(name, address)
+            return {"t": "error", "reason": error} if error else {"t": "ok", key: address}
+        if t == "connect":
+            # The transport-agnostic front door to the two commands above: the operator
+            # pastes whatever the other machine printed and the ADDRESS SHAPE picks the
+            # transport (an endpoint id and an onion can never be mistaken for each
+            # other — see test_an_endpoint_id_is_never_mistaken_for_an_onion). The
+            # reply names the transport it chose, so a UI can say which way it reached.
+            raw = msg.get("address")
+            for name in config.wan_transports():
+                address = self._wan_normalize(name, raw)
+                if not address:
+                    continue
+                error = self._start_manual_connect(name, address)
+                return ({"t": "error", "reason": error} if error else
+                        {"t": "ok", "transport": name, "address": address})
+            shapes = " or ".join(k.address_desc for k in _WAN_KINDS.values())
+            return {"t": "error", "reason": f"connect needs a peer's WAN id — {shapes}"}
         if t == "stop":
             self.request_stop()
             return {"t": "ok"}
@@ -3613,9 +3727,17 @@ class MeshNode:
             # classification against the local allowlist, and its dispatch surplus.
             d["verified"] = p.verified_fp is not None
             d["fingerprint"] = p.verified_fp or crypto.fingerprint_of(p.info.pubkey)
-            # Which transport the current link runs over ("lan" | "tor"), tracked
-            # per link at bind time — accurate for both inbound and outbound Tor.
+            # Which transport the current link runs over ("lan" | a WAN transport
+            # name), tracked per link at bind time — accurate for both inbound and
+            # outbound WAN links.
             d["transport"] = p.transport if p.linked else "lan"
+            # The WAN transport THIS EDGE agrees on: the most-preferred one both ends
+            # run, computed from the peer's live advert (its addresses are exactly the
+            # transports it can be reached over) against ours. Exactly one, or "" when
+            # the two share none — which is the honest warning that this pair cannot
+            # re-form off the LAN, however healthy the link looks right now.
+            wan = self._wan_transport_for(p.info)
+            d["wan"] = wan[0].name if wan else ""
             d["trust"] = self._peer_trust(p)
             d["surplus"] = round(p.info.surplus(), 3)
             # Real connection uptime for the badge (seconds since the link came up);
@@ -3646,19 +3768,19 @@ class MeshNode:
             # gate the operator can fix) or "network-down" (the stack is gone); "" up.
             "beaconBlocked": self._beacon_blocked,
             "beaconBlockReason": self._beacon_block_reason,
-            # Each WAN transport's state: whether it's enabled, whether it is live
-            # yet, and this node's permanent address on it. Lets a UI show WAN
-            # reachability and give the operator an address to share for a manual
-            # `iroh-connect` / `tor-connect`.
-            "iroh": {
-                "enabled": config.iroh_enabled(),
-                "ready": self.iroh is not None and self.iroh.address() is not None,
-                "endpoint": self.iroh.address() if self.iroh is not None else None,
-            },
-            "tor": {
-                "enabled": config.tor_enabled(),
-                "ready": self.tor is not None and self.tor.address() is not None,
-                "onion": self.tor.address() if self.tor is not None else None,
+            # Reaching machines off this network. `preferred` is the mesh's gossiped
+            # pick (always a name THIS node knows — one from a newer model resolves to
+            # the local default — so a UI needs no fallback of its own), and
+            # `transports` carries each one's state under its own name: whether the
+            # operator asked for it, whether it is live yet, and this node's permanent
+            # address on it — the id to hand a peer for a manual `connect`. `address`
+            # is spelled the same for every transport: the advert names it per
+            # transport (`endpoint` / `onion`), but a display reader wants one key it
+            # can walk the whole vocabulary with.
+            "wan": {
+                "preferred": config.wan_preferred(self.overrides),
+                "transports": {name: self._wan_state(name)
+                               for name in config.wan_transports()},
             },
             "trusted": [{"fingerprint": fp, "label": lbl}
                         for fp, lbl in sorted(self._trusted.items())],

@@ -142,6 +142,22 @@ def set_default_trust(level: str, timeout: float = 5.0) -> None:
     request({"t": "set-default-trust", "level": level}, timeout=timeout)
 
 
+def set_wan(transport: str, timeout: float = 5.0) -> None:
+    """Pick the mesh's preferred WAN transport ('iroh' | 'tor'), gossiped
+    last-writer-wins like a placement edit. It orders the transports a WAN dial
+    tries; a peer that runs only the other one is still reached over that one."""
+    request({"t": "set-wan", "transport": transport}, timeout=timeout)
+
+
+def connect(address: str, timeout: float = 10.0) -> tuple[str, str]:
+    """Initiate a link to a peer's WAN id — its iroh endpoint id or its onion —
+    reaching a machine you may never have met on the LAN. The address SHAPE picks
+    the transport; returns ``(transport, canonical address)`` for the dial the node
+    started in the background (watch ``--status`` for the peer to appear)."""
+    reply = request({"t": "connect", "address": address}, timeout=timeout)
+    return str(reply.get("transport", "")), str(reply.get("address", ""))
+
+
 def iroh_connect(endpoint: str, timeout: float = 10.0) -> str:
     """Ask the local node to initiate a link to a peer's iroh endpoint id — reaching
     a peer you may never have met on the LAN. The node dials in the background;

@@ -4,13 +4,14 @@ import Foundation
 /// Self-test for the shared mesh-control routine — `DIPLOMAT_MESH_CMD_TEST=1`.
 ///
 /// Every mesh edit the panel offers (set an attribute, trust/untrust a device, lift a
-/// ban, set the default trust, re-place a duty) runs through `Store.meshCommand`. Its
-/// three steps are all load-bearing and none of them is visible on screen when it goes
-/// missing: skip the `meshTick()` and the panel keeps rendering pre-edit state, skip the
+/// ban, set the default trust, re-place a duty, pick the preferred WAN transport, link
+/// to a pasted id) runs through `Store.meshCommand`. Its three steps are all
+/// load-bearing and none of them is visible on screen when it goes missing: skip the
+/// `meshTick()` and the panel keeps rendering pre-edit state, skip the
 /// `meshError` assignment and a *rejected* edit is indistinguishable from an applied one,
 /// run the round-trip on the main actor and the popover freezes for the socket timeout.
 /// So drive the routine with closures that succeed, throw a `MeshCtlError`, and throw
-/// something else — then drive all five real commands and check the same properties.
+/// something else — then drive every real command and check the same properties.
 ///
 ///   SZPONTNET_DIR=$(mktemp -d) DIPLOMAT_SELF_REPO=/nonexistent \
 ///     DIPLOMAT_MESH_CMD_TEST=1 swift run Diplomat
@@ -36,7 +37,7 @@ enum MeshCommandTest {
     private struct PlainError: Error {}
 
     /// What `MeshBridge.request` throws when the snapshot names no control port. Driving
-    /// the five commands through this path exercises the real bridge call without a node.
+    /// the commands through this path exercises the real bridge call without a node.
     private static let noPortMessage = "state.json has no usable tcpPort"
 
     static func run() async -> Bool {
@@ -195,7 +196,7 @@ enum MeshCommandTest {
         check("each command forwarded the port current at call time",
               probe.ports == [40881, 40882, 40883], "got \(probe.ports)")
 
-        // 4. The five real commands. A snapshot with no control port makes every
+        // 4. Every real command. A snapshot with no control port makes every
         //    `MeshBridge` call fail before it opens a socket, so this exercises the real
         //    bridge path — and proves each command actually goes through the routine
         //    (an edit that skipped it would leave `meshError` or `meshState` untouched).
@@ -206,6 +207,8 @@ enum MeshCommandTest {
             ("meshUnban", { store.meshUnban(fingerprint: "ee22", node: "n-flaky") }),
             ("meshSetDefaultTrust", { store.meshSetDefaultTrust(level: "personal") }),
             ("meshSetOverrides", { store.meshSetOverrides(duty: "review", placement: MeshPlacement(strategy: "weakest-first", tokenAware: true, spread: [])) }),
+            ("meshSetWan", { store.meshSetWan(transport: "tor") }),
+            ("meshConnect", { store.meshConnect(address: String(repeating: "3f", count: 32)) }),
         ]
         for (name, fire) in commands {
             seed(port: 0)

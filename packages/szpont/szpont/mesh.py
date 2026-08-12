@@ -187,13 +187,33 @@ class Mesh:
 
     # ---- transport and lifecycle ---------------------------------------
 
-    def iroh_connect(self, endpoint: str, timeout: float = 10.0) -> str:
-        """Reach a peer at its iroh endpoint id, whether or not you ever met it on
-        the LAN. Returns the normalized address the node is dialing. Needs a node
-        started with ``SZPONTNET_IROH=1``.
+    def set_wan(self, transport: str) -> None:
+        """Pick the mesh's preferred WAN transport (``"iroh"`` / ``"tor"``).
+        Gossiped last-writer-wins like :meth:`set_placement`.
+
+        It *orders* the transports a WAN dial tries; a peer that runs only the
+        other one is still reached over that one.
+        """
+        self._require_node()
+        with _translated():
+            ctl.set_wan(transport, timeout=self.timeout)
+
+    def connect(self, address: str, timeout: float = 10.0) -> tuple[str, str]:
+        """Reach a peer at its WAN id - an iroh endpoint id or an onion - whether
+        or not you ever met it on the LAN. The address *shape* picks the
+        transport; returns ``(transport, normalized address)``.
 
         The dial happens in the background: the peer shows up in a later
         :meth:`status`, not in this return value.
+        """
+        self._require_node()
+        with _translated():
+            return ctl.connect(address, timeout=timeout)
+
+    def iroh_connect(self, endpoint: str, timeout: float = 10.0) -> str:
+        """:meth:`connect` with the transport named rather than read off the
+        address: an iroh endpoint id, dialed by a node started with
+        ``SZPONTNET_IROH=1``. Returns the normalized address it is dialing.
         """
         self._require_node()
         with _translated():

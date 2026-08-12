@@ -302,9 +302,11 @@ def _telemetry_ledger_fixture() -> None:
 
 def _mesh_fixture(store: Store) -> None:
     """Synthetic mesh topology so the ⬡ Mesh screen can be eyeballed: a Linux self
-    node, one strong healthy macOS peer, one weak dead macOS peer, and the three
-    duties with one platform shortfall. Enables the mesh via the render-only
-    override (never persisting to real QSettings, never starting a node)."""
+    node, one strong healthy macOS peer, one weak dead macOS peer, the three
+    duties with one platform shortfall, and both WAN states an edge can be in (a
+    peer this pair can re-form with off the LAN, and one it cannot). Enables the
+    mesh via the render-only override (never persisting to real QSettings, never
+    starting a node)."""
     self_id = "n-self-linux"
     peer_ok = "n-mbp-strong"
     peer_dead = "n-mbp-weak"
@@ -328,14 +330,25 @@ def _mesh_fixture(store: Store) -> None:
              "tokensAuto": False, "tokensPct": 0.31,
              "tokensSessionPct": 0.31, "tokensWeekPct": 0.55,
              "sees": [self_id], "dutiesEnabled": {}, "v": 1,
-             "link": "up", "addr": "192.168.1.21", "lastSeenSecsAgo": 1.2},
+             "link": "up", "addr": "192.168.1.21", "lastSeenSecsAgo": 1.2,
+             "transport": "lan", "wan": "iroh"},
             # A legacy peer (no real probe): the quota row falls back to "≈NN%".
             {"id": peer_dead, "name": "mbp-weak", "platform": "macos",
              "tier": 5, "tokens": "low", "tcpPort": 40880, "epoch": 1, "seq": 8,
              "tokensPct": 0.2,
              "sees": [], "dutiesEnabled": {}, "v": 1,
-             "link": "down", "addr": "192.168.1.37", "lastSeenSecsAgo": 42},
+             "link": "down", "addr": "192.168.1.37", "lastSeenSecsAgo": 42,
+             "transport": "lan", "wan": ""},
         ],
+        # This machine runs both WAN transports: iroh is up (so there is an id to
+        # copy), Tor is still bootstrapping (the state a fresh node spends minutes in).
+        "wan": {
+            "preferred": "iroh",
+            "transports": {
+                "iroh": {"enabled": True, "ready": True, "address": "3f" * 32},
+                "tor": {"enabled": True, "ready": False, "address": None},
+            },
+        },
         "assignments": {
             "review": {"duty": "review", "assigned": [peer_ok], "shortfall": []},
             "conflicts": {"duty": "conflicts", "assigned": [self_id], "shortfall": []},

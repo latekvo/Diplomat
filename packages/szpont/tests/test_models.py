@@ -16,7 +16,7 @@ import pytest
 
 from szpont import models
 from szpont.models import (NEUTRAL_SURPLUS, Assignment, Claim, Device, Dispatch,
-                           Node, Peer, Quota, Slot, Snapshot, Tor)
+                           Node, Peer, Quota, Slot, Snapshot, Wan, WanTransport)
 
 
 # ---- a well-formed snapshot ----------------------------------------------
@@ -65,6 +65,10 @@ def test_link_and_transport_are_read_per_peer(snapshot_dict):
     assert [p.name for p in snap.up] == ["tower"]
     assert snap.peer("stranger").over_tor is True
     assert snap.peer("tower").over_tor is False
+    # Where the link IS, against where it would go once they part ways on the LAN.
+    assert (snap.peer("tower").transport, snap.peer("tower").wan) == ("lan", "tor")
+    # A peer publishing no agreed transport shares none with us - not "unknown".
+    assert snap.peer("stranger").wan == ""
 
 
 def test_out_of_tokens_is_the_state_that_excludes_a_node(snapshot_dict):
@@ -118,9 +122,22 @@ def test_the_trusted_and_banned_lists_are_read(snapshot_dict):
     assert snap.banned[0].reason == "accepted work and went silent"
 
 
-def test_tor_state_is_read(snapshot_dict):
-    tor = Snapshot.from_dict(snapshot_dict).tor
-    assert (tor.enabled, tor.ready, tor.onion) == (True, True, "abc.onion")
+def test_wan_state_is_read_per_transport(snapshot_dict):
+    wan = Snapshot.from_dict(snapshot_dict).wan
+    tor, iroh = wan.transport("tor"), wan.transport("iroh")
+
+    assert wan.preferred == "tor"
+    assert (tor.enabled, tor.ready, tor.address) == (True, True, "abc.onion")
+    assert (iroh.enabled, iroh.ready, iroh.address) == (False, False, None)
+    # Only the transport with an address can be dialed FROM or handed out.
+    assert wan.ready == ("tor",)
+
+
+def test_a_transport_this_node_does_not_run_reads_as_off(snapshot_dict):
+    """`transport()` answers for any name, so a caller walking a newer
+    vocabulary never has to check whether this node published that key."""
+    absent = Snapshot.from_dict(snapshot_dict).wan.transport("carrier-pigeon")
+    assert (absent.enabled, absent.ready, absent.address) == (False, False, None)
 
 
 def test_by_id_covers_this_machine_as_well_as_its_peers(snapshot_dict):
@@ -194,7 +211,8 @@ def test_from_dict_accepts_none_everywhere():
     assert Peer.from_dict(None).link == "down"
     assert Slot.from_dict(None).status == "failed"
     assert Claim.from_dict(None).owned is False
-    assert Tor.from_dict(None).enabled is False
+    assert Wan.from_dict(None).preferred == ""
+    assert WanTransport.from_dict(None).enabled is False
     assert Device.from_dict(None).fingerprint == ""
     assert Assignment.from_dict("review", None).duty == "review"
     assert Dispatch.from_results(None).slots == ()

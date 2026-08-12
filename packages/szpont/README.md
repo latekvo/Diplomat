@@ -30,7 +30,7 @@ if result.suppressed:
 ## What it gives you over the dictionaries
 
 **Types.** `Snapshot`, `Node`, `Peer`, `Assignment`, `Dispatch`, `Slot`, `Claim`,
-`Quota`, `Device`, `Tor` - with the questions you actually ask as properties:
+`Quota`, `Device`, `Wan` - with the questions you actually ask as properties:
 `peer.up`, `peer.personal`, `assignment.satisfied`, `result.ok`, `slot.suppressed`.
 
 Parsing never raises. A snapshot can be truncated mid-write, written by a newer

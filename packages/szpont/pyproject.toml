@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "szpont"
-version = "0.2.0"
+version = "0.3.0"
 description = "Install-and-run for Diplomat, and typed Python bindings for SzpontNet, the leaderless LAN peer-to-peer resource-sharing protocol"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -26,12 +26,12 @@ classifiers = [
 ]
 # The node itself. This package is bindings for it and has no independent
 # behaviour, so the dependency is required rather than an extra.
-dependencies = ["szpontnet>=0.6,<0.7"]
+dependencies = ["szpontnet>=0.7,<0.8"]
 
 [project.optional-dependencies]
 # Passed through to the library: Ed25519 device identity. Without it a node runs
 # keyless, advertises no public key, and is foreign to any peer with an allowlist.
-trust = ["szpontnet[trust]>=0.5,<0.6"]
+trust = ["szpontnet[trust]>=0.7,<0.8"]
 
 [project.scripts]
 # `pip install szpont` then `szpont`. The launcher is a top-level module rather

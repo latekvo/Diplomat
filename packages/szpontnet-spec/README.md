@@ -1,6 +1,6 @@
 # SzpontNet — the specification
 
-The normative definition of **SzpontNet** (v0.6.0, wire `v: 1`), the leaderless
+The normative definition of **SzpontNet** (v0.7.0, wire `v: 1`), the leaderless
 LAN protocol for self-discovery, resource advertisement and work hand-off, plus
 the tester that decides whether an implementation actually obeys it.
 

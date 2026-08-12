@@ -166,7 +166,9 @@ enum Render {
             // Linux render.py `mesh` fixture): a macOS self node, one strong healthy
             // Linux peer, one weak dead peer, the three duties with one platform
             // shortfall — plus the trust/accounting fields the node gossips since the
-            // trust layer landed. A headless mode never persists nor starts a node.
+            // trust layer landed, and both WAN states an edge can be in (a peer this
+            // pair can re-form with off the LAN, and one it cannot). A headless mode
+            // never persists nor starts a node.
             // `mesh-blocked` additionally sets beaconBlocked, snapshotting the loud
             // "device is not discoverable" banner.
             let _ = seedMesh(store, blocked: m.contains("blocked"))
@@ -385,7 +387,7 @@ enum Render {
             "tokensAuto": false, "tokensPct": 0.31,
             "tokensSessionPct": 0.31, "tokensWeekPct": 0.55,
             "sees": ["\(selfID)"], "verified": true, "fingerprint": "ee55ff66aa77bb88",
-            "trust": "personal", "surplus": 0.75,
+            "trust": "personal", "surplus": 0.75, "transport": "lan", "wan": "iroh",
             "stats": {"plan": "pro", "usageAvg": 0.25, "quotaLeft": 1.0, "surplus": 0.75}},
            {"id": "\(peerNew)", "name": "newbox", "platform": "windows", "tier": 3,
             "tokens": "ok", "link": "up", "addr": "192.168.1.44", "lastSeenSecsAgo": 0.8,
@@ -397,7 +399,7 @@ enum Render {
             "tokens": "low", "link": "down", "addr": "192.168.1.37", "lastSeenSecsAgo": 42,
             "tokensPct": 0.2,
             "sees": [], "verified": false, "fingerprint": "", "trust": "foreign",
-            "surplus": 0},
+            "surplus": 0, "transport": "lan", "wan": ""},
            {"id": "\(peerBanned)", "name": "flaky-box", "platform": "linux", "tier": 3,
             "tokens": "ok", "link": "up", "addr": "192.168.1.48", "lastSeenSecsAgo": 2.0,
             "sees": [], "verified": true, "fingerprint": "dd00ee11ff22aa33",
@@ -412,6 +414,11 @@ enum Render {
            "conflicts": {"duty": "conflicts", "assigned": ["\(selfID)"], "shortfall": []},
            "audit": {"duty": "audit", "assigned": ["\(selfID)"],
                      "shortfall": [{"platform": "linux", "missing": 1}]}},
+         "wan": {"preferred": "iroh",
+                 "transports": {
+                   "iroh": {"enabled": true, "ready": true,
+                            "address": "\(String(repeating: "3f", count: 32))"},
+                   "tor": {"enabled": true, "ready": false, "address": null}}},
          "overrides": {"rev": 0, "updatedBy": "", "duties": {}}}
         """
         store.meshEnabled = true  // headless-guarded: persists nothing, starts nothing

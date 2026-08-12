@@ -110,8 +110,8 @@ def snapshot_dict():
                 "tier": 1, "tokens": "low", "tokensPct": 0.2,
                 "pubkey": "BBBB", "fingerprint": "b" * 64, "verified": True,
                 "trust": "personal", "link": "up", "addr": "192.168.1.7",
-                "transport": "lan", "surplus": 0.5, "lastSeenSecsAgo": 1.4,
-                "uptimeSecs": 903.0,
+                "transport": "lan", "wan": "tor", "surplus": 0.5,
+                "lastSeenSecsAgo": 1.4, "uptimeSecs": 903.0,
                 "stats": {"plan": "pro", "surplus": 0.5},
             },
             {
@@ -130,6 +130,12 @@ def snapshot_dict():
         "banned": [{"node": "dddddddd4444", "label": "junk",
                     "reason": "accepted work and went silent"}],
         "defaultTrust": "foreign",
-        "tor": {"enabled": True, "ready": True, "onion": "abc.onion"},
+        "wan": {
+            "preferred": "tor",
+            "transports": {
+                "iroh": {"enabled": False, "ready": False, "address": None},
+                "tor": {"enabled": True, "ready": True, "address": "abc.onion"},
+            },
+        },
         "overrides": {"rev": 0, "duties": {}},
     }

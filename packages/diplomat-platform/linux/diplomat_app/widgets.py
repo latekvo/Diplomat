@@ -159,6 +159,12 @@ class ElidedLabel(QLabel):
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.setFixedHeight(self.fontMetrics().height())
 
+    def set_text(self, text: str) -> None:
+        """Replace the text. Not ``setText``: the painter reads ``_full``, so QLabel's
+        own setter would change nothing on screen."""
+        self._full = text
+        self.update()
+
     def paintEvent(self, event) -> None:  # noqa: N802
         from PySide6.QtGui import QPainter
 

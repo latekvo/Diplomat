@@ -29,6 +29,7 @@ peer TCP link; **ctl** = sent on a control session (client↔node).
 | [`status`](#status) | ctl | client→node | request the state snapshot |
 | [`state`](#state) | ctl | node→client | the state snapshot (reply to `status`) |
 | [`set-overrides`](#set-overrides) | ctl | client→node | edit a duty's placement policy |
+| [`set-wan`](#set-wan) | ctl | client→node | pick the mesh's preferred WAN transport ([06](06-coordination.md#the-preferred-wan-transport)) |
 | [`trust`](#trust--untrust) | ctl | client→node | add a fingerprint to the local allowlist |
 | [`untrust`](#trust--untrust) | ctl | client→node | remove a fingerprint from the local allowlist |
 | [`ban`](#ban--unban) | ctl | client→node | add a device to the local ban list ([13](13-foreign-execution.md#the-ban)) |
@@ -36,6 +37,8 @@ peer TCP link; **ctl** = sent on a control session (client↔node).
 | [`set-default-trust`](#set-default-trust) | ctl | client→node | set the default trust level for unlisted devices |
 | [`claim`](#claim--claim-result) | ctl | client→node | run the origination claim gate for a work key, without dispatching ([12](12-work-claims.md)) |
 | [`claim-result`](#claim--claim-result) | ctl | node→client | the claim gate's verdict (reply to `claim`) |
+| [`connect`](#connect) | ctl | client→node | dial a pasted peer WAN id, the transport read off its shape |
+| [`iroh-connect`](#iroh-connect) | ctl | client→node | dial a peer's iroh endpoint id to initiate contact ([15](15-iroh-transport.md)) |
 | [`tor-connect`](#tor-connect) | ctl | client→node | dial a peer's onion over Tor to initiate contact ([14](14-tor-transport.md)) |
 | [`stop`](#stop) | ctl | client→node | ask the node to shut down |
 | [`ok` / `error`](#ok--error) | ctl | node→client | generic command results |
@@ -260,7 +263,7 @@ A gossiped [placement-overrides](06-coordination.md#placement-overrides) update.
 
 ```json
 {"t": "overrides", "overrides": {"rev": 3, "updatedBy": "3236…", "duties": { … },
-                                 "sig": "…base64…"}, "v": 1}
+                                 "wan": "tor", "sig": "…base64…"}, "v": 1}
 ```
 
 The `overrides` object carries an optional `sig`: an Ed25519 signature by the
@@ -625,6 +628,25 @@ mesh-wide. The node bumps the last-writer-wins `rev`, applies it, and gossips it
 Reply: [`ok`](#ok--error), or [`error`](#ok--error) if `duty` is unknown or
 `placement` is malformed.
 
+### `set-wan`
+
+Pick the mesh's [preferred WAN transport](06-coordination.md#the-preferred-wan-transport).
+Carried in the same last-writer-wins record as `set-overrides`, so it bumps the same
+`rev` and reaches every node the same way.
+
+```json
+{"t": "set-wan", "transport": "tor", "v": 1}
+{"t": "ok", "transport": "tor"}
+```
+
+| Field | Type | Req? | Meaning |
+|-------|------|------|---------|
+| `transport` | string | **yes** | a WAN transport the model lists (`iroh` / `tor`); anything else is an [`error`](#ok--error) rather than a gossiped edit. |
+| `transport` | string | reply | the pick now in force mesh-wide. |
+
+The pick **orders** each node's dial attempts; it does not stop a node running - or
+being reached over - the other transport, so no edge loses its WAN path to an edit.
+
 ### `trust` / `untrust`
 
 Edit this node's **local** trust allowlist. `trust` adds a fingerprint (with an
@@ -716,6 +738,26 @@ owns is idempotent, so a legitimate retry is never suppressed.
 A [`dispatch`](#dispatch) with a `workKey` runs this same gate internally and
 reports `suppressed`; the stand-alone verb exists so origination dedup does not
 require routing the execution through the mesh.
+
+### `connect`
+
+Dial a peer's WAN id without naming the transport: the node reads the transport off
+the **address shape** (an iroh endpoint id and a v3 onion cannot be mistaken for one
+another) and hands off to the matching command below. This is what a paste box calls.
+
+```json
+{"t": "connect", "address": "<peer WAN id>", "v": 1}
+{"t": "ok", "transport": "iroh", "address": "<normalized-id>"}
+```
+
+| Field | Type | Req? | Meaning |
+|-------|------|------|---------|
+| `address` | string | **yes** | the peer's WAN id, leniently parsed. A string matching no transport's shape is an [`error`](#ok--error), as is one whose transport is not running on this node. |
+| `transport` | string | reply | which transport the shape selected - so a client can report the way it is reaching out. |
+| `address` | string | reply | the normalized id the node is now dialing. |
+
+The shape decides, not the mesh's [preferred transport](#set-wan): a paste names one
+specific machine reachable one specific way.
 
 ### `iroh-connect`
 

@@ -55,6 +55,11 @@
     }
   },
 
+  "wan": {
+    "_comment": "The WAN transports a node can run BESIDE the LAN (docs/14-tor-transport.md, docs/15-iroh-transport.md), listed in the default preference order. A mesh picks its preferred one live - the gossiped 'wan' field of the mesh-wide overrides (docs/06-coordination.md) - and with nobody having picked, the first entry here is it. Preference only ORDERS the transports a node actually runs: a peer reachable on just one of them is still dialed over that one, so an edge uses the most-preferred transport BOTH ends run. The transport VOCABULARY a UI renders (titles, colours) is not the protocol's business and lives with whoever renders it.",
+    "transports": ["iroh", "tor"]
+  },
+
   "trust": {
     "_comment": "The trust level applied to an UNKNOWN device - one whose proven fingerprint is not in this node's local allowlist. Ships 'foreign' (zero-trust): a new device is untrusted until the operator promotes it. Set to 'personal' for the full-altruism mode where every unlisted peer is trusted. The trust VOCABULARY a UI renders (titles, colours) is not the protocol's business and lives with whoever renders it.",
     "default": "foreign"

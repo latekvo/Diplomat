@@ -429,7 +429,8 @@ class NodeProcess:
         return self.ctl({"t": "status"})["state"]
 
     def onion(self) -> str:
-        return (self.state().get("tor") or {}).get("onion") or ""
+        wan = (self.state().get("wan") or {}).get("transports") or {}
+        return (wan.get("tor") or {}).get("address") or ""
 
     def peer(self, other: "NodeProcess") -> dict:
         for entry in self.state().get("peers", []):

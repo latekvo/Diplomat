@@ -437,11 +437,13 @@ opening a local terminal — on both front-ends.
 Both front-ends grow a **Mesh screen** (the ⬡ button in the panel header, beside
 [Telemetry](#telemetry) and Settings): the live node graph (link states), per-node tier/token editors (editing
 a *remote* node forwards over the mesh, so one panel configures the whole fleet),
-per-duty strategy + token-awareness controls (gossiped last-writer-wins), and the
-whole **trust surface** — the `New devices: Personal / Foreign` default, a one-time
+per-duty strategy + token-awareness controls (gossiped last-writer-wins), the whole
+**trust surface** — the `New devices: Personal / Foreign` default, a one-time
 callout when an unknown device shows up, a per-peer trust toggle, and the banned
-chip with its un-ban. It shouts `DEVICE IS NOT DISCOVERABLE` if every beacon send
-fails.
+chip with its un-ban — and **reaching machines off this network**: the mesh's
+preferred WAN transport, this machine's id on each transport it runs (copyable), a
+paste box that links to another machine's id, and per peer the one transport that
+edge agreed on. It shouts `DEVICE IS NOT DISCOVERABLE` if every beacon send fails.
 
 The mesh node itself is stdlib-only Python that runs on any OS — both the macOS app
 and the Linux applet drive that same node (a Swift node is future work), so enabling
@@ -505,8 +507,14 @@ There are two, and a node may run either, both, or neither:
   connecting in well under a second. Paste an address with
   `python3 -m szpontnet --iroh-connect <64-hex>`.
 
-A node running both prefers iroh for any peer reachable either way, and falls back to
-Tor for one that only advertises an onion.
+Which of the two an edge settles on is a **mesh-wide pick** ([spec ch
+6](packages/szpontnet-spec/docs/06-coordination.md#the-preferred-wan-transport)),
+gossiped last-writer-wins beside the duty placements and set from the Mesh screen or
+with `python3 -m szpontnet --wan iroh`. It **orders, it never excludes**: every node
+keeps running every transport it can, so the pick decides an edge only where both
+ends speak both, and a peer that advertises only an onion is still reached over Tor.
+An edge that shares neither has no way off the LAN at all, and the Mesh screen flags
+it. `--connect <id>` takes either address and reads the transport off its shape.
 
 **Trust model.** The mesh is designed around a LAN you control (IPv4; discovery is
 multicast + subnet broadcast), and — since the Tor transport is on by default — a

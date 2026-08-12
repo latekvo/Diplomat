@@ -182,8 +182,9 @@ class Peer(Node):
     """A node as *this* node currently sees it.
 
     Everything :class:`Node` carries, plus the reader's own view: the state of the
-    link, where it is, which transport carries it, whether the device key was
-    actually proved, and what the local allowlist makes of it. ``trust`` and
+    link, where it is, which transport carries it (and which one it would take off
+    the LAN - ``wan``, empty when the two ends share none), whether the device key
+    was actually proved, and what the local allowlist makes of it. ``trust`` and
     ``verified`` are deliberately separate - a peer can prove a key
     (``verified``) and still be ``foreign``, because proving a key says who you
     are and the allowlist says whether that matters here.
@@ -192,6 +193,7 @@ class Peer(Node):
     link: str = "down"
     addr: str = ""
     transport: str = "lan"
+    wan: str = ""
     trust: str = "foreign"
     verified: bool = False
     surplus: float = NEUTRAL_SURPLUS
@@ -223,6 +225,7 @@ class Peer(Node):
             link=_str(d, "link", "down"),
             addr=_str(d, "addr"),
             transport=_str(d, "transport", "lan"),
+            wan=_str(d, "wan"),
             trust=_str(d, "trust", "foreign"),
             verified=bool(d.get("verified", False)),
             surplus=_float(d, "surplus", NEUTRAL_SURPLUS),
@@ -398,43 +401,57 @@ class Claim:
 
 
 @dataclass(frozen=True, kw_only=True)
-class Iroh:
-    """The node's iroh transport: whether it is on, whether the endpoint is online
-    yet, and the address to hand a peer for a manual dial."""
+class WanTransport:
+    """One WAN transport on this node: whether it is on, whether it is live yet,
+    and this machine's permanent address on it - the id to hand a peer for a
+    manual :meth:`~szpont.Mesh.connect`."""
 
     enabled: bool = False
     ready: bool = False
-    endpoint: str | None = None
+    address: str | None = None
 
     @classmethod
-    def from_dict(cls, d: dict | None) -> "Iroh":
+    def from_dict(cls, d: dict | None) -> "WanTransport":
         d = d or {}
-        endpoint = d.get("endpoint")
+        address = d.get("address")
         return cls(
             enabled=bool(d.get("enabled")),
             ready=bool(d.get("ready")),
-            endpoint=endpoint if isinstance(endpoint, str) else None,
+            address=address if isinstance(address, str) else None,
         )
 
 
 @dataclass(frozen=True, kw_only=True)
-class Tor:
-    """The node's Tor transport, the :class:`Iroh` twin: whether it is on, whether
-    the onion service is live yet, and the address to hand a peer for a manual
-    dial."""
+class Wan:
+    """Reaching machines off this network: the mesh's gossiped transport
+    :attr:`preferred` pick, and what each transport is doing here.
 
-    enabled: bool = False
-    ready: bool = False
-    onion: str | None = None
+    Keyed by transport name, so a caller walks what the node published rather
+    than naming iroh and tor itself - the pair is the v1 vocabulary, not a limit.
+    """
+
+    preferred: str = ""
+    transports: dict = field(default_factory=dict)
+
+    def transport(self, name: str) -> WanTransport:
+        """One transport's state; a neutral, off one for a name this node has no
+        transport for, so a caller never has to check first."""
+        return self.transports.get(name) or WanTransport()
+
+    @property
+    def ready(self) -> tuple[str, ...]:
+        """Transports with a live address right now - what this machine can dial
+        FROM, and what it has an id to hand out for."""
+        return tuple(sorted(n for n, t in self.transports.items() if t.address))
 
     @classmethod
-    def from_dict(cls, d: dict | None) -> "Tor":
+    def from_dict(cls, d: dict | None) -> "Wan":
         d = d or {}
-        onion = d.get("onion")
         return cls(
-            enabled=bool(d.get("enabled")),
-            ready=bool(d.get("ready")),
-            onion=onion if isinstance(onion, str) else None,
+            preferred=_str(d, "preferred"),
+            transports={name: WanTransport.from_dict(value)
+                        for name, value in _dict(d, "transports").items()
+                        if isinstance(value, dict)},
         )
 
 
@@ -478,8 +495,7 @@ class Snapshot:
     trusted: tuple[Device, ...] = ()
     banned: tuple[Device, ...] = ()
     default_trust: str = "foreign"
-    iroh: Iroh = field(default_factory=Iroh)
-    tor: Tor = field(default_factory=Tor)
+    wan: Wan = field(default_factory=Wan)
     tcp_port: int = 0
     pid: int = 0
     updated_at: str = ""
@@ -533,8 +549,7 @@ class Snapshot:
             trusted=tuple(Device.from_dict(e) for e in _objects(d, "trusted")),
             banned=tuple(Device.from_dict(e) for e in _objects(d, "banned")),
             default_trust=_str(d, "defaultTrust", "foreign"),
-            iroh=Iroh.from_dict(_dict(d, "iroh")),
-            tor=Tor.from_dict(_dict(d, "tor")),
+            wan=Wan.from_dict(_dict(d, "wan")),
             tcp_port=_int(d, "tcpPort"),
             pid=_int(d, "pid"),
             updated_at=_str(d, "updatedAt"),

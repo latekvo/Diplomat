@@ -200,8 +200,15 @@ client can get it live or from disk.
   "peers": [
     { …NodeInfo…, "link": "up", "addr": "192.168.1.21", "lastSeenSecsAgo": 1.2,
       "uptimeSecs": 187.0, "verified": true, "fingerprint": "9c1f…a7",
-      "trust": "personal", "surplus": 1.75 }
+      "trust": "personal", "surplus": 1.75, "transport": "lan", "wan": "tor" }
   ],
+  "wan": {
+    "preferred": "tor",
+    "transports": {
+      "iroh": {"enabled": false, "ready": false, "address": null},
+      "tor":  {"enabled": true,  "ready": true,  "address": "<56-base32>.onion"}
+    }
+  },
   "trusted": [{"fingerprint": "9c1f…a7", "label": "mbp"}],
   "banned": [{"fingerprint": "5e2b…c9", "node": "bd4eaf…", "label": "flaky-box",
               "reason": "accepted SzpontRequest b1c2… (review) and failed to deliver: no response to readiness reminder",
@@ -231,7 +238,8 @@ pinned, else the usage-derived state), not the raw override.
 | `linking` | int | peers currently mid-handshake - lets a UI show a "linking to N…" / "scanning" affordance while the mesh forms. |
 | `beaconBlocked` | bool | true while *every* beacon send fails (the node is undiscoverable - e.g. an OS privacy gate denying LAN sends; [02](02-discovery.md#redial-from-memory)) - lets a UI say so instead of showing an inexplicably empty mesh. |
 | `self` | NodeInfo | this node's own advertisement, plus its own `fingerprint` (`sha256` of its advertised `pubkey`, 64 hex — *not* the pubkey itself) and `uptimeSecs` (seconds this node has been running). |
-| `peers` | array | each known peer's NodeInfo plus link decoration: `link` (`up`/`stale`/`down`), `addr` (last-seen source IP), `lastSeenSecsAgo` (float), `uptimeSecs` (float, seconds the current link has been up - `null` while down), plus **this node's local view** of the peer: `verified` (bool - whether the peer *proved possession* of its key on the link), `fingerprint` (the fingerprint it proved, or merely claims if unverified), `trust` (`personal`/`foreign`/`banned`, [11](11-trust-and-balancing.md)) and `surplus` (float - its advertised burn-down ratio, the value the load balancer ranks on). |
+| `peers` | array | each known peer's NodeInfo plus link decoration: `link` (`up`/`stale`/`down`), `addr` (last-seen source IP), `lastSeenSecsAgo` (float), `uptimeSecs` (float, seconds the current link has been up - `null` while down), plus **this node's local view** of the peer: `verified` (bool - whether the peer *proved possession* of its key on the link), `fingerprint` (the fingerprint it proved, or merely claims if unverified), `trust` (`personal`/`foreign`/`banned`, [11](11-trust-and-balancing.md)), `surplus` (float - its advertised burn-down ratio, the value the load balancer ranks on), `transport` (which transport the link currently runs over: `lan` or a WAN transport name) and `wan` (the WAN transport this edge would use, `""` when the two ends share none - see below). |
+| `wan` | object | this node's WAN reachability: `preferred` (the mesh's gossiped [pick](06-coordination.md#the-preferred-wan-transport), always a name this node knows, so a reader needs no fallback of its own) and `transports`, keyed by transport name, each `{enabled, ready, address}` - whether the operator asked for it, whether it is live yet, and this node's permanent address on it (the id to hand a peer for a manual [`connect`](04-messages.md#connect)). `address` is spelled the same for every transport, where the advert names it per transport (`endpoint` / `onion`). |
 | `trusted` | array | this node's local allowlist as `[{fingerprint, label}]` - a read-only mirror of [`trusted.json`](#trustedjson). Like the per-peer trust fields it is this node's own view; `trusted.json` and `device.key` are themselves **never gossiped**. |
 | `banned` | array | this node's local ban list as `[{fingerprint, node, label, reason, bannedAt, jobId}]` - a read-only mirror of [`banned.json`](#bannedjson) (also never gossiped), so a UI can show the operator **who was marked banned and why**. `[]` when nobody is. |
 | `defaultTrust` | string | this node's **default trust level** for an unknown (unlisted/unverified) device: `foreign` (zero-trust default — a new device is untrusted until promoted) or `personal` (full-trust). Mirrors [`trusted.json`](#trustedjson)'s `defaultLevel`; lets a UI render the default-trust toggle. |
@@ -240,6 +248,14 @@ pinned, else the usage-derived state), not the raw override.
 | `claims` | object | `{workKey: ownerNodeId}` for every currently-owned [work-claim](12-work-claims.md) this node observes (unowned keys omitted); lets a UI show what work is already spoken for. `{}` on a node that implements no work-claims. |
 | `foreign` | object | `{pendingResults, awaiting}` — counts of in-flight [foreign-execution](13-foreign-execution.md) exchanges: `job-result`s this node computed and owes back to a foreign requester (unacked), and remote dispatches it is still willing to receive a result for. Both `0` on a node that runs no foreign work. |
 | `v` | int | snapshot/protocol version. |
+
+**A peer's `transport` vs its `wan`.** `transport` is where the link *is* - `lan`
+while the two are on one network, and never rewritten under a live link
+([03](03-transport.md#link-state)). `wan` is where it *would go*: the transport both
+ends run, most-preferred first, computed from the peer's signed advert (its addresses
+are exactly the transports it can be reached over) against this node's ready ones.
+Exactly one name, or `""` when the pair shares none - the honest warning that this
+edge cannot re-form once they part ways on the LAN, however healthy it looks now.
 
 **Liveness of the snapshot itself.** A reader can tell a live node from a dead one
 by checking that `pid` names a running process. A suspended laptop resumes with a

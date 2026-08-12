@@ -2627,6 +2627,22 @@ final class Store: ObservableObject {
         meshCommand { try MeshBridge.setDefaultTrust(level: level, port: $0) }
     }
 
+    /// Pick the mesh's preferred WAN transport (gossiped last-writer-wins, like a
+    /// placement edit). It orders the transports a WAN dial tries, so it lands on the
+    /// next dial each node makes — no live link is moved. Mirrors the Linux store's
+    /// `mesh_set_wan`.
+    func meshSetWan(transport: String) {
+        meshCommand { try MeshBridge.setWan(transport: transport, port: $0) }
+    }
+
+    /// Link to a peer's WAN id (an iroh endpoint id or an onion), reaching a machine
+    /// this one may never have met on the LAN. The address shape picks the transport;
+    /// a refusal (an id we can't dial, a transport not running here) lands in
+    /// `meshError` for the screen. Mirrors the Linux store's `mesh_connect`.
+    func meshConnect(address: String) {
+        meshCommand { try MeshBridge.connect(address: address, port: $0) }
+    }
+
     /// Record that the user has decided on a newly-seen device (Personal or Keep Foreign),
     /// so its one-time "New device" prompt stops showing. UI-local; does not change trust.
     func meshAckDevice(fingerprint: String) {

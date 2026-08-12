@@ -54,6 +54,8 @@ def calls(monkeypatch):
     monkeypatch.setattr(ctl, "ban_device", recorder("ban_device"))
     monkeypatch.setattr(ctl, "unban_device", recorder("unban_device"))
     monkeypatch.setattr(ctl, "set_default_trust", recorder("set_default_trust"))
+    monkeypatch.setattr(ctl, "set_wan", recorder("set_wan"))
+    monkeypatch.setattr(ctl, "connect", recorder("connect", ("tor", "xyz.onion")))
     monkeypatch.setattr(ctl, "tor_connect", recorder("tor_connect", "xyz.onion"))
     monkeypatch.setattr(ctl, "stop", recorder("stop"))
     return recorded
@@ -307,6 +309,18 @@ def test_trust_and_its_reversal_reach_the_right_calls(live_node, calls):
 def test_tor_connect_returns_the_address_being_dialed(live_node, calls):
     assert Mesh().tor_connect("ABC.onion") == "xyz.onion"
     assert calls[0][1] == ("ABC.onion",)
+
+
+def test_connect_returns_the_transport_the_address_shape_picked(live_node, calls):
+    assert Mesh().connect("ABC.onion") == ("tor", "xyz.onion")
+    assert calls[0][1] == ("ABC.onion",)
+
+
+def test_the_preferred_wan_transport_is_forwarded_verbatim(live_node, calls):
+    """The bindings reshape nothing: an unknown name is the node's to refuse, so
+    the caller gets its reason rather than a second, divergent vocabulary here."""
+    Mesh().set_wan("iroh")
+    assert (calls[0][0], calls[0][1]) == ("set_wan", ("iroh",))
 
 
 def test_stop_asks_the_node_to_shut_down(live_node, calls):
