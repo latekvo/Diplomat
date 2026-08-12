@@ -752,7 +752,7 @@ def dispatch_status_text(verdict: str, terminal_title: str) -> str:
     """The wizard status line for one ``Store.dispatch_agent`` verdict - shared by
     all three wizards so refusals read identically everywhere (macOS twin:
     ``statusText(for:terminal:)``)."""
-    from . import autofix
+    from diplomat_runtime import autofix
 
     if verdict == "spawned":
         return f"Launched {terminal_title}"

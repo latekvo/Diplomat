@@ -20,8 +20,9 @@ from datetime import datetime, timedelta, timezone
 
 from PySide6.QtWidgets import QApplication
 
-from . import agentregistry, agentstate, probes, szpont
-from .models import OpenIssue, OpenPR
+from diplomat_runtime import agentregistry, agentstate
+from diplomat_runtime.models import OpenIssue, OpenPR
+from . import probes, szpont
 from .panel import Panel
 from .store import Store
 
@@ -99,7 +100,8 @@ def _left_pane_fixture(store: Store) -> None:
     :func:`_telemetry_ledger_fixture` below."""
     from datetime import datetime, timedelta, timezone
 
-    from . import activity, bans
+    from diplomat_runtime import activity
+    from . import bans
 
     now = datetime.now(timezone.utc)
 
@@ -139,7 +141,7 @@ def _queue_fixture(store: Store) -> None:
     per machine — and the panel re-measures on show, which in a one-shot render is a
     background thread racing the grab.
     """
-    from . import appconfig, autofix
+    from diplomat_runtime import appconfig, autofix
 
     appconfig.auto_task_limit = lambda: 4
 
@@ -230,7 +232,7 @@ def _telemetry_scratch() -> None:
     import tempfile
     from pathlib import Path
 
-    from . import activity
+    from diplomat_runtime import activity
 
     scratch = Path(tempfile.mkdtemp(prefix="diplomat-render-telemetry-"))
     activity._dir = lambda: scratch
@@ -248,7 +250,7 @@ def _telemetry_ledger_fixture() -> None:
     """
     import random
 
-    from . import telemetry
+    from diplomat_runtime import telemetry
 
     now = time.time()
     day = 86400.0

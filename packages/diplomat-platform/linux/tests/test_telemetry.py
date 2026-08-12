@@ -19,7 +19,7 @@ import time
 
 import pytest
 
-from diplomat_app import quota, telemetry, usagescan
+from diplomat_runtime import quota, telemetry, usagescan
 
 
 @pytest.fixture
@@ -350,7 +350,7 @@ def test_a_run_is_priced_before_its_directory_is_deleted(ledger, monkeypatch):
     survives the delete either. Lost, such a run falls through to the ``~/.claude``
     scan, which holds no transcript of it — and it lands unpriced, which is the whole
     defect the foreign-runner pricing path exists to close."""
-    from diplomat_app import agentregistry, agentstate, runner
+    from diplomat_runtime import agentregistry, agentstate, runner
     from diplomat_app.store import Store
     from test_autofix import register_run
 
@@ -571,7 +571,7 @@ def test_retiring_a_run_prices_it_from_the_transcript_its_prompt_names(ledger, s
     have to be read before it goes. Every figure on the screen that is per-task comes
     through here: a retirement that reads the directory afterwards prices nothing at
     all, and the ledger fills with completions the screen can only count."""
-    from diplomat_app import agentregistry, agentstate
+    from diplomat_runtime import agentregistry, agentstate
     from diplomat_app.store import Store
 
     repo, projects = scanner
@@ -607,7 +607,7 @@ def test_a_run_the_mesh_placed_is_dated_from_its_transcript(ledger, scanner):
     gets one and ``finished_at`` has nothing to read. Left at the poll instant, every
     such run's measured duration stretches to wherever that poll happened to land —
     and on a machine running the mesh, every run is one of these."""
-    from diplomat_app import agentregistry, agentstate
+    from diplomat_runtime import agentregistry, agentstate
     from diplomat_app.store import Store
 
     repo, projects = scanner

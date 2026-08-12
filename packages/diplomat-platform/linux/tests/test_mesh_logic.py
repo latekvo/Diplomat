@@ -19,7 +19,7 @@ from szpontnet import (  # noqa: E402
     assign, banned, config, crypto, identity, protocol, spawnjob, stats, trust,
     usage,
 )
-from diplomat_app import core  # noqa: E402
+from diplomat_runtime import core  # noqa: E402
 from szpontnet.config import Placement, PlacementOverrides  # noqa: E402
 from szpontnet.protocol import NodeInfo  # noqa: E402
 
@@ -2458,7 +2458,7 @@ def test_rebuild_udp_sockets_swap_in_fresh_ones(tmp_path, monkeypatch):
 
 
 def test_beacon_outage_surfaced_once_and_recovery_logged(tmp_path, monkeypatch):
-    from diplomat_app import activity
+    from diplomat_runtime import activity
     node = _fresh_node(tmp_path, monkeypatch)
 
     def beacon_lines() -> list[str]:
@@ -2526,7 +2526,7 @@ def test_beacon_block_reason_tracks_cause_change_mid_outage(tmp_path, monkeypatc
     sends never succeeding in between — must flip network-down → local-network, so the
     banner stops (falsely) saying "the net is down" and offers the permission fix. And
     the new diagnosis is re-logged once, not swallowed, but a steady cause stays quiet."""
-    from diplomat_app import activity
+    from diplomat_runtime import activity
     node = _fresh_node(tmp_path, monkeypatch)
     node.platform = "macos"
 
@@ -2957,7 +2957,7 @@ def test_agent_done_path_distinguishes_keys_sharing_a_long_prefix(tmp_path, monk
     DISTINCT completion-sentinel paths. A collision lets one agent's exit sentinel be
     misread as the other's: the first watcher releases a still-held claim (re-opening the
     PR to a double-dispatch) and the finished agent's claim is stranded."""
-    from diplomat_app import autofix
+    from diplomat_runtime import autofix
     node = _fresh_node(tmp_path, monkeypatch)
     node.epoch = 3_000_000.0
     owner = "my-github-organization"

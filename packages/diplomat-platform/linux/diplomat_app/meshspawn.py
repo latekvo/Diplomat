@@ -17,7 +17,8 @@ from __future__ import annotations
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QCheckBox, QLabel, QVBoxLayout, QWidget
 
-from . import core, glyphs
+from diplomat_runtime import core
+from . import glyphs
 from .store import Store
 
 

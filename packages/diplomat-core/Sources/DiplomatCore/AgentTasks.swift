@@ -12,8 +12,8 @@ import Foundation
 
 /// Where one Agent-tasks row sits in the list, and what its status reads.
 ///
-/// The order is the reading order the panel wants and *also* `ProcessRow`'s
-/// existing status precedence: an outcome ("merged" — the PR landed) outranks a
+/// The order is the reading order the panel wants and *also* the row's status
+/// precedence: an outcome ("merged" — the PR landed) outranks a
 /// local exit ("done" — the `claude` process left, whatever it achieved), an idle
 /// session that wants a human ("awaiting input") outranks one that doesn't need
 /// anything ("running"), and work that has not started yet is last. Finished rows
@@ -34,6 +34,7 @@ public enum AgentTaskStatus: Int, Comparable, CaseIterable {
     case awaitingInput
     case running
     case starting
+    case unknown
     case free
     case queued
 
@@ -41,16 +42,22 @@ public enum AgentTaskStatus: Int, Comparable, CaseIterable {
         lhs.rawValue < rhs.rawValue
     }
 
-    /// The status of a spawned session, from the three flags the tracker recomputes
-    /// on each sweep. A queued task has no session and is `.queued` by construction
-    /// (`.starting` while its dispatch runs); an empty slot has no task at all and
-    /// is `.free`.
-    public static func ofSession(merged: Bool, done: Bool,
-                                 awaitingInput: Bool) -> AgentTaskStatus {
-        if merged { return .merged }
-        if done { return .done }
-        if awaitingInput { return .awaitingInput }
-        return .running
+    /// Where a resolved run sits in the list. A queued task has no run behind it and is
+    /// `.queued` by construction (`.starting` while its dispatch runs); an empty slot has
+    /// no task at all and is `.free`.
+    ///
+    /// The two enums are one order in two vocabularies — `AgentState.stateOrder` ranks the
+    /// runs, this ranks them among the rows that are not runs — so the mapping is
+    /// exhaustive and unreordering: change one and this stops compiling.
+    public static func of(_ state: AgentState.RunState) -> AgentTaskStatus {
+        switch state {
+        case .merged:        return .merged
+        case .finished:      return .done
+        case .awaitingInput: return .awaitingInput
+        case .running:       return .running
+        case .starting:      return .starting
+        case .unknown:       return .unknown
+        }
     }
 
     /// The word the row shows.
@@ -61,45 +68,13 @@ public enum AgentTaskStatus: Int, Comparable, CaseIterable {
         case .awaitingInput: return "awaiting input"
         case .running:       return "running"
         case .starting:      return "starting"
+        // The one word that used not to exist: the applet would pick "running" or drop
+        // the row entirely rather than admit a probe had failed, which is how a wrong
+        // verdict became invisible. Its reason is drawn beside it.
+        case .unknown:       return "unknown"
         case .free:          return "free slot"
         case .queued:        return "queued"
         }
-    }
-}
-
-/// A unit of work this device handed to the mesh, and how the panel knows it is
-/// still going.
-///
-/// The run is somebody else's process: there is no window to focus, no tty to probe
-/// and no completion sentinel on this disk. What this machine does have is the
-/// executor's origination lease — it claims the work key when it spawns the agent
-/// and releases it when the agent exits (szpontnet-spec/docs/12) — republished in
-/// every snapshot the local node writes. So a claimed key is a running agent, and a
-/// key that has stopped appearing is one that has finished.
-public enum MeshAgentRun {
-    /// How long a key may go unseen before the run behind it reads as over.
-    ///
-    /// Absence is only evidence once it has had time to be evidence. The claim
-    /// travels the executor's link *before* the dispatch ack, but reaches this
-    /// front-end through a file the node rewrites every couple of seconds, read by a
-    /// poll of its own — and a node restart empties the book until its peers
-    /// re-assert. This window is long enough to outlast all three and short enough
-    /// that a finished run leaves the list while the operator is still looking at it.
-    public static let claimSettle: TimeInterval = 45
-
-    /// Whether the remote agent is finished, given how long ago this device last saw
-    /// the executor's claim.
-    ///
-    /// Sightings are what the clock runs on, never the run's own age: a review that
-    /// takes an hour is a normal one, so a row is only ever ended by evidence going
-    /// missing. A row that has no sighting yet — just dispatched, or just reloaded
-    /// after a restart — starts its window from that moment, which is what makes the
-    /// answer safe on both edges: a fresh row survives the lag before the first
-    /// snapshot carries its key, and a run whose key is NEVER published (the executor
-    /// deduped our dispatch against an agent already running on its host, which holds
-    /// no lease) ends up removed rather than pinned to the panel for good.
-    public static func finished(sinceSeen: TimeInterval) -> Bool {
-        sinceSeen >= claimSettle
     }
 }
 

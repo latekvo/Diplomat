@@ -26,11 +26,12 @@ from __future__ import annotations
 
 import pytest
 
-from diplomat_app import audit, autofix, conflicts, review
+from diplomat_runtime import autofix, review
+from diplomat_app import audit, conflicts
 from diplomat_app.auditwizardview import AuditWizardView
 from diplomat_app.conflictwizardview import ConflictWizardView
-from diplomat_app.prtarget import PRTarget
-from diplomat_app.review import SpecificAuthor
+from diplomat_runtime.prtarget import PRTarget
+from diplomat_runtime.review import SpecificAuthor
 from diplomat_app.store import Store
 from diplomat_app.wizardview import WizardView
 

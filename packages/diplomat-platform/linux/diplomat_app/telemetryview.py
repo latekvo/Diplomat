@@ -43,7 +43,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import core, glyphs, telemetry
+from diplomat_runtime import core, telemetry
+from . import glyphs
 from .store import Store
 from .widgets import GlyphLabel, card_host, muted, tint_bg
 

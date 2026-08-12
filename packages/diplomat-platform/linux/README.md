@@ -236,7 +236,8 @@ real subprocess and rendering the panel anyway.
 # From this directory. `SZPONTNET_HOST` is what puts Diplomat behind the node —
 # without it the node runs SzpontNet's own defaults (canonical v1 duties, state in
 # ~/.szpontnet, no activity feed) and joins a different mesh than the applet's.
-export SZPONTNET_HOST=diplomat_app.szponthost PYTHONPATH=../../szpontnet-core
+export SZPONTNET_HOST=diplomat_runtime.szponthost \
+       PYTHONPATH=../../diplomat-runtime:../../szpontnet-core
 
 python3 -m szpontnet --daemon     # join the mesh (works on macOS too, no Qt)
 python3 -m szpontnet --status     # topology + duty assignments
@@ -338,52 +339,26 @@ independent" checkable rather than merely asserted.
 
 ```
 diplomat_app/
-  core.py         loads the shared assets/ (from the diplomat-core package)
-  gh.py           gh CLI shell-out (GraphQL)
-  models.py       domain models, Filters, Fmt, API (from assets/)
+  __init__.py     puts ../../diplomat-runtime on sys.path and installs the mesh host —
+                  every module below imports the runtime at its own top level
   store.py        state, QSettings, tool catalog, row mapping, lookup
-  appconfig.py    ~/.diplomat/config.json — the settings a stdlib-only mesh node must read too
-                  (the repo root, the cap on concurrent automatic agents, and the
-                  rate-limit budget those agents are started against)
-  prref.py        single-PR reference parsing (number / URL / owner-repo#337)
-  prtarget.py     the whose-PRs axis shared by the wizards
-  promptcore.py   shells out to the diplomat-core binary — the ONLY prompt assembly
-  review.py       ReviewConfig + terminal spawner
   conflicts.py    ConflictConfig
   audit.py        AuditConfig - the Full E2E test
-  autofix.py      pure monitor decisions: dispatch gate, triggers, backoff, mesh,
-                  task cap, rate-limit budget, and the queue behind the cap
-                  (Autofix.swift + AgentTasks.swift's twin)
-  autobudget.py   ledger + probe + knobs -> may another automatic task start here?
-                  Asked by the applet's gate and by the mesh node (AutoBudget.swift's twin)
-  agentstate.py   the one resolver: typed evidence -> a state per agent run, and the four
-                  projections over it (per-PR dedup, the cap, the panel rows, retirement).
-                  Pure - no clock, no subprocess, no filesystem (AgentState.swift's twin)
   probes.py       the only thing that LOOKS: ps, tmux panes, mesh claims, gh merge state,
                   each answering present / unavailable / unsupported so a failure to look
                   is never mistaken for an answer. Tracks its own health
-  agentregistry.py  the durable run book at ~/.diplomat/agents — one record per dispatched
-                  run, plus each run's prompt, pid and completion sentinel. Same on-disk
-                  format as AgentRegistry.swift, byte for byte
   agentdump.py    DIPLOMAT_AGENTS=1 — every record, every probe's raw answer, every verdict
                   and the one fact that decided it
   autofixmonitor.py  the monitors' GitHub reads (monitor-prs / review-requests)
-  apiwatch.py     "is this a Claude API error?" matcher + nudge bookkeeping
-  tmuxwatch.py    tmux capture-pane / send-keys — the Linux stand-in for AppleScript
-  activity.py     the unified audit feed (audit.jsonl) + its category taxonomy
   bans.py         the allocator daemon's prompt-injection ban list
   selfupdate.py   fetch/merge, rebuild diplomat-core, relaunch (button + 6AM timer)
   migrate.py      one-time ~/.argent → ~/.diplomat state move
   glyphs.py       monochrome tool glyphs, size-normalised and tinted
   deviceallocator.py  bridge to the allocator daemon's state.json + Node installer
   szpont.py       the one gate on "is the SzpontNet add-on here?"
-  szponthost.py   Diplomat's answers to the six questions a mesh node asks its host
   meshspawn.py    the wizards' "⬡ Run on mesh" row
   meshview.py     the ⬡ Mesh topology screen
-  telemetry.py    the append-only telemetry ledger + the arithmetic over it (twin of Telemetry.swift)
   telemetryview.py  the Telemetry screen: the bell curve, the rate-limit windows, the backlog series, the token split
-  usagescan.py    Claude Code transcript scanner: repo-vs-other tokens, per-task attribution
-  quota.py        the OAuth usage probe — what is left of the 5-hour and 7-day windows
   widgets.py      cards, chips, rows
   panel.py        the popup panel (header, search, grid, results, agent tasks, devices)
   settingsview.py two-pane settings screen
@@ -398,8 +373,13 @@ diplomat_app/
 diplomat        the launcher (what the autostart .desktop execs)
 install/        build-core.sh + the autostart / auto-update (un)installers
 meshsim/        the real-socket mesh simulator the mesh scenarios run through
-tests/          the offline, headless pytest suite
+tests/          the offline, headless pytest suite — this applet's, and the shared
+                runtime's and diplomat-core's parity tests along with it
 ```
+
+Everything below the UI - the assets loader, PR triage, the run book, token accounting,
+the spawner, the mesh host - is [`diplomat-runtime`](../../diplomat-runtime/README.md),
+which the macOS app runs too.
 
 `argent-utils` is a deprecated launcher shim kept only so pre-rename installs keep
 working; it forwards to `./diplomat`.

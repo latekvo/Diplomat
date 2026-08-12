@@ -43,9 +43,9 @@ discards its log, declines work it has no runner for, and accepts work without
 limit.
 
 Diplomat is one such host
-([`diplomat-platform/linux/diplomat_app/szponthost.py`](https://github.com/latekvo/Diplomat/blob/main/packages/diplomat-platform/linux/diplomat_app/szponthost.py)) and
+([`diplomat-runtime/diplomat_runtime/szponthost.py`](https://github.com/latekvo/Diplomat/blob/main/packages/diplomat-runtime/diplomat_runtime/szponthost.py)) and
 registers itself two ways: in-process, and by putting
-`SZPONTNET_HOST=diplomat_app.szponthost` in the environment of the node it spawns.
+`SZPONTNET_HOST=diplomat_runtime.szponthost` in the environment of the node it spawns.
 
 ```python
 import szpontnet.host

@@ -32,7 +32,7 @@ from datetime import timedelta
 
 import pytest
 
-from diplomat_app.models import OpenIssue, OpenPR, ReviewThread, now
+from diplomat_runtime.models import OpenIssue, OpenPR, ReviewThread, now
 from diplomat_app.store import Store
 
 CORE_BIN = os.environ.get("DIPLOMAT_CORE_BIN")

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import pytest
 
-from diplomat_app import autofix
+from diplomat_runtime import autofix
 from diplomat_app.settingsview import SettingsView
 from diplomat_app.store import Store
 

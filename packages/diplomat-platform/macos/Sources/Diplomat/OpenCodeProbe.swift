@@ -25,15 +25,17 @@ enum OpenCodeProbe {
     ///
     /// A run with no port serves nothing to ask, so it never matches — that is an
     /// OpenCode run the spawn could not reserve one for.
-    static func bind(_ p: TrackedProcess, directory: String, taken: Set<String>) -> String {
-        guard p.port > 0, !p.promptFile.isEmpty,
-              let prompt = try? String(contentsOfFile: p.promptFile, encoding: .utf8),
-              let listing = sessions(port: p.port) else { return "" }
+    static func bind(_ r: AgentState.RunRecord, directory: String,
+                     taken: Set<String>) -> String {
+        guard let port = AgentRegistry.port(r.runID),
+              let prompt = try? String(contentsOf: AgentRegistry.promptPath(r.runID),
+                                       encoding: .utf8),
+              let listing = sessions(port: port) else { return "" }
         let found = OpenCodeAPI.candidates(listing, directory: directory,
-                                           sinceMs: p.createdAt.timeIntervalSince1970 * 1000,
+                                           sinceMs: r.dispatchedAt * 1000,
                                            taken: taken)
         for sessionID in found.prefix(OpenCodeAPI.maxCandidates) {
-            if OpenCodeAPI.isOurs(messages(port: p.port, sessionID: sessionID) ?? [],
+            if OpenCodeAPI.isOurs(messages(port: port, sessionID: sessionID) ?? [],
                                   prompt: prompt) {
                 return sessionID
             }
@@ -42,9 +44,9 @@ enum OpenCodeProbe {
     }
 
     /// What that session's last message says: working, or back at its prompt.
-    static func state(_ p: TrackedProcess, sessionID: String) -> AgentState.SessionState? {
-        guard p.port > 0,
-              let messages = messages(port: p.port, sessionID: sessionID, limit: 1)
+    static func state(_ r: AgentState.RunRecord, sessionID: String) -> AgentState.SessionState? {
+        guard let port = AgentRegistry.port(r.runID),
+              let messages = messages(port: port, sessionID: sessionID, limit: 1)
         else { return nil }
         return OpenCodeAPI.stateOf(messages)
     }

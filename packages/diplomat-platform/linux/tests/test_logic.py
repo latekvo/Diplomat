@@ -12,10 +12,10 @@ from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from diplomat_app import review  # noqa: E402
-from diplomat_app.models import Filters, Fmt, OpenIssue, OpenPR, ReviewThread  # noqa: E402
-from diplomat_app.prref import parse_pr_ref  # noqa: E402
-from diplomat_app.prtarget import PRTarget  # noqa: E402
+from diplomat_runtime import review  # noqa: E402
+from diplomat_runtime.models import Filters, Fmt, OpenIssue, OpenPR, ReviewThread  # noqa: E402
+from diplomat_runtime.prref import parse_pr_ref  # noqa: E402
+from diplomat_runtime.prtarget import PRTarget  # noqa: E402
 from diplomat_app.store import Store  # noqa: E402
 
 NOW = datetime.now(timezone.utc)
@@ -228,7 +228,7 @@ def test_specific_pr_disposition_drives_toggles_and_prompt():
     # A specific PR's polled author (mine / theirs / unknown) picks the disposition,
     # which decides both the visible action toggles and the diplomat-core prompt -
     # mirroring ReviewConfig.disposition / canX in DiplomatCore/Review.swift.
-    from diplomat_app.review import SpecificAuthor
+    from diplomat_runtime.review import SpecificAuthor
 
     def cfg(author: SpecificAuthor) -> review.ReviewConfig:
         return review.ReviewConfig(
@@ -274,7 +274,7 @@ def test_specific_pr_disposition_drives_toggles_and_prompt():
 def test_sweep_disposition_follows_target_not_specific_author():
     # For a whose-PRs sweep the disposition follows the target regardless of any
     # stale specific_author value (which only applies to a single PR).
-    from diplomat_app.review import SpecificAuthor
+    from diplomat_runtime.review import SpecificAuthor
 
     mine = review.ReviewConfig(me="latekvo", specific_author=SpecificAuthor.THEIRS)
     assert mine.disposition == SpecificAuthor.MINE
@@ -293,7 +293,7 @@ def test_poll_dispatch_does_not_self_deadlock_on_the_overlap_lock():
     # dispatch_agent must guard _dispatching_prs with its OWN mutex.
     import threading
 
-    from diplomat_app import autofix
+    from diplomat_runtime import autofix
 
     s = Store()
     s.me = "latekvo"
@@ -534,7 +534,7 @@ def test_repo_path_resolution(tmp_path):
     """
     import shlex
 
-    from diplomat_app import appconfig, core
+    from diplomat_runtime import appconfig, core
 
     prior_repo = os.environ.pop("DIPLOMAT_REPO", None)
     prior_config = os.environ.get("DIPLOMAT_CONFIG")
@@ -608,7 +608,7 @@ try:
 except ImportError:
     pass
 
-from diplomat_app import review
+from diplomat_runtime import review
 print(review.repo_path())
 """
 
@@ -627,13 +627,18 @@ def test_qt_less_node_reads_the_shared_config(tmp_path):
     prior = os.environ.get("DIPLOMAT_CONFIG")
     os.environ["DIPLOMAT_CONFIG"] = str(cfg)
     try:
-        from diplomat_app import appconfig
+        from diplomat_runtime import appconfig
 
         appconfig.set_value(appconfig.REPO_ROOT, picked)
         assert cfg.exists(), "the applet-side write must land on disk"
 
-        linux_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        env = {**os.environ, "PYTHONPATH": linux_dir, "DIPLOMAT_CONFIG": str(cfg)}
+        # The runtime package alone, which is all a node gets: the applet's own package
+        # is not on that path, so an answer that needed it would fail here rather than
+        # on the Mac, where nothing else would ever put it there.
+        packages = os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.dirname(os.path.abspath(__file__)))))
+        runtime_dir = os.path.join(packages, "diplomat-runtime")
+        env = {**os.environ, "PYTHONPATH": runtime_dir, "DIPLOMAT_CONFIG": str(cfg)}
         out = subprocess.run(
             [sys.executable, "-c", _QT_LESS_CHILD],
             capture_output=True, text=True, env=env, timeout=30,

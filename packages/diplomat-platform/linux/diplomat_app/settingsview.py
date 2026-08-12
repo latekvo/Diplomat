@@ -29,15 +29,17 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import (
+from diplomat_runtime import (
     apiwatch,
     appconfig,
     autofix,
     core,
-    deviceallocator,
-    glyphs,
     review,
     runner,
+)
+from . import (
+    deviceallocator,
+    glyphs,
     szpont,
 )
 from .store import Store, tools

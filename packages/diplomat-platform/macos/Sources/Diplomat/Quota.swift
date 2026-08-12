@@ -1,7 +1,7 @@
 import Foundation
 
 /// How much of the Claude rate-limit windows is left — the other half of the
-/// telemetry sample, and the macOS twin of the Linux applet's `quota.py`.
+/// telemetry sample, and the macOS twin of the shared runtime's `quota.py`.
 ///
 /// One GET against the OAuth usage endpoint (the same data Claude Code's `/usage`
 /// screen shows) using the OAuth access token Claude Code already holds, converted

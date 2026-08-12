@@ -31,12 +31,12 @@ enum HermesProbe {
     /// Hermes keeps one store for the whole machine, so the directory and dispatch time
     /// only narrow the field — the prompt is what makes the match exact when two runs are
     /// working in one checkout, which the applet's own task cap makes ordinary.
-    static func bind(_ p: TrackedProcess, directory: String, taken: Set<String>) -> String {
-        guard !p.promptFile.isEmpty,
-              let prompt = try? String(contentsOfFile: p.promptFile, encoding: .utf8)
+    static func bind(_ r: AgentState.RunRecord, directory: String,
+                     taken: Set<String>) -> String {
+        guard let prompt = try? String(contentsOf: AgentRegistry.promptPath(r.runID),
+                                       encoding: .utf8)
         else { return "" }
-        let found = candidates(directory: directory, since: p.createdAt.timeIntervalSince1970,
-                               taken: taken)
+        let found = candidates(directory: directory, since: r.dispatchedAt, taken: taken)
         for sessionID in found.prefix(OpenCodeAPI.maxCandidates) {
             let opening = row("SELECT role, content FROM messages WHERE session_id = ? "
                               + "ORDER BY id LIMIT 1", columns: 2, text: [sessionID])

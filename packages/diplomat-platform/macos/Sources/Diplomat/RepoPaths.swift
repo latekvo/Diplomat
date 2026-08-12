@@ -7,7 +7,7 @@ import DiplomatCore
 /// keeps the two resolutions from being confused for each other.
 ///
 /// `root` is the source tree behind both the self-update (git pull + rebuild) and the
-/// mesh node (`python3 -m szpontnet`, which runs from `linuxPackage` with
+/// mesh node (`python3 -m szpontnet`, which runs from `runtimePackage` with
 /// `szpontnetPackage` on its import path).
 ///
 /// A packaged `Diplomat.app` is decoupled from its source (it may sit in
@@ -48,10 +48,12 @@ enum RepoPaths {
     /// The SzpontNet library's project dir (what goes on a node's `PYTHONPATH`).
     static var szpontnetPackage: URL { packages.appendingPathComponent("szpontnet-core") }
 
-    /// The Linux front-end's package dir. macOS reaches into it for one thing only:
-    /// `diplomat_app.szponthost`, the module that puts Diplomat behind a mesh node.
-    static var linuxPackage: URL {
-        packages.appendingPathComponent("diplomat-platform/linux")
+    /// Diplomat's platform-neutral Python runtime — the half below the UI that both
+    /// front-ends run. macOS reaches for it to get `diplomat_runtime.szponthost`, the
+    /// module that puts Diplomat behind a mesh node; the other front-end's package is
+    /// no part of that, and this app never resolves it.
+    static var runtimePackage: URL {
+        packages.appendingPathComponent("diplomat-runtime")
     }
 
     /// This app's own package dir, and the scripts inside it that build the bundle
@@ -64,12 +66,12 @@ enum RepoPaths {
     /// True when `root` looks like an actual checkout, so the UI can disable the Update
     /// button / mesh spawn with a clear reason instead of failing obscurely on a missing
     /// directory. Both trees, because a node spawn needs both: the library it runs, and
-    /// the applet package holding the host module that puts Diplomat behind it.
+    /// the runtime holding the host module that puts Diplomat behind it.
     static var checkoutPresent: Bool {
         let fm = FileManager.default
         return fm.fileExists(atPath: root.appendingPathComponent(".git").path)
             && fm.fileExists(atPath: szpontnetPackage.appendingPathComponent("szpontnet").path)
-            && fm.fileExists(atPath: linuxPackage.appendingPathComponent("diplomat_app").path)
+            && fm.fileExists(atPath: runtimePackage.appendingPathComponent("diplomat_runtime").path)
     }
 
     // MARK: - the TARGET repo (where the agents work)

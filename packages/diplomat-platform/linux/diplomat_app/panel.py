@@ -26,8 +26,9 @@ from PySide6.QtCore import QUrl
 
 import time
 
-from . import activity, autofix, core, glyphs, szpont
-from .models import Fmt
+from diplomat_runtime import activity, autofix, core
+from diplomat_runtime.models import Fmt
+from . import glyphs, szpont
 from .settingsview import SettingsView
 from .store import Store, tool_by_id
 from .widgets import (

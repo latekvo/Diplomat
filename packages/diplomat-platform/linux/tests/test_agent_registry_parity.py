@@ -6,8 +6,8 @@ cross-language contract rather than an implementation detail of either side.
 
 A drift here fails silently in the worst possible way: nothing errors, the other side
 simply reads a run with no label, no source and no ledger key — which is exactly what
-"this applet has forgotten about that agent" looks like, the state this whole change
-exists to abolish. So the book is written by each side and read by the other.
+"this applet has forgotten about that agent" looks like. So: the book is written by
+each side and read by the other, field for field.
 """
 
 from __future__ import annotations
@@ -18,8 +18,8 @@ import subprocess
 
 import pytest
 
-from diplomat_app import agentregistry as R
-from diplomat_app import agentstate as A
+from diplomat_runtime import agentregistry as R
+from diplomat_runtime import agentstate as A
 
 CORE_BIN = os.environ.get("DIPLOMAT_CORE_BIN")
 pytestmark = pytest.mark.skipif(
@@ -109,7 +109,7 @@ def test_a_schema_the_other_side_does_not_know_is_ignored_by_both():
     """Both must refuse a book from the future rather than misread it — an applet
     acting on records whose fields it does not understand is worse than one that has
     forgotten, because the process scan covers forgetting."""
-    from diplomat_app import atomicjson
+    from diplomat_runtime import atomicjson
     atomicjson.write_atomic(R.runs_path(),
                             {"version": R.SCHEMA_VERSION + 99,
                              "runs": [r.to_json() for r in _records()]})

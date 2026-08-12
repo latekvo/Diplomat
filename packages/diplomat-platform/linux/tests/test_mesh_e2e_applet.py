@@ -29,7 +29,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-LINUX_DIR = Path(__file__).resolve().parents[1]
+RUNTIME_DIR = Path(__file__).resolve().parents[3] / "diplomat-runtime"
 SZPONTNET_DIR = Path(__file__).resolve().parents[3] / "szpontnet-core"
 
 pytestmark = pytest.mark.skipif(
@@ -71,7 +71,7 @@ def _mesh_env(tmp: Path) -> dict:
 def test_applet_meshes_and_dispatches(tmp_path, monkeypatch):
     # Prompt assembly shells out to the diplomat-core Swift binary; resolve it
     # against the REAL environment before we fake HOME away.
-    from diplomat_app import promptcore
+    from diplomat_runtime import promptcore
 
     try:
         core_bin = promptcore.core_bin()
@@ -105,9 +105,9 @@ def test_applet_meshes_and_dispatches(tmp_path, monkeypatch):
     peer_env.update({
         # The peer runs as its own process, so the host that makes it Diplomat's
         # node is handed over in its environment (see store.ensure_mesh_running_async).
-        "SZPONTNET_HOST": "diplomat_app.szponthost",
+        "SZPONTNET_HOST": "diplomat_runtime.szponthost",
         "PYTHONPATH": os.pathsep.join(
-            [str(LINUX_DIR), os.environ.get("PYTHONPATH", "")]).rstrip(os.pathsep),
+            [str(RUNTIME_DIR), os.environ.get("PYTHONPATH", "")]).rstrip(os.pathsep),
         "SZPONTNET_DIR": str(peer_dir),
         "SZPONTNET_PLATFORM": "macos",
         "SZPONTNET_SPAWN": f"cp {{prompt_file}} {tmp_path}/spawned-peer.txt",

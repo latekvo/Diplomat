@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pytest
 
-from diplomat_app import apiwatch, tmuxwatch
+from diplomat_runtime import apiwatch, tmuxwatch
 
 
 # MARK: - looks_like_api_error

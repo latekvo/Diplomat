@@ -25,7 +25,7 @@ import time
 
 import pytest
 
-from diplomat_app import telemetry
+from diplomat_runtime import telemetry
 from diplomat_app.store import Store
 
 pytest.importorskip("PySide6")

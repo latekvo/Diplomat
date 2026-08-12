@@ -8,8 +8,8 @@ import time
 
 import pytest
 
-from diplomat_app import autofix, review, telemetry
-from diplomat_app.autofix import (
+from diplomat_runtime import autofix, review, telemetry
+from diplomat_runtime.autofix import (
     PRFingerprint,
     PRSnapshot,
     ReviewAttempt,
@@ -233,7 +233,7 @@ def store(monkeypatch):
     st.me = "alice"  # skip the gh viewer-login shell-out
     # Never run the diplomat-core CLI in a unit test: stub the prompt builder.
     monkeypatch.setattr(
-        "diplomat_app.promptcore.build_prompt",
+        "diplomat_runtime.promptcore.build_prompt",
         lambda cfg: f"PROMPT:{cfg.get('kind')}:{cfg.get('specificPR')}",
     )
     # The probes would read this MACHINE's real processes, tmux panes and mesh —
@@ -259,8 +259,8 @@ def fake_probes(monkeypatch, *, processes=None, claims=None, merged=None,
     screen such an agent can never be seen to finish its turn. ``idle_prs`` are the
     ones sitting at their prompt.
     """
-    from diplomat_app import agentregistry
-    from diplomat_app import agentstate as A
+    from diplomat_runtime import agentregistry
+    from diplomat_runtime import agentstate as A
     from diplomat_app import probes
 
     def obs(v, empty):
@@ -293,8 +293,8 @@ def register_run(number, *, source=autofix.SOURCE_AUTO, pid=None, tty="",
     """Put one run in the registry, as a dispatch would. Returns the record."""
     import time as _time
 
-    from diplomat_app import agentregistry
-    from diplomat_app import agentstate as A
+    from diplomat_runtime import agentregistry
+    from diplomat_runtime import agentstate as A
 
     now = _time.time() if dispatched_at is None else dispatched_at
     return agentregistry.create_run(
@@ -308,7 +308,7 @@ def register_run(number, *, source=autofix.SOURCE_AUTO, pid=None, tty="",
 
 def agent_alive(pid, *, tty="pts/1", elapsed=5.0):
     """One live agent for `fake_probes(processes=…)`."""
-    from diplomat_app import agentstate as A
+    from diplomat_runtime import agentstate as A
     return {pid: A.ProcInfo(tty=tty, elapsed=elapsed, is_agent=True)}
 
 
@@ -476,13 +476,13 @@ def test_build_prompt_failure_surfaces_as_poll_error_not_a_dead_worker(store, mo
 
     def boom_build(cfg):
         raise RuntimeError("diplomat-core failed: build-prompt exit 1")
-    monkeypatch.setattr("diplomat_app.promptcore.build_prompt", boom_build)
+    monkeypatch.setattr("diplomat_runtime.promptcore.build_prompt", boom_build)
 
     store._autofix_poll_once()   # must NOT raise (a raise here would kill the worker thread)
     assert store.autofix_poll_error and "diplomat-core failed" in store.autofix_poll_error
 
     # Recovery: once build-prompt works again, the pill clears on the next clean poll.
-    monkeypatch.setattr("diplomat_app.promptcore.build_prompt",
+    monkeypatch.setattr("diplomat_runtime.promptcore.build_prompt",
                         lambda cfg: f"PROMPT:{cfg.get('kind')}")
     store._autofix_poll_once()
     assert store.autofix_poll_error is None
@@ -783,8 +783,8 @@ def test_a_mesh_run_is_judged_by_where_it_actually_runs(store, monkeypatch):
     process on that one, and judging it by a local process table — which this applet
     used to do, 120s after dispatch — retires every peer run the moment its grace
     expires, while the agent is still working."""
-    from diplomat_app import agentregistry
-    from diplomat_app import agentstate as A
+    from diplomat_runtime import agentregistry
+    from diplomat_runtime import agentstate as A
 
     _mesh_store(monkeypatch, store, dispatch=_spawned_here())
     monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
@@ -815,7 +815,7 @@ def test_a_mesh_run_is_judged_by_where_it_actually_runs(store, monkeypatch):
 def test_a_peer_run_is_never_retired_by_this_machines_process_table(store, monkeypatch):
     """The bug the placement split exists for. `ps` here says nothing whatever about a
     process there, so only the executor's origination claim can end the run."""
-    from diplomat_app import agentstate as A
+    from diplomat_runtime import agentstate as A
 
     register_run(1, placement=A.PLACEMENT_MESH_PEER, node="brick",
                  work_key="review:1:sha", dispatched_at=time.time() - 3600)
@@ -836,7 +836,7 @@ def test_a_peer_run_is_never_retired_by_this_machines_process_table(store, monke
 
     # The claim is released. Absence is measured from the last sighting — which the
     # assertions above just refreshed — so it is over once the settle window passes.
-    from diplomat_app import agentregistry
+    from diplomat_runtime import agentregistry
     (held,) = agentregistry.load()
     agentregistry.save([A.RunRecord(**{**held.__dict__,
                                        "claim_seen_at": time.time() - 120})])
@@ -896,7 +896,7 @@ def test_in_flight_falls_back_to_live_ps_agents(store, monkeypatch):
     monkeypatch.setattr(
         "diplomat_app.autofixmonitor.fetch_snapshots", lambda *a, **k: [snap]
     )
-    from diplomat_app import agentregistry
+    from diplomat_runtime import agentregistry
     assert agentregistry.load() == []  # nothing remembered locally…
     fake_probes(monkeypatch, live_prs={9})
     store._poll_my_prs([snap])
@@ -917,7 +917,7 @@ def test_an_undecodable_ps_dump_leaves_runs_unknown_rather_than_wedging(store,
     Caught, it becomes an UNAVAILABLE observation, and the difference from the old
     fail-open-to-empty is the whole point: empty would have retired every run on the
     machine at once."""
-    from diplomat_app import agentregistry
+    from diplomat_runtime import agentregistry
     from diplomat_app import probes
 
     register_run(512, pid=4242, tty="pts/3", dispatched_at=time.time() - 600)
@@ -1317,7 +1317,7 @@ def test_auto_task_limit_persists_to_the_shared_config_file(store):
     """It lives in ~/.diplomat/config.json, not QSettings, because the mesh node
     that spawns peer-routed work is a separate Qt-less process reading the same
     cap."""
-    from diplomat_app import appconfig
+    from diplomat_runtime import appconfig
 
     assert store.auto_task_limit == 2  # default, with nothing written
     store.auto_task_limit = 4
@@ -1465,7 +1465,7 @@ def test_an_old_record_keeps_its_name_while_its_agent_is_alive(store, monkeypatc
     runs on, with hours of work left. Reviews here routinely outlive any TTL, so a
     record is ended by evidence its agent is gone, never by the clock reaching a
     number. There is no TTL any more; this is what replaced it."""
-    from diplomat_app import agentstate as A
+    from diplomat_runtime import agentstate as A
 
     started = time.time() - 6 * 60 * 60  # six hours in
     register_run(512, pid=4242, tty="pts/3", dispatched_at=started,
@@ -1493,7 +1493,7 @@ def test_a_record_ends_when_its_process_is_gone_from_a_table_we_read(store, monk
 
     store.refresh_auto_task_count()
 
-    from diplomat_app import agentregistry
+    from diplomat_runtime import agentregistry
     assert agentregistry.load() == []
     assert store.running_tasks == [] and store.free_auto_slots == 2
 
@@ -1502,8 +1502,8 @@ def test_a_record_is_never_ended_by_a_table_we_could_not_read(store, monkeypatch
     """The distinction the whole resolver is built on, at the store level: an
     unreadable process table is not an empty one. The run holds its bay, keeps its
     name, keeps its PR, and says why."""
-    from diplomat_app import agentregistry
-    from diplomat_app import agentstate as A
+    from diplomat_runtime import agentregistry
+    from diplomat_runtime import agentstate as A
 
     register_run(512, pid=4242, tty="pts/3", dispatched_at=time.time() - 600,
                  label="Auto · #512")
@@ -1526,7 +1526,7 @@ def test_a_long_manual_run_never_starts_spending_the_automatic_budget(
     for the whole life of the agent it started, not for its first two hours. The
     exemption lives in the record, which is why the record now outlives a restart:
     lost, its agent reappears as an untracked one, and untracked counts as automatic."""
-    from diplomat_app import agentstate as A
+    from diplomat_runtime import agentstate as A
 
     register_run(512, source=autofix.SOURCE_PANEL, pid=4242, tty="pts/3",
                  dispatched_at=time.time() - 6 * 60 * 60, label="Review · #512")
@@ -1545,7 +1545,7 @@ def test_at_capacity_is_noted_once_per_episode(store, monkeypatch):
     """One activity line when the machine saturates, not one per deferred PR per
     poll — a 3-minute cadence over a long-running agent would otherwise bury the
     feed under the same sentence."""
-    from diplomat_app import activity
+    from diplomat_runtime import activity
 
     _spawn_recorder(monkeypatch, finish=False)
     monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
@@ -1561,7 +1561,7 @@ def test_at_capacity_is_noted_once_per_episode(store, monkeypatch):
     assert "cap of 1 automatic task" in noted[0].detail
 
     # Room again → the next saturation is a new episode and is noted afresh.
-    from diplomat_app import agentregistry
+    from diplomat_runtime import agentregistry
     agentregistry.save([])
     assert store.dispatch_agent(_job(number=5), autofix.SOURCE_AUTO) == "spawned"
     assert (
@@ -1741,7 +1741,7 @@ def test_work_over_the_cap_waits_in_the_queue(store, monkeypatch):
 def test_a_switched_off_monitor_queues_what_it_finds(store, monkeypatch):
     """The toggles decide who STARTS the work, not whether it is known: a monitor
     switched off keeps polling, lists what it finds, and waits for a click."""
-    from diplomat_app import activity
+    from diplomat_runtime import activity
 
     store.pr_autofix_enabled = False
     store.review_requests_enabled = False
@@ -2014,7 +2014,7 @@ def test_a_queued_dispatch_records_the_attempt_the_monitor_would_have(store, mon
 def test_execute_now_starts_a_queued_task_past_the_cap(store, monkeypatch):
     """The operator overrides the cap and nothing else: it stays auto work — same
     label, same counter — and once running it occupies a slot like any other."""
-    from diplomat_app import activity
+    from diplomat_runtime import activity
 
     store.pr_autofix_enabled = False
     calls = _spawn_recorder(monkeypatch, finish=False)
@@ -2330,7 +2330,7 @@ def test_drawing_the_rows_retires_nothing_and_writes_nothing(store, monkeypatch,
     reads had consequences, a headless render retired records and wrote probe warnings
     into the operator's real activity feed — found by rendering the panel and then
     finding the lines in ~/.diplomat afterwards."""
-    from diplomat_app import activity, agentregistry
+    from diplomat_runtime import activity, agentregistry
 
     register_run(512, pid=4242, tty="pts/3", ledger_key="review:512:abc",
                  dispatched_at=time.time() - 600)
@@ -2356,11 +2356,11 @@ def test_a_spawn_during_a_tick_is_not_dropped_by_the_write_back(store, monkeypat
     """The tick resolves against the book as it was; writing its own copy back would
     drop a run registered in between — an agent nothing counts, which is a bay the
     machine then spends twice."""
-    from diplomat_app import agentregistry
+    from diplomat_runtime import agentregistry
 
     slow = register_run(101, pid=1, tty="pts/1", dispatched_at=time.time())
     fake_probes(monkeypatch, processes={1: __import__(
-        "diplomat_app.agentstate", fromlist=["x"]).ProcInfo(
+        "diplomat_runtime.agentstate", fromlist=["x"]).ProcInfo(
             tty="pts/1", elapsed=5.0, is_agent=True)})
     t = store._agent_tick()
 
@@ -2380,7 +2380,7 @@ def test_the_poll_settles_the_agents_even_with_the_panel_shut(store, monkeypatch
     leave the tray alone. Seen live with three runs and the panel closed.
 
     So the 3-minute poll settles them, whatever is on screen."""
-    from diplomat_app import agentregistry
+    from diplomat_runtime import agentregistry
 
     register_run(512, pid=4242, tty="pts/3", dispatched_at=time.time() - 600)
     fake_probes(monkeypatch, processes={})  # its process is gone
@@ -2399,8 +2399,8 @@ def test_the_poll_writes_back_what_the_tick_learned(store, monkeypatch):
     """The same gate cost the write-back too: a run's pid and tty are learned by a
     tick, and if only a visible panel ever ticked, they were never persisted — so the
     pane probe kept asking about a tty nobody had recorded."""
-    from diplomat_app import agentregistry
-    from diplomat_app import agentstate as A
+    from diplomat_runtime import agentregistry
+    from diplomat_runtime import agentstate as A
 
     register_run(512, dispatched_at=time.time())  # no pid, no tty yet
     fake_probes(monkeypatch, live_prs={512})

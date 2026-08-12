@@ -17,7 +17,7 @@ import time
 
 import pytest
 
-from diplomat_app import autofix
+from diplomat_runtime import autofix
 from diplomat_app.panel import Panel
 from diplomat_app.store import Store
 from test_autofix import AT_PROMPT, WORKING, fake_probes, register_run
@@ -45,7 +45,7 @@ def _live(monkeypatch, *records, idle=False, elapsed=60.0):
     is there, and the screen whether that pid is working or waiting. Both are said
     here, so a row's state is the resolver's answer rather than something the test
     poked into the store."""
-    from diplomat_app import agentstate as A
+    from diplomat_runtime import agentstate as A
 
     fake_probes(
         monkeypatch,
@@ -195,7 +195,7 @@ def test_a_run_the_mesh_placed_here_says_where_it_came_from(panel, monkeypatch):
     """It spends this machine's bay like any other agent, but nothing on this screen
     dispatched it — without the note, an agent appears in a bay the operator watched
     the mesh route away."""
-    from diplomat_app import agentstate as A
+    from diplomat_runtime import agentstate as A
     _live(monkeypatch, register_run(512, pid=5121, tty="pts/1", label="Auto · #512",
                                     kind="review",
                                     placement=A.PLACEMENT_MESH_HERE))

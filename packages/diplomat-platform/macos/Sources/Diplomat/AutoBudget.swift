@@ -5,7 +5,7 @@ import DiplomatCore
 ///
 /// The pure arithmetic is `AgentDispatchGate.budgetDecide` and the pieces it is fed;
 /// this is the assembly — the telemetry ledger folded and priced, the live quota probe,
-/// and the operator's three knobs. Python twin: `diplomat_app/autobudget.py`, which the
+/// and the operator's three knobs. Python twin: `diplomat_runtime/autobudget.py`, which the
 /// mesh node uses to answer the same question about work a peer routes in. Both read
 /// the same ledger and the same config file, so a device cannot end up with one budget
 /// for work it found itself and another for work it was sent.

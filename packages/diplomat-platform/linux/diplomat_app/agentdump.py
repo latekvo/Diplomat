@@ -14,7 +14,8 @@ from __future__ import annotations
 
 import time
 
-from . import agentregistry, agentstate, apiwatch, probes
+from diplomat_runtime import agentregistry, agentstate, apiwatch
+from . import probes
 
 
 def run() -> int:
@@ -77,5 +78,5 @@ def _describe(obs: agentstate.Observation) -> str:
 
 def _limit() -> int:
     """The configured cap, read without building a Store (which would start timers)."""
-    from . import appconfig
+    from diplomat_runtime import appconfig
     return appconfig.auto_task_limit()

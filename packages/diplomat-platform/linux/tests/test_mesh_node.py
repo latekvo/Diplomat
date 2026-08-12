@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-LINUX_DIR = Path(__file__).resolve().parents[1]
+RUNTIME_DIR = Path(__file__).resolve().parents[3] / "diplomat-runtime"
 # `python -m szpontnet` puts its cwd on sys.path, so running the fake fleet from
 # the library's project dir is what makes the checkout's node the one under test.
 SZPONTNET_DIR = Path(__file__).resolve().parents[3] / "szpontnet-core"
@@ -78,9 +78,9 @@ _PORT_BASE = 42000 + (os.getpid() % 400) * 20
 def _host_env() -> dict:
     import os as _os
     return {
-        "SZPONTNET_HOST": "diplomat_app.szponthost",
+        "SZPONTNET_HOST": "diplomat_runtime.szponthost",
         "PYTHONPATH": _os.pathsep.join(
-            [str(LINUX_DIR), _os.environ.get("PYTHONPATH", "")]).rstrip(_os.pathsep),
+            [str(RUNTIME_DIR), _os.environ.get("PYTHONPATH", "")]).rstrip(_os.pathsep),
     }
 
 

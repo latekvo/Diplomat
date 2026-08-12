@@ -167,8 +167,14 @@ SPAWN_GRACE = 20.0
 PID_ADOPTION_SLACK = 30.0
 
 #: How long a mesh origination claim may go unseen before the peer's run reads as
-#: over. Same value and same reasoning as ``MeshAgentRun.claimSettle`` in the Swift
-#: core, which this replaces on both platforms.
+#: over.
+#:
+#: Absence is only evidence once it has had time to be evidence. The claim travels the
+#: executor's link BEFORE the dispatch ack, but reaches a front-end through a file the
+#: node rewrites every couple of seconds, read by a poll of its own — and a node restart
+#: empties the book until its peers re-assert. This window outlasts all three, and is
+#: short enough that a finished run leaves the list while the operator is still looking
+#: at it.
 CLAIM_SETTLE = 45.0
 
 
@@ -213,8 +219,8 @@ class SessionState:
 
     The typed answer to the question :func:`_classify_activity` otherwise has to read
     off a status bar. An OpenCode agent serves its session over loopback while it
-    works (:mod:`diplomat_app.opencodeapi`) and a Hermes agent writes its own to
-    SQLite (:mod:`diplomat_app.hermesstore`); Claude Code serves nothing, so its runs
+    works (:mod:`diplomat_runtime.opencodeapi`) and a Hermes agent writes its own to
+    SQLite (:mod:`diplomat_runtime.hermesstore`); Claude Code serves nothing, so its runs
     are absent from the evidence and are still read from the screen.
 
     Only the one fact, because it is the only one this evidence can carry honestly:

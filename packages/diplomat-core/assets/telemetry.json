@@ -1,5 +1,5 @@
 {
-  "_comment": "The Telemetry screen's model, shared verbatim by both front-ends (macOS TelemetryView.swift, Linux telemetryview.py) and by the shared math in DiplomatCore/Telemetry.swift + diplomat_app/telemetry.py. Titles, blurbs, glyphs and colours live here so the two screens cannot describe the same number differently; the numbers themselves come from the ledger at ~/.diplomat/pr-monitor/<ledgerFile>.",
+  "_comment": "The Telemetry screen's model, shared verbatim by both front-ends (macOS TelemetryView.swift, Linux telemetryview.py) and by the shared math in DiplomatCore/Telemetry.swift + diplomat_runtime/telemetry.py. Titles, blurbs, glyphs and colours live here so the two screens cannot describe the same number differently; the numbers themselves come from the ledger at ~/.diplomat/pr-monitor/<ledgerFile>.",
 
   "ledgerFile": "telemetry.jsonl",
   "cursorFile": "usage-cursor.json",

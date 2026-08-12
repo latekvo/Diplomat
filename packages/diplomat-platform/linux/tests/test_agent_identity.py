@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from diplomat_app import review
+from diplomat_runtime import review
 
 pytestmark = pytest.mark.skipif(not Path("/proc").is_dir(),
                                 reason="the pid identity check reads /proc")

@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import json
 
-from . import core, gh
-from .autofix import PRSnapshot, ReviewRequest
+from diplomat_runtime import core, gh
+from diplomat_runtime.autofix import PRSnapshot, ReviewRequest
 
 
 def _owed_thread(thread: dict, me: str) -> bool:

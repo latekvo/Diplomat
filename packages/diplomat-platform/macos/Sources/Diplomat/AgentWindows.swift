@@ -1,0 +1,104 @@
+import Foundation
+import DiplomatCore
+
+/// Where a run's terminal window is, so the panel can raise it again.
+///
+/// The run book is a cross-language contract and carries only what both front-ends mean
+/// by a run; a window id is neither — a Linux spawn is a detached process with no window
+/// handle at all. So it lives beside the run rather than in it, as one more file in the
+/// run directory next to `runner` / `port` / `session`. `AgentRegistry.forget` deletes
+/// the directory, so a retired run takes its handle with it.
+///
+/// The handle is the applet's ONLY way back to a session: a spawn walks away from a fully
+/// detached terminal, and these three ids are what the focus AppleScript addresses. A run
+/// with no handle — one the mesh node opened, or a live agent nobody dispatched — is a row
+/// that draws and resolves like any other and simply cannot be clicked.
+///
+/// Whether a run is still going is not asked here and never was a window question: the
+/// answer is its agent's pid in the process table (`AgentState`), and closing a window
+/// kills the session's processes, so a shut window is a pid that has gone.
+enum AgentWindows {
+    /// The three ids `focus` addresses a session by.
+    struct Handle: Equatable, Codable {
+        /// Which terminal app opened it ("iterm" / "terminal").
+        var terminal: String
+        /// Terminal window id (string form) — the focus target.
+        var windowID: String
+        /// iTerm session id (GUID); empty for Terminal.app, which has no stable one.
+        var sessionID: String
+    }
+
+    private static func path(_ runID: String) -> URL {
+        AgentRegistry.runDir(runID).appendingPathComponent("window")
+    }
+
+    /// Record where this run's window is. Best-effort: a handle that cannot be written is
+    /// a row that cannot be clicked, never a spawn that failed.
+    static func stage(_ runID: String, _ handle: Handle) {
+        guard let data = try? JSONEncoder().encode(handle) else { return }
+        try? data.write(to: path(runID), options: .atomic)
+    }
+
+    /// This run's window handle, or nil for a run that never had one.
+    static func handle(_ runID: String) -> Handle? {
+        guard let data = try? Data(contentsOf: path(runID)) else { return nil }
+        return try? JSONDecoder().decode(Handle.self, from: data)
+    }
+
+    /// Bring a session's terminal window to the front. Returns false when the window no
+    /// longer exists (closed) or AppleScript errors — the caller then re-settles and the
+    /// run's row goes with the next tick's verdict.
+    @discardableResult
+    static func focus(_ handle: Handle) -> Bool {
+        guard !handle.windowID.isEmpty else { return false }
+        let term = SpawnTerminal(rawValue: handle.terminal) ?? .iterm
+        let script = focusScript(term: term, windowID: handle.windowID,
+                                 sessionID: handle.sessionID)
+        return OSAScript.runSilently(script)
+    }
+
+    /// AppleScript that selects the window with the captured id (erroring if it's gone, so
+    /// the caller sees a non-zero exit). iTerm also re-selects the exact session; Terminal
+    /// raises + fronts the window.
+    static func focusScript(term: SpawnTerminal, windowID: String, sessionID: String) -> String {
+        switch term {
+        case .iterm:
+            return """
+            tell application "iTerm"
+                activate
+                set _found to false
+                repeat with w in windows
+                    if (id of w as string) is "\(windowID)" then
+                        select w
+                        set _found to true
+                        repeat with t in tabs of w
+                            repeat with s in sessions of t
+                                if (id of s) is "\(sessionID)" then
+                                    select t
+                                    tell t to select s
+                                end if
+                            end repeat
+                        end repeat
+                    end if
+                end repeat
+                if not _found then error "window gone"
+            end tell
+            """
+        case .terminal:
+            return """
+            tell application "Terminal"
+                activate
+                set _found to false
+                repeat with w in windows
+                    if (id of w as string) is "\(windowID)" then
+                        set index of w to 1
+                        set frontmost of w to true
+                        set _found to true
+                    end if
+                end repeat
+                if not _found then error "window gone"
+            end tell
+            """
+        }
+    }
+}

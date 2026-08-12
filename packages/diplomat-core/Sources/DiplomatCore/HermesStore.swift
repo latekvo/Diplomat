@@ -1,6 +1,6 @@
 import Foundation
 
-/// Reading a Hermes agent's own session — the Swift twin of `diplomat_app/hermesstore.py`.
+/// Reading a Hermes agent's own session — the Swift twin of `diplomat_runtime/hermesstore.py`.
 ///
 /// The same two questions `OpenCodeAPI` answers, from a different place. Hermes serves no
 /// per-run port — its `serve` is one machine-level gateway, not a server per agent — but

@@ -20,8 +20,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from diplomat_app.audit import AuditConfig  # noqa: E402
 from diplomat_app.conflicts import ConflictConfig  # noqa: E402
-from diplomat_app.prtarget import PRTarget  # noqa: E402
-from diplomat_app.review import ReviewConfig  # noqa: E402
+from diplomat_runtime.prtarget import PRTarget  # noqa: E402
+from diplomat_runtime.review import ReviewConfig  # noqa: E402
 
 GOLDEN_DIR = Path(__file__).resolve().parents[3] / "diplomat-core" / "assets" / "golden-prompts"
 

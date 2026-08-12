@@ -2,7 +2,7 @@ import Foundation
 import DiplomatCore
 
 /// Writing and reading `~/.diplomat/pr-monitor/telemetry.jsonl` — the macOS twin of
-/// the IO half of the Linux applet's `telemetry.py`. The arithmetic over what this
+/// the IO half of the shared runtime's `telemetry.py`. The arithmetic over what this
 /// records is shared (`DiplomatCore.Telemetry`); this file only decides when a line
 /// is appended and how the file is kept from growing forever.
 ///

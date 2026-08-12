@@ -16,8 +16,8 @@ import subprocess
 
 import pytest
 
-from diplomat_app import agentregistry as R
-from diplomat_app import agentstate as A
+from diplomat_runtime import agentregistry as R
+from diplomat_runtime import agentstate as A
 from diplomat_app import probes
 
 T0 = 1_000_000.0
@@ -67,7 +67,7 @@ def test_the_prompt_is_kept_with_the_run_and_is_not_world_readable():
 
 
 def test_a_book_from_a_future_schema_is_ignored_rather_than_misread():
-    from diplomat_app import atomicjson
+    from diplomat_runtime import atomicjson
     atomicjson.write_atomic(R.runs_path(), {"version": 99, "runs": [rec().to_json()]})
     assert R.load() == []
 
@@ -375,7 +375,7 @@ def test_the_busy_marker_is_counted_against_the_screens_it_was_looked_for_in(
     else's UI. If it stops matching, every agent reads as idle at once and the cap
     stops holding — and nothing else on screen would look wrong, so the ratio is the
     only warning there could be."""
-    from diplomat_app import apiwatch
+    from diplomat_runtime import apiwatch
 
     busy = f"● Reading…\n⏵⏵ bypass permissions on · {apiwatch.BUSY_MARKERS[0]} · ←"
     idle = "● Done.\n❯\n⏵⏵ bypass permissions on (shift+tab to cycle)"

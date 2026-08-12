@@ -23,8 +23,9 @@ from __future__ import annotations
 
 import sqlite3
 
-from diplomat_app import agentregistry, hermesstore, probes, runner
-from diplomat_app.agentstate import RunRecord, SessionState
+from diplomat_runtime import agentregistry, hermesstore, runner
+from diplomat_app import probes
+from diplomat_runtime.agentstate import RunRecord, SessionState
 
 T0 = 1_000_000.0
 PROMPT = "Review PR #7 in o/r"

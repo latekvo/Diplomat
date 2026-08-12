@@ -23,9 +23,10 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from . import glyphs, review, widgets
-from .prtarget import PRTarget
-from .review import SpecificAuthor
+from diplomat_runtime import review
+from diplomat_runtime.prtarget import PRTarget
+from diplomat_runtime.review import SpecificAuthor
+from . import glyphs, widgets
 from .store import Store
 from .wizardbase import SpawnWizard
 

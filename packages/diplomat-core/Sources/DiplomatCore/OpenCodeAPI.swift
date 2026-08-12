@@ -1,6 +1,6 @@
 import Foundation
 
-/// Reading an OpenCode agent's own session — the Swift twin of `diplomat_app/opencodeapi.py`.
+/// Reading an OpenCode agent's own session — the Swift twin of `diplomat_runtime/opencodeapi.py`.
 ///
 /// An OpenCode TUI given `--port` serves its session over HTTP on loopback while it
 /// works, and that server answers the two questions the applet has always had to guess

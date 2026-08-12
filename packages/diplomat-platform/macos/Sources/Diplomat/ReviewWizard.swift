@@ -75,28 +75,41 @@ enum AgentSpawner {
         }
     }
 
-    /// What a spawn produced: the staged prompt file plus the OS-level handles the
-    /// applet keeps so it can later focus the window and detect completion.
-    struct SpawnResult {
+    /// What a run's directory staged for its agent: the four paths the spawn is built
+    /// out of, and which CLI is to be run in it.
+    ///
+    /// Everything here comes from `AgentRegistry`, which the run is registered with
+    /// BEFORE the spawn — a terminal takes seconds to open, and a run booked only on
+    /// success is a PR that reads free while its agent is starting.
+    struct SpawnPlan {
         let promptFile: URL
         let donePath: String
-        let terminal: SpawnTerminal
-        let windowID: String
-        let sessionID: String
-        let tty: String
-        /// Which agent CLI this run was spawned as (`AgentRunner.rawValue`), so what is
-        /// asked about it afterwards is the runner it actually ran, not the one selected
-        /// by then.
-        let runner: String
+        let pidPath: String
+        /// Which agent CLI this run is spawned as. Resolved once by the caller and
+        /// carried here rather than re-read later: the setting is what the NEXT spawn
+        /// will use, so a run started under one runner and asked about after the
+        /// operator switched would be interrogated through the wrong store.
+        let runner: AgentRunner
         /// Where this run's OpenCode server answers, or 0 for a run that has none —
         /// every Claude Code and Hermes run, and any OpenCode run no port could be
         /// reserved for.
         let port: Int
     }
 
-    /// Stage the prompt, open the terminal, run claude. The AppleScript reports the
-    /// new window/session/tty back on stdout, which we capture so the spawned
-    /// session can be tracked (focused + polled for completion) afterwards.
+    /// What a spawn produced: the handle the applet keeps so it can raise the window
+    /// again, and the tty its agent runs on.
+    struct SpawnResult {
+        let terminal: SpawnTerminal
+        let window: AgentWindows.Handle
+        /// The controlling tty as `ps` spells it, which is how a run's screen is found.
+        /// Known here a moment before the pid file is, so a run has a screen from its
+        /// first tick rather than from whichever one adopts its pid.
+        let tty: String
+    }
+
+    /// Open the terminal and run the agent on the staged prompt. The AppleScript reports
+    /// the new window/session/tty back on stdout, which we capture so the spawned session
+    /// can be raised again afterwards.
     ///
     /// `restoreFocusTo` (a bundle id) makes the spawn NON-focus-stealing: the window
     /// opens without activating the terminal, and focus bounces straight back to that
@@ -104,26 +117,15 @@ enum AgentSpawner {
     /// don't yank the user off whatever they're doing; a user-driven SPAWN passes nil
     /// so the terminal comes forward as before.
     @discardableResult
-    static func spawn(_ prompt: String, terminal preferred: SpawnTerminal,
+    static func spawn(_ plan: SpawnPlan, terminal preferred: SpawnTerminal,
                       restoreFocusTo restoreBID: String? = nil) throws -> SpawnResult {
         let term = resolved(preferred)
-        let file = try writePrompt(prompt)
-        let donePath = doneFilePath()
-        // Resolved once and carried on the result rather than re-read later: the setting
-        // is what the NEXT spawn will use, so a run started under one runner and asked
-        // about after the operator switched would be interrogated through the wrong store.
-        let runner = AppConfig.agentRunner
-        // An OpenCode run gets a port reserved for its own server, which is what lets the
-        // applet ask that agent what it is doing. A port that cannot be had is not a
-        // failure to spawn: the run goes ahead without one and is read off its screen,
-        // exactly as a Claude Code run is.
-        let port = runner == .opencode ? (OpenCodeProbe.freePort() ?? 0) : 0
-        let cmd = shellCommand(promptFile: file, donePath: donePath, runner: runner,
-                               port: port)
-        let (wid, sid, tty) = try runSpawn(command: cmd, terminal: term, restoreFocusTo: restoreBID)
-        return SpawnResult(promptFile: file, donePath: donePath, terminal: term,
-                           windowID: wid, sessionID: sid, tty: tty,
-                           runner: runner.rawValue, port: port)
+        let (wid, sid, tty) = try runSpawn(command: shellCommand(plan), terminal: term,
+                                           restoreFocusTo: restoreBID)
+        return SpawnResult(terminal: term,
+                           window: AgentWindows.Handle(terminal: term.rawValue,
+                                                       windowID: wid, sessionID: sid),
+                           tty: AgentProbes.shortTTY(tty))
     }
 
     /// Open a new terminal window running `command`, returning the captured
@@ -155,39 +157,37 @@ enum AgentSpawner {
         return url
     }
 
-    /// A fresh path for the per-spawn completion sentinel (not created until the
-    /// spawned shell writes it). Lives under ~/.diplomat, NOT the temp dir — macOS
-    /// purges temp files after ~3 days, and the sweep re-derives `done` from the
-    /// file's existence, so a purged sentinel flipped long-lived completed sessions
-    /// back to "running".
-    static func doneFilePath() -> String {
-        let dir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".diplomat/pr-monitor/done")
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("diplomat-done-\(UUID().uuidString).txt").path
-    }
-
-    /// `cd '<repo>' 2>/dev/null; <agent>; printf %s $? > '<done>'`
+    /// `cd '<repo>' 2>/dev/null; "$SHELL" -i -c 'printf %s $$ > <pid>; <agent>'; printf %s $? > '<done>'`
     ///
     /// `<agent>` is `AgentRunner.agentCommand` — `claude "$(cat '<promptfile>')"` or the
     /// OpenCode spelling of the same thing. Everything around it is identical for both,
     /// because everything around it is what a run is *identified* by.
     ///
+    /// The agent runs one shell deeper, and the pid that shell records is the AGENT'S
+    /// OWN: the inner shell writes its `$$` first, then execs the agent over itself,
+    /// which replaces the process image without changing the pid. That pid is what
+    /// `AgentState` identifies the run by, in place of matching
+    /// `PR #<n> in <owner>/<repo>` against prompt text in `ps` output — which could not
+    /// tell two runs on one PR apart, matched any unrelated session that mentioned the
+    /// number, and matched the wrapper shell as readily as the agent.
+    ///
+    /// That exec is the shell's own, on the last command of a `-c` string, and must NOT
+    /// be written out as the `exec` keyword: alias expansion applies to the first word of
+    /// a simple command, so under an explicit `exec claude` the word checked is `exec`,
+    /// the user's `claude` alias never expands, and the agent loses the
+    /// `--dangerously-skip-permissions` that alias carries. The inner shell is
+    /// interactive for the same reason — aliases do not survive into a non-interactive
+    /// child. `$?` after it is still the agent's own exit code; the exec made them one
+    /// process.
+    ///
     /// The trailing `printf … > done` writes a sentinel the moment the agent returns, so
-    /// the applet can mark the session complete even while its window stays open.
-    ///
-    /// `port` is where an OpenCode run's own server answers, so `OpenCodeAPI` can ask the
-    /// agent whether it is working rather than inferring it from the window. The other two
-    /// runners ignore it — Hermes answers the same question from its own session store.
-    ///
-    /// `runner` defaults to the configured one; a spawn passes the one it already resolved
-    /// so the command and the port agree even if the setting changes mid-spawn.
-    static func shellCommand(promptFile: URL, donePath: String,
-                             runner: AgentRunner = AppConfig.agentRunner,
-                             port: Int = 0) -> String {
-        let agent = runner.agentCommand(promptFile: promptFile.path,
-                                        model: AppConfig.agentModel, port: port)
-        return "cd \(shq(repoPath)) 2>/dev/null; \(agent); printf %s $? > \(shq(donePath))"
+    /// the applet can price the run even while its window stays open.
+    static func shellCommand(_ plan: SpawnPlan) -> String {
+        let agent = plan.runner.agentCommand(promptFile: plan.promptFile.path,
+                                             model: AppConfig.agentModel, port: plan.port)
+        let inner = "printf %s $$ > \(shq(plan.pidPath)); \(agent)"
+        return "cd \(shq(repoPath)) 2>/dev/null; \"$SHELL\" -i -c \(shq(inner)); "
+            + "printf %s $? > \(shq(plan.donePath))"
     }
 
     /// Wrap the shell command in an "open a new window, settle, run this, and report
@@ -301,7 +301,7 @@ enum AgentSpawner {
     }
 
     /// POSIX single-quote a path for safe embedding in the shell command.
-    private static func shq(_ s: String) -> String {
+    static func shq(_ s: String) -> String {
         "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 

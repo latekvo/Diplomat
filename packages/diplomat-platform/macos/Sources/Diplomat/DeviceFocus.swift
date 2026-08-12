@@ -3,11 +3,11 @@ import AppKit
 
 // Best-effort "click an in-use device → focus the terminal running the agent that
 // holds it". The device pool only knows the owner by its MCP-forwarder PID, so we
-// resolve that PID's controlling tty (which the agent's `claude` session shares),
-// then bring that window forward. Two paths:
-//   1. Precise — the applet itself spawned that agent, so a TrackedProcess with the
-//      same tty exists; reuse ProcessMonitor.focus (window/session id).
-//   2. Fallback — any other claude session; locate the tty across iTerm/Terminal.
+// resolve that PID's controlling tty (which the agent's session shares), then bring
+// that window forward. Two paths:
+//   1. Precise — the applet itself spawned that agent, so a run with the same tty has
+//      a window handle recorded; raise it (`AgentWindows.focus`).
+//   2. Fallback — any other agent session; locate the tty across iTerm/Terminal.
 // Either can fail (agent not in a terminal, window closed, unsupported terminal);
 // the caller treats a false return as a silent no-op.
 enum DeviceFocus {
@@ -32,11 +32,11 @@ enum DeviceFocus {
     /// Bring forward the terminal window of the agent holding `dev`. Returns false
     /// when it can't be resolved (no owner PID, PID dead, no tty, window gone).
     @discardableResult
-    static func focus(_ dev: DeviceAllocation, tracked: [TrackedProcess]) -> Bool {
+    static func focus(_ dev: DeviceAllocation, tracked: [Store.AgentRow]) -> Bool {
         guard let pid = dev.owner?.ownerPid, let t = tty(forPid: pid) else { return false }
         // Precise: an applet-spawned session with this exact tty.
-        if let p = tracked.first(where: { !$0.tty.isEmpty && $0.shortTTY == t }),
-           ProcessMonitor.focus(p) { return true }
+        if let handle = tracked.first(where: { $0.record.tty == t })?.window,
+           AgentWindows.focus(handle) { return true }
         // Fallback: find the tty across the known terminals.
         return focusByTTY(t)
     }

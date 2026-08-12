@@ -4,7 +4,7 @@ import DiplomatCore
 /// Asking each run's own agent what it is doing — the Swift twin of
 /// `probes.agent_sessions`.
 ///
-/// Positive evidence where the pane gives an inference: a turn the runner itself marks
+/// Positive evidence where the screen gives an inference: a turn the runner itself marks
 /// finished, rather than whether someone else's status bar happened to have its interrupt
 /// hint drawn when we looked.
 ///
@@ -13,49 +13,51 @@ import DiplomatCore
 /// (`HermesProbe`) — and both come back as the same typed answer, so nothing downstream
 /// learns which runner it is looking at.
 enum AgentSessionProbe {
-    /// Which session a run turned out to own, and what it currently says.
+    /// Does this runner serve a session of its own to ask?
     ///
-    /// The two travel together because the sweep learns both at once and persists the
-    /// first: matching costs a fetch, and having paid it once the row should never pay
-    /// again.
-    struct AgentSession {
-        let sessionID: String
-        let state: AgentState.SessionState
-    }
+    /// A runner that does not is read off its screen — that is Claude Code, and a run
+    /// whose runner was never recorded.
+    static func serves(_ runner: String) -> Bool { backends[runner] != nil }
 
-    /// What every run that serves a session says it is doing, keyed by row.
+    /// What every run that serves a session says it is doing, keyed by run id.
     ///
-    /// A row missing from the answer is a row this cannot reach: every Claude Code run,
-    /// an OpenCode run spawned without a port, one whose server has not come up yet, one
-    /// whose session has not been written to yet. Its screen is read instead, so absence
-    /// here costs the older evidence and never a verdict.
+    /// A run missing from the answer is a run this cannot reach: an OpenCode run spawned
+    /// without a port, one whose server has not come up yet, one whose session has not
+    /// been written to yet. Its screen is read instead, so absence here costs the older
+    /// evidence and never a verdict.
+    ///
+    /// Which session is a run's is found once and written into the run's directory: the
+    /// search reads a session's opening message, while asking a bound one what it is doing
+    /// reads a single message.
     ///
     /// The directory is resolved because both stores record the agent's own working
     /// directory, which is physical, while the configured repo root is whatever the
     /// operator typed — and the match is exact equality, so one symlink between them and
     /// no run ever binds.
-    static func states(for procs: [TrackedProcess],
-                       directory: String = AgentSpawner.repoPath) -> [UUID: AgentSession] {
-        let asking = procs.compactMap { p -> (TrackedProcess, Backend)? in
-            guard let backend = backends[p.runner] else { return nil }
-            return (p, backend)
+    static func states(for records: [AgentState.RunRecord],
+                       directory: String = AgentSpawner.repoPath)
+        -> [String: AgentState.SessionState] {
+        let asking = records.compactMap { r -> (AgentState.RunRecord, Backend)? in
+            guard let backend = backends[AgentRegistry.runRunner(r.runID)] else { return nil }
+            return (r, backend)
         }
         guard !asking.isEmpty else { return [:] }
         let directory = URL(fileURLWithPath: directory).resolvingSymlinksInPath().path
-        var taken = Set(asking.map(\.0.agentSessionID).filter { !$0.isEmpty })
-        var out: [UUID: AgentSession] = [:]
+        var taken = Set(asking.map { AgentRegistry.boundSession($0.0.runID) }.filter { !$0.isEmpty })
+        var out: [String: AgentState.SessionState] = [:]
         // In dispatch order, so the runs that have already matched a session are out of
         // the way before a newer one goes looking — `taken` is only a useful filter if it
         // is filled in the order the sessions were created.
-        for (p, backend) in asking.sorted(by: { $0.0.createdAt < $1.0.createdAt }) {
-            var sessionID = p.agentSessionID
+        for (r, backend) in asking.sorted(by: { $0.0.dispatchedAt < $1.0.dispatchedAt }) {
+            var sessionID = AgentRegistry.boundSession(r.runID)
             if sessionID.isEmpty {
-                sessionID = backend.bind(p, directory, taken)
+                sessionID = backend.bind(r, directory, taken)
                 guard !sessionID.isEmpty else { continue }
+                AgentRegistry.bindSession(r.runID, sessionID)
                 taken.insert(sessionID)
             }
-            guard let state = backend.state(p, sessionID) else { continue }
-            out[p.id] = AgentSession(sessionID: sessionID, state: state)
+            guard let state = backend.state(r, sessionID) else { continue }
+            out[r.runID] = state
         }
         return out
     }
@@ -63,22 +65,21 @@ enum AgentSessionProbe {
     /// Where one runner's answers come from: which of its sessions is a run's, and what
     /// that session currently says.
     private struct Backend {
-        let bind: (TrackedProcess, String, Set<String>) -> String
-        let state: (TrackedProcess, String) -> AgentState.SessionState?
+        let bind: (AgentState.RunRecord, String, Set<String>) -> String
+        let state: (AgentState.RunRecord, String) -> AgentState.SessionState?
     }
 
-    /// Which store answers for which runner. A runner absent from here serves nothing and
-    /// is read off its screen — that is Claude Code, and a run whose runner was never
-    /// recorded. Same table as the Linux side's `probes._BACKENDS`.
+    /// Which store answers for which runner. Same table as the Linux side's
+    /// `probes._BACKENDS`.
     private static let backends: [String: Backend] = [
         AgentRunner.opencode.rawValue: Backend(
-            bind: { p, directory, taken in
-                OpenCodeProbe.bind(p, directory: directory, taken: taken)
+            bind: { r, directory, taken in
+                OpenCodeProbe.bind(r, directory: directory, taken: taken)
             },
-            state: { p, sessionID in OpenCodeProbe.state(p, sessionID: sessionID) }),
+            state: { r, sessionID in OpenCodeProbe.state(r, sessionID: sessionID) }),
         AgentRunner.hermes.rawValue: Backend(
-            bind: { p, directory, taken in
-                HermesProbe.bind(p, directory: directory, taken: taken)
+            bind: { r, directory, taken in
+                HermesProbe.bind(r, directory: directory, taken: taken)
             },
             state: { _, sessionID in HermesProbe.state(sessionID: sessionID) }),
     ]

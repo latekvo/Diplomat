@@ -16,7 +16,7 @@ import time
 
 import pytest
 
-from diplomat_app import activity, appconfig, autobudget, autofix, telemetry
+from diplomat_runtime import activity, appconfig, autobudget, autofix, telemetry
 from test_autofix import _spawn_recorder, store  # noqa: F401 — the shared
 # Store fixture and spawn stub, reused rather than rebuilt: a second copy would
 # be a second set of probe stubs to keep in step with the real one.
@@ -67,7 +67,7 @@ def _finished_tasks(at: float, tokens: list[float]) -> None:
 
 def _probe(monkeypatch, session, week):
     """What the OAuth usage probe reports is left, as fractions."""
-    monkeypatch.setattr("diplomat_app.quota.fractions_left", lambda: (session, week))
+    monkeypatch.setattr("diplomat_runtime.quota.fractions_left", lambda: (session, week))
 
 
 def _ledger_with_priced_tasks(monkeypatch, tokens: list[float]) -> None:
@@ -218,7 +218,7 @@ def test_a_probe_that_cannot_answer_never_holds_work_back(monkeypatch):
     def boom():
         raise OSError("network unreachable")
 
-    monkeypatch.setattr("diplomat_app.quota.fractions_left", boom)
+    monkeypatch.setattr("diplomat_runtime.quota.fractions_left", boom)
     assert autobudget.decide().affordable
 
 
@@ -276,7 +276,7 @@ def test_one_answer_is_reused_across_a_poll_that_asks_repeatedly(monkeypatch):
         calls.append(1)
         return (0.9, 0.9)
 
-    monkeypatch.setattr("diplomat_app.quota.fractions_left", counted)
+    monkeypatch.setattr("diplomat_runtime.quota.fractions_left", counted)
 
     now = time.time()
     for _ in range(8):
@@ -426,7 +426,7 @@ def test_a_mesh_peers_job_is_declined_so_the_slot_fails_over(monkeypatch, broke)
     """The other half of the same rule. Work a peer routes here spends THIS
     machine's limit, and the applet never sees it — so the node's host asks too,
     and a decline sends the mesh looking for a node with surplus."""
-    from diplomat_app.szponthost import DiplomatHost
+    from diplomat_runtime.szponthost import DiplomatHost
 
     assert DiplomatHost().at_job_capacity([]) is True
     lines = [e for e in activity.read() if e.action == "mesh-no-budget"]
@@ -437,12 +437,12 @@ def test_a_mesh_peers_job_is_declined_so_the_slot_fails_over(monkeypatch, broke)
 def test_a_mesh_peers_job_is_taken_when_the_window_has_room(monkeypatch):
     """The decline above must be the budget talking, not the host failing closed on
     every call."""
-    from diplomat_app.szponthost import DiplomatHost
+    from diplomat_runtime.szponthost import DiplomatHost
 
     _ledger_with_priced_tasks(monkeypatch, _SPREAD)
     _probe(monkeypatch, session=0.95, week=0.9)
-    monkeypatch.setattr("diplomat_app.szponthost._ps_dump", lambda: "")
-    monkeypatch.setattr("diplomat_app.tmuxwatch.pane_tails_for_ttys", lambda ttys: {})
+    monkeypatch.setattr("diplomat_runtime.szponthost._ps_dump", lambda: "")
+    monkeypatch.setattr("diplomat_runtime.tmuxwatch.pane_tails_for_ttys", lambda ttys: {})
 
     assert DiplomatHost().at_job_capacity([]) is False
 

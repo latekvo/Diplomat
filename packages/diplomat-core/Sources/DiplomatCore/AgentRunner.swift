@@ -1,6 +1,6 @@
 import Foundation
 
-/// Which agent CLI a spawn actually runs — the Swift twin of `diplomat_app/runner.py`.
+/// Which agent CLI a spawn actually runs — the Swift twin of `diplomat_runtime/runner.py`.
 ///
 /// Diplomat opens a terminal window and runs an agent in it. *Which* agent is one
 /// setting, because the applet's job — dispatch, track, price, reap — is the same
@@ -14,8 +14,8 @@ import Foundation
 /// Only the *agent word and its flags* differ. Everything the spawn is built out of —
 /// the prompt staged into a file and handed over as `$(cat …)`, the completion
 /// sentinel, the pid the run is identified by — is identical, deliberately: those are
-/// what `AgentRegistry` and `ProcessTracker` recognise a run by, and a second spawn
-/// shape would be a second set of them to keep true.
+/// what `AgentRegistry` and `AgentState` recognise a run by, and a second spawn shape
+/// would be a second set of them to keep true.
 ///
 /// Credentials are the one thing this type refuses to hold. Each foreign runner has its
 /// own provider store and its own login wizard, and that is where a key belongs — not

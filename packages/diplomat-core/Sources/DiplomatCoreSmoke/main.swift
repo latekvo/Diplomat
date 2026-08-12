@@ -960,11 +960,12 @@ section("the agent-task list and the queue behind the cap")
 // only disagree about what runs next by failing one of the two suites.
 // (`AgentTaskStatus` has no twin: a Linux spawn has no session row to sort.)
 //
-// The list's reading order, which is also `ProcessRow`'s status precedence.
+// The list's reading order, which is also the Agent-tasks row's status precedence.
 check(AgentTaskStatus.allCases
-      == [.merged, .done, .awaitingInput, .running, .starting, .free, .queued],
+      == [.merged, .done, .awaitingInput, .running, .starting, .unknown, .free, .queued],
       "finished first, then what wants a human, then what doesn't, then what is "
-      + "spawning, then this device's empty slots, then what hasn't started")
+      + "spawning, then what nothing is known about, then this device's empty slots, "
+      + "then what hasn't started")
 check(AgentTaskStatus.merged < AgentTaskStatus.queued
       && AgentTaskStatus.awaitingInput < AgentTaskStatus.running,
       "the case order IS the sort order")
@@ -975,16 +976,19 @@ check(AgentTaskStatus.running < AgentTaskStatus.starting
       && AgentTaskStatus.starting < AgentTaskStatus.free,
       "a task whose spawn is in flight is drawn where its session will be, not down "
       + "in the queue it just left")
-check(AgentTaskStatus.ofSession(merged: true, done: true, awaitingInput: true) == .merged,
-      "a landed PR is the definitive outcome — it outranks a local exit")
-check(AgentTaskStatus.ofSession(merged: false, done: true, awaitingInput: true) == .done,
-      "an exited session is done even though its last frame idles at a prompt")
-check(AgentTaskStatus.ofSession(merged: false, done: false, awaitingInput: true) == .awaitingInput,
-      "a live session idling at the prompt wants a human")
-check(AgentTaskStatus.ofSession(merged: false, done: false, awaitingInput: false) == .running,
-      "otherwise it is just running")
+// Every resolved state has a row to be drawn as, and the two orders agree. A state
+// with no case here would draw as whatever `of` fell through to, and one ordered
+// differently would sort the panel against the order `AgentState.rows` sorted it in.
+check(AgentState.RunState.allCases.map(AgentTaskStatus.of)
+      == [.merged, .done, .awaitingInput, .running, .starting, .unknown],
+      "every state a run resolves to has a row status")
+check(AgentState.stateOrder.map(AgentTaskStatus.of)
+      == AgentTaskStatus.allCases.filter { $0 != .free && $0 != .queued },
+      "the resolver's reading order is the row order, minus the two statuses no run "
+      + "resolves to")
 check(AgentTaskStatus.queued.title == "queued" && AgentTaskStatus.awaitingInput.title == "awaiting input"
-      && AgentTaskStatus.free.title == "free slot" && AgentTaskStatus.starting.title == "starting",
+      && AgentTaskStatus.free.title == "free slot" && AgentTaskStatus.starting.title == "starting"
+      && AgentTaskStatus.unknown.title == "unknown",
       "the words the rows show")
 
 // The empty bays the panel draws for the rest of the device's cap.
@@ -996,18 +1000,6 @@ check(AgentTaskQueue.freeSlots(limit: 2, running: 2) == 0,
       "a device at its cap has none")
 check(AgentTaskQueue.freeSlots(limit: 1, running: 4) == 0,
       "more agents up than the cap allows draws no slots, not negative ones")
-
-// A row for work running on a mesh peer lives exactly as long as the executor's
-// lease on it — the only completion signal a dispatcher ever gets.
-check(!MeshAgentRun.finished(sinceSeen: 0),
-      "a dispatch just made is not a run just finished")
-check(!MeshAgentRun.finished(sinceSeen: MeshAgentRun.claimSettle - 1),
-      "inside the settle window an unseen claim is lag, not an ended run")
-check(MeshAgentRun.finished(sinceSeen: MeshAgentRun.claimSettle),
-      "a lease unseen that long is one the executor released")
-check(MeshAgentRun.claimSettle >= 20,
-      "the window must outlast the node's state write plus the front-end's poll, "
-      + "or a live run reads as finished on the first tick that misses it")
 
 // Queue identity: two monitors owing the same PR are two tasks, and a push must
 // not lose the operator's place for either (so: not the sha-scoped mesh key).
