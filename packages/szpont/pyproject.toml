@@ -5,48 +5,39 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "szpont"
 version = "0.2.0"
-description = "Install-and-run for Diplomat, and typed Python bindings for SzpontNet, the leaderless LAN peer-to-peer resource-sharing protocol"
+description = "Install-and-run for Diplomat (Szpont Yon): fetches the checkout, builds it, and starts the applet"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "Ignacy Łątka" }]
-keywords = ["diplomat", "szpontnet", "mesh", "peer-to-peer", "lan", "distributed", "bindings", "launcher"]
+keywords = ["diplomat", "szpont", "szpontnet", "launcher", "menu-bar", "tray"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
   "License :: OSI Approved :: MIT License",
+  "Operating System :: MacOS :: MacOS X",
+  "Operating System :: POSIX :: Linux",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
-  "Topic :: System :: Distributed Computing",
-  "Topic :: System :: Networking",
-  "Typing :: Typed",
+  "Topic :: System :: Installation/Setup",
 ]
-# The node itself. This package is bindings for it and has no independent
-# behaviour, so the dependency is required rather than an extra.
-dependencies = ["szpontnet>=0.6,<0.7"]
-
-[project.optional-dependencies]
-# Passed through to the library: Ed25519 device identity. Without it a node runs
-# keyless, advertises no public key, and is foreign to any peer with an allowlist.
-trust = ["szpontnet[trust]>=0.5,<0.6"]
+# Empty, and it has to stay empty: this is what runs before Diplomat exists, on
+# whatever interpreter `pip` was on, so a dependency here is one the user has to
+# resolve to get anything at all.
+dependencies = []
 
 [project.scripts]
-# `pip install szpont` then `szpont`. The launcher is a top-level module rather
-# than part of the package on purpose - see its docstring; nothing about starting
-# an applet needs the protocol library that importing `szpont` would pull in.
+# The module is `szpont_launcher`, not `szpont`, so that the import name stays
+# free for the conformance tester.
 szpont = "szpont_launcher:main"
 
 [project.urls]
 Homepage = "https://github.com/latekvo/Diplomat"
 Source = "https://github.com/latekvo/Diplomat/tree/main/packages/szpont"
-Specification = "https://github.com/latekvo/Diplomat/tree/main/packages/szpontnet-spec"
+Issues = "https://github.com/latekvo/Diplomat/issues"
 
 [tool.setuptools]
-packages = ["szpont"]
 py-modules = ["szpont_launcher"]
-
-[tool.setuptools.package-data]
-szpont = ["py.typed"]
