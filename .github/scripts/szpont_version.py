@@ -58,7 +58,7 @@ def _sites(root: Path):
         yield rel, path, text, found[0]
 
 
-def read(root: Path = ROOT) -> str:
+def read(root: Path) -> str:
     """The version the tree states, refusing a tree that states more than one."""
     stated = {rel: match.group(1) for rel, _path, _text, match in _sites(root)}
     if len(set(stated.values())) != 1:
