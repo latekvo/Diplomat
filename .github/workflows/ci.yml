@@ -210,65 +210,49 @@ jobs:
         working-directory: packages/szpontnet-spec/conformance
         run: python -m szpont --node-cmd "python adapters/reference.py" --no-color
 
-  # The Python bindings, in a job of their own so what they are allowed to import
-  # is visible: the library and pytest, nothing else. The bindings exist to have no
-  # behaviour the library does not — a dependency creeping in here would mean they
-  # had started being a second implementation rather than a reading of the first.
-  # The `szpont` console script rides in the same distribution and is tested here
-  # too; it is a top-level module that imports only the standard library, so it
-  # costs this job's independence claim nothing.
+  # `pip install szpont`: the launcher, in a job of its own so what it is allowed
+  # to install is visible — pytest to run the tests, and nothing at all to run the
+  # launcher. This is what runs before Diplomat exists, on whatever interpreter
+  # `pip` was on, so a dependency creeping in here is one the user has to resolve
+  # before they can install anything at all.
   szpont:
-    name: szpont · Python bindings + launcher
+    name: szpont · PyPI launcher
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-      - name: Install the bindings, the library and pytest
-        run: pip install -e ./packages/szpontnet-core -e ./packages/szpont pytest
       - name: Tests
-        run: pytest packages/szpont/tests -q
+        run: |
+          pip install pytest
+          pytest packages/szpont/tests -q
       # The distribution as PyPI would see it. Catches the metadata faults that are
       # invisible until an upload is rejected — an unrenderable README, a missing
-      # package-data file, a version the index will not accept.
+      # module, a version the index will not accept.
       - name: Build the distribution and check its metadata
         run: |
           pip install build twine
           python -m build --outdir dist/szpont packages/szpont
           twine check --strict dist/szpont/*
-      # The wheel on its own terms: installed from the built artifact rather than
-      # from the checkout, so a module left out of `packages` fails here instead of
-      # for whoever installs it.
-      - name: The built wheel imports, carries its type marker and installs the command
+      # The wheel on its own terms, in a venv that has never seen the checkout: a
+      # module left out of `py-modules` fails here instead of for whoever installs
+      # it.
+      - name: The built wheel installs the command, and nothing else
         run: |
           python -m venv /tmp/wheel-check
-          /tmp/wheel-check/bin/pip install ./packages/szpontnet-core dist/szpont/*.whl
-          /tmp/wheel-check/bin/python -c "
-          import szpont, pathlib
-          assert szpont.__version__, 'no version'
-          assert (pathlib.Path(szpont.__file__).parent / 'py.typed').is_file(), 'py.typed missing from the wheel'
-          for name in szpont.__all__:
-              getattr(szpont, name)
-          print('wheel ok:', szpont.__version__, len(szpont.__all__), 'exports')
-          "
+          /tmp/wheel-check/bin/pip install dist/szpont/*.whl
           # `pip install szpont` then `szpont` is the claim on the front of the
           # README; this is the only place it is made from a built artifact.
           /tmp/wheel-check/bin/szpont --version
-      # What `import szpont` costs, checked where it is cheap to check. The
-      # launcher is in the distribution but not in the package, so that starting an
-      # applet never loads the protocol library — and so that this job's "the
-      # bindings import the library and nothing else" claim stays about the
-      # bindings.
-      - name: The launcher stands alone
-        run: |
-          python -c "
-          import subprocess, sys
-          out = subprocess.run([sys.executable, '-c',
-              'import szpont_launcher, sys; print(\"szpontnet\" in sys.modules)'],
-              capture_output=True, text=True, cwd='packages/szpont')
-          assert out.stdout.strip() == 'False', out
-          print('the launcher imports without the library')
+          /tmp/wheel-check/bin/python -c "
+          import importlib.metadata as md, importlib.util
+          assert md.requires('szpont') is None, md.requires('szpont')
+          # The import name belongs to the conformance tester, run as
+          # 'python -m szpont' from its own directory and shadowed by anything
+          # this distribution installed under that name.
+          assert importlib.util.find_spec('szpont') is None, 'the wheel took the import name'
+          print('wheel ok: a console script, no dependencies, no import name')
           "
 
   # `npx szpont`: the same launcher, published to the other index. Node and Python

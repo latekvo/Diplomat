@@ -56,11 +56,11 @@ jobs:
         id: pick
         run: |
           if [ "$GITHUB_REF_TYPE" = tag ]; then
-            # The tag names the release; five files in the tree name what actually
+            # The tag names the release; four files in the tree name what actually
             # gets built. They are edited at different times by different hands,
             # and the indexes believe the files - so `szpont-v0.3.0` over a tree
             # still saying 0.2.0 would publish 0.2.0 under a 0.3.0 tag, and 0.3.0
-            # would then be permanently unclaimable. The five are pinned against
+            # would then be permanently unclaimable. The four are pinned against
             # each other by test_launcher.py; this pins the tag against them.
             version="${GITHUB_REF_NAME#szpont-v}"
             stated="$(python3 .github/scripts/szpont_version.py show)"
@@ -101,11 +101,11 @@ jobs:
       # states a version, since test_launcher.py fails on any that was missed. CI
       # having been green on the branch is not the same claim: a tag can point
       # anywhere, including at a commit no CI run ever saw.
-      - name: Install the bindings, the library and pytest
-        run: pip install -e ./packages/szpontnet-core -e ./packages/szpont pytest
-      - name: Bindings + launcher tests
-        run: pytest packages/szpont/tests -q
-      - name: Launcher tests, and that the two implementations plan alike
+      - name: Launcher tests
+        run: |
+          pip install pytest
+          pytest packages/szpont/tests -q
+      - name: The twin's tests, and that the two implementations plan alike
         working-directory: packages/szpont-npm
         run: npm test
 
@@ -136,18 +136,17 @@ jobs:
       # this run means to publish, and answering for a machine it is not going to
       # touch. A module left out of the wheel is invisible until someone installs
       # it, and by then the version is spent.
-      - name: The built wheel installs, imports and runs
+      - name: The built wheel installs and runs
         run: |
           python -m venv /tmp/verify
-          /tmp/verify/bin/pip install ./packages/szpontnet-core dist/*.whl
-          /tmp/verify/bin/python -c "
-          import os, szpont
-          assert szpont.__version__ == os.environ['VERSION'], szpont.__version__
-          for name in szpont.__all__:
-              getattr(szpont, name)
-          print('bindings ok:', szpont.__version__, len(szpont.__all__), 'exports')
-          "
+          /tmp/verify/bin/pip install dist/*.whl
           test "$(/tmp/verify/bin/szpont --version)" = "szpont $VERSION"
+          /tmp/verify/bin/python -c "
+          import importlib.metadata as md, importlib.util
+          assert md.requires('szpont') is None, md.requires('szpont')
+          assert importlib.util.find_spec('szpont') is None, 'the wheel took the import name'
+          print('wheel ok: a console script, no dependencies, no import name')
+          "
           HOME="$RUNNER_TEMP/nowhere" /tmp/verify/bin/szpont --plan | python -c "
           import json, sys
           plan = json.load(sys.stdin)['plan']
@@ -217,7 +216,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -am "szpont $VERSION [skip ci]"
           # Main can have moved while the release ran. The commit touches nothing
-          # but the five version lines, so replaying it onto whatever is there now
+          # but the four version lines, so replaying it onto whatever is there now
           # is safe; a conflict means something else is editing them, and that is
           # for a person to settle. Branch and tag go together or not at all, so a
           # retry never finds the tag already claimed by its own earlier attempt.

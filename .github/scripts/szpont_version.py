@@ -2,11 +2,11 @@
 """The one version `szpont` carries, and every file in the tree that states it.
 
 `szpont` is published under one name to two indexes out of one commit, so the
-version is not a fact the release can look up anywhere - five files spell it out,
+version is not a fact the release can look up anywhere - four files spell it out,
 and a build made from a tree where they disagree is a package that lies about
-itself. `show` refuses such a tree, `set` writes all five, and
+itself. `show` refuses such a tree, `set` writes all four, and
 `test_release_version.py` holds the list to the files that actually state a
-version, so a sixth site cannot appear unnoticed.
+version, so a fifth site cannot appear unnoticed.
 
 `next-minor` is what a release off `main` publishes under. It is chosen over what
 the indexes already hold rather than over what the tree says, because an upload is
@@ -35,7 +35,6 @@ ROOT = Path(__file__).resolve().parents[2]
 SITES = (
     ("packages/szpont/pyproject.toml", r'(?m)^version = "(.+)"$'),
     ("packages/szpont/szpont_launcher.py", r'(?m)^__version__ = "(.+)"$'),
-    ("packages/szpont/szpont/__init__.py", r'(?m)^__version__ = "(.+)"$'),
     ("packages/szpont-npm/package.json", r'(?m)^  "version": "(.+)",$'),
     ("packages/szpont-npm/src/launcher.js", r"(?m)^export const VERSION = '(.+)';$"),
 )

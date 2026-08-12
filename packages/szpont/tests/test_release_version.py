@@ -87,7 +87,7 @@ def test_a_site_that_states_no_version_is_not_a_version(tree):
 
 
 def test_the_sites_are_every_file_that_states_the_version():
-    """Nothing outside the list declares it - a sixth site would go stale in silence.
+    """Nothing outside the list declares it - a fifth site would go stale in silence.
 
     A declaration, not the digits: a test that asserts on `"1.0.0"` is not a site,
     and a release must not be held up by one that happens to name the number the
