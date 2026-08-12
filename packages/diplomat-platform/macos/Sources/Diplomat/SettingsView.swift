@@ -3,30 +3,38 @@ import AppKit
 import DiplomatCore
 
 /// The settings screen — swapped in for the main panel body when the header gear
-/// is tapped. Two knobs: the GitHub handle to treat as "me", and which tool cards
-/// show in the grid. Both persist via the Store (UserDefaults-backed).
+/// is tapped. Eleven cards over two columns: identity, the agent runner and its repo
+/// root, what the monitors are allowed to do on their own, and the environment the
+/// spawns land in. Everything persists through the Store (UserDefaults, or the
+/// shared `~/.diplomat/config.json` for the knobs another process also reads).
+///
+/// Each row states what it does in a line; the paragraph behind that line is drawn
+/// only while the header's *Explain* switch is on. The screen was previously all
+/// paragraph — a page of prose with controls embedded in it, unreadable at a glance
+/// and no faster to use on the hundredth visit than the first.
 struct SettingsView: View {
     @EnvironmentObject var store: Store
     @Binding var isPresented: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 12) {
             headerRow
             // Two columns, same layout as the main panel: identity + automation
             // behaviour on the left, appearance + environment on the right.
             HStack(alignment: .top, spacing: 12) {
-                VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 10) {
                     identitySection
                     runnerSection
                     repoSection
                     autofixSection
-                    apiWatchSection
+                    limitsSection
                 }
                 .frame(width: PopoverRoot.columnWidth, alignment: .topLeading)
 
-                VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 10) {
                     toolsSection
                     terminalSection
+                    apiWatchSection
                     allocatorSection
                     meshSection
                     updateSection
@@ -35,6 +43,7 @@ struct SettingsView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
+        .environment(\.settingsExplain, store.settingsExplain)
         .task {
             // Freshen the allocator status only. This used to also fire a full GitHub
             // poll on EVERY Settings open — two GraphQL searches against the shared
@@ -47,387 +56,37 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: mesh (LAN P2P duty coordination)
-
-    /// Precomputed as a `String` (not concatenated inside the ViewBuilder) so the Settings
-    /// column stays within the SwiftUI type-checker's reach — same pattern as `apiWatchBlurb`.
-    private var meshBlurb: String {
-        "Runs a small peer-to-peer node that discovers the other Diplomat machines on "
-            + "your LAN (UDP beacons) and routes duty work — reviews, conflict fixes, the full "
-            + "E2E audit — to whichever node fits the placement policy (surplus-first by default, "
-            + "token- and platform-aware). Configure the whole mesh from the ⬡ Mesh screen (the "
-            + "⬡ button in the panel header). Off by default; no node opens on the network until "
-            + "you enable it here."
-    }
-
-    private var meshSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            sectionLabel("MESH (LAN P2P)")
-            Toggle(isOn: $store.meshEnabled) {
-                Text("Coordinate duties with other machines on this LAN").font(.caption)
-            }
-            .toggleStyle(.switch).controlSize(.small)
-            meshStatusRow
-            Text(meshBlurb)
-                .font(.caption2).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    @ViewBuilder
-    private var meshStatusRow: some View {
-        if store.meshEnabled {
-            let running = MeshBridge.nodeRunning(store.meshState)
-            let peers = store.meshState?.peers.count ?? 0
-            HStack(spacing: 5) {
-                Image(systemName: running ? "bolt.fill" : "bolt.slash.fill")
-                    .font(.system(size: 9)).foregroundStyle(running ? .green : .orange)
-                Text(running
-                     ? "Node running · \(peers) peer\(peers == 1 ? "" : "s")"
-                     : (store.meshState == nil ? "Starting node…" : "Node not running"))
-                    .font(.caption2).foregroundStyle(running ? .green : .orange)
-            }
-        }
-    }
-
-    // MARK: applet update
-
-    private var updateSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            sectionLabel("UPDATE")
-            updateStatusRow
-            HStack(spacing: 8) {
-                Button { store.updateApp() } label: { Text("Update").bold() }
-                    .buttonStyle(.borderedProminent).controlSize(.small)
-                    .disabled(!(store.updateState.map { !$0.isBusy } ?? false))
-                Button { store.refreshUpdateStatus() } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .buttonStyle(.borderless).controlSize(.small).help("Re-check for updates")
-            }
-            Text(updateBlurb)
-                .font(.caption2).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    private var updateBlurb: String {
-        "Pulls the latest applet from GitHub, rebuilds the diplomat-core prompt engine and the "
-            + "app bundle, and relaunches it in place."
-    }
-
-    @ViewBuilder
-    private var updateStatusRow: some View {
-        // nil (before the first check) reads as "checking", matching the Linux front-end.
-        switch store.updateState ?? .checking {
-        case .checking:
-            updateStatus("Checking…", .secondary, detail: "comparing with origin…")
-        case .updating(let step):
-            updateStatus("Updating…", .orange, detail: step)
-        case .restarting(let commit):
-            updateStatus("Restarting…", .green,
-                         detail: "relaunched at \(commit) — this instance is handing over")
-        case .failed(let err):
-            updateStatus("Update failed", .red, detail: err)
-        case .idle(let r):
-            if let e = r.error {
-                updateStatus("Check failed", .orange, detail: e)
-            } else if let behind = r.behind, behind > 0 {
-                // A diverged checkout still updates — via a merge, not a discard.
-                let aheadNote = (r.ahead ?? 0) > 0 ? " · \(r.ahead!) local ahead (will merge)" : ""
-                updateStatus("Update available · \(behind) commit\(behind == 1 ? "" : "s") behind", .blue,
-                             detail: "\(r.commit ?? "?") on \(r.branch ?? "?") · upstream \(r.upstream ?? "?")\(aheadNote)")
-            } else {
-                let aheadNote = (r.ahead ?? 0) > 0 ? " · \(r.ahead!) local ahead" : ""
-                updateStatus("Up to date", .primary,
-                             detail: "\(r.commit ?? "?") on \(r.branch ?? "?") · upstream \(r.upstream ?? "?")\(aheadNote)")
-            }
-        }
-    }
-
-    private func updateStatus(_ text: String, _ color: Color, detail: String) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text(text).font(.caption.bold()).foregroundStyle(color)
-            Text(detail).font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    // MARK: PR auto-fix monitor
-
-    private var autofixSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            sectionLabel("PR AUTO-FIX")
-            Toggle(isOn: $store.prAutofixEnabled) {
-                Text("Auto-fix my PRs (conflicts + reviews)").font(.caption)
-            }
-            .toggleStyle(.switch)
-            .controlSize(.small)
-            autofixDetail
-            pollErrorRow
-
-            Toggle(isOn: $store.reviewRequestsEnabled) {
-                Text("Full-E2E review PRs that request my review").font(.caption)
-            }
-            .toggleStyle(.switch)
-            .controlSize(.small)
-            Text(reviewRequestsBlurb)
-                .font(.caption2).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            if store.reviewRequestsEnabled { unaddressedReviewsRow }
-
-            if store.reviewRequestsEnabled { autoApproveBlock }
-
-            autoTaskLimitRow
-
-            autoBudgetBlock
-        }
-    }
-
-    /// The rate-limit budget: whether automatic work waits when the account is running
-    /// low, how sure of that it has to be, and what to keep in hand while the ledger
-    /// cannot yet price a task.
-    ///
-    /// Under the task cap because they are the two halves of one question — the cap
-    /// bounds how many automatic agents run at once, this bounds whether any of them
-    /// should start at all.
-    private static let autoBudgetBlurb = """
-        Priced from Telemetry → limit per task, against both rate-limit windows: \
-        higher confidence is stricter. Held work isn't dropped — it waits in the \
-        Agent-tasks list until a window refills, and "execute now" overrides it. \
-        Nothing is held while the usage probe can't read a window at all.
-        """
-
-    private var autoBudgetBlock: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Toggle(isOn: $store.autoBudgetGate) {
-                Text("Hold automatic work when the rate limit runs low").font(.caption)
-            }
-            .toggleStyle(.switch).controlSize(.small)
-            .padding(.top, 2)
-            Text(SettingsView.autoBudgetBlurb)
-                .font(.caption2).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            if store.autoBudgetGate { autoBudgetKnobs }
-        }
-    }
-
-    /// Both strings are resolved before the ViewBuilder sees them, for the reason
-    /// `autoTaskLimitBlurb` documents: an interpolation inside a `Text(...)` in a
-    /// builder is what tips this file over the type-checker's time limit on CI.
-    private var autoBudgetKnobs: some View {
-        let floor = store.autoBudgetFloorPct
-        let floorLabel: String = "Keep \(Telemetry.percent(floor)) in hand until then"
-        return VStack(alignment: .leading, spacing: 2) {
-            Picker("Start one only when", selection: $store.autoBudgetConfidence) {
-                ForEach(AgentDispatchGate.budgetConfidenceZ.keys.sorted(), id: \.self) {
-                    Text("\($0)% sure it fits").tag($0)
-                }
-            }
-            .controlSize(.small)
-            Stepper(value: $store.autoBudgetFloorPct, in: 0...100, step: 5) {
-                Text(floorLabel).font(.caption)
-            }
-            .controlSize(.small)
-        }
-        .padding(.leading, 18)
-    }
-
-    /// The device-wide ceiling on concurrent automatic agents. Sits at the foot of the
-    /// section because it governs BOTH monitors above it — a poll of either one can
-    /// find any number of pending units at once, and this is what keeps them from all
-    /// opening at the same moment.
-    /// Both strings are resolved before the ViewBuilder sees them. A concatenation or
-    /// a ternary inside a `Text(...)` in a builder is what tips this file over the
-    /// type-checker's time limit on a CI runner, while still compiling here.
-    private static let autoTaskLimitBlurb = """
-        A hard cap for this machine, across both monitors above and any work a mesh \
-        peer routes here. Agents you spawn yourself from the panel don't count \
-        against it. Work over the cap isn't dropped — it waits in the Agent-tasks \
-        list, in the order you put it, and starts as soon as a running agent \
-        finishes. The panel draws whatever is left of the cap as empty slots.
-        """
-
-    private var autoTaskLimitRow: some View {
-        let n = store.autoTaskLimit
-        let label: String = "Run at most \(n) automatic task\(n == 1 ? "" : "s") at a time"
-        return VStack(alignment: .leading, spacing: 2) {
-            Stepper(value: $store.autoTaskLimit,
-                    in: AgentDispatchGate.minAutoTaskLimit...AgentDispatchGate.maxAutoTaskLimit) {
-                Text(label).font(.caption)
-            }
-            .controlSize(.small)
-            .padding(.top, 2)
-            Text(SettingsView.autoTaskLimitBlurb)
-                .font(.caption2).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    /// Master switch for auto-approvals + (when on) the per-class verdict suppressors.
-    /// Off by default: an auto-review never submits a verdict on my behalf until I opt in.
-    private var autoApproveBlock: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Toggle(isOn: $store.autoApproveEnabled) {
-                Text("Let auto-reviews approve / request changes").font(.caption)
-            }
-            .toggleStyle(.switch).controlSize(.small)
-            .padding(.top, 2)
-            Text("Off ⇒ every auto-review leaves inline comments only; the approve / "
-                 + "request-changes call stays with you. On ⇒ a clean review may submit a "
-                 + "verdict, except where withheld below.")
-                .font(.caption2).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            if store.autoApproveEnabled { verdictPolicyBlock }
-            softApproveToggle
-        }
-    }
-
-    /// Soft-approvals: what a comments-only review does when it finds a PR perfectly
-    /// clean — leave a friendly thank-you note (no APPROVE action) instead of staying
-    /// silent. On by default; independent of the verdict toggle above.
-    private var softApproveToggle: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Toggle(isOn: $store.softApproveEnabled) {
-                Text("Soft-approve clean PRs (thank-you comment, no approval)").font(.caption)
-            }
-            .toggleStyle(.switch).controlSize(.small)
-            .padding(.top, 2)
-            Text("On ⇒ a review that comes back perfectly clean leaves one friendly "
-                 + "\u{201C}ran the sweep, all clean, thanks for contributing\u{201D} comment — "
-                 + "never an APPROVE action. Off ⇒ a clean review stays silent.")
-                .font(.caption2).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    private static let reviewRequestsBase = """
-        When someone requests my review on a PR, spawns the most thorough review \
-        (Full E2E · max, leaving inline comments) — read-only, never touches their \
-        branch. A review left unaddressed (agent died, lost connection, window \
-        closed) is retried automatically until it lands. Off, the requests still \
-        list under Agent tasks, queued for you to start by hand.
-        """
-
-    private var reviewRequestsBlurb: String {
-        let handled = store.reviewRequestsHandled > 0 ? "  Reviewed \(store.reviewRequestsHandled) so far." : ""
-        return SettingsView.reviewRequestsBase + handled
-    }
-
-    /// Shown while the monitor's polls are failing (gh auth expired, network, GraphQL
-    /// errors) — previously this failure mode was completely silent: the toggles said
-    /// "on", the counts froze stale, and nothing dispatched.
-    @ViewBuilder
-    private var pollErrorRow: some View {
-        if let err = store.autofixPollError {
-            HStack(alignment: .firstTextBaseline, spacing: 5) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.system(size: 9)).foregroundStyle(Color.red)
-                Text("Polls failing since \(Fmt.clock(store.autofixPollErrorAt)) — \(err)")
-                    .font(.caption2).foregroundStyle(Color.red)
-                    .lineLimit(3)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-
-    /// Shown while any review I owe has no agent on it — the reconciler is retrying them.
-    @ViewBuilder
-    private var unaddressedReviewsRow: some View {
-        if store.unaddressedReviews > 0 {
-            let n = store.unaddressedReviews
-            HStack(spacing: 5) {
-                Image(systemName: "arrow.triangle.2.circlepath")
-                    .font(.system(size: 9)).foregroundStyle(Color.orange)
-                Text("\(n) unaddressed review\(n == 1 ? "" : "s") — retrying")
-                    .font(.caption2).foregroundStyle(Color.orange)
-            }
-        }
-    }
-
-    /// The three configurable suppressors for the auto-review's "final pass + verdict".
-    /// A PR matching any enabled row gets comments only; otherwise it gets a verdict.
-    private var verdictPolicyBlock: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("WITHHOLD THE FINAL VERDICT WHEN THE PR…")
-                .font(.system(size: 9, weight: .bold)).foregroundStyle(.secondary).kerning(0.5)
-                .padding(.top, 4)
-            verdictToggle("…touches a SKILL", isOn: $store.verdictWithholdSkill)
-            verdictToggle("…touches the installer", isOn: $store.verdictWithholdInstaller)
-            verdictToggle("…is a community PR (author outside the org)", isOn: $store.verdictWithholdCommunity)
-            Text("Off for all three ⇒ every auto-review may approve or request changes. "
-                 + "On ⇒ that class gets inline comments only; the final call stays with you.")
-                .font(.caption2).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(.leading, 10)
-    }
-
-    private func verdictToggle(_ label: String, isOn: Binding<Bool>) -> some View {
-        Toggle(isOn: isOn) { Text(label).font(.caption) }
-            .toggleStyle(.switch).controlSize(.mini)
-    }
-
-    @ViewBuilder
-    private var autofixDetail: some View {
-        if store.prAutofixEnabled {
-            let live = store.autofixStatus?.isLive == true
-            let n = store.autofixStatus?.watching ?? 0
-            HStack(spacing: 5) {
-                Image(systemName: live ? "bolt.fill" : "bolt.slash.fill")
-                    .font(.system(size: 9)).foregroundStyle(live ? Color.green : Color.orange)
-                Text(live
-                     ? "Active — a monitor is watching \(n) open PR\(n == 1 ? "" : "s")."
-                     : "Enabled, but no monitor is running right now.")
-                    .font(.caption2).foregroundStyle(live ? Color.green : Color.orange)
-            }
-        }
-        Text("When on, an agent watches your open PRs and automatically resolves merge conflicts and addresses new review threads. Off, the monitor keeps looking and lists what it finds under Agent tasks — as queued work only you can start, with \u{201C}execute now\u{201D}.")
-            .font(.caption2).foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-    }
-
-    // MARK: Claude API-error watcher
-
-    private var apiWatchBlurb: String {
-        let base = "Watches every iTerm/Terminal session; when a Claude API error shows up "
-            + "(e.g. \u{201C}529 Overloaded\u{201D}), it sends \u{201C}\(ApiErrorWatcher.continueMessage)\u{201D} "
-            + "so a stalled agent resumes on its own. Out-of-quota stalls "
-            + "(\u{201C}You've hit your weekly limit\u{201D}) are left alone — nudging can't help "
-            + "until the limit resets. Claude Code runs only: the banners it matches are "
-            + "Claude Code's. An OpenCode or Hermes agent that hits an error reads as idle "
-            + "instead, frees its task-cap slot, and is dispatched again by whichever "
-            + "monitor owed the work."
-        let count = store.apiWatchContinues > 0 ? "  Continued \(store.apiWatchContinues)× so far." : ""
-        return base + count
-    }
-
-    private var apiWatchSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            sectionLabel("CLAUDE API ERRORS")
-            Toggle(isOn: $store.apiWatchEnabled) {
-                Text("Auto-continue agents on API errors").font(.caption)
-            }
-            .toggleStyle(.switch)
-            .controlSize(.small)
-            Text(apiWatchBlurb)
-                .font(.caption2).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
+    // MARK: header
 
     private var headerRow: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 8) {
             Image(systemName: "gearshape.fill").foregroundStyle(.secondary)
             Text("Settings").font(.subheadline.bold())
             Spacer()
+            explainToggle
             Button { withAnimation(.easeInOut(duration: 0.15)) { isPresented = false } } label: {
                 Text("Done").bold()
             }
             .buttonStyle(.borderless)
             .keyboardShortcut(.cancelAction)
         }
+    }
+
+    /// Reveals every row's long-form paragraph at once. One switch for the screen, not
+    /// a disclosure arrow per row: the paragraphs are read together, on the visit where
+    /// the automation is being set up, and never again after it.
+    private var explainToggle: some View {
+        Toggle(isOn: Binding(
+            get: { store.settingsExplain },
+            set: { on in withAnimation(.easeInOut(duration: 0.15)) { store.settingsExplain = on } }
+        )) {
+            HStack(spacing: 4) {
+                Image(systemName: "info.circle").font(.system(size: 10))
+                Text("Explain").font(.caption)
+            }
+        }
+        .toggleStyle(.switch).controlSize(.mini)
+        .help("Show what each setting does, in full")
     }
 
     // MARK: GitHub identity
@@ -437,31 +96,99 @@ struct SettingsView: View {
     }
 
     private var identitySection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            sectionLabel("GITHUB USERNAME")
-            HStack(spacing: 6) {
-                Image(systemName: "at").font(.caption).foregroundStyle(.secondary)
-                TextField(store.me.isEmpty ? "your github handle" : store.me,
-                          text: $store.usernameOverride)
-                    .textFieldStyle(.plain)
-                    .font(.callout)
-                if !trimmedOverride.isEmpty {
-                    Button { store.usernameOverride = "" } label: {
-                        Image(systemName: "xmark.circle.fill")
-                    }
-                    .buttonStyle(.borderless).foregroundStyle(.secondary)
-                    .help("Clear — fall back to the gh-authenticated user")
-                }
+        let override = trimmedOverride
+        let effective = override.isEmpty ? store.me : override
+        let pill = StatusPill(text: effective.isEmpty ? "not signed in" : "@\(effective)",
+                              tint: override.isEmpty ? .secondary : .blue,
+                              symbol: override.isEmpty ? "person" : "pencil")
+        return SettingsCard(symbol: "person.crop.circle.fill", title: "IDENTITY",
+                            tint: .blue, pill: pill) {
+            SettingRow(title: "GitHub username",
+                       summary: override.isEmpty
+                            ? "Blank = whoever `gh` is authenticated as."
+                            : "Overriding the gh-authenticated user.",
+                       detail: "Scopes the “My …” tools and the Review wizard: which PRs "
+                             + "count as mine, and whose reviews the monitors owe.",
+                       stacked: true) {
+                identityField
             }
-            .padding(8)
-            .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.1)))
-
-            Text(trimmedOverride.isEmpty
-                 ? "Using the gh-authenticated user\(store.me.isEmpty ? "" : " (@\(store.me))"). Scopes the “My …” tools and the Review wizard."
-                 : "Overriding to @\(trimmedOverride) for the “My …” tools and the Review wizard.")
-                .font(.caption2).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    private var identityField: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "at").font(.caption).foregroundStyle(.secondary)
+            TextField(store.me.isEmpty ? "your github handle" : store.me,
+                      text: $store.usernameOverride)
+                .textFieldStyle(.plain)
+                .font(.callout)
+            if !trimmedOverride.isEmpty {
+                Button { store.usernameOverride = "" } label: {
+                    Image(systemName: "xmark.circle.fill")
+                }
+                .buttonStyle(.borderless).foregroundStyle(.secondary)
+                .help("Clear — fall back to the gh-authenticated user")
+            }
+        }
+        .padding(7)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.12)))
+    }
+
+    // MARK: Agent runner (which CLI the agents are)
+
+    private var runnerSection: some View {
+        let foreign = store.agentRunner != .claude
+        let name = store.agentRunner.label
+        return SettingsCard(symbol: "terminal.fill", title: "AGENT RUNNER", tint: .purple,
+                            pill: StatusPill(text: name, tint: .purple)) {
+            SettingRow(title: "Which CLI a spawn runs",
+                       summary: runnerSummary,
+                       detail: foreign
+                            ? "Diplomat never holds an API key: \(name) stores its own "
+                            + "credential, and *Connect a provider* opens its login wizard, "
+                            + "which knows every provider in its catalog."
+                            : "SPAWN AGENT picks up whatever flags your shell alias for "
+                            + "`claude` gives it.",
+                       stacked: true) {
+                Picker("Which CLI a spawn runs", selection: $store.agentRunner) {
+                    ForEach(AgentRunner.allCases, id: \.self) { Text($0.label).tag($0) }
+                }
+                .pickerStyle(.segmented).labelsHidden()
+            }
+            if foreign { modelRow(name) }
+        }
+    }
+
+    private func modelRow(_ runnerName: String) -> some View {
+        NestedSettings(tint: .purple) {
+            HStack(spacing: 6) {
+                Image(systemName: "cpu").font(.caption).foregroundStyle(.secondary)
+                TextField("model — blank lets \(runnerName) choose", text: $store.agentModel)
+                    .textFieldStyle(.plain).font(.callout).lineLimit(1)
+                Button("Connect a provider…") { openProviderSetup() }
+                    .buttonStyle(.bordered).controlSize(.small)
+                    .help("Open \(runnerName)'s own login wizard: it knows every "
+                          + "provider in its catalog and stores the credential "
+                          + "itself. Diplomat never holds an API key.")
+            }
+            .padding(7)
+            .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.12)))
+        }
+    }
+
+    private var runnerSummary: String {
+        switch store.agentRunner {
+        case .claude: return "SPAWN AGENT runs `claude`."
+        case .opencode: return "SPAWN AGENT runs `opencode`, on OpenCode's own model and provider."
+        case .hermes: return "SPAWN AGENT runs `hermes chat --tui`, on Hermes' own model and provider."
+        }
+    }
+
+    /// Hand the user to the runner's provider wizard, in a terminal window of the kind
+    /// they already picked for agents — it is interactive, so it needs a real one.
+    private func openProviderSetup() {
+        AgentSpawner.openTerminal(command: store.agentRunner.setupCommand,
+                                  terminal: store.terminal)
     }
 
     // MARK: Repo root (where the agents work)
@@ -473,10 +200,53 @@ struct SettingsView: View {
         store.repoPathOverride.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// The hint text for a given state. `state` is passed in (not re-read) so one read in
-    /// `repoSection` drives both the text and the colour — they can't disagree, and the
+    private var repoSection: some View {
+        // One state read per render decides the pill, the summary and its colour.
+        let state = RepoPaths.agentRepoState
+        let ok = state == .ok
+        let pill = StatusPill(text: ok ? "checkout ok" : "check this",
+                              tint: ok ? .green : .orange,
+                              symbol: ok ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+        return SettingsCard(symbol: "folder.fill", title: "REPO ROOT", tint: .teal, pill: pill) {
+            // A problem states itself on the face of the card; only the happy path is
+            // short enough to fold into the summary line and its detail.
+            SettingRow(title: "Where every spawned agent starts",
+                       summary: repoSummary(state),
+                       detail: ok
+                            ? "Blank = the default path, \(RepoPaths.defaultAgentRepo). "
+                            + "DIPLOMAT_REPO in this app's environment outranks both."
+                            : nil,
+                       stacked: true) {
+                repoField
+            }
+        }
+    }
+
+    private var repoField: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "folder").font(.caption).foregroundStyle(.secondary)
+            TextField(RepoPaths.defaultAgentRepo, text: $store.repoPathOverride)
+                .textFieldStyle(.plain)
+                .font(.callout)
+                .lineLimit(1)
+            if !trimmedRepoPath.isEmpty {
+                Button { store.repoPathOverride = "" } label: {
+                    Image(systemName: "xmark.circle.fill")
+                }
+                .buttonStyle(.borderless).foregroundStyle(.secondary)
+                .help("Clear — fall back to \(RepoPaths.defaultAgentRepo)")
+            }
+            Button("Choose…") { chooseRepoRoot() }
+                .buttonStyle(.bordered).controlSize(.small)
+        }
+        .padding(7)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.12)))
+    }
+
+    /// The line for a given state. `state` is passed in (not re-read) so one read in
+    /// `repoSection` drives both the pill and the text — they can't disagree, and the
     /// filesystem is stat'd once per render. Mirrors `settingsview._refresh_repo_ui`.
-    private func repoHint(_ state: RepoPaths.AgentRepoState) -> String {
+    private func repoSummary(_ state: RepoPaths.AgentRepoState) -> String {
         switch state {
         case .envShadowed:
             return "DIPLOMAT_REPO is set in this app's environment — agents run in "
@@ -490,97 +260,13 @@ struct SettingsView: View {
                 + "best-effort, so an agent would start in your home directory instead. "
                 + "Pick the clone of \(repoSlug)."
         case .ok:
-            return "Every spawned agent starts with `cd \(RepoPaths.agentRepo)` — your local "
-                + "clone of \(repoSlug)\(trimmedRepoPath.isEmpty ? ". Blank = the default path." : ".")"
+            return "`cd \(RepoPaths.agentRepo)` — your local clone of \(repoSlug)."
         }
     }
 
     private var repoSlug: String {
         let c = CoreAssets.repoCoordinates()
         return "\(c.owner)/\(c.repo)"
-    }
-
-    // MARK: Agent runner (which CLI the agents are)
-
-    private var runnerSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            sectionLabel("AGENT RUNNER")
-            Picker("", selection: $store.agentRunner) {
-                ForEach(AgentRunner.allCases, id: \.self) { Text($0.label).tag($0) }
-            }
-            .pickerStyle(.segmented).labelsHidden()
-
-            if store.agentRunner != .claude {
-                let runnerName = store.agentRunner.label
-                HStack(spacing: 6) {
-                    Image(systemName: "cpu").font(.caption).foregroundStyle(.secondary)
-                    TextField("model — blank lets \(runnerName) choose",
-                              text: $store.agentModel)
-                        .textFieldStyle(.plain).font(.callout).lineLimit(1)
-                    Button("Connect a provider…") { openProviderSetup() }
-                        .buttonStyle(.bordered).controlSize(.small)
-                        .help("Open \(runnerName)'s own login wizard: it knows every "
-                              + "provider in its catalog and stores the credential "
-                              + "itself. Diplomat never holds an API key.")
-                }
-                .padding(8)
-                .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.1)))
-            }
-
-            Text(runnerHint)
-                .font(.caption2).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    private var runnerHint: String {
-        switch store.agentRunner {
-        case .claude:
-            return "SPAWN AGENT runs `claude`, picking up the flags your shell alias gives it."
-        case .opencode:
-            return "SPAWN AGENT runs `opencode`. Its model and provider are OpenCode's own — "
-                 + "connect one above; the credential is stored by OpenCode, never here."
-        case .hermes:
-            return "SPAWN AGENT runs `hermes chat --tui`. Its model and provider are Hermes' "
-                 + "own — connect one above; the credential is stored by Hermes, never here."
-        }
-    }
-
-    /// Hand the user to the runner's provider wizard, in a terminal window of the kind
-    /// they already picked for agents — it is interactive, so it needs a real one.
-    private func openProviderSetup() {
-        AgentSpawner.openTerminal(command: store.agentRunner.setupCommand,
-                                  terminal: store.terminal)
-    }
-
-    private var repoSection: some View {
-        // One state read per render decides both the hint text and its colour.
-        let state = RepoPaths.agentRepoState
-        return VStack(alignment: .leading, spacing: 6) {
-            sectionLabel("REPO ROOT")
-            HStack(spacing: 6) {
-                Image(systemName: "folder").font(.caption).foregroundStyle(.secondary)
-                TextField(RepoPaths.defaultAgentRepo, text: $store.repoPathOverride)
-                    .textFieldStyle(.plain)
-                    .font(.callout)
-                    .lineLimit(1)
-                if !trimmedRepoPath.isEmpty {
-                    Button { store.repoPathOverride = "" } label: {
-                        Image(systemName: "xmark.circle.fill")
-                    }
-                    .buttonStyle(.borderless).foregroundStyle(.secondary)
-                    .help("Clear — fall back to \(RepoPaths.defaultAgentRepo)")
-                }
-                Button("Choose…") { chooseRepoRoot() }
-                    .buttonStyle(.bordered).controlSize(.small)
-            }
-            .padding(8)
-            .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.1)))
-
-            Text(repoHint(state))
-                .font(.caption2).foregroundStyle(state == .ok ? Color.secondary : .orange)
-                .fixedSize(horizontal: false, vertical: true)
-        }
     }
 
     /// Directory picker for the repo root. The menu-bar popover closes when the panel
@@ -600,100 +286,410 @@ struct SettingsView: View {
         }
     }
 
+    // MARK: PR auto-fix monitor
+
+    private var autofixSection: some View {
+        SettingsCard(symbol: "bolt.fill", title: "AUTOMATIC WORK", tint: .orange,
+                     pill: autofixPill) {
+            conflictsRow
+            pollErrorRow
+            reviewRequestsRow
+            if store.reviewRequestsEnabled { reviewPolicyBlock }
+        }
+    }
+
+    /// How much automatic work this machine may run, and whether it can afford to. Its
+    /// own card, beside the monitors rather than under them: both rows bound *every*
+    /// automatic agent — the two monitors above and anything a mesh peer routes here.
+    private var limitsSection: some View {
+        let n = store.autoTaskLimit
+        return SettingsCard(symbol: "speedometer", title: "LIMITS", tint: .orange,
+                            pill: StatusPill(text: "≤ \(n) at a time", tint: .secondary)) {
+            autoTaskLimitRow
+            autoBudgetBlock
+        }
+    }
+
+    /// The monitors' own health, on the card so it is answered before any row is read.
+    /// A failing poll used to be invisible: the switches said "on", the counts froze
+    /// stale, and nothing dispatched.
+    private var autofixPill: StatusPill {
+        let on = store.prAutofixEnabled || store.reviewRequestsEnabled
+        if !on { return StatusPill(text: "manual", tint: .secondary, symbol: "hand.raised") }
+        if store.autofixPollError != nil {
+            return StatusPill(text: "polls failing", tint: .red,
+                              symbol: "exclamationmark.triangle.fill")
+        }
+        guard store.autofixStatus?.isLive == true else {
+            return StatusPill(text: "no monitor yet", tint: .orange, symbol: "bolt.slash.fill")
+        }
+        let n = store.autofixStatus?.watching ?? 0
+        return StatusPill(text: "watching \(n) PR\(n == 1 ? "" : "s")", tint: .green,
+                          symbol: "bolt.fill")
+    }
+
+    private var conflictsRow: some View {
+        SettingRow(title: "Auto-fix my PRs",
+                   summary: "Resolves merge conflicts and answers new review threads.",
+                   detail: "Off, the monitor keeps looking and lists what it finds under "
+                         + "Agent tasks — as queued work only you can start, with "
+                         + "“execute now”.") {
+            switchControl("Auto-fix my PRs", $store.prAutofixEnabled)
+        }
+    }
+
+    /// Shown while the monitor's polls are failing (gh auth expired, network, GraphQL
+    /// errors) — the card's pill flags it, this names the error.
+    @ViewBuilder
+    private var pollErrorRow: some View {
+        if let err = store.autofixPollError {
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 9)).foregroundStyle(Color.red)
+                Text("Failing since \(Fmt.clock(store.autofixPollErrorAt)) — \(err)")
+                    .font(.caption2).foregroundStyle(Color.red)
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var reviewRequestsRow: some View {
+        SettingRow(title: "Review PRs that request me",
+                   summary: "Full E2E · max, inline comments — read-only, never their branch.",
+                   detail: SettingsView.reviewRequestsDetail) {
+            HStack(spacing: 6) {
+                reviewedPill
+                switchControl("Review PRs that request me", $store.reviewRequestsEnabled)
+            }
+        }
+    }
+
+    private static let reviewRequestsDetail = """
+        A review left unaddressed (agent died, lost connection, window closed) is \
+        retried automatically until it lands. Off, the requests still list under \
+        Agent tasks, queued for you to start by hand.
+        """
+
+    /// Two counts that only exist once the monitor has run: how many reviews it has
+    /// delivered, and how many it currently owes. Both were sentences buried mid-blurb.
+    @ViewBuilder
+    private var reviewedPill: some View {
+        if store.unaddressedReviews > 0 {
+            let n = store.unaddressedReviews
+            StatusPill(text: "\(n) owed", tint: .orange, symbol: "arrow.triangle.2.circlepath")
+                .help("\(n) unaddressed review\(n == 1 ? "" : "s") — the reconciler is retrying")
+        } else if store.reviewRequestsHandled > 0 {
+            StatusPill(text: "\(store.reviewRequestsHandled) done", tint: .secondary)
+                .help("Reviews delivered so far")
+        }
+    }
+
+    /// What an auto-review is allowed to submit. Nested under the switch that creates
+    /// them, because none of it means anything while no auto-review runs.
+    private var reviewPolicyBlock: some View {
+        NestedSettings(tint: .orange) {
+            SettingRow(title: "May approve / request changes",
+                       summary: "Off ⇒ inline comments only; the verdict stays with you.",
+                       detail: "On ⇒ a clean review may submit a verdict, except on the "
+                             + "classes withheld below.") {
+                switchControl("May approve / request changes", $store.autoApproveEnabled)
+            }
+            if store.autoApproveEnabled { verdictPolicyBlock }
+            SettingRow(title: "Soft-approve clean PRs",
+                       summary: "One “ran the sweep, all clean” comment — never an APPROVE.",
+                       detail: "Off ⇒ a review that finds nothing says nothing. Independent "
+                             + "of the verdict switch above: a soft approval is a comment, "
+                             + "not a GitHub approval.") {
+                switchControl("Soft-approve clean PRs", $store.softApproveEnabled)
+            }
+        }
+    }
+
+    /// The three configurable suppressors for the auto-review's "final pass + verdict".
+    /// A PR matching any enabled chip gets comments only; otherwise it gets a verdict.
+    private var verdictPolicyBlock: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text("WITHHOLD IT WHEN THE PR TOUCHES…")
+                .font(.system(size: 9, weight: .bold)).foregroundStyle(.secondary).kerning(0.5)
+            HStack(spacing: 5) {
+                ToggleChip(label: "a SKILL", isOn: $store.verdictWithholdSkill,
+                           help: "Comments only on a PR that edits a SKILL")
+                ToggleChip(label: "the installer", isOn: $store.verdictWithholdInstaller,
+                           help: "Comments only on a PR that edits the installer")
+                ToggleChip(label: "community", isOn: $store.verdictWithholdCommunity,
+                           help: "Comments only on a PR whose author is outside the org")
+                Spacer(minLength: 0)
+            }
+        }
+    }
+
+    /// The device-wide ceiling on concurrent automatic agents. Under both monitors
+    /// because it governs both — a poll of either can find any number of pending units
+    /// at once, and this is what keeps them from all opening at the same moment.
+    private var autoTaskLimitRow: some View {
+        let n = store.autoTaskLimit
+        let lo = AgentDispatchGate.minAutoTaskLimit, hi = AgentDispatchGate.maxAutoTaskLimit
+        let badge: String = "\(n) task\(n == 1 ? "" : "s")"
+        return SettingRow(title: "Run at most",
+                          summary: "Across both monitors and anything a mesh peer routes here.",
+                          detail: SettingsView.autoTaskLimitDetail,
+                          stacked: true) {
+            SliderSetting(label: "Run at most",
+                          value: Binding(
+                              get: { Double(store.autoTaskLimit) },
+                              set: { store.autoTaskLimit = Int($0.rounded()) }
+                          ),
+                          range: Double(lo)...Double(hi),
+                          step: 1,
+                          badge: badge,
+                          minLabel: "\(lo)", maxLabel: "\(hi)",
+                          tint: .orange)
+        }
+    }
+
+    /// Both long strings are resolved before the ViewBuilder sees them: a concatenation
+    /// or a ternary inside a `Text(...)` in a builder is what tips this file over the
+    /// type-checker's time limit on a CI runner, while still compiling here.
+    private static let autoTaskLimitDetail = """
+        A hard cap for this machine, across both monitors and any work a mesh peer \
+        routes here. Agents you spawn yourself from the panel don't count against it. \
+        Work over the cap isn't dropped — it waits in the Agent-tasks list, in the \
+        order you put it, and starts as soon as a running agent finishes. The panel \
+        draws whatever is left of the cap as empty slots.
+        """
+
+    /// The rate-limit budget: whether automatic work waits when the account is running
+    /// low, how sure of that it has to be, and what to keep in hand while the ledger
+    /// cannot yet price a task.
+    ///
+    /// Under the task cap because they are the two halves of one question — the cap
+    /// bounds how many automatic agents run at once, this bounds whether any of them
+    /// should start at all.
+    private static let autoBudgetDetail = """
+        Priced from Telemetry → limit per task, against both rate-limit windows: \
+        higher confidence is stricter. Held work isn't dropped — it waits in the \
+        Agent-tasks list until a window refills, and "execute now" overrides it. \
+        Nothing is held while the usage probe can't read a window at all.
+        """
+
+    private var autoBudgetBlock: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            SettingRow(title: "Hold work when the limit runs low",
+                       summary: "Wait for a window to refill rather than start what won't fit.",
+                       detail: SettingsView.autoBudgetDetail) {
+                switchControl("Hold work when the limit runs low", $store.autoBudgetGate)
+            }
+            if store.autoBudgetGate { autoBudgetKnobs }
+        }
+    }
+
+    private var autoBudgetKnobs: some View {
+        let floorBadge: String = Telemetry.percent(store.autoBudgetFloorPct)
+        return NestedSettings(tint: .orange) {
+            SettingRow(title: "Start one only when it fits", stacked: true) {
+                Picker("Start one only when it fits", selection: $store.autoBudgetConfidence) {
+                    ForEach(AgentDispatchGate.budgetConfidenceZ.keys.sorted(), id: \.self) {
+                        Text("\($0)%").tag($0)
+                    }
+                }
+                .pickerStyle(.segmented).labelsHidden().controlSize(.small)
+            }
+            SettingRow(title: "Keep in hand until it can be priced", stacked: true) {
+                SliderSetting(label: "Keep in hand until it can be priced",
+                              value: $store.autoBudgetFloorPct,
+                              range: 0...100,
+                              step: 5,
+                              badge: floorBadge,
+                              minLabel: "spend it all", maxLabel: "spend nothing",
+                              tint: .orange)
+            }
+        }
+    }
+
+    // MARK: Claude API-error watcher
+
+    private var apiWatchSection: some View {
+        let pill = apiWatchPill
+        return SettingsCard(symbol: "exclamationmark.bubble.fill", title: "STALLED AGENTS",
+                            tint: .pink, pill: pill) {
+            SettingRow(title: "Auto-continue on API errors",
+                       summary: "A 529 stops an agent dead; this types it back into motion.",
+                       detail: SettingsView.apiWatchDetail) {
+                switchControl("Auto-continue on API errors", $store.apiWatchEnabled)
+            }
+        }
+    }
+
+    /// Every other card's pill answers "is this doing anything" before a row is read.
+    /// This one drew nothing at all until the watcher had stepped in at least once.
+    private var apiWatchPill: StatusPill {
+        let n = store.apiWatchContinues
+        let text = n > 0 ? "\(n) continued" : ""
+        if !store.apiWatchEnabled {
+            return StatusPill(text: text.isEmpty ? "off" : text, tint: .secondary,
+                              symbol: "bolt.slash.fill")
+        }
+        return StatusPill(text: text.isEmpty ? "watching" : text, tint: .green,
+                          symbol: "bolt.fill")
+    }
+
+    private static let apiWatchDetail = """
+        Watches every iTerm/Terminal session and sends "\(ApiErrorWatcher.continueMessage)" \
+        when a Claude API error shows up. Out-of-quota stalls ("You've hit your weekly \
+        limit") are left alone — nudging can't help until the limit resets. Claude Code \
+        runs only: the banners it matches are Claude Code's. An OpenCode or Hermes agent \
+        that hits an error reads as idle instead, frees its task-cap slot, and is \
+        dispatched again by whichever monitor owed the work.
+        """
+
     // MARK: Tool visibility
 
     private var toolsSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            sectionLabel("TOOLS — COLOR & VISIBILITY")
-            ForEach(ToolKind.allCases) { kind in
-                HStack(spacing: 8) {
-                    IconBadge(symbol: kind.systemImage, tint: store.tint(for: kind))
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(kind.title).font(.caption.bold())
-                        Text(kind.subtitle).font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1)
-                    }
-                    Spacer(minLength: 6)
-                    ColorPicker("", selection: Binding(
-                        get: { store.tint(for: kind) },
-                        set: { store.setTint($0, for: kind) }
-                    ), supportsOpacity: false)
-                        .labelsHidden()
-                        .help("Tint for \(kind.title)")
-                    Toggle("", isOn: Binding(
-                        get: { !store.hiddenTools.contains(kind.rawValue) },
-                        set: { store.setTool(kind, visible: $0) }
-                    ))
-                        .labelsHidden()
-                        .toggleStyle(.switch)
-                        .tint(store.tint(for: kind))
-                        .help("Show \(kind.title) in the grid")
+        let shown = ToolKind.allCases.count - store.hiddenTools.count
+        return SettingsCard(symbol: "square.grid.2x2.fill", title: "TOOLS",
+                            tint: .indigo,
+                            pill: StatusPill(text: "\(shown) of \(ToolKind.allCases.count) shown",
+                                             tint: .secondary)) {
+            SettingRow(title: "Cards in the panel grid",
+                       detail: "The tint colours the card and every result row under it. "
+                             + "Hiding the selected tool selects the first one still shown.",
+                       stacked: true) {
+                VStack(alignment: .leading, spacing: 5) {
+                    ForEach(ToolKind.allCases) { toolRow($0) }
                 }
             }
         }
+    }
+
+    /// One tool. The whole row dims while it is hidden, so which cards the grid will
+    /// actually draw reads off the column without checking six switch positions.
+    private func toolRow(_ kind: ToolKind) -> some View {
+        let visible = !store.hiddenTools.contains(kind.rawValue)
+        return HStack(spacing: 8) {
+            IconBadge(symbol: kind.systemImage, tint: store.tint(for: kind))
+            VStack(alignment: .leading, spacing: 1) {
+                Text(kind.title).font(.caption.bold())
+                Text(kind.subtitle).font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer(minLength: 6)
+            ColorPicker("Tint for \(kind.title)", selection: Binding(
+                get: { store.tint(for: kind) },
+                set: { store.setTint($0, for: kind) }
+            ), supportsOpacity: false)
+                .labelsHidden()
+                .frame(width: 34)
+                .help("Tint for \(kind.title)")
+            Toggle("Show \(kind.title) in the grid", isOn: Binding(
+                get: { visible },
+                set: { store.setTool(kind, visible: $0) }
+            ))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.small)
+                .tint(store.tint(for: kind))
+                .help("Show \(kind.title) in the grid")
+        }
+        .opacity(visible ? 1 : 0.45)
+        .padding(.horizontal, 6).padding(.vertical, 4)
+        .background(RoundedRectangle(cornerRadius: 7).fill(Color.gray.opacity(visible ? 0.07 : 0)))
     }
 
     // MARK: Terminal
 
     private var terminalSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            sectionLabel("SPAWN TERMINAL")
-            Picker("", selection: $store.terminalChoice) {
-                ForEach(SpawnTerminal.allCases) { term in
-                    Text(term.title + (term.isInstalled ? "" : " (not installed)")).tag(term.rawValue)
+        let resolved = AgentSpawner.resolved(store.terminal).title
+        return SettingsCard(symbol: "macwindow", title: "SPAWN TERMINAL", tint: .brown,
+                            pill: StatusPill(text: resolved, tint: .secondary)) {
+            SettingRow(title: "Window SPAWN AGENT opens",
+                       summary: "iTerm is used when installed; otherwise Terminal.",
+                       stacked: true) {
+                Picker("Window SPAWN AGENT opens", selection: $store.terminalChoice) {
+                    ForEach(SpawnTerminal.allCases) { term in
+                        Text(term.title + (term.isInstalled ? "" : " (not installed)")).tag(term.rawValue)
+                    }
                 }
+                .labelsHidden()
+                .pickerStyle(.segmented)
             }
-            .labelsHidden()
-            .pickerStyle(.segmented)
-            Text("SPAWN AGENT opens a new \(AgentSpawner.resolved(store.terminal).title) window. iTerm is used when installed; otherwise Terminal.")
-                .font(.caption2).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
     // MARK: Device allocator (MCP server + skill + rule)
 
-    @ViewBuilder
     private var allocatorSection: some View {
         let s = store.allocatorInstall
-        VStack(alignment: .leading, spacing: 6) {
-            sectionLabel("DEVICE ALLOCATOR (MCP)")
-            HStack(spacing: 8) {
-                Image(systemName: allocatorSymbol(s)).foregroundStyle(allocatorTint(s))
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(allocatorStatusText(s))
-                        .font(.caption.bold())
-                    Text(statusDetail(s)).font(.system(size: 9, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer()
-                if s?.daemonRunning ?? false {
-                    HStack(spacing: 3) {
-                        Image(systemName: "bolt.fill").font(.system(size: 8))
-                        Text("daemon").font(.system(size: 9))
-                    }.foregroundStyle(.green)
+        return SettingsCard(symbol: "iphone.gen3", title: "DEVICE ALLOCATOR",
+                            tint: .cyan, pill: allocatorPill(s)) {
+            SettingRow(title: "Reserve a simulator before using it",
+                       summary: allocatorSummary,
+                       detail: "Installs an MCP server, a skill and an always-on rule. "
+                             + "Reclaims a device when its agent dies or it sits idle for "
+                             + "15 minutes.",
+                       stacked: true) {
+                VStack(alignment: .leading, spacing: 7) {
+                    allocatorMarks(s)
+                    allocatorButtons(s)
                 }
             }
-            HStack(spacing: 8) {
-                Button { Task { await store.installAllocator() } } label: {
-                    Text(s?.outdated ?? false ? "Update"
-                         : (s?.installed ?? false) ? "Reinstall" : "Install").bold()
+        }
+    }
+
+    /// "Installed" alone would be a true statement about a machine still running the
+    /// copies some earlier checkout laid down, so the stale case says so and the marks
+    /// below name what drifted. Amber for stale, not green: it is working, but not from
+    /// this checkout. Mirrors `settingsview._refresh_allocator_ui`.
+    private func allocatorPill(_ s: AllocatorInstall?) -> StatusPill {
+        guard let s else { return StatusPill(text: "checking…", tint: .secondary) }
+        let version = s.version ?? "?"
+        if s.outdated {
+            return StatusPill(text: "out of date · v\(version)", tint: .orange,
+                              symbol: "exclamationmark.triangle.fill")
+        }
+        if s.installed {
+            return StatusPill(text: "v\(version)", tint: .green, symbol: "checkmark.seal.fill")
+        }
+        return StatusPill(text: "not installed", tint: .secondary, symbol: "circle.dashed")
+    }
+
+    @ViewBuilder
+    private func allocatorMarks(_ s: AllocatorInstall?) -> some View {
+        if let s {
+            let drift = s.outdated && !s.drift.isEmpty ? s.drift.joined(separator: ", ") : ""
+            HStack(spacing: 4) {
+                MarkChip(label: "MCP", ok: s.mcpRegistered)
+                MarkChip(label: "skill", ok: s.skillInstalled)
+                MarkChip(label: "rule", ok: s.ruleInstalled)
+                MarkChip(label: "CLAUDE.md", ok: s.claudeMdInjected)
+                if s.daemonRunning {
+                    StatusPill(text: "daemon", tint: .green, symbol: "bolt.fill")
                 }
-                .buttonStyle(.borderedProminent).controlSize(.small)
-                .disabled(!DeviceAllocator.packageAvailable || !DeviceAllocator.nodeAvailable)
-                if s?.installed ?? false {
-                    Button { Task { await store.uninstallAllocator() } } label: { Text("Uninstall") }
-                        .buttonStyle(.bordered).controlSize(.small)
-                }
-                Button { Task { await store.refreshAllocatorInstall() } } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .buttonStyle(.borderless).controlSize(.small).help("Re-check status")
+                Spacer(minLength: 0)
             }
-            Text(allocatorHint)
-                .font(.caption2)
-                .foregroundStyle(allocatorReady ? Color.secondary : Color.orange)
-                .fixedSize(horizontal: false, vertical: true)
+            if !drift.isEmpty {
+                Text("stale: \(drift)")
+                    .font(.system(size: 9, design: .monospaced)).foregroundStyle(.orange)
+            }
+        }
+    }
+
+    private func allocatorButtons(_ s: AllocatorInstall?) -> some View {
+        HStack(spacing: 8) {
+            Button { Task { await store.installAllocator() } } label: {
+                Text(s?.outdated ?? false ? "Update"
+                     : (s?.installed ?? false) ? "Reinstall" : "Install").bold()
+            }
+            .buttonStyle(.borderedProminent).controlSize(.small)
+            .disabled(!allocatorReady)
+            if s?.installed ?? false {
+                Button { Task { await store.uninstallAllocator() } } label: { Text("Uninstall") }
+                    .buttonStyle(.bordered).controlSize(.small)
+            }
+            Button { Task { await store.refreshAllocatorInstall() } } label: {
+                Image(systemName: "arrow.clockwise")
+            }
+            .buttonStyle(.borderless).controlSize(.small).help("Re-check status")
+            Spacer(minLength: 0)
         }
     }
 
@@ -701,46 +697,131 @@ struct SettingsView: View {
         DeviceAllocator.packageAvailable && DeviceAllocator.nodeAvailable
     }
 
-    private var allocatorHint: String {
+    private var allocatorSummary: String {
         if !DeviceAllocator.packageAvailable {
-            return "Package not found at \(DeviceAllocator.packageDir). Set DIPLOMAT_DEVICE_ALLOCATOR_DIR to point at it."
+            return "⚠ Package not found at \(DeviceAllocator.packageDir). Set "
+                + "DIPLOMAT_DEVICE_ALLOCATOR_DIR to point at it."
         }
         if !DeviceAllocator.nodeAvailable {
-            return "Node.js not found. Install Node (or set DIPLOMAT_NODE) — the allocator's MCP server and daemon need it to run."
+            return "⚠ Node.js not found. Install Node (or set DIPLOMAT_NODE) — the "
+                + "allocator's MCP server and daemon need it to run."
         }
-        return "Forces every local agent to reserve an emulator/simulator before using it (MCP server + skill + always-on rule), so agents never collide on a shared device. Reclaims a device when its agent dies or it sits idle for 15 minutes."
+        return "So two agents never drive the same emulator at once."
     }
 
-    /// "Installed" alone would be a true statement about a machine still running the
-    /// copies some earlier checkout laid down, so the stale case says so and the
-    /// detail line below names what drifted. Mirrors `settingsview._refresh_allocator_ui`.
-    private func allocatorStatusText(_ s: AllocatorInstall?) -> String {
-        guard let s else { return "Checking…" }
-        let version = s.version ?? "?"
-        if s.outdated { return "Out of date (v\(version))" }
-        return s.installed ? "Installed · v\(version)" : "Not installed"
+    // MARK: mesh (LAN P2P duty coordination)
+
+    private var meshSection: some View {
+        SettingsCard(symbol: "hexagon.fill", title: "MESH (LAN P2P)", tint: .mint,
+                     pill: meshPill) {
+            SettingRow(title: "Coordinate duties with this LAN",
+                       summary: "Routes reviews, conflict fixes and audits to whichever "
+                              + "machine fits the policy.",
+                       detail: SettingsView.meshDetail) {
+                switchControl("Coordinate duties with this LAN", $store.meshEnabled)
+            }
+        }
     }
 
-    /// Amber for stale, not green: it is working, but not from this checkout.
-    private func allocatorSymbol(_ s: AllocatorInstall?) -> String {
-        (s?.installed ?? false) && !(s?.outdated ?? false)
-            ? "checkmark.seal.fill" : "exclamationmark.triangle.fill"
+    private static let meshDetail = """
+        Runs a small peer-to-peer node that discovers the other Diplomat machines on \
+        your LAN (UDP beacons); placement is surplus-first by default, token- and \
+        platform-aware. Configure the whole mesh from the ⬡ Mesh screen (the ⬡ button \
+        in the panel header). Off by default; no node opens on the network until you \
+        enable it here.
+        """
+
+    private var meshPill: StatusPill {
+        guard store.meshEnabled else {
+            return StatusPill(text: "off", tint: .secondary, symbol: "bolt.slash.fill")
+        }
+        guard MeshBridge.nodeRunning(store.meshState) else {
+            return store.meshState == nil
+                ? StatusPill(text: "starting…", tint: .orange, symbol: "hourglass")
+                : StatusPill(text: "node not running", tint: .orange, symbol: "bolt.slash.fill")
+        }
+        let peers = store.meshState?.peers.count ?? 0
+        return StatusPill(text: "\(peers) peer\(peers == 1 ? "" : "s")", tint: .green,
+                          symbol: "bolt.fill")
     }
 
-    private func allocatorTint(_ s: AllocatorInstall?) -> Color {
-        (s?.installed ?? false) && !(s?.outdated ?? false) ? .green : .orange
+    // MARK: applet update
+
+    private var updateSection: some View {
+        SettingsCard(symbol: "arrow.down.circle.fill", title: "UPDATE", tint: .blue,
+                     pill: updatePill) {
+            SettingRow(title: "This applet",
+                       summary: updateDetail,
+                       detail: "Pulls the latest applet from GitHub, rebuilds the "
+                             + "diplomat-core prompt engine and the app bundle, and "
+                             + "relaunches it in place.",
+                       stacked: true) {
+                HStack(spacing: 8) {
+                    Button { store.updateApp() } label: { Text("Update").bold() }
+                        .buttonStyle(.borderedProminent).controlSize(.small)
+                        .disabled(!(store.updateState.map { !$0.isBusy } ?? false))
+                    Button { store.refreshUpdateStatus() } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .buttonStyle(.borderless).controlSize(.small).help("Re-check for updates")
+                    Spacer(minLength: 0)
+                }
+            }
+        }
     }
 
-    private func statusDetail(_ s: AllocatorInstall?) -> String {
-        guard let s else { return "querying the installer…" }
-        func mark(_ b: Bool) -> String { b ? "✓" : "✗" }
-        let base = "MCP \(mark(s.mcpRegistered)) · skill \(mark(s.skillInstalled)) · "
-            + "rule \(mark(s.ruleInstalled)) · CLAUDE.md \(mark(s.claudeMdInjected))"
-        guard s.outdated, !s.drift.isEmpty else { return base }
-        return base + "  ⟳ stale: \(s.drift.joined(separator: ", "))"
+    /// nil (before the first check) reads as "checking", matching the Linux front-end.
+    private var updatePill: StatusPill {
+        switch store.updateState ?? .checking {
+        case .checking:
+            return StatusPill(text: "checking…", tint: .secondary)
+        case .updating:
+            return StatusPill(text: "updating…", tint: .orange, symbol: "arrow.triangle.2.circlepath")
+        case .restarting:
+            return StatusPill(text: "restarting…", tint: .green, symbol: "arrow.clockwise")
+        case .failed:
+            return StatusPill(text: "update failed", tint: .red, symbol: "xmark.octagon.fill")
+        case .idle(let r):
+            if r.error != nil { return StatusPill(text: "check failed", tint: .orange,
+                                                  symbol: "exclamationmark.triangle.fill") }
+            guard let behind = r.behind, behind > 0 else {
+                return StatusPill(text: "up to date", tint: .green, symbol: "checkmark.seal.fill")
+            }
+            return StatusPill(text: "\(behind) behind", tint: .blue, symbol: "arrow.down.circle.fill")
+        }
     }
 
-    private func sectionLabel(_ text: String) -> some View {
-        Text(text).font(.caption2.bold()).foregroundStyle(.secondary).kerning(0.5)
+    /// The line under the button: what a check found, or what an update is doing.
+    private var updateDetail: String {
+        switch store.updateState ?? .checking {
+        case .checking:
+            return "comparing with origin…"
+        case .updating(let step):
+            return step
+        case .restarting(let commit):
+            return "relaunched at \(commit) — this instance is handing over"
+        case .failed(let err):
+            return err
+        case .idle(let r):
+            if let e = r.error { return e }
+            // A diverged checkout still updates — via a merge, not a discard.
+            let ahead = r.ahead ?? 0
+            let aheadNote = ahead > 0
+                ? " · \(ahead) local ahead\((r.behind ?? 0) > 0 ? " (will merge)" : "")" : ""
+            return "\(r.commit ?? "?") on \(r.branch ?? "?") · upstream \(r.upstream ?? "?")\(aheadNote)"
+        }
+    }
+
+    // MARK: shared control
+
+    /// The one switch every boolean row uses, so no two of them can end up different
+    /// sizes — which is exactly what the mini/small mix on this screen used to be.
+    /// `title` is the row's, repeated because `labelsHidden()` drops the label from
+    /// the layout but keeps it as the switch's accessible name.
+    private func switchControl(_ title: String, _ isOn: Binding<Bool>) -> some View {
+        Toggle(title, isOn: isOn)
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .controlSize(.small)
     }
 }

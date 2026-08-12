@@ -96,13 +96,17 @@ def _ledger_lines() -> list[str]:
         {"at": NOW - 10 * DAY + 3000, "ev": "done", "key": "review:h/o/r#1@aa",
          "tokens": 120_000.0},
     ]
-    # A retry: two `started` events for one key. First-wins, so the wait is measured
-    # to the FIRST start and the second attempt must not move it.
+    # A retry: two `started` and two `done` events for one key. First-wins on the
+    # instants, so the wait is measured to the FIRST start and the run to the FIRST
+    # completion, neither of which the second attempt may move. The PRICE is the
+    # exception: attempt 1 went unattributed, and taking it first-wins too would
+    # leave the whole chain reading as a task nobody could cost.
     events += [
         {"at": NOW - 9 * DAY, "ev": "queued", "key": "review:h/o/r#2@bb",
          "duty": "review", "pr": 2},
         {"at": NOW - 9 * DAY + 600, "ev": "started", "key": "review:h/o/r#2@bb",
          "remote": False, "attempt": 1},
+        {"at": NOW - 9 * DAY + 5000, "ev": "done", "key": "review:h/o/r#2@bb"},
         {"at": NOW - 9 * DAY + 9000, "ev": "started", "key": "review:h/o/r#2@bb",
          "remote": False, "attempt": 2},
         {"at": NOW - 9 * DAY + 12000, "ev": "done", "key": "review:h/o/r#2@bb",
@@ -148,6 +152,22 @@ def _ledger_lines() -> list[str]:
          "remote": False, "attempt": 1},
         {"at": NOW - 5.4 * DAY + 2600, "ev": "done", "key": "review:h/o/r#27@ll",
          "tokens": 175_000.0, "runner": "claude"},
+    ]
+    # A retry whose priced attempt ran under a DIFFERENT runner from the attempt that
+    # went unattributed. The price is taken from the later one, so its runner has to
+    # be taken with it: left reading `claude`, this OpenCode figure — enormous for
+    # the same reason as #26 — would be charged to the Anthropic window.
+    events += [
+        {"at": NOW - 5.3 * DAY, "ev": "queued", "key": "review:h/o/r#28@mm",
+         "duty": "review", "pr": 28},
+        {"at": NOW - 5.3 * DAY + 200, "ev": "started", "key": "review:h/o/r#28@mm",
+         "remote": False, "attempt": 1},
+        {"at": NOW - 5.3 * DAY + 2600, "ev": "done", "key": "review:h/o/r#28@mm",
+         "runner": "claude"},
+        {"at": NOW - 5.3 * DAY + 5000, "ev": "started", "key": "review:h/o/r#28@mm",
+         "remote": False, "attempt": 2},
+        {"at": NOW - 5.3 * DAY + 8000, "ev": "done", "key": "review:h/o/r#28@mm",
+         "tokens": 8_000_000.0, "runner": "opencode"},
     ]
     # Owed, then cleared before anyone took it (the reviewer resolved it themselves):
     # pending for a while, then not, and never a run.
@@ -280,20 +300,22 @@ def test_a_foreign_runners_task_is_priced_but_never_charged_to_the_window(both):
     """What it cost is a token count; what share of a five-hour Anthropic window it
     cost is nothing, because it never drew on one.
 
-    The fixture's OpenCode task is the largest in the ledger by an order of magnitude,
-    so counting it would move the distribution's every moment — and both sides have to
-    drop it identically or the two screens report different spend for one ledger."""
+    The fixture's OpenCode tasks are the largest in the ledger by an order of
+    magnitude, so counting them would move the distribution's every moment — and both
+    sides have to drop them identically or the two screens report different spend for
+    one ledger. One is a plain OpenCode run; the other took its price from a retry, so
+    it only reads as foreign if the runner was carried across with the price."""
     _swift, p = both
     counted = [t for t in p["tasks"]
                if t["tokens"] and not t["remote"] and t["startedAt"] is not None
                and t["startedAt"] >= NOW - DAYS * DAY and t["runner"] != "opencode"]
     foreign = [t for t in p["tasks"] if t["runner"] == "opencode"]
-    assert len(foreign) == 1 and foreign[0]["tokens"] == 9_000_000
+    assert sorted(t["tokens"] for t in foreign) == [8_000_000, 9_000_000]
     assert p["perTask"]["count"] == len(counted), (
         "the window's percentages counted a task billed to another provider"
     )
     # It is still the same work, and the tokens-per-task figure is where it belongs.
-    priced = [t["tokens"] for t in counted] + [foreign[0]["tokens"]]
+    priced = [t["tokens"] for t in counted] + [t["tokens"] for t in foreign]
     assert p["perTaskTokensMean"] == pytest.approx(sum(priced) / len(priced), abs=1e-6)
 
 

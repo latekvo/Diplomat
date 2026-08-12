@@ -61,6 +61,18 @@ jobs:
           DIPLOMAT_RENDER=telemetry DIPLOMAT_RENDER_OUT="$RUNNER_TEMP/telemetry.png" \
             swift run Diplomat
           test -s "$RUNNER_TEMP/telemetry.png"
+      # Settings, for the same reason, and in both of its states: the Explain switch
+      # decides whether each row's paragraph is built at all, so one render covers
+      # only half the view tree. ImageRenderer draws AppKit controls as placeholder
+      # boxes, which is fine here — this is a crash guard, not a snapshot.
+      - name: Headless settings render
+        working-directory: packages/diplomat-platform/macos
+        run: |
+          for mode in settings settings-explain; do
+            DIPLOMAT_RENDER=$mode DIPLOMAT_RENDER_OUT="$RUNNER_TEMP/$mode.png" \
+              swift run Diplomat
+            test -s "$RUNNER_TEMP/$mode.png"
+          done
       # The shared-helper self-tests that a runner can host. All pure logic, and none
       # of them touches the runner's real state: OSA_TEST runs bare AppleScript
       # expressions (no `tell application`, so no Automation permission),

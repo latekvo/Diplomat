@@ -60,7 +60,7 @@ def _installer_files(pr: OpenPR) -> list[str]:
 
 
 def _run_prompt(run_id: str) -> str:
-    """What a run was asked — the string :func:`usagescan.task_tokens` matches
+    """What a run was asked — the string :func:`usagescan.task_run` matches
     transcripts against. Empty when the run directory is gone, which prices the run
     as unattributed rather than as some other agent's transcript."""
     try:
@@ -383,6 +383,18 @@ class Store(QObject):
     @allocator_setup_done.setter
     def allocator_setup_done(self, value: bool) -> None:
         self._settings.setValue("allocatorSetupDone", bool(value))
+
+    @property
+    def settings_explain(self) -> bool:
+        """Whether Settings draws each row's long-form explanation (the header's
+        *Explain* switch). Off by default: the paragraphs answer questions a first
+        read raises and are noise on every read after it. Persisted, so the answer
+        to "do I want these" is given once rather than on every visit."""
+        return self._settings.value("settingsExplain", False, bool)
+
+    @settings_explain.setter
+    def settings_explain(self, value: bool) -> None:
+        self._settings.setValue("settingsExplain", bool(value))
 
     @property
     def mesh_enabled(self) -> bool:
@@ -1827,21 +1839,20 @@ class Store(QObject):
         if not gone:
             return
         # Every pricing input comes out of the run directory, so all of them must be
-        # read before `forget` deletes it.
-        #
-        # The sentinel's mtime is when the agent actually exited; now() is whenever a
-        # poll got round to looking, which is up to a poll period later and would
-        # inflate every recorded run time by a random few minutes.
+        # read before `forget` deletes it. A run the mesh placed leaves no sentinel
+        # here, and `record_completion` dates that one from its transcript; now() is
+        # only ever the instant this poll looked.
+        now = time.time()
         retired = [
-            (r, agentregistry.finished_at(r.run_id) or time.time(),
-             _run_prompt(r.run_id), agentregistry.bound_session(r.run_id),
+            (r, agentregistry.finished_at(r.run_id), _run_prompt(r.run_id),
+             agentregistry.bound_session(r.run_id),
              agentregistry.run_runner(r.run_id))
             for r in gone if r.ledger_key
         ]
         agentregistry.forget({r.run_id for r in gone})
-        for r, finished_at, prompt, session_id, agent_runner in retired:
+        for r, exited_at, prompt, session_id, agent_runner in retired:
             telemetry.record_completion(r.ledger_key, prompt, r.dispatched_at,
-                                        finished_at, session_id=session_id,
+                                        exited_at, now, session_id=session_id,
                                         agent_runner=agent_runner)
         if retired:
             self.telemetry_changed.emit()

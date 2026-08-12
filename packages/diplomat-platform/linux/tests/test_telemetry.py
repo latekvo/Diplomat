@@ -47,6 +47,41 @@ def test_events_round_trip_through_the_file(ledger):
     assert task.tokens == 1234.0
 
 
+def test_a_retried_task_is_priced_by_whichever_attempt_could_be_attributed(ledger):
+    """Work that is still owed after an agent finishes is re-run, and that appends a
+    SECOND completion under the same key — only one of which need be attributable,
+    since an applet that restarted mid-agent loses that run's prompt. Priced
+    first-wins, such a task counts as unattributed for good however often it is
+    re-run, and the whole retry chain drops out of the spread."""
+    unpriced = "conflicts:h/o/r#7@aa"
+    telemetry.record_done(unpriced, at=1_785_000_000.0, tokens=None)
+    telemetry.record_done(unpriced, at=1_785_009_000.0, tokens=4321.0)
+
+    # A transcript that could not be read prices at zero, which is no more a
+    # measurement than a missing one is.
+    empty = "conflicts:h/o/r#8@bb"
+    telemetry.record_done(empty, at=1_785_000_000.0, tokens=0.0)
+    telemetry.record_done(empty, at=1_785_009_000.0, tokens=8765.0)
+
+    priced = "conflicts:h/o/r#9@cc"
+    telemetry.record_done(priced, at=1_785_000_000.0, tokens=1000.0)
+    telemetry.record_done(priced, at=1_785_009_000.0, tokens=9999.0)
+
+    # The runner is what says whether a price came out of the Anthropic window, so it
+    # has to travel with the price it belongs to.
+    foreign = "conflicts:h/o/r#10@dd"
+    telemetry.record_done(foreign, at=1_785_000_000.0, tokens=None, agent_runner="claude")
+    telemetry.record_done(foreign, at=1_785_009_000.0, tokens=5000.0,
+                          agent_runner="opencode")
+
+    tasks = {t.key: t for t in telemetry.load().tasks}
+    assert tasks[unpriced].tokens == 4321.0, "the later attempt's price was discarded"
+    assert tasks[empty].tokens == 8765.0, "a zero read as a price"
+    assert tasks[priced].tokens == 1000.0, "a priced task was re-priced by its retry"
+    assert tasks[unpriced].done_at == 1_785_000_000.0, "the first completion is when it finished"
+    assert not tasks[foreign].anthropic, "a foreign runner's price was charged to the window"
+
+
 def test_the_fold_is_recomputed_when_the_file_changes(ledger):
     telemetry.record_queued("review:h/o/r#1@aa", "review", 1)
     assert len(telemetry.load().tasks) == 1
@@ -166,11 +201,12 @@ def test_a_completion_with_no_matching_transcript_is_still_recorded(ledger):
     """Attribution fails whenever the applet restarted mid-agent. Recording that as
     a completion with no cost keeps the run time honest and lets the screen say how
     many tasks it could not price; skipping it would hide the agent entirely."""
+    now = time.time()
     telemetry.record_started("review:h/o/r#1@aa")
     telemetry.record_completion("review:h/o/r#1@aa", "a prompt no transcript holds",
-                                time.time() - 60, time.time())
+                                now - 60, None, now)
     task = telemetry.load().tasks[0]
-    assert task.done_at is not None
+    assert task.done_at == now, "with neither sentinel nor transcript, the poll is all"
     assert task.tokens is None
 
 
@@ -263,8 +299,9 @@ def test_an_opencode_completion_is_priced_by_the_exporter(ledger, tmp_path,
                                                           monkeypatch):
     _stub_opencode(tmp_path, monkeypatch,
                    "#!/bin/sh\ncat <<'JSON'\n" + json.dumps(EXPORTED) + "\nJSON\n")
+    now = time.time()
     telemetry.record_completion("review:h/o/r#1@aa", "a prompt no transcript holds",
-                                time.time() - 60, time.time(), session_id="ses_ours",
+                                now - 60, now, now, session_id="ses_ours",
                                 agent_runner="opencode")
     assert telemetry.load().tasks[0].tokens == 248
 
@@ -278,8 +315,9 @@ def test_a_hermes_completion_is_priced_from_its_own_session_row(ledger, tmp_path
 
     _stub_opencode(tmp_path, monkeypatch, "#!/bin/sh\necho SHOULD_NOT_RUN >&2\nexit 3\n")
     store({OURS: [user(PROMPT), FINISHED]})
+    now = time.time()
     telemetry.record_completion("review:h/o/r#1@aa", "a prompt no transcript holds",
-                                time.time() - 60, time.time(), session_id=OURS,
+                                now - 60, now, now, session_id=OURS,
                                 agent_runner="hermes")
     assert telemetry.load().tasks[0].tokens == 125
 
@@ -294,8 +332,9 @@ def test_a_claude_completion_is_still_priced_by_its_own_transcript(ledger, scann
     repo, projects = scanner
     _stub_opencode(tmp_path, monkeypatch, "#!/bin/sh\necho SHOULD_NOT_RUN >&2\nexit 3\n")
     _session(projects / "s" / "mine.jsonl", "review PR #41 please", str(repo), [1000, 500])
+    now = time.time()
     telemetry.record_completion("review:h/o/r#41@aa", "review PR #41 please",
-                                time.time() - 300, time.time())
+                                now - 300, now, now)
     assert telemetry.load().tasks[0].tokens == 1500
 
 
@@ -326,7 +365,7 @@ def test_a_run_is_priced_before_its_directory_is_deleted(ledger, monkeypatch):
 
     seen = {}
     monkeypatch.setattr(telemetry, "record_completion",
-                        lambda key, prompt, started, at, session_id="",
+                        lambda key, prompt, started, at, noticed, session_id="",
                         agent_runner="": seen.update(
                             prompt=prompt, at=at, session_id=session_id,
                             agent_runner=agent_runner))
@@ -487,7 +526,7 @@ def test_a_task_is_costed_from_its_own_transcript(scanner):
              [1000, 500])
     _session(projects / "s" / "other.jsonl", "a different job entirely", str(repo),
              [9_000_000])
-    assert usagescan.task_tokens("review PR #41 please", started, time.time()) == 1500
+    assert usagescan.task_run("review PR #41 please", started, time.time()).tokens == 1500
 
 
 def test_a_prompt_written_as_content_blocks_still_matches(scanner):
@@ -499,8 +538,8 @@ def test_a_prompt_written_as_content_blocks_still_matches(scanner):
             {"type": "text", "text": "review PR #41 please"}]}},
         _turn(str(repo), 250),
     ])
-    assert usagescan.task_tokens("review PR #41 please",
-                                 time.time() - 60, time.time()) == 250
+    assert usagescan.task_run("review PR #41 please",
+                              time.time() - 60, time.time()).tokens == 250
 
 
 def test_a_transcript_outside_the_agents_lifetime_is_not_its_own(scanner):
@@ -512,16 +551,16 @@ def test_a_transcript_outside_the_agents_lifetime_is_not_its_own(scanner):
     _session(path, "review PR #41 please", str(repo), [250])
     stale = time.time() - 30 * 86400
     os.utime(path, (stale, stale))
-    assert usagescan.task_tokens("review PR #41 please",
-                                 time.time() - 60, time.time()) is None
+    assert usagescan.task_run("review PR #41 please",
+                              time.time() - 60, time.time()) is None
 
 
 def test_an_unmatched_prompt_reports_nothing_rather_than_zero(scanner):
     repo, projects = scanner
     _session(projects / "s" / "a.jsonl", "some other agent's prompt", str(repo), [250])
-    assert usagescan.task_tokens("review PR #41 please",
-                                 time.time() - 60, time.time()) is None
-    assert usagescan.task_tokens("", time.time() - 60, time.time()) is None
+    assert usagescan.task_run("review PR #41 please",
+                              time.time() - 60, time.time()) is None
+    assert usagescan.task_run("", time.time() - 60, time.time()) is None
 
 
 # MARK: - Retiring a run, which is what actually prices it
@@ -559,6 +598,40 @@ def test_retiring_a_run_prices_it_from_the_transcript_its_prompt_names(ledger, s
     telemetry._reset_cache()
     task = telemetry.load().tasks[0]
     assert task.tokens == 1500, "the run was retired without being priced"
+    assert task.done_at == exited_at, "the exit time came from the poll, not the agent"
+
+
+def test_a_run_the_mesh_placed_is_dated_from_its_transcript(ledger, scanner):
+    """A mesh executor points its agent at a completion sentinel of its own under the
+    mesh directory and unlinks it the moment it fires, so the run directory never
+    gets one and ``finished_at`` has nothing to read. Left at the poll instant, every
+    such run's measured duration stretches to wherever that poll happened to land —
+    and on a machine running the mesh, every run is one of these."""
+    from diplomat_app import agentregistry, agentstate
+    from diplomat_app.store import Store
+
+    repo, projects = scanner
+    prompt = "resolve the conflicts on PR #9 please"
+    dispatched_at = time.time() - 3600
+    exited_at = dispatched_at + 300
+    transcript = projects / "s" / "meshed.jsonl"
+    _session(transcript, prompt, str(repo), [700])
+    os.utime(transcript, (exited_at, exited_at))
+
+    record = agentstate.RunRecord(run_id="m1", dispatched_at=dispatched_at,
+                                  pr_number=9, kind="conflicts",
+                                  placement=agentstate.PLACEMENT_MESH_HERE,
+                                  ledger_key="conflicts:o/r#9@aa")
+    agentregistry.create_run(record, prompt)  # and no sentinel: the mesh kept its own
+
+    telemetry.record_started(record.ledger_key)
+    Store()._retire_finished(agentstate.Tick(records=[], states={}, rows=[],
+                                             cap_load=set(), retirable=[record],
+                                             free_slots=0))
+
+    telemetry._reset_cache()
+    task = telemetry.load().tasks[0]
+    assert task.tokens == 700, "the run was retired without being priced"
     assert task.done_at == exited_at, "the exit time came from the poll, not the agent"
 
 # MARK: - What a range's token split measures

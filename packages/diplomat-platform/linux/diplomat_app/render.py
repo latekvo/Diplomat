@@ -6,7 +6,8 @@ a real display by grabbing the widget's own pixels:
     DIPLOMAT_RENDER=panel DIPLOMAT_RENDER_OUT=/tmp/p.png \
         QT_QPA_PLATFORM=offscreen python -m diplomat_app
 
-what ∈ {panel, lookup, wizard, conflicts, settings, devices, mesh, telemetry}.
+what ∈ {panel, lookup, wizard, conflicts, settings[-explain], devices, mesh,
+telemetry}.
 With DIPLOMAT_RENDER_LIVE=1 it fetches real data first; otherwise it uses a small
 synthetic fixture.
 """
@@ -47,6 +48,22 @@ def _fixture(store: Store) -> None:
                   "NONE", now - timedelta(hours=3), now, 1, [], ["bug"], False),
     ]
     store.has_loaded = True
+
+
+def _settings_fixture(store: Store, *, explain: bool) -> None:
+    """Open Settings on the states its quiet rows never reach: an outstanding
+    review count (so the owed-reviews pill draws) and auto-approvals on (so the
+    nested verdict policy is unfolded). ``explain`` turns on the header switch,
+    the only state that draws the long-form paragraph under each row.
+
+    Mirrors ``Render.seedSettings`` on macOS. Writes through the real properties,
+    so it persists to whatever QSettings this process has — which in a render is
+    the scratch HOME the caller points it at, as it is for every other fixture."""
+    store.review_requests_enabled = True
+    store.auto_approve_enabled = True
+    store.review_requests_handled = 7
+    store.unaddressed_reviews = 2
+    store.settings_explain = explain
 
 
 def _device_fixture(store: Store) -> None:
@@ -381,9 +398,13 @@ def run(what: str, out: str) -> int:
     # every one of those is absent, and the fixture would be a synthetic topology
     # nothing reads.
     if szpont.AVAILABLE and what in (
-        "mesh", "panel", "settings", "wizard", "conflicts", "audit"
+        "mesh", "panel", "settings", "settings-explain", "wizard", "conflicts", "audit"
     ):
         _mesh_fixture(store)
+
+    # Also before Panel(): Settings reads every one of these once, as it builds.
+    if what.startswith("settings"):
+        _settings_fixture(store, explain=what.endswith("explain"))
 
     # Also before Panel(): the Telemetry screen folds the ledger as it is built,
     # so a fixture written afterwards would only show up on the next repaint.
@@ -401,7 +422,7 @@ def run(what: str, out: str) -> int:
         panel._open_action("conflicts")
     elif what == "audit":
         panel._open_action("audit")
-    elif what == "settings":
+    elif what.startswith("settings"):
         panel._toggle_settings()
     elif what == "devices":
         _device_fixture(store)

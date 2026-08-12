@@ -121,7 +121,7 @@ def test_the_sentinel_carries_the_agents_exit_code(tmp_path):
 
 def test_the_agent_reads_the_prompt_from_its_run_directory(tmp_path):
     """The prompt still reaches the agent as one argv, which is what the transcript is
-    matched on later (`usagescan.task_tokens`).
+    matched on later (`usagescan.task_run`).
 
     It is the LAST argument, not the first: the user's `claude` alias puts its own
     flags ahead of it, so pinning ``$1`` pins the absence of their alias."""

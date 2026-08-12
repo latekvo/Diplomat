@@ -1,10 +1,14 @@
-"""The Settings controls that are more than a checkbox bound to a property.
+"""The Settings controls that are more than a switch bound to a property.
 
-A toggle that stops writing through is loud — the box springs back. A *number*
-that stops writing through is silent: the stepper shows what you typed, the
+A switch that stops writing through is loud — the knob springs back. A *number*
+that stops writing through is silent: the slider sits where you dragged it, the
 setting keeps its old value, and the only symptom is behaviour you can't explain.
 So the automatic-task cap's two directions are pinned here — the store's value
-reaching the stepper, and the stepper's reaching the store.
+reaching the slider, and the slider's reaching the store.
+
+The *Explain* switch gets the same treatment for the same reason: it decides
+whether a row's paragraph is on screen at all, and a row built after the switch
+was last read would otherwise open in the wrong state with nothing to show for it.
 """
 
 from __future__ import annotations
@@ -26,31 +30,90 @@ def app():
 
 
 @pytest.fixture
-def view(app, monkeypatch):
+def make_view(app, monkeypatch):
     # Opening the real screen otherwise shells the allocator installer and starts
-    # an update check; neither belongs in a test about one stepper.
+    # an update check; neither belongs in a test about one slider.
     monkeypatch.setattr(Store, "refresh_allocator_install_async", lambda self: None)
     monkeypatch.setattr(Store, "refresh_update_status_async", lambda self: None)
-    store = Store()
-    store.auto_task_limit = 3
-    v = SettingsView(store)
-    yield v
-    v.deleteLater()
+    built: list[SettingsView] = []
+
+    def build(**settings) -> SettingsView:
+        store = Store()
+        store.auto_task_limit = 3
+        for key, value in settings.items():
+            setattr(store, key, value)
+        view = SettingsView(store)
+        built.append(view)
+        return view
+
+    yield build
+    for view in built:
+        view.deleteLater()
 
 
-def test_the_stepper_opens_on_the_stored_cap(view):
+@pytest.fixture
+def view(make_view):
+    return make_view()
+
+
+def test_the_slider_opens_on_the_stored_cap(view):
     assert view._auto_limit.value() == 3
 
 
-def test_moving_the_stepper_writes_the_cap_through(view):
-    view._auto_limit.setValue(5)
+def test_moving_the_slider_writes_the_cap_through(view):
+    view._auto_limit.set_value(5)
+    view._auto_limit.changed.emit(5)
     assert view.store.auto_task_limit == 5
 
 
-def test_the_stepper_cannot_offer_a_cap_the_gate_would_clamp(view):
+def test_the_slider_cannot_offer_a_cap_the_gate_would_clamp(view):
     """Range mismatch would let the UI show a number the store silently changes."""
     assert view._auto_limit.minimum() == autofix.MIN_AUTO_TASK_LIMIT
     assert view._auto_limit.maximum() == autofix.MAX_AUTO_TASK_LIMIT
-    view._auto_limit.setValue(999)
+    view._auto_limit.set_value(999)
     assert view._auto_limit.value() == autofix.MAX_AUTO_TASK_LIMIT
-    assert view.store.auto_task_limit == autofix.MAX_AUTO_TASK_LIMIT
+
+
+def test_the_cap_reads_back_on_the_card(view):
+    view._auto_limit._slider.setValue(4)
+    assert "4" in view._limits_pill.text()
+
+
+def _details(view) -> list:
+    return [row._detail for row in view._rows if row._detail.text()]
+
+
+def test_a_screen_opened_with_explain_off_shows_no_paragraph(make_view):
+    view = make_view(settings_explain=False)
+    assert _details(view), "no row carries a paragraph — the test proves nothing"
+    assert not any(d.isVisibleTo(view) for d in _details(view))
+
+
+def test_a_screen_opened_with_explain_on_shows_them(make_view):
+    view = make_view(settings_explain=True)
+    assert all(d.isVisibleTo(view) for d in _details(view))
+
+
+def test_the_budget_floor_reads_as_a_percentage_to_one_place(view):
+    """The same rendering the panel's own budget readouts and the macOS twin use.
+    A bare integer here would report a different number than the Telemetry screen
+    for the same setting."""
+    view._budget_floor.set_value(20)
+    assert view._budget_floor.badge() == "20.0%"
+
+
+def test_every_row_names_its_control_for_a_screen_reader(view):
+    """The row's name is a separate label, so an unnamed control reads as a bare
+    switch. Every row is checked because the naming is one line in `SettingRow`:
+    a control that arrives already named keeps its own, and nothing else can."""
+    unnamed = [r for r in view._rows if not r._control.accessibleName()]
+    assert not unnamed
+
+
+def test_the_explain_switch_writes_through_and_reveals(view):
+    view._explain.setChecked(True)
+    assert view.store.settings_explain is True
+    assert all(d.isVisibleTo(view) for d in _details(view))
+    view._explain.setChecked(False)
+    assert view.store.settings_explain is False
+    assert not any(d.isVisibleTo(view) for d in _details(view))
