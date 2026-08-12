@@ -12,6 +12,8 @@
     python -m szpontnet --untrust <fp>                     # revoke trust
     python -m szpontnet --ban <fp-or-node-id>              # ban a device (declines all)
     python -m szpontnet --unban <fp-or-node-id>            # lift a ban
+    python -m szpontnet --connect <endpoint-id|onion>      # link to a peer's WAN id
+    python -m szpontnet --wan iroh                         # mesh's preferred transport
     python -m szpontnet --dispatch audit --prompt "…"      # route a request
     python -m szpontnet --dispatch review --prompt-file /tmp/p.txt
     python -m szpontnet --dispatch review --prompt "…" --target <node-id>
@@ -149,16 +151,35 @@ def _print_status() -> int:
             left = f"≈{round(float(info.get('tokensPct', 1.0)) * 100)}%"
         return f"{info.get('tokens')} {left} ({auto})"
 
+    def _edge(p: dict) -> str:
+        """How this edge runs, and how it would re-form off the LAN: the live link's
+        transport, plus the WAN transport both ends run when that is a different (or
+        no) answer — the pairing an operator needs to see that a healthy LAN link has
+        no way back after the machines part."""
+        live = p.get("transport", "lan")
+        wan = p.get("wan", "")
+        if live != "lan":
+            return live
+        return f"lan→{wan}" if wan else "lan (no shared WAN transport)"
+
     me = state.get("self", {})
     print(f"self  {me.get('name')}  {me.get('platform')}  {_strength(me)}"
           f"  tokens {_tokens(me)}{_acct(me)}"
           f"  :{state.get('tcpPort')}  id {me.get('id','')[:8]}"
           f"  fp {me.get('fingerprint','')[:16] or '(keyless)'}")
+    wan = state.get("wan") or {}
+    for name in config.wan_transports():
+        transport = (wan.get("transports") or {}).get(name) or {}
+        if not transport.get("enabled"):
+            continue
+        pref = " (preferred)" if wan.get("preferred") == name else ""
+        print(f"wan   {name}{pref}  {transport.get('address') or '(not ready)'}")
     for p in state.get("peers", []):
         vmark = "✓" if p.get("verified") else "?"
         print(f"peer  {p.get('name')}  {p.get('platform')}  {_strength(p)}"
               f"  tokens {_tokens(p)}{_acct(p)}  {p.get('trust', 'foreign')}{vmark}"
-              f"  link {p.get('link')}  {p.get('addr')}  fp {p.get('fingerprint','')[:16]}")
+              f"  link {p.get('link')} via {_edge(p)}  {p.get('addr')}"
+              f"  fp {p.get('fingerprint','')[:16]}")
     print(f"default trust for new devices: {state.get('defaultTrust', 'foreign')}")
     trusted = state.get("trusted", [])
     if trusted:
@@ -248,6 +269,14 @@ def main(argv: list[str] | None = None) -> int:
                     choices=("personal", "foreign"),
                     help="set the trust level for UNKNOWN devices (personal|foreign); "
                     "ships foreign (a new device is untrusted until you promote it)")
+    ap.add_argument("--connect", metavar="ID", dest="connect",
+                    help="link to a peer's WAN id — its 64-hex iroh endpoint id or "
+                         "its .onion — even if you never met on the LAN; the address "
+                         "shape picks the transport")
+    ap.add_argument("--wan", metavar="TRANSPORT", dest="wan",
+                    help="pick the MESH's preferred WAN transport (iroh|tor), "
+                         "gossiped to every node; an edge uses the most-preferred "
+                         "transport both its ends run")
     ap.add_argument("--iroh-connect", metavar="ENDPOINT", dest="iroh_connect",
                     help="dial a peer's iroh endpoint id to initiate contact — works "
                          "even if you never met on the LAN "
@@ -298,6 +327,16 @@ def main(argv: list[str] | None = None) -> int:
         if args.default_trust:
             ctl.set_default_trust(args.default_trust)
             print(f"default trust for new devices → {args.default_trust}")
+            return 0
+        if args.connect:
+            transport, address = ctl.connect(args.connect)
+            print(f"dialing {address} over {transport}… "
+                  "(watch --status for the peer)")
+            return 0
+        if args.wan:
+            transport = args.wan.strip().lower()
+            ctl.set_wan(transport)
+            print(f"mesh's preferred WAN transport → {transport}")
             return 0
         if args.iroh_connect:
             endpoint = ctl.iroh_connect(args.iroh_connect)

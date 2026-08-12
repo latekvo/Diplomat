@@ -2399,6 +2399,19 @@ class Store(QObject):
         """Edit one duty's mesh-wide placement (gossiped last-writer-wins)."""
         self._mesh_command(lambda ctl: ctl.set_overrides(duty, placement), "set-overrides")
 
+    def mesh_set_wan(self, transport: str) -> None:
+        """Pick the mesh's preferred WAN transport (gossiped last-writer-wins, like a
+        placement edit). It orders the transports a WAN dial tries, so it lands on the
+        next dial each node makes — no live link is moved."""
+        self._mesh_command(lambda ctl: ctl.set_wan(transport), "set-wan")
+
+    def mesh_connect(self, address: str) -> None:
+        """Link to a peer's WAN id (an iroh endpoint id or an onion), reaching a
+        machine this one may never have met on the LAN. The address shape picks the
+        transport; the node dials in the background, so the peer appears in the
+        topology a poll or two later."""
+        self._mesh_command(lambda ctl: ctl.connect(address), "connect")
+
     def mesh_dispatch(self, duty: str, prompt: str, done_callback=None) -> None:
         """Route a job through the mesh; `done_callback(results, error)` fires on
         the worker thread (callers marshal back to the UI thread themselves)."""

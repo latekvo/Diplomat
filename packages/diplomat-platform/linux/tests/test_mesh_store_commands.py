@@ -1,12 +1,13 @@
 """The Store's mesh control commands: argument passing, error surfacing, refresh.
 
 Every mesh edit the panel offers (set an attribute, trust/untrust a device, lift
-a ban, re-place a duty) is the same routine around one ``ctl`` call: run it off
-the UI thread, put any :class:`ctl.CtlError` in ``mesh_error``, then re-read the
-topology so the edit shows. Every step is invisible when it goes missing - drop
-the refresh and the screen keeps rendering pre-edit state, drop the error
-assignment and a rejected edit looks like it worked - so the five commands share
-one routine, ``Store._mesh_command``.
+a ban, re-place a duty, pick the preferred WAN transport, link to a pasted id) is
+the same routine around one ``ctl`` call: run it off the UI thread, put any
+:class:`ctl.CtlError` in ``mesh_error``, then re-read the topology so the edit
+shows. Every step is invisible when it goes missing - drop the refresh and the
+screen keeps rendering pre-edit state, drop the error assignment and a rejected
+edit looks like it worked - so the commands share one routine,
+``Store._mesh_command``.
 
 These pin all three of its steps plus the arguments each command forwards.
 """
@@ -21,7 +22,7 @@ from diplomat_app.store import Store
 
 
 _COMMANDS = ("set_attr", "trust_device", "untrust_device",
-             "unban_device", "set_overrides")
+             "unban_device", "set_overrides", "set_wan", "connect")
 
 
 class Recorder:
@@ -85,9 +86,11 @@ def _settle():
     ("mesh_untrust", "untrust_device"),
     ("mesh_unban", "unban_device"),
     ("mesh_set_overrides", "set_overrides"),
+    ("mesh_set_wan", "set_wan"),
+    ("mesh_connect", "connect"),
 ])
 def test_the_fake_covers_the_call_each_command_makes(method, expected):
-    """Anti-vacuity: the ``ctl`` fake only intercepts the five functions listed in
+    """Anti-vacuity: the ``ctl`` fake only intercepts the functions listed in
     ``_COMMANDS``. If a command is repointed at some other ``ctl`` function the
     tests below would silently start driving the real control socket, so pin the
     mapping here instead."""
@@ -128,6 +131,21 @@ def test_set_overrides_forwards_duty_and_placement(store, ctl):
     store.mesh_set_overrides("review", {"strategy": "weakest-first"})
     _settle()
     assert ctl.calls == [("set_overrides", ("review", {"strategy": "weakest-first"}), {})]
+
+
+def test_set_wan_forwards_the_transport(store, ctl):
+    store.mesh_set_wan("tor")
+    _settle()
+    assert ctl.calls == [("set_wan", ("tor",), {})]
+
+
+def test_connect_forwards_the_pasted_id_verbatim(store, ctl):
+    """Verbatim: the node owns parsing — it is what decides which transport an id
+    names — so the Store reshapes nothing on the way there."""
+    pasted = "  IROH://" + "A" * 64 + "  "
+    store.mesh_connect(pasted)
+    _settle()
+    assert ctl.calls == [("connect", (pasted,), {})]
 
 
 # ---- the steps every command shares --------------------------------------
@@ -171,9 +189,11 @@ def test_a_rejected_edit_still_refreshes(store, ctl):
     pytest.param(lambda s: s.mesh_untrust("ff11"), id="untrust"),
     pytest.param(lambda s: s.mesh_unban("ff11"), id="unban"),
     pytest.param(lambda s: s.mesh_set_overrides("review", {}), id="set_overrides"),
+    pytest.param(lambda s: s.mesh_set_wan("iroh"), id="set_wan"),
+    pytest.param(lambda s: s.mesh_connect("a" * 64), id="connect"),
 ])
 def test_every_command_surfaces_errors_and_refreshes(store, ctl, command):
-    """The property has to hold for all five, not just the one spot-checked above -
+    """The property has to hold for every one, not just the one spot-checked above -
     that is the whole reason they share a routine."""
     ctl.fail_with = "boom"
     command(store)

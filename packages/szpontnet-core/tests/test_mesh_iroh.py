@@ -261,6 +261,75 @@ def test_tor_still_carries_a_peer_that_advertises_no_endpoint(tmp_path, monkeypa
         (target, "tor", _ONION_A)]
 
 
+def test_the_mesh_preference_decides_which_transport_an_edge_uses(tmp_path,
+                                                                  monkeypatch):
+    """The operator's pick, gossiped mesh-wide, is what ranks the transports — not
+    the order they happened to start in. Both ends resolve the same preference from
+    the same record, so the pair agrees on the transport without negotiating it."""
+    import time as _time
+
+    from szpontnet import config
+
+    node = _fresh_node(tmp_path, monkeypatch, SZPONTNET_DEFAULT_TRUST="personal")
+    node.local = _dc_replace(node.local, id="0" * 32)
+    target = "z" * 32
+    node._wan_cache = {target: wancache.WanEntry(endpoint=_EP_B, onion=_ONION_A)}
+    _install(node, ("iroh", _FakeIroh(_EP_A)), ("tor", _FakeIroh(_ONION_A)))
+
+    node.overrides = config.PlacementOverrides(rev=1, updated_by="op", wan="tor")
+    assert [(w.name, a) for _p, w, a in
+            node._wan_redial_targets(_time.monotonic())] == [("tor", _ONION_A)]
+
+    node.overrides = config.PlacementOverrides(rev=2, updated_by="op", wan="iroh")
+    assert [(w.name, a) for _p, w, a in
+            node._wan_redial_targets(_time.monotonic())] == [("iroh", _EP_B)]
+
+
+def test_the_preference_orders_the_transports_it_never_excludes_one(tmp_path,
+                                                                    monkeypatch):
+    """A mesh that prefers iroh must still reach the machine that only runs Tor.
+    Excluding instead of ordering would strand exactly the peers a WAN transport
+    exists for — and silently, since the peer looks fine while it is on the LAN."""
+    import time as _time
+
+    from szpontnet import config
+
+    node = _fresh_node(tmp_path, monkeypatch, SZPONTNET_DEFAULT_TRUST="personal")
+    node.local = _dc_replace(node.local, id="0" * 32)
+    target = "z" * 32
+    node._wan_cache = {target: wancache.WanEntry(onion=_ONION_A)}
+    _install(node, ("iroh", _FakeIroh(_EP_A)), ("tor", _FakeIroh(_ONION_A)))
+    node.overrides = config.PlacementOverrides(rev=1, updated_by="op", wan="iroh")
+    assert [w.name for _p, w, _a in
+            node._wan_redial_targets(_time.monotonic())] == ["tor"]
+
+
+def test_a_preference_this_build_cannot_honour_falls_back_to_the_default_order(
+        tmp_path, monkeypatch):
+    """A newer mesh naming a transport this node has never heard of must leave it
+    dialing over what it does have. Ranking the name would put every running
+    transport below an absent one — a WAN that goes quiet on an upgrade elsewhere.
+
+    The name is still HELD verbatim: this record is relayed by re-serialising it, so
+    dropping the field would break the editor's signature one hop on
+    (test_a_pick_this_build_cannot_honour_still_relays_and_still_converges)."""
+    import time as _time
+
+    from szpontnet import config
+
+    node = _fresh_node(tmp_path, monkeypatch, SZPONTNET_DEFAULT_TRUST="personal")
+    node.local = _dc_replace(node.local, id="0" * 32)
+    target = "z" * 32
+    node._wan_cache = {target: wancache.WanEntry(endpoint=_EP_B, onion=_ONION_A)}
+    _install(node, ("iroh", _FakeIroh(_EP_A)), ("tor", _FakeIroh(_ONION_A)))
+    node.overrides = config.PlacementOverrides.from_dict(
+        {"rev": 1, "updatedBy": "op", "wan": "quic-of-the-future"})
+    assert node.overrides.wan == "quic-of-the-future"
+    assert [w.name for _p, w, _a in
+            node._wan_redial_targets(_time.monotonic())] == [
+        config.wan_transports()[0]]
+
+
 def test_a_transport_that_is_not_ready_is_skipped_for_the_next_one(tmp_path,
                                                                    monkeypatch):
     """A transport whose address() is None is not up (still binding, or dead). It
@@ -296,10 +365,102 @@ def test_iroh_asked_for_but_unavailable_reports_enabled_without_ready(tmp_path,
     assert node.iroh is None  # nothing bound, exactly as a missing package leaves it
 
     state = node.snapshot()
-    assert state["iroh"]["enabled"] is True    # the operator asked for it…
-    assert state["iroh"]["ready"] is False     # …and nothing answered
-    assert state["iroh"]["endpoint"] is None
+    assert state["wan"]["transports"]["iroh"]["enabled"] is True    # the operator asked for it…
+    assert state["wan"]["transports"]["iroh"]["ready"] is False     # …and nothing answered
+    assert state["wan"]["transports"]["iroh"]["address"] is None
     assert "endpoint" not in state["self"]
+
+
+# MARK: - the transport an edge agrees on
+
+
+def _peer_advertising(node, key, node_id, endpoint="", onion=""):
+    """Learn a peer from a signed advert naming the WAN addresses given, and return
+    its entry in the snapshot."""
+    raw = _signed_advert(key, node_id, endpoint=endpoint, onion=onion)
+    node._learn_node(NodeInfo.from_dict(raw), "10.0.0.9", None, raw=raw)
+    return next(p for p in node.snapshot()["peers"] if p["id"] == node_id)
+
+
+def test_the_snapshot_names_one_transport_per_edge(tmp_path, monkeypatch):
+    """Exactly one, and only one both ends run: it is what tells an operator how a
+    pair reconnects once they are not on one network — a question a healthy LAN
+    link answers for nobody."""
+    node = _fresh_node(tmp_path, monkeypatch)
+    _install(node, ("iroh", _FakeIroh(_EP_A)), ("tor", _FakeIroh(_ONION_A)))
+    key = crypto.DeviceKey(Ed25519PrivateKey.generate())
+
+    both = _peer_advertising(node, key, "peer-both", endpoint=_EP_B, onion=_ONION_A)
+    assert both["wan"] == "iroh"  # the preferred one, of the two they share
+    onion_only = _peer_advertising(node, key, "peer-onion", onion=_ONION_A)
+    assert onion_only["wan"] == "tor"
+
+
+def test_an_edge_with_no_transport_in_common_says_so(tmp_path, monkeypatch):
+    """The pair that cannot re-form off the LAN. Reporting a transport here — or
+    leaving the field out — would hide the one failure the operator can still fix
+    while both machines are up."""
+    node = _fresh_node(tmp_path, monkeypatch)
+    _install(node, ("tor", _FakeIroh(_ONION_A)))  # this node runs Tor only
+    key = crypto.DeviceKey(Ed25519PrivateKey.generate())
+
+    assert _peer_advertising(node, key, "peer-iroh", endpoint=_EP_B)["wan"] == ""
+    assert _peer_advertising(node, key, "peer-lan")["wan"] == ""
+
+
+# MARK: - manual introduction: connect to a pasted id
+
+
+def _connect(node, address):
+    async def go():
+        reply = await node._ctl_command({"t": "connect", "address": address})
+        # The dial is a background one-shot the reply does not wait for; yield once
+        # so it has actually started by the time the caller inspects what was dialed.
+        await asyncio.sleep(0)
+        return reply
+
+    return asyncio.run(go())
+
+
+def test_connect_routes_a_pasted_id_by_its_shape(tmp_path, monkeypatch):
+    """The operator pastes what the other machine printed and should not have to
+    say which transport it belongs to — the two address shapes are disjoint, so
+    naming the transport would only be a way to get it wrong."""
+    node = _fresh_node(tmp_path, monkeypatch)
+    dialed: list[tuple[str, str]] = []
+
+    async def _fake_dial(w, address, peer_id=None):
+        dialed.append((w.name, address))
+
+    monkeypatch.setattr(node, "_wan_dial", _fake_dial)
+    _install(node, ("iroh", _FakeIroh(_EP_A)), ("tor", _FakeIroh(_ONION_A)))
+
+    assert _connect(node, f"  IROH://{_EP_B.upper()}  ") == {
+        "t": "ok", "transport": "iroh", "address": _EP_B}
+    assert _connect(node, _ONION_A) == {
+        "t": "ok", "transport": "tor", "address": _ONION_A}
+    assert dialed == [("iroh", _EP_B), ("tor", _ONION_A)]
+
+
+def test_connect_over_a_transport_this_node_does_not_run_says_which(tmp_path,
+                                                                    monkeypatch):
+    """A recognised id we cannot dial is a fixable local state, not a bad paste, and
+    the two read identically unless the reply distinguishes them."""
+    node = _fresh_node(tmp_path, monkeypatch)
+    _install(node, ("iroh", _FakeIroh(_EP_A)))  # no Tor here
+
+    reply = _connect(node, _ONION_A)
+    assert reply["t"] == "error"
+    assert "tor" in reply["reason"]
+
+
+def test_connect_refuses_something_that_is_no_wan_id_at_all(tmp_path, monkeypatch):
+    node = _fresh_node(tmp_path, monkeypatch)
+    _install(node, ("iroh", _FakeIroh(_EP_A)), ("tor", _FakeIroh(_ONION_A)))
+
+    for junk in ("", "192.168.1.4", "a" * 63, _EP_A + ".onion", None):
+        reply = _connect(node, junk)
+        assert reply["t"] == "error", f"{junk!r} must not be dialed"
 
 
 # MARK: - security: a WAN link serves peer links, never operator control (ctl)
