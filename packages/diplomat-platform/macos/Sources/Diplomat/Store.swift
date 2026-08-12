@@ -219,6 +219,14 @@ final class Store: ObservableObject {
         didSet { persist(Array(meshAckedDevices), forKey: Keys.meshAckedDevices) }
     }
 
+    /// Whether Settings draws each row's long-form explanation (the header's *Explain*
+    /// switch). Off by default: the paragraphs answer questions a first read raises and
+    /// are noise on every read after it. Persisted, so the answer to "do I want these"
+    /// is given once rather than on every visit.
+    @Published var settingsExplain: Bool {
+        didSet { persist(settingsExplain, forKey: Keys.settingsExplain) }
+    }
+
     /// Whether the "marked Personal — trust the other side too" reminder is suppressed
     /// (the modal's "Don't show again"). Persisted locally; default off (shown once per
     /// promotion until the user opts out).
@@ -399,6 +407,7 @@ final class Store: ObservableObject {
         static let meshEnabled = "meshEnabled"
         static let meshAckedDevices = "meshAckedDevices"
         static let meshTrustReminderSuppressed = "meshTrustReminderSuppressed"
+        static let settingsExplain = "settingsExplain"
         static let allocatorSetupDone = "allocatorSetupDone"
         static let queuedTaskOrder = "queuedTaskOrder"
     }
@@ -503,6 +512,7 @@ final class Store: ObservableObject {
         meshEnabled = defaults.object(forKey: Keys.meshEnabled) as? Bool ?? false
         meshAckedDevices = Set(defaults.stringArray(forKey: Keys.meshAckedDevices) ?? [])
         meshTrustReminderSuppressed = defaults.bool(forKey: Keys.meshTrustReminderSuppressed)
+        settingsExplain = defaults.bool(forKey: Keys.settingsExplain)
         processes = Store.loadProcesses()
         queuedTaskOrder = defaults.stringArray(forKey: Keys.queuedTaskOrder) ?? []
         if hiddenTools.contains(selected.rawValue),

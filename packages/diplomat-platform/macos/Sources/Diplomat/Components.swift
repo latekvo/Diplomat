@@ -296,6 +296,227 @@ struct WizardSpawnControls: View {
     }
 }
 
+// MARK: - Settings chrome
+
+// Settings is a form, and a form is the same three shapes over and over: a titled
+// card, a named row with a control on its right, and a small status token. They live
+// here for the reason the atoms above do — and because the twin screen in
+// `settingsview.py` is built from the same three, so a change of shape has one
+// obvious counterpart on the other side rather than thirty scattered ones.
+
+/// Whether the rows are showing their long-form explanation. Set once by `SettingsView`
+/// from the header's *Explain* switch; read by every `SettingRow` beneath it, which is
+/// why it travels in the environment rather than through thirty initialisers.
+private struct SettingsExplainKey: EnvironmentKey { static let defaultValue = false }
+
+extension EnvironmentValues {
+    var settingsExplain: Bool {
+        get { self[SettingsExplainKey.self] }
+        set { self[SettingsExplainKey.self] = newValue }
+    }
+}
+
+/// A small state token: an optional glyph and a word, in a tint that carries the
+/// state on its own. Used for everything Settings reports rather than sets — the
+/// monitors' live/idle, the allocator's version, the mesh's peer count.
+struct StatusPill: View {
+    let text: String
+    let tint: Color
+    var symbol: String? = nil
+
+    var body: some View {
+        HStack(spacing: 3) {
+            if let symbol {
+                Image(systemName: symbol).font(.system(size: 8, weight: .bold))
+            }
+            Text(text).font(.system(size: 9, weight: .bold))
+        }
+        .foregroundStyle(tint)
+        .padding(.horizontal, 6).padding(.vertical, 2)
+        .background(Capsule().fill(tint.opacity(0.14)))
+    }
+}
+
+/// A ✓/✗ token for one part of a multi-part install — green when present, red when
+/// missing. The allocator's four pieces used to be one monospaced run of "MCP ✓ ·
+/// skill ✓ · rule ✗", which reads as a filename until you parse it word by word.
+struct MarkChip: View {
+    let label: String
+    let ok: Bool
+
+    var body: some View {
+        HStack(spacing: 2) {
+            Image(systemName: ok ? "checkmark" : "xmark").font(.system(size: 7, weight: .black))
+            Text(label).font(.system(size: 9, weight: .semibold))
+        }
+        .foregroundStyle(ok ? Color.green : Color.red)
+        .padding(.horizontal, 5).padding(.vertical, 2)
+        .background(Capsule().fill((ok ? Color.green : Color.red).opacity(0.12)))
+    }
+}
+
+/// One block of Settings: a tinted glyph, a caps title, an optional state pill, and
+/// the rows under them on a soft card.
+///
+/// `pill` is a concrete optional rather than a second `@ViewBuilder` — one builder per
+/// container is what keeps the SwiftUI type-checker inside its time budget on a CI
+/// runner, the same constraint the wizard chrome above is shaped by.
+struct SettingsCard<Content: View>: View {
+    let symbol: String
+    let title: String
+    var tint: Color = .secondary
+    var pill: StatusPill? = nil
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                Image(systemName: symbol)
+                    .font(.system(size: 9, weight: .bold)).foregroundStyle(tint)
+                    .frame(width: 17, height: 17)
+                    .background(RoundedRectangle(cornerRadius: 5).fill(tint.opacity(0.16)))
+                Text(title).font(.system(size: 10, weight: .heavy)).kerning(0.6)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 6)
+                pill
+            }
+            VStack(alignment: .leading, spacing: 10) { content() }
+        }
+        .padding(.horizontal, 10).padding(.vertical, 9)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.gray.opacity(0.11)))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.gray.opacity(0.22), lineWidth: 1))
+    }
+}
+
+/// One setting: its name, the control that sets it, and — under both — an optional
+/// one-line summary. `detail` is the long-form paragraph, drawn only while the
+/// header's *Explain* switch is on, so the screen defaults to something you can scan
+/// and still holds every word of what a knob does.
+struct SettingRow<Control: View>: View {
+    let title: String
+    var summary: String? = nil
+    var detail: String? = nil
+    /// Put the control under the title instead of beside it — for the wide ones
+    /// (a text field, a segmented picker) that have no room in a trailing slot.
+    var stacked: Bool = false
+    @ViewBuilder var control: () -> Control
+
+    @Environment(\.settingsExplain) private var explain
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            if stacked {
+                Text(title).font(.system(size: 11, weight: .semibold))
+                control()
+            } else {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(title).font(.system(size: 11, weight: .semibold))
+                    Spacer(minLength: 8)
+                    control()
+                }
+            }
+            // Under the control either way: half of these lines report what the
+            // control currently resolves to (which handle is in force, where `cd`
+            // will land), and a consequence reads wrong above its cause.
+            if let summary {
+                Text(summary).font(.system(size: 10)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if explain, let detail {
+                Text(detail).font(.system(size: 10)).foregroundStyle(.secondary)
+                    .padding(.horizontal, 7).padding(.vertical, 5)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.09)))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+}
+
+/// Settings that exist only while the switch above them is on, indented behind a
+/// tinted rail — so the dependency is drawn rather than left to be inferred from an
+/// indent, which is all that distinguished the nested verdict policy before.
+struct NestedSettings<Content: View>: View {
+    var tint: Color = .accentColor
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 9) {
+            RoundedRectangle(cornerRadius: 1).fill(tint.opacity(0.4)).frame(width: 2)
+            VStack(alignment: .leading, spacing: 9) { content() }
+        }
+        .padding(.leading, 1)
+    }
+}
+
+/// A capsule that fills with its tint while on — the multi-select counterpart of a
+/// switch, for a set of flags short enough to name in a word each.
+struct ToggleChip: View {
+    let label: String
+    @Binding var isOn: Bool
+    var tint: Color = .orange
+    var help: String = ""
+
+    var body: some View {
+        Button { isOn.toggle() } label: {
+            HStack(spacing: 4) {
+                Image(systemName: isOn ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 9, weight: .bold))
+                Text(label).font(.system(size: 10, weight: .semibold))
+            }
+            .foregroundStyle(isOn ? tint : Color.secondary)
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            .background(Capsule().fill(tint.opacity(isOn ? 0.18 : 0.07)))
+            .overlay(Capsule().stroke(tint.opacity(isOn ? 0.7 : 0.22), lineWidth: 1))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .help(help)
+    }
+}
+
+/// A slider with the value in a badge beside it and the two ends of the range named
+/// underneath. Replaces the steppers, which show a number without showing the range
+/// it lives in — so the only way to learn a cap of 16 existed was to click sixteen times.
+struct SliderSetting: View {
+    @Binding var value: Double
+    let range: ClosedRange<Double>
+    /// A step draws a tick per stop, which is worth it only where the stops are few
+    /// enough to aim at — nil keeps the track clean and leaves rounding to the binding.
+    var step: Double? = nil
+    /// The current value, already formatted — "4 tasks", "20%".
+    let badge: String
+    let minLabel: String
+    let maxLabel: String
+    var tint: Color = .accentColor
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            HStack(spacing: 8) {
+                slider.controlSize(.small).tint(tint)
+                Text(badge).font(.system(size: 10, weight: .bold).monospacedDigit())
+                    .foregroundStyle(tint)
+                    .frame(minWidth: 52, alignment: .trailing)
+            }
+            HStack {
+                Text(minLabel).font(.system(size: 9)).foregroundStyle(.secondary)
+                Spacer()
+                Text(maxLabel).font(.system(size: 9)).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var slider: some View {
+        if let step {
+            Slider(value: $value, in: range, step: step)
+        } else {
+            Slider(value: $value, in: range)
+        }
+    }
+}
+
 extension View {
     /// The panel's card chrome: padded content on a soft rounded tint. Every grouped
     /// block in the popover wears it — the activity feed, the ongoing-sessions list, the

@@ -1028,7 +1028,8 @@ DIPLOMAT_QUEUE_TEST=1 swift run Diplomat      # self-test: the queue behind the 
                                                      #   redirects its own audit writes.
 DIPLOMAT_RENDER=panel    ./Diplomat.app/Contents/MacOS/Diplomat  # snapshot a screen to PNG (out
                                                      #   path: DIPLOMAT_RENDER_OUT). States: panel|panel-procs
-                                                     #   natural|settings|settings-live|approved|unban-confirm
+                                                     #   natural|settings[-explain]|settings-live|approved
+                                                     #   unban-confirm
                                                      #   activity[-filtered] (audit feed + its filter chips)
                                                      #   wizard[-other|-specific[-mine|-theirs]|-wrong|-banned]
                                                      #   devices[-open|-procs]|conflicts[-other|-specific|-wrong]
@@ -1043,6 +1044,8 @@ DIPLOMAT_RENDER=panel    ./Diplomat.app/Contents/MacOS/Diplomat  # snapshot a sc
                                                      #   window-<state> (any state above through a real
                                                      #   window: ImageRenderer draws no AppKit control, so
                                                      #   window-settings is the only faithful Settings shot)
+                                                     # DIPLOMAT_RENDER_THEME=light|dark snapshots the other
+                                                     #   appearance without switching the machine over
                                                      #   live (the real popover ON-SCREEN, left running, to
                                                      #   drive the queue's drag + execute now with a mouse;
                                                      #   its queued rows resolve in-flight, so no spawn)

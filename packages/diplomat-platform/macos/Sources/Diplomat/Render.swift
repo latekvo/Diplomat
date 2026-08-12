@@ -14,6 +14,13 @@ enum Render {
         let out = ProcessInfo.processInfo.environment["DIPLOMAT_RENDER_OUT"]
             ?? FileManager.default.temporaryDirectory.appendingPathComponent("diplomat-\(what).png").path
 
+        // A snapshot otherwise only ever shows the runner's own theme, so half of what
+        // the panel draws — every tint, fill and hairline it picks per appearance —
+        // has no way to be looked at without changing the whole machine over.
+        if let theme = ProcessInfo.processInfo.environment["DIPLOMAT_RENDER_THEME"] {
+            NSApp.appearance = NSAppearance(named: theme == "light" ? .aqua : .darkAqua)
+        }
+
         if what.lowercased() == "popover" {
             let _ = seedProcessesIfNeeded("procs", store: store)
             let _ = seedAutofix(store)
@@ -172,12 +179,16 @@ enum Render {
             let _ = seedProcessesIfNeeded("procs", store: store)
             let _ = seedDeviceState(store)
             ContentView(showSettings: true)
-        case "settings":
-            // Seed an outstanding review count so the "N unaddressed reviews — retrying"
-            // row renders under the review-requests toggle. No fixed height: the
-            // two-column form sizes to its natural content (a fixed frame taller than
-            // the content centers it and pads the snapshot with dead whitespace).
-            let _ = seedSettings(store)
+        case "settings", "settings-explain":
+            // Seed an outstanding review count so the "2 owed" pill renders on the
+            // review-requests row. No fixed height: the two-column form sizes to its
+            // natural content (a fixed frame taller than the content centers it and
+            // pads the snapshot with dead whitespace).
+            //
+            // `-explain` opens it with the header's Explain switch on, which is the
+            // only state that draws the long-form paragraph under each row — the rest
+            // of this file's rows are one line each and never exercise that layout.
+            let _ = seedSettings(store, explain: w.hasSuffix("explain"))
             SettingsView(isPresented: .constant(true))
         case let m where m.hasPrefix("mesh"):
             // The ⬡ Mesh screen over a synthetic topology (the macOS analogue of the
@@ -543,14 +554,15 @@ enum Render {
         ]
     }
 
-    /// Seed the review-requests settings so the "N unaddressed reviews — retrying" row
-    /// renders (DIPLOMAT_RENDER=settings).
+    /// Seed the review-requests settings so the owed-reviews pill renders and the
+    /// nested verdict policy is open (DIPLOMAT_RENDER=settings).
     @MainActor
-    private static func seedSettings(_ store: Store) {
+    private static func seedSettings(_ store: Store, explain: Bool) {
         store.reviewRequestsEnabled = true
         store.reviewRequestsHandled = 7
         store.unaddressedReviews = 2
         store.autoApproveEnabled = true   // show the master toggle ON + its nested suppressors
+        store.settingsExplain = explain
     }
 
     /// A LIVE auto-fix heartbeat so the top-of-panel status pill renders "active".
