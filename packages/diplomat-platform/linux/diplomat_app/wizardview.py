@@ -355,7 +355,8 @@ class WizardView(SpawnWizard):
         if not self.store.has_loaded:
             self.status.setText("PRs haven't loaded yet — refresh, then sweep.")
             return
-        self.spawn_btn.setEnabled(False)
+        self._dispatch_inflight = True
+        self._restyle_spawn()
         self.status.setText("Queueing one review per PR…")
         self.store.request_review_sweep_async(
             cfg, lambda queued, already, err: self._sweep_queued.emit(queued, already, err)
@@ -364,6 +365,7 @@ class WizardView(SpawnWizard):
     def _on_sweep_queued(self, queued: int, already: int, err: str) -> None:
         """Main-thread slot: report what the sweep put in the queue, and hand SPAWN
         back through ``_sync`` so it returns to whatever the CURRENT inputs warrant."""
+        self._dispatch_inflight = False
         if err:
             self.status.setText(f"Couldn't queue the sweep: {err}")
         elif queued:

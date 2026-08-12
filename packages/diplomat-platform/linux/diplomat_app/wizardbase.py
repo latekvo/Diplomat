@@ -41,6 +41,12 @@ class SpawnWizard(QWidget):
         # and the same string for every wizard ("review" / "conflicts" / "audit").
         self._kind = kind
         self._tint = tint
+        # Set while a dispatch this wizard started has yet to answer — a mesh round
+        # trip, or a sweep's fan-out. SPAWN is disabled for it, and stays disabled
+        # across a _sync(), which re-derives the button from config validity alone
+        # and would otherwise hand it back mid-flight: every input change calls one,
+        # and so does the panel's own periodic refresh_identity().
+        self._dispatch_inflight = False
 
     # ---- hooks the subclasses fill in ------------------------------------
 
@@ -79,8 +85,12 @@ class SpawnWizard(QWidget):
         root.addWidget(self.status)
 
     def _restyle_spawn(self) -> None:
-        """Enable + fill SPAWN according to whether the config can actually spawn."""
-        widgets.style_spawn_button(self.spawn_btn, self._tint, self._config().is_valid)
+        """Enable + fill SPAWN according to whether the config can actually spawn —
+        which a dispatch still in flight is reason enough on its own for it not to."""
+        widgets.style_spawn_button(
+            self.spawn_btn, self._tint,
+            self._config().is_valid and not self._dispatch_inflight,
+        )
 
     def refresh_identity(self) -> None:
         """Re-validate after the viewer login resolves — the panel calls this on
@@ -98,7 +108,8 @@ class SpawnWizard(QWidget):
         if self.mesh_row.use_mesh():
             # Mesh: the local node picks the executor (strategy, platform spread,
             # token failover) and runs it there. Nothing is spawned on this machine.
-            self.spawn_btn.setEnabled(False)
+            self._dispatch_inflight = True
+            self._restyle_spawn()
             self.status.setText("Dispatching over the mesh…")
             activity.log("panel", self._kind, f"{label} · via mesh")
             self.mesh_row.dispatch(cfg.build_prompt())
@@ -128,6 +139,7 @@ class SpawnWizard(QWidget):
         The button comes back through ``_sync`` rather than a bare re-enable, so it
         returns to whatever the *current* config warrants — a wizard whose input
         went invalid while the dispatch was in flight stays disabled."""
+        self._dispatch_inflight = False
         self.status.setText(MeshSpawnRow.summarize(results, err))
         self.store.refresh_activity()
         self._sync()

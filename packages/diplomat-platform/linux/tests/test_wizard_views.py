@@ -236,6 +236,26 @@ def test_review_sweep_holds_spawn_until_the_fan_out_answers(store, swept, local_
     assert "3 reviews" in w.status.text()
 
 
+def test_a_sync_mid_fan_out_does_not_hand_spawn_back(store, swept, local_only):
+    """The hold has to survive a ``_sync``, which re-derives SPAWN from validity
+    alone and knows nothing of a dispatch in flight.
+
+    Something calls one throughout the wait: every input the operator nudges while
+    watching, and the panel's own periodic ``refresh_identity``. Either would arm the
+    button mid-fan-out, and the press it invites is a second sweep of the same scope."""
+    w = WizardView(store)
+    w._spawn()
+
+    w.refresh_identity()  # what the panel does on every data refresh
+    assert not w.spawn_btn.isEnabled()
+    w.slider.setValue(w.slider.value() + 1)  # …and what the operator does while waiting
+    assert not w.spawn_btn.isEnabled()
+
+    swept[0][1](1, 0, "")
+    assert w.spawn_btn.isEnabled()
+    assert len(swept) == 1
+
+
 def test_review_sweep_says_when_it_queued_nothing(store, swept, local_only):
     """A sweep whose scope matches no open PR must say so: the queue looking exactly
     as it did before the press is otherwise indistinguishable from a dead button."""
@@ -429,6 +449,27 @@ def test_every_wizard_re_enables_spawn_when_a_mesh_dispatch_returns(
     is dead until the panel is rebuilt."""
     w = build(store)
     w._spawn()
+    assert not w.spawn_btn.isEnabled()
+
+    w._mesh_done([], "")
+    assert w.spawn_btn.isEnabled()
+
+
+@pytest.mark.parametrize("build", [
+    pytest.param(_review_wizard, id="review"),
+    pytest.param(lambda s: ConflictWizardView(s), id="conflicts"),
+    pytest.param(lambda s: AuditWizardView(s), id="audit"),
+])
+def test_every_wizard_holds_spawn_across_a_sync_mid_mesh_dispatch(
+    store, mesh_live, build
+):
+    """The same hold as the sweep's, on the branch it was written for: a ``_sync``
+    while the mesh round trip is still out must not arm the button, or the dispatch
+    goes out twice."""
+    w = build(store)
+    w._spawn()
+
+    w.refresh_identity()
     assert not w.spawn_btn.isEnabled()
 
     w._mesh_done([], "")

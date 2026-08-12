@@ -1505,10 +1505,18 @@ class Store(QObject):
             # Assembled BEFORE the asks are stored, so a core binary that cannot build
             # a prompt costs this press an error message rather than a list of asks
             # that fails the same way on every poll from here on.
-            tasks = [self._requested_task(e) for e in fresh]
+            built = {e.number: self._requested_task(e) for e in fresh}
             with self._requested_lock:
-                self.requested_reviews = self.requested_reviews + fresh
-            self._publish_requested(tasks)
+                # Re-read under the lock and drop whatever arrived while the prompts
+                # were being assembled. The set read above is stale by then: assembly
+                # is a core subprocess per PR, which is long enough for a second sweep
+                # of an overlapping scope to have stored its own asks in the meantime,
+                # and appending against the stale set would store those PRs twice.
+                stored = self.requested_reviews
+                taken = {r.number for r in stored}
+                fresh = [e for e in fresh if e.number not in taken]
+                self.requested_reviews = stored + fresh
+            self._publish_requested([built[e.number] for e in fresh])
         return len(fresh), len(targets) - len(fresh)
 
     def request_review_sweep_async(self, cfg: review.ReviewConfig, done) -> None:

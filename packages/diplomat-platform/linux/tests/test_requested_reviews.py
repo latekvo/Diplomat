@@ -19,6 +19,7 @@ question.
 
 from __future__ import annotations
 
+import threading
 from datetime import datetime, timezone
 
 import pytest
@@ -137,6 +138,46 @@ def test_sweeping_twice_asks_once(swept_store):
 
     assert (queued, already) == (1, 2)  # only the ready PR is new
     assert [t.id for t in swept_store.queued_tasks] == ["review:1", "review:2", "review:3"]
+
+
+def test_two_sweeps_that_overlap_in_time_ask_once(swept_store, monkeypatch):
+    """The same idempotence, for two fan-outs running at once rather than one after
+    the other.
+
+    Each assembles a prompt per PR between reading what is already asked for and
+    storing what it adds, and that half is a core subprocess apiece — long enough for
+    the other press to have stored its asks in the meantime. Deciding what is new from
+    the set read before that gap stores those PRs twice."""
+    store = swept_store
+    at_assembly = threading.Barrier(2, timeout=10)
+    build = store._requested_task
+    started: set[int] = set()
+
+    def gated(entry):
+        # Hold each fan-out inside its assembly window until both are in it.
+        ident = threading.get_ident()
+        if ident not in started:
+            started.add(ident)
+            at_assembly.wait()
+        return build(entry)
+
+    monkeypatch.setattr(store, "_requested_task", gated)
+    presses: list[tuple[int, int]] = [(-1, -1), (-1, -1)]
+
+    def press(slot):
+        presses[slot] = store.request_review_sweep(_sweep(store))
+
+    threads = [threading.Thread(target=press, args=(i,)) for i in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=20)
+
+    assert [r.number for r in store.requested_reviews] == [1, 2]
+    assert [t.id for t in store.queued_tasks] == ["review:1", "review:2"]
+    # …and the press that lost the race says so, rather than counting the same two
+    # reviews a second time at the operator.
+    assert sorted(presses) == [(0, 2), (2, 0)]
 
 
 def test_a_sweep_that_cannot_build_a_prompt_leaves_nothing_behind(swept_store, monkeypatch):
