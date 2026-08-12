@@ -475,13 +475,8 @@ enum QueueTest {
         // conflict fix another agent's run may make unnecessary. Back over the cap
         // first: a sweep queues without asking it, but a monitor's find reaches the
         // queue only by being refused, and the section above left the bay free.
-        store.processes = [
-            TrackedProcess(kind: "review", label: "Auto · Review · #1", terminal: "iterm",
-                           windowID: "1", sessionID: "", tty: "", donePath: "",
-                           prURL: "https://github.com/software-mansion/argent/pull/1",
-                           source: AgentDispatchGate.Source.auto.rawValue,
-                           createdAt: Date(), done: false),
-        ]
+        emptyBook()
+        bookAgent(1)
         _ = await offer(job(35))
         _ = await offer(job(36, action: "conflicts", label: "Resolve · #36",
                             counter: .conflicts))
@@ -512,17 +507,12 @@ enum QueueTest {
         // The dispatch is what answers an ask. #31's PR gains an agent, so the dispatch
         // is refused and the ask stands; a refusal that dropped it would silently
         // abandon the review.
-        store.processes.append(
-            TrackedProcess(kind: "review", label: "Auto · Review · #31", terminal: "iterm",
-                           windowID: "31", sessionID: "", tty: "", donePath: "",
-                           prURL: "https://github.com/software-mansion/argent/pull/31",
-                           source: AgentDispatchGate.Source.auto.rawValue,
-                           createdAt: Date(), done: false))
+        bookAgent(31)
         await store.executeQueuedTask("review:31")
         check("an ask refused because the PR is busy is still asked for",
               store.requestedReviews.map(\.number) == [31, 33])
         store.error = nil
-        store.processes = []
+        emptyBook()
         store.requestedReviews = []
         store.queuedTasks = []
 

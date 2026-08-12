@@ -9,11 +9,14 @@ screen keeps rendering pre-edit state, drop the error assignment and a rejected
 edit looks like it worked - so the commands share one routine,
 ``Store._mesh_command``.
 
-These pin all three of its steps plus the arguments each command forwards.
+These pin all three of its steps plus the arguments each command forwards, and
+the one command that is not a ``ctl`` call at all: starting the node process, whose
+whole configuration is the environment it is handed.
 """
 
 from __future__ import annotations
 
+import os
 import threading
 
 import pytest
@@ -224,3 +227,76 @@ def test_commands_do_not_block_the_caller(store, monkeypatch):
     release.set()
     _settle()
     assert returned.is_set()
+
+
+#: A developer's own ``PYTHONPATH``, so the entries the applet adds can be told apart
+#: from the ones it merely forwards.
+AMBIENT = "/opt/ambient-python-path"
+
+PACKAGES = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__)))))
+
+
+@pytest.fixture
+def spawned(store, monkeypatch):
+    """Run ``ensure_mesh_running_async`` against a stubbed ``Popen`` and return the
+    call it made.
+
+    Nothing else reaches this code: the node it starts is a real background process,
+    so every other mesh test rebuilds that environment by hand rather than running the
+    method that builds it.
+    """
+    import subprocess
+
+    from szpontnet import statefile
+
+    monkeypatch.setenv("PYTHONPATH", AMBIENT)
+    monkeypatch.setattr(statefile, "node_running", lambda: False)
+    monkeypatch.setattr(store, "_mesh_enabled_override", True)
+    calls: list[dict] = []
+    done = threading.Event()
+
+    def fake_popen(argv, **kwargs):
+        calls.append({"argv": argv, **kwargs})
+        done.set()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    store.ensure_mesh_running_async()
+    assert done.wait(timeout=5), "no node was started"
+    return calls[0]
+
+
+def _path(spawned) -> list[str]:
+    return spawned["env"]["PYTHONPATH"].split(os.pathsep)
+
+
+def test_the_node_is_handed_the_shared_runtime_and_nothing_of_the_applet(spawned):
+    """The node is a separate stdlib-only process that imports its host by name off
+    ``PYTHONPATH``. Hand it this package instead and every duty it runs reaches for
+    PySide6 on a machine that may have none."""
+    added = [p for p in _path(spawned) if p != AMBIENT]
+    assert os.path.join(PACKAGES, "diplomat-runtime") in added
+    assert os.path.join(PACKAGES, "diplomat-platform", "linux") not in added
+
+
+def test_the_host_module_it_names_is_importable_from_that_path(spawned):
+    """The name and the path are one answer in two halves: name a host the node cannot
+    import and it comes up on the library's own defaults - its own state directory,
+    none of our duties, no activity feed - which looks like a healthy mesh right up
+    until a peer routes work here."""
+    host = spawned["env"]["SZPONTNET_HOST"]
+    module = os.path.join(*host.split(".")) + ".py"
+    assert any(os.path.isfile(os.path.join(p, module)) for p in _path(spawned)), host
+
+
+def test_a_developers_own_import_path_is_kept(spawned):
+    """Prepended, not replaced: the applet is often run out of a virtualenv or an
+    editable install that lives on that path."""
+    assert AMBIENT in _path(spawned)
+
+
+def test_the_node_is_started_detached_from_the_applet(spawned):
+    """It outlives the applet on purpose - a peer's work is placed on this machine's
+    node, not on this window."""
+    assert spawned["argv"][1:] == ["-m", "szpontnet", "--daemon"]
+    assert spawned["start_new_session"] is True

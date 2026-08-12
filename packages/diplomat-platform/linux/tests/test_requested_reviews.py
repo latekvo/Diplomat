@@ -25,10 +25,11 @@ from datetime import datetime, timezone
 import pytest
 from test_autofix import _spawn_recorder, fake_probes, store  # noqa: F401 — fixture
 
-from diplomat_app import autofix, bans, review
-from diplomat_app.models import OpenPR
-from diplomat_app.prtarget import PRTarget
+from diplomat_app import bans
 from diplomat_app.store import Store
+from diplomat_runtime import autofix, review
+from diplomat_runtime.models import OpenPR
+from diplomat_runtime.prtarget import PRTarget
 
 pytest.importorskip("PySide6")
 
@@ -192,7 +193,7 @@ def test_a_sweep_that_cannot_build_a_prompt_leaves_nothing_behind(swept_store, m
             raise RuntimeError("diplomat-core timed out assembling the prompt")
         return f"PROMPT:{cfg['specificPR']}:{cfg['depth']}"
 
-    monkeypatch.setattr("diplomat_app.promptcore.build_prompt", flaky)
+    monkeypatch.setattr("diplomat_runtime.promptcore.build_prompt", flaky)
 
     with pytest.raises(RuntimeError):
         swept_store.request_review_sweep(_sweep(swept_store, depth="quick"))
@@ -274,7 +275,7 @@ def test_an_ask_whose_prompt_will_not_assemble_costs_only_its_own_row(swept_stor
             raise RuntimeError("diplomat-core failed: unknown depth")
         return "PROMPT"
 
-    monkeypatch.setattr("diplomat_app.promptcore.build_prompt", poisoned)
+    monkeypatch.setattr("diplomat_runtime.promptcore.build_prompt", poisoned)
 
     _poll(store, monkeypatch)
 
@@ -376,7 +377,7 @@ def test_a_running_requested_review_is_not_labelled_automatic(swept_store, monke
     "Auto · " prefix says a MONITOR found the work, and this one the operator did.
     Left on, a requested review of #1 reads exactly like the review-reply monitor's
     own dispatch on #1."""
-    from diplomat_app import activity
+    from diplomat_runtime import activity
 
     _spawn_recorder(monkeypatch)
     monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
