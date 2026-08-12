@@ -385,6 +385,18 @@ class Store(QObject):
         self._settings.setValue("allocatorSetupDone", bool(value))
 
     @property
+    def settings_explain(self) -> bool:
+        """Whether Settings draws each row's long-form explanation (the header's
+        *Explain* switch). Off by default: the paragraphs answer questions a first
+        read raises and are noise on every read after it. Persisted, so the answer
+        to "do I want these" is given once rather than on every visit."""
+        return self._settings.value("settingsExplain", False, bool)
+
+    @settings_explain.setter
+    def settings_explain(self, value: bool) -> None:
+        self._settings.setValue("settingsExplain", bool(value))
+
+    @property
     def mesh_enabled(self) -> bool:
         """Opt-in: whether this machine joins the LAN P2P mesh. Off by default so
         Diplomat never opens a UDP/TCP node on the network unasked; the app

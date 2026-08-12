@@ -1,8 +1,13 @@
-"""Settings screen — GitHub handle, per-tool colour/visibility, spawn terminal.
+"""Settings screen — identity, what the monitors may do, and the environment
+spawns land in.
 
-The Linux analogue of SettingsView.swift. Persists through the Store (QSettings).
-Built once and updated in place so typing in the handle field is never disrupted
-by a background data refresh.
+The Linux analogue of SettingsView.swift, card for card and row for row. Persists
+through the Store (QSettings, or the shared ``~/.diplomat/config.json`` for the
+knobs another process also reads). Built once and updated in place so typing in
+the handle field is never disrupted by a background data refresh.
+
+Each row states what it does in a line; the paragraph behind that line is drawn
+only while the header's *Explain* switch is on.
 """
 
 from __future__ import annotations
@@ -11,19 +16,15 @@ import os
 import shutil
 import time
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QCheckBox,
     QColorDialog,
-    QComboBox,
-    QDoubleSpinBox,
     QFileDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
-    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -34,18 +35,40 @@ from . import (
     autofix,
     core,
     deviceallocator,
+    glyphs,
     review,
     runner,
     szpont,
 )
 from .store import Store, tools
-from .widgets import IconChip, muted
+from .widgets import (
+    ChoiceChips,
+    IconChip,
+    Pill,
+    SegmentedControl,
+    SettingRow,
+    SliderSetting,
+    SwitchToggle,
+    ToggleChip,
+    muted,
+    nested_settings,
+    settings_card,
+)
+
+#: Card tints, mirroring the SF Symbol tints of the macOS twin.
+_BLUE, _PURPLE, _TEAL = "#0A84FF", "#BF5AF2", "#40C8E0"
+_ORANGE, _PINK, _INDIGO = "#FF9500", "#FF375F", "#5E5CE6"
+_BROWN, _CYAN, _MINT = "#AC8E68", "#32ADE6", "#00C7BE"
+_GREEN, _RED, _GREY = "#34C759", "#FF3B30", "#8E8E93"
 
 
-def _section_label(text: str) -> QLabel:
-    lbl = QLabel(text)
-    lbl.setStyleSheet(muted(9, bold=True) + " letter-spacing: 1px;")
-    return lbl
+def _style_swatch(btn: QPushButton, hex_color: str) -> None:
+    """The tool tint well: the colour itself, as a rounded block. A "●" glyph in the
+    tint (what this was) is mostly the button's own background."""
+    btn.setStyleSheet(
+        f"QPushButton {{ background-color: {hex_color}; border-radius: 4px;"
+        " border: 1px solid rgba(128,128,128,0.5); }"
+    )
 
 
 class SettingsView(QWidget):
@@ -55,36 +78,40 @@ class SettingsView(QWidget):
         super().__init__()
         self.store = store
         self._chips: dict[str, IconChip] = {}
+        #: Every row that has a long-form paragraph, so the header switch can
+        #: reveal them together rather than each row watching the store.
+        self._rows: list[SettingRow] = []
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(14)
+        root.setSpacing(12)
 
         root.addLayout(self._header_row())
 
         # Two columns, matching the macOS SettingsView and the main panel: identity +
         # automation behaviour on the left, appearance + environment on the right. Each
-        # column pushes its sections up with a bottom stretch so the two stay top-aligned
+        # column pushes its cards up with a bottom stretch so the two stay top-aligned
         # regardless of differing heights.
         body = QHBoxLayout()
         body.setSpacing(12)
 
         left = QVBoxLayout()
-        left.setSpacing(14)
-        left.addLayout(self._identity_section())
-        left.addLayout(self._runner_section())
-        left.addLayout(self._repo_section())
-        left.addLayout(self._autofix_section())
-        left.addLayout(self._apiwatch_section())
+        left.setSpacing(10)
+        left.addWidget(self._identity_card())
+        left.addWidget(self._runner_card())
+        left.addWidget(self._repo_card())
+        left.addWidget(self._autofix_card())
+        left.addWidget(self._limits_card())
         left.addStretch(1)
 
         right = QVBoxLayout()
-        right.setSpacing(14)
-        right.addLayout(self._tools_section())
-        right.addLayout(self._terminal_section())
-        right.addLayout(self._allocator_section())
-        right.addLayout(self._mesh_section())
-        right.addLayout(self._update_section())
+        right.setSpacing(10)
+        right.addWidget(self._tools_card())
+        right.addWidget(self._terminal_card())
+        right.addWidget(self._apiwatch_card())
+        right.addWidget(self._allocator_card())
+        right.addWidget(self._mesh_card())
+        right.addWidget(self._update_card())
         right.addStretch(1)
 
         body.addLayout(left, 1)
@@ -102,6 +129,7 @@ class SettingsView(QWidget):
         self._refresh_update_ui()
         self._refresh_autofix_ui()
         self._refresh_apiwatch_ui()
+        self._apply_explain(store.settings_explain)
         store.refresh_allocator_install_async()
         store.refresh_update_status_async()
         if store.mesh_enabled:
@@ -111,6 +139,10 @@ class SettingsView(QWidget):
             # mesh_state fresh while a node is live.
             store.refresh_mesh_state()
 
+    def _track(self, row: SettingRow) -> SettingRow:
+        self._rows.append(row)
+        return row
+
     # MARK: header
 
     def _header_row(self) -> QHBoxLayout:
@@ -119,89 +151,117 @@ class SettingsView(QWidget):
         title.setStyleSheet("font-weight: 700; font-size: 13px;")
         row.addWidget(title)
         row.addStretch(1)
+
+        # One switch for the screen, not a disclosure arrow per row: the paragraphs
+        # are read together, on the visit where the automation is being set up, and
+        # never again after it.
+        explain_label = QLabel("Explain")
+        explain_label.setStyleSheet(muted(11))
+        row.addWidget(explain_label)
+        self._explain = SwitchToggle()
+        self._explain.setToolTip("Show what each setting does, in full")
+        self._explain.setChecked(self.store.settings_explain)
+        self._explain.toggled.connect(self._on_explain_toggled)
+        row.addWidget(self._explain)
+
         done = QPushButton("Done")
         done.setStyleSheet("font-weight: 700;")
         done.clicked.connect(self.done.emit)
         row.addWidget(done)
         return row
 
+    def _on_explain_toggled(self, on: bool) -> None:
+        self.store.settings_explain = on
+        self._apply_explain(on)
+
+    def _apply_explain(self, on: bool) -> None:
+        for row in self._rows:
+            row.set_explain(on)
+
     # MARK: GitHub identity
 
-    def _identity_section(self) -> QVBoxLayout:
-        col = QVBoxLayout()
-        col.setSpacing(6)
-        col.addWidget(_section_label("GITHUB USERNAME"))
+    def _identity_card(self) -> QWidget:
+        card, body, self._identity_pill = settings_card(
+            glyphs.G_IDENTITY, "IDENTITY", _BLUE
+        )
 
         field = QLineEdit(self.store.username_override)
         field.setPlaceholderText(self.store.me or "your github handle")
         field.setClearButtonEnabled(True)
 
-        hint = QLabel()
-        hint.setWordWrap(True)
-        hint.setStyleSheet(muted(10))
+        self._identity_row = self._track(SettingRow(
+            "GitHub username", field, stacked=True,
+            detail="Scopes the “My …” tools and the Review wizard: which PRs count "
+                   "as mine, and whose reviews the monitors owe.",
+        ))
+        body.addWidget(self._identity_row)
 
-        def update_hint() -> None:
-            o = self.store.username_override.strip()
-            if o:
-                hint.setText(f"Overriding to @{o} for the “My …” tools and the Review wizard.")
-            else:
-                who = f" (@{self.store.me})" if self.store.me else ""
-                hint.setText(
-                    f"Using the gh-authenticated user{who}. Scopes the “My …” tools and the Review wizard."
-                )
+        def refresh() -> None:
+            override = self.store.username_override.strip()
+            effective = override or self.store.me
+            self._identity_pill.set_state(
+                f"@{effective}" if effective else "not signed in",
+                _BLUE if override else _GREY,
+            )
+            self._identity_row.set_summary(
+                "Overriding the gh-authenticated user."
+                if override else "Blank = whoever `gh` is authenticated as."
+            )
 
         def on_text(text: str) -> None:
             self.store.username_override = text
-            update_hint()
+            refresh()
             self.store.changed.emit()
 
         field.textChanged.connect(on_text)
-        update_hint()
-        col.addWidget(field)
-        col.addWidget(hint)
-        return col
+        refresh()
+        return card
 
     # MARK: agent runner (which CLI the agents are)
 
-    def _runner_section(self) -> QVBoxLayout:
-        col = QVBoxLayout()
-        col.setSpacing(6)
-        col.addWidget(_section_label("AGENT RUNNER"))
+    def _runner_card(self) -> QWidget:
+        card, body, self._runner_pill = settings_card(
+            glyphs.G_RUNNER, "AGENT RUNNER", _PURPLE
+        )
 
-        combo = QComboBox()
-        for key in runner.RUNNERS:
-            combo.addItem(runner.LABELS[key], key)
-        idx = combo.findData(self.store.agent_runner)
-        if idx >= 0:
-            combo.setCurrentIndex(idx)
-        col.addWidget(combo)
+        picker = SegmentedControl(
+            [(runner.LABELS[key], key) for key in runner.RUNNERS], tint=_PURPLE
+        )
+        picker.set_value(self.store.agent_runner)
+        picker.changed.connect(self._on_runner_changed)
+        self._runner_row = self._track(SettingRow(
+            "Which CLI a spawn runs", picker, stacked=True,
+        ))
+        body.addWidget(self._runner_row)
 
+        # The model + provider controls, shown only for a runner that has them.
+        self._runner_nest, nest = nested_settings(_PURPLE)
+        model_row = QHBoxLayout()
+        model_row.setSpacing(6)
         self._model_field = QLineEdit(self.store.agent_model)
         self._model_field.setClearButtonEnabled(True)
         self._model_field.textChanged.connect(
             lambda text: setattr(self.store, "agent_model", text)
         )
-        col.addWidget(self._model_field)
-
-        self._providers_button = QPushButton("Connect a provider…")
-        self._providers_button.setToolTip(
+        model_row.addWidget(self._model_field, 1)
+        providers = QPushButton("Connect a provider…")
+        providers.setToolTip(
             "Open the runner's own login wizard: it knows every provider in its "
             "catalog and stores the credential itself. Diplomat never holds an API key."
         )
-        self._providers_button.clicked.connect(self._open_provider_setup)
-        col.addWidget(self._providers_button)
+        providers.clicked.connect(self._open_provider_setup)
+        model_row.addWidget(providers)
+        holder = QWidget()
+        holder.setLayout(model_row)
+        nest.addWidget(holder)
+        body.addWidget(self._runner_nest)
 
-        self._runner_hint = QLabel()
-        self._runner_hint.setWordWrap(True)
-        self._runner_hint.setStyleSheet(muted(10))
-        col.addWidget(self._runner_hint)
-
-        combo.currentIndexChanged.connect(
-            lambda: (setattr(self.store, "agent_runner", combo.currentData()),
-                     self._refresh_runner_ui())
-        )
         self._refresh_runner_ui()
-        return col
+        return card
+
+    def _on_runner_changed(self, key: object) -> None:
+        self.store.agent_runner = str(key)
+        self._refresh_runner_ui()
 
     def _refresh_runner_ui(self) -> None:
         """Show the model and provider controls only for a runner that has them, and
@@ -213,9 +273,9 @@ class SettingsView(QWidget):
         chosen = self.store.agent_runner
         label = runner.LABELS.get(chosen, chosen)
         foreign = chosen != runner.CLAUDE
-        self._model_field.setVisible(foreign)
+        self._runner_pill.set_state(label, _PURPLE)
+        self._runner_nest.setVisible(foreign)
         self._model_field.setPlaceholderText(f"model — blank lets {label} choose")
-        self._providers_button.setVisible(foreign)
         found = shutil.which(chosen)
         if found:
             where = f"Spawns run `{chosen}` ({found})."
@@ -223,22 +283,26 @@ class SettingsView(QWidget):
             where = (f"`{chosen}` is not on this app's PATH. Agents run under your "
                      f"login shell, so an rc-only install still works — but check it "
                      f"if spawned runs finish instantly without doing anything.")
-        extra = (f" Its model and provider are {label}'s own — connect one above; the "
-                 f"credential is stored by {label}, never here." if foreign else "")
-        self._runner_hint.setText(where + extra)
+        self._runner_row.set_summary(where, color=None if found else _ORANGE)
+        self._runner_row.set_detail(
+            f"Diplomat never holds an API key: {label} stores its own credential, and "
+            f"*Connect a provider* opens its login wizard, which knows every provider "
+            f"in its catalog."
+            if foreign else
+            "SPAWN AGENT picks up whatever flags your shell alias for `claude` gives it."
+        )
 
     def _open_provider_setup(self) -> None:
         try:
             review.open_terminal(runner.setup_command(), self.store.terminal)
         except review.SpawnError as exc:
-            self._runner_hint.setText(f"Could not open a terminal: {exc}")
+            self._runner_row.set_summary(f"Could not open a terminal: {exc}",
+                                         color=_ORANGE)
 
     # MARK: repo root (where the agents work)
 
-    def _repo_section(self) -> QVBoxLayout:
-        col = QVBoxLayout()
-        col.setSpacing(6)
-        col.addWidget(_section_label("REPO ROOT"))
+    def _repo_card(self) -> QWidget:
+        card, body, self._repo_pill = settings_card(glyphs.G_REPO, "REPO ROOT", _TEAL)
 
         row = QHBoxLayout()
         row.setSpacing(6)
@@ -250,11 +314,13 @@ class SettingsView(QWidget):
         browse.setToolTip("Pick the local checkout agents should work in")
         browse.clicked.connect(self._browse_repo)
         row.addWidget(browse)
-        col.addLayout(row)
+        holder = QWidget()
+        holder.setLayout(row)
 
-        self._repo_hint = QLabel()
-        self._repo_hint.setWordWrap(True)
-        col.addWidget(self._repo_hint)
+        self._repo_row = self._track(SettingRow(
+            "Where every spawned agent starts", holder, stacked=True,
+        ))
+        body.addWidget(self._repo_row)
 
         def on_text(text: str) -> None:
             self.store.repo_path_override = text
@@ -262,7 +328,7 @@ class SettingsView(QWidget):
 
         self._repo_field.textChanged.connect(on_text)
         self._refresh_repo_ui()
-        return col
+        return card
 
     def _browse_repo(self) -> None:
         chosen = QFileDialog.getExistingDirectory(
@@ -286,10 +352,14 @@ class SettingsView(QWidget):
         return "ok" if os.path.exists(os.path.join(resolved, ".git")) else "not-a-checkout"
 
     def _refresh_repo_ui(self) -> None:
-        """Hint + colour, from one state read so the two can't disagree."""
+        """Pill, summary and colour, from one state read so the three can't disagree.
+
+        A problem states itself on the face of the card; only the happy path is short
+        enough to fold into the summary line and put the rest behind *Explain*."""
         state = self._repo_state()
         resolved = review.repo_path()
         owner, repo = core.config()["owner"], core.config()["repo"]
+        default = review.default_repo_path()
         if state == "env-shadowed":
             env = os.environ.get("DIPLOMAT_REPO", "")
             text = (
@@ -309,240 +379,210 @@ class SettingsView(QWidget):
                 f"{owner}/{repo}."
             )
         else:
-            tail = "" if self.store.repo_path_override.strip() else " Blank = the default path."
-            text = (
-                f"Every spawned agent starts with `cd {resolved}` — your local clone of "
-                f"{owner}/{repo}.{tail}"
-            )
-        self._repo_hint.setText(text)
-        self._repo_hint.setStyleSheet(
-            f"color: {'palette(mid)' if state == 'ok' else '#FF9500'}; font-size: 10px;"
+            text = f"`cd {resolved}` — your local clone of {owner}/{repo}."
+        ok = state == "ok"
+        self._repo_pill.set_state("checkout ok" if ok else "check this",
+                                  _GREEN if ok else _ORANGE)
+        self._repo_row.set_summary(text, color=None if ok else _ORANGE)
+        self._repo_row.set_detail(
+            f"Blank = the default path, {default}. DIPLOMAT_REPO in this app's "
+            "environment outranks both." if ok else None
         )
 
     # MARK: PR auto-fix monitor
 
-    def _autofix_section(self) -> QVBoxLayout:
-        col = QVBoxLayout()
-        col.setSpacing(6)
-        col.addWidget(_section_label("PR AUTO-FIX"))
+    def _autofix_card(self) -> QWidget:
+        card, body, self._autofix_pill = settings_card(
+            glyphs.G_AUTO, "AUTOMATIC WORK", _ORANGE
+        )
 
-        self._cb_autofix = QCheckBox("Auto-fix my PRs (conflicts + reviews)")
-        self._cb_autofix.setChecked(self.store.pr_autofix_enabled)
-        self._cb_autofix.toggled.connect(self._on_autofix_toggled)
-        col.addWidget(self._cb_autofix)
+        self._sw_autofix = SwitchToggle(_ORANGE)
+        self._sw_autofix.setChecked(self.store.pr_autofix_enabled)
+        self._sw_autofix.toggled.connect(self._on_autofix_toggled)
+        body.addWidget(self._track(SettingRow(
+            "Auto-fix my PRs", self._sw_autofix,
+            summary="Resolves merge conflicts and answers new review threads.",
+            detail="Off, the monitor keeps looking and lists what it finds under "
+                   "Agent tasks — as queued work only you can start, with "
+                   "“execute now”.",
+        )))
 
-        self._autofix_status = QLabel("")
-        self._autofix_status.setStyleSheet("font-size: 10px;")
-        col.addWidget(self._autofix_status)
-
+        # The failing-poll line. The card's pill flags it; this names the error.
         self._autofix_poll_err = QLabel("")
         self._autofix_poll_err.setWordWrap(True)
-        self._autofix_poll_err.setStyleSheet("color: #FF3B30; font-size: 10px;")
-        col.addWidget(self._autofix_poll_err)
+        self._autofix_poll_err.setStyleSheet(f"color: {_RED}; font-size: 10px;")
+        body.addWidget(self._autofix_poll_err)
 
-        hint = QLabel(
-            "When on, an agent watches your open PRs and automatically resolves merge "
-            "conflicts and addresses new review threads. Off, the monitor keeps "
-            "looking and lists what it finds under Agent tasks — as queued work only "
-            "you can start, with “execute now”."
-        )
-        hint.setWordWrap(True)
-        hint.setStyleSheet(muted(10))
-        col.addWidget(hint)
+        # Two counts that only exist once the monitor has run: how many reviews it
+        # has delivered, and how many it currently owes.
+        self._reviewed_pill = Pill("")
+        self._sw_review_req = SwitchToggle(_ORANGE)
+        self._sw_review_req.setChecked(self.store.review_requests_enabled)
+        self._sw_review_req.toggled.connect(self._on_review_req_toggled)
+        review_control = QWidget()
+        review_row = QHBoxLayout(review_control)
+        review_row.setContentsMargins(0, 0, 0, 0)
+        review_row.setSpacing(6)
+        review_row.addWidget(self._reviewed_pill)
+        review_row.addWidget(self._sw_review_req)
+        body.addWidget(self._track(SettingRow(
+            "Review PRs that request me", review_control,
+            summary="Full E2E · max, inline comments — read-only, never their branch.",
+            detail="A review left unaddressed (agent died, lost connection, window "
+                   "closed) is retried automatically until it lands. Off, the "
+                   "requests still list under Agent tasks, queued for you to start "
+                   "by hand.",
+        )))
 
-        self._cb_review_req = QCheckBox("Full-E2E review PRs that request my review")
-        self._cb_review_req.setChecked(self.store.review_requests_enabled)
-        self._cb_review_req.toggled.connect(self._on_review_req_toggled)
-        col.addWidget(self._cb_review_req)
+        # What an auto-review may submit. Nested under the switch that creates them,
+        # because none of it means anything while no auto-review runs.
+        self._approve_nest, approve = nested_settings(_ORANGE)
+        self._sw_auto_approve = SwitchToggle(_ORANGE)
+        self._sw_auto_approve.setChecked(self.store.auto_approve_enabled)
+        self._sw_auto_approve.toggled.connect(self._on_auto_approve_toggled)
+        approve.addWidget(self._track(SettingRow(
+            "May approve / request changes", self._sw_auto_approve,
+            summary="Off ⇒ inline comments only; the verdict stays with you.",
+            detail="On ⇒ a clean review may submit a verdict, except on the classes "
+                   "withheld below.",
+        )))
+        approve.addWidget(self._verdict_block())
 
-        self._review_req_hint = QLabel("")
-        self._review_req_hint.setWordWrap(True)
-        self._review_req_hint.setStyleSheet(muted(10))
-        col.addWidget(self._review_req_hint)
+        self._sw_soft_approve = SwitchToggle(_ORANGE)
+        self._sw_soft_approve.setChecked(self.store.soft_approve_enabled)
+        self._sw_soft_approve.toggled.connect(self._on_soft_approve_toggled)
+        approve.addWidget(self._track(SettingRow(
+            "Soft-approve clean PRs", self._sw_soft_approve,
+            summary="One “ran the sweep, all clean” comment — never an APPROVE.",
+            detail="Off ⇒ a review that finds nothing says nothing. Independent of "
+                   "the verdict switch above: a soft approval is a comment, not a "
+                   "GitHub approval.",
+        )))
+        body.addWidget(self._approve_nest)
+        return card
 
-        self._unaddressed = QLabel("")
-        self._unaddressed.setStyleSheet("color: #FF9500; font-size: 10px;")
-        col.addWidget(self._unaddressed)
-
-        # Auto-approve block — a container so it (and the verdict sub-block) can be
-        # shown/hidden as a unit (a QLayout can't be toggled; a QWidget can).
-        self._approve_container = QWidget()
-        approve = QVBoxLayout(self._approve_container)
-        approve.setContentsMargins(12, 0, 0, 0)
-        approve.setSpacing(4)
-
-        self._cb_auto_approve = QCheckBox("Let auto-reviews approve / request changes")
-        self._cb_auto_approve.setChecked(self.store.auto_approve_enabled)
-        self._cb_auto_approve.toggled.connect(self._on_auto_approve_toggled)
-        approve.addWidget(self._cb_auto_approve)
-
-        approve_hint = QLabel(
-            "Off ⇒ every auto-review leaves inline comments only; the approve / "
-            "request-changes call stays with you. On ⇒ a clean review may submit a "
-            "verdict, except where withheld below."
-        )
-        approve_hint.setWordWrap(True)
-        approve_hint.setStyleSheet(muted(10))
-        approve.addWidget(approve_hint)
-
+    def _verdict_block(self) -> QWidget:
+        """The three suppressors for an auto-review's final verdict, as chips: a PR
+        matching any lit chip gets comments only."""
         self._verdict_container = QWidget()
-        verdict = QVBoxLayout(self._verdict_container)
-        verdict.setContentsMargins(12, 0, 0, 0)
-        verdict.setSpacing(2)
-        verdict.addWidget(_section_label("WITHHOLD THE FINAL VERDICT WHEN THE PR…"))
-        self._cb_verdict_skill = QCheckBox("…touches a SKILL")
-        self._cb_verdict_skill.setChecked(self.store.verdict_withhold_skill)
-        self._cb_verdict_skill.toggled.connect(lambda on: self._set_verdict("skill", on))
-        verdict.addWidget(self._cb_verdict_skill)
-        self._cb_verdict_installer = QCheckBox("…touches the installer")
-        self._cb_verdict_installer.setChecked(self.store.verdict_withhold_installer)
-        self._cb_verdict_installer.toggled.connect(
-            lambda on: self._set_verdict("installer", on)
+        col = QVBoxLayout(self._verdict_container)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(5)
+        caption = QLabel("WITHHOLD IT WHEN THE PR TOUCHES…")
+        caption.setStyleSheet(
+            "color: palette(mid); font-size: 9px; font-weight: 700;"
+            " letter-spacing: 0.5px;"
         )
-        verdict.addWidget(self._cb_verdict_installer)
-        self._cb_verdict_community = QCheckBox("…is a community PR (author outside the org)")
-        self._cb_verdict_community.setChecked(self.store.verdict_withhold_community)
-        self._cb_verdict_community.toggled.connect(
-            lambda on: self._set_verdict("community", on)
-        )
-        verdict.addWidget(self._cb_verdict_community)
-        approve.addWidget(self._verdict_container)
+        col.addWidget(caption)
 
-        # Soft-approvals: what a comments-only review does on a perfectly-clean PR -
-        # leave a friendly thank-you note (no APPROVE action) instead of staying silent.
-        # On by default; independent of the verdict toggle above.
-        self._cb_soft_approve = QCheckBox(
-            "Soft-approve clean PRs (thank-you comment, no approval)"
-        )
-        self._cb_soft_approve.setChecked(self.store.soft_approve_enabled)
-        self._cb_soft_approve.toggled.connect(self._on_soft_approve_toggled)
-        approve.addWidget(self._cb_soft_approve)
-        soft_hint = QLabel(
-            "On ⇒ a review that comes back perfectly clean leaves one friendly "
-            "“ran the sweep, all clean, thanks for contributing” comment — "
-            "never an APPROVE action. Off ⇒ a clean review stays silent."
-        )
-        soft_hint.setWordWrap(True)
-        soft_hint.setStyleSheet(muted(10))
-        approve.addWidget(soft_hint)
+        chips = QHBoxLayout()
+        chips.setSpacing(5)
+        for label, which, tip in (
+            ("a SKILL", "skill", "Comments only on a PR that edits a SKILL"),
+            ("the installer", "installer", "Comments only on a PR that edits the installer"),
+            ("community", "community",
+             "Comments only on a PR whose author is outside the org"),
+        ):
+            chip = ToggleChip(label, tint=_ORANGE)
+            chip.setToolTip(tip)
+            chip.setChecked(getattr(self.store, f"verdict_withhold_{which}"))
+            chip.toggled.connect(
+                lambda on, w=which: self._set_verdict(w, on)
+            )
+            chips.addWidget(chip)
+        chips.addStretch(1)
+        col.addLayout(chips)
+        return self._verdict_container
 
-        col.addWidget(self._approve_container)
-        col.addLayout(self._auto_limit_row())
-        col.addLayout(self._auto_budget_rows())
-        return col
+    # MARK: limits (the cap, and the budget it is spent against)
 
-    def _auto_limit_row(self) -> QVBoxLayout:
-        """The device-wide ceiling on concurrent automatic agents. Sits at the foot
-        of the section because it governs BOTH monitors above it — a poll of either
-        one can find any number of pending units at once, and this is what keeps
-        them from all opening at the same moment."""
-        col = QVBoxLayout()
-        col.setSpacing(2)
+    def _limits_card(self) -> QWidget:
+        """How much automatic work this machine may run, and whether it can afford
+        it. Its own card, beside the monitors rather than under them: both rows
+        bound *every* automatic agent — the two monitors and anything a mesh peer
+        routes here."""
+        card, body, self._limits_pill = settings_card(glyphs.G_LIMITS, "LIMITS", _ORANGE)
 
-        row = QHBoxLayout()
-        row.setSpacing(6)
-        row.addWidget(QLabel("Run at most"))
-        self._auto_limit = QSpinBox()
-        self._auto_limit.setRange(
-            autofix.MIN_AUTO_TASK_LIMIT, autofix.MAX_AUTO_TASK_LIMIT
+        self._auto_limit = SliderSetting(
+            minimum=autofix.MIN_AUTO_TASK_LIMIT,
+            maximum=autofix.MAX_AUTO_TASK_LIMIT,
+            min_label=str(autofix.MIN_AUTO_TASK_LIMIT),
+            max_label=str(autofix.MAX_AUTO_TASK_LIMIT),
+            tint=_ORANGE,
         )
-        self._auto_limit.setValue(self.store.auto_task_limit)
-        self._auto_limit.valueChanged.connect(self._on_auto_limit_changed)
-        row.addWidget(self._auto_limit)
-        row.addWidget(QLabel("automatic tasks at a time"))
-        row.addStretch(1)
-        col.addLayout(row)
-
-        hint = QLabel(
-            "A hard cap for this machine, across both monitors above and any work a "
-            "mesh peer routes here. Agents you spawn yourself from the panel don't "
-            "count against it. Work over the cap isn't dropped — it waits in the "
-            "Agent-tasks list, in the order you put it, and starts as soon as a "
-            "running agent finishes. The panel draws whatever is left of the cap as "
-            "empty slots."
+        self._auto_limit.set_badge_text(
+            lambda n: f"{n} task" + ("" if n == 1 else "s")
         )
-        hint.setWordWrap(True)
-        hint.setStyleSheet(muted(10))
-        col.addWidget(hint)
-        return col
+        self._auto_limit.set_value(self.store.auto_task_limit)
+        self._auto_limit.changed.connect(self._on_auto_limit_changed)
+        body.addWidget(self._track(SettingRow(
+            "Run at most", self._auto_limit, stacked=True,
+            summary="Across both monitors and anything a mesh peer routes here.",
+            detail="A hard cap for this machine, across both monitors and any work a "
+                   "mesh peer routes here. Agents you spawn yourself from the panel "
+                   "don't count against it. Work over the cap isn't dropped — it "
+                   "waits in the Agent-tasks list, in the order you put it, and "
+                   "starts as soon as a running agent finishes. The panel draws "
+                   "whatever is left of the cap as empty slots.",
+        )))
+
+        self._sw_budget = SwitchToggle(_ORANGE)
+        self._sw_budget.setChecked(appconfig.auto_budget_gate())
+        self._sw_budget.toggled.connect(self._on_budget_gate_toggled)
+        body.addWidget(self._track(SettingRow(
+            "Hold work when the limit runs low", self._sw_budget,
+            summary="Wait for a window to refill rather than start what won't fit.",
+            detail="Priced from Telemetry → limit per task, against both rate-limit "
+                   "windows: higher confidence is stricter. Held work isn't dropped "
+                   "— it waits in the Agent-tasks list until a window refills, and "
+                   "“execute now” overrides it. Nothing is held while the usage probe "
+                   "can't read a window at all.",
+        )))
+
+        self._budget_knobs, knobs = nested_settings(_ORANGE)
+        self._budget_confidence = SegmentedControl(
+            [(f"{level}%", level) for level in sorted(autofix.BUDGET_CONFIDENCE_Z)],
+            tint=_ORANGE,
+        )
+        self._budget_confidence.set_value(appconfig.auto_budget_confidence())
+        self._budget_confidence.changed.connect(self._on_budget_confidence_changed)
+        knobs.addWidget(self._track(SettingRow(
+            "Start one only when it fits", self._budget_confidence, stacked=True,
+        )))
+
+        self._budget_floor = SliderSetting(
+            minimum=0, maximum=100, step=5,
+            min_label="spend it all", max_label="spend nothing", tint=_ORANGE,
+        )
+        self._budget_floor.set_badge_text(lambda pct: f"{pct}%")
+        self._budget_floor.set_value(round(appconfig.auto_budget_floor_pct()))
+        self._budget_floor.changed.connect(self._on_budget_floor_changed)
+        knobs.addWidget(self._track(SettingRow(
+            "Keep in hand until it can be priced", self._budget_floor, stacked=True,
+        )))
+        body.addWidget(self._budget_knobs)
+        self._budget_knobs.setVisible(self._sw_budget.isChecked())
+        self._refresh_limits_pill()
+        return card
+
+    def _refresh_limits_pill(self) -> None:
+        self._limits_pill.set_state(f"≤ {self.store.auto_task_limit} at a time", _GREY)
 
     def _on_auto_limit_changed(self, value: int) -> None:
         self.store.auto_task_limit = value
+        self._refresh_limits_pill()
         self.store.changed.emit()
-
-    def _auto_budget_rows(self) -> QVBoxLayout:
-        """The rate-limit budget: whether automatic work waits when the account is
-        running low, how sure of that it has to be, and what to keep in hand while the
-        ledger cannot yet price a task.
-
-        Under the task cap because they are the two halves of one question — the cap
-        bounds how many automatic agents run at once, this bounds whether any of them
-        should start at all — and the confidence and floor are meaningless with the
-        gate off, so they are disabled with it."""
-        col = QVBoxLayout()
-        col.setSpacing(2)
-
-        self._cb_budget = QCheckBox("Hold automatic work when the rate limit runs low")
-        self._cb_budget.setChecked(appconfig.auto_budget_gate())
-        self._cb_budget.toggled.connect(self._on_budget_gate_toggled)
-        col.addWidget(self._cb_budget)
-
-        self._budget_knobs = QWidget()
-        knobs = QVBoxLayout(self._budget_knobs)
-        knobs.setContentsMargins(18, 0, 0, 0)
-        knobs.setSpacing(2)
-
-        row = QHBoxLayout()
-        row.setSpacing(6)
-        row.addWidget(QLabel("Start one only when"))
-        self._budget_confidence = QComboBox()
-        for level in sorted(autofix.BUDGET_CONFIDENCE_Z):
-            self._budget_confidence.addItem(f"{level}%", level)
-        self._budget_confidence.setCurrentIndex(
-            self._budget_confidence.findData(appconfig.auto_budget_confidence())
-        )
-        self._budget_confidence.currentIndexChanged.connect(
-            self._on_budget_confidence_changed
-        )
-        row.addWidget(self._budget_confidence)
-        row.addWidget(QLabel("sure it fits, and keep"))
-        self._budget_floor = QDoubleSpinBox()
-        self._budget_floor.setRange(0.0, 100.0)
-        self._budget_floor.setSingleStep(5.0)
-        self._budget_floor.setDecimals(1)
-        self._budget_floor.setSuffix("%")
-        self._budget_floor.setValue(appconfig.auto_budget_floor_pct())
-        self._budget_floor.valueChanged.connect(self._on_budget_floor_changed)
-        row.addWidget(self._budget_floor)
-        row.addWidget(QLabel("in hand until then"))
-        row.addStretch(1)
-        knobs.addLayout(row)
-
-        hint = QLabel(
-            "Priced from Telemetry → limit per task, against both rate-limit windows: "
-            "higher confidence is stricter. Held work isn't dropped — it waits in the "
-            "Agent-tasks list until a window refills, and “execute now” overrides it. "
-            "Nothing is held while the usage probe can't read a window at all."
-        )
-        hint.setWordWrap(True)
-        hint.setStyleSheet(muted(10))
-        knobs.addWidget(hint)
-
-        col.addWidget(self._budget_knobs)
-        self._budget_knobs.setEnabled(self._cb_budget.isChecked())
-        return col
 
     def _on_budget_gate_toggled(self, on: bool) -> None:
         appconfig.set_bool(appconfig.AUTO_BUDGET_GATE, on)
-        self._budget_knobs.setEnabled(on)
+        self._budget_knobs.setVisible(on)
         self.store.changed.emit()
 
-    def _on_budget_confidence_changed(self, index: int) -> None:
-        appconfig.set_int(appconfig.AUTO_BUDGET_CONFIDENCE,
-                          int(self._budget_confidence.itemData(index)))
+    def _on_budget_confidence_changed(self, level: object) -> None:
+        appconfig.set_int(appconfig.AUTO_BUDGET_CONFIDENCE, int(level))
         self.store.changed.emit()
 
-    def _on_budget_floor_changed(self, value: float) -> None:
+    def _on_budget_floor_changed(self, value: int) -> None:
         appconfig.set_float(appconfig.AUTO_BUDGET_FLOOR_PCT, float(value))
         self.store.changed.emit()
 
@@ -579,77 +619,71 @@ class SettingsView(QWidget):
         self.store.changed.emit()
 
     def _refresh_autofix_ui(self) -> None:
+        """The monitors' own health on the card's pill, so it is answered before any
+        row is read. A failing poll used to be invisible: the switches said "on", the
+        counts froze stale, and nothing dispatched."""
         autofix_on = self.store.pr_autofix_enabled
         review_on = self.store.review_requests_enabled
-
-        self._autofix_status.setVisible(autofix_on)
-        if autofix_on:
-            st = self.store.autofix_status
-            live = bool(st) and (time.time() - st.get("updatedAt", 0)) < 15 * 60
-            if live:
-                n = st.get("watching", 0)
-                plural = "" if n == 1 else "s"
-                self._autofix_status.setText(f"● Active — watching {n} open PR{plural}.")
-                self._autofix_status.setStyleSheet("color: #34C759; font-size: 10px;")
-            else:
-                self._autofix_status.setText("○ Enabled, but no monitor has polled yet.")
-                self._autofix_status.setStyleSheet("color: #FF9500; font-size: 10px;")
-
         err = self.store.autofix_poll_error
+        st = self.store.autofix_status
+        live = bool(st) and (time.time() - st.get("updatedAt", 0)) < 15 * 60
+
+        if not (autofix_on or review_on):
+            self._autofix_pill.set_state("manual", _GREY)
+        elif err:
+            self._autofix_pill.set_state("polls failing", _RED)
+        elif live:
+            n = st.get("watching", 0)
+            self._autofix_pill.set_state(
+                f"watching {n} PR" + ("" if n == 1 else "s"), _GREEN
+            )
+        else:
+            self._autofix_pill.set_state("no monitor yet", _ORANGE)
+
         self._autofix_poll_err.setVisible(bool(err) and autofix_on)
         if err:
             self._autofix_poll_err.setText(f"⚠ Polls failing — {err}")
 
+        owed = self.store.unaddressed_reviews
         handled = self.store.review_requests_handled
-        suffix = f"  Reviewed {handled} so far." if handled else ""
-        self._review_req_hint.setText(
-            "When someone requests my review, spawns the most thorough review (Full "
-            "E2E, inline comments) — read-only, never touches their branch. A review "
-            "left unaddressed is retried automatically until it lands. Off, the "
-            "requests still list under Agent tasks, queued for you to start by "
-            "hand." + suffix
-        )
+        if review_on and owed > 0:
+            self._reviewed_pill.set_state(f"↻ {owed} owed", _ORANGE)
+            self._reviewed_pill.setToolTip(
+                f"{owed} unaddressed review" + ("" if owed == 1 else "s")
+                + " — the reconciler is retrying"
+            )
+        elif handled:
+            self._reviewed_pill.set_state(f"{handled} done", _GREY)
+            self._reviewed_pill.setToolTip("Reviews delivered so far")
+        else:
+            self._reviewed_pill.set_state("")
 
-        n = self.store.unaddressed_reviews
-        self._unaddressed.setVisible(review_on and n > 0)
-        if n > 0:
-            plural = "" if n == 1 else "s"
-            self._unaddressed.setText(f"↻ {n} unaddressed review{plural} — retrying")
-
-        self._approve_container.setVisible(review_on)
+        self._approve_nest.setVisible(review_on)
         self._verdict_container.setVisible(review_on and self.store.auto_approve_enabled)
 
     # MARK: Claude API-error watcher
 
-    def _apiwatch_section(self) -> QVBoxLayout:
-        col = QVBoxLayout()
-        col.setSpacing(6)
-        col.addWidget(_section_label("CLAUDE API ERRORS"))
-
-        self._cb_apiwatch = QCheckBox("Auto-continue agents on API errors")
-        self._cb_apiwatch.setChecked(self.store.api_watch_enabled)
-        self._cb_apiwatch.toggled.connect(self._on_apiwatch_toggled)
-        col.addWidget(self._cb_apiwatch)
-
-        self._apiwatch_status = QLabel("")
-        self._apiwatch_status.setWordWrap(True)
-        self._apiwatch_status.setStyleSheet("font-size: 10px;")
-        col.addWidget(self._apiwatch_status)
-
-        hint = QLabel(
-            "Watches every tmux pane; when a Claude API error shows up (e.g. “529 "
-            "Overloaded”), it types “" + apiwatch.CONTINUE_MESSAGE + "” so a stalled "
-            "agent resumes on its own. Out-of-quota stalls (“You've hit your weekly "
-            "limit”) are left alone — nudging can't help until the limit resets. Run "
-            "your agents inside tmux for this to reach them. Claude Code runs only: "
-            "the banners it matches are Claude Code's. An OpenCode or Hermes agent "
-            "that hits an error reads as idle instead, frees its task-cap slot, and "
-            "is dispatched again by whichever monitor owed the work."
+    def _apiwatch_card(self) -> QWidget:
+        card, body, self._apiwatch_pill = settings_card(
+            glyphs.G_STALLED, "STALLED AGENTS", _PINK
         )
-        hint.setWordWrap(True)
-        hint.setStyleSheet(muted(10))
-        col.addWidget(hint)
-        return col
+        self._sw_apiwatch = SwitchToggle(_PINK)
+        self._sw_apiwatch.setChecked(self.store.api_watch_enabled)
+        self._sw_apiwatch.toggled.connect(self._on_apiwatch_toggled)
+        self._apiwatch_row = self._track(SettingRow(
+            "Auto-continue on API errors", self._sw_apiwatch,
+            summary="A 529 stops an agent dead; this types it back into motion.",
+            detail="Watches every tmux pane and types “" + apiwatch.CONTINUE_MESSAGE
+                   + "” when a Claude API error shows up. Out-of-quota stalls (“You've "
+                   "hit your weekly limit”) are left alone — nudging can't help until "
+                   "the limit resets. Run your agents inside tmux for this to reach "
+                   "them. Claude Code runs only: the banners it matches are Claude "
+                   "Code's. An OpenCode or Hermes agent that hits an error reads as "
+                   "idle instead, frees its task-cap slot, and is dispatched again by "
+                   "whichever monitor owed the work.",
+        ))
+        body.addWidget(self._apiwatch_row)
+        return card
 
     def _on_apiwatch_toggled(self, on: bool) -> None:
         self.store.api_watch_enabled = on
@@ -659,45 +693,64 @@ class SettingsView(QWidget):
             self.store.run_apiwatch_poll_async()  # kick a scan immediately
 
     def _refresh_apiwatch_ui(self) -> None:
-        on = self.store.api_watch_enabled
-        self._apiwatch_status.setVisible(on)
-        if not on:
-            return
         count = self.store.api_watch_continues
-        tail = f"  Continued {count}× so far." if count else ""
+        if not self.store.api_watch_enabled:
+            self._apiwatch_pill.set_state(
+                f"{count} continued" if count else "off", _GREY
+            )
+            return
         st = self.store.apiwatch_status
         live = bool(st) and (time.time() - st.get("updatedAt", 0)) < 15 * 60
         if st is not None and not st.get("tmux", True):
-            self._apiwatch_status.setText(
-                "⚠ tmux not found — this watcher drives tmux panes; install tmux and "
-                "run agents inside it." + tail
+            self._apiwatch_pill.set_state("tmux not found", _ORANGE)
+            self._apiwatch_row.set_summary(
+                "This watcher drives tmux panes; install tmux and run agents inside it.",
+                color=_ORANGE,
             )
-            self._apiwatch_status.setStyleSheet("color: #FF9500; font-size: 10px;")
-        elif live:
+            return
+        self._apiwatch_row.set_summary(
+            "A 529 stops an agent dead; this types it back into motion."
+        )
+        if live:
             n = st.get("watching", 0)
-            plural = "" if n == 1 else "s"
-            self._apiwatch_status.setText(
-                f"● Active — watching {n} tmux pane{plural}." + tail
+            self._apiwatch_pill.set_state(
+                f"watching {n} pane" + ("" if n == 1 else "s"), _GREEN
             )
-            self._apiwatch_status.setStyleSheet("color: #34C759; font-size: 10px;")
         else:
-            self._apiwatch_status.setText(
-                "○ Enabled, but no scan has run yet." + tail
+            self._apiwatch_pill.set_state(
+                f"{count} continued" if count else "no scan yet", _ORANGE
             )
-            self._apiwatch_status.setStyleSheet("color: #FF9500; font-size: 10px;")
 
     # MARK: tool colour & visibility
 
-    def _tools_section(self) -> QVBoxLayout:
-        col = QVBoxLayout()
-        col.setSpacing(8)
-        col.addWidget(_section_label("TOOLS — COLOR & VISIBILITY"))
+    def _tools_card(self) -> QWidget:
+        card, body, self._tools_pill = settings_card(glyphs.G_TOOLS, "TOOLS", _INDIGO)
+        rows = QWidget()
+        col = QVBoxLayout(rows)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(5)
+        self._tool_rows: dict[str, QWidget] = {}
         for tool in tools():
-            col.addLayout(self._tool_row(tool.id, tool.title, tool.subtitle, tool.glyph))
-        return col
+            col.addWidget(self._tool_row(tool.id, tool.title, tool.subtitle, tool.glyph))
+        body.addWidget(self._track(SettingRow(
+            "Cards in the panel grid", rows, stacked=True,
+            detail="The tint colours the card and every result row under it. Hiding "
+                   "the selected tool selects the first one still shown.",
+        )))
+        self._refresh_tools_pill()
+        return card
 
-    def _tool_row(self, tool_id: str, title: str, subtitle: str, glyph: str) -> QHBoxLayout:
-        row = QHBoxLayout()
+    def _refresh_tools_pill(self) -> None:
+        total = len(tools())
+        shown = sum(1 for t in tools() if t.id not in self.store.hidden_tools)
+        self._tools_pill.set_state(f"{shown} of {total} shown", _GREY)
+
+    def _tool_row(self, tool_id: str, title: str, subtitle: str, glyph: str) -> QWidget:
+        """One tool. The whole row dims while it is hidden, so which cards the grid
+        will actually draw reads off the column without checking six switches."""
+        host = QWidget()
+        row = QHBoxLayout(host)
+        row.setContentsMargins(6, 4, 6, 4)
         row.setSpacing(8)
         chip = IconChip(glyph, self.store.tint(tool_id), size=22)
         self._chips[tool_id] = chip
@@ -713,19 +766,39 @@ class SettingsView(QWidget):
         text.addWidget(s)
         row.addLayout(text, 1)
 
-        color_btn = QPushButton("●")
-        color_btn.setFixedWidth(34)
-        color_btn.setStyleSheet(f"color: {self.store.tint(tool_id)}; font-size: 16px;")
+        color_btn = QPushButton()
+        color_btn.setFixedSize(34, 16)
+        color_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         color_btn.setToolTip(f"Tint for {title}")
+        _style_swatch(color_btn, self.store.tint(tool_id))
         color_btn.clicked.connect(lambda: self._pick_color(tool_id, color_btn))
         row.addWidget(color_btn)
 
-        toggle = QCheckBox()
+        toggle = SwitchToggle(self.store.tint(tool_id))
         toggle.setChecked(tool_id not in self.store.hidden_tools)
         toggle.setToolTip(f"Show {title} in the grid")
-        toggle.toggled.connect(lambda on: self.store.set_tool(tool_id, on))
+        toggle.toggled.connect(lambda on, tid=tool_id: self._on_tool_toggled(tid, on))
         row.addWidget(toggle)
-        return row
+
+        self._tool_rows[tool_id] = host
+        self._style_tool_row(tool_id)
+        return host
+
+    def _on_tool_toggled(self, tool_id: str, on: bool) -> None:
+        self.store.set_tool(tool_id, on)
+        self._style_tool_row(tool_id)
+        self._refresh_tools_pill()
+
+    def _style_tool_row(self, tool_id: str) -> None:
+        visible = tool_id not in self.store.hidden_tools
+        host = self._tool_rows[tool_id]
+        host.setStyleSheet(
+            "background-color: rgba(128,128,128,0.07); border-radius: 7px;"
+            if visible else "background-color: transparent;"
+        )
+        # Qt has no view-wide opacity in a stylesheet; the chip carries the "off"
+        # rendering it already has for the panel's hidden tools.
+        self._chips[tool_id].set_active(visible)
 
     def _pick_color(self, tool_id: str, btn: QPushButton) -> None:
         initial = QColor(self.store.tint(tool_id))
@@ -733,35 +806,81 @@ class SettingsView(QWidget):
         if chosen.isValid():
             hex_color = chosen.name(QColor.NameFormat.HexRgb).upper()
             self.store.set_tint(hex_color, tool_id)
-            btn.setStyleSheet(f"color: {hex_color}; font-size: 16px;")
+            _style_swatch(btn, hex_color)
             chip = self._chips.get(tool_id)
             if chip:
-                chip.setStyleSheet(
-                    f"background-color: {hex_color}; border-radius: 6px; font-size: 11px;"
-                )
+                chip.set_tint(hex_color)
+
+    # MARK: terminal
+
+    def _terminal_card(self) -> QWidget:
+        card, body, pill = settings_card(glyphs.G_TERMINAL, "SPAWN TERMINAL", _BROWN)
+        # Chips rather than a segmented row: Linux knows seven terminals, and which
+        # of them are actually on this machine is the whole question — a dropdown
+        # hides six of the answers behind a click.
+        picker = ChoiceChips(
+            [(term.title, term.key) for term in review.TERMINALS],
+            columns=3, tint=_BROWN,
+        )
+        for term in review.TERMINALS:
+            chip = picker.chip(term.key)
+            if chip is not None and not term.is_installed:
+                chip.setToolTip("Not installed — spawns fall back to the first that is")
+                chip.setEnabled(False)
+        picker.set_value(self.store.terminal_choice)
+        picker.changed.connect(self._on_terminal_changed)
+        self._terminal_pill = pill
+        self._terminal_row = self._track(SettingRow(
+            "Window SPAWN AGENT opens", picker, stacked=True,
+            detail="A greyed chip is a terminal this machine does not have. The "
+                   "spawn resolves to the first installed one, and to xterm if none "
+                   "of them is.",
+        ))
+        body.addWidget(self._terminal_row)
+        self._refresh_terminal_ui()
+        return card
+
+    def _on_terminal_changed(self, key: object) -> None:
+        self.store.terminal_choice = str(key)
+        self._refresh_terminal_ui()
+
+    def _refresh_terminal_ui(self) -> None:
+        resolved = review.resolved(self.store.terminal)
+        self._terminal_pill.set_state(resolved.title, _GREY)
+        self._terminal_row.set_summary(
+            f"Runs the agent runner with the review prompt in {resolved.title}."
+        )
 
     # MARK: device allocator (MCP server + skill + rule)
 
-    def _allocator_section(self) -> QVBoxLayout:
-        col = QVBoxLayout()
-        col.setSpacing(6)
-        col.addWidget(_section_label("DEVICE ALLOCATOR (MCP)"))
+    def _allocator_card(self) -> QWidget:
+        card, body, self._alloc_pill = settings_card(
+            glyphs.G_DEVICES, "DEVICE ALLOCATOR", _CYAN
+        )
+        controls = QWidget()
+        col = QVBoxLayout(controls)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(7)
 
-        status_row = QHBoxLayout()
-        status_row.setSpacing(8)
-        self._alloc_status = QLabel("Checking…")
-        self._alloc_status.setStyleSheet("font-weight: 700; font-size: 11px;")
-        status_row.addWidget(self._alloc_status)
-        status_row.addStretch(1)
-        self._alloc_daemon = QLabel("⚡ daemon")
-        self._alloc_daemon.setStyleSheet("color: #34C759; font-size: 9px;")
-        self._alloc_daemon.setVisible(False)
-        status_row.addWidget(self._alloc_daemon)
-        col.addLayout(status_row)
+        marks = QHBoxLayout()
+        marks.setSpacing(4)
+        self._alloc_marks: dict[str, Pill] = {}
+        for key, label in (("mcpRegistered", "MCP"), ("skillInstalled", "skill"),
+                           ("ruleInstalled", "rule"), ("claudeMdInjected", "CLAUDE.md")):
+            pill = Pill("")
+            self._alloc_marks[key] = pill
+            marks.addWidget(pill)
+        self._alloc_daemon = Pill("")
+        marks.addWidget(self._alloc_daemon)
+        marks.addStretch(1)
+        col.addLayout(marks)
 
-        self._alloc_detail = QLabel("querying the installer…")
-        self._alloc_detail.setStyleSheet(muted(9, mono=True))
-        col.addWidget(self._alloc_detail)
+        self._alloc_drift = QLabel("")
+        self._alloc_drift.setWordWrap(True)
+        self._alloc_drift.setStyleSheet(
+            f"color: {_ORANGE}; font-size: 9px; font-family: monospace;"
+        )
+        col.addWidget(self._alloc_drift)
 
         btn_row = QHBoxLayout()
         btn_row.setSpacing(8)
@@ -782,104 +901,100 @@ class SettingsView(QWidget):
         btn_row.addStretch(1)
         col.addLayout(btn_row)
 
-        avail = deviceallocator.package_available()
-        hint = QLabel(
-            "Forces every local agent to reserve an emulator/simulator before using it "
-            "(MCP server + skill + always-on rule), so agents never collide on a shared "
-            "device. Reclaims a device when its agent dies or it sits idle for 1h."
-            if avail else
-            f"Package not found at {deviceallocator.package_dir()}. "
-            "Set DIPLOMAT_DEVICE_ALLOCATOR_DIR to point at it."
-        )
-        hint.setWordWrap(True)
-        hint.setStyleSheet(
-            f"color: {'palette(mid)' if avail else '#FF9500'}; font-size: 10px;"
-        )
-        col.addWidget(hint)
-        return col
+        self._alloc_row = self._track(SettingRow(
+            "Reserve a simulator before using it", controls, stacked=True,
+            detail="Installs an MCP server, a skill and an always-on rule. Reclaims a "
+                   "device when its agent dies or it sits idle for 1h.",
+        ))
+        if deviceallocator.package_available():
+            self._alloc_row.set_summary(
+                "So two agents never drive the same emulator at once."
+            )
+        else:
+            self._alloc_row.set_summary(
+                f"⚠ Package not found at {deviceallocator.package_dir()}. Set "
+                "DIPLOMAT_DEVICE_ALLOCATOR_DIR to point at it.", color=_ORANGE
+            )
+        body.addWidget(self._alloc_row)
+        return card
 
     def _refresh_allocator_ui(self) -> None:
         s = self.store.allocator_install
         if s is None:
-            self._alloc_status.setText("Checking…")
-            self._alloc_detail.setText("querying the installer…")
+            self._alloc_pill.set_state("checking…", _GREY)
+            for pill in self._alloc_marks.values():
+                pill.set_state("")
+            self._alloc_daemon.set_state("")
+            self._alloc_drift.setVisible(False)
             self._alloc_uninstall.setVisible(False)
-            self._alloc_daemon.setVisible(False)
             return
         installed = bool(s.get("installed"))
         outdated = bool(s.get("outdated"))
         version = s.get("version") or "?"
 
-        def mark(b: object) -> str:
-            return "✓" if b else "✗"
-
         # "Installed" alone would be a true statement about a machine still running
         # the copies some earlier checkout laid down, so the stale case says so and
-        # names what drifted. Amber, not green: it is working, but not from here.
-        self._alloc_status.setText(
-            f"Out of date (v{version})" if outdated
-            else f"Installed · v{version}" if installed
-            else "Not installed"
-        )
-        self._alloc_status.setStyleSheet(
-            "font-weight: 700; font-size: 11px;"
-            + (" color: #FF9500;" if outdated else "")
-        )
-        detail = (
-            f"MCP {mark(s.get('mcpRegistered'))} · skill {mark(s.get('skillInstalled'))}"
-            f" · rule {mark(s.get('ruleInstalled'))} · CLAUDE.md {mark(s.get('claudeMdInjected'))}"
-        )
+        # the marks name what drifted. Amber, not green: it is working, but not
+        # from here.
+        if outdated:
+            self._alloc_pill.set_state(f"out of date · v{version}", _ORANGE)
+        elif installed:
+            self._alloc_pill.set_state(f"v{version}", _GREEN)
+        else:
+            self._alloc_pill.set_state("not installed", _GREY)
+
+        for key, pill in self._alloc_marks.items():
+            pill.set_mark({"mcpRegistered": "MCP", "skillInstalled": "skill",
+                           "ruleInstalled": "rule",
+                           "claudeMdInjected": "CLAUDE.md"}[key], bool(s.get(key)))
+        if s.get("daemonRunning"):
+            self._alloc_daemon.set_state("⚡ daemon", _GREEN)
+        else:
+            self._alloc_daemon.set_state("")
+
         drift = s.get("drift") or []
+        self._alloc_drift.setVisible(bool(outdated and drift))
         if outdated and drift:
-            detail += f"  ⟳ stale: {', '.join(str(d) for d in drift)}"
-        self._alloc_detail.setText(detail)
+            self._alloc_drift.setText(
+                "stale: " + ", ".join(str(d) for d in drift)
+            )
         self._alloc_install.setText(
             "Update" if outdated else "Reinstall" if installed else "Install"
         )
         self._alloc_uninstall.setVisible(installed)
-        self._alloc_daemon.setVisible(bool(s.get("daemonRunning")))
 
     # MARK: mesh (LAN P2P duty coordination)
 
-    def _mesh_section(self) -> QVBoxLayout:
-        col = QVBoxLayout()
-        col.setSpacing(6)
-        col.addWidget(_section_label("MESH (LAN P2P)"))
-
-        toggle = QCheckBox("Coordinate duties with other machines on this LAN")
-        toggle.setChecked(self.store.mesh_enabled)
+    def _mesh_card(self) -> QWidget:
+        card, body, self._mesh_pill = settings_card(glyphs.G_MESH, "MESH (LAN P2P)", _MINT)
+        self._sw_mesh = SwitchToggle(_MINT)
+        self._sw_mesh.setChecked(self.store.mesh_enabled)
         # Dead without the add-on: the mesh is SzpontNet, and there is no node for
         # this switch to start. Shown-but-disabled rather than hidden, so the
-        # feature is discoverable and the status line below can say what is missing.
-        toggle.setEnabled(szpont.AVAILABLE)
-        toggle.toggled.connect(self._on_mesh_toggled)
-        col.addWidget(toggle)
-
-        self._mesh_status = QLabel("")
-        self._mesh_status.setStyleSheet("font-weight: 700; font-size: 11px;")
-        col.addWidget(self._mesh_status)
-
-        hint = QLabel(
-            "Runs a small peer-to-peer node that discovers the other Diplomat "
-            "machines on your LAN (UDP beacons) and routes duty work — reviews, "
-            "conflict fixes, the full E2E audit — to whichever node fits the "
-            "placement policy (surplus-first by default, token- and platform-aware). "
-            "Configure the whole mesh from the ⬡ Mesh screen (the ⬡ button in the "
-            "panel header). "
-            "Off by default; no node opens on the network until you enable it here."
-            if szpont.AVAILABLE else
-            # The ⬡ screen and its header button are not built without the add-on,
-            # so pointing at them here would send the reader looking for a control
-            # that isn't there.
-            "Coordinating duties across machines is an add-on: it needs the "
-            f"SzpontNet library, which is not installed (looked for "
-            f"{szpont.package_dir()}). Everything else in Diplomat runs on this "
-            "machine alone and is unaffected."
-        )
-        hint.setWordWrap(True)
-        hint.setStyleSheet(muted(10))
-        col.addWidget(hint)
-        return col
+        # feature is discoverable and the pill can say what is missing.
+        self._sw_mesh.setEnabled(szpont.AVAILABLE)
+        self._sw_mesh.toggled.connect(self._on_mesh_toggled)
+        self._mesh_row = self._track(SettingRow(
+            "Coordinate duties with this LAN", self._sw_mesh,
+            summary="Routes reviews, conflict fixes and audits to whichever machine "
+                    "fits the policy."
+                    if szpont.AVAILABLE else
+                    # The ⬡ screen and its header button are not built without the
+                    # add-on, so pointing at them would send the reader looking for a
+                    # control that isn't there.
+                    "Coordinating duties across machines is an add-on: it needs the "
+                    f"SzpontNet library, which is not installed (looked for "
+                    f"{szpont.package_dir()}). Everything else in Diplomat runs on "
+                    "this machine alone and is unaffected.",
+            detail="Runs a small peer-to-peer node that discovers the other Diplomat "
+                   "machines on your LAN (UDP beacons); placement is surplus-first by "
+                   "default, token- and platform-aware. Configure the whole mesh from "
+                   "the ⬡ Mesh screen (the ⬡ button in the panel header). Off by "
+                   "default; no node opens on the network until you enable it here."
+                   if szpont.AVAILABLE else None,
+        ))
+        body.addWidget(self._mesh_row)
+        return card
 
     def _on_mesh_toggled(self, on: bool) -> None:
         self.store.mesh_enabled = on
@@ -890,19 +1005,13 @@ class SettingsView(QWidget):
         self._refresh_mesh_ui()
 
     def _refresh_mesh_ui(self) -> None:
-        # Before ``mesh_enabled``, which is also False here — the disabled toggle
-        # above needs a reason beside it, and "Off" reads as a choice the user made.
+        # Before ``mesh_enabled``, which is also False here — the disabled switch
+        # needs a reason beside it, and "off" reads as a choice the user made.
         if not szpont.AVAILABLE:
-            self._mesh_status.setText("SzpontNet not installed")
-            self._mesh_status.setStyleSheet(
-                "font-weight: 700; font-size: 11px; color: palette(mid);"
-            )
+            self._mesh_pill.set_state("add-on missing", _GREY)
             return
         if not self.store.mesh_enabled:
-            self._mesh_status.setText("Off")
-            self._mesh_status.setStyleSheet(
-                "font-weight: 700; font-size: 11px; color: palette(mid);"
-            )
+            self._mesh_pill.set_state("off", _GREY)
             return
 
         from szpontnet import statefile
@@ -910,131 +1019,79 @@ class SettingsView(QWidget):
         state = self.store.mesh_state
         if statefile.node_running(state):
             peers = len((state or {}).get("peers", []))
-            plural = "" if peers == 1 else "s"
-            self._mesh_status.setText(f"Node running · {peers} peer{plural}")
-            self._mesh_status.setStyleSheet(
-                "font-weight: 700; font-size: 11px; color: #34C759;"
+            self._mesh_pill.set_state(
+                f"{peers} peer" + ("" if peers == 1 else "s"), _GREEN
             )
         else:
-            self._mesh_status.setText("Starting node…" if state is None
-                                      else "Node not running")
-            self._mesh_status.setStyleSheet(
-                "font-weight: 700; font-size: 11px; color: #FF9500;"
+            self._mesh_pill.set_state(
+                "starting…" if state is None else "node not running", _ORANGE
             )
 
     # MARK: applet update
 
-    def _update_section(self) -> QVBoxLayout:
-        col = QVBoxLayout()
-        col.setSpacing(6)
-        col.addWidget(_section_label("UPDATE"))
-
-        self._update_status = QLabel("Checking…")
-        self._update_status.setStyleSheet("font-weight: 700; font-size: 11px;")
-        col.addWidget(self._update_status)
-
-        self._update_detail = QLabel("comparing with origin…")
-        self._update_detail.setWordWrap(True)
-        self._update_detail.setStyleSheet(
-            muted(9, mono=True)
-        )
-        col.addWidget(self._update_detail)
-
-        btn_row = QHBoxLayout()
-        btn_row.setSpacing(8)
+    def _update_card(self) -> QWidget:
+        card, body, self._update_pill = settings_card(glyphs.G_UPDATE, "UPDATE", _BLUE)
+        btn_row = QWidget()
+        row = QHBoxLayout(btn_row)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
         self._update_btn = QPushButton("Update")
         self._update_btn.setStyleSheet("font-weight: 700;")
         self._update_btn.setEnabled(False)
         self._update_btn.clicked.connect(self.store.update_applet_async)
-        btn_row.addWidget(self._update_btn)
+        row.addWidget(self._update_btn)
         recheck = QPushButton("⟲")
         recheck.setFixedWidth(34)
         recheck.setToolTip("Re-check for updates")
         recheck.clicked.connect(self.store.refresh_update_status_async)
-        btn_row.addWidget(recheck)
-        btn_row.addStretch(1)
-        col.addLayout(btn_row)
+        row.addWidget(recheck)
+        row.addStretch(1)
 
-        hint = QLabel(
-            "Pulls the latest applet from GitHub, rebuilds the diplomat-core "
-            "prompt engine, and relaunches the tray app in place."
-        )
-        hint.setWordWrap(True)
-        hint.setStyleSheet(muted(10))
-        col.addWidget(hint)
-        return col
+        self._update_row = self._track(SettingRow(
+            "This applet", btn_row, stacked=True,
+            summary="comparing with origin…",
+            detail="Pulls the latest applet from GitHub, rebuilds the diplomat-core "
+                   "prompt engine, and relaunches the tray app in place.",
+        ))
+        body.addWidget(self._update_row)
+        return card
 
     def _refresh_update_ui(self) -> None:
         s = self.store.update_state or {"phase": "checking"}
         phase = s.get("phase")
 
-        def status(text: str, color: str | None = None) -> None:
-            suffix = f" color: {color};" if color else ""
-            self._update_status.setText(text)
-            self._update_status.setStyleSheet(
-                f"font-weight: 700; font-size: 11px;{suffix}"
-            )
-
         if phase == "checking":
-            status("Checking…")
-            self._update_detail.setText("comparing with origin…")
+            self._update_pill.set_state("checking…", _GREY)
+            self._update_row.set_summary("comparing with origin…")
             self._update_btn.setEnabled(False)
         elif phase == "updating":
-            status("Updating…", "#FF9500")
-            self._update_detail.setText(s.get("step") or "")
+            self._update_pill.set_state("updating…", _ORANGE)
+            self._update_row.set_summary(s.get("step") or "")
             self._update_btn.setEnabled(False)
         elif phase == "restarting":
-            status("Restarting…", "#34C759")
-            self._update_detail.setText(
+            self._update_pill.set_state("restarting…", _GREEN)
+            self._update_row.set_summary(
                 f"relaunched at {s.get('commit')} — this instance is handing over"
             )
             self._update_btn.setEnabled(False)
         elif phase == "error":
-            status("Update failed", "#FF3B30")
-            self._update_detail.setText(s.get("error") or "unknown error")
+            self._update_pill.set_state("update failed", _RED)
+            self._update_row.set_summary(s.get("error") or "unknown error", color=_RED)
             self._update_btn.setEnabled(True)
         elif s.get("error"):
-            status("Check failed", "#FF9500")
-            self._update_detail.setText(s["error"])
+            self._update_pill.set_state("check failed", _ORANGE)
+            self._update_row.set_summary(s["error"], color=_ORANGE)
             self._update_btn.setEnabled(True)
         else:
             behind = s.get("behind") or 0
             ahead = s.get("ahead") or 0
             if behind:
-                plural = "" if behind == 1 else "s"
-                status(f"Update available · {behind} commit{plural} behind", "#0A84FF")
+                self._update_pill.set_state(f"{behind} behind", _BLUE)
             else:
-                status("Up to date")
+                self._update_pill.set_state("up to date", _GREEN)
             detail = f"{s.get('commit')} on {s.get('branch')} · upstream {s.get('upstream')}"
             if ahead:
                 # A diverged checkout still updates — via a merge, not a discard.
-                detail += f" · {ahead} local ahead (will merge)"
-            self._update_detail.setText(detail)
+                detail += f" · {ahead} local ahead" + (" (will merge)" if behind else "")
+            self._update_row.set_summary(detail)
             self._update_btn.setEnabled(True)
-
-    # MARK: terminal
-
-    def _terminal_section(self) -> QVBoxLayout:
-        col = QVBoxLayout()
-        col.setSpacing(6)
-        col.addWidget(_section_label("SPAWN TERMINAL"))
-        combo = QComboBox()
-        for term in review.TERMINALS:
-            suffix = "" if term.is_installed else "  (not installed)"
-            combo.addItem(term.title + suffix, term.key)
-        idx = combo.findData(self.store.terminal_choice)
-        if idx >= 0:
-            combo.setCurrentIndex(idx)
-        combo.currentIndexChanged.connect(
-            lambda: setattr(self.store, "terminal_choice", combo.currentData())
-        )
-        col.addWidget(combo)
-
-        hint = QLabel(
-            "SPAWN AGENT opens a new terminal window running the agent runner with "
-            "the review prompt."
-        )
-        hint.setWordWrap(True)
-        hint.setStyleSheet(muted(10))
-        col.addWidget(hint)
-        return col
