@@ -268,8 +268,9 @@ def test_the_quota_axis_spans_the_lookback_not_just_the_readings(store):
     assert max(columns) >= 400 * 0.98, "the newest reading is not at the right edge"
 
 
-def _owed_chart(reviews: int, conflicts: int, width: int = 400, height: int = 160):
-    """A rendered owed-work chart over a fortnight of that much work owed throughout."""
+def _owed_chart(reviews: int, conflicts: int):
+    """The owed-work chart rendered 400x160, over a fortnight owing that much
+    throughout."""
     from PySide6.QtCore import Qt
     from PySide6.QtGui import QImage
 
@@ -283,33 +284,33 @@ def _owed_chart(reviews: int, conflicts: int, width: int = 400, height: int = 16
               for i in range(56)),
         14.0,
     )
-    chart.resize(width, height)
+    chart.resize(400, 160)
     image = QImage(chart.size(), QImage.Format.Format_ARGB32)
     image.fill(Qt.GlobalColor.transparent)
     chart.render(image)
     return image
 
 
-def _pending_fill_rows(image, width: int = 400,
-                       height: int = 160) -> tuple[list[int], list[int]]:
+def _pending_fill_rows(image) -> tuple[list[int], list[int]]:
     """The y rows each owed-work series painted, as ``(reviews, fixes)``.
 
     Picked out by hue: reviews are pink (``#FF2D78``, red well over blue) and fixes
-    blue (``#32ADE6``, blue well over red), while the day gridlines are white, the
-    axis labels grey, and neither leans either way. Scanned down the middle of the
-    chart, clear of the ``peak`` label in the top-left corner.
+    blue (``#32ADE6``, blue well over red), while the card's background is near-black
+    and the gridlines white, neither of which leans either way. Scanned down the
+    middle of the chart, clear of the ``peak`` label in the top-left corner.
     """
     reviews, fixes = [], []
-    for y in range(height):
-        colors = [image.pixelColor(x, y) for x in range(width // 3, 2 * width // 3)]
-        if any(c.alpha() > 0 and c.red() > c.blue() + 50 for c in colors):
+    for y in range(image.height()):
+        colors = [image.pixelColor(x, y)
+                  for x in range(image.width() // 3, image.width() * 2 // 3)]
+        if any(c.red() > c.blue() + 50 for c in colors):
             reviews.append(y)
-        if any(c.alpha() > 0 and c.blue() > c.red() + 50 for c in colors):
+        if any(c.blue() > c.red() + 50 for c in colors):
             fixes.append(y)
     return reviews, fixes
 
 
-def test_owed_work_stacks_rather_than_overlaying(store):
+def test_owed_work_stacks_rather_than_overlaying(app):
     """Both kinds of work queue for the same executors, so the bands cumulate: the
     fixes ride on top of the reviews and the top edge is the whole backlog. Drawn
     from the axis up instead, the two would cover the same pixels and a moment owing
@@ -336,18 +337,18 @@ def test_owed_work_stacks_rather_than_overlaying(store):
     )
 
 
-def test_a_range_that_never_owed_anything_claims_no_peak(store):
+def test_a_range_that_never_owed_anything_claims_no_peak(app):
     """The count axis is floored at one so an empty range can still be scaled and
     drawn. The peak label reports the data, not that floor — "peak 1 owed" over a
     fortnight in which the agents kept up is a backlog that never existed."""
     def ink(image) -> int:
         """Label pixels in the corner the peak is written in — pale and grey. The
-        stack's own top edge runs through the same corner, so brightness is what
-        separates them: the card's near-black background and the band's fill are
+        stack's own top edge runs through the same corner, so brightness and hue are
+        what separate them: the card's near-black background and the band's fill are
         both dark, and its stroke is saturated blue."""
-        return sum(1
-                   for x in range(4, 100) for y in range(0, 22)
-                   for c in [image.pixelColor(x, y)]
+        pixels = (image.pixelColor(x, y)
+                  for x in range(4, 100) for y in range(0, 22))
+        return sum(1 for c in pixels
                    if c.red() > 60 and abs(c.red() - c.blue()) < 40)
 
     assert ink(_owed_chart(reviews=3, conflicts=1)) > 0, (
