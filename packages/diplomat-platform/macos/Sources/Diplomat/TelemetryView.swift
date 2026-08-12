@@ -460,10 +460,9 @@ private struct PendingChart: View {
                                     (points.map(\.conflicts), conflictTint)] {
                 let stacked = zip(base, values).map { $0 + $1 }
                 if values.contains(where: { $0 > 0 }) {
-                    // The band between the running total below it and its own top,
-                    // walked out along the top and back along the floor — not a shape
-                    // from the axis up, which would bury the band under it at any
-                    // opacity.
+                    // The band between the running total below it and its own top —
+                    // not a shape from the axis up, which would bury the band under it
+                    // at any opacity.
                     var fill = Path()
                     fill.move(to: CGPoint(x: xOf(0), y: yOf(base[0])))
                     for (i, value) in stacked.enumerated() {

@@ -271,9 +271,9 @@ class PendingChart(QWidget):
             stacked = [b + v for b, v in zip(base, series)]
             if any(series):
                 color = _tint(metric)
-                # The band between the running total below it and its own top, walked
-                # out along the top and back along the floor — not a shape from the
-                # axis up, which would bury the band under it at any alpha.
+                # The band between the running total below it and its own top — not a
+                # shape from the axis up, which would bury the band under it at any
+                # alpha.
                 fill = QPainterPath()
                 fill.moveTo(x_of(0), y_of(base[0]))
                 for i, value in enumerate(stacked):
