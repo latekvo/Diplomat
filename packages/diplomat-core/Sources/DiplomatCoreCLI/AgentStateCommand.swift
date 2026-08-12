@@ -109,6 +109,15 @@ enum AgentStateCommand {
                     out[pr] = tty as? String ?? ""
                 }
                 return out
+            },
+            sessions: decodeObs(d["sessions"]) { v in
+                guard let m = v as? [String: Any] else { return nil }
+                var out: [String: AgentState.SessionState] = [:]
+                for (runID, s) in m {
+                    guard let sd = s as? [String: Any] else { continue }
+                    out[runID] = AgentState.SessionState(busy: sd["busy"] as? Bool ?? false)
+                }
+                return out
             })
     }
 

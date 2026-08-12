@@ -1,4 +1,4 @@
-"""Pure predicates over a Claude CLI pane's visible buffer — the Linux port of
+"""Pure predicates over an agent pane's visible buffer — the Linux port of
 DiplomatCore's ApiErrorMatch.swift and AgentActivity.swift (plus the backoff
 constants that live in Store.swift on macOS).
 
@@ -7,6 +7,20 @@ are read off the CLI's own status bar: whether the session is *stalled on an API
 error* (and how long to wait before nudging it again), and whether it is *working
 at all* — a session that has finished its turn sits at its prompt indefinitely,
 which is neither an error nor a reason to keep holding a slot of the task cap.
+
+The two questions have different reach across runners, and the difference is
+deliberate. **Busy** is answered for all three, because getting it wrong empties
+the task cap under a machine that is full. **Stalled on an API error** is answered
+only for Claude Code, whose error banners these patterns were read off. A foreign
+runner surfaces a failed turn as the provider's own JSON (OpenCode:
+``Unauthorized: {"error":{…,"type":"api_error",…}}``) — one shape per provider,
+and none of them observed here beyond an auth rejection, which is precisely the
+kind of permanent failure the quota banners below are excluded for. So a foreign
+agent that hits a transient error is not nudged. It is not stranded either, and
+its own session is what says so rather than this: an errored turn is stamped
+completed like any other (OpenCode) or carries a terminal ``finish_reason``
+(Hermes), so it reads as idle, gives its bay back, and the monitor that owed the
+work dispatches it again on a later tick.
 
 Kept deterministic and side-effect-free so it's unit-testable in isolation: the
 terminal reads/writes live in :mod:`tmuxwatch`, and the scan/dispatch/persistence
@@ -107,9 +121,14 @@ def is_confirmed_stall(previous_tail: str | None, current_tail: str) -> bool:
     return looks_like_api_error(current_tail) and previous_tail == current_tail
 
 
-# The interrupt hint the CLI renders only while a turn is actually in flight —
-# verbatim from AgentActivity.swift, so both front-ends read the same marker.
-BUSY_MARKER = "esc to interrupt"
+# The interrupt hint a CLI renders only while a turn is actually in flight — one
+# spelling per runner, verbatim from AgentActivity.swift so both front-ends read the
+# same markers. Claude Code writes "esc to interrupt", OpenCode "esc interrupt", and
+# Hermes "Ctrl+C to interrupt…". No string here contains another, so a pane is read
+# against all of them: the applet cannot ask a pane which CLI drew it, and a runner
+# missing from this list is one whose agents read as idle the whole time they work —
+# their bays go back to the task cap and the monitors dispatch over the top of them.
+BUSY_MARKERS = ("esc to interrupt", "esc interrupt", "ctrl+c to interrupt")
 
 # How many non-empty visible lines from the bottom carry the LIVE status bar. Far
 # shorter than SCANNED_TAIL_LINES: an error banner sits well above the prompt box and
@@ -128,10 +147,11 @@ def looks_busy(visible: str) -> bool:
     An agent is spawned into an INTERACTIVE session (``review.shell_command``), so
     finishing its work is not an exit: the process lives on at the prompt until a
     human closes the window. Absence of the hint is the only thing that separates
-    those two states from the outside — ``ps`` shows the same live ``claude`` for
-    both, and the completion sentinel only ever fires on exit.
+    those two states from the outside — ``ps`` shows the same live agent for both,
+    and the completion sentinel only ever fires on exit.
     """
-    return BUSY_MARKER in last_lines(visible, BUSY_TAIL_LINES).lower()
+    tail = last_lines(visible, BUSY_TAIL_LINES).lower()
+    return any(marker in tail for marker in BUSY_MARKERS)
 
 
 def next_backoff(prev_interval: float | None) -> float:

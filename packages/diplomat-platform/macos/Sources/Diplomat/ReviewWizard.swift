@@ -84,6 +84,14 @@ enum AgentSpawner {
         let windowID: String
         let sessionID: String
         let tty: String
+        /// Which agent CLI this run was spawned as (`AgentRunner.rawValue`), so what is
+        /// asked about it afterwards is the runner it actually ran, not the one selected
+        /// by then.
+        let runner: String
+        /// Where this run's OpenCode server answers, or 0 for a run that has none —
+        /// every Claude Code and Hermes run, and any OpenCode run no port could be
+        /// reserved for.
+        let port: Int
     }
 
     /// Stage the prompt, open the terminal, run claude. The AppleScript reports the
@@ -101,10 +109,21 @@ enum AgentSpawner {
         let term = resolved(preferred)
         let file = try writePrompt(prompt)
         let donePath = doneFilePath()
-        let cmd = shellCommand(promptFile: file, donePath: donePath)
+        // Resolved once and carried on the result rather than re-read later: the setting
+        // is what the NEXT spawn will use, so a run started under one runner and asked
+        // about after the operator switched would be interrogated through the wrong store.
+        let runner = AppConfig.agentRunner
+        // An OpenCode run gets a port reserved for its own server, which is what lets the
+        // applet ask that agent what it is doing. A port that cannot be had is not a
+        // failure to spawn: the run goes ahead without one and is read off its screen,
+        // exactly as a Claude Code run is.
+        let port = runner == .opencode ? (OpenCodeProbe.freePort() ?? 0) : 0
+        let cmd = shellCommand(promptFile: file, donePath: donePath, runner: runner,
+                               port: port)
         let (wid, sid, tty) = try runSpawn(command: cmd, terminal: term, restoreFocusTo: restoreBID)
         return SpawnResult(promptFile: file, donePath: donePath, terminal: term,
-                           windowID: wid, sessionID: sid, tty: tty)
+                           windowID: wid, sessionID: sid, tty: tty,
+                           runner: runner.rawValue, port: port)
     }
 
     /// Open a new terminal window running `command`, returning the captured
@@ -117,6 +136,15 @@ enum AgentSpawner {
         let captured = try runOsascriptCapturing(
             appleScript(for: term, shellCommand: command, restoreFocusTo: restoreBID))
         return parseCapture(captured)
+    }
+
+    /// Open a terminal window on one command a *human* is meant to drive — the runner's
+    /// provider-login wizard. Unlike a spawn there is no run to register and no handle
+    /// worth keeping, so the captured ids are dropped and a failure to open is not
+    /// raised into the Settings sheet: the visible outcome either way is a window that
+    /// did or did not appear.
+    static func openTerminal(command: String, terminal preferred: SpawnTerminal) {
+        _ = try? runSpawn(command: command, terminal: resolved(preferred))
     }
 
     static func writePrompt(_ prompt: String) throws -> URL {
@@ -139,12 +167,27 @@ enum AgentSpawner {
         return dir.appendingPathComponent("diplomat-done-\(UUID().uuidString).txt").path
     }
 
-    /// `cd '<repo>' 2>/dev/null; claude "$(cat '<promptfile>')"; printf %s $? > '<done>'`
+    /// `cd '<repo>' 2>/dev/null; <agent>; printf %s $? > '<done>'`
     ///
-    /// The trailing `printf … > done` writes a sentinel the moment `claude` returns,
-    /// so the applet can mark the session complete even while its window stays open.
-    static func shellCommand(promptFile: URL, donePath: String) -> String {
-        "cd \(shq(repoPath)) 2>/dev/null; claude \"$(cat \(shq(promptFile.path)))\"; printf %s $? > \(shq(donePath))"
+    /// `<agent>` is `AgentRunner.agentCommand` — `claude "$(cat '<promptfile>')"` or the
+    /// OpenCode spelling of the same thing. Everything around it is identical for both,
+    /// because everything around it is what a run is *identified* by.
+    ///
+    /// The trailing `printf … > done` writes a sentinel the moment the agent returns, so
+    /// the applet can mark the session complete even while its window stays open.
+    ///
+    /// `port` is where an OpenCode run's own server answers, so `OpenCodeAPI` can ask the
+    /// agent whether it is working rather than inferring it from the window. The other two
+    /// runners ignore it — Hermes answers the same question from its own session store.
+    ///
+    /// `runner` defaults to the configured one; a spawn passes the one it already resolved
+    /// so the command and the port agree even if the setting changes mid-spawn.
+    static func shellCommand(promptFile: URL, donePath: String,
+                             runner: AgentRunner = AppConfig.agentRunner,
+                             port: Int = 0) -> String {
+        let agent = runner.agentCommand(promptFile: promptFile.path,
+                                        model: AppConfig.agentModel, port: port)
+        return "cd \(shq(repoPath)) 2>/dev/null; \(agent); printf %s $? > \(shq(donePath))"
     }
 
     /// Wrap the shell command in an "open a new window, settle, run this, and report
@@ -303,7 +346,7 @@ struct SpawnAgentButton: View {
         }
         .buttonStyle(.plain)
         .disabled(!isValid)
-        .help("Open a new \(terminalTitle) window running claude with this prompt.")
+        .help("Open a new \(terminalTitle) window running the agent runner with this prompt.")
     }
 }
 

@@ -174,9 +174,9 @@ struct TelemetryView: View {
                     + "\(Telemetry.percent(s.perTaskWeekMean)) of the week"
             }
             if d.count == 0 && s.perTaskTokensMean > 0 {
-                return "tokens per task. The share of the limit needs two quota "
-                    + "readings from the OAuth usage probe — is Claude Code logged "
-                    + "in on this machine?"
+                return "tokens per task. The share of the limit is Claude Code's "
+                    + "own — it counts only tasks that ran on it, and needs two "
+                    + "quota readings from the OAuth usage probe."
             }
             return "No finished auto-task in this range yet."
         }()

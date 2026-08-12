@@ -12,6 +12,12 @@ import Foundation
 ///     <run-id>/prompt.txt  what the agent was asked (also its transcript's first message)
 ///     <run-id>/pid         the agent's real pid, written by the agent's own shell
 ///     <run-id>/done        its exit code, written when it returns
+///     <run-id>/runner      which agent CLI was spawned into it
+///     <run-id>/port        the loopback port its OpenCode server answers on
+///     <run-id>/session     which of that runner's sessions turned out to be this run's
+///
+/// The last three are the Linux front-end's; macOS carries the same three facts on the
+/// `TrackedProcess` row it already keeps per run.
 ///
 /// The per-run directory is what makes identity exact. The shell that runs the agent
 /// writes its own `$$` into `pid` and then `exec`s the agent, so the pid in that file IS

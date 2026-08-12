@@ -36,8 +36,8 @@ struct TrackedProcess: Identifiable, Codable, Equatable {
         /// The origination lease this run holds while its agent lives.
         var workKey: String
         /// Whether the mesh placed this run back on THIS machine — the best node it
-        /// could find was the one that asked. Such a run is a `claude` process here
-        /// like any other, so it spends this device's automatic-task budget; only the
+        /// could find was the one that asked. Such a run is an agent process here like
+        /// any other, so it spends this device's automatic-task budget; only the
         /// terminal was opened by the node rather than by the applet.
         var onThisMachine: Bool
 
@@ -96,11 +96,35 @@ struct TrackedProcess: Identifiable, Codable, Equatable {
     /// (which only means the local `claude` process exited). Persisted as a cache;
     /// the next refresh corrects it. Always false for sessions with no PR.
     var merged: Bool
-    /// Recomputed by the poller from the session's terminal buffer: true when the agent
-    /// has finished its turn and is idling at the prompt (no "esc to interrupt" hint on
-    /// the live status bar) rather than actively working. Meaningful only while `!done`;
-    /// persisted only as a cache, the next poll corrects it.
+    /// Recomputed by the poller: true when the agent has finished its turn and is idling
+    /// at the prompt rather than actively working — from its own session where it serves
+    /// one (`runner`), and otherwise from whether the CLI's interrupt hint is on the live
+    /// status bar. Meaningful only while `!done`; persisted only as a cache, the next
+    /// poll corrects it.
     var awaitingInput: Bool
+    /// Which agent CLI this run was spawned as (`AgentRunner.rawValue`), or "" for a run
+    /// started before the applet recorded it. Written at spawn rather than re-read from
+    /// the setting later, because the setting is what the NEXT spawn will use: a run
+    /// started under one runner and asked about after the operator switched would
+    /// otherwise be interrogated through the wrong store.
+    ///
+    /// "" is not Claude Code, it is "unknown" — and both are read off the screen, the
+    /// only evidence such a run ever had.
+    var runner: String
+    /// Where this run's OpenCode server answers, or 0 for a run that has none — every
+    /// Claude Code and Hermes run, and any OpenCode run no port could be reserved for.
+    var port: Int
+    /// Which of its runner's sessions turned out to be this run's, or "" before one has
+    /// been matched. Found once, by the prompt, and kept: the search reads a session's
+    /// opening message, while asking a matched one what it is doing reads a single
+    /// message. What makes `awaitingInput` an answer from the agent rather than a
+    /// reading of its window.
+    var agentSessionID: String
+    /// The staged prompt this run was launched on. Kept because it is what the match
+    /// above compares against — both foreign runners keep one session store for the
+    /// whole machine, so nothing narrows it to this run and the prompt is the only exact
+    /// key.
+    var promptFile: String
 
     /// `source` defaults to a panel spawn: the only callers that leave it out are the
     /// fixture rows (the headless render, the tracking self-test), and a fixture stands
@@ -112,7 +136,9 @@ struct TrackedProcess: Identifiable, Codable, Equatable {
          prURL: String?, mesh: MeshRun? = nil,
          source: String = AgentDispatchGate.Source.panel.rawValue,
          createdAt: Date = Date(),
-         done: Bool = false, merged: Bool = false, awaitingInput: Bool = false) {
+         done: Bool = false, merged: Bool = false, awaitingInput: Bool = false,
+         runner: String = "", port: Int = 0, agentSessionID: String = "",
+         promptFile: String = "") {
         self.id = id
         self.kind = kind
         self.label = label
@@ -128,6 +154,10 @@ struct TrackedProcess: Identifiable, Codable, Equatable {
         self.done = done
         self.merged = merged
         self.awaitingInput = awaitingInput
+        self.runner = runner
+        self.port = port
+        self.agentSessionID = agentSessionID
+        self.promptFile = promptFile
     }
 
     /// Tolerant decode: the recomputed cache flags (`done`, `merged`) may be absent
@@ -157,6 +187,12 @@ struct TrackedProcess: Identifiable, Codable, Equatable {
         done = try c.decodeIfPresent(Bool.self, forKey: .done) ?? false
         merged = try c.decodeIfPresent(Bool.self, forKey: .merged) ?? false
         awaitingInput = try c.decodeIfPresent(Bool.self, forKey: .awaitingInput) ?? false
+        // A row persisted before runs recorded their runner has none, which is the same
+        // state as a Claude Code run: nothing to ask, so its window is read instead.
+        runner = try c.decodeIfPresent(String.self, forKey: .runner) ?? ""
+        port = try c.decodeIfPresent(Int.self, forKey: .port) ?? 0
+        agentSessionID = try c.decodeIfPresent(String.self, forKey: .agentSessionID) ?? ""
+        promptFile = try c.decodeIfPresent(String.self, forKey: .promptFile) ?? ""
     }
 
     /// This row stands for work running on a mesh node, not a session on this
@@ -282,9 +318,11 @@ enum ProcessMonitor {
     static func sweep(_ procs: [TrackedProcess], now: Date = Date(),
                       openWindows: ((SpawnTerminal) -> Set<String>?)? = nil,
                       sessionTails: [String: String]? = nil,
-                      ttyElapsed: [String: TimeInterval]? = nil) -> Sweep {
+                      ttyElapsed: [String: TimeInterval]? = nil,
+                      agentSessions: (([TrackedProcess]) -> [UUID: AgentSessionProbe.AgentSession])? = nil) -> Sweep {
         let local = procs.filter { !$0.isMesh }
         guard !local.isEmpty else { return Sweep(refreshed: procs, closedIDs: []) }
+        let answers = (agentSessions ?? { AgentSessionProbe.states(for: $0) })(local)
         let resolve = openWindows ?? { openWindowIDs(term: $0) }
         let fm = FileManager.default
         // One window-id query per distinct terminal app (nil = couldn't determine).
@@ -343,17 +381,17 @@ enum ProcessMonitor {
             }
             if windowClosed { closed.insert(p.id) }
             p.done = sentinel || windowClosed
-            // A still-live session is "awaiting input" when its terminal shows the CLI back
-            // at the prompt (no interrupt hint). Only assert it when we actually captured
-            // that session's buffer — absent evidence, leave it reading as running.
-            if let tails = sessionTails {
-                if p.done {
-                    p.awaitingInput = false
-                } else if let tail = tails[p.tty] {
-                    p.awaitingInput = !AgentActivity.looksBusy(tail)
-                } else {
-                    p.awaitingInput = false
-                }
+            // A still-live session is "awaiting input" when its own agent says the turn is
+            // over — a completion stamp, positive evidence — and failing that when its
+            // terminal shows the CLI back at the prompt, which is only an inference from
+            // whether someone else's interrupt hint was drawn when we looked. Only assert
+            // it on evidence we actually have: absent both, leave it reading as running.
+            if let answer = answers[p.id] {
+                p.agentSessionID = answer.sessionID
+                p.awaitingInput = p.done ? false : !answer.state.busy
+            } else if let tails = sessionTails {
+                p.awaitingInput = p.done
+                    ? false : !(tails[p.tty].map(AgentActivity.looksBusy) ?? true)
             }
             return p
         }
@@ -479,7 +517,7 @@ enum ProcessMonitor {
         for line in dump.split(separator: "\n") {
             // Only a real agent process carries the phrase: the spawning shell's
             // argv holds the unexpanded `$(cat …)`, not the prompt text.
-            guard line.contains("claude") else { continue }
+            guard AgentRunner.isAgentLine(String(line)) else { continue }
             let s = String(line)
             let tty = canonicalTTY(String(s.trimmingCharacters(in: .whitespaces)
                                            .prefix { !$0.isWhitespace }))

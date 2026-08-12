@@ -91,6 +91,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if env["DIPLOMAT_QUEUE_TEST"] == "1" {
             Task { @MainActor in let ok = await QueueTest.run(); exit(ok ? 0 : 1) }
         }
+        // Self-test of what the sweep decides about a live session — working, or back at
+        // its prompt. Both probes are injected, so it opens no window and dials no port.
+        if env["DIPLOMAT_SWEEP_TEST"] == "1" {
+            exit(SweepTest.run() ? 0 : 1)
+        }
         // Device-allocator self-test: exercise the exact paths the live panel uses —
         // resolve node, shell the installer's --check, and Codable-decode the daemon's
         // real state.json — and print them. Works headless (e.g. with a locked screen).

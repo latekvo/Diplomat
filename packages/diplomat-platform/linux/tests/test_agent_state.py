@@ -51,7 +51,7 @@ def proc(elapsed: float = 60.0, tty: str = "pts/3", is_agent: bool = True):
 
 
 def ev(*, processes=None, sentinels=None, tails=None, claims=None,
-       merged=None, live_agents=None) -> A.Evidence:
+       merged=None, live_agents=None, sessions=None) -> A.Evidence:
     """An evidence bundle where anything not named is PRESENT-and-empty.
 
     Empty, not unavailable: these cases are about a machine that was successfully
@@ -70,6 +70,7 @@ def ev(*, processes=None, sentinels=None, tails=None, claims=None,
         claims=obs(claims, set()),
         merged_prs=obs(merged, set()),
         live_agents=obs(live_agents, {}),
+        sessions=obs(sessions, {}),
     )
 
 
@@ -94,6 +95,35 @@ CASES = [
     ("a live pid back at its prompt is awaiting input",
      rec(), ev(processes={4242: proc()}, tails={"pts/3": AT_PROMPT}),
      A.AWAITING_INPUT, "at the prompt"),
+
+    # --- a run that serves its own session, which outranks its screen -------
+    #
+    # The session's answer is positive evidence — a turn stamped complete — where the
+    # screen is an inference from whether someone else's interrupt hint was drawn.
+    # The two disagreeing cases are the ones that matter: they are what a redrawn or
+    # reworded status bar looks like, and each is a mistake the applet used to make
+    # with no way to tell it was making one.
+    ("a session mid-turn is working even though its screen looks idle",
+     rec(), ev(processes={4242: proc()}, tails={"pts/3": AT_PROMPT},
+               sessions={"r1": A.SessionState(busy=True)}),
+     A.RUNNING, "its session is mid-turn"),
+    ("a session that finished its turn gives its bay back though the hint is stale",
+     rec(), ev(processes={4242: proc()}, tails={"pts/3": WORKING},
+               sessions={"r1": A.SessionState(busy=False)}),
+     A.AWAITING_INPUT, "its session finished its turn"),
+    ("a run with no session of its own is still read off its screen",
+     rec(), ev(processes={4242: proc()}, tails={"pts/3": WORKING},
+               sessions={"someone-else": A.SessionState(busy=False)}),
+     A.RUNNING, "working"),
+    ("a session probe that could not answer falls back to the screen",
+     rec(), ev(processes={4242: proc()}, tails={"pts/3": AT_PROMPT},
+               sessions=A.Observation.unavailable("no run has an OpenCode server")),
+     A.AWAITING_INPUT, "at the prompt"),
+    ("a session answer needs no screen at all",
+     rec(), ev(processes={4242: proc()},
+               tails=A.Observation.unavailable("is unreadable"),
+               sessions={"r1": A.SessionState(busy=False)}),
+     A.AWAITING_INPUT, "its session finished its turn"),
     ("a pid missing from a table we did read has finished",
      rec(), ev(processes={9999: proc()}),
      A.FINISHED, "absent from the process table"),
