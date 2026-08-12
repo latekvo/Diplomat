@@ -23,8 +23,9 @@ already the identity two machines agree on — :func:`autofix.work_key`):
     an agent was dispatched for it (``remote`` when the mesh placed it on a peer,
     whose quota it then spends rather than ours).
 ``done``
-    the completion sentinel fired, carrying the tokens the agent's own transcript
-    accounts for (see :mod:`usagescan`).
+    the agent exited — timed from its completion sentinel, or from the last turn of
+    its transcript where the mesh placed the run and kept no sentinel we can read —
+    carrying the tokens that transcript accounts for (see :mod:`usagescan`).
 ``cleared``
     a poll no longer sees it owed and we never started it — someone replied by
     hand, the PR closed, a peer took it.
@@ -193,9 +194,9 @@ def record_started(key: str, remote: bool = False, attempt: int = 1) -> None:
 
 
 def record_done(key: str, at: float, tokens: float | None) -> None:
-    """Record a completion at ``at`` — the sentinel file's mtime, i.e. when the
-    agent actually exited, not when a poll noticed (which is up to a poll period
-    later and would inflate every run time)."""
+    """Record a completion at ``at`` — when the agent actually exited, not when a
+    poll noticed (which is up to a poll period later and would inflate every run
+    time). :func:`record_completion` is what establishes that instant."""
     event = {"at": at, "ev": "done", "key": key}
     if tokens is not None:
         event["tokens"] = tokens
@@ -206,8 +207,17 @@ def record_cleared(key: str) -> None:
     append({"at": time.time(), "ev": "cleared", "key": key})
 
 
-def record_completion(key: str, prompt: str, started_at: float, done_at: float) -> None:
-    """Record a finished agent, pricing it from its own transcript.
+def record_completion(key: str, prompt: str, started_at: float,
+                      exited_at: float | None, noticed_at: float) -> None:
+    """Record a finished agent, pricing it from its own transcript and dating it
+    from the best evidence of when it exited.
+
+    ``exited_at`` is the completion sentinel's mtime, for a run that left one. A
+    run the mesh placed leaves none: the node deletes its own sentinel the instant
+    it fires, so the applet never sees it. The transcript's last turn stands in —
+    written seconds before the agent exits, where ``noticed_at`` is the poll that
+    found the run gone, up to a poll period later, and would inflate the run time
+    by that much.
 
     Attribution can fail — the applet restarting mid-agent loses the prompt the
     match needs — and that is recorded honestly as a completion with no tokens
@@ -217,10 +227,12 @@ def record_completion(key: str, prompt: str, started_at: float, done_at: float) 
     from . import usagescan
 
     try:
-        tokens = usagescan.task_tokens(prompt, started_at, done_at)
+        run = usagescan.task_run(prompt, started_at, exited_at or noticed_at)
     except OSError:
-        tokens = None
-    record_done(key, done_at, tokens)
+        run = None
+    if exited_at is None:
+        exited_at = run.last_turn_at if run is not None else noticed_at
+    record_done(key, exited_at, run.tokens if run is not None else None)
 
 
 # MARK: - Reading (what the monitors and the screen share)
@@ -458,6 +470,15 @@ def fold(lines: list[str]) -> Ledger:
             if task.done_at is None:
                 task.done_at = at
                 task.tokens = _number(obj.get("tokens"))
+            elif not (task.tokens or 0) > 0:
+                # A retry appends a SECOND completion under the same key. The
+                # instants stay first-wins, but the price is taken from whichever
+                # attempt could be attributed at all — otherwise a task whose first
+                # attempt was never tied back to a transcript stays unpriced however
+                # many times it is re-run.
+                later = _number(obj.get("tokens"))
+                if later is not None and later > 0:
+                    task.tokens = later
         else:  # "cleared"
             if task.cleared_at is None:
                 task.cleared_at = at

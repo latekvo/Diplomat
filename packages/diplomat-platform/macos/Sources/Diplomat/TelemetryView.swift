@@ -14,7 +14,7 @@ import DiplomatCore
 /// * what the probe measured to be left of each rate-limit window, over the lookback;
 /// * how many auto-reviews were owed but unstarted, over the lookback;
 /// * the same for auto-fixes;
-/// * mean time from an agent starting to its completion sentinel;
+/// * mean time from an agent starting to its exit;
 /// * mean time from the monitor first seeing the work to an agent taking it;
 /// * how much of this machine's Claude spend went on this repo rather than
 ///   everything else.

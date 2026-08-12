@@ -129,7 +129,7 @@ def create_run(record: RunRecord, prompt: str) -> RunRecord:
     """Stage a run's directory and register it. Returns the record as stored.
 
     The prompt is written here rather than to a temp file because it is what ties the
-    run back to its Claude transcript when it finishes (``usagescan.task_tokens`` —
+    run back to its Claude transcript when it finishes (``usagescan.task_run`` —
     the transcript's opening user message IS this text), and a run directory that
     outlives ``/tmp`` cleanup keeps that link.
     """
@@ -176,10 +176,11 @@ def _read_pid(run_id: str) -> int | None:
 
 
 def sentinels(records: list[RunRecord]) -> Observation:
-    """The run ids whose agent has written its exit code.
+    """The run ids whose agent has written its exit code — the runs this applet
+    spawned itself, which are the only ones pointed at a sentinel in here.
 
-    Always PRESENT: this reads our own directory, and a run whose sentinel is absent
-    is positively "has not exited yet" rather than unknown. An unreadable directory
+    Always PRESENT: this reads our own directory, so a missing sentinel is
+    positively "has not exited yet" rather than unknown. An unreadable directory
     would make every run look unfinished, which is the safe direction — the pid probe
     is what actually ends a local run, and this only ever ends one earlier.
     """
@@ -198,6 +199,11 @@ def finished_at(run_id: str) -> float | None:
 
     Not "when a poll got round to noticing", which is up to a poll period later and
     would inflate every recorded run time by a random few minutes.
+
+    None for a run the mesh placed: the executor points the agent at a sentinel of
+    its own under the mesh directory and unlinks it the moment it fires, so nothing
+    is ever written here. :func:`telemetry.record_completion` dates those from the
+    agent's transcript rather than from the poll.
     """
     try:
         return done_path(run_id).stat().st_mtime

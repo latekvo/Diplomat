@@ -96,13 +96,17 @@ def _ledger_lines() -> list[str]:
         {"at": NOW - 10 * DAY + 3000, "ev": "done", "key": "review:h/o/r#1@aa",
          "tokens": 120_000.0},
     ]
-    # A retry: two `started` events for one key. First-wins, so the wait is measured
-    # to the FIRST start and the second attempt must not move it.
+    # A retry: two `started` and two `done` events for one key. First-wins on the
+    # instants, so the wait is measured to the FIRST start and the run to the FIRST
+    # completion, neither of which the second attempt may move. The PRICE is the
+    # exception: attempt 1 went unattributed, and taking it first-wins too would
+    # leave the whole chain reading as a task nobody could cost.
     events += [
         {"at": NOW - 9 * DAY, "ev": "queued", "key": "review:h/o/r#2@bb",
          "duty": "review", "pr": 2},
         {"at": NOW - 9 * DAY + 600, "ev": "started", "key": "review:h/o/r#2@bb",
          "remote": False, "attempt": 1},
+        {"at": NOW - 9 * DAY + 5000, "ev": "done", "key": "review:h/o/r#2@bb"},
         {"at": NOW - 9 * DAY + 9000, "ev": "started", "key": "review:h/o/r#2@bb",
          "remote": False, "attempt": 2},
         {"at": NOW - 9 * DAY + 12000, "ev": "done", "key": "review:h/o/r#2@bb",

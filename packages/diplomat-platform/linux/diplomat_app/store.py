@@ -59,7 +59,7 @@ def _installer_files(pr: OpenPR) -> list[str]:
 
 
 def _run_prompt(run_id: str) -> str:
-    """What a run was asked — the string :func:`usagescan.task_tokens` matches
+    """What a run was asked — the string :func:`usagescan.task_run` matches
     transcripts against. Empty when the run directory is gone, which prices the run
     as unattributed rather than as some other agent's transcript."""
     try:
@@ -1783,20 +1783,18 @@ class Store(QObject):
         if not gone:
             return
         # Both pricing inputs come out of the run directory, so they must be read
-        # before `forget` deletes it.
-        #
-        # The sentinel's mtime is when the agent actually exited; now() is whenever a
-        # poll got round to looking, which is up to a poll period later and would
-        # inflate every recorded run time by a random few minutes.
+        # before `forget` deletes it. A run the mesh placed leaves no sentinel here,
+        # and `record_completion` dates that one from its transcript; now() is only
+        # ever the instant this poll looked.
+        now = time.time()
         retired = [
-            (r, agentregistry.finished_at(r.run_id) or time.time(),
-             _run_prompt(r.run_id))
+            (r, agentregistry.finished_at(r.run_id), _run_prompt(r.run_id))
             for r in gone if r.ledger_key
         ]
         agentregistry.forget({r.run_id for r in gone})
-        for r, finished_at, prompt in retired:
+        for r, exited_at, prompt in retired:
             telemetry.record_completion(r.ledger_key, prompt, r.dispatched_at,
-                                        finished_at)
+                                        exited_at, now)
         if retired:
             self.telemetry_changed.emit()
 
