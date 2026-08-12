@@ -1001,6 +1001,13 @@ def test_dispatch_gate_matrix_parity():
         == "Auto · Review · #7 · retry 2"
     )
     assert autofix.dispatch_label(autofix.SOURCE_PANEL, "Review · #7") == "Review · #7"
+    # A review the operator asked for is dispatched as auto work — it waits for the
+    # cap and holds a bay — but the prefix answers who found the work, and that was
+    # them. Without this it reads identically to the review-reply monitor's own row.
+    assert (autofix.dispatch_label(autofix.SOURCE_AUTO, "Review · #7", requested=True)
+            == "Review · #7")
+    assert (autofix.dispatch_label(autofix.SOURCE_AUTO, "Review · #7", 2, requested=True)
+            == "Review · #7 · retry 2")
     assert autofix.dispatch_bumps_counter(autofix.SOURCE_AUTO, 1)
     assert not autofix.dispatch_bumps_counter(autofix.SOURCE_AUTO, 2)
     assert not autofix.dispatch_bumps_counter(autofix.SOURCE_PANEL, 1)
@@ -1661,6 +1668,25 @@ def test_a_conflict_fix_sorts_last_whatever_the_arrangement_says():
     assert autofix.queue_band("a") == 0
 
 
+def test_a_requested_review_waits_behind_the_monitors_and_ahead_of_a_conflict_fix():
+    """Three bands, in the order the operator would have chosen by hand: what GitHub
+    is already owed, then the sweep they asked for when they had time for it, then the
+    conflict fix another agent's run may make unnecessary. Sweeping fifty drafts
+    otherwise buries every review request behind them for a day."""
+    order = autofix.queue_order
+    offered = ["conflicts:1", "review:2", "review-req:3", "review-reply:4"]
+    assert order(offered, []) == ["review-req:3", "review-reply:4",
+                                  "review:2", "conflicts:1"]
+    # And the arrangement cannot lift one out of its band, in either direction.
+    assert order(offered, ["review:2", "conflicts:1", "review-req:3"]) == [
+        "review-req:3", "review-reply:4", "review:2", "conflicts:1"
+    ]
+    assert (autofix.queue_band("review:2"), autofix.queue_band("conflicts:1")) == (1, 2)
+    # Within the requested band the arrangement still decides.
+    assert (order(["review:1", "review:2"], ["review:2"])
+            == ["review:2", "review:1"])
+
+
 def test_queue_reorder_can_reach_every_position():
     """Both directions are needed: an insert-before rule alone can never send a task
     to the end, which is the first arrangement anyone reaches for."""
@@ -1681,6 +1707,11 @@ def test_queue_reorder_can_reach_every_position():
     # Within the conflict band a drag works like any other.
     assert (ro(["conflicts:1", "conflicts:2"], "conflicts:1", "conflicts:2")
             == ["conflicts:2", "conflicts:1"])
+    # The requested-review band is a band like the other two: a drag out of it is
+    # refused whichever side it is heading for.
+    three = ["review-req:1", "review:2", "conflicts:3"]
+    assert ro(three, "review:2", "review-req:1") == three
+    assert ro(three, "review:2", "conflicts:3") == three
 
 
 def test_work_over_the_cap_waits_in_the_queue(store, monkeypatch):

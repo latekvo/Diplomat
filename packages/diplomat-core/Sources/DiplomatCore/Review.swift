@@ -38,7 +38,11 @@ public enum ReviewCatalog {
 
 /// Who authored a specific PR under review, when known. Selects the prompt (fix-on-
 /// branch vs review-only vs author-gated) and which action toggles even apply.
-public enum SpecificAuthor: Equatable {
+/// Raw values are the wire spelling the `build-prompt` CLI reads and the Python twin's
+/// `SpecificAuthor` writes, so the one vocabulary covers the config in memory, the
+/// payload between the front-ends, and a config a front-end stores (a queued review
+/// keeps the whole config until it is dispatched).
+public enum SpecificAuthor: String, Equatable, Codable {
     case unknown   // specific PR, author not polled yet / poll failed — offer everything
     case mine      // fix on the branch (CASE A)
     case theirs    // review only (CASE B)
@@ -50,7 +54,7 @@ public enum SpecificAuthor: Equatable {
 /// here, shared verbatim with the Linux front-end. The one thing `buildPrompt`
 /// looks up off the machine is which model the agent runs on (`AgentModel`),
 /// which the attribution tag names.
-public struct ReviewConfig {
+public struct ReviewConfig: Codable, Equatable {
     /// Whose PRs we review — the same axis the Resolve-conflicts wizard uses.
     public typealias Target = PRTarget
 
@@ -168,6 +172,36 @@ public struct ReviewConfig {
         if isSinglePR { return prRef.isValid }
         // A whose-PRs sweep needs a handle and at least one PR-state box ticked.
         return !authorHandle.isEmpty && (includeDrafts || includeReady)
+    }
+
+    /// The login whose open PRs this sweep expands into one queued review each, or ""
+    /// when there is nothing to expand (a single PR, or my own PRs before the viewer
+    /// login has resolved).
+    ///
+    /// Not `authorHandle`, which falls back to the literal "me" for the prompt to
+    /// address: matched against real PR authors that would sweep whatever the account
+    /// called "me" has open.
+    public var sweepAuthor: String {
+        switch target {
+        case .mine: return me.trimmingCharacters(in: .whitespaces)
+        case .someone: return username.trimmingCharacters(in: .whitespaces)
+        case .specific: return ""
+        }
+    }
+
+    /// This sweep, narrowed to one of the PRs it covers — the config behind one queued
+    /// review.
+    ///
+    /// Same depth and same action toggles, because they are what the operator chose;
+    /// only the scope changes. The disposition comes from the sweep's own target rather
+    /// than a fresh `gh` poll: a sweep already knows whose PRs it asked for, and polling
+    /// per PR would be one shell-out apiece to re-learn it.
+    public func forPR(_ number: Int) -> ReviewConfig {
+        var out = self
+        out.specificAuthor = disposition
+        out.target = .specific
+        out.specificPR = String(number)
+        return out
     }
 
     /// The attribution tag every posted comment opens with, naming the model the agent

@@ -206,18 +206,25 @@ an idle machine with a cap of two reads `0 · 2 free` over two empty bays.
   answered yet. Seconds, and a row for all of them, so *execute now* never reads as
   the click deleting the task. It holds a bay from the moment it starts, and the
   session or mesh row that replaces it takes its place in the list.
-- **Free slots** are the rest of the cap. Each running automatic agent takes one;
-  agents you spawn yourself from the panel take none, and neither does work the
-  mesh placed on another machine - that spends the peer's capacity, not yours.
-  Queued work starts here on the next poll.
-- **Queued** rows are auto-fixes and auto-reviews nothing has started yet. Each
+- **Free slots** are the rest of the cap. Each running automatic agent takes one, a
+  review from a sweep included - the queue picked the moment for it, so it holds a
+  bay like anything else that waited there. An agent a wizard press opened on the
+  spot takes none, and neither does work the mesh placed on another machine - that
+  spends the peer's capacity, not yours. Queued work starts here on the next poll.
+- **Queued** rows are auto-fixes, auto-reviews and reviews you asked for that
+  nothing has started yet. Each
   carries **execute now** - start it immediately, past whatever is holding it -
   and a drag grip: drop a row on another to set the order the queue runs in. That
   order is honoured at the top of the next poll, *before* the monitors go looking
   for more work, so a slot that just freed goes to whatever you put first rather
   than to whichever PR GitHub happened to list first.
-- **Resolve-conflicts** rows run after every auto-fix and auto-review, whatever
-  order the monitors found them in, and no drag lifts one above a review (that
+- **Requested reviews** - one row per PR of a Review-PRs sweep - run after every
+  auto-fix and auto-review and before the conflict fixes, because what the monitors
+  find is a debt other people can see and a sweep is work you started when you had
+  the time for it. Each also carries **cancel**: you asked for it, so nothing else
+  will ever take it off the list.
+- **Resolve-conflicts** rows run last of all, whatever
+  order the monitors found them in, and no drag lifts one out of its band (that
   drag is refused rather than sprung back on the next poll). An agent working the
   same branch lands its own merge on the way, so a conflict fix is the work most
   often made unnecessary by the work ahead of it - and the poll re-offers it for
@@ -279,8 +286,10 @@ Two failure directions, both deliberate:
   next poll offers it again; it sits in the Agent-tasks list and starts when the
   window refills. *Execute now* overrides the budget exactly as it overrides the
   cap - you are looking at the row and know something the ledger does not. A wizard
-  SPAWN is never gated at all: spending your own last slice of the limit is your
-  call.
+  SPAWN that opens a terminal on the spot is never gated at all: spending your own
+  last slice of the limit is your call. A review that same wizard queues instead is
+  priced like the rest of the queue, because what starting it costs is the same
+  whoever wanted it.
 
 The feed carries one `no-budget` line per episode, quoting which window is short and
 against what, and another when the next episode begins - not one per PR per poll.
@@ -297,8 +306,19 @@ reply on threads that have been answered, leaves the list instead of opening an
 agent on work somebody already did. (Not on a mesh claim: the cap outranks the mesh gate, so a machine with
 anything queued is one that never asked a peer - peer-owned work leaves when the
 drain reaches it and the mesh answers.) The key order is remembered, so your
-arrangement survives the rebuild and a restart; nothing else is. *Execute now* keeps the task automatic in every other respect:
-same `Auto · ` label, same auto-handled counter, same mesh routing - the cap and
+arrangement survives the rebuild and a restart.
+
+The one exception is the reviews **you** ask for by sweeping your PRs (below):
+nothing on GitHub records that a PR was swept, so those are remembered instead of
+re-derived, offered on every poll until each is dispatched, wear your own label
+rather than `Auto · `, and carry a **cancel** button beside *execute now* because
+short of a ban on the PR's author nothing else will ever retire one. They wait in a
+band of their own - behind everything GitHub is already owed (a review requested of
+you, a thread waiting on your reply), ahead of the conflict fixes - so sweeping
+fifty drafts does not bury a review request behind them for a day.
+
+*Execute now* keeps the task automatic in every other respect:
+same label, same auto-handled counter, same mesh routing - the cap and
 the rate-limit budget are the two holds it overrides. So a click can land the agent on a peer rather than
 here, and what the starting row becomes is a mesh row saying which; it occupies a
 slot of this machine's cap only when it actually runs on this machine.
@@ -307,14 +327,23 @@ slot of this machine's cap only when it actually runs on this machine.
 
 The grid carries a **Review PRs** card alongside the tools. Click it and the wizard
 opens where the PR lists normally render; dial in a few choices and hit **SPAWN
-AGENT** - it opens a fresh terminal window (iTerm if installed, else Terminal)
-running a detached review session in your **repo root** (Settings; default
-`~/dev/<repo>`) that you watch and steer yourself. The prompt is staged to a
-file and the window runs
+AGENT**.
+
+A **specific PR** is one agent: a fresh terminal window (iTerm if installed, else
+Terminal) running a detached review session in your **repo root** (Settings;
+default `~/dev/<repo>`) that you watch and steer yourself. The prompt is staged to
+a file and the window runs
 `<agent> "$(cat <promptfile>)"; printf %s $? > <done>` - where `<agent>` is the
 [agent runner](#agent-runner) you picked, and the trailing sentinel
 (under `~/.diplomat/pr-monitor/done/`) is how the Agent-tasks list knows the
-agent finished. The choices are baked into the prompt:
+agent finished.
+
+A **whose-PRs sweep** is not one agent for all of them. It queues one review per PR
+it covers, so the task cap starts them a few at a time and each is a row you can
+reorder, run ahead of the rest, or cancel - fifty drafts are fifty reviews, not one
+session told to work through fifty. (Which is also why the mesh row is offered for a
+single PR only: a sweep opens no session to place.) The choices are baked into each
+prompt:
 
 - **Target** — the same three-way selector the other wizards use: *Mine* (the
   resolved handle, see Settings), *Someone else's* (a handle field lights up), or
@@ -432,7 +461,9 @@ first target declines — gone, or out of tokens — the dispatch fails over to 
 next candidate by rank. While the mesh is live, the three wizards grow a
 **⬡ Run on mesh** row (checked by default, with a preview of where the duty
 currently routes): SPAWN AGENT then hands the job to the node instead of always
-opening a local terminal — on both front-ends.
+opening a local terminal — on both front-ends. The Review wizard offers the row for
+a single PR only: a whose-PRs sweep opens no session to place, it queues one review
+per PR for this machine's own cap to start.
 
 Both front-ends grow a **Mesh screen** (the ⬡ button in the panel header, beside
 [Telemetry](#telemetry) and Settings): the live node graph (link states), per-node tier/token editors (editing
@@ -714,11 +745,12 @@ Linux; `DIPLOMAT_APIWATCH_SECS`, floor 5s).
 are level-triggered over everything GitHub currently owes, so one poll of a busy
 day would otherwise dispatch every pending unit in a single pass - a terminal
 window and an agent session per conflicted PR and per owed review, all at the
-same moment. The cap is the *machine's*, not a monitor's: it spans both monitors
-and any work a mesh peer routes here, and it counts agents that are really
-running (`ps`, so it survives an applet restart) rather than a tally that can
-drift. Agents *you* spawn from the panel don't count against it, and a click is
-never refused.
+same moment. The cap is the *machine's*, not a monitor's: it spans both monitors,
+the reviews a PR sweep queues, and any work a mesh peer routes here, and it counts
+agents that are really running (`ps`, so it survives an applet restart) rather than
+a tally that can drift. The agent a wizard press opens on the spot is outside it
+and is never refused; what a press leaves in the queue instead - the reviews of a
+whose-PRs sweep - is on the cap like every other queued task.
 
 An agent is spawned into an *interactive* session, so finishing its work is not
 exiting - it waits at its prompt until someone closes the window, and `ps` shows
@@ -851,13 +883,13 @@ and ⏻) swaps the panel to a settings screen:
   and visible only while it's on - the **auto-approve** master toggle and its
   three withhold-the-verdict suppressors (SKILL / installer / community).
 - **Run at most N automatic tasks at a time** - this machine's hard cap on
-  concurrent automatic agents (**default 2**, range 1-16), across both monitors
-  and any work a mesh peer routes here. Panel spawns are never capped and don't
-  count against it; work over the cap is deferred to the next poll, not dropped.
-  Like the repo root and for the same reason, it lives in the shared
-  `~/.diplomat/config.json` rather than UserDefaults - the node that runs
-  peer-routed work is a separate stdlib-only process, and a machine with two
-  answers to "how many at once" has no cap at all.
+  concurrent automatic agents (**default 2**, range 1-16), across both monitors,
+  the reviews a PR sweep queues, and any work a mesh peer routes here. The agent a
+  wizard press opens on the spot is never capped and doesn't count against it; work
+  over the cap is deferred to the next poll, not dropped. Like the repo root and for
+  the same reason, it lives in the shared `~/.diplomat/config.json` rather than
+  UserDefaults - the node that runs peer-routed work is a separate stdlib-only
+  process, and a machine with two answers to "how many at once" has no cap at all.
 - **Hold automatic work when the rate limit runs low** - the
   [rate-limit budget](#the-rate-limit-budget) (**default on**), with the confidence
   it must reach that a task fits (**default 95%**, one-sided) and the share of a
@@ -865,9 +897,9 @@ and ⏻) swaps the panel to a settings screen:
   Priced from the same per-task figure the [Telemetry](#telemetry) screen shows,
   against both rate-limit windows. Held work waits under
   [Agent tasks](#agent-tasks) and starts when a window refills; *execute now*
-  overrides it, panel spawns are never gated, and nothing is held at all while the
-  usage probe cannot read a window. In `~/.diplomat/config.json` for the same reason
-  as the cap above.
+  overrides it, a wizard spawn that opens a terminal on the spot is never gated, and
+  nothing is held at all while the usage probe cannot read a window. In
+  `~/.diplomat/config.json` for the same reason as the cap above.
 - **Auto-continue agents on API errors** - the terminal watcher toggle, plus a
   count of nudges sent.
 - **Tools - color & visibility** - a **color well** to retint each tool plus a switch

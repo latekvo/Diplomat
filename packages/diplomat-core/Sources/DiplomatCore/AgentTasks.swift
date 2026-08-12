@@ -103,13 +103,19 @@ public enum MeshAgentRun {
     }
 }
 
-/// The order automatic work waits in.
+/// The order work waits in.
 ///
-/// The queue is a *view* of what the monitors would re-offer, not a second copy of
-/// their state: the cap defers work by writing no attempt record, so every poll
-/// re-offers everything GitHub still owes and the list is rebuilt from that. Only
-/// the operator's arrangement of it is remembered, because that is the one thing a
-/// poll cannot reconstruct.
+/// Most of the queue is a *view* of what the monitors would re-offer, not a second
+/// copy of their state: the cap defers work by writing no attempt record, so every
+/// poll re-offers everything GitHub still owes and the list is rebuilt from that.
+/// Only the operator's arrangement of it is remembered, because that is the one
+/// thing a poll cannot reconstruct.
+///
+/// The exception is the reviews the operator asks for by sweeping their PRs
+/// (`requestedAction`). GitHub has nothing to re-offer them from — a PR does not
+/// record that someone wanted it reviewed — so that ask is the front-end's own list,
+/// and it is the front-end that offers one task per PR on each poll until each is
+/// dispatched.
 public enum AgentTaskQueue {
     /// A queued task's identity, stable across polls and applet restarts: the
     /// monitor's verb plus the PR. Not the mesh work key — that one is scoped to a
@@ -124,27 +130,41 @@ public enum AgentTaskQueue {
         "\(auditAction):\(prNumber)"
     }
 
-    /// The one verb whose work waits behind every other. Matched off the queue key
-    /// rather than the job, because the operator's saved arrangement is a list of
-    /// keys and has to be banded the same way after a restart, with no job to
-    /// consult (`order`).
-    public static let lastAction = "conflicts"
+    /// The verb a review the operator asked for is queued under — the same one a
+    /// Review-PRs spawn writes to the activity feed, because it is that spawn, split
+    /// into one task per PR.
+    public static let requestedAction = "review"
 
-    /// Which band of the queue a task waits in: 0 for everything, 1 for a conflict
-    /// fix. Bands outrank the operator's arrangement; within one, the arrangement
-    /// decides.
+    /// The verbs whose work waits behind the rest, nearest-first — a requested
+    /// review, then a conflict fix, which waits behind everything. Matched off the
+    /// queue key rather than the job, because the operator's saved arrangement is a
+    /// list of keys and has to be banded the same way after a restart, with no job to
+    /// consult (`order`).
+    public static let lastActions = [requestedAction, "conflicts"]
+
+    /// Which band of the queue a task waits in: 0 for the monitors' own finds, 1 for
+    /// a review the operator asked for, 2 for a conflict fix. Bands outrank the
+    /// operator's arrangement; within one, the arrangement decides.
     ///
-    /// Resolving a conflict is the one unit of automatic work that another agent's
-    /// run routinely makes unnecessary: a review-reply agent works the same branch
-    /// and lands its own merge on the way, and a review of someone else's PR can
-    /// leave this one behind a rebase. Run first, a conflict fix spends a bay of the
-    /// cap on the state of the branch as it was BEFORE the work in front of it
+    /// A monitor's find is first because it is answering something GitHub is already
+    /// owed — a review requested of me, a thread on my PR waiting on a reply — and
+    /// that debt is visible to other people. A requested review is a sweep the
+    /// operator started when they had the time for it; it is worth the whole cap
+    /// eventually, but not ahead of the work the repository is waiting on. Sweeping
+    /// fifty drafts otherwise buries every review request behind them for a day.
+    ///
+    /// Resolving a conflict stays last: it is the one unit of work that another
+    /// agent's run routinely makes unnecessary — a review-reply agent works the same
+    /// branch and lands its own merge on the way, and a review of someone else's PR
+    /// can leave this one behind a rebase. Run first, a conflict fix spends a bay of
+    /// the cap on the state of the branch as it was BEFORE the work in front of it
     /// landed — and often on a conflict that no longer exists by the time it opens
     /// the diff. It is also the cheapest to re-derive: the reconciler re-offers it
     /// every poll for as long as GitHub still calls the PR conflicting, so a fix
     /// deferred is never a fix lost.
     public static func band(_ key: String) -> Int {
-        (key.prefix(while: { $0 != ":" }) == lastAction) ? 1 : 0
+        let verb = String(key.prefix(while: { $0 != ":" }))
+        return (lastActions.firstIndex(of: verb).map { $0 + 1 }) ?? 0
     }
 
     /// Does the evidence of THIS poll still owe a task the queue is holding?
@@ -159,8 +179,9 @@ public enum AgentTaskQueue {
     /// Only the two verbs that fetch covers are answerable — both are jobs on MY
     /// PRs, and `snapshots` is the fetch of exactly those. A review requested of me
     /// lives in the other fetch, and nothing on this machine can retire it early
-    /// anyway: it is owed until I review it, which is what the agent is for.
-    /// Unanswerable is not stale, so it stands.
+    /// anyway: it is owed until I review it, which is what the agent is for. A review
+    /// the operator asked for is owed for the same reason, by their word rather than
+    /// GitHub's. Unanswerable is not stale, so it stands.
     public static func stillOwed(auditAction: String, prNumber: Int,
                                  conflicting: Set<Int>,
                                  owingReply: Set<Int>) -> Bool {
@@ -193,11 +214,11 @@ public enum AgentTaskQueue {
     /// one that never asked a peer. Peer-owned work leaves the queue when the drain
     /// reaches it and the mesh answers.)
     ///
-    /// Conflict fixes then fall to the back whatever order they were found in
-    /// (`band`). The monitors find them mid-cycle — the conflict reconciler runs
-    /// before the review-request fetch even begins — so without the band a poll's own
-    /// sequence would decide, and the work most likely to be made unnecessary would
-    /// be the work that ran first.
+    /// Requested reviews and then conflict fixes fall to the back whatever order they
+    /// were found in (`band`). The monitors find their work mid-cycle — the conflict
+    /// reconciler runs before the review-request fetch even begins — so without the
+    /// bands a poll's own sequence would decide, and a sweep of fifty drafts offered
+    /// first would hold up every review GitHub is waiting on.
     public static func order(offered: [String], saved: [String]) -> [String] {
         let live = Set(offered)
         var out: [String] = []
@@ -213,7 +234,7 @@ public enum AgentTaskQueue {
         // Banded by a stable partition rather than `sort`, which is not guaranteed
         // stable in the standard library: everything above keeps its place within
         // the band it lands in, and that order is the operator's arrangement.
-        return out.filter { band($0) == 0 } + out.filter { band($0) != 0 }
+        return (0...lastActions.count).flatMap { b in out.filter { band($0) == b } }
     }
 
     /// One drag: `moving` lands where it was dropped relative to `onto` — after it
@@ -224,12 +245,11 @@ public enum AgentTaskQueue {
     /// the end of the queue, which is exactly the arrangement someone reaches for
     /// first (this one is not urgent — run it last).
     ///
-    /// A drag onto a key that is not in the queue, onto itself, or across the band
-    /// boundary is not a rearrangement and leaves the order alone. The last of those
-    /// is the same answer as the first two rather than a partial move, because a
-    /// conflict fix dragged above a review would be re-banded on the next poll and
-    /// snap back: a drag that cannot survive one poll is better refused than shown
-    /// landing.
+    /// A drag onto a key that is not in the queue, onto itself, or into another band
+    /// is not a rearrangement and leaves the order alone. The last of those is the
+    /// same answer as the first two rather than a partial move, because a conflict fix
+    /// dragged above a review would be re-banded on the next poll and snap back: a
+    /// drag that cannot survive one poll is better refused than shown landing.
     public static func reorder(_ order: [String], moving id: String,
                                onto target: String) -> [String] {
         guard band(id) == band(target) else { return order }

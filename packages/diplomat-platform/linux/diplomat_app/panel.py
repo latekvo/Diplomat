@@ -89,6 +89,13 @@ def _icon_button(glyph: str, tooltip: str) -> QToolButton:
     return btn
 
 
+def _queued_label(task: autofix.QueuedTask) -> str:
+    """The row a task not yet running wears — the same string its dispatch will log
+    and its session will carry, so nothing is renamed the moment it starts."""
+    return autofix.dispatch_label(autofix.SOURCE_AUTO, task.job.label, task.attempt,
+                                  requested=task.job.requested)
+
+
 def _task_look(kind: str) -> tuple[str, str]:
     """The glyph and tint one agent task wears, from ``AgentJob.kind``. The same pair
     its action card carries in the grid, so a queued conflict fix reads as the
@@ -671,9 +678,7 @@ class Panel(QWidget):
         for task in starting:
             glyph, tint = _task_look(task.job.kind)
             self.tasks_col.addWidget(StartingTaskRow(
-                label=autofix.dispatch_label(
-                    autofix.SOURCE_AUTO, task.job.label, task.attempt
-                ),
+                label=_queued_label(task),
                 glyph=glyph,
                 hex_color=tint,
             ))
@@ -683,15 +688,20 @@ class Panel(QWidget):
             glyph, tint = _task_look(task.job.kind)
             row = QueuedTaskRow(
                 task_id=task.id,
-                label=autofix.dispatch_label(
-                    autofix.SOURCE_AUTO, task.job.label, task.attempt
-                ),
+                label=_queued_label(task),
                 glyph=glyph,
                 hex_color=tint,
                 paused=self.store.is_paused(task.job.counter),
+                # Only an ask can be called off. A monitor's row stands for work
+                # GitHub is owed: dropping it would put it straight back on the next
+                # poll, so the button would do nothing anyone could see.
+                cancellable=task.job.requested,
             )
             row.run_requested.connect(
                 lambda tid=task.id: self.store.execute_queued_task_async(tid)
+            )
+            row.cancel_requested.connect(
+                lambda tid=task.id: self.store.cancel_requested_review(tid)
             )
             row.dropped.connect(
                 lambda dragged, tid=task.id: self.store.move_queued_task(dragged, tid)

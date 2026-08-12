@@ -91,6 +91,20 @@ check(Filters.unaddressedExternalIssues(issues).map { $0.number } == [201], "ext
 check(Filters.myApprovedPRs(prs, me: me).map { $0.number } == [104], "my-approved filter")
 check(Filters.myUnaddressedReviewPRs(prs, me: me).map { $0.number } == [105], "my-unaddressed filter")
 check(Filters.myApprovedPRs(prs, me: "").isEmpty, "empty me → no approved PRs")
+// What a Review-PRs sweep expands into — one queued review per PR, so this decides
+// how many agents a single press eventually starts. #102 is bob's only draft; #101
+// and #103..105 are other people's or not drafts.
+check(Filters.sweptPRs(prs, author: "bob", includeDrafts: true,
+                       includeReady: false).map { $0.number } == [102],
+      "a drafts-only sweep covers that author's drafts")
+check(Filters.sweptPRs(prs, author: "bob", includeDrafts: false,
+                       includeReady: true).isEmpty,
+      "…and a ready-only sweep of the same author covers nothing")
+check(Filters.sweptPRs(prs, author: "BOB", includeDrafts: true,
+                       includeReady: true).map { $0.number } == [102],
+      "the handle is typed by hand, and GitHub logins are case-insensitive")
+check(Filters.sweptPRs(prs, author: "", includeDrafts: true, includeReady: true).isEmpty,
+      "no handle yet sweeps nobody, rather than everybody")
 // isSkillFile matches the FILENAME (skill.md / *.skill.md), never a bare suffix —
 // "docs/reskill.md" must not count as a SKILL file (it feeds the verdict gate).
 check(Filters.isSkillFile("skills/foo/SKILL.md"))
@@ -355,6 +369,23 @@ check(single("https://github.com/\(cfg.owner)/\(cfg.repo)/pull/337").buildPrompt
 // A URL for a different repo is rejected.
 check(!single("https://github.com/other/proj/pull/9").isValid)
 check(mine.buildPrompt().contains("No AI attribution"))
+
+// A sweep is queued as one review per PR, and `forPR` is the config behind each: the
+// operator's depth and toggles, narrowed to that PR, with the disposition the sweep
+// already knew rather than a fresh `gh` poll per PR.
+let sweptOne = other.forPR(337)
+check(sweptOne.target == .specific && sweptOne.specificPR == "337"
+      && sweptOne.specificAuthor == .theirs && sweptOne.depth == other.depth,
+      "a swept PR keeps the sweep's depth and inherits its disposition")
+check(mine.forPR(337).specificAuthor == .mine, "…and my own sweep hands down .mine")
+check(sweptOne.buildPrompt().hasPrefix("Review PR #337 in \(cfg.owner)/\(cfg.repo)."),
+      "a queued review is the single-PR prompt, not the sweep's")
+check(mine.sweepAuthor == me && other.sweepAuthor == "someuser"
+      && single("337").sweepAuthor.isEmpty,
+      "the sweep's author is the real login, never the prompt's \"me\" fallback")
+check(ReviewConfig(depth: "max", me: "").sweepAuthor.isEmpty
+      && ReviewConfig(depth: "max", me: "").authorHandle == "me",
+      "…which is the whole difference: an unresolved login sweeps nobody")
 
 // A specific PR may be mine OR someone else's, so its prompt is author-gated: it
 // polls the author, then splits into CASE A (mine → fix on branch, mark ready) and
@@ -788,6 +819,12 @@ check(AgentDispatchGate.label(source: .auto, core: "Review · #7", attemptNumber
       == "Auto · Review · #7 · retry 2", "auto label prefix + retry suffix")
 check(AgentDispatchGate.label(source: .panel, core: "Review · #7") == "Review · #7",
       "panel label is the bare core")
+check(AgentDispatchGate.label(source: .auto, core: "Review · #7", requested: true)
+      == "Review · #7"
+      && AgentDispatchGate.label(source: .auto, core: "Review · #7", attemptNumber: 2,
+                                 requested: true) == "Review · #7 · retry 2",
+      "a review the operator asked for keeps the retry suffix and loses the prefix — "
+      + "it waits for the cap like auto work, but no monitor found it")
 check(AgentDispatchGate.bumpsCounter(source: .auto, attemptNumber: 1)
       && !AgentDispatchGate.bumpsCounter(source: .auto, attemptNumber: 2)
       && !AgentDispatchGate.bumpsCounter(source: .panel, attemptNumber: 1),
@@ -1007,9 +1044,26 @@ check(AgentTaskQueue.reorder(["a", "b"], moving: "z", onto: "a") == ["a", "b"]
 // PARITY: diplomat-platform/linux/tests/test_autofix.py asserts the same arrangements —
 // the band is the one rule that outranks the operator's, so the two front-ends must
 // not disagree about where a conflict fix waits.
-check(AgentTaskQueue.band("conflicts:1") == 1 && AgentTaskQueue.band("review-req:2") == 0
-      && AgentTaskQueue.band("a") == 0,
-      "a conflict fix bands last; everything else — including a verbless key — bands first")
+check(AgentTaskQueue.band("conflicts:1") == 2 && AgentTaskQueue.band("review:2") == 1
+      && AgentTaskQueue.band("review-req:3") == 0 && AgentTaskQueue.band("a") == 0,
+      "a conflict fix bands last, a requested review behind the monitors' own finds, "
+      + "and everything else — including a verbless key — first")
+check(AgentTaskQueue.order(offered: ["conflicts:1", "review:2", "review-req:3",
+                                     "review-reply:4"], saved: [])
+      == ["review-req:3", "review-reply:4", "review:2", "conflicts:1"],
+      "what GitHub is owed runs before the sweep the operator asked for, which runs "
+      + "before the conflict fix another agent may make unnecessary")
+check(AgentTaskQueue.order(offered: ["review:1", "review:2"], saved: ["review:2"])
+      == ["review:2", "review:1"],
+      "within the requested band the arrangement still decides")
+check(AgentTaskQueue.reorder(["review-req:1", "review:2", "conflicts:3"],
+                             moving: "review:2", onto: "review-req:1")
+      == ["review-req:1", "review:2", "conflicts:3"]
+      && AgentTaskQueue.reorder(["review-req:1", "review:2", "conflicts:3"],
+                                moving: "review:2", onto: "conflicts:3")
+      == ["review-req:1", "review:2", "conflicts:3"],
+      "the requested band is a band like the others — a drag out of it is refused "
+      + "whichever side it heads for")
 check(AgentTaskQueue.order(offered: ["conflicts:1", "review-req:2"], saved: [])
       == ["review-req:2", "conflicts:1"],
       "a conflict fix waits behind a review however the monitors found them")

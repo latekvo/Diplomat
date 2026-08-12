@@ -498,6 +498,113 @@ enum QueueTest {
         store.processes = []
         store.queuedTasks = []
 
+        // 14. The reviews the operator asks for. A whose-PRs sweep is queued one PR at a
+        //    time rather than handed to a single agent, and these are the only queued
+        //    tasks nothing on GitHub would re-offer — so the list that remembers the ask
+        //    has to survive a commit, and the dispatch that answers one has to take it
+        //    off. (Seeded empty: a headless Store reads the operator's real list, and a
+        //    developer mid-sweep would otherwise fail every count below.)
+        //
+        //    The band, the key and the arrangement are pinned in DiplomatCoreSmoke; what
+        //    is here is the wiring those rules hang off.
+        store.requestedReviews = []
+        store.queuedTasks = []
+        func openPR(_ number: Int, author: String = "alice", draft: Bool = true) -> OpenPR {
+            OpenPR(number: number, title: "PR \(number)",
+                   url: "https://github.com/software-mansion/argent/pull/\(number)",
+                   isDraft: draft, author: author, createdAt: Date(),
+                   readyForReviewAt: nil, files: [], reviewDecision: nil, reviewThreads: [])
+        }
+        store.prs = [openPR(31), openPR(32), openPR(33, draft: false), openPR(34, author: "bob")]
+        let sweep = ReviewConfig(depth: "deep", target: .mine, me: "alice",
+                                 includeDrafts: true, includeReady: false)
+        let fanOut = store.requestReviewSweep(sweep)
+        check("a sweep queues one review per PR in scope, not one agent for all",
+              fanOut.queued == 2 && fanOut.already == 0
+                  && store.queuedTasks.map(\.id) == ["review:31", "review:32"])
+        check("…each scoped to its own PR",
+              store.queuedTasks.map(\.job.prNumber) == [31, 32])
+        check("…owned by no monitor, so no toggle pauses it and no counter counts it",
+              store.queuedTasks.allSatisfy {
+                  $0.job.counter == nil && $0.job.ledgerKey.isEmpty && !store.isPaused($0.job.counter)
+              })
+        check("…and labelled as the operator's own, not as a monitor's find",
+              store.queuedTasks.first.map {
+                  AgentDispatchGate.label(source: .auto, core: $0.job.label,
+                                          attemptNumber: $0.attemptNumber,
+                                          requested: $0.job.requested)
+              } == "Review · #31 · deep")
+
+        // Sweeping again over an overlapping scope adds only what is new: the queue is
+        // keyed by PR, so a second ask would be one row that dispatches twice.
+        var wider = sweep
+        wider.includeReady = true
+        let again = store.requestReviewSweep(wider)
+        check("a second sweep asks only for what is not already queued",
+              again.queued == 1 && again.already == 2)
+
+        // Nothing on GitHub says a PR was swept, so the ask itself is what re-offers
+        // these — a commit built from the monitors alone would empty the panel of them.
+        store.offerRequestedReviews()
+        store.commitQueue()
+        check("a poll re-offers every ask nothing has started",
+              store.queuedTasks.map(\.id) == ["review:31", "review:32", "review:33"])
+
+        // …and the band puts them behind what GitHub is already owed, ahead of the
+        // conflict fix another agent's run may make unnecessary. Back over the cap
+        // first: a sweep queues without asking it, but a monitor's find reaches the
+        // queue only by being refused, and the section above left the bay free.
+        store.processes = [
+            TrackedProcess(kind: "review", label: "Auto · Review · #1", terminal: "iterm",
+                           windowID: "1", sessionID: "", tty: "", donePath: "",
+                           prURL: "https://github.com/software-mansion/argent/pull/1",
+                           source: AgentDispatchGate.Source.auto.rawValue,
+                           createdAt: Date(), done: false),
+        ]
+        _ = await offer(job(35))
+        _ = await offer(job(36, action: "conflicts", label: "Resolve · #36",
+                            counter: .conflicts))
+        store.offerRequestedReviews()
+        store.commitQueue()
+        check("a requested review waits behind a monitor's find and ahead of a conflict fix",
+              store.queuedTasks.map(\.id)
+                  == ["review-req:35", "review:31", "review:32", "review:33", "conflicts:36"])
+
+        // Cancel is the only way out: nothing else retires an ask, so a mis-aimed sweep
+        // would otherwise be a day of agents nobody can call off.
+        store.cancelRequestedReview("review:32")
+        store.offerRequestedReviews()
+        store.commitQueue()
+        check("a cancelled ask does not come back on the next poll",
+              store.requestedReviews.map(\.number) == [31, 33]
+                  && !store.queuedTasks.contains { $0.id == "review:32" })
+        // Cancel refuses a row no ask stands behind. The monitor's find has to be
+        // offered again to be in the queue at all: the commit above rebuilt it from
+        // that cycle's offers, and that cycle offered only the asks.
+        _ = await offer(job(35))
+        store.offerRequestedReviews()
+        store.commitQueue()
+        store.cancelRequestedReview("review-req:35")
+        check("…and a monitor's row is not cancellable at all",
+              store.queuedTasks.contains { $0.id == "review-req:35" })
+
+        // The dispatch is what answers an ask. #31's PR gains an agent, so the dispatch
+        // is refused and the ask stands; a refusal that dropped it would silently
+        // abandon the review.
+        store.processes.append(
+            TrackedProcess(kind: "review", label: "Auto · Review · #31", terminal: "iterm",
+                           windowID: "31", sessionID: "", tty: "", donePath: "",
+                           prURL: "https://github.com/software-mansion/argent/pull/31",
+                           source: AgentDispatchGate.Source.auto.rawValue,
+                           createdAt: Date(), done: false))
+        await store.executeQueuedTask("review:31")
+        check("an ask refused because the PR is busy is still asked for",
+              store.requestedReviews.map(\.number) == [31, 33])
+        store.error = nil
+        store.processes = []
+        store.requestedReviews = []
+        store.queuedTasks = []
+
         // 13. The redirect above is the only thing between a run of this test and the
         //    operator's real activity log, so prove it caught the writes.
         check("the at-capacity lines it provoked went to the scratch feed",

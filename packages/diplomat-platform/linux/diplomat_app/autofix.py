@@ -361,8 +361,8 @@ def parse_work_key(key: str) -> tuple[str, str, str, int] | None:
 #   button has already decided placement (dispatch_decide);
 # - counters: only a monitor's FIRST dispatch counts as auto-handled work
 #   (dispatch_bumps_counter);
-# - label: auto rows carry the "Auto · " prefix, retries are surfaced the same
-#   way on both (dispatch_label).
+# - label: rows a monitor found carry the "Auto · " prefix, retries are surfaced
+#   the same way on both (dispatch_label).
 #
 # Swift twin: AgentDispatchGate in DiplomatCore/Autofix.swift - keep semantics
 # byte-equivalent (see the parity tests on both sides).
@@ -641,11 +641,19 @@ def budget_decide(
     return tightest if tightest is not None else Budget(affordable=True)
 
 
-def dispatch_label(source: str, core: str, attempt: int = 1) -> str:
+def dispatch_label(source: str, core: str, attempt: int = 1,
+                   requested: bool = False) -> str:
     """The activity/session label both interfaces produce: same core, the source
-    prefix and retry suffix applied identically everywhere."""
+    prefix and retry suffix applied identically everywhere.
+
+    ``requested`` drops the prefix for work the operator asked for by name and the
+    queue merely chose the moment for — a review from a PR sweep. Such a job is
+    dispatched as ``SOURCE_AUTO`` in every other respect (it waits for the cap, it
+    holds a bay while it runs), but "Auto · " answers *who decided there was work
+    here*, and for this one that was the operator. Without it a requested review of
+    #12 and the review-reply monitor's own dispatch on #12 read as the same row."""
     retry = f" · retry {attempt}" if attempt > 1 else ""
-    prefix = "Auto · " if source == SOURCE_AUTO else ""
+    prefix = "Auto · " if source == SOURCE_AUTO and not requested else ""
     return f"{prefix}{core}{retry}"
 
 
@@ -664,11 +672,17 @@ def dispatch_bumps_counter(source: str, attempt: int) -> bool:
 # operator reads off the panel and the sequence the monitor actually runs are then
 # the same rules, not two implementations of an intention.
 #
-# The queue is a *view* of what the monitors would re-offer, not a second copy of
-# their state: the cap defers work by writing no attempt record, so every poll
-# re-offers everything GitHub still owes and the list is rebuilt from that. Only the
-# operator's arrangement of it is remembered, because that is the one thing a poll
-# cannot reconstruct.
+# Most of the queue is a *view* of what the monitors would re-offer, not a second
+# copy of their state: the cap defers work by writing no attempt record, so every
+# poll re-offers everything GitHub still owes and the list is rebuilt from that. Only
+# the operator's arrangement of it is remembered, because that is the one thing a
+# poll cannot reconstruct.
+#
+# The exception is the reviews the operator asks for by sweeping their PRs
+# (QUEUE_REQUESTED_ACTION). GitHub has nothing to re-offer them from — a PR does not
+# record that someone wanted it reviewed — so that ask is the front-end's own list
+# (``Store.requested_reviews``), and it is the front-end that offers one task per PR
+# on each poll until each is dispatched.
 
 
 def queue_key(audit_action: str, pr_number: int) -> str:
@@ -683,26 +697,40 @@ def queue_key(audit_action: str, pr_number: int) -> str:
     return f"{audit_action}:{pr_number}"
 
 
-# The one verb whose work waits behind every other. Matched off the queue key rather
-# than the job, because the operator's saved arrangement is a list of keys and has to
-# be banded the same way after a restart, with no job to consult (`queue_order`).
-QUEUE_LAST_ACTION = "conflicts"
+# The verb a review the operator asked for is queued under — the same one a
+# Review-PRs spawn writes to the activity feed, because it is that spawn, split into
+# one task per PR.
+QUEUE_REQUESTED_ACTION = "review"
+
+# The verbs whose work waits behind the rest, nearest-first — a requested review, then
+# a conflict fix, which waits behind everything. Matched off the queue key rather than
+# the job, because the operator's saved arrangement is a list of keys and has to be
+# banded the same way after a restart, with no job to consult (`queue_order`).
+QUEUE_LAST_ACTIONS = (QUEUE_REQUESTED_ACTION, "conflicts")
 
 
 def queue_band(key: str) -> int:
-    """Which band of the queue a task waits in: 0 for everything, 1 for a conflict
-    fix. Bands outrank the operator's arrangement; within one, the arrangement decides.
+    """Which band of the queue a task waits in: 0 for the monitors' own finds, 1 for a
+    review the operator asked for, 2 for a conflict fix. Bands outrank the operator's
+    arrangement; within one, the arrangement decides.
 
-    Resolving a conflict is the one unit of automatic work that another agent's run
-    routinely makes unnecessary: a review-reply agent works the same branch and lands
-    its own merge on the way, and a review of someone else's PR can leave this one
-    behind a rebase. Run first, a conflict fix spends a bay of the cap on the state of
-    the branch as it was BEFORE the work in front of it landed — and often on a
+    A monitor's find is first because it is answering something GitHub is already owed
+    — a review requested of me, a thread on my PR waiting on a reply — and that debt is
+    visible to other people. A requested review is a sweep the operator started when
+    they had the time for it; it is worth the whole cap eventually, but not ahead of
+    the work the repository is waiting on. Sweeping fifty drafts otherwise buries every
+    review request behind them for a day.
+
+    Resolving a conflict stays last: it is the one unit of work that another agent's
+    run routinely makes unnecessary — a review-reply agent works the same branch and
+    lands its own merge on the way, and a review of someone else's PR can leave this
+    one behind a rebase. Run first, a conflict fix spends a bay of the cap on the state
+    of the branch as it was BEFORE the work in front of it landed — and often on a
     conflict that no longer exists by the time it opens the diff. It is also the
     cheapest to re-derive: the reconciler re-offers it every poll for as long as
     GitHub still calls the PR conflicting, so a fix deferred is never a fix lost."""
     verb, _, _ = key.partition(":")
-    return 1 if verb == QUEUE_LAST_ACTION else 0
+    return QUEUE_LAST_ACTIONS.index(verb) + 1 if verb in QUEUE_LAST_ACTIONS else 0
 
 
 def still_owed(audit_action: str, pr_number: int,
@@ -719,8 +747,9 @@ def still_owed(audit_action: str, pr_number: int,
     Only the two verbs this fetch covers are answerable — both are jobs on MY PRs, and
     ``snaps`` is the fetch of exactly those. A review requested of me lives in the
     other fetch, and nothing on this machine can retire it early anyway: it is owed
-    until I review it, which is what the agent is for. Unanswerable is not stale, so
-    it stands."""
+    until I review it, which is what the agent is for. A review the operator asked for
+    is owed for the same reason, by their word rather than GitHub's. Unanswerable is
+    not stale, so it stands."""
     if audit_action == "conflicts":
         return pr_number in conflicting
     if audit_action == "review-reply":
@@ -751,11 +780,11 @@ def queue_order(offered: list[str], saved: list[str]) -> list[str]:
     one that never asked a peer. Peer-owned work leaves the queue when the drain
     reaches it and the mesh answers.)
 
-    Conflict fixes then fall to the back whatever order they were found in
-    (:func:`queue_band`). The monitors find them mid-cycle — the conflict reconciler
-    runs before the review-request fetch even begins — so without the band a poll's
-    own sequence would decide, and the work most likely to be made unnecessary would
-    be the work that ran first."""
+    Requested reviews and then conflict fixes fall to the back whatever order they
+    were found in (:func:`queue_band`). The monitors find their work mid-cycle — the
+    conflict reconciler runs before the review-request fetch even begins — so without
+    the bands a poll's own sequence would decide, and a sweep of fifty drafts offered
+    first would hold up every review GitHub is waiting on."""
     live = set(offered)
     out: list[str] = []
     seen: set[str] = set()
@@ -781,11 +810,11 @@ def queue_reorder(order: list[str], moving: str, onto: str) -> list[str]:
     queue, which is exactly the arrangement someone reaches for first (this one is
     not urgent — run it last).
 
-    A drag onto a key that is not in the queue, onto itself, or across the band
-    boundary is not a rearrangement and leaves the order alone. The last of those is
-    the same answer as the first two rather than a partial move, because a conflict
-    fix dragged above a review would be re-banded on the next poll and snap back: a
-    drag that cannot survive one poll is better refused than shown landing."""
+    A drag onto a key that is not in the queue, onto itself, or into another band is
+    not a rearrangement and leaves the order alone. The last of those is the same
+    answer as the first two rather than a partial move, because a conflict fix dragged
+    above a review would be re-banded on the next poll and snap back: a drag that
+    cannot survive one poll is better refused than shown landing."""
     if moving == onto or moving not in order or onto not in order:
         return order
     if queue_band(moving) != queue_band(onto):
@@ -827,6 +856,16 @@ class AgentJob:
     # panel spawn keeps no attempt record, and a job with no monitor behind it (the
     # sweeps) has no stamp to carry.
     attempt_stamp: str = ""
+
+    @property
+    def requested(self) -> bool:
+        """Whether the operator asked for this exact unit of work, as opposed to a
+        monitor having found it. Read off the verb, which already distinguishes them:
+        the monitors dispatch under ``review-req`` and ``review-reply``, and a plain
+        ``review`` is a Review-PRs spawn — a click, or one PR of the sweep a click
+        queued. It decides the label (:func:`dispatch_label`) and, in the front-end,
+        which queued rows can be cancelled."""
+        return self.audit_action == QUEUE_REQUESTED_ACTION
 
 
 @dataclass(frozen=True)

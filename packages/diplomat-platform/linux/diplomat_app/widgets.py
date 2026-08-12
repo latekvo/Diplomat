@@ -433,15 +433,17 @@ class ActivityRow(QFrame):
 
 
 class QueuedTaskRow(QFrame):
-    """One unit of automatic work nothing has started yet.
+    """One unit of work nothing has started yet.
 
-    It carries the two things the rest of the panel has no use for: a handle to start
-    it now regardless of what is holding it (``run_requested``), and a drag grip that
-    sets the order the queue drains in — drop this row on another and that one emits
-    ``dropped`` with the dragged row's queue key.
+    It carries the things the rest of the panel has no use for: a handle to start it
+    now regardless of what is holding it (``run_requested``), a drag grip that sets the
+    order the queue drains in — drop this row on another and that one emits ``dropped``
+    with the dragged row's queue key — and, on a review the operator asked for, a way
+    to call it off again (``cancel_requested``).
     """
 
     run_requested = Signal()
+    cancel_requested = Signal()
     #: The queue key of the row dropped onto this one.
     dropped = Signal(str)
 
@@ -453,9 +455,13 @@ class QueuedTaskRow(QFrame):
         "Start this agent now. Its monitor is switched off, so nothing else will — "
         "but once running it counts against the cap like any automatic agent."
     )
+    _CANCEL_HELP = (
+        "Drop this review from the queue without running it. You asked for it by "
+        "sweeping your PRs, so nothing else will bring it back."
+    )
 
     def __init__(self, *, task_id: str, label: str, glyph: str, hex_color: str,
-                 paused: bool) -> None:
+                 paused: bool, cancellable: bool = False) -> None:
         super().__init__()
         self._task_id = task_id
         self._press: QPointF | None = None
@@ -484,6 +490,22 @@ class QueuedTaskRow(QFrame):
         status.setStyleSheet(muted(9))
         col.addWidget(status)
         row.addLayout(col, 1)
+
+        if cancellable:
+            # Muted, and to the left of "execute now": the two do opposite things to
+            # the same row, and the destructive one must not be the one the eye lands
+            # on or the hand reaches first.
+            cancel = QPushButton("cancel")
+            cancel.setCursor(Qt.CursorShape.PointingHandCursor)
+            cancel.setToolTip(self._CANCEL_HELP)
+            cancel.setStyleSheet(
+                f"QPushButton {{ color: {glyphs.MUTED}; background-color: transparent;"
+                " border: none; border-radius: 8px; padding: 2px 7px;"
+                " font-size: 9px; font-weight: 600; }"
+                "QPushButton:hover { color: #FF3B30; }"
+            )
+            cancel.clicked.connect(self.cancel_requested.emit)
+            row.addWidget(cancel, 0, Qt.AlignmentFlag.AlignVCenter)
 
         run = QPushButton("execute now")
         run.setCursor(Qt.CursorShape.PointingHandCursor)

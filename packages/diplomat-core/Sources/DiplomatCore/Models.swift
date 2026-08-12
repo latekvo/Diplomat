@@ -161,6 +161,26 @@ public enum Filters {
         guard !me.isEmpty else { return [] }
         return prs.filter { $0.author == me && !$0.unaddressedThreads(me: me).isEmpty }
     }
+
+    /// The PRs one Review-PRs sweep covers: `author`'s open PRs, in whichever of the
+    /// draft/ready scope the wizard's two boxes leave ticked.
+    ///
+    /// This is what the sweep is *expanded* into — one queued review per PR rather
+    /// than one agent told to work through all of them — so it decides how many
+    /// agents a single SPAWN eventually starts, and the two front-ends must agree on
+    /// it exactly.
+    ///
+    /// The login compare is case-insensitive because one side of it is typed by hand
+    /// into the wizard's username field, and GitHub logins are: `@OctoCat` asking for
+    /// octocat's PRs is not a request for nothing.
+    public static func sweptPRs(_ prs: [OpenPR], author: String,
+                                includeDrafts: Bool, includeReady: Bool) -> [OpenPR] {
+        guard !author.isEmpty else { return [] }
+        let handle = author.lowercased()
+        return prs.filter {
+            $0.author.lowercased() == handle && ($0.isDraft ? includeDrafts : includeReady)
+        }
+    }
 }
 
 // MARK: - Tiny formatting helpers

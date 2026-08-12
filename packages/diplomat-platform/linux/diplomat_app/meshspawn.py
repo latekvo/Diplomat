@@ -36,6 +36,8 @@ class MeshSpawnRow(QWidget):
         super().__init__()
         self.store = store
         self.duty_id = duty_id
+        # Whether this wizard's inputs produce a spawn to route at all (`set_applicable`).
+        self._applicable = True
 
         col = QVBoxLayout(self)
         col.setContentsMargins(0, 0, 0, 0)
@@ -72,12 +74,27 @@ class MeshSpawnRow(QWidget):
 
         return statefile.node_running(self.store.mesh_state)
 
+    def set_applicable(self, applicable: bool) -> None:
+        """Say whether this wizard's current inputs produce a spawn to route at all.
+
+        Kept here rather than left to callers toggling ``setVisible``: the row also
+        re-shows itself whenever the mesh comes up (``mesh_changed``), so a wizard
+        that hid it from outside would find it back the next time a peer appeared."""
+        if applicable == self._applicable:
+            return
+        self._applicable = applicable
+        self._sync()
+
     def use_mesh(self) -> bool:
         """True when this SPAWN should go through the mesh."""
-        return self._mesh_live and self.toggle.isChecked()
+        return self._routable and self.toggle.isChecked()
+
+    @property
+    def _routable(self) -> bool:
+        return self._applicable and self._mesh_live
 
     def _sync(self) -> None:
-        live = self._mesh_live
+        live = self._routable
         self.setVisible(live)
         if not live:
             return

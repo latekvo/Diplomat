@@ -432,7 +432,7 @@ struct SettingsView: View {
         let lo = AgentDispatchGate.minAutoTaskLimit, hi = AgentDispatchGate.maxAutoTaskLimit
         let badge: String = "\(n) task\(n == 1 ? "" : "s")"
         return SettingRow(title: "Run at most",
-                          summary: "Across both monitors and anything a mesh peer routes here.",
+                          summary: SettingsView.autoTaskLimitSummary,
                           detail: SettingsView.autoTaskLimitDetail,
                           stacked: true) {
             SliderSetting(label: "Run at most",
@@ -451,9 +451,14 @@ struct SettingsView: View {
     /// Both long strings are resolved before the ViewBuilder sees them: a concatenation
     /// or a ternary inside a `Text(...)` in a builder is what tips this file over the
     /// type-checker's time limit on a CI runner, while still compiling here.
+    private static let autoTaskLimitSummary =
+        "Across both monitors, a PR sweep's reviews, and anything a mesh peer routes here."
+
     private static let autoTaskLimitDetail = """
-        A hard cap for this machine, across both monitors and any work a mesh peer \
-        routes here. Agents you spawn yourself from the panel don't count against it. \
+        A hard cap for this machine, across both monitors, the reviews a PR sweep \
+        queues, and any work a mesh peer routes here. The agent a wizard press opens \
+        on the spot is outside it; a review it queues instead is inside, like \
+        anything else waiting for a bay. \
         Work over the cap isn't dropped — it waits in the Agent-tasks list, in the \
         order you put it, and starts as soon as a running agent finishes. The panel \
         draws whatever is left of the cap as empty slots.
