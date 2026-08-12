@@ -70,6 +70,27 @@ def test_my_tools_empty_without_identity():
     assert Filters.my_unaddressed_review_prs(prs, "") == []
 
 
+def test_a_sweep_covers_one_authors_prs_in_the_scope_it_asked_for():
+    """What a Review-PRs sweep expands into — one queued review per PR here, so this
+    decides how many agents a single press eventually starts."""
+    prs = [
+        OpenPR(1, "d", "u/1", True, "alice", NOW, None, [], None, []),
+        OpenPR(2, "r", "u/2", False, "alice", NOW, None, [], None, []),
+        OpenPR(3, "d", "u/3", True, "bob", NOW, None, [], None, []),
+    ]
+    swept = Filters.swept_prs
+    assert [p.number for p in swept(prs, "alice", True, True)] == [1, 2]
+    assert [p.number for p in swept(prs, "alice", True, False)] == [1]  # "my drafts"
+    assert [p.number for p in swept(prs, "alice", False, True)] == [2]
+    assert swept(prs, "alice", False, False) == []
+    # Typed by hand into the wizard's username field, and GitHub logins are
+    # case-insensitive: asking for @Alice's PRs is not a request for nothing.
+    assert [p.number for p in swept(prs, "ALICE", True, True)] == [1, 2]
+    # No handle yet (the viewer login has not resolved) sweeps nobody, rather than
+    # everybody.
+    assert swept(prs, "", True, True) == []
+
+
 def test_store_settings_are_isolated_from_the_real_user(tmp_path):
     # conftest.py redirects QSettings into the per-test temp dir; a hidden-tools
     # write from a test must land there, never in the user's real settings (which

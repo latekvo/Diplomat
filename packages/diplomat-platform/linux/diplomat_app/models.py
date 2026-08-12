@@ -175,6 +175,29 @@ class Filters:
             return []
         return [p for p in prs if p.author == me and p.unaddressed_threads(me)]
 
+    @staticmethod
+    def swept_prs(prs: list[OpenPR], author: str, include_drafts: bool,
+                  include_ready: bool) -> list[OpenPR]:
+        """The PRs one Review-PRs sweep covers: ``author``'s open PRs, in whichever of
+        the draft/ready scope the wizard's two boxes leave ticked.
+
+        This is what the sweep is *expanded* into — one queued review per PR rather
+        than one agent told to work through all of them — so it decides how many agents
+        a single SPAWN eventually starts, and the two front-ends must agree on it
+        exactly (Swift: ``Filters.sweptPRs``).
+
+        The login compare is case-insensitive because one side of it is typed by hand
+        into the wizard's username field, and GitHub logins are: ``@OctoCat`` asking for
+        octocat's PRs is not a request for nothing."""
+        if not author:
+            return []
+        handle = author.lower()
+        return [
+            p for p in prs
+            if p.author.lower() == handle
+            and (include_drafts if p.is_draft else include_ready)
+        ]
+
 
 # MARK: - Tiny formatting helpers
 

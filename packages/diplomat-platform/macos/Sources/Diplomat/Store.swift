@@ -319,9 +319,23 @@ final class Store: ObservableObject {
     /// is rebuilt from live evidence every 3 minutes; a stored copy would only ever
     /// be a staler answer to a question already being re-asked, and would hand
     /// "execute now" a prompt assembled against a PR that has since moved on. What
-    /// IS persisted is `queuedTaskOrder` — the operator's arrangement, the one thing
-    /// a poll cannot reconstruct.
+    /// IS persisted is `queuedTaskOrder` — the operator's arrangement — and
+    /// `requestedReviews`, the sweeps the operator asked for, both being things a
+    /// poll cannot reconstruct.
     @Published var queuedTasks: [QueuedAgentTask] = []
+
+    /// The reviews the operator has asked for and nothing has started yet, in the
+    /// order their sweeps asked for them.
+    ///
+    /// Persisted, alone among the things the queue is built from, because it is the
+    /// only one GitHub cannot answer for: a poll can always re-derive that a PR
+    /// conflicts or that a thread is waiting on me, but nothing about a PR records
+    /// that somebody swept it into a review. Losing this list on a restart would
+    /// silently drop the rest of a fifty-PR sweep, which is exactly the run long
+    /// enough to be interrupted.
+    var requestedReviews: [RequestedReview] {
+        didSet { persistJSON(requestedReviews, forKey: Keys.requestedReviews) }
+    }
 
     /// Queued work whose dispatch is under way: it has left the queue and its spawn
     /// has not answered yet.
@@ -377,6 +391,7 @@ final class Store: ObservableObject {
         static let meshTrustReminderSuppressed = "meshTrustReminderSuppressed"
         static let allocatorSetupDone = "allocatorSetupDone"
         static let queuedTaskOrder = "queuedTaskOrder"
+        static let requestedReviews = "requestedReviews"
     }
 
     /// The persisted terminal choice, readable before a Store exists (the AppDelegate's
@@ -479,6 +494,7 @@ final class Store: ObservableObject {
         meshTrustReminderSuppressed = defaults.bool(forKey: Keys.meshTrustReminderSuppressed)
         processes = Store.loadProcesses()
         queuedTaskOrder = defaults.stringArray(forKey: Keys.queuedTaskOrder) ?? []
+        requestedReviews = Store.loadRequestedReviews()
         if hiddenTools.contains(selected.rawValue),
            let first = ToolKind.allCases.first(where: { !hiddenTools.contains($0.rawValue) }) {
             selected = first
@@ -756,7 +772,8 @@ final class Store: ObservableObject {
         processes.append(TrackedProcess(
             kind: job.kind,
             label: AgentDispatchGate.label(source: .auto, core: job.label,
-                                           attemptNumber: attemptNumber),
+                                           attemptNumber: attemptNumber,
+                                           requested: job.requested),
             terminal: "", windowID: "", sessionID: "", tty: "", donePath: "",
             prURL: job.prURL, mesh: run,
             source: AgentDispatchGate.Source.auto.rawValue))
@@ -918,6 +935,11 @@ final class Store: ObservableObject {
             stagedQueue = []
             if let snaps { await pollMyPRs(snaps: snaps) }
             await pollReviewRequests(owner: owner, repo: repo)
+            // Last, so the monitors' finds keep the places they were found in: the
+            // operator's own sweep bands behind them anyway, and a fifty-PR ask
+            // offered first would otherwise decide the arrangement of a queue it is
+            // meant to wait in.
+            offerRequestedReviews()
             // A cycle that failed part-way knows what it fetched, not what is owed —
             // committing then would drop every task the failing half would have
             // re-offered, and with it the operator's arrangement of them.
@@ -1371,11 +1393,13 @@ final class Store: ObservableObject {
     /// reconcilers run after the edge-trigger and carry the backoff-aware attempt
     /// number, so theirs is the job that should run.
     private func stageQueued(_ job: AgentJob, attemptNumber: Int) {
-        // Only PR-scoped work with a monitor behind it can be queued: a task nothing
-        // can name is one the next poll cannot recognise as the same one, and a task
-        // no monitor owns is one nothing would re-offer — the queue would be the only
-        // record of it, which is precisely what this list is not. (Every automatic job
-        // is both; the sweeps that are neither are panel-only, and a click is uncapped.)
+        // Only PR-scoped work with a monitor behind it is queued by a REFUSAL: a task
+        // nothing can name is one the next poll cannot recognise as the same one, and a
+        // task no monitor owns is one nothing would re-offer from here — so the refusal
+        // would be the only record of it, and a poll that never happened would lose it.
+        // (Every automatic job is both. A review the operator asked for is neither, and
+        // is re-offered from the list that remembers the ask instead —
+        // `offerRequestedReviews`. A wizard click is uncapped and never refused.)
         guard let number = job.prNumber, job.counter != nil else { return }
         let entry = QueuedAgentTask(
             id: AgentTaskQueue.key(auditAction: job.auditAction, prNumber: number),
@@ -1483,6 +1507,156 @@ final class Store: ObservableObject {
         }
     }
 
+    // MARK: - the reviews the operator asks for
+    //
+    // A Review-PRs sweep is expanded here into one queued review per PR, rather than
+    // handed to a single agent as "review every draft PR of mine". On a repo with
+    // fifty drafts that agent is fifty reviews in one session: one context, one
+    // terminal, one machine, and no way to see where it has got to or to stop it
+    // halfway. Split, each PR is a row of the Agent-tasks list, gets a bay of the task
+    // cap to itself, and runs when the cap has room — behind the monitors' finds,
+    // ahead of the conflict fixes (`AgentTaskQueue.band`).
+
+    /// One PR a Review-PRs sweep asked to have reviewed, waiting for a free slot.
+    ///
+    /// This is the only work in the queue the applet has to REMEMBER. Everything else
+    /// there is a monitor's find, re-derived from GitHub on every poll — but a PR
+    /// records nothing about somebody having wanted it reviewed, so if this list is
+    /// lost the ask is lost with it. Hence the whole config rather than a PR number:
+    /// the prompt for each is assembled from it when the task is offered, exactly as
+    /// the wizard would have assembled it at the moment of the click.
+    struct RequestedReview: Codable, Equatable {
+        let number: Int
+        let url: String
+        /// Whose PR — the pipeline's ban dimension. Empty for my own.
+        let author: String
+        let config: ReviewConfig
+
+        /// The row this task wears in the panel and the activity feed. Carries the
+        /// depth because that is the choice a sweep is worth re-reading later: the
+        /// same PR queued from a `max` sweep and from a `quick` one are different jobs.
+        var label: String { "Review · #\(number) · \(config.depth)" }
+    }
+
+    private static func loadRequestedReviews() -> [RequestedReview] {
+        guard let data = UserDefaults.standard.data(forKey: Keys.requestedReviews),
+              let decoded = try? JSONDecoder().decode([RequestedReview].self, from: data)
+        else { return [] }
+        return decoded
+    }
+
+    /// Queue one review per PR `cfg` sweeps. Returns `(queued, already)`.
+    ///
+    /// The PRs come from the panel's own last fetch rather than a fresh one: it is the
+    /// list the operator was looking at when they pressed the button, which is the list
+    /// they meant. One that has closed since drops out at dispatch — the agent is
+    /// scoped to a PR reference either way.
+    ///
+    /// A PR already waiting for a review keeps the ask it has instead of gaining a
+    /// second: the queue is keyed by PR, so two would be one row that dispatches twice
+    /// (and the second dispatch would find the first agent still on the PR). That makes
+    /// pressing SPAWN twice, or sweeping a scope that overlaps an earlier one,
+    /// idempotent rather than a way to double up.
+    @discardableResult
+    func requestReviewSweep(_ cfg: ReviewConfig) -> (queued: Int, already: Int) {
+        let targets = Filters.sweptPRs(prs, author: cfg.sweepAuthor,
+                                       includeDrafts: cfg.includeDrafts,
+                                       includeReady: cfg.includeReady)
+        let known = Set(requestedReviews.map(\.number))
+        let fresh = targets.filter { !known.contains($0.number) }.map { pr in
+            RequestedReview(number: pr.number, url: pr.url,
+                            // The ban dimension, and only someone else's PR has one.
+                            author: cfg.disposition == .theirs ? pr.author : "",
+                            config: cfg.forPR(pr.number))
+        }
+        guard !fresh.isEmpty else { return (0, targets.count) }
+        requestedReviews += fresh
+        publishRequested(fresh)
+        return (fresh.count, targets.count - fresh.count)
+    }
+
+    /// One stored ask as the queued task it stands for.
+    ///
+    /// Carries no `counter`, no `workKey` and no `ledgerKey`: no monitor owns it (so no
+    /// toggle pauses it and no auto-handled counter counts it), and the telemetry
+    /// ledger measures the monitors, not the operator.
+    private func requestedTask(_ entry: RequestedReview) -> QueuedAgentTask {
+        QueuedAgentTask(
+            id: AgentTaskQueue.key(auditAction: AgentTaskQueue.requestedAction,
+                                   prNumber: entry.number),
+            job: AgentJob(kind: "review", auditAction: AgentTaskQueue.requestedAction,
+                          label: entry.label, prompt: entry.config.buildPrompt(),
+                          prURL: entry.url, prNumber: entry.number,
+                          authorLogin: entry.author.isEmpty ? nil : entry.author,
+                          duty: "review", workKey: "", counter: nil),
+            attemptNumber: 1)
+    }
+
+    /// Put freshly asked-for reviews into the queue there and then.
+    ///
+    /// Without this they would appear on the next poll, up to a poll period after the
+    /// press — and a press that leaves the panel exactly as it was reads as a press
+    /// that did nothing. Re-arranged through the same `AgentTaskQueue.order` the commit
+    /// uses, so the rows land in their band and in the operator's arrangement, not
+    /// merely at the end.
+    private func publishRequested(_ entries: [RequestedReview]) {
+        let tasks = queuedTasks + entries.map(requestedTask)
+        let ordered = AgentTaskQueue.order(offered: tasks.map(\.id), saved: queuedTaskOrder)
+        queuedTaskOrder = ordered
+        queuedTasks = ordered.compactMap { id in tasks.first { $0.id == id } }
+    }
+
+    /// Offer every review still asked for, alongside the monitors' own finds.
+    ///
+    /// This is the list's whole job in a poll. A monitor re-offers its work by finding
+    /// it on GitHub again; nothing on GitHub says a PR was swept, so what re-offers
+    /// these is the ask itself, until the dispatch that starts one takes it off
+    /// (`settleRequested`).
+    ///
+    /// Not private: the queue self-test commits a cycle directly, which is the only way
+    /// to exercise the offer without a live GitHub fetch.
+    func offerRequestedReviews() {
+        for entry in requestedReviews { stagedQueue.append(requestedTask(entry)) }
+    }
+
+    /// Take an ask off the list once its dispatch has answered for it.
+    ///
+    /// Started (here or on a peer that already owns the work) is the obvious one. A BAN
+    /// is the other: the agent would refuse to run for as long as the ban stands, and a
+    /// row nothing will ever start is a row that lies about what this machine is going
+    /// to do. Every other outcome leaves the ask alone — an in-flight PR, a window with
+    /// no budget left and a terminal that failed to open are all reasons to try again
+    /// next poll, which is exactly what staying in the list means.
+    private func settleRequested(_ entry: QueuedAgentTask, _ outcome: DispatchOutcome) {
+        guard entry.job.requested else { return }
+        switch outcome {
+        case .spawned, .standDown, .banned: forgetRequested(entry.job.prNumber)
+        case .inFlight, .atCapacity, .unaffordable, .failed: break
+        }
+    }
+
+    /// Drop one PR's ask.
+    private func forgetRequested(_ number: Int?) {
+        guard let number else { return }
+        requestedReviews.removeAll { $0.number == number }
+    }
+
+    /// The queued row's "cancel": drop an ask the operator has changed their mind
+    /// about, without starting it.
+    ///
+    /// A sweep is the one thing in this list that can be asked for by the fifty, and
+    /// the only one nothing else will retire — a monitor's row leaves when GitHub stops
+    /// owing the work, but an ask stands until it runs. Without a way back out, a
+    /// mis-aimed sweep is a day of agents nobody can call off.
+    func cancelRequestedReview(_ id: String) {
+        guard let entry = queuedTasks.first(where: { $0.id == id }), entry.job.requested
+        else { return }
+        forgetRequested(entry.job.prNumber)
+        dropQueuedTask(id)
+        AuditLog.log("panel", "queue-cancel", "\(entry.job.label) — cancelled, not run")
+        refreshAudit()
+    }
+
     /// Whether the monitor that owns this work is switched off.
     ///
     /// A switched-off monitor still finds its work and still queues it — what your
@@ -1494,15 +1668,17 @@ final class Store: ObservableObject {
         switch counter {
         case .reviewRequests:        return !reviewRequestsEnabled
         case .myReviews, .conflicts: return !prAutofixEnabled
-        // Unreachable: a job with no monitor behind it is never queued (`stageQueued`).
-        // Answering "not paused" keeps the unreachable case from being the one that
-        // silently holds work back.
+        // A review the operator asked for: no monitor owns it, so neither toggle
+        // speaks for it. It waits for the cap and nothing else — switching the
+        // monitors off says what this machine may go looking for, not that it should
+        // stop doing what it was told.
         case nil:                    return false
         }
     }
 
     /// The queued tasks the drain may start, in the operator's order — everything
-    /// whose monitor is still on.
+    /// whose monitor is still on, plus the reviews the operator asked for, which no
+    /// monitor speaks for either way.
     ///
     /// Not private: this is the seam the queue self-test drives. Asserting on the
     /// list the drain walks is how the "a paused monitor's work is held, not run"
@@ -1518,6 +1694,13 @@ final class Store: ObservableObject {
     /// overrides the rate-limit budget. The drain does not: it is the machine starting
     /// its own automatic work, and a task that could not be afforded when it was found
     /// is not afforded by having waited in a list.
+    ///
+    /// Dispatched as `.auto` whatever put it in the queue, including a review the
+    /// operator asked for. That is not about who wanted the work but about what
+    /// starting it costs: this dispatch spends a bay of the device's cap and its share
+    /// of the rate-limit window, and the gate's `.panel` branch is for the agent a
+    /// click opens *now*, outside the cap entirely. What the operator's ask does change
+    /// is the label — see `AgentDispatchGate.label`.
     ///
     /// That record is not bookkeeping polish: the whole retry ladder hangs off it. A
     /// queued dispatch that wrote none would look, to the very next poll after the
@@ -1542,6 +1725,7 @@ final class Store: ObservableObject {
                                           bypassCapacity: true, bypassBudget: forced)
         endStarting(entry.id)
         if outcome.wasHandled { recordQueuedAttempt(entry) }
+        settleRequested(entry, outcome)
         return outcome
     }
 
@@ -1782,6 +1966,14 @@ final class Store: ObservableObject {
         /// path: a panel spawn keeps no attempt record, and a job with no monitor
         /// behind it (the sweeps) has no stamp to carry.
         var attemptStamp: String = ""
+
+        /// Whether the operator asked for this exact unit of work, as opposed to a
+        /// monitor having found it. Read off the verb, which already distinguishes
+        /// them: the monitors dispatch under `review-req` and `review-reply`, and a
+        /// plain `review` is a Review-PRs spawn — a click, or one PR of the sweep a
+        /// click queued. It decides the label (`AgentDispatchGate.label`) and, in the
+        /// panel, which queued rows can be cancelled.
+        var requested: Bool { auditAction == AgentTaskQueue.requestedAction }
     }
 
     enum AutoCounter { case reviewRequests, myReviews, conflicts }
@@ -1948,7 +2140,8 @@ final class Store: ObservableObject {
             case .spawned(let node, let onThisMachine):
                 AuditLog.log(source.rawValue, job.auditAction,
                              AgentDispatchGate.label(source: source, core: job.label,
-                                                     attemptNumber: attemptNumber))
+                                                     attemptNumber: attemptNumber,
+                                                     requested: job.requested))
                 trackMeshRun(job, node: node, attemptNumber: attemptNumber,
                              onThisMachine: onThisMachine)
                 bumpAutoCounter(job, source: source, attemptNumber: attemptNumber)
@@ -1975,7 +2168,8 @@ final class Store: ObservableObject {
             let tracked = source == .auto ? job.ledgerKey : ""
             track(kind: job.kind,
                   label: AgentDispatchGate.label(source: source, core: job.label,
-                                                 attemptNumber: attemptNumber),
+                                                 attemptNumber: attemptNumber,
+                                                 requested: job.requested),
                   prURL: job.prURL, result: result, source: source.rawValue,
                   auditAction: job.auditAction, ledgerKey: tracked, prompt: job.prompt)
             bumpAutoCounter(job, source: source, attemptNumber: attemptNumber)

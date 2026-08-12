@@ -126,7 +126,8 @@ def _queue_fixture(store: Store) -> None:
 
     appconfig.auto_task_limit = lambda: 4
 
-    def task(number: int, kind: str, action: str, label: str, counter: str, attempt=1):
+    def task(number: int, kind: str, action: str, label: str, counter: str | None,
+             attempt=1):
         return autofix.QueuedTask(
             id=autofix.queue_key(action, number),
             job=autofix.AgentJob(
@@ -145,6 +146,9 @@ def _queue_fixture(store: Store) -> None:
         task(512, "review", "review-req",
              "Review-req · #512 (@octocat) −verdict (auto-approvals off)",
              "review_requests"),
+        # One PR of a sweep the operator asked for: no "Auto · " on its label, and the
+        # one kind of row that can be cancelled.
+        task(503, "review", autofix.QUEUE_REQUESTED_ACTION, "Review · #503 · deep", None),
         task(508, "conflicts", "conflicts", "Resolve · #508", "conflicts", attempt=2),
         starting,
     ]

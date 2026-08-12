@@ -119,8 +119,8 @@ public enum AutofixDiff {
 ///   button has already decided placement (`decide`);
 /// - counters: only a monitor's FIRST dispatch counts as auto-handled work
 ///   (`bumpsCounter`);
-/// - label: auto rows carry the "Auto · " prefix, retries are surfaced the same
-///   way on both (`label`).
+/// - label: rows a monitor found carry the "Auto · " prefix, retries are surfaced
+///   the same way on both (`label`).
 ///
 /// Python twin: `autofix.dispatch_decide` etc. — keep byte-equivalent semantics
 /// (see the parity tests on both sides).
@@ -392,9 +392,17 @@ public enum AgentDispatchGate {
 
     /// The activity/session label both interfaces produce: same core, the source
     /// prefix and retry suffix applied identically everywhere.
-    public static func label(source: Source, core: String, attemptNumber: Int = 1) -> String {
+    ///
+    /// `requested` drops the prefix for work the operator asked for by name and the
+    /// queue merely chose the moment for — a review from a PR sweep. Such a job is
+    /// dispatched as `.auto` in every other respect (it waits for the cap, it holds a
+    /// bay while it runs), but "Auto · " answers *who decided there was work here*,
+    /// and for this one that was the operator. Without it a requested review of #12
+    /// and the review-reply monitor's own dispatch on #12 read as the same row.
+    public static func label(source: Source, core: String, attemptNumber: Int = 1,
+                             requested: Bool = false) -> String {
         let retry = attemptNumber > 1 ? " · retry \(attemptNumber)" : ""
-        return (source == .auto ? "Auto · " : "") + core + retry
+        return (source == .auto && !requested ? "Auto · " : "") + core + retry
     }
 
     /// Auto-handled counters bump only on a monitor's first dispatch — a retry is

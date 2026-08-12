@@ -617,27 +617,26 @@ struct ReviewWizardView: View {
                             isValid: config.isValid && !meshDispatching,
                             tint: tint,
                             terminalTitle: AgentSpawner.resolved(store.terminal).title,
+                            // Only a single PR is a session the mesh could place: a
+                            // sweep opens none, it queues one review per PR for this
+                            // machine's own cap to start.
+                            routable: target == .specific,
                             action: spawn)
     }
 
     /// A short label for the ongoing-processes list, e.g. "Review · #337 · Deep".
+    /// One shape, because a single PR is the only thing this wizard spawns: a sweep is
+    /// queued a PR at a time and each of those rows is labelled by its own
+    /// `Store.RequestedReview`.
     private var trackingLabel: String {
-        let d = depth.title
-        switch target {
-        case .mine: return "Review · my PRs · \(d)"
-        case .someone:
-            let u = username.trimmingCharacters(in: .whitespaces)
-            return "Review · @\(u.isEmpty ? "user" : u) · \(d)"
-        case .specific:
-            let n = config.prRef.number.map { "#\($0)" } ?? "PR"
-            return "Review · \(n) · \(d)"
-        }
+        let n = config.prRef.number.map { "#\($0)" } ?? "PR"
+        return "Review · \(n) · \(depth.title)"
     }
 
-    /// The one PR this run concerns (single-PR mode only) — the open-in-browser
-    /// fallback when its window can't be focused.
+    /// The one PR this run concerns — the open-in-browser fallback when its window
+    /// can't be focused.
     private var trackingPRURL: String? {
-        guard target == .specific, let n = config.prRef.number else { return nil }
+        guard let n = config.prRef.number else { return nil }
         let (owner, repo) = config.targetRepo
         return "https://github.com/\(owner)/\(repo)/pull/\(n)"
     }
@@ -683,6 +682,14 @@ struct ReviewWizardView: View {
 
     private func spawn() {
         let cfg = config
+        // A single PR is one agent, and the two branches below dispatch it. A
+        // whose-PRs sweep is not: it becomes one queued review per PR, so the task cap
+        // decides how many run at once rather than one agent being handed every draft
+        // in the repo at the same time.
+        guard cfg.isSinglePR else {
+            queueSweep(cfg)
+            return
+        }
         // Mesh path: hand the job to the local node (it picks the executor, with
         // failover) instead of opening a terminal here — mirrors the Linux wizards.
         if MeshSpawnRow.isLive(store), useMesh {
@@ -701,14 +708,35 @@ struct ReviewWizardView: View {
         let term = AgentSpawner.resolved(store.terminal)
         let job = Store.AgentJob(kind: "review", auditAction: "review",
                                  label: trackingLabel, prompt: cfg.buildPrompt(),
-                                 prURL: trackingPRURL,
-                                 prNumber: target == .specific ? cfg.prRef.number : nil,
+                                 prURL: trackingPRURL, prNumber: cfg.prRef.number,
                                  authorLogin: reviewedAuthorLogin, duty: "review",
                                  workKey: "", counter: nil)
         status = "Launching \(term.title)…"
         Task {
             status = statusText(for: await store.dispatchAgent(job, source: .panel),
                                 terminal: term.title)
+        }
+    }
+
+    /// Expand a whose-PRs sweep into one queued review per PR, and say what landed.
+    ///
+    /// The PRs are the panel's own last fetch — the list the operator was looking at
+    /// when they pressed the button. Before the first fetch that list is empty, and
+    /// queueing nothing out of it would read as "you have no drafts".
+    private func queueSweep(_ cfg: ReviewConfig) {
+        guard store.hasLoaded else {
+            status = "PRs haven't loaded yet — refresh, then sweep."
+            return
+        }
+        let (queued, already) = store.requestReviewSweep(cfg)
+        if queued > 0 {
+            let waiting = already > 0 ? " (\(already) already queued)" : ""
+            status = "Queued \(queued) review\(queued == 1 ? "" : "s")\(waiting)"
+                + " — they start as slots free."
+        } else if already > 0 {
+            status = "All \(already) are queued already."
+        } else {
+            status = "No open PRs in that scope."
         }
     }
 

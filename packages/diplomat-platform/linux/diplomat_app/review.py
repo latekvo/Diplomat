@@ -20,7 +20,7 @@ import shlex
 import shutil
 import subprocess
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 
 from . import appconfig, core
@@ -172,12 +172,43 @@ class ReviewConfig(PRSweepConfig):
         # A whose-PRs sweep needs a handle and at least one PR-state box ticked.
         return bool(self.author_handle) and (self.include_drafts or self.include_ready)
 
-    def build_prompt(self) -> str:
-        # Single-sourced in Swift (DiplomatCore) — assembled by the diplomat-core
-        # CLI so the Linux applet can't drift from the macOS builder.
-        from . import promptcore
+    @property
+    def sweep_author(self) -> str:
+        """The login whose open PRs this sweep expands into one queued review each,
+        or "" when there is nothing to expand (a single PR, or my own PRs before the
+        viewer login has resolved).
 
-        return promptcore.build_prompt({
+        Not :attr:`author_handle`, which falls back to the literal "me" for the prompt
+        to address: matched against real PR authors that would sweep whatever the
+        account called "me" has open."""
+        if self.target == PRTarget.MINE:
+            return self.me.strip()
+        if self.target == PRTarget.SOMEONE:
+            return self.username.strip()
+        return ""
+
+    def for_pr(self, number: int) -> "ReviewConfig":
+        """This sweep, narrowed to one of the PRs it covers — the config behind one
+        queued review.
+
+        Same depth and same action toggles, because they are what the operator chose;
+        only the scope changes. The disposition comes from the sweep's own target
+        rather than a fresh ``gh`` poll: a sweep already knows whose PRs it asked for,
+        and polling per PR would be one shell-out apiece to re-learn it."""
+        return replace(
+            self,
+            target=PRTarget.SPECIFIC,
+            specific_pr=str(number),
+            specific_author=self.disposition,
+        )
+
+    def prompt_payload(self) -> dict:
+        """The inputs the prompt is assembled from — everything the builder reads, and
+        nothing derived. Split out of :meth:`build_prompt` because a queued review is
+        stored as this payload: it is already the serialised form of the config, kept
+        in step with the Swift builder by the golden-prompt tests, so persisting it
+        needs no second spelling of these fields (``Store.requested_reviews``)."""
+        return {
             "kind": "review",
             "depth": self.depth,
             "target": self.target.name.lower(),
@@ -192,7 +223,67 @@ class ReviewConfig(PRSweepConfig):
             "finalPass": self.final_pass,
             "softApprove": self.soft_approve,
             "specificAuthor": self.disposition.value,
-        })
+        }
+
+    def build_prompt(self) -> str:
+        # Single-sourced in Swift (DiplomatCore) — assembled by the diplomat-core
+        # CLI so the Linux applet can't drift from the macOS builder.
+        from . import promptcore
+
+        return promptcore.build_prompt(self.prompt_payload())
+
+
+# MARK: - A review the operator has asked for
+
+
+@dataclass(frozen=True)
+class RequestedReview:
+    """One PR a Review-PRs sweep asked to have reviewed, waiting for a free slot.
+
+    A sweep is expanded into one of these per PR it covers instead of one agent told
+    to work through all fifty, so each gets a bay of the task cap to itself and the
+    panel can show, hold and reorder them one by one.
+
+    This is the only work in the queue the applet has to REMEMBER. Everything else
+    there is a monitor's find, re-derived from GitHub on every poll — but a PR records
+    nothing about somebody having wanted it reviewed, so if this list is lost the ask
+    is lost with it. Hence the whole payload rather than a PR number: it is what the
+    prompt is assembled from, at the press and again after a restart, so the agent
+    that eventually runs is the one the wizard would have opened at the click.
+    """
+
+    number: int
+    url: str
+    #: Whose PR — the pipeline's ban dimension. Empty for my own.
+    author: str
+    #: :meth:`ReviewConfig.prompt_payload` for this one PR.
+    config: dict
+
+    @property
+    def label(self) -> str:
+        """The row this task wears in the panel and the activity feed. Carries the
+        depth because that is the choice a sweep is worth re-reading later: the same
+        PR queued from a `max` sweep and from a `quick` one are different jobs."""
+        return f"Review · #{self.number} · {self.config.get('depth', '')}"
+
+    def to_json(self) -> dict:
+        return {"pr": self.number, "url": self.url, "author": self.author,
+                "config": self.config}
+
+    @staticmethod
+    def from_json(obj: dict) -> "RequestedReview | None":
+        """One stored row, or ``None`` when it is not one. A hand-edited or
+        part-written entry drops out of the list rather than taking the applet's whole
+        queue down with it — the same degradation every other state file here gets."""
+        try:
+            number = int(obj["pr"])
+            config = obj["config"]
+        except (KeyError, TypeError, ValueError):
+            return None
+        if not isinstance(config, dict):
+            return None
+        return RequestedReview(number=number, url=str(obj.get("url", "")),
+                               author=str(obj.get("author", "")), config=config)
 
 
 # MARK: - Terminal choice + spawning

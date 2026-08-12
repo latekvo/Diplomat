@@ -198,14 +198,20 @@ an idle machine with a cap of two reads `0 · 2 free` over two empty bays.
   agents you spawn yourself from the panel take none, and neither does work the
   mesh placed on another machine - that spends the peer's capacity, not yours.
   Queued work starts here on the next poll.
-- **Queued** rows are auto-fixes and auto-reviews nothing has started yet. Each
+- **Queued** rows are auto-fixes, auto-reviews and reviews you asked for that
+  nothing has started yet. Each
   carries **execute now** - start it immediately, past whatever is holding it -
   and a drag grip: drop a row on another to set the order the queue runs in. That
   order is honoured at the top of the next poll, *before* the monitors go looking
   for more work, so a slot that just freed goes to whatever you put first rather
   than to whichever PR GitHub happened to list first.
-- **Resolve-conflicts** rows run after every auto-fix and auto-review, whatever
-  order the monitors found them in, and no drag lifts one above a review (that
+- **Requested reviews** - one row per PR of a Review-PRs sweep - run after every
+  auto-fix and auto-review and before the conflict fixes, because what the monitors
+  find is a debt other people can see and a sweep is work you started when you had
+  the time for it. Each also carries **cancel**: you asked for it, so nothing else
+  will ever take it off the list.
+- **Resolve-conflicts** rows run last of all, whatever
+  order the monitors found them in, and no drag lifts one out of its band (that
   drag is refused rather than sprung back on the next poll). An agent working the
   same branch lands its own merge on the way, so a conflict fix is the work most
   often made unnecessary by the work ahead of it - and the poll re-offers it for
@@ -285,7 +291,17 @@ reply on threads that have been answered, leaves the list instead of opening an
 agent on work somebody already did. (Not on a mesh claim: the cap outranks the mesh gate, so a machine with
 anything queued is one that never asked a peer - peer-owned work leaves when the
 drain reaches it and the mesh answers.) The key order is remembered, so your
-arrangement survives the rebuild and a restart; nothing else is. *Execute now* keeps the task automatic in every other respect:
+arrangement survives the rebuild and a restart.
+
+The one exception is the reviews **you** ask for by sweeping your PRs (below):
+nothing on GitHub records that a PR was swept, so those are remembered instead of
+re-derived, offered on every poll until each is dispatched, and carry a **cancel**
+button beside *execute now* because nothing else will ever retire one. They wait in
+a band of their own - behind everything GitHub is already owed (a review requested
+of you, a thread waiting on your reply), ahead of the conflict fixes - so sweeping
+fifty drafts does not bury a review request behind them for a day.
+
+*Execute now* keeps the task automatic in every other respect:
 same `Auto · ` label, same auto-handled counter, same mesh routing - the cap and
 the rate-limit budget are the two holds it overrides. So a click can land the agent on a peer rather than
 here, and what the starting row becomes is a mesh row saying which; it occupies a
@@ -295,13 +311,22 @@ slot of this machine's cap only when it actually runs on this machine.
 
 The grid carries a **Review PRs** card alongside the tools. Click it and the wizard
 opens where the PR lists normally render; dial in a few choices and hit **SPAWN
-AGENT** - it opens a fresh terminal window (iTerm if installed, else Terminal)
-running a detached review session in your **repo root** (Settings; default
-`~/dev/<repo>`) that you watch and steer yourself. The prompt is staged to a
-file and the window runs
+AGENT**.
+
+A **specific PR** is one agent: a fresh terminal window (iTerm if installed, else
+Terminal) running a detached review session in your **repo root** (Settings;
+default `~/dev/<repo>`) that you watch and steer yourself. The prompt is staged to
+a file and the window runs
 `claude "$(cat <promptfile>)"; printf %s $? > <done>` - the trailing sentinel
 (under `~/.diplomat/pr-monitor/done/`) is how the Agent-tasks list knows the
-agent finished. The choices are baked into the prompt:
+agent finished.
+
+A **whose-PRs sweep** is not one agent for all of them. It queues one review per PR
+it covers, so the task cap starts them a few at a time and each is a row you can
+reorder, run ahead of the rest, or cancel - fifty drafts are fifty reviews, not one
+session told to work through fifty. (Which is also why the mesh row is offered for a
+single PR only: a sweep opens no session to place.) The choices are baked into each
+prompt:
 
 - **Target** — the same three-way selector the other wizards use: *Mine* (the
   resolved handle, see Settings), *Someone else's* (a handle field lights up), or

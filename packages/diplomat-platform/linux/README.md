@@ -53,14 +53,20 @@ slot**, then the **queue** that has no bay yet.
   including a job the mesh placed back on this machine, which is a `claude` process
   here whoever opened its terminal; agents you spawn yourself from the panel take
   none. Queued work starts here on the next poll.
-- **Queued** rows are auto-fixes and auto-reviews nothing has started yet. Each
+- **Queued** rows are auto-fixes, auto-reviews and reviews you asked for that nothing
+  has started yet. Each
   carries **execute now** — start it immediately, past whatever is holding it — and a
   drag grip: drop a row on another to set the order the queue runs in. That order is
   honoured at the top of the next poll, *before* the monitors go looking for more
   work, so a slot that just freed goes to whatever you put first rather than to
   whichever PR GitHub happened to list first.
-- **Resolve-conflicts** rows run after every auto-fix and auto-review, whatever order
-  the monitors found them in, and no drag lifts one above a review (that drag is
+- **Requested reviews** — one row per PR of a Review-PRs sweep — run after every
+  auto-fix and auto-review and before the conflict fixes, because what the monitors
+  find is a debt other people can see and a sweep is work you started when you had
+  the time for it. Each also carries **cancel**: you asked for it, so nothing else
+  will ever take it off the list.
+- **Resolve-conflicts** rows run last of all, whatever order
+  the monitors found them in, and no drag lifts one out of its band (that drag is
   refused rather than sprung back on the next poll). An agent working the same branch
   lands its own merge on the way, so a conflict fix is the work most often made
   unnecessary by the work ahead of it — and the poll re-offers it for as long as
@@ -82,10 +88,19 @@ re-checks the rows it is about to run against the fetch it has just made — a c
 fix on a PR GitHub no longer calls conflicting, or a reply on threads that have been
 answered, leaves the list instead of opening an agent on work somebody already did. Only the key
 order is remembered (in `QSettings`), so your arrangement survives the rebuild and a
-restart; nothing else is. *Execute now* keeps the task automatic in every other
+restart. *Execute now* keeps the task automatic in every other
 respect: same `Auto · ` label, same auto-handled counter, same retry record, and once
 running it occupies a slot like any other automatic agent, so the rest of the queue
 waits behind it.
+
+The exception is the reviews **you** ask for by sweeping your PRs in the Review
+wizard, which queues one review per PR instead of handing every draft to a single
+agent. Nothing on GitHub records that a PR was swept, so those asks are remembered
+(`QSettings`, beside the arrangement) and re-offered every poll until each is
+dispatched, they carry your own label rather than `Auto · `, and each row has a
+**cancel** beside *execute now* — nothing else will ever retire one. They wait in a
+band between the monitors' finds and the conflict fixes, so a fifty-draft sweep never
+holds up a review GitHub is already owed.
 
 The rules the list obeys — the queue key, the arrangement, one drag, the free-slot
 count — are `AgentTaskQueue` in
@@ -271,6 +286,9 @@ python tests/test_logic.py        # the logic tests, dependency-free (no pytest)
   spawn runs). Pinned against the Swift twin.
 - `tests/test_agent_tasks_panel.py` - the panel half of that queue: the rows it
   draws, and the click and the drop that reach the store.
+- `tests/test_requested_reviews.py` - the reviews a PR sweep asks for: what one
+  press queues, the list that remembers the asks across a restart, what re-offers
+  them and what finally takes each off.
 - `tests/test_apiwatch.py` - the API-error matcher + the tmux watcher's backoff
   and two-scan stall confirmation.
 - `tests/test_activity.py` - the audit feed: action → category taxonomy, filtering.

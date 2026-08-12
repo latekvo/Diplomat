@@ -285,11 +285,15 @@ struct WizardSpawnControls: View {
     let isValid: Bool
     let tint: Color
     let terminalTitle: String
+    /// Whether this wizard's current inputs produce a session to place at all. A
+    /// Review-PRs sweep does not — it queues one review per PR for this machine's own
+    /// task cap to start — so the mesh row has nothing to offer and is left out.
+    var routable: Bool = true
     let action: () -> Void
 
     var body: some View {
         VStack(spacing: 6) {
-            MeshSpawnRow(duty: duty, useMesh: $useMesh)
+            if routable { MeshSpawnRow(duty: duty, useMesh: $useMesh) }
             SpawnAgentButton(isValid: isValid, tint: tint,
                              terminalTitle: terminalTitle, action: action)
         }

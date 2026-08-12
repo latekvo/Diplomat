@@ -13,6 +13,9 @@ not flatten:
   :class:`autofix.AgentJob` and hands it to the shared gate, not a bare spawn;
 * the mesh dispatch path — that it routes through the row instead, disables the
   button, and logs the dispatch;
+* the Review wizard's third path, where a whose-PRs sweep queues a review per PR
+  instead of dispatching anything (what the queue then does with them is
+  ``test_requested_reviews.py``);
 * the status line each outcome produces.
 
 Every test drives the real widget under the offscreen Qt platform; the store's
@@ -80,6 +83,29 @@ def mesh_live(monkeypatch):
     monkeypatch.setattr(MeshSpawnRow, "use_mesh", lambda self: True)
     monkeypatch.setattr(MeshSpawnRow, "dispatch", lambda self, prompt: sent.append(prompt))
     return sent
+
+
+@pytest.fixture
+def swept(monkeypatch, store):
+    """Capture the sweeps handed to the fan-out worker, and hand back its callback.
+
+    The real one assembles a prompt per PR on a thread; a test that let it run would
+    be timing a subprocess per PR and racing the signal that reports it. Each entry is
+    ``(config, done)`` — call ``done`` to drive the reporting half."""
+    calls: list[tuple] = []
+    monkeypatch.setattr(store, "request_review_sweep_async",
+                        lambda cfg, done: calls.append((cfg, done)))
+    return calls
+
+
+def _review_wizard(store):
+    """The Review wizard on the one path the shared dispatch chrome covers: a single
+    PR. A whose-PRs sweep opens no session — it queues one review per PR — so it has
+    no dispatch, no mesh routing and no launch status of its own."""
+    w = WizardView(store)
+    w.target.setCurrentIndex(w.target.findData(PRTarget.SPECIFIC))
+    w.specific_pr.setText("455")
+    return w
 
 
 # ---- Review wizard: contextual fields follow the target -------------------
@@ -170,59 +196,79 @@ def test_review_local_spawn_goes_through_the_shared_gate(store, dispatched, loca
     assert job.prompt
 
 
-def test_review_sweep_carries_no_pr_dedup_key(store, dispatched, local_only):
-    """A whose-PRs sweep isn't scoped to one PR, so it must not claim one."""
+def test_review_sweep_queues_instead_of_spawning(store, dispatched, swept, local_only):
+    """The whole point of this wizard's sweep: it queues a review per PR instead of
+    handing one agent every PR at once, and the queue starts them a bay at a time."""
     w = WizardView(store)
     w.target.setCurrentIndex(w.target.findData(PRTarget.MINE))
     w._spawn()
 
-    job, _ = dispatched[0]
-    assert job.pr_number is None
-    assert job.pr_url is None
+    assert dispatched == []  # nothing was launched…
+    assert len(swept) == 1  # …the sweep went to the fan-out instead
+    cfg, _ = swept[0]
+    assert cfg.target == PRTarget.MINE
 
 
-def test_review_sweep_ignores_a_leftover_pr_number(store, dispatched, local_only):
-    """The single-PR field keeps its text when the target moves off it. A sweep
-    that still claimed that PR would take its dedup key, and the pipeline would
-    refuse the next agent for a PR this run was never scoped to."""
+def test_review_sweep_holds_spawn_until_the_fan_out_answers(store, swept, local_only):
+    """The fan-out assembles a prompt per PR, which takes long enough to press again;
+    a second press would ask for the whole sweep twice."""
+    w = WizardView(store)
+    w._spawn()
+    assert not w.spawn_btn.isEnabled()
+
+    swept[0][1](3, 0, "")
+    assert w.spawn_btn.isEnabled()
+    assert "3 reviews" in w.status.text()
+
+
+def test_review_sweep_says_when_it_queued_nothing(store, swept, local_only):
+    """A sweep whose scope matches no open PR must say so: the queue looking exactly
+    as it did before the press is otherwise indistinguishable from a dead button."""
+    w = WizardView(store)
+    w._spawn()
+    swept[0][1](0, 0, "")
+
+    assert "no open prs" in w.status.text().lower()
+
+
+def test_review_sweep_reports_a_fan_out_failure(store, swept, local_only):
+    """A missing or wedged core binary fails while assembling the prompts — a
+    refusal, not a launch, and the wizard has to say which."""
+    w = WizardView(store)
+    w._spawn()
+    swept[0][1](0, 0, "diplomat-core not found")
+
+    assert "diplomat-core not found" in w.status.text()
+    assert w.spawn_btn.isEnabled()
+
+
+def test_review_sweep_waits_for_the_pr_list(store, swept, local_only):
+    """The sweep expands the PRs the panel last fetched. Before the first fetch that
+    list is empty, and queueing nothing from it would read as "you have no drafts"."""
+    store.has_loaded = False
+    w = WizardView(store)
+    w._spawn()
+
+    assert swept == []
+    assert "refresh" in w.status.text().lower()
+
+
+def test_review_hides_mesh_routing_for_a_sweep(store):
+    """Nothing to route: a sweep opens no session here or anywhere. The row is left
+    for the single-PR spawn that does."""
     w = WizardView(store)
     w.target.setCurrentIndex(w.target.findData(PRTarget.SPECIFIC))
     w.specific_pr.setText("455")
-    w.target.setCurrentIndex(w.target.findData(PRTarget.SOMEONE))
-    w.username.setText("octocat")
-    w._spawn()
+    assert w.mesh_row.use_mesh() == w.mesh_row._mesh_live
 
-    job, _ = dispatched[0]
-    assert w.specific_pr.text() == "455"  # the field really did keep its value
-    assert job.pr_number is None
-    assert job.pr_url is None
-
-
-def test_review_passes_the_reviewed_author_for_the_ban_check(store, dispatched, local_only):
-    w = WizardView(store)
-    w.target.setCurrentIndex(w.target.findData(PRTarget.SOMEONE))
-    w.username.setText("octocat")
-    w._spawn()
-
-    job, _ = dispatched[0]
-    assert job.author_login == "octocat"
-
-
-def test_review_claims_no_author_for_my_own_prs(store, dispatched, local_only):
-    """My own PRs have no ban dimension — passing a login here would check the
-    ban list against myself."""
-    w = WizardView(store)
     w.target.setCurrentIndex(w.target.findData(PRTarget.MINE))
-    w._spawn()
-
-    job, _ = dispatched[0]
-    assert job.author_login is None
+    assert not w.mesh_row.use_mesh()
 
 
 def test_review_mesh_spawn_routes_over_the_mesh_and_disables_the_button(
     store, dispatched, mesh_live
 ):
-    w = WizardView(store)
+    w = _review_wizard(store)
     w._spawn()
 
     assert len(mesh_live) == 1  # the prompt went to the mesh row
@@ -332,7 +378,7 @@ def test_audit_mesh_spawn_routes_over_the_mesh(store, dispatched, mesh_live):
 
 
 @pytest.mark.parametrize("build", [
-    pytest.param(lambda s: WizardView(s), id="review"),
+    pytest.param(_review_wizard, id="review"),
     pytest.param(lambda s: ConflictWizardView(s), id="conflicts"),
     pytest.param(lambda s: AuditWizardView(s), id="audit"),
 ])
@@ -341,7 +387,7 @@ def test_every_wizard_starts_with_an_empty_status_line(store, build):
 
 
 @pytest.mark.parametrize("build", [
-    pytest.param(lambda s: WizardView(s), id="review"),
+    pytest.param(_review_wizard, id="review"),
     pytest.param(lambda s: ConflictWizardView(s), id="conflicts"),
     pytest.param(lambda s: AuditWizardView(s), id="audit"),
 ])
@@ -357,7 +403,7 @@ def test_every_wizard_reports_a_local_dispatch_in_its_status_line(
 
 
 @pytest.mark.parametrize("build", [
-    pytest.param(lambda s: WizardView(s), id="review"),
+    pytest.param(_review_wizard, id="review"),
     pytest.param(lambda s: ConflictWizardView(s), id="conflicts"),
     pytest.param(lambda s: AuditWizardView(s), id="audit"),
 ])
@@ -378,21 +424,19 @@ def test_mesh_completion_leaves_spawn_disabled_while_input_is_invalid(
     store, mesh_live
 ):
     """The button comes back to what the *current* config warrants, not to a flat
-    "enabled": if the user emptied the handle while the dispatch was in flight,
+    "enabled": if the user emptied the PR field while the dispatch was in flight,
     re-enabling would offer a click that can only fail."""
-    w = WizardView(store)
-    w.target.setCurrentIndex(w.target.findData(PRTarget.SOMEONE))
-    w.username.setText("octocat")
+    w = _review_wizard(store)
     w._spawn()
     assert not w.spawn_btn.isEnabled()
 
-    w.username.setText("")  # input went invalid mid-dispatch
+    w.specific_pr.setText("")  # input went invalid mid-dispatch
     w._mesh_done([], "")
     assert not w.spawn_btn.isEnabled()
 
 
 @pytest.mark.parametrize("build", [
-    pytest.param(lambda s: WizardView(s), id="review"),
+    pytest.param(_review_wizard, id="review"),
     pytest.param(lambda s: ConflictWizardView(s), id="conflicts"),
     pytest.param(lambda s: AuditWizardView(s), id="audit"),
 ])

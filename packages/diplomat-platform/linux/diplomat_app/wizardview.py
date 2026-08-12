@@ -37,6 +37,9 @@ class WizardView(SpawnWizard):
     # Carries (pending_pr_text, author_login_or_empty) so the slot can ignore a
     # result superseded by newer keystrokes - mirrors the macOS `pending` guard.
     _author_resolved = Signal(str, str)
+    # (queued, already_queued, error) from a sweep's fan-out worker, which assembles a
+    # prompt per PR off the UI thread.
+    _sweep_queued = Signal(int, int, str)
 
     def __init__(self, store: Store) -> None:
         super().__init__(store, kind="review", tint=_TINT)
@@ -52,6 +55,7 @@ class WizardView(SpawnWizard):
         # The PR text the in-flight poll was launched for (debounce/supersede guard).
         self._author_pending: str | None = None
         self._author_resolved.connect(self._on_author_resolved)
+        self._sweep_queued.connect(self._on_sweep_queued)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -233,6 +237,10 @@ class WizardView(SpawnWizard):
         self.soft_approve.setVisible(cfg.can_soft_approve)
         self.final_pass.setVisible(cfg.can_final_pass)
 
+        # Only a single PR is a session this row could place: a sweep opens none,
+        # it queues one review per PR for this machine's own cap to start.
+        self.mesh_row.set_applicable(is_specific)
+
         self._restyle_spawn()
 
     def _update_author_hint(self, is_specific: bool) -> None:
@@ -327,6 +335,47 @@ class WizardView(SpawnWizard):
         # A newly resolved viewer login can change the disposition of the current PR;
         # drop the pending guard so _sync re-polls instead of short-circuiting.
         self._author_pending = None
+        self._sync()
+
+    # MARK: spawn — one PR opens a session, a sweep fills the queue
+
+    def _spawn(self) -> None:
+        """A single PR is one agent, and the base class dispatches it. A whose-PRs
+        sweep is not: it becomes one queued review per PR (``Store.request_review_sweep``)
+        so the task cap decides how many run at once, rather than one agent being
+        handed every draft in the repo at the same time.
+
+        SPAWN is disabled for the round trip, as the mesh branch does with its own —
+        the fan-out assembles a prompt per PR and a second press meanwhile would ask
+        for the sweep twice."""
+        cfg = self._config()
+        if cfg.is_single_pr:
+            super()._spawn()
+            return
+        if not self.store.has_loaded:
+            self.status.setText("PRs haven't loaded yet — refresh, then sweep.")
+            return
+        self.spawn_btn.setEnabled(False)
+        self.status.setText("Queueing one review per PR…")
+        self.store.request_review_sweep_async(
+            cfg, lambda queued, already, err: self._sweep_queued.emit(queued, already, err)
+        )
+
+    def _on_sweep_queued(self, queued: int, already: int, err: str) -> None:
+        """Main-thread slot: report what the sweep put in the queue, and hand SPAWN
+        back through ``_sync`` so it returns to whatever the CURRENT inputs warrant."""
+        if err:
+            self.status.setText(f"Couldn't queue the sweep: {err}")
+        elif queued:
+            waiting = f" ({already} already queued)" if already else ""
+            self.status.setText(
+                f"Queued {queued} review{'' if queued == 1 else 's'}{waiting} — "
+                "they start as slots free."
+            )
+        elif already:
+            self.status.setText(f"All {already} are queued already.")
+        else:
+            self.status.setText("No open PRs in that scope.")
         self._sync()
 
     def _label(self) -> str:

@@ -678,6 +678,8 @@ struct ContentView: View {
                             tint: agentTaskTint(task.job.kind),
                             paused: store.isPaused(task.job.counter),
                             onRun: { Task { await store.executeQueuedTask(task.id) } },
+                            cancellable: task.job.requested,
+                            onCancel: { store.cancelRequestedReview(task.id) },
                             onDropped: { store.moveQueuedTask($0, onto: task.id) }
                         )
                     case .starting(let task):
@@ -1084,9 +1086,10 @@ private struct AgentTaskStatusLabel: View {
 
 // MARK: - Queued agent-task row
 
-/// Automatic work nothing has started yet. It carries the two things a session row
-/// has no use for: a handle to start it now regardless of what is holding it, and a
-/// drag grip that sets the order the queue drains in.
+/// Work nothing has started yet. It carries the things a session row has no use for:
+/// a handle to start it now regardless of what is holding it, a drag grip that sets
+/// the order the queue drains in, and — on a review the operator asked for — a way to
+/// call it off again.
 private struct QueuedTaskRow: View {
     let task: Store.QueuedAgentTask
     let tint: Color
@@ -1094,6 +1097,10 @@ private struct QueuedTaskRow: View {
     /// saying on the row: "queued" otherwise promises a start that is never coming.
     let paused: Bool
     let onRun: () -> Void
+    /// False for a monitor's row: dropping one would put it straight back on the next
+    /// poll, so the button would do nothing anyone could see.
+    let cancellable: Bool
+    let onCancel: () -> Void
     /// The queue key of the row dropped onto this one.
     let onDropped: (String) -> Void
 
@@ -1110,6 +1117,10 @@ private struct QueuedTaskRow: View {
         Start this agent now, without waiting for a free slot. It then counts against \
         the cap like any automatic agent.
         """
+    private static let cancelHelp = """
+        Drop this review from the queue without running it. You asked for it by \
+        sweeping your PRs, so nothing else will bring it back.
+        """
     private var runHelp: String {
         paused ? QueuedTaskRow.pausedHelp : QueuedTaskRow.heldHelp
     }
@@ -1120,7 +1131,8 @@ private struct QueuedTaskRow: View {
     /// the panel exactly as its session will once it starts.
     private var label: String {
         AgentDispatchGate.label(source: .auto, core: task.job.label,
-                                attemptNumber: task.attemptNumber)
+                                attemptNumber: task.attemptNumber,
+                                requested: task.job.requested)
     }
 
     var body: some View {
@@ -1142,6 +1154,19 @@ private struct QueuedTaskRow: View {
                 }
             }
             Spacer(minLength: 4)
+            // Muted, and to the left of "execute now": the two do opposite things to
+            // the same row, and the destructive one must not be the one the eye lands
+            // on or the hand reaches first.
+            if cancellable {
+                Button(action: onCancel) {
+                    Text("cancel")
+                        .font(.system(size: 9, weight: .medium))
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help(QueuedTaskRow.cancelHelp)
+            }
             Button(action: onRun) {
                 Text("execute now")
                     .font(.system(size: 9, weight: .medium))
@@ -1189,7 +1214,8 @@ private struct StartingTaskRow: View {
     /// The label it will run under, as the queued row and the session both show it.
     private var label: String {
         AgentDispatchGate.label(source: .auto, core: task.job.label,
-                                attemptNumber: task.attemptNumber)
+                                attemptNumber: task.attemptNumber,
+                                requested: task.job.requested)
     }
 
     var body: some View {

@@ -475,6 +475,11 @@ enum Render {
             queuedFixture(number: 512, kind: "review", auditAction: "review-req",
                           label: "Review-req · #512 (@octocat) −verdict (auto-approvals off)",
                           counter: .reviewRequests),
+            // One PR of a sweep the operator asked for: no "Auto · " on its label, and
+            // the one kind of row that can be cancelled.
+            queuedFixture(number: 503, kind: "review",
+                          auditAction: AgentTaskQueue.requestedAction,
+                          label: "Review · #503 · deep", counter: nil),
             queuedFixture(number: 508, kind: "conflicts", auditAction: "conflicts",
                           label: "Resolve · #508", counter: .conflicts, attemptNumber: 2),
             starting,
@@ -491,7 +496,7 @@ enum Render {
     /// of the golden ones.
     @MainActor
     private static func queuedFixture(number: Int, kind: String, auditAction: String,
-                                      label: String, counter: Store.AutoCounter,
+                                      label: String, counter: Store.AutoCounter?,
                                       attemptNumber: Int = 1) -> Store.QueuedAgentTask {
         let url = "https://github.com/software-mansion/argent/pull/\(number)"
         return Store.QueuedAgentTask(
