@@ -67,9 +67,10 @@ def step(plan: dict, sid: str) -> dict:
 def test_every_szpont_carries_the_same_version():
     """PyPI and npm publish the same name from this one commit.
 
-    Four files say what version that is, and the release workflow refuses a tag
-    that disagrees with them - so a bump that misses one of them has to fail here,
-    while it is still cheap. An index version, once taken, is taken forever.
+    Five files say what version that is - this one and the four below - and a
+    release either writes all five or refuses a tag that disagrees with them, so a
+    bump that misses one has to fail here, while it is still cheap. An index
+    version, once taken, is taken forever.
     """
     pyproject = (PKG_DIR / "pyproject.toml").read_text(encoding="utf-8")
     npm = json.loads((PKG_DIR.parent / "szpont-npm" / "package.json").read_text(encoding="utf-8"))

@@ -1,8 +1,19 @@
-# Publish `szpont` to PyPI and to npm, on a tag.
+# Publish `szpont` to PyPI and to npm.
 #
-# One name, two indexes, one tag: `npm i -g szpont` and `pip install szpont` are
+# One name, two indexes, one commit: `npm i -g szpont` and `pip install szpont` are
 # meant to be the same command, so they are released together from the same commit
 # and can never be a version apart.
+#
+# Every push to `main` is a release, and every release is a major. The number is
+# one above the highest major either index already holds, so no run can choose one
+# that is taken, and a release that reaches PyPI and fails on npm is put back onto
+# a single shared version by the next push rather than by hand. A `szpont-v*` tag
+# releases too, publishing whatever version the tree at that tag already states -
+# that is the path for a release cut deliberately, off main or out of order.
+#
+# The release commit cannot start another release: it is pushed with this
+# workflow's own GITHUB_TOKEN, which GitHub refuses to let trigger a run, and it
+# carries `[skip ci]` besides.
 #
 # PyPI goes out over Trusted Publishing - PyPI is told, once, that this
 # repository's `release-szpont.yml` may upload the `szpont` project, and the
@@ -17,14 +28,55 @@ name: Release szpont
 
 on:
   push:
+    branches: [main]
     tags: ["szpont-v*"]
 
 permissions:
   contents: read
 
+# One release at a time: the version is read off the indexes, so two runs choosing
+# at once would choose the same number and the second upload would be refused.
+# Queued runs are not cancelled, but only one may queue - a burst of pushes to main
+# collapses into a single release, of the tree at the last of them.
+concurrency:
+  group: release-szpont
+  cancel-in-progress: false
+
 jobs:
+  # What is being published, decided once, so that everything below is building the
+  # same thing and the record written at the end names it.
+  version:
+    name: Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.pick.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Pick the version this run publishes
+        id: pick
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            # The tag names the release; five files in the tree name what actually
+            # gets built. They are edited at different times by different hands,
+            # and the indexes believe the files - so `szpont-v0.3.0` over a tree
+            # still saying 0.2.0 would publish 0.2.0 under a 0.3.0 tag, and 0.3.0
+            # would then be permanently unclaimable. The five are pinned against
+            # each other by test_launcher.py; this pins the tag against them.
+            version="${GITHUB_REF_NAME#szpont-v}"
+            stated="$(python3 .github/scripts/szpont_version.py show)"
+            if [ "$version" != "$stated" ]; then
+              echo "::error::tag $GITHUB_REF_NAME does not match the version the tree states ($stated)"
+              exit 1
+            fi
+          else
+            version="$(python3 .github/scripts/szpont_version.py next-major)"
+          fi
+          echo "publishing szpont $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
   verify:
     name: Verify
+    needs: version
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -35,30 +87,20 @@ jobs:
         with:
           node-version: "24"
 
-      # The tag names the release; four files in the tree name what actually gets
-      # built. They are edited at different times by different hands, and the
-      # indexes believe the files - so `szpont-v0.3.0` over a pyproject still
-      # saying 0.2.0 would publish 0.2.0 under a 0.3.0 tag, and 0.3.0 would then be
-      # permanently unclaimable. The four are pinned against each other by
-      # test_launcher.py; this pins the tag against them.
-      - name: The tag and the packaged versions agree
-        run: |
-          tag_version="${GITHUB_REF_NAME#szpont-v}"
-          pkg_version="$(node -p "require('./packages/szpont-npm/package.json').version")"
-          py_version="$(python -c "
-          import re, pathlib
-          print(re.search(r'^version = \"(.+)\"$',
-                pathlib.Path('packages/szpont/pyproject.toml').read_text(), re.M).group(1))
-          ")"
-          echo "tag=$tag_version  pyproject=$py_version  package.json=$pkg_version"
-          if [ "$tag_version" != "$py_version" ] || [ "$tag_version" != "$pkg_version" ]; then
-            echo "::error::tag $GITHUB_REF_NAME does not match pyproject ($py_version) / package.json ($pkg_version)"
-            exit 1
-          fi
+      # Off main the tree still states the last release's version, so the version
+      # chosen above is written into it before anything is built or tested. Off a
+      # tag the tree already states it and was checked against the tag.
+      - name: State the release version in the tree
+        if: github.ref_type == 'branch'
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: python3 .github/scripts/szpont_version.py set "$VERSION"
 
-      # The same jobs CI runs on every push, repeated against the exact commit
-      # being published. CI having been green on the branch is not the same claim:
-      # a tag can point anywhere, including at a commit no CI run ever saw.
+      # The same jobs CI runs on every push, repeated against the exact tree being
+      # published - which is also what holds the rewrite above to every file that
+      # states a version, since test_launcher.py fails on any that was missed. CI
+      # having been green on the branch is not the same claim: a tag can point
+      # anywhere, including at a commit no CI run ever saw.
       - name: Install the bindings, the library and pytest
         run: pip install -e ./packages/szpontnet-core -e ./packages/szpont pytest
       - name: Bindings + launcher tests
@@ -69,36 +111,43 @@ jobs:
 
   pypi:
     name: Publish to PyPI
-    needs: verify
+    needs: [version, verify]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
       id-token: write # mint the OIDC token PyPI trades for an upload
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+      - name: State the release version in the tree
+        if: github.ref_type == 'branch'
+        run: python3 .github/scripts/szpont_version.py set "$VERSION"
       - name: Build the distribution
         run: |
           pip install build twine
           python -m build --outdir dist packages/szpont
           twine check --strict dist/*
       # The artifact on its own terms, in a venv that has never seen the checkout:
-      # the console script must be installed, runnable, and answer for a machine it
-      # is not going to touch. A module left out of the wheel is invisible until
-      # someone installs it, and by then the version is spent.
+      # the console script must be installed, runnable, answering under the version
+      # this run means to publish, and answering for a machine it is not going to
+      # touch. A module left out of the wheel is invisible until someone installs
+      # it, and by then the version is spent.
       - name: The built wheel installs, imports and runs
         run: |
           python -m venv /tmp/verify
           /tmp/verify/bin/pip install ./packages/szpontnet-core dist/*.whl
           /tmp/verify/bin/python -c "
-          import szpont
+          import os, szpont
+          assert szpont.__version__ == os.environ['VERSION'], szpont.__version__
           for name in szpont.__all__:
               getattr(szpont, name)
           print('bindings ok:', szpont.__version__, len(szpont.__all__), 'exports')
           "
-          /tmp/verify/bin/szpont --version
+          test "$(/tmp/verify/bin/szpont --version)" = "szpont $VERSION"
           HOME="$RUNNER_TEMP/nowhere" /tmp/verify/bin/szpont --plan | python -c "
           import json, sys
           plan = json.load(sys.stdin)['plan']
@@ -110,17 +159,22 @@ jobs:
 
   npm:
     name: Publish to npm
-    needs: verify
+    needs: [version, verify]
     runs-on: ubuntu-latest
     environment: npm
     permissions:
       id-token: write # OIDC, for provenance and for npm Trusted Publishing
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
+      - name: State the release version in the tree
+        if: github.ref_type == 'branch'
+        run: python3 .github/scripts/szpont_version.py set "$VERSION"
       # The tarball on its own terms, installed from the artifact rather than from
       # the checkout - a file left out of `files` fails here instead of for whoever
       # runs `npx szpont`.
@@ -129,7 +183,7 @@ jobs:
         run: |
           npm pack --pack-destination "$RUNNER_TEMP"
           npm i -g --prefix "$RUNNER_TEMP/global" "$RUNNER_TEMP"/szpont-*.tgz
-          "$RUNNER_TEMP/global/bin/szpont" --version
+          test "$("$RUNNER_TEMP/global/bin/szpont" --version)" = "szpont $VERSION"
       - name: Publish to npm
         working-directory: packages/szpont-npm
         # Trusted Publishing is used when the package has a publisher configured
@@ -138,3 +192,42 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --provenance --access public
+
+  # Both indexes hold the version; now main says so too, and a tag points at the
+  # commit that says it. Last on purpose: main only ever claims a version that is
+  # actually published, so a run that fails anywhere above leaves nothing to unwind
+  # and the next push simply chooses again.
+  record:
+    name: Record the release on main
+    needs: [version, pypi, npm]
+    if: github.ref_type == 'branch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # a rebase, if main moved while this ran
+      - name: Commit the version to main and tag it
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          python3 .github/scripts/szpont_version.py set "$VERSION"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "szpont $VERSION [skip ci]"
+          # Main can have moved while the release ran. The commit touches nothing
+          # but the five version lines, so replaying it onto whatever is there now
+          # is safe; a conflict means something else is editing them, and that is
+          # for a person to settle. Branch and tag go together or not at all, so a
+          # retry never finds the tag already claimed by its own earlier attempt.
+          for _ in 1 2 3; do
+            git tag -f "szpont-v$VERSION"
+            if git push --atomic origin "HEAD:main" "refs/tags/szpont-v$VERSION"; then
+              exit 0
+            fi
+            git fetch origin main
+            git rebase FETCH_HEAD || { git rebase --abort; break; }
+          done
+          echo "::error::szpont $VERSION is published, but main could not be moved onto it"
+          exit 1
