@@ -266,8 +266,10 @@ struct TelemetryView: View {
         let found: String = "\(s.queuedCount) unit\(s.queuedCount == 1 ? "" : "s") of work "
             + "found in this range, \(s.startedCount) started"
             + (s.remoteCount > 0 ? ", \(s.remoteCount) on mesh peers" : "")
-            + ". Work picked up between two points on the chart never shows as a "
-            + "backlog — that is the chart working, not a gap."
+            + ". Fixes stack on top of reviews, which take a free slot first, so the "
+            + "top edge is everything the pool owes. Work picked up between two points "
+            + "on the chart never shows as a backlog — that is the chart working, not "
+            + "a gap."
         return VStack(alignment: .leading, spacing: 6) {
             cardHead("pendingWork", "\(s.pendingReviewsNow) / \(s.pendingConflictsNow)")
             note("owed right now: \(title("pendingReviews").lowercased()) / "
@@ -407,8 +409,14 @@ private struct SpreadChart: View {
     }
 }
 
-/// Owed-but-unstarted work over the lookback: two filled series, reviews and conflict
-/// fixes, on a shared count axis with day gridlines.
+/// Owed-but-unstarted work over the lookback: reviews and conflict fixes stacked into
+/// one area on a count axis with day gridlines.
+///
+/// Stacked rather than overlaid because the two kinds of work queue for the same
+/// executors — the top edge is the whole backlog those executors owe, which is the
+/// number that decides whether anything waits. Reviews are the lower band: they outrank
+/// conflict fixes for a free slot (`AgentTaskQueue.band`), so the band above is exactly
+/// the work waiting behind the band below.
 private struct PendingChart: View {
     let points: [Telemetry.PendingPoint]
     let days: Double
@@ -422,7 +430,8 @@ private struct PendingChart: View {
             let padL: CGFloat = 4, padR: CGFloat = 4, padT: CGFloat = 8, padB: CGFloat = 16
             let w = size.width - padL - padR
             let h = size.height - padT - padB
-            let top = max(1, points.map { max($0.reviews, $0.conflicts) }.max() ?? 1)
+            let peak = points.map { $0.reviews + $0.conflicts }.max() ?? 0
+            let top = max(1, peak)
 
             func xOf(_ i: Int) -> CGFloat {
                 padL + w * CGFloat(i) / CGFloat(points.count - 1)
@@ -446,24 +455,34 @@ private struct PendingChart: View {
                 }
             }
 
+            var base = [Int](repeating: 0, count: points.count)
             for (values, color) in [(points.map(\.reviews), reviewTint),
                                     (points.map(\.conflicts), conflictTint)] {
-                guard values.contains(where: { $0 > 0 }) else { continue }
-                var fill = Path()
-                fill.move(to: CGPoint(x: xOf(0), y: padT + h))
-                for (i, value) in values.enumerated() {
-                    fill.addLine(to: CGPoint(x: xOf(i), y: yOf(value)))
-                }
-                fill.addLine(to: CGPoint(x: xOf(values.count - 1), y: padT + h))
-                fill.closeSubpath()
-                ctx.fill(fill, with: .color(color.opacity(0.22)))
+                let stacked = zip(base, values).map { $0 + $1 }
+                if values.contains(where: { $0 > 0 }) {
+                    // The band between the running total below it and its own top,
+                    // walked out along the top and back along the floor — not a shape
+                    // from the axis up, which would bury the band under it at any
+                    // opacity.
+                    var fill = Path()
+                    fill.move(to: CGPoint(x: xOf(0), y: yOf(base[0])))
+                    for (i, value) in stacked.enumerated() {
+                        fill.addLine(to: CGPoint(x: xOf(i), y: yOf(value)))
+                    }
+                    for i in stride(from: base.count - 1, through: 0, by: -1) {
+                        fill.addLine(to: CGPoint(x: xOf(i), y: yOf(base[i])))
+                    }
+                    fill.closeSubpath()
+                    ctx.fill(fill, with: .color(color.opacity(0.22)))
 
-                var line = Path()
-                for (i, value) in values.enumerated() {
-                    let p = CGPoint(x: xOf(i), y: yOf(value))
-                    if i == 0 { line.move(to: p) } else { line.addLine(to: p) }
+                    var line = Path()
+                    for (i, value) in stacked.enumerated() {
+                        let p = CGPoint(x: xOf(i), y: yOf(value))
+                        if i == 0 { line.move(to: p) } else { line.addLine(to: p) }
+                    }
+                    ctx.stroke(line, with: .color(color), lineWidth: 1.8)
                 }
-                ctx.stroke(line, with: .color(color), lineWidth: 1.8)
+                base = stacked
             }
 
             ctx.draw(axisText(dayLabel(first.at)),
@@ -471,9 +490,14 @@ private struct PendingChart: View {
             ctx.draw(axisText("now"),
                      at: CGPoint(x: padL + w, y: padT + h + 8), anchor: .trailing)
             // Peak, on the count axis, so the height means something without a full
-            // y-axis eating the width.
-            ctx.draw(axisText("peak \(top)"),
-                     at: CGPoint(x: padL + 2, y: padT + 4), anchor: .leading)
+            // y-axis eating the width. It is the peak of the stack — the most ever owed
+            // at one moment — which the per-series peaks in the key need not add up to.
+            // A range that never owed anything says nothing rather than reporting the
+            // floor the axis is held at.
+            if peak > 0 {
+                ctx.draw(axisText("peak \(peak) owed"),
+                         at: CGPoint(x: padL + 2, y: padT + 4), anchor: .leading)
+            }
         }
     }
 }
