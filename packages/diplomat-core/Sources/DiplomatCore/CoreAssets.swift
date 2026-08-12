@@ -73,6 +73,18 @@ public enum CoreAssets {
         public let blocks: [String: String]
     }
 
+    /// The exception lists `AgentModel.displayName` consults when it turns a model id
+    /// into the name the attribution tag wears. The rules themselves are in
+    /// `AgentModel`; these are the parts no rule can derive.
+    public struct Models: Decodable {
+        /// Ids that name no single model, and so leave the tag with no model at all.
+        public let ignore: [String]
+        /// Leading id segments that name the vendor rather than the model.
+        public let stripPrefixes: [String]
+        /// Whole segments that are initialisms, which title-casing would mangle.
+        public let acronyms: [String]
+    }
+
     /// The Telemetry screen's model — the lookback ranges, the chart resolutions,
     /// the confidence level, and one entry per figure (title, blurb, glyph, tint).
     /// The arithmetic is `Telemetry`; this is only how it is presented, kept here so
@@ -189,6 +201,7 @@ public enum CoreAssets {
     private static let _review = try? loadJSON("review.json", as: Review.self)
     private static let _conflicts = try? loadJSON("conflicts.json", as: Conflicts.self)
     private static let _audit = try? loadJSON("audit.json", as: Audit.self)
+    private static let _models = try? loadJSON("models.json", as: Models.self)
     private static let _telemetry = try? loadJSON("telemetry.json", as: TelemetryModel.self)
 
     public static func config() throws -> Config {
@@ -234,6 +247,13 @@ public enum CoreAssets {
     public static func audit() throws -> Audit {
         guard let a = _audit else { return try loadJSON("audit.json", as: Audit.self) }
         return a
+    }
+
+    /// The model-naming exception lists from `models.json`, used to spell the model in
+    /// the attribution tag every posted comment carries.
+    public static func models() throws -> Models {
+        guard let m = _models else { return try loadJSON("models.json", as: Models.self) }
+        return m
     }
 
     /// The Telemetry screen's model from `telemetry.json`, shared verbatim with the

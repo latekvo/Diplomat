@@ -1,0 +1,12 @@
+{
+  "_comment": "The three exception lists behind AgentModel.displayName, which turns whichever model id a spawn will run on into the name the Diplomat attribution tag wears — `claude-opus-5` into `Opus 5`, `openrouter/moonshotai/kimi-k3` into `Kimi K3`. The general shape of an id (a provider path, dash-separated words, a version split across segments, a release stamp) is handled by rules in that file, because a lookup table would name the models that existed the day it was written and go quietly wrong for every one released after. Only what no rule can derive lives here.",
+
+  "_ignoreComment": "Values that name no single model, and so leave the tag with no model in it at all. Both are Claude Code settings aliases standing for a policy rather than a model: `default` is whatever the account is given, `opusplan` is two models, one per mode. Sentinels of the `<synthetic>` shape are rejected by AgentModel on their punctuation instead, so a successor to that one needs no entry here.",
+  "ignore": ["default", "opusplan"],
+
+  "_stripPrefixesComment": "A leading id segment that names the vendor rather than the model. Anthropic's ids are the case that matters — `claude-opus-5` is the id for the model everyone, including Anthropic, calls Opus 5. A vendor whose name IS the model family (qwen/qwen-3.8-max) must never be listed here, or the tag would name the version and lose the model.",
+  "stripPrefixes": ["claude"],
+
+  "_acronymsComment": "Words that are initialisms, which title-casing would otherwise render as Gpt / Glm. Matched case-insensitively against whole id segments only, so a model whose name merely contains one is untouched.",
+  "acronyms": ["gpt", "glm", "qwq"]
+}

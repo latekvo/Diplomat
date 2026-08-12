@@ -3,7 +3,9 @@ import Foundation
 /// Everything the "Full E2E test" action collects, plus the logic that turns it
 /// into the prompt handed to a fresh `claude` session. Pure value type — the prompt
 /// text comes from `assets/audit.json`; only the assembly order/conditions live here,
-/// shared verbatim with the Linux front-end.
+/// shared verbatim with the Linux front-end. The one thing `buildPrompt` looks up off
+/// the machine is which model the agent runs on (`AgentModel`), which the attribution
+/// tag names.
 ///
 /// Unlike Review / Resolve-conflicts there is no whose-PRs axis: the audit always
 /// targets the whole repository. Two independent toggles gate the optional scope:
@@ -50,7 +52,9 @@ public struct AuditConfig {
             if let b = blocks["openPRs"] { out.append(fill(b)) }
             if let b = blocks["noAttribution"] { out.append(fill(b)) }
             // PRs/comments this run opens carry the Diplomat attribution tag.
-            if let b = blocks["diplomatTag"] { out.append(fill(b)) }
+            if let b = blocks["diplomatTag"] {
+                out.append(AgentModel.fillTag(fill(b), model: AgentModel.detected()))
+            }
         } else if let b = blocks["readOnly"] {
             out.append(fill(b))
         }
