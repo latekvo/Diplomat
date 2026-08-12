@@ -51,7 +51,8 @@ slot**, then the **queue** that has no bay yet.
   from the moment it starts, and the running row it becomes takes its place.
 - **Free slots** are the rest of the cap. Each running automatic agent takes one —
   including a job the mesh placed back on this machine, which is a `claude` process
-  here whoever opened its terminal; agents you spawn yourself from the panel take
+  here whoever opened its terminal, and a review from a sweep, which the queue
+  merely picked the moment for; an agent a wizard press opened on the spot takes
   none. Queued work starts here on the next poll.
 - **Queued** rows are auto-fixes, auto-reviews and reviews you asked for that nothing
   has started yet. Each
@@ -86,10 +87,10 @@ state: it is rebuilt from live GitHub evidence on every poll, so a task drops ou
 moment the work is taken by an agent, resolved, or its author banned. Every poll also
 re-checks the rows it is about to run against the fetch it has just made — a conflict
 fix on a PR GitHub no longer calls conflicting, or a reply on threads that have been
-answered, leaves the list instead of opening an agent on work somebody already did. Only the key
+answered, leaves the list instead of opening an agent on work somebody already did. The key
 order is remembered (in `QSettings`), so your arrangement survives the rebuild and a
 restart. *Execute now* keeps the task automatic in every other
-respect: same `Auto · ` label, same auto-handled counter, same retry record, and once
+respect: same label, same auto-handled counter, same retry record, and once
 running it occupies a slot like any other automatic agent, so the rest of the queue
 waits behind it.
 
@@ -98,7 +99,8 @@ wizard, which queues one review per PR instead of handing every draft to a singl
 agent. Nothing on GitHub records that a PR was swept, so those asks are remembered
 (`QSettings`, beside the arrangement) and re-offered every poll until each is
 dispatched, they carry your own label rather than `Auto · `, and each row has a
-**cancel** beside *execute now* — nothing else will ever retire one. They wait in a
+**cancel** beside *execute now* — short of a ban on the PR's author, nothing else
+will ever retire one. They wait in a
 band between the monitors' finds and the conflict fixes, so a fifty-draft sweep never
 holds up a review GitHub is already owed.
 
@@ -183,21 +185,23 @@ rate-limit budget's three knobs are the exceptions (see their bullets):
   stops is the automatic start.
 - **Run at most N automatic tasks at a time** — this machine's hard cap on
   concurrent automatic agents (default **2**, range 1–16), spanning both monitors
-  above and any work a mesh peer routes here. Panel spawns are never capped and
-  don't count against it; work over the cap is not dropped — it waits in the
-  [Agent tasks](#agent-tasks) list, in the order you put it, and whatever is left of
-  the cap shows there as empty slots. In `~/.diplomat/config.json` for the same
-  reason as the repo root — the node that runs peer-routed work has no Qt, and a
-  machine with two answers to "how many at once" has no cap at all.
+  above, the reviews a PR sweep queues, and any work a mesh peer routes here. The
+  agent a wizard press opens on the spot is never capped and doesn't count against
+  it; work over the cap is not dropped — it waits in the [Agent tasks](#agent-tasks)
+  list, in the order you put it, and whatever is left of the cap shows there as empty
+  slots. In `~/.diplomat/config.json` for the same reason as the repo root — the node
+  that runs peer-routed work has no Qt, and a machine with two answers to "how many
+  at once" has no cap at all.
 - **Hold automatic work when the rate limit runs low** — the
   [rate-limit budget](../../../README.md#the-rate-limit-budget) (default **on**),
   with the confidence it must reach that a task fits (default **95%**) and the share
   of a window to keep in hand while the ledger cannot price one yet (default
   **20%**). Priced from the same per-task figure the Telemetry screen shows, against
   both rate-limit windows. Held work waits under [Agent tasks](#agent-tasks) and
-  starts when a window refills; *execute now* overrides it, panel spawns are never
-  gated, and nothing is held at all while the usage probe cannot read a window. In
-  `~/.diplomat/config.json` for the same reason as the cap above.
+  starts when a window refills; *execute now* overrides it, a wizard spawn that
+  opens a terminal on the spot is never gated, and nothing is held at all while the
+  usage probe cannot read a window. In `~/.diplomat/config.json` for the same reason
+  as the cap above.
 - **Claude API errors** — the tmux watcher toggle, plus a count of nudges sent.
 - **Tools — colour & visibility** — retint or hide any tool card. (SKILL.md PRs
   and Installer/CLI PRs ship hidden.)

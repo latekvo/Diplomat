@@ -541,7 +541,16 @@ enum QueueTest {
               store.queuedTasks.map(\.id) == ["review:31", "review:32", "review:33"])
 
         // …and the band puts them behind what GitHub is already owed, ahead of the
-        // conflict fix another agent's run may make unnecessary.
+        // conflict fix another agent's run may make unnecessary. Back over the cap
+        // first: a sweep queues without asking it, but a monitor's find reaches the
+        // queue only by being refused, and the section above left the bay free.
+        store.processes = [
+            TrackedProcess(kind: "review", label: "Auto · Review · #1", terminal: "iterm",
+                           windowID: "1", sessionID: "", tty: "", donePath: "",
+                           prURL: "https://github.com/software-mansion/argent/pull/1",
+                           source: AgentDispatchGate.Source.auto.rawValue,
+                           createdAt: Date(), done: false),
+        ]
         _ = await offer(job(35))
         _ = await offer(job(36, action: "conflicts", label: "Resolve · #36",
                             counter: .conflicts))

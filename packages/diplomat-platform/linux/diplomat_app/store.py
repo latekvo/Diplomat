@@ -257,6 +257,9 @@ class Store(QObject):
         # — an assembled prompt is the expensive half and cannot change while the ask
         # stands, so it is built once rather than once per poll (:meth:`_requested_task`).
         self._requested_tasks: dict[int, tuple[dict, autofix.QueuedTask]] = {}
+        # Asks already reported as un-assemblable, so the poll says it once rather
+        # than every cycle for as long as the ask stands (:meth:`_note_unbuildable_ask`).
+        self._unbuildable_logged: set[int] = set()
         # Serializes the read-modify-write of the stored asks. Three threads reach it:
         # the fan-out worker adding a sweep's, the poll worker dropping the one it
         # just dispatched, and the GUI thread cancelling a row. Unguarded, a sweep that
@@ -1058,8 +1061,14 @@ class Store(QObject):
                 self._stage_queued(job, attempt)
                 return verdict
             if verdict == autofix.VERDICT_BANNED:
+                # A monitor's find comes back on its own once the ban lifts, so "un-ban
+                # to review" is a whole instruction for one. An ask does not: this
+                # verdict is one of the three that retire it (:meth:`_settle_requested`),
+                # so the sweep has to be told the review is gone rather than waiting.
+                remedy = ("the ask is dropped, sweep again to re-queue it"
+                          if job.requested else "un-ban to review")
                 activity.log(
-                    source, "ban-skip", f"{job.label} - author is banned (un-ban to review)"
+                    source, "ban-skip", f"{job.label} - author is banned ({remedy})"
                 )
                 self.refresh_activity()
                 return verdict
@@ -1477,8 +1486,10 @@ class Store(QObject):
 
         The PRs come from the panel's own last fetch rather than a fresh one: it is
         the list the operator was looking at when they pressed the button, which is
-        the list they meant. One that has closed since drops out at dispatch — the
-        agent is scoped to a PR reference either way.
+        the list they meant. One that closes before its turn comes is reviewed anyway:
+        an ask stands on the operator's word rather than GitHub's, so the drain has
+        nothing to retire it by (:func:`autofix.still_owed`) and **cancel** is the way
+        out of one a sweep should not have caught.
 
         A PR already waiting for a review keeps the ask it has instead of gaining a
         second: the queue is keyed by PR, so two would be one row that dispatches twice
@@ -1594,9 +1605,35 @@ class Store(QObject):
         This is the list's whole job in a poll. A monitor re-offers its work by finding
         it on GitHub again; nothing on GitHub says a PR was swept, so what re-offers
         these is the ask itself, until the dispatch that starts one takes it off
-        (:meth:`_settle_requested`)."""
+        (:meth:`_settle_requested`).
+
+        An ask whose prompt will not assemble is skipped rather than allowed to end
+        the cycle. The press assembles every prompt before storing anything, but the
+        memo that holds the results is process-local, so after a restart the core
+        binary is met again here — once per standing ask, inside the poll. A raise
+        from one of them would escape into the cycle's handler, which answers a
+        failed poll by leaving the queue uncommitted: not one row short, but empty,
+        the monitors' finds included, and with no row for the operator to cancel the
+        offending ask by. Skipping keeps the ask for a later poll, which is what a
+        core mid-self-update wants anyway."""
         for entry in self.requested_reviews:
-            self._staged_queue = self._staged_queue + [self._requested_task(entry)]
+            try:
+                task = self._requested_task(entry)
+            except Exception as exc:  # noqa: BLE001 — a missing/wedged core binary
+                self._note_unbuildable_ask(entry, exc)
+                continue
+            self._staged_queue = self._staged_queue + [task]
+
+    def _note_unbuildable_ask(self, entry: review.RequestedReview, exc: Exception) -> None:
+        """Say once, per ask, that its prompt would not assemble.
+
+        Once because the poll meets the same ask every three minutes for as long as
+        it stands, and a feed that repeats itself that often is one nobody reads."""
+        if entry.number in self._unbuildable_logged:
+            return
+        self._unbuildable_logged.add(entry.number)
+        activity.log("panel", "queue-skip",
+                     f"{entry.label} — prompt would not assemble: {exc}")
 
     def _settle_requested(self, entry: autofix.QueuedTask, verdict: str) -> None:
         """Take an ask off the list once its dispatch has answered for it.
@@ -1621,6 +1658,9 @@ class Store(QObject):
             self.requested_reviews = [r for r in self.requested_reviews
                                       if r.number != number]
         self._requested_tasks.pop(number, None)
+        # A later sweep of the same PR is a new ask, and is owed the same one report
+        # if its prompt will not assemble either.
+        self._unbuildable_logged.discard(number)
 
     def cancel_requested_review(self, task_id: str) -> None:
         """The queued row's "cancel": drop an ask the operator has changed their mind
@@ -1863,7 +1903,9 @@ class Store(QObject):
         elif verdict == autofix.VERDICT_STAND_DOWN:
             self.error = f"{label}: a mesh peer's agent already owns this work."
         elif verdict == autofix.VERDICT_BANNED:
-            self.error = f"{label}: the PR's author is banned (un-ban to review)."
+            remedy = ("the ask is dropped, sweep again to re-queue it"
+                      if entry.job.requested else "un-ban to review")
+            self.error = f"{label}: the PR's author is banned ({remedy})."
         if verdict != "spawned":
             self.changed.emit()
         self.refresh_activity()

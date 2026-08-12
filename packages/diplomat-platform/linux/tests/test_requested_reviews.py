@@ -255,6 +255,35 @@ def test_every_poll_re_offers_an_ask_nothing_has_started(swept_store, monkeypatc
     assert [t.id for t in swept_store.queued_tasks] == ["review:1", "review:2"]
 
 
+def test_an_ask_whose_prompt_will_not_assemble_costs_only_its_own_row(swept_store,
+                                                                     monkeypatch):
+    """The press builds every prompt before storing anything, but the memo holding
+    those results does not survive a restart — so the core binary is met again in the
+    poll, once per standing ask. A raise there ends the cycle, and a cycle that ends
+    early commits nothing: the panel loses the monitors' finds too, and the ask that
+    caused it has no row left to cancel by."""
+    fake_probes(monkeypatch, live_prs=CAP_FULL)
+    store = swept_store
+    store.request_review_sweep(_sweep(store))
+    # A restart: the asks and the arrangement survive it, the built tasks do not.
+    store.queued_tasks = []
+    store._requested_tasks = {}
+
+    def poisoned(payload):
+        if payload["specificPR"] == "1":
+            raise RuntimeError("diplomat-core failed: unknown depth")
+        return "PROMPT"
+
+    monkeypatch.setattr("diplomat_app.promptcore.build_prompt", poisoned)
+
+    _poll(store, monkeypatch)
+
+    assert [t.id for t in store.queued_tasks] == ["review:2"]
+    # …and the skipped one is kept, because a core mid-self-update is a reason to
+    # ask again next poll rather than to throw the ask away.
+    assert [r.number for r in store.requested_reviews] == [1, 2]
+
+
 def test_a_started_review_leaves_the_list_for_good(swept_store, monkeypatch):
     """The dispatch is what answers the ask. Left in the list it would be re-offered
     on the next poll, and the PR reviewed again, and again."""

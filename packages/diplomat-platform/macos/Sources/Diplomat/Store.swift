@@ -1538,19 +1538,35 @@ final class Store: ObservableObject {
         var label: String { "Review · #\(number) · \(config.depth)" }
     }
 
+    /// One stored ask, decoded so that a row which will not read costs only itself.
+    ///
+    /// Decoding the array whole would make any single bad row empty the list, and the
+    /// stored element is the entire `ReviewConfig` — a shared type that gains fields.
+    /// The first release to add one would silently drop every ask a sweep left
+    /// standing, which is the loss this list is persisted to prevent.
+    private struct StoredAsk: Decodable {
+        let review: RequestedReview?
+
+        init(from decoder: Decoder) throws {
+            review = try? decoder.singleValueContainer().decode(RequestedReview.self)
+        }
+    }
+
     private static func loadRequestedReviews() -> [RequestedReview] {
         guard let data = UserDefaults.standard.data(forKey: Keys.requestedReviews),
-              let decoded = try? JSONDecoder().decode([RequestedReview].self, from: data)
+              let rows = try? JSONDecoder().decode([StoredAsk].self, from: data)
         else { return [] }
-        return decoded
+        return rows.compactMap(\.review)
     }
 
     /// Queue one review per PR `cfg` sweeps. Returns `(queued, already)`.
     ///
     /// The PRs come from the panel's own last fetch rather than a fresh one: it is the
     /// list the operator was looking at when they pressed the button, which is the list
-    /// they meant. One that has closed since drops out at dispatch — the agent is
-    /// scoped to a PR reference either way.
+    /// they meant. One that closes before its turn comes is reviewed anyway: an ask
+    /// stands on the operator's word rather than GitHub's, so the drain has nothing to
+    /// retire it by (`AgentTaskQueue.stillOwed`) and **cancel** is the way out of one a
+    /// sweep should not have caught.
     ///
     /// A PR already waiting for a review keeps the ask it has instead of gaining a
     /// second: the queue is keyed by PR, so two would be one row that dispatches twice
