@@ -20,6 +20,17 @@ func check(_ condition: Bool, _ message: @autoclosure () -> String = "",
     }
 }
 
+// Every prompt built below names the model this machine's agents run on in its
+// attribution tag (`AgentModel`), which would otherwise bake whatever the developer
+// happens to be running into the golden files they regenerate. Point both of the
+// documented overrides at paths inside a scratch directory that is never created, so
+// the prompts assembled here are the model-free ones the goldens hold — on a CI runner
+// and on a working machine alike. The Linux suite's conftest fences the same two names.
+let fence = FileManager.default.temporaryDirectory
+    .appendingPathComponent("diplomat-smoke-no-agent-state", isDirectory: true)
+setenv("DIPLOMAT_CONFIG", fence.appendingPathComponent("config.json").path, 1)
+setenv("DIPLOMAT_CLAUDE_DIR", fence.appendingPathComponent("claude").path, 1)
+
 section("core assets")
 let cfg = try CoreAssets.config()
 print("config: \(cfg.owner)/\(cfg.repo)")
@@ -445,6 +456,121 @@ check(!AgentRunner.hermes.agentCommand(promptFile: "/tmp/p.txt", port: 47_910).c
 check(!AgentRunner.opencode.agentCommand(promptFile: "/tmp/p.txt", port: 0).contains("--port"),
       "a run with no port must spawn exactly as it did before, not with --port 0")
 print("agent runner assertions passed")
+
+section("agent model")
+// The model named in the attribution tag every posted comment opens with. Ids are one
+// per provider and none of them is a display name, so these pin the rules that turn one
+// into the other — a wrong answer here is a wrong model attributed on a public comment.
+check(AgentModel.displayName("claude-opus-5") == "Opus 5",
+      "Anthropic's id for the model everyone calls Opus 5")
+check(AgentModel.displayName("claude-haiku-4-5-20251001") == "Haiku 4.5",
+      "a release stamp dates a model, it does not name it; 4-5 is one version")
+check(AgentModel.displayName("openrouter/moonshotai/kimi-k3") == "Kimi K3",
+      "the provider path is routing, not a name")
+check(AgentModel.displayName("qwen/qwen-3.8-max") == "Qwen 3.8 Max",
+      "a vendor whose name IS the model family must survive the path strip")
+check(AgentModel.displayName("openai/gpt-5.2") == "GPT 5.2", "initialisms are not title-cased")
+check(AgentModel.displayName("moonshotai/kimi-k2:free") == "Kimi K2",
+      "an OpenRouter variant suffix qualifies a model, it does not name another")
+check(AgentModel.displayName("opus[1m]") == "Opus",
+      "Claude Code's context-window suffix is not part of the name")
+// Everything that names no single model leaves the tag exactly as it has always read.
+check(AgentModel.displayName("") == "")
+check(AgentModel.displayName("<synthetic>") == "",
+      "Claude Code's sentinel for a turn no model produced — rejected by shape")
+check(AgentModel.displayName("default") == "" && AgentModel.displayName("opusplan") == "",
+      "aliases that stand for a policy rather than a model")
+// The two forms the tag takes. An undetected model must leave it byte-identical to
+// what every golden file holds, which is what makes the model an addition, not a rewrite.
+check(AgentModel.fillTag("\\[[Diplomat](u){model}\\]: ", model: "Opus 5")
+        == "\\[[Diplomat](u), Opus 5\\]: ")
+check(AgentModel.fillTag("\\[[Diplomat](u){model}\\]: ", model: "") == "\\[[Diplomat](u)\\]: ")
+
+// The lookup end to end, over a fixture tree rather than the machine running this.
+let modelFixture = FileManager.default.temporaryDirectory
+    .appendingPathComponent("diplomat-agent-model-\(ProcessInfo.processInfo.processIdentifier)",
+                            isDirectory: true)
+try? FileManager.default.removeItem(at: modelFixture)
+let claudeHome = modelFixture.appendingPathComponent("claude", isDirectory: true)
+let sessions = claudeHome.appendingPathComponent("projects/-repo", isDirectory: true)
+try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+let configFile = modelFixture.appendingPathComponent("config.json")
+func writeConfig(_ json: String) throws { try json.write(to: configFile, atomically: true, encoding: .utf8) }
+func writeTranscript(_ name: String, _ body: String, ageSecs: Double) throws {
+    let url = sessions.appendingPathComponent(name)
+    try body.write(to: url, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes(
+        [.modificationDate: Date().addingTimeInterval(-ageSecs)], ofItemAtPath: url.path)
+}
+
+check(AgentModel.detect(configFile: configFile, claudeHome: claudeHome) == "",
+      "a machine that has said nothing must add nothing to the tag")
+
+// Claude Code is told no model by Diplomat, so what it last actually ran is the answer.
+try writeTranscript("old.jsonl", "{\"message\":{\"model\":\"claude-sonnet-5\"}}\n", ageSecs: 600)
+try writeTranscript("new.jsonl", "{\"message\":{\"model\":\"claude-opus-5\"}}\n", ageSecs: 10)
+check(AgentModel.detect(configFile: configFile, claudeHome: claudeHome) == "Opus 5",
+      "the newest transcript is the one that says what `claude` starts on now")
+// A synthetic last turn must fall through to the real one before it, not blank the tag.
+try writeTranscript("new.jsonl",
+                    "{\"message\":{\"model\":\"claude-opus-5\"}}\n{\"message\":{\"model\":\"<synthetic>\"}}\n",
+                    ageSecs: 10)
+check(AgentModel.detect(configFile: configFile, claudeHome: claudeHome) == "Opus 5")
+// A session touched before its first turn was written holds no model at all, and the
+// newest file is regularly that one — stopping at it would drop the model whenever a
+// run had just been started.
+try writeTranscript("newest.jsonl", "{\"type\":\"user\",\"message\":{\"role\":\"user\"}}\n", ageSecs: 1)
+check(AgentModel.detect(configFile: configFile, claudeHome: claudeHome) == "Opus 5",
+      "the newest transcript with a model in it, not merely the newest transcript")
+// A model pinned in Settings belongs to the OTHER runners: `AgentRunner.claude`'s
+// command carries no model flag, so claiming it here would attribute a model that
+// never ran.
+try writeConfig("{\"agentModel\": \"openrouter/moonshotai/kimi-k3\"}")
+check(AgentModel.detect(configFile: configFile, claudeHome: claudeHome) == "Opus 5",
+      "a pin left over from OpenCode must not be attributed to a Claude Code run")
+try writeConfig("{\"agentRunner\": \"opencode\", \"agentModel\": \"openrouter/moonshotai/kimi-k3\"}")
+check(AgentModel.detect(configFile: configFile, claudeHome: claudeHome) == "Kimi K3",
+      "for the runners Diplomat does pin, the pin is what the spawn passes them")
+try writeConfig("{\"agentRunner\": \"hermes\"}")
+check(AgentModel.detect(configFile: configFile, claudeHome: claudeHome) == "",
+      "no pin means the runner's own remembered model, which Diplomat cannot name")
+// With no transcripts at all, what Claude Code's settings ask for.
+try FileManager.default.removeItem(at: sessions)
+try writeConfig("{}")
+try "{\"model\": \"opus[1m]\"}".write(to: claudeHome.appendingPathComponent("settings.json"),
+                                     atomically: true, encoding: .utf8)
+check(AgentModel.detect(configFile: configFile, claudeHome: claudeHome) == "Opus",
+      "a machine that has not run `claude` yet still knows what it is set to")
+// Claude Code writes compact JSON; a reader that only accepts that spelling is one
+// pretty-printer away from silently finding nothing and dropping the model.
+check(AgentModel.lastModelField(in: "{\"model\" : \"claude-opus-5\"}") == "claude-opus-5")
+
+// The tag as it actually reaches an agent, on a machine that HAS a model to name —
+// the goldens are regenerated from the same assets they assert, so the prefix is
+// pinned here or nowhere. The fence is lifted onto the fixture for these builds and
+// put straight back, so everything after it keeps the model-free goldens.
+let plainTag = "`\\[[Diplomat](https://github.com/latekvo/Diplomat)\\]: `"
+let opusTag = "`\\[[Diplomat](https://github.com/latekvo/Diplomat), Opus 5\\]: `"
+check(ReviewConfig(depth: "max", me: "testuser").buildPrompt().contains(plainTag),
+      "with nothing to read, the tag must stay the prefix every install already posts")
+try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+try writeTranscript("session.jsonl", "{\"message\":{\"model\":\"claude-opus-5\"}}\n", ageSecs: 1)
+setenv("DIPLOMAT_CLAUDE_DIR", claudeHome.path, 1)
+setenv("DIPLOMAT_CONFIG", configFile.path, 1)
+let taggedReview = ReviewConfig(depth: "max", me: "testuser").buildPrompt()
+check(taggedReview.contains(opusTag), "the review tag must name the model the run is on")
+check(taggedReview.contains("\"[Diplomat, Opus 5]: <your text>\""),
+      "and the example it renders as must agree with the prefix it just gave")
+// The audit posts under the same attribution from a second copy of the block in a
+// second asset, so the model has to reach both.
+check(AuditConfig(openPRs: true).buildPrompt().contains(opusTag),
+      "the audit's comments carry the same tag as a review's")
+check(!AuditConfig().buildPrompt().contains("[Diplomat"),
+      "a read-only audit posts nothing, so it is handed no attribution rule at all")
+setenv("DIPLOMAT_CONFIG", fence.appendingPathComponent("config.json").path, 1)
+setenv("DIPLOMAT_CLAUDE_DIR", fence.appendingPathComponent("claude").path, 1)
+try? FileManager.default.removeItem(at: modelFixture)
+print("agent model assertions passed")
 
 section("opencode sessions")
 // OpenCode keeps ONE session store for the whole machine, so a run's own server lists
