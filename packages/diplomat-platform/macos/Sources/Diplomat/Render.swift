@@ -8,29 +8,33 @@ import DiplomatCore
 /// `DIPLOMAT_RENDER_OUT=<path>` (defaults under the temp dir).
 @MainActor
 enum Render {
-    /// Returns true when the snapshot is done and the caller should exit; the `popover`
-    /// mode returns false and exits by itself after the app runloop has laid it out.
+    /// Returns true when the snapshot is done and the caller should exit; the window
+    /// modes return false and exit by themselves after the app runloop has laid them out.
     static func run(_ what: String, store: Store) -> Bool {
         let out = ProcessInfo.processInfo.environment["DIPLOMAT_RENDER_OUT"]
             ?? FileManager.default.temporaryDirectory.appendingPathComponent("diplomat-\(what).png").path
 
         if what.lowercased() == "popover" {
-            runWindow(out: out, store: store)
+            let _ = seedProcessesIfNeeded("procs", store: store)
+            let _ = seedAutofix(store)
+            runWindow(what: "popover", out: out, root: PopoverRoot().environmentObject(store))
             return false
         }
         if what.lowercased() == "live" {
             runLiveWindow(store: store)
             return false
         }
+        // `window-<mode>` — any mode below, through a real window instead of
+        // `ImageRenderer`. Needed for a screen made of controls: `ImageRenderer` draws
+        // no AppKit control at all, so a Settings snapshot through it comes out as a
+        // page of empty placeholder boxes where every switch, picker and field is.
+        if what.lowercased().hasPrefix("window-") {
+            let mode = String(what.dropFirst("window-".count))
+            runWindow(what: mode, out: out, root: chrome(view(for: mode, store: store), store: store))
+            return false
+        }
 
-        let body = view(for: what, store: store)
-        let content = body
-            .environmentObject(store)
-            .frame(width: PopoverRoot.width)
-            .padding(10)
-            .background(Color(nsColor: .windowBackgroundColor))
-
-        let renderer = ImageRenderer(content: content)
+        let renderer = ImageRenderer(content: chrome(view(for: what, store: store), store: store))
         renderer.scale = 2
         guard let cg = renderer.cgImage else { print("RENDER ERROR: nil cgImage"); return true }
         let rep = NSBitmapImageRep(cgImage: cg)
@@ -46,17 +50,31 @@ enum Render {
         return true
     }
 
-    /// `DIPLOMAT_RENDER=popover` — snapshot the REAL popover root in a live NSWindow
-    /// (via `cacheDisplay`, no screen-recording permission needed) instead of
-    /// `ImageRenderer`. This is the only mode that draws window-level AppKit chrome —
-    /// notably the legacy ("Show scroll bars: Always") vertical scroller, which lives
-    /// INSIDE the window and once clipped the fixed-width content's outer margins.
-    /// Pair with `DIPLOMAT_POPOVER_CAP` (e.g. 400) to force the scrolling state.
-    /// The snapshot must show the content's 10pt left margin intact WITH the scroller.
-    private static func runWindow(out: String, store: Store) {
-        let _ = seedProcessesIfNeeded("procs", store: store)
-        let _ = seedAutofix(store)
-        let hosting = NSHostingController(rootView: PopoverRoot().environmentObject(store))
+    /// The frame every snapshot is taken in: the popover's fixed width, its outer
+    /// margin, its background. Shared by the `ImageRenderer` and window paths so the
+    /// two cannot disagree about what a mode's snapshot is a picture of.
+    private static func chrome(_ body: some View, store: Store) -> some View {
+        body
+            .environmentObject(store)
+            .frame(width: PopoverRoot.width)
+            .padding(10)
+            .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    /// Snapshot a root view in a live NSWindow (via `cacheDisplay`, no screen-recording
+    /// permission needed) instead of `ImageRenderer`. Two callers:
+    ///
+    /// `DIPLOMAT_RENDER=popover` passes the REAL popover root — the only mode that draws
+    /// window-level AppKit chrome, notably the legacy ("Show scroll bars: Always")
+    /// vertical scroller, which lives INSIDE the window and once clipped the fixed-width
+    /// content's outer margins. Pair with `DIPLOMAT_POPOVER_CAP` (e.g. 400) to force the
+    /// scrolling state; the snapshot must show the content's 10pt left margin intact WITH
+    /// the scroller.
+    ///
+    /// `DIPLOMAT_RENDER=window-<mode>` passes any other mode's view, for the controls
+    /// `ImageRenderer` leaves blank.
+    private static func runWindow(what: String, out: String, root: some View) {
+        let hosting = NSHostingController(rootView: root)
         let window = NSWindow(contentViewController: hosting)
         // Ordered (so AppKit lays out + commits) but parked far off-screen so nothing
         // flashes on the user's display. `PopoverWindowController.center()` only
@@ -78,7 +96,7 @@ enum Render {
             }
             do {
                 try data.write(to: URL(fileURLWithPath: out))
-                print("rendered popover -> \(out)  (\(rep.pixelsWide)x\(rep.pixelsHigh), "
+                print("rendered \(what) -> \(out)  (\(rep.pixelsWide)x\(rep.pixelsHigh), "
                       + "scroller: \(NSScroller.preferredScrollerStyle == .legacy ? "legacy" : "overlay"))")
             } catch {
                 print("RENDER ERROR: \(error)")

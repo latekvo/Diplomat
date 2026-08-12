@@ -1040,6 +1040,9 @@ DIPLOMAT_RENDER=panel    ./Diplomat.app/Contents/MacOS/Diplomat  # snapshot a sc
                                                      #   popover (REAL NSWindow snapshot incl. the legacy
                                                      #   scroller — pair with DIPLOMAT_POPOVER_CAP=400
                                                      #   to force the scrolling state)
+                                                     #   window-<state> (any state above through a real
+                                                     #   window: ImageRenderer draws no AppKit control, so
+                                                     #   window-settings is the only faithful Settings shot)
                                                      #   live (the real popover ON-SCREEN, left running, to
                                                      #   drive the queue's drag + execute now with a mouse;
                                                      #   its queued rows resolve in-flight, so no spawn)
