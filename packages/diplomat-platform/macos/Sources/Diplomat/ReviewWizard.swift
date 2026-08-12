@@ -740,18 +740,13 @@ struct ReviewWizardView: View {
         }
     }
 
-    /// Whose PRs this run would review, when known — the pipeline's ban dimension.
-    /// (My own PRs have no ban dimension; a specific PR's author comes from the
-    /// wizard's debounced poll and may still be unknown.)
-    private var reviewedAuthorLogin: String? {
-        switch target {
-        case .mine: return nil
-        case .someone:
-            let u = username.trimmingCharacters(in: .whitespaces)
-            return u.isEmpty ? nil : u
-        case .specific: return specificAuthorLogin
-        }
-    }
+    /// Whose PR this run would review, when known — the pipeline's ban dimension.
+    ///
+    /// Only a single PR is dispatched from here at all: a sweep queues instead, and
+    /// each ask it queues carries its own PR's author. So this is the wizard's
+    /// debounced poll, which may still be unknown — and nil for my own PR, which has
+    /// no ban dimension to check.
+    private var reviewedAuthorLogin: String? { specificAuthorLogin }
 }
 
 /// The wizard status line for one dispatch outcome — shared by all three wizards

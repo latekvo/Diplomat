@@ -384,13 +384,12 @@ class WizardView(SpawnWizard):
         return f"Review · {scope} · {cfg.depth}"
 
     def _author_login(self) -> str | None:
-        """Whose PRs this run would review, when known - the pipeline's ban
-        dimension. My own PRs have none; a specific PR's author comes from the
-        debounced poll (only trusted while its THEIRS disposition holds)."""
-        target = self.target.currentData()
-        if target == PRTarget.SOMEONE:
-            handle = self.username.text().strip()
-            return handle or None
-        if target == PRTarget.SPECIFIC and self._specific_author == SpecificAuthor.THEIRS:
+        """Whose PR this run would review, when known - the pipeline's ban dimension.
+
+        Only a single PR reaches the base class's dispatch at all: a sweep queues
+        instead, and each ask it queues carries its own PR's author. So this is the
+        debounced poll's answer, trusted only while its THEIRS disposition holds - my
+        own PRs have no ban dimension to check."""
+        if self._specific_author == SpecificAuthor.THEIRS:
             return self._specific_author_login
         return None

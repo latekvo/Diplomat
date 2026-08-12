@@ -196,6 +196,21 @@ def test_review_local_spawn_goes_through_the_shared_gate(store, dispatched, loca
     assert job.prompt
 
 
+def test_review_passes_the_polled_author_for_the_ban_check(store, dispatched, local_only):
+    """A specific PR is the only thing this wizard dispatches, so its ban dimension is
+    the debounced poll's answer — and only while that says the PR is someone else's.
+    My own PR has none: a login here would check the ban list against myself."""
+    w = _review_wizard(store)
+    w._specific_author = SpecificAuthor.THEIRS
+    w._specific_author_login = "octocat"
+    w._spawn()
+    assert dispatched[-1][0].author_login == "octocat"
+
+    w._specific_author = SpecificAuthor.MINE
+    w._spawn()
+    assert dispatched[-1][0].author_login is None
+
+
 def test_review_sweep_queues_instead_of_spawning(store, dispatched, swept, local_only):
     """The whole point of this wizard's sweep: it queues a review per PR instead of
     handing one agent every PR at once, and the queue starts them a bay at a time."""
