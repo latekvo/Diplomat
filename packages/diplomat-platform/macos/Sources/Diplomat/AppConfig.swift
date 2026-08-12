@@ -5,8 +5,9 @@ import DiplomatCore
 ///
 /// Almost every setting belongs in this app's UserDefaults, and stays there. A few
 /// can't: the repo root every spawn `cd`s into, the cap on how many automatic agents
-/// may run here at once, and the three knobs of the rate-limit budget those agents are
-/// started against. Each is consumed by whichever process picks the work up, and one of
+/// may run here at once, the three knobs of the rate-limit budget those agents are
+/// started against, and which agent CLI a spawn runs (with the model it is pinned to).
+/// Each is consumed by whichever process picks the work up, and one of
 /// those is a **mesh node** — a separate, stdlib-only Python process with neither
 /// UserDefaults nor Qt (the README documents joining a mesh with "no Qt needed"), which
 /// outlives this app and can't be handed a value at spawn time.
@@ -26,6 +27,20 @@ enum AppConfig {
     static let autoBudgetConfidenceKey = "autoBudgetConfidence"
     /// Share of each window to keep in hand while the ledger cannot price a task.
     static let autoBudgetFloorPctKey = "autoBudgetFloorPct"
+    /// Which agent CLI a spawn runs — see `AgentRunner`. Same key on the Linux side.
+    static let agentRunnerKey = "agentRunner"
+    /// The model the selected runner is pinned to; "" lets that runner pick. A model id,
+    /// never a credential: those stay in the runner's own provider store.
+    /// Same key on the Linux side.
+    static let agentModelKey = "agentModel"
+
+    /// The runner every spawn on this machine uses, resolved here rather than at each
+    /// call site because there are two, in different processes: this app's spawner and
+    /// — for work a mesh peer routes in — the node's, through the Python host.
+    static var agentRunner: AgentRunner { AgentRunner.from(string(agentRunnerKey)) }
+
+    /// The model the selected runner is pinned to, or "" for that runner's own choice.
+    static var agentModel: String { string(agentModelKey) }
 
     /// Overridable so a self-test can point at a scratch file instead of the real one —
     /// same escape hatch as the mesh's `SZPONTNET_DIR`.

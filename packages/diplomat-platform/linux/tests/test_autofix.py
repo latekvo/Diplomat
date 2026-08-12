@@ -317,9 +317,10 @@ def _spawn_recorder(monkeypatch, finish=False):
     simulating an agent that finished immediately so the in-flight guard clears)."""
     calls = []
 
-    def fake_spawn(prompt, preferred, done_path=None, pid_path=None, prompt_file=None):
+    def fake_spawn(prompt, preferred, done_path=None, pid_path=None, prompt_file=None,
+                   port=None):
         calls.append({"prompt": prompt, "done": done_path, "pid": pid_path,
-                      "prompt_file": prompt_file})
+                      "prompt_file": prompt_file, "port": port})
         if finish and done_path:
             with open(done_path, "w") as fh:
                 fh.write("0")
@@ -2242,7 +2243,8 @@ def test_a_spawn_failure_stops_the_drain_rather_than_clearing_the_queue(store, m
 
     attempted: list = []
 
-    def refuse(prompt, preferred, done_path=None, pid_path=None, prompt_file=None):
+    def refuse(prompt, preferred, done_path=None, pid_path=None, prompt_file=None,
+               port=None):
         attempted.append(prompt)
         raise review.SpawnError("no terminal emulator found")
 

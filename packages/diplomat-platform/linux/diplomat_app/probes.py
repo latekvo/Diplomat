@@ -15,12 +15,13 @@ bays, never an agent declared finished.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
 from dataclasses import dataclass
 
-from . import apiwatch, core, tmuxwatch
+from . import apiwatch, core, runner, tmuxwatch
 from .agentstate import UNAVAILABLE, Evidence, Observation, ProcInfo, RunRecord
 
 #: How long a probe's answer is reused. The resolver re-runs for every question the
@@ -31,6 +32,7 @@ _CACHE_SECS = 5
 
 _ps_cache: tuple[float, str] | None = None
 _tails_cache: tuple[float, frozenset, Observation] | None = None
+_sessions_cache: tuple[float, frozenset, Observation] | None = None
 
 #: How each probe last answered, and how long it has been failing. A probe that goes
 #: quiet is the failure mode with no symptom of its own — the applet keeps drawing
@@ -38,11 +40,11 @@ _tails_cache: tuple[float, frozenset, Observation] | None = None
 #: rather than left to be inferred from behaviour.
 _health: dict[str, "ProbeHealth"] = {}
 
-#: How many agent screens have been read, and how many of them showed the CLI's
-#: interrupt hint. The hint is a literal string from someone else's UI
-#: (:data:`apiwatch.BUSY_MARKER`), and if it ever stops matching, every agent reads as
-#: idle at once: the cap empties and the monitors burst. Nothing else would say so —
-#: the applet would look like it was working perfectly — so the ratio is counted.
+#: How many agent screens have been read, and how many of them showed a CLI's
+#: interrupt hint. The hints are literal strings from someone else's UI
+#: (:data:`apiwatch.BUSY_MARKERS`), and if they ever stop matching, every agent reads
+#: as idle at once: the cap empties and the monitors burst. Nothing else would say so
+#: — the applet would look like it was working perfectly — so the ratio is counted.
 _tails_read = 0
 _marker_seen = 0
 
@@ -123,9 +125,10 @@ def _ps_dump(now: float) -> Observation:
 def reset_cache() -> None:
     """Drop every probe cache and every counter — for tests that change the machine
     between assertions inside one cache window."""
-    global _ps_cache, _tails_cache, _tails_read, _marker_seen
+    global _ps_cache, _tails_cache, _sessions_cache, _tails_read, _marker_seen
     _ps_cache = None
     _tails_cache = None
+    _sessions_cache = None
     _tails_read = 0
     _marker_seen = 0
     _health.clear()
@@ -135,9 +138,10 @@ def process_table(dump: Observation) -> Observation:
     """pid → what the process table says about it.
 
     ``etimes`` (whole seconds since start) is what the resolver's pid-adoption guard
-    compares against a run's age; the argv decides ``is_agent``, using the same
-    "the line mentions claude" test the legacy scan used, because a wrapper shell and
-    an agent both carrying the word is exactly what the age half of the guard is for.
+    compares against a run's age; the argv decides ``is_agent``, using the same loose
+    "the line mentions a runner's CLI" test the legacy scan used, because a wrapper
+    shell and an agent both carrying the word is exactly what the age half of the
+    guard is for.
     """
     if not dump.ok:
         return Observation.unavailable(dump.reason)
@@ -152,7 +156,7 @@ def process_table(dump: Observation) -> Observation:
         except ValueError:
             continue
         table[pid] = ProcInfo(tty=tty.removeprefix("/dev/") if tty != "?" else "",
-                              elapsed=elapsed, is_agent="claude" in args)
+                              elapsed=elapsed, is_agent=runner.is_agent_line(args))
     return Observation.present(table)
 
 
@@ -187,7 +191,7 @@ def live_agents(dump: Observation) -> Observation:
     # came back keyed to a tty that was really a pid, so no screen could ever be
     # found for one and no untracked agent ever gave its bay back.
     for line in dump.value.splitlines():
-        if "claude" not in line:
+        if not runner.is_agent_line(line):
             continue
         parts = line.split(maxsplit=3)
         if len(parts) < 4:
@@ -231,6 +235,164 @@ def pane_tails(records: list[RunRecord], now: float = 0.0) -> Observation:
         _marker_seen += sum(1 for t in tails.values() if apiwatch.looks_busy(t))
     _tails_cache = (now, ttys, obs)
     return obs
+
+
+#: Most sessions considered when matching a run to its own. Ordinarily there is one —
+#: each runner's ``candidates`` filters are narrow — and the cap only bites when a run
+#: never binds at all, where it is what stops a fruitless search costing one opening
+#: message read per stale session on every tick, forever.
+_MAX_CANDIDATES = 4
+
+
+def agent_sessions(records: list[RunRecord], directory: str,
+                   now: float = 0.0) -> Observation:
+    """run id → what that run's own agent says it is doing.
+
+    Positive evidence where the pane gives an inference: a turn the runner itself
+    marks finished, rather than whether someone else's status bar happened to have its
+    interrupt hint drawn when we looked.
+
+    Two runners answer, from different places — OpenCode over the loopback port its
+    spawn reserved (:mod:`opencodeapi`), Hermes out of the SQLite store it keeps every
+    session in (:mod:`hermesstore`) — and both come back as the same typed answer, so
+    nothing downstream learns which runner it is looking at.
+
+    A run missing from the answer is a run this cannot reach: every Claude Code run,
+    an OpenCode run spawned without a port, one whose server has not come up yet, one
+    whose session has not been written to yet. The resolver reads its screen instead,
+    so absence here costs the older evidence and never a verdict.
+
+    UNSUPPORTED when no tracked run has such a session at all — a machine running
+    Claude Code is an ordinary machine, not one whose probe has gone quiet.
+
+    Cached for the same window as the other probes, and for a sharper reason: this one
+    dials a socket, the resolver re-runs for every question the applet asks, and the
+    panel asks two of them per repaint — so uncached, one unresponsive port costs a
+    repaint two full per-run timeouts on the Qt thread. The staleness it buys is the
+    one the pane tail already has for the very same busy-or-idle decision.
+
+    The directory is resolved because both stores record the agent's own ``getcwd()``,
+    which is physical, while the configured repo root is whatever the operator typed —
+    and the match is exact equality, so one symlink between them and no run ever binds.
+    """
+    from . import agentregistry
+
+    global _sessions_cache
+    asking = [(r, agentregistry.run_runner(r.run_id)) for r in records]
+    asking = [(r, name) for r, name in asking if name in _BACKENDS]
+    if not asking:
+        return Observation.unsupported("are unavailable (no run serves a session of "
+                                       "its own)")
+    # Keyed on the runs as well as the clock: a run dispatched since the last pass
+    # would otherwise be answered from a sweep that never asked about it.
+    key = frozenset(r.run_id for r, _ in asking)
+    if (_sessions_cache is not None and _sessions_cache[1] == key
+            and now - _sessions_cache[0] < _CACHE_SECS):
+        return _sessions_cache[2]
+    directory = os.path.realpath(directory)
+    taken = {agentregistry.bound_session(r.run_id) for r, _ in asking}
+    taken.discard("")
+    out = {}
+    # In dispatch order, so the runs that have already matched a session are out of the
+    # way before a newer one goes looking — `taken` is only a useful filter if it is
+    # filled in the order the sessions were created.
+    for record, name in sorted(asking, key=lambda pair: pair[0].dispatched_at):
+        backend = _BACKENDS[name]
+        session_id = agentregistry.bound_session(record.run_id)
+        if not session_id:
+            session_id = backend.bind(record, directory, taken)
+            if not session_id:
+                continue
+            agentregistry.bind_session(record.run_id, session_id)
+            taken.add(session_id)
+        state = backend.state(record, session_id)
+        if state is not None:
+            out[record.run_id] = state
+    obs = Observation.present(out)
+    _sessions_cache = (now, key, obs)
+    return obs
+
+
+class _OpenCodeBackend:
+    """A run's own OpenCode server, on the port its spawn reserved."""
+
+    @staticmethod
+    def bind(record: RunRecord, directory: str, taken: set[str]) -> str:
+        """Which session on this run's server is this run's, by its opening prompt.
+
+        Every run has its own server but they share one session store, so the port
+        alone narrows nothing — ``GET /session`` lists the machine's own recent
+        history whichever port it is asked on. The prompt is what makes the match
+        exact, and exact is worth the fetch: the applet runs several agents in one
+        checkout at a time, so two sessions a second apart in the same directory is
+        the ordinary case, not the pathological one.
+        """
+        from . import agentregistry, opencodeapi
+
+        port = agentregistry.port(record.run_id)
+        if port is None:
+            return ""
+        listing = opencodeapi.sessions(port)
+        if listing is None:
+            return ""
+        prompt = _staged_prompt(record.run_id)
+        if prompt is None:
+            return ""
+        found = opencodeapi.candidates(listing, directory,
+                                       record.dispatched_at * 1000.0, taken)
+        for session_id in found[:_MAX_CANDIDATES]:
+            if opencodeapi.is_ours(opencodeapi.messages(port, session_id) or [],
+                                   prompt):
+                return session_id
+        return ""
+
+    @staticmethod
+    def state(record: RunRecord, session_id: str):
+        from . import agentregistry, opencodeapi
+
+        port = agentregistry.port(record.run_id)
+        if port is None:
+            return None
+        return opencodeapi.state_of(
+            opencodeapi.messages(port, session_id, limit=1) or [])
+
+
+class _HermesBackend:
+    """Hermes' own session store, which it writes as it works."""
+
+    @staticmethod
+    def bind(record: RunRecord, directory: str, taken: set[str]) -> str:
+        from . import hermesstore
+
+        prompt = _staged_prompt(record.run_id)
+        if prompt is None:
+            return ""
+        for session_id in hermesstore.candidates(
+                directory, record.dispatched_at, taken)[:_MAX_CANDIDATES]:
+            if hermesstore.is_ours(session_id, prompt):
+                return session_id
+        return ""
+
+    @staticmethod
+    def state(record: RunRecord, session_id: str):
+        from . import hermesstore
+
+        return hermesstore.state_of(session_id)
+
+
+def _staged_prompt(run_id: str) -> str | None:
+    from . import agentregistry
+
+    try:
+        return agentregistry.prompt_path(run_id).read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
+#: Which store answers for which runner. A runner absent from here serves nothing and
+#: is read off its screen — that is Claude Code, and a run whose runner was never
+#: recorded.
+_BACKENDS = {runner.OPENCODE: _OpenCodeBackend, runner.HERMES: _HermesBackend}
 
 
 def mesh_claims() -> Observation:
@@ -294,9 +456,7 @@ def gather(records: list[RunRecord], now: float, *,
     belongs to the slow refresh, so the fast tick carries forward whatever the last
     one found (UNAVAILABLE until the first).
     """
-    from . import agentregistry
-
-    from . import agentstate
+    from . import agentregistry, agentstate, review
 
     dump = _ps_dump(now)
     table = _note("processes", process_table(dump), now)
@@ -314,4 +474,6 @@ def gather(records: list[RunRecord], now: float, *,
         claims=_note("mesh claims", mesh_claims(), now),
         merged_prs=merged or Observation.unavailable("have not been probed yet"),
         live_agents=scan,
+        sessions=_note("agent sessions",
+                       agent_sessions(records, review.repo_path(), now), now),
     )

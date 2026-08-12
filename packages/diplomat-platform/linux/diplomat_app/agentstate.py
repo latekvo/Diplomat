@@ -114,7 +114,7 @@ def _jsonable(value: Any) -> Any:
         return sorted(value)
     if isinstance(value, dict):
         return {str(k): _jsonable(v) for k, v in value.items()}
-    if isinstance(value, ProcInfo):
+    if isinstance(value, (ProcInfo, SessionState)):
         return value.to_json()
     return value
 
@@ -205,6 +205,32 @@ class ProcInfo:
         return ProcInfo(tty=obj.get("tty", ""),
                         elapsed=float(obj.get("elapsed", 0.0)),
                         is_agent=bool(obj.get("isAgent", False)))
+
+
+@dataclass(frozen=True)
+class SessionState:
+    """What an agent's own session says about it, for a runner that keeps one.
+
+    The typed answer to the question :func:`_classify_activity` otherwise has to read
+    off a status bar. An OpenCode agent serves its session over loopback while it
+    works (:mod:`diplomat_app.opencodeapi`) and a Hermes agent writes its own to
+    SQLite (:mod:`diplomat_app.hermesstore`); Claude Code serves nothing, so its runs
+    are absent from the evidence and are still read from the screen.
+
+    Only the one fact, because it is the only one this evidence can carry honestly:
+    an OpenCode run's spend is a sum over its whole transcript and the poll reads one
+    message. A finished run is priced from its runner's own store instead.
+    """
+
+    #: Is a turn in flight? Whichever way its runner says so.
+    busy: bool
+
+    def to_json(self) -> dict:
+        return {"busy": self.busy}
+
+    @staticmethod
+    def from_json(obj: dict) -> "SessionState":
+        return SessionState(busy=bool(obj.get("busy", False)))
 
 
 @dataclass(frozen=True)
@@ -307,6 +333,11 @@ class Evidence:
     #: here, whose pid file belongs to the node that spawned it.
     live_agents: Observation = field(
         default_factory=lambda: Observation.unavailable("not probed"))
+    #: run id → what that run's own agent session says about it. Only a runner that
+    #: serves one appears here, so a run's absence is ordinary and reads as "ask the
+    #: screen" rather than as anything about the run.
+    sessions: Observation = field(
+        default_factory=lambda: Observation.unavailable("not probed"))
 
     def to_json(self) -> dict:
         return {"processes": self.processes.to_json(),
@@ -314,7 +345,8 @@ class Evidence:
                 "tails": self.tails.to_json(),
                 "claims": self.claims.to_json(),
                 "mergedPrs": self.merged_prs.to_json(),
-                "liveAgents": self.live_agents.to_json()}
+                "liveAgents": self.live_agents.to_json(),
+                "sessions": self.sessions.to_json()}
 
     @staticmethod
     def from_json(obj: dict) -> "Evidence":
@@ -331,6 +363,10 @@ class Evidence:
             live_agents=Observation.from_json(
                 obj.get("liveAgents"),
                 lambda v: {int(k): str(t) for k, t in (v or {}).items()}),
+            sessions=Observation.from_json(
+                obj.get("sessions"),
+                lambda v: {str(k): SessionState.from_json(s)
+                           for k, s in (v or {}).items()}),
         )
 
 
@@ -531,13 +567,25 @@ def _classify_activity(record: RunRecord, evidence: Evidence, done,
 
     An agent is spawned into an INTERACTIVE session, so finishing its work is not
     exiting: it sits at the prompt until a human closes the window, and the process
-    table shows the same live agent either way. Its own visible buffer is the only
-    thing that separates the two.
+    table shows the same live agent either way. Something has to separate the two.
+
+    Two things can, and the agent's own session is asked first because it is the only
+    one that is positive evidence: a turn carries a completion stamp, set when it
+    ends. The screen is the fallback, and it is an inference — it reads whether the
+    CLI's interrupt hint was on the status bar when we looked, which is a string from
+    someone else's UI that says nothing at all if they reword it.
 
     Every gap here reads as RUNNING, which costs a bay rather than correctness — but
     it is also the one rung that fails silently, so :mod:`diplomat_app.probes` counts
     how often the tail is missing and says so out loud.
     """
+    if evidence.sessions.ok:
+        session: SessionState | None = evidence.sessions.value.get(record.run_id)
+        if session is not None:
+            if session.busy:
+                return done(RUNNING, f"{alive_reason}; its session is mid-turn")
+            return done(AWAITING_INPUT, f"{alive_reason}; its session finished its "
+                                        f"turn")
     if not evidence.tails.ok:
         return done(RUNNING,
                     f"{alive_reason}; screen {evidence.tails.reason or 'unavailable'}")

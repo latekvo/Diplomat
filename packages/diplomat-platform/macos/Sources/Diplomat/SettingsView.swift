@@ -17,6 +17,7 @@ struct SettingsView: View {
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 16) {
                     identitySection
+                    runnerSection
                     repoSection
                     autofixSection
                     apiWatchSection
@@ -394,7 +395,10 @@ struct SettingsView: View {
             + "(e.g. \u{201C}529 Overloaded\u{201D}), it sends \u{201C}\(ApiErrorWatcher.continueMessage)\u{201D} "
             + "so a stalled agent resumes on its own. Out-of-quota stalls "
             + "(\u{201C}You've hit your weekly limit\u{201D}) are left alone — nudging can't help "
-            + "until the limit resets."
+            + "until the limit resets. Claude Code runs only: the banners it matches are "
+            + "Claude Code's. An OpenCode or Hermes agent that hits an error reads as idle "
+            + "instead, frees its task-cap slot, and is dispatched again by whichever "
+            + "monitor owed the work."
         let count = store.apiWatchContinues > 0 ? "  Continued \(store.apiWatchContinues)× so far." : ""
         return base + count
     }
@@ -494,6 +498,59 @@ struct SettingsView: View {
     private var repoSlug: String {
         let c = CoreAssets.repoCoordinates()
         return "\(c.owner)/\(c.repo)"
+    }
+
+    // MARK: Agent runner (which CLI the agents are)
+
+    private var runnerSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            sectionLabel("AGENT RUNNER")
+            Picker("", selection: $store.agentRunner) {
+                ForEach(AgentRunner.allCases, id: \.self) { Text($0.label).tag($0) }
+            }
+            .pickerStyle(.segmented).labelsHidden()
+
+            if store.agentRunner != .claude {
+                let runnerName = store.agentRunner.label
+                HStack(spacing: 6) {
+                    Image(systemName: "cpu").font(.caption).foregroundStyle(.secondary)
+                    TextField("model — blank lets \(runnerName) choose",
+                              text: $store.agentModel)
+                        .textFieldStyle(.plain).font(.callout).lineLimit(1)
+                    Button("Connect a provider…") { openProviderSetup() }
+                        .buttonStyle(.bordered).controlSize(.small)
+                        .help("Open \(runnerName)'s own login wizard: it knows every "
+                              + "provider in its catalog and stores the credential "
+                              + "itself. Diplomat never holds an API key.")
+                }
+                .padding(8)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.1)))
+            }
+
+            Text(runnerHint)
+                .font(.caption2).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var runnerHint: String {
+        switch store.agentRunner {
+        case .claude:
+            return "SPAWN AGENT runs `claude`, picking up the flags your shell alias gives it."
+        case .opencode:
+            return "SPAWN AGENT runs `opencode`. Its model and provider are OpenCode's own — "
+                 + "connect one above; the credential is stored by OpenCode, never here."
+        case .hermes:
+            return "SPAWN AGENT runs `hermes chat --tui`. Its model and provider are Hermes' "
+                 + "own — connect one above; the credential is stored by Hermes, never here."
+        }
+    }
+
+    /// Hand the user to the runner's provider wizard, in a terminal window of the kind
+    /// they already picked for agents — it is interactive, so it needs a real one.
+    private func openProviderSetup() {
+        AgentSpawner.openTerminal(command: store.agentRunner.setupCommand,
+                                  terminal: store.terminal)
     }
 
     private var repoSection: some View {

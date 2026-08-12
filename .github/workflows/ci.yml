@@ -83,6 +83,7 @@ jobs:
             DIPLOMAT_MESH_CMD_TEST=1 swift run Diplomat
           DIPLOMAT_ALLOCATOR_TEST=1 swift run Diplomat
           DIPLOMAT_QUEUE_TEST=1 swift run Diplomat
+          DIPLOMAT_SWEEP_TEST=1 swift run Diplomat
 
   # The shared core advertises "compiles on macOS *and* Linux". This guards that
   # invariant by building + running the diplomat-core package on Linux (the SwiftUI

@@ -94,9 +94,15 @@ enum TelemetryLog {
     /// Record a completion at `at` — the sentinel file's mtime, i.e. when the agent
     /// actually exited, not when the sweep noticed (which is up to a poll period
     /// later and would inflate every run time).
-    static func done(key: String, at: TimeInterval, tokens: Double?) {
+    ///
+    /// `runner` is which CLI spent the tokens, and it is what keeps the rate-limit
+    /// percentages honest: an OpenCode or Hermes task is billed by whichever provider
+    /// that runner is logged into, so its tokens are worth reporting per task but not
+    /// against a window they never drew on (`Telemetry.Task.anthropic`).
+    static func done(key: String, at: TimeInterval, tokens: Double?, runner: String) {
         var event: [String: Any] = ["at": at, "ev": "done", "key": key]
         if let tokens { event["tokens"] = tokens }
+        if !runner.isEmpty { event["runner"] = runner }
         append(event)
     }
 

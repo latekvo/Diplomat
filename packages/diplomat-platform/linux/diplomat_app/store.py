@@ -39,6 +39,7 @@ from . import (
     deviceallocator,
     probes,
     review,
+    runner,
     szpont,
     telemetry,
     tmuxwatch,
@@ -348,6 +349,28 @@ class Store(QObject):
     @repo_path_override.setter
     def repo_path_override(self, value: str) -> None:
         appconfig.set_value(appconfig.REPO_ROOT, value)
+
+    @property
+    def agent_runner(self) -> str:
+        """Which agent CLI a spawn runs (Settings → AGENT RUNNER). In
+        :mod:`appconfig` rather than QSettings for the same reason the repo root is:
+        a mesh node spawns agents from a process with no Qt to ask."""
+        return runner.selected()
+
+    @agent_runner.setter
+    def agent_runner(self, value: str) -> None:
+        appconfig.set_value(appconfig.AGENT_RUNNER, value)
+
+    @property
+    def agent_model(self) -> str:
+        """The model the selected runner is pinned to; empty leaves the choice to that
+        runner's own picker. A model id, never a credential — those live in the
+        runner's provider store."""
+        return appconfig.get(appconfig.AGENT_MODEL)
+
+    @agent_model.setter
+    def agent_model(self, value: str) -> None:
+        appconfig.set_value(appconfig.AGENT_MODEL, value)
 
     @property
     def allocator_setup_done(self) -> bool:
@@ -1197,6 +1220,13 @@ class Store(QObject):
         The agent's shell writes its own pid into the run directory and then execs, so
         what identifies this run afterwards is that pid rather than the wording of its
         prompt (:func:`review.shell_command`).
+
+        Which runner is spawned is written down here rather than re-read later: the
+        setting is what the NEXT spawn will use, so a run started under one runner and
+        asked about after the operator switched would be interrogated through the
+        wrong store. An OpenCode run also gets a port reserved for its own server. A
+        port that cannot be had is not a failure to spawn — the run goes ahead without
+        one and is read off its screen, exactly as a Claude Code run is.
         """
         now = time.time()
         record = agentregistry.create_run(
@@ -1205,11 +1235,15 @@ class Store(QObject):
                 pr_number=number, pr_url=url, kind=kind, label=label, source=source,
                 placement=agentstate.PLACEMENT_LOCAL, ledger_key=ledger_key),
             prompt)
+        chosen = agentregistry.stage_runner(record.run_id)
+        port = (agentregistry.stage_port(record.run_id)
+                if chosen == runner.OPENCODE else None)
         try:
             review.spawn(prompt, self.terminal,
                          done_path=str(agentregistry.done_path(record.run_id)),
                          pid_path=str(agentregistry.pid_path(record.run_id)),
-                         prompt_file=str(agentregistry.prompt_path(record.run_id)))
+                         prompt_file=str(agentregistry.prompt_path(record.run_id)),
+                         port=port)
         except review.SpawnError:
             agentregistry.forget({record.run_id})
             return False
@@ -1225,9 +1259,16 @@ class Store(QObject):
         untracked scan will find it; one on a peer is judged only by the executor's
         origination claim, which is the sole evidence that crosses the machine
         boundary.
+
+        Which runner it is under is recorded for a landing HERE and only there. The
+        node spawns through the same seam this applet does (:func:`runner.agent_command`
+        by way of :mod:`szponthost`), so the answer is the same one and the run is
+        asked of the right store and priced by it. A run on a PEER is a process on
+        another machine: our stores hold nothing about it, and a runner written here
+        would point its probe at a session that is somebody else's.
         """
         now = time.time()
-        agentregistry.create_run(
+        record = agentregistry.create_run(
             agentstate.RunRecord(
                 run_id=agentregistry.new_run_id(now), dispatched_at=now,
                 pr_number=number, pr_url=url, kind=kind, label=label, source=source,
@@ -1235,6 +1276,8 @@ class Store(QObject):
                            else agentstate.PLACEMENT_MESH_PEER),
                 node=node, work_key=work_key, ledger_key=ledger_key),
             prompt)
+        if here:
+            agentregistry.stage_runner(record.run_id)
 
     def _auto_tasks_running(self) -> int:
         """How many bays of this device's cap are held right now — the number the cap
@@ -1717,15 +1760,15 @@ class Store(QObject):
         self._note_stale_busy_marker()
 
     def _note_stale_busy_marker(self) -> None:
-        """Say out loud when the CLI's interrupt hint has never once matched.
+        """Say out loud when no CLI's interrupt hint has ever once matched.
 
-        Telling a working agent from one waiting at its prompt rests on a literal
-        string borrowed from someone else's UI (``apiwatch.BUSY_MARKER``). If Claude
-        Code rewords its status bar, every agent reads as idle at once: every bay of
-        the cap frees, and the monitors dispatch a burst onto a machine that is
+        Telling a working agent from one waiting at its prompt rests on literal
+        strings borrowed from someone else's UI (``apiwatch.BUSY_MARKERS``). If the
+        runner in use rewords its status bar, every agent reads as idle at once: every
+        bay of the cap frees, and the monitors dispatch a burst onto a machine that is
         already full. Nothing else on this screen would look wrong.
 
-        So a machine that has read plenty of agent screens and never seen the hint on
+        So a machine that has read plenty of agent screens and never seen a hint on
         any of them is reported. It is not proof — every agent really can be idle —
         which is why the threshold is high and the wording says what was measured
         rather than what it means.
@@ -1734,10 +1777,11 @@ class Store(QObject):
         if seen or read < self._MARKER_SAMPLE or self._marker_warned:
             return
         self._marker_warned = True
+        markers = " / ".join(f"“{m}”" for m in apiwatch.BUSY_MARKERS)
         activity.log("auto", "warn",
-                     f"Read {read} agent screens without once seeing “"
-                     f"{apiwatch.BUSY_MARKER}” — if the CLI reworded it, every agent "
-                     f"now reads as idle and the task cap will not hold")
+                     f"Read {read} agent screens without once seeing {markers} — if "
+                     f"the CLI reworded it, every agent now reads as idle and the "
+                     f"task cap will not hold")
         self.refresh_activity()
 
     def _persist_run_changes(self, t: agentstate.Tick) -> None:
@@ -1782,21 +1826,23 @@ class Store(QObject):
         gone = [r for r in t.retirable if not r.untracked]
         if not gone:
             return
-        # Both pricing inputs come out of the run directory, so they must be read
-        # before `forget` deletes it.
+        # Every pricing input comes out of the run directory, so all of them must be
+        # read before `forget` deletes it.
         #
         # The sentinel's mtime is when the agent actually exited; now() is whenever a
         # poll got round to looking, which is up to a poll period later and would
         # inflate every recorded run time by a random few minutes.
         retired = [
             (r, agentregistry.finished_at(r.run_id) or time.time(),
-             _run_prompt(r.run_id))
+             _run_prompt(r.run_id), agentregistry.bound_session(r.run_id),
+             agentregistry.run_runner(r.run_id))
             for r in gone if r.ledger_key
         ]
         agentregistry.forget({r.run_id for r in gone})
-        for r, finished_at, prompt in retired:
+        for r, finished_at, prompt, session_id, agent_runner in retired:
             telemetry.record_completion(r.ledger_key, prompt, r.dispatched_at,
-                                        finished_at)
+                                        finished_at, session_id=session_id,
+                                        agent_runner=agent_runner)
         if retired:
             self.telemetry_changed.emit()
 

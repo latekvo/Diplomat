@@ -8,6 +8,7 @@ by a background data refresh.
 from __future__ import annotations
 
 import os
+import shutil
 import time
 
 from PySide6.QtCore import Signal
@@ -27,7 +28,16 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import apiwatch, appconfig, autofix, core, deviceallocator, review, szpont
+from . import (
+    apiwatch,
+    appconfig,
+    autofix,
+    core,
+    deviceallocator,
+    review,
+    runner,
+    szpont,
+)
 from .store import Store, tools
 from .widgets import IconChip, muted
 
@@ -62,6 +72,7 @@ class SettingsView(QWidget):
         left = QVBoxLayout()
         left.setSpacing(14)
         left.addLayout(self._identity_section())
+        left.addLayout(self._runner_section())
         left.addLayout(self._repo_section())
         left.addLayout(self._autofix_section())
         left.addLayout(self._apiwatch_section())
@@ -149,6 +160,78 @@ class SettingsView(QWidget):
         col.addWidget(field)
         col.addWidget(hint)
         return col
+
+    # MARK: agent runner (which CLI the agents are)
+
+    def _runner_section(self) -> QVBoxLayout:
+        col = QVBoxLayout()
+        col.setSpacing(6)
+        col.addWidget(_section_label("AGENT RUNNER"))
+
+        combo = QComboBox()
+        for key in runner.RUNNERS:
+            combo.addItem(runner.LABELS[key], key)
+        idx = combo.findData(self.store.agent_runner)
+        if idx >= 0:
+            combo.setCurrentIndex(idx)
+        col.addWidget(combo)
+
+        self._model_field = QLineEdit(self.store.agent_model)
+        self._model_field.setClearButtonEnabled(True)
+        self._model_field.textChanged.connect(
+            lambda text: setattr(self.store, "agent_model", text)
+        )
+        col.addWidget(self._model_field)
+
+        self._providers_button = QPushButton("Connect a provider…")
+        self._providers_button.setToolTip(
+            "Open the runner's own login wizard: it knows every provider in its "
+            "catalog and stores the credential itself. Diplomat never holds an API key."
+        )
+        self._providers_button.clicked.connect(self._open_provider_setup)
+        col.addWidget(self._providers_button)
+
+        self._runner_hint = QLabel()
+        self._runner_hint.setWordWrap(True)
+        self._runner_hint.setStyleSheet(muted(10))
+        col.addWidget(self._runner_hint)
+
+        combo.currentIndexChanged.connect(
+            lambda: (setattr(self.store, "agent_runner", combo.currentData()),
+                     self._refresh_runner_ui())
+        )
+        self._refresh_runner_ui()
+        return col
+
+    def _refresh_runner_ui(self) -> None:
+        """Show the model and provider controls only for a runner that has them, and
+        say which CLI has to be on PATH.
+
+        A missing binary is otherwise near-silent: the window opens, the shell prints
+        "command not found", the completion sentinel takes the 127 straight away, and
+        the applet records a run that finished in a second without doing anything."""
+        chosen = self.store.agent_runner
+        label = runner.LABELS.get(chosen, chosen)
+        foreign = chosen != runner.CLAUDE
+        self._model_field.setVisible(foreign)
+        self._model_field.setPlaceholderText(f"model — blank lets {label} choose")
+        self._providers_button.setVisible(foreign)
+        found = shutil.which(chosen)
+        if found:
+            where = f"Spawns run `{chosen}` ({found})."
+        else:
+            where = (f"`{chosen}` is not on this app's PATH. Agents run under your "
+                     f"login shell, so an rc-only install still works — but check it "
+                     f"if spawned runs finish instantly without doing anything.")
+        extra = (f" Its model and provider are {label}'s own — connect one above; the "
+                 f"credential is stored by {label}, never here." if foreign else "")
+        self._runner_hint.setText(where + extra)
+
+    def _open_provider_setup(self) -> None:
+        try:
+            review.open_terminal(runner.setup_command(), self.store.terminal)
+        except review.SpawnError as exc:
+            self._runner_hint.setText(f"Could not open a terminal: {exc}")
 
     # MARK: repo root (where the agents work)
 
@@ -558,7 +641,10 @@ class SettingsView(QWidget):
             "Overloaded”), it types “" + apiwatch.CONTINUE_MESSAGE + "” so a stalled "
             "agent resumes on its own. Out-of-quota stalls (“You've hit your weekly "
             "limit”) are left alone — nudging can't help until the limit resets. Run "
-            "your agents inside tmux for this to reach them."
+            "your agents inside tmux for this to reach them. Claude Code runs only: "
+            "the banners it matches are Claude Code's. An OpenCode or Hermes agent "
+            "that hits an error reads as idle instead, frees its task-cap slot, and "
+            "is dispatched again by whichever monitor owed the work."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet(muted(10))
@@ -945,7 +1031,8 @@ class SettingsView(QWidget):
         col.addWidget(combo)
 
         hint = QLabel(
-            "SPAWN AGENT opens a new terminal window running `claude` with the review prompt."
+            "SPAWN AGENT opens a new terminal window running the agent runner with "
+            "the review prompt."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet(muted(10))
