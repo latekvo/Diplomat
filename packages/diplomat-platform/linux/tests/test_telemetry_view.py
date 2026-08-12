@@ -268,26 +268,32 @@ def test_the_quota_axis_spans_the_lookback_not_just_the_readings(store):
     assert max(columns) >= 400 * 0.98, "the newest reading is not at the right edge"
 
 
-def _owed_chart(reviews: int, conflicts: int):
-    """The owed-work chart rendered 400x160, over a fortnight owing that much
-    throughout."""
-    from PySide6.QtCore import Qt
-    from PySide6.QtGui import QImage
+def _owed_chart(reviews: list[int], conflicts: list[int]):
+    """The owed-work chart rendered 400x160, over a fortnight owing those counts.
+
+    Rendered without ``DrawWindowBackground``, so every pixel left transparent is one
+    the chart did not paint. The widget's background is whatever palette the host Qt
+    hands it — light on a bare CI runner, dark on a desktop — and reading ink off it
+    by brightness passes on one and not the other.
+    """
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtGui import QImage, QRegion
+    from PySide6.QtWidgets import QWidget
 
     from diplomat_app.telemetryview import PendingChart
 
     now = 1_785_000_000.0
+    steps = len(reviews)
     chart = PendingChart()
     chart.set_series(
-        tuple(telemetry.PendingPoint(at=now - (56 - i) * 900, reviews=reviews,
-                                     conflicts=conflicts)
-              for i in range(56)),
+        tuple(telemetry.PendingPoint(at=now - (steps - i) * 900, reviews=r, conflicts=c)
+              for i, (r, c) in enumerate(zip(reviews, conflicts))),
         14.0,
     )
     chart.resize(400, 160)
     image = QImage(chart.size(), QImage.Format.Format_ARGB32)
     image.fill(Qt.GlobalColor.transparent)
-    chart.render(image)
+    chart.render(image, QPoint(), QRegion(), QWidget.RenderFlag.DrawChildren)
     return image
 
 
@@ -315,7 +321,7 @@ def test_owed_work_stacks_rather_than_overlaying(app):
     fixes ride on top of the reviews and the top edge is the whole backlog. Drawn
     from the axis up instead, the two would cover the same pixels and a moment owing
     three reviews and one fix would read as a backlog of three."""
-    reviews, fixes = _pending_fill_rows(_owed_chart(reviews=3, conflicts=1))
+    reviews, fixes = _pending_fill_rows(_owed_chart([3] * 56, [1] * 56))
 
     assert reviews and fixes, "a series was not drawn at all"
     # Four owed at once over a plot 136 high (160, padded 8 above and 16 below), so
@@ -342,20 +348,19 @@ def test_a_range_that_never_owed_anything_claims_no_peak(app):
     drawn. The peak label reports the data, not that floor — "peak 1 owed" over a
     fortnight in which the agents kept up is a backlog that never existed."""
     def ink(image) -> int:
-        """Label pixels in the corner the peak is written in — pale and grey. The
-        stack's own top edge runs through the same corner, so brightness and hue are
-        what separate them: the card's near-black background and the band's fill are
-        both dark, and its stroke is saturated blue."""
-        pixels = (image.pixelColor(x, y)
-                  for x in range(4, 100) for y in range(0, 22))
-        return sum(1 for c in pixels
-                   if c.red() > 60 and abs(c.red() - c.blue()) < 40)
+        """Pixels painted in the corner the peak is written in. Nothing else is drawn
+        there over an empty range: the day gridlines land at the right edge and the
+        date labels below the plot."""
+        return sum(image.pixelColor(x, y).alpha() > 0
+                   for x in range(4, 100) for y in range(0, 22))
 
-    assert ink(_owed_chart(reviews=3, conflicts=1)) > 0, (
+    # Work only in the last quarter of the range, so the bands stay flat on the floor
+    # under the label and the corner holds nothing but it.
+    assert ink(_owed_chart([0] * 42 + [3] * 14, [0] * 42 + [1] * 14)) > 0, (
         "nothing was drawn where the peak label belongs — the check below proves "
         "nothing"
     )
-    assert ink(_owed_chart(reviews=0, conflicts=0)) == 0, (
+    assert ink(_owed_chart([0] * 56, [0] * 56)) == 0, (
         "a range with nothing owed still labelled a peak"
     )
 
