@@ -294,9 +294,12 @@ def test_review_hides_mesh_routing_for_a_sweep(store):
     w = WizardView(store)
     w.target.setCurrentIndex(w.target.findData(PRTarget.SPECIFIC))
     w.specific_pr.setText("455")
-    assert w.mesh_row.use_mesh() == w.mesh_row._mesh_live
+    # Applicability, not `use_mesh`, is what the target decides: `use_mesh` is false
+    # for want of a live node either way here, so it cannot tell the two apart.
+    assert w.mesh_row._applicable
 
     w.target.setCurrentIndex(w.target.findData(PRTarget.MINE))
+    assert not w.mesh_row._applicable
     assert not w.mesh_row.use_mesh()
 
 
