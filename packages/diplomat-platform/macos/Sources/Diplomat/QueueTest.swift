@@ -508,9 +508,9 @@ enum QueueTest {
         store.prs = [openPR(31), openPR(32), openPR(33, draft: false), openPR(34, author: "bob")]
         let sweep = ReviewConfig(depth: "deep", target: .mine, me: "alice",
                                  includeDrafts: true, includeReady: false)
-        let swept = store.requestReviewSweep(sweep)
+        let fanOut = store.requestReviewSweep(sweep)
         check("a sweep queues one review per PR in scope, not one agent for all",
-              swept.queued == 2 && swept.already == 0
+              fanOut.queued == 2 && fanOut.already == 0
                   && store.queuedTasks.map(\.id) == ["review:31", "review:32"])
         check("…each scoped to its own PR",
               store.queuedTasks.map(\.job.prNumber) == [31, 32])
