@@ -58,7 +58,7 @@ def test_the_plain_style_carries_neither_flag():
 @pytest.mark.parametrize("css", [muted(), muted(11), muted(9, mono=True),
                                  muted(9, bold=True)])
 def test_the_result_is_terminated_so_callers_can_append(css):
-    """The panel's telemetry empty-state, `settingsview._section_label` and the audit
+    """The panel's telemetry empty-state, `SettingRow`'s explanation box and the audit
     wizard's blurb each append their own declarations to this string. A missing final
     `;` would silently merge into the appended property and drop both."""
     assert css.endswith(";")
