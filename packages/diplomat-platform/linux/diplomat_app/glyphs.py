@@ -45,6 +45,21 @@ G_MESH = "⬡"     # mesh screen header / "run on mesh" toggle (matches the mesh
 G_TELEMETRY = "◫" # telemetry screen header (the per-figure glyphs live in
                   # assets/telemetry.json, like the tool and category ones)
 
+# --- Settings card glyphs --------------------------------------------------
+# One per block of the Settings screen. Plain text symbols, like the rest of this
+# file: the obvious pictograms for these (⚡ gauge ⚠ ⬇) all carry an emoji
+# presentation on at least one platform, and would render as a colour sticker in
+# a row of tinted monochrome glyphs.
+G_IDENTITY = "@"    # the GitHub handle to treat as "me"
+G_RUNNER = "❯"      # which agent CLI a spawn runs (a shell prompt)
+G_REPO = "⌂"        # the repo root every spawn starts in
+G_AUTO = "↯"        # what the monitors may do on their own (a bolt)
+G_LIMITS = "◐"      # how much of it at once, and against what budget (a gauge)
+G_TOOLS = "▦"       # which cards the panel grid draws
+G_TERMINAL = "▣"    # the terminal window SPAWN AGENT opens
+G_STALLED = "↻"     # nudging a stalled agent back into motion
+G_UPDATE = "↓"      # pulling the latest applet
+
 # --- Action-card glyphs (grid actions) -------------------------------------
 G_REVIEW = "☑"   # Review-PRs action
 G_CONFLICT = "⋔" # Resolve-conflicts action

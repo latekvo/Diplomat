@@ -103,7 +103,7 @@
     {
       "id": "completeTime",
       "title": "Time to finish",
-      "blurb": "Mean wall-clock from an agent starting to its completion sentinel.",
+      "blurb": "Mean wall-clock from an agent starting to its exit.",
       "unit": "duration",
       "emoji": "⏱",
       "linuxGlyph": "⧗",

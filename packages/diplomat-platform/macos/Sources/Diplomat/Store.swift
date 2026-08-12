@@ -89,6 +89,24 @@ final class Store: ObservableObject {
             AppConfig.set(AppConfig.repoRootKey, repoPathOverride)
         }
     }
+    /// Which agent CLI a spawn runs (Settings → AGENT RUNNER). In `AppConfig` rather
+    /// than UserDefaults for the same reason the repo root is: a mesh node spawns
+    /// agents from a process with no UserDefaults to ask.
+    @Published var agentRunner: AgentRunner {
+        didSet {
+            guard !Headless.active else { return }
+            AppConfig.set(AppConfig.agentRunnerKey, agentRunner.rawValue)
+        }
+    }
+    /// The model the selected runner is pinned to; empty leaves the choice to that
+    /// runner's own picker. A model id, never a credential — those live in the
+    /// runner's provider store.
+    @Published var agentModel: String {
+        didSet {
+            guard !Headless.active else { return }
+            AppConfig.set(AppConfig.agentModelKey, agentModel)
+        }
+    }
     /// Whether the in-process PR auto-fix monitor is on. Persisted; when turned on we
     /// kick an immediate poll rather than waiting for the next tick.
     @Published var prAutofixEnabled: Bool {
@@ -201,6 +219,14 @@ final class Store: ObservableObject {
         didSet { persist(Array(meshAckedDevices), forKey: Keys.meshAckedDevices) }
     }
 
+    /// Whether Settings draws each row's long-form explanation (the header's *Explain*
+    /// switch). Off by default: the paragraphs answer questions a first read raises and
+    /// are noise on every read after it. Persisted, so the answer to "do I want these"
+    /// is given once rather than on every visit.
+    @Published var settingsExplain: Bool {
+        didSet { persist(settingsExplain, forKey: Keys.settingsExplain) }
+    }
+
     /// Whether the "marked Personal — trust the other side too" reminder is suppressed
     /// (the modal's "Don't show again"). Persisted locally; default off (shown once per
     /// promotion until the user opts out).
@@ -302,6 +328,12 @@ final class Store: ObservableObject {
         let prompt: String
         let donePath: String
         let at: Double
+        /// Which agent CLI ran it, so the right store is asked what it spent.
+        let runner: String
+        /// The session this run turned out to own, learned by the sweep after the run
+        /// started and copied here so it survives the row: what prices a run is read when
+        /// the run ENDS, which is the same moment its row is removed.
+        var sessionID: String = ""
     }
     private var telemetryInflight: [UUID: TelemetryRun] = [:]
 
@@ -389,6 +421,7 @@ final class Store: ObservableObject {
         static let meshEnabled = "meshEnabled"
         static let meshAckedDevices = "meshAckedDevices"
         static let meshTrustReminderSuppressed = "meshTrustReminderSuppressed"
+        static let settingsExplain = "settingsExplain"
         static let allocatorSetupDone = "allocatorSetupDone"
         static let queuedTaskOrder = "queuedTaskOrder"
         static let requestedReviews = "requestedReviews"
@@ -468,6 +501,8 @@ final class Store: ObservableObject {
         terminalChoice = defaults.string(forKey: Keys.terminalChoice)
             ?? (SpawnTerminal.iterm.isInstalled ? SpawnTerminal.iterm.rawValue : SpawnTerminal.terminal.rawValue)
         repoPathOverride = AppConfig.string(AppConfig.repoRootKey)
+        agentRunner = AppConfig.agentRunner
+        agentModel = AppConfig.agentModel
         autoTaskLimit = AppConfig.autoTaskLimit
         autoBudgetGate = AppConfig.autoBudgetGate
         autoBudgetConfidence = AppConfig.autoBudgetConfidence
@@ -492,6 +527,7 @@ final class Store: ObservableObject {
         meshEnabled = defaults.object(forKey: Keys.meshEnabled) as? Bool ?? false
         meshAckedDevices = Set(defaults.stringArray(forKey: Keys.meshAckedDevices) ?? [])
         meshTrustReminderSuppressed = defaults.bool(forKey: Keys.meshTrustReminderSuppressed)
+        settingsExplain = defaults.bool(forKey: Keys.settingsExplain)
         processes = Store.loadProcesses()
         queuedTaskOrder = defaults.stringArray(forKey: Keys.queuedTaskOrder) ?? []
         requestedReviews = Store.loadRequestedReviews()
@@ -725,11 +761,13 @@ final class Store: ObservableObject {
                                terminal: result.terminal.rawValue,
                                windowID: result.windowID, sessionID: result.sessionID,
                                tty: result.tty, donePath: result.donePath, prURL: prURL,
-                               source: source)
+                               source: source, runner: result.runner, port: result.port,
+                               promptFile: result.promptFile.path)
         if !ledgerKey.isEmpty, !p.donePath.isEmpty {
             telemetryInflight[p.id] = TelemetryRun(key: ledgerKey, prompt: prompt,
                                                    donePath: p.donePath,
-                                                   at: Date().timeIntervalSince1970)
+                                                   at: Date().timeIntervalSince1970,
+                                                   runner: result.runner)
         }
         processes.append(p)
         AuditLog.log(source, auditAction ?? kind, label)
@@ -765,8 +803,15 @@ final class Store: ObservableObject {
         guard !job.workKey.isEmpty else { return }
         let run = TrackedProcess.MeshRun(node: node, workKey: job.workKey,
                                          onThisMachine: onThisMachine)
+        // Which runner, for a landing HERE and only there. The node spawns through the
+        // same seam a local dispatch does, so the answer is this setting — and it is
+        // what decides which store the run is asked of and priced from. A run on a
+        // PEER is a process on another machine: nothing here holds its session, and a
+        // runner recorded would point the probe at somebody else's.
+        let runner = onThisMachine ? AppConfig.agentRunner.rawValue : ""
         if let i = processes.firstIndex(where: { $0.mesh?.workKey == job.workKey }) {
             processes[i].mesh = run
+            processes[i].runner = runner
             return
         }
         processes.append(TrackedProcess(
@@ -776,7 +821,8 @@ final class Store: ObservableObject {
                                            requested: job.requested),
             terminal: "", windowID: "", sessionID: "", tty: "", donePath: "",
             prURL: job.prURL, mesh: run,
-            source: AgentDispatchGate.Source.auto.rawValue))
+            source: AgentDispatchGate.Source.auto.rawValue,
+            runner: runner))
         meshClaimSeen[job.workKey] = Date()
     }
 
@@ -2558,7 +2604,8 @@ final class Store: ObservableObject {
     private func reconcileTelemetryCompletions() async {
         guard !telemetryInflight.isEmpty else { return }
         let now = Date().timeIntervalSince1970
-        var finished: [(key: String, prompt: String, at: Double, done: Double)] = []
+        var finished: [(key: String, prompt: String, at: Double, done: Double,
+                        session: String, runner: String)] = []
         for (id, run) in telemetryInflight {
             guard let attrs = try? FileManager.default.attributesOfItem(atPath: run.donePath),
                   let mtime = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970
@@ -2570,7 +2617,7 @@ final class Store: ObservableObject {
                 continue
             }
             telemetryInflight[id] = nil
-            finished.append((run.key, run.prompt, run.at, mtime))
+            finished.append((run.key, run.prompt, run.at, mtime, run.sessionID, run.runner))
         }
         guard !finished.isEmpty else { return }
         // Scanning transcripts walks ~/.claude, so it stays off the main actor. The
@@ -2581,9 +2628,21 @@ final class Store: ObservableObject {
         let completions = finished
         await Task.detached(priority: .utility) {
             for f in completions {
-                let tokens = UsageScan.taskTokens(prompt: f.prompt, startedAt: f.at,
+                // Which transcript prices it depends on what ran it, and the run says
+                // which by what it left behind. A matched session under a foreign runner
+                // is priced by that runner's own store — OpenCode through its exporter,
+                // Hermes from the session row it keeps running totals on. Everything else
+                // is a Claude Code run, found in ~/.claude by the prompt it opened with.
+                let tokens: Double?
+                switch (f.session.isEmpty, AgentRunner(rawValue: f.runner)) {
+                case (false, .hermes): tokens = HermesProbe.sessionTokens(sessionID: f.session)
+                case (false, .opencode): tokens = UsageScan.opencodeTaskTokens(sessionID: f.session)
+                default:
+                    tokens = UsageScan.taskTokens(prompt: f.prompt, startedAt: f.at,
                                                   endedAt: f.done)
-                TelemetryLog.done(key: f.key, at: f.done, tokens: tokens)
+                }
+                TelemetryLog.done(key: f.key, at: f.done, tokens: tokens,
+                                  runner: f.runner)
             }
         }.value
         refreshTelemetry()
@@ -2639,8 +2698,14 @@ final class Store: ObservableObject {
             }
             return ProcessMonitor.sweep(snapshot, sessionTails: tails)
         }.value
-        var stateByID: [UUID: (done: Bool, awaiting: Bool)] = [:]
-        for p in sweep.refreshed { stateByID[p.id] = (p.done, p.awaitingInput) }
+        var stateByID: [UUID: (done: Bool, awaiting: Bool, session: String)] = [:]
+        for p in sweep.refreshed {
+            stateByID[p.id] = (p.done, p.awaitingInput, p.agentSessionID)
+            // Copied off the row while the row still exists. What prices a run is read
+            // when the run ENDS, and ending is what removes its row — so a session id
+            // left only on the row would be gone by the time it was wanted.
+            if !p.agentSessionID.isEmpty { telemetryInflight[p.id]?.sessionID = p.agentSessionID }
+        }
         var next = processes
         var changed = false
         // The terminal was closed → the session is no longer something we can monitor;
@@ -2654,6 +2719,7 @@ final class Store: ObservableObject {
             guard let s = stateByID[next[i].id] else { continue }
             if next[i].done != s.done { next[i].done = s.done; changed = true }
             if next[i].awaitingInput != s.awaiting { next[i].awaitingInput = s.awaiting; changed = true }
+            if next[i].agentSessionID != s.session { next[i].agentSessionID = s.session; changed = true }
         }
         if changed { processes = next }
     }
@@ -2779,6 +2845,22 @@ final class Store: ObservableObject {
     /// round-trip off-main; a `MeshCtlError` lands in `meshError` for the screen.
     func meshSetDefaultTrust(level: String) {
         meshCommand { try MeshBridge.setDefaultTrust(level: level, port: $0) }
+    }
+
+    /// Pick the mesh's preferred WAN transport (gossiped last-writer-wins, like a
+    /// placement edit). It orders the transports a WAN dial tries, so it lands on the
+    /// next dial each node makes — no live link is moved. Mirrors the Linux store's
+    /// `mesh_set_wan`.
+    func meshSetWan(transport: String) {
+        meshCommand { try MeshBridge.setWan(transport: transport, port: $0) }
+    }
+
+    /// Link to a peer's WAN id (an iroh endpoint id or an onion), reaching a machine
+    /// this one may never have met on the LAN. The address shape picks the transport;
+    /// a refusal (an id we can't dial, a transport not running here) lands in
+    /// `meshError` for the screen. Mirrors the Linux store's `mesh_connect`.
+    func meshConnect(address: String) {
+        meshCommand { try MeshBridge.connect(address: address, port: $0) }
     }
 
     /// Record that the user has decided on a newly-seen device (Personal or Keep Foreign),

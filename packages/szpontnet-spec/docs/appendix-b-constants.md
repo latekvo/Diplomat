@@ -251,14 +251,16 @@ known-but-unseen **personal** peers. Two are specified — the Tor onion service
 ([`NodeInfo.endpoint`](04-messages.md#nodeinfo), opt-in,
 [15](15-iroh-transport.md)). With both off, or on a machine missing what they need,
 the node is LAN-only and byte-identical to a node that has never implemented either.
-A node running both prefers iroh per peer.
 
 The reconnect policy below is shared by both transports and is node-local (peers need
 not agree on it); one dial per due peer per tick goes out over its most preferred
-available transport. Only `ONION_VIRTPORT` and the `szpontnet/1` ALPN are on the wire.
+available transport. Which transport that is, for an edge whose both ends run both, is
+the mesh's gossiped [preferred transport](06-coordination.md#the-preferred-wan-transport).
+Only `ONION_VIRTPORT` and the `szpontnet/1` ALPN are on the wire.
 
 | Name | Value | Where |
 |------|-------|-------|
+| `wan.transports` | `["iroh", "tor"]` | the WAN vocabulary, in the model's default preference order - the names a [`set-wan`](04-messages.md#set-wan) pick may take, and the fallback order until one is picked. |
 | iroh ALPN | `szpontnet/1` | the application protocol QUIC negotiates; a mismatch is refused before any bytes are read ([15](15-iroh-transport.md)). |
 | iroh online timeout | `30.0` s | wait for the endpoint to come online before giving up and staying LAN-only; override via `SZPONTNET_IROH_ONLINE_SECS` (non-finite / non-positive → `30`). |
 | `ONION_VIRTPORT` | `80` | the onion service's virtual port; the dialer and `HiddenServicePort` agree on it, and nothing on the host binds it ([14](14-tor-transport.md)). |
@@ -277,8 +279,9 @@ available transport. Only `ONION_VIRTPORT` and the `szpontnet/1` ALPN are on the
 
 `beacon`, `hello`, `auth`, `node`, `overrides`, `heartbeat`, `set-attr`,
 `dispatch`, `job-status`, `job-result`, `job-ack`, `job-reminder`, `job-progress`,
-`work-claim`, `ctl`, `status`, `state`, `set-overrides`, `trust`, `untrust`,
-`ban`, `unban`, `tor-connect`, `stop`, `ok`, `error`, `dispatch-result`. Full
+`work-claim`, `ctl`, `status`, `state`, `set-overrides`, `set-wan`, `trust`,
+`untrust`, `ban`, `unban`, `set-default-trust`, `claim`, `claim-result`, `connect`,
+`iroh-connect`, `tor-connect`, `stop`, `ok`, `error`, `dispatch-result`. Full
 reference: [04-messages](04-messages.md).
 
 ## Job statuses

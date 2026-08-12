@@ -58,8 +58,8 @@ class DiplomatHost(szpont_host.Host):
         activity.log("mesh", action, detail)
 
     def run_job(self, prompt: str, done_path: str | None) -> str:
-        """Open a terminal running ``claude`` on the staged prompt, exactly like a
-        local SPAWN AGENT.
+        """Open a terminal running the configured agent runner on the staged prompt,
+        exactly like a local SPAWN AGENT.
 
         macOS goes through ``osascript`` (Terminal.app on the same shell command
         the Linux spawner builds); Linux uses the applet's own spawner, which

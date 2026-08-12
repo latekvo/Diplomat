@@ -96,13 +96,17 @@ def _ledger_lines() -> list[str]:
         {"at": NOW - 10 * DAY + 3000, "ev": "done", "key": "review:h/o/r#1@aa",
          "tokens": 120_000.0},
     ]
-    # A retry: two `started` events for one key. First-wins, so the wait is measured
-    # to the FIRST start and the second attempt must not move it.
+    # A retry: two `started` and two `done` events for one key. First-wins on the
+    # instants, so the wait is measured to the FIRST start and the run to the FIRST
+    # completion, neither of which the second attempt may move. The PRICE is the
+    # exception: attempt 1 went unattributed, and taking it first-wins too would
+    # leave the whole chain reading as a task nobody could cost.
     events += [
         {"at": NOW - 9 * DAY, "ev": "queued", "key": "review:h/o/r#2@bb",
          "duty": "review", "pr": 2},
         {"at": NOW - 9 * DAY + 600, "ev": "started", "key": "review:h/o/r#2@bb",
          "remote": False, "attempt": 1},
+        {"at": NOW - 9 * DAY + 5000, "ev": "done", "key": "review:h/o/r#2@bb"},
         {"at": NOW - 9 * DAY + 9000, "ev": "started", "key": "review:h/o/r#2@bb",
          "remote": False, "attempt": 2},
         {"at": NOW - 9 * DAY + 12000, "ev": "done", "key": "review:h/o/r#2@bb",
@@ -124,6 +128,46 @@ def _ledger_lines() -> list[str]:
         {"at": NOW - 7 * DAY + 300, "ev": "started", "key": "conflicts:h/o/r#4@dd",
          "remote": False, "attempt": 1},
         {"at": NOW - 7 * DAY + 1500, "ev": "done", "key": "conflicts:h/o/r#4@dd"},
+    ]
+    # Finished under a foreign runner: billed by whichever provider OpenCode is logged
+    # into, so its tokens are a task cost like any other and are not a share of the
+    # Anthropic window. The figure is deliberately enormous — counted against the
+    # window it would move every moment of the distribution, so a side that keeps it
+    # cannot match one that drops it.
+    events += [
+        {"at": NOW - 5.5 * DAY, "ev": "queued", "key": "review:h/o/r#26@kk",
+         "duty": "review", "pr": 26},
+        {"at": NOW - 5.5 * DAY + 200, "ev": "started", "key": "review:h/o/r#26@kk",
+         "remote": False, "attempt": 1},
+        {"at": NOW - 5.5 * DAY + 2600, "ev": "done", "key": "review:h/o/r#26@kk",
+         "tokens": 9_000_000.0, "runner": "opencode"},
+    ]
+    # The same field naming Claude Code explicitly, which every run does from here on:
+    # it is the account the window belongs to, so this one counts. A blank and this
+    # have to read alike, and only a case that spells it out can say so.
+    events += [
+        {"at": NOW - 5.4 * DAY, "ev": "queued", "key": "review:h/o/r#27@ll",
+         "duty": "review", "pr": 27},
+        {"at": NOW - 5.4 * DAY + 200, "ev": "started", "key": "review:h/o/r#27@ll",
+         "remote": False, "attempt": 1},
+        {"at": NOW - 5.4 * DAY + 2600, "ev": "done", "key": "review:h/o/r#27@ll",
+         "tokens": 175_000.0, "runner": "claude"},
+    ]
+    # A retry whose priced attempt ran under a DIFFERENT runner from the attempt that
+    # went unattributed. The price is taken from the later one, so its runner has to
+    # be taken with it: left reading `claude`, this OpenCode figure — enormous for
+    # the same reason as #26 — would be charged to the Anthropic window.
+    events += [
+        {"at": NOW - 5.3 * DAY, "ev": "queued", "key": "review:h/o/r#28@mm",
+         "duty": "review", "pr": 28},
+        {"at": NOW - 5.3 * DAY + 200, "ev": "started", "key": "review:h/o/r#28@mm",
+         "remote": False, "attempt": 1},
+        {"at": NOW - 5.3 * DAY + 2600, "ev": "done", "key": "review:h/o/r#28@mm",
+         "runner": "claude"},
+        {"at": NOW - 5.3 * DAY + 5000, "ev": "started", "key": "review:h/o/r#28@mm",
+         "remote": False, "attempt": 2},
+        {"at": NOW - 5.3 * DAY + 8000, "ev": "done", "key": "review:h/o/r#28@mm",
+         "tokens": 8_000_000.0, "runner": "opencode"},
     ]
     # Owed, then cleared before anyone took it (the reviewer resolved it themselves):
     # pending for a while, then not, and never a run.
@@ -227,6 +271,10 @@ def test_the_fixture_exercises_every_figure(both):
     assert p["avgRunSecs"] > 0 and p["avgWaitSecs"] > 0
     assert p["remoteCount"] == 1, "the mesh-placed task is missing"
     assert p["unattributedCount"] == 1, "the uncosted completion is missing"
+    assert {"", "claude", "opencode"} <= {t["runner"] for t in p["tasks"]}, (
+        "the fixture has no foreign-runner completion beside the Anthropic ones, so "
+        "an implementation that charged every runner to the same window would pass"
+    )
     assert p["quota"], "no quota readings — the rate-limit chart has nothing to draw"
     assert any(q["sessionPct"] is None for q in p["quota"]), (
         "the fixture has no probe-offline gap, so an implementation that dropped the "
@@ -246,6 +294,29 @@ def test_the_fixture_exercises_every_figure(both):
         "these are the fixture's outermost counters, and anything less means the "
         "interval straddling the range boundary was dropped"
     )
+
+
+def test_a_foreign_runners_task_is_priced_but_never_charged_to_the_window(both):
+    """What it cost is a token count; what share of a five-hour Anthropic window it
+    cost is nothing, because it never drew on one.
+
+    The fixture's OpenCode tasks are the largest in the ledger by an order of
+    magnitude, so counting them would move the distribution's every moment — and both
+    sides have to drop them identically or the two screens report different spend for
+    one ledger. One is a plain OpenCode run; the other took its price from a retry, so
+    it only reads as foreign if the runner was carried across with the price."""
+    _swift, p = both
+    counted = [t for t in p["tasks"]
+               if t["tokens"] and not t["remote"] and t["startedAt"] is not None
+               and t["startedAt"] >= NOW - DAYS * DAY and t["runner"] != "opencode"]
+    foreign = [t for t in p["tasks"] if t["runner"] == "opencode"]
+    assert sorted(t["tokens"] for t in foreign) == [8_000_000, 9_000_000]
+    assert p["perTask"]["count"] == len(counted), (
+        "the window's percentages counted a task billed to another provider"
+    )
+    # It is still the same work, and the tokens-per-task figure is where it belongs.
+    priced = [t["tokens"] for t in counted] + [t["tokens"] for t in foreign]
+    assert p["perTaskTokensMean"] == pytest.approx(sum(priced) / len(priced), abs=1e-6)
 
 
 def test_a_retry_does_not_move_the_measured_wait(both):

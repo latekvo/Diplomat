@@ -221,6 +221,22 @@ enum MeshBridge {
         _ = try request(["t": "set-default-trust", "level": level], port: port)
     }
 
+    /// Pick the mesh's preferred WAN transport ("iroh" | "tor"), gossiped
+    /// last-writer-wins like a placement edit. It orders the transports a WAN dial
+    /// tries: a peer that runs only the other one is still reached over that one.
+    /// Mirrors `ctl.set_wan`.
+    static func setWan(transport: String, port: Int) throws {
+        _ = try request(["t": "set-wan", "transport": transport], port: port)
+    }
+
+    /// Link to a peer's WAN id — its iroh endpoint id or its onion — reaching a
+    /// machine this one may never have met on the LAN. The address shape picks the
+    /// transport; the node dials in the background, so the peer appears in the
+    /// topology a poll or two later. Mirrors `ctl.connect`.
+    static func connect(address: String, port: Int) throws {
+        _ = try request(["t": "connect", "address": address], port: port, timeout: 10)
+    }
+
     /// Hand a duty job to the mesh: the local node picks the target (per the dispatch
     /// strategy, with failover) unless `target` pins a node id, and the chosen executor
     /// spawns the agent. Returns the per-node result dicts (`status`: spawned / declined /
@@ -272,7 +288,8 @@ enum MeshBridge {
         inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr)
         let rc = withUnsafePointer(to: &addr) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                // Qualified: the ctl command of the same name shadows the socket call here.
+                Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
             }
         }
         guard rc == 0 else {

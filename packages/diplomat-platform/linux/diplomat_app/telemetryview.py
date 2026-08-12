@@ -11,7 +11,7 @@ arithmetic, and draws eight figures:
 * what the probe measured to be left of each rate-limit window, over the lookback;
 * how many auto-reviews were owed but unstarted, over the lookback;
 * the same for auto-fixes;
-* mean time from an agent starting to its completion sentinel;
+* mean time from an agent starting to its exit;
 * mean time from the monitor first seeing the work to an agent taking it;
 * how much of this machine's Claude spend went on this repo rather than
   everything else.
@@ -210,8 +210,15 @@ class SpreadChart(QWidget):
 
 
 class PendingChart(QWidget):
-    """Owed-but-unstarted work over the lookback: two filled series, reviews and
-    conflict fixes, on a shared count axis with day gridlines."""
+    """Owed-but-unstarted work over the lookback: reviews and conflict fixes stacked
+    into one area on a count axis with day gridlines.
+
+    Stacked rather than overlaid because the two kinds of work queue for the same
+    executors — the top edge is the whole backlog those executors owe, which is the
+    number that decides whether anything waits. Reviews are the lower band: they
+    outrank conflict fixes for a free slot (:func:`autofix.queue_band`), so the band
+    above is exactly the work waiting behind the band below.
+    """
 
     def __init__(self) -> None:
         super().__init__()
@@ -235,7 +242,8 @@ class PendingChart(QWidget):
         pad_l, pad_r, pad_t, pad_b = 4.0, 4.0, 8.0, 16.0
         w = self.width() - pad_l - pad_r
         h = self.height() - pad_t - pad_b
-        top = max(1, max(max(p.reviews, p.conflicts) for p in pts))
+        peak = max(p.reviews + p.conflicts for p in pts)
+        top = max(1, peak)
 
         def x_of(i: int) -> float:
             return pad_l + w * i / (len(pts) - 1)
@@ -257,30 +265,36 @@ class PendingChart(QWidget):
                 painter.drawLine(int(gx), int(pad_t), int(gx), int(pad_t + h))
                 t -= step * day
 
+        base = [0] * len(pts)
         for series, metric in ((tuple(p.reviews for p in pts), "pendingReviews"),
                                (tuple(p.conflicts for p in pts), "pendingFixes")):
-            if not any(series):
-                continue
-            color = _tint(metric)
-            fill = QPainterPath()
-            fill.moveTo(x_of(0), pad_t + h)
-            for i, value in enumerate(series):
-                fill.lineTo(x_of(i), y_of(value))
-            fill.lineTo(x_of(len(series) - 1), pad_t + h)
-            fill.closeSubpath()
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(_qcolor(color, 0.22))
-            painter.drawPath(fill)
+            stacked = [b + v for b, v in zip(base, series)]
+            if any(series):
+                color = _tint(metric)
+                # The band between the running total below it and its own top — not a
+                # shape from the axis up, which would bury the band under it at any
+                # alpha.
+                fill = QPainterPath()
+                fill.moveTo(x_of(0), y_of(base[0]))
+                for i, value in enumerate(stacked):
+                    fill.lineTo(x_of(i), y_of(value))
+                for i in range(len(base) - 1, -1, -1):
+                    fill.lineTo(x_of(i), y_of(base[i]))
+                fill.closeSubpath()
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(_qcolor(color, 0.22))
+                painter.drawPath(fill)
 
-            line = QPainterPath()
-            for i, value in enumerate(series):
-                px, py = x_of(i), y_of(value)
-                line.moveTo(px, py) if i == 0 else line.lineTo(px, py)
-            pen = QPen(QColor(color))
-            pen.setWidthF(1.8)
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.setPen(pen)
-            painter.drawPath(line)
+                line = QPainterPath()
+                for i, value in enumerate(stacked):
+                    px, py = x_of(i), y_of(value)
+                    line.moveTo(px, py) if i == 0 else line.lineTo(px, py)
+                pen = QPen(QColor(color))
+                pen.setWidthF(1.8)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.setPen(pen)
+                painter.drawPath(line)
+            base = stacked
 
         painter.setPen(QColor(glyphs.MUTED))
         f = painter.font()
@@ -291,9 +305,13 @@ class PendingChart(QWidget):
         painter.drawText(QRectF(pad_l + w - 90, pad_t + h + 2, 90, 12),
                          int(Qt.AlignmentFlag.AlignRight), "now")
         # Peak, on the count axis, so the height means something without a full
-        # y-axis eating the width.
-        painter.drawText(QRectF(pad_l + 2, pad_t - 1, 60, 12),
-                         int(Qt.AlignmentFlag.AlignLeft), f"peak {top}")
+        # y-axis eating the width. It is the peak of the stack — the most ever owed
+        # at one moment — which the per-series peaks in the key need not add up to.
+        # A range that never owed anything says nothing rather than reporting the
+        # floor the axis is held at.
+        if peak:
+            painter.drawText(QRectF(pad_l + 2, pad_t - 1, 90, 12),
+                             int(Qt.AlignmentFlag.AlignLeft), f"peak {peak} owed")
         painter.end()
 
 
@@ -619,9 +637,9 @@ class TelemetryView(QWidget):
                        f"{telemetry.percent(s.per_task_week_mean)} of the week")
         elif d.count == 0 and s.per_task_tokens_mean > 0:
             headline = telemetry.tokens(s.per_task_tokens_mean)
-            caption = ("tokens per task. The share of the limit needs two quota "
-                       "readings from the OAuth usage probe — is Claude Code "
-                       "logged in on this machine?")
+            caption = ("tokens per task. The share of the limit is Claude Code's "
+                       "own — it counts only tasks that ran on it, and needs two "
+                       "quota readings from the OAuth usage probe.")
         else:
             headline = "—"
             caption = "No finished auto-task in this range yet."
@@ -750,8 +768,10 @@ class TelemetryView(QWidget):
             f"{s.queued_count} unit{'' if s.queued_count == 1 else 's'} of work found "
             f"in this range, {s.started_count} started"
             + (f", {s.remote_count} on mesh peers" if s.remote_count else "")
-            + ". Work picked up between two points on the chart never shows as a "
-              "backlog — that is the chart working, not a gap."
+            + ". Fixes stack on top of reviews, which take a free slot first, so the "
+              "top edge is everything the pool owes. Work picked up between two "
+              "points on the chart never shows as a backlog — that is the chart "
+              "working, not a gap."
         )
         found.setWordWrap(True)
         found.setStyleSheet(muted(9))

@@ -186,7 +186,7 @@ policy at runtime, mesh-wide, from any node (a control client issues
 **last-writer-wins**:
 
 ```json
-{"rev": 3, "updatedBy": "3236…", "duties": {
+{"rev": 3, "updatedBy": "3236…", "wan": "tor", "duties": {
     "review": {"strategy": "strongest-first", "tokenAware": true, "spread": []}
 }}
 ```
@@ -196,6 +196,7 @@ policy at runtime, mesh-wide, from any node (a control client issues
 | `rev` | int | a monotonically increasing revision counter. |
 | `updatedBy` | string | node id of the last editor (the tie-break). |
 | `duties` | object<string, placement> | the *full* policy for each overridden duty (not a diff). |
+| `wan` | string | the mesh's [preferred WAN transport](#the-preferred-wan-transport); absent or empty means the model's own order. |
 
 **LWW comparison.** Overrides `X` **wins over** `Y` iff the tuple
 `(X.rev, X.updatedBy) > (Y.rev, Y.updatedBy)` (compare `rev` numerically, then
@@ -210,6 +211,33 @@ combine partial edits - the winning `duties` map replaces the loser's wholesale.
 
 A duty **not** present in `duties` uses its model default. To reset a duty to
 default, an implementation MAY omit it from a new (higher-`rev`) `duties` map.
+
+### The preferred WAN transport
+
+The same record carries one mesh-wide setting that is not a duty: `wan`, the
+transport an [off-LAN link](03-transport.md#link-state) should prefer. A control
+client sets it with [`set-wan`](04-messages.md#set-wan), which bumps `rev` and
+gossips exactly like a duty edit; every node converges on one pick.
+
+The pick **orders, it never excludes**. A node keeps running every WAN transport it
+can, and when it dials a peer off the LAN it walks its own ready transports
+preferred-first and takes the first one that peer advertises an address for. So the
+preference decides an edge only when **both** ends can speak **both** transports; a
+pair that shares exactly one still links over that one. Two nodes that share *none*
+have no way off the LAN at all - the snapshot reports that as an empty per-peer
+[`wan`](08-state.md#the-statejson-snapshot) rather than pretending to a link.
+
+An edit **MUST** carry the whole record: setting `wan` preserves `duties` and a
+duty edit preserves `wan`, since the winning record replaces the loser's wholesale.
+A `wan` naming a transport the mesh's model does not list **MUST** be refused at the
+editing node rather than gossiped: a receiver that cannot honour it would silently
+fall back to its own order, so a typo would look applied and change nothing.
+
+A **receiver** that meets a name it has no transport for - a newer mesh's pick - falls
+back to its own order for its own dials, and **MUST** still carry the field verbatim
+when it re-propagates. Dropping it would change the bytes the editor signed, so the
+hop behind that node would reject the record and lose the whole revision, duty edits
+included.
 
 ## Placement strategy vs dispatch strategy
 

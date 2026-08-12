@@ -13,8 +13,9 @@ iroh transport is added *beside* it.
 
 [14 — Tor](14-tor-transport.md) reaches the same peers through an onion service and
 is the default WAN transport; this one costs no daemon, no multi-minute bootstrap and
-no rendezvous circuit per dial. A node may run either, both, or neither, and one
-running both prefers this one per peer.
+no rendezvous circuit per dial. A node may run either, both, or neither; which one an
+edge that could use both settles on is the mesh's gossiped
+[preferred transport](06-coordination.md#the-preferred-wan-transport).
 
 Turned on with `SZPONTNET_IROH=1` (`true`/`yes`/`on` are honoured too; every other
 value, including a typo, leaves it off), and absent whenever the implementation's
@@ -108,9 +109,10 @@ Foreign peers reach *us* inbound. Promote the device, run full-altruism
 (below).
 
 **One dial per peer per tick, most-preferred transport first.** A peer reachable both
-ways is dialed over iroh; a peer that advertises only an `onion` is still dialed over
-Tor for as long as that transport is enabled. A transport that is not yet up (or has
-died) is skipped, and the peer falls through to the next one that is.
+ways is dialed over the mesh's [preferred transport](06-coordination.md#the-preferred-wan-transport);
+a peer that advertises only an `onion` is still dialed over Tor for as long as that
+transport is enabled. A transport that is not yet up (or has died) is skipped, and the
+peer falls through to the next one that is.
 
 **No aggressive switching.** A peer that already holds a live link — over *any*
 transport — is never probed or re-dialed. A WAN link is not torn down merely because
@@ -124,11 +126,16 @@ You can reach a peer you were **never** on a LAN with by pasting its endpoint id
 
 ```
 python -m szpontnet --iroh-connect <64-hex>
+python -m szpontnet --connect <64-hex>       # same dial, transport read off the shape
 ```
 
 This dials **unconditionally** (bypassing the smaller-id rule — it is a deliberate
 one-shot). The handshake proceeds normally; from then on the peer is an ordinary mesh
 member and its endpoint is cached like any other.
+
+The shape-routed [`connect`](04-messages.md#connect) is what a paste box calls: an
+endpoint id and a v3 onion cannot be mistaken for one another, so the operator pastes
+whatever the other machine printed and the node picks the transport.
 
 ## Lifecycle & degradation
 

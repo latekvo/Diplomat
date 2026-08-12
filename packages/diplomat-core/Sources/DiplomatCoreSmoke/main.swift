@@ -20,6 +20,17 @@ func check(_ condition: Bool, _ message: @autoclosure () -> String = "",
     }
 }
 
+// Every prompt built below names the model this machine's agents run on in its
+// attribution tag (`AgentModel`), which would otherwise bake whatever the developer
+// happens to be running into the golden files they regenerate. Point both of the
+// documented overrides at paths inside a scratch directory that is never created, so
+// the prompts assembled here are the model-free ones the goldens hold — on a CI runner
+// and on a working machine alike. The Linux suite's conftest fences the same two names.
+let fence = FileManager.default.temporaryDirectory
+    .appendingPathComponent("diplomat-smoke-no-agent-state", isDirectory: true)
+setenv("DIPLOMAT_CONFIG", fence.appendingPathComponent("config.json").path, 1)
+setenv("DIPLOMAT_CLAUDE_DIR", fence.appendingPathComponent("claude").path, 1)
+
 section("core assets")
 let cfg = try CoreAssets.config()
 print("config: \(cfg.owner)/\(cfg.repo)")
@@ -414,6 +425,266 @@ check(cSingle.buildPrompt().hasPrefix("Take PR #337 in \(cfg.owner)/\(cfg.repo).
 check(cSingle.buildPrompt().contains("Merge the latest `origin/main`"))
 check(cMine.buildPrompt().contains("No AI attribution"))
 print("conflict prompt assertions passed")
+
+section("agent runner")
+// The runner is chosen in ONE config file that both front-ends read, so a machine
+// can hand a mesh job to the other platform and must get the same agent out of it.
+// These are the exact strings `tests/test_runner.py` pins on the Python side; the
+// two are compared literally, because a difference here is two applets spawning
+// different CLIs from one setting.
+check(AgentRunner.from("") == .claude, "an unset runner must be Claude Code")
+check(AgentRunner.from("gpt-cli") == .claude, "an unknown runner must degrade, not fail")
+check(AgentRunner.from("opencode") == .opencode)
+check(AgentRunner.from("hermes") == .hermes)
+check(AgentRunner.claude.agentCommand(promptFile: "/tmp/p.txt", model: "ignored")
+        == "claude \"$(cat '/tmp/p.txt')\"",
+      "the Claude command is what every existing install is mid-flight on")
+check(AgentRunner.opencode.agentCommand(promptFile: "/tmp/p.txt")
+        == "\(AgentRunner.permissionEnv)='\(AgentRunner.permissionValue)' "
+         + "opencode --prompt \"$(cat '/tmp/p.txt')\"")
+check(AgentRunner.opencode.agentCommand(promptFile: "/tmp/p.txt", model: "openrouter/moonshotai/kimi-k2")
+        .hasSuffix("opencode -m 'openrouter/moonshotai/kimi-k2' --prompt \"$(cat '/tmp/p.txt')\""),
+      "a configured model must reach the agent")
+check(!AgentRunner.opencode.agentCommand(promptFile: "/tmp/p.txt", model: "  ").contains(" -m "),
+      "a blank model must leave OpenCode's own choice alone")
+// Hermes is windowed like the other two: `--tui` is what the operator watches and types
+// into, and `-q` is what makes the prompt the session's opening message — the key
+// `HermesStore.isOurs` matches a run to its session by.
+check(AgentRunner.hermes.agentCommand(promptFile: "/tmp/p.txt")
+        == "hermes chat --tui --yolo -q \"$(cat '/tmp/p.txt')\"")
+check(AgentRunner.hermes.agentCommand(promptFile: "/tmp/p.txt", model: "openai/gpt-5.2")
+        == "hermes chat --tui --yolo -m 'openai/gpt-5.2' -q \"$(cat '/tmp/p.txt')\"")
+check(AgentRunner.hermes.setupCommand == "hermes setup; hermes status",
+      "each runner's provider wizard is its own; Diplomat holds no key for either")
+// Every scan that counts, adopts or reaps an agent goes through this: a runner it
+// cannot see is an agent that burns quota while holding no bay of the task cap.
+check(AgentRunner.isAgentLine("501 ttys000 30 opencode --prompt Review PR #7 in o/r"))
+check(AgentRunner.isAgentLine("501 ttys000 30 claude Review PR #7 in o/r"))
+check(!AgentRunner.isAgentLine("501 ttys000 30 vim notes.txt"))
+// All three interrupt hints, captured from the real CLIs. No string contains another,
+// so matching one spelling reads every agent of the other runners as idle.
+check(AgentActivity.looksBusy("  Build  GLM-5.2\n  ⬝⬝⬝  esc interrupt      ctrl+p commands"),
+      "an OpenCode pane mid-turn must read as busy")
+check(AgentActivity.looksBusy("⏵⏵ bypass permissions on · esc to interrupt · ←"),
+      "a Claude Code pane mid-turn must read as busy")
+check(AgentActivity.looksBusy(" ─ (°ロ°) contemplating… · 33s │ glm 5.2 xhigh │ 1 session\n ❯ Ctrl+C to interrupt…"),
+      "a Hermes pane mid-turn must read as busy")
+check(!AgentActivity.looksBusy("  Build  GLM-5.2\n     27.4K (3%)  ctrl+p commands"),
+      "a finished OpenCode pane must give its bay back")
+check(!AgentActivity.looksBusy(" ─ ready │ glm 5.2 xhigh │ 26k/1m │ ✓ 0s │ 1 session\n ❯"),
+      "a finished Hermes pane must give its bay back")
+// The port is what lets the applet ASK an OpenCode agent what it is doing instead of
+// reading its status bar. Pinned literally for the same reason the rest of the command
+// is: the two front-ends must spawn one server, not two different ones.
+check(AgentRunner.opencode.agentCommand(promptFile: "/tmp/p.txt", port: 47_910)
+        == "\(AgentRunner.permissionEnv)='\(AgentRunner.permissionValue)' "
+         + "opencode --port 47910 --prompt \"$(cat '/tmp/p.txt')\"")
+check(AgentRunner.claude.agentCommand(promptFile: "/tmp/p.txt", port: 47_910)
+        == "claude \"$(cat '/tmp/p.txt')\"",
+      "Claude Code serves no session, so a port must not reach its command")
+check(!AgentRunner.hermes.agentCommand(promptFile: "/tmp/p.txt", port: 47_910).contains("47910"),
+      "Hermes serves no port either; it answers from its own store")
+check(!AgentRunner.opencode.agentCommand(promptFile: "/tmp/p.txt", port: 0).contains("--port"),
+      "a run with no port must spawn exactly as it did before, not with --port 0")
+print("agent runner assertions passed")
+
+section("agent model")
+// The model named in the attribution tag every posted comment opens with. Ids are one
+// per provider and none of them is a display name, so these pin the rules that turn one
+// into the other — a wrong answer here is a wrong model attributed on a public comment.
+check(AgentModel.displayName("claude-opus-5") == "Opus 5",
+      "Anthropic's id for the model everyone calls Opus 5")
+check(AgentModel.displayName("claude-haiku-4-5-20251001") == "Haiku 4.5",
+      "a release stamp dates a model, it does not name it; 4-5 is one version")
+check(AgentModel.displayName("openrouter/moonshotai/kimi-k3") == "Kimi K3",
+      "the provider path is routing, not a name")
+check(AgentModel.displayName("qwen/qwen-3.8-max") == "Qwen 3.8 Max",
+      "a vendor whose name IS the model family must survive the path strip")
+check(AgentModel.displayName("openai/gpt-5.2") == "GPT 5.2", "initialisms are not title-cased")
+check(AgentModel.displayName("moonshotai/kimi-k2:free") == "Kimi K2",
+      "an OpenRouter variant suffix qualifies a model, it does not name another")
+check(AgentModel.displayName("opus[1m]") == "Opus",
+      "Claude Code's context-window suffix is not part of the name")
+// Everything that names no single model leaves the tag exactly as it has always read.
+check(AgentModel.displayName("") == "")
+check(AgentModel.displayName("<synthetic>") == "",
+      "Claude Code's sentinel for a turn no model produced — rejected by shape")
+check(AgentModel.displayName("default") == "" && AgentModel.displayName("opusplan") == "",
+      "aliases that stand for a policy rather than a model")
+// The two forms the tag takes. An undetected model must leave it byte-identical to
+// what every golden file holds, which is what makes the model an addition, not a rewrite.
+check(AgentModel.fillTag("\\[[Diplomat](u){model}\\]: ", model: "Opus 5")
+        == "\\[[Diplomat](u), Opus 5\\]: ")
+check(AgentModel.fillTag("\\[[Diplomat](u){model}\\]: ", model: "") == "\\[[Diplomat](u)\\]: ")
+
+// The lookup end to end, over a fixture tree rather than the machine running this.
+let modelFixture = FileManager.default.temporaryDirectory
+    .appendingPathComponent("diplomat-agent-model-\(ProcessInfo.processInfo.processIdentifier)",
+                            isDirectory: true)
+try? FileManager.default.removeItem(at: modelFixture)
+let claudeHome = modelFixture.appendingPathComponent("claude", isDirectory: true)
+let sessions = claudeHome.appendingPathComponent("projects/-repo", isDirectory: true)
+try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+let configFile = modelFixture.appendingPathComponent("config.json")
+func writeConfig(_ json: String) throws { try json.write(to: configFile, atomically: true, encoding: .utf8) }
+func writeTranscript(_ name: String, _ body: String, ageSecs: Double) throws {
+    let url = sessions.appendingPathComponent(name)
+    try body.write(to: url, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes(
+        [.modificationDate: Date().addingTimeInterval(-ageSecs)], ofItemAtPath: url.path)
+}
+
+check(AgentModel.detect(configFile: configFile, claudeHome: claudeHome) == "",
+      "a machine that has said nothing must add nothing to the tag")
+
+// Claude Code is told no model by Diplomat, so what it last actually ran is the answer.
+try writeTranscript("old.jsonl", "{\"message\":{\"model\":\"claude-sonnet-5\"}}\n", ageSecs: 600)
+try writeTranscript("new.jsonl", "{\"message\":{\"model\":\"claude-opus-5\"}}\n", ageSecs: 10)
+check(AgentModel.detect(configFile: configFile, claudeHome: claudeHome) == "Opus 5",
+      "the newest transcript is the one that says what `claude` starts on now")
+// A synthetic last turn must fall through to the real one before it, not blank the tag.
+try writeTranscript("new.jsonl",
+                    "{\"message\":{\"model\":\"claude-opus-5\"}}\n{\"message\":{\"model\":\"<synthetic>\"}}\n",
+                    ageSecs: 10)
+check(AgentModel.detect(configFile: configFile, claudeHome: claudeHome) == "Opus 5")
+// A session touched before its first turn was written holds no model at all, and the
+// newest file is regularly that one — stopping at it would drop the model whenever a
+// run had just been started.
+try writeTranscript("newest.jsonl", "{\"type\":\"user\",\"message\":{\"role\":\"user\"}}\n", ageSecs: 1)
+check(AgentModel.detect(configFile: configFile, claudeHome: claudeHome) == "Opus 5",
+      "the newest transcript with a model in it, not merely the newest transcript")
+// A model pinned in Settings belongs to the OTHER runners: `AgentRunner.claude`'s
+// command carries no model flag, so claiming it here would attribute a model that
+// never ran.
+try writeConfig("{\"agentModel\": \"openrouter/moonshotai/kimi-k3\"}")
+check(AgentModel.detect(configFile: configFile, claudeHome: claudeHome) == "Opus 5",
+      "a pin left over from OpenCode must not be attributed to a Claude Code run")
+try writeConfig("{\"agentRunner\": \"opencode\", \"agentModel\": \"openrouter/moonshotai/kimi-k3\"}")
+check(AgentModel.detect(configFile: configFile, claudeHome: claudeHome) == "Kimi K3",
+      "for the runners Diplomat does pin, the pin is what the spawn passes them")
+try writeConfig("{\"agentRunner\": \"hermes\"}")
+check(AgentModel.detect(configFile: configFile, claudeHome: claudeHome) == "",
+      "no pin means the runner's own remembered model, which Diplomat cannot name")
+// With no transcripts at all, what Claude Code's settings ask for.
+try FileManager.default.removeItem(at: sessions)
+try writeConfig("{}")
+try "{\"model\": \"opus[1m]\"}".write(to: claudeHome.appendingPathComponent("settings.json"),
+                                     atomically: true, encoding: .utf8)
+check(AgentModel.detect(configFile: configFile, claudeHome: claudeHome) == "Opus",
+      "a machine that has not run `claude` yet still knows what it is set to")
+// Claude Code writes compact JSON; a reader that only accepts that spelling is one
+// pretty-printer away from silently finding nothing and dropping the model.
+check(AgentModel.lastModelField(in: "{\"model\" : \"claude-opus-5\"}") == "claude-opus-5")
+
+// The tag as it actually reaches an agent, on a machine that HAS a model to name —
+// the goldens are regenerated from the same assets they assert, so the prefix is
+// pinned here or nowhere. The fence is lifted onto the fixture for these builds and
+// put straight back, so everything after it keeps the model-free goldens.
+let plainTag = "`\\[[Diplomat](https://github.com/latekvo/Diplomat)\\]: `"
+let opusTag = "`\\[[Diplomat](https://github.com/latekvo/Diplomat), Opus 5\\]: `"
+check(ReviewConfig(depth: "max", me: "testuser").buildPrompt().contains(plainTag),
+      "with nothing to read, the tag must stay the prefix every install already posts")
+try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+try writeTranscript("session.jsonl", "{\"message\":{\"model\":\"claude-opus-5\"}}\n", ageSecs: 1)
+setenv("DIPLOMAT_CLAUDE_DIR", claudeHome.path, 1)
+setenv("DIPLOMAT_CONFIG", configFile.path, 1)
+let taggedReview = ReviewConfig(depth: "max", me: "testuser").buildPrompt()
+check(taggedReview.contains(opusTag), "the review tag must name the model the run is on")
+check(taggedReview.contains("\"[Diplomat, Opus 5]: <your text>\""),
+      "and the example it renders as must agree with the prefix it just gave")
+// The audit posts under the same attribution from a second copy of the block in a
+// second asset, so the model has to reach both.
+check(AuditConfig(openPRs: true).buildPrompt().contains(opusTag),
+      "the audit's comments carry the same tag as a review's")
+check(!AuditConfig().buildPrompt().contains("[Diplomat"),
+      "a read-only audit posts nothing, so it is handed no attribution rule at all")
+setenv("DIPLOMAT_CONFIG", fence.appendingPathComponent("config.json").path, 1)
+setenv("DIPLOMAT_CLAUDE_DIR", fence.appendingPathComponent("claude").path, 1)
+try? FileManager.default.removeItem(at: modelFixture)
+print("agent model assertions passed")
+
+section("opencode sessions")
+// OpenCode keeps ONE session store for the whole machine, so a run's own server lists
+// every session on the box. These are the filters that get from that list to the one
+// session a run owns — and the same cases `tests/test_opencode_api.py` pins.
+let ours = "Review PR #7 in o/r"
+let listing: [[String: Any]] = [
+    ["id": "ses_a", "directory": "/repo", "time": ["created": 2_000.0]],
+    ["id": "ses_b", "directory": "/repo", "time": ["created": 3_000.0]],
+    ["id": "ses_old", "directory": "/repo", "time": ["created": 500.0]],
+    ["id": "ses_elsewhere", "directory": "/other", "time": ["created": 3_000.0]],
+]
+check(OpenCodeAPI.candidates(listing, directory: "/repo", sinceMs: 1_000, taken: [])
+        == ["ses_a", "ses_b"],
+      "another checkout's sessions, and ones older than the run, are not candidates")
+check(OpenCodeAPI.candidates(listing, directory: "/repo", sinceMs: 1_000, taken: ["ses_a"])
+        == ["ses_b"],
+      "a session another run already owns must never be taken twice")
+// The prompt is submitted verbatim, so the match is equality — which is what tells two
+// runs apart when both are working in the same checkout, the ordinary case under the
+// task cap.
+let opening: [[String: Any]] = [["info": ["role": "user"], "parts": [["type": "text", "text": ours]]]]
+check(OpenCodeAPI.isOurs(opening, prompt: ours))
+check(!OpenCodeAPI.isOurs(opening, prompt: "Review PR #8 in o/r"))
+check(!OpenCodeAPI.isOurs([], prompt: ours), "a session with no messages is nobody's")
+// Busy/idle, and the price. A turn with no completion stamp has not ended — which is
+// also the right reading of a provider retry.
+check(OpenCodeAPI.stateOf([]) == nil,
+      "a session not yet written to is not idle; it has not started")
+let working: [[String: Any]] = [["info": ["role": "assistant", "time": ["created": 1.0]]]]
+check(OpenCodeAPI.stateOf(working)?.busy == true)
+let finished: [[String: Any]] = [["info": [
+    "role": "assistant", "time": ["created": 1.0, "completed": 2.0]]]]
+check(OpenCodeAPI.stateOf(finished)?.busy == false)
+// A stamp that is not a time is not a stamp. The one direction that must not be
+// reachable by accident is a gap reading as a finished turn.
+let halfStamped: [[String: Any]] = [["info": [
+    "role": "assistant", "time": ["created": 1.0, "completed": "soon"]]]]
+check(OpenCodeAPI.stateOf(halfStamped)?.busy == true)
+// What a run SPENT is a sum over every message, because OpenCode prices a turn per
+// message — and it counts input, output and cache WRITES only. This session reports
+// 60505 tokens of `total`, nearly all of it cache reads; counting those would make the
+// per-task figure on the telemetry screen mean one thing for one runner and another
+// for the other. Same numbers as `tests/test_telemetry.py`.
+let exported: [[String: Any]] = [
+    ["info": ["role": "user"]],
+    ["info": ["role": "assistant", "tokens": ["total": 30_000.0, "input": 3.0,
+                                              "output": 84.0, "reasoning": 9.0,
+                                              "cache": ["read": 29_000.0, "write": 40.0]]]],
+    ["info": ["role": "assistant", "tokens": ["total": 30_505.0, "input": 7.0,
+                                              "output": 8.0, "reasoning": 0.0,
+                                              "cache": ["read": 30_384.0, "write": 106.0]]]],
+]
+check(OpenCodeAPI.sessionTokens(exported) == 248)
+check(OpenCodeAPI.sessionTokens([]) == 0)
+print("opencode session assertions passed")
+
+section("hermes sessions")
+// The same two questions, answered from Hermes' own SQLite store instead of a port —
+// and the same cases `tests/test_hermes_store.py` pins. A turn is over only when the
+// agent itself says so.
+check(HermesStore.stateOf(role: nil, finishReason: nil) == nil,
+      "a session not yet written to is not idle; it has not started")
+check(HermesStore.stateOf(role: "assistant", finishReason: "stop")?.busy == false)
+check(HermesStore.stateOf(role: "assistant", finishReason: "tool_calls")?.busy == true,
+      "asking for a tool is the middle of a turn, not the end of one")
+check(HermesStore.stateOf(role: "tool", finishReason: nil)?.busy == true,
+      "a tool result nobody has answered yet is a turn still in flight")
+check(HermesStore.stateOf(role: "user", finishReason: "stop")?.busy == true,
+      "a query not picked up yet must not read as a finished turn")
+// `-q` stores the query verbatim, so the match is equality — the same exactness
+// `--prompt` buys under OpenCode, and the only thing separating two agents in one
+// checkout.
+check(HermesStore.isOurs(role: "user", content: ours, prompt: ours))
+check(!HermesStore.isOurs(role: "user", content: ours, prompt: "Review PR #8 in o/r"))
+check(!HermesStore.isOurs(role: "assistant", content: ours, prompt: ours),
+      "an assistant message is never the message a run was submitted as")
+// Input + output + cache WRITES, never the cache reads beside them — the same three
+// `OpenCodeAPI.sessionTokens` and the Claude Code transcript scan sum, so one ledger
+// holds every runner in one unit.
+check(HermesStore.sessionTokens(input: 100, output: 20, cacheWrite: 5) == 125)
+check(HermesStore.sessionTokens(input: nil, output: nil, cacheWrite: nil) == 0)
+print("hermes session assertions passed")
 
 section("audit prompts")
 // A whole-repo E2E audit needs no input (always valid), and the hard-repro bar is

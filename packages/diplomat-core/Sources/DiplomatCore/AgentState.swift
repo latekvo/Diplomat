@@ -153,6 +153,26 @@ public enum AgentState {
         }
     }
 
+    /// What an agent's own session says about it, for a runner that keeps one.
+    ///
+    /// The typed answer to the question `classifyActivity` otherwise has to read off a
+    /// status bar. An OpenCode agent serves its session over loopback while it works
+    /// (`OpenCodeAPI`) and a Hermes agent writes its own to SQLite (`HermesStore`);
+    /// Claude Code serves nothing, so its runs are absent from the evidence and are
+    /// still read from the screen.
+    ///
+    /// Only the one fact, because it is the only one this evidence can carry honestly:
+    /// an OpenCode run's spend is a sum over its whole transcript and the poll reads one
+    /// message. A finished run is priced from its runner's own store instead.
+    public struct SessionState: Equatable {
+        /// Is a turn in flight? Whichever way its runner says so.
+        public var busy: Bool
+
+        public init(busy: Bool) {
+            self.busy = busy
+        }
+    }
+
     /// One dispatched agent run, as the registry persists it.
     ///
     /// Identity is `runID`, not the PR: two runs on one PR are two records, an applet
@@ -229,6 +249,10 @@ public enum AgentState {
         /// about a run whose terminal this applet did not open — a mesh placement that
         /// landed back here, whose pid file belongs to the node that spawned it.
         public var liveAgents: Observation<[Int: String]>
+        /// run id → what that run's own agent session says about it. Only a runner
+        /// that serves one appears here, so a run's absence is ordinary and reads as
+        /// "ask the screen" rather than as anything about the run.
+        public var sessions: Observation<[String: SessionState]>
 
         /// Defaults are `.unavailable` rather than empty, so a caller that forgets to
         /// wire a probe gets rows reading "unknown" instead of a machine that
@@ -238,13 +262,15 @@ public enum AgentState {
                     tails: Observation<[String: String]> = .unavailable("not probed"),
                     claims: Observation<Set<String>> = .unavailable("not probed"),
                     mergedPRs: Observation<Set<Int>> = .unavailable("not probed"),
-                    liveAgents: Observation<[Int: String]> = .unavailable("not probed")) {
+                    liveAgents: Observation<[Int: String]> = .unavailable("not probed"),
+                    sessions: Observation<[String: SessionState]> = .unavailable("not probed")) {
             self.processes = processes
             self.sentinels = sentinels
             self.tails = tails
             self.claims = claims
             self.mergedPRs = mergedPRs
             self.liveAgents = liveAgents
+            self.sessions = sessions
         }
     }
 
@@ -445,8 +471,13 @@ public enum AgentState {
     ///
     /// An agent is spawned into an INTERACTIVE session, so finishing its work is not
     /// exiting: it sits at the prompt until a human closes the window, and the process
-    /// table shows the same live agent either way. Its own visible buffer is the only
-    /// thing that separates the two.
+    /// table shows the same live agent either way. Something has to separate the two.
+    ///
+    /// Two things can, and the agent's own session is asked first because it is the
+    /// only one that is positive evidence: a turn carries a completion stamp, set when
+    /// it ends. The screen is the fallback, and it is an inference — it reads whether
+    /// the CLI's interrupt hint was on the status bar when we looked, which is a string
+    /// from someone else's UI that says nothing at all if they reword it.
     ///
     /// Every gap here reads as `.running`, which costs a bay rather than correctness —
     /// but it is also the one rung that fails silently, so the probe layer counts how
@@ -454,6 +485,10 @@ public enum AgentState {
     private static func classifyActivity(_ record: RunRecord, evidence: Evidence,
                                          done: (RunState, String) -> Resolution,
                                          aliveReason: String) -> Resolution {
+        if let known = evidence.sessions.value, let session = known[record.runID] {
+            if session.busy { return done(.running, "\(aliveReason); its session is mid-turn") }
+            return done(.awaitingInput, "\(aliveReason); its session finished its turn")
+        }
         guard let tails = evidence.tails.value else {
             let why = evidence.tails.reason.isEmpty ? "unavailable" : evidence.tails.reason
             return done(.running, "\(aliveReason); screen \(why)")

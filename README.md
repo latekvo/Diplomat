@@ -60,9 +60,10 @@ Targets `software-mansion/argent` and shells out to the authenticated `gh` CLI.
 
 ## ⚠️ Billing and usage - read this first
 
-> **This software may be used _only_ with usage-based Anthropic API billing** - an
-> **Anthropic API key** from the [Anthropic Console](https://console.anthropic.com),
-> metered per token and governed by Anthropic's
+> **Under the Claude Code runner, this software may be used _only_ with usage-based
+> Anthropic API billing** - an **Anthropic API key** from the
+> [Anthropic Console](https://console.anthropic.com), metered per token and governed
+> by Anthropic's
 > [**Commercial Terms of Service**](https://www.anthropic.com/legal/commercial-terms).
 > Point the spawned agents at it via `ANTHROPIC_API_KEY` (Claude Code prefers an API
 > key in the environment over any logged-in subscription).
@@ -71,9 +72,20 @@ Targets `software-mansion/argent` and shells out to the authenticated `gh` CLI.
 > **Claude Free / Pro / Max** plans, governed by Anthropic's
 > [**Consumer Terms of Service**](https://www.anthropic.com/legal/consumer-terms).
 > Diplomat exists to spawn **automated, unattended agents** - background monitors that
-> open `claude` windows and push to your branches with no human in the loop. That is
+> open agent windows and push to your branches with no human in the loop. That is
 > programmatic / headless / service-style use, which belongs on the API, not on a
 > personal subscription.
+>
+> **Under the [OpenCode or Hermes runner](#agent-runner), the bill and the terms are
+> whichever provider you connected** - OpenRouter, an Anthropic API key, a hosted
+> Ollama, a model on your own machine. Diplomat does not hold that credential and
+> cannot see what it is charged; read the terms of the provider you pick. It counts
+> those runs' *tokens* like any other, and counts them against no limit at all - the
+> rate-limit figures on the telemetry screen are the Anthropic account's, and only
+> tasks that ran on Claude Code are measured against them.
+> The unattended-use point above is about
+> *automation*, not about Anthropic specifically, so it applies whatever you run: a
+> plan sold for interactive personal use is the wrong place for a background monitor.
 >
 > **No warranty, no responsibility.** This software is provided **"as is"**, without
 > warranty of any kind. **The author accepts no responsibility and no liability** for
@@ -112,8 +124,8 @@ entirely and [run it from the checkout](#run) as before.
 The two packages are the same launcher published under one name to two indexes
 ([`packages/szpont`](packages/szpont/README.md),
 [`packages/szpont-npm`](packages/szpont-npm/README.md)); a parity test holds them to
-the same plan on every machine shape either can meet. On PyPI the name also carries
-the typed SzpontNet bindings, which is what `import szpont` means.
+the same plan on every machine shape either can meet. Neither installs anything but
+the launcher - one file of standard library on each side.
 
 ## The library
 
@@ -321,7 +333,8 @@ A **specific PR** is one agent: a fresh terminal window (iTerm if installed, els
 Terminal) running a detached review session in your **repo root** (Settings;
 default `~/dev/<repo>`) that you watch and steer yourself. The prompt is staged to
 a file and the window runs
-`claude "$(cat <promptfile>)"; printf %s $? > <done>` - the trailing sentinel
+`<agent> "$(cat <promptfile>)"; printf %s $? > <done>` - where `<agent>` is the
+[agent runner](#agent-runner) you picked, and the trailing sentinel
 (under `~/.diplomat/pr-monitor/done/`) is how the Agent-tasks list knows the
 agent finished.
 
@@ -442,7 +455,7 @@ moved. Duties are the three spawn actions, each with a configurable placement:
 default).)
 
 Dispatching routes a staged prompt to the chosen node over the mesh; the
-receiving machine opens its own terminal running `claude` exactly like a local
+receiving machine opens its own terminal running its own agent runner exactly like a local
 SPAWN AGENT (dispatches are the `📤/📥 mesh` rows in the activity feed). If the
 first target declines — gone, or out of tokens — the dispatch fails over to the
 next candidate by rank. While the mesh is live, the three wizards grow a
@@ -455,11 +468,13 @@ per PR for this machine's own cap to start.
 Both front-ends grow a **Mesh screen** (the ⬡ button in the panel header, beside
 [Telemetry](#telemetry) and Settings): the live node graph (link states), per-node tier/token editors (editing
 a *remote* node forwards over the mesh, so one panel configures the whole fleet),
-per-duty strategy + token-awareness controls (gossiped last-writer-wins), and the
-whole **trust surface** — the `New devices: Personal / Foreign` default, a one-time
+per-duty strategy + token-awareness controls (gossiped last-writer-wins), the whole
+**trust surface** — the `New devices: Personal / Foreign` default, a one-time
 callout when an unknown device shows up, a per-peer trust toggle, and the banned
-chip with its un-ban. It shouts `DEVICE IS NOT DISCOVERABLE` if every beacon send
-fails.
+chip with its un-ban — and **reaching machines off this network**: the mesh's
+preferred WAN transport, this machine's id on each transport it runs (copyable), a
+paste box that links to another machine's id, and per peer the one transport that
+edge agreed on. It shouts `DEVICE IS NOT DISCOVERABLE` if every beacon send fails.
 
 The mesh node itself is stdlib-only Python that runs on any OS — both the macOS app
 and the Linux applet drive that same node (a Swift node is future work), so enabling
@@ -523,8 +538,14 @@ There are two, and a node may run either, both, or neither:
   connecting in well under a second. Paste an address with
   `python3 -m szpontnet --iroh-connect <64-hex>`.
 
-A node running both prefers iroh for any peer reachable either way, and falls back to
-Tor for one that only advertises an onion.
+Which of the two an edge settles on is a **mesh-wide pick** ([spec ch
+6](packages/szpontnet-spec/docs/06-coordination.md#the-preferred-wan-transport)),
+gossiped last-writer-wins beside the duty placements and set from the Mesh screen or
+with `python3 -m szpontnet --wan iroh`. It **orders, it never excludes**: every node
+keeps running every transport it can, so the pick decides an edge only where both
+ends speak both, and a peer that advertises only an onion is still reached over Tor.
+An edge that shares neither has no way off the LAN at all, and the Mesh screen flags
+it. `--connect <id>` takes either address and reads the transport off its shape.
 
 **Trust model.** The mesh is designed around a LAN you control (IPv4; discovery is
 multicast + subnet broadcast), and — since the Tor transport is on by default — a
@@ -600,13 +621,15 @@ default 14):
   and a week of exhaustion cannot come out as the same picture. A missing reading is
   a probe that could not answer, not an empty window, so the line breaks across one
   instead of diving to the floor and back.
-- **Owed work** over time - two filled series on one count axis, auto-reviews and
-  conflict fixes, of work the monitors had found but nobody had started yet. Work
-  picked up between two points on the chart never appears as a backlog, which is
-  the chart working rather than a gap in it.
+- **Owed work** over time - work the monitors had found but nobody had started yet,
+  auto-reviews and conflict fixes stacked into one area on a count axis. Stacked
+  because both queue for the same executors, with reviews taking a free slot first:
+  the fixes ride on top of the reviews, and the top edge is everything the pool
+  owes. Work picked up between two points on the chart never appears as a backlog,
+  which is the chart working rather than a gap in it.
 - **Time to start** - from the monitor first seeing a unit of work to an agent
   taking it (the reconciler's backoff, an applet that was off, a busy PR).
-- **Time to finish** - from an agent starting to its completion sentinel.
+- **Time to finish** - from an agent starting to its exit.
 - **Spent on this repo** - how much of this machine's Claude spend went on the repo
   the agents work in rather than everything else. Split by the `cwd` each turn ran
   in, so it counts your own sessions in that checkout too - it is a repo split, not
@@ -621,8 +644,9 @@ last Tuesday?", "how close to the ceiling did we get?"), so the source is an
 `O_APPEND` like the activity feed so this applet, its counterpart on the other OS and
 a mesh node can all append to one file. The monitors write `queued` when they first
 see work owed, `cleared` if it stops being owed before anyone takes it, `started` on
-dispatch, `done` from the completion sentinel's own mtime (not when a poll noticed),
-and a `sample` every 15 minutes. It rewrites itself to the 60-day retention horizon
+dispatch, `done` when the agent exited - its completion sentinel's own mtime, or the
+last turn of its transcript for a run the mesh placed, which leaves no sentinel this
+applet can read, but never when a poll noticed - and a `sample` every 15 minutes. It rewrites itself to the 60-day retention horizon
 once it passes 4 MB.
 
 Two gatherers fill in what GitHub doesn't know:
@@ -641,7 +665,11 @@ Two gatherers fill in what GitHub doesn't know:
   exact identity that needs no new flag on the spawn path. Scanning is incremental
   (a byte offset per file), and the first scan seeds every existing transcript at EOF
   rather than reading gigabytes of history it could never attribute anyway.
-  `DIPLOMAT_CLAUDE_DIR` moves where it reads from.
+  `DIPLOMAT_CLAUDE_DIR` moves where it reads from. A [foreign runner](#agent-runner)
+  writes no such transcript, so each is priced from its own store instead - OpenCode
+  summed over every message of `opencode export <session>` (it reports a turn's cost
+  per message), Hermes read off the running totals on its session row - both counting
+  the same three fields, so one ledger holds every runner in one unit.
 
 The probe reports **what is left of each window** on every sample, and that reading is
 what *rate limit left* draws - measured, not derived. What Anthropic never publishes is
@@ -663,7 +691,7 @@ ledger means.
 
 The applets don't just render lists - they act on them. Three background
 monitors ship **ON by default** (opt out in Settings). Know what that means
-before running it: they **spawn real terminal windows** running `claude` agents,
+before running it: they **spawn real terminal windows** running agents,
 and the auto-fix agents **push to your PR branches**. Those background windows
 open **without stealing focus** - a monitor spawn opens the terminal behind
 whatever you're working in and bounces focus straight back; only a spawn *you*
@@ -689,7 +717,10 @@ nudge opens no window at all - it types into a session that already exists.)
   dedup: a push re-stamps the review request, which would double-spawn - a new
   request within 1h of a dispatch is treated as churn and suppressed. Banned
   authors are never auto-reviewed.
-- **Claude API-error watcher** - every ~20s reads each agent session's visible
+- **Claude API-error watcher** - Claude Code runs only; the banners it matches are
+  Claude Code's, and an OpenCode or Hermes agent that errors reads as idle instead,
+  frees its task-cap slot, and is dispatched again by whichever monitor owed the
+  work. Every ~20s it reads each agent session's visible
   tail (macOS: any iTerm/Terminal session; Linux: **tmux panes only** - there's no
   portable way to read or type into an arbitrary Linux emulator, so the Linux
   spawner opens each agent in a tmux session of its own and an agent started
@@ -713,7 +744,7 @@ Linux; `DIPLOMAT_APIWATCH_SECS`, floor 5s).
 **At most 2 automatic agents run at once** (Settings; 1-16). Both monitors above
 are level-triggered over everything GitHub currently owes, so one poll of a busy
 day would otherwise dispatch every pending unit in a single pass - a terminal
-window and a `claude` session per conflicted PR and per owed review, all at the
+window and an agent session per conflicted PR and per owed review, all at the
 same moment. The cap is the *machine's*, not a monitor's: it spans both monitors,
 the reviews a PR sweep queues, and any work a mesh peer routes here, and it counts
 agents that are really running (`ps`, so it survives an applet restart) rather than
@@ -784,6 +815,55 @@ and ⏻) swaps the panel to a settings screen:
 - **GitHub username** - override the handle used by the "My …" tools, the wizards
   and the monitors. Blank = the `gh`-authenticated user (`viewer.login`), resolved
   eagerly at launch so it's the default everywhere.
+- <a id="agent-runner"></a>**Agent runner** - which agent CLI a spawn runs:
+  **Claude Code** (the default, and what every existing install keeps), **OpenCode**
+  or **Hermes**. Only the agent word and its flags change; the prompt, the staged
+  file, the completion sentinel, the pid a run is identified by and every monitor
+  above it are the same whichever it is, which is the point of having one setting
+  rather than a second pipeline. All three are windowed, so a run can be watched and
+  typed into. Like the repo root the setting lives in the shared
+  `~/.diplomat/config.json`, so a running mesh node picks it up on its next spawn -
+  and which runner a given run *started* under is written into its run directory, so
+  switching mid-flight can't interrogate a live agent through the wrong store.
+  - **Model** (OpenCode, Hermes) - a model id such as
+    `openrouter/moonshotai/kimi-k2` or `ollama-cloud/glm-5.2`. Blank leaves the
+    choice to that runner's own picker rather than overriding it with a guess.
+  - **Connect a provider…** (OpenCode, Hermes) - opens that runner's own login wizard
+    in a terminal (`opencode providers login`, `hermes setup`). Diplomat deliberately
+    has no API-key field: each runner already knows its whole provider catalog, which
+    entries take OAuth rather than a key, and where each one's credentials belong -
+    and each writes them to the store its agent reads from anyway. **No provider
+    credential is ever stored by Diplomat**, which matters because
+    `~/.diplomat/config.json` is world-readable and copied around by the mesh.
+  - **How a run is watched.** Both foreign runners are *asked* whether their turn is
+    over rather than having it read off their status bar - positive evidence, instead
+    of whether someone else's `esc interrupt` hint happened to be drawn when the poll
+    looked. They answer from different places. An OpenCode agent is spawned with
+    `--port <n>` on a port Diplomat reserved for it, so it serves its own session on
+    loopback while it works; the port is unauthenticated (OpenCode's server takes a
+    password but its own TUI sends none), so it is reachable by other users of the
+    same machine and nothing else. Hermes serves no such port, and needs none: it
+    writes every session and message to `~/.hermes/state.db` as it goes, which
+    Diplomat opens read-only, and a turn is over exactly when the agent stamps its own
+    message `finish_reason` (`tool_calls` is mid-turn, `stop` is the end). Either way
+    the session is matched to the run by the staged prompt, which both runners store
+    verbatim as the session's opening message - the only exact key, since both keep
+    one session store for the whole machine. A run that cannot be reached - the port
+    was taken, the server has not come up, the store is not there - falls back to the
+    status bar exactly as a Claude Code run does.
+  - **How a run is priced.** OpenCode reports a turn's cost per message, so a
+    finished run is summed from `opencode export <session>` when it ends, not from the
+    poll. Hermes keeps running totals on the session row, so it is simply read. Both
+    count input + output + cache *writes*, the same three the Claude Code transcript
+    scan sums, so one ledger holds every runner in one unit. What those tokens are
+    *not* is a share of a rate-limit window: that window is the Anthropic account's,
+    priced from Claude Code's own usage probe, so **limit per task** and the
+    [rate-limit budget](#the-rate-limit-budget) count the tasks that ran on Claude Code
+    and leave a foreign run to the token figures beside them.
+  - What does *not* carry over: the [Claude API-error watcher](#autonomous-monitors)
+    - its banners are Claude Code's. A foreign agent that errors reads as idle, so
+    it gives its task-cap slot back and the monitor that owed the work dispatches it
+    again.
 - **Repo root** - the local checkout every spawned agent `cd`s into, with a
   **Choose…** directory picker (type a path if you prefer; a leading `~` expands).
   Blank = `~/dev/<repo>` for whichever repo [`assets/config.json`](packages/diplomat-core/assets/config.json)
@@ -991,7 +1071,8 @@ DIPLOMAT_QUEUE_TEST=1 swift run Diplomat      # self-test: the queue behind the 
                                                      #   redirects its own audit writes.
 DIPLOMAT_RENDER=panel    ./Diplomat.app/Contents/MacOS/Diplomat  # snapshot a screen to PNG (out
                                                      #   path: DIPLOMAT_RENDER_OUT). States: panel|panel-procs
-                                                     #   natural|settings|settings-live|approved|unban-confirm
+                                                     #   natural|settings[-explain]|settings-live|approved
+                                                     #   unban-confirm
                                                      #   activity[-filtered] (audit feed + its filter chips)
                                                      #   wizard[-other|-specific[-mine|-theirs]|-wrong|-banned]
                                                      #   devices[-open|-procs]|conflicts[-other|-specific|-wrong]
@@ -1003,6 +1084,11 @@ DIPLOMAT_RENDER=panel    ./Diplomat.app/Contents/MacOS/Diplomat  # snapshot a sc
                                                      #   popover (REAL NSWindow snapshot incl. the legacy
                                                      #   scroller — pair with DIPLOMAT_POPOVER_CAP=400
                                                      #   to force the scrolling state)
+                                                     #   window-<state> (any state above through a real
+                                                     #   window: ImageRenderer draws no AppKit control, so
+                                                     #   window-settings is the only faithful Settings shot)
+                                                     # DIPLOMAT_RENDER_THEME=light|dark snapshots the other
+                                                     #   appearance without switching the machine over
                                                      #   live (the real popover ON-SCREEN, left running, to
                                                      #   drive the queue's drag + execute now with a mouse;
                                                      #   its queued rows resolve in-flight, so no spawn)
@@ -1079,10 +1165,10 @@ telemetry renders + the helper self-tests), `swift-core-linux` (proves the core 
 Linux, and publishes a static `diplomat-core` binary), `python-linux` (pytest
 against that binary, so the golden-prompt parity is proven across languages, then
 the library-less start), `szpontnet` (the library's own tests plus a full
-conformance run against the reference node), `szpont` (the bindings, the
-launcher, and the built wheel installed into a venv that has never seen the
-checkout), `szpont-npm` (the same launcher in JavaScript, held to the Python one's
-plan machine shape for machine shape), and `node-device-allocator`.
+conformance run against the reference node), `szpont` (the launcher, and the built
+wheel installed into a venv that has never seen the checkout), `szpont-npm` (the
+same launcher in JavaScript, held to the Python one's plan machine shape for
+machine shape), and `node-device-allocator`.
 
 ```
 packages/
@@ -1111,6 +1197,9 @@ packages/
         AgentTasks.swift           the Agent-tasks list's sort order + the queue behind the task cap
         ReviewReconcile.swift      pure retry/backoff/dedup decisions for the monitors
         AgentActivity.swift        terminal-tail classification: running vs awaiting input
+        AgentRunner.swift          which agent CLI a spawn runs, and the one command that runs it
+        OpenCodeAPI.swift          reading an OpenCode run's own session: whose it is, mid-turn or not, spend
+        HermesStore.swift          the same, for a Hermes run's session in its SQLite store
         AgentState.swift           the one resolver: typed evidence -> a state per agent run,
                                    and the four projections (dedup, cap, rows, retirement)
         AgentRegistry.swift        the durable run book both applets read/write (~/.diplomat/agents)
@@ -1141,8 +1230,12 @@ packages/
         AutofixStatus.swift        the monitor heartbeat behind the status pill
         ApiErrorWatcher.swift      iTerm/Terminal session reader + continue-nudge sender
         ProcessTracker.swift       tracked agent sessions (liveness, focus, done sentinel, merged)
+        AgentSessionProbe.swift    asks each run's own agent what it is doing, through its runner's store
+        OpenCodeProbe.swift        dials an OpenCode run's own server: free port, session list, messages
+        HermesProbe.swift          reads a Hermes run's session out of ~/.hermes/state.db, read-only
         TrackTest.swift            E2E self-test of the tracking path (DIPLOMAT_TRACK_TEST)
         QueueTest.swift            self-test of the deferred-task queue (DIPLOMAT_QUEUE_TEST)
+        SweepTest.swift            self-test of working-vs-at-the-prompt (DIPLOMAT_SWEEP_TEST)
         BanList.swift / AuditLog.swift   ban list (the daemon's banned.json) + the unified activity feed (audit.jsonl)
         DeviceAllocator.swift      allocator daemon state reader + installer bridge
         DeviceFocus.swift          click an in-use device → focus the holding agent's terminal
@@ -1186,10 +1279,9 @@ packages/
     conformance/               ← black-box conformance tester: runs a candidate node as an opaque
                                  subprocess, joins over real multicast + TCP, exits non-zero on any MUST failure
 
-  szpont/                      ← what `szpont` means on PyPI (see its README): typed Python bindings for
-                                 SzpontNet — the wire format bound to types, adding nothing to the protocol
-    szpont_launcher.py         ← and the `szpont` command: clone/build/launch Diplomat. A top-level module,
-                                 not part of the package, so starting an applet never imports the library
+  szpont/                      ← what `szpont` means on PyPI (see its README): the `szpont` command
+    szpont_launcher.py         ← clone/build/launch Diplomat, out of the standard library alone. Named
+                                 apart from `szpont` so the conformance tester keeps the import name
 
   szpont-npm/                  ← what `szpont` means on npm (see its README): the same launcher, in
                                  JavaScript, for `npx szpont`
@@ -1198,6 +1290,7 @@ packages/
 
 .github/workflows/ci.yml       ← swift-macos · swift-core-linux · python-linux · szpontnet · szpont ·
                                  szpont-npm · node-device-allocator
-.github/workflows/release-szpont.yml     ← tag szpont-v* → PyPI + npm, from one verified commit
+.github/workflows/release-szpont.yml     ← every push to main → the next minor on PyPI + npm, from one
+                                           verified commit; tag szpont-v* to release what a tree states
 .github/workflows/release-szpontnet.yml  ← tag szpontnet-v* → PyPI
 ```

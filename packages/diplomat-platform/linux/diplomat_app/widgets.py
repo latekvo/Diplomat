@@ -2,15 +2,28 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QMimeData, QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import (
+    Property,
+    QEasingCurve,
+    QMimeData,
+    QPointF,
+    QPropertyAnimation,
+    QRectF,
+    Qt,
+    Signal,
+)
 from PySide6.QtGui import QColor, QDrag, QFont, QFontMetricsF, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
+    QAbstractButton,
     QApplication,
+    QButtonGroup,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
     QSizePolicy,
+    QSlider,
     QVBoxLayout,
     QWidget,
 )
@@ -159,6 +172,12 @@ class ElidedLabel(QLabel):
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.setFixedHeight(self.fontMetrics().height())
 
+    def set_text(self, text: str) -> None:
+        """Replace the text. Not ``setText``: the painter reads ``_full``, so QLabel's
+        own setter would change nothing on screen."""
+        self._full = text
+        self.update()
+
     def paintEvent(self, event) -> None:  # noqa: N802
         from PySide6.QtGui import QPainter
 
@@ -200,6 +219,10 @@ class IconChip(QLabel):
 
     def set_tint(self, hex_color: str) -> None:
         self._tint = hex_color
+        self.update()
+
+    def set_active(self, active: bool) -> None:
+        self._active = active
         self.update()
 
     def paintEvent(self, event) -> None:  # noqa: N802
@@ -816,3 +839,473 @@ def style_spawn_button(btn: QPushButton, tint: str, is_valid: bool) -> None:
         f"QPushButton {{ background-color: {fill}; color: white; font-weight: 700;"
         f" padding: 8px; border-radius: 7px; }}"
     )
+
+
+# ---- Settings chrome ------------------------------------------------------
+#
+# Settings is a form, and a form is the same few shapes over and over: a titled
+# card, a named row with a control on its right, a small state token, and the
+# controls themselves. Qt ships none of the controls this screen wants — its
+# checkbox is a tick in a box and its only multiple-choice widget is a dropdown —
+# so the switch, the segmented picker and the chips are drawn here. The macOS
+# twins live in Components.swift.
+
+#: Track size of :class:`SwitchToggle`, and the knob's inset within it.
+_SWITCH_W, _SWITCH_H, _SWITCH_PAD = 34, 19, 2
+#: The default "on" fill for a switch — the same blue the panel's accents use.
+SWITCH_TINT = "#0A84FF"
+
+
+class SwitchToggle(QAbstractButton):
+    """A sliding on/off switch: a filled track with a knob that travels across it.
+
+    Qt's ``QCheckBox`` is a tick in a box, which reads as "tick this to agree"
+    rather than "this is on" — wrong for a screen of live behaviour switches, and
+    unable to say at a glance which of a column of settings are running.
+
+    The knob animates, except while the widget is not yet shown: ``setChecked``
+    during construction would otherwise leave every switch frozen part-way across
+    in a headless render, since no event loop runs between build and grab.
+    """
+
+    def __init__(self, tint: str = SWITCH_TINT, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setCheckable(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedSize(_SWITCH_W, _SWITCH_H)
+        self._tint = tint
+        self._travel = 1.0 if self.isChecked() else 0.0
+        self._anim = QPropertyAnimation(self, b"travel", self)
+        self._anim.setDuration(140)
+        self._anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        self.toggled.connect(self._on_toggled)
+
+    def set_tint(self, tint: str) -> None:
+        self._tint = tint
+        self.update()
+
+    def _get_travel(self) -> float:
+        return self._travel
+
+    def _set_travel(self, value: float) -> None:
+        self._travel = value
+        self.update()
+
+    #: 0 = knob fully left (off), 1 = fully right (on). Animated, so it is a Qt
+    #: property rather than a plain attribute.
+    travel = Property(float, _get_travel, _set_travel)
+
+    def _on_toggled(self, on: bool) -> None:
+        target = 1.0 if on else 0.0
+        if not self.isVisible():
+            self._anim.stop()
+            self._set_travel(target)
+            return
+        self._anim.stop()
+        self._anim.setStartValue(self._travel)
+        self._anim.setEndValue(target)
+        self._anim.start()
+
+    def paintEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        radius = _SWITCH_H / 2
+        off = QColor(128, 128, 128, 90)
+        on = QColor(self._tint)
+        track = QColor(
+            round(off.red() + (on.red() - off.red()) * self._travel),
+            round(off.green() + (on.green() - off.green()) * self._travel),
+            round(off.blue() + (on.blue() - off.blue()) * self._travel),
+            round(off.alpha() + (255 - off.alpha()) * self._travel),
+        )
+        if not self.isEnabled():
+            track.setAlpha(round(track.alpha() * 0.4))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(track)
+        painter.drawRoundedRect(QRectF(0, 0, _SWITCH_W, _SWITCH_H), radius, radius)
+
+        knob = _SWITCH_H - 2 * _SWITCH_PAD
+        x = _SWITCH_PAD + self._travel * (_SWITCH_W - knob - 2 * _SWITCH_PAD)
+        painter.setBrush(QColor(255, 255, 255, 255 if self.isEnabled() else 150))
+        painter.drawEllipse(QRectF(x, _SWITCH_PAD, knob, knob))
+        painter.end()
+
+    def sizeHint(self):  # noqa: N802 (Qt override)
+        return self.size()
+
+
+class Pill(QLabel):
+    """A small state token: a word in a tint, on a capsule of the same tint.
+
+    Used for everything Settings *reports* rather than sets — a monitor's
+    live/idle, the allocator's version, the mesh's peer count — and, via
+    :meth:`set_mark`, for one present/missing part of a multi-part install.
+    """
+
+    def __init__(self, text: str = "", tint: str = "#8E8E93") -> None:
+        super().__init__()
+        self.set_state(text, tint)
+
+    def set_state(self, text: str, tint: str = "#8E8E93") -> None:
+        self.setText(text)
+        self.setVisible(bool(text))
+        self.setStyleSheet(
+            f"color: {tint}; background-color: {tint_bg(tint, 0.14)};"
+            " border-radius: 7px; padding: 2px 6px;"
+            " font-size: 9px; font-weight: 700;"
+        )
+
+    def set_mark(self, label: str, ok: bool) -> None:
+        """One part of an install: ✓ green when present, ✗ red when missing.
+
+        The allocator's four parts used to be a single monospaced run — "MCP ✓ ·
+        skill ✓ · rule ✗" — which reads as a filename until it is parsed word by
+        word."""
+        self.set_state(f"{'✓' if ok else '✗'} {label}", "#34C759" if ok else "#FF3B30")
+
+
+class SegmentedControl(QWidget):
+    """A row of joined pills, one of which is selected — for a choice of two to
+    five, where a dropdown hides every option but the current one behind a click.
+
+    ``changed`` carries the selected key (the second half of each option pair).
+    """
+
+    changed = Signal(object)
+
+    def __init__(self, options: list[tuple[str, object]], *,
+                 tint: str = SWITCH_TINT) -> None:
+        super().__init__()
+        self._keys: list[object] = []
+        self._group = QButtonGroup(self)
+        self._group.setExclusive(True)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(2, 2, 2, 2)
+        row.setSpacing(2)
+        self.setStyleSheet(
+            "SegmentedControl { background-color: rgba(128,128,128,0.14);"
+            " border-radius: 7px; }"
+        )
+        for index, (label, key) in enumerate(options):
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setStyleSheet(
+                "QPushButton { border: none; border-radius: 5px; padding: 4px 8px;"
+                " font-size: 11px; color: palette(text); background: transparent; }"
+                f"QPushButton:checked {{ background-color: {tint_bg(tint, 0.85)};"
+                " color: white; font-weight: 600; }"
+            )
+            self._group.addButton(btn, index)
+            self._keys.append(key)
+            row.addWidget(btn, 1)
+        self._group.idClicked.connect(self._on_clicked)
+
+    def _on_clicked(self, index: int) -> None:
+        self.changed.emit(self._keys[index])
+
+    def set_value(self, key: object) -> None:
+        """Select the segment for ``key``, without emitting ``changed`` — this is
+        the store writing to the UI, not the UI writing to the store."""
+        if key not in self._keys:
+            return
+        self._group.button(self._keys.index(key)).setChecked(True)
+
+    def value(self) -> object | None:
+        checked = self._group.checkedId()
+        return self._keys[checked] if checked >= 0 else None
+
+
+class ToggleChip(QPushButton):
+    """A capsule that fills with its tint while on — the multi-select counterpart
+    of a switch, for a set of flags short enough to name in a word each."""
+
+    def __init__(self, label: str, *, tint: str = "#FF9500") -> None:
+        super().__init__(label)
+        self._tint = tint
+        self.setCheckable(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.toggled.connect(lambda _: self._restyle())
+        self._restyle()
+
+    def _restyle(self) -> None:
+        on = self.isChecked()
+        self.setStyleSheet(
+            f"QPushButton {{ color: {self._tint if on else 'palette(mid)'};"
+            f" background-color: {tint_bg(self._tint, 0.18 if on else 0.07)};"
+            f" border: 1px solid {tint_bg(self._tint, 0.7 if on else 0.22)};"
+            " border-radius: 9px; padding: 3px 9px;"
+            f" font-size: 10px; font-weight: {'700' if on else '500'}; }}"
+        )
+
+
+class ChoiceChips(QWidget):
+    """One-of-many as a grid of chips, all visible at once.
+
+    :class:`SegmentedControl`'s wide cousin, for a choice too long to sit in one
+    row — the spawn terminal, of which Linux knows seven. A dropdown would hide
+    six of them behind a click, including whichever ones are actually installed.
+
+    ``changed`` carries the selected key.
+    """
+
+    changed = Signal(object)
+
+    def __init__(self, options: list[tuple[str, object]], *, columns: int = 3,
+                 tint: str = SWITCH_TINT) -> None:
+        super().__init__()
+        self._keys: list[object] = []
+        self._group = QButtonGroup(self)
+        self._group.setExclusive(True)
+        grid = QGridLayout(self)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(4)
+        for index, (label, key) in enumerate(options):
+            chip = ToggleChip(label, tint=tint)
+            self._group.addButton(chip, index)
+            self._keys.append(key)
+            grid.addWidget(chip, index // columns, index % columns)
+        self._group.idClicked.connect(lambda i: self.changed.emit(self._keys[i]))
+
+    def chip(self, key: object) -> ToggleChip | None:
+        return (self._group.button(self._keys.index(key))
+                if key in self._keys else None)
+
+    def set_value(self, key: object) -> None:
+        """Select the chip for ``key``, without emitting ``changed`` — this is the
+        store writing to the UI, not the UI writing to the store."""
+        if key in self._keys:
+            self._group.button(self._keys.index(key)).setChecked(True)
+
+    def value(self) -> object | None:
+        checked = self._group.checkedId()
+        return self._keys[checked] if checked >= 0 else None
+
+
+class SliderSetting(QWidget):
+    """A slider with the value in a badge beside it and the ends of the range
+    named underneath.
+
+    Replaces the spin boxes, which show a number without showing the range it
+    lives in — the only way to learn a cap of 16 existed was to click sixteen
+    times. ``changed`` carries the (integer) value.
+    """
+
+    changed = Signal(int)
+
+    def __init__(self, *, label: str, minimum: int, maximum: int, step: int = 1,
+                 min_label: str, max_label: str, tint: str = "#FF9500") -> None:
+        super().__init__()
+        self._tint = tint
+        col = QVBoxLayout(self)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(1)
+
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        self._slider = QSlider(Qt.Orientation.Horizontal)
+        self._slider.setAccessibleName(label)
+        self._slider.setRange(minimum, maximum)
+        self._slider.setSingleStep(step)
+        self._slider.setPageStep(step)
+        # A tick per stop, so the granularity the value snaps to is visible and not
+        # just enforced. Mirrors `Slider(value:in:step:)` in Components.swift.
+        self._slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self._slider.setTickInterval(step)
+        self._slider.valueChanged.connect(self._on_changed)
+        row.addWidget(self._slider, 1)
+        self._badge = QLabel("")
+        self._badge.setStyleSheet(
+            f"color: {tint}; font-size: 10px; font-weight: 700; font-family: monospace;"
+        )
+        self._badge.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self._badge.setMinimumWidth(58)
+        row.addWidget(self._badge)
+        col.addLayout(row)
+
+        ends = QHBoxLayout()
+        ends.setSpacing(4)
+        lo = QLabel(min_label)
+        lo.setStyleSheet(muted(9))
+        hi = QLabel(max_label)
+        hi.setStyleSheet(muted(9))
+        ends.addWidget(lo)
+        ends.addStretch(1)
+        ends.addWidget(hi)
+        col.addLayout(ends)
+
+        self._step = step
+        self._badge_text = str
+
+    def set_badge_text(self, fn) -> None:
+        """How to render the current value in the badge — ``4`` → "4 tasks"."""
+        self._badge_text = fn
+        self._badge.setText(fn(self._slider.value()))
+
+    def _on_changed(self, value: int) -> None:
+        # Snap to the step the stored setting is quantised in, so dragging can
+        # only produce values the store would also accept.
+        snapped = round(value / self._step) * self._step
+        if snapped != value:
+            self._slider.setValue(snapped)
+            return
+        self._badge.setText(self._badge_text(value))
+        self.changed.emit(value)
+
+    def badge(self) -> str:
+        return self._badge.text()
+
+    def set_value(self, value: int) -> None:
+        """Move the slider without emitting ``changed`` — the store writing to the
+        UI, not the reverse."""
+        blocked = self._slider.blockSignals(True)
+        self._slider.setValue(value)
+        self._slider.blockSignals(blocked)
+        self._badge.setText(self._badge_text(self._slider.value()))
+
+    def value(self) -> int:
+        return self._slider.value()
+
+    def minimum(self) -> int:
+        return self._slider.minimum()
+
+    def maximum(self) -> int:
+        return self._slider.maximum()
+
+
+def settings_card(glyph: str, title: str, tint: str) -> tuple[QWidget, QVBoxLayout, Pill]:
+    """One block of Settings: a tinted glyph, a caps title, a state pill, and the
+    rows under them on a soft card.
+
+    Returns the host, the layout to add rows to, and the pill — which starts empty
+    and hidden, so a card with nothing to report simply has none.
+    """
+    host = QWidget()
+    host.setObjectName("settingsCard")
+    outer = QVBoxLayout(host)
+    outer.setContentsMargins(10, 9, 10, 9)
+    outer.setSpacing(10)
+    host.setStyleSheet(
+        "#settingsCard { background-color: rgba(128,128,128,0.11);"
+        " border: 1px solid rgba(128,128,128,0.22); border-radius: 10px; }"
+    )
+
+    head = QHBoxLayout()
+    head.setSpacing(6)
+    badge = GlyphLabel(glyph, 17, tint, 9)
+    badge.setStyleSheet(f"background-color: {tint_bg(tint, 0.16)}; border-radius: 5px;")
+    head.addWidget(badge)
+    label = QLabel(title)
+    label.setStyleSheet(
+        "color: palette(mid); font-size: 10px; font-weight: 800; letter-spacing: 1px;"
+    )
+    head.addWidget(label)
+    head.addStretch(1)
+    pill = Pill("")
+    head.addWidget(pill)
+    outer.addLayout(head)
+
+    body = QVBoxLayout()
+    body.setSpacing(10)
+    outer.addLayout(body)
+    return host, body, pill
+
+
+class SettingRow(QWidget):
+    """One setting: its name, the control that sets it, and — under both — an
+    optional one-line summary.
+
+    ``detail`` is the long-form paragraph, drawn only while the header's *Explain*
+    switch is on (:meth:`set_explain`), so the screen defaults to something you can
+    scan and still holds every word of what a knob does.
+
+    ``stacked`` puts the control under the title instead of beside it, for the wide
+    ones (a text field, a segmented picker) that have no room in a trailing slot.
+    """
+
+    def __init__(self, title: str, control: QWidget, *, summary: str | None = None,
+                 detail: str | None = None, stacked: bool = False) -> None:
+        super().__init__()
+        col = QVBoxLayout(self)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(5)
+
+        name = QLabel(title)
+        name.setStyleSheet("font-size: 11px; font-weight: 600;")
+        # The title is a separate label, so a screen reader on the control alone
+        # would read a bare switch. Twin of `switchControl(_:_:)` in SettingsView.swift.
+        self._control = control
+        if not control.accessibleName():
+            control.setAccessibleName(title)
+        if stacked:
+            col.addWidget(name)
+            col.addWidget(control)
+        else:
+            row = QHBoxLayout()
+            row.setSpacing(8)
+            row.addWidget(name)
+            row.addStretch(1)
+            row.addWidget(control)
+            col.addLayout(row)
+
+        # Under the control either way: half of these lines report what the control
+        # currently resolves to (which handle is in force, where `cd` will land),
+        # and a consequence reads wrong above its cause.
+        self._summary = QLabel(summary or "")
+        self._summary.setWordWrap(True)
+        self._summary.setStyleSheet(muted(10))
+        self._summary.setVisible(bool(summary))
+        col.addWidget(self._summary)
+
+        # Built whether or not there is a paragraph yet: a row whose detail is
+        # state-dependent (the runner's, the repo root's) would otherwise have
+        # nowhere to put one when it acquires it.
+        self._explain = False
+        self._detail = QLabel(detail or "")
+        self._detail.setWordWrap(True)
+        self._detail.setStyleSheet(
+            muted(10) + " background-color: rgba(128,128,128,0.09);"
+            " border-radius: 6px; padding: 5px 7px;"
+        )
+        self._detail.setVisible(False)
+        col.addWidget(self._detail)
+
+    def set_summary(self, text: str, *, color: str | None = None) -> None:
+        """Rewrite the one-liner — for the rows whose summary reports live state
+        (the resolved repo path, what an update check found)."""
+        self._summary.setText(text)
+        self._summary.setVisible(bool(text))
+        self._summary.setStyleSheet(
+            muted(10) if color is None else f"color: {color}; font-size: 10px;"
+        )
+
+    def summary(self) -> str:
+        return self._summary.text()
+
+    def set_detail(self, text: str | None) -> None:
+        """Rewrite the paragraph — for the rows whose explanation depends on state
+        (which runner is chosen, whether the repo root resolves)."""
+        self._detail.setText(text or "")
+        self._detail.setVisible(bool(text) and self._explain)
+
+    def set_explain(self, on: bool) -> None:
+        self._explain = on
+        self._detail.setVisible(on and bool(self._detail.text()))
+
+
+def nested_settings(tint: str) -> tuple[QWidget, QVBoxLayout]:
+    """Settings that exist only while the switch above them is on, indented behind
+    a tinted rail — so the dependency is drawn rather than left to be inferred from
+    an indent, which is all that distinguished the nested verdict policy before."""
+    host = QWidget()
+    row = QHBoxLayout(host)
+    row.setContentsMargins(1, 0, 0, 0)
+    row.setSpacing(9)
+    rail = QFrame()
+    rail.setFixedWidth(2)
+    rail.setStyleSheet(f"background-color: {tint_bg(tint, 0.4)}; border-radius: 1px;")
+    row.addWidget(rail)
+    col = QVBoxLayout()
+    col.setSpacing(9)
+    row.addLayout(col, 1)
+    return host, col

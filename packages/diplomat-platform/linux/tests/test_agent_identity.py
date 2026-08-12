@@ -68,6 +68,24 @@ def _cmdline(pid: int) -> str:
         return ""
 
 
+def _await_exec(pid: int, timeout: float = 10.0) -> str:
+    """The pid's argv once the shell has replaced itself with the agent.
+
+    The pid file is written by the ``printf`` BEFORE the exec, so the sample cannot be
+    taken the moment it appears: between the two the argv is still the shell's, and
+    reading it there says "wrapper" about a run that is about to be the agent. Waited
+    for rather than slept on, so a shell that never execs still fails — just at the
+    deadline, with the argv it was stuck on.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        argv = _cmdline(pid)
+        if argv and "printf" not in argv:
+            return argv
+        time.sleep(0.05)
+    return _cmdline(pid)
+
+
 def test_the_recorded_pid_is_the_agents_own_process(tmp_path):
     """The claim the whole identity mechanism rests on: the inner shell writes its own
     ``$$`` and then ``exec``s the agent, so the pid outlives the shell it came from
@@ -77,7 +95,7 @@ def test_the_recorded_pid_is_the_agents_own_process(tmp_path):
     try:
         assert _await_file(pid_file), "the agent's shell never wrote a pid"
         pid = int(pid_file.read_text().strip())
-        cmdline = _cmdline(pid)
+        cmdline = _await_exec(pid)
         assert cmdline, f"pid {pid} is not a live process"
         assert "claude" in cmdline, \
             f"pid {pid} is not the agent — its argv is {cmdline!r}"
@@ -103,7 +121,7 @@ def test_the_sentinel_carries_the_agents_exit_code(tmp_path):
 
 def test_the_agent_reads_the_prompt_from_its_run_directory(tmp_path):
     """The prompt still reaches the agent as one argv, which is what the transcript is
-    matched on later (`usagescan.task_tokens`).
+    matched on later (`usagescan.task_run`).
 
     It is the LAST argument, not the first: the user's `claude` alias puts its own
     flags ahead of it, so pinning ``$1`` pins the absence of their alias."""

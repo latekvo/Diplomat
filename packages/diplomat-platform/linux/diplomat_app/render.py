@@ -6,7 +6,8 @@ a real display by grabbing the widget's own pixels:
     DIPLOMAT_RENDER=panel DIPLOMAT_RENDER_OUT=/tmp/p.png \
         QT_QPA_PLATFORM=offscreen python -m diplomat_app
 
-what ∈ {panel, lookup, wizard, conflicts, settings, devices, mesh, telemetry}.
+what ∈ {panel, lookup, wizard, conflicts, settings[-explain], devices, mesh,
+telemetry}.
 With DIPLOMAT_RENDER_LIVE=1 it fetches real data first; otherwise it uses a small
 synthetic fixture.
 """
@@ -47,6 +48,22 @@ def _fixture(store: Store) -> None:
                   "NONE", now - timedelta(hours=3), now, 1, [], ["bug"], False),
     ]
     store.has_loaded = True
+
+
+def _settings_fixture(store: Store, *, explain: bool) -> None:
+    """Open Settings on the states its quiet rows never reach: an outstanding
+    review count (so the owed-reviews pill draws) and auto-approvals on (so the
+    nested verdict policy is unfolded). ``explain`` turns on the header switch,
+    the only state that draws the long-form paragraph under each row.
+
+    Mirrors ``Render.seedSettings`` on macOS. Writes through the real properties,
+    so it persists to whatever QSettings this process has — which in a render is
+    the scratch HOME the caller points it at, as it is for every other fixture."""
+    store.review_requests_enabled = True
+    store.auto_approve_enabled = True
+    store.review_requests_handled = 7
+    store.unaddressed_reviews = 2
+    store.settings_explain = explain
 
 
 def _device_fixture(store: Store) -> None:
@@ -306,9 +323,11 @@ def _telemetry_ledger_fixture() -> None:
 
 def _mesh_fixture(store: Store) -> None:
     """Synthetic mesh topology so the ⬡ Mesh screen can be eyeballed: a Linux self
-    node, one strong healthy macOS peer, one weak dead macOS peer, and the three
-    duties with one platform shortfall. Enables the mesh via the render-only
-    override (never persisting to real QSettings, never starting a node)."""
+    node, one strong healthy macOS peer, one weak dead macOS peer, the three
+    duties with one platform shortfall, and both WAN states an edge can be in (a
+    peer this pair can re-form with off the LAN, and one it cannot). Enables the
+    mesh via the render-only override (never persisting to real QSettings, never
+    starting a node)."""
     self_id = "n-self-linux"
     peer_ok = "n-mbp-strong"
     peer_dead = "n-mbp-weak"
@@ -332,14 +351,25 @@ def _mesh_fixture(store: Store) -> None:
              "tokensAuto": False, "tokensPct": 0.31,
              "tokensSessionPct": 0.31, "tokensWeekPct": 0.55,
              "sees": [self_id], "dutiesEnabled": {}, "v": 1,
-             "link": "up", "addr": "192.168.1.21", "lastSeenSecsAgo": 1.2},
+             "link": "up", "addr": "192.168.1.21", "lastSeenSecsAgo": 1.2,
+             "transport": "lan", "wan": "iroh"},
             # A legacy peer (no real probe): the quota row falls back to "≈NN%".
             {"id": peer_dead, "name": "mbp-weak", "platform": "macos",
              "tier": 5, "tokens": "low", "tcpPort": 40880, "epoch": 1, "seq": 8,
              "tokensPct": 0.2,
              "sees": [], "dutiesEnabled": {}, "v": 1,
-             "link": "down", "addr": "192.168.1.37", "lastSeenSecsAgo": 42},
+             "link": "down", "addr": "192.168.1.37", "lastSeenSecsAgo": 42,
+             "transport": "lan", "wan": ""},
         ],
+        # This machine runs both WAN transports: iroh is up (so there is an id to
+        # copy), Tor is still bootstrapping (the state a fresh node spends minutes in).
+        "wan": {
+            "preferred": "iroh",
+            "transports": {
+                "iroh": {"enabled": True, "ready": True, "address": "3f" * 32},
+                "tor": {"enabled": True, "ready": False, "address": None},
+            },
+        },
         "assignments": {
             "review": {"duty": "review", "assigned": [peer_ok], "shortfall": []},
             "conflicts": {"duty": "conflicts", "assigned": [self_id], "shortfall": []},
@@ -372,9 +402,13 @@ def run(what: str, out: str) -> int:
     # every one of those is absent, and the fixture would be a synthetic topology
     # nothing reads.
     if szpont.AVAILABLE and what in (
-        "mesh", "panel", "settings", "wizard", "conflicts", "audit"
+        "mesh", "panel", "settings", "settings-explain", "wizard", "conflicts", "audit"
     ):
         _mesh_fixture(store)
+
+    # Also before Panel(): Settings reads every one of these once, as it builds.
+    if what.startswith("settings"):
+        _settings_fixture(store, explain=what.endswith("explain"))
 
     # Also before Panel(): the Telemetry screen folds the ledger as it is built,
     # so a fixture written afterwards would only show up on the next repaint.
@@ -392,7 +426,7 @@ def run(what: str, out: str) -> int:
         panel._open_action("conflicts")
     elif what == "audit":
         panel._open_action("audit")
-    elif what == "settings":
+    elif what.startswith("settings"):
         panel._toggle_settings()
     elif what == "devices":
         _device_fixture(store)

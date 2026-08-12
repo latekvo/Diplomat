@@ -15,7 +15,7 @@ from dataclasses import replace
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from szpontnet import crypto, protocol
+from szpontnet import config, crypto, protocol
 from szpontnet.protocol import NodeInfo
 
 
@@ -279,6 +279,91 @@ def test_an_override_converges_across_the_mesh(simnet):
                 lambda s=sim: s.node.overrides.rev == 1
                 and "review" in s.node.overrides.duties, 5.0,
                 f"{sim.name} never adopted the override")
+
+    simnet.run(scenario())
+
+
+def test_the_preferred_wan_transport_converges_across_the_mesh(simnet):
+    """An edge agrees on ONE transport only because both its ends resolved the same
+    mesh-wide pick, so the pick has to reach machines the editor never linked to —
+    the same reach a placement override gets, on the same record.
+
+    The duty edit that follows is the trap: both settings ride one record and the
+    WHOLE record wins the last-writer-wins comparison, so an edit that rebuilt it
+    without carrying the pick forward would quietly move every WAN edge back."""
+    async def scenario():
+        a = await simnet.node("a")
+        b = await simnet.node("b")
+        c = await simnet.node("c")
+        simnet.cut(a, c)
+        await simnet.linked(a, b)
+        await simnet.linked(b, c)
+
+        assert await b.ctl({"t": "set-wan", "transport": "tor"}) == {
+            "t": "ok", "transport": "tor"}
+        for sim in (a, c):
+            await simnet.until(lambda s=sim: s.node.overrides.wan == "tor", 5.0,
+                               f"{sim.name} never adopted the transport pick")
+
+        await b.ctl({"t": "set-overrides", "duty": "review",
+                     "placement": {"strategy": "strongest-first",
+                                   "tokenAware": True, "spread": []}})
+        for sim in (a, c):
+            await simnet.until(
+                lambda s=sim: "review" in s.node.overrides.duties, 5.0,
+                f"{sim.name} never adopted the duty edit")
+            assert sim.node.overrides.wan == "tor", "the duty edit reset the pick"
+
+    simnet.run(scenario())
+
+
+def test_an_unpickable_transport_is_refused_rather_than_gossiped(simnet):
+    """The pick names the transport every node is to rank first, so a name no node
+    can honour must never enter the record — it would rank every real transport
+    below an absent one, mesh-wide, from one typo."""
+    async def scenario():
+        a = await simnet.node("a")
+        reply = await a.ctl({"t": "set-wan", "transport": "carrier-pigeon"})
+        assert reply["t"] == "error"
+        assert a.node.overrides.wan == ""
+        assert a.node.overrides.rev == 0  # nothing was published
+
+    simnet.run(scenario())
+
+
+def test_a_pick_this_build_cannot_honour_still_relays_and_still_converges(simnet):
+    """A newer mesh picks a transport this build has never heard of.
+
+    Two things have to hold at once, and they pull apart. The record is relayed by
+    re-serialising it, so the unknown name has to survive the parse verbatim or the
+    editor's signature no longer matches and the hop behind this node loses the whole
+    revision — the duty edits riding the same record with it. And this node still has
+    to dial *something*: an unhonourable name resolves to its own default order rather
+    than ranking every transport it does run below one it doesn't.
+    """
+    async def scenario():
+        a = await simnet.node("a")
+        b = await simnet.node("b")
+        c = await simnet.node("c")
+        simnet.cut(a, c)
+        await simnet.linked(a, b)
+        await simnet.linked(b, c)
+        await simnet.all_verified(a, b)
+        # C authenticates the edit against A's pinned key, which only a relayed advert
+        # can give it — and gossip carries CHANGES, so give it one.
+        a.node.apply_local_attrs({"name": "two-hops-away"})
+        await simnet.until(lambda: a.id in c.node.peers, 5.0,
+                           "C never learned A's key from the relay")
+
+        b.inject_to(a, {"t": "overrides", "overrides": _signed_override(
+            a, {"rev": 1, "updatedBy": a.id, "duties": {}, "wan": "quic2"})})
+        await simnet.until(lambda: c.node.overrides.rev == 1, 5.0,
+                           "the pick never survived the relay to C")
+
+        for sim in (b, c):
+            assert sim.node.overrides.wan == "quic2", "the relay rewrote the record"
+            assert config.wan_preferred(sim.node.overrides) == \
+                config.wan_transports()[0], "an unrunnable transport was ranked first"
 
     simnet.run(scenario())
 

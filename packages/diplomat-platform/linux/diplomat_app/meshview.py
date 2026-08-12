@@ -5,10 +5,13 @@ The Linux face of Diplomat Mesh (see ``assets/mesh.json`` for the model and
 Mesh · Settings), it renders the local node's public topology snapshot
 (``~/.diplomat/mesh/state.json``): a compact wire graph of self + peers,
 one editable card per node (machine strength in words + an auto-measured token
-budget + a Personal/Foreign trust toggle — edits apply to *any* node, self or
-peer, forwarded over the mesh so one machine configures the fleet), and
-the duty table (which job classes route where, with a live per-duty placement
-policy the panel edits and the mesh gossips last-writer-wins).
+budget + the transport that edge runs over + a Personal/Foreign trust toggle —
+edits apply to *any* node, self or peer, forwarded over the mesh so one machine
+configures the fleet), the WAN card (the mesh's preferred transport, this
+machine's id on each transport it runs, and the paste box that links to a peer's
+— a handshake that needs no LAN meeting), and the duty table (which job classes
+route where, with a live per-duty placement policy the panel edits and the mesh
+gossips last-writer-wins).
 
 Everything data-dependent rebuilds in place on ``store.mesh_changed`` (the same
 ``_rebuild_* + _clear_layout`` idiom the Panel uses), so the 2s poll never tears
@@ -20,12 +23,13 @@ wrappers (those run the control-socket calls off the UI thread).
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtGui import QColor, QGuiApplication, QPainter, QPen
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QSizePolicy,
     QToolButton,
@@ -50,6 +54,11 @@ _TOKEN_COLOR = {t["id"]: t["colorHex"] for t in core.mesh()["tokens"]}
 _TOKEN_ORDER = [t["id"] for t in core.mesh()["tokens"]]
 # Trust levels (personal/foreign) — the toggle vocabulary, from the shared model.
 _TRUST_META = {t["id"]: t for t in core.mesh()["trust"]["levels"]}
+# How an edge runs (lan / iroh / tor), from the shared model. ``_WAN_TRANSPORTS`` is
+# the pickable subset — the LAN is where peers that share a network meet, never a
+# choice — and its order is the one the preferred-transport toggle offers.
+_TRANSPORT_META = {t["id"]: t for t in core.mesh()["transports"]}
+_WAN_TRANSPORTS = [t["id"] for t in core.mesh()["transports"] if t.get("wan")]
 
 
 def _fmt_dur(secs: float | None) -> str:
@@ -75,6 +84,24 @@ def _clear_layout(layout) -> None:
             w.deleteLater()
         elif item.layout() is not None:
             _clear_layout(item.layout())
+
+
+def _wan_transport_state(state: dict, transport_id: str) -> dict:
+    """One WAN transport's block in the snapshot (``enabled``/``ready``/``address``),
+    or an empty dict on a node that reports none — which is how every reader here
+    treats "this machine does not run it"."""
+    block = ((state.get("wan") or {}).get("transports") or {}).get(transport_id)
+    return block if isinstance(block, dict) else {}
+
+
+def _transport_meta(transport_id: str) -> tuple[str, str, str]:
+    """(monochrome glyph, colorHex, title) for a transport id, from the shared model.
+    An unknown id — a peer running a transport this build has no vocabulary for —
+    renders as a neutral link rather than vanishing."""
+    meta = _TRANSPORT_META.get(transport_id)
+    if meta is None:
+        return "→", "#8E8E93", transport_id or "?"
+    return meta.get("linuxGlyph", meta["emoji"]), meta["colorHex"], meta["title"]
 
 
 def _platform_meta(platform_id: str) -> tuple[str, str]:
@@ -297,6 +324,12 @@ class MeshView(QWidget):
         gw.addWidget(self.graph)
         live.addWidget(graph_wrap)
 
+        # Reaching machines off this network: the mesh's preferred WAN transport, this
+        # node's id on each transport it runs, and the paste box that links to a peer's.
+        self.wan_host, self.wan_col = card_host()
+        self._build_wan_card()
+        live.addWidget(self.wan_host)
+
         columns = QHBoxLayout()
         columns.setSpacing(12)
 
@@ -434,6 +467,9 @@ class MeshView(QWidget):
         else:
             self._set_scan(None)
 
+        # Before the node cards: each peer's edge row asks what this machine can
+        # reach over (``_wan_ready``), which this settles from the same snapshot.
+        self._refresh_wan(state)
         self._rebuild_nodes(self_node, peers)
         self._rebuild_duties(state, self_node, peers)
 
@@ -485,6 +521,165 @@ class MeshView(QWidget):
             btn.setStyleSheet("font-weight: 700;")
             btn.clicked.connect(self.store.ensure_mesh_running_async)
             self.state_col.addWidget(btn, 0, Qt.AlignmentFlag.AlignCenter)
+
+    # MARK: WAN reachability
+
+    def _build_wan_card(self) -> None:
+        """Build the WAN card ONCE, in __init__.
+
+        Everything else on this screen is rebuilt from the snapshot; this card is
+        refreshed in place (:meth:`_refresh_wan`) because it holds a text field. A
+        2s poll that tore down and recreated a QLineEdit would eat the id the
+        operator is halfway through pasting into it."""
+        head = QLabel("REACHING MACHINES OFF THIS NETWORK")
+        head.setStyleSheet(muted(9, bold=True))
+        self.wan_col.addWidget(head)
+
+        # Preferred transport — a segmented pick, gossiped mesh-wide.
+        pref_row = QHBoxLayout()
+        pref_row.setSpacing(4)
+        lbl = QLabel("preferred")
+        lbl.setStyleSheet(muted(9))
+        pref_row.addWidget(lbl)
+        self.pref_buttons: dict[str, QToolButton] = {}
+        for tid in _WAN_TRANSPORTS:
+            glyph, color, title = _transport_meta(tid)
+            btn = QToolButton()
+            btn.setText(f"{glyph} {title}")
+            btn.setCheckable(True)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setToolTip(
+                f"{_TRANSPORT_META[tid].get('detail', '')}\n\n"
+                "The mesh's preferred WAN transport, gossiped to every node. An edge "
+                "uses the most-preferred transport BOTH its ends run, so a peer that "
+                "runs only the other one is still reached over that one. Takes effect "
+                "on the next reconnect — a live link is never moved."
+            )
+            btn.clicked.connect(lambda _c=False, t=tid: self.store.mesh_set_wan(t))
+            self.pref_buttons[tid] = btn
+            pref_row.addWidget(btn)
+        pref_row.addStretch(1)
+        self.wan_col.addLayout(pref_row)
+
+        # My id, one row per WAN transport this machine runs.
+        self.id_rows: dict[str, tuple[QWidget, QLabel, QLabel]] = {}
+        for tid in _WAN_TRANSPORTS:
+            glyph, color, title = _transport_meta(tid)
+            row_host = QWidget()
+            row = QHBoxLayout(row_host)
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(4)
+            cap = QLabel("my id")
+            cap.setStyleSheet(muted(9))
+            row.addWidget(cap)
+            mark = QLabel(glyph)
+            mark.setStyleSheet(f"color: {color}; font-size: 10px; font-weight: 700;")
+            row.addWidget(mark)
+            value = ElidedLabel("", 9, "#d8dbde")
+            row.addWidget(value, 1)
+            copy = QToolButton()
+            copy.setText("copy")
+            copy.setCursor(Qt.CursorShape.PointingHandCursor)
+            copy.setStyleSheet(
+                "QToolButton { border: none; font-size: 9px; padding: 1px 6px;"
+                " border-radius: 6px; color: palette(mid); }")
+            copy.setToolTip(f"Copy this machine's {title} id — paste it into another "
+                            "machine's Mesh screen to link the two.")
+            copy.clicked.connect(lambda _c=False, t=tid: self._copy_my_id(t))
+            row.addWidget(copy)
+            self.id_rows[tid] = (row_host, value, copy)
+            self.wan_col.addWidget(row_host)
+        # WAN transports with an address up right now — what a peer card checks before
+        # calling a missing shared transport a problem (with none of our own, "no
+        # shared transport" is this machine's LAN-only state, said once above).
+        self._wan_ready: list[str] = []
+
+        # The state line for a machine with no WAN transport up (nothing to copy).
+        self.wan_note = QLabel("")
+        self.wan_note.setWordWrap(True)
+        self.wan_note.setStyleSheet(muted(9))
+        self.wan_col.addWidget(self.wan_note)
+
+        # Connect to a peer's id — the manual introduction, no LAN meeting needed.
+        conn_row = QHBoxLayout()
+        conn_row.setSpacing(4)
+        cap = QLabel("connect to id")
+        cap.setStyleSheet(muted(9))
+        conn_row.addWidget(cap)
+        self.connect_field = QLineEdit()
+        self.connect_field.setPlaceholderText(
+            "paste another machine's id — an iroh endpoint id or a .onion")
+        self.connect_field.setStyleSheet("font-size: 10px;")
+        self.connect_field.returnPressed.connect(self._connect_clicked)
+        conn_row.addWidget(self.connect_field, 1)
+        self.connect_btn = QPushButton("Connect")
+        self.connect_btn.setStyleSheet("font-weight: 700;")
+        self.connect_btn.setToolTip(
+            "Dial that machine now, over whichever transport its id names — it works "
+            "even if the two were never on a LAN together. From then on it is an "
+            "ordinary mesh member and reconnects on its own.")
+        self.connect_btn.clicked.connect(self._connect_clicked)
+        conn_row.addWidget(self.connect_btn)
+        self.wan_col.addLayout(conn_row)
+
+    def _copy_my_id(self, transport: str) -> None:
+        """Put this machine's id on that transport on the clipboard (the half of a
+        manual handshake this machine owns)."""
+        address = _wan_transport_state(self.store.mesh_state or {},
+                                       transport).get("address")
+        if address:
+            QGuiApplication.clipboard().setText(str(address))
+
+    def _connect_clicked(self) -> None:
+        address = self.connect_field.text().strip()
+        if not address:
+            return
+        # Cleared on submit, not on success: the dial runs in the background and its
+        # outcome arrives as a peer appearing (or an error on the line below), so
+        # there is nothing here to wait for. A stale id left in the box would just
+        # get re-sent by the next Return.
+        self.connect_field.clear()
+        self.store.mesh_connect(address)
+
+    def _refresh_wan(self, state: dict) -> None:
+        """Update the WAN card in place from the snapshot."""
+        preferred = (state.get("wan") or {}).get("preferred", "")
+        for tid, btn in self.pref_buttons.items():
+            _glyph, color, _title = _transport_meta(tid)
+            active = tid == preferred
+            btn.setChecked(active)
+            btn.setStyleSheet(
+                "QToolButton { border: none; font-size: 9px; font-weight: 700;"
+                f" padding: 1px 6px; border-radius: 6px;"
+                f" color: {color if active else 'palette(mid)'};"
+                f" background-color: {tint_bg(color, 0.18) if active else 'transparent'}; }}"
+            )
+
+        ready = []
+        for tid, (row_host, value, copy) in self.id_rows.items():
+            block = _wan_transport_state(state, tid)
+            address = block.get("address")
+            # A transport the operator never asked for has no row; one that is coming
+            # up (Tor's bootstrap runs into minutes) says so rather than showing blank.
+            row_host.setVisible(bool(block.get("enabled")))
+            value.set_text(str(address) if address else "coming up…")
+            copy.setEnabled(bool(address))
+            if address:
+                ready.append(tid)
+        self._wan_ready = ready
+
+        if ready:
+            self.wan_note.setVisible(False)
+        else:
+            self.wan_note.setVisible(True)
+            self.wan_note.setText(
+                "No WAN transport is up on this machine — it can only reach peers on "
+                "this network. Install tor, or set SZPONTNET_IROH=1 with the "
+                "szpontnet[wan] extra, and restart the node."
+            )
+        # Connecting needs a transport of our own to dial from.
+        self.connect_field.setEnabled(bool(ready))
+        self.connect_btn.setEnabled(bool(ready))
 
     # MARK: node cards
 
@@ -559,10 +754,72 @@ class MeshView(QWidget):
         # Read-only quota indicator, deliberately separate from the editor above.
         outer.addLayout(self._quota_row(node))
 
-        # Trust toggle (peers only — self is always "you").
+        # How this edge runs, and trust in it (peers only — self is neither an edge
+        # nor a trust decision).
         if peer is not None:
+            outer.addLayout(self._edge_row(peer))
             outer.addLayout(self._trust_toggle(peer))
         return card
+
+    def _edge_row(self, peer: dict) -> QHBoxLayout:
+        """One edge, one transport. Shows the transport the live link actually runs
+        over, and — for a peer we currently reach on this network — the WAN transport
+        the two would re-form over once they part, since that is the part a LAN link
+        hides until it is too late to fix."""
+        row = QHBoxLayout()
+        row.setSpacing(4)
+        cap = QLabel("via")
+        cap.setStyleSheet(muted(9))
+        row.addWidget(cap)
+
+        live = peer.get("transport", "lan")
+        wan = peer.get("wan", "")
+        linked = peer.get("link") in ("up", "stale")
+
+        def mark(transport_id: str) -> QLabel:
+            glyph, color, title = _transport_meta(transport_id)
+            lbl = QLabel(f"{glyph} {title}")
+            lbl.setStyleSheet(f"color: {color}; font-size: 9px; font-weight: 700;")
+            return lbl
+
+        if linked and live != "lan":
+            chip = mark(live)
+            chip.setToolTip(f"This link runs over {_transport_meta(live)[2]}.")
+            row.addWidget(chip)
+        elif linked:
+            chip = mark("lan")
+            chip.setToolTip("This link is a direct connection on this network.")
+            row.addWidget(chip)
+            row.addWidget(self._offlan_note(wan))
+        else:
+            row.addWidget(self._offlan_note(wan))
+        row.addStretch(1)
+        return row
+
+    def _offlan_note(self, wan: str) -> QLabel:
+        """How this pair reaches each other once they are not on one network: the
+        agreed WAN transport, or the warning that they agree on none."""
+        if wan:
+            glyph, color, title = _transport_meta(wan)
+            note = QLabel(f"→ {glyph} {title} off-LAN")
+            note.setStyleSheet(f"color: {color}; font-size: 9px;")
+            note.setToolTip(
+                f"Off this network the two reconnect over {title} — the transport "
+                "both machines run, ranked by the mesh's preference.")
+            return note
+        if not self._wan_ready:
+            # This machine has no WAN transport at all, which the card above already
+            # says once. Repeating it per peer would read as a per-peer fault.
+            note = QLabel("→ this network only")
+            note.setStyleSheet(muted(9))
+            return note
+        note = QLabel("⚠ no shared WAN transport")
+        note.setStyleSheet("color: #FF9500; font-size: 9px; font-weight: 600;")
+        note.setToolTip(
+            "This machine and that one run no WAN transport in common, so the link "
+            "cannot re-form once they leave this network. Run the same transport on "
+            "both — or link them by hand with the id above.")
+        return note
 
     def _status_badge(self, peer: dict | None) -> QLabel:
         """'self' for the local node; for a peer, the connection UPTIME while linked

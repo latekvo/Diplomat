@@ -7,9 +7,9 @@ Layers, weakest to strongest:
 2. ``SZPONTNET_*`` environment overrides for the protocol knobs — how the
    tests run whole meshes on loopback with fast timeouts without touching the
    model;
-3. gossiped last-writer-wins *placement overrides* (per-duty strategy /
-   token-awareness / platform spread, edited live from a topology UI) —
-   see :class:`PlacementOverrides`.
+3. gossiped last-writer-wins *mesh-wide overrides* (per-duty strategy /
+   token-awareness / platform spread, plus the preferred WAN transport, edited
+   live from a topology UI) — see :class:`PlacementOverrides`.
 """
 
 from __future__ import annotations
@@ -167,6 +167,37 @@ def tor_enabled() -> bool:
     tor fails to bootstrap, simply does not get this transport — it degrades, it
     never stops a node from starting. See tor.py."""
     return (env.get("TOR", "1") or "").strip().lower() not in _OFF_VALUES
+
+
+def wan_transports() -> tuple[str, ...]:
+    """Every WAN transport this implementation can run, in the model's default
+    preference order (``wan.transports``). The vocabulary the mesh's preferred
+    transport is picked from, and the tie-break order behind it."""
+    raw = model().get("wan", {}).get("transports", [])
+    names = tuple(str(t) for t in raw if isinstance(t, str) and t)
+    return names or ("iroh", "tor")
+
+
+def wan_preferred(overrides: "PlacementOverrides | None" = None) -> str:
+    """The mesh's preferred WAN transport: the gossiped choice
+    (:attr:`PlacementOverrides.wan`) when one has been made, else the model's first
+    entry. Never returns a transport this implementation doesn't know — an override
+    naming one is ignored, which is what keeps a newer mesh's choice from silencing
+    an older node's WAN entirely."""
+    names = wan_transports()
+    picked = overrides.wan if overrides else ""
+    return picked if picked in names else names[0]
+
+
+def wan_order(overrides: "PlacementOverrides | None" = None) -> tuple[str, ...]:
+    """Transport names in the order a WAN dial should try them: the mesh's preferred
+    one first, the rest in model order.
+
+    Preference *orders*, it never excludes: a peer that runs only the less-preferred
+    transport is still dialed over that one, so an edge uses the most-preferred
+    transport BOTH ends actually run."""
+    pref = wan_preferred(overrides)
+    return (pref, *(t for t in wan_transports() if t != pref))
 
 
 def tor_bootstrap_timeout() -> float:
@@ -420,17 +451,24 @@ class Placement:
 
 @dataclass(frozen=True)
 class PlacementOverrides:
-    """Mesh-wide placement edits, gossiped last-writer-wins.
+    """Mesh-wide settings edits, gossiped last-writer-wins.
 
     ``rev`` is a lamport-ish counter: every edit bumps it past the highest rev
     seen anywhere, so concurrent edits converge on the same winner everywhere
     (ties broken by ``updated_by``). ``duties`` maps duty id → placement dict
-    (the full policy, not a diff).
+    (the full policy, not a diff), and ``wan`` names the mesh's preferred WAN
+    transport — one record, so however many settings ride on it they converge
+    under one comparison.
     """
 
     rev: int = 0
     updated_by: str = ""
     duties: dict = field(default_factory=dict)
+    # The mesh's preferred WAN transport, or "" while nobody has chosen and every node
+    # uses the model default. It ORDERS the transports a node runs rather than
+    # selecting one (:func:`wan_order`), and is held as gossiped — resolving a name
+    # this build cannot honour is :func:`wan_preferred`'s job, not this field's.
+    wan: str = ""
     # Base64 Ed25519 signature by the ``updated_by`` node over this override's
     # canonical form, so a relay can't forge or tamper with a mesh-wide placement
     # edit. Empty for a legacy/keyless editor (then unauthenticated). See node.py.
@@ -454,8 +492,22 @@ class PlacementOverrides:
             duties={k: v for k, v in raw_duties.items()
                     if isinstance(v, dict) and not _has_non_finite(v)}
             if isinstance(raw_duties, dict) else {},
+            wan=cls._as_wan(d.get("wan")),
             sig=str(d.get("sig", "")),
         )
+
+    @staticmethod
+    def _as_wan(raw: object) -> str:
+        """The gossiped WAN preference, tolerating garbage the way the rest of the
+        wire layer does: a non-string becomes "" (no choice).
+
+        A *name* is kept whatever it says, including one from a newer model this build
+        has no transport for. Dropping it here would be lossy at exactly the wrong
+        place: this record is relayed by re-serializing it, so a field removed on the
+        way through no longer matches the editor's signature and the hop behind this
+        node loses the whole revision. :func:`wan_preferred` is where a name this node
+        cannot honour falls back to the local default."""
+        return raw if isinstance(raw, str) else ""
 
     @staticmethod
     def _as_rev(raw: object) -> int:
@@ -472,6 +524,10 @@ class PlacementOverrides:
 
     def to_dict(self) -> dict:
         d = {"rev": self.rev, "updatedBy": self.updated_by, "duties": self.duties}
+        # Omitted while unchosen, so a mesh that never picks a WAN transport gossips
+        # exactly the bytes it did before the field existed.
+        if self.wan:
+            d["wan"] = self.wan
         if self.sig:
             d["sig"] = self.sig
         return d
@@ -482,7 +538,15 @@ class PlacementOverrides:
     def with_duty(self, duty_id: str, placement: Placement, by: str) -> "PlacementOverrides":
         duties = dict(self.duties)
         duties[duty_id] = placement.to_dict()
-        return PlacementOverrides(rev=self.rev + 1, updated_by=by, duties=duties)
+        return PlacementOverrides(rev=self.rev + 1, updated_by=by, duties=duties,
+                                  wan=self.wan)
+
+    def with_wan(self, transport: str, by: str) -> "PlacementOverrides":
+        """This record with the mesh's preferred WAN transport set — a new revision,
+        carrying the duty policies forward untouched (the whole record is what wins
+        the LWW comparison, so dropping them would reset every duty edit)."""
+        return PlacementOverrides(rev=self.rev + 1, updated_by=by,
+                                  duties=dict(self.duties), wan=transport)
 
     def signed(self, sig: str) -> "PlacementOverrides":
         return replace(self, sig=sig)

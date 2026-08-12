@@ -51,7 +51,9 @@ public enum SpecificAuthor: String, Equatable, Codable {
 /// Everything the Review-PRs wizard collects, plus the logic that turns it into
 /// the prompt handed to a fresh `claude` session. Pure value type — the prompt
 /// text comes from `assets/review.json`; only the assembly order/conditions live
-/// here, shared verbatim with the Linux front-end.
+/// here, shared verbatim with the Linux front-end. The one thing `buildPrompt`
+/// looks up off the machine is which model the agent runs on (`AgentModel`),
+/// which the attribution tag names.
 public struct ReviewConfig: Codable, Equatable {
     /// Whose PRs we review — the same axis the Resolve-conflicts wizard uses.
     public typealias Target = PRTarget
@@ -202,6 +204,13 @@ public struct ReviewConfig: Codable, Equatable {
         return out
     }
 
+    /// The attribution tag every posted comment opens with, naming the model the agent
+    /// about to run this prompt is on. Exactly one of the four builders below emits it,
+    /// so the detection behind it happens once per prompt.
+    private func diplomatTag(_ blocks: [String: String]) -> String? {
+        blocks["diplomatTag"].map { AgentModel.fillTag($0, model: AgentModel.detected()) }
+    }
+
     private func prKind(_ scope: [String: String]) -> String {
         switch (includeDrafts, includeReady) {
         case (true, true):  return scope["prKindBoth"] ?? ""
@@ -263,7 +272,7 @@ public struct ReviewConfig: Codable, Equatable {
             out.append(b)
         }
         // Every comment/review this run posts carries the Diplomat attribution tag.
-        if let b = blocks["diplomatTag"] { out.append(b) }
+        if let b = diplomatTag(blocks) { out.append(b) }
 
         return out.joined(separator: "\n\n")
     }
@@ -299,7 +308,7 @@ public struct ReviewConfig: Codable, Equatable {
         // findings block above already covers replying to threads (so the separate reply
         // block is redundant here).
         // Thread replies this run posts carry the Diplomat attribution tag.
-        if let b = blocks["diplomatTag"] { out.append(b) }
+        if let b = diplomatTag(blocks) { out.append(b) }
         return out.filter { !$0.isEmpty }.joined(separator: "\n\n")
     }
 
@@ -340,7 +349,7 @@ public struct ReviewConfig: Codable, Equatable {
         }
         if let trailer = blocks["trailer"] { out.append(trailer) }
         // Every review/comment this run posts carries the Diplomat attribution tag.
-        if let b = blocks["diplomatTag"] { out.append(b) }
+        if let b = diplomatTag(blocks) { out.append(b) }
         return out.filter { !$0.isEmpty }.joined(separator: "\n\n")
     }
 
@@ -392,7 +401,7 @@ public struct ReviewConfig: Codable, Equatable {
             out.append(b)
         }
         // Whichever branch the PR falls into, tag every comment/review it posts.
-        if let b = blocks["diplomatTag"] { out.append(b) }
+        if let b = diplomatTag(blocks) { out.append(b) }
 
         return out.filter { !$0.isEmpty }.joined(separator: "\n\n")
     }

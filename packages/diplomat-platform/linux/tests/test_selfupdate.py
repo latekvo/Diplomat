@@ -310,7 +310,7 @@ def test_update_button_pulls_builds_and_relaunches(repos):
     assert pump_until(("idle",)) == "idle"
     assert store.update_state["behind"] == 1
     assert view._update_btn.isEnabled()
-    assert "Update available" in view._update_status.text()
+    assert view._update_pill.text() == "1 behind"
 
     view._update_btn.click()
     assert pump_until(("restarting", "error")) == "restarting"
@@ -322,7 +322,8 @@ def test_update_button_pulls_builds_and_relaunches(repos):
     while not (marker / "relaunched").exists() and time.monotonic() < deadline:
         time.sleep(0.05)
     assert (marker / "relaunched").exists()
-    assert "Restarting" in view._update_status.text()
+    assert view._update_pill.text() == "restarting…"
+    assert "handing over" in view._update_row.summary()
 
     view.deleteLater()
 

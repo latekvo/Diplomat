@@ -260,7 +260,9 @@ DIPLOMAT_SELF_UPDATE=1 python -m diplomat_app       # the unattended 06:00 updat
 
 # Snapshot a panel state to PNG (no real display required):
 DIPLOMAT_RENDER=panel DIPLOMAT_RENDER_OUT=/tmp/p.png \
-    QT_QPA_PLATFORM=offscreen python -m diplomat_app   # panel|lookup|wizard|conflicts|audit|settings|devices|mesh
+    QT_QPA_PLATFORM=offscreen python -m diplomat_app   # panel|lookup|wizard|conflicts|audit|devices|mesh
+                                                       #   settings[-explain] (-explain opens every row's
+                                                       #   long-form paragraph, the only state that draws them)
 DIPLOMAT_REFRESH_SECS=30 ./diplomat            # faster auto-refresh, for tuning
 ```
 

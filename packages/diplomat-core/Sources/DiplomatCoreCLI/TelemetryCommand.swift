@@ -46,7 +46,7 @@ enum TelemetryCommand {
                     "key": t.key, "duty": t.duty, "pr": t.pr,
                     "queuedAt": opt(t.queuedAt), "startedAt": opt(t.startedAt),
                     "doneAt": opt(t.doneAt), "clearedAt": opt(t.clearedAt),
-                    "remote": t.remote, "tokens": opt(t.tokens),
+                    "remote": t.remote, "tokens": opt(t.tokens), "runner": t.runner,
                     "runSecs": opt(t.runSecs), "waitSecs": opt(t.waitSecs),
                 ]
             },

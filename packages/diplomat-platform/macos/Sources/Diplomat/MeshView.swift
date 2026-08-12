@@ -8,10 +8,13 @@ import DiplomatCore
 ///
 /// It renders the local node's public topology snapshot (`store.meshState`): a compact
 /// wire graph of self + peers, one editable card per node (machine strength in words +
-/// an auto-measured token budget + a Personal/Foreign trust toggle — edits apply to any
-/// node, self or peer, forwarded over the mesh so one machine configures the fleet), and
-/// the duty table (which job classes route where, with a live per-duty placement policy
-/// the panel edits and the mesh gossips last-writer-wins). Reads are a polled file decode;
+/// an auto-measured token budget + the transport that edge runs over + a
+/// Personal/Foreign trust toggle — edits apply to any node, self or peer, forwarded
+/// over the mesh so one machine configures the fleet), the WAN card (the mesh's
+/// preferred transport, this machine's id on each transport it runs, and the box that
+/// links to a peer's — a handshake that needs no LAN meeting), and the duty table
+/// (which job classes route where, with a live per-duty placement policy the panel
+/// edits and the mesh gossips last-writer-wins). Reads are a polled file decode;
 /// the write paths call the `store.mesh*` control wrappers.
 struct MeshView: View {
     @EnvironmentObject var store: Store
@@ -23,6 +26,8 @@ struct MeshView: View {
     @State private var trustReminderPeer: String?
     /// The reminder modal's "Don't show again" checkbox (applied on dismiss).
     @State private var suppressTrustReminder = false
+    /// The WAN card's paste box — another machine's id, on its way to a manual dial.
+    @State private var connectField = ""
 
     /// `seedTrustReminder` pre-opens the reminder modal for a headless render self-test
     /// (`DIPLOMAT_RENDER=mesh-reminder`); nil in normal use.
@@ -194,6 +199,8 @@ struct MeshView: View {
                 .frame(maxWidth: .infinity)
                 .cardChrome(padding: 6)
 
+            wanCard
+
             HStack(alignment: .top, spacing: 12) {
                 nodesColumn(selfNode: selfNode, peers: peers)
                     .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -267,6 +274,171 @@ struct MeshView: View {
         .background(RoundedRectangle(cornerRadius: 6).fill(Color.teal.opacity(0.10)))
     }
 
+    // MARK: WAN reachability
+
+    /// Reaching machines off this network: the mesh's preferred transport, this
+    /// machine's id on each transport it runs, and the box that links to a peer's.
+    /// The counterpart of the Linux screen's WAN card.
+    private var wanCard: some View {
+        let wan = store.meshState?.wan
+        let ready = wan?.ready ?? []
+        return VStack(alignment: .leading, spacing: 5) {
+            sectionLabel("REACHING MACHINES OFF THIS NETWORK")
+            preferredTransportRow(wan?.preferred ?? "")
+            ForEach(catalog?.wanTransports ?? [], id: \.id) { t in
+                if let state = wan?.transport(t.id), state.enabled { myIDRow(t, state) }
+            }
+            if ready.isEmpty { lanOnlyNote }
+            connectRow(enabled: !ready.isEmpty)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .cardChrome()
+    }
+
+    /// The mesh-wide transport pick. It ORDERS the transports a WAN dial tries — a
+    /// peer that runs only the other one is still reached over that one — so an edge
+    /// uses the most-preferred transport both its ends run.
+    private func preferredTransportRow(_ preferred: String) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: "globe").font(.system(size: 9)).foregroundStyle(.secondary)
+            Text("Preferred:").font(.system(size: 9)).foregroundStyle(.secondary)
+            ForEach(catalog?.wanTransports ?? [], id: \.id) { t in
+                segButton("\(t.emoji) \(t.title)", active: t.id == preferred,
+                          tint: transportColor(t.id)) {
+                    if t.id != preferred { store.meshSetWan(transport: t.id) }
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .help("The mesh's preferred WAN transport, gossiped to every node. An edge uses "
+              + "the most-preferred transport BOTH its ends run, so a peer that runs "
+              + "only the other one is still reached over that one. Takes effect on the "
+              + "next reconnect — a live link is never moved.")
+    }
+
+    /// This machine's permanent id on one transport — the half of a manual handshake
+    /// it owns. Copyable only once the transport is live: handing a peer an empty
+    /// string is worse than saying nothing, because it looks like an id.
+    private func myIDRow(_ transport: MeshCatalog.Transport,
+                         _ state: MeshWanTransport) -> some View {
+        let address = state.address ?? ""
+        return HStack(spacing: 4) {
+            Text("my id").font(.system(size: 9)).foregroundStyle(.secondary)
+            Text(transport.emoji).font(.system(size: 9))
+            Text(address.isEmpty ? "coming up…" : address)
+                .font(.system(size: 9, design: .monospaced))
+                .foregroundStyle(address.isEmpty ? Color.secondary : Color.primary)
+                .lineLimit(1).truncationMode(.middle)
+                .textSelection(.enabled)
+            Button("copy") { copyToPasteboard(address) }
+                .buttonStyle(.borderless).font(.system(size: 9))
+                .disabled(address.isEmpty)
+                .help("Copy this machine's \(transport.title) id — paste it into another "
+                      + "machine's Mesh screen to link the two.")
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var lanOnlyNote: some View {
+        Text("No WAN transport is up on this machine — it can only reach peers on this "
+             + "network. Install tor, or set SZPONTNET_IROH=1 with the szpontnet[wan] "
+             + "extra, and restart the node.")
+            .font(.system(size: 9)).foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// The manual introduction: paste what the other machine printed and dial it. The
+    /// address shape picks the transport, so there is nothing else to say — and it
+    /// works between machines that were never on a LAN together.
+    private func connectRow(enabled: Bool) -> some View {
+        HStack(spacing: 4) {
+            Text("connect to id").font(.system(size: 9)).foregroundStyle(.secondary)
+            TextField("paste another machine's id", text: $connectField)
+                .textFieldStyle(.roundedBorder).font(.system(size: 10))
+                .onSubmit { submitConnect() }
+            Button("Connect") { submitConnect() }
+                .buttonStyle(.bordered).controlSize(.small)
+        }
+        .disabled(!enabled)
+        .help("Dial that machine now, over whichever transport its id names — it works "
+              + "even if the two were never on a LAN together. From then on it is an "
+              + "ordinary mesh member and reconnects on its own.")
+    }
+
+    /// Hand the pasted id to the node and empty the box. Cleared on submit, not on
+    /// success: the dial is a background one-shot whose outcome arrives as a peer
+    /// appearing (or an error line above), so there is nothing here to wait for.
+    private func submitConnect() {
+        let address = connectField.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !address.isEmpty else { return }
+        connectField = ""
+        store.meshConnect(address: address)
+    }
+
+    private func copyToPasteboard(_ text: String) {
+        guard !text.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    /// One edge, one transport: what the live link runs over, and — for a peer we
+    /// reach on this network — the WAN transport the two would re-form over once they
+    /// part, since that is the part a healthy LAN link hides until it is too late.
+    private func edgeRow(_ peer: MeshPeer) -> some View {
+        let linked = peer.link == "up" || peer.link == "stale"
+        let onWan = linked && peer.transport != "lan"
+        return HStack(spacing: 4) {
+            Text("via").font(.system(size: 9)).foregroundStyle(.secondary)
+            if onWan {
+                transportMark(peer.transport)
+                    .help("This link runs over \(transportTitle(peer.transport)).")
+            } else {
+                if linked {
+                    transportMark("lan")
+                        .help("This link is a direct connection on this network.")
+                }
+                offLanNote(peer.wan)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func transportMark(_ id: String) -> some View {
+        let t = catalog?.transport(id)
+        return Text("\(t?.emoji ?? "→") \(t?.title ?? id)")
+            .font(.system(size: 9, weight: .bold)).foregroundStyle(transportColor(id))
+    }
+
+    /// How this pair reaches each other once they are not on one network: the agreed
+    /// WAN transport, or the warning that they agree on none. With no WAN transport
+    /// HERE, that is this machine's own state (said once in the card above) rather
+    /// than a fault of every peer — so it reads as a plain note, not a warning.
+    @ViewBuilder
+    private func offLanNote(_ wan: String) -> some View {
+        if !wan.isEmpty {
+            Text("→ \(catalog?.transport(wan)?.emoji ?? "") \(transportTitle(wan)) off-LAN")
+                .font(.system(size: 9)).foregroundStyle(transportColor(wan))
+                .help("Off this network the two reconnect over \(transportTitle(wan)) — "
+                      + "the transport both machines run, ranked by the mesh's preference.")
+        } else if (store.meshState?.wan?.ready ?? []).isEmpty {
+            Text("→ this network only").font(.system(size: 9)).foregroundStyle(.secondary)
+        } else {
+            Text("⚠ no shared WAN transport")
+                .font(.system(size: 9, weight: .semibold)).foregroundStyle(.orange)
+                .help("This machine and that one run no WAN transport in common, so the "
+                      + "link cannot re-form once they leave this network. Run the same "
+                      + "transport on both — or link them by hand with the id above.")
+        }
+    }
+
+    private func transportColor(_ id: String) -> Color {
+        Color(hex: catalog?.transport(id)?.colorHex ?? "") ?? .gray
+    }
+
+    private func transportTitle(_ id: String) -> String {
+        catalog?.transport(id)?.title ?? id
+    }
+
     // MARK: nodes column
 
     private func nodesColumn(selfNode: MeshNode?, peers: [MeshPeer]) -> some View {
@@ -308,6 +480,7 @@ struct MeshView: View {
             quotaRow(tokens: tokens, sessionPct: sessionPct, weekPct: weekPct,
                      legacyPct: tokensPct, auto: tokensAuto)
             if let peer {
+                edgeRow(peer)
                 // A newly-seen, still-untrusted device gets the one-time decision prompt;
                 // once decided it collapses to the compact Personal/Foreign toggle.
                 if isNewDevice(peer) { newDeviceCallout(peer) } else { trustToggle(peer) }

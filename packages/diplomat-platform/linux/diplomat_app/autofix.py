@@ -994,9 +994,11 @@ def agent_lines(ps_output: str, owner: str, repo: str):
     """
     import re
 
+    from . import runner
+
     pat = re.compile(_LIVE_AGENT_RE_TMPL.format(repo=re.escape(f"{owner}/{repo}")))
     for line in ps_output.splitlines():
-        if "claude" not in line:
+        if not runner.is_agent_line(line):
             continue
         tty, _, _rest = line.strip().partition(" ")
         tty = tty.removeprefix("/dev/")

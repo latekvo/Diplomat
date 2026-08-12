@@ -268,6 +268,103 @@ def test_the_quota_axis_spans_the_lookback_not_just_the_readings(store):
     assert max(columns) >= 400 * 0.98, "the newest reading is not at the right edge"
 
 
+def _owed_chart(reviews: list[int], conflicts: list[int]):
+    """The owed-work chart rendered 400x160, over a fortnight owing those counts.
+
+    Rendered without ``DrawWindowBackground``, so every pixel left transparent is one
+    the chart did not paint. The widget's background is whatever palette the host Qt
+    hands it — light on a bare CI runner, dark on a desktop — and reading ink off it
+    by brightness passes on one and not the other.
+    """
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtGui import QImage, QRegion
+    from PySide6.QtWidgets import QWidget
+
+    from diplomat_app.telemetryview import PendingChart
+
+    now = 1_785_000_000.0
+    steps = len(reviews)
+    chart = PendingChart()
+    chart.set_series(
+        tuple(telemetry.PendingPoint(at=now - (steps - i) * 900, reviews=r, conflicts=c)
+              for i, (r, c) in enumerate(zip(reviews, conflicts))),
+        14.0,
+    )
+    chart.resize(400, 160)
+    image = QImage(chart.size(), QImage.Format.Format_ARGB32)
+    image.fill(Qt.GlobalColor.transparent)
+    chart.render(image, QPoint(), QRegion(), QWidget.RenderFlag.DrawChildren)
+    return image
+
+
+def _pending_fill_rows(image) -> tuple[list[int], list[int]]:
+    """The y rows each owed-work series painted, as ``(reviews, fixes)``.
+
+    Picked out by hue: reviews are pink (``#FF2D78``, red well over blue) and fixes
+    blue (``#32ADE6``, blue well over red), while the card's background is near-black
+    and the gridlines white, neither of which leans either way. Scanned down the
+    middle of the chart, clear of the ``peak`` label in the top-left corner.
+    """
+    reviews, fixes = [], []
+    for y in range(image.height()):
+        colors = [image.pixelColor(x, y)
+                  for x in range(image.width() // 3, image.width() * 2 // 3)]
+        if any(c.red() > c.blue() + 50 for c in colors):
+            reviews.append(y)
+        if any(c.blue() > c.red() + 50 for c in colors):
+            fixes.append(y)
+    return reviews, fixes
+
+
+def test_owed_work_stacks_rather_than_overlaying(app):
+    """Both kinds of work queue for the same executors, so the bands cumulate: the
+    fixes ride on top of the reviews and the top edge is the whole backlog. Drawn
+    from the axis up instead, the two would cover the same pixels and a moment owing
+    three reviews and one fix would read as a backlog of three."""
+    reviews, fixes = _pending_fill_rows(_owed_chart([3] * 56, [1] * 56))
+
+    assert reviews and fixes, "a series was not drawn at all"
+    # Four owed at once over a plot 136 high (160, padded 8 above and 16 below), so
+    # the bands meet three quarters up it. Allowed either side: the 1.8px boundary
+    # stroke and its antialiasing.
+    plot_top, plot_h = 8, 160 - 8 - 16
+    boundary = plot_top + plot_h * (1 - 3 / 4)
+    assert min(reviews) > boundary - 4, (
+        f"reviews are painted up to y={min(reviews)}, above the {boundary:.0f}px "
+        f"boundary — the band was drawn from the axis rather than stacked"
+    )
+    assert max(fixes) < boundary + 4, (
+        f"fixes are painted down to y={max(fixes)}, below the {boundary:.0f}px "
+        f"boundary — the band was drawn from the axis rather than off the reviews"
+    )
+    assert min(fixes) < plot_top + 6, (
+        f"the stack tops out at y={min(fixes)}, short of the plot's top — the axis "
+        f"is not the peak of what was owed at once"
+    )
+
+
+def test_a_range_that_never_owed_anything_claims_no_peak(app):
+    """The count axis is floored at one so an empty range can still be scaled and
+    drawn. The peak label reports the data, not that floor — "peak 1 owed" over a
+    fortnight in which the agents kept up is a backlog that never existed."""
+    def ink(image) -> int:
+        """Pixels painted in the corner the peak is written in. Nothing else is drawn
+        there over an empty range: the day gridlines land at the right edge and the
+        date labels below the plot."""
+        return sum(image.pixelColor(x, y).alpha() > 0
+                   for x in range(4, 100) for y in range(0, 22))
+
+    # Work only in the last quarter of the range, so the bands stay flat on the floor
+    # under the label and the corner holds nothing but it.
+    assert ink(_owed_chart([0] * 42 + [3] * 14, [0] * 42 + [1] * 14)) > 0, (
+        "nothing was drawn where the peak label belongs — the check below proves "
+        "nothing"
+    )
+    assert ink(_owed_chart([0] * 56, [0] * 56)) == 0, (
+        "a range with nothing owed still labelled a peak"
+    )
+
+
 def test_work_running_on_a_peer_is_not_charged_to_this_machine(store):
     """A mesh placement spends the peer's quota; counting it here would make this
     machine's cost per task depend on how busy the fleet is."""

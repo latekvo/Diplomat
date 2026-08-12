@@ -337,6 +337,10 @@ enum QueueTest {
               store.processes.first?.mesh?.node == "softoobox")
         check("…under the label it would have run under here",
               store.processes.first?.label == "Auto · Review-req · #77")
+        // Its process is on another machine, so no store here holds its session. A
+        // runner recorded would point the session probe at somebody else's.
+        check("…and names no runner, because the run is not ours to ask",
+              store.processes.first?.runner == "")
         // The same key offered twice is the same run: a stand-down re-offered before
         // the in-flight check can see the row must not draw a second one.
         store.trackMeshRun(meshJob, node: "softoobox", attemptNumber: 1)
@@ -362,6 +366,12 @@ enum QueueTest {
               store.freeAutoSlots == 1)
         check("…and is still a mesh row, held by its lease like any other",
               store.processes.first?.isMesh == true)
+        // The node spawns through the same seam a local dispatch does, so this run is
+        // under the configured runner — and that is what decides which store it is
+        // asked of and priced from. Left blank it would be asked of none and priced
+        // off `~/.claude`, which holds no transcript of a foreign runner's work.
+        check("…under the runner that spawned it, so it can be asked and priced",
+              store.processes.first?.runner == AppConfig.agentRunner.rawValue)
         // Back to the peer-routed row, and to a sighting as fresh as its dispatch: the
         // lifecycle below is one timeline over THAT key, and it starts here.
         store.processes = []

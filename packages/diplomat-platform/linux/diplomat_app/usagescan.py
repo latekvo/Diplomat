@@ -1,4 +1,7 @@
-"""Where the token half of the telemetry comes from: Claude Code's own transcripts.
+"""Where the token half of the telemetry comes from: the agents' own transcripts.
+
+Claude Code's are read off disk and are most of this module; an OpenCode run keeps
+its own elsewhere, and "The other runner's transcript" below is where it is priced.
 
 Claude Code appends every turn to ``~/.claude/projects/<munged-cwd>/<session>.jsonl``
 with a ``usage`` block, and stamps each record with the ``cwd`` it ran in. That is
@@ -29,6 +32,9 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
+import shutil
+import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -260,16 +266,26 @@ def totals() -> Totals:
 # MARK: - Per-task attribution
 
 
-#: How long after an agent's completion its transcript may still be written. The
-#: sentinel fires when `claude` exits, and the final turn is already on disk by
-#: then; the slack covers a slow flush and a clock that isn't perfectly monotonic.
+#: How long past ``ended_at`` an agent's transcript may still have been written.
+#: That bound is at or after the agent's exit and the final turn is already on disk
+#: by then; the slack covers a slow flush and a clock that isn't perfectly monotonic.
 _MTIME_SLACK_SECS = 600.0
 
 
-def task_tokens(prompt: str, started_at: float, ended_at: float) -> float | None:
-    """Tokens spent by the agent that ran ``prompt``, or None if it can't be found.
+@dataclass(frozen=True)
+class TaskRun:
+    """One finished agent, recovered from the transcript it wrote."""
 
-    The link is the prompt itself. Every agent is launched as
+    tokens: float
+    #: When its last turn was written, which is seconds before the agent exits.
+    #: The only exit evidence left by a run whose completion sentinel nothing kept.
+    last_turn_at: float
+
+
+def task_run(prompt: str, started_at: float, ended_at: float) -> TaskRun | None:
+    """The agent that ran ``prompt``, or None if its transcript can't be found.
+
+    The link is the prompt itself. A Claude Code agent is launched as
     ``claude "$(cat <staged prompt>)"``, so the transcript's opening user message
     is that prompt verbatim — an exact identity, needing no new CLI flag on the
     spawn path (where a wrong guess would break the applet's actual job, not just
@@ -279,8 +295,10 @@ def task_tokens(prompt: str, started_at: float, ended_at: float) -> float | None
     Only transcripts touched during the agent's life are opened, and only their
     first few lines until one matches, so the search is bounded by how many
     sessions ran alongside it. Returning None is normal and expected — the applet
-    restarting mid-agent loses the prompt — and the screen reports those as
-    unattributed rather than pretending they were free.
+    restarting mid-agent loses the prompt the match needs. An OpenCode run writes no
+    such transcript at all, keeping its sessions in a store of its own, and is
+    priced by :func:`opencode_task_tokens`; the screen reports whatever neither can
+    attribute as unattributed rather than pretending it was free.
     """
     wanted = (prompt or "").strip()
     if not wanted:
@@ -289,17 +307,19 @@ def task_tokens(prompt: str, started_at: float, ended_at: float) -> float | None
     if not root.is_dir():
         return None
     roots = repo_roots()
-    for path in _candidates(root, started_at, ended_at):
+    for path, mtime in _candidates(root, started_at, ended_at):
         if _opening_prompt(path) != wanted:
             continue
-        return _file_tokens(path, roots)
+        return TaskRun(tokens=_file_tokens(path, roots), last_turn_at=mtime)
     return None
 
 
-def _candidates(root: Path, started_at: float, ended_at: float) -> list[Path]:
-    """Transcripts that could belong to a run spanning ``[started_at, ended_at]``,
-    newest first. A transcript is still being appended to while its agent works, so
-    its mtime lands at or after the agent's last turn — never before it started."""
+def _candidates(root: Path, started_at: float,
+                ended_at: float) -> list[tuple[Path, float]]:
+    """Transcripts that could belong to a run spanning ``[started_at, ended_at]``
+    with their mtimes, newest first. A transcript is still being appended to while
+    its agent works, so its mtime lands at or after the agent's last turn — never
+    before it started."""
     out: list[tuple[float, Path]] = []
     for path in root.rglob("*.jsonl"):
         try:
@@ -309,7 +329,7 @@ def _candidates(root: Path, started_at: float, ended_at: float) -> list[Path]:
         if started_at <= mtime <= ended_at + _MTIME_SLACK_SECS:
             out.append((mtime, path))
     out.sort(key=lambda pair: -pair[0])
-    return [p for _, p in out]
+    return [(p, mtime) for mtime, p in out]
 
 
 #: Lines read while looking for a transcript's first user message. The session
@@ -362,3 +382,115 @@ def _file_tokens(path: Path, roots: list[Path]) -> float:
         return 0.0
     repo, other, _consumed = _scan_chunk(data, roots)
     return repo + other
+
+
+# MARK: - The other runner's transcript
+
+
+#: How long ``opencode export`` may take. It reads one session out of a local store,
+#: so this is generous — but it runs on the poll that retires a run, and a wedged CLI
+#: must cost that run its price rather than the poll.
+_EXPORT_TIMEOUT = 20.0
+
+#: How long the user's shell may take to say where the CLI is. It sources their rc,
+#: which can be slow — a version manager, a prompt framework — so it gets its own
+#: budget rather than the export's, and the two together bound the pricing path.
+_RESOLVE_TIMEOUT = 10.0
+
+#: Where ``opencode`` turned out to be, once found. Only a hit is remembered: a miss
+#: is a CLI that may still be installed while the applet runs.
+_opencode_path: str | None = None
+
+
+def _reset_cache() -> None:
+    """Forget where the CLI was. For tests, which stand a different one up per case."""
+    global _opencode_path
+
+    _opencode_path = None
+
+
+def _opencode_binary() -> str | None:
+    """The ``opencode`` executable, found the way the spawn finds it.
+
+    An agent is spawned through the user's *interactive* login shell precisely so that
+    a per-user install is on ``PATH`` (:func:`review.shell_command`), and the Settings
+    screen promises as much: an rc-only install still runs. This process's own
+    environment is whatever launched the applet — a desktop entry, a Dock icon — and
+    ordinarily has none of that, so pricing a finished run off it alone would price
+    ``None`` for exactly the installs the spawn was written to support.
+
+    So this ``PATH`` first, and only on a miss the shell. What comes back is a path,
+    exec'd directly rather than run through the shell, because the rc that put it on
+    ``PATH`` is equally free to print a banner and the export's stdout has to stay
+    parseable JSON.
+    """
+    global _opencode_path
+
+    if _opencode_path:
+        return _opencode_path
+    _opencode_path = shutil.which("opencode") or _shell_path_to("opencode")
+    return _opencode_path
+
+
+def _shell_path_to(name: str) -> str | None:
+    """Where the user's interactive shell says ``name`` is, if it names a real file.
+
+    The last qualifying line, because an rc is free to print above the answer. An
+    alias or a shell function fails the test — ``command -v`` describes those rather
+    than locating them — and reads the same as not installed.
+    """
+    from . import review
+
+    try:
+        out = subprocess.run(  # noqa: S603 - the user's own shell, quoted argument
+            [review.user_shell(), "-i", "-c", f"command -v {shlex.quote(name)}"],
+            capture_output=True, text=True, timeout=_RESOLVE_TIMEOUT)
+    except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
+        return None
+    for line in reversed(out.stdout.splitlines()):
+        path = line.strip()
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+    return None
+
+
+def opencode_task_tokens(session_id: str) -> float | None:
+    """Tokens spent by one OpenCode session, or None if it cannot be read.
+
+    An OpenCode run leaves nothing in ``~/.claude``, so :func:`task_run` cannot see
+    it and every such run used to land in the ledger unpriced. Its own transcript is
+    reachable through ``opencode export``, which is asked for rather than read off
+    disk: the store behind it is an internal SQLite schema, while the command is part
+    of the CLI's published surface and already knows where the store lives.
+
+    Read at retirement, not on the poll — a turn's price is per-message, so a run's is
+    a sum over every message it produced, and the live probe
+    (:mod:`diplomat_app.opencodeapi`) deliberately fetches one. By then the run's own
+    server is gone, which is why this goes through the CLI rather than the port.
+
+    How a session's messages add up is :func:`opencodeapi.session_tokens`, shared with
+    the Swift front-end so the two cannot price the same run differently.
+    """
+    from . import opencodeapi
+
+    if not session_id:
+        return None
+    binary = _opencode_binary()
+    if not binary:
+        return None
+    try:
+        out = subprocess.run(  # noqa: S603 - resolved absolute path, no shell
+            [binary, "export", session_id],
+            capture_output=True, text=True, timeout=_EXPORT_TIMEOUT)
+    except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
+        return None
+    if out.returncode != 0:
+        return None
+    try:
+        session = json.loads(out.stdout)
+    except ValueError:
+        return None
+    messages = session.get("messages") if isinstance(session, dict) else None
+    if not isinstance(messages, list):
+        return None
+    return opencodeapi.session_tokens(messages)

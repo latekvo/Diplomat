@@ -17,8 +17,9 @@ import Foundation
 /// - `queued`  — a poll saw this work owed for the first time.
 /// - `started` — an agent was dispatched for it (`remote` when the mesh placed it
 ///               on a peer, in which case the tokens are that machine's, not ours).
-/// - `done`    — the completion sentinel fired, carrying the tokens the agent's own
-///               transcript accounts for.
+/// - `done`    — the agent exited, carrying the tokens its own transcript accounts
+///               for. Timed from its completion sentinel, or from that transcript's
+///               last turn where the run left no sentinel the applet can read.
 /// - `cleared` — a poll no longer sees it owed and we never started it (someone
 ///               replied by hand, the PR closed, a peer took it).
 ///
@@ -58,8 +59,21 @@ public enum Telemetry {
         /// creation, matching `usage._tokenCost`). Nil when the transcript couldn't
         /// be tied back to the run.
         public var tokens: Double?
+        /// Which CLI ran it (an `AgentRunner.rawValue`), or empty for a task recorded
+        /// before there was a choice of one.
+        public var runner: String
 
-        /// Seconds from an agent starting to its completion sentinel.
+        /// Whether the tokens it spent came out of the account the quota probe reads.
+        ///
+        /// Only Claude Code's do; every other runner is billed by whichever provider it
+        /// is logged into. So a foreign task is worth a token count of its own and is
+        /// worth nothing at all as a share of a five-hour window it never drew on — and
+        /// left in, it would drag that share down for every task beside it.
+        public var anthropic: Bool {
+            runner.isEmpty || runner == AgentRunner.claude.rawValue
+        }
+
+        /// Seconds from an agent starting to its exit.
         public var runSecs: Double? {
             guard let s = startedAt, let d = doneAt, d >= s else { return nil }
             return d - s
@@ -138,7 +152,7 @@ public enum Telemetry {
             let fresh = byKey[key] == nil
             var task = byKey[key] ?? Task(key: key, duty: "", pr: 0, queuedAt: nil,
                                           startedAt: nil, doneAt: nil, clearedAt: nil,
-                                          remote: false, tokens: nil)
+                                          remote: false, tokens: nil, runner: "")
             if let duty = obj["duty"] as? String, !duty.isEmpty { task.duty = duty }
             if let pr = number(obj["pr"]), pr > 0 { task.pr = Int(pr) }
             let known: Bool
@@ -154,9 +168,23 @@ public enum Telemetry {
                 }
             case "done":
                 known = true
+                let agentRunner = obj["runner"] as? String ?? ""
                 if task.doneAt == nil {
                     task.doneAt = at
                     task.tokens = number(obj["tokens"])
+                    task.runner = agentRunner
+                } else if !((task.tokens ?? 0) > 0) {
+                    // A retry appends a SECOND completion under the same key. The
+                    // instants stay first-wins, but the price is taken from
+                    // whichever attempt could be attributed at all — otherwise a
+                    // task whose first attempt was never tied back to a transcript
+                    // stays unpriced however many times it is re-run. Its runner
+                    // travels with it: that is what says whether those tokens came
+                    // out of the Anthropic window.
+                    if let later = number(obj["tokens"]), later > 0 {
+                        task.tokens = later
+                        task.runner = agentRunner
+                    }
                 }
             case "cleared":
                 known = true
@@ -481,14 +509,18 @@ public enum Telemetry {
         let runs = local.compactMap(\.runSecs)
         let waits = inRange.compactMap(\.waitSecs)
 
-        let priced = local.compactMap(\.tokens).filter { $0 > 0 }
+        let priced = local.filter { ($0.tokens ?? 0) > 0 }
+        // Two lists, because the two figures ask different questions: what a task cost
+        // is a token count whoever billed it, while a share of a window is the
+        // account's and only its own tasks may be measured against it.
+        let charged = priced.filter(\.anthropic).compactMap(\.tokens)
         var pct: [Double] = []
         if let limit = sessionLimit, limit > 0 {
-            pct = priced.map { 100 * $0 / limit }
+            pct = charged.map { 100 * $0 / limit }
         }
         var weekMean = 0.0
-        if let limit = weekLimit, limit > 0, !priced.isEmpty {
-            weekMean = priced.reduce(0) { $0 + 100 * $1 / limit } / Double(priced.count)
+        if let limit = weekLimit, limit > 0, !charged.isEmpty {
+            weekMean = charged.reduce(0) { $0 + 100 * $1 / limit } / Double(charged.count)
         }
 
         let series = pendingSeries(ledger.tasks, now: now, days: days, steps: steps)
@@ -502,7 +534,7 @@ public enum Telemetry {
             perTask: distribution(pct, binCount: binCount, z: z),
             perTaskWeekMean: weekMean,
             perTaskTokensMean: priced.isEmpty
-                ? 0 : priced.reduce(0, +) / Double(priced.count),
+                ? 0 : priced.compactMap(\.tokens).reduce(0, +) / Double(priced.count),
             avgRunSecs: runs.isEmpty ? 0 : runs.reduce(0, +) / Double(runs.count),
             avgWaitSecs: waits.isEmpty ? 0 : waits.reduce(0, +) / Double(waits.count),
             runSamples: runs.count,
