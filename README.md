@@ -1242,7 +1242,7 @@ packages/
 
 .github/workflows/ci.yml       ← swift-macos · swift-core-linux · python-linux · szpontnet · szpont ·
                                  szpont-npm · node-device-allocator
-.github/workflows/release-szpont.yml     ← every push to main → the next major on PyPI + npm, from one
+.github/workflows/release-szpont.yml     ← every push to main → the next minor on PyPI + npm, from one
                                            verified commit; tag szpont-v* to release what a tree states
 .github/workflows/release-szpontnet.yml  ← tag szpontnet-v* → PyPI
 ```

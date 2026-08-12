@@ -4,10 +4,10 @@
 # meant to be the same command, so they are released together from the same commit
 # and can never be a version apart.
 #
-# Every push to `main` is a release, and every release is a major. The number is
-# one above the highest major either index already holds, so no run can choose one
-# that is taken, and a release that reaches PyPI and fails on npm is put back onto
-# a single shared version by the next push rather than by hand. A `szpont-v*` tag
+# Every push to `main` is a release, and every release is a minor. The number is
+# one minor above the highest `major.minor` either index already holds, so no run
+# can choose one that is taken, and a release that reaches PyPI and fails on npm is
+# put back onto a single shared version by the next push. A `szpont-v*` tag
 # releases too, publishing whatever version the tree at that tag already states -
 # that is the path for a release cut deliberately, off main or out of order.
 #
@@ -69,7 +69,7 @@ jobs:
               exit 1
             fi
           else
-            version="$(python3 .github/scripts/szpont_version.py next-major)"
+            version="$(python3 .github/scripts/szpont_version.py next-minor)"
           fi
           echo "publishing szpont $version"
           echo "version=$version" >> "$GITHUB_OUTPUT"

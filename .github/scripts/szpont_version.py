@@ -8,13 +8,13 @@ itself. `show` refuses such a tree, `set` writes all five, and
 `test_release_version.py` holds the list to the files that actually state a
 version, so a sixth site cannot appear unnoticed.
 
-`next-major` is what a release off `main` publishes under. It is chosen over what
+`next-minor` is what a release off `main` publishes under. It is chosen over what
 the indexes already hold rather than over what the tree says, because an upload is
 irreversible and the tree is only ever a record of the last release that finished:
 a run whose bump commit never landed, or one that reached PyPI and failed on npm,
 must not hand the next run a number that is already spent. Taking the highest
-major either index holds and adding one also puts a half-published release back on
-a single version, on both indexes, at the next push.
+`major.minor` either index holds and adding one to the minor also puts a
+half-published release back on a single version, on both indexes, at the next push.
 """
 
 from __future__ import annotations
@@ -69,7 +69,7 @@ def read(root: Path) -> str:
 def write(root: Path, version: str) -> None:
     """Put `version` in every file that states one.
 
-    Only a release off main writes, and it writes what `next-major` chose, so
+    Only a release off main writes, and it writes what `next-minor` chose, so
     anything else reaching here is a version that got lost on the way - an unset
     job output arrives as the empty string, and an empty string would be built,
     uploaded and unrecallable.
@@ -80,18 +80,23 @@ def write(root: Path, version: str) -> None:
         path.write_text(text[: match.start(1)] + version + text[match.end(1) :], encoding="utf-8")
 
 
-def next_major(floors: list[str]) -> str:
-    """One major above the highest of `floors`, which are versions already taken.
+def next_minor(floors: list[str]) -> str:
+    """One minor above the highest of `floors`, which are versions already taken.
+
+    Highest by `(major, minor)` read as numbers, so 0.10.0 outranks 0.9.0 and a
+    later major outranks any minor under an earlier one.
 
     A floor that is not `major.minor.patch` is one no release here produced - a
-    prerelease, a date, something hand-uploaded - and only its major digit is worth
-    reading, so it is read leniently and never rejected: the point is a number
-    above all of them, not a judgement about any one of them.
+    prerelease, a date, something hand-uploaded - and only its `major.minor` is
+    worth reading, so it is read leniently and never rejected: the point is a
+    number above all of them, not a judgement about any one of them.
     """
-    majors = [int(m.group(1)) for f in floors if (m := re.match(r"(\d+)\.", f))]
-    if not majors:
+    seen = [(int(m.group(1)), int(m.group(2)))
+            for f in floors if (m := re.match(r"(\d+)\.(\d+)", f))]
+    if not seen:
         raise VersionError(f"no version to count from in {floors}")
-    return f"{max(majors) + 1}.0.0"
+    major, minor = max(seen)
+    return f"{major}.{minor + 1}.0"
 
 
 def _fetch(url: str):
@@ -122,7 +127,7 @@ def main(argv: list[str] | None = None) -> None:
     commands.add_parser("show", help="print the version the tree states")
     setter = commands.add_parser("set", help="write a version into every file that states one")
     setter.add_argument("version")
-    commands.add_parser("next-major", help="print the next major over the tree and both indexes")
+    commands.add_parser("next-minor", help="print the next minor over the tree and both indexes")
     args = parser.parse_args(argv)
 
     if args.command == "show":
@@ -130,7 +135,7 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "set":
         write(ROOT, args.version)
     else:
-        print(next_major([read(ROOT), *published()]))
+        print(next_minor([read(ROOT), *published()]))
 
 
 if __name__ == "__main__":

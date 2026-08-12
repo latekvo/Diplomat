@@ -107,19 +107,26 @@ def test_the_sites_are_every_file_that_states_the_version():
 # --- what a release off main publishes under --------------------------------
 
 
-def test_next_major_clears_every_version_already_taken():
-    assert version_tool.next_major(["0.2.0"]) == "1.0.0"
-    assert version_tool.next_major(["3.0.0", "2.0.0", "0.2.0"]) == "4.0.0"
-    assert version_tool.next_major(["9.4.7"]) == "10.0.0"
+def test_next_minor_clears_every_version_already_taken():
+    assert version_tool.next_minor(["0.2.0"]) == "0.3.0"
+    assert version_tool.next_minor(["0.3.0", "0.2.0", "0.1.9"]) == "0.4.0"
 
 
-def test_next_major_counts_from_a_version_it_did_not_write():
-    """A hand-uploaded prerelease still takes its major; it must not be reused."""
-    assert version_tool.next_major(["1.0.0", "2.0.0rc1"]) == "3.0.0"
-    assert version_tool.next_major(["1.0.0", "2.0.0-rc.1"]) == "3.0.0"
-    assert version_tool.next_major(["1.0.0", "not-a-version"]) == "2.0.0"
+def test_next_minor_ranks_the_floors_as_numbers():
+    """Sorted as text, 0.9.0 outranks 0.10.0 and the next release is one already up."""
+    assert version_tool.next_minor(["0.9.0", "0.10.0"]) == "0.11.0"
+    assert version_tool.next_minor(["1.2.0", "0.30.0"]) == "1.3.0"
+
+
+def test_next_minor_counts_from_a_version_it_did_not_write():
+    """A hand-uploaded prerelease still takes its minor; it must not be reused."""
+    assert version_tool.next_minor(["0.2.0", "0.3.0rc1"]) == "0.4.0"
+    assert version_tool.next_minor(["0.2.0", "0.3.0-rc.1"]) == "0.4.0"
+    assert version_tool.next_minor(["0.2.0", "not-a-version"]) == "0.3.0"
 
 
 def test_nothing_to_count_from_is_not_a_version():
     with pytest.raises(version_tool.VersionError):
-        version_tool.next_major(["not-a-version"])
+        version_tool.next_minor(["not-a-version"])
+    with pytest.raises(version_tool.VersionError):
+        version_tool.next_minor(["7"])
