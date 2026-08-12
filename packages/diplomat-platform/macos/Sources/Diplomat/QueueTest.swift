@@ -568,6 +568,12 @@ enum QueueTest {
         check("a cancelled ask does not come back on the next poll",
               store.requestedReviews.map(\.number) == [31, 33]
                   && !store.queuedTasks.contains { $0.id == "review:32" })
+        // Cancel refuses a row no ask stands behind. The monitor's find has to be
+        // offered again to be in the queue at all: the commit above rebuilt it from
+        // that cycle's offers, and that cycle offered only the asks.
+        _ = await offer(job(35))
+        store.offerRequestedReviews()
+        store.commitQueue()
         store.cancelRequestedReview("review-req:35")
         check("…and a monitor's row is not cancellable at all",
               store.queuedTasks.contains { $0.id == "review-req:35" })
