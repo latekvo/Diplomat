@@ -124,8 +124,8 @@ entirely and [run it from the checkout](#run) as before.
 The two packages are the same launcher published under one name to two indexes
 ([`packages/szpont`](packages/szpont/README.md),
 [`packages/szpont-npm`](packages/szpont-npm/README.md)); a parity test holds them to
-the same plan on every machine shape either can meet. On PyPI the name also carries
-the typed SzpontNet bindings, which is what `import szpont` means.
+the same plan on every machine shape either can meet. Neither installs anything but
+the launcher - one file of standard library on each side.
 
 ## The library
 
@@ -590,10 +590,12 @@ default 14):
   and a week of exhaustion cannot come out as the same picture. A missing reading is
   a probe that could not answer, not an empty window, so the line breaks across one
   instead of diving to the floor and back.
-- **Owed work** over time - two filled series on one count axis, auto-reviews and
-  conflict fixes, of work the monitors had found but nobody had started yet. Work
-  picked up between two points on the chart never appears as a backlog, which is
-  the chart working rather than a gap in it.
+- **Owed work** over time - work the monitors had found but nobody had started yet,
+  auto-reviews and conflict fixes stacked into one area on a count axis. Stacked
+  because both queue for the same executors, with reviews taking a free slot first:
+  the fixes ride on top of the reviews, and the top edge is everything the pool
+  owes. Work picked up between two points on the chart never appears as a backlog,
+  which is the chart working rather than a gap in it.
 - **Time to start** - from the monitor first seeing a unit of work to an agent
   taking it (the reconciler's backoff, an applet that was off, a busy PR).
 - **Time to finish** - from an agent starting to its completion sentinel.
@@ -1124,10 +1126,10 @@ telemetry renders + the helper self-tests), `swift-core-linux` (proves the core 
 Linux, and publishes a static `diplomat-core` binary), `python-linux` (pytest
 against that binary, so the golden-prompt parity is proven across languages, then
 the library-less start), `szpontnet` (the library's own tests plus a full
-conformance run against the reference node), `szpont` (the bindings, the
-launcher, and the built wheel installed into a venv that has never seen the
-checkout), `szpont-npm` (the same launcher in JavaScript, held to the Python one's
-plan machine shape for machine shape), and `node-device-allocator`.
+conformance run against the reference node), `szpont` (the launcher, and the built
+wheel installed into a venv that has never seen the checkout), `szpont-npm` (the
+same launcher in JavaScript, held to the Python one's plan machine shape for
+machine shape), and `node-device-allocator`.
 
 ```
 packages/
@@ -1238,10 +1240,9 @@ packages/
     conformance/               ← black-box conformance tester: runs a candidate node as an opaque
                                  subprocess, joins over real multicast + TCP, exits non-zero on any MUST failure
 
-  szpont/                      ← what `szpont` means on PyPI (see its README): typed Python bindings for
-                                 SzpontNet — the wire format bound to types, adding nothing to the protocol
-    szpont_launcher.py         ← and the `szpont` command: clone/build/launch Diplomat. A top-level module,
-                                 not part of the package, so starting an applet never imports the library
+  szpont/                      ← what `szpont` means on PyPI (see its README): the `szpont` command
+    szpont_launcher.py         ← clone/build/launch Diplomat, out of the standard library alone. Named
+                                 apart from `szpont` so the conformance tester keeps the import name
 
   szpont-npm/                  ← what `szpont` means on npm (see its README): the same launcher, in
                                  JavaScript, for `npx szpont`

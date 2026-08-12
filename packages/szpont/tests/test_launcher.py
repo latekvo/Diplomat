@@ -61,24 +61,22 @@ def step(plan: dict, sid: str) -> dict:
     return next(s for s in plan["steps"] if s["id"] == sid)
 
 
-# --- one version, four places ----------------------------------------------
+# --- one version, four files -----------------------------------------------
 
 
 def test_every_szpont_carries_the_same_version():
     """PyPI and npm publish the same name from this one commit.
 
-    Four files say what version that is, and the release workflow refuses a tag
-    that disagrees with them - so a bump that misses one of them has to fail here,
+    Four files say what version that is - this module, the pyproject beside it,
+    and the twin's package.json and launcher.js - and the release workflow refuses
+    a tag that disagrees with them, so a bump that misses one has to fail here
     while it is still cheap. An index version, once taken, is taken forever.
     """
     pyproject = (PKG_DIR / "pyproject.toml").read_text(encoding="utf-8")
     npm = json.loads((PKG_DIR.parent / "szpont-npm" / "package.json").read_text(encoding="utf-8"))
     js = (PKG_DIR.parent / "szpont-npm" / "src" / "launcher.js").read_text(encoding="utf-8")
 
-    import szpont
-
     assert re.search(r'^version = "(.+)"$', pyproject, re.M).group(1) == launcher.__version__
-    assert szpont.__version__ == launcher.__version__
     assert npm["version"] == launcher.__version__
     assert re.search(r"^export const VERSION = '(.+)';$", js, re.M).group(1) == launcher.__version__
 

@@ -19,10 +19,12 @@ two agree by construction on :func:`plan`, a pure function from what was probed 
 what will be run, and ``parity-with-python.mjs`` compares their answers fact for
 fact.
 
-A top-level module rather than ``szpont.launcher``: reaching a submodule imports
-the bindings, which cost the protocol library that a launcher has no use for -
-and keeping the CLI outside the package leaves "the bindings import the library
-and nothing else" a claim CI can still make.
+``szpont_launcher`` rather than ``szpont``: the import name is left free for the
+conformance tester, which is run as ``python -m szpont`` from its own directory
+and would be shadowed by anything this distribution put on the import path.
+
+The standard library only, on both sides: this is what runs before Diplomat's own
+dependencies exist, on whatever interpreter ``pip`` happened to be on.
 """
 
 from __future__ import annotations
@@ -37,7 +39,7 @@ import sys
 from pathlib import Path
 from typing import Mapping, Sequence
 
-__version__ = "0.3.0"
+__version__ = "0.2.0"
 
 DEFAULT_REPO_URL = "https://github.com/latekvo/Diplomat.git"
 SUPPORTED = ("darwin", "linux")
