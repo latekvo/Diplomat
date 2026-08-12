@@ -3,7 +3,7 @@ import AppKit
 import DiplomatCore
 
 /// The settings screen — swapped in for the main panel body when the header gear
-/// is tapped. Ten cards over two columns: identity, the agent runner and its repo
+/// is tapped. Eleven cards over two columns: identity, the agent runner and its repo
 /// root, what the monitors are allowed to do on their own, and the environment the
 /// spawns land in. Everything persists through the Store (UserDefaults, or the
 /// shared `~/.diplomat/config.json` for the knobs another process also reads).
@@ -150,7 +150,7 @@ struct SettingsView: View {
                             : "SPAWN AGENT picks up whatever flags your shell alias for "
                             + "`claude` gives it.",
                        stacked: true) {
-                Picker("", selection: $store.agentRunner) {
+                Picker("Which CLI a spawn runs", selection: $store.agentRunner) {
                     ForEach(AgentRunner.allCases, id: \.self) { Text($0.label).tag($0) }
                 }
                 .pickerStyle(.segmented).labelsHidden()
@@ -334,7 +334,7 @@ struct SettingsView: View {
                    detail: "Off, the monitor keeps looking and lists what it finds under "
                          + "Agent tasks — as queued work only you can start, with "
                          + "“execute now”.") {
-            switchControl($store.prAutofixEnabled)
+            switchControl("Auto-fix my PRs", $store.prAutofixEnabled)
         }
     }
 
@@ -360,7 +360,7 @@ struct SettingsView: View {
                    detail: SettingsView.reviewRequestsDetail) {
             HStack(spacing: 6) {
                 reviewedPill
-                switchControl($store.reviewRequestsEnabled)
+                switchControl("Review PRs that request me", $store.reviewRequestsEnabled)
             }
         }
     }
@@ -393,7 +393,7 @@ struct SettingsView: View {
                        summary: "Off ⇒ inline comments only; the verdict stays with you.",
                        detail: "On ⇒ a clean review may submit a verdict, except on the "
                              + "classes withheld below.") {
-                switchControl($store.autoApproveEnabled)
+                switchControl("May approve / request changes", $store.autoApproveEnabled)
             }
             if store.autoApproveEnabled { verdictPolicyBlock }
             SettingRow(title: "Soft-approve clean PRs",
@@ -401,7 +401,7 @@ struct SettingsView: View {
                        detail: "Off ⇒ a review that finds nothing says nothing. Independent "
                              + "of the verdict switch above: a soft approval is a comment, "
                              + "not a GitHub approval.") {
-                switchControl($store.softApproveEnabled)
+                switchControl("Soft-approve clean PRs", $store.softApproveEnabled)
             }
         }
     }
@@ -435,10 +435,11 @@ struct SettingsView: View {
                           summary: "Across both monitors and anything a mesh peer routes here.",
                           detail: SettingsView.autoTaskLimitDetail,
                           stacked: true) {
-            SliderSetting(value: Binding(
-                get: { Double(store.autoTaskLimit) },
-                set: { store.autoTaskLimit = Int($0.rounded()) }
-            ),
+            SliderSetting(label: "Run at most",
+                          value: Binding(
+                              get: { Double(store.autoTaskLimit) },
+                              set: { store.autoTaskLimit = Int($0.rounded()) }
+                          ),
                           range: Double(lo)...Double(hi),
                           step: 1,
                           badge: badge,
@@ -477,7 +478,7 @@ struct SettingsView: View {
             SettingRow(title: "Hold work when the limit runs low",
                        summary: "Wait for a window to refill rather than start what won't fit.",
                        detail: SettingsView.autoBudgetDetail) {
-                switchControl($store.autoBudgetGate)
+                switchControl("Hold work when the limit runs low", $store.autoBudgetGate)
             }
             if store.autoBudgetGate { autoBudgetKnobs }
         }
@@ -487,7 +488,7 @@ struct SettingsView: View {
         let floorBadge: String = Telemetry.percent(store.autoBudgetFloorPct)
         return NestedSettings(tint: .orange) {
             SettingRow(title: "Start one only when it fits", stacked: true) {
-                Picker("", selection: $store.autoBudgetConfidence) {
+                Picker("Start one only when it fits", selection: $store.autoBudgetConfidence) {
                     ForEach(AgentDispatchGate.budgetConfidenceZ.keys.sorted(), id: \.self) {
                         Text("\($0)%").tag($0)
                     }
@@ -495,14 +496,10 @@ struct SettingsView: View {
                 .pickerStyle(.segmented).labelsHidden().controlSize(.small)
             }
             SettingRow(title: "Keep in hand until it can be priced", stacked: true) {
-                // Snapped to the 5-point stops the stepper used to step in, but by the
-                // binding rather than the slider: 20 ticks on a 100-point track is a
-                // striped bar, not a scale.
-                SliderSetting(value: Binding(
-                    get: { store.autoBudgetFloorPct },
-                    set: { store.autoBudgetFloorPct = ($0 / 5).rounded() * 5 }
-                ),
+                SliderSetting(label: "Keep in hand until it can be priced",
+                              value: $store.autoBudgetFloorPct,
                               range: 0...100,
+                              step: 5,
                               badge: floorBadge,
                               minLabel: "spend it all", maxLabel: "spend nothing",
                               tint: .orange)
@@ -513,16 +510,28 @@ struct SettingsView: View {
     // MARK: Claude API-error watcher
 
     private var apiWatchSection: some View {
-        let n = store.apiWatchContinues
-        let pill = n > 0 ? StatusPill(text: "\(n) continued", tint: .secondary) : nil
+        let pill = apiWatchPill
         return SettingsCard(symbol: "exclamationmark.bubble.fill", title: "STALLED AGENTS",
                             tint: .pink, pill: pill) {
             SettingRow(title: "Auto-continue on API errors",
                        summary: "A 529 stops an agent dead; this types it back into motion.",
                        detail: SettingsView.apiWatchDetail) {
-                switchControl($store.apiWatchEnabled)
+                switchControl("Auto-continue on API errors", $store.apiWatchEnabled)
             }
         }
+    }
+
+    /// Every other card's pill answers "is this doing anything" before a row is read.
+    /// This one drew nothing at all until the watcher had stepped in at least once.
+    private var apiWatchPill: StatusPill {
+        let n = store.apiWatchContinues
+        let text = n > 0 ? "\(n) continued" : ""
+        if !store.apiWatchEnabled {
+            return StatusPill(text: text.isEmpty ? "off" : text, tint: .secondary,
+                              symbol: "bolt.slash.fill")
+        }
+        return StatusPill(text: text.isEmpty ? "watching" : text, tint: .green,
+                          symbol: "bolt.fill")
     }
 
     private static let apiWatchDetail = """
@@ -564,14 +573,14 @@ struct SettingsView: View {
                 Text(kind.subtitle).font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 6)
-            ColorPicker("", selection: Binding(
+            ColorPicker("Tint for \(kind.title)", selection: Binding(
                 get: { store.tint(for: kind) },
                 set: { store.setTint($0, for: kind) }
             ), supportsOpacity: false)
                 .labelsHidden()
                 .frame(width: 34)
                 .help("Tint for \(kind.title)")
-            Toggle("", isOn: Binding(
+            Toggle("Show \(kind.title) in the grid", isOn: Binding(
                 get: { visible },
                 set: { store.setTool(kind, visible: $0) }
             ))
@@ -595,7 +604,7 @@ struct SettingsView: View {
             SettingRow(title: "Window SPAWN AGENT opens",
                        summary: "iTerm is used when installed; otherwise Terminal.",
                        stacked: true) {
-                Picker("", selection: $store.terminalChoice) {
+                Picker("Window SPAWN AGENT opens", selection: $store.terminalChoice) {
                     ForEach(SpawnTerminal.allCases) { term in
                         Text(term.title + (term.isInstalled ? "" : " (not installed)")).tag(term.rawValue)
                     }
@@ -709,7 +718,7 @@ struct SettingsView: View {
                        summary: "Routes reviews, conflict fixes and audits to whichever "
                               + "machine fits the policy.",
                        detail: SettingsView.meshDetail) {
-                switchControl($store.meshEnabled)
+                switchControl("Coordinate duties with this LAN", $store.meshEnabled)
             }
         }
     }
@@ -807,8 +816,10 @@ struct SettingsView: View {
 
     /// The one switch every boolean row uses, so no two of them can end up different
     /// sizes — which is exactly what the mini/small mix on this screen used to be.
-    private func switchControl(_ isOn: Binding<Bool>) -> some View {
-        Toggle("", isOn: isOn)
+    /// `title` is the row's, repeated because `labelsHidden()` drops the label from
+    /// the layout but keeps it as the switch's accessible name.
+    private func switchControl(_ title: String, _ isOn: Binding<Bool>) -> some View {
+        Toggle(title, isOn: isOn)
             .labelsHidden()
             .toggleStyle(.switch)
             .controlSize(.small)

@@ -68,6 +68,15 @@ enum Render {
             .background(Color(nsColor: .windowBackgroundColor))
     }
 
+    /// A window AppKit will leave where it is put. The default drags an ordered window
+    /// back onto the screen, which flashes it on the operator's display and leaves the
+    /// snapshot's controls drawn differently depending on where it landed.
+    private final class OffscreenWindow: NSWindow {
+        override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
+            frameRect
+        }
+    }
+
     /// Snapshot a root view in a live NSWindow (via `cacheDisplay`, no screen-recording
     /// permission needed) instead of `ImageRenderer`. Two callers:
     ///
@@ -82,11 +91,9 @@ enum Render {
     /// `ImageRenderer` leaves blank.
     private static func runWindow(what: String, out: String, root: some View) {
         let hosting = NSHostingController(rootView: root)
-        let window = NSWindow(contentViewController: hosting)
-        // Ordered (so AppKit lays out + commits) but parked far off-screen so nothing
-        // flashes on the user's display. `PopoverWindowController.center()` only
-        // corrects x, never y, so the window stays out of sight. `cacheDisplay` draws
-        // the view hierarchy directly — on-screen visibility isn't needed.
+        let window = OffscreenWindow(contentViewController: hosting)
+        // Ordered, so AppKit lays the window out and commits it, but parked off-screen:
+        // `cacheDisplay` draws the hierarchy directly, so it never has to be visible.
         window.setFrameOrigin(NSPoint(x: -4000, y: -4000))
         window.orderFrontRegardless()
         // Snapshot after the app runloop has run the layout passes (content-height

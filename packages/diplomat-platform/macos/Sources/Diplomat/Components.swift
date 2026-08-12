@@ -480,12 +480,14 @@ struct ToggleChip: View {
 /// underneath. Replaces the steppers, which show a number without showing the range
 /// it lives in — so the only way to learn a cap of 16 existed was to click sixteen times.
 struct SliderSetting: View {
+    /// The row's title — drawn as separate text, so the slider has no name of its own.
+    let label: String
     @Binding var value: Double
     let range: ClosedRange<Double>
-    /// A step draws a tick per stop, which is worth it only where the stops are few
-    /// enough to aim at — nil keeps the track clean and leaves rounding to the binding.
-    var step: Double? = nil
-    /// The current value, already formatted — "4 tasks", "20%".
+    /// The stops the setting is meaningful in, drawn as ticks: granularity you can
+    /// see, not only one the slider enforces.
+    let step: Double
+    /// The current value, already formatted — "4 tasks", "20.0%".
     let badge: String
     let minLabel: String
     let maxLabel: String
@@ -494,25 +496,21 @@ struct SliderSetting: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
             HStack(spacing: 8) {
-                slider.controlSize(.small).tint(tint)
+                Slider(value: $value, in: range, step: step)
+                    .controlSize(.small).tint(tint)
+                    .accessibilityLabel(label)
+                    .accessibilityValue(badge)
                 Text(badge).font(.system(size: 10, weight: .bold).monospacedDigit())
                     .foregroundStyle(tint)
                     .frame(minWidth: 52, alignment: .trailing)
+                    .accessibilityHidden(true)
             }
             HStack {
                 Text(minLabel).font(.system(size: 9)).foregroundStyle(.secondary)
                 Spacer()
                 Text(maxLabel).font(.system(size: 9)).foregroundStyle(.secondary)
             }
-        }
-    }
-
-    @ViewBuilder
-    private var slider: some View {
-        if let step {
-            Slider(value: $value, in: range, step: step)
-        } else {
-            Slider(value: $value, in: range)
+            .accessibilityHidden(true)
         }
     }
 }

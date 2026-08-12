@@ -504,6 +504,7 @@ class SettingsView(QWidget):
         card, body, self._limits_pill = settings_card(glyphs.G_LIMITS, "LIMITS", _ORANGE)
 
         self._auto_limit = SliderSetting(
+            label="Run at most",
             minimum=autofix.MIN_AUTO_TASK_LIMIT,
             maximum=autofix.MAX_AUTO_TASK_LIMIT,
             min_label=str(autofix.MIN_AUTO_TASK_LIMIT),
@@ -551,10 +552,11 @@ class SettingsView(QWidget):
         )))
 
         self._budget_floor = SliderSetting(
+            label="Keep in hand until it can be priced",
             minimum=0, maximum=100, step=5,
             min_label="spend it all", max_label="spend nothing", tint=_ORANGE,
         )
-        self._budget_floor.set_badge_text(lambda pct: f"{pct}%")
+        self._budget_floor.set_badge_text(lambda pct: f"{pct:.1f}%")
         self._budget_floor.set_value(round(appconfig.auto_budget_floor_pct()))
         self._budget_floor.changed.connect(self._on_budget_floor_changed)
         knobs.addWidget(self._track(SettingRow(
@@ -904,7 +906,7 @@ class SettingsView(QWidget):
         self._alloc_row = self._track(SettingRow(
             "Reserve a simulator before using it", controls, stacked=True,
             detail="Installs an MCP server, a skill and an always-on rule. Reclaims a "
-                   "device when its agent dies or it sits idle for 1h.",
+                   "device when its agent dies or it sits idle for 15 minutes.",
         ))
         if deviceallocator.package_available():
             self._alloc_row.set_summary(

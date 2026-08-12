@@ -1065,7 +1065,7 @@ class SliderSetting(QWidget):
 
     changed = Signal(int)
 
-    def __init__(self, *, minimum: int, maximum: int, step: int = 1,
+    def __init__(self, *, label: str, minimum: int, maximum: int, step: int = 1,
                  min_label: str, max_label: str, tint: str = "#FF9500") -> None:
         super().__init__()
         self._tint = tint
@@ -1076,14 +1076,14 @@ class SliderSetting(QWidget):
         row = QHBoxLayout()
         row.setSpacing(8)
         self._slider = QSlider(Qt.Orientation.Horizontal)
+        self._slider.setAccessibleName(label)
         self._slider.setRange(minimum, maximum)
         self._slider.setSingleStep(step)
         self._slider.setPageStep(step)
-        # Ticks only where the stops are few enough to aim at; 20 of them on a
-        # 100-point track is a striped bar, not a scale.
-        if maximum - minimum <= 20:
-            self._slider.setTickPosition(QSlider.TickPosition.TicksBelow)
-            self._slider.setTickInterval(step)
+        # A tick per stop, so the granularity the value snaps to is visible and not
+        # just enforced. Mirrors `Slider(value:in:step:)` in Components.swift.
+        self._slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self._slider.setTickInterval(step)
         self._slider.valueChanged.connect(self._on_changed)
         row.addWidget(self._slider, 1)
         self._badge = QLabel("")
@@ -1123,6 +1123,9 @@ class SliderSetting(QWidget):
             return
         self._badge.setText(self._badge_text(value))
         self.changed.emit(value)
+
+    def badge(self) -> str:
+        return self._badge.text()
 
     def set_value(self, value: int) -> None:
         """Move the slider without emitting ``changed`` — the store writing to the
@@ -1201,6 +1204,11 @@ class SettingRow(QWidget):
 
         name = QLabel(title)
         name.setStyleSheet("font-size: 11px; font-weight: 600;")
+        # The title is a separate label, so a screen reader on the control alone
+        # would read a bare switch. Twin of `switchControl(_:_:)` in SettingsView.swift.
+        self._control = control
+        if not control.accessibleName():
+            control.setAccessibleName(title)
         if stacked:
             col.addWidget(name)
             col.addWidget(control)

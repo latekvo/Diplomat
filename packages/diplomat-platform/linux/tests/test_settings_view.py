@@ -94,6 +94,22 @@ def test_a_screen_opened_with_explain_on_shows_them(make_view):
     assert all(d.isVisibleTo(view) for d in _details(view))
 
 
+def test_the_budget_floor_reads_as_a_percentage_to_one_place(view):
+    """The same rendering the panel's own budget readouts and the macOS twin use.
+    A bare integer here would report a different number than the Telemetry screen
+    for the same setting."""
+    view._budget_floor.set_value(20)
+    assert view._budget_floor.badge() == "20.0%"
+
+
+def test_every_row_names_its_control_for_a_screen_reader(view):
+    """The row's name is a separate label, so an unnamed control reads as a bare
+    switch. Every row is checked because the naming is one line in `SettingRow`:
+    a control that arrives already named keeps its own, and nothing else can."""
+    unnamed = [r for r in view._rows if not r._control.accessibleName()]
+    assert not unnamed
+
+
 def test_the_explain_switch_writes_through_and_reveals(view):
     view._explain.setChecked(True)
     assert view.store.settings_explain is True
