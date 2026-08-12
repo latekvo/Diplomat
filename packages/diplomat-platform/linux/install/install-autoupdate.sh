@@ -37,7 +37,7 @@ Type=oneshot
 # systemd SIGTERM/SIGKILLs it the instant this oneshot deactivates — killing the relaunched
 # tray mid-startup and silently defeating the update swap. KillMode=process kills only the
 # (already-exited) main ExecStart process, sparing the detached tray. NOT RemainAfterExit=yes:
-# that leaves the oneshot 'active (exited)', making the daily timer's `start` a no-op.
+# that leaves the oneshot 'active (exited)', making the daily timer's \`start\` a no-op.
 KillMode=process
 Environment=DIPLOMAT_SELF_UPDATE=1
 ExecStart=/bin/bash ${LAUNCHER}
