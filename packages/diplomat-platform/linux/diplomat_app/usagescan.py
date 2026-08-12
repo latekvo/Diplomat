@@ -266,14 +266,24 @@ def totals() -> Totals:
 # MARK: - Per-task attribution
 
 
-#: How long after an agent's completion its transcript may still be written. The
-#: sentinel fires when `claude` exits, and the final turn is already on disk by
-#: then; the slack covers a slow flush and a clock that isn't perfectly monotonic.
+#: How long past ``ended_at`` an agent's transcript may still have been written.
+#: That bound is at or after the agent's exit and the final turn is already on disk
+#: by then; the slack covers a slow flush and a clock that isn't perfectly monotonic.
 _MTIME_SLACK_SECS = 600.0
 
 
-def task_tokens(prompt: str, started_at: float, ended_at: float) -> float | None:
-    """Tokens spent by the agent that ran ``prompt``, or None if it can't be found.
+@dataclass(frozen=True)
+class TaskRun:
+    """One finished agent, recovered from the transcript it wrote."""
+
+    tokens: float
+    #: When its last turn was written, which is seconds before the agent exits.
+    #: The only exit evidence left by a run whose completion sentinel nothing kept.
+    last_turn_at: float
+
+
+def task_run(prompt: str, started_at: float, ended_at: float) -> TaskRun | None:
+    """The agent that ran ``prompt``, or None if its transcript can't be found.
 
     The link is the prompt itself. A Claude Code agent is launched as
     ``claude "$(cat <staged prompt>)"``, so the transcript's opening user message
@@ -297,17 +307,19 @@ def task_tokens(prompt: str, started_at: float, ended_at: float) -> float | None
     if not root.is_dir():
         return None
     roots = repo_roots()
-    for path in _candidates(root, started_at, ended_at):
+    for path, mtime in _candidates(root, started_at, ended_at):
         if _opening_prompt(path) != wanted:
             continue
-        return _file_tokens(path, roots)
+        return TaskRun(tokens=_file_tokens(path, roots), last_turn_at=mtime)
     return None
 
 
-def _candidates(root: Path, started_at: float, ended_at: float) -> list[Path]:
-    """Transcripts that could belong to a run spanning ``[started_at, ended_at]``,
-    newest first. A transcript is still being appended to while its agent works, so
-    its mtime lands at or after the agent's last turn — never before it started."""
+def _candidates(root: Path, started_at: float,
+                ended_at: float) -> list[tuple[Path, float]]:
+    """Transcripts that could belong to a run spanning ``[started_at, ended_at]``
+    with their mtimes, newest first. A transcript is still being appended to while
+    its agent works, so its mtime lands at or after the agent's last turn — never
+    before it started."""
     out: list[tuple[float, Path]] = []
     for path in root.rglob("*.jsonl"):
         try:
@@ -317,7 +329,7 @@ def _candidates(root: Path, started_at: float, ended_at: float) -> list[Path]:
         if started_at <= mtime <= ended_at + _MTIME_SLACK_SECS:
             out.append((mtime, path))
     out.sort(key=lambda pair: -pair[0])
-    return [p for _, p in out]
+    return [(p, mtime) for mtime, p in out]
 
 
 #: Lines read while looking for a transcript's first user message. The session
@@ -445,7 +457,7 @@ def _shell_path_to(name: str) -> str | None:
 def opencode_task_tokens(session_id: str) -> float | None:
     """Tokens spent by one OpenCode session, or None if it cannot be read.
 
-    An OpenCode run leaves nothing in ``~/.claude``, so :func:`task_tokens` cannot see
+    An OpenCode run leaves nothing in ``~/.claude``, so :func:`task_run` cannot see
     it and every such run used to land in the ledger unpriced. Its own transcript is
     reachable through ``opencode export``, which is asked for rather than read off
     disk: the store behind it is an internal SQLite schema, while the command is part

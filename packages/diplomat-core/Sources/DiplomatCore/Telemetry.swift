@@ -17,8 +17,9 @@ import Foundation
 /// - `queued`  — a poll saw this work owed for the first time.
 /// - `started` — an agent was dispatched for it (`remote` when the mesh placed it
 ///               on a peer, in which case the tokens are that machine's, not ours).
-/// - `done`    — the completion sentinel fired, carrying the tokens the agent's own
-///               transcript accounts for.
+/// - `done`    — the agent exited, carrying the tokens its own transcript accounts
+///               for. Timed from its completion sentinel, or from that transcript's
+///               last turn where the run left no sentinel the applet can read.
 /// - `cleared` — a poll no longer sees it owed and we never started it (someone
 ///               replied by hand, the PR closed, a peer took it).
 ///
@@ -72,7 +73,7 @@ public enum Telemetry {
             runner.isEmpty || runner == AgentRunner.claude.rawValue
         }
 
-        /// Seconds from an agent starting to its completion sentinel.
+        /// Seconds from an agent starting to its exit.
         public var runSecs: Double? {
             guard let s = startedAt, let d = doneAt, d >= s else { return nil }
             return d - s
@@ -167,10 +168,23 @@ public enum Telemetry {
                 }
             case "done":
                 known = true
+                let agentRunner = obj["runner"] as? String ?? ""
                 if task.doneAt == nil {
                     task.doneAt = at
                     task.tokens = number(obj["tokens"])
-                    task.runner = obj["runner"] as? String ?? ""
+                    task.runner = agentRunner
+                } else if !((task.tokens ?? 0) > 0) {
+                    // A retry appends a SECOND completion under the same key. The
+                    // instants stay first-wins, but the price is taken from
+                    // whichever attempt could be attributed at all — otherwise a
+                    // task whose first attempt was never tied back to a transcript
+                    // stays unpriced however many times it is re-run. Its runner
+                    // travels with it: that is what says whether those tokens came
+                    // out of the Anthropic window.
+                    if let later = number(obj["tokens"]), later > 0 {
+                        task.tokens = later
+                        task.runner = agentRunner
+                    }
                 }
             case "cleared":
                 known = true

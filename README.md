@@ -590,7 +590,7 @@ default 14):
   which is the chart working rather than a gap in it.
 - **Time to start** - from the monitor first seeing a unit of work to an agent
   taking it (the reconciler's backoff, an applet that was off, a busy PR).
-- **Time to finish** - from an agent starting to its completion sentinel.
+- **Time to finish** - from an agent starting to its exit.
 - **Spent on this repo** - how much of this machine's Claude spend went on the repo
   the agents work in rather than everything else. Split by the `cwd` each turn ran
   in, so it counts your own sessions in that checkout too - it is a repo split, not
@@ -605,8 +605,9 @@ last Tuesday?", "how close to the ceiling did we get?"), so the source is an
 `O_APPEND` like the activity feed so this applet, its counterpart on the other OS and
 a mesh node can all append to one file. The monitors write `queued` when they first
 see work owed, `cleared` if it stops being owed before anyone takes it, `started` on
-dispatch, `done` from the completion sentinel's own mtime (not when a poll noticed),
-and a `sample` every 15 minutes. It rewrites itself to the 60-day retention horizon
+dispatch, `done` when the agent exited - its completion sentinel's own mtime, or the
+last turn of its transcript for a run the mesh placed, which leaves no sentinel this
+applet can read, but never when a poll noticed - and a `sample` every 15 minutes. It rewrites itself to the 60-day retention horizon
 once it passes 4 MB.
 
 Two gatherers fill in what GitHub doesn't know:
