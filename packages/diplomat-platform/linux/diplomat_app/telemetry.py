@@ -192,13 +192,22 @@ def record_started(key: str, remote: bool = False, attempt: int = 1) -> None:
             "remote": remote, "attempt": attempt})
 
 
-def record_done(key: str, at: float, tokens: float | None) -> None:
+def record_done(key: str, at: float, tokens: float | None,
+                agent_runner: str = "") -> None:
     """Record a completion at ``at`` — the sentinel file's mtime, i.e. when the
     agent actually exited, not when a poll noticed (which is up to a poll period
-    later and would inflate every run time)."""
+    later and would inflate every run time).
+
+    ``agent_runner`` is which CLI spent the tokens, and it is what keeps the
+    rate-limit percentages honest: an OpenCode or Hermes task is billed by whichever
+    provider that runner is logged into, so its tokens are worth reporting per task
+    but not against a window they never drew on (:attr:`Task.anthropic`).
+    """
     event = {"at": at, "ev": "done", "key": key}
     if tokens is not None:
         event["tokens"] = tokens
+    if agent_runner:
+        event["runner"] = agent_runner
     append(event)
 
 
@@ -233,7 +242,7 @@ def record_completion(key: str, prompt: str, started_at: float, done_at: float,
             tokens = usagescan.task_tokens(prompt, started_at, done_at)
     except OSError:
         tokens = None
-    record_done(key, done_at, tokens)
+    record_done(key, done_at, tokens, agent_runner)
 
 
 # MARK: - Reading (what the monitors and the screen share)
@@ -335,6 +344,21 @@ class Task:
     cleared_at: float | None = None
     remote: bool = False
     tokens: float | None = None
+    #: Which CLI ran it (a :mod:`runner` key), or blank for a task recorded before
+    #: there was a choice of one.
+    runner: str = ""
+
+    @property
+    def anthropic(self) -> bool:
+        """Whether the tokens it spent came out of the account the quota probe reads.
+
+        Only Claude Code's do; every other runner is billed by whichever provider it
+        is logged into. So a foreign task is worth a token count of its own and is
+        worth nothing at all as a share of a five-hour window it never drew on — and
+        left in, it would drag that share down for every task beside it."""
+        from . import runner as agentrunner
+
+        return self.runner in ("", agentrunner.CLAUDE)
 
     @property
     def run_secs(self) -> float | None:
@@ -471,6 +495,8 @@ def fold(lines: list[str]) -> Ledger:
             if task.done_at is None:
                 task.done_at = at
                 task.tokens = _number(obj.get("tokens"))
+                agent_runner = obj.get("runner")
+                task.runner = agent_runner if isinstance(agent_runner, str) else ""
         else:  # "cleared"
             if task.cleared_at is None:
                 task.cleared_at = at
@@ -774,13 +800,17 @@ def summarize(ledger: Ledger, *, now: float, days: float, steps: int,
     runs = [t.run_secs for t in local if t.run_secs is not None]
     waits = [t.wait_secs for t in in_range if t.wait_secs is not None]
 
-    priced = [t.tokens for t in local if t.tokens is not None and t.tokens > 0]
+    priced = [t for t in local if t.tokens is not None and t.tokens > 0]
+    # Two lists, because the two figures ask different questions: what a task cost is
+    # a token count whoever billed it, while a share of a window is the account's and
+    # only its own tasks may be measured against it.
+    charged = [t.tokens for t in priced if t.anthropic]
     pct: list[float] = []
     if session_limit is not None and session_limit > 0:
-        pct = [100 * tok / session_limit for tok in priced]
+        pct = [100 * tok / session_limit for tok in charged]
     week_mean = 0.0
-    if week_limit is not None and week_limit > 0 and priced:
-        week_mean = sum(100 * tok / week_limit for tok in priced) / len(priced)
+    if week_limit is not None and week_limit > 0 and charged:
+        week_mean = sum(100 * tok / week_limit for tok in charged) / len(charged)
 
     series = pending_series(ledger.tasks, now=now, days=days, steps=steps)
     quota = quota_series(ledger.samples, now=now, days=days)
@@ -792,7 +822,8 @@ def summarize(ledger: Ledger, *, now: float, days: float, steps: int,
         week_limit_tokens=week_limit,
         per_task=distribution(pct, bin_count=bin_count, z=z),
         per_task_week_mean=week_mean,
-        per_task_tokens_mean=sum(priced) / len(priced) if priced else 0.0,
+        per_task_tokens_mean=(sum(t.tokens for t in priced) / len(priced)
+                              if priced else 0.0),
         avg_run_secs=sum(runs) / len(runs) if runs else 0.0,
         avg_wait_secs=sum(waits) / len(waits) if waits else 0.0,
         run_samples=len(runs),
@@ -897,7 +928,7 @@ def parity_payload(ledger: Ledger, summary: Summary) -> dict:
                 "key": t.key, "duty": t.duty, "pr": t.pr,
                 "queuedAt": _opt(t.queued_at), "startedAt": _opt(t.started_at),
                 "doneAt": _opt(t.done_at), "clearedAt": _opt(t.cleared_at),
-                "remote": t.remote, "tokens": _opt(t.tokens),
+                "remote": t.remote, "tokens": _opt(t.tokens), "runner": t.runner,
                 "runSecs": _opt(t.run_secs), "waitSecs": _opt(t.wait_secs),
             }
             for t in ledger.tasks

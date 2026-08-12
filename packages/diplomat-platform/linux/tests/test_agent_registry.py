@@ -277,6 +277,9 @@ def test_gather_never_leaves_a_probe_undeclared():
     assert evidence.sentinels.ok
     assert evidence.tails.status in (A.PRESENT, A.UNAVAILABLE, A.UNSUPPORTED)
     assert evidence.claims.status in (A.PRESENT, A.UNAVAILABLE, A.UNSUPPORTED)
+    # UNSUPPORTED here: the run this staged is a Claude Code one, which serves no
+    # session — the probe has to say that rather than leave the field at its default.
+    assert evidence.sessions.status == A.UNSUPPORTED
     assert evidence.merged_prs.status == A.UNAVAILABLE  # not probed on the fast tick
     assert evidence.live_agents.status in (A.PRESENT, A.UNAVAILABLE)
 

@@ -619,9 +619,9 @@ class TelemetryView(QWidget):
                        f"{telemetry.percent(s.per_task_week_mean)} of the week")
         elif d.count == 0 and s.per_task_tokens_mean > 0:
             headline = telemetry.tokens(s.per_task_tokens_mean)
-            caption = ("tokens per task. The share of the limit needs two quota "
-                       "readings from the OAuth usage probe — is Claude Code "
-                       "logged in on this machine?")
+            caption = ("tokens per task. The share of the limit is Claude Code's "
+                       "own — it counts only tasks that ran on it, and needs two "
+                       "quota readings from the OAuth usage probe.")
         else:
             headline = "—"
             caption = "No finished auto-task in this range yet."

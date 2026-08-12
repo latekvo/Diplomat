@@ -36,8 +36,8 @@ struct TrackedProcess: Identifiable, Codable, Equatable {
         /// The origination lease this run holds while its agent lives.
         var workKey: String
         /// Whether the mesh placed this run back on THIS machine — the best node it
-        /// could find was the one that asked. Such a run is a `claude` process here
-        /// like any other, so it spends this device's automatic-task budget; only the
+        /// could find was the one that asked. Such a run is an agent process here like
+        /// any other, so it spends this device's automatic-task budget; only the
         /// terminal was opened by the node rather than by the applet.
         var onThisMachine: Bool
 

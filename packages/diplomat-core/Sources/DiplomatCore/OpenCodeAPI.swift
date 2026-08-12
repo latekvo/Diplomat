@@ -21,7 +21,8 @@ import Foundation
 /// ## Which session is this run's
 ///
 /// Every run gets its own server, but not its own session store: OpenCode keeps one
-/// global store, so `GET /session` on any port lists every session on the machine. So a
+/// global store, so `GET /session` on any port answers with the machine's own history
+/// rather than this run's — its hundred most recent sessions, newest first. So a
 /// run is matched to its session the only way that is exact — by the prompt.
 /// `candidates` narrows the list to sessions that could be this run's, and `isOurs`
 /// confirms one against the prompt the applet staged.

@@ -419,14 +419,18 @@ check(AgentRunner.hermes.setupCommand == "hermes setup; hermes status",
 check(AgentRunner.isAgentLine("501 ttys000 30 opencode --prompt Review PR #7 in o/r"))
 check(AgentRunner.isAgentLine("501 ttys000 30 claude Review PR #7 in o/r"))
 check(!AgentRunner.isAgentLine("501 ttys000 30 vim notes.txt"))
-// Both interrupt hints, captured from the real CLIs. Neither string contains the
-// other, so matching one spelling reads every agent of the other runner as idle.
+// All three interrupt hints, captured from the real CLIs. No string contains another,
+// so matching one spelling reads every agent of the other runners as idle.
 check(AgentActivity.looksBusy("  Build  GLM-5.2\n  ⬝⬝⬝  esc interrupt      ctrl+p commands"),
       "an OpenCode pane mid-turn must read as busy")
 check(AgentActivity.looksBusy("⏵⏵ bypass permissions on · esc to interrupt · ←"),
       "a Claude Code pane mid-turn must read as busy")
+check(AgentActivity.looksBusy(" ─ (°ロ°) contemplating… · 33s │ glm 5.2 xhigh │ 1 session\n ❯ Ctrl+C to interrupt…"),
+      "a Hermes pane mid-turn must read as busy")
 check(!AgentActivity.looksBusy("  Build  GLM-5.2\n     27.4K (3%)  ctrl+p commands"),
       "a finished OpenCode pane must give its bay back")
+check(!AgentActivity.looksBusy(" ─ ready │ glm 5.2 xhigh │ 26k/1m │ ✓ 0s │ 1 session\n ❯"),
+      "a finished Hermes pane must give its bay back")
 // The port is what lets the applet ASK an OpenCode agent what it is doing instead of
 // reading its status bar. Pinned literally for the same reason the rest of the command
 // is: the two front-ends must spawn one server, not two different ones.

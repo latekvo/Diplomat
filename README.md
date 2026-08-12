@@ -76,10 +76,14 @@ Targets `software-mansion/argent` and shells out to the authenticated `gh` CLI.
 > programmatic / headless / service-style use, which belongs on the API, not on a
 > personal subscription.
 >
-> **Under the [OpenCode runner](#agent-runner), the bill and the terms are whichever
-> provider you connected** - OpenRouter, an Anthropic API key, a hosted Ollama, a
-> model on your own machine. Diplomat neither holds that credential nor meters it;
-> read the terms of the provider you pick. The unattended-use point above is about
+> **Under the [OpenCode or Hermes runner](#agent-runner), the bill and the terms are
+> whichever provider you connected** - OpenRouter, an Anthropic API key, a hosted
+> Ollama, a model on your own machine. Diplomat does not hold that credential and
+> cannot see what it is charged; read the terms of the provider you pick. It counts
+> those runs' *tokens* like any other, and counts them against no limit at all - the
+> rate-limit figures on the telemetry screen are the Anthropic account's, and only
+> tasks that ran on Claude Code are measured against them.
+> The unattended-use point above is about
 > *automation*, not about Anthropic specifically, so it applies whatever you run: a
 > plan sold for interactive personal use is the wrong place for a background monitor.
 >
@@ -672,9 +676,9 @@ nudge opens no window at all - it types into a session that already exists.)
   request within 1h of a dispatch is treated as churn and suppressed. Banned
   authors are never auto-reviewed.
 - **Claude API-error watcher** - Claude Code runs only; the banners it matches are
-  Claude Code's, and an OpenCode agent that errors reads as idle instead, frees its
-  task-cap slot, and is dispatched again by whichever monitor owed the work. Every
-  ~20s it reads each agent session's visible
+  Claude Code's, and an OpenCode or Hermes agent that errors reads as idle instead,
+  frees its task-cap slot, and is dispatched again by whichever monitor owed the
+  work. Every ~20s it reads each agent session's visible
   tail (macOS: any iTerm/Terminal session; Linux: **tmux panes only** - there's no
   portable way to read or type into an arbitrary Linux emulator, so the Linux
   spawner opens each agent in a tmux session of its own and an agent started
@@ -808,7 +812,11 @@ and ⏻) swaps the panel to a settings screen:
     finished run is summed from `opencode export <session>` when it ends, not from the
     poll. Hermes keeps running totals on the session row, so it is simply read. Both
     count input + output + cache *writes*, the same three the Claude Code transcript
-    scan sums, so one ledger holds every runner in one unit.
+    scan sums, so one ledger holds every runner in one unit. What those tokens are
+    *not* is a share of a rate-limit window: that window is the Anthropic account's,
+    priced from Claude Code's own usage probe, so **limit per task** and the
+    [rate-limit budget](#the-rate-limit-budget) count the tasks that ran on Claude Code
+    and leave a foreign run to the token figures beside them.
   - What does *not* carry over: the [Claude API-error watcher](#autonomous-monitors)
     - its banners are Claude Code's. A foreign agent that errors reads as idle, so
     it gives its task-cap slot back and the monitor that owed the work dispatches it

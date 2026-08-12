@@ -1,8 +1,11 @@
 import Foundation
 import DiplomatCore
 
-/// Where the token half of the telemetry comes from: Claude Code's own transcripts.
+/// Where the token half of the telemetry comes from: the agents' own transcripts.
 /// The macOS twin of the Linux applet's `usagescan.py`.
+///
+/// Claude Code's are read off disk and are most of this file; an OpenCode run keeps
+/// its own elsewhere and is priced at the end, through that CLI.
 ///
 /// Claude Code appends every turn to `~/.claude/projects/<munged-cwd>/<session>.jsonl`
 /// with a `usage` block, and stamps each record with the `cwd` it ran in. That is
@@ -234,6 +237,68 @@ enum UsageScan {
     /// CLI must cost that run its price rather than the poll.
     private static let exportTimeout: TimeInterval = 20
 
+    /// How long the user's shell may take to say where the CLI is. It sources their
+    /// rc, which can be slow — a version manager, a prompt framework — so it gets its
+    /// own budget rather than the export's, and the two together bound the pricing
+    /// path.
+    private static let resolveTimeout: TimeInterval = 10
+
+    // Guards the resolved path against the concurrent retirements `Store` prices from
+    // a detached task. Cached on SUCCESS only, so an `opencode` installed after launch
+    // is picked up by the next run that retires rather than needing a restart — the
+    // same rule, and the same shape, as `GH.ghPath`.
+    private static let binaryLock = NSLock()
+    private static var cachedOpenCodePath: String?
+
+    /// The `opencode` executable, found the way the spawn finds it.
+    ///
+    /// A spawn types its command into a terminal window, and that window's shell is the
+    /// user's own — which is what puts a per-user install on `PATH`, and what Settings
+    /// promises when it says an rc-only install still runs. An app launched from the
+    /// Dock inherits none of that, so pricing a finished run off this process's
+    /// environment alone would price nil for exactly the installs the spawn supports.
+    ///
+    /// So this `PATH` first, and only on a miss the shell. What comes back is a path,
+    /// run directly rather than through the shell, because the rc that put it on `PATH`
+    /// is equally free to print a banner and the export's stdout has to stay parseable
+    /// JSON.
+    private static func opencodeBinary() -> String? {
+        binaryLock.lock()
+        defer { binaryLock.unlock() }
+        if let cached = cachedOpenCodePath { return cached }
+        cachedOpenCodePath = onPath("opencode") ?? shellPath(to: "opencode")
+        return cachedOpenCodePath
+    }
+
+    /// `name` on this process's own `PATH` — free, and right whenever the applet was
+    /// launched from a shell that already had it.
+    private static func onPath(_ name: String) -> String? {
+        let path = ProcessInfo.processInfo.environment["PATH"] ?? ""
+        for dir in path.split(separator: ":") where !dir.isEmpty {
+            let candidate = "\(dir)/\(name)"
+            if FileManager.default.isExecutableFile(atPath: candidate) { return candidate }
+        }
+        return nil
+    }
+
+    /// Where the user's shell says `name` is, if it names a real file.
+    ///
+    /// Interactive as well as login, because a terminal window's shell is both and on
+    /// zsh it is the interactive pass that reads `.zshrc`. The last qualifying line,
+    /// because an rc is free to print above the answer; an alias or a shell function
+    /// fails the test — `command -v` describes those rather than locating them — and
+    /// reads the same as not installed.
+    private static func shellPath(to name: String) -> String? {
+        let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+        guard let out = capture(shell, ["-ilc", "command -v \(name)"], within: resolveTimeout),
+              let text = String(data: out, encoding: .utf8) else { return nil }
+        for line in text.split(separator: "\n").reversed() {
+            let path = line.trimmingCharacters(in: .whitespaces)
+            if FileManager.default.isExecutableFile(atPath: path) { return path }
+        }
+        return nil
+    }
+
     /// Tokens spent by one OpenCode session, or nil if it cannot be read.
     ///
     /// An OpenCode run leaves nothing in `~/.claude`, so `taskTokens` cannot see it and
@@ -252,30 +317,45 @@ enum UsageScan {
     /// would make the per-task figure on the telemetry screen mean two things at once.
     static func opencodeTaskTokens(sessionID: String) -> Double? {
         guard !sessionID.isEmpty,
-              let out = shell(["opencode", "export", sessionID]),
+              let binary = opencodeBinary(),
+              let out = capture(binary, ["export", sessionID], within: exportTimeout),
               let root = (try? JSONSerialization.jsonObject(with: out)) as? [String: Any],
               let messages = root["messages"] as? [[String: Any]] else { return nil }
         return OpenCodeAPI.sessionTokens(messages)
     }
 
-    /// Run a command and return its stdout, or nil if it could not be run or exited
-    /// non-zero. `/usr/bin/env` resolves the CLI on PATH the same way the spawn does.
-    private static func shell(_ argv: [String]) -> Data? {
+    /// Run a command and return its stdout — nil if it could not be started, overran
+    /// `timeout`, or exited non-zero.
+    ///
+    /// stdout goes to a temp file rather than a pipe, the way `GH.run` does it. A pipe
+    /// holds 64K and then blocks the child until someone drains it — and the drain is
+    /// an unbounded read, so the deadline below could only be reached once the thing it
+    /// exists to bound had already finished.
+    private static func capture(_ executable: String, _ arguments: [String],
+                                within timeout: TimeInterval) -> Data? {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("diplomat-capture-\(UUID().uuidString)")
+        guard FileManager.default.createFile(atPath: url.path, contents: nil),
+              let sink = try? FileHandle(forWritingTo: url) else { return nil }
+        defer {
+            try? sink.close()
+            try? FileManager.default.removeItem(at: url)
+        }
         let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        proc.arguments = argv
-        let pipe = Pipe()
-        proc.standardOutput = pipe
+        proc.executableURL = URL(fileURLWithPath: executable)
+        proc.arguments = arguments
+        proc.standardOutput = sink
         proc.standardError = FileHandle.nullDevice
+        // An interactive shell that inherited a terminal would try to drive it.
+        proc.standardInput = FileHandle.nullDevice
         guard (try? proc.run()) != nil else { return nil }
-        // Read before waiting: a session large enough to fill the pipe buffer would
-        // otherwise deadlock — the child blocks on a full pipe, and the wait never
-        // returns.
-        let out = pipe.fileHandleForReading.readDataToEndOfFile()
-        let deadline = Date().addingTimeInterval(exportTimeout)
+        let deadline = Date().addingTimeInterval(timeout)
         while proc.isRunning, Date() < deadline { usleep(50_000) }
-        if proc.isRunning { proc.terminate(); return nil }
-        return proc.terminationStatus == 0 ? out : nil
+        guard !proc.isRunning else {
+            proc.terminate()
+            return nil
+        }
+        return proc.terminationStatus == 0 ? try? Data(contentsOf: url) : nil
     }
 
     /// Transcripts that could belong to a run spanning `[startedAt, endedAt]`, newest

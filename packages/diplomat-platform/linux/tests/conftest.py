@@ -153,21 +153,24 @@ def isolated_claude_dir(tmp_path, monkeypatch):
     so a test that reaches a dispatch path is gated by the task cap alone unless it
     stubs the probe itself.
 
-    The three caches are cleared around each test because all three are module state
-    a per-test temp file can collide on: the fold is keyed on the ledger's mtime and
-    size, and the other two are keyed on a clock.
+    The four caches are cleared around each test because all four are module state a
+    per-test temp file can collide on: the fold is keyed on the ledger's mtime and
+    size, two are keyed on a clock, and the last remembers a path to an ``opencode``
+    that the next test replaces with its own.
     """
-    from diplomat_app import autobudget, quota, telemetry
+    from diplomat_app import autobudget, quota, telemetry, usagescan
 
     monkeypatch.setenv("DIPLOMAT_CLAUDE_DIR", str(tmp_path / "claude"))
     monkeypatch.setenv("DIPLOMAT_QUOTA_PROBE", "0")
     quota._reset_cache()
     telemetry._reset_cache()
     autobudget._reset_cache()
+    usagescan._reset_cache()
     yield
     quota._reset_cache()
     telemetry._reset_cache()
     autobudget._reset_cache()
+    usagescan._reset_cache()
 
 
 @pytest.fixture(autouse=True)

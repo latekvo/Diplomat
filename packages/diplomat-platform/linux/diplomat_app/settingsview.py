@@ -642,9 +642,9 @@ class SettingsView(QWidget):
             "agent resumes on its own. Out-of-quota stalls (“You've hit your weekly "
             "limit”) are left alone — nudging can't help until the limit resets. Run "
             "your agents inside tmux for this to reach them. Claude Code runs only: "
-            "the banners it matches are Claude Code's. An OpenCode agent that hits an "
-            "error reads as idle instead, frees its task-cap slot, and is dispatched "
-            "again by whichever monitor owed the work."
+            "the banners it matches are Claude Code's. An OpenCode or Hermes agent "
+            "that hits an error reads as idle instead, frees its task-cap slot, and "
+            "is dispatched again by whichever monitor owed the work."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet(muted(10))

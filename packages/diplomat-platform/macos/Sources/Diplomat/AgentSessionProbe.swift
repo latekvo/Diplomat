@@ -29,6 +29,11 @@ enum AgentSessionProbe {
     /// an OpenCode run spawned without a port, one whose server has not come up yet, one
     /// whose session has not been written to yet. Its screen is read instead, so absence
     /// here costs the older evidence and never a verdict.
+    ///
+    /// The directory is resolved because both stores record the agent's own working
+    /// directory, which is physical, while the configured repo root is whatever the
+    /// operator typed — and the match is exact equality, so one symlink between them and
+    /// no run ever binds.
     static func states(for procs: [TrackedProcess],
                        directory: String = AgentSpawner.repoPath) -> [UUID: AgentSession] {
         let asking = procs.compactMap { p -> (TrackedProcess, Backend)? in
@@ -36,6 +41,7 @@ enum AgentSessionProbe {
             return (p, backend)
         }
         guard !asking.isEmpty else { return [:] }
+        let directory = URL(fileURLWithPath: directory).resolvingSymlinksInPath().path
         var taken = Set(asking.map(\.0.agentSessionID).filter { !$0.isEmpty })
         var out: [UUID: AgentSession] = [:]
         // In dispatch order, so the runs that have already matched a session are out of

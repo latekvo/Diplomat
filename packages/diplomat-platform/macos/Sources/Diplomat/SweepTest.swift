@@ -129,8 +129,69 @@ enum SweepTest {
               AgentSessionProbe.states(for: [staged(.claude, prompt: fixture.oursPrompt)],
                                        directory: fixture.cwd).isEmpty)
 
+        // 7. OpenCode, the one runner whose price comes from a subprocess. The exporter
+        //    is reached the way a spawn reaches it — through the user's shell — so a
+        //    stub only an rc puts on the path is what proves it: the applet's own
+        //    environment is a Dock icon's, and an install of exactly that shape is what
+        //    the Settings hint tells the operator will still work.
+        if let rcShell = opencodeFixture() {
+            let priorPath = ProcessInfo.processInfo.environment["PATH"]
+            let priorShell = ProcessInfo.processInfo.environment["SHELL"]
+            setenv("SHELL", rcShell, 1)
+            setenv("PATH", "/usr/bin:/bin", 1)   // what a desktop launcher hands the app
+            check("an rc-only opencode still prices its run",
+                  UsageScan.opencodeTaskTokens(sessionID: "ses_ours") == 248)
+            // Put the process back: this is the only check that touches the environment,
+            // and one left behind would reach whatever is written after it.
+            if let priorPath { setenv("PATH", priorPath, 1) } else { unsetenv("PATH") }
+            if let priorShell { setenv("SHELL", priorShell, 1) } else { unsetenv("SHELL") }
+        } else {
+            check("an opencode fixture could be written", false)
+        }
+
         print(pass ? "\nSWEEP TEST OK" : "\nSWEEP TEST FAILED")
         return pass
+    }
+
+    /// A throwaway `opencode`, and the shell whose rc is the only thing that finds it.
+    /// Returns that shell.
+    ///
+    /// The exported numbers are the ones the Linux suite and `DiplomatCoreSmoke` assert
+    /// against too — 3 + 84 + 40 + 7 + 8 + 106, never the 59384 cache reads beside them.
+    private static func opencodeFixture() -> String? {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("diplomat-export-test-\(UUID().uuidString)")
+        let bin = dir.appendingPathComponent("opt")
+        guard (try? FileManager.default.createDirectory(at: bin,
+                                                        withIntermediateDirectories: true)) != nil
+        else { return nil }
+        let exported = """
+        {"messages": [
+          {"info": {"role": "user"}},
+          {"info": {"role": "assistant",
+                    "tokens": {"input": 3, "output": 84, "reasoning": 9,
+                               "cache": {"read": 29000, "write": 40}}}},
+          {"info": {"role": "assistant",
+                    "tokens": {"input": 7, "output": 8, "reasoning": 0,
+                               "cache": {"read": 30384, "write": 106}}}}
+        ]}
+        """
+        let exporter = bin.appendingPathComponent("opencode")
+        let shell = dir.appendingPathComponent("rcshell")
+        // The rc greets, because one that does is ordinary and its greeting lands on the
+        // same stdout as the answer.
+        let files = [
+            (exporter, "#!/bin/sh\ncat <<'JSON'\n\(exported)\nJSON\n"),
+            (shell, "#!/bin/sh\necho 'welcome back!'\nexport PATH=\(bin.path):$PATH\n"
+                    + "exec /bin/sh \"$@\"\n"),
+        ]
+        for (url, body) in files {
+            guard FileManager.default.createFile(atPath: url.path,
+                                                 contents: Data(body.utf8),
+                                                 attributes: [.posixPermissions: 0o755])
+            else { return nil }
+        }
+        return shell.path
     }
 
     /// A throwaway Hermes store: two sessions a second apart in one directory, told apart

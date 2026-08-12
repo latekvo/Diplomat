@@ -396,9 +396,9 @@ struct SettingsView: View {
             + "so a stalled agent resumes on its own. Out-of-quota stalls "
             + "(\u{201C}You've hit your weekly limit\u{201D}) are left alone — nudging can't help "
             + "until the limit resets. Claude Code runs only: the banners it matches are "
-            + "Claude Code's. An OpenCode agent that hits an error reads as idle instead, "
-            + "frees its task-cap slot, and is dispatched again by whichever monitor owed "
-            + "the work."
+            + "Claude Code's. An OpenCode or Hermes agent that hits an error reads as idle "
+            + "instead, frees its task-cap slot, and is dispatched again by whichever "
+            + "monitor owed the work."
         let count = store.apiWatchContinues > 0 ? "  Continued \(store.apiWatchContinues)× so far." : ""
         return base + count
     }

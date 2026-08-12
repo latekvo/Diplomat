@@ -42,6 +42,22 @@ OPENCODE_IDLE = (
     "                          30.5K (15%) · $0.04  ctrl+p commands"
 )
 
+#: A Hermes pane mid-turn. Its hint sits on the composer rather than a status bar, and
+#: it is a third spelling again — no other runner's marker appears anywhere in it.
+HERMES_BUSY = (
+    " └─ ▾ Tool calls (1)\n"
+    '   └─ ● ⡡ Terminal("sleep 45") (29s)\n'
+    " ─ (°ロ°) contemplating… · 33s │ glm 5.2 xhigh │ 33s │ voice off │ 1 session\n"
+    " ❯ Ctrl+C to interrupt…"
+)
+
+#: The same pane once the agent answered and went back to its prompt.
+HERMES_IDLE = (
+    " ┊  DONE\n"
+    " ─ ready │ glm 5.2 xhigh │ 26k/1m │ [░░░░░░░░░░] 3% │ 53s │ ✓ 0s │ voice off\n"
+    " ❯"
+)
+
 #: How OpenCode surfaces a rejected turn: the provider's own JSON, verbatim.
 OPENCODE_AUTH_ERROR = (
     '  ┃  Unauthorized: {"error":{"message":"Unauthorized",'
@@ -237,6 +253,19 @@ def test_an_opencode_pane_back_at_its_prompt_reads_as_idle():
     assert apiwatch.looks_busy(OPENCODE_IDLE) is False
 
 
+def test_a_hermes_pane_mid_turn_reads_as_busy():
+    """A third spelling, "Ctrl+C to interrupt…", which neither of the others matches.
+    The screen is what a Hermes run is read by until its session is written and bound —
+    and permanently, if that store cannot be read — so a marker missing here means an
+    agent that reads as idle the whole time it works: its bay goes back to the cap and
+    the monitor dispatches over the top of it."""
+    assert apiwatch.looks_busy(HERMES_BUSY) is True
+
+
+def test_a_hermes_pane_back_at_its_prompt_reads_as_idle():
+    assert apiwatch.looks_busy(HERMES_IDLE) is False
+
+
 def test_a_rejected_opencode_turn_is_not_mistaken_for_a_nudgeable_stall():
     """The error patterns were read off Claude Code's banners. OpenCode surfaces the
     provider's raw JSON, and the one shape observed is an auth rejection — permanent,
@@ -257,3 +286,35 @@ def test_the_marker_count_rises_for_an_opencode_screen(monkeypatch):
                        tty="pts/1")
     probes.pane_tails([record], now=1000.0)
     assert probes.marker_stats() == (1, 1)
+
+
+# MARK: - A run the mesh placed
+
+
+def _mesh_run(here: bool) -> str:
+    """Book a mesh placement the way a dispatch does, and return its run id."""
+    from diplomat_app import agentregistry
+    from diplomat_app.store import Store
+
+    Store._track_mesh_run(Store(), "https://github.com/o/r/pull/7", 7, "mesh",
+                          "review:h/o/r#7@aa", "the prompt", "node-a",
+                          "review:h/o/r#7@aa", here)
+    return agentregistry.load()[0].run_id
+
+
+def test_a_mesh_run_that_landed_here_records_which_runner_it_is_under(opencode):
+    """The node spawns through the same seam a local dispatch does, so a placement it
+    ran on THIS box is an ordinary local agent — it holds a bay and the untracked scan
+    finds it. With no runner on its row the probes ask no store about it and it is
+    priced from ``~/.claude``, which holds no transcript of an OpenCode run at all."""
+    from diplomat_app import agentregistry
+
+    assert agentregistry.run_runner(_mesh_run(here=True)) == runner.OPENCODE
+
+
+def test_a_mesh_run_on_a_peer_records_no_runner_at_all(opencode):
+    """Its process is on another machine and our stores hold nothing about it. A
+    runner written down here would point the probe at somebody else's session."""
+    from diplomat_app import agentregistry
+
+    assert agentregistry.run_runner(_mesh_run(here=False)) == ""

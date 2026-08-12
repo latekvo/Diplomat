@@ -1259,9 +1259,16 @@ class Store(QObject):
         untracked scan will find it; one on a peer is judged only by the executor's
         origination claim, which is the sole evidence that crosses the machine
         boundary.
+
+        Which runner it is under is recorded for a landing HERE and only there. The
+        node spawns through the same seam this applet does (:func:`runner.agent_command`
+        by way of :mod:`szponthost`), so the answer is the same one and the run is
+        asked of the right store and priced by it. A run on a PEER is a process on
+        another machine: our stores hold nothing about it, and a runner written here
+        would point its probe at a session that is somebody else's.
         """
         now = time.time()
-        agentregistry.create_run(
+        record = agentregistry.create_run(
             agentstate.RunRecord(
                 run_id=agentregistry.new_run_id(now), dispatched_at=now,
                 pr_number=number, pr_url=url, kind=kind, label=label, source=source,
@@ -1269,6 +1276,8 @@ class Store(QObject):
                            else agentstate.PLACEMENT_MESH_PEER),
                 node=node, work_key=work_key, ledger_key=ledger_key),
             prompt)
+        if here:
+            agentregistry.stage_runner(record.run_id)
 
     def _auto_tasks_running(self) -> int:
         """How many bays of this device's cap are held right now — the number the cap

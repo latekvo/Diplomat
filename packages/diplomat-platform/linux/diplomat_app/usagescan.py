@@ -1,4 +1,7 @@
-"""Where the token half of the telemetry comes from: Claude Code's own transcripts.
+"""Where the token half of the telemetry comes from: the agents' own transcripts.
+
+Claude Code's are read off disk and are most of this module; an OpenCode run keeps
+its own elsewhere, and "The other runner's transcript" below is where it is priced.
 
 Claude Code appends every turn to ``~/.claude/projects/<munged-cwd>/<session>.jsonl``
 with a ``usage`` block, and stamps each record with the ``cwd`` it ran in. That is
@@ -29,6 +32,8 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
+import shutil
 import subprocess
 import time
 from dataclasses import dataclass
@@ -375,6 +380,67 @@ def _file_tokens(path: Path, roots: list[Path]) -> float:
 #: must cost that run its price rather than the poll.
 _EXPORT_TIMEOUT = 20.0
 
+#: How long the user's shell may take to say where the CLI is. It sources their rc,
+#: which can be slow — a version manager, a prompt framework — so it gets its own
+#: budget rather than the export's, and the two together bound the pricing path.
+_RESOLVE_TIMEOUT = 10.0
+
+#: Where ``opencode`` turned out to be, once found. Only a hit is remembered: a miss
+#: is a CLI that may still be installed while the applet runs.
+_opencode_path: str | None = None
+
+
+def _reset_cache() -> None:
+    """Forget where the CLI was. For tests, which stand a different one up per case."""
+    global _opencode_path
+
+    _opencode_path = None
+
+
+def _opencode_binary() -> str | None:
+    """The ``opencode`` executable, found the way the spawn finds it.
+
+    An agent is spawned through the user's *interactive* login shell precisely so that
+    a per-user install is on ``PATH`` (:func:`review.shell_command`), and the Settings
+    screen promises as much: an rc-only install still runs. This process's own
+    environment is whatever launched the applet — a desktop entry, a Dock icon — and
+    ordinarily has none of that, so pricing a finished run off it alone would price
+    ``None`` for exactly the installs the spawn was written to support.
+
+    So this ``PATH`` first, and only on a miss the shell. What comes back is a path,
+    exec'd directly rather than run through the shell, because the rc that put it on
+    ``PATH`` is equally free to print a banner and the export's stdout has to stay
+    parseable JSON.
+    """
+    global _opencode_path
+
+    if _opencode_path:
+        return _opencode_path
+    _opencode_path = shutil.which("opencode") or _shell_path_to("opencode")
+    return _opencode_path
+
+
+def _shell_path_to(name: str) -> str | None:
+    """Where the user's interactive shell says ``name`` is, if it names a real file.
+
+    The last qualifying line, because an rc is free to print above the answer. An
+    alias or a shell function fails the test — ``command -v`` describes those rather
+    than locating them — and reads the same as not installed.
+    """
+    from . import review
+
+    try:
+        out = subprocess.run(  # noqa: S603 - the user's own shell, quoted argument
+            [review.user_shell(), "-i", "-c", f"command -v {shlex.quote(name)}"],
+            capture_output=True, text=True, timeout=_RESOLVE_TIMEOUT)
+    except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
+        return None
+    for line in reversed(out.stdout.splitlines()):
+        path = line.strip()
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+    return None
+
 
 def opencode_task_tokens(session_id: str) -> float | None:
     """Tokens spent by one OpenCode session, or None if it cannot be read.
@@ -397,9 +463,12 @@ def opencode_task_tokens(session_id: str) -> float | None:
 
     if not session_id:
         return None
+    binary = _opencode_binary()
+    if not binary:
+        return None
     try:
-        out = subprocess.run(  # noqa: S603, S607 - fixed argv, no shell
-            ["opencode", "export", session_id],
+        out = subprocess.run(  # noqa: S603 - resolved absolute path, no shell
+            [binary, "export", session_id],
             capture_output=True, text=True, timeout=_EXPORT_TIMEOUT)
     except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
         return None

@@ -18,7 +18,8 @@ OpenCode agent spawned before the port was allocated, a server that will not ans
 Which session is this run's
 --------------------------
 Every run gets its own server, but not its own session store: OpenCode keeps one
-global store, so ``GET /session`` on any port lists every session on the machine.
+global store, so ``GET /session`` on any port answers with the machine's own history
+rather than this run's — its hundred most recent sessions, newest first.
 So a run is matched to its session the only way that is exact — by the prompt.
 :func:`candidates` narrows the list to sessions that could be this run's (its
 directory, created no earlier than its dispatch, not already another run's), and
@@ -43,6 +44,7 @@ cannot answer says so and the tick continues.
 
 from __future__ import annotations
 
+import http.client
 import json
 import socket
 import urllib.error
@@ -98,12 +100,18 @@ def _get(port: int, path: str):
     whose window was closed, a port taken by something that is not OpenCode and a
     response too large to hold are all "this run cannot be reached", and the caller's
     only useful response to any of them is to fall back to the screen.
+
+    ``HTTPException`` is caught beside the socket errors and not by accident: it is
+    what a listener that speaks something other than HTTP raises, and it descends from
+    ``Exception`` rather than ``OSError``, so a port the kernel handed to some other
+    daemon between the reservation and the agent's own bind would otherwise raise
+    through :func:`probes.gather` and cost every run its tick, not just this one.
     """
     url = f"http://{HOST}:{port}{path}"
     try:
         with urllib.request.urlopen(url, timeout=TIMEOUT) as resp:  # noqa: S310 - loopback
             raw = resp.read(MAX_BYTES + 1)
-    except (OSError, urllib.error.URLError, ValueError):
+    except (OSError, urllib.error.URLError, http.client.HTTPException, ValueError):
         return None
     if len(raw) > MAX_BYTES:
         return None
@@ -114,7 +122,11 @@ def _get(port: int, path: str):
 
 
 def sessions(port: int) -> list[dict] | None:
-    """Every session the machine's store holds, as this run's server reports them."""
+    """The machine's recent sessions, newest first, as this run's server reports them.
+
+    A hundred of them, not the whole store (1.4.3) — a bound a run's own session is
+    always inside, since it is matched within seconds of being created.
+    """
     data = _get(port, "/session")
     return data if isinstance(data, list) else None
 
@@ -132,6 +144,18 @@ def messages(port: int, session_id: str, limit: int = 0) -> list[dict] | None:
 
 
 # MARK: - Reading the answer (pure)
+
+
+def _sub(obj: dict, key: str) -> dict:
+    """A nested object, or an empty one for any other shape.
+
+    ``(obj.get(k) or {})`` would do for a missing key or a null, and raises on the one
+    that matters — a key whose value is a *list*, which is what a JSON payload from
+    something that is not OpenCode looks like. These readers are called from the tick,
+    where an exception costs every run its answer rather than this one.
+    """
+    value = obj.get(key)
+    return value if isinstance(value, dict) else {}
 
 
 def candidates(session_list: list[dict], directory: str, since_ms: float,
@@ -152,7 +176,7 @@ def candidates(session_list: list[dict], directory: str, since_ms: float,
             continue
         if s.get("directory") != directory:
             continue
-        created = (s.get("time") or {}).get("created")
+        created = _sub(s, "time").get("created")
         if not isinstance(created, (int, float)) or created < since_ms:
             continue
         out.append((created, sid))
@@ -173,7 +197,7 @@ def is_ours(session_messages: list[dict], prompt: str) -> bool:
     first = session_messages[0]
     if not isinstance(first, dict):
         return False
-    if (first.get("info") or {}).get("role") != "user":
+    if _sub(first, "info").get("role") != "user":
         return False
     texts = [p.get("text", "") for p in first.get("parts") or []
              if isinstance(p, dict) and p.get("type") == "text"]
@@ -199,7 +223,7 @@ def state_of(session_messages: list[dict]) -> SessionState | None:
     info = last.get("info")
     if not isinstance(info, dict):
         return None
-    completed = (info.get("time") or {}).get("completed")
+    completed = _sub(info, "time").get("completed")
     return SessionState(busy=not isinstance(completed, (int, float)))
 
 

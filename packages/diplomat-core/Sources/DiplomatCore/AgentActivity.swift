@@ -10,12 +10,14 @@ import Foundation
 /// the live status bar* means busy; its absence means the agent is waiting on the user.
 public enum AgentActivity {
     /// The interrupt hint a CLI renders only while a turn is actively running — one
-    /// spelling per runner. Claude Code writes "esc to interrupt"; OpenCode writes "esc
-    /// interrupt". Neither string contains the other, so a pane is read against both:
-    /// nothing can ask a pane which CLI drew it, and an agent whose marker is missing
-    /// here reads as idle the whole time it works — its bay goes back to the task cap
-    /// and the monitor dispatches over the top of it.
-    public static let busyMarkers = ["esc to interrupt", "esc interrupt"]
+    /// spelling per runner. Claude Code writes "esc to interrupt", OpenCode "esc
+    /// interrupt", and Hermes "Ctrl+C to interrupt…". No string here contains another,
+    /// so a pane is read against all of them: nothing can ask a pane which CLI drew it,
+    /// and a runner missing from this list is one whose agents read as idle the whole
+    /// time they work — their bays go back to the task cap and the monitors dispatch
+    /// over the top of them.
+    public static let busyMarkers = ["esc to interrupt", "esc interrupt",
+                                     "ctrl+c to interrupt"]
 
     /// How many non-empty lines up from the bottom to inspect. The live status/hint bar is
     /// always the last line or two; scanning only this tail avoids matching the very same

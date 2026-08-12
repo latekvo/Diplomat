@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import time
 
 import pytest
@@ -214,6 +215,37 @@ def test_an_opencode_run_is_priced_from_its_whole_session(tmp_path, monkeypatch)
     assert usagescan.opencode_task_tokens("ses_ours") == 3 + 84 + 40 + 7 + 8 + 106
 
 
+def test_an_rc_only_opencode_still_prices_its_run(tmp_path, monkeypatch):
+    """The exporter is found the way the spawn finds it — through the user's shell.
+
+    An agent runs in a terminal window, so an install that only the rc puts on ``PATH``
+    is on the agent's ``PATH``; the Settings hint promises exactly that. The applet's
+    own environment comes from a desktop entry and has none of it, so a CLI reached by
+    name alone would leave every run of that install unpriced — the case this pricing
+    path exists for.
+
+    The rc here also prints, because one that does is ordinary and its greeting lands
+    on the same stdout as the answer.
+    """
+    exe = tmp_path / "opt" / "opencode"
+    exe.parent.mkdir(parents=True)
+    exe.write_text("#!/bin/sh\ncat <<'JSON'\n" + json.dumps(EXPORTED) + "\nJSON\n",
+                   encoding="utf-8")
+    exe.chmod(0o755)
+    shell = tmp_path / "rcshell"
+    shell.write_text("#!/bin/sh\n"
+                     "echo 'welcome back!'\n"
+                     f"export PATH={shlex.quote(str(exe.parent))}:$PATH\n"
+                     'exec /bin/sh "$@"\n', encoding="utf-8")
+    shell.chmod(0o755)
+    monkeypatch.setenv("DIPLOMAT_SHELL", str(shell))
+    # What a desktop launcher hands the applet: the system directories and nothing
+    # the user's rc would have added.
+    monkeypatch.setenv("PATH", os.pathsep.join(["/usr/bin", "/bin"]))
+
+    assert usagescan.opencode_task_tokens("ses_ours") == 3 + 84 + 40 + 7 + 8 + 106
+
+
 def test_a_session_the_exporter_cannot_produce_is_unpriced_not_free(tmp_path,
                                                                     monkeypatch):
     _stub_opencode(tmp_path, monkeypatch, "#!/bin/sh\necho 'no such session' >&2\nexit 1\n")
@@ -272,13 +304,22 @@ def test_a_run_is_priced_before_its_directory_is_deleted(ledger, monkeypatch):
     live in. Read after the delete, the prompt comes back empty and the sentinel's
     mtime is gone — so a run is priced against a transcript it can no longer be
     matched to, and stamped with the moment a poll noticed instead of the moment the
-    agent exited."""
-    from diplomat_app import agentregistry, agentstate
+    agent exited.
+
+    Which store to price it FROM lives in the same directory: a foreign runner's run
+    is priced from its own session, and neither the runner nor the matched session id
+    survives the delete either. Lost, such a run falls through to the ``~/.claude``
+    scan, which holds no transcript of it — and it lands unpriced, which is the whole
+    defect the foreign-runner pricing path exists to close."""
+    from diplomat_app import agentregistry, agentstate, runner
     from diplomat_app.store import Store
     from test_autofix import register_run
 
     exited_at = time.time() - 300
     record = register_run(7, ledger_key="review:h/o/r#7@aa", prompt="the real prompt")
+    agentregistry.runner_path(record.run_id).write_text(runner.OPENCODE,
+                                                        encoding="utf-8")
+    agentregistry.bind_session(record.run_id, "ses_ours")
     done = agentregistry.done_path(record.run_id)
     done.write_text("0", encoding="utf-8")
     os.utime(done, (exited_at, exited_at))
@@ -286,7 +327,9 @@ def test_a_run_is_priced_before_its_directory_is_deleted(ledger, monkeypatch):
     seen = {}
     monkeypatch.setattr(telemetry, "record_completion",
                         lambda key, prompt, started, at, session_id="",
-                        agent_runner="": seen.update(prompt=prompt, at=at))
+                        agent_runner="": seen.update(
+                            prompt=prompt, at=at, session_id=session_id,
+                            agent_runner=agent_runner))
     tick = agentstate.tick([record], agentstate.Evidence(
         processes=agentstate.Observation.present({}),
         sentinels=agentstate.Observation.present({record.run_id})), time.time(), 2)
@@ -294,6 +337,8 @@ def test_a_run_is_priced_before_its_directory_is_deleted(ledger, monkeypatch):
 
     assert seen["prompt"] == "the real prompt"
     assert seen["at"] == pytest.approx(exited_at, abs=1)
+    assert seen["session_id"] == "ses_ours"
+    assert seen["agent_runner"] == runner.OPENCODE
 
 
 # MARK: - The transcript scanner

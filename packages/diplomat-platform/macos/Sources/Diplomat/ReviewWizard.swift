@@ -346,7 +346,7 @@ struct SpawnAgentButton: View {
         }
         .buttonStyle(.plain)
         .disabled(!isValid)
-        .help("Open a new \(terminalTitle) window running claude with this prompt.")
+        .help("Open a new \(terminalTitle) window running the agent runner with this prompt.")
     }
 }
 

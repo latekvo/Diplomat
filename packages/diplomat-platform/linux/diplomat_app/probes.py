@@ -15,6 +15,7 @@ bays, never an agent declared finished.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -31,6 +32,7 @@ _CACHE_SECS = 5
 
 _ps_cache: tuple[float, str] | None = None
 _tails_cache: tuple[float, frozenset, Observation] | None = None
+_sessions_cache: tuple[float, frozenset, Observation] | None = None
 
 #: How each probe last answered, and how long it has been failing. A probe that goes
 #: quiet is the failure mode with no symptom of its own — the applet keeps drawing
@@ -123,9 +125,10 @@ def _ps_dump(now: float) -> Observation:
 def reset_cache() -> None:
     """Drop every probe cache and every counter — for tests that change the machine
     between assertions inside one cache window."""
-    global _ps_cache, _tails_cache, _tails_read, _marker_seen
+    global _ps_cache, _tails_cache, _sessions_cache, _tails_read, _marker_seen
     _ps_cache = None
     _tails_cache = None
+    _sessions_cache = None
     _tails_read = 0
     _marker_seen = 0
     _health.clear()
@@ -241,7 +244,8 @@ def pane_tails(records: list[RunRecord], now: float = 0.0) -> Observation:
 _MAX_CANDIDATES = 4
 
 
-def agent_sessions(records: list[RunRecord], directory: str) -> Observation:
+def agent_sessions(records: list[RunRecord], directory: str,
+                   now: float = 0.0) -> Observation:
     """run id → what that run's own agent says it is doing.
 
     Positive evidence where the pane gives an inference: a turn the runner itself
@@ -260,14 +264,32 @@ def agent_sessions(records: list[RunRecord], directory: str) -> Observation:
 
     UNSUPPORTED when no tracked run has such a session at all — a machine running
     Claude Code is an ordinary machine, not one whose probe has gone quiet.
+
+    Cached for the same window as the other probes, and for a sharper reason: this one
+    dials a socket, the resolver re-runs for every question the applet asks, and the
+    panel asks two of them per repaint — so uncached, one unresponsive port costs a
+    repaint two full per-run timeouts on the Qt thread. The staleness it buys is the
+    one the pane tail already has for the very same busy-or-idle decision.
+
+    The directory is resolved because both stores record the agent's own ``getcwd()``,
+    which is physical, while the configured repo root is whatever the operator typed —
+    and the match is exact equality, so one symlink between them and no run ever binds.
     """
     from . import agentregistry
 
+    global _sessions_cache
     asking = [(r, agentregistry.run_runner(r.run_id)) for r in records]
     asking = [(r, name) for r, name in asking if name in _BACKENDS]
     if not asking:
         return Observation.unsupported("are unavailable (no run serves a session of "
                                        "its own)")
+    # Keyed on the runs as well as the clock: a run dispatched since the last pass
+    # would otherwise be answered from a sweep that never asked about it.
+    key = frozenset(r.run_id for r, _ in asking)
+    if (_sessions_cache is not None and _sessions_cache[1] == key
+            and now - _sessions_cache[0] < _CACHE_SECS):
+        return _sessions_cache[2]
+    directory = os.path.realpath(directory)
     taken = {agentregistry.bound_session(r.run_id) for r, _ in asking}
     taken.discard("")
     out = {}
@@ -286,7 +308,9 @@ def agent_sessions(records: list[RunRecord], directory: str) -> Observation:
         state = backend.state(record, session_id)
         if state is not None:
             out[record.run_id] = state
-    return Observation.present(out)
+    obs = Observation.present(out)
+    _sessions_cache = (now, key, obs)
+    return obs
 
 
 class _OpenCodeBackend:
@@ -297,11 +321,11 @@ class _OpenCodeBackend:
         """Which session on this run's server is this run's, by its opening prompt.
 
         Every run has its own server but they share one session store, so the port
-        alone narrows nothing — ``GET /session`` lists the whole machine's history
-        whichever port it is asked on. The prompt is what makes the match exact, and
-        exact is worth the fetch: the applet runs several agents in one checkout at a
-        time, so two sessions a second apart in the same directory is the ordinary
-        case, not the pathological one.
+        alone narrows nothing — ``GET /session`` lists the machine's own recent
+        history whichever port it is asked on. The prompt is what makes the match
+        exact, and exact is worth the fetch: the applet runs several agents in one
+        checkout at a time, so two sessions a second apart in the same directory is
+        the ordinary case, not the pathological one.
         """
         from . import agentregistry, opencodeapi
 
@@ -451,5 +475,5 @@ def gather(records: list[RunRecord], now: float, *,
         merged_prs=merged or Observation.unavailable("have not been probed yet"),
         live_agents=scan,
         sessions=_note("agent sessions",
-                       agent_sessions(records, review.repo_path()), now),
+                       agent_sessions(records, review.repo_path(), now), now),
     )

@@ -8,18 +8,19 @@ import Foundation
 ///
 /// * `claude` — Claude Code, the default and what every existing run used;
 /// * `opencode` — OpenCode, whose model comes from whichever provider the user
-///   configured in OpenCode itself (Anthropic, OpenRouter, a local Ollama, …).
+///   configured in OpenCode itself (Anthropic, OpenRouter, a local Ollama, …);
+/// * `hermes` — Hermes Agent, likewise.
 ///
-/// Only the *agent word* differs. Everything the spawn is built out of — the prompt
-/// staged into a file and handed over as `$(cat …)`, the completion sentinel, the pid
-/// the run is identified by — is identical, deliberately: those are what
-/// `AgentRegistry` and `ProcessTracker` recognise a run by, and a second spawn shape
-/// would be a second set of them to keep true.
+/// Only the *agent word and its flags* differ. Everything the spawn is built out of —
+/// the prompt staged into a file and handed over as `$(cat …)`, the completion
+/// sentinel, the pid the run is identified by — is identical, deliberately: those are
+/// what `AgentRegistry` and `ProcessTracker` recognise a run by, and a second spawn
+/// shape would be a second set of them to keep true.
 ///
-/// Credentials are the one thing this type refuses to hold. OpenCode has its own
-/// provider store and its own login wizard, and that is where a key belongs — not in
-/// `~/.diplomat/config.json`, which is world-readable by default and copied around by
-/// the mesh. Diplomat stores the *choice* of runner and model; OpenCode stores the
+/// Credentials are the one thing this type refuses to hold. Each foreign runner has its
+/// own provider store and its own login wizard, and that is where a key belongs — not
+/// in `~/.diplomat/config.json`, which is world-readable by default and copied around
+/// by the mesh. Diplomat stores the *choice* of runner and model; the runner stores the
 /// secret.
 public enum AgentRunner: String, CaseIterable, Sendable {
     case claude
@@ -70,14 +71,16 @@ public enum AgentRunner: String, CaseIterable, Sendable {
     /// `--dangerously-skip-permissions`. A leading variable assignment keeps that
     /// property for OpenCode, which has no alias to expand.
     ///
-    /// `model` is a `provider/model` id, or empty to let OpenCode use the one its own
-    /// picker already remembers — passing a guess would silently move the user off it.
+    /// `model` is a model id, or empty to let the runner use the one its own picker
+    /// already remembers — passing a guess would silently move the user off it. The
+    /// Claude runner takes no such flag here and ignores it.
     ///
     /// `port` puts an OpenCode run's own server on a port the applet already knows, which
     /// is what lets `OpenCodeAPI` ask the agent what it is doing instead of reading it off
-    /// the agent's screen. The Claude runner has no such server and ignores it. Omitting
-    /// it is a supported spawn, not a broken one: the run works exactly as before and is
-    /// tracked by its screen.
+    /// the agent's screen. It is ignored by the other two, which have no such server —
+    /// Hermes answers the same question from its own session store. Omitting it is a
+    /// supported spawn, not a broken one: the run works exactly as before and is tracked
+    /// by its screen.
     public func agentCommand(promptFile: String, model: String = "", port: Int = 0) -> String {
         let prompt = "\"$(cat \(Self.shq(promptFile)))\""
         let trimmed = model.trimmingCharacters(in: .whitespaces)

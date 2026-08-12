@@ -18,8 +18,8 @@ enum OpenCodeProbe {
     /// Which session on this run's server is this run's, by its opening prompt.
     ///
     /// Every run has its own server but they share one session store, so the port alone
-    /// narrows nothing — `GET /session` lists the whole machine's history whichever port
-    /// it is asked on. The prompt is what makes the match exact, and exact is worth the
+    /// narrows nothing — `GET /session` lists the machine's own recent history whichever
+    /// port it is asked on. The prompt is what makes the match exact, and exact is worth the
     /// fetch: the applet runs several agents in one checkout at a time, so two sessions a
     /// second apart in the same directory is the ordinary case, not the pathological one.
     ///
@@ -86,7 +86,10 @@ enum OpenCodeProbe {
         return port > 0 ? port : nil
     }
 
-    /// Every session the machine's store holds, as this run's server reports them.
+    /// The machine's recent sessions, newest first, as this run's server reports them.
+    ///
+    /// A hundred of them, not the whole store (1.4.3) — a bound a run's own session is
+    /// always inside, since it is matched within seconds of being created.
     static func sessions(port: Int) -> [[String: Any]]? {
         get(port: port, path: "/session")
     }

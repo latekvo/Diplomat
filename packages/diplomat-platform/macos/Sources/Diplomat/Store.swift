@@ -777,8 +777,15 @@ final class Store: ObservableObject {
         guard !job.workKey.isEmpty else { return }
         let run = TrackedProcess.MeshRun(node: node, workKey: job.workKey,
                                          onThisMachine: onThisMachine)
+        // Which runner, for a landing HERE and only there. The node spawns through the
+        // same seam a local dispatch does, so the answer is this setting — and it is
+        // what decides which store the run is asked of and priced from. A run on a
+        // PEER is a process on another machine: nothing here holds its session, and a
+        // runner recorded would point the probe at somebody else's.
+        let runner = onThisMachine ? AppConfig.agentRunner.rawValue : ""
         if let i = processes.firstIndex(where: { $0.mesh?.workKey == job.workKey }) {
             processes[i].mesh = run
+            processes[i].runner = runner
             return
         }
         processes.append(TrackedProcess(
@@ -787,7 +794,8 @@ final class Store: ObservableObject {
                                            attemptNumber: attemptNumber),
             terminal: "", windowID: "", sessionID: "", tty: "", donePath: "",
             prURL: job.prURL, mesh: run,
-            source: AgentDispatchGate.Source.auto.rawValue))
+            source: AgentDispatchGate.Source.auto.rawValue,
+            runner: runner))
         meshClaimSeen[job.workKey] = Date()
     }
 
@@ -2413,7 +2421,8 @@ final class Store: ObservableObject {
                     tokens = UsageScan.taskTokens(prompt: f.prompt, startedAt: f.at,
                                                   endedAt: f.done)
                 }
-                TelemetryLog.done(key: f.key, at: f.done, tokens: tokens)
+                TelemetryLog.done(key: f.key, at: f.done, tokens: tokens,
+                                  runner: f.runner)
             }
         }.value
         refreshTelemetry()

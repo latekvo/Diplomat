@@ -11,7 +11,7 @@ Three things have to hold for that to be worth having, and each is a group below
 * the answer must be **read correctly** — including that "no messages yet" is not
   "idle", which would retire an agent seconds after it launched;
 * the run must be matched to **its own** session — OpenCode keeps one store for the
-  whole machine, so a run's own server lists every session on the box, and the
+  whole machine, so a run's own server lists the box's recent history, and the
   applet's task cap makes "two agents in one checkout" the ordinary case;
 * a run that **cannot** be reached must cost the older evidence and never a verdict.
 
@@ -228,15 +228,52 @@ def test_a_run_finds_its_own_session_and_remembers_it(server, monkeypatch):
     _Canned.routes["/session/ses_ours/message?limit=1"] = FINISHED
     record = staged("r1", port)
 
-    obs = probes.agent_sessions([record], "/repo")
+    obs = probes.agent_sessions([record], "/repo", T0)
 
     assert obs.ok and obs.value["r1"] == SessionState(busy=False)
     # Written down, so the search — which reads a session's opening message — happens
-    # once per run rather than once per tick.
+    # once per run rather than once per tick. Asked far enough past the first tick to
+    # be past the cache too, which is what leaves the memo as the only reason the
+    # search is not repeated.
     assert agentregistry.bound_session("r1") == "ses_ours"
     _Canned.seen.clear()
-    probes.agent_sessions([record], "/repo")
+    probes.agent_sessions([record], "/repo", T0 + probes._CACHE_SECS + 1)
     assert _Canned.seen == ["/session/ses_ours/message?limit=1"]
+
+
+def test_a_repaint_moments_later_is_answered_without_dialling_again(server):
+    """This probe dials a socket and the resolver re-runs for every question the applet
+    asks — two per panel repaint. Uncached, one unresponsive port would cost a repaint
+    two full timeouts on the Qt thread."""
+    port = server.server_address[1]
+    _Canned.routes["/session"] = [
+        {"id": "ses_ours", "directory": "/repo", "time": {"created": T0 * 1000 + 2}},
+    ]
+    _Canned.routes["/session/ses_ours/message"] = opening(PROMPT)
+    _Canned.routes["/session/ses_ours/message?limit=1"] = FINISHED
+    record = staged("r1", port)
+    first = probes.agent_sessions([record], "/repo", T0)
+    _Canned.seen.clear()
+
+    again = probes.agent_sessions([record], "/repo", T0 + probes._CACHE_SECS - 0.1)
+
+    assert _Canned.seen == [], "the cached window still went to the network"
+    assert again.value == first.value
+    # A run dispatched since the last pass is not in the answer the cache holds, so
+    # the key is the runs as well as the clock.
+    _Canned.routes["/session/ses_2/message"] = opening("Review PR #8 in o/r")
+    _Canned.routes["/session/ses_2/message?limit=1"] = WORKING
+    _Canned.routes["/session"] = _Canned.routes["/session"] + [
+        {"id": "ses_2", "directory": "/repo", "time": {"created": T0 * 1000 + 3}},
+    ]
+    fresh = staged("r2", port, prompt="Review PR #8 in o/r")
+
+    both = probes.agent_sessions([record, fresh], "/repo",
+                                 T0 + probes._CACHE_SECS - 0.1)
+
+    assert both.value["r2"].busy is True, (
+        "a newer run was answered from a sweep that never asked about it"
+    )
 
 
 def test_two_runs_in_one_checkout_do_not_take_each_others_session(server):
@@ -270,6 +307,29 @@ def test_a_run_whose_session_cannot_be_found_is_simply_absent(server):
     _Canned.routes["/session"] = []
     obs = probes.agent_sessions([staged("r1", port)], "/repo")
     assert obs.ok and "r1" not in obs.value
+
+
+def test_a_session_older_than_the_run_is_never_taken_for_it(server):
+    """The store is the whole machine's, so a *previous* agent's session on the same
+    prompt in the same checkout is an ordinary thing to find — the same PR reviewed
+    twice. Only time separates the two, and the two clocks are not the same one:
+    OpenCode stamps a session in milliseconds while a run records its dispatch in
+    seconds. Compared unconverted, every session ever created outranks every run and
+    the oldest stale one wins."""
+    port = server.server_address[1]
+    _Canned.routes["/session"] = [
+        {"id": "ses_last_run", "directory": "/repo",
+         "time": {"created": (T0 - 3600) * 1000}},
+    ]
+    _Canned.routes["/session/ses_last_run/message"] = opening(PROMPT)
+    _Canned.routes["/session/ses_last_run/message?limit=1"] = FINISHED
+
+    obs = probes.agent_sessions([staged("r1", port)], "/repo", T0)
+
+    assert obs.ok and "r1" not in obs.value
+    assert not agentregistry.bound_session("r1"), (
+        "a stale session was written onto the row, so no later sweep would look again"
+    )
 
 
 def test_a_machine_with_no_such_runs_is_unsupported_not_silent():
