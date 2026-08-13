@@ -186,6 +186,31 @@ def test_an_unreadable_process_table_is_unavailable_not_empty(monkeypatch):
     assert "UnicodeDecodeError" in obs.reason
 
 
+def test_a_ps_that_exits_non_zero_is_unavailable_not_an_empty_table(monkeypatch):
+    """Its stdout is truncated or empty, and a short table is a positive claim that
+    those processes have gone."""
+    monkeypatch.setattr(probes.subprocess, "run",
+                        lambda *a, **k: subprocess.CompletedProcess(a[0], 1, "", ""))
+    probes.reset_cache()
+    assert probes._ps_dump(T0).status == A.UNAVAILABLE
+    assert not probes.process_table(probes._ps_dump(T0)).ok
+
+
+def test_one_failed_ps_does_not_retire_every_live_run_at_once(monkeypatch):
+    """What an empty-but-PRESENT table costs: every local run's pid is missing from it
+    in the same tick, so the book is emptied under agents that are still working."""
+    monkeypatch.setattr(probes.subprocess, "run",
+                        lambda *a, **k: subprocess.CompletedProcess(a[0], 1, "", ""))
+    probes.reset_cache()
+    records = [rec(run_id="r1", pid=4242), rec(run_id="r2", pid=4243)]
+    evidence = A.Evidence(processes=probes.process_table(probes._ps_dump(T0)))
+
+    t = A.tick(records, evidence, T0 + 600, 2)
+
+    assert t.retirable == []
+    assert {s.state for s in t.states.values()} == {A.UNKNOWN}
+
+
 def test_a_process_with_no_controlling_tty_carries_an_empty_one(monkeypatch):
     monkeypatch.setattr(probes, "_ps_dump",
                         lambda now: A.Observation.present(
@@ -238,6 +263,32 @@ def test_the_pane_probe_asks_only_about_the_ttys_of_tracked_runs(monkeypatch):
     probes.pane_tails([rec(run_id="a", tty="pts/3"), rec(run_id="b", tty=""),
                        rec(run_id="c", tty="pts/9")])
     assert asked["ttys"] == {"pts/3", "pts/9"}
+
+
+def test_gather_captures_the_screen_of_an_agent_with_no_record(monkeypatch):
+    """`tick` synthesizes untracked agents only after the evidence is built, so gather
+    has to find them itself. Missed, the one run with no record — and so no sentinel
+    and no session to ask — is also the one whose screen is never read, and it holds a
+    bay from the moment it is found until its window closes."""
+    asked = {}
+
+    def record_and_answer(ttys):
+        asked["ttys"] = set(ttys)
+        return {t: "❯" for t in ttys}
+
+    monkeypatch.setattr(probes.shutil, "which", lambda _: "/usr/bin/tmux")
+    monkeypatch.setattr(probes.tmuxwatch, "pane_tails_for_ttys", record_and_answer)
+    monkeypatch.setattr(probes.core, "config",
+                        lambda: {"owner": "software-mansion", "repo": "argent"})
+    monkeypatch.setattr(probes, "_ps_dump", lambda now: A.Observation.present(
+        "  42 pts/7  600 hermes chat --tui -q Review PR #652 in software-mansion/argent\n"))
+
+    evidence = probes.gather([], T0)
+
+    assert asked["ttys"] == {"pts/7"}
+    t = A.tick([], evidence, T0, 2)
+    assert [s.state for _, s in t.rows] == [A.AWAITING_INPUT]
+    assert t.cap_load == set() and t.free_slots == 2
 
 
 def test_a_missing_mesh_addon_is_unsupported_and_a_dead_node_is_unavailable(monkeypatch):

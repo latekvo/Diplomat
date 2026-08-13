@@ -109,17 +109,25 @@ def _ps_dump(now: float) -> Observation:
     ``(OSError, SubprocessError)`` guard and wedges the caller. That is not
     hypothetical; the same bug once killed the API-error watcher every poll for as
     long as one such pane existed.
+
+    A non-zero exit is UNAVAILABLE rather than the stdout it managed to produce: that
+    stdout is truncated or empty, and a short table is not "those processes are gone" —
+    every local run whose pid fell off it resolves FINISHED in the same tick, so one
+    failed ``ps`` empties the book under live agents. ``AgentProbes.run`` drops one for
+    the same reason.
     """
     global _ps_cache
     if _ps_cache is not None and now - _ps_cache[0] < _CACHE_SECS:
         return Observation.present(_ps_cache[1])
     try:
-        out = subprocess.run(["ps", "-eo", "pid=,tty=,etimes=,args="],
-                             capture_output=True, text=True, timeout=10).stdout
+        proc = subprocess.run(["ps", "-eo", "pid=,tty=,etimes=,args="],
+                              capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.SubprocessError, UnicodeDecodeError) as exc:
         return Observation.unavailable(f"could not be read ({type(exc).__name__})")
-    _ps_cache = (now, out)
-    return Observation.present(out)
+    if proc.returncode != 0:
+        return Observation.unavailable(f"exited {proc.returncode}")
+    _ps_cache = (now, proc.stdout)
+    return Observation.present(proc.stdout)
 
 
 def reset_cache() -> None:
@@ -204,7 +212,7 @@ def live_agents(dump: Observation) -> Observation:
 
 
 def pane_tails(records: list[RunRecord], now: float = 0.0) -> Observation:
-    """tty → the visible buffer of the pane on it, for the runs we are tracking.
+    """tty → the visible buffer of the pane on it, for the runs it is given.
 
     Selective on purpose: this runs on the panel's 8-second tick, so it is one
     ``capture-pane`` per agent rather than one per pane on the developer's box.
@@ -467,6 +475,11 @@ def gather(records: list[RunRecord], now: float, *,
     # read as working for a whole tick longer than it was.
     scan = _note("agent scan", live_agents(dump), now)
     looked_up = agentstate.adopt_ttys(records, table, scan)
+    # Synthesized here as well as in `tick`, which adds them only AFTER this bundle is
+    # built. An untracked run has no record, so no sentinel and no session to ask —
+    # left out, the one run that depends entirely on its screen is the one whose screen
+    # is never captured, and it reads as working until its window closes.
+    looked_up = agentstate.synthesize_untracked(looked_up, scan, now)
     return Evidence(
         processes=table,
         sentinels=_note("sentinels", agentregistry.sentinels(records), now),

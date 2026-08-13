@@ -34,7 +34,8 @@ def run() -> int:
                       ("screens", evidence.tails),
                       ("mesh claims", evidence.claims),
                       ("merged PRs", evidence.merged_prs),
-                      ("agent scan", evidence.live_agents)):
+                      ("agent scan", evidence.live_agents),
+                      ("agent sessions", evidence.sessions)):
         print(f"  {name:<15} {_describe(obs)}")
     read, seen = probes.marker_stats()
     if read:
