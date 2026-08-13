@@ -23,6 +23,7 @@ from diplomat_app.store import Store
 from test_autofix import AT_PROMPT, WORKING, fake_probes, register_run
 from diplomat_app.widgets import (
     FreeSlotRow,
+    QueueAutoRunRow,
     QueuedTaskRow,
     RunningTaskRow,
     StartingTaskRow,
@@ -275,7 +276,8 @@ def test_a_starting_task_keeps_a_row_where_its_agent_will_be(panel):
     assert rows[0].findChildren(QPushButton) == []
     assert [t.id for t in panel.store.queued_tasks] == ["review-req:508"]
     # One bay left of the cap of two, because the starting task holds the other.
-    assert _row_kinds(panel) == ["StartingTaskRow", "FreeSlotRow", "QueuedTaskRow"]
+    assert _row_kinds(panel) == ["StartingTaskRow", "FreeSlotRow",
+                                 "QueueAutoRunRow", "QueuedTaskRow"]
 
 
 def test_the_task_count_carries_a_starting_row(panel):
@@ -299,6 +301,46 @@ def test_execute_now_asks_the_store_to_run_that_task(panel):
 
     _run_button(_rows(panel, QueuedTaskRow)[1]).click()
     assert ran == ["review-req:508"]
+
+
+def test_the_switch_that_holds_the_queue_sits_at_the_top_of_it(panel):
+    """Where the queue starts, so the thing it governs is the thing under it."""
+    panel.store.queued_tasks = [_queued(512), _queued(508)]
+    panel._rebuild_agent_tasks()
+
+    assert _row_kinds(panel) == ["FreeSlotRow", "FreeSlotRow", "QueueAutoRunRow",
+                                 "QueuedTaskRow", "QueuedTaskRow"]
+
+
+def test_the_switch_holds_the_queue_and_starts_it_again(panel, monkeypatch):
+    polls = []
+    monkeypatch.setattr(Store, "run_autofix_poll_async", lambda self: polls.append(1))
+    panel.store.queued_tasks = [_queued(512)]
+    panel._rebuild_agent_tasks()
+
+    _switch(panel).setChecked(False)
+    assert panel.store.queue_auto_run is False
+    assert panel.store.drainable_tasks == []
+    assert polls == []
+
+    _switch(panel).setChecked(True)
+    assert panel.store.queue_auto_run is True
+    assert [t.id for t in panel.store.drainable_tasks] == ["review-req:512"]
+    # The drain runs at the top of a poll, so without a kick here the queue would sit
+    # still for a whole poll period after the press.
+    assert polls == [1]
+
+
+def test_a_held_queue_keeps_its_switch_once_the_list_empties(panel):
+    """Off is the state that keeps the list empty, so a switch drawn only beside queued
+    rows would be one there is no way back from."""
+    panel.store.queue_auto_run = False
+    panel._rebuild_agent_tasks()
+    assert len(_rows(panel, QueueAutoRunRow)) == 1
+
+    panel.store.queue_auto_run = True
+    panel._rebuild_agent_tasks()
+    assert _rows(panel, QueueAutoRunRow) == []  # nothing to say with the queue empty
 
 
 def test_a_drop_reorders_the_queue_around_the_row_it_landed_on(panel):
@@ -329,10 +371,16 @@ def test_a_row_refuses_a_drop_of_itself(app):
     row.deleteLater()
 
 
+def _switch(panel):
+    """The queue's auto-execute switch. Re-read after every flip: the toggle rebuilds
+    the list, which frees the row it was pressed on."""
+    return _rows(panel, QueueAutoRunRow)[0].switch
+
+
 def _row_kinds(panel) -> list[str]:
     """The task rows in the order the list draws them."""
     layout = panel.tasks_col
-    kinds = (RunningTaskRow, StartingTaskRow, FreeSlotRow, QueuedTaskRow)
+    kinds = (RunningTaskRow, StartingTaskRow, FreeSlotRow, QueueAutoRunRow, QueuedTaskRow)
     return [
         type(layout.itemAt(i).widget()).__name__
         for i in range(layout.count())

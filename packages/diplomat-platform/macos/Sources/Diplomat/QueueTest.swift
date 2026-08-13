@@ -9,8 +9,8 @@ import DiplomatCore
 /// a queue silently stops being one: that a refusal is captured rather than
 /// dropped, that one unit offered twice in a cycle is one task, that the operator's
 /// arrangement survives the poll that rebuilds the list, that work GitHub stops
-/// owing falls out of it, and that a switched-off monitor's work is held rather
-/// than either run or dropped.
+/// owing falls out of it, and that a switched-off monitor's work — or, with the
+/// queue's own switch off, anyone's — is held rather than either run or dropped.
 ///
 /// It reaches the at-capacity branch honestly — a real `dispatchAgent` call against
 /// a real cap — so it never spawns an agent, needs no `gh` auth and no terminal
@@ -215,6 +215,27 @@ enum QueueTest {
               await offer(job(8, action: "conflicts", label: "Resolve · #8",
                               counter: .conflicts)) == .atCapacity)
         store.autoTaskLimit = 1
+
+        // 8b. The switch over the queue itself, which is what neither monitor toggle
+        //     can be: neither speaks for a review the operator asked for, so without
+        //     this one nothing stops a fifty-PR sweep emptying into agents a bay at
+        //     a time.
+        store.prAutofixEnabled = true
+        store.reviewRequestsEnabled = true
+        store.queueAutoRun = false
+        check("a switched-off queue is nothing the drain may run, both monitors on",
+              store.drainableTasks.isEmpty)
+        check("…and its rows stay, for \"execute now\"", store.queuedTasks.count == 2)
+        // It holds at the DISPATCH too, not only at the drain: this offer meets a free
+        // bay, so without that hold it would start without ever reaching the queue.
+        store.autoTaskLimit = 3
+        check("…and a find that meets a free bay is held rather than started",
+              await offer(job(8, action: "conflicts", label: "Resolve · #8",
+                              counter: .conflicts)) == .atCapacity)
+        store.autoTaskLimit = 1
+        store.queueAutoRun = true
+        check("switched back on, the queue is the drain's again",
+              store.drainableTasks.map(\.id) == ["review-req:4", "conflicts:6"])
 
         // 9. The empty slots the panel draws under the tasks. The seeded agent is up
         //    against a cap of one, so this device has no room; the panel must not

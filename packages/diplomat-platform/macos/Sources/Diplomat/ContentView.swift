@@ -661,34 +661,47 @@ struct ContentView: View {
                           icon: "antenna.radiowaves.left.and.right",
                           caption: caption.isEmpty ? nil : caption)
             if tasksExpanded {
-                ForEach(items) { item in
-                    switch item {
-                    case .session(let row):
-                        AgentRunRow(
-                            row: row,
-                            tint: agentTaskTint(row.record.kind),
-                            onTap: { activate(row) },
-                            onRemove: { store.forgetRun(row.id) }
-                        )
-                    case .queued(let task):
-                        QueuedTaskRow(
-                            task: task,
-                            tint: agentTaskTint(task.job.kind),
-                            paused: store.isPaused(task.job.counter),
-                            onRun: { Task { await store.executeQueuedTask(task.id) } },
-                            cancellable: task.job.requested,
-                            onCancel: { store.cancelRequestedReview(task.id) },
-                            onDropped: { store.moveQueuedTask($0, onto: task.id) }
-                        )
-                    case .starting(let task):
-                        StartingTaskRow(task: task, tint: agentTaskTint(task.job.kind))
-                    case .freeSlot:
-                        FreeSlotRow()
-                    }
+                // Split around the switch that governs the queue, which draws where the
+                // queue starts. `.queued` sorts last, so the two halves are the one
+                // reading order with a row let into it.
+                ForEach(items.filter { $0.status != .queued }) { taskRow($0) }
+                // Drawn with the queue, and also when it is empty but switched off:
+                // otherwise the one state you cannot leave is the one that empties
+                // the list.
+                if queued > 0 || !store.queueAutoRun {
+                    QueueAutoRunRow(isOn: $store.queueAutoRun)
                 }
+                ForEach(items.filter { $0.status == .queued }) { taskRow($0) }
             }
         }
         .cardChrome()
+    }
+
+    @ViewBuilder
+    private func taskRow(_ item: AgentTaskItem) -> some View {
+        switch item {
+        case .session(let row):
+            AgentRunRow(
+                row: row,
+                tint: agentTaskTint(row.record.kind),
+                onTap: { activate(row) },
+                onRemove: { store.forgetRun(row.id) }
+            )
+        case .queued(let task):
+            QueuedTaskRow(
+                task: task,
+                tint: agentTaskTint(task.job.kind),
+                paused: store.isPaused(task.job.counter),
+                onRun: { Task { await store.executeQueuedTask(task.id) } },
+                cancellable: task.job.requested,
+                onCancel: { store.cancelRequestedReview(task.id) },
+                onDropped: { store.moveQueuedTask($0, onto: task.id) }
+            )
+        case .starting(let task):
+            StartingTaskRow(task: task, tint: agentTaskTint(task.job.kind))
+        case .freeSlot:
+            FreeSlotRow()
+        }
     }
 
     private func agentTaskTint(_ kind: String) -> Color { DiplomatUI.agentTaskTint(kind) }
@@ -1125,6 +1138,34 @@ private struct AgentTaskStatusLabel: View {
 }
 
 // MARK: - Queued agent-task row
+
+/// The switch above the queue: whether a free bay starts the next queued task.
+///
+/// Off, nothing drains and every row waits for "execute now". The monitors keep
+/// finding work and queueing it either way — that is what separates this from
+/// switching them off in Settings.
+private struct QueueAutoRunRow: View {
+    @Binding var isOn: Bool
+
+    private static let help = """
+        On, a queued task starts as soon as a bay frees. Off, the queue moves only \
+        when you press “execute now”.
+        """
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text("Auto-execute queue")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 4)
+            Toggle("Auto-execute queue", isOn: $isOn)
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.small)
+        }
+        .help(QueueAutoRunRow.help)
+    }
+}
 
 /// Work nothing has started yet. It carries the things a session row has no use for:
 /// a handle to start it now regardless of what is holding it, a drag grip that sets

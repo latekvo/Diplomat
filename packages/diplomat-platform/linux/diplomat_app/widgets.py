@@ -432,6 +432,35 @@ class ActivityRow(QFrame):
             row.addWidget(ts, 0, Qt.AlignmentFlag.AlignTop)
 
 
+class QueueAutoRunRow(QFrame):
+    """The switch above the queue: whether a free bay starts the next queued task.
+
+    Off, nothing drains and every row waits for "execute now". The monitors keep
+    finding work and queueing it either way — that is what separates this from
+    switching them off in Settings.
+    """
+
+    toggled = Signal(bool)
+
+    _HELP = ("On, a queued task starts as soon as a bay frees. Off, the queue moves "
+             "only when you press “execute now”.")
+
+    def __init__(self, *, on: bool) -> None:
+        super().__init__()
+        self.setToolTip(self._HELP)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(6, 0, 6, 0)
+        row.setSpacing(6)
+        label = QLabel("Auto-execute queue")
+        label.setStyleSheet(muted(9, bold=True))
+        row.addWidget(label)
+        row.addStretch(1)
+        self.switch = SwitchToggle()
+        self.switch.setChecked(on)
+        self.switch.toggled.connect(self.toggled.emit)
+        row.addWidget(self.switch, 0, Qt.AlignmentFlag.AlignVCenter)
+
+
 class QueuedTaskRow(QFrame):
     """One unit of work nothing has started yet.
 

@@ -501,6 +501,19 @@ class Store(QObject):
         self._settings.setValue("queuedTaskOrder", list(value))
 
     @property
+    def queue_auto_run(self) -> bool:
+        """Whether a free bay starts the next queued task by itself. On by default.
+
+        Off, nothing automatic starts on this machine: the monitors keep finding
+        work and every find queues, including the reviews a sweep asked for — which
+        the monitor toggles do not speak for. Rows then move on "execute now" only."""
+        return self._settings.value("queueAutoRun", True, bool)
+
+    @queue_auto_run.setter
+    def queue_auto_run(self, value: bool) -> None:
+        self._settings.setValue("queueAutoRun", bool(value))
+
+    @property
     def requested_reviews(self) -> list[review.RequestedReview]:
         """The reviews the operator has asked for and nothing has started yet, in the
         order their sweeps asked for them.
@@ -1021,9 +1034,10 @@ class Store(QObject):
 
         An AUTO job is additionally capped at ``auto_task_limit`` concurrent
         agents on this device (``_auto_tasks_running``), held outright while its own
-        monitor is switched off (:meth:`is_paused`), and held again when what is
-        left of the rate-limit windows will not cover it (:mod:`autobudget`); a
-        panel click is subject to none of the three. Every one of those refusals
+        monitor is switched off (:meth:`is_paused`) or the queue is
+        (:attr:`queue_auto_run`), and held again when what is left of the rate-limit
+        windows will not cover it (:mod:`autobudget`); a panel click is subject to
+        none of them. Every one of those refusals
         queues the job (:meth:`_stage_queued`), which is what the panel's
         Agent-tasks list shows as *queued*.
 
@@ -1063,11 +1077,14 @@ class Store(QObject):
                 if not full:
                     self._capacity_logged = False
                 # A switched-off monitor has no room for its own work, whatever the
-                # device's. Modelled as capacity because the answer is the same one
-                # in every respect that matters here — hold the job, write no attempt
-                # record, re-offer it next poll — which keeps a toggle that is the
+                # device's, and neither has a switched-off queue — for anything. Both
+                # are modelled as capacity because the answer is the same one in every
+                # respect that matters here — hold the job, write no attempt record,
+                # re-offer it next poll — which keeps two toggles that are the
                 # front-end's own out of the dispatch gate both front-ends mirror.
-                paused = self.is_paused(job.counter)
+                # The queue switch has to hold HERE and not only at the drain: a find
+                # that meets a free bay never reaches the queue at all.
+                paused = self.is_paused(job.counter) or not self.queue_auto_run
                 at_capacity = full or paused
             # Measured after capacity and under the same conditions: a device with
             # no free bay has nothing to spend a budget on, so the probe and the
@@ -1818,16 +1835,21 @@ class Store(QObject):
         if counter in ("my_reviews", "conflicts"):
             return not self.pr_autofix_enabled
         # A review the operator asked for: no monitor owns it, so neither toggle
-        # speaks for it. It waits for the cap and nothing else — switching the
-        # monitors off says what this machine may go looking for, not that it should
-        # stop doing what it was told.
+        # speaks for it. Switching the monitors off says what this machine may go
+        # looking for, not that it should stop doing what it was told — for an ask,
+        # that is what :attr:`queue_auto_run` says.
         return False
 
     @property
     def drainable_tasks(self) -> list[autofix.QueuedTask]:
         """The queued tasks the drain may start, in the operator's order — everything
         whose monitor is still on, plus the reviews the operator asked for, which no
-        monitor speaks for either way."""
+        monitor speaks for either way.
+
+        Empty while :attr:`queue_auto_run` is off, including the asks: that switch is
+        over the queue itself, not over what fills it."""
+        if not self.queue_auto_run:
+            return []
         return [e for e in self.queued_tasks if not self.is_paused(e.job.counter)]
 
     def _begin_starting(self, entry: autofix.QueuedTask) -> None:

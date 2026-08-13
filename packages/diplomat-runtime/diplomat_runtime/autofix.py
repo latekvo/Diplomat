@@ -871,9 +871,10 @@ class AgentJob:
 @dataclass(frozen=True)
 class QueuedTask:
     """One unit of automatic work nothing has started yet: the whole job, held by the
-    device's task cap or by its own monitor being switched off, until a slot frees or
-    the operator runs it. Rebuilt from live evidence on each poll — see
-    ``Store.queued_tasks``. Twin of Store.QueuedAgentTask on macOS."""
+    device's task cap, by the rate-limit budget, or by a switch the operator set (its
+    own monitor, or the queue itself), until a slot frees or the operator runs it.
+    Rebuilt from live evidence on each poll — see ``Store.queued_tasks``. Twin of
+    Store.QueuedAgentTask on macOS."""
 
     # :func:`queue_key` — stable across polls and applet restarts, which is what
     # lets the operator's drag order outlive the list itself.

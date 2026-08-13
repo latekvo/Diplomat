@@ -211,6 +211,11 @@ an idle machine with a cap of two reads `0 · 2 free` over two empty bays.
   bay like anything else that waited there. An agent a wizard press opened on the
   spot takes none, and neither does work the mesh placed on another machine - that
   spends the peer's capacity, not yours. Queued work starts here on the next poll.
+- **Auto-execute queue** is the switch at the top of the queue (**default on**): off,
+  nothing starts by itself and every row waits for *execute now*. The monitors keep
+  finding work and queueing it either way. It stays on screen while it is off even
+  with the list empty - otherwise the state that empties the list would be the one
+  you cannot leave.
 - **Queued** rows are auto-fixes, auto-reviews and reviews you asked for that
   nothing has started yet. Each
   carries **execute now** - start it immediately, past whatever is holding it -
@@ -230,14 +235,15 @@ an idle machine with a cap of two reads `0 · 2 free` over two empty bays.
   often made unnecessary by the work ahead of it - and the poll re-offers it for
   as long as GitHub still calls the PR conflicting, so waiting costs it nothing.
 
-Three things hold work. The cap holds what there is no slot for, and releases it as
+Four things hold work. The cap holds what there is no slot for, and releases it as
 slots free. The **rate-limit budget** (below) holds everything when the account is
 too low to afford another agent, and releases it when a window refills. A
 **monitor you switched off** holds its own work indefinitely: it keeps polling and
 keeps listing what it finds (reading *queued · monitor off*), but nothing starts by
 itself - only *execute now* does. So the toggles decide who starts the work, not
 whether you get to see it, and turning both off does not stop the 3-minute GitHub
-poll.
+poll. **Auto-execute queue** holds every kind at once, the reviews you asked for
+included - which is the one thing no monitor toggle speaks for.
 
 ### The rate-limit budget
 
@@ -878,12 +884,12 @@ and ⏻) swaps the panel to a settings screen:
   a mesh node spawns agents from its own stdlib-only process, so the pick lives in
   the shared `~/.diplomat/config.json` that both front-ends and the node re-read on
   each spawn - change it and a *running* node picks it up.
-- **Auto-fix my PRs / Full-E2E review requests** - the two monitor toggles, with
-  live status: PRs watched, reviews done so far, "N unaddressed reviews -
-  retrying", and any poll failure. (The combined *fixed N* counter lives on the
-  panel's status pill, not here.) A monitor switched off keeps polling and keeps
-  listing what it finds under [Agent tasks](#agent-tasks); what stops is the
-  automatic start. Nested under the **review-requests** toggle -
+- **Auto-queue fixes for my PRs / Auto-queue reviews that request me** - the two
+  monitor toggles, with live status: PRs watched, reviews done so far, "N
+  unaddressed reviews - retrying", and any poll failure. (The combined *fixed N*
+  counter lives on the panel's status pill, not here.) A monitor switched off keeps
+  polling and keeps listing what it finds under [Agent tasks](#agent-tasks); what
+  stops is the automatic start. Nested under the **review-requests** toggle -
   and visible only while it's on - the **auto-approve** master toggle and its
   three withhold-the-verdict suppressors (SKILL / installer / community).
 - **Run at most N automatic tasks at a time** - this machine's hard cap on

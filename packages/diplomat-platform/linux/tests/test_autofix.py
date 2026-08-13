@@ -1929,6 +1929,46 @@ def test_one_poll_offering_a_task_twice_queues_the_backoff_aware_one(store, monk
     assert [(t.id, t.attempt) for t in store.queued_tasks] == [("review-reply:5", 2)]
 
 
+def test_a_switched_off_queue_starts_nothing_at_all(store, monkeypatch):
+    """The switch over the queue itself. Neither monitor toggle speaks for a review the
+    operator asked for, so without this one nothing stops a fifty-PR sweep emptying into
+    agents a bay at a time. Off, every find waits — including one that meets a free bay,
+    which would never reach the queue to be held there."""
+    from diplomat_runtime import activity
+
+    store.queue_auto_run = False
+    calls = _spawn_recorder(monkeypatch, finish=False)
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_snapshots", lambda *a, **k: [])
+    monkeypatch.setattr(
+        "diplomat_app.autofixmonitor.fetch_review_requests",
+        lambda *a, **k: [_req(number=n, requested_at="2026-01-02") for n in (1, 2)],
+    )
+
+    store._autofix_poll_once()
+
+    assert calls == []
+    assert [t.id for t in store.queued_tasks] == ["review-req:1", "review-req:2"]
+    assert store.drainable_tasks == []
+    # A held queue is not a saturated device: both bays are open, and the feed says
+    # nothing about capacity — the operator switched this off on purpose.
+    assert store.free_auto_slots == 2
+    assert [e for e in activity.read() if e.action == "at-capacity"] == []
+
+    # …and it holds across the next cycle too, rather than being a 3-minute delay.
+    store._autofix_poll_once()
+    assert calls == []
+
+    # "execute now" is the way past it, as it is past every other hold.
+    store._execute_queued_task(store.queued_tasks[0])
+    assert [c["prompt"] for c in calls] == ["PROMPT:review:1"]
+
+    # Switched back on, the queue starts what it was holding.
+    store.queue_auto_run = True
+    store._autofix_poll_once()
+    assert [c["prompt"] for c in calls] == ["PROMPT:review:1", "PROMPT:review:2"]
+
+
 def test_a_monitor_switched_back_on_drains_what_it_held(store, monkeypatch):
     """The held work is the same work: turning the toggle back on starts it, without
     waiting for GitHub to offer it again."""

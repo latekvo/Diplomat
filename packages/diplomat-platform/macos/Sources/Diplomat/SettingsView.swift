@@ -329,12 +329,11 @@ struct SettingsView: View {
     }
 
     private var conflictsRow: some View {
-        SettingRow(title: "Auto-fix my PRs",
-                   summary: "Resolves merge conflicts and answers new review threads.",
-                   detail: "Off, the monitor keeps looking and lists what it finds under "
-                         + "Agent tasks — as queued work only you can start, with "
-                         + "“execute now”.") {
-            switchControl("Auto-fix my PRs", $store.prAutofixEnabled)
+        SettingRow(title: "Auto-queue fixes for my PRs",
+                   summary: "Merge conflicts and new review threads.",
+                   detail: "Off, the monitor still lists what it finds under Agent "
+                         + "tasks — queued, for “execute now” only.") {
+            switchControl("Auto-queue fixes for my PRs", $store.prAutofixEnabled)
         }
     }
 
@@ -355,20 +354,20 @@ struct SettingsView: View {
     }
 
     private var reviewRequestsRow: some View {
-        SettingRow(title: "Review PRs that request me",
+        SettingRow(title: "Auto-queue reviews that request me",
                    summary: "Full E2E · max, inline comments — read-only, never their branch.",
                    detail: SettingsView.reviewRequestsDetail) {
             HStack(spacing: 6) {
                 reviewedPill
-                switchControl("Review PRs that request me", $store.reviewRequestsEnabled)
+                switchControl("Auto-queue reviews that request me",
+                              $store.reviewRequestsEnabled)
             }
         }
     }
 
     private static let reviewRequestsDetail = """
-        A review left unaddressed (agent died, lost connection, window closed) is \
-        retried automatically until it lands. Off, the requests still list under \
-        Agent tasks, queued for you to start by hand.
+        A review that never lands (agent died, window closed) is retried. Off, the \
+        requests still list under Agent tasks, queued for “execute now” only.
         """
 
     /// Two counts that only exist once the monitor has run: how many reviews it has
@@ -455,13 +454,10 @@ struct SettingsView: View {
         "Across both monitors, a PR sweep's reviews, and anything a mesh peer routes here."
 
     private static let autoTaskLimitDetail = """
-        A hard cap for this machine, across both monitors, the reviews a PR sweep \
-        queues, and any work a mesh peer routes here. The agent a wizard press opens \
-        on the spot is outside it; a review it queues instead is inside, like \
-        anything else waiting for a bay. \
-        Work over the cap isn't dropped — it waits in the Agent-tasks list, in the \
-        order you put it, and starts as soon as a running agent finishes. The panel \
-        draws whatever is left of the cap as empty slots.
+        The agent a wizard press opens on the spot is outside the cap; a review it \
+        queues instead is inside. Work over the cap waits in Agent tasks, in the \
+        order you put it, and starts when a bay frees — unless you switch off \
+        Auto-execute queue there.
         """
 
     /// The rate-limit budget: whether automatic work waits when the account is running
@@ -473,9 +469,9 @@ struct SettingsView: View {
     /// should start at all.
     private static let autoBudgetDetail = """
         Priced from Telemetry → limit per task, against both rate-limit windows: \
-        higher confidence is stricter. Held work isn't dropped — it waits in the \
-        Agent-tasks list until a window refills, and "execute now" overrides it. \
-        Nothing is held while the usage probe can't read a window at all.
+        higher confidence is stricter. Held work waits in Agent tasks until a window \
+        refills, and "execute now" overrides it. Nothing is held while the usage \
+        probe can't read a window.
         """
 
     private var autoBudgetBlock: some View {

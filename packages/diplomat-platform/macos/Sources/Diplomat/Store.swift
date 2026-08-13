@@ -126,6 +126,19 @@ final class Store: ObservableObject {
         }
     }
 
+    /// Whether a free bay starts the next queued task by itself. On by default.
+    ///
+    /// Off, nothing automatic starts on this machine: the monitors keep finding work
+    /// and every find queues, including the reviews a sweep asked for — which the
+    /// monitor toggles do not speak for. Rows then move on "execute now" only.
+    /// Persisted; kicks a poll on enable, since the drain runs at the top of one.
+    @Published var queueAutoRun: Bool {
+        didSet {
+            persist(queueAutoRun, forKey: Keys.queueAutoRun)
+            if queueAutoRun && !oldValue && !Headless.active { Task { await runAutofixPollOnce() } }
+        }
+    }
+
     /// How many automatic agents this machine runs at once — 2 by default.
     ///
     /// The monitors are level-triggered over everything GitHub currently owes, so
@@ -406,6 +419,7 @@ final class Store: ObservableObject {
         static let settingsExplain = "settingsExplain"
         static let allocatorSetupDone = "allocatorSetupDone"
         static let queuedTaskOrder = "queuedTaskOrder"
+        static let queueAutoRun = "queueAutoRun"
         static let requestedReviews = "requestedReviews"
     }
 
@@ -493,6 +507,7 @@ final class Store: ObservableObject {
         // so defaulting on can't falsely claim "active" when no monitor is running.
         prAutofixEnabled = defaults.object(forKey: Keys.prAutofixEnabled) as? Bool ?? true
         reviewRequestsEnabled = defaults.object(forKey: Keys.reviewRequestsEnabled) as? Bool ?? true
+        queueAutoRun = defaults.object(forKey: Keys.queueAutoRun) as? Bool ?? true
         // Auto-approvals OFF by default — an auto-review never submits a verdict on my
         // behalf until I explicitly opt in.
         autoApproveEnabled = defaults.object(forKey: Keys.autoApproveEnabled) as? Bool ?? false
@@ -1842,29 +1857,31 @@ final class Store: ObservableObject {
     /// A switched-off monitor still finds its work and still queues it — what your
     /// PRs owe is worth seeing whether or not this machine is set to act on it — but
     /// nothing automatic starts it. It waits for "execute now", or for the toggle to
-    /// come back on. That is the whole difference the two toggles make now: they
-    /// decide who starts the work, not whether it is known.
+    /// come back on. That is the whole difference the two toggles make: they decide
+    /// who starts the work, not whether it is known.
     func isPaused(_ counter: AutoCounter?) -> Bool {
         switch counter {
         case .reviewRequests:        return !reviewRequestsEnabled
         case .myReviews, .conflicts: return !prAutofixEnabled
         // A review the operator asked for: no monitor owns it, so neither toggle
-        // speaks for it. It waits for the cap and nothing else — switching the
-        // monitors off says what this machine may go looking for, not that it should
-        // stop doing what it was told.
+        // speaks for it. Switching the monitors off says what this machine may go
+        // looking for, not that it should stop doing what it was told — for an ask,
+        // that is what `queueAutoRun` says.
         case nil:                    return false
         }
     }
 
     /// The queued tasks the drain may start, in the operator's order — everything
     /// whose monitor is still on, plus the reviews the operator asked for, which no
-    /// monitor speaks for either way.
+    /// monitor speaks for either way. Empty while `queueAutoRun` is off, including
+    /// the asks: that switch is over the queue itself, not over what fills it.
     ///
     /// Not private: this is the seam the queue self-test drives. Asserting on the
     /// list the drain walks is how the "a paused monitor's work is held, not run"
     /// rule gets a test at all — driving the drain itself would end in a real spawn.
     var drainableTasks: [QueuedAgentTask] {
-        queuedTasks.filter { !isPaused($0.job.counter) }
+        guard queueAutoRun else { return [] }
+        return queuedTasks.filter { !isPaused($0.job.counter) }
     }
 
     /// Dispatch one queued task past the capacity check its caller already made, and
@@ -2160,9 +2177,9 @@ final class Store: ObservableObject {
     enum AutoCounter { case reviewRequests, myReviews, conflicts }
 
     /// One unit of automatic work nothing has started yet: the whole job, held by the
-    /// device's task cap or by its own monitor being switched off, until a slot frees
-    /// or the operator runs it. Rebuilt from live evidence on each poll — see
-    /// `queuedTasks`.
+    /// device's task cap, by the rate-limit budget, or by a switch the operator set
+    /// (its own monitor, or the queue itself), until a slot frees or the operator runs
+    /// it. Rebuilt from live evidence on each poll — see `queuedTasks`.
     struct QueuedAgentTask: Identifiable, Equatable {
         /// `AgentTaskQueue.key` — stable across polls and applet restarts, which is
         /// what lets the operator's drag order outlive the list itself.
@@ -2213,10 +2230,11 @@ final class Store: ObservableObject {
     ///
     /// An AUTO job is additionally capped at `autoTaskLimit` concurrent agents on
     /// this device (`AgentState.capLoad`), held outright while its own monitor is
-    /// switched off (`isPaused`), and held again when what is left of the rate-limit
-    /// windows will not cover it (`AutoBudget`); a panel click is subject to none of
-    /// the three. Every one of those refusals queues the job (`stageQueued`), which is
-    /// what the panel's Agent-tasks list shows as *queued*.
+    /// switched off (`isPaused`) or the queue is (`queueAutoRun`), and held again
+    /// when what is left of the rate-limit windows will not cover it (`AutoBudget`);
+    /// a panel click is subject to none of them. Every one of those refusals queues
+    /// the job (`stageQueued`), which is what the panel's Agent-tasks list shows as
+    /// *queued*.
     ///
     /// `bypassCapacity` is for the two callers that have already answered the
     /// capacity question themselves: the queue drain (which counted the free slot it
@@ -2251,11 +2269,14 @@ final class Store: ObservableObject {
             let full = await agentTick().tick.capLoad.count >= autoTaskLimit
             if !full { capacityLogged = false }
             // A switched-off monitor has no room for its own work, whatever the
-            // device's. Modelled as capacity because the answer is the same one in
-            // every respect that matters here — hold the job, write no attempt
-            // record, re-offer it next poll — which keeps a toggle that only this
-            // front-end has out of the dispatch gate both front-ends mirror.
-            paused = isPaused(job.counter)
+            // device's, and neither has a switched-off queue — for anything. Both are
+            // modelled as capacity because the answer is the same one in every respect
+            // that matters here — hold the job, write no attempt record, re-offer it
+            // next poll — which keeps two toggles that only this front-end has out of
+            // the dispatch gate both front-ends mirror. The queue switch has to hold
+            // HERE and not only at the drain: a find that meets a free bay never
+            // reaches the queue at all.
+            paused = isPaused(job.counter) || !queueAutoRun
             atCapacity = full || paused
         }
         // Measured after capacity and under the same conditions: a device with no free

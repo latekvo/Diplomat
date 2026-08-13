@@ -54,6 +54,11 @@ slot**, then the **queue** that has no bay yet.
   here whoever opened its terminal, and a review from a sweep, which the queue
   merely picked the moment for; an agent a wizard press opened on the spot takes
   none. Queued work starts here on the next poll.
+- **Auto-execute queue** is the switch at the top of the queue (default **on**): off,
+  nothing starts by itself and every row waits for *execute now*. The monitors keep
+  finding work and queueing it either way. It stays on screen while it is off even
+  with the list empty — otherwise the state that empties the list would be the one you
+  cannot leave.
 - **Queued** rows are auto-fixes, auto-reviews and reviews you asked for that nothing
   has started yet. Each
   carries **execute now** — start it immediately, past whatever is holding it — and a
@@ -73,14 +78,15 @@ slot**, then the **queue** that has no bay yet.
   unnecessary by the work ahead of it — and the poll re-offers it for as long as
   GitHub still calls the PR conflicting, so waiting costs it nothing.
 
-Three things hold work. The cap holds what there is no slot for, and releases it as
+Four things hold work. The cap holds what there is no slot for, and releases it as
 slots free. The [rate-limit budget](../../../README.md#the-rate-limit-budget) holds
 everything when the account is too low to afford another agent, and releases it when a
 window refills. A **monitor you switched off** holds its own work indefinitely: it
 keeps polling and keeps listing what it finds (reading *queued · monitor off*), but
 nothing starts by itself — only *execute now* does. So the toggles decide who starts
 the work, not whether you get to see it, and turning both off does not stop the
-3-minute GitHub poll.
+3-minute GitHub poll. **Auto-execute queue** holds every kind at once, the reviews you
+asked for included — which is the one thing no monitor toggle speaks for.
 
 The queue is a view of what the monitors would re-offer, not a second copy of their
 state: it is rebuilt from live GitHub evidence on every poll, so a task drops out the
@@ -176,7 +182,8 @@ rate-limit budget's three knobs are the exceptions (see their bullets):
   separate, stdlib-only process with no Qt — so a job that lands over the mesh
   uses the same checkout, and a *running* node picks up a change on its next
   spawn.
-- **PR auto-fix / Full-E2E review requests** — the two monitor toggles with live
+- **Auto-queue fixes for my PRs / Auto-queue reviews that request me** — the two
+  monitor toggles with live
   status, and under the review-requests one the **auto-approve** master toggle
   plus its three withhold-the-verdict suppressors (SKILL / installer / community),
   and the **soft-approve** toggle (default ON — a clean comments-only review leaves

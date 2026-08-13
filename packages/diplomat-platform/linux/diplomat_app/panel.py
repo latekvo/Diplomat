@@ -38,6 +38,7 @@ from .widgets import (
     FreeSlotRow,
     GlyphLabel,
     IconChip,
+    QueueAutoRunRow,
     QueuedTaskRow,
     ResultRow,
     RunningTaskRow,
@@ -685,6 +686,12 @@ class Panel(QWidget):
             ))
         for _ in range(free):
             self.tasks_col.addWidget(FreeSlotRow())
+        # Drawn with the queue, and also when it is empty but switched off: otherwise
+        # the one state you cannot leave is the one that empties the list.
+        if queued or not self.store.queue_auto_run:
+            switch = QueueAutoRunRow(on=self.store.queue_auto_run)
+            switch.toggled.connect(self._set_queue_auto_run)
+            self.tasks_col.addWidget(switch)
         for task in queued:
             glyph, tint = _task_look(task.job.kind)
             row = QueuedTaskRow(
@@ -712,6 +719,14 @@ class Panel(QWidget):
     def _toggle_tasks(self) -> None:
         self._tasks_expanded = not self._tasks_expanded
         self._rebuild_agent_tasks()
+
+    def _set_queue_auto_run(self, on: bool) -> None:
+        """Switched back on, poll now: the drain runs at the top of a poll, so the
+        queue would otherwise sit still for a whole period after the press."""
+        self.store.queue_auto_run = on
+        self.store.tasks_changed.emit()
+        if on:
+            self.store.run_autofix_poll_async()
 
     def _tasks_tick(self) -> None:
         """Re-measure the running automatic agents while the panel is on screen, so a

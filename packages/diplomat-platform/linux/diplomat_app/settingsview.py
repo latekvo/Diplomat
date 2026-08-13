@@ -402,11 +402,10 @@ class SettingsView(QWidget):
         self._sw_autofix.setChecked(self.store.pr_autofix_enabled)
         self._sw_autofix.toggled.connect(self._on_autofix_toggled)
         body.addWidget(self._track(SettingRow(
-            "Auto-fix my PRs", self._sw_autofix,
-            summary="Resolves merge conflicts and answers new review threads.",
-            detail="Off, the monitor keeps looking and lists what it finds under "
-                   "Agent tasks — as queued work only you can start, with "
-                   "“execute now”.",
+            "Auto-queue fixes for my PRs", self._sw_autofix,
+            summary="Merge conflicts and new review threads.",
+            detail="Off, the monitor still lists what it finds under Agent tasks — "
+                   "queued, for “execute now” only.",
         )))
 
         # The failing-poll line. The card's pill flags it; this names the error.
@@ -428,12 +427,11 @@ class SettingsView(QWidget):
         review_row.addWidget(self._reviewed_pill)
         review_row.addWidget(self._sw_review_req)
         body.addWidget(self._track(SettingRow(
-            "Review PRs that request me", review_control,
+            "Auto-queue reviews that request me", review_control,
             summary="Full E2E · max, inline comments — read-only, never their branch.",
-            detail="A review left unaddressed (agent died, lost connection, window "
-                   "closed) is retried automatically until it lands. Off, the "
-                   "requests still list under Agent tasks, queued for you to start "
-                   "by hand.",
+            detail="A review that never lands (agent died, window closed) is retried. "
+                   "Off, the requests still list under Agent tasks, queued for "
+                   "“execute now” only.",
         )))
 
         # What an auto-review may submit. Nested under the switch that creates them,
@@ -522,14 +520,10 @@ class SettingsView(QWidget):
             "Run at most", self._auto_limit, stacked=True,
             summary="Across both monitors, a PR sweep's reviews, and anything a mesh "
                     "peer routes here.",
-            detail="A hard cap for this machine, across both monitors, the reviews a "
-                   "PR sweep queues, and any work a mesh peer routes here. The agent "
-                   "a wizard press opens on the spot is outside it; a review it "
-                   "queues instead is inside, like anything else waiting for a bay. "
-                   "Work over the cap isn't dropped — it "
-                   "waits in the Agent-tasks list, in the order you put it, and "
-                   "starts as soon as a running agent finishes. The panel draws "
-                   "whatever is left of the cap as empty slots.",
+            detail="The agent a wizard press opens on the spot is outside the cap; a "
+                   "review it queues instead is inside. Work over the cap waits in "
+                   "Agent tasks, in the order you put it, and starts when a bay frees "
+                   "— unless you switch off Auto-execute queue there.",
         )))
 
         self._sw_budget = SwitchToggle(_ORANGE)
@@ -539,10 +533,9 @@ class SettingsView(QWidget):
             "Hold work when the limit runs low", self._sw_budget,
             summary="Wait for a window to refill rather than start what won't fit.",
             detail="Priced from Telemetry → limit per task, against both rate-limit "
-                   "windows: higher confidence is stricter. Held work isn't dropped "
-                   "— it waits in the Agent-tasks list until a window refills, and "
-                   "“execute now” overrides it. Nothing is held while the usage probe "
-                   "can't read a window at all.",
+                   "windows: higher confidence is stricter. Held work waits in Agent "
+                   "tasks until a window refills, and “execute now” overrides it. "
+                   "Nothing is held while the usage probe can't read a window.",
         )))
 
         self._budget_knobs, knobs = nested_settings(_ORANGE)
