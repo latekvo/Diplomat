@@ -1,4 +1,4 @@
-"""Pure PR auto-fix logic — the Linux port of DiplomatCore's Autofix.swift,
+"""Pure PR auto-fix logic — the Python twin of DiplomatCore's Autofix.swift,
 ReviewReconcile.swift and the VerdictPolicy in Review.swift.
 
 Kept deterministic and side-effect-free so it's testable in isolation: the

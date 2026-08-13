@@ -29,7 +29,7 @@ import subprocess
 
 import pytest
 
-from diplomat_app import review, szponthost
+from diplomat_runtime import review, szponthost
 from szpontnet import launch, spawnjob
 
 # ``conftest.no_host_agent_spawn`` replaces these two with a refusing stub, because

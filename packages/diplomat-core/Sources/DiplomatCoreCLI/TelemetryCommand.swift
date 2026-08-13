@@ -4,8 +4,8 @@ import Foundation
 /// `diplomat-core telemetry` — fold a ledger fixture and print the whole Telemetry
 /// screen's arithmetic as JSON.
 ///
-/// Same reason `tool-data` exists: `Telemetry` (here) and `diplomat_app/telemetry.py`
-/// (the Linux applet) are two implementations of one calculation, and neither can
+/// Same reason `tool-data` exists: `Telemetry` (here) and `diplomat_runtime/telemetry.py`
+/// (the shared runtime) are two implementations of one calculation, and neither can
 /// delegate to the other — the screen recomputes on every range flip and on every
 /// poll, so a subprocess per repaint is not an option. A drift in either would be
 /// invisible, and invisible in the worst way: both screens keep rendering, they just

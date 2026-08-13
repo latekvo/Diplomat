@@ -1,6 +1,6 @@
 """The telemetry ledger: what the monitors record, and the arithmetic over it.
 
-The Linux twin of ``DiplomatCore/Telemetry.swift`` (the math) plus the ledger
+The Python twin of ``DiplomatCore/Telemetry.swift`` (the math) plus the ledger
 writer that has no Swift counterpart here — macOS writes the same file from
 ``TelemetryLog.swift``. One append-only file,
 ``~/.diplomat/pr-monitor/telemetry.jsonl``, one JSON object per line, ``O_APPEND``

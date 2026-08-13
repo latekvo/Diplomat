@@ -98,7 +98,7 @@ def test_the_host_scan_would_actually_catch_one():
     real hit."""
     assert _host_mentions("# see assets/mesh.json for the duty catalog")
     assert _host_mentions('DIR = Path.home() / ".diplomat" / "mesh"')
-    assert _host_mentions("from diplomat_app import core")
+    assert _host_mentions("from diplomat_runtime import core")
     assert not _host_mentions('os.environ.get("SZPONTNET_DIR")')
 
 

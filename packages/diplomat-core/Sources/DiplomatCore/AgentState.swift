@@ -17,7 +17,7 @@ import Foundation
 // `Evidence` bundle. That split is what makes a scenario a literal instead of a machine
 // in a particular state.
 //
-// Python twin: `diplomat_app/agentstate.py`. The scenario table in
+// Python twin: `diplomat_runtime/agentstate.py`. The scenario table in
 // `linux/tests/test_agent_state.py` is fed through both (`test_agent_state_parity.py`,
 // via `diplomat-core agent-state`), so the two front-ends cannot drift again. Reason
 // strings are compared verbatim, so any text change here needs the same text there.
@@ -120,8 +120,14 @@ public enum AgentState {
     public static let pidAdoptionSlack: TimeInterval = 30
 
     /// How long a mesh origination claim may go unseen before the peer's run reads as
-    /// over. Same value and same reasoning as `MeshAgentRun.claimSettle`, which this
-    /// replaces on both platforms.
+    /// over.
+    ///
+    /// Absence is only evidence once it has had time to be evidence. The claim travels
+    /// the executor's link BEFORE the dispatch ack, but reaches a front-end through a
+    /// file the node rewrites every couple of seconds, read by a poll of its own — and a
+    /// node restart empties the book until its peers re-assert. This window outlasts all
+    /// three, and is short enough that a finished run leaves the list while the operator
+    /// is still looking at it.
     public static let claimSettle: TimeInterval = 45
 
     // MARK: - Placements and sources

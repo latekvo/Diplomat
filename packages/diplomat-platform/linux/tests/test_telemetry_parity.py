@@ -1,7 +1,7 @@
 """Cross-platform parity for the telemetry arithmetic.
 
 ``DiplomatCore.Telemetry`` (diplomat-core/Sources/DiplomatCore/Telemetry.swift) and
-``diplomat_app.telemetry`` are two implementations of the same maths, and both draw a
+``diplomat_runtime.telemetry`` are two implementations of the same maths, and both draw a
 screen the operator reads as fact: what share of a rate-limit window a task costs,
 how wide the confidence interval on that is, how much work was owed a fortnight ago.
 Neither can delegate to the other — the Linux screen repaints on a range flip and a
@@ -27,7 +27,7 @@ import subprocess
 
 import pytest
 
-from diplomat_app import telemetry
+from diplomat_runtime import telemetry
 
 CORE_BIN = os.environ.get("DIPLOMAT_CORE_BIN")
 

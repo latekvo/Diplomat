@@ -2,26 +2,23 @@ import Foundation
 import SQLite3
 import DiplomatCore
 
-/// Headless self-test for what the sweep decides about a live session — is it working,
-/// or back at its prompt? — driven by `DIPLOMAT_SWEEP_TEST=1`.
+/// Headless self-test for what a run's OWN agent says it is doing, driven by
+/// `DIPLOMAT_SWEEP_TEST=1`.
 ///
 /// The reading of an answer is pure and pinned in `DiplomatCoreSmoke` (`OpenCodeAPI`,
-/// `HermesStore`); what this covers is the wiring around it, which is where the answer
-/// stops being used: that a run's own session outranks its window, that a run without one
-/// still falls back to the window, that the match a run pays for once is written onto the
-/// row so it is never paid for again, and that each runner is asked of its own store.
+/// `HermesStore`), and what that answer then decides is pinned by the shared scenario
+/// table (`AgentState`). What this covers is the wiring between them, which is where the
+/// answer stops being used: that each runner is asked of its own store, that the session a
+/// run matched is written into its run directory so it is never matched again, that a
+/// runner serving nothing is asked of nothing, and that a finished run is priced from the
+/// store that ran it.
 ///
-/// It opens no window, dials no port and needs no agent: the OpenCode probe is injected,
-/// and the Hermes one is pointed at a store this file writes. A CI runner can host it:
+/// It opens no window, dials no port and needs no agent: the Hermes probe is pointed at a
+/// store this file writes, and the OpenCode exporter at one it stages on a throwaway
+/// shell's path. A CI runner can host it:
 ///
 ///     DIPLOMAT_SWEEP_TEST=1 swift run Diplomat
 enum SweepTest {
-    /// The live status bar of a real Claude Code pane mid-turn, and of one back at its
-    /// prompt. Verbatim, because the whole point of the marker is that it is someone
-    /// else's string — a buffer we composed would only prove we agree with ourselves.
-    static let working = "● Reading files…\n⏵⏵ bypass permissions on · esc to interrupt · ←"
-    static let atPrompt = "● Posted the review.\n❯\n⏵⏵ bypass permissions on (shift+tab to cycle)"
-
     /// Returns overall pass/fail so the launcher can exit non-zero — a FAIL that still
     /// exits 0 can't gate anything.
     @discardableResult
@@ -32,104 +29,74 @@ enum SweepTest {
             if !ok { pass = false }
         }
 
-        // A row old enough to be past the spawn grace, on a tty the terminal still lists
-        // — so the window-gone branch never fires and `awaitingInput` is what varies.
-        func row(runner: AgentRunner = .claude, port: Int = 0,
-                 agentSessionID: String = "") -> TrackedProcess {
-            TrackedProcess(kind: "review", label: "Review · #7", terminal: "iterm",
-                           windowID: "1", sessionID: "", tty: "/dev/ttys001",
-                           donePath: "", prURL: nil,
-                           createdAt: Date(timeIntervalSinceNow: -600),
-                           runner: runner.rawValue, port: port,
-                           agentSessionID: agentSessionID)
-        }
-        func sweep(_ p: TrackedProcess, tail: String,
-                   session: AgentSessionProbe.AgentSession?) -> TrackedProcess {
-            ProcessMonitor.sweep([p], openWindows: { _ in ["1"] },
-                                 sessionTails: ["/dev/ttys001": tail],
-                                 ttyElapsed: ["ttys001": 900],
-                                 agentSessions: { procs in
-                                     guard let session, let first = procs.first else { return [:] }
-                                     return [first.id: session]
-                                 }).refreshed[0]
-        }
-        func answer(_ busy: Bool, _ id: String = "ses_ours") -> AgentSessionProbe.AgentSession {
-            AgentSessionProbe.AgentSession(sessionID: id,
-                                           state: AgentState.SessionState(busy: busy))
-        }
+        // Every run is registered for real, in a scratch book: what is on trial is a
+        // probe that reads a run's runner and prompt out of its own directory and writes
+        // its session back there, so a fixture that skipped the registry would exercise
+        // none of it.
+        let agents = FileManager.default.temporaryDirectory
+            .appendingPathComponent("diplomat-sweep-agents-\(UUID().uuidString)")
+        setenv("DIPLOMAT_AGENTS_DIR", agents.path, 1)
+        defer { try? FileManager.default.removeItem(at: agents) }
 
-        // 1. The two disagreeing cases, which are the whole reason to ask the agent: they
-        //    are what a redrawn or reworded status bar looks like, and each is a mistake
-        //    the applet used to make with no way to tell it was making one.
-        check("a session mid-turn holds its bay though its window looks idle",
-              sweep(row(runner: .opencode, port: 47_910), tail: atPrompt, session: answer(true))
-                  .awaitingInput == false)
-        check("a session that finished its turn gives its bay back though the hint is stale",
-              sweep(row(runner: .opencode, port: 47_910), tail: working, session: answer(false))
-                  .awaitingInput == true)
-
-        // 2. The match costs a fetch of a session's opening message; the row is where the
-        //    answer is kept so the next sweep asks a session it already knows.
-        check("the session a run matched is written onto its row",
-              sweep(row(runner: .opencode, port: 47_910), tail: working, session: answer(false))
-                  .agentSessionID == "ses_ours")
-
-        // 3. Every Claude Code run is this one, as is an OpenCode run no port could be
-        //    reserved for. Reaching for an answer that is not there must cost the older
-        //    evidence, never the verdict.
-        check("a run with no session of its own is still read off its window",
-              sweep(row(), tail: working, session: nil).awaitingInput == false)
-        check("…and reads as idle when that window is back at its prompt",
-              sweep(row(), tail: atPrompt, session: nil).awaitingInput == true)
-
-        // 4. A window whose buffer could not be captured at all: neither probe answered,
-        //    so nothing may be asserted. Left as it came in — running.
-        let unread = ProcessMonitor.sweep([row()], openWindows: { _ in ["1"] },
-                                          ttyElapsed: ["ttys001": 900],
-                                          agentSessions: { _ in [:] }).refreshed[0]
-        check("a run neither probe could reach keeps reading as running",
-              unread.awaitingInput == false)
-
-        // 5. Hermes, against a real store this writes — the one runner whose answer comes
-        //    out of SQLite rather than a socket, so the query, the read-only open and the
-        //    match are all exercised rather than stubbed.
         guard let fixture = hermesFixture() else {
             check("a Hermes store fixture could be written", false)
             print("\nSWEEP TEST FAILED")
             return false
         }
         setenv("DIPLOMAT_HERMES_DB", fixture.db, 1)
-        func staged(_ runner: AgentRunner, prompt: String) -> TrackedProcess {
-            var p = row(runner: runner)
-            p.promptFile = prompt
-            return p
+
+        var dispatched = Date().timeIntervalSince1970 - 600
+        func staged(_ runner: AgentRunner, prompt: String) -> AgentState.RunRecord {
+            dispatched += 1
+            let record = AgentRegistry.createRun(
+                AgentState.RunRecord(runID: AgentRegistry.newRunID(now: dispatched),
+                                     dispatchedAt: dispatched, prNumber: 7, kind: "review",
+                                     label: "Review · #7"),
+                prompt: prompt)
+            AgentRegistry.stageRunner(record.runID, runner.rawValue)
+            return record
         }
+
+        // 1. Hermes, against a real store this writes — the one runner whose answer comes
+        //    out of SQLite rather than a socket, so the query, the read-only open and the
+        //    match are all exercised rather than stubbed.
         let ours = staged(.hermes, prompt: fixture.oursPrompt)
-        let mine = AgentSessionProbe.states(for: [ours], directory: fixture.cwd)[ours.id]
+        let mine = AgentSessionProbe.states(for: [ours], directory: fixture.cwd)[ours.runID]
         // Two sessions a second apart in one checkout is the ordinary case under the task
         // cap, and only the prompt separates them.
         check("a Hermes run finds its own session and not the one beside it",
-              mine?.sessionID == "ses_ours")
-        check("a Hermes turn that is mid tool call reads as working",
-              mine?.state.busy == true)
+              AgentRegistry.boundSession(ours.runID) == "ses_ours")
+        check("a Hermes turn that is mid tool call reads as working", mine?.busy == true)
         let other = staged(.hermes, prompt: fixture.donePrompt)
-        let theirs = AgentSessionProbe.states(for: [other], directory: fixture.cwd)[other.id]
+        let theirs = AgentSessionProbe.states(for: [other], directory: fixture.cwd)[other.runID]
         check("a Hermes turn its agent marked finished reads as back at the prompt",
-              theirs?.sessionID == "ses_done" && theirs?.state.busy == false)
-        // Input + output + cache writes, never the 9000 cache reads beside them: the
-        // per-task figure has to mean the same thing for every runner in one ledger.
+              AgentRegistry.boundSession(other.runID) == "ses_done" && theirs?.busy == false)
+
+        // 2. The match costs a fetch of a session's opening message; the run's directory
+        //    is where the answer is kept, so the next tick asks a session it already
+        //    knows — and so a run that ends can still be priced by it after its prompt is
+        //    gone.
+        try? FileManager.default.removeItem(at: AgentRegistry.promptPath(ours.runID))
+        check("a bound session outlives the prompt that found it",
+              AgentSessionProbe.states(for: [ours],
+                                       directory: fixture.cwd)[ours.runID]?.busy == true)
+
+        // 3. Claude Code serves nothing, so asking any store about it would be asking
+        //    about somebody else's session — the runner is what decides who is asked.
+        check("a Claude Code run is asked of no store at all",
+              !AgentSessionProbe.serves(AgentRunner.claude.rawValue)
+                  && AgentSessionProbe.states(for: [staged(.claude, prompt: fixture.oursPrompt)],
+                                              directory: fixture.cwd).isEmpty)
+
+        // 4. Pricing: input + output + cache writes, never the 9000 cache reads beside
+        //    them — the per-task figure has to mean the same thing for every runner in
+        //    one ledger.
         check("a finished Hermes run is priced from its own session row",
               HermesProbe.sessionTokens(sessionID: "ses_ours") == 125)
         check("a session the store has never heard of is unpriced, not free",
               HermesProbe.sessionTokens(sessionID: "ses_gone") == nil)
 
-        // 6. Claude Code serves nothing, so asking any store about it would be asking
-        //    about somebody else's session — the runner is what decides who is asked.
-        check("a Claude Code run is asked of no store at all",
-              AgentSessionProbe.states(for: [staged(.claude, prompt: fixture.oursPrompt)],
-                                       directory: fixture.cwd).isEmpty)
-
-        // 7. OpenCode, the one runner whose price comes from a subprocess. The exporter
+        // 5. OpenCode, the one runner whose price comes from a subprocess. The exporter
         //    is reached the way a spawn reaches it — through the user's shell — so a
         //    stub only an rc puts on the path is what proves it: the applet's own
         //    environment is a Dock icon's, and an install of exactly that shape is what
@@ -235,12 +202,6 @@ enum SweepTest {
                  ('ses_done', 'assistant', 'posted', 'stop');
         """
         guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else { return nil }
-        let oursFile = dir.appendingPathComponent("ours.txt")
-        let doneFile = dir.appendingPathComponent("done.txt")
-        guard (try? ours.write(to: oursFile, atomically: true, encoding: .utf8)) != nil,
-              (try? done.write(to: doneFile, atomically: true, encoding: .utf8)) != nil
-        else { return nil }
-        return (dir.appendingPathComponent("state.db").path, cwd,
-                oursFile.path, doneFile.path)
+        return (dir.appendingPathComponent("state.db").path, cwd, ours, done)
     }
 }

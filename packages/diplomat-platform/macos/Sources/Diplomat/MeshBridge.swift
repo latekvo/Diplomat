@@ -125,17 +125,17 @@ enum MeshBridge {
         p.executableURL = URL(fileURLWithPath: python)
         p.arguments = ["-m", "szpontnet", "--daemon"]
         // Both trees come in on PYTHONPATH, so the working directory is only the one the
-        // daemon inherits for its lifetime — the Linux package for the same reason the
+        // daemon inherits for its lifetime — the runtime package for the same reason the
         // Linux spawner picks it: it is the tree this front-end can be sure exists.
-        p.currentDirectoryURL = RepoPaths.linuxPackage
+        p.currentDirectoryURL = RepoPaths.runtimePackage
         // The node is a separate process and gets no say in who its host is, so hand it
         // both halves: the paths to import the library and Diplomat from, and the module
         // that registers Diplomat behind it. Without the second it comes up on SzpontNet's
         // own defaults — its own state directory, none of our duties, no activity feed.
         var env = ProcessInfo.processInfo.environment
-        env["SZPONTNET_HOST"] = "diplomat_app.szponthost"
+        env["SZPONTNET_HOST"] = "diplomat_runtime.szponthost"
         env["PYTHONPATH"] = [
-            RepoPaths.linuxPackage.path,
+            RepoPaths.runtimePackage.path,
             RepoPaths.szpontnetPackage.path,
             env["PYTHONPATH"] ?? "",
         ].filter { !$0.isEmpty }.joined(separator: ":")

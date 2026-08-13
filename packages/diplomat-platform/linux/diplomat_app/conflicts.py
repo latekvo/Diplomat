@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .configbase import PRSweepConfig
-from .prtarget import PRTarget
+from diplomat_runtime.configbase import PRSweepConfig
+from diplomat_runtime.prtarget import PRTarget
 
 # Whose PRs we sweep — the same axis the Review wizard uses. Kept as ``Target`` here
 # (and re-exported) so existing call sites stay unchanged.
@@ -36,7 +36,7 @@ class ConflictConfig(PRSweepConfig):
 
     def build_prompt(self) -> str:
         # Single-sourced in Swift (DiplomatCore) via the diplomat-core CLI.
-        from . import promptcore
+        from diplomat_runtime import promptcore
 
         return promptcore.build_prompt({
             "kind": "conflicts",

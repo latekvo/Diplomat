@@ -291,8 +291,15 @@ enum Dump {
         print(prompt)
         guard let file = try? AgentSpawner.writePrompt(prompt) else { return }
         defer { try? FileManager.default.removeItem(at: file) }
-        let cmd = AgentSpawner.shellCommand(promptFile: file,
-                                            donePath: AgentSpawner.doneFilePath())
+        // The paths a real spawn takes from the run's own directory, stood in for by a
+        // throwaway id: what the dump is for is the shape of the command, and a run
+        // registered here would be one the applet then had to retire.
+        let run = AgentRegistry.newRunID(now: Date().timeIntervalSince1970)
+        let cmd = AgentSpawner.shellCommand(
+            AgentSpawner.SpawnPlan(promptFile: file,
+                                   donePath: AgentRegistry.donePath(run).path,
+                                   pidPath: AgentRegistry.pidPath(run).path,
+                                   runner: AppConfig.agentRunner, port: 0))
         print("\n----- SHELL COMMAND -----")
         print(cmd)
         let term = AgentSpawner.resolved(.iterm)
@@ -428,7 +435,7 @@ enum Dump {
         // 1. BACKGROUND spawn — must not steal focus off Finder.
         neutral()
         let before = frontmost()
-        let done1 = AgentSpawner.doneFilePath()
+        let done1 = NSTemporaryDirectory() + "diplomat-focus-bg-\(UUID().uuidString)"
         let cmd1 = "echo 'diplomat bg focus self-test — closes itself'; sleep 2; printf %s $? > '\(done1)'"
         let cap1 = try? AgentSpawner.runSpawn(command: cmd1, terminal: term,
                                               restoreFocusTo: "com.apple.finder")
@@ -452,7 +459,7 @@ enum Dump {
         // 2. FOREGROUND spawn — the user SPAWN path; SHOULD bring the terminal forward.
         neutral()
         let before2 = frontmost()
-        let done2 = AgentSpawner.doneFilePath()
+        let done2 = NSTemporaryDirectory() + "diplomat-focus-fg-\(UUID().uuidString)"
         let cmd2 = "echo 'diplomat fg focus self-test — closes itself'; sleep 2; printf %s $? > '\(done2)'"
         let cap2 = try? AgentSpawner.runSpawn(command: cmd2, terminal: term, restoreFocusTo: nil)
         usleep(800_000)

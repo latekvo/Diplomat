@@ -5,7 +5,7 @@ import Foundation
 /// fixture and print every answer it produces.
 ///
 /// Same standing as `tool-data` and `telemetry`: `AgentState` (Swift) and
-/// `diplomat_app/agentstate.py` (the Linux applet) are two implementations of one
+/// `diplomat_runtime/agentstate.py` (the shared runtime) are two implementations of one
 /// decision, and neither can delegate to the other — this runs on an 8-second poll and
 /// on every dispatch, so a subprocess per tick is not an option. A drift would be
 /// invisible in the worst way: both applets keep drawing rows, they just quietly

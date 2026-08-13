@@ -55,8 +55,8 @@ final class Store: ObservableObject {
         UserDefaults.standard.set(value, forKey: key)
     }
 
-    /// JSON-encoded twin of `persist`, for the Codable caches (tracked processes, the
-    /// per-PR attempt maps, the auto-fix fingerprints). Same headless rule; an encode
+    /// JSON-encoded twin of `persist`, for the Codable caches (the per-PR attempt maps,
+    /// the auto-fix fingerprints). Same headless rule; an encode
     /// failure leaves the previous value in place rather than clearing it.
     private func persistJSON<T: Encodable>(_ value: T, forKey key: String) {
         guard !Headless.active else { return }
@@ -295,52 +295,35 @@ final class Store: ObservableObject {
         }
     }
 
-    /// The dispatched agent tasks shown in the ongoing-processes list: the sessions
-    /// this machine spawned, plus the work it handed to a mesh node (`mesh` set —
-    /// same row, different liveness). Persisted so the list survives an applet
-    /// restart, which each kind outlives for its own reason: a session's
-    /// tty/window/sentinel handles are OS-level, and a mesh run's lease is held by
-    /// the peer executing it.
-    @Published var processes: [TrackedProcess] {
-        didSet { persistProcesses() }
+    /// Every dispatched agent run the panel draws, in reading order: the sessions this
+    /// machine spawned, the work it handed to a mesh node, and any live agent nobody
+    /// dispatched at all.
+    ///
+    /// A projection of the last tick (`agentTick`), never a book of its own: the book is
+    /// `~/.diplomat/agents/runs.json`, which is where the list survives a restart and
+    /// where the Linux front-end and the mesh node read it from.
+    @Published private(set) var agentRows: [AgentRow] = []
+
+    /// One row of the Agent-tasks list: the record, what this tick resolved it to, and
+    /// the window handle — nil for a run with no terminal on this machine, which is a
+    /// row that draws and cannot be clicked.
+    struct AgentRow: Identifiable, Equatable {
+        var record: AgentState.RunRecord
+        var state: AgentState.RunState
+        /// The one fact that decided the state. Drawn beside `unknown`, which is the
+        /// state where "which probe went quiet" is the difference between two entirely
+        /// different things to go and fix.
+        var reason: String
+        var window: AgentWindows.Handle?
+
+        var id: String { record.runID }
+        var status: AgentTaskStatus { AgentTaskStatus.of(state) }
     }
 
     /// The folded telemetry ledger the Telemetry screen draws. Republished when a
     /// sample lands or an agent finishes, so an open screen follows the ledger
     /// without a timer of its own.
     @Published var telemetryLedger = Telemetry.Ledger()
-
-    /// One auto-dispatched agent whose completion is still to be recorded: the
-    /// ledger key to record against, the sentinel to watch, and the prompt that
-    /// identifies the agent's transcript.
-    ///
-    /// Deliberately in memory and NOT in `TrackedProcess`: that struct is persisted
-    /// to UserDefaults on every mutation, and a prompt is kilobytes of text. An
-    /// applet restart therefore forfeits the cost of the agents it had in flight,
-    /// which the screen reports as unattributed rather than as free.
-    ///
-    /// It also holds the sentinel path itself rather than looking it up in
-    /// `processes`, because a tracked row is removed the moment its terminal window
-    /// closes — and an agent that finished and then had its window closed inside one
-    /// poll would otherwise take its completion with it.
-    private struct TelemetryRun {
-        let key: String
-        let prompt: String
-        let donePath: String
-        let at: Double
-        /// Which agent CLI ran it, so the right store is asked what it spent.
-        let runner: String
-        /// The session this run turned out to own, learned by the sweep after the run
-        /// started and copied here so it survives the row: what prices a run is read when
-        /// the run ENDS, which is the same moment its row is removed.
-        var sessionID: String = ""
-    }
-    private var telemetryInflight: [UUID: TelemetryRun] = [:]
-
-    /// A run whose sentinel never appears (window killed, machine slept) is given
-    /// up on after this long, so a stuck entry can't accumulate forever. Matches
-    /// the Linux applet's in-flight TTL.
-    private static let telemetryRunTTL: TimeInterval = 2 * 60 * 60
 
     /// Automatic work nothing has started yet — held by the task cap, or by its own
     /// monitor being switched off — in the order it will run. The other half of the
@@ -401,7 +384,6 @@ final class Store: ObservableObject {
         static let hiddenTools = "hiddenTools"
         static let colorOverrides = "colorOverrides"
         static let terminalChoice = "terminalChoice"
-        static let processes = "trackedProcesses"
         static let prAutofixEnabled = "prAutofixEnabled"
         static let autofixFingerprints = "autofixFingerprints"
         static let autofixConflicts = "autofixConflictsHandled"
@@ -528,7 +510,6 @@ final class Store: ObservableObject {
         meshAckedDevices = Set(defaults.stringArray(forKey: Keys.meshAckedDevices) ?? [])
         meshTrustReminderSuppressed = defaults.bool(forKey: Keys.meshTrustReminderSuppressed)
         settingsExplain = defaults.bool(forKey: Keys.settingsExplain)
-        processes = Store.loadProcesses()
         queuedTaskOrder = defaults.stringArray(forKey: Keys.queuedTaskOrder) ?? []
         requestedReviews = Store.loadRequestedReviews()
         if hiddenTools.contains(selected.rawValue),
@@ -690,190 +671,417 @@ final class Store: ObservableObject {
             self.error = (error as? LocalizedError)?.errorDescription ?? "\(error)"
         }
         isLoading = false
-        // A full refresh is also where we re-check whether any tracked session's PR
-        // has since been merged. Best-effort and after the main load so a PR-state
-        // hiccup never blocks the tool data or clobbers its error.
+        // A full refresh is also where we re-ask which of the tracked PRs have landed.
+        // Best-effort and after the main load so a PR-state hiccup never blocks the
+        // tool data or clobbers its error.
         await refreshMergedStatuses()
     }
 
-    /// Re-check, off the back of an Update, whether any tracked session's PR has been
-    /// merged on GitHub, and flip its `merged` flag. Best-effort: a failed probe just
-    /// leaves that row unchanged. Only sessions tied to a PR that isn't already known
-    /// merged are queried, so the cost is one `gh pr view` per still-open tracked PR.
+    /// Ask GitHub which of the tracked PRs have landed — the one terminal outcome that
+    /// outranks whatever a process is doing.
+    ///
+    /// On the slow refresh, not the 8-second tick: it costs a `gh` call per PR. The answer
+    /// is carried forward by the fast ticks in between.
     func refreshMergedStatuses() async {
-        let targets = processes.filter { !$0.merged && $0.prNumber != nil }
-        guard !targets.isEmpty else { return }
-        var nowMerged: Set<UUID> = []
-        for p in targets {
-            guard let n = p.prNumber else { continue }
-            if let state = try? await API.fetchPRState(number: n), state == "MERGED" {
-                nowMerged.insert(p.id)
-            }
-        }
-        guard !nowMerged.isEmpty else { return }
-        var next = processes
-        var changed = false
-        for i in next.indices where nowMerged.contains(next[i].id) && !next[i].merged {
-            next[i].merged = true
-            changed = true
-        }
-        if changed { processes = next }
+        mergedPRs = await AgentProbes.mergedPRs(
+            Set(AgentRegistry.load().compactMap(\.prNumber)))
     }
 
-    // MARK: tracked agent sessions
+    // MARK: tracked agent runs
 
-    /// Outcome of clicking a tracked process row.
+    /// Outcome of clicking an agent row.
     enum FocusOutcome { case focused, dismissed }
 
-    /// How often the ongoing-processes list re-checks liveness. Default 8s; override
-    /// with `DIPLOMAT_PROC_POLL_SECS` (clamped ≥2s) for tuning/testing.
+    /// How often the agent rows are re-resolved. Default 8s; override with
+    /// `DIPLOMAT_PROC_POLL_SECS` (clamped ≥2s) for tuning/testing.
     static var processPollInterval: TimeInterval {
         let secs = ProcessInfo.processInfo.environment["DIPLOMAT_PROC_POLL_SECS"].flatMap(Double.init)
         return max(2, secs ?? 8)
     }
     private var processPollTask: Task<Void, Never>?
 
-    private func persistProcesses() {
-        persistJSON(processes, forKey: Keys.processes)
-    }
-    private static func loadProcesses() -> [TrackedProcess] {
-        guard let data = UserDefaults.standard.data(forKey: Keys.processes),
-              let decoded = try? JSONDecoder().decode([TrackedProcess].self, from: data)
-        else { return [] }
-        return decoded
-    }
-
-    /// Register a freshly spawned agent session for tracking, and record it in the audit
-    /// log. `source` is "panel" (a wizard SPAWN) or "auto" (a monitor dispatch).
+    /// Register a run, then spawn its agent into it. Returns the terminal that opened.
     ///
-    /// `kind` drives the tracked-session row's tint; `auditAction` (defaulting to `kind`)
-    /// is the verb written to the activity feed. They're decoupled so a review-reply agent
-    /// can log a distinct `review-reply` action — feeding the Activity filter its own
-    /// "Replies" category — while still rendering as a plain review session.
+    /// The record is written BEFORE the spawn, not after. A terminal takes seconds to
+    /// open and the poll that dispatched it can ask about the same PR again inside that
+    /// window; a run booked only on success is a PR that reads free while its agent is
+    /// starting.
     ///
-    /// `ledgerKey` + `prompt` are supplied only for a monitor dispatch, and are what
-    /// lets the sentinel that ends this session be turned into a telemetry
-    /// completion with a cost attached.
-    func track(kind: String, label: String, prURL: String?, result: AgentSpawner.SpawnResult,
-               source: String = "panel", auditAction: String? = nil,
-               ledgerKey: String = "", prompt: String = "") {
-        let p = TrackedProcess(kind: kind, label: label,
-                               terminal: result.terminal.rawValue,
-                               windowID: result.windowID, sessionID: result.sessionID,
-                               tty: result.tty, donePath: result.donePath, prURL: prURL,
-                               source: source, runner: result.runner, port: result.port,
-                               promptFile: result.promptFile.path)
-        if !ledgerKey.isEmpty, !p.donePath.isEmpty {
-            telemetryInflight[p.id] = TelemetryRun(key: ledgerKey, prompt: prompt,
-                                                   donePath: p.donePath,
-                                                   at: Date().timeIntervalSince1970,
-                                                   runner: result.runner)
+    /// The agent's shell writes its own pid into the run directory and then execs, so
+    /// what identifies this run afterwards is that pid rather than the wording of its
+    /// prompt (`AgentSpawner.shellCommand`).
+    ///
+    /// Which runner is spawned is written down here rather than re-read later: the setting
+    /// is what the NEXT spawn will use, so a run started under one runner and asked about
+    /// after the operator switched would be interrogated through the wrong store. An
+    /// OpenCode run also gets a port reserved for its own server. A port that cannot be had
+    /// is not a failure to spawn — the run goes ahead without one and is read off its
+    /// screen, exactly as a Claude Code run is.
+    ///
+    /// `kind` drives the row's tint; `auditAction` (defaulting to `kind`) is the verb
+    /// written to the activity feed. They're decoupled so a review-reply agent can log a
+    /// distinct `review-reply` action — feeding the Activity filter its own "Replies"
+    /// category — while still rendering as a plain review session.
+    @discardableResult
+    func spawnTracked(kind: String, label: String, prURL: String?, prNumber: Int?,
+                      prompt: String, source: String, auditAction: String? = nil,
+                      ledgerKey: String = "", terminal preferred: SpawnTerminal,
+                      restoreFocusTo restoreBID: String? = nil) async throws -> SpawnTerminal {
+        let now = Date().timeIntervalSince1970
+        let record = AgentRegistry.createRun(
+            AgentState.RunRecord(runID: AgentRegistry.newRunID(now: now), dispatchedAt: now,
+                                 prNumber: prNumber, prURL: prURL ?? "", kind: kind,
+                                 label: label, source: source, placement: .local,
+                                 ledgerKey: ledgerKey),
+            prompt: prompt)
+        let runner = AppConfig.agentRunner
+        AgentRegistry.stageRunner(record.runID, runner.rawValue)
+        var port = 0
+        if runner == .opencode, let free = OpenCodeProbe.freePort(),
+           AgentRegistry.stagePort(record.runID, free) {
+            port = free
         }
-        processes.append(p)
-        AuditLog.log(source, auditAction ?? kind, label)
+        let plan = AgentSpawner.SpawnPlan(
+            promptFile: AgentRegistry.promptPath(record.runID),
+            donePath: AgentRegistry.donePath(record.runID).path,
+            pidPath: AgentRegistry.pidPath(record.runID).path,
+            runner: runner, port: port)
+        do {
+            // Detached: the spawn's `osascript` blocks for `inputSettleDelay` seconds,
+            // and this actor draws the panel.
+            let result = try await Task.detached(priority: .userInitiated) {
+                try AgentSpawner.spawn(plan, terminal: preferred, restoreFocusTo: restoreBID)
+            }.value
+            AgentWindows.stage(record.runID, result.window)
+            // The tty the spawn captured is the window's, which is the agent's: known a
+            // moment before the pid file is, so the run has a screen from its very first
+            // tick instead of from whichever one adopts its pid.
+            var seeded = record
+            seeded.tty = result.tty
+            Store.persistRunChanges([seeded])
+            AuditLog.log(source, auditAction ?? kind, label)
+            return result.terminal
+        } catch {
+            // Nothing is running, so the record would be a bay held for an agent that
+            // never started — and, being a record, one nothing can ever retire.
+            AgentRegistry.forget([record.runID])
+            throw error
+        }
     }
 
-    /// Remove one tracked session from the list (the row's ✕ button).
-    func removeProcess(_ id: UUID) {
-        processes.removeAll { $0.id == id }
+    /// Stop tracking one run — the row's ✕.
+    ///
+    /// Drops it from the book and deletes its run directory. Only offered for a run this
+    /// applet booked: a live agent nobody dispatched is re-derived from the process table
+    /// every tick, so forgetting one would redraw it a second later.
+    ///
+    /// Priced on the way out: this is the one way a run leaves the book without being
+    /// retired, and retirement is what would otherwise close its ledger entry.
+    func forgetRun(_ runID: String) {
+        let priced = Store.pricingInputs(AgentRegistry.load().filter { $0.runID == runID })
+        AgentRegistry.forget([runID])
+        Task {
+            await settleLedger(priced)
+            await settleAgents()
+        }
     }
 
-    // MARK: mesh rows (work this device handed to a peer)
+    // MARK: mesh runs (work this device handed to the mesh)
 
-    /// Register a unit of work the mesh is running elsewhere, so the panel shows it
-    /// as a task in flight rather than as nothing at all.
+    /// Book a run the mesh placed, which this applet did not spawn itself.
     ///
-    /// A mesh dispatch consumes the queued row and leaves no session behind it, so
-    /// without this the machine that originated the work has no trace of it — and
-    /// "execute now" on a peer-routed task is indistinguishable from a click that
-    /// silently dropped it. The row is the same row a local session gets — same
-    /// label, same kind, same place in the list — and says where it runs.
+    /// There is no pid to record: the executor opened the terminal. A placement that
+    /// landed back HERE is still a process on this box, so it spends a bay and the
+    /// untracked scan will find it; one on a peer is judged only by the executor's
+    /// origination claim, which is the sole evidence that crosses the machine boundary.
     ///
-    /// Keyed by the work key, not the row id: one lease is one agent, so a second
-    /// dispatch of a key already on the list (a stand-down re-offered before the
-    /// in-flight check can see the row) updates that row instead of adding a twin.
+    /// Which runner it is under is recorded for a landing HERE and only there. The node
+    /// spawns through the same seam this applet does, so the answer is the same one and the
+    /// run is asked of the right store and priced by it. A run on a PEER is a process on
+    /// another machine: our stores hold nothing about it, and a runner written here would
+    /// point its probe at a session that is somebody else's.
     ///
-    /// Not private: the queue self-test builds a row here rather than through a real
+    /// Not private: the queue self-test books a run here rather than through a real
     /// dispatch, which would need a live mesh node and a peer willing to run it.
     func trackMeshRun(_ job: AgentJob, node: String, attemptNumber: Int,
                       onThisMachine: Bool = false) {
-        // The key IS the row's identity here, so a job without one has no row to be:
-        // every keyless row would answer to every other's lease. (`routeViaMesh` only
-        // dispatches keyed jobs, so nothing in the app arrives here without one.)
+        // The work key IS a mesh run's identity — it is what the executor's origination
+        // claim is published under, and the only evidence that ever crosses the machine
+        // boundary. A run without one could never be resolved against a claim book.
+        // (`routeViaMesh` only dispatches keyed jobs, so nothing in the app arrives here
+        // without one.)
         guard !job.workKey.isEmpty else { return }
-        let run = TrackedProcess.MeshRun(node: node, workKey: job.workKey,
-                                         onThisMachine: onThisMachine)
-        // Which runner, for a landing HERE and only there. The node spawns through the
-        // same seam a local dispatch does, so the answer is this setting — and it is
-        // what decides which store the run is asked of and priced from. A run on a
-        // PEER is a process on another machine: nothing here holds its session, and a
-        // runner recorded would point the probe at somebody else's.
-        let runner = onThisMachine ? AppConfig.agentRunner.rawValue : ""
-        if let i = processes.firstIndex(where: { $0.mesh?.workKey == job.workKey }) {
-            processes[i].mesh = run
-            processes[i].runner = runner
-            return
+        let now = Date().timeIntervalSince1970
+        let record = AgentRegistry.createRun(
+            AgentState.RunRecord(
+                runID: AgentRegistry.newRunID(now: now), dispatchedAt: now,
+                prNumber: job.prNumber, prURL: job.prURL ?? "", kind: job.kind,
+                label: AgentDispatchGate.label(source: .auto, core: job.label,
+                                               attemptNumber: attemptNumber,
+                                               requested: job.requested),
+                source: AgentDispatchGate.Source.auto.rawValue,
+                placement: onThisMachine ? .meshHere : .meshPeer,
+                node: node, workKey: job.workKey, ledgerKey: job.ledgerKey),
+            prompt: job.prompt)
+        if onThisMachine {
+            AgentRegistry.stageRunner(record.runID, AppConfig.agentRunner.rawValue)
         }
-        processes.append(TrackedProcess(
-            kind: job.kind,
-            label: AgentDispatchGate.label(source: .auto, core: job.label,
-                                           attemptNumber: attemptNumber,
-                                           requested: job.requested),
-            terminal: "", windowID: "", sessionID: "", tty: "", donePath: "",
-            prURL: job.prURL, mesh: run,
-            source: AgentDispatchGate.Source.auto.rawValue,
-            runner: runner))
-        meshClaimSeen[job.workKey] = Date()
     }
 
-    /// When each live mesh row's lease was last seen in the local node's snapshot.
-    /// In memory only: it is re-seeded from the row's own age on the first pass after
-    /// a restart, and persisting it would mean rewriting every row on every tick just
-    /// to record that nothing changed.
-    private var meshClaimSeen: [String: Date] = [:]
+    // MARK: - the one tick every agent question is a projection of
 
-    /// Re-derive the mesh rows' liveness from the origination leases the local node
-    /// publishes, and drop the ones whose agent has finished.
+    /// Everything one pass of evidence produced, plus what the panel needs to click a row.
+    struct AgentPass {
+        var tick: AgentState.Tick
+        /// Window handles for the runs that have one, read in the same pass so a repaint
+        /// never touches the disk.
+        var windows: [String: AgentWindows.Handle]
+    }
+
+    /// Resolve every registered run against one pass of evidence. READ-ONLY.
     ///
-    /// Dropped, not left reading "done": a finished remote run is the case the sweep
-    /// already calls terminal-closed — there is no window to focus, no output to
-    /// read, nothing left this machine can do with the row — and the feed keeps the
-    /// record. Left on the list they would also hold the PR in-flight against the
-    /// monitors, so a run that failed on a peer could never be retried anywhere.
+    /// This is the single place the applet asks what its agents are doing. The dedup, the
+    /// cap, the panel rows and the retirement are all projections of the result
+    /// (`DiplomatCore.AgentState`), so they cannot come to disagree — which is what four
+    /// independent re-derivations of the same question did.
     ///
-    /// Not private: the queue self-test drives it with a synthetic claim book, which
-    /// is the only way to exercise the lifecycle without a live mesh.
-    func reconcileMeshRuns(claims: [String: String], now: Date = Date()) {
-        let live = processes.filter(\.isMesh).compactMap { $0.mesh?.workKey }
-        guard !live.isEmpty else {
-            if !meshClaimSeen.isEmpty { meshClaimSeen = [:] }
-            return
+    /// Nothing here writes, retires or logs. The panel asks for the rows and the free slots
+    /// on every repaint, so a read with consequences means a screenshot retires records and
+    /// a redraw writes to the operator's activity feed. What the consequences are, and when
+    /// they happen, is `settleAgents`.
+    ///
+    /// Deliberately not cached either. The expensive part is the I/O, and that is already
+    /// cached where it happens (`AgentProbes`), so resolving again costs a file read and
+    /// some set arithmetic. A cache here would instead buy a staleness window in which an
+    /// agent that just finished still holds its bay — the exact class of wrong answer this
+    /// whole mechanism exists to remove.
+    ///
+    /// The probes shell out, run AppleScript and dial sockets, so the whole pass is done
+    /// off the main actor.
+    func agentTick() async -> AgentPass {
+        let limit = autoTaskLimit
+        let (owner, repo) = coreRepo
+        let (mesh, snapshot, merged) = (meshEnabled, meshState, mergedPRs)
+        let directory = AgentSpawner.repoPath
+        return await Task.detached(priority: .userInitiated) {
+            let now = Date().timeIntervalSince1970
+            let records = AgentRegistry.adoptPids(AgentRegistry.load())
+            let evidence = AgentProbes.gather(records: records, now: now, owner: owner,
+                                              repo: repo, directory: directory,
+                                              meshEnabled: mesh, meshState: snapshot,
+                                              merged: merged)
+            let tick = AgentState.tick(records: records, evidence: evidence, now: now,
+                                       limit: limit)
+            var windows: [String: AgentWindows.Handle] = [:]
+            for r in tick.records where !r.untracked {
+                windows[r.runID] = AgentWindows.handle(r.runID)
+            }
+            return AgentPass(tick: tick, windows: windows)
+        }.value
+    }
+
+    /// One tick, and the consequences of it: publish the rows, write back what was learned,
+    /// retire what has ended, and report a probe that has gone quiet.
+    ///
+    /// Called from the process poll and from the display refresh — the two ticks that are
+    /// meant to move the world on — and from nowhere that merely draws.
+    @discardableResult
+    func settleAgents() async -> AgentPass {
+        let pass = await agentTick()
+        Store.persistRunChanges(pass.tick.records)
+        publish(pass)
+        await retireFinished(pass.tick)
+        noteSilentProbes()
+        return pass
+    }
+
+    /// The rows and the cap load this pass produced.
+    ///
+    /// Runs that are over are left out. The same tick that resolves one retires it, so
+    /// drawing it would put a row on screen for one redraw and then take it away again —
+    /// and which redraw catches it depends on when the poll happened to land. What a
+    /// finished run leaves behind is its activity line and its ledger entry.
+    private func publish(_ pass: AgentPass) {
+        let rows = pass.tick.rows
+            .filter { $0.1.state != .finished && $0.1.state != .merged }
+            .map { AgentRow(record: $0.0, state: $0.1.state, reason: $0.1.reason,
+                            window: pass.windows[$0.0.runID] ?? nil) }
+        // Assigned only on a change, like every other value the 8-second poll re-derives:
+        // `@Published` fires on assignment, not on difference, so an unconditional write
+        // would redraw the panel on every tick of an idle machine.
+        if agentRows != rows { agentRows = rows }
+        if autoTasksMeasured != pass.tick.capLoad.count {
+            autoTasksMeasured = pass.tick.capLoad.count
         }
-        var finished = Set<String>()
-        for key in live {
-            if claims[key] != nil { meshClaimSeen[key] = now; continue }
-            // A row restored from disk has no sighting behind it, so this pass becomes
-            // its first and the window runs from here. Its `createdAt` must NOT stand
-            // in: a row for an hour-long review reloads already older than any window,
-            // and `meshState` is still nil for the first couple of seconds after
-            // launch — so an age-based clock would drop every restored row on the
-            // first poll, before the node's snapshot could vouch for a single one.
-            let seen = meshClaimSeen[key] ?? now
-            if MeshAgentRun.finished(sinceSeen: now.timeIntervalSince(seen)) {
-                finished.insert(key)
-            } else {
-                meshClaimSeen[key] = seen
+    }
+
+    /// Write back the three things a tick learns about a run: the pid its shell has since
+    /// written, the tty its process turned out to be on, and when its mesh claim was last
+    /// seen.
+    ///
+    /// Merged into whatever is on disk NOW rather than replacing the book with this tick's
+    /// copy of it. A spawn that registered while this tick was resolving would otherwise be
+    /// dropped — an agent nothing counts, which is a bay of the cap the machine can then
+    /// spend twice.
+    ///
+    /// Synthesized rows are not written at all: a run nobody dispatched is re-derived from
+    /// the process table every tick and has nothing to persist.
+    private static func persistRunChanges(_ learned: [AgentState.RunRecord]) {
+        let fresh = Dictionary(learned.filter { !$0.untracked }.map { ($0.runID, $0) },
+                               uniquingKeysWith: { _, last in last })
+        var out: [AgentState.RunRecord] = []
+        var changed = false
+        for r in AgentRegistry.load() {
+            guard let f = fresh[r.runID] else { out.append(r); continue }
+            var merged = r
+            if merged.pid == nil { merged.pid = f.pid }
+            if merged.tty.isEmpty { merged.tty = f.tty }
+            if let seen = f.claimSeenAt { merged.claimSeenAt = seen }
+            changed = changed || merged != r
+            out.append(merged)
+        }
+        if changed { AgentRegistry.save(out) }
+    }
+
+    /// Price what has ended and drop it from the book.
+    ///
+    /// Only on positive evidence that the agent ended — never on a record's age. The prompt
+    /// comes out of the run directory, so an applet that restarted mid-agent can still
+    /// attribute the run to its transcript; the in-memory list could not, and every such
+    /// run landed in the ledger unpriced.
+    private func retireFinished(_ t: AgentState.Tick) async {
+        let gone = t.retirable.filter { !$0.untracked }
+        guard !gone.isEmpty else { return }
+        let priced = Store.pricingInputs(gone)
+        AgentRegistry.forget(Set(gone.map(\.runID)))
+        await settleLedger(priced)
+    }
+
+    /// What pricing a finished run needs, read off disk while its run directory still exists.
+    private struct Completion: Sendable {
+        let key: String, prompt: String, runner: String
+        let at: TimeInterval, done: TimeInterval, session: String
+    }
+
+    /// Read every pricing input for these runs. MUST be called before `forget` deletes
+    /// their directories — all of it lives in there, and a record that is gone can never
+    /// be retired, so an entry left open here stays open for good.
+    ///
+    /// The sentinel's mtime is when the agent actually exited; now() is whenever a poll got
+    /// round to looking, which is up to a poll period later and would inflate every recorded
+    /// run time. A run the mesh placed leaves no sentinel here — the executor writes its own
+    /// — so that one is dated from the poll, which is the best this machine has.
+    private static func pricingInputs(_ records: [AgentState.RunRecord]) -> [Completion] {
+        let now = Date().timeIntervalSince1970
+        return records.filter { !$0.ledgerKey.isEmpty }.map {
+            Completion(key: $0.ledgerKey, prompt: AgentRegistry.prompt($0.runID),
+                       runner: AgentRegistry.runRunner($0.runID),
+                       at: $0.dispatchedAt, done: AgentRegistry.finishedAt($0.runID) ?? now,
+                       session: AgentRegistry.boundSession($0.runID))
+        }
+    }
+
+    /// Close these runs' ledger entries, pricing each from whatever ran it.
+    private func settleLedger(_ completions: [Completion]) async {
+        guard !completions.isEmpty else { return }
+        // Scanning transcripts walks ~/.claude, so it stays off the main actor. The batch
+        // is bound to a `let` first because capturing a mutable var in concurrently-
+        // executing code is an error under the Swift 5.10 toolchain the macOS CI job builds
+        // with — 6.x proves the mutation is finished and accepts it, so this only ever
+        // fails away from the machine it was written on.
+        let batch = completions
+        await Task.detached(priority: .utility) {
+            for f in batch {
+                // Which transcript prices a run depends on what ran it, and the run says
+                // which by what it left behind. A matched session under a foreign runner is
+                // priced by that runner's own store — OpenCode through its exporter, Hermes
+                // from the session row it keeps running totals on. Everything else is a
+                // Claude Code run, found in ~/.claude by the prompt it opened with.
+                let tokens: Double?
+                switch (f.session.isEmpty, AgentRunner(rawValue: f.runner)) {
+                case (false, .hermes):
+                    tokens = HermesProbe.sessionTokens(sessionID: f.session)
+                case (false, .opencode):
+                    tokens = UsageScan.opencodeTaskTokens(sessionID: f.session)
+                default:
+                    tokens = UsageScan.taskTokens(prompt: f.prompt, startedAt: f.at,
+                                                  endedAt: f.done)
+                }
+                TelemetryLog.done(key: f.key, at: f.done, tokens: tokens, runner: f.runner)
+            }
+        }.value
+        refreshTelemetry()
+    }
+
+    /// Say out loud when a probe has stopped answering.
+    ///
+    /// This is the failure with no symptom of its own. Every other bug here shows up as a
+    /// wrong row; a probe going quiet shows up as rows that are merely *less certain*,
+    /// which looks exactly like an applet working correctly. Left unsaid, the operator sees
+    /// agents pile up holding bays and has no way to know that the reason is an automation
+    /// permission revoked an hour ago.
+    ///
+    /// Once per probe per episode, cleared when it answers again — the same shape as the
+    /// at-capacity note, for the same reason.
+    private func noteSilentProbes() {
+        for h in AgentProbes.health() {
+            let was = probeWarned[h.name] ?? false
+            if h.silent, !was {
+                probeWarned[h.name] = true
+                AuditLog.log("auto", "probe-silent",
+                             "Agent \(h.name) \(h.reason.isEmpty ? "cannot be read" : h.reason)"
+                             + " — agent rows fall back to whatever weaker evidence is left"
+                             + " and keep their slots until it answers again")
+                refreshAudit()
+            } else if !h.silent, was {
+                probeWarned[h.name] = false
+                AuditLog.log("auto", "probe-recovered", "Agent \(h.name) readable again")
+                refreshAudit()
             }
         }
-        if !finished.isEmpty {
-            processes.removeAll { $0.mesh.map { finished.contains($0.workKey) } ?? false }
-        }
-        // Keys of rows that have left the list (finished here, or dismissed) stop
-        // being tracked — the map is bounded by the list it describes.
-        meshClaimSeen = meshClaimSeen.filter { key, _ in
-            live.contains(key) && !finished.contains(key)
-        }
+        noteStaleBusyMarker()
     }
+
+    /// Say out loud when no CLI's interrupt hint has ever once matched.
+    ///
+    /// Telling a working agent from one waiting at its prompt rests on literal strings
+    /// borrowed from someone else's UI (`AgentActivity.busyMarkers`). If the runner in use
+    /// rewords its status bar, every agent reads as idle at once: every bay of the cap
+    /// frees, and the monitors dispatch a burst onto a machine that is already full.
+    /// Nothing else on this screen would look wrong.
+    ///
+    /// So a machine that has read plenty of agent screens and never seen a hint on any of
+    /// them is reported. It is not proof — every agent really can be idle — which is why
+    /// the threshold is high and the wording says what was measured rather than what it
+    /// means.
+    private func noteStaleBusyMarker() {
+        let (read, seen) = AgentProbes.markerStats()
+        guard seen == 0, read >= Store.markerSample, !markerWarned else { return }
+        markerWarned = true
+        let markers = AgentActivity.busyMarkers.map { "“\($0)”" }.joined(separator: " / ")
+        AuditLog.log("auto", "warn",
+                     "Read \(read) agent screens without once seeing \(markers) — if the CLI "
+                     + "reworded it, every agent now reads as idle and the task cap will not "
+                     + "hold")
+        refreshAudit()
+    }
+
+    /// How many agent screens must be read with no interrupt hint on any of them before the
+    /// marker is called stale. High, because every agent on a quiet machine really can be
+    /// at its prompt. Matches the Linux applet's threshold.
+    private static let markerSample = 40
+
+    /// Which probes have had their silence reported, and whether the stale-marker warning
+    /// has been given. Both latch once per episode; the probe one clears when that probe
+    /// answers again, the marker one does not — a machine that has read that many screens
+    /// without a single hint says so once and then stops.
+    private var probeWarned: [String: Bool] = [:]
+    private var markerWarned = false
+
+    /// Which of the tracked PRs GitHub calls MERGED, carried forward by the fast ticks
+    /// between the slow refreshes that probe it. `.unavailable` until the first, which
+    /// reads as "nothing is known about any PR" rather than as "none of them landed".
+    private var mergedPRs: Observation<Set<Int>> = .unavailable("have not been probed yet")
 
     // MARK: PR auto-fix monitor
 
@@ -1059,11 +1267,9 @@ final class Store: ObservableObject {
     private func reconcileMyReviews(snaps: [PRSnapshot], now: Date) async {
         var attempts = loadMyReviewAttempts()
         let owed = snaps.filter { $0.threadsIOwe > 0 }
-        let liveRefs = await livePRAgents()
         for s in owed {
             let key = String(s.number)
-            let inFlight = processes.contains(where: { $0.prURL == s.url && !$0.done })
-                || liveRefs.contains(s.number)
+            let inFlight = await self.inFlight(s.number)
             let decision = ReviewReconcile.decide(prior: attempts[key],
                                                   stamp: AttemptStamp.unresolvedReview,
                                                   inFlight: inFlight, banned: false, now: now)
@@ -1091,11 +1297,9 @@ final class Store: ObservableObject {
     private func reconcileMyConflicts(snaps: [PRSnapshot], now: Date) async {
         var attempts = loadMyConflictAttempts()
         let conflicted = snaps.filter { $0.mergeable == "CONFLICTING" }
-        let liveRefs = await livePRAgents()
         for s in conflicted {
             let key = String(s.number)
-            let inFlight = processes.contains(where: { $0.prURL == s.url && !$0.done })
-                || liveRefs.contains(s.number)
+            let inFlight = await self.inFlight(s.number)
             let decision = ReviewReconcile.decide(prior: attempts[key],
                                                   stamp: AttemptStamp.conflicting,
                                                   inFlight: inFlight, banned: false, now: now)
@@ -1155,11 +1359,6 @@ final class Store: ObservableObject {
         let now = Date()
         var attempts = loadReviewReqAttempts()   // prNumber -> our attempt record
         let owed = reqs.filter { $0.oweReview }
-        let liveRefs = await livePRAgents()
-        func inFlight(_ r: AutofixMonitor.ReviewRequest) -> Bool {
-            processes.contains(where: { $0.prURL == r.url && !$0.done })
-                || liveRefs.contains(r.number)
-        }
         // Before dispatching, so the ledger has a queue instant to measure the
         // time-to-start against. A banned author's request is owed by GitHub's
         // reckoning but will never be dispatched, so it is left out — counting it
@@ -1174,7 +1373,7 @@ final class Store: ObservableObject {
             let key = String(r.number)
             let stamp = AttemptStamp.reviewRequest(r)
             let decision = ReviewReconcile.decide(
-                prior: attempts[key], stamp: stamp, inFlight: inFlight(r),
+                prior: attempts[key], stamp: stamp, inFlight: await inFlight(r.number),
                 banned: BanList.isBanned(r.author, in: banned), now: now)
             switch decision {
             case .skipBanned, .skipInFlight, .skipCoolingDown:
@@ -1201,7 +1400,11 @@ final class Store: ObservableObject {
         // Reviews still owed with no agent on them AFTER this poll — the ones a freshly
         // spawned agent didn't cover (cooling down between retries, or a spawn that failed).
         // Excludes banned authors, which we never auto-review.
-        unaddressedReviews = owed.filter { !inFlight($0) && !BanList.isBanned($0.author, in: banned) }.count
+        var unaddressed = 0
+        for r in owed where !BanList.isBanned(r.author, in: banned) {
+            if await !inFlight(r.number) { unaddressed += 1 }
+        }
+        unaddressedReviews = unaddressed
     }
 
     /// Re-read the prompt-injection ban list (cheap local file). Publishes on change.
@@ -1234,100 +1437,27 @@ final class Store: ObservableObject {
         }
     }
 
-    /// PR numbers with a live `claude` agent visible in `ps` right now — the
-    /// tracking-independent half of the monitors' in-flight dedup. The tracked-row
-    /// check alone is fragile: rows die with an applet hiccup or a swept window id
-    /// while the agent itself keeps running, and the retry backoff (minutes) is far
-    /// shorter than an agent's runtime (an hour), so any tracking slip used to
-    /// guarantee a duplicate dispatch onto a PR that already had an agent.
-    private func livePRAgents() async -> Set<Int> {
-        if let c = liveAgentsCache, Date().timeIntervalSince(c.at) < 5 { return c.refs }
-        let (owner, repo) = coreRepo
-        let refs = await Task.detached(priority: .utility) {
-            ProcessMonitor.liveAgentPRNumbers(owner: owner, repo: repo)
-        }.value
-        liveAgentsCache = (Date(), refs)
-        return refs
-    }
-    /// Brief cache over the `ps` scan so one poll cycle (reconcilers + each
-    /// dispatch gate) costs one subprocess, mirroring the Linux store.
-    private var liveAgentsCache: (at: Date, refs: Set<Int>)?
-
-    /// PR numbers whose agent is alive but back at its prompt, having finished its
-    /// turn — the agents that no longer hold a bay of the cap
-    /// (`ProcessMonitor.idleAgentPRNumbers`).
+    /// Does this PR already have an agent, for the monitors' dedup?
     ///
-    /// Reads the same session dump the sweep and the API-error scan already share, so
-    /// asking costs no extra AppleEvent traffic. A dump that failed yields no evidence,
-    /// so nothing is freed and the machine behaves as it did before it could be read.
-    private func idlePRAgents() async -> Set<Int> {
-        let (owner, repo) = coreRepo
-        return await Task.detached(priority: .utility) {
-            guard let sessions = ApiErrorWatcher.dumpSessionsCached() else { return [] }
-            let tails = Dictionary(sessions.map { ($0.tty, $0.tail) },
-                                   uniquingKeysWith: { first, _ in first })
-            return ProcessMonitor.idleAgentPRNumbers(owner: owner, repo: repo,
-                                                     sessionTails: tails)
-        }.value
+    /// Every state that is not over counts, including one waiting at its prompt (that
+    /// session holds the PR's context) and one nothing is known about — releasing a PR on
+    /// missing evidence is how two agents end up on it.
+    private func inFlight(_ prNumber: Int) async -> Bool {
+        await agentTick().tick.inFlight(prNumber: prNumber)
     }
 
-    /// How many automatic agents are up on this device right now — the number the cap
-    /// is compared against (`AgentDispatchGate.runningAutoTasks`).
-    ///
-    /// The tracked rows say WHO started each agent, the `ps` scan says which are
-    /// really alive, the session dump says which of those are actually doing
-    /// anything; no one of the three is enough, so the pure helper combines them.
-    ///
-    /// An agent waiting at its prompt is not counted. An interactive session does not
-    /// exit when its work is done, so without that subtraction a machine whose
-    /// finished windows are still open defers automatic work for as long as they stay
-    /// open — hours, with nothing running to justify it. The row stays on the list
-    /// (reading `awaiting input`, so the operator can see which window it is); what it
-    /// gives back is the bay.
-    ///
-    /// A row counts by where its agent RUNS (`runsHere`), not by who dispatched it. A
-    /// peer's is not counted: this cap is how many agents THIS machine runs, and
-    /// counting them would spend the device's budget on work it is not doing, shrinking
-    /// the panel by a free slot for every job routed away. A placement the mesh landed
-    /// back here IS counted, from the moment it is made — `ps` alone cannot do that job,
-    /// because it takes seconds to see a new agent and a poll dispatches its whole
-    /// backlog in one pass, which is exactly when a cap of two started six agents.
-    @discardableResult
-    private func autoTasksRunning() async -> Int {
-        var autoPRs = Set<Int>(), manualPRs = Set<Int>()
-        for p in processes where !p.done && p.runsHere {
-            guard let n = p.prNumber else { continue }
-            if p.source == AgentDispatchGate.Source.panel.rawValue {
-                manualPRs.insert(n)
-            } else {
-                autoPRs.insert(n)
-            }
-        }
-        let n = AgentDispatchGate.runningAutoTasks(livePRs: await livePRAgents(),
-                                                   autoPRs: autoPRs,
-                                                   manualPRs: manualPRs,
-                                                   idlePRs: await idlePRAgents())
-        // Assigned only on a change, like every other published value the 8-second
-        // sweep re-derives: `@Published` fires on assignment, not on difference, so
-        // an unconditional write would redraw the panel on every tick of an idle
-        // machine.
-        if autoTasksMeasured != n { autoTasksMeasured = n }
-        return n
-    }
-
-    /// The last count `autoTasksRunning` measured, published so the panel can draw
-    /// the device's free slots without a `ps` scan of its own. Refreshed by every
-    /// capacity decision and by the session sweep, so a finished agent frees its bay
-    /// on the panel within one sweep rather than at the next 3-minute poll.
+    /// How many bays of this device's cap the last tick found held, published so the panel
+    /// can draw the free slots without resolving again.
     @Published private(set) var autoTasksMeasured = 0
 
-    /// Re-measure for the display alone. The sweep calls it on every tick, including
-    /// the ticks where nothing is tracked: an agent can be alive in `ps` with no row
-    /// behind it (an applet restart loses the rows, not the agents), and that is
-    /// exactly when a wrongly-drawn free bay would be most misleading.
-    func refreshAutoTaskCount() async { await autoTasksRunning() }
+    /// Re-resolve for the display alone, and act on what it finds.
+    ///
+    /// The panel calls it on its own tick, including the ticks where nothing is registered:
+    /// an agent can be alive with no record behind it (one this applet never spawned), and
+    /// that is exactly when a wrongly-drawn free bay would be most misleading.
+    func refreshAutoTaskCount() async { await settleAgents() }
 
-    /// Pin the measurement, for headless self-tests only. The real one scans `ps` on
+    /// Pin the measurement, for headless self-tests only. The real one reads `ps` on
     /// whatever machine is running the test, so an assertion about free slots would
     /// otherwise pass or fail on how many agents the developer happens to have open.
     func pinAutoTasksMeasured(_ n: Int) {
@@ -1335,34 +1465,22 @@ final class Store: ObservableObject {
         autoTasksMeasured = n
     }
 
+    /// Pin the rows, for headless snapshots only. Resolved for real, a render would
+    /// draw whichever of the developer's own agents and terminals happen to be up when
+    /// the picture is taken.
+    func pinAgentRows(_ rows: [AgentRow]) {
+        guard Headless.active else { return }
+        agentRows = rows
+    }
+
     /// Slots of this device's cap with nothing in them, as the panel draws them.
     ///
-    /// Counted against the higher of the last measurement and what the tracked rows
-    /// themselves say. Each is only a lower bound on the truth — the measurement can
-    /// predate a spawn this very poll made, the rows miss agents nobody tracked — and
-    /// between two lower bounds the larger is the safer: it errs towards drawing one
-    /// bay fewer, never towards offering a slot the gate would refuse.
-    ///
-    /// Work that is starting is ADDED to that, not folded into it: its spawn has
-    /// registered with neither source, so it is one neither bound can account for.
-    /// Taking the higher of the two and stopping there would lose it whenever the
-    /// measurement is already the higher — and drawn as free, its bay would put a row
-    /// that is launching next to the empty slot it is launching into, which is one row
-    /// more than the cap allows.
-    ///
-    /// A row that is `awaitingInput` is excluded from BOTH bounds — the measurement
-    /// subtracts it, and so must this side, or the `max` would simply hand the bay
-    /// straight back to the agent that just gave it up. It keeps its row regardless:
-    /// what the operator needs to see is which finished window is still open.
+    /// Work that is starting holds one. Its spawn has not registered anywhere yet, but the
+    /// bay is spoken for — and drawn as free it would put a row that is launching next to
+    /// the empty slot it is launching into, which is one row more than the cap allows.
     var freeAutoSlots: Int {
-        let tracked = Set(processes.filter {
-            !$0.done && !$0.awaitingInput && $0.runsHere
-                && $0.source != AgentDispatchGate.Source.panel.rawValue
-        }.compactMap(\.prNumber)).count
-        return AgentTaskQueue.freeSlots(
-            limit: autoTaskLimit,
-            running: max(autoTasksMeasured, tracked) + startingTasks.count
-        )
+        AgentTaskQueue.freeSlots(limit: autoTaskLimit,
+                                 running: autoTasksMeasured + startingTasks.count)
     }
 
     /// Whether the "deferring auto work" note has been logged for the current
@@ -1535,7 +1653,7 @@ final class Store: ObservableObject {
             // starts it there and then. Re-reading the queue is what keeps the drain
             // from dispatching that same task a second time when it reaches it.
             guard queuedTasks.contains(where: { $0.id == entry.id }) else { continue }
-            guard await autoTasksRunning() < autoTaskLimit else { return }
+            guard await agentTick().tick.capLoad.count < autoTaskLimit else { return }
             // Finding room here is what re-arms the saturation notice. The gate's own
             // reset sits behind the capacity measurement this path skips, so without
             // this the feed would carry one `at-capacity` line for an unbounded run of
@@ -1774,8 +1892,9 @@ final class Store: ObservableObject {
     /// band, whether the drain reached it or the operator clicked. The move out of
     /// `queuedTasks` runs before the first suspension, so the panel shows the click
     /// landing and a second click finds nothing to start; the move out of
-    /// `startingTasks` runs in the same actor turn as the row that replaces it
-    /// (`track` / `trackMeshRun` are called inside `dispatchAgent`, which then returns
+    /// `startingTasks` runs only once the row that replaces it is already published
+    /// (`dispatchAgent` books the run — `spawnTracked` or `trackMeshRun` — and awaits
+    /// `settleAgents` before it returns, and `endStarting` resumes on that continuation
     /// without suspending again). Between them the task is a row the whole way: never
     /// drawn twice, and never missing.
     @discardableResult
@@ -2005,7 +2124,7 @@ final class Store: ObservableObject {
     /// the ban check, in-flight dedup, mesh policy, spawn, tracking, counters — so
     /// a button click and a monitor tick cannot behave differently by accident.
     struct AgentJob: Equatable {
-        var kind: String            // tracked-row tint: "review" | "conflicts" | "audit"
+        var kind: String            // agent-row tint: "review" | "conflicts" | "audit"
         var auditAction: String     // activity-feed verb
         var label: String           // label core (source prefix / retry suffix added by the gate)
         var prompt: String
@@ -2087,13 +2206,13 @@ final class Store: ObservableObject {
     /// smoke-tested decision both platforms mirror) and, on `.proceed`, spawn +
     /// track it. `resolvingPRs` is taken for the whole await span of any PR-scoped
     /// job, so a double-click or an overlapping poll can't race two spawns onto
-    /// one PR (it also drives the panel row's spinner). In-flight evidence is the
-    /// tracked rows OR a live `claude` visible in `ps` — the ground-truth floor
-    /// that also catches agents whose local bookkeeping was lost and mesh jobs
-    /// that landed on this very machine.
+    /// one PR (it also drives the panel row's spinner). In-flight evidence is one
+    /// tick's verdict on every registered run plus every agent visible in `ps` with
+    /// no record behind it, so it also catches agents whose local bookkeeping was
+    /// lost and mesh jobs that landed on this very machine.
     ///
     /// An AUTO job is additionally capped at `autoTaskLimit` concurrent agents on
-    /// this device (`autoTasksRunning`), held outright while its own monitor is
+    /// this device (`AgentState.capLoad`), held outright while its own monitor is
     /// switched off (`isPaused`), and held again when what is left of the rate-limit
     /// windows will not cover it (`AutoBudget`); a panel click is subject to none of
     /// the three. Every one of those refusals queues the job (`stageQueued`), which is
@@ -2122,19 +2241,14 @@ final class Store: ObservableObject {
         defer { if let n = job.prNumber { resolvingPRs.remove(n) } }
         let banned = job.authorLogin.map { BanList.isBanned($0, in: BanList.read()) } ?? false
         var agentOnPR = false
-        if let url = job.prURL {
-            agentOnPR = processes.contains { $0.prURL == url && !$0.done }
-            if !agentOnPR, let n = job.prNumber {
-                agentOnPR = await livePRAgents().contains(n)
-            }
-        }
+        if let n = job.prNumber { agentOnPR = await inFlight(n) }
         // Measured only for an auto job that would otherwise run: the count costs a
         // `ps` scan, a panel click is never capped, and an in-flight PR spawns
         // nothing either way — so in both of those the answer would be discarded.
         // Finding room is also what re-arms the "deferring" note.
         var atCapacity = false, paused = false
         if source == .auto, !agentOnPR, !bypassCapacity {
-            let full = await autoTasksRunning() >= autoTaskLimit
+            let full = await agentTick().tick.capLoad.count >= autoTaskLimit
             if !full { capacityLogged = false }
             // A switched-off monitor has no room for its own work, whatever the
             // device's. Modelled as capacity because the answer is the same one in
@@ -2187,6 +2301,12 @@ final class Store: ObservableObject {
         case .proceed:
             break
         }
+        // What this dispatch is called wherever it is named: the activity line it writes,
+        // and — while it runs — the row it wears in the Agent-tasks list. One string, so a
+        // retry cannot read as a first attempt in one of them.
+        let rowLabel = AgentDispatchGate.label(source: source, core: job.label,
+                                               attemptNumber: attemptNumber,
+                                               requested: job.requested)
         // An AUTO job on a live mesh runs on the best-surplus node via claim-gated
         // dispatch (every machine scans; the mesh runs it once and dedups via the
         // executor's claim). A manual spawn — or a wedged/absent mesh — runs and is
@@ -2200,10 +2320,10 @@ final class Store: ObservableObject {
                 trackMeshRun(job, node: node, attemptNumber: attemptNumber)
                 return .standDown
             case .spawned(let node, let onThisMachine):
-                AuditLog.log(source.rawValue, job.auditAction,
-                             AgentDispatchGate.label(source: source, core: job.label,
-                                                     attemptNumber: attemptNumber,
-                                                     requested: job.requested))
+                AuditLog.log(source.rawValue, job.auditAction, rowLabel)
+                // Booked wherever the mesh put it, before the next job of this poll asks
+                // how many agents are running — left unbooked, every dispatch of a burst
+                // measured the same empty machine and the cap held back nothing at all.
                 trackMeshRun(job, node: node, attemptNumber: attemptNumber,
                              onThisMachine: onThisMachine)
                 bumpAutoCounter(job, source: source, attemptNumber: attemptNumber)
@@ -2215,29 +2335,24 @@ final class Store: ObservableObject {
                 recordTelemetryStart(job, source: source, remote: !onThisMachine,
                                      attemptNumber: attemptNumber)
                 refreshAudit()
+                await settleAgents()
                 return .spawned(terminal: "mesh")
             case .local:
                 break               // fall through to a local tracked spawn
             }
         }
-        let preferred = terminal
-        let restoreBID = AgentDispatchGate.stealsFocus(source) ? nil : frontmostAppBundleID
-        let prompt = job.prompt
         do {
-            let result = try await Task.detached(priority: .userInitiated) {
-                try AgentSpawner.spawn(prompt, terminal: preferred, restoreFocusTo: restoreBID)
-            }.value
-            let tracked = source == .auto ? job.ledgerKey : ""
-            track(kind: job.kind,
-                  label: AgentDispatchGate.label(source: source, core: job.label,
-                                                 attemptNumber: attemptNumber,
-                                                 requested: job.requested),
-                  prURL: job.prURL, result: result, source: source.rawValue,
-                  auditAction: job.auditAction, ledgerKey: tracked, prompt: job.prompt)
+            let opened = try await spawnTracked(
+                kind: job.kind, label: rowLabel, prURL: job.prURL, prNumber: job.prNumber,
+                prompt: job.prompt, source: source.rawValue, auditAction: job.auditAction,
+                ledgerKey: source == .auto ? job.ledgerKey : "", terminal: terminal,
+                restoreFocusTo: AgentDispatchGate.stealsFocus(source) ? nil
+                    : frontmostAppBundleID)
             bumpAutoCounter(job, source: source, attemptNumber: attemptNumber)
             recordTelemetryStart(job, source: source, remote: false,
                                  attemptNumber: attemptNumber)
-            return .spawned(terminal: result.terminal.rawValue)
+            await settleAgents()
+            return .spawned(terminal: opened.rawValue)
         } catch {
             let msg = (error as? LocalizedError)?.errorDescription ?? "\(error)"
             AuditLog.log(source.rawValue, "spawn-failed",
@@ -2562,7 +2677,6 @@ final class Store: ObservableObject {
         guard processPollTask == nil else { return }
         processPollTask = Task { [weak self] in
             while !Task.isCancelled {
-                await self?.refreshProcessStatuses()
                 await self?.refreshAutoTaskCount()
                 await self?.refreshDeviceState()
                 self?.refreshBanList()
@@ -2593,61 +2707,6 @@ final class Store: ObservableObject {
         refreshTelemetry()
     }
 
-    /// Turn finished agents into ledger completions, costed from their own Claude
-    /// transcripts.
-    ///
-    /// Driven by the completion sentinel rather than the tracked row's `done` flag,
-    /// which also goes true when a terminal window is closed — that is a session we
-    /// stopped being able to watch, not a run whose duration means anything. The
-    /// sentinel's mtime is when `claude` actually exited; `now` is whenever a poll got
-    /// round to looking, up to a poll period later, and would inflate every run time.
-    private func reconcileTelemetryCompletions() async {
-        guard !telemetryInflight.isEmpty else { return }
-        let now = Date().timeIntervalSince1970
-        var finished: [(key: String, prompt: String, at: Double, done: Double,
-                        session: String, runner: String)] = []
-        for (id, run) in telemetryInflight {
-            guard let attrs = try? FileManager.default.attributesOfItem(atPath: run.donePath),
-                  let mtime = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970
-            else {
-                // No sentinel yet. Past the TTL there never will be one — the window
-                // was killed, or the machine slept through the run — and there is
-                // nothing honest left to record.
-                if now - run.at > Store.telemetryRunTTL { telemetryInflight[id] = nil }
-                continue
-            }
-            telemetryInflight[id] = nil
-            finished.append((run.key, run.prompt, run.at, mtime, run.sessionID, run.runner))
-        }
-        guard !finished.isEmpty else { return }
-        // Scanning transcripts walks ~/.claude, so it stays off the main actor. The
-        // batch is bound to a `let` first because capturing a mutable var in
-        // concurrently-executing code is an error under the Swift 5.10 toolchain the
-        // macOS CI job builds with — 6.x proves the mutation is finished and accepts
-        // it, so this only ever fails away from the machine it was written on.
-        let completions = finished
-        await Task.detached(priority: .utility) {
-            for f in completions {
-                // Which transcript prices it depends on what ran it, and the run says
-                // which by what it left behind. A matched session under a foreign runner
-                // is priced by that runner's own store — OpenCode through its exporter,
-                // Hermes from the session row it keeps running totals on. Everything else
-                // is a Claude Code run, found in ~/.claude by the prompt it opened with.
-                let tokens: Double?
-                switch (f.session.isEmpty, AgentRunner(rawValue: f.runner)) {
-                case (false, .hermes): tokens = HermesProbe.sessionTokens(sessionID: f.session)
-                case (false, .opencode): tokens = UsageScan.opencodeTaskTokens(sessionID: f.session)
-                default:
-                    tokens = UsageScan.taskTokens(prompt: f.prompt, startedAt: f.at,
-                                                  endedAt: f.done)
-                }
-                TelemetryLog.done(key: f.key, at: f.done, tokens: tokens,
-                                  runner: f.runner)
-            }
-        }.value
-        refreshTelemetry()
-    }
-
     /// Take one quota/token reading for the ledger, off the main actor.
     ///
     /// Rides the process poll but answers to its own pacing: the share of this
@@ -2656,7 +2715,6 @@ final class Store: ObservableObject {
     /// unbroken sample series regardless. `TelemetryLog.sampleDue` does the pacing, so calling
     /// this more often than the sample interval is free.
     func runTelemetrySampleOnce() async {
-        await reconcileTelemetryCompletions()
         guard TelemetryLog.sampleDue() else { return }
         await Task.detached(priority: .utility) {
             let quota = Quota.fractionsLeft()
@@ -2667,73 +2725,20 @@ final class Store: ObservableObject {
         refreshTelemetry()
     }
 
-    /// Re-derive each session's `done` flag off the main thread (one `ps` call), drop
-    /// any whose terminal window/tab was closed, then merge the rest back by id so a
-    /// concurrent add/remove isn't clobbered.
-    func refreshProcessStatuses() async {
-        // The mesh rows first: they are the ones the sweep below cannot speak for, and
-        // dropping a finished one before the sweep keeps the two liveness sources from
-        // reporting on the same tick's list in different states. With the mesh off
-        // there is no claim book to consult, so every row settles out — a machine that
-        // has stopped watching the mesh must not keep drawing its runs as live.
-        reconcileMeshRuns(claims: meshEnabled ? (meshState?.claims ?? [:]) : [:])
-        let snapshot = processes
-        guard !snapshot.isEmpty else { return }
-        let sweep = await Task.detached(priority: .utility) {
-            // One osascript dump of every session's visible buffer (tty → tail) lets the
-            // sweep tell a working agent from one idling at the prompt (awaiting input).
-            // Cached/shared with the API-error scan.
-            //
-            // nil is passed STRAIGHT THROUGH, never flattened to an empty map. The two
-            // mean different things and `sweep` acts on the difference: an empty map is
-            // "we read the terminals and this session was not among them", which lets a
-            // window-gone verdict stand, while nil is "we could not read them at all",
-            // which vetoes nothing. Collapsing them — as `?? [:]` did — made the whole
-            // nil path dead code, so a revoked automation permission or an AppleEvent
-            // timeout quietly downgraded every row's liveness evidence instead of
-            // suspending judgement on it.
-            let tails = ApiErrorWatcher.dumpSessionsCached().map { sessions in
-                Dictionary(sessions.map { ($0.tty, $0.tail) },
-                           uniquingKeysWith: { first, _ in first })
-            }
-            return ProcessMonitor.sweep(snapshot, sessionTails: tails)
-        }.value
-        var stateByID: [UUID: (done: Bool, awaiting: Bool, session: String)] = [:]
-        for p in sweep.refreshed {
-            stateByID[p.id] = (p.done, p.awaitingInput, p.agentSessionID)
-            // Copied off the row while the row still exists. What prices a run is read
-            // when the run ENDS, and ending is what removes its row — so a session id
-            // left only on the row would be gone by the time it was wanted.
-            if !p.agentSessionID.isEmpty { telemetryInflight[p.id]?.sessionID = p.agentSessionID }
-        }
-        var next = processes
-        var changed = false
-        // The terminal was closed → the session is no longer something we can monitor;
-        // remove it from the list instead of leaving a dead "done" row.
-        if !sweep.closedIDs.isEmpty {
-            let before = next.count
-            next.removeAll { sweep.closedIDs.contains($0.id) }
-            if next.count != before { changed = true }
-        }
-        for i in next.indices {
-            guard let s = stateByID[next[i].id] else { continue }
-            if next[i].done != s.done { next[i].done = s.done; changed = true }
-            if next[i].awaitingInput != s.awaiting { next[i].awaitingInput = s.awaiting; changed = true }
-            if next[i].agentSessionID != s.session { next[i].agentSessionID = s.session; changed = true }
-        }
-        if changed { processes = next }
-    }
-
-    /// Click a tracked row: bring its terminal window to the front. If that fails the
-    /// window is gone, so re-run the sweep to dismiss the dead row immediately rather
-    /// than leaving it to linger (or falling back to opening the browser). The
-    /// osascript focus runs off the main thread so the popover never hitches.
-    func activate(_ p: TrackedProcess) async -> FocusOutcome {
+    /// Click a row: bring its terminal window to the front.
+    ///
+    /// A run the mesh placed on a peer has no window here, and one this applet never
+    /// spawned has no handle to raise — both are rows that draw and cannot be clicked, so
+    /// they dismiss rather than pretending. If the focus fails the window is gone, so the
+    /// tick is re-run to drop the dead row immediately rather than leaving it to linger.
+    /// The AppleScript runs off the main thread so the popover never hitches.
+    func activate(_ row: AgentRow) async -> FocusOutcome {
+        guard let handle = row.window else { return .dismissed }
         let focused = await Task.detached(priority: .userInitiated) {
-            ProcessMonitor.focus(p)
+            AgentWindows.focus(handle)
         }.value
         if focused { return .focused }
-        await refreshProcessStatuses()
+        await settleAgents()
         return .dismissed
     }
 

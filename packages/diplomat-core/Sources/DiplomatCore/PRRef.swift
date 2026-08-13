@@ -7,7 +7,7 @@ import Foundation
 /// `owner/repo#337` shorthand. When the input names a repo (URL or shorthand) it's
 /// checked against the configured target repo, so a link to the wrong project is
 /// rejected instead of silently reviewing the wrong PR. Shared verbatim with the
-/// Linux front-end (see `prref.py`).
+/// shared runtime (see `prref.py`).
 public struct PRRef: Equatable {
     /// The extracted PR number, or nil when the input contains a usable one.
     public let number: Int?

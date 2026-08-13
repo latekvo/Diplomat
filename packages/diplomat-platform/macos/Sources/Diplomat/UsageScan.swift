@@ -2,7 +2,7 @@ import Foundation
 import DiplomatCore
 
 /// Where the token half of the telemetry comes from: the agents' own transcripts.
-/// The macOS twin of the Linux applet's `usagescan.py`.
+/// The macOS twin of the shared runtime's `usagescan.py`.
 ///
 /// Claude Code's are read off disk and are most of this file; an OpenCode run keeps
 /// its own elsewhere and is priced at the end, through that CLI.

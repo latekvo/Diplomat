@@ -37,7 +37,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import core, glyphs
+from diplomat_runtime import core
+from . import glyphs
 from szpontnet import config as mesh_config
 from szpontnet import statefile
 from szpontnet.config import PlacementOverrides

@@ -1,6 +1,6 @@
 """The durable book of dispatched agent runs — one record per run, on disk.
 
-What this replaces, and why it had to be on disk: the Linux applet kept its
+What this replaces, and why it had to be on disk: each front-end kept its
 in-flight list in memory only, so every restart forgot which agents were running
 while the agents themselves ran on. The panel then redrew them as anonymous
 "untracked" rows, a click-spawned agent started counting against the automatic cap

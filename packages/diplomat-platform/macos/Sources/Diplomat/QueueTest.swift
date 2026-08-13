@@ -46,6 +46,30 @@ enum QueueTest {
         // differently depending on how much of their window was left when they ran the
         // suite. Off, it reports no reading, which the gate treats as no opinion.
         setenv("DIPLOMAT_QUOTA_PROBE", "0", 1)
+        // And the run book, for the same reason one layer down: every agent this test
+        // stands up is a real record, and one written into the operator's book would be
+        // an agent their panel draws and their cap holds a bay for.
+        let agents = FileManager.default.temporaryDirectory
+            .appendingPathComponent("diplomat-queuetest-agents-\(UUID().uuidString)")
+        setenv("DIPLOMAT_AGENTS_DIR", agents.path, 1)
+        defer { try? FileManager.default.removeItem(at: agents) }
+
+        /// Stand one automatic agent up, the way a dispatch books it: a record with no
+        /// pid yet, which is exactly what a spawn nothing has observed yet looks like —
+        /// and which holds a bay of the cap from the moment it is written.
+        func bookAgent(_ number: Int, label: String = "") {
+            let now = Date().timeIntervalSince1970
+            AgentRegistry.createRun(
+                AgentState.RunRecord(
+                    runID: AgentRegistry.newRunID(now: now), dispatchedAt: now,
+                    prNumber: number,
+                    prURL: "https://github.com/software-mansion/argent/pull/\(number)",
+                    kind: "review",
+                    label: label.isEmpty ? "Auto · Review · #\(number)" : label,
+                    source: AgentDispatchGate.Source.auto.rawValue),
+                prompt: "")
+        }
+        func emptyBook() { AgentRegistry.forget(Set(AgentRegistry.load().map(\.runID))) }
 
         let store = Store()
         // A headless Store still READS the operator's real settings — pin every one
@@ -65,13 +89,7 @@ enum QueueTest {
         // count also consults can only add to it, never subtract, so a developer's
         // own live agents can't turn this into a spawn.)
         store.autoTaskLimit = 1
-        store.processes = [
-            TrackedProcess(kind: "review", label: "Auto · Review · #1", terminal: "iterm",
-                           windowID: "1", sessionID: "", tty: "", donePath: "",
-                           prURL: "https://github.com/software-mansion/argent/pull/1",
-                           source: AgentDispatchGate.Source.auto.rawValue,
-                           createdAt: Date(), done: false),
-        ]
+        bookAgent(1)
 
         func job(_ number: Int, action: String = "review-req", label: String? = nil,
                  counter: Store.AutoCounter = .reviewRequests) -> Store.AgentJob {
@@ -205,7 +223,6 @@ enum QueueTest {
         check("a device at its cap draws no free slots", store.freeAutoSlots == 0)
         store.autoTaskLimit = 3
         check("raising the cap opens the slots it added", store.freeAutoSlots == 2)
-        store.processes = []
         store.pinAutoTasksMeasured(0)
         check("an idle device is all free slots", store.freeAutoSlots == 3)
         // Reachable two ways: an untracked agent counts as automatic, and the cap can
@@ -227,13 +244,7 @@ enum QueueTest {
         store.prAutofixEnabled = true
         store.reviewRequestsEnabled = true
         store.commitQueue()
-        store.processes = [
-            TrackedProcess(kind: "review", label: "Auto · Review · #1", terminal: "iterm",
-                           windowID: "1", sessionID: "", tty: "", donePath: "",
-                           prURL: "https://github.com/software-mansion/argent/pull/1",
-                           source: AgentDispatchGate.Source.auto.rawValue,
-                           createdAt: Date(), done: false),
-        ]
+        bookAgent(1)
         func offerBoth() async {
             _ = await offer(job(4))
             _ = await offer(job(6, action: "conflicts", label: "Resolve · #6",
@@ -307,152 +318,68 @@ enum QueueTest {
         _ = await offer(job(7))
         store.commitQueue()
         check("#7 is queued", store.queuedTasks.map(\.id) == ["review-req:7"])
-        store.processes.append(
-            TrackedProcess(kind: "review", label: "Auto · Review-req · #7", terminal: "iterm",
-                           windowID: "7", sessionID: "", tty: "", donePath: "",
-                           prURL: "https://github.com/software-mansion/argent/pull/7",
-                           source: AgentDispatchGate.Source.auto.rawValue,
-                           createdAt: Date(), done: false))
+        bookAgent(7, label: "Auto · Review-req · #7")
         await store.executeQueuedTask("review-req:7")
         check("a refused start leaves no row spinning behind it",
               store.startingTasks.isEmpty && store.queuedTasks.isEmpty)
         check("…and says why nothing opened",
               store.error?.contains("already on this PR") == true)
         store.error = nil
-        store.processes = []
 
         // 11. A task the mesh runs on a peer is still a task this panel shows. Before
         //    the mesh row existed, "execute now" on peer-routed work took the queued
         //    row away and put nothing in its place, which reads exactly like the click
-        //    dropping the task. The row it leaves instead lives on the executor's
-        //    lease: held while the remote agent runs, gone when it finishes.
-        store.processes = []
+        //    dropping the task. What it leaves instead is a record like any other,
+        //    which the resolver then holds for as long as the executor's lease.
+        //
+        //    How long that is, is pure and pinned by the shared scenario table
+        //    (`AgentState`, `test_agent_state.py`) — what is on trial here is that the
+        //    record the mesh path writes carries what the resolver needs to do it.
+        emptyBook()
         let meshKey = "review:github.com/software-mansion/argent#77@abc123"
         var meshJob = job(77)
         meshJob.workKey = meshKey
         store.trackMeshRun(meshJob, node: "softoobox", attemptNumber: 1)
-        check("a job the mesh took becomes a row, not a gap",
-              store.processes.count == 1 && store.processes.first?.isMesh == true)
-        check("…that names the node it runs on",
-              store.processes.first?.mesh?.node == "softoobox")
+        let peer = AgentRegistry.load().first
+        check("a job the mesh took becomes a record, not a gap",
+              AgentRegistry.load().count == 1 && peer?.placement == .meshPeer)
+        check("…that names the node it runs on", peer?.node == "softoobox")
         check("…under the label it would have run under here",
-              store.processes.first?.label == "Auto · Review-req · #77")
+              peer?.label == "Auto · Review-req · #77")
+        // The lease is the only evidence about a peer's run that ever crosses the
+        // machine boundary; without the key there is nothing to resolve it against.
+        check("…keyed by the lease the executor claims it under", peer?.workKey == meshKey)
         // Its process is on another machine, so no store here holds its session. A
         // runner recorded would point the session probe at somebody else's.
         check("…and names no runner, because the run is not ours to ask",
-              store.processes.first?.runner == "")
-        // The same key offered twice is the same run: a stand-down re-offered before
-        // the in-flight check can see the row must not draw a second one.
-        store.trackMeshRun(meshJob, node: "softoobox", attemptNumber: 1)
-        check("one lease is one row, however often the mesh answers for it",
-              store.processes.count == 1)
+              AgentRegistry.runRunner(peer?.runID ?? "").isEmpty)
 
         // It runs elsewhere, so it spends none of THIS device's budget — a peer-routed
         // job that closed a local bay would cap the machine on work it isn't doing.
-        store.autoTaskLimit = 2
-        store.pinAutoTasksMeasured(0)
-        check("a mesh row takes none of this device's slots", store.freeAutoSlots == 2)
+        check("a peer's run holds none of this device's bays",
+              await store.agentTick().tick.capLoad.isEmpty)
 
-        // 10b. The other placement the mesh can make: back onto the machine that asked.
-        //    That agent is a `claude` process HERE, so it spends a slot from the moment
-        //    it is placed. Waiting for `ps` to notice is what let a poll dispatch its
-        //    whole backlog into one cap — every gate in the burst measured the same
-        //    machine, seconds before any of its new agents were visible.
-        store.processes = []
+        // 11b. The other placement the mesh can make: back onto the machine that asked.
+        //    That agent is a process HERE, so it spends a bay from the moment it is
+        //    placed. Waiting for `ps` to notice is what let a poll dispatch its whole
+        //    backlog into one cap — every gate in the burst measured the same machine,
+        //    seconds before any of its new agents were visible.
+        emptyBook()
         var homeJob = job(78)
         homeJob.workKey = "review:github.com/software-mansion/argent#78@abc123"
         store.trackMeshRun(homeJob, node: "softoobox", attemptNumber: 1, onThisMachine: true)
-        check("a mesh run placed back here spends one of this device's slots",
-              store.freeAutoSlots == 1)
-        check("…and is still a mesh row, held by its lease like any other",
-              store.processes.first?.isMesh == true)
+        let home = AgentRegistry.load().first
+        check("a mesh run placed back here spends one of this device's bays",
+              await store.agentTick().tick.capLoad == Set([home?.runID ?? ""]))
+        check("…and is still a mesh run, held by its lease like any other",
+              home?.placement == .meshHere && home?.workKey == homeJob.workKey)
         // The node spawns through the same seam a local dispatch does, so this run is
         // under the configured runner — and that is what decides which store it is
         // asked of and priced from. Left blank it would be asked of none and priced
         // off `~/.claude`, which holds no transcript of a foreign runner's work.
         check("…under the runner that spawned it, so it can be asked and priced",
-              store.processes.first?.runner == AppConfig.agentRunner.rawValue)
-        // Back to the peer-routed row, and to a sighting as fresh as its dispatch: the
-        // lifecycle below is one timeline over THAT key, and it starts here.
-        store.processes = []
-        store.trackMeshRun(meshJob, node: "softoobox", attemptNumber: 1)
-
-        // One timeline, so each step measures from the sighting before it — the whole
-        // rule is that the clock restarts every time the lease is seen, not that a row
-        // expires at some age.
-        let t0 = Date()
-        func at(_ secs: TimeInterval) -> Date { t0.addingTimeInterval(secs) }
-        // The lease is present ⇒ the agent is up, however long the row has been there.
-        // An hour-long review is the normal case, not a stuck row.
-        store.reconcileMeshRuns(claims: [meshKey: "n-soft-strong"], now: at(3600))
-        check("a claimed key keeps its row, however old", store.processes.count == 1)
-        // Absence inside the settle window is snapshot lag, not a finished run — and
-        // it is measured from that last sighting, not from the dispatch.
-        store.reconcileMeshRuns(claims: [:], now: at(3600 + MeshAgentRun.claimSettle - 1))
-        check("an unseen claim inside the settle window does not end the row",
-              store.processes.count == 1)
-        // Past it, the executor has released: the run is over and there is nothing
-        // left here to focus, read or retry — so the row goes, as a closed terminal's
-        // does. Left behind it would also hold the PR in-flight forever.
-        store.reconcileMeshRuns(claims: [:], now: at(3600 + MeshAgentRun.claimSettle + 1))
-        check("a released lease takes the row with it", store.processes.isEmpty)
-
-        // A row reloaded after a restart has no sighting behind it and an age that can
-        // be hours — and for the first seconds of a launch the node's snapshot has not
-        // been read yet, so the claim book looks empty whatever a peer is running. Its
-        // window has to start at the first pass, or every restored row is dropped on
-        // the first poll of every launch.
-        store.processes = [
-            TrackedProcess(kind: "review", label: "Auto · Review-req · #77",
-                           terminal: "", windowID: "", sessionID: "", tty: "",
-                           donePath: "",
-                           prURL: "https://github.com/software-mansion/argent/pull/77",
-                           mesh: .init(node: "softoobox", workKey: meshKey,
-                                       onThisMachine: false),
-                           source: AgentDispatchGate.Source.auto.rawValue,
-                           createdAt: at(-7200), done: false),
-        ]
-        store.reconcileMeshRuns(claims: [:], now: at(0))
-        check("a row reloaded hours after its dispatch survives the first pass",
-              store.processes.count == 1)
-        store.reconcileMeshRuns(claims: [meshKey: "n-soft-strong"], now: at(1))
-        store.reconcileMeshRuns(claims: [:], now: at(MeshAgentRun.claimSettle))
-        check("…and then lives on sightings like any other",
-              store.processes.count == 1)
-
-        // The list now has two liveness sources walking it, and each must leave the
-        // other's rows alone. A local session outlives the mesh reconciler…
-        let local = TrackedProcess(kind: "review", label: "Review · #5", terminal: "iterm",
-                                   windowID: "5", sessionID: "", tty: "", donePath: "",
-                                   prURL: "https://github.com/software-mansion/argent/pull/5",
-                                   createdAt: t0, done: false)
-        store.processes = [local]
-        store.reconcileMeshRuns(claims: [:], now: at(MeshAgentRun.claimSettle + 1))
-        check("a local session is not the mesh reconciler's to remove",
-              store.processes.count == 1)
-        // …and a mesh row outlives the window sweep, which would otherwise read its
-        // missing window, tty and sentinel — none of which a remote run has — as a
-        // session that ended.
-        let remote = TrackedProcess(kind: "review", label: "Auto · Review-req · #77",
-                                    terminal: "", windowID: "", sessionID: "", tty: "",
-                                    donePath: "",
-                                    prURL: "https://github.com/software-mansion/argent/pull/77",
-                                    mesh: .init(node: "softoobox", workKey: meshKey,
-                                                onThisMachine: false),
-                                    source: AgentDispatchGate.Source.auto.rawValue,
-                                    createdAt: t0.addingTimeInterval(-600), done: false)
-        // Every local probe says gone: no window in the enumeration, no session dump,
-        // no process on the tty. Asking at all is the bug — a machine whose whole
-        // Agent-tasks list is peer-routed work would drive an AppleScript window
-        // enumeration every poll to learn nothing — so the resolver counts its calls.
-        var asked = 0
-        let swept = ProcessMonitor.sweep([remote], now: at(0),
-                                         openWindows: { _ in asked += 1; return [] },
-                                         sessionTails: [:], ttyElapsed: [:])
-        check("a mesh row is not the window sweep's to remove",
-              swept.closedIDs.isEmpty && swept.refreshed.first?.done == false)
-        check("…and the sweep never asks a terminal about one", asked == 0)
-        store.processes = []
+              AgentRegistry.runRunner(home?.runID ?? "") == AppConfig.agentRunner.rawValue)
+        emptyBook()
 
         // 12. The refresh the drain makes before it starts anything. A queued task
         //    carries the verdict of the poll that staged it, and by the time a bay
@@ -463,13 +390,7 @@ enum QueueTest {
         store.autoTaskLimit = 1
         store.prAutofixEnabled = true
         store.reviewRequestsEnabled = true
-        store.processes = [
-            TrackedProcess(kind: "review", label: "Auto · Review · #1", terminal: "iterm",
-                           windowID: "1", sessionID: "", tty: "", donePath: "",
-                           prURL: "https://github.com/software-mansion/argent/pull/1",
-                           source: AgentDispatchGate.Source.auto.rawValue,
-                           createdAt: Date(), done: false),
-        ]
+        bookAgent(1)
         _ = await offer(job(21, action: "conflicts", label: "Resolve · #21",
                             counter: .conflicts))
         _ = await offer(job(22, action: "conflicts", label: "Resolve · #22",
@@ -495,7 +416,7 @@ enum QueueTest {
         // review request on the panel would vanish the first time the drain ran.
         check("a review request is not retired by a fetch that cannot see it",
               store.queuedTasks.contains { $0.id == "review-req:23" })
-        store.processes = []
+        emptyBook()
         store.queuedTasks = []
 
         // 14. The reviews the operator asks for. A whose-PRs sweep is queued one PR at a
@@ -554,13 +475,8 @@ enum QueueTest {
         // conflict fix another agent's run may make unnecessary. Back over the cap
         // first: a sweep queues without asking it, but a monitor's find reaches the
         // queue only by being refused, and the section above left the bay free.
-        store.processes = [
-            TrackedProcess(kind: "review", label: "Auto · Review · #1", terminal: "iterm",
-                           windowID: "1", sessionID: "", tty: "", donePath: "",
-                           prURL: "https://github.com/software-mansion/argent/pull/1",
-                           source: AgentDispatchGate.Source.auto.rawValue,
-                           createdAt: Date(), done: false),
-        ]
+        emptyBook()
+        bookAgent(1)
         _ = await offer(job(35))
         _ = await offer(job(36, action: "conflicts", label: "Resolve · #36",
                             counter: .conflicts))
@@ -591,17 +507,12 @@ enum QueueTest {
         // The dispatch is what answers an ask. #31's PR gains an agent, so the dispatch
         // is refused and the ask stands; a refusal that dropped it would silently
         // abandon the review.
-        store.processes.append(
-            TrackedProcess(kind: "review", label: "Auto · Review · #31", terminal: "iterm",
-                           windowID: "31", sessionID: "", tty: "", donePath: "",
-                           prURL: "https://github.com/software-mansion/argent/pull/31",
-                           source: AgentDispatchGate.Source.auto.rawValue,
-                           createdAt: Date(), done: false))
+        bookAgent(31)
         await store.executeQueuedTask("review:31")
         check("an ask refused because the PR is busy is still asked for",
               store.requestedReviews.map(\.number) == [31, 33])
         store.error = nil
-        store.processes = []
+        emptyBook()
         store.requestedReviews = []
         store.queuedTasks = []
 

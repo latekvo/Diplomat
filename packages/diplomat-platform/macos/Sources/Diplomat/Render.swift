@@ -462,7 +462,7 @@ enum Render {
         return true
     }
 
-    /// For a render mode carrying `-procs`, inject fake tracked sessions and queued
+    /// For a render mode carrying `-procs`, inject fake agent rows and queued
     /// tasks so the whole Agent-tasks list can be eyeballed: every session status,
     /// the sort that puts finished work on top and the queue at the bottom, the
     /// queued rows' drag grip and "execute now", and the row a task wears between the
@@ -482,35 +482,49 @@ enum Render {
         store.prAutofixEnabled = true
         store.reviewRequestsEnabled = false
         // Deliberately not in status order — the list's own sort is what's on trial.
-        store.processes = [
-            TrackedProcess(kind: "review", label: "Review · #337 · Deep", terminal: "iterm",
-                           windowID: "1", sessionID: "a", tty: "/dev/ttys991", donePath: "",
-                           prURL: "https://github.com/software-mansion/argent/pull/337",
-                           createdAt: Date(), done: false),
-            TrackedProcess(kind: "review", label: "Review · #462 · Full E2E", terminal: "iterm",
-                           windowID: "9", sessionID: "d", tty: "/dev/ttys994", donePath: "",
-                           prURL: "https://github.com/software-mansion/argent/pull/462",
-                           createdAt: Date(), done: false, awaitingInput: true),
-            TrackedProcess(kind: "conflicts", label: "Resolve · my PRs", terminal: "iterm",
-                           windowID: "2", sessionID: "b", tty: "/dev/ttys992", donePath: "",
-                           prURL: nil, createdAt: Date(), done: true),
-            TrackedProcess(kind: "review", label: "Review · #312 · Standard", terminal: "iterm",
-                           windowID: "3", sessionID: "c", tty: "/dev/ttys993", donePath: "",
-                           prURL: "https://github.com/software-mansion/argent/pull/312",
-                           createdAt: Date(), done: true, merged: true),
-            // Work this device handed to the mesh: it runs on a peer, so the row has
-            // no terminal handles at all and says where instead. Seeded here because
-            // it is the one row family whose whole point is a state no local session
-            // can reach — a running agent with nothing on this machine behind it.
-            TrackedProcess(kind: "conflicts", label: "Auto · Resolve · #489", terminal: "",
-                           windowID: "", sessionID: "", tty: "", donePath: "",
-                           prURL: "https://github.com/software-mansion/argent/pull/489",
-                           mesh: .init(node: "softoobox",
-                                       workKey: "conflicts:github.com/software-mansion/argent#489@ab12cd",
-                                       onThisMachine: false),
-                           source: AgentDispatchGate.Source.auto.rawValue,
-                           createdAt: Date(), done: false),
-        ]
+        // Pinned rather than resolved: read for real, this would draw whichever of the
+        // developer's own agents and terminals happen to be up when the picture is taken.
+        let now = Date().timeIntervalSince1970
+        func row(_ number: Int?, _ kind: String, _ label: String, _ state: AgentState.RunState,
+                 placement: AgentState.Placement = .local, node: String = "",
+                 source: AgentDispatchGate.Source = .panel, reason: String = "",
+                 untracked: Bool = false) -> Store.AgentRow {
+            var record = AgentState.RunRecord(
+                runID: "r-\(number ?? 0)-\(kind)", dispatchedAt: now - 900,
+                prNumber: number, prURL: number.map { "https://github.com/x/pull/\($0)" } ?? "",
+                kind: kind, label: label, source: source.rawValue, placement: placement,
+                node: node)
+            record.untracked = untracked
+            // Only a run this applet opened a window for can be clicked, so only those
+            // carry a handle — which is what the mesh row and the untracked one are here
+            // to show the absence of.
+            let window = placement == .local && !untracked
+                ? AgentWindows.Handle(terminal: "iterm", windowID: "\(number ?? 0)",
+                                      sessionID: "s\(number ?? 0)")
+                : nil
+            return Store.AgentRow(record: record, state: state, reason: reason, window: window)
+        }
+        store.pinAgentRows([
+            row(337, "review", "Review · #337 · Deep", .running),
+            row(462, "review", "Review · #462 · Full E2E", .awaitingInput),
+            row(nil, "conflicts", "Resolve · my PRs", .finished),
+            row(312, "review", "Review · #312 · Standard", .merged),
+            // Work this device handed to the mesh: it runs on a peer, so the row has no
+            // window at all and says where instead. Seeded because it is the one row
+            // family whose whole point is a state no local session can reach — a running
+            // agent with nothing on this machine behind it.
+            row(489, "conflicts", "Auto · Resolve · #489", .running,
+                placement: .meshPeer, node: "softoobox", source: .auto),
+            // An agent nobody here dispatched, found only by the prompt scan — what an
+            // applet restart or a hand-started session leaves behind. It has no label of
+            // its own, which is the case the row's fallback naming is for.
+            row(351, "review", "", .running, source: .auto, untracked: true),
+            // The state that used not to exist: a run the applet cannot see, drawn as
+            // such with the reason it cannot, rather than guessed at or dropped.
+            row(404, "review", "Auto · Review-req · #404 (@hubot)", .unknown,
+                source: .auto,
+                reason: "screens are unreadable (the terminals would not answer)"),
+        ])
         let starting = queuedFixture(number: 497, kind: "review", auditAction: "review-req",
                                      label: "Review-req · #497 (@hubot)",
                                      counter: .reviewRequests)
@@ -531,6 +545,13 @@ enum Render {
         // is the state a click leaves behind, and seeding the band directly would
         // prove the row draws without proving the queue lets go of it.
         store.beginStarting(starting)
+        // Pinned like the rows above, and for the same reason: the cap comes from the
+        // shared config file, so an operator who raised theirs would change how many
+        // empty bays this picture has. Two are held — the untracked agent and the one
+        // nothing is known about, both automatic and both on this machine — which
+        // leaves two free beside the one the starting task has taken.
+        store.autoTaskLimit = 5
+        store.pinAutoTasksMeasured(2)
         return true
     }
 

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import pytest
 
-from diplomat_app import appconfig
+from diplomat_runtime import appconfig
 from szpontnet import identity, wancache, peercache, statefile, stats, trust
 
 # The ways a state file goes bad in the field: a truncated write, a hand-edit

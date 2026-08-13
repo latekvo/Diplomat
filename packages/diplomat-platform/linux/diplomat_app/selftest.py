@@ -12,10 +12,10 @@ None of these need a display; they only touch QtCore (QSettings) + gh.
 
 from __future__ import annotations
 
-from . import review
-from .models import API, Filters, Fmt
-from .prtarget import PRTarget
-from .review import ReviewConfig
+from diplomat_runtime import review
+from diplomat_runtime.models import API, Filters, Fmt
+from diplomat_runtime.prtarget import PRTarget
+from diplomat_runtime.review import ReviewConfig
 from .store import Store, tool_by_id
 
 

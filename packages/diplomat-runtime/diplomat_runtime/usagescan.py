@@ -465,7 +465,7 @@ def opencode_task_tokens(session_id: str) -> float | None:
 
     Read at retirement, not on the poll — a turn's price is per-message, so a run's is
     a sum over every message it produced, and the live probe
-    (:mod:`diplomat_app.opencodeapi`) deliberately fetches one. By then the run's own
+    (:mod:`diplomat_runtime.opencodeapi`) deliberately fetches one. By then the run's own
     server is gone, which is why this goes through the CLI rather than the port.
 
     How a session's messages add up is :func:`opencodeapi.session_tokens`, shared with

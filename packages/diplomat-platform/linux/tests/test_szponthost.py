@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from diplomat_app import activity, core, review, szponthost
+from diplomat_runtime import activity, core, review, szponthost
 from szpontnet import config as mesh_config
 from szpontnet import host as szpont_host
 from szpontnet import spawnjob
@@ -178,14 +178,14 @@ def _ps_output(monkeypatch, text: str):
 
 def test_a_live_agent_on_the_same_pr_is_reported(host, monkeypatch):
     _ps_output(monkeypatch, "claude review PR #7 owner/repo\n")
-    monkeypatch.setattr("diplomat_app.autofix.live_pr_numbers",
+    monkeypatch.setattr("diplomat_runtime.autofix.live_pr_numbers",
                         lambda out, owner, repo: {7})
     assert host.work_already_running("review:github.com/owner/repo#7@abc123") is True
 
 
 def test_a_different_pr_is_not(host, monkeypatch):
     _ps_output(monkeypatch, "claude review PR #9 owner/repo\n")
-    monkeypatch.setattr("diplomat_app.autofix.live_pr_numbers",
+    monkeypatch.setattr("diplomat_runtime.autofix.live_pr_numbers",
                         lambda out, owner, repo: {9})
     assert host.work_already_running("review:github.com/owner/repo#7@abc123") is False
 
@@ -229,7 +229,7 @@ def _agents_on(monkeypatch, prs: set[int]):
     """Pretend ``ps`` shows a live agent for each of ``prs`` (the matcher itself is
     covered by ``live_pr_numbers``' own tests)."""
     _ps_output(monkeypatch, "".join(f"claude … PR #{n} in o/r\n" for n in prs))
-    monkeypatch.setattr("diplomat_app.autofix.live_pr_numbers",
+    monkeypatch.setattr("diplomat_runtime.autofix.live_pr_numbers",
                         lambda out, owner, repo: set(prs))
 
 
@@ -258,7 +258,7 @@ def test_the_nodes_own_fresh_jobs_count_before_ps_can_see_them(host, monkeypatch
 def test_the_cap_is_the_one_the_applet_writes(host, monkeypatch):
     """Same file, same number: a device with two answers to "how many at once" has
     no cap at all."""
-    from diplomat_app import appconfig
+    from diplomat_runtime import appconfig
 
     _agents_on(monkeypatch, {1, 2})
     appconfig.set_int(appconfig.AUTO_TASK_LIMIT, 3)

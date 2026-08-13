@@ -3,7 +3,7 @@ import Foundation
 /// The durable book of dispatched agent runs — one record per run, on disk.
 ///
 /// Both front-ends read and write the same file in the same format, so a run means the
-/// same thing on either. Python twin: `diplomat_app/agentregistry.py`.
+/// same thing on either. Python twin: `diplomat_runtime/agentregistry.py`.
 ///
 /// Layout, under `~/.diplomat/agents` (`$DIPLOMAT_AGENTS_DIR` overrides, which is also
 /// how the tests get an isolated one):
@@ -15,9 +15,7 @@ import Foundation
 ///     <run-id>/runner      which agent CLI was spawned into it
 ///     <run-id>/port        the loopback port its OpenCode server answers on
 ///     <run-id>/session     which of that runner's sessions turned out to be this run's
-///
-/// The last three are the Linux front-end's; macOS carries the same three facts on the
-/// `TrackedProcess` row it already keeps per run.
+///     <run-id>/window      the terminal window handle a macOS spawn can raise again
 ///
 /// The per-run directory is what makes identity exact. The shell that runs the agent
 /// writes its own `$$` into `pid` and then `exec`s the agent, so the pid in that file IS
@@ -66,6 +64,18 @@ public enum AgentRegistry {
 
     public static func donePath(_ runID: String) -> URL {
         runDir(runID).appendingPathComponent("done")
+    }
+
+    public static func runnerPath(_ runID: String) -> URL {
+        runDir(runID).appendingPathComponent("runner")
+    }
+
+    public static func portPath(_ runID: String) -> URL {
+        runDir(runID).appendingPathComponent("port")
+    }
+
+    public static func sessionPath(_ runID: String) -> URL {
+        runDir(runID).appendingPathComponent("session")
     }
 
     /// A run's identity: the dispatch second, then random.
@@ -174,6 +184,80 @@ public enum AgentRegistry {
     /// The prompt a run was dispatched with, for pricing it against its transcript.
     public static func prompt(_ runID: String) -> String {
         (try? String(contentsOf: promptPath(runID), encoding: .utf8)) ?? ""
+    }
+
+    // MARK: - Which runner ran it, and how to reach it
+
+    /// Longest a session id may be. Both runners' are well under 64; the cap is only what
+    /// stops a stray file in a run directory becoming an id every later tick queries.
+    private static let maxSessionID = 128
+
+    /// Record which agent CLI is being spawned into this run.
+    ///
+    /// Written down rather than re-read from the setting later, because the setting is
+    /// what the NEXT spawn will use: a run started under one runner and asked about after
+    /// the operator switched would otherwise be interrogated through the wrong store, and
+    /// answer nothing about itself.
+    public static func stageRunner(_ runID: String, _ name: String) {
+        try? name.write(to: runnerPath(runID), atomically: true, encoding: .utf8)
+    }
+
+    /// Which agent CLI ran this run, or "" for one that predates the record.
+    ///
+    /// Empty is not Claude Code: it is "unknown", and the probes read it as a run they
+    /// cannot ask about — which falls back to the screen, the only evidence such a run
+    /// ever had.
+    public static func runRunner(_ runID: String) -> String {
+        read(runnerPath(runID))
+    }
+
+    /// Record the port this run's OpenCode server will answer on.
+    ///
+    /// The applet picks it rather than the agent, because the applet is the one that puts
+    /// it on the agent's command line — a port only discoverable once the server is up is
+    /// a port nothing can ask about while the run is starting, which is when the first
+    /// questions are asked. Recording it is what makes it useful, so a port that cannot
+    /// be written down is the same as none.
+    @discardableResult
+    public static func stagePort(_ runID: String, _ port: Int) -> Bool {
+        (try? String(port).write(to: portPath(runID), atomically: true, encoding: .utf8)) != nil
+    }
+
+    /// The port this run's OpenCode server answers on, or nil for a run that has none —
+    /// every Claude Code and Hermes run, and any OpenCode run whose port could not be
+    /// reserved.
+    public static func port(_ runID: String) -> Int? {
+        guard let value = Int(read(portPath(runID))), value > 0, value < 65_536 else {
+            return nil
+        }
+        return value
+    }
+
+    /// Which of its runner's sessions was found to be this run's, or "" before one was.
+    ///
+    /// Kept on disk rather than in memory so the search survives the applet restart this
+    /// whole module exists for — and because the search is the expensive half: matching a
+    /// session to a run reads its opening message, while asking a bound one what it is
+    /// doing reads a single message.
+    ///
+    /// Every runner spells an id its own way — `ses_00d61ec0…` under OpenCode,
+    /// `20260812_002140_b0e4d4` under Hermes — so what is checked is the shape any id has
+    /// and no torn or hand-edited file does: one bounded, non-empty token.
+    public static func boundSession(_ runID: String) -> String {
+        let value = read(sessionPath(runID))
+        guard value.count <= maxSessionID,
+              value.split(whereSeparator: \.isWhitespace).count == 1 else { return "" }
+        return value
+    }
+
+    /// Record which session is this run's.
+    public static func bindSession(_ runID: String, _ sessionID: String) {
+        try? sessionID.write(to: sessionPath(runID), atomically: true, encoding: .utf8)
+    }
+
+    private static func read(_ url: URL) -> String {
+        ((try? String(contentsOf: url, encoding: .utf8)) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Drop these runs from the book and delete their directories.

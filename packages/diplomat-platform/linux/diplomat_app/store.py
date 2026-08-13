@@ -24,7 +24,7 @@ import tempfile
 import threading
 import time
 
-from . import (
+from diplomat_runtime import (
     activity,
     agentregistry,
     agentstate,
@@ -32,21 +32,23 @@ from . import (
     appconfig,
     autobudget,
     autofix,
-    autofixmonitor,
-    bans,
-    conflicts,
     core,
-    deviceallocator,
-    probes,
     promptcore,
     review,
     runner,
-    szpont,
     telemetry,
     tmuxwatch,
 )
-from .models import API, Filters, Fmt, OpenIssue, OpenPR
-from .prtarget import PRTarget
+from diplomat_runtime.models import API, Filters, Fmt, OpenIssue, OpenPR
+from diplomat_runtime.prtarget import PRTarget
+from . import (
+    autofixmonitor,
+    bans,
+    conflicts,
+    deviceallocator,
+    probes,
+    szpont,
+)
 
 
 def _count(n: int, noun: str) -> str:
@@ -1133,31 +1135,28 @@ class Store(QObject):
             if routed == autofix.VERDICT_STAND_DOWN:
                 return routed  # a peer's agent owns it (logged once by the router)
             if routed == "spawned":
+                # Booked wherever the mesh put it. A placement back on this machine is
+                # one of the agents the cap counts, and must be booked before the next
+                # job of this poll asks how many are running — left unbooked, every
+                # dispatch of a burst measured the same empty machine and the cap held
+                # back nothing at all. A placement on a peer spends that peer's budget,
+                # but it is still work this device is waiting on, so it gets a row
+                # rather than leaving a gap.
+                self._track_mesh_run(job.pr_url, job.pr_number, source,
+                                     job.ledger_key, job.prompt, node=node,
+                                     work_key=job.work_key, here=ran_here,
+                                     label=row_label, kind=job.kind)
                 ok = True
-                if job.pr_url is not None and job.pr_number is not None:
-                    # Booked wherever the mesh put it. A placement back on this
-                    # machine is one of the agents the cap counts, and must be booked
-                    # before the next job of this poll asks how many are running —
-                    # left unbooked, every dispatch of a burst measured the same empty
-                    # machine and the cap held back nothing at all. A placement on a
-                    # peer spends that peer's budget, but it is still work this device
-                    # is waiting on, so it gets a row rather than leaving a gap.
-                    self._track_mesh_run(job.pr_url, job.pr_number, source,
-                                         job.ledger_key, job.prompt, node=node,
-                                         work_key=job.work_key, here=ran_here,
-                                         label=row_label, kind=job.kind)
-            elif job.pr_url is not None and job.pr_number is not None:
+            else:
+                # Registered whether or not it is PR-scoped. A sweep or an audit has
+                # nothing to dedup against, but it is still an agent this applet opened
+                # a window on, and a run with no record is a row the panel cannot draw
+                # and a directory nothing ever cleans up. What it costs depends on how
+                # it was dispatched, not on having a PR: the cap counts automatic runs
+                # and pricing follows the ledger key.
                 ok = self._spawn_tracked(job.prompt, job.pr_url, job.pr_number,
                                          source, job.ledger_key,
                                          label=row_label, kind=job.kind)
-            else:
-                # Not PR-scoped (sweeps, audits): nothing to dedup against, so no
-                # registration - but the same spawn, label and audit shape.
-                try:
-                    review.spawn(job.prompt, self.terminal)
-                    ok = True
-                except review.SpawnError:
-                    ok = False
             if not ok:
                 activity.log(source, "spawn-failed", f"{job.label} failed to spawn")
                 self.refresh_activity()
@@ -1273,8 +1272,9 @@ class Store(QObject):
         )
         return self.dispatch_agent(job, autofix.SOURCE_AUTO, attempt) in ("spawned", autofix.VERDICT_STAND_DOWN)
 
-    def _spawn_tracked(self, prompt: str, url: str, number: int, source: str,
-                       ledger_key: str = "", label: str = "", kind: str = "") -> bool:
+    def _spawn_tracked(self, prompt: str, url: str | None, number: int | None,
+                       source: str, ledger_key: str = "", label: str = "",
+                       kind: str = "") -> bool:
         """Register a run, then spawn its agent into it. Returns whether the terminal
         launched.
 
@@ -1298,8 +1298,9 @@ class Store(QObject):
         record = agentregistry.create_run(
             agentstate.RunRecord(
                 run_id=agentregistry.new_run_id(now), dispatched_at=now,
-                pr_number=number, pr_url=url, kind=kind, label=label, source=source,
-                placement=agentstate.PLACEMENT_LOCAL, ledger_key=ledger_key),
+                pr_number=number, pr_url=url or "", kind=kind, label=label,
+                source=source, placement=agentstate.PLACEMENT_LOCAL,
+                ledger_key=ledger_key),
             prompt)
         chosen = agentregistry.stage_runner(record.run_id)
         port = (agentregistry.stage_port(record.run_id)
@@ -1315,9 +1316,9 @@ class Store(QObject):
             return False
         return True
 
-    def _track_mesh_run(self, url: str, number: int, source: str, ledger_key: str,
-                        prompt: str, node: str, work_key: str, here: bool,
-                        label: str = "", kind: str = "") -> None:
+    def _track_mesh_run(self, url: str | None, number: int | None, source: str,
+                        ledger_key: str, prompt: str, node: str, work_key: str,
+                        here: bool, label: str = "", kind: str = "") -> None:
         """Book a run the mesh placed, which this applet did not spawn itself.
 
         There is no pid to record: the executor opened the terminal. A placement that
@@ -1337,7 +1338,8 @@ class Store(QObject):
         record = agentregistry.create_run(
             agentstate.RunRecord(
                 run_id=agentregistry.new_run_id(now), dispatched_at=now,
-                pr_number=number, pr_url=url, kind=kind, label=label, source=source,
+                pr_number=number, pr_url=url or "", kind=kind, label=label,
+                source=source,
                 placement=(agentstate.PLACEMENT_MESH_HERE if here
                            else agentstate.PLACEMENT_MESH_PEER),
                 node=node, work_key=work_key, ledger_key=ledger_key),
@@ -1983,7 +1985,7 @@ class Store(QObject):
 
         This is the single place the applet asks what its agents are doing. The dedup,
         the cap, the panel rows and the retirement are all projections of the result
-        (:mod:`diplomat_app.agentstate`), so they cannot come to disagree — which is
+        (:mod:`diplomat_runtime.agentstate`), so they cannot come to disagree — which is
         what four independent re-derivations of the same question did.
 
         Nothing here writes, retires or logs. The panel asks for the rows and the free
@@ -2243,7 +2245,7 @@ class Store(QObject):
             return
 
         def work() -> None:
-            from . import quota, usagescan
+            from diplomat_runtime import quota, usagescan
 
             try:
                 session, week = quota.fractions_left()
@@ -2377,7 +2379,8 @@ class Store(QObject):
     def refresh_activity(self) -> None:
         """Re-read the shared activity feed (audit.jsonl) and ban list (cheap tail /
         small-file reads) and signal on change. Runs on the panel's 8s poll."""
-        from . import activity, bans
+        from diplomat_runtime import activity
+        from . import bans
 
         new_audit = activity.read()
         new_bans = bans.read()
@@ -2580,23 +2583,27 @@ class Store(QObject):
             import subprocess
             import sys
 
-            linux_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            from . import RUNTIME_DIR
+
             # The node is a separate process and gets no say in who its host is, so
-            # hand it both halves: the path to import Diplomat and the library from,
-            # and the module that registers Diplomat behind it. Without the second
-            # the node comes up on the library's own defaults — its own state
-            # directory, no duty catalog of ours, no activity feed.
+            # hand it both halves: the path to import the shared runtime and the
+            # library from, and the module that registers Diplomat behind it. Without
+            # the second the node comes up on the library's own defaults — its own
+            # state directory, no duty catalog of ours, no activity feed. This package
+            # is deliberately NOT on that path: a node needs the runtime, and nothing a
+            # Qt applet adds on top of it.
             env = {
                 **os.environ,
-                "SZPONTNET_HOST": "diplomat_app.szponthost",
+                "SZPONTNET_HOST": "diplomat_runtime.szponthost",
                 "PYTHONPATH": os.pathsep.join(
-                    [linux_dir, szpont.package_dir(), os.environ.get("PYTHONPATH", "")]
+                    [RUNTIME_DIR, szpont.package_dir(),
+                     os.environ.get("PYTHONPATH", "")]
                 ).rstrip(os.pathsep),
             }
             try:
                 subprocess.Popen(  # noqa: S603 — relaunch ourselves as a node
                     [sys.executable, "-m", "szpontnet", "--daemon"],
-                    cwd=linux_dir,
+                    cwd=RUNTIME_DIR,
                     env=env,
                     start_new_session=True,
                     stdin=subprocess.DEVNULL,

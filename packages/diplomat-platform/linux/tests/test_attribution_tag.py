@@ -20,9 +20,9 @@ from pathlib import Path
 
 import pytest
 
-from diplomat_app import appconfig, runner, usagescan
 from diplomat_app.audit import AuditConfig
-from diplomat_app.review import ReviewConfig
+from diplomat_runtime import appconfig, runner, usagescan
+from diplomat_runtime.review import ReviewConfig
 
 pytestmark = pytest.mark.skipif(
     not os.environ.get("DIPLOMAT_CORE_BIN"),

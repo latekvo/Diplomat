@@ -132,8 +132,9 @@ public enum AgentDispatchGate {
     public enum Verdict: Equatable {
         /// Run it.
         case proceed
-        /// An agent is already working this PR (tracked row or a live `claude`
-        /// visible in `ps`) — never double-spawn, whoever asks.
+        /// An agent is already working this PR (`AgentState.inFlight`, which counts
+        /// every run that is not over, tracked or not) — never double-spawn, whoever
+        /// asks.
         case inFlight
         /// The author is on the prompt-injection ban list — never agent-review
         /// them, whoever asks. (Un-ban first if that is really wanted.)

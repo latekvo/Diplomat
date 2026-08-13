@@ -1,7 +1,7 @@
 """The impure half of agent-state detection: the outside world, typed.
 
-:mod:`diplomat_app.agentstate` decides; this module is the only thing that looks.
-Every probe here returns an :class:`~diplomat_app.agentstate.Observation`, so a
+:mod:`diplomat_runtime.agentstate` decides; this module is the only thing that looks.
+Every probe here returns an :class:`~diplomat_runtime.agentstate.Observation`, so a
 failure to look is carried to the resolver as a failure to look rather than as an
 empty answer — which is the whole reason the resolver can refuse to guess.
 
@@ -21,8 +21,8 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 
-from . import apiwatch, core, runner, tmuxwatch
-from .agentstate import UNAVAILABLE, Evidence, Observation, ProcInfo, RunRecord
+from diplomat_runtime import apiwatch, core, runner, tmuxwatch
+from diplomat_runtime.agentstate import UNAVAILABLE, Evidence, Observation, ProcInfo, RunRecord
 
 #: How long a probe's answer is reused. The resolver re-runs for every question the
 #: applet asks — that is deliberate, so no answer is ever stale — which makes THIS the
@@ -275,7 +275,7 @@ def agent_sessions(records: list[RunRecord], directory: str,
     which is physical, while the configured repo root is whatever the operator typed —
     and the match is exact equality, so one symlink between them and no run ever binds.
     """
-    from . import agentregistry
+    from diplomat_runtime import agentregistry
 
     global _sessions_cache
     asking = [(r, agentregistry.run_runner(r.run_id)) for r in records]
@@ -327,7 +327,7 @@ class _OpenCodeBackend:
         checkout at a time, so two sessions a second apart in the same directory is
         the ordinary case, not the pathological one.
         """
-        from . import agentregistry, opencodeapi
+        from diplomat_runtime import agentregistry, opencodeapi
 
         port = agentregistry.port(record.run_id)
         if port is None:
@@ -348,7 +348,7 @@ class _OpenCodeBackend:
 
     @staticmethod
     def state(record: RunRecord, session_id: str):
-        from . import agentregistry, opencodeapi
+        from diplomat_runtime import agentregistry, opencodeapi
 
         port = agentregistry.port(record.run_id)
         if port is None:
@@ -362,7 +362,7 @@ class _HermesBackend:
 
     @staticmethod
     def bind(record: RunRecord, directory: str, taken: set[str]) -> str:
-        from . import hermesstore
+        from diplomat_runtime import hermesstore
 
         prompt = _staged_prompt(record.run_id)
         if prompt is None:
@@ -375,13 +375,13 @@ class _HermesBackend:
 
     @staticmethod
     def state(record: RunRecord, session_id: str):
-        from . import hermesstore
+        from diplomat_runtime import hermesstore
 
         return hermesstore.state_of(session_id)
 
 
 def _staged_prompt(run_id: str) -> str | None:
-    from . import agentregistry
+    from diplomat_runtime import agentregistry
 
     try:
         return agentregistry.prompt_path(run_id).read_text(encoding="utf-8")
@@ -436,7 +436,7 @@ def merged_prs(pr_numbers: set[int]) -> Observation:
     """
     if not pr_numbers:
         return Observation.present(set())
-    from . import gh
+    from diplomat_runtime import gh
     merged = set()
     for n in sorted(pr_numbers):
         try:
@@ -456,7 +456,7 @@ def gather(records: list[RunRecord], now: float, *,
     belongs to the slow refresh, so the fast tick carries forward whatever the last
     one found (UNAVAILABLE until the first).
     """
-    from . import agentregistry, agentstate, review
+    from diplomat_runtime import agentregistry, agentstate, review
 
     dump = _ps_dump(now)
     table = _note("processes", process_table(dump), now)

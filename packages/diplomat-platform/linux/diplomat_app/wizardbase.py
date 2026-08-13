@@ -24,7 +24,8 @@ from __future__ import annotations
 
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 
-from . import review, widgets
+from diplomat_runtime import review
+from . import widgets
 from .meshspawn import MeshSpawnRow
 from .store import Store
 
@@ -101,7 +102,7 @@ class SpawnWizard(QWidget):
     # ---- the dispatch branch ---------------------------------------------
 
     def _spawn(self) -> None:
-        from . import activity, autofix
+        from diplomat_runtime import activity, autofix
 
         cfg = self._config()
         label = self._label()

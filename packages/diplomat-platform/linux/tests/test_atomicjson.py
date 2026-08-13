@@ -3,7 +3,7 @@
 Small state files on both sides of the library boundary go through this pair: the
 node's identity, peer + onion caches, trust store, ban list, usage stats and public
 snapshot (:mod:`szpontnet.atomicjson`), and the applet's shared
-``~/.diplomat/config.json`` (:mod:`diplomat_app.atomicjson`, its own copy, because
+``~/.diplomat/config.json`` (:mod:`diplomat_runtime.atomicjson`, its own copy, because
 resolving the repo the agents work in must not depend on the mesh add-on being
 installed).
 
@@ -30,7 +30,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest  # noqa: E402
 
-from diplomat_app import atomicjson as diplomat_atomicjson  # noqa: E402
+from diplomat_runtime import atomicjson as diplomat_atomicjson  # noqa: E402
 from szpontnet import atomicjson as szpontnet_atomicjson  # noqa: E402
 
 

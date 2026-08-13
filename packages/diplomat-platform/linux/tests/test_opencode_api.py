@@ -28,8 +28,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from diplomat_app import agentregistry, opencodeapi, probes, review, runner
-from diplomat_app.agentstate import RunRecord, SessionState
+from diplomat_runtime import agentregistry, opencodeapi, review, runner
+from diplomat_app import probes
+from diplomat_runtime.agentstate import RunRecord, SessionState
 
 T0 = 1_000_000.0
 PROMPT = "Review PR #7 in o/r"
@@ -346,7 +347,7 @@ def test_a_machine_with_no_such_runs_is_unsupported_not_silent():
 
 @pytest.fixture
 def opencode(monkeypatch, tmp_path):
-    from diplomat_app import appconfig
+    from diplomat_runtime import appconfig
 
     appconfig.set_value(appconfig.AGENT_RUNNER, runner.OPENCODE)
     monkeypatch.setattr(review, "repo_path", lambda: str(tmp_path))

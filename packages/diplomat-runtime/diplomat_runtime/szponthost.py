@@ -11,7 +11,7 @@ Registered two ways, because the node runs in two places:
 
 * in this process — :func:`install`, called by whoever is about to read a
   placement or drive a control command;
-* in the node daemon Diplomat spawns — ``SZPONTNET_HOST=diplomat_app.szponthost``
+* in the node daemon Diplomat spawns — ``SZPONTNET_HOST=diplomat_runtime.szponthost``
   in its environment, which the library resolves through this module's
   :func:`host` factory.
 """
@@ -24,11 +24,11 @@ from pathlib import Path
 
 from szpontnet import host as szpont_host
 
-# Everything except the base class is imported inside the methods that need it.
-# `diplomat_app/__init__` installs this host, so this module is on the import path
-# of every entry point the package has, including the stdlib-only node daemon —
-# and a module that pulls the applet's world in at import time would put all of it
-# between the daemon's `python -m` and its first line of work.
+# Everything except the base class is imported inside the methods that need it. This
+# module is on the import path of every entry point that can host a node — the Linux
+# applet, which installs it in-process, and the stdlib-only node daemon either front-end
+# spawns — and a module that pulled the whole runtime in at import time would put all of
+# it between the daemon's `python -m` and its first line of work.
 
 
 class DiplomatHost(szpont_host.Host):
@@ -211,7 +211,7 @@ def _applescript_quote(s: str) -> str:
 
 
 def host() -> DiplomatHost:
-    """Factory for ``SZPONTNET_HOST=diplomat_app.szponthost``."""
+    """Factory for ``SZPONTNET_HOST=diplomat_runtime.szponthost``."""
     return DiplomatHost()
 
 

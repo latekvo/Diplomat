@@ -20,8 +20,9 @@ import shlex
 
 import pytest
 
-from diplomat_app import apiwatch, appconfig, autofix, probes, review, runner
-from diplomat_app.agentstate import RunRecord
+from diplomat_runtime import apiwatch, appconfig, autofix, review, runner
+from diplomat_app import probes
+from diplomat_runtime.agentstate import RunRecord
 
 # MARK: - Real captured panes
 
@@ -293,7 +294,7 @@ def test_the_marker_count_rises_for_an_opencode_screen(monkeypatch):
 
 def _mesh_run(here: bool) -> str:
     """Book a mesh placement the way a dispatch does, and return its run id."""
-    from diplomat_app import agentregistry
+    from diplomat_runtime import agentregistry
     from diplomat_app.store import Store
 
     Store._track_mesh_run(Store(), "https://github.com/o/r/pull/7", 7, "mesh",
@@ -307,7 +308,7 @@ def test_a_mesh_run_that_landed_here_records_which_runner_it_is_under(opencode):
     ran on THIS box is an ordinary local agent — it holds a bay and the untracked scan
     finds it. With no runner on its row the probes ask no store about it and it is
     priced from ``~/.claude``, which holds no transcript of an OpenCode run at all."""
-    from diplomat_app import agentregistry
+    from diplomat_runtime import agentregistry
 
     assert agentregistry.run_runner(_mesh_run(here=True)) == runner.OPENCODE
 
@@ -315,6 +316,6 @@ def test_a_mesh_run_that_landed_here_records_which_runner_it_is_under(opencode):
 def test_a_mesh_run_on_a_peer_records_no_runner_at_all(opencode):
     """Its process is on another machine and our stores hold nothing about it. A
     runner written down here would point the probe at somebody else's session."""
-    from diplomat_app import agentregistry
+    from diplomat_runtime import agentregistry
 
     assert agentregistry.run_runner(_mesh_run(here=False)) == ""

@@ -35,7 +35,7 @@ import Foundation
 ///
 /// Pure and `Foundation`-only, so it builds on Linux and is driven by
 /// `diplomat-core telemetry` — which is how `test_telemetry_parity.py` diffs it
-/// against the Python twin in `diplomat_app/telemetry.py`. Keep the two in step.
+/// against the Python twin in `diplomat_runtime/telemetry.py`. Keep the two in step.
 public enum Telemetry {
 
     // MARK: - Ledger

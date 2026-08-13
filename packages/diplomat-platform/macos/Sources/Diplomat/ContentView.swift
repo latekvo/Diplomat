@@ -350,7 +350,7 @@ struct ContentView: View {
         }
         .padding(10)
         .background(cmdFCatcher)
-        .animation(.easeInOut(duration: 0.18), value: store.processes)
+        .animation(.easeInOut(duration: 0.18), value: store.agentRows)
         .animation(.easeInOut(duration: 0.18), value: store.queuedTasks)
         // The queued → starting → session move is the one the operator drives by
         // hand, so it is the one that must read as a move rather than a jump.
@@ -590,7 +590,7 @@ struct ContentView: View {
     /// the agent sessions it has spawned, the automatic work it is holding, and a row
     /// per empty slot of its cap.
     private enum AgentTaskItem: Identifiable {
-        case session(TrackedProcess)
+        case session(Store.AgentRow)
         case queued(Store.QueuedAgentTask)
         /// Off the queue, spawn not yet answered. Still the queued task — the same
         /// key, so the row keeps its identity across the change and animates into
@@ -600,11 +600,11 @@ struct ContentView: View {
         /// that distinguishes one from another.
         case freeSlot(Int)
 
-        /// Namespaced, because a session's UUID, a queue key and a slot index are
-        /// three alphabets sharing one `ForEach`.
+        /// Namespaced, because a run id, a queue key and a slot index are three
+        /// alphabets sharing one `ForEach`.
         var id: String {
             switch self {
-            case .session(let p): return "s-\(p.id.uuidString)"
+            case .session(let r): return "s-\(r.id)"
             case .queued(let q):  return "q-\(q.id)"
             case .starting(let q): return "q-\(q.id)"
             case .freeSlot(let i): return "free-\(i)"
@@ -613,9 +613,7 @@ struct ContentView: View {
 
         var status: AgentTaskStatus {
             switch self {
-            case .session(let p):
-                return AgentTaskStatus.ofSession(merged: p.merged, done: p.done,
-                                                 awaitingInput: p.awaitingInput)
+            case .session(let r): return r.status
             case .queued:   return .queued
             case .starting: return .starting
             case .freeSlot: return .free
@@ -624,15 +622,15 @@ struct ContentView: View {
     }
 
     /// The list in reading order: finished at the top, then the sessions that want a
-    /// human, then the ones that don't, then this device's empty slots, then what
-    /// hasn't started (`AgentTaskStatus`).
+    /// human, then the ones that don't, then what nothing is known about, then this
+    /// device's empty slots, then what hasn't started (`AgentTaskStatus`).
     ///
-    /// Ties keep the order they came in — sessions oldest-first, the queue in its
-    /// execution order — which matters most for the queue, whose whole point is that
-    /// its order is the operator's. `sorted(by:)` makes no stability promise, so the
-    /// position is the tiebreak rather than an assumption about the sort.
+    /// Ties keep the order they came in — runs as `AgentState.rows` ranked them, the
+    /// queue in its execution order — which matters most for the queue, whose whole
+    /// point is that its order is the operator's. `sorted(by:)` makes no stability
+    /// promise, so the position is the tiebreak rather than an assumption about the sort.
     private var agentTaskItems: [AgentTaskItem] {
-        let items = store.processes.map(AgentTaskItem.session)
+        let items = store.agentRows.map(AgentTaskItem.session)
             + store.startingTasks.map(AgentTaskItem.starting)
             + store.queuedTasks.map(AgentTaskItem.queued)
             + (0..<store.freeAutoSlots).map(AgentTaskItem.freeSlot)
@@ -658,19 +656,19 @@ struct ContentView: View {
             // last queued row would drop the count for as long as its spawn takes.
             // Empty slots are not (a device with nothing to do reads "0", not "2").
             SectionHeader(title: "AGENT TASKS",
-                          count: store.processes.count + queued + starting,
+                          count: store.agentRows.count + queued + starting,
                           expanded: $tasksExpanded,
                           icon: "antenna.radiowaves.left.and.right",
                           caption: caption.isEmpty ? nil : caption)
             if tasksExpanded {
                 ForEach(items) { item in
                     switch item {
-                    case .session(let proc):
-                        ProcessRow(
-                            proc: proc,
-                            tint: agentTaskTint(proc.kind),
-                            onTap: { activate(proc) },
-                            onRemove: { store.removeProcess(proc.id) }
+                    case .session(let row):
+                        AgentRunRow(
+                            row: row,
+                            tint: agentTaskTint(row.record.kind),
+                            onTap: { activate(row) },
+                            onRemove: { store.forgetRun(row.id) }
                         )
                     case .queued(let task):
                         QueuedTaskRow(
@@ -695,10 +693,10 @@ struct ContentView: View {
 
     private func agentTaskTint(_ kind: String) -> Color { DiplomatUI.agentTaskTint(kind) }
 
-    /// Click a tracked row: focus its window. If focus fails the window is gone and
-    /// the session is dismissed by the store — nothing more to do here.
-    private func activate(_ proc: TrackedProcess) {
-        Task { _ = await store.activate(proc) }
+    /// Click a row: focus its window. If focus fails the window is gone and the row is
+    /// dismissed by the store — nothing more to do here.
+    private func activate(_ row: Store.AgentRow) {
+        Task { _ = await store.activate(row) }
     }
 
     // MARK: search (reverse lookup)
@@ -786,7 +784,7 @@ struct ContentView: View {
             if !store.bannedAuthors.isEmpty { bannedList(store.bannedAuthors) }
             agentTaskList
             if let ds = store.deviceState, !ds.devices.isEmpty {
-                DevicesView(ds: ds, tracked: store.processes,
+                DevicesView(ds: ds, tracked: store.agentRows,
                             onKill: { key in Task { await store.killDevice(key) } })
             }
             if !store.auditEntries.isEmpty { auditList(store.auditEntries) }
@@ -960,23 +958,39 @@ private enum DiplomatUI {
     }
 }
 
-// MARK: - Agent-session row
+// MARK: - Agent-run row
 
-private struct ProcessRow: View {
-    let proc: TrackedProcess
+private struct AgentRunRow: View {
+    let row: Store.AgentRow
     let tint: Color
     let onTap: () -> Void
     let onRemove: () -> Void
 
-    private var kindIcon: String { DiplomatUI.agentTaskIcon(proc.kind) }
+    private var kindIcon: String { DiplomatUI.agentTaskIcon(row.record.kind) }
 
     // Resolved out of the ViewBuilder, where a ternary over concatenations is what
     // tips this file past the type-checker's time limit on a CI runner.
     private static let localHelp = "Bring this session's window to the front."
+    private static let untrackedHelp =
+        "An agent nobody here dispatched. Nothing to focus — this applet did not open "
+        + "its window."
     private static func meshHelp(_ node: String) -> String {
         node.isEmpty
             ? "Running on a mesh node. Nothing to focus here — the agent is on another machine."
             : "Running on mesh node \(node). Nothing to focus here — the agent is on that machine."
+    }
+    /// A placement the mesh sent back here: this machine's own agent, but the node
+    /// opened its window, so this applet never captured a handle to raise.
+    private static let meshHereHelp =
+        "Placed on this machine by the mesh. Nothing to focus — the node opened its window, "
+        + "not this applet."
+    /// Why a run with no window handle cannot be clicked.
+    private static func help(for record: AgentState.RunRecord) -> String {
+        switch record.placement {
+        case .meshPeer: return meshHelp(record.node)
+        case .meshHere: return meshHereHelp
+        case .local:    return untrackedHelp
+        }
     }
     /// The note beside the status word. Built here rather than in the `Text(...)`
     /// itself: a ternary inside a ViewBuilder call is what has tipped this file past
@@ -987,24 +1001,31 @@ private struct ProcessRow: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            // A mesh row's agent is a process on another machine: there is no window
-            // to raise, so it is content rather than a button. Offering the click and
-            // doing nothing would read as a session whose window had gone missing.
-            if let run = proc.mesh {
-                content.help(ProcessRow.meshHelp(run.node))
+            // A row with no window handle has nothing to raise — an agent on a peer, one
+            // the mesh placed back here, or one nobody dispatched. Offering the click and
+            // doing nothing would read as a session whose window had gone missing. Each
+            // placement answers differently: the status line says "on mesh" for both mesh
+            // rows, which "nobody here dispatched this" would contradict.
+            if row.window == nil {
+                content.help(AgentRunRow.help(for: row.record))
             } else {
                 Button(action: onTap) { content.contentShape(Rectangle()) }
                     .buttonStyle(.plain)
-                    .help(ProcessRow.localHelp)
+                    .help(AgentRunRow.localHelp)
             }
 
-            Button(action: onRemove) {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
+            // Only a run this applet booked can be forgotten. One nobody dispatched is
+            // re-derived from the process table on the next tick, so the ✕ would take
+            // the row away for a second and then hand it straight back.
+            if !row.record.untracked {
+                Button(action: onRemove) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.borderless)
+                .help("Stop tracking — remove from the list.")
             }
-            .buttonStyle(.borderless)
-            .help("Stop tracking — remove from the list.")
         }
         .padding(6)
         .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.06)))
@@ -1014,28 +1035,43 @@ private struct ProcessRow: View {
         HStack(spacing: 8) {
             IconBadge(symbol: kindIcon, tint: tint)
             VStack(alignment: .leading, spacing: 1) {
-                Text(proc.label).font(.caption).lineLimit(1)
+                Text(label).font(.caption).lineLimit(1)
                 statusLine
             }
             Spacer(minLength: 4)
         }
     }
 
+    /// A run nobody dispatched has no label of its own — nothing recorded what it was
+    /// for — so it is named by the PR its prompt mentions, which is a great deal more
+    /// than the blank the operator would otherwise get.
+    private var label: String {
+        if !row.record.label.isEmpty { return row.record.label }
+        return row.record.prNumber.map { "Agent · #\($0)" } ?? "Agent"
+    }
+
     private var statusLine: some View {
-        // "merged" is the definitive outcome — it outranks "done" (the local claude
-        // process merely exited; the PR may still be open). A live session that has
-        // finished its turn and is idling at the prompt reads "awaiting input" (amber,
-        // it needs you) rather than "running". That precedence is also the list's sort
-        // order, so it is decided once, in the core.
+        // "merged" is the definitive outcome — it outranks "done" (the agent process
+        // merely exited; the PR may still be open). A live session that has finished its
+        // turn and is idling at the prompt reads "awaiting input" (amber, it needs you)
+        // rather than "running". That precedence is also the list's sort order, so it is
+        // decided once, in the core.
         HStack(spacing: 3) {
-            AgentTaskStatusLabel(
-                status: AgentTaskStatus.ofSession(merged: proc.merged, done: proc.done,
-                                                  awaitingInput: proc.awaitingInput))
-            // WHERE, next to what — the same shape the queued row uses for the note
-            // that its monitor is off. Without it a mesh row is indistinguishable
-            // from a local session whose window this machine has simply lost.
-            if let run = proc.mesh {
-                Text(ProcessRow.meshNote(run.node))
+            AgentTaskStatusLabel(status: row.status)
+            // WHERE, next to what — the same shape the queued row uses for the note that
+            // its monitor is off. Without it a mesh row is indistinguishable from a local
+            // session whose window this machine has simply lost.
+            if row.record.placement != .local {
+                Text(AgentRunRow.meshNote(row.record.node))
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            // WHY nothing is known, which is the difference between two entirely
+            // different things to go and fix — a revoked automation permission and a
+            // mesh node that stopped.
+            if row.state == .unknown, !row.reason.isEmpty {
+                Text("· \(row.reason)")
                     .font(.system(size: 9))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -1065,6 +1101,9 @@ private struct AgentTaskStatusLabel: View {
         case .running:       return "circle.fill"
         // The wizard's SPAWN AGENT glyph: what this row is, is a spawn under way.
         case .starting:      return "play.fill"
+        // Not a state of the agent but of what can be seen of it: the row is drawn, its
+        // bay is held, and the glyph says the applet is the one that cannot answer.
+        case .unknown:       return "questionmark.circle.fill"
         case .free:          return "circle.dashed"
         case .queued:        return "clock.fill"
         }
@@ -1078,6 +1117,7 @@ private struct AgentTaskStatusLabel: View {
         // A task on its way to running, in running's colour: the click's answer is
         // the row leaving the grey of the queue, before a word of it is read.
         case .running, .starting: return .blue
+        case .unknown:       return .secondary
         case .free:          return .secondary
         case .queued:        return .secondary
         }
@@ -1280,7 +1320,7 @@ private struct FreeSlotRow: View {
 /// try to focus the terminal running the agent that holds it.
 struct DevicesView: View {
     let ds: DeviceState
-    let tracked: [TrackedProcess]
+    let tracked: [Store.AgentRow]
     /// Kill a device by key (the per-row X). No-op default so the renderer can omit it.
     var onKill: (String) -> Void = { _ in }
 
@@ -1288,7 +1328,7 @@ struct DevicesView: View {
     @State private var freeExpanded: Bool
 
     /// The seed params let the headless renderer snapshot either collapse state.
-    init(ds: DeviceState, tracked: [TrackedProcess], onKill: @escaping (String) -> Void = { _ in },
+    init(ds: DeviceState, tracked: [Store.AgentRow], onKill: @escaping (String) -> Void = { _ in },
          seedInUseExpanded: Bool = true, seedFreeExpanded: Bool = false) {
         self.ds = ds
         self.tracked = tracked
@@ -1344,7 +1384,7 @@ struct DevicesView: View {
 
 private struct DeviceRow: View {
     let dev: DeviceAllocation
-    var tracked: [TrackedProcess] = []
+    var tracked: [Store.AgentRow] = []
     var onKill: ((String) -> Void)? = nil
 
     /// Clickable when an owner PID exists to resolve a terminal for. The actual
@@ -1421,7 +1461,7 @@ private struct DeviceRow: View {
         .onTapGesture {
             // Off-main: the focus path is one `ps` + up to two synchronous osascript
             // round-trips — running it in the gesture handler froze the popover
-            // (its tracked-row sibling has always detached for the same reason).
+            // (its agent-row sibling has always detached for the same reason).
             guard focusable else { return }
             let d = dev, t = tracked
             Task.detached(priority: .userInitiated) { DeviceFocus.focus(d, tracked: t) }

@@ -13,7 +13,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from diplomat_app import activity  # noqa: E402
+from diplomat_runtime import activity  # noqa: E402
 
 
 def test_category_of_matches_swift_taxonomy() -> None:

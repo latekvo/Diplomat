@@ -1,4 +1,4 @@
-"""`diplomat_app.agentstate` vs `DiplomatCore/AgentState.swift`, over one table.
+"""`diplomat_runtime.agentstate` vs `DiplomatCore/AgentState.swift`, over one table.
 
 The two are two implementations of one decision, and neither can delegate to the
 other: this resolver runs on the panel's 8-second poll and on every dispatch, so a
@@ -25,7 +25,7 @@ import subprocess
 
 import pytest
 
-from diplomat_app import agentstate as A
+from diplomat_runtime import agentstate as A
 
 # The scenario table itself, so the two languages are pinned against exactly the
 # cases the Python side already asserts rather than a second, drifting copy.

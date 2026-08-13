@@ -482,11 +482,15 @@ the mesh on macOS needs the source checkout on disk (`DIPLOMAT_SELF_REPO` if it
 isn't at the default `~/dev/diplomat`):
 
 ```bash
-cd packages/diplomat-platform/linux
+cd packages/diplomat-runtime
 # Put Diplomat behind the node: without this it runs SzpontNet's own defaults —
 # the canonical v1 duties, state in ~/.szpontnet, no activity feed — and so joins
 # a different mesh than the one your app is on.
-export SZPONTNET_HOST=diplomat_app.szponthost PYTHONPATH=../../szpontnet-core
+# Absolute, because `--daemon` re-execs the node from the library's own directory:
+# a relative PYTHONPATH entry would resolve against THAT cwd, the host module would
+# not import, and the node would come up on the null host without saying so.
+export SZPONTNET_HOST=diplomat_runtime.szponthost
+export PYTHONPATH="$PWD:$PWD/../szpontnet-core"
 
 python3 -m szpontnet --daemon      # join the mesh (any OS, no Qt needed)
 python3 -m szpontnet --status      # live topology + duty assignments
@@ -683,7 +687,7 @@ per task rather than inventing a percentage. Work placed on a **mesh peer** spen
 peer's quota, so it counts as started and is kept out of the cost and run-time figures.
 
 The arithmetic is shared: [`Telemetry.swift`](packages/diplomat-core/Sources/DiplomatCore/Telemetry.swift)
-and `diplomat_app/telemetry.py` are diffed field-for-field over one ledger by
+and `diplomat_runtime/telemetry.py` are diffed field-for-field over one ledger by
 `tests/test_telemetry_parity.py`, so the two screens cannot disagree about what a
 ledger means.
 
@@ -1215,6 +1219,16 @@ packages/
                                  instead of reimplementing them; `tool-data` and `telemetry` expose the two
                                  engines the Linux side reimplements, so the parity tests can diff them
 
+  diplomat-runtime/            ← the platform-neutral Python half: the twin of diplomat-core plus
+                                 everything below the UI that has no Swift counterpart
+    diplomat_runtime/            no Qt, no AppKit — the assets loader, PR triage, the run book, token
+                                 accounting, the spawner. The Linux applet imports it; the macOS app's
+                                 mesh node runs it with nothing else of Diplomat's on its path
+      szponthost.py            ← Diplomat's answers to the six questions a mesh node asks its host:
+                                 the duty catalog, the state dir, where events go, how a job runs here,
+                                 whether an agent is already up on that work, and whether this machine
+                                 has room for another and the rate limit to afford it
+
   diplomat-platform/           ← the platform wrappers: one UI each over that same core
     macos/                     ← macOS SwiftUI menu-bar app — thin UI over the core
       Sources/Diplomat/
@@ -1229,13 +1243,14 @@ packages/
         AutofixMonitor.swift       the monitors' GitHub reads (monitor-prs / review-requests queries)
         AutofixStatus.swift        the monitor heartbeat behind the status pill
         ApiErrorWatcher.swift      iTerm/Terminal session reader + continue-nudge sender
-        ProcessTracker.swift       tracked agent sessions (liveness, focus, done sentinel, merged)
+        AgentProbes.swift          the outside world, typed: `ps`, screens, sentinels, claims -> Evidence
+        AgentWindows.swift         where each run's terminal window is, so a row click can raise it
         AgentSessionProbe.swift    asks each run's own agent what it is doing, through its runner's store
         OpenCodeProbe.swift        dials an OpenCode run's own server: free port, session list, messages
         HermesProbe.swift          reads a Hermes run's session out of ~/.hermes/state.db, read-only
-        TrackTest.swift            E2E self-test of the tracking path (DIPLOMAT_TRACK_TEST)
+        TrackTest.swift            E2E self-test of the run book + this platform's probes (DIPLOMAT_TRACK_TEST)
         QueueTest.swift            self-test of the deferred-task queue (DIPLOMAT_QUEUE_TEST)
-        SweepTest.swift            self-test of working-vs-at-the-prompt (DIPLOMAT_SWEEP_TEST)
+        SweepTest.swift            self-test of asking each runner's own store (DIPLOMAT_SWEEP_TEST)
         BanList.swift / AuditLog.swift   ban list (the daemon's banned.json) + the unified activity feed (audit.jsonl)
         DeviceAllocator.swift      allocator daemon state reader + installer bridge
         DeviceFocus.swift          click an in-use device → focus the holding agent's terminal
@@ -1256,10 +1271,9 @@ packages/
         AppConfig.swift            the cross-process settings file (~/.diplomat/config.json) the mesh node shares
       install/                 ← build-app + the autostart / auto-update (un)installers (launchd)
     linux/                     ← Linux Qt6/PySide6 tray applet (see its README)
-      diplomat_app/szponthost.py   ← Diplomat's answers to the six questions a mesh node asks its host:
-                                 the duty catalog, the state dir, where events go, how a job runs here,
-                                 whether an agent is already up on that work, and whether this machine
-                                 has room for another and the rate limit to afford it
+      diplomat_app/            ← what is this front-end's own: screens, wizards, the Store driving
+                                 them, its self-update and single-instance guards, and probes.py —
+                                 this platform's evidence gatherer, twin of AgentProbes.swift
       install/                 ← build-core + the autostart / auto-update (un)installers (XDG + systemd)
       meshsim/                 ← the real-socket mesh simulator the mesh scenarios run through
 

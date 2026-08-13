@@ -41,7 +41,7 @@ public enum AgentModel {
     /// lookup over a fixture instead of over the developer's own machine.
     public static func detect(configFile: URL, claudeHome: URL) -> String {
         let cfg = readJSONObject(configFile)
-        // Same two keys as `AppConfig` (macOS) and `appconfig.py` (Linux) write.
+        // Same two keys as `AppConfig` (macOS) and the runtime's `appconfig.py` write.
         let runner = AgentRunner.from(cfg["agentRunner"] as? String ?? "")
         let pinned = (cfg["agentModel"] as? String ?? "")
         // The Claude runner ignores that field (`AgentRunner.agentCommand` passes it no

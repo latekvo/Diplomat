@@ -18,9 +18,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from diplomat_app import gh, review  # noqa: E402
-from diplomat_app.prtarget import PRTarget  # noqa: E402
-from diplomat_app.review import SpecificAuthor  # noqa: E402
+from diplomat_runtime import gh, review  # noqa: E402
+from diplomat_runtime.prtarget import PRTarget  # noqa: E402
+from diplomat_runtime.review import SpecificAuthor  # noqa: E402
 from diplomat_app.store import Store  # noqa: E402
 from diplomat_app.wizardview import WizardView  # noqa: E402
 

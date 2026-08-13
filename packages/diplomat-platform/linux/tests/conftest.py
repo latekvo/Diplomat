@@ -28,6 +28,10 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _LINUX_DIR = os.path.dirname(_HERE)
 _PACKAGES = os.path.dirname(os.path.dirname(_LINUX_DIR))
 sys.path.insert(0, _LINUX_DIR)
+# The shared runtime, which the applet's own ``__init__`` would put here anyway —
+# spelled out because plenty of these tests import ``diplomat_runtime`` without ever
+# touching ``diplomat_app``.
+sys.path.insert(0, os.path.join(_PACKAGES, "diplomat-runtime"))
 # The mesh add-on, from this checkout rather than an install, so the suite runs
 # against the SzpontNet in the tree it is testing. Normalised, because whichever
 # of the two suites' conftests lands first decides the ``__file__`` every module
@@ -84,7 +88,7 @@ def no_host_agent_spawn(monkeypatch):
     ``SZPONTNET_FOREIGN_SPAWN``) are deliberately left alone: they are empty by
     default and the mesh tests point them at a harmless ``cp`` template.
     """
-    from diplomat_app import review, szponthost
+    from diplomat_runtime import review, szponthost
 
     def refuse(*args, **kwargs):
         raise AssertionError(
@@ -110,7 +114,7 @@ def no_github_reads(monkeypatch):
     Tests that mean to exercise a fetch stub ``autofixmonitor.fetch_*`` (or
     ``models.API``) themselves; this is the backstop for the ones that don't.
     """
-    from diplomat_app import gh
+    from diplomat_runtime import gh
 
     def refuse(args, timeout=60.0):
         raise AssertionError(
@@ -129,7 +133,7 @@ def isolated_activity_feed(tmp_path, monkeypatch):
     watcher dispatch paths call :func:`activity.log`, which otherwise appends to the
     user's live feed (``activity._dir`` resolves via ``Path.home()``, which the
     QSettings redirect above does not cover)."""
-    from diplomat_app import activity
+    from diplomat_runtime import activity
 
     feed = tmp_path / "diplomat-feed"
     feed.mkdir()
@@ -158,7 +162,7 @@ def isolated_claude_dir(tmp_path, monkeypatch):
     size, two are keyed on a clock, and the last remembers a path to an ``opencode``
     that the next test replaces with its own.
     """
-    from diplomat_app import autobudget, quota, telemetry, usagescan
+    from diplomat_runtime import autobudget, quota, telemetry, usagescan
 
     monkeypatch.setenv("DIPLOMAT_CLAUDE_DIR", str(tmp_path / "claude"))
     monkeypatch.setenv("DIPLOMAT_QUOTA_PROBE", "0")

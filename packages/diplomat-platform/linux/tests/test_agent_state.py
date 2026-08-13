@@ -1,4 +1,4 @@
-"""The scenario table behind :mod:`diplomat_app.agentstate`.
+"""The scenario table behind :mod:`diplomat_runtime.agentstate`.
 
 One named case per situation the resolver has to get right, each fed through
 ``resolve_one`` and asserted on the state AND the reason — the reason because it is
@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import pytest
 
-from diplomat_app import agentstate as A
+from diplomat_runtime import agentstate as A
 
 # A fixed clock. Every offset below is integral so the formatted seconds in a reason
 # string are the same text in both languages (see the parity test).
