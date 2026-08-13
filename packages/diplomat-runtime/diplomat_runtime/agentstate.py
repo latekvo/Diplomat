@@ -12,8 +12,9 @@ Here they are one function and four projections of its result:
     in_flight(...)  cap_load(...)  rows(...)  retirable(...)
 
 Everything in this module is **pure** — no clock, no subprocess, no filesystem. The
-impure half is :mod:`diplomat_app.probes`, whose only job is to turn the outside
-world into an :class:`Evidence` bundle. That split is what makes a scenario a dict
+impure half is each front-end's own probe layer — :mod:`diplomat_app.probes` on Linux,
+``AgentProbes.swift`` on macOS — whose only job is to turn the outside world into an
+:class:`Evidence` bundle. That split is what makes a scenario a dict
 literal instead of a machine in a particular state.
 
 Swift twin: ``DiplomatCore/AgentState.swift``. The scenario table in
@@ -31,8 +32,8 @@ already-complete verdicts on agents that were still working.
 
 The mirror rule costs a bay rather than correctness: a live process whose screen
 cannot be read is RUNNING, because working and waiting-at-the-prompt are genuinely
-indistinguishable from outside. :mod:`diplomat_app.probes` reports how often that
-happens rather than letting it pass silently.
+indistinguishable from outside. The probe layer reports how often that happens rather
+than letting it pass silently.
 """
 
 from __future__ import annotations
@@ -582,7 +583,7 @@ def _classify_activity(record: RunRecord, evidence: Evidence, done,
     someone else's UI that says nothing at all if they reword it.
 
     Every gap here reads as RUNNING, which costs a bay rather than correctness — but
-    it is also the one rung that fails silently, so :mod:`diplomat_app.probes` counts
+    it is also the one rung that fails silently, so the probe layer counts
     how often the tail is missing and says so out loud.
     """
     if evidence.sessions.ok:

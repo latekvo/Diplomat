@@ -979,6 +979,19 @@ private struct AgentRunRow: View {
             ? "Running on a mesh node. Nothing to focus here — the agent is on another machine."
             : "Running on mesh node \(node). Nothing to focus here — the agent is on that machine."
     }
+    /// A placement the mesh sent back here: this machine's own agent, but the node
+    /// opened its window, so this applet never captured a handle to raise.
+    private static let meshHereHelp =
+        "Placed on this machine by the mesh. Nothing to focus — the node opened its window, "
+        + "not this applet."
+    /// Why a run with no window handle cannot be clicked.
+    private static func help(for record: AgentState.RunRecord) -> String {
+        switch record.placement {
+        case .meshPeer: return meshHelp(record.node)
+        case .meshHere: return meshHereHelp
+        case .local:    return untrackedHelp
+        }
+    }
     /// The note beside the status word. Built here rather than in the `Text(...)`
     /// itself: a ternary inside a ViewBuilder call is what has tipped this file past
     /// the type-checker's time limit on CI's slower runner before.
@@ -988,13 +1001,13 @@ private struct AgentRunRow: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            // A row with no window handle has nothing to raise — an agent on a peer, or
-            // one nobody dispatched. Offering the click and doing nothing would read as
-            // a session whose window had gone missing.
+            // A row with no window handle has nothing to raise — an agent on a peer, one
+            // the mesh placed back here, or one nobody dispatched. Offering the click and
+            // doing nothing would read as a session whose window had gone missing. Each
+            // placement answers differently: the status line says "on mesh" for both mesh
+            // rows, which "nobody here dispatched this" would contradict.
             if row.window == nil {
-                content.help(row.record.placement == .meshPeer
-                             ? AgentRunRow.meshHelp(row.record.node)
-                             : AgentRunRow.untrackedHelp)
+                content.help(AgentRunRow.help(for: row.record))
             } else {
                 Button(action: onTap) { content.contentShape(Rectangle()) }
                     .buttonStyle(.plain)

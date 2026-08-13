@@ -272,11 +272,15 @@ def _path(spawned) -> list[str]:
 
 def test_the_node_is_handed_the_shared_runtime_and_nothing_of_the_applet(spawned):
     """The node is a separate stdlib-only process that imports its host by name off
-    ``PYTHONPATH``. Hand it this package instead and every duty it runs reaches for
-    PySide6 on a machine that may have none."""
+    ``PYTHONPATH``. It runs on either OS, so what it is handed is the half that has no
+    front-end in it - naming this package would make one applet's tree a dependency of
+    the other's node."""
     added = [p for p in _path(spawned) if p != AMBIENT]
     assert os.path.join(PACKAGES, "diplomat-runtime") in added
     assert os.path.join(PACKAGES, "diplomat-platform", "linux") not in added
+    # And the working directory, which `python -m` puts at sys.path[0] — ahead of every
+    # entry above, so handing over this package here would undo the whole assertion.
+    assert spawned["cwd"] == os.path.join(PACKAGES, "diplomat-runtime")
 
 
 def test_the_host_module_it_names_is_importable_from_that_path(spawned):
@@ -291,8 +295,11 @@ def test_the_host_module_it_names_is_importable_from_that_path(spawned):
 
 def test_a_developers_own_import_path_is_kept(spawned):
     """Prepended, not replaced: the applet is often run out of a virtualenv or an
-    editable install that lives on that path."""
-    assert AMBIENT in _path(spawned)
+    editable install that lives on that path. Ours go in front of it, so a stale copy
+    of the runtime installed there cannot shadow the tree being run."""
+    path = _path(spawned)
+    assert AMBIENT in path
+    assert path.index(os.path.join(PACKAGES, "diplomat-runtime")) < path.index(AMBIENT)
 
 
 def test_the_node_is_started_detached_from_the_applet(spawned):
@@ -300,3 +307,49 @@ def test_the_node_is_started_detached_from_the_applet(spawned):
     node, not on this window."""
     assert spawned["argv"][1:] == ["-m", "szpontnet", "--daemon"]
     assert spawned["start_new_session"] is True
+
+
+# MARK: - the same spawn, from the other front-end
+
+
+MESH_BRIDGE = os.path.join(PACKAGES, "diplomat-platform", "macos", "Sources",
+                           "Diplomat", "MeshBridge.swift")
+
+
+def _swift_host() -> str:
+    """The host module `MeshBridge.ensureRunning` puts in its node's environment."""
+    import re
+
+    with open(MESH_BRIDGE, encoding="utf-8") as fh:
+        found = re.search(r'env\["SZPONTNET_HOST"\]\s*=\s*"([^"]+)"', fh.read())
+    assert found, f"no SZPONTNET_HOST assignment in {MESH_BRIDGE}"
+    return found.group(1)
+
+
+def test_the_macos_spawn_names_a_host_module_that_exists(spawned):
+    """The macOS bridge builds this environment in Swift, so no Python test reaches it
+    and the job that could compile it has no checkout of the module it names. A grep,
+    then - because the failure it guards has no symptom: ``szpontnet.host.host()``
+    catches the ImportError and returns the null host, so a node handed a name that no
+    longer resolves starts, joins, reports healthy, and declines every job it is ever
+    offered.
+
+    Both front-ends are asserted against the same file on disk rather than against each
+    other's spelling, so renaming the module without moving it fails here too.
+    """
+    host = _swift_host()
+    module = os.path.join(PACKAGES, "diplomat-runtime", *host.split(".")) + ".py"
+    assert os.path.isfile(module), f"{host} is not a module of diplomat-runtime"
+    assert host == spawned["env"]["SZPONTNET_HOST"], "the two front-ends name one host"
+
+
+def test_the_macos_spawn_hands_over_the_runtime_and_not_this_package(spawned):
+    """Its twin above, for the path half: a name the node cannot import is the same
+    outcome as no name at all."""
+    with open(MESH_BRIDGE, encoding="utf-8") as fh:
+        source = fh.read()
+    start = source.index('env["PYTHONPATH"]')
+    entries = source[start:start + 400]
+    assert "RepoPaths.runtimePackage.path" in entries
+    assert "p.currentDirectoryURL = RepoPaths.runtimePackage" in source
+    assert "linuxPackage" not in source, "macOS resolves the other front-end's tree again"

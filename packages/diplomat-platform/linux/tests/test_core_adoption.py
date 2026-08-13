@@ -48,14 +48,37 @@ REACHED_INDIRECTLY = {
 }
 
 
+#: Twins whose two halves are not named the same thing, each with the source line that
+#: says so — the pairing below is by filename, so these would otherwise go unchecked.
+RENAMED_TWINS = {
+    "AgentActivity": "apiwatch",     # apiwatch.py:2
+    "ApiErrorMatch": "apiwatch",     # apiwatch.py:2
+    "AgentTasks": "autofix",         # autofix.py:666 "mirrors AgentTasks.swift"
+    "ReviewReconcile": "autofix",    # autofix.py:80
+    "AuditCategory": "core",         # core.py:117 "Mirrors …/AuditCategory.swift"
+    "AgentRunner": "runner",         # AgentRunner.swift:3
+}
+
+#: Swift comments and string literals, stripped before the search below: a type is adopted
+#: by being USED, and one that survives only as a mention in a doc comment is exactly the
+#: unadopted type this file exists to find.
+_NONCODE = re.compile(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\\n])*"', re.S)
+
+
 def _macos_sources() -> str:
     out = []
     for root, _dirs, files in os.walk(MACOS):
         for name in files:
             if name.endswith(".swift"):
                 with open(os.path.join(root, name), encoding="utf-8") as fh:
-                    out.append(fh.read())
+                    out.append(_NONCODE.sub(" ", fh.read()))
     return "\n".join(out)
+
+
+def _twin_module(stem: str) -> bool:
+    names = {stem.lower(), RENAMED_TWINS.get(stem, "")}
+    return any(os.path.exists(os.path.join(d, f"{n}.py"))
+               for d in PY for n in names if n)
 
 
 def _twinned() -> list[tuple[str, list[str]]]:
@@ -65,7 +88,7 @@ def _twinned() -> list[tuple[str, list[str]]]:
         if not name.endswith(".swift"):
             continue
         stem = name[: -len(".swift")]
-        if not any(os.path.exists(os.path.join(d, f"{stem.lower()}.py")) for d in PY):
+        if not _twin_module(stem):
             continue
         with open(os.path.join(CORE, name), encoding="utf-8") as fh:
             pairs.append((stem, _DECL.findall(fh.read())))
@@ -77,14 +100,31 @@ def test_the_pairing_finds_the_shared_types():
     renamed directory or a tightened declaration regex would otherwise turn the test
     below into a loop over nothing that passes forever."""
     pairs = _twinned()
-    assert len(pairs) >= 10, pairs
+    assert len(pairs) >= 18, pairs
     assert ("AgentState", ["Observation", "AgentState"]) in pairs
+    # One of each pairing rule, so losing either is a failure and not a quieter check.
+    assert ("AgentRunner", ["AgentRunner"]) in pairs
     assert all(types for _stem, types in pairs)
 
 
-def test_every_twinned_core_type_is_referenced_by_the_macos_app():
-    """A core type with a Python twin that macOS never names is a shared behaviour only
-    one front-end adopted."""
+def test_every_renamed_twin_names_a_module_that_exists():
+    """An alias whose Python side has moved or been renamed silently un-pairs its core
+    file — the same hole as never having listed it, and one nothing else here reports."""
+    missing = sorted(stem for stem, module in RENAMED_TWINS.items()
+                     if not any(os.path.exists(os.path.join(d, f"{module}.py")) for d in PY))
+    assert not missing, f"renamed twins whose Python module is gone: {missing}"
+
+
+def test_every_twinned_core_file_is_referenced_by_the_macos_app():
+    """A core file with a Python twin that macOS names no type of is a shared behaviour
+    only one front-end adopted.
+
+    Per file, not per type: one reference clears the file. A type is the unit a reviewer
+    reads, but it is not the unit that drifts - what went unadopted here was a whole
+    module, and holding every public type to the rule would fail on the several that
+    exist so the Python side can spell an error or a row (``GHError``, ``ReviewThread``)
+    and have no business being named in Swift.
+    """
     macos = _macos_sources()
     orphans = []
     for stem, types in _twinned():
@@ -106,3 +146,13 @@ def test_the_exemptions_are_types_that_exist():
     declared = {t for _stem, types in _twinned() for t in types}
     stale = sorted(set(REACHED_INDIRECTLY) - declared)
     assert not stale, f"exemptions for types no twinned core file declares: {stale}"
+
+
+def test_no_exemption_is_for_a_type_the_app_names_anyway():
+    """The other way an exemption goes stale: the type got adopted directly and the
+    waiver stayed. It then excuses nothing today and silently excuses whatever the name
+    is next attached to."""
+    macos = _macos_sources()
+    unneeded = sorted(t for t in REACHED_INDIRECTLY
+                      if re.search(rf"\b{re.escape(t)}\b", macos))
+    assert not unneeded, f"exempted but named directly in the macOS sources: {unneeded}"

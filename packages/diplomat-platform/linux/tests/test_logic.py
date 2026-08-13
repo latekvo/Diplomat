@@ -10,7 +10,12 @@ import os
 import sys
 from datetime import datetime, timedelta, timezone
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+_LINUX = os.path.join(os.path.dirname(__file__), "..")
+sys.path.insert(0, _LINUX)
+# The shared runtime, spelled out rather than left to ``diplomat_app/__init__``: under
+# ``python tests/test_logic.py`` there is no conftest to have put it here, and importing
+# the applet for the side effect is what the standalone run exists to not need.
+sys.path.insert(0, os.path.join(_LINUX, "..", "..", "diplomat-runtime"))
 
 from diplomat_runtime import review  # noqa: E402
 from diplomat_runtime.models import Filters, Fmt, OpenIssue, OpenPR, ReviewThread  # noqa: E402

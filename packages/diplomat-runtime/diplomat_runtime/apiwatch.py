@@ -1,4 +1,4 @@
-"""Pure predicates over an agent pane's visible buffer — the Linux port of
+"""Pure predicates over an agent pane's visible buffer — the Python twin of
 DiplomatCore's ApiErrorMatch.swift and AgentActivity.swift (plus the backoff
 constants that live in Store.swift on macOS).
 

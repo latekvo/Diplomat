@@ -1206,6 +1206,48 @@ do {
     print("agent state assertions passed")
 }
 
+section("the run book's sidecars")
+// PARITY: the same bodies `tests/test_agent_registry.py` parametrizes over. The guard is
+// on the READ, so what it defends against is a torn write or a stray file — neither of
+// which any caller can be made to produce, which is why the fixture writes them directly.
+// Both front-ends read runs booked by the other, so a guard only one side applies is a
+// run that binds nothing on one machine and queries a garbage session id on the other.
+do {
+    let book = FileManager.default.temporaryDirectory
+        .appendingPathComponent("diplomat-smoke-agents-\(UUID().uuidString)", isDirectory: true)
+    setenv("DIPLOMAT_AGENTS_DIR", book.path, 1)
+    defer { try? FileManager.default.removeItem(at: book) }
+    let now = Date().timeIntervalSince1970
+    let run = AgentRegistry.createRun(
+        AgentState.RunRecord(runID: AgentRegistry.newRunID(now: now), dispatchedAt: now),
+        prompt: "p").runID
+
+    check(AgentRegistry.boundSession(run) == "", "a run binds no session before one is found")
+    AgentRegistry.bindSession(run, "ses_00d61ec0")
+    check(AgentRegistry.boundSession(run) == "ses_00d61ec0", "and reads back the one it bound")
+    for body in ["", "   ", "\n", "ses_a ses_b", String(repeating: "x", count: 400)] {
+        try? body.write(to: AgentRegistry.sessionPath(run), atomically: true, encoding: .utf8)
+        check(AgentRegistry.boundSession(run) == "",
+              "a session file that is not one id binds nothing, not \(body.count) chars of one")
+    }
+
+    check(AgentRegistry.port(run) == nil, "a run with no port file has no port")
+    check(AgentRegistry.stagePort(run, 47_910) && AgentRegistry.port(run) == 47_910,
+          "a staged port reads back")
+    for body in ["0", "65536", "-1", "", "not-a-port", "47910 47911"] {
+        try? body.write(to: AgentRegistry.portPath(run), atomically: true, encoding: .utf8)
+        check(AgentRegistry.port(run) == nil, "a port file of “\(body)” is no port")
+    }
+
+    check(AgentRegistry.runRunner(run) == "", "an unstaged runner is unknown, not Claude Code")
+    AgentRegistry.stageRunner(run, AgentRunner.opencode.rawValue)
+    check(AgentRegistry.runRunner(run) == "opencode", "and reads back the one it staged")
+    AgentRegistry.forget([run])
+    check(AgentRegistry.load().isEmpty && AgentRegistry.boundSession(run) == "",
+          "forgetting a run takes its sidecars with it")
+    print("run book sidecar assertions passed")
+}
+
 section("autofix mesh coordination")
 // PARITY fixtures: diplomat-platform/linux/tests/test_autofix.py asserts these exact strings — two
 // nodes only dedupe origination when their derivations agree byte-for-byte

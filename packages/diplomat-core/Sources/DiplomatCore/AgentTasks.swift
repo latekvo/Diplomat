@@ -47,8 +47,9 @@ public enum AgentTaskStatus: Int, Comparable, CaseIterable {
     /// no task at all and is `.free`.
     ///
     /// The two enums are one order in two vocabularies — `AgentState.stateOrder` ranks the
-    /// runs, this ranks them among the rows that are not runs — so the mapping is
-    /// exhaustive and unreordering: change one and this stops compiling.
+    /// runs, this ranks them among the rows that are not runs. A new `RunState` stops this
+    /// compiling; a REORDERED one does not, so the smoke walks `stateOrder` through here
+    /// and checks the result against `allCases`.
     public static func of(_ state: AgentState.RunState) -> AgentTaskStatus {
         switch state {
         case .merged:        return .merged
@@ -68,9 +69,8 @@ public enum AgentTaskStatus: Int, Comparable, CaseIterable {
         case .awaitingInput: return "awaiting input"
         case .running:       return "running"
         case .starting:      return "starting"
-        // The one word that used not to exist: the applet would pick "running" or drop
-        // the row entirely rather than admit a probe had failed, which is how a wrong
-        // verdict became invisible. Its reason is drawn beside it.
+        // Said out loud rather than guessed at: a row nothing could be learned about
+        // holds its bay and says so, and its reason is drawn beside it.
         case .unknown:       return "unknown"
         case .free:          return "free slot"
         case .queued:        return "queued"

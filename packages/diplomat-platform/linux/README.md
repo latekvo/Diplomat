@@ -236,8 +236,11 @@ real subprocess and rendering the panel anyway.
 # From this directory. `SZPONTNET_HOST` is what puts Diplomat behind the node —
 # without it the node runs SzpontNet's own defaults (canonical v1 duties, state in
 # ~/.szpontnet, no activity feed) and joins a different mesh than the applet's.
-export SZPONTNET_HOST=diplomat_runtime.szponthost \
-       PYTHONPATH=../../diplomat-runtime:../../szpontnet-core
+# Absolute, because `--daemon` re-execs the node from the library's own directory:
+# a relative PYTHONPATH entry would resolve against THAT cwd, the host module would
+# not import, and the node would come up on the null host without saying so.
+export SZPONTNET_HOST=diplomat_runtime.szponthost
+export PYTHONPATH="$PWD/../../diplomat-runtime:$PWD/../../szpontnet-core"
 
 python3 -m szpontnet --daemon     # join the mesh (works on macOS too, no Qt)
 python3 -m szpontnet --status     # topology + duty assignments
@@ -340,7 +343,8 @@ independent" checkable rather than merely asserted.
 ```
 diplomat_app/
   __init__.py     puts ../../diplomat-runtime on sys.path and installs the mesh host —
-                  every module below imports the runtime at its own top level
+                  done here because the modules below import the runtime at their own
+                  top level, and this package runs from a checkout, not an install
   store.py        state, QSettings, tool catalog, row mapping, lookup
   conflicts.py    ConflictConfig
   audit.py        AuditConfig - the Full E2E test
@@ -378,8 +382,9 @@ tests/          the offline, headless pytest suite — this applet's, and the sh
 ```
 
 Everything below the UI - the assets loader, PR triage, the run book, token accounting,
-the spawner, the mesh host - is [`diplomat-runtime`](../../diplomat-runtime/README.md),
-which the macOS app runs too.
+the spawner, the mesh host - is [`diplomat-runtime`](../../diplomat-runtime/README.md).
+The macOS app renders the Swift twins of it and hands the package itself to the mesh
+node it spawns.
 
 `argent-utils` is a deprecated launcher shim kept only so pre-rename installs keep
 working; it forwards to `./diplomat`.

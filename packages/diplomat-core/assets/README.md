@@ -3,7 +3,7 @@
 Everything in here is consumed **verbatim** by both front-ends:
 
 - the macOS SwiftUI menu-bar app (`../Sources/DiplomatCore` loads it), and
-- the Linux Qt6/PySide6 tray applet (`diplomat-platform/linux/diplomat_app` loads it).
+- the Python runtime both front-ends run (`diplomat-runtime/diplomat_runtime/core.py` loads it).
 
 The two UIs differ only in *rendering*. All the triage logic — what to query,
 how to filter, what the prompts say — lives here once. Change a query or a

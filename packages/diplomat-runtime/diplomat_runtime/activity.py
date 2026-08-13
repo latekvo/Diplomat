@@ -1,4 +1,4 @@
-"""The unified activity/audit feed — the Linux port of AuditLog.swift + AuditCategory.
+"""The unified activity/audit feed — the Python twin of AuditLog.swift + AuditCategory.
 
 Every action the panel or the daemon takes appends one JSON line to
 ``~/.diplomat/pr-monitor/audit.jsonl`` (written by the macOS app and the

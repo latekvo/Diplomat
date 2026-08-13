@@ -486,7 +486,11 @@ cd packages/diplomat-runtime
 # Put Diplomat behind the node: without this it runs SzpontNet's own defaults —
 # the canonical v1 duties, state in ~/.szpontnet, no activity feed — and so joins
 # a different mesh than the one your app is on.
-export SZPONTNET_HOST=diplomat_runtime.szponthost PYTHONPATH=../szpontnet-core
+# Absolute, because `--daemon` re-execs the node from the library's own directory:
+# a relative PYTHONPATH entry would resolve against THAT cwd, the host module would
+# not import, and the node would come up on the null host without saying so.
+export SZPONTNET_HOST=diplomat_runtime.szponthost
+export PYTHONPATH="$PWD:$PWD/../szpontnet-core"
 
 python3 -m szpontnet --daemon      # join the mesh (any OS, no Qt needed)
 python3 -m szpontnet --status      # live topology + duty assignments
@@ -1267,8 +1271,9 @@ packages/
         AppConfig.swift            the cross-process settings file (~/.diplomat/config.json) the mesh node shares
       install/                 ← build-app + the autostart / auto-update (un)installers (launchd)
     linux/                     ← Linux Qt6/PySide6 tray applet (see its README)
-      diplomat_app/            ← the Qt half only: screens, wizards, the Store driving them, and
-                                 probes.py — this platform's evidence gatherer, twin of AgentProbes.swift
+      diplomat_app/            ← what is this front-end's own: screens, wizards, the Store driving
+                                 them, its self-update and single-instance guards, and probes.py —
+                                 this platform's evidence gatherer, twin of AgentProbes.swift
       install/                 ← build-core + the autostart / auto-update (un)installers (XDG + systemd)
       meshsim/                 ← the real-socket mesh simulator the mesh scenarios run through
 

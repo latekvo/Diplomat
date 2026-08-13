@@ -1149,8 +1149,11 @@ class Store(QObject):
                 ok = True
             else:
                 # Registered whether or not it is PR-scoped. A sweep or an audit has
-                # nothing to dedup against, but it is an agent on this machine like any
-                # other — it holds a bay, it wants a row, and it is priced when it ends.
+                # nothing to dedup against, but it is still an agent this applet opened
+                # a window on, and a run with no record is a row the panel cannot draw
+                # and a directory nothing ever cleans up. What it costs depends on how
+                # it was dispatched, not on having a PR: the cap counts automatic runs
+                # and pricing follows the ledger key.
                 ok = self._spawn_tracked(job.prompt, job.pr_url, job.pr_number,
                                          source, job.ledger_key,
                                          label=row_label, kind=job.kind)

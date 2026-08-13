@@ -747,8 +747,11 @@ final class Store: ObservableObject {
             pidPath: AgentRegistry.pidPath(record.runID).path,
             runner: runner, port: port)
         do {
-            let result = try AgentSpawner.spawn(plan, terminal: preferred,
-                                                restoreFocusTo: restoreBID)
+            // Detached: the spawn's `osascript` blocks for `inputSettleDelay` seconds,
+            // and this actor draws the panel.
+            let result = try await Task.detached(priority: .userInitiated) {
+                try AgentSpawner.spawn(plan, terminal: preferred, restoreFocusTo: restoreBID)
+            }.value
             AgentWindows.stage(record.runID, result.window)
             // The tty the spawn captured is the window's, which is the agent's: known a
             // moment before the pid file is, so the run has a screen from its very first
@@ -771,9 +774,16 @@ final class Store: ObservableObject {
     /// Drops it from the book and deletes its run directory. Only offered for a run this
     /// applet booked: a live agent nobody dispatched is re-derived from the process table
     /// every tick, so forgetting one would redraw it a second later.
+    ///
+    /// Priced on the way out: this is the one way a run leaves the book without being
+    /// retired, and retirement is what would otherwise close its ledger entry.
     func forgetRun(_ runID: String) {
+        let priced = Store.pricingInputs(AgentRegistry.load().filter { $0.runID == runID })
         AgentRegistry.forget([runID])
-        Task { await settleAgents() }
+        Task {
+            await settleLedger(priced)
+            await settleAgents()
+        }
     }
 
     // MARK: mesh runs (work this device handed to the mesh)
@@ -942,31 +952,46 @@ final class Store: ObservableObject {
     private func retireFinished(_ t: AgentState.Tick) async {
         let gone = t.retirable.filter { !$0.untracked }
         guard !gone.isEmpty else { return }
-        // Every pricing input comes out of the run directory, so all of them must be read
-        // before `forget` deletes it.
-        //
-        // The sentinel's mtime is when the agent actually exited; now() is whenever a poll
-        // got round to looking, which is up to a poll period later and would inflate every
-        // recorded run time. A run the mesh placed leaves no sentinel here — the executor
-        // writes its own — so that one is dated from the poll, which is the best this
-        // machine has.
-        let now = Date().timeIntervalSince1970
-        let priced = gone.filter { !$0.ledgerKey.isEmpty }.map {
-            (key: $0.ledgerKey, prompt: AgentRegistry.prompt($0.runID),
-             at: $0.dispatchedAt, done: AgentRegistry.finishedAt($0.runID) ?? now,
-             session: AgentRegistry.boundSession($0.runID),
-             runner: AgentRegistry.runRunner($0.runID))
-        }
+        let priced = Store.pricingInputs(gone)
         AgentRegistry.forget(Set(gone.map(\.runID)))
-        guard !priced.isEmpty else { return }
+        await settleLedger(priced)
+    }
+
+    /// What pricing a finished run needs, read off disk while its run directory still exists.
+    private struct Completion: Sendable {
+        let key: String, prompt: String, runner: String
+        let at: TimeInterval, done: TimeInterval, session: String
+    }
+
+    /// Read every pricing input for these runs. MUST be called before `forget` deletes
+    /// their directories — all of it lives in there, and a record that is gone can never
+    /// be retired, so an entry left open here stays open for good.
+    ///
+    /// The sentinel's mtime is when the agent actually exited; now() is whenever a poll got
+    /// round to looking, which is up to a poll period later and would inflate every recorded
+    /// run time. A run the mesh placed leaves no sentinel here — the executor writes its own
+    /// — so that one is dated from the poll, which is the best this machine has.
+    private static func pricingInputs(_ records: [AgentState.RunRecord]) -> [Completion] {
+        let now = Date().timeIntervalSince1970
+        return records.filter { !$0.ledgerKey.isEmpty }.map {
+            Completion(key: $0.ledgerKey, prompt: AgentRegistry.prompt($0.runID),
+                       runner: AgentRegistry.runRunner($0.runID),
+                       at: $0.dispatchedAt, done: AgentRegistry.finishedAt($0.runID) ?? now,
+                       session: AgentRegistry.boundSession($0.runID))
+        }
+    }
+
+    /// Close these runs' ledger entries, pricing each from whatever ran it.
+    private func settleLedger(_ completions: [Completion]) async {
+        guard !completions.isEmpty else { return }
         // Scanning transcripts walks ~/.claude, so it stays off the main actor. The batch
         // is bound to a `let` first because capturing a mutable var in concurrently-
         // executing code is an error under the Swift 5.10 toolchain the macOS CI job builds
         // with — 6.x proves the mutation is finished and accepts it, so this only ever
         // fails away from the machine it was written on.
-        let completions = priced
+        let batch = completions
         await Task.detached(priority: .utility) {
-            for f in completions {
+            for f in batch {
                 // Which transcript prices a run depends on what ran it, and the run says
                 // which by what it left behind. A matched session under a foreign runner is
                 // priced by that runner's own store — OpenCode through its exporter, Hermes
@@ -1005,8 +1030,8 @@ final class Store: ObservableObject {
                 probeWarned[h.name] = true
                 AuditLog.log("auto", "probe-silent",
                              "Agent \(h.name) \(h.reason.isEmpty ? "cannot be read" : h.reason)"
-                             + " — agent rows will read “unknown” and keep their slots until"
-                             + " it answers again")
+                             + " — agent rows fall back to whatever weaker evidence is left"
+                             + " and keep their slots until it answers again")
                 refreshAudit()
             } else if !h.silent, was {
                 probeWarned[h.name] = false
@@ -1867,8 +1892,9 @@ final class Store: ObservableObject {
     /// band, whether the drain reached it or the operator clicked. The move out of
     /// `queuedTasks` runs before the first suspension, so the panel shows the click
     /// landing and a second click finds nothing to start; the move out of
-    /// `startingTasks` runs in the same actor turn as the row that replaces it
-    /// (`track` / `trackMeshRun` are called inside `dispatchAgent`, which then returns
+    /// `startingTasks` runs only once the row that replaces it is already published
+    /// (`dispatchAgent` books the run — `spawnTracked` or `trackMeshRun` — and awaits
+    /// `settleAgents` before it returns, and `endStarting` resumes on that continuation
     /// without suspending again). Between them the task is a row the whole way: never
     /// drawn twice, and never missing.
     @discardableResult

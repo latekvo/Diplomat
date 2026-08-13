@@ -56,7 +56,7 @@ enum AgentProbes {
 
     /// How many agent screens have been read, and how many of them showed a CLI's
     /// interrupt hint. The hints are literal strings from someone else's UI
-    /// (`ApiErrorMatch.busyMarkers`), and if they ever stop matching, every agent reads as
+    /// (`AgentActivity.busyMarkers`), and if they ever stop matching, every agent reads as
     /// idle at once: the cap empties and the monitors burst. Nothing else would say so —
     /// the applet would look like it was working perfectly — so the ratio is counted.
     private static var tailsRead = 0
@@ -111,8 +111,8 @@ enum AgentProbes {
     /// One `ps` pass, briefly cached, as `pid tty etime args…` lines.
     ///
     /// `etime` rather than Linux's `etimes`: BSD `ps` has no whole-seconds keyword and
-    /// exits with `keyword not found` when asked for one, which would make the dump empty
-    /// and every local run read as finished.
+    /// exits non-zero with `keyword not found` when asked for one, so every tick would
+    /// resolve `unavailable` and every local run would sit at `unknown` holding its bay.
     private static func psDump(now: TimeInterval) -> Observation<String> {
         lock.lock()
         if let cached = psCache, now - cached.at < cacheSecs {
@@ -287,9 +287,9 @@ enum AgentProbes {
     /// Claude Code is an ordinary machine, not one whose probe has gone quiet.
     ///
     /// Cached for the same window as the other probes, and for a sharper reason: this one
-    /// dials a socket, the resolver re-runs for every question the applet asks, and the
-    /// panel asks two of them per repaint — so uncached, one unresponsive port costs a
-    /// repaint two full per-run timeouts on the main actor.
+    /// dials a socket, and the resolver re-runs for every question the applet asks — the
+    /// poll's, the cap's, and one per dispatch. Uncached, a burst of those inside one
+    /// window pays a full per-run timeout each for the same unresponsive port.
     static func agentSessions(_ records: [AgentState.RunRecord], directory: String,
                               now: TimeInterval) -> Observation<[String: AgentState.SessionState]> {
         let asking = records.filter { AgentSessionProbe.serves(AgentRegistry.runRunner($0.runID)) }

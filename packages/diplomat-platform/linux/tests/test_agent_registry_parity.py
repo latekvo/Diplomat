@@ -82,10 +82,14 @@ def test_python_reads_every_field_swift_wrote():
     assert R.load() == _records()
 
 
-def test_the_two_write_byte_identical_books():
-    """Not merely mutually readable — identical. A field one side omits entirely would
-    survive both round-trips above (each reads back its own omission as a default) and
-    only show up here."""
+def test_the_two_write_the_same_fields():
+    """Not merely mutually readable — the same book. A field one side omits entirely
+    would survive both round-trips above (each reads back its own omission as a default)
+    and only show up here.
+
+    Parsed, not compared byte for byte: the two encoders order and escape keys their own
+    way (Swift sorts them and escapes ``/``), and nothing reads this file as bytes.
+    """
     R.save(_records())
     python_book = json.loads(R.runs_path().read_text())
     _swift({"mode": "write", "runs": [r.to_json() for r in _records()]})

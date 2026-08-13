@@ -8,24 +8,24 @@ its host. No Qt, no AppKit, no PySide6 - importable from a stdlib-only daemon.
 Both front-ends run it, by different routes:
 
 - the **Linux applet** imports it directly (`diplomat_app` puts this package on
-  `sys.path` and every module of the front-end reaches through it);
+  `sys.path`, and its screens and Store read the triage logic from here);
 - the **macOS app** links the Swift twins for its own screens, and hands *this* package
   to the mesh node it spawns - `SZPONTNET_HOST=diplomat_runtime.szponthost`, with
   nothing else of Diplomat's on that node's path.
 
 That second route is the reason the package exists. A node runs on both OSes, so the
-module that puts Diplomat behind one is cross-platform by definition; when it lived in
-the Linux applet's package, enabling the mesh on a Mac meant putting the Linux front-end
-on a `PYTHONPATH`.
+module that puts Diplomat behind one is cross-platform by definition, and neither
+front-end should have to put the other's package on a `PYTHONPATH` to spawn one.
 
 ## Twins
 
 Most of what is here has a Swift counterpart in
-[`diplomat-core`](../diplomat-core/README.md), pinned field-for-field by the parity
-tests in [`../diplomat-platform/linux/tests`](../diplomat-platform/linux/tests) - which
-is also where this package's own tests live, since they need the same fixtures the
-applet's do. `tests/test_core_adoption.py` is the guard on the arrangement: a core type
-that grows a twin here and is named nowhere in the macOS sources fails the suite.
+[`diplomat-core`](../diplomat-core/Sources/DiplomatCore), pinned field-for-field by the
+parity tests in [`../diplomat-platform/linux/tests`](../diplomat-platform/linux/tests) -
+which is also where this package's own tests live, since they need the same fixtures the
+applet's do. `test_core_adoption.py` is the guard on the arrangement: a core FILE that
+grows a Python twin and has not one of its public types named in the macOS sources fails
+the suite.
 
 ## Layout
 
@@ -53,7 +53,9 @@ diplomat_runtime/
                   Pure - no clock, no subprocess, no filesystem (AgentState.swift's twin)
   agentregistry.py  the durable run book at ~/.diplomat/agents — one record per dispatched
                   run, plus each run's prompt, pid and completion sentinel. Same on-disk
-                  format as AgentRegistry.swift, byte for byte
+                  format as AgentRegistry.swift, field for field: each side reads back
+                  every record the other wrote (the two encoders order and escape keys
+                  their own way, so it is the fields that match, not the bytes)
   opencodeapi.py  reading an OpenCode run's own session: whose it is, mid-turn or not, spend
   hermesstore.py  the same, for a Hermes run's session in its SQLite store
   apiwatch.py     "is this a Claude API error?" matcher + nudge bookkeeping
