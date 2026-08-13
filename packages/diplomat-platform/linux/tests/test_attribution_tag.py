@@ -2,10 +2,11 @@
 
 Which model a spawn will run on is worked out by ``AgentModel`` in the shared Swift
 core, so these drive it the way the applet does — through the real ``diplomat-core``
-binary, over a fenced ``$DIPLOMAT_CLAUDE_DIR`` / ``$DIPLOMAT_CONFIG`` (conftest points
-both at this test's tmp dir). That is the whole Linux path: nothing here re-implements
-the lookup, it asserts the one implementation is reached and honours the same two
-override hooks the Python side documents.
+binary, over a fenced ``$DIPLOMAT_CLAUDE_DIR`` / ``$DIPLOMAT_CONFIG`` /
+``$DIPLOMAT_HERMES_CONFIG`` (conftest points all three at this test's tmp dir). That is
+the whole Linux path: nothing here re-implements the lookup, it asserts the one
+implementation is reached and honours the same override hooks the Python side
+documents.
 
 The stakes are what makes this worth a file: the tag goes out on public comments and
 reviews, so a wrong answer attributes a review to a model that never ran it.
@@ -94,11 +95,46 @@ def test_the_tag_names_the_model_a_foreign_runner_is_pinned_to():
     assert tag_prefix("Kimi K3") in review_prompt()
 
 
-def test_an_unpinned_foreign_runner_claims_no_model():
-    """Blank means OpenCode uses the model its own picker remembers. Diplomat cannot
-    name that, and guessing would attribute a review to a model nobody selected."""
+def test_an_unpinned_opencode_claims_no_model():
+    """Blank means OpenCode uses the model its own picker remembers, and Diplomat does
+    not read where OpenCode writes that down — guessing would attribute a review to a
+    model nobody selected."""
     appconfig.set_value(appconfig.AGENT_RUNNER, runner.OPENCODE)
     claude_transcript("claude-opus-5")
+    assert PLAIN in review_prompt()
+
+
+def hermes_config(body: str) -> None:
+    """A Hermes config in the fenced ``~/.hermes`` (conftest's ``isolated_hermes_state``
+    points ``DIPLOMAT_HERMES_CONFIG`` into this test's tmp dir)."""
+    path = Path(os.environ["DIPLOMAT_HERMES_CONFIG"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body, encoding="utf-8")
+
+
+def test_an_unpinned_hermes_is_named_by_its_own_config():
+    """Hermes writes the model its picker is on into its own config, and a spawn with no
+    pin passes no ``-m``, so that default is exactly what the run will be on. Reading it
+    is what lets the tag name a model the user never had to enter into Diplomat."""
+    appconfig.set_value(appconfig.AGENT_RUNNER, runner.HERMES)
+    hermes_config("model:\n  default: moonshotai/kimi-k3\n  provider: openrouter\n")
+    assert tag_prefix("Kimi K3") in review_prompt()
+    assert "[Diplomat, Kimi K3]: <your text>" in review_prompt()
+
+
+def test_a_pin_beats_what_hermes_would_have_picked():
+    """The pin is what the spawn passes as ``-m``, so it is what the session runs on —
+    reading the config over it would name the model the pin overrode."""
+    appconfig.set_value(appconfig.AGENT_RUNNER, runner.HERMES)
+    appconfig.set_value(appconfig.AGENT_MODEL, "openrouter/moonshotai/kimi-k3")
+    hermes_config("model:\n  default: qwen/qwen-3.8-max\n")
+    assert tag_prefix("Kimi K3") in review_prompt()
+
+
+def test_a_machine_with_no_hermes_config_tags_as_it_always_has():
+    """Hermes need not be installed for it to be the selected runner, and an absent or
+    unreadable config is the same answer as an unpinned OpenCode: say nothing."""
+    appconfig.set_value(appconfig.AGENT_RUNNER, runner.HERMES)
     assert PLAIN in review_prompt()
 
 

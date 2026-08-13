@@ -178,15 +178,18 @@ def isolated_claude_dir(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def isolated_hermes_store(tmp_path, monkeypatch):
-    """Fence the Hermes reader off from the developer's own ``~/.hermes/state.db``.
+def isolated_hermes_state(tmp_path, monkeypatch):
+    """Fence the Hermes readers off from the developer's own ``~/.hermes``.
 
-    Same reasoning as the Claude Code redirect above: that file is every session the
-    operator has ever run, so a test reaching :mod:`hermesstore` would match a run
-    against their real work and answer differently on every machine. The path points
-    at a file that does not exist, which is the "no store" case every reader already
-    degrades to; a test that wants a store writes one there."""
+    Same reasoning as the Claude Code redirect above, for both files Diplomat reads
+    there: ``state.db`` is every session the operator has ever run, so a test reaching
+    :mod:`hermesstore` would match a run against their real work, and ``config.yaml``
+    holds the model their picker is on, which the attribution tag names. Either would
+    answer differently on every machine. Both paths point at files that do not exist,
+    which is the "nothing to read" case each reader already degrades to; a test that
+    wants one writes it there."""
     monkeypatch.setenv("DIPLOMAT_HERMES_DB", str(tmp_path / "hermes" / "state.db"))
+    monkeypatch.setenv("DIPLOMAT_HERMES_CONFIG", str(tmp_path / "hermes" / "config.yaml"))
     yield
 
 

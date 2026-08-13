@@ -5,13 +5,16 @@ import Foundation
 ///
 /// Every comment, review and reply Diplomat posts opens with that tag, and naming the
 /// model in it is what lets a reader tell an Opus 5 review from a Kimi K3 one without
-/// asking. Diplomat is *told* the model for two of its three runners and has to go and
-/// look for the third:
+/// asking. A pin in Settings is the only thing that tells Diplomat outright; without one
+/// it goes and looks for what the runner will pick for itself:
 ///
 /// * **OpenCode / Hermes** are pinned to a model in `~/.diplomat/config.json` (Settings,
 ///   beside the runner), and the spawn passes exactly that to the CLI. Blank means the
 ///   runner uses the model its own picker remembers — a choice Diplomat deliberately
-///   does not second-guess, and one it cannot name, so it says nothing.
+///   does not second-guess, but one it can still *name* where the runner writes that
+///   choice down: Hermes keeps it in `~/.hermes/config.yaml`, and a spawn passed no
+///   `-m` starts on exactly that. OpenCode's equivalent is not read (see
+///   `foreignRunnerModel`), so an unpinned OpenCode still names nothing.
 /// * **Claude Code** takes no model from Diplomat at all: it is started through the
 ///   user's own `claude` alias, and picks its model from its own settings, a `--model`
 ///   in that alias, or an in-session `/model`. The only source that accounts for all
@@ -34,19 +37,21 @@ public enum AgentModel {
     /// The model named in the tag for a spawn started here, or "" when nothing on this
     /// machine says which one that is.
     public static func detected() -> String {
-        detect(configFile: configURL(), claudeHome: claudeHomeURL())
+        detect(configFile: configURL(), claudeHome: claudeHomeURL(), hermesConfig: hermesConfigURL())
     }
 
     /// `detected()` against explicit locations, so the smoke test can drive the whole
     /// lookup over a fixture instead of over the developer's own machine.
-    public static func detect(configFile: URL, claudeHome: URL) -> String {
+    public static func detect(configFile: URL, claudeHome: URL, hermesConfig: URL) -> String {
         let cfg = readJSONObject(configFile)
         // Same two keys as `AppConfig` (macOS) and the runtime's `appconfig.py` write.
         let runner = AgentRunner.from(cfg["agentRunner"] as? String ?? "")
         let pinned = (cfg["agentModel"] as? String ?? "")
         // The Claude runner ignores that field (`AgentRunner.agentCommand` passes it no
         // model flag), so a pin left over from OpenCode must not be claimed here.
-        return displayName(runner == .claude ? claudeCodeModel(home: claudeHome) : pinned)
+        if runner == .claude { return displayName(claudeCodeModel(home: claudeHome)) }
+        guard pinned.isEmpty else { return displayName(pinned) }
+        return displayName(foreignRunnerModel(runner, hermesConfig: hermesConfig))
     }
 
     /// The tag block with `{model}` filled in: `, Opus 5` when a model is known and
@@ -204,7 +209,72 @@ public enum AgentModel {
         return found
     }
 
-    // MARK: - The two files it reads
+    // MARK: - Asking a foreign runner what it runs
+
+    /// What an unpinned OpenCode / Hermes spawn starts on, read from the runner's own
+    /// picker state.
+    ///
+    /// Only Hermes is asked: OpenCode's selection lives in its own store, whose layout
+    /// this does not read — and a guess at it would put a model in the tag that never
+    /// ran, which is worse than the empty tag it replaces.
+    private static func foreignRunnerModel(_ runner: AgentRunner, hermesConfig: URL) -> String {
+        guard runner == .hermes,
+              let text = try? String(contentsOf: hermesConfig, encoding: .utf8)
+        else { return "" }
+        return defaultModel(inHermesConfig: text) ?? ""
+    }
+
+    /// The `default:` under the top-level `model:` mapping of a Hermes config:
+    ///
+    ///     model:
+    ///       default: moonshotai/kimi-k3
+    ///       provider: openrouter
+    ///
+    /// That key is what `hermes chat` starts a session on when it is passed no `-m`,
+    /// which is every spawn Diplomat makes with the pin left blank.
+    ///
+    /// A scan rather than a YAML parse: one scalar is wanted out of a file whose every
+    /// other key is Hermes' own business, and this library is linked into a static
+    /// binary that takes no dependencies it can avoid. Only a *direct* child of
+    /// `model:` counts, so the `default_model:` each entry under `providers:` carries
+    /// is never mistaken for the model Hermes actually starts on.
+    public static func defaultModel(inHermesConfig text: String) -> String? {
+        var inModel = false
+        var childIndent: Int?
+        // By `isNewline`, not by "\n": Swift reads a CRLF pair as one Character, so a
+        // split on "\n" matches nothing in a CRLF file and returns it as one line.
+        for line in text.split(whereSeparator: \.isNewline) {
+            let indent = line.prefix(while: { $0 == " " }).count
+            let body = line.dropFirst(indent)
+            if body.isEmpty || body.hasPrefix("#") { continue }
+            if indent == 0 {
+                inModel = body.hasPrefix("model:")
+                childIndent = nil
+                continue
+            }
+            guard inModel else { continue }
+            if childIndent == nil { childIndent = indent }
+            guard indent == childIndent, body.hasPrefix("default:") else { continue }
+            return scalar(String(body.dropFirst("default:".count)))
+        }
+        return nil
+    }
+
+    /// One YAML scalar as written after its key, or nil when it is written as nothing.
+    private static func scalar(_ raw: String) -> String? {
+        var s = raw.trimmingCharacters(in: .whitespaces)
+        if let quote = s.first, quote == "\"" || quote == "'" {
+            guard let close = s.dropFirst().firstIndex(of: quote) else { return nil }
+            s = String(s[s.index(after: s.startIndex)..<close])
+        } else if let comment = s.range(of: " #") {
+            // Unquoted, `#` opens a comment only after a space, so this cannot eat an id.
+            s = String(s[s.startIndex..<comment.lowerBound])
+        }
+        s = s.trimmingCharacters(in: .whitespaces)
+        return s.isEmpty ? nil : s
+    }
+
+    // MARK: - The three files it reads
 
     /// The cross-process settings file both front-ends write — `~/.diplomat/config.json`,
     /// relocatable with `DIPLOMAT_CONFIG` exactly as `AppConfig` and `appconfig.py` do.
@@ -228,6 +298,17 @@ public enum AgentModel {
             return URL(fileURLWithPath: (env as NSString).expandingTildeInPath)
         }
         return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude")
+    }
+
+    /// Hermes' own config, under `DIPLOMAT_HERMES_CONFIG` — the twin of the
+    /// `DIPLOMAT_HERMES_DB` override `hermesstore.py` reads its session store through,
+    /// and named for a file for the same reason: one file is all either of them wants.
+    private static func hermesConfigURL() -> URL {
+        if let env = ProcessInfo.processInfo.environment["DIPLOMAT_HERMES_CONFIG"], !env.isEmpty {
+            return URL(fileURLWithPath: (env as NSString).expandingTildeInPath)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".hermes/config.yaml")
     }
 
     /// One JSON object off disk, or `[:]` for anything that isn't one — an absent,
