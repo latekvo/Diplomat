@@ -248,7 +248,7 @@ def store():
 
 def _panes(monkeypatch, sequence, sent=True):
     """Patch tmuxwatch so successive scans see ``sequence[i]`` (a list of Pane), and
-    record every send_continue call. ``sequence`` may also hold ``None`` (a failed
+    record every send_line call. ``sequence`` may also hold ``None`` (a failed
     dump). Returns the list of nudged pane_ids."""
     state = {"i": 0}
     nudged: list[str] = []
@@ -261,7 +261,7 @@ def _panes(monkeypatch, sequence, sent=True):
     monkeypatch.setattr(tmuxwatch, "dump_panes", fake_dump)
     monkeypatch.setattr(tmuxwatch, "is_available", lambda: True)
     monkeypatch.setattr(
-        tmuxwatch, "send_continue",
+        tmuxwatch, "send_line",
         lambda pane_id, msg: (nudged.append(pane_id) or True) if sent else False,
     )
     return nudged

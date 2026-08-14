@@ -133,13 +133,44 @@ def pane_tails_for_ttys(ttys: set[str]) -> dict[str, str] | None:
         return None
 
 
-def send_continue(pane_id: str, message: str) -> bool:
+def send_line(pane_id: str, message: str) -> bool:
     """Type ``message`` into the pane and submit it (send the literal text, then
     Enter). Returns whether the pane accepted it — False when the pane no longer
-    exists, so the caller doesn't count a nudge that never landed."""
+    exists, so the caller doesn't count a nudge that never landed.
+
+    One line, and both callers depend on that: ``-l`` sends the text verbatim, so an
+    embedded newline would submit early and hand the session half a message.
+    """
     if _run(["tmux", "send-keys", "-t", pane_id, "-l", message]) is None:
         return False
     return _run(["tmux", "send-keys", "-t", pane_id, "Enter"]) is not None
+
+
+def send_line_to_tty(tty: str, message: str) -> bool:
+    """The same, addressed by the tty a run is known by rather than by pane id.
+
+    The API-error watcher reads every pane and already holds the ids; the Freebuff
+    prompt hand-off comes the other way round — it knows a run's tty from ``ps`` and
+    has to find the pane on it, the same join :func:`pane_tails_for_ttys` makes to read
+    that run's screen. False when nothing is on that tty, which the caller reads as
+    "not delivered" and no more: it claimed the hand-off before sending, so this is not
+    retried.
+
+    ``tty`` is spelled as ``ps`` spells it (``pts/3``), and tmux's ``/dev/`` prefix is
+    dropped to match, exactly as in :func:`pane_tails_for_ttys`.
+    """
+    listing = _run(
+        ["tmux", "list-panes", "-a", "-F", f"#{{pane_id}}{_UNIT}#{{pane_tty}}"]
+    )
+    if listing is None:
+        return False
+    for line in listing.splitlines():
+        if _UNIT not in line:
+            continue
+        pane_id, pane_tty = (s.strip() for s in line.split(_UNIT, 1))
+        if pane_id and pane_tty.removeprefix("/dev/") == tty.removeprefix("/dev/"):
+            return send_line(pane_id, message)
+    return False
 
 
 def _run(argv: list[str]) -> str | None:

@@ -246,13 +246,17 @@ class SettingsView(QWidget):
             lambda text: setattr(self.store, "agent_model", text)
         )
         model_row.addWidget(self._model_field, 1)
-        providers = QPushButton("Connect a provider…")
-        providers.setToolTip(
-            "Open the runner's own login wizard: it knows every provider in its "
-            "catalog and stores the credential itself. Diplomat never holds an API key."
+        # Takes the width the field is not using, so the button stays at the right
+        # edge for a runner that has no model to pin.
+        model_row.addStretch(0)
+        self._model_row = model_row
+        self._providers_button = QPushButton()
+        self._providers_button.setToolTip(
+            "Open the runner's own login wizard, which stores the credential itself. "
+            "Diplomat never holds an API key."
         )
-        providers.clicked.connect(self._open_provider_setup)
-        model_row.addWidget(providers)
+        self._providers_button.clicked.connect(self._open_provider_setup)
+        model_row.addWidget(self._providers_button)
         holder = QWidget()
         holder.setLayout(model_row)
         nest.addWidget(holder)
@@ -271,13 +275,25 @@ class SettingsView(QWidget):
 
         A missing binary is otherwise near-silent: the window opens, the shell prints
         "command not found", the completion sentinel takes the 127 straight away, and
-        the applet records a run that finished in a second without doing anything."""
+        the applet records a run that finished in a second without doing anything.
+
+        The model field and the provider button are shown independently, because
+        Freebuff has the second and not the first: its CLI takes no model flag, so a
+        field here would accept a model id that nothing on the way to the agent would
+        ever read."""
         chosen = self.store.agent_runner
         label = runner.LABELS.get(chosen, chosen)
         foreign = chosen != runner.CLAUDE
         self._runner_pill.set_state(label, _PURPLE)
         self._runner_nest.setVisible(foreign)
+        has_field = chosen in runner.MODEL_RUNNERS
+        self._model_field.setVisible(has_field)
+        self._model_row.setStretch(1, 0 if has_field else 1)
         self._model_field.setPlaceholderText(f"model — blank lets {label} choose")
+        # Freebuff signs into one account of its own rather than choosing among
+        # providers, so the button says what it will actually open.
+        self._providers_button.setText("Log in…" if chosen == runner.FREEBUFF
+                                       else "Connect a provider…")
         found = shutil.which(chosen)
         if found:
             where = f"Spawns run `{chosen}` ({found})."
@@ -286,13 +302,19 @@ class SettingsView(QWidget):
                      f"login shell, so an rc-only install still works — but check it "
                      f"if spawned runs finish instantly without doing anything.")
         self._runner_row.set_summary(where, color=None if found else _ORANGE)
-        self._runner_row.set_detail(
-            f"Diplomat never holds an API key: {label} stores its own credential, and "
-            f"*Connect a provider* opens its login wizard, which knows every provider "
-            f"in its catalog."
-            if foreign else
-            "SPAWN AGENT picks up whatever flags your shell alias for `claude` gives it."
-        )
+        if chosen == runner.FREEBUFF:
+            detail = (f"Diplomat never holds an API key: *Log in* opens {label}'s own "
+                      f"login and it stores the credential itself. {label} takes no "
+                      f"prompt on its command line, so a spawn opens an empty session "
+                      f"and the task is typed in once it is ready.")
+        elif foreign:
+            detail = (f"Diplomat never holds an API key: {label} stores its own "
+                      f"credential, and *Connect a provider* opens its login wizard, "
+                      f"which knows every provider in its catalog.")
+        else:
+            detail = ("SPAWN AGENT picks up whatever flags your shell alias for "
+                      "`claude` gives it.")
+        self._runner_row.set_detail(detail)
 
     def _open_provider_setup(self) -> None:
         try:

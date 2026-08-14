@@ -338,6 +338,20 @@ def test_a_claude_completion_is_still_priced_by_its_own_transcript(ledger, scann
     assert telemetry.load().tasks[0].tokens == 1500
 
 
+def test_a_freebuff_completion_is_never_priced_off_a_claude_transcript(ledger, scanner):
+    """The ~/.claude scan matches on prompt text, and Freebuff has no store of its own
+    to be priced from — so reaching that scan for want of anywhere else to look does
+    not fail to find a transcript, it finds the WRONG one. The same PR dispatched under
+    both runners opens both with the same prompt, and this run would be billed the
+    Claude run's 1500 tokens on top of the Claude run itself."""
+    repo, projects = scanner
+    _session(projects / "s" / "mine.jsonl", "review PR #41 please", str(repo), [1000, 500])
+    now = time.time()
+    telemetry.record_completion("review:h/o/r#41@bb", "review PR #41 please",
+                                now - 300, now, now, agent_runner="freebuff")
+    assert telemetry.load().tasks[0].tokens is None
+
+
 def test_a_run_is_priced_before_its_directory_is_deleted(ledger, monkeypatch):
     """Retiring a run deletes the directory its prompt and its completion sentinel
     live in. Read after the delete, the prompt comes back empty and the sentinel's

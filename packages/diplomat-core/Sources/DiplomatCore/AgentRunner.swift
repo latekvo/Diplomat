@@ -9,13 +9,22 @@ import Foundation
 /// * `claude` — Claude Code, the default and what every existing run used;
 /// * `opencode` — OpenCode, whose model comes from whichever provider the user
 ///   configured in OpenCode itself (Anthropic, OpenRouter, a local Ollama, …);
-/// * `hermes` — Hermes Agent, likewise.
+/// * `hermes` — Hermes Agent, likewise;
+/// * `freebuff` — Freebuff, Codebuff's free tier, on the account its own login
+///   connects.
 ///
 /// Only the *agent word and its flags* differ. Everything the spawn is built out of —
-/// the prompt staged into a file and handed over as `$(cat …)`, the completion
-/// sentinel, the pid the run is identified by — is identical, deliberately: those are
-/// what `AgentRegistry` and `AgentState` recognise a run by, and a second spawn shape
-/// would be a second set of them to keep true.
+/// the prompt staged into a file, the completion sentinel, the pid the run is
+/// identified by — is identical, deliberately: those are what `AgentRegistry` and
+/// `AgentState` recognise a run by, and a second spawn shape would be a second set of
+/// them to keep true.
+///
+/// Three of the four also take that prompt on the command line, as `$(cat …)`.
+/// Freebuff takes none: its CLI accepts a prompt argument only when the same binary
+/// runs as `codebuff`, and under the `freebuff` name the parser both restricts its one
+/// positional to `login` and hard-codes the initial prompt to nothing. So a Freebuff
+/// spawn opens on an empty composer and is handed its prompt afterwards, by typing —
+/// see `promptHandoff` and `takesTypedPrompt`.
 ///
 /// Credentials are the one thing this type refuses to hold. Each foreign runner has its
 /// own provider store and its own login wizard, and that is where a key belongs — not
@@ -26,6 +35,7 @@ public enum AgentRunner: String, CaseIterable, Sendable {
     case claude
     case opencode
     case hermes
+    case freebuff
 
     /// What Settings shows for each.
     public var label: String {
@@ -33,7 +43,40 @@ public enum AgentRunner: String, CaseIterable, Sendable {
         case .claude: return "Claude Code"
         case .opencode: return "OpenCode"
         case .hermes: return "Hermes"
+        case .freebuff: return "Freebuff"
         }
+    }
+
+    /// Whether this runner takes `-m <model>`. False for Freebuff, whose CLI has no
+    /// such flag — the free tier picks the model server-side, and Settings hides the
+    /// field rather than offering one whose value nothing would read.
+    public var takesModel: Bool { self == .opencode || self == .hermes }
+
+    /// Whether a spawn of this runner opens on an EMPTY session, so its prompt has to
+    /// be typed into it afterwards rather than passed on the command line.
+    ///
+    /// True for Freebuff alone. Every caller that dispatches has to ask, because a run
+    /// that never receives its prompt is the worst shape of failure the applet has:
+    /// the process is up, `ps` sees it, it holds a bay of the task cap, and it will sit
+    /// there doing nothing until a human closes the window.
+    public var takesTypedPrompt: Bool { self == .freebuff }
+
+    /// The single line typed into a Freebuff composer to start its run.
+    ///
+    /// A pointer at the staged prompt rather than the prompt itself, and that is the
+    /// whole reason this is one line: the terminal channels that can type into a live
+    /// session submit a LINE (iTerm `write text` / Terminal `do script … in tab` here,
+    /// tmux `send-keys` + Enter on Linux), so a multi-line review prompt sent through
+    /// either would submit at its first newline and hand the agent a fragment. Both
+    /// channels already exist for the API-error nudge, and this reuses them unchanged.
+    ///
+    /// The file is the run's own `prompt.txt` (`AgentRegistry`), which outlives the
+    /// hand-off and is deleted only when the run is retired. It sits outside the repo,
+    /// so the line says how to reach it as well as what to do with it — Codebuff's file
+    /// tools are scoped to the project it opened, while its terminal tool is not.
+    public static func promptHandoff(promptFile: String) -> String {
+        "Read the instructions in \(promptFile) (cat it in the terminal — it is "
+            + "outside this project) and follow them exactly."
     }
 
     /// The configured runner, falling back to Claude Code.
@@ -77,17 +120,32 @@ public enum AgentRunner: String, CaseIterable, Sendable {
     ///
     /// `port` puts an OpenCode run's own server on a port the applet already knows, which
     /// is what lets `OpenCodeAPI` ask the agent what it is doing instead of reading it off
-    /// the agent's screen. It is ignored by the other two, which have no such server —
-    /// Hermes answers the same question from its own session store. Omitting it is a
-    /// supported spawn, not a broken one: the run works exactly as before and is tracked
-    /// by its screen.
-    public func agentCommand(promptFile: String, model: String = "", port: Int = 0) -> String {
+    /// the agent's screen. It is ignored by the other three, which have no such server —
+    /// Hermes answers the same question from its own session store, and Freebuff's is on
+    /// Freebuff's own machines. Omitting it is a supported spawn, not a broken one: the
+    /// run works exactly as before and is tracked by its screen.
+    ///
+    /// `repo` is the checkout the spawn `cd`s into, and only Freebuff is passed it on its
+    /// command line as well. `promptFile` is the one thing Freebuff ignores, taking no
+    /// prompt argument at all (`promptHandoff`): it is the one runner whose returned
+    /// command does not carry the prompt, and the one whose spawn is not finished when
+    /// the command has run.
+    public func agentCommand(promptFile: String, model: String = "", port: Int = 0,
+                             repo: String = "") -> String {
         let prompt = "\"$(cat \(Self.shq(promptFile)))\""
         let trimmed = model.trimmingCharacters(in: .whitespaces)
         let flag = trimmed.isEmpty ? "" : " -m \(Self.shq(trimmed))"
         switch self {
         case .claude:
             return "claude \(prompt)"
+        case .freebuff:
+            // `--cwd` rather than leaning on the `cd` the spawn already did, because
+            // the two fail differently. That `cd` is deliberately quiet
+            // (`2>/dev/null`), and where the other runners would then simply work in
+            // the wrong directory, Freebuff opens a full-screen directory PICKER when
+            // its working directory is not a project — an agent that can never start,
+            // holding a bay of the task cap until someone closes the window.
+            return "freebuff --cwd \(Self.shq(repo))"
         case .hermes:
             // `--yolo` bypasses the approval prompts, the same autonomy the Claude
             // alias carries and `OPENCODE_PERMISSION` grants below. `-q` submits the
@@ -130,8 +188,8 @@ public enum AgentRunner: String, CaseIterable, Sendable {
 
     /// The command that lets a user connect a provider to this runner.
     ///
-    /// Diplomat deliberately does not ask for a provider and an API key itself. Both
-    /// foreign runners ship a wizard that knows their whole provider catalog, which
+    /// Diplomat deliberately does not ask for a provider and an API key itself. OpenCode
+    /// and Hermes each ship a wizard that knows their whole provider catalog, which
     /// entries take an OAuth flow rather than a key, and where each one's credentials
     /// belong — and each writes them to the store its agent reads from anyway. A key
     /// field here would be a worse copy of that which also put a secret in Diplomat's
@@ -139,9 +197,17 @@ public enum AgentRunner: String, CaseIterable, Sendable {
     ///
     /// The listing command runs after, so the window the user is left looking at states
     /// what is now connected rather than making them trust that it worked.
+    ///
+    /// Freebuff is the exception to the *provider* half: it has no catalog to choose
+    /// from, only the one account its own site signs a user into, so its wizard is the
+    /// whole of it and there is nothing to list afterwards. The window stays on the
+    /// command, which is what prints the URL the user has to open.
     public var setupCommand: String {
-        self == .hermes ? "hermes setup; hermes status"
-                        : "opencode providers login; opencode providers list"
+        switch self {
+        case .freebuff: return "freebuff login"
+        case .hermes: return "hermes setup; hermes status"
+        default: return "opencode providers login; opencode providers list"
+        }
     }
 
     /// Single-quote for the shell, the same way `ReviewWizard.shq` does.

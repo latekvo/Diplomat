@@ -91,7 +91,7 @@ enum AgentSpawner {
         /// operator switched would be interrogated through the wrong store.
         let runner: AgentRunner
         /// Where this run's OpenCode server answers, or 0 for a run that has none —
-        /// every Claude Code and Hermes run, and any OpenCode run no port could be
+        /// every run of any other runner, and any OpenCode run no port could be
         /// reserved for.
         let port: Int
     }
@@ -184,7 +184,8 @@ enum AgentSpawner {
     /// the applet can price the run even while its window stays open.
     static func shellCommand(_ plan: SpawnPlan) -> String {
         let agent = plan.runner.agentCommand(promptFile: plan.promptFile.path,
-                                             model: AppConfig.agentModel, port: plan.port)
+                                             model: AppConfig.agentModel, port: plan.port,
+                                             repo: repoPath)
         let inner = "printf %s $$ > \(shq(plan.pidPath)); \(agent)"
         return "cd \(shq(repoPath)) 2>/dev/null; \"$SHELL\" -i -c \(shq(inner)); "
             + "printf %s $? > \(shq(plan.donePath))"

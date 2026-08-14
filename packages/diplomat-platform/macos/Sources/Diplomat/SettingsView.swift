@@ -143,12 +143,7 @@ struct SettingsView: View {
                             pill: StatusPill(text: name, tint: .purple)) {
             SettingRow(title: "Which CLI a spawn runs",
                        summary: runnerSummary,
-                       detail: foreign
-                            ? "Diplomat never holds an API key: \(name) stores its own "
-                            + "credential, and *Connect a provider* opens its login wizard, "
-                            + "which knows every provider in its catalog."
-                            : "SPAWN AGENT picks up whatever flags your shell alias for "
-                            + "`claude` gives it.",
+                       detail: runnerDetail,
                        stacked: true) {
                 Picker("Which CLI a spawn runs", selection: $store.agentRunner) {
                     ForEach(AgentRunner.allCases, id: \.self) { Text($0.label).tag($0) }
@@ -159,20 +154,34 @@ struct SettingsView: View {
         }
     }
 
+    /// The model field and the login button are shown independently, because Freebuff
+    /// has the second and not the first: its CLI takes no model flag, so a field here
+    /// would accept a model id that nothing on the way to the agent would ever read.
     private func modelRow(_ runnerName: String) -> some View {
-        NestedSettings(tint: .purple) {
+        let hasField = store.agentRunner.takesModel
+        // Freebuff signs into one account of its own rather than choosing among
+        // providers, so the button says what it will actually open.
+        let buttonTitle = hasField ? "Connect a provider…" : "Log in…"
+        // The fill is the field's chrome; with no field it would be an empty box.
+        let fill = hasField ? Color.gray.opacity(0.12) : Color.clear
+        return NestedSettings(tint: .purple) {
             HStack(spacing: 6) {
-                Image(systemName: "cpu").font(.caption).foregroundStyle(.secondary)
-                TextField("model — blank lets \(runnerName) choose", text: $store.agentModel)
-                    .textFieldStyle(.plain).font(.callout).lineLimit(1)
-                Button("Connect a provider…") { openProviderSetup() }
+                if hasField {
+                    Image(systemName: "cpu").font(.caption).foregroundStyle(.secondary)
+                    TextField("model — blank lets \(runnerName) choose", text: $store.agentModel)
+                        .textFieldStyle(.plain).font(.callout).lineLimit(1)
+                } else {
+                    Spacer()
+                }
+                Button(buttonTitle) {
+                    openProviderSetup()
+                }
                     .buttonStyle(.bordered).controlSize(.small)
-                    .help("Open \(runnerName)'s own login wizard: it knows every "
-                          + "provider in its catalog and stores the credential "
-                          + "itself. Diplomat never holds an API key.")
+                    .help("Open \(runnerName)'s own login wizard, which stores the "
+                          + "credential itself. Diplomat never holds an API key.")
             }
             .padding(7)
-            .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.12)))
+            .background(RoundedRectangle(cornerRadius: 6).fill(fill))
         }
     }
 
@@ -181,6 +190,23 @@ struct SettingsView: View {
         case .claude: return "SPAWN AGENT runs `claude`."
         case .opencode: return "SPAWN AGENT runs `opencode`, on OpenCode's own model and provider."
         case .hermes: return "SPAWN AGENT runs `hermes chat --tui`, on Hermes' own model and provider."
+        case .freebuff: return "SPAWN AGENT runs `freebuff`, on Freebuff's free tier and its own model."
+        }
+    }
+
+    private var runnerDetail: String {
+        switch store.agentRunner {
+        case .claude:
+            return "SPAWN AGENT picks up whatever flags your shell alias for `claude` gives it."
+        case .freebuff:
+            return "Diplomat never holds an API key: *Log in* opens Freebuff's own login "
+                + "and it stores the credential itself. Freebuff takes no prompt on its "
+                + "command line, so a spawn opens an empty session and the task is typed "
+                + "in once it is ready."
+        case .opencode, .hermes:
+            return "Diplomat never holds an API key: \(store.agentRunner.label) stores its "
+                + "own credential, and *Connect a provider* opens its login wizard, which "
+                + "knows every provider in its catalog."
         }
     }
 

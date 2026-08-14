@@ -851,6 +851,12 @@ final class Store: ObservableObject {
         /// Window handles for the runs that have one, read in the same pass so a repaint
         /// never touches the disk.
         var windows: [String: AgentWindows.Handle]
+        /// tty → that session's visible tail, carried out of the pass because one
+        /// consequence needs a probe's raw answer rather than the resolution: the
+        /// Freebuff prompt hand-off types into a session on the strength of what that
+        /// session shows, and re-reading it would cost a second AppleEvent dump of
+        /// every terminal on the machine.
+        var tails: Observation<[String: String]>
     }
 
     /// Resolve every registered run against one pass of evidence. READ-ONLY.
@@ -891,7 +897,7 @@ final class Store: ObservableObject {
             for r in tick.records where !r.untracked {
                 windows[r.runID] = AgentWindows.handle(r.runID)
             }
-            return AgentPass(tick: tick, windows: windows)
+            return AgentPass(tick: tick, windows: windows, tails: evidence.tails)
         }.value
     }
 
@@ -905,9 +911,54 @@ final class Store: ObservableObject {
         let pass = await agentTick()
         Store.persistRunChanges(pass.tick.records)
         publish(pass)
+        await handOffTypedPrompts(pass)
         await retireFinished(pass.tick)
         noteSilentProbes()
         return pass
+    }
+
+    /// Type its prompt into every run that was spawned without one and is now ready to
+    /// take it — which is every Freebuff run, and no other.
+    ///
+    /// A Freebuff spawn opens on an empty composer because its CLI accepts no prompt
+    /// argument (`AgentRunner.promptHandoff`), so this is not an extra: until it lands,
+    /// the run is an agent doing nothing that still holds a bay of the task cap. It
+    /// waits for the composer rather than typing on a timer because the TUI discards
+    /// whatever arrives before it is up — text sent 0.3s into a launch never appears,
+    /// the same text at 5s lands in full.
+    ///
+    /// Runs it must not touch, and why each is a different question: a mesh PEER's run
+    /// is a process on another machine, an untracked one has no run directory to claim
+    /// the hand-off in, and one whose recorded runner is anything else was given its
+    /// prompt on the command line. The runner is read off the run rather than from the
+    /// setting, which is what the NEXT spawn will use — an operator who switched after
+    /// dispatching would otherwise have the applet type into a Claude Code session that
+    /// has been working for an hour.
+    private func handOffTypedPrompts(_ pass: AgentPass) async {
+        guard let tails = pass.tails.value else { return }
+        for r in pass.tick.records
+        where !r.untracked && r.runsHere && !r.tty.isEmpty
+            && AgentRunner.from(AgentRegistry.runRunner(r.runID)).takesTypedPrompt
+            && !AgentRegistry.promptTyped(r.runID) {
+            guard let tail = tails[r.tty],
+                  AgentActivity.looksReadyForPrompt(tail),
+                  AgentRegistry.claimPromptTyped(r.runID) else { continue }
+            let line = AgentRunner.promptHandoff(
+                promptFile: AgentRegistry.promptPath(r.runID).path)
+            // The records are keyed by the tty `ps` reports; the terminals answer to
+            // the full path (`AgentProbes.fullTTY`).
+            let tty = AgentProbes.fullTTY(r.tty)
+            let sent = await Task.detached(priority: .userInitiated) {
+                ApiErrorWatcher.sendLine(tty: tty, line)
+            }.value
+            if !sent {
+                AuditLog.log("auto", "warn",
+                    "Could not type the prompt into the \(AgentRunner.freebuff.label) "
+                    + "agent on \(tty) — it is sitting on an empty composer and will do "
+                    + "nothing until someone pastes it")
+                refreshAudit()
+            }
+        }
     }
 
     /// The rows and the cap load this pass produced.
@@ -1010,17 +1061,33 @@ final class Store: ObservableObject {
                 // Which transcript prices a run depends on what ran it, and the run says
                 // which by what it left behind. A matched session under a foreign runner is
                 // priced by that runner's own store — OpenCode through its exporter, Hermes
-                // from the session row it keeps running totals on. Everything else is a
-                // Claude Code run, found in ~/.claude by the prompt it opened with.
+                // from the session row it keeps running totals on. A Claude Code run is
+                // found in ~/.claude by the prompt it opened with.
+                //
+                // Nothing else is priced at all, and the ~/.claude search is deliberately
+                // not the fallback it reads like: that store holds Claude Code's
+                // transcripts and no others, so searching it for a run of any other CLI
+                // cannot succeed — and CAN return the wrong answer, because what it
+                // matches on is the prompt text. Dispatch the same PR twice, once under
+                // Claude Code and once under a runner with no store of its own (every
+                // Freebuff run, and any run whose session was never matched), and the two
+                // prompts are identical, so the second would be priced at the first's
+                // tokens.
                 let tokens: Double?
-                switch (f.session.isEmpty, AgentRunner(rawValue: f.runner)) {
-                case (false, .hermes):
+                let ran = AgentRunner(rawValue: f.runner)
+                if !f.session.isEmpty, ran == .hermes {
                     tokens = HermesProbe.sessionTokens(sessionID: f.session)
-                case (false, .opencode):
+                } else if !f.session.isEmpty, ran == .opencode {
                     tokens = UsageScan.opencodeTaskTokens(sessionID: f.session)
-                default:
+                } else if f.runner.isEmpty || ran == .claude {
+                    // Empty is a run from before the applet recorded a runner, which is
+                    // Claude Code. An unrecognised one is NOT: a newer applet's runner
+                    // read by an older one is priced at nothing rather than searched for
+                    // in a store that is certainly not its own.
                     tokens = UsageScan.taskTokens(prompt: f.prompt, startedAt: f.at,
                                                   endedAt: f.done)
+                } else {
+                    tokens = nil
                 }
                 TelemetryLog.done(key: f.key, at: f.done, tokens: tokens, runner: f.runner)
             }
@@ -2668,7 +2735,7 @@ final class Store: ObservableObject {
             if let b = apiErrorBackoff[s.tty], now < b.nextAllowed { continue }
             let tty = s.tty
             let sent = await Task.detached(priority: .userInitiated) {
-                ApiErrorWatcher.sendContinue(tty: tty)
+                ApiErrorWatcher.sendLine(tty: tty, ApiErrorWatcher.continueMessage)
             }.value
             // Only count/audit a nudge that actually landed — the send scripts now
             // report whether any session owned the tty.

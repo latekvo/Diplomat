@@ -11,13 +11,39 @@ import Foundation
 public enum AgentActivity {
     /// The interrupt hint a CLI renders only while a turn is actively running — one
     /// spelling per runner. Claude Code writes "esc to interrupt", OpenCode "esc
-    /// interrupt", and Hermes "Ctrl+C to interrupt…". No string here contains another,
-    /// so a pane is read against all of them: nothing can ask a pane which CLI drew it,
-    /// and a runner missing from this list is one whose agents read as idle the whole
-    /// time they work — their bays go back to the task cap and the monitors dispatch
-    /// over the top of them.
+    /// interrupt", Hermes "Ctrl+C to interrupt…", and Freebuff a stop button, "■ Esc".
+    /// No string here contains another, so a pane is read against all of them: nothing
+    /// can ask a pane which CLI drew it, and a runner missing from this list is one
+    /// whose agents read as idle the whole time they work — their bays go back to the
+    /// task cap and the monitors dispatch over the top of them.
+    ///
+    /// Freebuff's is the square and the word together because the word alone is not a
+    /// hint at all: its own pickers carry "↑↓ navigate · Enter select · Esc cancel"
+    /// while the agent behind them is doing nothing.
     public static let busyMarkers = ["esc to interrupt", "esc interrupt",
-                                     "ctrl+c to interrupt"]
+                                     "ctrl+c to interrupt", "■ esc"]
+
+    /// The placeholder Freebuff's composer shows when it is empty and waiting for a
+    /// task — the one state in which a prompt typed at it arrives. Everything before it
+    /// discards input: keystrokes sent 0.3s into a launch never appear, the same text
+    /// sent at 5s lands in full (measured against freebuff 0.0.149 driven through a
+    /// pty).
+    public static let readyMarker = "enter a coding task or / for commands"
+
+    /// True when a session shows a Freebuff composer waiting to be typed into.
+    ///
+    /// Searched across the whole of what it is handed — the session's visible tail, as
+    /// `ApiErrorWatcher` cuts it — rather than the last line or two the interrupt hint
+    /// lives on: the composer sits above the status bar, inside a box with borders of
+    /// its own. That costs nothing in false matches, because the screens a spawn can
+    /// land on INSTEAD are the login wall and the project picker, and neither carries
+    /// this string.
+    ///
+    /// Busy is excluded so the answer stays "waiting for its FIRST prompt" rather than
+    /// "the composer happens to be empty", which is equally true of an agent mid-turn.
+    public static func looksReadyForPrompt(_ visible: String) -> Bool {
+        visible.lowercased().contains(readyMarker) && !looksBusy(visible)
+    }
 
     /// How many non-empty lines up from the bottom to inspect. The live status/hint bar is
     /// always the last line or two; scanning only this tail avoids matching the very same

@@ -200,9 +200,10 @@ def record_done(key: str, at: float, tokens: float | None,
     time). :func:`record_completion` is what establishes that instant.
 
     ``agent_runner`` is which CLI spent the tokens, and it is what keeps the
-    rate-limit percentages honest: an OpenCode or Hermes task is billed by whichever
-    provider that runner is logged into, so its tokens are worth reporting per task
-    but not against a window they never drew on (:attr:`Task.anthropic`).
+    rate-limit percentages honest: a task under any other runner is billed by whoever
+    that runner is logged into — or, on Freebuff's free tier, by nobody — so its
+    tokens are worth reporting per task but not against a window they never drew on
+    (:attr:`Task.anthropic`).
     """
     event = {"at": at, "ev": "done", "key": key}
     if tokens is not None:
@@ -225,8 +226,16 @@ def record_completion(key: str, prompt: str, started_at: float,
     Which transcript depends on what ran it, and the run says which by what it left
     behind. A matched session id under a foreign runner is priced by that runner's own
     store — OpenCode through its exporter, Hermes from the session row it keeps
-    running totals on. Everything else is a Claude Code run, found in ``~/.claude`` by
-    the prompt it opened with.
+    running totals on. A Claude Code run is found in ``~/.claude`` by the prompt it
+    opened with.
+
+    Nothing else is priced at all, and the ``~/.claude`` search is deliberately not the
+    fallback it reads like: that store holds Claude Code's transcripts and no others,
+    so searching it for a run of any other CLI cannot succeed — and CAN return the
+    wrong answer, because what it matches on is the prompt text. Dispatch the same PR
+    twice, once under Claude Code and once under a runner with no store of its own —
+    every Freebuff run, and any run whose session was never matched — and the two
+    prompts are identical, so the second would be priced at the first one's tokens.
 
     ``exited_at`` is the completion sentinel's mtime, for a run that left one. A run
     the mesh placed leaves none: the node deletes its own sentinel the instant it
@@ -250,9 +259,11 @@ def record_completion(key: str, prompt: str, started_at: float,
             tokens = hermesstore.session_tokens(session_id)
         elif session_id and agent_runner == runner.OPENCODE:
             tokens = usagescan.opencode_task_tokens(session_id)
-        else:
+        elif agent_runner in ("", runner.CLAUDE):
             run = usagescan.task_run(prompt, started_at, exited_at or noticed_at)
             tokens = run.tokens if run is not None else None
+        else:
+            tokens = None
     except OSError:
         tokens = None
     if exited_at is None:

@@ -50,6 +50,12 @@ public enum AgentModel {
         // The Claude runner ignores that field (`AgentRunner.agentCommand` passes it no
         // model flag), so a pin left over from OpenCode must not be claimed here.
         if runner == .claude { return displayName(claudeCodeModel(home: claudeHome)) }
+        // Freebuff ignores it for the same reason and has nowhere else to be asked: its
+        // free tier picks the model on its own servers. Naming nothing is the honest
+        // answer, and it is the pin that makes this a guard rather than a fallthrough —
+        // a value left behind by OpenCode would otherwise be attributed, on a public
+        // comment, to a model Freebuff never ran.
+        guard runner.takesModel else { return "" }
         guard pinned.isEmpty else { return displayName(pinned) }
         return displayName(foreignRunnerModel(runner, hermesConfig: hermesConfig))
     }

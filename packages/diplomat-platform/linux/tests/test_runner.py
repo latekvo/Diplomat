@@ -59,6 +59,55 @@ HERMES_IDLE = (
     " ❯"
 )
 
+#: A Freebuff pane mid-turn. Its hint is a stop BUTTON rather than a sentence, drawn
+#: on the right of the same status bar that carries the spinner's "working…".
+#:
+#: Reconstructed from freebuff 0.0.149's own bundle rather than captured, and the one
+#: fixture here that is: Freebuff's backend answers 401 to every key its login mints
+#: (verified in its own ``~/.config/manicode/projects/*/chats/*/log.jsonl``), so no
+#: turn can be run at all. What is pinned is the CLI's literal and the condition it
+#: renders under — ``kind === "waiting" || kind === "streaming"`` draws ``■ Esc``,
+#: ``kind === "idle"`` draws ``✕ End session`` — and the surrounding layout is a
+#: plausible frame around it, not evidence. Recapture from a live turn when the
+#: account works.
+FREEBUFF_BUSY = (
+    "  enter a coding task or / for commands\n"
+    "  working...                                                      ■ Esc"
+)
+
+#: The same bar once the turn ended: the stop button is replaced by the session's, and
+#: the composer is back to its placeholder.
+FREEBUFF_IDLE = (
+    "  enter a coding task or / for commands\n"
+    "  Buffy · unlimited                                       ✕ End session"
+)
+
+#: The two screens a Freebuff spawn lands on when it CANNOT take a prompt, both
+#: captured verbatim from freebuff 0.0.149 driven through a pty on a real macOS box
+#: (80×24, ANSI rendered to a screen the way ``capture-pane`` hands one over).
+#:
+#: These are what the readiness check has to reject, and they are the reason it looks
+#: for the composer's placeholder rather than for the absence of anything: a spawn that
+#: is parked here looks exactly as calm as one that is ready.
+FREEBUFF_LOGIN_WALL = (
+    " ⚠ We found an API key but it appears to be invalid. Please log in again to\n"
+    " continue.\n"
+    "        ███████╗██████╗ ███████╗███████╗██████╗ ██╗   ██╗███████╗███████╗\n"
+    "        ██║     ██║  ██║███████╗███████╗██████╔╝╚██████╔╝██║     ██║\n"
+    "                             Press ENTER to login..."
+)
+
+FREEBUFF_PROJECT_PICKER = (
+    "           ▍Select project directory...\n"
+    "          ┌──────────────────────────────────────────────────────────┐\n"
+    "          │ 📂   ..                                                 ▀│\n"
+    "          │ 📁   Applications                                        │\n"
+    "          └──────────────────────────────────────────────────────────┘\n"
+    "                                                            ┌────────┐\n"
+    "          ~                                                 │  Open  │\n"
+    "                                                            └────────┘"
+)
+
 #: How OpenCode surfaces a rejected turn: the provider's own JSON, verbatim.
 OPENCODE_AUTH_ERROR = (
     '  ┃  Unauthorized: {"error":{"message":"Unauthorized",'
@@ -83,6 +132,16 @@ def hermes(monkeypatch, tmp_path):
     appconfig.set_value(appconfig.AGENT_RUNNER, runner.HERMES)
     monkeypatch.setattr(review, "repo_path", lambda: str(tmp_path))
     return runner.HERMES
+
+
+@pytest.fixture
+def freebuff(monkeypatch, tmp_path):
+    """The same, for Freebuff. The repo root is stubbed like the others, and it is the
+    one runner that reads it: the checkout goes on its command line as well as into the
+    ``cd``."""
+    appconfig.set_value(appconfig.AGENT_RUNNER, runner.FREEBUFF)
+    monkeypatch.setattr(review, "repo_path", lambda: str(tmp_path))
+    return runner.FREEBUFF
 
 
 # MARK: - Which CLI a spawn runs
@@ -140,6 +199,57 @@ def test_hermes_takes_the_configured_model_and_no_port(hermes):
     assert cmd == 'hermes chat --tui --yolo -m openai/gpt-5.2 -q "$(cat /tmp/p.txt)"'
 
 
+def test_the_freebuff_runner_opens_on_the_repo_and_carries_no_prompt(freebuff, tmp_path):
+    """The one spawn whose command does not hand the agent its prompt, because its CLI
+    takes none: under the ``freebuff`` name the parser restricts its one positional to
+    ``login`` and hard-codes the initial prompt to nothing. Passing the file anyway
+    would be a run that starts by reading out its own instructions as a task.
+
+    ``--cwd`` is what keeps a spawn off Freebuff's directory picker. The ``cd`` in
+    ``shell_command`` is quiet by design, and where the other runners would then work
+    in the wrong directory, Freebuff would open a picker and wait for a human forever
+    while holding a bay of the task cap."""
+    cmd = runner.agent_command("/tmp/p.txt")
+    assert cmd == f"freebuff --cwd {shlex.quote(str(tmp_path))}"
+    assert "p.txt" not in cmd
+
+
+def test_freebuff_is_passed_neither_a_model_nor_a_port(freebuff):
+    """Its CLI has neither flag: the free tier picks the model server-side, and its
+    session lives on Freebuff's own machines rather than on a loopback port. Passing
+    either would not be ignored — an unknown option is a CLI that exits, which the
+    completion sentinel would record as a run that finished in a second."""
+    appconfig.set_value(appconfig.AGENT_MODEL, "openai/gpt-5.2")
+    cmd = runner.agent_command("/tmp/p.txt", port=47910)
+    assert " -m " not in cmd and "47910" not in cmd
+
+
+def test_freebuff_is_not_offered_a_model_field_at_all():
+    """The other side of the same fact, and the one Settings reads: a runner absent
+    from ``MODEL_RUNNERS`` gets no model field, rather than one whose value nothing
+    between it and the agent would ever look at."""
+    assert runner.FREEBUFF not in runner.MODEL_RUNNERS
+    assert set(runner.MODEL_RUNNERS) == {runner.OPENCODE, runner.HERMES}
+
+
+def test_only_freebuff_has_to_be_typed_its_prompt():
+    """What every dispatch path asks before deciding a spawn is finished. Answering it
+    for the wrong runner types a second prompt into an agent that already has one."""
+    assert runner.takes_typed_prompt(runner.FREEBUFF)
+    assert not any(runner.takes_typed_prompt(r) for r in runner.RUNNERS
+                   if r != runner.FREEBUFF)
+
+
+def test_the_typed_prompt_is_one_line_that_names_the_staged_file():
+    """It goes in through channels that submit a LINE — tmux ``send-keys`` + Enter,
+    iTerm ``write text``, Terminal ``do script … in tab`` — so a newline anywhere in it
+    submits early and hands the agent a fragment of its own instructions. That is why
+    it points at the prompt rather than being it."""
+    line = runner.prompt_handoff("/home/u/.diplomat/agents/17-ab/prompt.txt")
+    assert "\n" not in line
+    assert "/home/u/.diplomat/agents/17-ab/prompt.txt" in line
+
+
 def test_each_runner_hands_the_user_to_its_own_provider_wizard(hermes):
     """Diplomat holds no API key for either runner: each ships a wizard that knows its
     whole provider catalog and writes the credential to its own store. Sending a Hermes
@@ -147,6 +257,10 @@ def test_each_runner_hands_the_user_to_its_own_provider_wizard(hermes):
     assert runner.setup_command() == "hermes setup; hermes status"
     appconfig.set_value(appconfig.AGENT_RUNNER, runner.OPENCODE)
     assert runner.setup_command() == "opencode providers login; opencode providers list"
+    # Freebuff has no provider catalog to list — one account, one login — so its wizard
+    # is the whole command and the window is left on what it printed: a URL to open.
+    appconfig.set_value(appconfig.AGENT_RUNNER, runner.FREEBUFF)
+    assert runner.setup_command() == "freebuff login"
 
 
 def test_a_prompt_path_with_a_space_survives_the_hand_off(opencode):
@@ -223,6 +337,7 @@ def test_a_claude_spawn_is_left_exactly_as_it_was(monkeypatch, tmp_path):
     ("2 pts/1 30 opencode --prompt Review PR #7 in o/r", True),
     ("2 pts/1 30 claude Review PR #7 in o/r", True),
     ("2 pts/1 30 hermes chat --tui --yolo -q Review PR #7 in o/r", True),
+    ("2 pts/1 30 freebuff --cwd /home/u/dev/argent", True),
     ("2 pts/1 30 vim notes.txt", False),
 ])
 def test_every_runner_is_visible_to_the_scans_that_count_agents(line, seen):
@@ -267,6 +382,76 @@ def test_a_hermes_pane_back_at_its_prompt_reads_as_idle():
     assert apiwatch.looks_busy(HERMES_IDLE) is False
 
 
+def test_a_freebuff_pane_mid_turn_reads_as_busy():
+    """A fourth spelling, and the only one that is not a sentence: Freebuff draws a
+    stop button, "■ Esc". Missing it reads every working Freebuff agent as idle, which
+    hands its bay back to the cap while it is still working."""
+    assert apiwatch.looks_busy(FREEBUFF_BUSY) is True
+
+
+def test_a_freebuff_pane_between_turns_reads_as_idle():
+    assert apiwatch.looks_busy(FREEBUFF_IDLE) is False
+
+
+def test_the_word_esc_alone_does_not_make_a_freebuff_screen_busy():
+    """Why the marker is the square and the word together. Freebuff's pickers hint
+    "Esc cancel", and one of them is a screen a spawn can sit on indefinitely — read as
+    busy, it would hold a bay of the task cap for as long as its window stayed open,
+    which is exactly the state this most needs to report correctly."""
+    assert "esc" in ("↑↓ navigate · Enter select · Esc cancel").lower()
+    assert apiwatch.looks_busy("↑↓ navigate · Enter select · Esc cancel") is False
+
+
+# MARK: - Handing a Freebuff run its prompt
+
+
+def test_a_freebuff_composer_is_what_marks_a_run_ready_for_its_prompt():
+    """The gate on typing at all. The TUI discards input that arrives before it is up
+    (measured: text sent 0.3s into a launch never appears, the same text at 5s lands in
+    full), so a spawn typed at on a timer loses its prompt outright — and a run that
+    never received one is an agent doing nothing that still holds a bay."""
+    assert apiwatch.looks_ready_for_prompt(FREEBUFF_IDLE) is True
+
+
+@pytest.mark.parametrize("screen", [FREEBUFF_LOGIN_WALL, FREEBUFF_PROJECT_PICKER])
+def test_the_screens_a_spawn_can_be_stuck_on_are_not_mistaken_for_a_composer(screen):
+    """Both are real captures, and both are what a broken spawn actually looks like: a
+    logged-out account stops at the login wall, and a working directory that is not a
+    project stops at the picker. Typing the prompt at either sends a page of review
+    instructions into a password screen or a filename filter."""
+    assert apiwatch.looks_ready_for_prompt(screen) is False
+
+
+def test_an_agent_mid_turn_is_not_ready_for_a_prompt():
+    """The composer is empty while a turn runs, too. Reading that as "ready" would
+    queue the whole review a second time behind the one already in flight."""
+    assert apiwatch.looks_ready_for_prompt(FREEBUFF_BUSY) is False
+
+
+def test_the_hand_off_can_be_claimed_once_and_only_once(tmp_path, monkeypatch):
+    """What stops a run being typed into on every tick: the composer it is waiting at
+    still looks exactly as ready one tick after the prompt went in, and for as long as
+    the turn takes to start."""
+    monkeypatch.setenv("DIPLOMAT_AGENTS_DIR", str(tmp_path))
+    from diplomat_runtime import agentregistry
+
+    agentregistry.run_dir("r1").mkdir(parents=True)
+    assert agentregistry.prompt_typed("r1") is False
+    assert agentregistry.claim_prompt_typed("r1") is True
+    assert agentregistry.prompt_typed("r1") is True
+
+
+def test_a_hand_off_that_cannot_be_recorded_is_not_sent(tmp_path, monkeypatch):
+    """The claim is written BEFORE the line is sent, and a claim that fails cancels the
+    send. Recording it afterwards would leave a run whose directory has gone unwritable
+    being typed into on every tick for as long as its window is open."""
+    monkeypatch.setenv("DIPLOMAT_AGENTS_DIR", str(tmp_path))
+    from diplomat_runtime import agentregistry
+
+    # No run directory at all — `touch` cannot create the file under a missing parent.
+    assert agentregistry.claim_prompt_typed("never-staged") is False
+
+
 def test_a_rejected_opencode_turn_is_not_mistaken_for_a_nudgeable_stall():
     """The error patterns were read off Claude Code's banners. OpenCode surfaces the
     provider's raw JSON, and the one shape observed is an auth rejection — permanent,
@@ -287,6 +472,101 @@ def test_the_marker_count_rises_for_an_opencode_screen(monkeypatch):
                        tty="pts/1")
     probes.pane_tails([record], now=1000.0)
     assert probes.marker_stats() == (1, 1)
+
+
+# MARK: - The pass that hands a Freebuff run its prompt
+
+
+def _staged(monkeypatch, tmp_path, chosen: str, screen: str, tty: str = "pts/9"):
+    """One registered run under ``chosen``, its pane showing ``screen``, and a Store
+    holding that pane as this tick's evidence. Returns (store, tick, sent), where
+    ``sent`` collects every line the applet types."""
+    from diplomat_runtime import agentregistry, agentstate, tmuxwatch
+    from diplomat_app.store import Store
+
+    monkeypatch.setenv("DIPLOMAT_AGENTS_DIR", str(tmp_path / "agents"))
+    record = agentregistry.create_run(
+        RunRecord(run_id="r1", dispatched_at=0.0, pr_number=7, kind="review", tty=tty),
+        "Review PR #7 in o/r")
+    agentregistry.runner_path("r1").write_text(chosen, encoding="utf-8")
+    sent: list[tuple[str, str]] = []
+    monkeypatch.setattr(tmuxwatch, "send_line_to_tty",
+                        lambda t, msg: bool(sent.append((t, msg))) or True)
+    store = Store()
+    store._tick_tails = agentstate.Observation.present({tty: screen})
+    tick = agentstate.Tick(records=[record], states={}, rows=[(record, None)],
+                           cap_load=set(), retirable=[], free_slots=0)
+    return store, tick, sent
+
+
+def test_a_freebuff_run_is_typed_its_prompt_when_its_composer_comes_up(monkeypatch, tmp_path):
+    """The half of a Freebuff spawn that the command line cannot do. Without it the
+    process is up, ``ps`` sees it, it holds a bay of the task cap — and it does nothing
+    at all until a human notices and pastes the task in."""
+    from diplomat_runtime import agentregistry
+
+    store, tick, sent = _staged(monkeypatch, tmp_path, runner.FREEBUFF, FREEBUFF_IDLE)
+    store._hand_off_typed_prompts(tick)
+    assert [t for t, _ in sent] == ["pts/9"]
+    assert str(agentregistry.prompt_path("r1")) in sent[0][1]
+
+
+def test_the_same_composer_on_the_next_tick_is_not_typed_into_again(monkeypatch, tmp_path):
+    """The pane looks exactly as ready one tick after the line went in, and for as long
+    as the turn takes to start. Typing again queues the whole review a second time."""
+    store, tick, sent = _staged(monkeypatch, tmp_path, runner.FREEBUFF, FREEBUFF_IDLE)
+    store._hand_off_typed_prompts(tick)
+    store._hand_off_typed_prompts(tick)
+    assert len(sent) == 1
+
+
+@pytest.mark.parametrize("screen", [FREEBUFF_LOGIN_WALL, FREEBUFF_PROJECT_PICKER,
+                                    FREEBUFF_BUSY])
+def test_nothing_is_typed_at_a_run_that_is_not_at_its_composer(monkeypatch, tmp_path, screen):
+    """The two screens a broken spawn parks on, and the one an agent shows while it is
+    already working. Each would take the line somewhere else: a password prompt, a
+    filename filter, or a queue behind the turn in flight."""
+    store, tick, sent = _staged(monkeypatch, tmp_path, runner.FREEBUFF, screen)
+    store._hand_off_typed_prompts(tick)
+    assert sent == []
+
+
+@pytest.mark.parametrize("chosen", [runner.CLAUDE, runner.OPENCODE, runner.HERMES, ""])
+def test_no_other_runner_is_ever_typed_into(monkeypatch, tmp_path, chosen):
+    """They were handed their prompt on the command line and have been working on it
+    since. The runner is read off the RUN, not from the setting, so an operator who
+    switched to Freebuff after dispatching does not have the applet interrupt an agent
+    that is an hour into a review. Empty is a record from before the applet wrote a
+    runner down, which is Claude Code."""
+    store, tick, sent = _staged(monkeypatch, tmp_path, chosen, FREEBUFF_IDLE)
+    store._hand_off_typed_prompts(tick)
+    assert sent == []
+
+
+def test_a_run_on_a_peer_is_never_typed_into(monkeypatch, tmp_path):
+    """Its agent is a process on somebody else's machine. The tty on the record would
+    be read here as one of ours, and the line would go to whatever local session
+    happens to hold it."""
+    from diplomat_runtime import agentstate
+
+    store, tick, sent = _staged(monkeypatch, tmp_path, runner.FREEBUFF, FREEBUFF_IDLE)
+    peer = RunRecord(**{**tick.records[0].__dict__,
+                        "placement": agentstate.PLACEMENT_MESH_PEER})
+    store._hand_off_typed_prompts(
+        agentstate.Tick(records=[peer], states={}, rows=[(peer, None)],
+                        cap_load=set(), retirable=[], free_slots=0))
+    assert sent == []
+
+
+def test_a_screen_that_could_not_be_read_types_nothing(monkeypatch, tmp_path):
+    """An unreadable pane is "we could not look", not "not ready". Typing on it would
+    send the prompt to a tty on the strength of no evidence at all."""
+    from diplomat_runtime import agentstate
+
+    store, tick, sent = _staged(monkeypatch, tmp_path, runner.FREEBUFF, FREEBUFF_IDLE)
+    store._tick_tails = agentstate.Observation.unavailable("tmux would not answer")
+    store._hand_off_typed_prompts(tick)
+    assert sent == []
 
 
 # MARK: - A run the mesh placed
