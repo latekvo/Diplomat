@@ -846,7 +846,7 @@ and ⏻) swaps the panel to a settings screen:
   - **Connect a provider…** (OpenCode, Hermes) / **Log in…** (Freebuff) - opens that
     runner's own login wizard in a terminal (`opencode providers login`,
     `hermes setup`, `freebuff login`, which prints a URL to open). Diplomat
-    deliberately has no API-key field: each runner already knows its whole provider
+    deliberately has no API-key field: those runners already know their whole provider
     catalog, which entries take OAuth rather than a key, and where each one's
     credentials belong - and each writes them to the store its agent reads from
     anyway. Freebuff has no catalog at all, only the one account its own site signs
