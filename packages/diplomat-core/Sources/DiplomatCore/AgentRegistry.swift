@@ -15,6 +15,7 @@ import Foundation
 ///     <run-id>/runner      which agent CLI was spawned into it
 ///     <run-id>/port        the loopback port its OpenCode server answers on
 ///     <run-id>/session     which of that runner's sessions turned out to be this run's
+///     <run-id>/typed       that a Freebuff run's prompt has been typed into it
 ///     <run-id>/window      the terminal window handle a macOS spawn can raise again
 ///
 /// The per-run directory is what makes identity exact. The shell that runs the agent
@@ -253,6 +254,35 @@ public enum AgentRegistry {
     /// Record which session is this run's.
     public static func bindSession(_ runID: String, _ sessionID: String) {
         try? sessionID.write(to: sessionPath(runID), atomically: true, encoding: .utf8)
+    }
+
+    // MARK: - The prompt a run had to be typed
+
+    public static func typedPath(_ runID: String) -> URL {
+        runDir(runID).appendingPathComponent("typed")
+    }
+
+    /// Whether this run's prompt has already been typed into its agent.
+    ///
+    /// Only a Freebuff run is ever asked (`AgentRunner.takesTypedPrompt`), and the
+    /// answer is what stops the hand-off happening twice: the applet types on a poll
+    /// tick, and every later tick still sees the same ready composer.
+    public static func promptTyped(_ runID: String) -> Bool {
+        FileManager.default.fileExists(atPath: typedPath(runID).path)
+    }
+
+    /// Take the right to type this run's prompt, once. True if it is ours to send.
+    ///
+    /// The claim is written BEFORE the line is sent, and the send is skipped when it
+    /// cannot be written, because the alternative fails without limit. Recording after
+    /// a successful send would leave a run whose directory has gone unwritable being
+    /// typed into on every tick for as long as its window is open — the same review
+    /// queued behind itself over and over. Claiming first bounds the damage to one lost
+    /// hand-off, which is visible (an agent sitting on an empty composer) and costs a
+    /// human one paste, and it is a run whose pid and completion sentinels live in that
+    /// same directory, so it was already only half-tracked.
+    public static func claimPromptTyped(_ runID: String) -> Bool {
+        FileManager.default.createFile(atPath: typedPath(runID).path, contents: nil)
     }
 
     private static func read(_ url: URL) -> String {

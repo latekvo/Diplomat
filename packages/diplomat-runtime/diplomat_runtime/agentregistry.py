@@ -18,6 +18,7 @@ also how the tests get an isolated one):
     <run-id>/runner      which agent CLI was spawned into it
     <run-id>/port        the loopback port its OpenCode server answers on
     <run-id>/session     which of that runner's sessions turned out to be this run's
+    <run-id>/typed       that a Freebuff run's prompt has been typed into it
 
 The per-run directory is what makes identity exact. The shell that runs the agent
 writes its own ``$$`` into ``pid`` and then ``exec``s the agent, so the pid in that
@@ -85,6 +86,10 @@ def port_path(run_id: str) -> Path:
 
 def session_path(run_id: str) -> Path:
     return run_dir(run_id) / "session"
+
+
+def typed_path(run_id: str) -> Path:
+    return run_dir(run_id) / "typed"
 
 
 def new_run_id(now: float) -> str:
@@ -295,6 +300,41 @@ def bind_session(run_id: str, session_id: str) -> None:
         session_path(run_id).write_text(session_id, encoding="utf-8")
     except OSError:
         pass
+
+
+# MARK: - The prompt a run had to be typed
+
+
+def prompt_typed(run_id: str) -> bool:
+    """Whether this run's prompt has already been typed into its agent.
+
+    Only a Freebuff run is ever asked (:func:`runner.takes_typed_prompt`), and the
+    answer is what stops the hand-off happening twice: the applet types on a poll
+    tick, and every later tick still sees the same ready composer.
+    """
+    try:
+        return typed_path(run_id).exists()
+    except OSError:
+        return True
+
+
+def claim_prompt_typed(run_id: str) -> bool:
+    """Take the right to type this run's prompt, once. True if it is ours to send.
+
+    The claim is written BEFORE the line is sent, and the send is skipped when it
+    cannot be written, because the alternative fails without limit. Recording after a
+    successful send would leave a run whose directory has gone unwritable being typed
+    into on every tick for as long as its window is open — the same review queued
+    behind itself over and over. Claiming first bounds the damage to one lost hand-off,
+    which is visible (an agent sitting on an empty composer) and costs a human one
+    paste, and it is a run whose pid and completion sentinels live in that same
+    directory, so it was already only half-tracked.
+    """
+    try:
+        typed_path(run_id).touch()
+    except OSError:
+        return False
+    return True
 
 
 def sentinels(records: list[RunRecord]) -> Observation:

@@ -221,8 +221,9 @@ class SessionState:
     The typed answer to the question :func:`_classify_activity` otherwise has to read
     off a status bar. An OpenCode agent serves its session over loopback while it
     works (:mod:`diplomat_runtime.opencodeapi`) and a Hermes agent writes its own to
-    SQLite (:mod:`diplomat_runtime.hermesstore`); Claude Code serves nothing, so its runs
-    are absent from the evidence and are still read from the screen.
+    SQLite (:mod:`diplomat_runtime.hermesstore`); Claude Code and Freebuff serve
+    nothing, so their runs are absent from the evidence and are still read from the
+    screen.
 
     Only the one fact, because it is the only one this evidence can carry honestly:
     an OpenCode run's spend is a sum over its whole transcript and the poll reads one

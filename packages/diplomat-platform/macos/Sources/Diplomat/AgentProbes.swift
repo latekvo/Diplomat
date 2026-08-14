@@ -270,6 +270,14 @@ enum AgentProbes {
         return t.hasPrefix("/dev/") ? String(t.dropFirst(5)) : t
     }
 
+    /// The other spelling, for the one direction that needs it: the terminal apps are
+    /// addressed by the full path, so anything going back to a session — a nudge, a
+    /// prompt hand-off — has to undo `shortTTY` before `ApiErrorWatcher` can match it.
+    static func fullTTY(_ raw: String) -> String {
+        let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.isEmpty || t.hasPrefix("/dev/") ? t : "/dev/" + t
+    }
+
     // MARK: - The agents' own sessions
 
     /// run id → what that run's own agent says it is doing.

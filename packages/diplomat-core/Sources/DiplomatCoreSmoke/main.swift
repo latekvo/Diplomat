@@ -448,7 +448,7 @@ check(AgentRunner.opencode.agentCommand(promptFile: "/tmp/p.txt", model: "openro
       "a configured model must reach the agent")
 check(!AgentRunner.opencode.agentCommand(promptFile: "/tmp/p.txt", model: "  ").contains(" -m "),
       "a blank model must leave OpenCode's own choice alone")
-// Hermes is windowed like the other two: `--tui` is what the operator watches and types
+// Hermes is windowed like the rest: `--tui` is what the operator watches and types
 // into, and `-q` is what makes the prompt the session's opening message — the key
 // `HermesStore.isOurs` matches a run to its session by.
 check(AgentRunner.hermes.agentCommand(promptFile: "/tmp/p.txt")
@@ -456,14 +456,14 @@ check(AgentRunner.hermes.agentCommand(promptFile: "/tmp/p.txt")
 check(AgentRunner.hermes.agentCommand(promptFile: "/tmp/p.txt", model: "openai/gpt-5.2")
         == "hermes chat --tui --yolo -m 'openai/gpt-5.2' -q \"$(cat '/tmp/p.txt')\"")
 check(AgentRunner.hermes.setupCommand == "hermes setup; hermes status",
-      "each runner's provider wizard is its own; Diplomat holds no key for either")
+      "each runner's provider wizard is its own; Diplomat holds no key for any of them")
 // Every scan that counts, adopts or reaps an agent goes through this: a runner it
 // cannot see is an agent that burns quota while holding no bay of the task cap.
 check(AgentRunner.isAgentLine("501 ttys000 30 opencode --prompt Review PR #7 in o/r"))
 check(AgentRunner.isAgentLine("501 ttys000 30 claude Review PR #7 in o/r"))
 check(!AgentRunner.isAgentLine("501 ttys000 30 vim notes.txt"))
-// All three interrupt hints, captured from the real CLIs. No string contains another,
-// so matching one spelling reads every agent of the other runners as idle.
+// Every interrupt hint, from the real CLIs. No string contains another, so matching one
+// spelling reads every agent of the other runners as idle.
 check(AgentActivity.looksBusy("  Build  GLM-5.2\n  ⬝⬝⬝  esc interrupt      ctrl+p commands"),
       "an OpenCode pane mid-turn must read as busy")
 check(AgentActivity.looksBusy("⏵⏵ bypass permissions on · esc to interrupt · ←"),
@@ -487,6 +487,42 @@ check(!AgentRunner.hermes.agentCommand(promptFile: "/tmp/p.txt", port: 47_910).c
       "Hermes serves no port either; it answers from its own store")
 check(!AgentRunner.opencode.agentCommand(promptFile: "/tmp/p.txt", port: 0).contains("--port"),
       "a run with no port must spawn exactly as it did before, not with --port 0")
+// Freebuff, the one runner whose command carries no prompt: its CLI takes none, so the
+// spawn opens an empty composer and the prompt is typed in afterwards. `--cwd` is what
+// keeps it off its own directory picker, where a spawn would wait for a human forever
+// while holding a bay of the task cap.
+check(AgentRunner.from("freebuff") == .freebuff)
+check(AgentRunner.freebuff.agentCommand(promptFile: "/tmp/p.txt", model: "openai/gpt-5.2",
+                                        port: 47_910, repo: "/home/u/dev/argent")
+        == "freebuff --cwd '/home/u/dev/argent'",
+      "Freebuff takes no prompt, no model and no port — only the project it opens on")
+check(AgentRunner.freebuff.setupCommand == "freebuff login",
+      "Freebuff signs into one account of its own; there is no provider catalog to list")
+check(!AgentRunner.freebuff.takesModel && AgentRunner.hermes.takesModel,
+      "a runner with no model flag must not be offered a model field")
+check(AgentRunner.allCases.filter(\.takesTypedPrompt) == [.freebuff],
+      "typing a prompt into a runner that was already given one queues the work twice")
+check(!AgentRunner.promptHandoff(promptFile: "/tmp/agents/17-ab/prompt.txt").contains("\n"),
+      "the hand-off goes through a channel that submits a LINE; a newline in it "
+      + "submits early and hands the agent a fragment")
+check(AgentRunner.promptHandoff(promptFile: "/tmp/agents/17-ab/prompt.txt")
+        .contains("/tmp/agents/17-ab/prompt.txt"))
+check(AgentRunner.isAgentLine("501 ttys000 30 freebuff --cwd /home/u/dev/argent"))
+// Freebuff's hint is a stop BUTTON rather than a sentence, and the square is part of
+// the marker: its own pickers say "Esc cancel" while the agent behind them does
+// nothing, and a picker read as busy holds a bay for as long as its window is open.
+check(AgentActivity.looksBusy("  enter a coding task or / for commands\n  working...    ■ Esc"),
+      "a Freebuff pane mid-turn must read as busy")
+check(!AgentActivity.looksBusy("↑↓ navigate · Enter select · Esc cancel"),
+      "the word Esc alone is not an interrupt hint")
+check(AgentActivity.looksReadyForPrompt("  enter a coding task or / for commands\n"
+                                        + "  Buffy · unlimited      ✕ End session"),
+      "the composer's placeholder is the only sign that a prompt typed now will land")
+check(!AgentActivity.looksReadyForPrompt("                Press ENTER to login..."),
+      "a spawn stuck at the login wall must not be typed a page of review instructions")
+check(!AgentActivity.looksReadyForPrompt("  enter a coding task or / for commands\n"
+                                         + "  working...    ■ Esc"),
+      "the composer is empty mid-turn too; typing then queues the review twice")
 print("agent runner assertions passed")
 
 section("agent model")
@@ -588,6 +624,13 @@ check(AgentModel.detect(configFile: configFile, claudeHome: claudeHome, hermesCo
 try writeConfig("{\"agentRunner\": \"opencode\"}")
 check(AgentModel.detect(configFile: configFile, claudeHome: claudeHome, hermesConfig: hermesConfig) == "",
       "Hermes' config is Hermes' — an unpinned OpenCode must not be named out of it")
+// Freebuff takes no model flag and picks on its own servers, so nothing on this machine
+// says what it ran. The pin here is the trap: it is left over from OpenCode two lines
+// up, and the transcripts under `claudeHome` still name Opus 5 — either would be a
+// model attributed, on a public comment, to a run that was not on it.
+try writeConfig("{\"agentRunner\": \"freebuff\", \"agentModel\": \"qwen/qwen-3.8-max\"}")
+check(AgentModel.detect(configFile: configFile, claudeHome: claudeHome, hermesConfig: hermesConfig) == "",
+      "a runner Diplomat cannot pin and cannot read must name nothing at all")
 // `providers:` entries carry a `default_model:` each, and a nested mapping can carry a
 // `default:` of its own; neither is the model Hermes starts on.
 check(AgentModel.defaultModel(inHermesConfig: "model:\n  fallbacks:\n    default: nested\n  default: real\n")

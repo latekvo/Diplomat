@@ -9,7 +9,7 @@ at all* — a session that has finished its turn sits at its prompt indefinitely
 which is neither an error nor a reason to keep holding a slot of the task cap.
 
 The two questions have different reach across runners, and the difference is
-deliberate. **Busy** is answered for all three, because getting it wrong empties
+deliberate. **Busy** is answered for all four, because getting it wrong empties
 the task cap under a machine that is full. **Stalled on an API error** is answered
 only for Claude Code, whose error banners these patterns were read off. A foreign
 runner surfaces a failed turn as the provider's own JSON (OpenCode:
@@ -123,12 +123,17 @@ def is_confirmed_stall(previous_tail: str | None, current_tail: str) -> bool:
 
 # The interrupt hint a CLI renders only while a turn is actually in flight — one
 # spelling per runner, verbatim from AgentActivity.swift so both front-ends read the
-# same markers. Claude Code writes "esc to interrupt", OpenCode "esc interrupt", and
-# Hermes "Ctrl+C to interrupt…". No string here contains another, so a pane is read
-# against all of them: the applet cannot ask a pane which CLI drew it, and a runner
-# missing from this list is one whose agents read as idle the whole time they work —
-# their bays go back to the task cap and the monitors dispatch over the top of them.
-BUSY_MARKERS = ("esc to interrupt", "esc interrupt", "ctrl+c to interrupt")
+# same markers. Claude Code writes "esc to interrupt", OpenCode "esc interrupt",
+# Hermes "Ctrl+C to interrupt…", and Freebuff a stop button, "■ Esc". No string here
+# contains another, so a pane is read against all of them: the applet cannot ask a
+# pane which CLI drew it, and a runner missing from this list is one whose agents read
+# as idle the whole time they work — their bays go back to the task cap and the
+# monitors dispatch over the top of them.
+#
+# Freebuff's is the square and the word together because the word alone is not a hint
+# at all: its own pickers carry "↑↓ navigate · Enter select · Esc cancel" while the
+# agent behind them is doing nothing.
+BUSY_MARKERS = ("esc to interrupt", "esc interrupt", "ctrl+c to interrupt", "■ esc")
 
 # How many non-empty visible lines from the bottom carry the LIVE status bar. Far
 # shorter than SCANNED_TAIL_LINES: an error banner sits well above the prompt box and
@@ -152,6 +157,29 @@ def looks_busy(visible: str) -> bool:
     """
     tail = last_lines(visible, BUSY_TAIL_LINES).lower()
     return any(marker in tail for marker in BUSY_MARKERS)
+
+
+# The placeholder Freebuff's composer shows when it is empty and waiting for a task —
+# the one state in which a prompt typed at it arrives. Everything before it discards
+# input: keystrokes sent 0.3s into a launch never appear, the same text sent at 5s
+# lands in full (measured against freebuff 0.0.149 driven through a pty).
+READY_MARKER = "enter a coding task or / for commands"
+
+
+def looks_ready_for_prompt(visible: str) -> bool:
+    """True when a pane shows a Freebuff composer waiting to be typed into.
+
+    Searched across the whole of what it is handed — the pane's visible tail, as
+    :func:`tmuxwatch.pane_tails_for_ttys` cuts it — rather than the last line or two
+    the interrupt hint lives on: the composer sits above the status bar, inside a box
+    with borders of its own. That costs nothing in false matches, because the screens a
+    spawn can land on INSTEAD are the login wall and the project picker, and neither
+    carries this string.
+
+    Busy is excluded so the answer stays "waiting for its FIRST prompt" rather than
+    "the composer happens to be empty", which is equally true of an agent mid-turn.
+    """
+    return READY_MARKER in visible.lower() and not looks_busy(visible)
 
 
 def next_backoff(prev_interval: float | None) -> float:

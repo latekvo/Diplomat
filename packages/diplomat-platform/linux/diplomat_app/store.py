@@ -211,6 +211,11 @@ class Store(QObject):
         # Replaced, never mutated: the poll worker writes it while the GUI thread
         # draws from it. Its own short mutex guards the swap and the cache stamp.
         self._tick: agentstate.Tick | None = None
+        #: tty → that pane's visible tail, carried out of the tick because one
+        #: consequence needs a probe's raw answer rather than the resolution: the
+        #: Freebuff prompt hand-off types into a pane on the strength of what that
+        #: pane shows, and re-reading it would cost a second capture of every pane.
+        self._tick_tails: agentstate.Observation | None = None
         self._tick_lock = threading.Lock()
         # What the last merged-status probe found. It costs a `gh` call per PR, so it
         # rides the slow refresh rather than the 8-second tick, and the fast ticks
@@ -2029,6 +2034,7 @@ class Store(QObject):
         t = agentstate.tick(records, evidence, now, self.auto_task_limit)
         with self._tick_lock:
             self._tick = t
+            self._tick_tails = evidence.tails
         return t
 
     def _settle_agents(self) -> agentstate.Tick:
@@ -2040,9 +2046,54 @@ class Store(QObject):
         """
         t = self._agent_tick()
         self._persist_run_changes(t)
+        self._hand_off_typed_prompts(t)
         self._retire_finished(t)
         self._note_silent_probes()
         return t
+
+    def _hand_off_typed_prompts(self, t: agentstate.Tick) -> None:
+        """Type its prompt into every run that was spawned without one and is now
+        ready to take it — which is every Freebuff run, and no other.
+
+        A Freebuff spawn opens on an empty composer because its CLI accepts no prompt
+        argument (:func:`runner.prompt_handoff`), so this is not an extra: until it
+        lands, the run is an agent doing nothing that still holds a bay of the task
+        cap. It waits for the composer rather than typing on a timer because the TUI
+        discards whatever arrives before it is up — text sent 0.3s into a launch never
+        appears, the same text at 5s lands in full.
+
+        Runs it must not touch, and why each is a different question: a mesh PEER's run
+        is a process on another machine, an untracked one has no run directory to
+        claim the hand-off in, and one whose recorded runner is anything else was given
+        its prompt on the command line. The runner is read off the run rather than from
+        the setting, which is what the NEXT spawn will use — an operator who switched
+        after dispatching would otherwise have the applet type into a Claude Code
+        session that has been working for an hour.
+        """
+        tails = self._tick_tails
+        if tails is None or not tails.ok:
+            return
+        for record, _state in t.rows:
+            if record.untracked or not record.runs_here or not record.tty:
+                continue
+            ran = agentregistry.run_runner(record.run_id)
+            if not runner.takes_typed_prompt(ran):
+                continue
+            if agentregistry.prompt_typed(record.run_id):
+                continue
+            tail = tails.value.get(record.tty)
+            if tail is None or not apiwatch.looks_ready_for_prompt(tail):
+                continue
+            if not agentregistry.claim_prompt_typed(record.run_id):
+                continue
+            line = runner.prompt_handoff(str(agentregistry.prompt_path(record.run_id)))
+            if not tmuxwatch.send_line_to_tty(record.tty, line):
+                activity.log("auto", "warn",
+                             f"Could not type the prompt into the "
+                             f"{runner.LABELS[ran]} agent on {record.tty} — it is "
+                             f"sitting on an empty composer and will do nothing "
+                             f"until someone pastes it")
+                self.refresh_activity()
 
     def _note_silent_probes(self) -> None:
         """Say out loud when a probe has stopped answering.
@@ -2343,7 +2394,7 @@ class Store(QObject):
             b = self._apiwatch_backoff.get(p.pane_id)
             if b and now < b["nextAllowed"]:  # still inside this pane's backoff window
                 continue
-            if not tmuxwatch.send_continue(p.pane_id, apiwatch.CONTINUE_MESSAGE):
+            if not tmuxwatch.send_line(p.pane_id, apiwatch.CONTINUE_MESSAGE):
                 continue  # pane vanished — don't count a nudge that never landed
             self.api_watch_continues += 1
             nxt = apiwatch.next_backoff(b["interval"] if b else None)

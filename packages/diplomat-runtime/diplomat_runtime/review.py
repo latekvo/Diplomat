@@ -445,21 +445,21 @@ def shell_command(prompt_file: str, done_path: str | None = None,
     wrapper shell and tmux client as readily as the agent.
 
     That exec is the shell's own, on the last command of a ``-c`` string, and must NOT
-    be written out as the `exec` keyword. Both runners need it left implicit, for
+    be written out as the `exec` keyword. Every runner needs it left implicit, for
     reasons that happen to differ: alias expansion applies to the first word of a
     simple command, so under an explicit ``exec claude`` the word checked is `exec`,
     the user's `claude` alias never expands, and the agent loses the
     ``--dangerously-skip-permissions`` that alias carries; and the shell only elides
     the fork for a command it recognises as the last one, which is what makes the
-    written pid the agent's rather than the wrapper shell's under either CLI.
+    written pid the agent's rather than the wrapper shell's under any of them.
 
     The inner shell is interactive for the same reason the outer one is: an alias has
     to resolve, and aliases do not survive into a non-interactive child. ``$?`` after
     it is still the agent's own exit code — the exec made them one process.
 
     ``port`` is where an OpenCode run's own server answers, so :mod:`opencodeapi` can
-    ask the agent whether it is working rather than inferring it from the pane. The
-    Claude runner ignores it.
+    ask the agent whether it is working rather than inferring it from the pane. Every
+    other runner ignores it.
     """
     repo = shlex.quote(repo_path())
     agent_cmd = runner.agent_command(prompt_file, port)

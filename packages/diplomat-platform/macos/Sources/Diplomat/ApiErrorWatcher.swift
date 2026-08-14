@@ -58,13 +58,17 @@ enum ApiErrorWatcher {
         return fresh
     }
 
-    /// Send the continue nudge to whichever session/tab owns `tty` (submits it as the
-    /// next line of input — iTerm `write text` / Terminal `do script … in tab`).
-    /// Returns whether a session with that tty was actually found and written to —
-    /// the caller must not count/audit a nudge that never landed.
+    /// Type one line into whichever session/tab owns `tty` and submit it (iTerm
+    /// `write text` / Terminal `do script … in tab`). Returns whether a session with
+    /// that tty was actually found and written to — the caller must not count/audit a
+    /// line that never landed.
+    ///
+    /// One line, and both callers depend on that: each script submits what it is given
+    /// as the session's next input, so an embedded newline would submit early and hand
+    /// the session half a message.
     @discardableResult
-    static func sendContinue(tty: String) -> Bool {
-        let msg = escape(continueMessage)
+    static func sendLine(tty: String, _ line: String) -> Bool {
+        let msg = escape(line)
         var sent = false
         if isRunning("com.googlecode.iterm2"), run(itermSendScript(tty: tty, msg: msg)) != nil {
             sent = true

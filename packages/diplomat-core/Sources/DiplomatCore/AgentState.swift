@@ -164,8 +164,8 @@ public enum AgentState {
     /// The typed answer to the question `classifyActivity` otherwise has to read off a
     /// status bar. An OpenCode agent serves its session over loopback while it works
     /// (`OpenCodeAPI`) and a Hermes agent writes its own to SQLite (`HermesStore`);
-    /// Claude Code serves nothing, so its runs are absent from the evidence and are
-    /// still read from the screen.
+    /// Claude Code and Freebuff serve nothing, so their runs are absent from the
+    /// evidence and are still read from the screen.
     ///
     /// Only the one fact, because it is the only one this evidence can carry honestly:
     /// an OpenCode run's spend is a sum over its whole transcript and the poll reads one

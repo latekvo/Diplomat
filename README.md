@@ -76,11 +76,12 @@ Targets `software-mansion/argent` and shells out to the authenticated `gh` CLI.
 > programmatic / headless / service-style use, which belongs on the API, not on a
 > personal subscription.
 >
-> **Under the [OpenCode or Hermes runner](#agent-runner), the bill and the terms are
-> whichever provider you connected** - OpenRouter, an Anthropic API key, a hosted
-> Ollama, a model on your own machine. Diplomat does not hold that credential and
-> cannot see what it is charged; read the terms of the provider you pick. It counts
-> those runs' *tokens* like any other, and counts them against no limit at all - the
+> **Under any [runner other than Claude Code](#agent-runner), the bill and the terms
+> are whichever account you connected** - OpenRouter, an Anthropic API key, a hosted
+> Ollama, a model on your own machine, or on Freebuff the free tier of a Codebuff
+> account. Diplomat does not hold that credential and cannot see what it is charged;
+> read the terms of the runner and provider you pick. It counts what it can of those
+> runs' *tokens* like any other, and counts them against no limit at all - the
 > rate-limit figures on the telemetry screen are the Anthropic account's, and only
 > tasks that ran on Claude Code are measured against them.
 > The unattended-use point above is about
@@ -679,7 +680,9 @@ Two gatherers fill in what GitHub doesn't know:
   writes no such transcript, so each is priced from its own store instead - OpenCode
   summed over every message of `opencode export <session>` (it reports a turn's cost
   per message), Hermes read off the running totals on its session row - both counting
-  the same three fields, so one ledger holds every runner in one unit.
+  the same three fields, so one ledger holds every runner in one unit. Freebuff keeps
+  its session on its own servers and has no such store, so its runs are recorded as
+  completions with no token figure rather than guessed at.
 
 The probe reports **what is left of each window** on every sample, and that reading is
 what *rate limit left* draws - measured, not derived. What Anthropic never publishes is
@@ -728,9 +731,9 @@ nudge opens no window at all - it types into a session that already exists.)
   request within 1h of a dispatch is treated as churn and suppressed. Banned
   authors are never auto-reviewed.
 - **Claude API-error watcher** - Claude Code runs only; the banners it matches are
-  Claude Code's, and an OpenCode or Hermes agent that errors reads as idle instead,
-  frees its task-cap slot, and is dispatched again by whichever monitor owed the
-  work. Every ~20s it reads each agent session's visible
+  Claude Code's, and an agent under any other runner that errors reads as idle
+  instead, frees its task-cap slot, and is dispatched again by whichever monitor owed
+  the work. Every ~20s it reads each agent session's visible
   tail (macOS: any iTerm/Terminal session; Linux: **tmux panes only** - there's no
   portable way to read or type into an arbitrary Linux emulator, so the Linux
   spawner opens each agent in a tmux session of its own and an agent started
@@ -826,26 +829,38 @@ and ⏻) swaps the panel to a settings screen:
   and the monitors. Blank = the `gh`-authenticated user (`viewer.login`), resolved
   eagerly at launch so it's the default everywhere.
 - <a id="agent-runner"></a>**Agent runner** - which agent CLI a spawn runs:
-  **Claude Code** (the default, and what every existing install keeps), **OpenCode**
-  or **Hermes**. Only the agent word and its flags change; the prompt, the staged
-  file, the completion sentinel, the pid a run is identified by and every monitor
-  above it are the same whichever it is, which is the point of having one setting
-  rather than a second pipeline. All three are windowed, so a run can be watched and
-  typed into. Like the repo root the setting lives in the shared
+  **Claude Code** (the default, and what every existing install keeps), **OpenCode**,
+  **Hermes** or **Freebuff**. Only the agent word and its flags change; the staged
+  prompt file, the completion sentinel, the pid a run is identified by and every
+  monitor above it are the same whichever it is, which is the point of having one
+  setting rather than a second pipeline. All four are windowed, so a run can be
+  watched and typed into. Like the repo root the setting lives in the shared
   `~/.diplomat/config.json`, so a running mesh node picks it up on its next spawn -
   and which runner a given run *started* under is written into its run directory, so
   switching mid-flight can't interrogate a live agent through the wrong store.
   - **Model** (OpenCode, Hermes) - a model id such as
     `openrouter/moonshotai/kimi-k2` or `ollama-cloud/glm-5.2`. Blank leaves the
-    choice to that runner's own picker rather than overriding it with a guess.
-  - **Connect a provider…** (OpenCode, Hermes) - opens that runner's own login wizard
-    in a terminal (`opencode providers login`, `hermes setup`). Diplomat deliberately
-    has no API-key field: each runner already knows its whole provider catalog, which
-    entries take OAuth rather than a key, and where each one's credentials belong -
-    and each writes them to the store its agent reads from anyway. **No provider
-    credential is ever stored by Diplomat**, which matters because
-    `~/.diplomat/config.json` is world-readable and copied around by the mesh.
-  - **How a run is watched.** Both foreign runners are *asked* whether their turn is
+    choice to that runner's own picker rather than overriding it with a guess. The
+    field is hidden for a runner whose CLI has no model flag: Freebuff's free tier
+    picks server-side, so a value here would reach nothing.
+  - **Connect a provider…** (OpenCode, Hermes) / **Log in…** (Freebuff) - opens that
+    runner's own login wizard in a terminal (`opencode providers login`,
+    `hermes setup`, `freebuff login`, which prints a URL to open). Diplomat
+    deliberately has no API-key field: those runners already know their whole provider
+    catalog, which entries take OAuth rather than a key, and where each one's
+    credentials belong - and each writes them to the store its agent reads from
+    anyway. Freebuff has no catalog at all, only the one account its own site signs
+    you into. **No provider credential is ever stored by Diplomat**, which matters
+    because `~/.diplomat/config.json` is world-readable and copied around by the mesh.
+  - **How a run gets its prompt.** Three of the four take it on the command line, as
+    `"$(cat <staged file>)"`. Freebuff's CLI takes no prompt argument, so its spawn
+    opens on an empty composer and Diplomat types one line into it - a pointer at the
+    staged prompt file - as soon as the composer is up, through the same channel the
+    API-error watcher nudges with (tmux `send-keys` on Linux, iTerm/Terminal
+    AppleScript on macOS). It waits for the composer rather than typing on a timer,
+    because the TUI discards whatever arrives before it is ready, and it records the
+    hand-off in the run's directory so a later poll cannot queue the review twice.
+  - **How a run is watched.** OpenCode and Hermes are *asked* whether their turn is
     over rather than having it read off their status bar - positive evidence, instead
     of whether someone else's `esc interrupt` hint happened to be drawn when the poll
     looked. They answer from different places. An OpenCode agent is spawned with
@@ -860,12 +875,17 @@ and ⏻) swaps the panel to a settings screen:
     verbatim as the session's opening message - the only exact key, since both keep
     one session store for the whole machine. A run that cannot be reached - the port
     was taken, the server has not come up, the store is not there - falls back to the
-    status bar exactly as a Claude Code run does.
+    status bar exactly as a Claude Code run does, which is also where a Freebuff run
+    is read from: its session lives on Freebuff's servers, so there is nothing local
+    to ask.
   - **How a run is priced.** OpenCode reports a turn's cost per message, so a
     finished run is summed from `opencode export <session>` when it ends, not from the
     poll. Hermes keeps running totals on the session row, so it is simply read. Both
     count input + output + cache *writes*, the same three the Claude Code transcript
-    scan sums, so one ledger holds every runner in one unit. What those tokens are
+    scan sums, so one ledger holds every runner in one unit. A Freebuff run is
+    recorded with no token figure - the free tier reports none anywhere Diplomat can
+    read - and the telemetry screen counts it among the tasks it could not price
+    rather than inventing one. What those tokens are
     *not* is a share of a rate-limit window: that window is the Anthropic account's,
     priced from Claude Code's own usage probe, so **limit per task** and the
     [rate-limit budget](#the-rate-limit-budget) count the tasks that ran on Claude Code

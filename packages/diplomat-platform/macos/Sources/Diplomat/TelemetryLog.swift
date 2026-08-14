@@ -96,9 +96,10 @@ enum TelemetryLog {
     /// later and would inflate every run time).
     ///
     /// `runner` is which CLI spent the tokens, and it is what keeps the rate-limit
-    /// percentages honest: an OpenCode or Hermes task is billed by whichever provider
-    /// that runner is logged into, so its tokens are worth reporting per task but not
-    /// against a window they never drew on (`Telemetry.Task.anthropic`).
+    /// percentages honest: a task under any other runner is billed by whoever that
+    /// runner is logged into — or, on Freebuff's free tier, by nobody — so its tokens
+    /// are worth reporting per task but not against a window they never drew on
+    /// (`Telemetry.Task.anthropic`).
     static func done(key: String, at: TimeInterval, tokens: Double?, runner: String) {
         var event: [String: Any] = ["at": at, "ev": "done", "key": key]
         if let tokens { event["tokens"] = tokens }

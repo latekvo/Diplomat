@@ -7,20 +7,41 @@ same whichever it is:
 * ``claude`` — Claude Code, the default and what every existing run used;
 * ``opencode`` — OpenCode, whose model comes from whichever provider the user
   configured in OpenCode itself (Anthropic, OpenRouter, a local Ollama, …);
-* ``hermes`` — Hermes Agent, likewise.
+* ``hermes`` — Hermes Agent, likewise;
+* ``freebuff`` — Freebuff, Codebuff's free tier, on the account its own login
+  wizard connects.
 
 Only the *agent word and its flags* differ. Everything the spawn is built out of
-— the interactive shell, the ``$(cat …)`` prompt hand-off, the pid file written
-before the shell execs the agent over itself, the completion sentinel — is
-identical, and deliberately so: those mechanisms are what :mod:`agentregistry`
-and :mod:`probes` identify a run by, and a second spawn shape would be a second
-set of them to keep true.
+— the interactive shell, the pid file written before the shell execs the agent
+over itself, the completion sentinel — is identical, and deliberately so: those
+mechanisms are what :mod:`agentregistry` and :mod:`probes` identify a run by, and
+a second spawn shape would be a second set of them to keep true.
 
-What each of the two foreign runners is *doing* is asked of the runner rather than
-read off its screen, and each answers from a different place: OpenCode over a
-loopback port of its own (:mod:`opencodeapi`), Hermes out of the SQLite store it
-keeps every session in (:mod:`hermesstore`). Both come back as the same typed
-answer, so :mod:`agentstate` never learns which runner it is looking at.
+Three of the four also take their prompt on the command line, as ``$(cat …)``.
+Freebuff takes none: its CLI accepts a prompt argument only when the same binary
+runs as ``codebuff``, and under the ``freebuff`` name the parser both restricts
+its one positional to ``login`` and hard-codes the initial prompt to nothing. So a
+Freebuff spawn opens on an empty composer and is handed its prompt afterwards, by
+typing — see :func:`prompt_handoff` and :func:`takes_typed_prompt`.
+
+That has one consequence beyond the spawn, and it is a *reduction* in what can be
+seen rather than a wrong answer. A Freebuff agent's ``ps`` line is
+``freebuff --cwd <repo>`` and nothing else, so the scan that reads a PR number out
+of an agent's own prompt text (``probes.live_agents``) can never match one. Both
+things that scan is for lose a case: an untracked Freebuff agent — one this applet
+has no record of — is not drawn or counted, and a run the MESH placed here, which
+has no pid file to be found by instead, never acquires a tty, so its screen is
+never read and its prompt is never typed into it. Every run this applet spawned
+itself is unaffected: those are identified by the pid their own shell wrote.
+
+What OpenCode and Hermes are *doing* is asked of the runner rather than read off
+its screen, and each answers from a different place: OpenCode over a loopback port
+of its own (:mod:`opencodeapi`), Hermes out of the SQLite store it keeps every
+session in (:mod:`hermesstore`). Both come back as the same typed answer, so
+:mod:`agentstate` never learns which runner it is looking at. Freebuff has no such
+store to ask — its session lives on its server, and all it keeps on disk is a
+diagnostic log — so a Freebuff run is read off its screen, exactly as a Claude Code
+run is.
 
 Credentials are the one thing this module refuses to hold. Each runner has its own
 provider store and its own login wizard, and that is where a key belongs — not in
@@ -45,10 +66,17 @@ import shlex
 CLAUDE = "claude"
 OPENCODE = "opencode"
 HERMES = "hermes"
-RUNNERS = (CLAUDE, OPENCODE, HERMES)
+FREEBUFF = "freebuff"
+RUNNERS = (CLAUDE, OPENCODE, HERMES, FREEBUFF)
 
 #: What Settings shows for each.
-LABELS = {CLAUDE: "Claude Code", OPENCODE: "OpenCode", HERMES: "Hermes"}
+LABELS = {CLAUDE: "Claude Code", OPENCODE: "OpenCode", HERMES: "Hermes",
+          FREEBUFF: "Freebuff"}
+
+#: The runners that take ``-m <model>``. Freebuff is absent because its CLI has no
+#: such flag: the free tier picks the model server-side, and Settings hides the field
+#: rather than offering one whose value nothing would read.
+MODEL_RUNNERS = (OPENCODE, HERMES)
 
 #: OpenCode's permission gate, opened for a spawned agent.
 #:
@@ -93,12 +121,44 @@ def model() -> str:
 
     Empty is a real choice, not a missing one: both OpenCode and Hermes already
     remember a default model per install, and overriding it with a guess would
-    silently move a user off the model their own picker selected. Claude Code takes
-    no such flag here and ignores it.
+    silently move a user off the model their own picker selected. Claude Code and
+    Freebuff take no such flag here and ignore it.
     """
     from . import appconfig
 
     return appconfig.get(appconfig.AGENT_MODEL).strip()
+
+
+def takes_typed_prompt(name: str) -> bool:
+    """Whether a spawn of this runner opens on an EMPTY session, so its prompt has to
+    be typed into it afterwards rather than passed on the command line.
+
+    True for Freebuff alone. Every caller that dispatches has to ask, because a run
+    that never receives its prompt is the worst shape of failure the applet has: the
+    process is up, ``ps`` sees it, it holds a bay of the task cap, and it will sit
+    there doing nothing until a human closes the window.
+    """
+    return name == FREEBUFF
+
+
+def prompt_handoff(prompt_file: str) -> str:
+    """The single line typed into a Freebuff composer to start its run.
+
+    A pointer at the staged prompt rather than the prompt itself, and that is the
+    whole reason this is one line: the terminal channels that can type into a live
+    session submit a LINE (tmux ``send-keys`` + Enter on Linux, iTerm ``write text`` /
+    Terminal ``do script … in tab`` on macOS), so a multi-line review prompt sent
+    through either would submit at its first newline and hand the agent a fragment.
+    Both channels already exist for the API-error nudge, and this reuses them
+    unchanged.
+
+    The file is the run's own ``prompt.txt`` (:mod:`agentregistry`), which outlives the
+    hand-off and is deleted only when the run is retired. It sits outside the repo, so
+    the line says how to reach it as well as what to do with it — Codebuff's file tools
+    are scoped to the project it opened, while its terminal tool is not.
+    """
+    return (f"Read the instructions in {prompt_file} (cat it in the terminal — it is "
+            f"outside this project) and follow them exactly.")
 
 
 def agent_command(prompt_file: str, port: int | None = None) -> str:
@@ -111,7 +171,7 @@ def agent_command(prompt_file: str, port: int | None = None) -> str:
 
     It must stay a *simple command* with the agent word first. Under Claude Code
     that word has to be alias-expandable (the alias is what carries
-    ``--dangerously-skip-permissions``); for both runners it has to be the shell's
+    ``--dangerously-skip-permissions``); for every runner it has to be the shell's
     last command, so the shell execs the agent over itself and the pid already
     written to the run's ``pid`` file is the agent's own. A leading variable
     assignment keeps both properties — the shell still execs the command it prefixes,
@@ -119,15 +179,30 @@ def agent_command(prompt_file: str, port: int | None = None) -> str:
 
     ``port`` puts an OpenCode run's own server on a port the applet already knows,
     which is what lets :mod:`opencodeapi` ask the agent what it is doing instead of
-    reading it off the agent's screen. It is ignored by the other two, which have no
-    such server — Hermes answers the same question from its own session store.
-    Omitting it is a supported spawn, not a broken one: the run works exactly as
-    before and is tracked by its screen.
+    reading it off the agent's screen. It is ignored by the other three, which have no
+    such server — Hermes answers the same question from its own session store, and
+    Freebuff's is on Freebuff's own machines. Omitting it is a supported spawn, not a
+    broken one: the run works exactly as before and is tracked by its screen.
+
+    ``prompt_file`` is ignored for Freebuff, which takes no prompt argument at all
+    (:func:`prompt_handoff`). It is the one runner whose returned command does not
+    carry the prompt, and the one whose spawn is not finished when the command has
+    run.
     """
     pf = shlex.quote(prompt_file)
     chosen = selected()
     if chosen == CLAUDE:
         return f'claude "$(cat {pf})"'
+    if chosen == FREEBUFF:
+        # `--cwd` rather than leaning on the `cd` the spawn already did, because the
+        # two fail differently. That `cd` is deliberately quiet (`2>/dev/null`), and
+        # where the other runners would then simply work in the wrong directory,
+        # Freebuff opens a full-screen directory PICKER when its working directory is
+        # not a project — an agent that can never start, holding a bay of the task cap
+        # until someone closes the window.
+        from . import review
+
+        return f"freebuff --cwd {shlex.quote(review.repo_path())}"
     pinned = model()
     flag = f" -m {shlex.quote(pinned)}" if pinned else ""
     if chosen == HERMES:
@@ -156,8 +231,8 @@ def agent_command(prompt_file: str, port: int | None = None) -> str:
 def setup_command() -> str:
     """The command that lets a user connect a provider to the selected runner.
 
-    Diplomat deliberately does not ask for a provider and an API key itself. Both
-    foreign runners ship a wizard that knows their whole provider catalog, which
+    Diplomat deliberately does not ask for a provider and an API key itself. OpenCode
+    and Hermes each ship a wizard that knows their whole provider catalog, which
     entries take an OAuth flow rather than a key, and where each one's credentials
     belong — and each writes them to its own store, the only place its agent reads
     them from anyway. A key field here would be a worse copy of that which also put a
@@ -165,8 +240,16 @@ def setup_command() -> str:
 
     The listing command runs after, so the window the user is left looking at states
     what is now connected rather than making them trust that it worked.
+
+    Freebuff is the exception to the *provider* half: it has no catalog to choose
+    from, only the one account its own site signs a user into, so its wizard is the
+    whole of it and there is nothing to list afterwards. The window stays on the
+    command, which is what prints the URL the user has to open.
     """
-    if selected() == HERMES:
+    chosen = selected()
+    if chosen == FREEBUFF:
+        return "freebuff login"
+    if chosen == HERMES:
         return "hermes setup; hermes status"
     return "opencode providers login; opencode providers list"
 
