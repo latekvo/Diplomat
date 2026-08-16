@@ -70,6 +70,14 @@ _QUOTA_PHRASES = [
 # "You've hit your weekly/usage/session/5-hour limit" — the "hit your … limit"
 # family, matched with a small gap so new limit names keep matching.
 _HIT_YOUR_LIMIT = re.compile(r"hit your [a-z0-9\- ]{0,16}limit")
+# Spend caps an org sets on a member/workspace, which the API rejects with a 403 —
+#   "API Error: 403 Org member budget limit exceeded (daily limit). Contact your
+#    org admin."
+# Same gap trick as above, so org/workspace/monthly wordings and the "reached"
+# spelling all match. Filed with the quota banners rather than the errors because
+# the code is the only thing transient-looking about it: the cap holds until its
+# window rolls over or an admin raises it, neither of which a nudge can do.
+_BUDGET_LIMIT = re.compile(r"budget[a-z0-9\- ]{0,16}(exceeded|reached)")
 _API_ERROR_CODE = re.compile(r"API Error:?\s*[0-9]{3}")
 _BARE_429 = re.compile(r"\b429\b")
 
@@ -79,16 +87,16 @@ def looks_like_api_error(text: str) -> bool:
     past — a server 5xx / rate-limit ("API Error: <3-digit code>"), a status-page
     error, or a codeless connectivity failure (network out, DNS, timeout).
 
-    Out-of-quota banners return False: nudging a quota-limited session does nothing
-    until the window resets, so the watcher intentionally leaves them alone. A quota
-    banner also SUPPRESSES any API-error text in the same tail.
+    Out-of-quota and org budget-cap banners return False: nudging a capped session
+    does nothing until the window resets, so the watcher intentionally leaves them
+    alone. Either banner also SUPPRESSES any API-error text in the same tail.
     """
     lower = text.lower()
     # Quota banner present ⇒ ignore this session entirely (and suppress any stray
     # API-error text sharing the tail).
     if any(p in lower for p in _QUOTA_PHRASES):
         return False
-    if _HIT_YOUR_LIMIT.search(lower):
+    if _HIT_YOUR_LIMIT.search(lower) or _BUDGET_LIMIT.search(lower):
         return False
     # "API Error: <3-digit code>" — the exact CLI format (529/500/503/429/…).
     if _API_ERROR_CODE.search(text):

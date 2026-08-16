@@ -41,6 +41,21 @@ def test_quota_banners_are_ignored():
     assert apiwatch.looks_like_api_error("5-hour limit reached ∙ resets 6pm") is False
 
 
+def test_org_budget_caps_are_ignored():
+    # A 403 spend cap prints WITH the "API Error: <code>" prefix, so it only stays
+    # un-nudged for as long as the budget wording is matched ahead of the code rule.
+    assert apiwatch.looks_like_api_error(
+        "API Error: 403 Org member budget limit exceeded (daily limit). "
+        "Contact your org admin."
+    ) is False
+    assert apiwatch.looks_like_api_error("Organization budget exceeded") is False
+    assert apiwatch.looks_like_api_error("workspace monthly budget limit reached") is False
+    # Prose about a budget that isn't a cap being hit stays nudgeable.
+    assert apiwatch.looks_like_api_error(
+        "API Error: 529 Overloaded\nthe budget for this run was 500k tokens"
+    ) is True
+
+
 def test_quota_banner_suppresses_cooccurring_api_error():
     tail = "API Error: 529 Overloaded\nYou've hit your weekly limit."
     assert apiwatch.looks_like_api_error(tail) is False

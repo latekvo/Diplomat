@@ -40,21 +40,30 @@ public enum ApiErrorMatch {
     /// "You've hit your weekly/usage/session/5-hour limit" — the "hit your … limit"
     /// family, matched with a small gap so new limit names keep matching.
     private static let hitYourLimitPattern = #"hit your [a-z0-9\- ]{0,16}limit"#
+    /// Spend caps an org sets on a member/workspace, which the API rejects with a 403 —
+    ///   "API Error: 403 Org member budget limit exceeded (daily limit). Contact your
+    ///    org admin."
+    /// Same gap trick as above, so org/workspace/monthly wordings and the "reached"
+    /// spelling all match. Filed with the quota banners rather than the errors because
+    /// the code is the only thing transient-looking about it: the cap holds until its
+    /// window rolls over or an admin raises it, neither of which a nudge can do.
+    private static let budgetLimitPattern = #"budget[a-z0-9\- ]{0,16}(exceeded|reached)"#
 
     /// True when `text` shows a transient Claude API error the watcher should nudge
     /// past — a server 5xx / rate-limit ("API Error: <3-digit code>"), a status-page
     /// error, or a codeless connectivity failure (network out, DNS, timeout).
     ///
-    /// Out-of-quota banners return false: nudging a quota-limited session does nothing
-    /// until the window resets, so the watcher intentionally leaves them alone. A quota
-    /// banner also SUPPRESSES any API-error text in the same tail, since the session is
-    /// idling on the limit rather than the error.
+    /// Out-of-quota and org budget-cap banners return false: nudging a capped session
+    /// does nothing until the window resets, so the watcher intentionally leaves them
+    /// alone. Either banner also SUPPRESSES any API-error text in the same tail, since
+    /// the session is idling on the limit rather than the error.
     public static func looksLikeApiError(_ text: String) -> Bool {
         let lower = text.lowercased()
         // Quota banner present ⇒ ignore this session entirely (and suppress any stray
         // API-error text sharing the tail).
         if quotaPhrases.contains(where: lower.contains) { return false }
-        if lower.range(of: hitYourLimitPattern, options: .regularExpression) != nil {
+        if lower.range(of: hitYourLimitPattern, options: .regularExpression) != nil
+            || lower.range(of: budgetLimitPattern, options: .regularExpression) != nil {
             return false
         }
         // "API Error: <3-digit code>" — the exact CLI format (529/500/503/429/…).

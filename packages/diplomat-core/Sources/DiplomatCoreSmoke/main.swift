@@ -1625,6 +1625,15 @@ check(!ApiErrorMatch.looksLikeApiError("5-hour limit reached ∙ resets 6pm"))
 check(!ApiErrorMatch.looksLikeApiError("Weekly limit reached ∙ resets Oct 14"))
 check(!ApiErrorMatch.looksLikeApiError("Session limit reached ∙ resets 3am"))
 check(!ApiErrorMatch.looksLikeApiError("You are out of tokens for this period."))
+// An org's spend cap is a quota too, however transient its 403 looks: it holds until
+// the window rolls over or an admin raises it. It arrives WITH the "API Error: <code>"
+// prefix, so it stays un-nudged only while the budget wording is read ahead of the code.
+check(!ApiErrorMatch.looksLikeApiError(
+    "API Error: 403 Org member budget limit exceeded (daily limit). Contact your org admin."))
+check(!ApiErrorMatch.looksLikeApiError("Organization budget exceeded"))
+check(!ApiErrorMatch.looksLikeApiError("workspace monthly budget limit reached"))
+// Prose about a budget that isn't a cap being hit leaves a real error nudgeable.
+check(ApiErrorMatch.looksLikeApiError("API Error: 529 Overloaded\nthe budget for this run was 500k tokens"))
 // A quota banner SUPPRESSES a co-occurring API error in the same tail — the session
 // idles on the limit, not the error, so we must not nudge it.
 check(!ApiErrorMatch.looksLikeApiError("API Error: 529 Overloaded\nYou've hit your weekly limit."))
