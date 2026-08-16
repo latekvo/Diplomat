@@ -532,10 +532,12 @@ class SettingsView(QWidget):
         body.addWidget(self._track(SettingRow(
             "Hold work when the limit runs low", self._sw_budget,
             summary="Wait for a window to refill rather than start what won't fit.",
-            detail="Priced from Telemetry → limit per task, against both rate-limit "
-                   "windows: higher confidence is stricter. Held work waits in Agent "
-                   "tasks until a window refills, and “execute now” overrides it. "
-                   "Nothing is held while the usage probe can't read a window.",
+            detail="Priced from Telemetry → limit per task: against both rate-limit "
+                   "windows under Claude Code, or — under a runner billed in money — "
+                   "against what one task costs on the model it runs, and what your "
+                   "OpenRouter key and credit balance have left. Higher confidence is "
+                   "stricter. Held work waits in Agent tasks, and “execute now” "
+                   "overrides it. Nothing is held while the probe can't read a limit.",
         )))
 
         self._budget_knobs, knobs = nested_settings(_ORANGE)
@@ -559,6 +561,24 @@ class SettingsView(QWidget):
         self._budget_floor.changed.connect(self._on_budget_floor_changed)
         knobs.addWidget(self._track(SettingRow(
             "Keep in hand until it can be priced", self._budget_floor, stacked=True,
+            summary="Of each rate-limit window, under Claude Code.",
+        )))
+
+        # The same knob in the other currency. Both are shown whichever runner is
+        # selected: the setting outlives the choice of runner, and a knob that
+        # appeared and disappeared as that changed would look like it had been reset.
+        self._budget_reserve = SliderSetting(
+            label="Keep on the account until it can be priced",
+            minimum=0, maximum=int(autofix.MAX_BUDGET_RESERVE_USD), step=5,
+            min_label="spend it all", max_label="spend nothing", tint=_ORANGE,
+        )
+        self._budget_reserve.set_badge_text(lambda usd: f"${usd:.2f}")
+        self._budget_reserve.set_value(round(appconfig.auto_budget_reserve_usd()))
+        self._budget_reserve.changed.connect(self._on_budget_reserve_changed)
+        knobs.addWidget(self._track(SettingRow(
+            "Keep on the account until it can be priced", self._budget_reserve,
+            stacked=True,
+            summary="Of your OpenRouter balance, under a runner billed in money.",
         )))
         body.addWidget(self._budget_knobs)
         self._budget_knobs.setVisible(self._sw_budget.isChecked())
@@ -584,6 +604,10 @@ class SettingsView(QWidget):
 
     def _on_budget_floor_changed(self, value: int) -> None:
         appconfig.set_float(appconfig.AUTO_BUDGET_FLOOR_PCT, float(value))
+        self.store.changed.emit()
+
+    def _on_budget_reserve_changed(self, value: int) -> None:
+        appconfig.set_float(appconfig.AUTO_BUDGET_RESERVE_USD, float(value))
         self.store.changed.emit()
 
     def _on_autofix_toggled(self, on: bool) -> None:

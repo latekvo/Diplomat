@@ -355,8 +355,8 @@ def parse_work_key(key: str) -> tuple[str, str, str, int] | None:
 # - capacity: only auto work is held to the device's automatic-task cap - a
 #   human's click is one deliberate agent, not a monitor emptying its queue
 #   (dispatch_decide);
-# - budget: only auto work is held to what is left of the rate-limit windows -
-#   a human spending their own last 5% is their call to make (dispatch_decide);
+# - budget: only auto work is held to what is left of the limits it spends
+#   against - a human spending their own last slice is their call (dispatch_decide);
 # - mesh: only auto origination is mesh-gated - a human clicking THIS machine's
 #   button has already decided placement (dispatch_decide);
 # - counters: only a monitor's FIRST dispatch counts as auto-handled work
@@ -398,11 +398,11 @@ def dispatch_decide(
     next tick (the refusal writes no attempt record, so no backoff engages).
 
     The budget sits between the two for the same reason and with the same
-    consequence: an account with no window left cannot finish the agent it would
-    claim the work for, and holding the job costs nothing but the wait for the
-    5-hour window to refill. It ranks BELOW capacity only because capacity is the
-    measurement already in hand — a saturated device has no slot to spend a budget
-    on, so the probe is never worth taking."""
+    consequence: an account with nothing left to spend cannot finish the agent it
+    would claim the work for, and holding the job costs nothing but the wait for a
+    window to refill or a balance to be topped up. It ranks BELOW capacity only
+    because capacity is the measurement already in hand — a saturated device has no
+    slot to spend a budget on, so the probe is never worth taking."""
     if banned:
         return VERDICT_BANNED
     if agent_on_pr:
@@ -492,20 +492,28 @@ def running_auto_tasks(
     return len(running_auto_prs(live_prs, auto_prs, manual_prs, idle_prs))
 
 
-# MARK: - The device's rate-limit budget
+# MARK: - The device's spending budget
 #
 # The cap above bounds how many automatic agents run at once; this bounds whether
 # any of them should start at all. A machine can have three empty bays and 4% of
 # its 5-hour window left, and spending that on an auto-review is how the operator
 # finds the limit gone the next time they sit down to work.
 #
+# There are two currencies, because there are two ways an agent is paid for. Claude
+# Code spends a rate-limit window Anthropic publishes only as a percentage; every
+# other runner spends an account billed in money. The arithmetic below is the same
+# either way and is written in neither unit — `budget_decide` compares what a
+# ceiling has left against what a task needs, and the caller says which currency
+# both are in.
+#
 # What a task costs is a measurement, not a guess: the telemetry ledger prices
-# every finished agent against the window it was spent from (telemetry.summarize →
-# `per_task`, a share-of-window distribution). So the question "can we afford one
-# more" has a statistical answer — and the one worth asking is about the NEXT task,
-# not about the average one. Half of all tasks cost more than the mean, and the
-# distribution is right-skewed (most small, a few enormous), so a gate set at the
-# mean would wave through the expensive tail every time.
+# every finished agent — against the window it was spent from (telemetry.summarize
+# → `per_task`), or, for a runner billed in money, at what the provider charged for
+# the model it ran on (`per_task_usd`). So the question "can we afford one more" has
+# a statistical answer — and the one worth asking is about the NEXT task, not about
+# the average one. Half of all tasks cost more than the mean, and the distribution
+# is right-skewed (most small, a few enormous), so a gate set at the mean would wave
+# through the expensive tail every time.
 #
 # Hence a one-sided upper PREDICTION bound: the cost that one more task will come
 # in under, with the configured confidence. That is what `autoBudgetConfidence`
@@ -524,6 +532,17 @@ BUDGET_CONFIDENCE_Z = {50: 0.0, 80: 0.8416, 90: 1.2816, 95: 1.6449, 99: 2.3263}
 DEFAULT_BUDGET_CONFIDENCE = 95
 #: Share of a window to keep in hand when the ledger cannot price a task yet.
 DEFAULT_BUDGET_FLOOR_PCT = 20.0
+#: Dollars to keep in hand for the same reason, on an account billed in money. A
+#: floor expressed as a share would mean nothing there: the ceilings are a key's cap
+#: and a credit balance, and 20% of a balance is 20% of however much was last topped
+#: up rather than any fixed amount of work.
+DEFAULT_BUDGET_RESERVE_USD = 1.0
+#: The most it can be set to. A percentage has 100 to stop at and money has nothing,
+#: so this is a chosen bound rather than a derived one — chosen well past any real
+#: setting (it is four times this machine's whole weekly key cap) and shared with the
+#: slider that sets it, because a knob whose range and whose clamp disagreed would
+#: quietly rewrite a hand-edited file the first time it was touched.
+MAX_BUDGET_RESERVE_USD = 100.0
 #: A prediction bound needs a spread, and the sample standard deviation of one
 #: observation is 0 — which would report a single cheap task as certainty. Below
 #: this the ledger has no answer and the floor stands in, however the caller's own
@@ -532,6 +551,14 @@ MIN_BUDGET_SAMPLES = 2
 
 WINDOW_SESSION = "session"  # the 5-hour rate-limit window
 WINDOW_WEEK = "week"  # the 7-day one
+WINDOW_KEY = "orKey"  # the OpenRouter API key's own spend cap
+WINDOW_CREDITS = "orCredits"  # the OpenRouter account's credit balance
+
+#: What a verdict's figures are denominated in. A rate limit is only ever published
+#: as a percentage and an OpenRouter account only ever as money, so the unit follows
+#: from which ceiling was read and is carried so the feed can say which it meant.
+UNIT_PCT = "pct"
+UNIT_USD = "usd"
 
 
 def clamp_budget_confidence(value: int) -> int:
@@ -559,11 +586,19 @@ def clamp_budget_floor_pct(value: float) -> float:
     return max(0.0, min(100.0, value))
 
 
+def clamp_budget_reserve_usd(value: float) -> float:
+    """The configured dollar reserve, held to what the knob can express. 0 is allowed
+    and means "spend it to the last cent while the ledger is still thin"."""
+    if not math.isfinite(value):
+        return DEFAULT_BUDGET_RESERVE_USD
+    return max(0.0, min(MAX_BUDGET_RESERVE_USD, value))
+
+
 def task_cost_bound(mean: float, sd: float, count: int, *,
                     z: float, min_sample: int) -> float | None:
-    """What one more auto-task will cost at most, as a share of the window
-    ``mean``/``sd`` are shares of — the upper end of a one-sided prediction
-    interval, ``mean + z·sd·√(1 + 1/n)``.
+    """What one more auto-task will cost at most, in whatever unit ``mean``/``sd``
+    are measured in — the upper end of a one-sided prediction interval,
+    ``mean + z·sd·√(1 + 1/n)``.
 
     The ``√(1 + 1/n)`` is what makes this a bound on the NEXT observation rather
     than on the mean: it carries the spread of the tasks themselves plus the
@@ -584,61 +619,64 @@ def task_cost_bound(mean: float, sd: float, count: int, *,
 
 @dataclass(frozen=True)
 class Budget:
-    """Whether what is left of the rate-limit windows covers one more auto-task,
-    and the arithmetic that decided it — the numbers the activity feed quotes back
-    when work is held."""
+    """Whether what is left of the ceilings this machine spends against covers one
+    more auto-task, and the arithmetic that decided it — the numbers the activity
+    feed quotes back when work is held."""
 
     affordable: bool
-    #: The window the verdict came from: the one with the LEAST headroom, whether
+    #: The ceiling the verdict came from: the one with the LEAST headroom, whether
     #: it refused or not, so the same field explains an approval and a refusal.
-    #: Empty when neither window had a reading and nothing was decided.
+    #: Empty when none of them had a reading and nothing was decided.
     window: str = ""
-    #: What that window had left, and what a task was required to fit inside, both
-    #: as percentages of it.
-    left_pct: float = 0.0
-    needed_pct: float = 0.0
-    #: True when ``needed_pct`` was priced from the ledger, False when the
-    #: telemetry was too thin and the configured floor stood in for it.
+    #: What that ceiling had left, and what a task was required to fit inside — both
+    #: in :attr:`unit`, and only ever comparable to each other.
+    left: float = 0.0
+    needed: float = 0.0
+    #: True when ``needed`` was priced from the ledger, False when the telemetry was
+    #: too thin and the configured floor stood in for it.
     measured: bool = False
+    #: Which currency the two figures are in (:data:`UNIT_PCT`, :data:`UNIT_USD`).
+    unit: str = UNIT_PCT
 
 
-def budget_decide(
-    session_left_pct: float | None,
-    week_left_pct: float | None,
-    session_cost_pct: float | None,
-    week_cost_pct: float | None,
-    floor_pct: float,
-) -> Budget:
+def budget_decide(windows: list[tuple[str, float | None, float | None]],
+                  floor: float, unit: str = UNIT_PCT) -> Budget:
     """Can one more automatic task be afforded right now?
 
-    Both windows gate, because either can be the one that runs out: the 5-hour
-    window is what stops work this afternoon, and the 7-day window is the ceiling a
-    busy week walks into. A task has to fit inside what is left of each.
+    ``windows`` is the ceilings this machine's work is spent against, each as
+    ``(name, left, cost-of-one-task)`` in a single unit — percentages of a rate limit
+    for a Claude Code machine, dollars for one billed by an OpenRouter account. Every
+    one of them gates, because any can be the one that runs out: the 5-hour window is
+    what stops work this afternoon and the 7-day window is the ceiling a busy week
+    walks into, exactly as a key's cap is what stops work this week and the credit
+    balance is what stops it altogether. A task has to fit inside what is left of
+    each.
 
-    A window with no cost measurement falls back to ``floor_pct`` — "keep this much
-    of the limit in hand" — which is the whole of the answer on a machine whose
-    ledger has not priced a task yet.
+    A ceiling with no cost measurement falls back to ``floor`` — "keep this much in
+    hand" — which is the whole of the answer on a machine whose ledger has not priced
+    a task yet.
 
-    A window with **no reading at all** is skipped, and a call where neither window
-    has one is affordable. That is deliberate: the usage probe can be switched off
-    (``DIPLOMAT_QUOTA_PROBE=0``), logged out, or simply offline, and a gate that
-    read silence as "no budget" would take a machine's automatic work with it every
-    time the network dropped. The gate exists to spend a *measured* limit carefully;
-    with nothing measured it has no opinion, and the task cap is still in front of
-    it."""
+    A ceiling with **no reading at all** is skipped, and a call where none has one is
+    affordable. That is deliberate: a usage probe can be switched off
+    (``DIPLOMAT_QUOTA_PROBE=0``, ``DIPLOMAT_SPEND_PROBE=0``), logged out, or simply
+    offline, and a gate that read silence as "no budget" would take a machine's
+    automatic work with it every time the network dropped. The gate exists to spend a
+    *measured* limit carefully; with nothing measured it has no opinion, and the task
+    cap is still in front of it.
+
+    Ties go to the ceiling listed first, so a caller decides which of two equally
+    binding ones it would rather name.
+    """
     tightest: Budget | None = None
-    for window, left, cost in (
-        (WINDOW_SESSION, session_left_pct, session_cost_pct),
-        (WINDOW_WEEK, week_left_pct, week_cost_pct),
-    ):
+    for window, left, cost in windows:
         if left is None:
             continue
-        needed = floor_pct if cost is None else cost
-        if tightest is not None and left - needed >= tightest.left_pct - tightest.needed_pct:
-            continue  # the other window is the binding one; session wins a tie
-        tightest = Budget(affordable=left >= needed, window=window,
-                          left_pct=left, needed_pct=needed, measured=cost is not None)
-    return tightest if tightest is not None else Budget(affordable=True)
+        needed = floor if cost is None else cost
+        if tightest is not None and left - needed >= tightest.left - tightest.needed:
+            continue  # an earlier ceiling is the binding one
+        tightest = Budget(affordable=left >= needed, window=window, left=left,
+                          needed=needed, measured=cost is not None, unit=unit)
+    return tightest if tightest is not None else Budget(affordable=True, unit=unit)
 
 
 def dispatch_label(source: str, core: str, attempt: int = 1,

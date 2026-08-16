@@ -236,8 +236,9 @@ an idle machine with a cap of two reads `0 · 2 free` over two empty bays.
   as long as GitHub still calls the PR conflicting, so waiting costs it nothing.
 
 Four things hold work. The cap holds what there is no slot for, and releases it as
-slots free. The **rate-limit budget** (below) holds everything when the account is
-too low to afford another agent, and releases it when a window refills. A
+slots free. The **spending budget** (below) holds everything when the account is
+too low to afford another agent, and releases it when a window refills or the
+balance is topped up. A
 **monitor you switched off** holds its own work indefinitely: it keeps polling and
 keeps listing what it finds (reading *queued · monitor off*), but nothing starts by
 itself - only *execute now* does. So the toggles decide who starts the work, not
@@ -245,7 +246,7 @@ whether you get to see it, and turning both off does not stop the 3-minute GitHu
 poll. **Auto-execute queue** holds every kind at once, the reviews you asked for
 included - which is the one thing no monitor toggle speaks for.
 
-### The rate-limit budget
+### The spending budget
 
 The cap bounds how many automatic agents run at once. The budget bounds whether any
 of them should start at all - because a machine can have three empty bays and 4% of
@@ -262,17 +263,36 @@ one-sided upper **prediction bound**, `mean + z·sd·√(1 + 1/n)`: the cost one
 task will come in under, at the confidence you pick. At the default 95%, roughly one
 auto-task in twenty may still overrun what it was gated on.
 
-Both windows gate - a task has to fit inside what is left of the 5-hour one *and*
-the 7-day one, since either can be the one that runs out. The weekly figure is the
-same tasks rescaled by the ratio of the two calibrations, so the two can never
-disagree about how big a task is. What is *left* comes from the live usage probe
-rather than the ledger's last sample: samples are 15 minutes apart, and several
-agents' worth of spending fits in that gap.
+**Two currencies, because there are two ways an agent is paid for.** Which one
+applies follows from the [runner](#agent-runner) a spawn uses, and the two never
+substitute for each other - a Hermes task held against a Claude window is gated on a
+limit it never touches, and a machine not logged into Claude Code at all would have
+no gate whatsoever.
 
-Three knobs, in **Settings → PR AUTO-FIX**, and in `~/.diplomat/config.json` beside
+- **Claude Code** spends Anthropic **rate-limit windows**, which that account
+  publishes only as a percentage. Both windows gate - a task has to fit inside what
+  is left of the 5-hour one *and* the 7-day one, since either can be the one that
+  runs out. The weekly figure is the same tasks rescaled by the ratio of the two
+  calibrations, so the two can never disagree about how big a task is.
+- **Hermes** (and any other runner billed by a provider) spends **money**. Hermes
+  prices each of its own sessions against the model it ran on, so the ledger carries
+  what the task cost in dollars and which model's rates it was charged at - and the
+  gate prices the next task from that model's runs alone, since rates differ by two
+  orders of magnitude and a mean across models describes no task that ever ran. What
+  is left is read from OpenRouter: the **key limit** (the cap on the API key itself,
+  which resets on whatever period the account chose) and the **credit balance** (what
+  was bought less what has been spent, which does not reset at all). Both gate, and
+  the tighter one answers. The key comes from `~/.hermes/.env`, where Hermes' own
+  login wizard puts it - Diplomat stores the choice of runner and model, never a
+  secret.
+
+What is *left* comes from the live probe rather than the ledger's last sample:
+samples are 15 minutes apart, and several agents' worth of spending fits in that gap.
+
+Four knobs, in **Settings → PR AUTO-FIX**, and in `~/.diplomat/config.json` beside
 the task cap so the mesh node reads the same ones:
 
-- **Hold automatic work when the rate limit runs low** (`autoBudgetGate`, on) - the
+- **Hold automatic work when the limit runs low** (`autoBudgetGate`, on) - the
   master switch.
 - **Confidence** (`autoBudgetConfidence`, `95`) - 50 / 80 / 90 / 95 / 99. Higher is
   stricter. A hand-edited value the table has no quantile for rounds *up*, never
@@ -281,13 +301,20 @@ the task cap so the mesh node reads the same ones:
   while the ledger is too thin to price a task. Until at least five auto-tasks have
   finished and been priced, this is the whole of the answer, so a fresh install
   spends down to 20% and no further.
+- **Kept on the account** (`autoBudgetReserveUsd`, `1.00`) - the same, in dollars,
+  for a runner billed in money. A separate knob because a percentage of a credit
+  balance is a percentage of however much was last topped up.
 
 Two failure directions, both deliberate:
 
-- **No reading at all is no opinion.** The usage probe can be off
-  (`DIPLOMAT_QUOTA_PROBE=0`), logged out, or simply offline. Nothing is held then -
+- **No reading at all is no opinion.** A probe can be off (`DIPLOMAT_QUOTA_PROBE=0`,
+  `DIPLOMAT_SPEND_PROBE=0`), logged out, or simply offline. Nothing is held then -
   a gate that read silence as "no budget" would take a machine's automatic work down
-  with the network every time it dropped.
+  with the network every time it dropped. **A machine that has never been charged a
+  dollar is the same silence**: the reserve engages only once something has actually
+  been billed here, so a runner pointed at a local model - or one Diplomat cannot
+  price - is not held against an account it never draws on merely because a key for
+  that account is sitting on disk.
 - **A refusal defers, it never drops.** Held work writes no attempt record, so the
   next poll offers it again; it sits in the Agent-tasks list and starts when the
   window refills. *Execute now* overrides the budget exactly as it overrides the
@@ -679,7 +706,16 @@ Two gatherers fill in what GitHub doesn't know:
   writes no such transcript, so each is priced from its own store instead - OpenCode
   summed over every message of `opencode export <session>` (it reports a turn's cost
   per message), Hermes read off the running totals on its session row - both counting
-  the same three fields, so one ledger holds every runner in one unit.
+  the same three fields, so one ledger holds every runner in one unit. Hermes' row
+  also carries what the provider **charged**, and the model it charged for, which is
+  the unit the [spending budget](#the-spending-budget) holds that machine to.
+- **Balance** (`spend.py` / `Spend.swift`) - the money twin of the quota probe, and
+  what the spending budget reads when the runner is billed by a provider rather than
+  out of a rate-limit window. One GET each against OpenRouter's `/api/v1/key` and
+  `/api/v1/credits`, keyed from `~/.hermes/.env`, giving dollars left on the key's own
+  cap and on the account's credit balance. Cached and degraded exactly as the quota
+  probe is; `DIPLOMAT_SPEND_PROBE=0` turns it off and `DIPLOMAT_HERMES_ENV` moves
+  where the key is read from.
 
 The probe reports **what is left of each window** on every sample, and that reading is
 what *rate limit left* draws - measured, not derived. What Anthropic never publishes is
@@ -870,7 +906,7 @@ and ⏻) swaps the panel to a settings screen:
     scan sums, so one ledger holds every runner in one unit. What those tokens are
     *not* is a share of a rate-limit window: that window is the Anthropic account's,
     priced from Claude Code's own usage probe, so **limit per task** and the
-    [rate-limit budget](#the-rate-limit-budget) count the tasks that ran on Claude Code
+    [spending budget](#the-spending-budget) count the tasks that ran on Claude Code
     and leave a foreign run to the token figures beside them.
   - What does *not* carry over: the [Claude API-error watcher](#autonomous-monitors)
     - its banners are Claude Code's. A foreign agent that errors reads as idle, so
@@ -902,16 +938,18 @@ and ⏻) swaps the panel to a settings screen:
   the same reason, it lives in the shared `~/.diplomat/config.json` rather than
   UserDefaults - the node that runs peer-routed work is a separate stdlib-only
   process, and a machine with two answers to "how many at once" has no cap at all.
-- **Hold automatic work when the rate limit runs low** - the
-  [rate-limit budget](#the-rate-limit-budget) (**default on**), with the confidence
-  it must reach that a task fits (**default 95%**, one-sided) and the share of a
-  window to keep in hand while the ledger cannot price a task yet (**default 20%**).
-  Priced from the same per-task figure the [Telemetry](#telemetry) screen shows,
-  against both rate-limit windows. Held work waits under
-  [Agent tasks](#agent-tasks) and starts when a window refills; *execute now*
-  overrides it, a wizard spawn that opens a terminal on the spot is never gated, and
-  nothing is held at all while the usage probe cannot read a window. In
-  `~/.diplomat/config.json` for the same reason as the cap above.
+- **Hold automatic work when the limit runs low** - the
+  [spending budget](#the-spending-budget) (**default on**), with the confidence
+  it must reach that a task fits (**default 95%**, one-sided) and what to keep in
+  hand while the ledger cannot price a task yet - a share of a window (**default
+  20%**) under Claude Code, or dollars on the account (**default $1.00**) under a
+  runner billed in money. Priced from the same per-task figure the
+  [Telemetry](#telemetry) screen shows, against both rate-limit windows or against
+  both of the OpenRouter ceilings. Held work waits under [Agent tasks](#agent-tasks)
+  and starts when a window refills; *execute now* overrides it, a wizard spawn that
+  opens a terminal on the spot is never gated, and nothing is held at all while the
+  probe cannot read a limit. In `~/.diplomat/config.json` for the same reason as the
+  cap above.
 - **Auto-continue agents on API errors** - the terminal watcher toggle, plus a
   count of nudges sent.
 - **Tools - color & visibility** - a **color well** to retint each tool plus a switch
@@ -1235,7 +1273,7 @@ packages/
       szponthost.py            ← Diplomat's answers to the six questions a mesh node asks its host:
                                  the duty catalog, the state dir, where events go, how a job runs here,
                                  whether an agent is already up on that work, and whether this machine
-                                 has room for another and the rate limit to afford it
+                                 has room for another and the limit — window or balance — to afford it
 
   diplomat-platform/           ← the platform wrappers: one UI each over that same core
     macos/                     ← macOS SwiftUI menu-bar app — thin UI over the core
@@ -1272,6 +1310,7 @@ packages/
         TelemetryLog.swift         writes/reads ~/.diplomat/pr-monitor/telemetry.jsonl (append-only, rotated)
         UsageScan.swift            Claude Code transcript scanner: repo-vs-other tokens, per-task attribution
         Quota.swift                the OAuth usage probe — what is left of the 5-hour and 7-day windows
+        Spend.swift                the OpenRouter balance probe — dollars left on the key cap and the credits
         AutoBudget.swift           ledger + probe + knobs -> may another automatic task start here?
         SelfUpdate.swift           fetch/merge upstream, rebuild, relaunch (Update button + the 06:00 run)
         RepoPaths.swift            locate this app's own checkout (DIPLOMAT_SELF_REPO → … → ~/dev/diplomat),

@@ -159,3 +159,34 @@ def session_tokens(session_id: str) -> float | None:
     return float(sum(v for v in rows[0]
                      if isinstance(v, (int, float)) and not isinstance(v, bool)
                      and v >= 0))
+
+
+def session_price(session_id: str) -> tuple[float | None, str]:
+    """``(dollars, model)`` for one session — what it cost, and what it ran on.
+
+    The other unit a task can be priced in, and the one an OpenRouter-billed run is
+    actually held to (:mod:`spend`). Tokens alone cannot answer it: the same hundred
+    thousand tokens are cents on a small model and dollars on a frontier one, so the
+    model is read alongside the money and travels with it into the ledger.
+
+    Hermes prices each session itself, against the provider's published rates for the
+    model it ran on, and settles that figure when the provider reports the real one:
+    ``actual_cost_usd`` is preferred where it exists and the estimate answers until
+    it does. Both are cumulative on the session row, like the token counts beside
+    them.
+
+    ``(None, "")`` where there is nothing to read — a session row that has not been
+    priced yet, or a Hermes build older than the columns. That is a completion
+    recorded without a price, exactly as an unattributable transcript is, and the
+    gate falls back to its reserve rather than to a made-up figure.
+    """
+    rows = _query(
+        "SELECT actual_cost_usd, estimated_cost_usd, model FROM sessions "
+        "WHERE id = ?", (session_id,))
+    if not rows:
+        return None, ""
+    actual, estimated, model = rows[0]
+    usd = next((float(v) for v in (actual, estimated)
+                if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0),
+               None)
+    return usd, model if isinstance(model, str) else ""

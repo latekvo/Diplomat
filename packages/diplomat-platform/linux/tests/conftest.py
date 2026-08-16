@@ -181,16 +181,31 @@ def isolated_claude_dir(tmp_path, monkeypatch):
 def isolated_hermes_state(tmp_path, monkeypatch):
     """Fence the Hermes readers off from the developer's own ``~/.hermes``.
 
-    Same reasoning as the Claude Code redirect above, for both files Diplomat reads
-    there: ``state.db`` is every session the operator has ever run, so a test reaching
-    :mod:`hermesstore` would match a run against their real work, and ``config.yaml``
-    holds the model their picker is on, which the attribution tag names. Either would
-    answer differently on every machine. Both paths point at files that do not exist,
-    which is the "nothing to read" case each reader already degrades to; a test that
-    wants one writes it there."""
+    Same reasoning as the Claude Code redirect above, for all three files Diplomat
+    reads there: ``state.db`` is every session the operator has ever run, so a test
+    reaching :mod:`hermesstore` would match a run against their real work,
+    ``config.yaml`` holds the model their picker is on, which the attribution tag
+    names, and ``.env`` holds the OpenRouter key :mod:`spend` prices an account
+    through — which a test must neither read nor spend a live request on. All three
+    point at files that do not exist, which is the "nothing to read" case each reader
+    already degrades to; a test that wants one writes it there.
+
+    The spend probe additionally has an off switch, like the quota probe: with no
+    reading the money budget has no opinion, so a test reaching a dispatch path is
+    gated by the task cap alone unless it stubs the probe itself."""
     monkeypatch.setenv("DIPLOMAT_HERMES_DB", str(tmp_path / "hermes" / "state.db"))
     monkeypatch.setenv("DIPLOMAT_HERMES_CONFIG", str(tmp_path / "hermes" / "config.yaml"))
+    monkeypatch.setenv("DIPLOMAT_HERMES_ENV", str(tmp_path / "hermes" / ".env"))
+    monkeypatch.setenv("DIPLOMAT_SPEND_PROBE", "0")
+    # …and out of the environment, which `spend.api_key` falls back to and a
+    # developer running the suite in their working shell may well have exported.
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    from diplomat_runtime import spend
+
+    spend._reset_cache()
     yield
+    spend._reset_cache()
 
 
 @pytest.fixture(autouse=True)

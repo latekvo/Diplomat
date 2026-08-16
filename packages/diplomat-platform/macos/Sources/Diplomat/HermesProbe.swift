@@ -67,6 +67,29 @@ enum HermesProbe {
                                          cacheWrite: row[2] as? Int)
     }
 
+    /// `(dollars, model)` for one finished run — what it cost, and what it ran on.
+    ///
+    /// `("", nil)` where the store cannot say, which includes a Hermes older than these
+    /// columns: the query fails to prepare and every failure here is an empty result.
+    ///
+    /// SQLite is dynamically typed, so a cost stored as a whole number comes back an
+    /// integer from a REAL column; both spellings are the same money.
+    static func sessionPrice(sessionID: String) -> (usd: Double?, model: String) {
+        guard !sessionID.isEmpty,
+              let row = row("SELECT actual_cost_usd, estimated_cost_usd, model "
+                            + "FROM sessions WHERE id = ?", columns: 3, text: [sessionID])
+        else { return (nil, "") }
+        return (HermesStore.sessionPrice(actual: number(row[0]), estimated: number(row[1])),
+                row[2] as? String ?? "")
+    }
+
+    /// One numeric column, whichever of the two shapes SQLite handed back.
+    private static func number(_ value: Any?) -> Double? {
+        if let d = value as? Double { return d }
+        if let i = value as? Int { return Double(i) }
+        return nil
+    }
+
     /// Sessions that could be a run's, oldest first.
     ///
     /// `source` is left alone deliberately: Hermes tags a session by how it was started

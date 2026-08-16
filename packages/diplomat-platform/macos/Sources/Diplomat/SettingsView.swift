@@ -468,10 +468,11 @@ struct SettingsView: View {
     /// bounds how many automatic agents run at once, this bounds whether any of them
     /// should start at all.
     private static let autoBudgetDetail = """
-        Priced from Telemetry → limit per task, against both rate-limit windows: \
-        higher confidence is stricter. Held work waits in Agent tasks until a window \
-        refills, and "execute now" overrides it. Nothing is held while the usage \
-        probe can't read a window.
+        Priced from Telemetry → limit per task: against both rate-limit windows under \
+        Claude Code, or — under a runner billed in money — against what one task costs \
+        on the model it runs, and what your OpenRouter key and credit balance have \
+        left. Higher confidence is stricter. Held work waits in Agent tasks, and \
+        "execute now" overrides it. Nothing is held while the probe can't read a limit.
         """
 
     private var autoBudgetBlock: some View {
@@ -487,6 +488,7 @@ struct SettingsView: View {
 
     private var autoBudgetKnobs: some View {
         let floorBadge: String = Telemetry.percent(store.autoBudgetFloorPct)
+        let reserveBadge: String = Telemetry.money(store.autoBudgetReserveUsd)
         return NestedSettings(tint: .orange) {
             SettingRow(title: "Start one only when it fits", stacked: true) {
                 Picker("Start one only when it fits", selection: $store.autoBudgetConfidence) {
@@ -496,12 +498,28 @@ struct SettingsView: View {
                 }
                 .pickerStyle(.segmented).labelsHidden().controlSize(.small)
             }
-            SettingRow(title: "Keep in hand until it can be priced", stacked: true) {
+            SettingRow(title: "Keep in hand until it can be priced",
+                       summary: "Of each rate-limit window, under Claude Code.",
+                       stacked: true) {
                 SliderSetting(label: "Keep in hand until it can be priced",
                               value: $store.autoBudgetFloorPct,
                               range: 0...100,
                               step: 5,
                               badge: floorBadge,
+                              minLabel: "spend it all", maxLabel: "spend nothing",
+                              tint: .orange)
+            }
+            // The same knob in the other currency. Both are shown whichever runner is
+            // selected: the setting outlives the choice of runner, and a knob that
+            // appeared and disappeared as that changed would look like it had been reset.
+            SettingRow(title: "Keep on the account until it can be priced",
+                       summary: "Of your OpenRouter balance, under a runner billed in money.",
+                       stacked: true) {
+                SliderSetting(label: "Keep on the account until it can be priced",
+                              value: $store.autoBudgetReserveUsd,
+                              range: 0...AgentDispatchGate.maxBudgetReserveUsd,
+                              step: 5,
+                              badge: reserveBadge,
                               minLabel: "spend it all", maxLabel: "spend nothing",
                               tint: .orange)
             }

@@ -720,6 +720,17 @@ check(!HermesStore.isOurs(role: "assistant", content: ours, prompt: ours),
 // holds every runner in one unit.
 check(HermesStore.sessionTokens(input: 100, output: 20, cacheWrite: 5) == 125)
 check(HermesStore.sessionTokens(input: nil, output: nil, cacheWrite: nil) == 0)
+// The same session in the other unit — what the provider charged, which is what the
+// budget gate holds an account billed in money to.
+check(HermesStore.sessionPrice(actual: nil, estimated: 0.0675) == 0.0675,
+      "the estimate answers until the provider settles it")
+check(HermesStore.sessionPrice(actual: 0.071, estimated: 0.0675) == 0.071,
+      "…and the settled charge is preferred once it exists")
+check(HermesStore.sessionPrice(actual: nil, estimated: nil) == nil,
+      "a session not yet priced is unpriced, not free — a zero would enter the "
+      + "distribution the next task is gated on")
+check(HermesStore.sessionPrice(actual: 0, estimated: 0.0675) == 0.0675,
+      "a zero in the settled column is the column being empty, not a free task")
 print("hermes session assertions passed")
 
 section("audit prompts")
@@ -914,13 +925,15 @@ check(AgentDispatchGate.runningAutoTasks(livePRs: [1, 2], autoPRs: [], manualPRs
       "no evidence at all (the default) frees nothing — a terminal that cannot be read "
       + "must cost a deferral, never a burst")
 
-section("the device's rate-limit budget")
+section("the device's spending budget")
 // PARITY: diplomat-platform/linux/tests/test_autofix.py asserts these exact numbers
 // and bounds — the two front-ends decide whether to spend the same account's limit,
 // so a disagreement here is one machine gating what the other starts.
 check(AgentDispatchGate.defaultBudgetConfidence == 95
-      && AgentDispatchGate.defaultBudgetFloorPct == 20,
-      "95% sure, and 20% of a window kept in hand until the ledger can price a task")
+      && AgentDispatchGate.defaultBudgetFloorPct == 20
+      && AgentDispatchGate.defaultBudgetReserveUsd == 1.0,
+      "95% sure, and 20% of a window — or a dollar of an account — kept in hand "
+      + "until the ledger can price a task")
 check(AgentDispatchGate.budgetZ(95) == 1.6449,
       "95% one-sided — NOT the screen's two-sided 1.96 on the mean")
 check(AgentDispatchGate.clampBudgetConfidence(93) == 95
@@ -935,6 +948,10 @@ check(AgentDispatchGate.clampBudgetFloorPct(-1) == 0
       && AgentDispatchGate.clampBudgetFloorPct(140) == 100
       && AgentDispatchGate.clampBudgetFloorPct(.nan) == 20,
       "the floor is a real share of a window")
+check(AgentDispatchGate.clampBudgetReserveUsd(-1) == 0
+      && AgentDispatchGate.clampBudgetReserveUsd(250) == 100
+      && AgentDispatchGate.clampBudgetReserveUsd(.nan) == 1.0,
+      "the reserve is held to what its knob can express")
 
 // A prediction bound, not the screen's interval on the mean: it carries the spread
 // of the tasks and does NOT converge on the mean as n grows.
@@ -954,40 +971,53 @@ if let bound = AgentDispatchGate.taskCostBound(mean: 2, sd: 1, count: 4,
 }
 
 // Both windows gate, the tighter one answers, and no reading at all is no opinion.
-check(AgentDispatchGate.budgetDecide(sessionLeftPct: 50, weekLeftPct: 50,
-                                     sessionCostPct: 10, weekCostPct: 2,
-                                     floorPct: 20).affordable,
+// The ceilings are listed in the order `AutoBudget.decide` lists them, which is what
+// fixes the tie-break.
+func windows(_ sessionLeft: Double?, _ weekLeft: Double?,
+             _ sessionCost: Double?, _ weekCost: Double?) -> [(String, Double?, Double?)] {
+    [(AgentDispatchGate.windowSession, sessionLeft, sessionCost),
+     (AgentDispatchGate.windowWeek, weekLeft, weekCost)]
+}
+check(AgentDispatchGate.budgetDecide(windows(50, 50, 10, 2), floor: 20).affordable,
       "room in both windows proceeds")
-let broke = AgentDispatchGate.budgetDecide(sessionLeftPct: 5, weekLeftPct: 50,
-                                           sessionCostPct: 10, weekCostPct: 2,
-                                           floorPct: 20)
+let broke = AgentDispatchGate.budgetDecide(windows(5, 50, 10, 2), floor: 20)
 check(!broke.affordable && broke.window == AgentDispatchGate.windowSession
-      && broke.measured && broke.leftPct == 5 && broke.neededPct == 10,
+      && broke.measured && broke.left == 5 && broke.needed == 10,
       "the 5-hour window refuses, and says what it had against what was needed")
-let weekBroke = AgentDispatchGate.budgetDecide(sessionLeftPct: 90, weekLeftPct: 1,
-                                               sessionCostPct: 10, weekCostPct: 2,
-                                               floorPct: 20)
+let weekBroke = AgentDispatchGate.budgetDecide(windows(90, 1, 10, 2), floor: 20)
 check(!weekBroke.affordable && weekBroke.window == AgentDispatchGate.windowWeek,
       "a full 5-hour window does not buy a spent weekly one")
-let floored = AgentDispatchGate.budgetDecide(sessionLeftPct: 15, weekLeftPct: nil,
-                                             sessionCostPct: nil, weekCostPct: nil,
-                                             floorPct: 20)
-check(!floored.affordable && !floored.measured && floored.neededPct == 20,
+let floored = AgentDispatchGate.budgetDecide(windows(15, nil, nil, nil), floor: 20)
+check(!floored.affordable && !floored.measured && floored.needed == 20,
       "an unpriced ledger holds the floor instead")
-check(AgentDispatchGate.budgetDecide(sessionLeftPct: 25, weekLeftPct: nil,
-                                     sessionCostPct: nil, weekCostPct: nil,
-                                     floorPct: 20).affordable,
+check(AgentDispatchGate.budgetDecide(windows(25, nil, nil, nil), floor: 20).affordable,
       "…and above the floor it proceeds")
-let noReading = AgentDispatchGate.budgetDecide(sessionLeftPct: nil, weekLeftPct: nil,
-                                               sessionCostPct: nil, weekCostPct: nil,
-                                               floorPct: 20)
+let noReading = AgentDispatchGate.budgetDecide(windows(nil, nil, nil, nil), floor: 20)
 check(noReading.affordable && noReading.window.isEmpty,
       "no reading is no opinion — a probe that is off or offline must not take the "
       + "machine's automatic work down with it")
-let tie = AgentDispatchGate.budgetDecide(sessionLeftPct: 30, weekLeftPct: 30,
-                                         sessionCostPct: 10, weekCostPct: 10,
-                                         floorPct: 20)
+check(AgentDispatchGate.budgetDecide([], floor: 20).affordable,
+      "…and no ceilings at all is the same silence, not an error")
+let tie = AgentDispatchGate.budgetDecide(windows(30, 30, 10, 10), floor: 20)
 check(tie.window == AgentDispatchGate.windowSession, "session wins an exact tie")
+check(tie.unit == AgentDispatchGate.unitPct, "a rate limit decides in percentages")
+
+// The same arithmetic in the other currency. Nothing in the gate may assume a
+// percentage: a $255 balance is not 255% of anything.
+let dollars = [(AgentDispatchGate.windowKey, 0.10 as Double?, 0.21 as Double?),
+               (AgentDispatchGate.windowCredits, 17.03 as Double?, 0.21 as Double?)]
+let spent = AgentDispatchGate.budgetDecide(dollars, floor: 1.0,
+                                           unit: AgentDispatchGate.unitUsd)
+check(!spent.affordable && spent.window == AgentDispatchGate.windowKey
+      && spent.left == 0.10 && spent.needed == 0.21
+      && spent.unit == AgentDispatchGate.unitUsd,
+      "a key with less than one task's worth left holds the work, in dollars")
+let uncapped = AgentDispatchGate.budgetDecide(
+    [(AgentDispatchGate.windowKey, nil, 0.21),
+     (AgentDispatchGate.windowCredits, 0.05, 0.21)],
+    floor: 1.0, unit: AgentDispatchGate.unitUsd)
+check(!uncapped.affordable && uncapped.window == AgentDispatchGate.windowCredits,
+      "an uncapped key has no ceiling of its own; the balance still gates")
 
 section("the agent-task list and the queue behind the cap")
 // PARITY: every `AgentTaskQueue` case below is asserted again, on the same inputs, by

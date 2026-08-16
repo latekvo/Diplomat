@@ -3,7 +3,7 @@
 Nearly every setting belongs to one front-end and lives in that front-end's own
 store (``QSettings`` here, ``UserDefaults`` on macOS). A few can't: the repo root
 every spawn ``cd``s into, the cap on how many automatic agents may run here at
-once, the three knobs of the rate-limit budget those agents are started against,
+once, the four knobs of the spending budget those agents are started against,
 and which agent CLI a spawn runs (with the model it is pinned to). Each is
 consumed by whichever process picks the work up, and one of those is a **mesh
 node** — a separate process that is stdlib-only by design (the root README
@@ -36,6 +36,8 @@ AUTO_TASK_LIMIT = "autoTaskLimit"
 AUTO_BUDGET_GATE = "autoBudgetGate"
 AUTO_BUDGET_CONFIDENCE = "autoBudgetConfidence"
 AUTO_BUDGET_FLOOR_PCT = "autoBudgetFloorPct"
+#: The floor's twin for an account billed in money — see :func:`auto_budget_reserve_usd`.
+AUTO_BUDGET_RESERVE_USD = "autoBudgetReserveUsd"
 #: Which agent CLI a spawn runs — see :mod:`runner`, which owns the values.
 AGENT_RUNNER = "agentRunner"
 #: The model the selected runner is pinned to; "" lets that runner pick. A model id,
@@ -146,11 +148,12 @@ def auto_task_limit() -> int:
 
 
 def auto_budget_gate() -> bool:
-    """Whether automatic work is held back when the rate-limit windows are too low
-    to afford it (Settings → PR AUTO-FIX). Lives here, not in a front-end's own
-    store, for the reason the task cap does: a mesh node spends this machine's
-    limit on work the applet never sees, and the two must not disagree about
-    whether that limit is being watched."""
+    """Whether automatic work is held back when there is too little left to afford
+    it — of the rate-limit windows, or of the money an account billed in money has
+    (Settings → PR AUTO-FIX). Lives here, not in a front-end's own store, for the
+    reason the task cap does: a mesh node spends this machine's limit on work the
+    applet never sees, and the two must not disagree about whether that limit is
+    being watched."""
     return get_bool(AUTO_BUDGET_GATE, True)
 
 
@@ -167,4 +170,15 @@ def auto_budget_floor_pct() -> float:
     thin to price a task."""
     return autofix.clamp_budget_floor_pct(
         get_float(AUTO_BUDGET_FLOOR_PCT, autofix.DEFAULT_BUDGET_FLOOR_PCT)
+    )
+
+
+def auto_budget_reserve_usd() -> float:
+    """The same, in dollars, for a machine whose agents are billed in money: what to
+    keep on the account while the ledger is too thin to price a task. Separate from
+    the floor above because the two cannot be one knob — a percentage of a credit
+    balance is a percentage of whatever was last topped up, and a percentage is the
+    only form a rate limit is ever published in."""
+    return autofix.clamp_budget_reserve_usd(
+        get_float(AUTO_BUDGET_RESERVE_USD, autofix.DEFAULT_BUDGET_RESERVE_USD)
     )
