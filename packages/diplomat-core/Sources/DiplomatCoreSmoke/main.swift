@@ -1506,6 +1506,25 @@ check(!quickPrompt.contains("nearest twin"), "quick depth runs no swarm and name
 check(!quickPrompt.contains("a sibling that has it"), "quick depth carries no absence pass")
 print("review moves + absence pass assertions passed")
 
+// ---- Where a swarm's spilled summaries may be read from ----
+// A runner that spills a subagent's full output writes it to one machine-wide cache under a
+// name carrying only a task index and a timestamp, and the applet dispatches several of
+// these prompts at once against one agent home — so a glob there spans every concurrent
+// run's summaries, not this one's. `quick` carries the rule too: the bar is not depth-gated.
+section("delegation summary provenance")
+for p in [ReviewConfig(depth: "standard", me: "latekvo").buildPrompt(),
+          ReviewConfig(depth: "deep", target: .specific, me: "latekvo",
+                       specificPR: "768", specificAuthor: .theirs).buildPrompt(),
+          ReviewConfig(depth: "max", me: "latekvo").buildPrompt(),
+          AuditConfig().buildPrompt(),
+          AuditConfig(fixIssues: true, openPRs: true).buildPrompt()] {
+    check(p.contains("EXACT path that delegation handed back"),
+          "prompt pins the summary to the path delegation returned")
+    check(p.contains("never by globbing or listing the summary cache"),
+          "prompt forbids resolving a summary by pattern")
+}
+print("delegation summary provenance assertions passed")
+
 // ---- Auto-review verdict policy (skill / installer / community suppressors) ----
 section("verdict policy")
 let cleanFiles = ["packages/diplomat-core/src/foo.ts", "README.md"]
