@@ -299,22 +299,13 @@ public enum API {
         }
     }
 
-    /// Run a GraphQL query and decode it, retrying once on failure. GitHub
-    /// intermittently times these heavier queries out, so a single retry turns a
-    /// transient blip into a non-event.
+    /// Run a GraphQL query and decode it. The transport retry belongs to
+    /// `GH.graphql`, which every GraphQL caller shares; what is left here is
+    /// deterministic — a payload that fails to decode fails the same way twice.
     private static func graphqlDecoded<T: Decodable>(_ queryName: String, withRepo: Bool, as: T.Type) async throws -> T {
-        var lastError: Error?
-        for attempt in 0..<2 {
-            do {
-                let data = try await GH.graphql(queryName, withRepo: withRepo)
-                try checkGraphQLErrors(data)
-                return try makeDecoder().decode(T.self, from: data)
-            } catch {
-                lastError = error
-                if attempt == 0 { try? await Task.sleep(nanoseconds: 800_000_000) }
-            }
-        }
-        throw lastError!
+        let data = try await GH.graphql(queryName, withRepo: withRepo)
+        try checkGraphQLErrors(data)
+        return try makeDecoder().decode(T.self, from: data)
     }
 
     private static func makeDecoder() -> JSONDecoder {

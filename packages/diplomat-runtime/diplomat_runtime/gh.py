@@ -59,18 +59,32 @@ def run(args: list[str], timeout: float = 60.0) -> bytes:
     return proc.stdout
 
 
-def graphql(query_name: str, *, with_repo: bool) -> dict:
+def graphql(
+    query_name: str,
+    *,
+    with_repo: bool,
+    variables: dict[str, str] | None = None,
+    typed_variables: dict[str, str] | None = None,
+) -> dict:
     """Run a shared assets/graphql query, returning the decoded JSON envelope.
+
+    ``variables`` go through gh's ``-f``, which sends the value as a string;
+    ``typed_variables`` through ``-F``, which lets gh parse it into the JSON type
+    the query declares — the spelling a ``Boolean!`` needs.
 
     Retries once on failure — GitHub intermittently times the heavier queries
     out ("Something went wrong…"), so a single retry turns a blip into a
-    non-event (mirrors API.graphqlDecoded in Models.swift).
+    non-event (mirrors GH.graphql in GH.swift).
     """
     query = core.read_graphql(query_name)
     args = ["api", "graphql", "-f", f"query={query}"]
     if with_repo:
         cfg = core.config()
         args += ["-f", f"owner={cfg['owner']}", "-f", f"name={cfg['repo']}"]
+    for k, v in (variables or {}).items():
+        args += ["-f", f"{k}={v}"]
+    for k, v in (typed_variables or {}).items():
+        args += ["-F", f"{k}={v}"]
 
     last: Exception | None = None
     for attempt in range(2):

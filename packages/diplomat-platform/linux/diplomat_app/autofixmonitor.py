@@ -3,15 +3,17 @@
 Two GraphQL searches over the `gh` CLI, decoded into the pure types in
 :mod:`autofix`. The queries themselves are the shared ones in ``assets/graphql/``
 (single source of truth with the macOS monitor), driven by a search ``$q``
-qualifier rather than the owner/name form that :func:`gh.graphql` wraps — so the
-requests are issued directly here.
+qualifier rather than the owner/name form :func:`gh.graphql` fills in itself.
+
+They are the heaviest requests the applet makes and the only two on the poll's hot
+path, where either one failing costs the cycle: the queue drain stands down and
+nothing is committed until a cycle succeeds. So they go through
+:func:`gh.graphql` for its retry rather than issuing the request raw.
 """
 
 from __future__ import annotations
 
-import json
-
-from diplomat_runtime import core, gh
+from diplomat_runtime import gh
 from diplomat_runtime.autofix import PRSnapshot, ReviewRequest
 
 
@@ -62,9 +64,8 @@ def _parse_snapshots(env: dict, me: str) -> list[PRSnapshot]:
 def fetch_snapshots(owner: str, repo: str, me: str) -> list[PRSnapshot]:
     """One GraphQL search over my open, authored PRs (``assets/graphql/monitor-prs``)."""
     q = f"repo:{owner}/{repo} author:{me} is:pr is:open"
-    query = core.read_graphql("monitor-prs")
-    data = gh.run(["api", "graphql", "-f", f"query={query}", "-f", f"q={q}"])
-    return _parse_snapshots(json.loads(data), me)
+    env = gh.graphql("monitor-prs", with_repo=False, variables={"q": q})
+    return _parse_snapshots(env, me)
 
 
 def _parse_review_requests(env: dict, me: str) -> list[ReviewRequest]:
@@ -131,17 +132,10 @@ def fetch_review_requests(
     paths for the verdict-withhold gate — a big chunk of the rate-limit cost, so
     the caller passes ``False`` unless auto-approvals are on."""
     q = f"repo:{owner}/{repo} review-requested:{me} is:pr is:open"
-    query = core.read_graphql("review-requests")
-    data = gh.run(
-        [
-            "api",
-            "graphql",
-            "-f",
-            f"query={query}",
-            "-f",
-            f"q={q}",
-            "-F",
-            f"withFiles={'true' if include_files else 'false'}",
-        ]
+    env = gh.graphql(
+        "review-requests",
+        with_repo=False,
+        variables={"q": q},
+        typed_variables={"withFiles": "true" if include_files else "false"},
     )
-    return _parse_review_requests(json.loads(data), me)
+    return _parse_review_requests(env, me)
