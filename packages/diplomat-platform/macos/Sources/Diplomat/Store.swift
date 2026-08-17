@@ -164,7 +164,7 @@ final class Store: ObservableObject {
         }
     }
 
-    /// The rate-limit budget's three knobs — same file, same reason as the cap above:
+    /// The spending budget's four knobs — same file, same reason as the cap above:
     /// a mesh node spends this machine's limit on work this app never sees.
     ///
     /// Each normalises in memory as well as on disk, so the gate here and the node
@@ -196,6 +196,16 @@ final class Store: ObservableObject {
             AutoBudget.resetCache()
             guard !Headless.active else { return }
             AppConfig.setDouble(AppConfig.autoBudgetFloorPctKey, clamped)
+        }
+    }
+
+    @Published var autoBudgetReserveUsd: Double {
+        didSet {
+            let clamped = AgentDispatchGate.clampBudgetReserveUsd(autoBudgetReserveUsd)
+            if clamped != autoBudgetReserveUsd { autoBudgetReserveUsd = clamped }
+            AutoBudget.resetCache()
+            guard !Headless.active else { return }
+            AppConfig.setDouble(AppConfig.autoBudgetReserveUsdKey, clamped)
         }
     }
 
@@ -503,6 +513,7 @@ final class Store: ObservableObject {
         autoBudgetGate = AppConfig.autoBudgetGate
         autoBudgetConfidence = AppConfig.autoBudgetConfidence
         autoBudgetFloorPct = AppConfig.autoBudgetFloorPct
+        autoBudgetReserveUsd = AppConfig.autoBudgetReserveUsd
         // Default ON (absent key ⇒ true): the pill only lights up on a live heartbeat,
         // so defaulting on can't falsely claim "active" when no monitor is running.
         prAutofixEnabled = defaults.object(forKey: Keys.prAutofixEnabled) as? Bool ?? true
@@ -1013,16 +1024,24 @@ final class Store: ObservableObject {
                 // from the session row it keeps running totals on. Everything else is a
                 // Claude Code run, found in ~/.claude by the prompt it opened with.
                 let tokens: Double?
+                var usd: Double?
+                var model = ""
                 switch (f.session.isEmpty, AgentRunner(rawValue: f.runner)) {
                 case (false, .hermes):
                     tokens = HermesProbe.sessionTokens(sessionID: f.session)
+                    // Hermes prices its own sessions in dollars, which is the unit the
+                    // run was actually billed in — the tokens above buy a comparison
+                    // with every other runner, this buys the gate that pauses before
+                    // the money runs out.
+                    (usd, model) = HermesProbe.sessionPrice(sessionID: f.session)
                 case (false, .opencode):
                     tokens = UsageScan.opencodeTaskTokens(sessionID: f.session)
                 default:
                     tokens = UsageScan.taskTokens(prompt: f.prompt, startedAt: f.at,
                                                   endedAt: f.done)
                 }
-                TelemetryLog.done(key: f.key, at: f.done, tokens: tokens, runner: f.runner)
+                TelemetryLog.done(key: f.key, at: f.done, tokens: tokens,
+                                  runner: f.runner, usd: usd, model: model)
             }
         }.value
         refreshTelemetry()
@@ -1501,14 +1520,14 @@ final class Store: ObservableObject {
     /// Whether the "deferring auto work" note has been logged for the current
     /// at-capacity episode, and for the current out-of-budget one. Two flags, not one:
     /// a machine can saturate and drain several times over inside a single spell of
-    /// having no rate limit left, and each episode is worth one line of its own.
+    /// having nothing left to spend, and each episode is worth one line of its own.
     private var capacityLogged = false
     private var budgetLogged = false
 
-    /// Note that automatic work is being held for want of rate limit — once per
-    /// episode, like `logAtCapacity`, and cleared the moment a dispatch finds the
-    /// window has refilled. Without that, a machine sitting under its floor would write
-    /// one of these per owed PR per poll, for hours.
+    /// Note that automatic work is being held for want of budget — once per episode,
+    /// like `logAtCapacity`, and cleared the moment a dispatch finds room again.
+    /// Without that, a machine sitting under its floor would write one of these per
+    /// owed PR per poll, for hours.
     private func logUnaffordable(_ budget: AgentDispatchGate.Budget) {
         guard !budgetLogged else { return }
         budgetLogged = true
@@ -1888,14 +1907,14 @@ final class Store: ObservableObject {
     /// record the attempt its monitor would have recorded.
     ///
     /// `forced` is the operator's "execute now", and is the only thing that also
-    /// overrides the rate-limit budget. The drain does not: it is the machine starting
+    /// overrides the spending budget. The drain does not: it is the machine starting
     /// its own automatic work, and a task that could not be afforded when it was found
     /// is not afforded by having waited in a list.
     ///
     /// Dispatched as `.auto` whatever put it in the queue, including a review the
     /// operator asked for. That is not about who wanted the work but about what
     /// starting it costs: this dispatch spends a bay of the device's cap and its share
-    /// of the rate-limit window, and the gate's `.panel` branch is for the agent a
+    /// of whatever pays for it, and the gate's `.panel` branch is for the agent a
     /// click opens *now*, outside the cap entirely. What the operator's ask does change
     /// is the label — see `AgentDispatchGate.label`.
     ///
@@ -1983,7 +2002,7 @@ final class Store: ObservableObject {
     /// automatic agent, so the rest of the queue waits behind it. Of the six
     /// asymmetries the gate draws between a click and a monitor tick (focus, capacity,
     /// budget, mesh, counters, label) this borrows exactly two: the cap and the
-    /// rate-limit budget, which are the two the operator is overriding. Both are
+    /// spending budget, which are the two the operator is overriding. Both are
     /// estimates of what this machine should do next, and the operator looking at the
     /// row knows something they do not.
     ///
@@ -2177,7 +2196,7 @@ final class Store: ObservableObject {
     enum AutoCounter { case reviewRequests, myReviews, conflicts }
 
     /// One unit of automatic work nothing has started yet: the whole job, held by the
-    /// device's task cap, by the rate-limit budget, or by a switch the operator set
+    /// device's task cap, by the spending budget, or by a switch the operator set
     /// (its own monitor, or the queue itself), until a slot frees or the operator runs
     /// it. Rebuilt from live evidence on each poll — see `queuedTasks`.
     struct QueuedAgentTask: Identifiable, Equatable {
@@ -2231,7 +2250,8 @@ final class Store: ObservableObject {
     /// An AUTO job is additionally capped at `autoTaskLimit` concurrent agents on
     /// this device (`AgentState.capLoad`), held outright while its own monitor is
     /// switched off (`isPaused`) or the queue is (`queueAutoRun`), and held again
-    /// when what is left of the rate-limit windows will not cover it (`AutoBudget`);
+    /// when what is left of the limits it spends against will not cover it
+    /// (`AutoBudget`);
     /// a panel click is subject to none of them. Every one of those refusals queues
     /// the job (`stageQueued`), which is what the panel's Agent-tasks list shows as
     /// *queued*.
@@ -2552,7 +2572,7 @@ final class Store: ObservableObject {
             self.error = "Resolve #\(number): an agent is already on this PR."
         case .spawned, .banned, .standDown, .atCapacity, .unaffordable:
             // The last three are answers only a monitor gets — none of the mesh gate,
-            // the automatic-task cap and the rate-limit budget applies to a click.
+            // the automatic-task cap and the spending budget applies to a click.
             break
         }
     }

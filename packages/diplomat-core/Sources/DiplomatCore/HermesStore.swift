@@ -68,4 +68,24 @@ public enum HermesStore {
             return sum + Double(n)
         }
     }
+
+    /// What one session cost in dollars, from the same row.
+    ///
+    /// The other unit a task can be priced in, and the one an OpenRouter-billed run is
+    /// actually held to. Tokens alone cannot answer it: the same hundred thousand
+    /// tokens are cents on a small model and dollars on a frontier one, which is why
+    /// the model is read alongside the money and travels with it into the ledger.
+    ///
+    /// Hermes prices each session itself, against the provider's published rates for
+    /// the model it ran on, and settles that figure when the provider reports the real
+    /// one: `actual` is preferred where it exists and `estimated` answers until it
+    /// does.
+    ///
+    /// nil where there is nothing to read — a session row that has not been priced yet,
+    /// or a Hermes build older than the columns. That is a completion recorded without
+    /// a price, exactly as an unattributable transcript is, and the gate falls back to
+    /// its reserve rather than to a made-up figure.
+    public static func sessionPrice(actual: Double?, estimated: Double?) -> Double? {
+        [actual, estimated].first { ($0 ?? 0) > 0 } ?? nil
+    }
 }

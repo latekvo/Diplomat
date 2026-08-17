@@ -102,6 +102,21 @@ def test_the_budget_floor_reads_as_a_percentage_to_one_place(view):
     assert view._budget_floor.badge() == "20.0%"
 
 
+def test_the_budget_reserve_reads_as_money_and_persists(view):
+    """The other currency's knob, in the spelling the feed quotes it back in. It
+    writes to the SHARED config file rather than QSettings, because the mesh node
+    that spends this account on peer-routed work is a separate process reading the
+    same reserve."""
+    from diplomat_runtime import appconfig
+
+    # Driven through the slider itself rather than `set_value`, which is the store
+    # writing to the UI and deliberately silent — this is the other direction.
+    view._budget_reserve._slider.setValue(5)
+
+    assert view._budget_reserve.badge() == "$5.00"
+    assert appconfig.auto_budget_reserve_usd() == 5.0
+
+
 def test_every_row_names_its_control_for_a_screen_reader(view):
     """The row's name is a separate label, so an unnamed control reads as a bare
     switch. Every row is checked because the naming is one line in `SettingRow`:

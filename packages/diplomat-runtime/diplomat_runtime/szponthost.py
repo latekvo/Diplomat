@@ -95,8 +95,9 @@ class DiplomatHost(szpont_host.Host):
         """Should a dispatch routed here be declined and failed over to another
         node? Two reasons say yes, and the library asks for them as one question:
         this machine is already at its cap on concurrent automatic tasks (Settings →
-        PR AUTO-FIX, 2 by default), or it has too little rate limit left to afford
-        the job (:mod:`autobudget`).
+        PR AUTO-FIX, 2 by default), or it has too little left to afford the job —
+        of a rate-limit window, or of the money an account billed in money has
+        (:mod:`autobudget`).
 
         The applet enforces both on the work IT originates; this is the other half —
         work a mesh peer routes in, which the applet never sees and which spends
@@ -109,8 +110,8 @@ class DiplomatHost(szpont_host.Host):
         A budget decline is logged here rather than left to the node's own
         `mesh-at-capacity` line, which can only say the machine is busy — it is the
         difference between a peer waiting minutes for an agent to finish and waiting
-        hours for a window to refill, and the operator reading the feed is the one
-        who needs to know which.
+        hours for a window to refill — or indefinitely, for an account to be topped
+        up — and the operator reading the feed is the one who needs to know which.
 
         Failing the slot over is the right outcome for both: the mesh ranks peers
         surplus-first, so the node with limit to spend is exactly the one that picks

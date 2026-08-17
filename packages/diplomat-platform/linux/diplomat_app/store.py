@@ -225,11 +225,11 @@ class Store(QObject):
         # at-capacity episode (see _log_at_capacity), and for the current
         # out-of-budget one (see _log_unaffordable). Two flags, not one: a machine
         # can saturate and drain several times over inside a single spell of having
-        # no rate limit left, and each episode is worth one line of its own.
+        # nothing left to spend, and each episode is worth one line of its own.
         self._capacity_logged = False
         self._budget_logged = False
         # Automatic work nothing has started yet — held by the task cap, by the
-        # rate-limit budget, or by its own monitor being switched off — in the order
+        # spending budget, or by its own monitor being switched off — in the order
         # it will run. The panel's Agent-tasks list.
         #
         # Deliberately NOT persisted. A deferral writes no attempt record precisely so
@@ -1035,8 +1035,8 @@ class Store(QObject):
         An AUTO job is additionally capped at ``auto_task_limit`` concurrent
         agents on this device (``_auto_tasks_running``), held outright while its own
         monitor is switched off (:meth:`is_paused`) or the queue is
-        (:attr:`queue_auto_run`), and held again when what is left of the rate-limit
-        windows will not cover it (:mod:`autobudget`); a panel click is subject to
+        (:attr:`queue_auto_run`), and held again when what is left of the limits it
+        spends against will not cover it (:mod:`autobudget`); a panel click is subject to
         none of them. Every one of those refusals
         queues the job (:meth:`_stage_queued`), which is what the panel's
         Agent-tasks list shows as *queued*.
@@ -1472,10 +1472,10 @@ class Store(QObject):
         self.refresh_activity()
 
     def _log_unaffordable(self, budget: autofix.Budget) -> None:
-        """Note that automatic work is being held for want of rate limit — once per
+        """Note that automatic work is being held for want of budget — once per
         episode, like :meth:`_log_at_capacity`, and cleared the moment a dispatch
-        finds the window has refilled. Without that, a machine sitting under its
-        floor would write one of these per owed PR per poll, for hours."""
+        finds room again. Without that, a machine sitting under its floor would write
+        one of these per owed PR per poll, for hours."""
         if self._budget_logged:
             return
         self._budget_logged = True
@@ -1878,14 +1878,14 @@ class Store(QObject):
         and record the attempt its monitor would have recorded.
 
         ``forced`` is the operator's "execute now", and is the only thing that also
-        overrides the rate-limit budget. The drain does not: it is the machine
+        overrides the spending budget. The drain does not: it is the machine
         starting its own automatic work, and a task that could not be afforded when
         it was found is not afforded by having waited in a list.
 
         Dispatched as ``SOURCE_AUTO`` whatever put it in the queue, including a review
         the operator asked for. That is not about who wanted the work but about what
         starting it costs: this dispatch spends a bay of the device's cap and its
-        share of the rate-limit window, and the gate's panel branch is for the agent a
+        share of whatever pays for it, and the gate's panel branch is for the agent a
         click opens *now*, outside the cap entirely. What the operator's ask does
         change is the label — see :func:`autofix.dispatch_label`.
 
@@ -1942,7 +1942,7 @@ class Store(QObject):
         automatic agent, so the rest of the queue waits behind it. Of the five
         asymmetries the gate draws between a click and a monitor tick (capacity,
         budget, mesh, counters, label) this borrows exactly two: the cap and the
-        rate-limit budget, which are the two the operator is overriding. Both are
+        spending budget, which are the two the operator is overriding. Both are
         estimates of what this machine should do next, and the operator looking at
         the row knows something they do not.
 

@@ -20,13 +20,15 @@ enum AppConfig {
     static let repoRootKey = "repoRoot"
     /// How many automatic agents this machine runs at once. Same key on the Linux side.
     static let autoTaskLimitKey = "autoTaskLimit"
-    /// Whether automatic work is held back when the rate-limit windows are too low to
-    /// afford it. Same three keys on the Linux side.
+    /// Whether automatic work is held back when there is too little left to afford it.
+    /// Same four keys on the Linux side.
     static let autoBudgetGateKey = "autoBudgetGate"
     /// How sure the gate must be that a task fits, as a percentage.
     static let autoBudgetConfidenceKey = "autoBudgetConfidence"
     /// Share of each window to keep in hand while the ledger cannot price a task.
     static let autoBudgetFloorPctKey = "autoBudgetFloorPct"
+    /// The same, in dollars, for an account billed in money.
+    static let autoBudgetReserveUsdKey = "autoBudgetReserveUsd"
     /// Which agent CLI a spawn runs — see `AgentRunner`. Same key on the Linux side.
     static let agentRunnerKey = "agentRunner"
     /// The model the selected runner is pinned to; "" lets that runner pick. A model id,
@@ -168,5 +170,16 @@ enum AppConfig {
         AgentDispatchGate.clampBudgetFloorPct(
             double(autoBudgetFloorPctKey,
                    fallback: AgentDispatchGate.defaultBudgetFloorPct))
+    }
+
+    /// The same, in dollars, for a machine whose agents are billed in money: what to
+    /// keep on the account while the ledger is too thin to price a task. Separate from
+    /// the floor above because the two cannot be one knob — a percentage of a credit
+    /// balance is a percentage of whatever was last topped up, and a percentage is the
+    /// only form a rate limit is ever published in.
+    static var autoBudgetReserveUsd: Double {
+        AgentDispatchGate.clampBudgetReserveUsd(
+            double(autoBudgetReserveUsdKey,
+                   fallback: AgentDispatchGate.defaultBudgetReserveUsd))
     }
 }

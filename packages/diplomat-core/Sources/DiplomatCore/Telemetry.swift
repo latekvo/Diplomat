@@ -18,8 +18,10 @@ import Foundation
 /// - `started` — an agent was dispatched for it (`remote` when the mesh placed it
 ///               on a peer, in which case the tokens are that machine's, not ours).
 /// - `done`    — the agent exited, carrying the tokens its own transcript accounts
-///               for. Timed from its completion sentinel, or from that transcript's
-///               last turn where the run left no sentinel the applet can read.
+///               for and, for a runner the provider bills in money, what it charged
+///               and the model it charged for. Timed from its completion sentinel, or
+///               from that transcript's last turn where the run left no sentinel the
+///               applet can read.
 /// - `cleared` — a poll no longer sees it owed and we never started it (someone
 ///               replied by hand, the PR closed, a peer took it).
 ///
@@ -62,6 +64,12 @@ public enum Telemetry {
         /// Which CLI ran it (an `AgentRunner.rawValue`), or empty for a task recorded
         /// before there was a choice of one.
         public var runner: String
+        /// What the provider charged for it, for a runner billed in money, and the
+        /// model whose rates it was charged at — in the ledger's own spelling of that
+        /// id, which is the runner's, so tasks group by it without anything having to
+        /// translate between how two tools write the same model.
+        public var usd: Double?
+        public var model: String
 
         /// Whether the tokens it spent came out of the account the quota probe reads.
         ///
@@ -152,7 +160,8 @@ public enum Telemetry {
             let fresh = byKey[key] == nil
             var task = byKey[key] ?? Task(key: key, duty: "", pr: 0, queuedAt: nil,
                                           startedAt: nil, doneAt: nil, clearedAt: nil,
-                                          remote: false, tokens: nil, runner: "")
+                                          remote: false, tokens: nil, runner: "",
+                                          usd: nil, model: "")
             if let duty = obj["duty"] as? String, !duty.isEmpty { task.duty = duty }
             if let pr = number(obj["pr"]), pr > 0 { task.pr = Int(pr) }
             let known: Bool
@@ -169,11 +178,14 @@ public enum Telemetry {
             case "done":
                 known = true
                 let agentRunner = obj["runner"] as? String ?? ""
+                let ranOn = obj["model"] as? String ?? ""
                 if task.doneAt == nil {
                     task.doneAt = at
                     task.tokens = number(obj["tokens"])
                     task.runner = agentRunner
-                } else if !((task.tokens ?? 0) > 0) {
+                    task.usd = number(obj["usd"])
+                    task.model = ranOn
+                } else {
                     // A retry appends a SECOND completion under the same key. The
                     // instants stay first-wins, but the price is taken from
                     // whichever attempt could be attributed at all — otherwise a
@@ -181,9 +193,20 @@ public enum Telemetry {
                     // stays unpriced however many times it is re-run. Its runner
                     // travels with it: that is what says whether those tokens came
                     // out of the Anthropic window.
-                    if let later = number(obj["tokens"]), later > 0 {
+                    //
+                    // The two prices fill independently, because a runner can report
+                    // one and not the other — a session row written before the
+                    // provider returned a cost carries tokens and no money.
+                    if !((task.tokens ?? 0) > 0), let later = number(obj["tokens"]),
+                       later > 0 {
                         task.tokens = later
                         task.runner = agentRunner
+                    }
+                    if !((task.usd ?? 0) > 0), let later = number(obj["usd"]),
+                       later > 0 {
+                        task.usd = later
+                        task.model = ranOn
+                        if task.runner.isEmpty { task.runner = agentRunner }
                     }
                 }
             case "cleared":
@@ -434,6 +457,16 @@ public enum Telemetry {
         /// number, but a measured one.
         public let perTaskTokensMean: Double
 
+        /// What a task costs in DOLLARS, for a runner the provider bills in money.
+        /// Built from one model's runs only (`perTaskUsdModel`), which is what makes
+        /// the figure mean anything: rates differ by two orders of magnitude across
+        /// models, so a distribution mixing them describes no task that ever ran.
+        public let perTaskUsd: Distribution
+        /// The model `perTaskUsd` is priced for — the most recent one to run, spelled
+        /// as the runner that ran it spells it. Empty when nothing in range was
+        /// billed in money.
+        public let perTaskUsdModel: String
+
         public let avgRunSecs: Double
         public let avgWaitSecs: Double
         public let runSamples: Int
@@ -523,6 +556,22 @@ public enum Telemetry {
             weekMean = charged.reduce(0) { $0 + 100 * $1 / limit } / Double(charged.count)
         }
 
+        // The dollar half of the same question. Restricted to the model that ran most
+        // recently, because a switch of model is a switch of rates: keeping the older
+        // model's runs in would price the next task against rates it will not be
+        // charged at, and dropping them narrows the sample until the new model has a
+        // history of its own — which holds work to the standing reserve meanwhile, the
+        // conservative direction of the two. Ties go to the first seen, as they do in
+        // the Python twin.
+        let billed = local.filter { ($0.usd ?? 0) > 0 }
+        var latest: Task?
+        for task in billed {
+            guard let best = latest else { latest = task; continue }
+            if (task.startedAt ?? 0) > (best.startedAt ?? 0) { latest = task }
+        }
+        let usdModel = latest?.model ?? ""
+        let usd = billed.filter { $0.model == usdModel }.compactMap(\.usd)
+
         let series = pendingSeries(ledger.tasks, now: now, days: days, steps: steps)
         let quota = quotaSeries(ledger.samples, now: now, days: days)
         let (repo, other) = tokenSplit(samples)
@@ -535,6 +584,8 @@ public enum Telemetry {
             perTaskWeekMean: weekMean,
             perTaskTokensMean: priced.isEmpty
                 ? 0 : priced.compactMap(\.tokens).reduce(0, +) / Double(priced.count),
+            perTaskUsd: distribution(usd, binCount: binCount, z: z),
+            perTaskUsdModel: usdModel,
             avgRunSecs: runs.isEmpty ? 0 : runs.reduce(0, +) / Double(runs.count),
             avgWaitSecs: waits.isEmpty ? 0 : waits.reduce(0, +) / Double(waits.count),
             runSamples: runs.count,
@@ -584,6 +635,16 @@ public enum Telemetry {
         guard value.isFinite else { return "—" }
         if value > 0, value < 1 { return String(format: "%.2f%%", value) }
         return String(format: "%.1f%%", value)
+    }
+
+    /// "$12.40" / "$0.068" — dollar figures, which run from a fraction of a cent for
+    /// one task to a three-figure balance. Sub-dollar amounts keep three places for
+    /// the reason sub-1% figures keep two: that is the range a single task lands in,
+    /// and rounding it to cents would print most of them as the same number.
+    public static func money(_ value: Double) -> String {
+        guard value.isFinite, value >= 0 else { return "—" }
+        if value > 0, value < 1 { return String(format: "$%.3f", value) }
+        return String(format: "$%.2f", value)
     }
 
     /// "1.2M" / "834k" / "512" — token counts, which run to eight figures.

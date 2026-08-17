@@ -47,21 +47,16 @@ enum TelemetryCommand {
                     "queuedAt": opt(t.queuedAt), "startedAt": opt(t.startedAt),
                     "doneAt": opt(t.doneAt), "clearedAt": opt(t.clearedAt),
                     "remote": t.remote, "tokens": opt(t.tokens), "runner": t.runner,
+                    "usd": opt(t.usd), "model": t.model,
                     "runSecs": opt(t.runSecs), "waitSecs": opt(t.waitSecs),
                 ]
             },
             "sampleCount": ledger.samples.count,
             "sessionLimitTokens": opt(s.sessionLimitTokens),
             "weekLimitTokens": opt(s.weekLimitTokens),
-            "perTask": [
-                "count": s.perTask.count,
-                "mean": r(s.perTask.mean), "sd": r(s.perTask.sd), "stderr": r(s.perTask.stderr),
-                "ciLow": r(s.perTask.ciLow), "ciHigh": r(s.perTask.ciHigh),
-                "min": r(s.perTask.min), "max": r(s.perTask.max), "median": r(s.perTask.median),
-                "bins": s.perTask.bins.map { ["lower": r($0.lower), "upper": r($0.upper),
-                                              "count": $0.count] },
-                "curve": s.perTask.curve.map { r($0) },
-            ],
+            "perTask": dist(s.perTask),
+            "perTaskUsd": dist(s.perTaskUsd),
+            "perTaskUsdModel": s.perTaskUsdModel,
             "perTaskWeekMean": r(s.perTaskWeekMean),
             "perTaskTokensMean": r(s.perTaskTokensMean),
             "avgRunSecs": r(s.avgRunSecs), "avgWaitSecs": r(s.avgWaitSecs),
@@ -88,6 +83,7 @@ enum TelemetryCommand {
                 "ciLow": Telemetry.percent(s.perTask.ciLow),
                 "ciHigh": Telemetry.percent(s.perTask.ciHigh),
                 "weekMean": Telemetry.percent(s.perTaskWeekMean),
+                "usdMean": Telemetry.money(s.perTaskUsd.mean),
                 "share": Telemetry.percent(s.repoSharePct),
                 "perTaskTokens": Telemetry.tokens(s.perTaskTokensMean),
                 "repoTokens": Telemetry.tokens(s.repoTokens),
@@ -99,6 +95,18 @@ enum TelemetryCommand {
             die("could not serialise telemetry", 1)
         }
         FileHandle.standardOutput.write(data)
+    }
+
+    private static func dist(_ d: Telemetry.Distribution) -> [String: Any] {
+        [
+            "count": d.count,
+            "mean": r(d.mean), "sd": r(d.sd), "stderr": r(d.stderr),
+            "ciLow": r(d.ciLow), "ciHigh": r(d.ciHigh),
+            "min": r(d.min), "max": r(d.max), "median": r(d.median),
+            "bins": d.bins.map { ["lower": r($0.lower), "upper": r($0.upper),
+                                  "count": $0.count] },
+            "curve": d.curve.map { r($0) },
+        ]
     }
 
     private static func r(_ v: Double) -> Double {

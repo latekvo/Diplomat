@@ -169,6 +169,62 @@ def _ledger_lines() -> list[str]:
         {"at": NOW - 5.3 * DAY + 8000, "ev": "done", "key": "review:h/o/r#28@mm",
          "tokens": 8_000_000.0, "runner": "opencode"},
     ]
+    # Billed in money, on two different models. The dollar distribution is ONE
+    # model's — the most recently run — so the three cheap runs below must be dropped
+    # by both sides in favour of the four expensive ones. Left in, they would move
+    # every moment of that distribution, which is exactly the drift this file exists
+    # to catch. The prices are two orders of magnitude apart on purpose: a side that
+    # mixes them cannot round its way back into agreement.
+    for i, usd in enumerate([0.061, 0.079, 0.104]):
+        at = NOW - 5.2 * DAY + i * 3600
+        key = f"review:h/o/r#3{i}@n{i}"
+        events += [
+            {"at": at, "ev": "queued", "key": key, "duty": "review", "pr": 30 + i},
+            {"at": at + 100, "ev": "started", "key": key, "remote": False,
+             "attempt": 1},
+            {"at": at + 1500, "ev": "done", "key": key, "tokens": 95_000.0,
+             "runner": "hermes", "usd": usd,
+             "model": "deepseek/deepseek-v4-flash-0731"},
+        ]
+    for i, usd in enumerate([4.62, 5.01, 4.88, 5.24]):
+        at = NOW - 4.5 * DAY + i * 3600
+        key = f"review:h/o/r#4{i}@p{i}"
+        events += [
+            {"at": at, "ev": "queued", "key": key, "duty": "review", "pr": 40 + i},
+            {"at": at + 100, "ev": "started", "key": key, "remote": False,
+             "attempt": 1},
+            {"at": at + 1500, "ev": "done", "key": key, "tokens": 900_000.0,
+             "runner": "hermes", "usd": usd, "model": "anthropic/claude-opus-5"},
+        ]
+    # A retry where the first attempt was priced in TOKENS but not in money — a
+    # session row written before the provider returned a cost — and the second
+    # carries the charge. The two prices fill independently, so this task ends up
+    # with the first attempt's tokens and the second's dollars; a side that gates the
+    # money behind the tokens leaves it unbilled and out of the distribution above.
+    events += [
+        {"at": NOW - 4.4 * DAY, "ev": "queued", "key": "review:h/o/r#48@qq",
+         "duty": "review", "pr": 48},
+        {"at": NOW - 4.4 * DAY + 100, "ev": "started", "key": "review:h/o/r#48@qq",
+         "remote": False, "attempt": 1},
+        {"at": NOW - 4.4 * DAY + 1500, "ev": "done", "key": "review:h/o/r#48@qq",
+         "tokens": 880_000.0, "runner": "hermes"},
+        {"at": NOW - 4.4 * DAY + 3000, "ev": "started", "key": "review:h/o/r#48@qq",
+         "remote": False, "attempt": 2},
+        {"at": NOW - 4.4 * DAY + 4500, "ev": "done", "key": "review:h/o/r#48@qq",
+         "usd": 4.95, "model": "anthropic/claude-opus-5"},
+    ]
+    # Billed, but the mesh placed it on a peer: that machine's money, not ours, so it
+    # is out of the distribution for the reason a remote task is out of the token one.
+    # Its price is absurd, so a side that counts it says so loudly.
+    events += [
+        {"at": NOW - 4.3 * DAY, "ev": "queued", "key": "review:h/o/r#49@rr",
+         "duty": "review", "pr": 49},
+        {"at": NOW - 4.3 * DAY + 100, "ev": "started", "key": "review:h/o/r#49@rr",
+         "remote": True, "attempt": 1},
+        {"at": NOW - 4.3 * DAY + 1500, "ev": "done", "key": "review:h/o/r#49@rr",
+         "tokens": 700_000.0, "runner": "hermes", "usd": 90.0,
+         "model": "anthropic/claude-opus-5"},
+    ]
     # Owed, then cleared before anyone took it (the reviewer resolved it themselves):
     # pending for a while, then not, and never a run.
     events += [
@@ -269,11 +325,20 @@ def test_the_fixture_exercises_every_figure(both):
     assert any(b["count"] for b in p["perTask"]["bins"]), "empty histogram"
     assert any(v > 0 for v in p["perTask"]["curve"]), "flat fitted normal"
     assert p["avgRunSecs"] > 0 and p["avgWaitSecs"] > 0
-    assert p["remoteCount"] == 1, "the mesh-placed task is missing"
+    assert p["remoteCount"] == 2, (
+        "a mesh-placed task is missing — one unfinished, and one that finished and "
+        "was charged, so both currencies have a peer's spend to exclude"
+    )
     assert p["unattributedCount"] == 1, "the uncosted completion is missing"
-    assert {"", "claude", "opencode"} <= {t["runner"] for t in p["tasks"]}, (
+    assert {"", "claude", "opencode", "hermes"} <= {t["runner"] for t in p["tasks"]}, (
         "the fixture has no foreign-runner completion beside the Anthropic ones, so "
         "an implementation that charged every runner to the same window would pass"
+    )
+    assert p["perTaskUsd"]["count"] >= 5, "too few billed tasks to shape a distribution"
+    assert p["perTaskUsd"]["sd"] > 0, "no spread in the money — a bound from it is a point"
+    assert len({t["model"] for t in p["tasks"] if t["usd"]}) > 1, (
+        "the fixture bills only one model, so an implementation that never filtered "
+        "by model would pass"
     )
     assert p["quota"], "no quota readings — the rate-limit chart has nothing to draw"
     assert any(q["sessionPct"] is None for q in p["quota"]), (
@@ -306,17 +371,44 @@ def test_a_foreign_runners_task_is_priced_but_never_charged_to_the_window(both):
     one ledger. One is a plain OpenCode run; the other took its price from a retry, so
     it only reads as foreign if the runner was carried across with the price."""
     _swift, p = both
-    counted = [t for t in p["tasks"]
-               if t["tokens"] and not t["remote"] and t["startedAt"] is not None
-               and t["startedAt"] >= NOW - DAYS * DAY and t["runner"] != "opencode"]
-    foreign = [t for t in p["tasks"] if t["runner"] == "opencode"]
-    assert sorted(t["tokens"] for t in foreign) == [8_000_000, 9_000_000]
+    local_priced = [t for t in p["tasks"]
+                    if t["tokens"] and not t["remote"] and t["startedAt"] is not None
+                    and t["startedAt"] >= NOW - DAYS * DAY]
+    foreign = [t for t in local_priced if t["runner"] in ("opencode", "hermes")]
+    counted = [t for t in local_priced if t not in foreign]
+    assert sorted(t["tokens"] for t in foreign
+                  if t["runner"] == "opencode") == [8_000_000, 9_000_000]
     assert p["perTask"]["count"] == len(counted), (
         "the window's percentages counted a task billed to another provider"
     )
     # It is still the same work, and the tokens-per-task figure is where it belongs.
-    priced = [t["tokens"] for t in counted] + [t["tokens"] for t in foreign]
+    priced = [t["tokens"] for t in local_priced]
     assert p["perTaskTokensMean"] == pytest.approx(sum(priced) / len(priced), abs=1e-6)
+
+
+def test_the_money_distribution_is_one_models_local_runs(both):
+    """The dollar figure the budget gate prices the next task from. Three filters have
+    to agree across both implementations, and each one changes the answer: only tasks
+    that were CHARGED, only ones that ran HERE, and only the model that ran most
+    recently — rates differ by two orders of magnitude, so a mean across models
+    describes no task that ever ran."""
+    _swift, p = both
+    assert p["perTaskUsdModel"] == "anthropic/claude-opus-5", (
+        "the most recently RUN model is what the next task is priced at"
+    )
+    billed = [t for t in p["tasks"]
+              if t["usd"] and not t["remote"] and t["startedAt"] is not None
+              and t["startedAt"] >= NOW - DAYS * DAY
+              and t["model"] == p["perTaskUsdModel"]]
+    assert p["perTaskUsd"]["count"] == len(billed) == 5, (
+        "the four opus runs plus the retry that was charged on its second attempt"
+    )
+    assert p["perTaskUsd"]["mean"] == pytest.approx(
+        sum(t["usd"] for t in billed) / len(billed), abs=1e-6)
+    # The cheap model's runs are in the same range and would drag the mean to a
+    # third of this; the remote one would double it.
+    assert 4.5 < p["perTaskUsd"]["mean"] < 5.3
+    assert p["format"]["usdMean"].startswith("$4."), p["format"]["usdMean"]
 
 
 def test_a_retry_does_not_move_the_measured_wait(both):

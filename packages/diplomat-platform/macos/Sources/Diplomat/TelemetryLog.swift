@@ -99,10 +99,20 @@ enum TelemetryLog {
     /// percentages honest: an OpenCode or Hermes task is billed by whichever provider
     /// that runner is logged into, so its tokens are worth reporting per task but not
     /// against a window they never drew on (`Telemetry.Task.anthropic`).
-    static func done(key: String, at: TimeInterval, tokens: Double?, runner: String) {
+    ///
+    /// `usd`/`model` are the other unit that same task can be priced in, for a runner
+    /// billed in money rather than out of a rate-limit window: what the provider
+    /// charged, and the model whose rates it was charged at. The pair travels together
+    /// because neither is worth anything alone — the same task costs cents on one model
+    /// and dollars on another, so a mean taken across models would price nothing that
+    /// ever ran (`Telemetry.Summary.perTaskUsd`).
+    static func done(key: String, at: TimeInterval, tokens: Double?, runner: String,
+                     usd: Double? = nil, model: String = "") {
         var event: [String: Any] = ["at": at, "ev": "done", "key": key]
         if let tokens { event["tokens"] = tokens }
         if !runner.isEmpty { event["runner"] = runner }
+        if let usd { event["usd"] = usd }
+        if !model.isEmpty { event["model"] = model }
         append(event)
     }
 

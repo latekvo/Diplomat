@@ -25,7 +25,9 @@ already the identity two machines agree on — :func:`autofix.work_key`):
 ``done``
     the agent exited — timed from its completion sentinel, or from the last turn of
     its transcript where the mesh placed the run and kept no sentinel we can read —
-    carrying the tokens that transcript accounts for (see :mod:`usagescan`).
+    carrying the tokens that transcript accounts for (see :mod:`usagescan`), and,
+    for a runner the provider bills in money, what it charged and the model it
+    charged for (see :func:`hermesstore.session_price`).
 ``cleared``
     a poll no longer sees it owed and we never started it — someone replied by
     hand, the PR closed, a peer took it.
@@ -194,7 +196,8 @@ def record_started(key: str, remote: bool = False, attempt: int = 1) -> None:
 
 
 def record_done(key: str, at: float, tokens: float | None,
-                agent_runner: str = "") -> None:
+                agent_runner: str = "", usd: float | None = None,
+                model: str = "") -> None:
     """Record a completion at ``at`` — when the agent actually exited, not when a
     poll noticed (which is up to a poll period later and would inflate every run
     time). :func:`record_completion` is what establishes that instant.
@@ -203,12 +206,23 @@ def record_done(key: str, at: float, tokens: float | None,
     rate-limit percentages honest: an OpenCode or Hermes task is billed by whichever
     provider that runner is logged into, so its tokens are worth reporting per task
     but not against a window they never drew on (:attr:`Task.anthropic`).
+
+    ``usd``/``model`` are the other unit that same task can be priced in, for a
+    runner billed in money rather than out of a rate-limit window: what the provider
+    charged, and the model whose rates it was charged at. The pair travels together
+    because neither is worth anything alone — the same task costs cents on one model
+    and dollars on another, so a mean taken across models would price nothing that
+    ever ran (:attr:`Summary.per_task_usd`).
     """
     event = {"at": at, "ev": "done", "key": key}
     if tokens is not None:
         event["tokens"] = tokens
     if agent_runner:
         event["runner"] = agent_runner
+    if usd is not None:
+        event["usd"] = usd
+    if model:
+        event["model"] = model
     append(event)
 
 
@@ -245,9 +259,15 @@ def record_completion(key: str, prompt: str, started_at: float,
     from . import hermesstore, runner, usagescan
 
     run = None
+    usd: float | None = None
+    model = ""
     try:
         if session_id and agent_runner == runner.HERMES:
             tokens = hermesstore.session_tokens(session_id)
+            # Hermes prices its own sessions in dollars, which is the unit the run was
+            # actually billed in — the tokens above buy a comparison with every other
+            # runner, this buys the gate that pauses before the money runs out.
+            usd, model = hermesstore.session_price(session_id)
         elif session_id and agent_runner == runner.OPENCODE:
             tokens = usagescan.opencode_task_tokens(session_id)
         else:
@@ -257,7 +277,7 @@ def record_completion(key: str, prompt: str, started_at: float,
         tokens = None
     if exited_at is None:
         exited_at = run.last_turn_at if run is not None else noticed_at
-    record_done(key, exited_at, tokens, agent_runner)
+    record_done(key, exited_at, tokens, agent_runner, usd, model)
 
 
 # MARK: - Reading (what the monitors and the screen share)
@@ -362,6 +382,12 @@ class Task:
     #: Which CLI ran it (a :mod:`runner` key), or blank for a task recorded before
     #: there was a choice of one.
     runner: str = ""
+    #: What the provider charged for it, for a runner billed in money, and the model
+    #: whose rates it was charged at — in the ledger's own spelling of that id, which
+    #: is the runner's, so tasks group by it without anything having to translate
+    #: between how two tools write the same model.
+    usd: float | None = None
+    model: str = ""
 
     @property
     def anthropic(self) -> bool:
@@ -509,21 +535,36 @@ def fold(lines: list[str]) -> Ledger:
         elif ev == "done":
             agent_runner = obj.get("runner")
             agent_runner = agent_runner if isinstance(agent_runner, str) else ""
+            ran_on = obj.get("model")
+            ran_on = ran_on if isinstance(ran_on, str) else ""
             if task.done_at is None:
                 task.done_at = at
                 task.tokens = _number(obj.get("tokens"))
                 task.runner = agent_runner
-            elif not (task.tokens or 0) > 0:
+                task.usd = _number(obj.get("usd"))
+                task.model = ran_on
+            else:
                 # A retry appends a SECOND completion under the same key. The
                 # instants stay first-wins, but the price is taken from whichever
                 # attempt could be attributed at all — otherwise a task whose first
                 # attempt was never tied back to a transcript stays unpriced however
                 # many times it is re-run. Its runner travels with it: that is what
                 # says whether those tokens came out of the Anthropic window.
-                later = _number(obj.get("tokens"))
-                if later is not None and later > 0:
-                    task.tokens = later
-                    task.runner = agent_runner
+                #
+                # The two prices fill independently, because a runner can report one
+                # and not the other — a session row written before the provider
+                # returned a cost carries tokens and no money.
+                if not (task.tokens or 0) > 0:
+                    later = _number(obj.get("tokens"))
+                    if later is not None and later > 0:
+                        task.tokens = later
+                        task.runner = agent_runner
+                if not (task.usd or 0) > 0:
+                    later = _number(obj.get("usd"))
+                    if later is not None and later > 0:
+                        task.usd = later
+                        task.model = ran_on
+                        task.runner = task.runner or agent_runner
         else:  # "cleared"
             if task.cleared_at is None:
                 task.cleared_at = at
@@ -764,6 +805,16 @@ class Summary:
     #: a measured one.
     per_task_tokens_mean: float = 0.0
 
+    #: What a task costs in DOLLARS, for a runner the provider bills in money. Built
+    #: from one model's runs only (:attr:`per_task_usd_model`), which is what makes
+    #: the figure mean anything: rates differ by two orders of magnitude across
+    #: models, so a distribution mixing them describes no task that ever ran.
+    per_task_usd: Distribution = field(default_factory=Distribution)
+    #: The model :attr:`per_task_usd` is priced for — the most recent one to run,
+    #: spelled as the runner that ran it spells it. Empty when nothing in range was
+    #: billed in money.
+    per_task_usd_model: str = ""
+
     avg_run_secs: float = 0.0
     avg_wait_secs: float = 0.0
     run_samples: int = 0
@@ -839,6 +890,20 @@ def summarize(ledger: Ledger, *, now: float, days: float, steps: int,
     if week_limit is not None and week_limit > 0 and charged:
         week_mean = sum(100 * tok / week_limit for tok in charged) / len(charged)
 
+    # The dollar half of the same question. Restricted to the model that ran most
+    # recently, because a switch of model is a switch of rates: keeping the older
+    # model's runs in would price the next task against rates it will not be charged
+    # at, and dropping them narrows the sample until the new model has a history of
+    # its own — which holds work to the standing reserve meanwhile, the conservative
+    # direction of the two. Ties go to the first seen, as they do in the Swift twin.
+    billed = [t for t in local if t.usd is not None and t.usd > 0]
+    latest: Task | None = None
+    for task in billed:
+        if latest is None or task.started_at > latest.started_at:
+            latest = task
+    usd_model = latest.model if latest is not None else ""
+    usd = [t.usd for t in billed if t.model == usd_model]
+
     series = pending_series(ledger.tasks, now=now, days=days, steps=steps)
     quota = quota_series(ledger.samples, now=now, days=days)
     repo, other = token_split(samples)
@@ -851,6 +916,8 @@ def summarize(ledger: Ledger, *, now: float, days: float, steps: int,
         per_task_week_mean=week_mean,
         per_task_tokens_mean=(sum(t.tokens for t in priced) / len(priced)
                               if priced else 0.0),
+        per_task_usd=distribution(usd, bin_count=bin_count, z=z),
+        per_task_usd_model=usd_model,
         avg_run_secs=sum(runs) / len(runs) if runs else 0.0,
         avg_wait_secs=sum(waits) / len(waits) if waits else 0.0,
         run_samples=len(runs),
@@ -917,6 +984,16 @@ def percent(value: float) -> str:
     return f"{value:.1f}%"
 
 
+def money(value: float) -> str:
+    """``$12.40`` / ``$0.068`` — dollar figures, which run from a fraction of a cent
+    for one task to a three-figure balance. Sub-dollar amounts keep three places for
+    the reason sub-1% figures keep two: that is the range a single task lands in, and
+    rounding it to cents would print most of them as the same number."""
+    if not math.isfinite(value) or value < 0:
+        return "—"
+    return f"${value:.3f}" if 0 < value < 1 else f"${value:.2f}"
+
+
 def tokens(value: float) -> str:
     """``1.2M`` / ``834k`` / ``512`` — token counts, which run to eight figures."""
     if not math.isfinite(value) or value <= 0:
@@ -945,6 +1022,18 @@ def _opt(value: float | None):
     return None if value is None else _r(value)
 
 
+def _dist(d: Distribution) -> dict:
+    return {
+        "count": d.count,
+        "mean": _r(d.mean), "sd": _r(d.sd), "stderr": _r(d.stderr),
+        "ciLow": _r(d.ci_low), "ciHigh": _r(d.ci_high),
+        "min": _r(d.min), "max": _r(d.max), "median": _r(d.median),
+        "bins": [{"lower": _r(b.lower), "upper": _r(b.upper), "count": b.count}
+                 for b in d.bins],
+        "curve": [_r(v) for v in d.curve],
+    }
+
+
 def parity_payload(ledger: Ledger, summary: Summary) -> dict:
     """Everything ``diplomat-core telemetry`` prints, in the same shape — the
     subject of ``test_telemetry_parity.py``."""
@@ -956,6 +1045,7 @@ def parity_payload(ledger: Ledger, summary: Summary) -> dict:
                 "queuedAt": _opt(t.queued_at), "startedAt": _opt(t.started_at),
                 "doneAt": _opt(t.done_at), "clearedAt": _opt(t.cleared_at),
                 "remote": t.remote, "tokens": _opt(t.tokens), "runner": t.runner,
+                "usd": _opt(t.usd), "model": t.model,
                 "runSecs": _opt(t.run_secs), "waitSecs": _opt(t.wait_secs),
             }
             for t in ledger.tasks
@@ -963,15 +1053,9 @@ def parity_payload(ledger: Ledger, summary: Summary) -> dict:
         "sampleCount": len(ledger.samples),
         "sessionLimitTokens": _opt(summary.session_limit_tokens),
         "weekLimitTokens": _opt(summary.week_limit_tokens),
-        "perTask": {
-            "count": d.count,
-            "mean": _r(d.mean), "sd": _r(d.sd), "stderr": _r(d.stderr),
-            "ciLow": _r(d.ci_low), "ciHigh": _r(d.ci_high),
-            "min": _r(d.min), "max": _r(d.max), "median": _r(d.median),
-            "bins": [{"lower": _r(b.lower), "upper": _r(b.upper), "count": b.count}
-                     for b in d.bins],
-            "curve": [_r(v) for v in d.curve],
-        },
+        "perTask": _dist(d),
+        "perTaskUsd": _dist(summary.per_task_usd),
+        "perTaskUsdModel": summary.per_task_usd_model,
         "perTaskWeekMean": _r(summary.per_task_week_mean),
         "perTaskTokensMean": _r(summary.per_task_tokens_mean),
         "avgRunSecs": _r(summary.avg_run_secs),
@@ -1006,6 +1090,7 @@ def parity_payload(ledger: Ledger, summary: Summary) -> dict:
             "ciLow": percent(d.ci_low),
             "ciHigh": percent(d.ci_high),
             "weekMean": percent(summary.per_task_week_mean),
+            "usdMean": money(summary.per_task_usd.mean),
             "share": percent(summary.repo_share_pct),
             "perTaskTokens": tokens(summary.per_task_tokens_mean),
             "repoTokens": tokens(summary.repo_tokens),

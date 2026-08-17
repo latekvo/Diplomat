@@ -310,16 +310,38 @@ def test_a_hermes_completion_is_priced_from_its_own_session_row(ledger, tmp_path
                                                                 monkeypatch):
     """The third arm of the same fork. Hermes keeps running totals on the session row,
     so nothing is summed and nothing is shelled out to — but sending it to OpenCode's
-    exporter instead would price every Hermes run at nothing."""
-    from test_hermes_store import FINISHED, OURS, PROMPT, store, user
+    exporter instead would price every Hermes run at nothing.
+
+    In BOTH units: the tokens make it comparable to every other runner's task, and the
+    money is what the budget gate holds an OpenRouter-billed machine to."""
+    from test_hermes_store import FINISHED, MODEL, OURS, PROMPT, _charge, store, user
 
     _stub_opencode(tmp_path, monkeypatch, "#!/bin/sh\necho SHOULD_NOT_RUN >&2\nexit 3\n")
     store({OURS: [user(PROMPT), FINISHED]})
+    _charge(OURS, estimated=0.0675)
     now = time.time()
     telemetry.record_completion("review:h/o/r#1@aa", "a prompt no transcript holds",
                                 now - 60, now, now, session_id=OURS,
                                 agent_runner="hermes")
-    assert telemetry.load().tasks[0].tokens == 125
+    task = telemetry.load().tasks[0]
+    assert task.tokens == 125
+    assert (task.usd, task.model) == (0.0675, MODEL)
+
+
+def test_a_claude_completion_carries_no_money_at_all(ledger, scanner, tmp_path,
+                                                     monkeypatch):
+    """Claude Code spends a rate-limit window, not an account. A dollar figure on one
+    of its tasks would put it in a distribution the money gate prices the NEXT task
+    from — and there is no rate it could have been charged at."""
+    repo, projects = scanner
+    _stub_opencode(tmp_path, monkeypatch, "#!/bin/sh\nexit 3\n")
+    _session(projects / "s" / "mine.jsonl", "review PR #41 please", str(repo), [1000, 500])
+    now = time.time()
+    telemetry.record_completion("review:h/o/r#41@aa", "review PR #41 please",
+                                now - 300, now, now)
+    task = telemetry.load().tasks[0]
+    assert task.tokens == 1500
+    assert (task.usd, task.model) == (None, "")
 
 
 def test_a_claude_completion_is_still_priced_by_its_own_transcript(ledger, scanner,

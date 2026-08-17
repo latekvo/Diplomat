@@ -43,10 +43,25 @@ OLDER = "20260811_222041_ddbfdc"
 SCHEMA = """
 CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, cwd TEXT, started_at REAL,
   input_tokens INTEGER, output_tokens INTEGER, cache_read_tokens INTEGER,
+  cache_write_tokens INTEGER, model TEXT, estimated_cost_usd REAL,
+  actual_cost_usd REAL);
+CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT,
+  role TEXT, content TEXT, finish_reason TEXT);
+"""
+
+#: The pre-pricing schema, which a store written by an older Hermes still has. Kept
+#: whole rather than derived from the one above, so the reader is tested against a
+#: shape that really existed instead of against a subset this file invented.
+SCHEMA_UNPRICED = """
+CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, cwd TEXT, started_at REAL,
+  input_tokens INTEGER, output_tokens INTEGER, cache_read_tokens INTEGER,
   cache_write_tokens INTEGER);
 CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT,
   role TEXT, content TEXT, finish_reason TEXT);
 """
+
+#: What the sessions Hermes writes here are actually priced against.
+MODEL = "deepseek/deepseek-v4-flash-0731"
 
 
 def store(sessions: dict, cwds: dict | None = None) -> None:
@@ -66,9 +81,9 @@ def store(sessions: dict, cwds: dict | None = None) -> None:
         for i, (session_id, messages) in enumerate(sessions.items()):
             conn.execute(
                 "INSERT INTO sessions (id, source, cwd, started_at, input_tokens, "
-                "output_tokens, cache_read_tokens, cache_write_tokens) "
-                "VALUES (?, 'tui', ?, ?, 100, 20, 9000, 5)",
-                (session_id, (cwds or {}).get(session_id, REPO), T0 + i))
+                "output_tokens, cache_read_tokens, cache_write_tokens, model) "
+                "VALUES (?, 'tui', ?, ?, 100, 20, 9000, 5, ?)",
+                (session_id, (cwds or {}).get(session_id, REPO), T0 + i, MODEL))
             conn.executemany(
                 "INSERT INTO messages (session_id, role, content, finish_reason) "
                 "VALUES (?, ?, ?, ?)",
@@ -170,6 +185,74 @@ def test_a_run_is_priced_from_its_own_session_row():
 def test_a_session_the_store_never_heard_of_is_unpriced_not_free():
     store({OURS: [user(PROMPT)]})
     assert hermesstore.session_tokens(THEIRS) is None
+    assert hermesstore.session_price(THEIRS) == (None, "")
+
+
+def _charge(session_id: str, *, estimated=None, actual=None) -> None:
+    """Price a session the way Hermes does as it runs: an estimate from the
+    provider's published rates, settled later if the provider reports a real figure."""
+    conn = sqlite3.connect(hermesstore.db_path())
+    try:
+        conn.execute("UPDATE sessions SET estimated_cost_usd = ?, actual_cost_usd = ? "
+                     "WHERE id = ?", (estimated, actual, session_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_a_run_is_priced_in_money_against_the_model_it_ran_on():
+    """The unit an OpenRouter-billed run is actually held to. The model travels with
+    it because the money means nothing without it — the same task is cents on this
+    model and dollars on a frontier one."""
+    store({OURS: [user(PROMPT), FINISHED]})
+    _charge(OURS, estimated=0.067540928)
+
+    assert hermesstore.session_price(OURS) == (0.067540928, MODEL)
+
+
+def test_a_settled_charge_is_preferred_to_the_estimate_that_stood_in_for_it():
+    store({OURS: [user(PROMPT), FINISHED]})
+    _charge(OURS, estimated=0.067540928, actual=0.071)
+
+    assert hermesstore.session_price(OURS)[0] == 0.071
+
+
+def test_a_zero_in_the_settled_column_is_the_column_being_empty():
+    """Not a free task: reading it as one would put a 0 into the distribution the next
+    task is gated on, and drag the bound below what every run really costs. The same
+    case is asserted against the Swift twin in ``DiplomatCoreSmoke``."""
+    store({OURS: [user(PROMPT), FINISHED]})
+    _charge(OURS, estimated=0.067540928, actual=0)
+
+    assert hermesstore.session_price(OURS)[0] == 0.067540928
+
+
+def test_a_session_hermes_has_not_priced_yet_carries_no_money():
+    """A row written before the provider answered. Not a free task — a task with no
+    price, which the budget gate must not average in as a zero."""
+    store({OURS: [user(PROMPT), FINISHED]})
+
+    assert hermesstore.session_price(OURS) == (None, MODEL)
+
+
+def test_a_store_older_than_the_price_columns_is_read_without_them():
+    """Hermes gained these columns; a store written before it did still answers every
+    other question. Losing the money must not lose the run."""
+    path = hermesstore.db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path)
+    try:
+        conn.executescript(SCHEMA_UNPRICED)
+        conn.execute(
+            "INSERT INTO sessions (id, source, cwd, started_at, input_tokens, "
+            "output_tokens, cache_read_tokens, cache_write_tokens) "
+            "VALUES (?, 'tui', ?, ?, 100, 20, 9000, 5)", (OURS, REPO, T0))
+        conn.commit()
+    finally:
+        conn.close()
+
+    assert hermesstore.session_price(OURS) == (None, "")
+    assert hermesstore.session_tokens(OURS) == 100 + 20 + 5
 
 
 # MARK: - The probe, end to end
