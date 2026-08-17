@@ -248,7 +248,8 @@ def test_iroh_is_preferred_over_tor_when_a_peer_advertises_both(tmp_path, monkey
 
 def test_tor_still_carries_a_peer_that_advertises_no_endpoint(tmp_path, monkeypatch):
     """Preference is not exclusion: a peer that runs only Tor stays reachable over
-    it, which is what lets one node opt into iroh without cutting off the rest."""
+    it, which is what keeps a machine without the iroh library reachable from one
+    that has it."""
     import time as _time
 
     node = _fresh_node(tmp_path, monkeypatch, SZPONTNET_DEFAULT_TRUST="personal")
