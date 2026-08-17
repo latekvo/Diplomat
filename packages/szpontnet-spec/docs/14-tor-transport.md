@@ -2,8 +2,8 @@
 
 > [15 — the iroh transport](15-iroh-transport.md) reaches the same peers without a
 > `tor` daemon, a multi-minute bootstrap or a rendezvous circuit per dial, and is the
-> other WAN transport a node can run. It is opt-in; this one is the default. Either
-> alone is a complete WAN path, and where an edge could use both, the mesh's gossiped
+> other WAN transport a node can run. Both are on by default. Either alone is a
+> complete WAN path, and where an edge could use both, the mesh's gossiped
 > [preferred transport](06-coordination.md#the-preferred-wan-transport) settles it.
 
 v1 is single-LAN ([02](02-discovery.md), [03](03-transport.md)): discovery is

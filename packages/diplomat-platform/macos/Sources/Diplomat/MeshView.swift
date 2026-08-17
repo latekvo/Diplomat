@@ -341,8 +341,8 @@ struct MeshView: View {
 
     private var lanOnlyNote: some View {
         Text("No WAN transport is up on this machine — it can only reach peers on this "
-             + "network. Install tor, or set SZPONTNET_IROH=1 with the szpontnet[wan] "
-             + "extra, and restart the node.")
+             + "network. Install the szpontnet[wan] extra for iroh, or a tor binary, "
+             + "and restart the node.")
             .font(.system(size: 9)).foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
     }

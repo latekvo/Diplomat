@@ -43,9 +43,10 @@ _PORT_BASE = 43000 + (os.getpid() % 400) * 20
 def _mesh_env(tmp: Path) -> dict:
     return {
         "SZPONTNET_LOOPBACK": "1",
-        # The Tor transport is on by default; this test is about the applet over a
-        # loopback LAN, so keep it off rather than fork a `tor` per node and wait on
-        # the live Tor network. See szpontnet-core's test_tor_e2e.py for the onion.
+        # Both WAN transports are on by default; this test is about the applet over a
+        # loopback LAN, so keep them off rather than fork a `tor` per node and wait on
+        # the live Tor network, or publish an iroh endpoint per node to a live
+        # discovery service. See szpontnet-core's test_tor_e2e.py / test_iroh_e2e.py.
         "SZPONTNET_IROH": "0",
         "SZPONTNET_TOR": "0",
         "SZPONTNET_MCAST_PORT": str(_PORT_BASE),

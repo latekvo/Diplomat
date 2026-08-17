@@ -102,10 +102,11 @@ def _proto_env(port_base: int) -> dict:
     return {
         "SZPONTNET_LOOPBACK": "1",
         "SZPONTNET_OAUTH_PROBE": "0",
-        # These scenarios are about the LAN this simulator controls, and Tor is on by
-        # default in a shipped node — so without this every simulated machine would
-        # fork a real `tor` and spend its bootstrap timeout reaching the live Tor
-        # network. "Offline" in the docstring above is a claim this line keeps.
+        # These scenarios are about the LAN this simulator controls, and both WAN
+        # transports are on by default in a shipped node — so without these every
+        # simulated machine would fork a real `tor` and spend its bootstrap timeout on
+        # the live Tor network, and publish an iroh endpoint to a live discovery
+        # service. "Offline" in the docstring above is a claim these two lines keep.
         "SZPONTNET_IROH": "0",
         "SZPONTNET_TOR": "0",
         "SZPONTNET_MCAST_PORT": str(port_base),

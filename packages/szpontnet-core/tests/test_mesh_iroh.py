@@ -348,24 +348,26 @@ def test_a_transport_that_is_not_ready_is_skipped_for_the_next_one(tmp_path,
     assert node._wan_redial_targets(_time.monotonic()) == []
 
 
-def test_iroh_asked_for_but_unavailable_reports_enabled_without_ready(tmp_path,
-                                                                      monkeypatch):
-    """The state a node is in when the operator turned iroh on and no endpoint
-    bound — the missing package, or an endpoint that never came online.
+def test_iroh_on_but_unavailable_reports_enabled_without_ready(tmp_path, monkeypatch):
+    """The state a node is in with iroh on and no endpoint bound — the missing
+    package, or an endpoint that never came online. Reached here with the variable
+    UNSET, which is the shipped default and so the common case rather than a corner.
 
     Note the combination — ``enabled`` true, ``ready`` false — which is the honest
-    one for "asked for, unavailable" and the pair a UI needs to say so. It holds only
-    because ``enabled`` reports the *operator's* switch rather than the live
-    transport; sourcing it from ``self.iroh`` would collapse the two into one flag
-    and report the request as never made. Mirrors the Tor twin, which asserts the
-    same pair against a real node with no daemon to run
+    one for "on, unavailable" and the pair a UI needs to say so: it is what tells the
+    Mesh screen to show the row at all, and to say "coming up…" instead of an id.
+    It holds only because ``enabled`` reports the *configured* switch rather than the
+    live transport; sourcing it from ``self.iroh`` would collapse the two into one
+    flag and report the transport as never wanted. Mirrors the Tor twin, which
+    asserts the same pair against a real node with no daemon to run
     (``test_a_node_on_a_machine_with_no_tor_installed_still_runs``, test_tor_e2e.py).
     """
-    node = _fresh_node(tmp_path, monkeypatch, SZPONTNET_IROH="1")
+    monkeypatch.delenv("SZPONTNET_IROH", raising=False)  # undo the suite-wide off
+    node = _fresh_node(tmp_path, monkeypatch)
     assert node.iroh is None  # nothing bound, exactly as a missing package leaves it
 
     state = node.snapshot()
-    assert state["wan"]["transports"]["iroh"]["enabled"] is True    # the operator asked for it…
+    assert state["wan"]["transports"]["iroh"]["enabled"] is True    # on by default…
     assert state["wan"]["transports"]["iroh"]["ready"] is False     # …and nothing answered
     assert state["wan"]["transports"]["iroh"]["address"] is None
     assert "endpoint" not in state["self"]
@@ -578,41 +580,45 @@ def test_wan_cache_roundtrips_and_tolerates_garbage(tmp_path, monkeypatch):
 # MARK: - config
 
 
-def test_iroh_stays_off_unless_it_is_explicitly_turned_on(monkeypatch):
-    """iroh ships beside Tor rather than in place of it, so an operator who never
-    asks for it must never get an endpoint: a node's WAN transport does not change
-    under it on an upgrade.
+def test_iroh_runs_unless_it_is_explicitly_turned_off(monkeypatch):
+    """A mesh spanning several LANs is what the node is for, and iroh is the cheaper
+    way to get one — no daemon, no multi-minute bootstrap — so an operator should not
+    have to discover a switch to reach the machine they are away from. It is the exact
+    twin of ``SZPONTNET_TOR``: publishing a permanent WAN address is the same exposure
+    either way, so the two knobs default the same way and read the same spellings.
 
-    That makes it an opt-in knob, and an opt-in knob recognises only the on-spellings:
-    anything else — a typo, a stray quote, the word ``enabled`` — leaves it off, which
-    is the direction that fails safe. (``SZPONTNET_TOR`` is the default-ON knob, and
-    honours a lenient off-list for the mirror-image reason — see test_mesh_tor.py.)"""
+    Hence an unset variable means ON, and only the recognised off-spellings mean off.
+    The lenient list is the load-bearing half: for a default-ON knob an unrecognised
+    value fails the *wrong* way (an endpoint published by a node whose operator
+    explicitly tried to prevent one), which is why ``false``/``no``/``off``/``""`` are
+    honoured, not only ``0`` — see test_mesh_tor.py for the twin."""
     from szpontnet import config
 
     monkeypatch.delenv("SZPONTNET_IROH", raising=False)
-    assert config.iroh_enabled() is False
-
-    for on in ("1", "true", "yes", "on", "TRUE", " On ", "Yes"):
-        monkeypatch.setenv("SZPONTNET_IROH", on)
-        assert config.iroh_enabled() is True, f"{on!r} should enable iroh"
-
-    for off in ("0", "false", "no", "off", "", "enabled", "sure", "2"):
-        monkeypatch.setenv("SZPONTNET_IROH", off)
-        assert config.iroh_enabled() is False, f"{off!r} should leave iroh off"
-
-
-def test_the_legacy_env_name_can_still_turn_iroh_on(monkeypatch):
-    """``DIPLOMAT_MESH_*`` is honoured wherever ``SZPONTNET_*`` is unset (see env.py),
-    and that has to include this switch: the old spelling is how a machine that
-    already opted into iroh keeps its endpoint across the rename."""
-    from szpontnet import config
-
-    monkeypatch.delenv("SZPONTNET_IROH", raising=False)
-    monkeypatch.setenv("DIPLOMAT_MESH_IROH", "1")
     assert config.iroh_enabled() is True
-    # The new name still wins when both are set.
-    monkeypatch.setenv("SZPONTNET_IROH", "0")
+
+    for off in ("0", "false", "no", "off", "", "FALSE", " Off ", "No"):
+        monkeypatch.setenv("SZPONTNET_IROH", off)
+        assert config.iroh_enabled() is False, f"{off!r} should disable iroh"
+
+    for on in ("1", "true", "yes", "on", "enabled"):
+        monkeypatch.setenv("SZPONTNET_IROH", on)
+        assert config.iroh_enabled() is True, f"{on!r} should leave iroh on"
+
+
+def test_the_legacy_env_name_can_still_turn_iroh_off(monkeypatch):
+    """``DIPLOMAT_MESH_*`` is honoured wherever ``SZPONTNET_*`` is unset (see env.py),
+    and that has to include the off switch: a machine whose profile still exports the
+    old spelling to disable iroh would otherwise start publishing an endpoint on an
+    upgrade, which is the one direction of this default that must never surprise."""
+    from szpontnet import config
+
+    monkeypatch.delenv("SZPONTNET_IROH", raising=False)
+    monkeypatch.setenv("DIPLOMAT_MESH_IROH", "0")
     assert config.iroh_enabled() is False
+    # The new name still wins when both are set.
+    monkeypatch.setenv("SZPONTNET_IROH", "1")
+    assert config.iroh_enabled() is True
 
 
 def test_iroh_online_timeout_rejects_non_finite(monkeypatch):

@@ -541,11 +541,12 @@ There are two, and a node may run either, both, or neither:
   node with no `tor` binary installed simply does not run it, and `SZPONTNET_TOR=0`
   turns it off. Paste an address with
   `python3 -m szpontnet --tor-connect <hash>.onion`.
-- **iroh** ([spec ch 15](packages/szpontnet-spec/docs/15-iroh-transport.md)), opt-in
-  with `SZPONTNET_IROH=1` and the optional package (`pip install 'szpontnet[wan]'`):
-  a permanent QUIC endpoint whose id is an Ed25519 public key. It reaches the same
-  peers with no daemon, no multi-minute bootstrap and no rendezvous circuit per dial,
-  connecting in well under a second. Paste an address with
+- **iroh** ([spec ch 15](packages/szpontnet-spec/docs/15-iroh-transport.md)), **on by
+  default** given the optional package (`pip install 'szpontnet[wan]'`): a permanent
+  QUIC endpoint whose id is an Ed25519 public key. A node without that package simply
+  does not run it, and `SZPONTNET_IROH=0` turns it off. It reaches the same peers with
+  no daemon, no multi-minute bootstrap and no rendezvous circuit per dial, connecting
+  in well under a second. Paste an address with
   `python3 -m szpontnet --iroh-connect <64-hex>`.
 
 Which of the two an edge settles on is a **mesh-wide pick** ([spec ch
@@ -558,15 +559,16 @@ An edge that shares neither has no way off the LAN at all, and the Mesh screen f
 it. `--connect <id>` takes either address and reads the transport off its shape.
 
 **Trust model.** The mesh is designed around a LAN you control (IPv4; discovery is
-multicast + subnet broadcast), and — since the Tor transport is on by default — a
-node also publishes an onion that peers can reach it on from anywhere. A WAN address
+multicast + subnet broadcast), and — since both WAN transports are on by default — a
+node also publishes an onion, and a QUIC endpoint wherever `szpontnet[wan]` is
+installed, that peers can reach it on from anywhere. A WAN address
 carries peer links only; the operator's control channel (`stop`, `trust`,
 `dispatch`, `set-attr`) is refused on any connection that did not arrive on the LAN.
 Note what that leaves: on an **open** mesh (no join secret) a peer holding your onion
 or endpoint can link and, subject to trust, exchange gossip and dispatch from the WAN,
 where before it would have had to be on your LAN. The two fences below apply
 identically over every transport, and turning both transports off (`SZPONTNET_TOR=0`,
-`SZPONTNET_IROH` unset) removes the WAN surface entirely.
+`SZPONTNET_IROH=0`) removes the WAN surface entirely.
 
 Two independent fences:
 

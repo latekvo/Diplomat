@@ -248,7 +248,7 @@ advertises inside its signed advert, plus a dialer that reconnects to
 known-but-unseen **personal** peers. Two are specified — the Tor onion service
 ([`NodeInfo.onion`](04-messages.md#nodeinfo), on by default,
 [14](14-tor-transport.md)) and **iroh**
-([`NodeInfo.endpoint`](04-messages.md#nodeinfo), opt-in,
+([`NodeInfo.endpoint`](04-messages.md#nodeinfo), on by default,
 [15](15-iroh-transport.md)). With both off, or on a machine missing what they need,
 the node is LAN-only and byte-identical to a node that has never implemented either.
 
@@ -273,7 +273,7 @@ Only `ONION_VIRTPORT` and the `szpontnet/1` ALPN are on the wire.
 | iroh endpoint key | `~/.diplomat/mesh/iroh/endpoint.key` | this node's Ed25519 endpoint secret (`0600` in a `0700` dir), so the endpoint id is permanent across restarts. Not the device key. |
 | onion key + data dir | `~/.diplomat/mesh/tor/` | this node's private Tor `DataDirectory`; the `HiddenServiceDir` is `tor/onion/` (`0700`), so the `.onion` is permanent across restarts. |
 | peer WAN cache | `~/.diplomat/mesh/wan.json` | last-known peer `endpoint`/`onion` addresses, learned only from signed hellos and bounded like `peers.json` - the WAN sibling of the LAN redial cache. A former `onions.json` is read once on upgrade. |
-| enable / disable via | `SZPONTNET_TOR` / `SZPONTNET_IROH` / `SZPONTNET_TOR_BINARY` | Tor is on unless `0` (or `false`/`no`/`off`/empty); iroh is off unless `1` (or `true`/`yes`/`on`); point at a non-PATH `tor` ([14](14-tor-transport.md), [15](15-iroh-transport.md)). |
+| enable / disable via | `SZPONTNET_TOR` / `SZPONTNET_IROH` / `SZPONTNET_TOR_BINARY` | Both are on unless set to `0` (or `false`/`no`/`off`/empty); point at a non-PATH `tor` ([14](14-tor-transport.md), [15](15-iroh-transport.md)). |
 
 ## Message types
 

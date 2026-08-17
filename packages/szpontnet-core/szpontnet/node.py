@@ -281,7 +281,7 @@ _WAN_KINDS: dict[str, _WanKind] = {
     "iroh": _WanKind(field="endpoint", normalize=irohnet.normalize_endpoint,
                      enabled=config.iroh_enabled,
                      address_desc="a 64-hex endpoint id",
-                     enable_hint="set SZPONTNET_IROH=1 and install szpontnet[wan]"),
+                     enable_hint="install szpontnet[wan] and leave SZPONTNET_IROH unset"),
     "tor": _WanKind(field="onion", normalize=tor.normalize_onion,
                     enabled=config.tor_enabled,
                     address_desc="a v3 .onion address",
@@ -626,13 +626,14 @@ class MeshNode:
                 self.iroh = irohnet.IrohTransport(identity.mesh_dir())
                 self._add_wan("iroh", self.iroh)
             else:
-                # A warning, unlike the Tor twin below: the operator asked for iroh
-                # explicitly, so an absent package defeats what they set. Neither
-                # message says "LAN-only" — the other transport may well be up, and
-                # only the caller knows which of the two it asked for.
+                # Both transports are on by default, so neither absence is a warning:
+                # a box with no 'iroh' package (or no tor binary) is an ordinary box,
+                # and shouting here would fire on every start of every machine that
+                # never wanted WAN reach. Neither message says "LAN-only" either — the
+                # other transport may well be up.
                 log("mesh-up",
-                    "Mesh/Iroh: SZPONTNET_IROH is set but the 'iroh' package is not "
-                    "installed — no WAN reach over iroh. Install szpontnet[wan].")
+                    "Mesh/Iroh: the 'iroh' package is not installed — no WAN reach "
+                    "over iroh. Install szpontnet[wan].")
         if config.tor_enabled():
             tor_binary = tor.binary()
             if tor_binary:
@@ -640,12 +641,9 @@ class MeshNode:
                                             binary_path=tor_binary)
                 self._add_wan("tor", self.tor)
             else:
-                # Not a warning: a box with no tor installed is an ordinary box, and
-                # this transport is on by default — warning here would fire on every
-                # start of every machine that never wanted WAN reach.
                 log("mesh-up",
                     "Mesh/Tor: no 'tor' binary found — no WAN reach over Tor. "
-                    "Install tor, or set SZPONTNET_IROH=1 (needs szpontnet[wan]).")
+                    "Install tor, or install szpontnet[wan] for the iroh transport.")
         for w in self._wan:
             self._tasks.append(loop.create_task(
                 self._wan_serve(w), name=f"mesh-{w.name}-serve"))

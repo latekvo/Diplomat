@@ -660,8 +660,9 @@ class MeshView(QWidget):
         for tid, (row_host, value, copy) in self.id_rows.items():
             block = _wan_transport_state(state, tid)
             address = block.get("address")
-            # A transport the operator never asked for has no row; one that is coming
-            # up (Tor's bootstrap runs into minutes) says so rather than showing blank.
+            # A transport the operator turned off has no row. One that is on without an
+            # address yet says so rather than showing blank — Tor's bootstrap runs into
+            # minutes, and where the library or binary is absent it never arrives.
             row_host.setVisible(bool(block.get("enabled")))
             value.set_text(str(address) if address else "coming up…")
             copy.setEnabled(bool(address))
@@ -675,8 +676,8 @@ class MeshView(QWidget):
             self.wan_note.setVisible(True)
             self.wan_note.setText(
                 "No WAN transport is up on this machine — it can only reach peers on "
-                "this network. Install tor, or set SZPONTNET_IROH=1 with the "
-                "szpontnet[wan] extra, and restart the node."
+                "this network. Install the szpontnet[wan] extra for iroh, or a tor "
+                "binary, and restart the node."
             )
         # Connecting needs a transport of our own to dial from.
         self.connect_field.setEnabled(bool(ready))

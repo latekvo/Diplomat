@@ -590,7 +590,7 @@ def test_foreign_onion_churn_does_not_evict_a_personal_entry(tmp_path, monkeypat
     assert "peer-personal" in node._wan_cache  # personal survived the foreign flood
 
 
-# MARK: - config: the transport is off unless it is explicitly turned on
+# MARK: - config: the transport is on unless it is explicitly turned off
 
 
 def test_tor_runs_unless_it_is_explicitly_turned_off(monkeypatch):
@@ -601,8 +601,8 @@ def test_tor_runs_unless_it_is_explicitly_turned_off(monkeypatch):
     The lenient list is the load-bearing half: for a default-ON knob an unrecognised
     value fails the *wrong* way (a tor process the operator explicitly tried to
     prevent), which is why ``false``/``no``/``off``/``""`` are honoured, not only
-    ``0``. (``SZPONTNET_IROH`` is the opt-in knob, and recognises only the
-    on-spellings for the mirror-image reason — see test_mesh_iroh.py.)"""
+    ``0``. (``SZPONTNET_IROH`` is the twin, and honours the same list for the same
+    reason — see test_mesh_iroh.py.)"""
     from szpontnet import config
 
     monkeypatch.delenv("SZPONTNET_TOR", raising=False)

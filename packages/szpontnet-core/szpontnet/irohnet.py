@@ -33,11 +33,11 @@ device key, and one key serving two protocols is a cross-protocol reuse this
 buys nothing for. The endpoint id is bound to the device key the same way the
 onion is — by riding inside the *signed* advertisement.
 
-Enabled with ``SZPONTNET_IROH=1`` (see :func:`config.iroh_enabled`), alongside or
-instead of the Tor transport it reaches the same peers as; a node running both
-prefers this one. If the ``iroh`` package is not installed the node carries on
-without it, the same graceful degradation as a missing ``tor`` binary or a missing
-``cryptography``.
+On unless ``SZPONTNET_IROH`` says otherwise (see :func:`config.iroh_enabled`),
+alongside or instead of the Tor transport it reaches the same peers as; a node
+running both prefers this one. If the ``iroh`` package is not installed the node
+carries on without it, the same graceful degradation as a missing ``tor`` binary or
+a missing ``cryptography``.
 """
 
 from __future__ import annotations

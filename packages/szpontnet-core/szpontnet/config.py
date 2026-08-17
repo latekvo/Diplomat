@@ -111,15 +111,10 @@ def secret() -> str:
 # or a wrapper script clears a variable it cannot unset.
 _OFF_VALUES = frozenset({"0", "false", "no", "off", ""})
 
-# The mirror of :data:`_OFF_VALUES`, for a switch that is OFF by default. An opt-in
-# knob must recognise only these: anything else — a typo, a stray quote, the word
-# "enabled" — leaves the feature off, which is the direction that fails safe.
-_ON_VALUES = frozenset({"1", "true", "yes", "on"})
-
 
 def iroh_enabled() -> bool:
-    """Whether this node runs the iroh QUIC transport — off by default, on only for
-    an explicit ``SZPONTNET_IROH`` in :data:`_ON_VALUES`.
+    """Whether this node runs the iroh QUIC transport — **on by default**, off only
+    for an explicit ``SZPONTNET_IROH`` in :data:`_OFF_VALUES`.
 
     The transport is complementary to the LAN, not an alternative to it: the node
     binds a permanent endpoint (an Ed25519 public key it advertises inside its signed
@@ -130,12 +125,17 @@ def iroh_enabled() -> bool:
 
     It reaches the same peers as the Tor transport (:func:`tor_enabled`) without a
     daemon, a multi-minute bootstrap, or a rendezvous circuit per dial, and a node
-    running both prefers it. A node may run either, both, or neither.
+    running both prefers it. A node may run either, both, or neither, and both
+    default the same way: publishing a permanent WAN address is the same exposure
+    whichever transport does it, so the cheaper one is a poor thing to hide behind
+    a switch.
 
-    On is an *intent*, not a promise: a machine without the optional ``iroh`` package,
-    or one whose endpoint never comes online, simply does not get this transport — it
-    degrades, it never stops a node from starting. See irohnet.py."""
-    return (env.get("IROH", "") or "").strip().lower() in _ON_VALUES
+    On is an *intent*, not a promise: a machine without the optional ``iroh`` package
+    (``szpontnet[wan]``), or one whose endpoint never comes online, simply does not
+    get this transport — it degrades, it never stops a node from starting. That is
+    also why the default can be ON while the dependency stays optional. See
+    irohnet.py."""
+    return (env.get("IROH", "1") or "").strip().lower() not in _OFF_VALUES
 
 
 def iroh_online_timeout() -> float:

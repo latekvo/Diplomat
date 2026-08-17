@@ -6,29 +6,31 @@ LAN address. That is the whole mesh as long as every machine is on the same
 network. The **iroh transport** lifts that restriction: once two nodes have met,
 they can keep talking from **anywhere**, with **no public IP and no domain name**.
 
-It is **opt-in** and **atomic**. Complementary, not alternative: multicast discovery
-and direct TCP links remain the path between peers that share a network, and this is
-what makes several such networks one mesh. Nothing below changes the LAN path — the
-iroh transport is added *beside* it.
+It is **on by default** and **atomic**. Complementary, not alternative: multicast
+discovery and direct TCP links remain the path between peers that share a network,
+and this is what makes several such networks one mesh. Nothing below changes the LAN
+path — the iroh transport is added *beside* it.
 
 [14 — Tor](14-tor-transport.md) reaches the same peers through an onion service and
-is the default WAN transport; this one costs no daemon, no multi-minute bootstrap and
-no rendezvous circuit per dial. A node may run either, both, or neither; which one an
-edge that could use both settles on is the mesh's gossiped
+is on by default too; this one costs no daemon, no multi-minute bootstrap and no
+rendezvous circuit per dial, which is why it heads the default preference order. A
+node may run either, both, or neither; which one an edge that could use both settles
+on is the mesh's gossiped
 [preferred transport](06-coordination.md#the-preferred-wan-transport).
 
-Turned on with `SZPONTNET_IROH=1` (`true`/`yes`/`on` are honoured too; every other
-value, including a typo, leaves it off), and absent whenever the implementation's
-iroh library is unavailable. In either case this transport is gone; the node is the
-LAN-only node described in the rest of these docs unless it also runs
-[14](14-tor-transport.md), and wire-identical to one when it does not.
+Turned off with `SZPONTNET_IROH=0` (`false`/`no`/`off`/empty are honoured too; any
+other value leaves it on), and absent whenever the implementation's iroh library is
+unavailable — which is what lets an implementation ship this transport on by default
+while its library stays an optional dependency. In either case this transport is
+gone; the node is the LAN-only node described in the rest of these docs unless it
+also runs [14](14-tor-transport.md), and wire-identical to one when it does not.
 
-> **A node running this transport publishes a stable endpoint.** It serves only the
-> peer-link accept path — control sessions are refused
+> **A node running this transport publishes a stable endpoint by default.** It serves
+> only the peer-link accept path — control sessions are refused
 > ([Security notes](#security-notes)) — but on an **open mesh** (no `SZPONTNET_SECRET`,
 > the documented home-LAN default) any peer holding the address can link from the
 > WAN, which on a LAN-only node would have required being on the LAN. Set a join
-> secret, or leave `SZPONTNET_IROH` unset, if that is not what you want.
+> secret, or `SZPONTNET_IROH=0`, if that is not what you want.
 
 ## The idea in one paragraph
 
@@ -188,7 +190,7 @@ LAN-only rather than claiming a WAN handle that no longer answers.
 
 | Env | Meaning |
 |-----|---------|
-| `SZPONTNET_IROH=1` | Enable the iroh transport. Off by default; `true`/`yes`/`on` also enable, and every other value leaves it off. |
+| `SZPONTNET_IROH=0` | Disable the iroh transport. On by default; `false`/`no`/`off`/empty also disable. Any other value leaves it on. |
 | `SZPONTNET_IROH_ONLINE_SECS` | Wait for the endpoint to come online before giving up (default 30). |
 
 ## Conformance

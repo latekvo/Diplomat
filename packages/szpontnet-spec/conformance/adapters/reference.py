@@ -84,14 +84,15 @@ def main() -> None:
     # read would cap the advertised quotaLeft with this machine's real budget,
     # skewing seeded ch-11 stats.)
     env["SZPONTNET_OAUTH_PROBE"] = "0"
-    # For the same reason, no Tor. The transport is on by default in a shipped node,
-    # so a candidate on a machine that has `tor` installed would spawn one per
-    # scenario and spend up to its bootstrap timeout reaching the live Tor network —
-    # for a suite that only ever exercises the LAN wire protocol (the onion path is
-    # optional to implement, see 14-tor-transport). `setdefault`, not an assignment,
-    # so a tester that does want to drive the transport keeps the last word: every
-    # other SZPONTNET_* knob it set is inherited as-is, and this must not be the one
-    # exception.
+    # For the same reason, no WAN. BOTH transports are on by default in a shipped
+    # node, so a candidate with `tor` installed would spawn a daemon per scenario and
+    # spend up to its bootstrap timeout on the live Tor network, and one with the iroh
+    # library would publish an endpoint per scenario to a live discovery service —
+    # for a suite that only ever exercises the LAN wire protocol (both WAN paths are
+    # optional to implement, see 14-tor-transport and 15-iroh-transport).
+    # `setdefault`, not an assignment, so a tester that does want to drive a transport
+    # keeps the last word: every other SZPONTNET_* knob it set is inherited as-is, and
+    # these must not be the exceptions.
     env.setdefault("SZPONTNET_IROH", "0")
     env.setdefault("SZPONTNET_TOR", "0")
     env["PYTHONPATH"] = os.pathsep.join(

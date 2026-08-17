@@ -765,7 +765,7 @@ Ask the node to initiate a **WAN link** to a peer's iroh endpoint id - reaching 
 you may never have met on the LAN. The node dials in the background (this reply returns
 immediately) and runs the identical hello/auth/trust handshake a LAN dial does; watch
 [`status`](#status) for the peer to appear. Requires the iroh transport online on this
-node (`SZPONTNET_IROH=1` and the iroh library present). Unlike
+node (the iroh library present and `SZPONTNET_IROH` not disabled). Unlike
 auto-redial, a manual paste dials **unconditionally** - it bypasses the personal-only
 and smaller-id-dials fences (a deliberate one-shot introduction), though it is still
 deduped against an in-flight dial to the same address. See
