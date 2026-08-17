@@ -772,6 +772,11 @@ class Store(QObject):
                 # the drain runs first, and the whole point of the check is that it
                 # reads THIS cycle's evidence, not the one the queue was built from.
                 snaps = self._fetch_my_snapshots(owner, repo)
+                # And which PRs have left the open state — the one thing the fetch
+                # above cannot answer, because it lists what is open and the queue
+                # has to be checked against what is not. Every verb answers to it,
+                # the operator's own ask included (:func:`autofix.still_owed`).
+                closed = self._fetch_closed_prs(owner, repo)
                 # The queue first, in the operator's order: a slot that freed since
                 # the last cycle belongs to work already waiting for it, not to
                 # whichever PR this poll's fetch happens to return first.
@@ -781,9 +786,11 @@ class Store(QObject):
                 # the same as being current: while `gh` is down the list freezes, and
                 # a drain that kept firing from it would spawn agents at work
                 # answered by hand hours ago. A fetch that failed just now is the
-                # same blindness one cycle earlier, so it holds the drain too.
-                if self.autofix_poll_error is None and snaps is not None:
-                    self._drain_queued_tasks(snaps)
+                # same blindness one cycle earlier, so it holds the drain too —
+                # either of them, since a missing answer is not a pass.
+                if (self.autofix_poll_error is None and snaps is not None
+                        and closed is not None):
+                    self._drain_queued_tasks(snaps, closed)
                 # Start this cycle's staging empty — the one place it is reset, so a
                 # cycle that failed part-way and never committed does not carry its
                 # offers into this one. They are re-offered by the cycle that
@@ -821,6 +828,16 @@ class Store(QObject):
         case the failure is already noted and every consumer of it stands down."""
         try:
             return autofixmonitor.fetch_snapshots(owner, repo, self.effective_me)
+        except Exception as exc:  # noqa: BLE001 — any failure is a poll failure
+            self._note_poll_failure(exc)
+            return None
+
+    def _fetch_closed_prs(self, owner: str, repo: str) -> set[int] | None:
+        """This cycle's read of the PRs that have merged or closed, or ``None`` if the
+        read failed — which is not the same as an empty set, and is why the failure
+        stands the drain down rather than letting it read every PR as open."""
+        try:
+            return autofixmonitor.fetch_closed_prs(owner, repo)
         except Exception as exc:  # noqa: BLE001 — any failure is a poll failure
             self._note_poll_failure(exc)
             return None
@@ -1560,10 +1577,9 @@ class Store(QObject):
 
         The PRs come from the panel's own last fetch rather than a fresh one: it is
         the list the operator was looking at when they pressed the button, which is
-        the list they meant. One that closes before its turn comes is reviewed anyway:
-        an ask stands on the operator's word rather than GitHub's, so the drain has
-        nothing to retire it by (:func:`autofix.still_owed`) and **cancel** is the way
-        out of one a sweep should not have caught.
+        the list they meant. One that merges or closes before its turn comes is
+        dropped by the drain (:func:`autofix.still_owed`); one the sweep should not
+        have caught in the first place is what **cancel** is for.
 
         A PR already waiting for a review keeps the ask it has instead of gaining a
         second: the queue is keyed by PR, so two would be one row that dispatches twice
@@ -1679,7 +1695,8 @@ class Store(QObject):
         This is the list's whole job in a poll. A monitor re-offers its work by finding
         it on GitHub again; nothing on GitHub says a PR was swept, so what re-offers
         these is the ask itself, until the dispatch that starts one takes it off
-        (:meth:`_settle_requested`).
+        (:meth:`_settle_requested`) or the drain finds its PR closed
+        (:meth:`_drain_queued_tasks`).
 
         An ask whose prompt will not assemble is skipped rather than allowed to end
         the cycle. The press assembles every prompt before storing anything, but the
@@ -1741,9 +1758,10 @@ class Store(QObject):
         about, without starting it.
 
         A sweep is the one thing in this list that can be asked for by the fifty, and
-        the only one nothing else will retire — a monitor's row leaves when GitHub
-        stops owing the work, but an ask stands until it runs. Without a way back out,
-        a mis-aimed sweep is a day of agents nobody can call off."""
+        the only one GitHub does not answer for: a monitor's row leaves when the work
+        is no longer owed, while an ask on a PR that is still open stands until it
+        runs. Without a way back out, a mis-aimed sweep is a day of agents nobody can
+        call off."""
         entry = next((e for e in self.queued_tasks if e.id == task_id), None)
         if entry is None or not entry.job.requested:
             return
@@ -1752,18 +1770,20 @@ class Store(QObject):
         activity.log("panel", "queue-cancel", f"{entry.job.label} — cancelled, not run")
         self.refresh_activity()
 
-    def _drain_queued_tasks(self, snaps: list) -> None:
+    def _drain_queued_tasks(self, snaps: list, closed: set[int]) -> None:
         """Run the queue down into whatever room this device has, in the operator's
         order. This is what makes the drag order mean anything: it runs at the TOP of
         a poll, before the monitors offer their own finds, so a slot that freed since
         the last cycle goes to the work already waiting for it rather than to whatever
         this poll's fetch happens to list first.
 
-        The list is re-checked against ``snaps`` — this cycle's read of my PRs —
-        before any of it is run: a queued task carries the verdict of the poll that
-        staged it, which is as old as a whole poll period by the time a bay frees, and
-        what filled that bay in the meantime was an agent working one of these same
-        branches. Work the fetch no longer owes leaves the list instead of spawning
+        The list is re-checked against ``snaps`` — this cycle's read of my PRs — and
+        against ``closed``, the PRs that have left the open state, before any of it is
+        run: a queued task carries the verdict of the poll that staged it, which is as
+        old as a whole poll period by the time a bay frees, and what filled that bay in
+        the meantime was an agent working one of these same branches — or the author,
+        landing the PR. Work the fetch no longer owes, and work on a PR that is no
+        longer there to work on, leaves the list instead of spawning
         (:func:`autofix.still_owed`).
 
         That pass covers the whole queue, not the part the drain reaches: a row
@@ -1784,9 +1804,19 @@ class Store(QObject):
         # from spawning. Paused work is swept too — a switched-off monitor's row is
         # still a claim about what the PR owes.
         for entry in list(self.queued_tasks):
-            if not autofix.still_owed(entry.job.audit_action, entry.job.pr_number,
-                                      conflicting, owing_reply):
-                self._drop_queued_task(entry.id)
+            if autofix.still_owed(entry.job.audit_action, entry.job.pr_number,
+                                  conflicting, owing_reply, closed):
+                continue
+            # An ask outlives its row by design — the row is rebuilt from it on every
+            # poll — so it has to be forgotten as well as dropped, or this same cycle
+            # offers it straight back. Logged because it is the one retirement neither
+            # a dispatch nor the operator is behind: a row that vanished in silence
+            # reads exactly like the review having run.
+            if entry.job.requested:
+                self._forget_requested(entry.job.pr_number)
+                activity.log("panel", "queue-drop",
+                             f"{entry.job.label} — PR no longer open, not run")
+            self._drop_queued_task(entry.id)
         for entry in self.drainable_tasks:
             # The list moves under this loop: it waits on a spawn per task, and an
             # "execute now" during one of those takes its row off the queue and starts

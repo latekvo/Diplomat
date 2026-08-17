@@ -359,7 +359,7 @@ def test_the_drain_stops_at_the_budget_and_keeps_its_queue(store, monkeypatch, b
         autofix.QueuedTask("review:4", _job(number=4), 1),
     ]
 
-    store._drain_queued_tasks([])
+    store._drain_queued_tasks([], closed=set())
 
     assert calls == []
     # The one it tried is re-staged rather than dropped — a refusal writes no attempt

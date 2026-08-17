@@ -1851,9 +1851,146 @@ def test_the_queue_is_refreshed_even_with_no_room_to_start_anything(store, monke
 
     # #8 came out of conflict; #7 has not. (A spawn here would hit the conftest
     # backstop, so "started nothing" is asserted by the test running at all.)
-    store._drain_queued_tasks([_snap(number=7, mergeable="CONFLICTING"), _snap(number=8)])
+    store._drain_queued_tasks(
+        [_snap(number=7, mergeable="CONFLICTING"), _snap(number=8)], closed=set()
+    )
 
     assert [t.id for t in store.queued_tasks] == ["conflicts:7"]
+
+
+def test_the_drain_drops_every_row_whose_pr_has_left_the_open_state(store, monkeypatch):
+    """The check the my-PRs fetch cannot make. It lists what is OPEN, so it answers
+    "does #7 still conflict" and never "is #7 still there" — and the verbs it does not
+    cover (a review requested of me, a review the operator swept for) would otherwise
+    stand for ever on a PR that landed weeks ago. Closed retires all of them, at no
+    capacity, over the whole queue rather than the part a free bay lets the drain
+    reach."""
+    store.queued_tasks = [
+        autofix.QueuedTask("review-req:3",
+                           _job(number=3, action="review-req",
+                                counter="review_requests"), 1),
+        autofix.QueuedTask("review-reply:4",
+                           _job(number=4, action="review-reply",
+                                counter="my_reviews"), 1),
+        autofix.QueuedTask("conflicts:7",
+                           _job(number=7, action="conflicts", counter="conflicts"), 1),
+        autofix.QueuedTask("conflicts:8",
+                           _job(number=8, action="conflicts", counter="conflicts"), 1),
+    ]
+    monkeypatch.setattr(type(store), "_auto_tasks_running", lambda self: 99)  # no bays
+
+    # #7 and #8 both still conflict, #4 still owes a reply — and #3, #4 and #7 have
+    # left the open state since the poll that queued them.
+    store._drain_queued_tasks(
+        [_snap(number=4, mergeable="CONFLICTING", i_owe=2),
+         _snap(number=7, mergeable="CONFLICTING"),
+         _snap(number=8, mergeable="CONFLICTING")],
+        closed={3, 4, 7},
+    )
+
+    assert [t.id for t in store.queued_tasks] == ["conflicts:8"]
+
+
+def test_a_pr_missing_from_the_closed_read_is_a_pr_that_is_still_open(store, monkeypatch):
+    """The set is the repo's recent closures, capped and newest-first — not an answer
+    about the queue. So absence has to read as "open", or one busy afternoon of merges
+    would push a waiting PR off the end of the read and empty the panel of it."""
+    store.queued_tasks = [
+        autofix.QueuedTask("review-req:3",
+                           _job(number=3, action="review-req",
+                                counter="review_requests"), 1),
+    ]
+    monkeypatch.setattr(type(store), "_auto_tasks_running", lambda self: 99)
+
+    store._drain_queued_tasks([], closed={4, 5, 99})
+
+    assert [t.id for t in store.queued_tasks] == ["review-req:3"]
+
+
+def test_a_review_request_on_a_landed_pr_is_dropped_before_the_drain_can_spawn_it(
+        store, monkeypatch):
+    """The drain runs at the TOP of a cycle, before the review-request fetch that would
+    have stopped offering a merged PR. So the commit at the end of the cycle is too late
+    to be the only thing that retires one: a bay that freed while the row waited would
+    already have gone on reviewing a diff nobody will open again."""
+    calls = _spawn_recorder(monkeypatch, finish=False)
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_snapshots", lambda *a, **k: [])
+    monkeypatch.setattr(
+        "diplomat_app.autofixmonitor.fetch_review_requests",
+        lambda *a, **k: [_req(number=n, requested_at="2026-01-02") for n in (3, 4)],
+    )
+    store.auto_task_limit = 1
+
+    store._autofix_poll_once()
+    assert [t.id for t in store.queued_tasks] == ["review-req:4"]
+    with open(calls[0]["done"], "w") as fh:
+        fh.write("0")  # #3's agent exits → the bay #4 has been waiting for
+
+    # #4 merged in the meantime. GitHub stops requesting a review on a merged PR, so
+    # this cycle's request fetch is down to #3 — which the drain has not read yet.
+    monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_closed_prs",
+                        lambda *a, **k: {4})
+    monkeypatch.setattr(
+        "diplomat_app.autofixmonitor.fetch_review_requests",
+        lambda *a, **k: [_req(number=3, requested_at="2026-01-02")],
+    )
+    store._autofix_poll_once()
+
+    assert [c["prompt"] for c in calls] == ["PROMPT:review:3"]  # #4 never opened
+    assert store.queued_tasks == []
+
+
+def test_a_failed_closed_pr_read_holds_the_drain(store, monkeypatch):
+    """A read that failed is not an empty answer. Treated as one, every PR in the queue
+    reads as open and the drain spends its bays on the strength of the poll that staged
+    them — the blindness the re-check exists to end. So it stands the drain down, the
+    same way a failed my-PRs fetch does."""
+    calls = _spawn_recorder(monkeypatch, finish=False)
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_snapshots", lambda *a, **k: [])
+    monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_review_requests",
+                        lambda *a, **k: [])
+
+    def boom(*a, **k):
+        raise RuntimeError("gh timed out after 60s")
+
+    monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_closed_prs", boom)
+    store.queued_tasks = [
+        autofix.QueuedTask("review-req:3",
+                           _job(number=3, action="review-req",
+                                counter="review_requests"), 1),
+    ]
+
+    store._autofix_poll_once()
+
+    assert calls == []  # a free bay, and nothing put in it
+    assert [t.id for t in store.queued_tasks] == ["review-req:3"]
+    assert "gh timed out" in (store.autofix_poll_error or "")
+
+
+def test_the_closed_pr_read_asks_for_closed_prs(nothing_closed, monkeypatch):
+    """The qualifier IS the feature: `is:open` here, or a search missing `is:closed`
+    altogether, hands the drain a set that retires the rows it was built to keep. Every
+    other test in the suite has this fetch stubbed out, so this is the only place its
+    query and its decoding are seen at all — hence the fixture that stubs it, asked for
+    by name to get the real function back."""
+    import json
+
+    fetch_closed_prs = nothing_closed
+    seen: dict = {}
+
+    def fake_run(args, timeout=60.0):
+        seen["args"] = args
+        # A search over issues returns non-PR nodes as `{}` — skipped, not counted.
+        return json.dumps(
+            {"data": {"search": {"nodes": [{"number": 41}, {}, {"number": 42}]}}}
+        ).encode()
+
+    monkeypatch.setattr("diplomat_runtime.gh.run", fake_run)
+
+    assert fetch_closed_prs("o", "r") == {41, 42}
+    assert "q=repo:o/r is:pr is:closed sort:updated-desc" in seen["args"]
 
 
 def test_the_drain_still_starts_a_conflict_fix_the_branch_still_needs(store, monkeypatch):
@@ -2169,7 +2306,7 @@ def test_the_drain_skips_a_task_the_operator_started_under_it(store, monkeypatch
     monkeypatch.setattr(type(store), "_run_queued_task", fake_run)
     monkeypatch.setattr(type(store), "_auto_tasks_running", lambda self: 0)
 
-    store._drain_queued_tasks([])  # a review request is not in this fetch to check
+    store._drain_queued_tasks([], closed=set())  # neither fetch answers a review request
 
     assert ran == ["review-req:3"]
 
@@ -2323,7 +2460,7 @@ def test_a_spawn_failure_stops_the_drain_rather_than_clearing_the_queue(store, m
     for c in calls:  # both agents finish → the drain has room for both queued tasks
         with open(c["done"], "w") as fh:
             fh.write("0")
-    store._drain_queued_tasks([])
+    store._drain_queued_tasks([], closed=set())
 
     # The first was tried and failed; the second was never touched, so it is still in
     # the panel rather than dropped alongside it.

@@ -1116,17 +1116,28 @@ check(AgentTaskQueue.reorder(["conflicts:1", "conflicts:2"],
       "within the conflict band a drag works like any other")
 
 check(AgentTaskQueue.stillOwed(auditAction: "conflicts", prNumber: 8,
-                               conflicting: [7], owingReply: [8]) == false,
+                               conflicting: [7], owingReply: [8], closed: []) == false,
       "a conflict fix on a PR this fetch no longer calls conflicting is work already done")
 check(AgentTaskQueue.stillOwed(auditAction: "conflicts", prNumber: 7,
-                               conflicting: [7], owingReply: []),
+                               conflicting: [7], owingReply: [], closed: []),
       "…and one the fetch still calls conflicting is dispatched")
 check(AgentTaskQueue.stillOwed(auditAction: "review-reply", prNumber: 8,
-                               conflicting: [8], owingReply: []) == false,
+                               conflicting: [8], owingReply: [], closed: []) == false,
       "a reply on a PR whose threads are answered is work already done")
 check(AgentTaskQueue.stillOwed(auditAction: "review-req", prNumber: 3,
-                               conflicting: [], owingReply: []),
+                               conflicting: [], owingReply: [], closed: []),
       "a review requested of me is not in this fetch to check — unanswerable is not stale")
+// A closed PR is the one answer that reaches every verb, including the two the fetches
+// above cannot speak for: a review of a merged diff is nobody's work.
+check(AgentTaskQueue.stillOwed(auditAction: "review-req", prNumber: 3,
+                               conflicting: [], owingReply: [], closed: [3]) == false,
+      "…until its PR closes, which no agent of mine can put back")
+check(AgentTaskQueue.stillOwed(auditAction: "review", prNumber: 31,
+                               conflicting: [], owingReply: [], closed: [31]) == false,
+      "a review the operator asked for goes the same way — merged is merged")
+check(AgentTaskQueue.stillOwed(auditAction: "conflicts", prNumber: 7,
+                               conflicting: [7], owingReply: [], closed: [7]) == false,
+      "closed outranks a fetch that still calls the PR conflicting")
 
 section("agent state: what every dispatched run resolves to")
 // PARITY: the whole scenario table lives in

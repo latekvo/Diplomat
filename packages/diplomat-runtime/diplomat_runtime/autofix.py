@@ -682,7 +682,7 @@ def dispatch_bumps_counter(source: str, attempt: int) -> bool:
 # (QUEUE_REQUESTED_ACTION). GitHub has nothing to re-offer them from — a PR does not
 # record that someone wanted it reviewed — so that ask is the front-end's own list
 # (``Store.requested_reviews``), and it is the front-end that offers one task per PR
-# on each poll until each is dispatched.
+# on each poll until each is dispatched or its PR leaves the open state.
 
 
 def queue_key(audit_action: str, pr_number: int) -> str:
@@ -733,8 +733,8 @@ def queue_band(key: str) -> int:
     return QUEUE_LAST_ACTIONS.index(verb) + 1 if verb in QUEUE_LAST_ACTIONS else 0
 
 
-def still_owed(audit_action: str, pr_number: int,
-               conflicting: set[int], owing_reply: set[int]) -> bool:
+def still_owed(audit_action: str, pr_number: int, conflicting: set[int],
+               owing_reply: set[int], closed: set[int]) -> bool:
     """Does the evidence of THIS poll still owe a task the queue is holding?
 
     A queued task carries the prompt and the verdict of the poll that staged it, which
@@ -744,12 +744,20 @@ def still_owed(audit_action: str, pr_number: int,
     longer calls conflicting, or a reply on a PR whose threads are answered, is work
     somebody already did.
 
-    Only the two verbs this fetch covers are answerable — both are jobs on MY PRs, and
-    ``snaps`` is the fetch of exactly those. A review requested of me lives in the
-    other fetch, and nothing on this machine can retire it early anyway: it is owed
-    until I review it, which is what the agent is for. A review the operator asked for
-    is owed for the same reason, by their word rather than GitHub's. Unanswerable is
-    not stale, so it stands."""
+    A PR that has left the open state retires every verb, the operator's own ask
+    included: merged or closed, there is no branch left to fix and a review lands on a
+    diff nobody will open again. ``closed`` is positive evidence — the PRs this cycle
+    SAW closed — so a PR missing from it reads as open and its row stands, which is
+    the safe direction for the one answer that also forgets the ask behind the row.
+
+    While the PR is open, only the two verbs ``conflicting``/``owing_reply`` come from
+    are answerable — both are jobs on MY PRs, and ``snaps`` is the fetch of exactly
+    those. A review requested of me lives in the other fetch, and nothing on this
+    machine retires it: it is owed until I review it, which is what the agent is for.
+    A review the operator asked for is owed for the same reason, by their word rather
+    than GitHub's. Unanswerable is not stale, so it stands."""
+    if pr_number in closed:
+        return False
     if audit_action == "conflicts":
         return pr_number in conflicting
     if audit_action == "review-reply":

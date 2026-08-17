@@ -46,7 +46,7 @@ struct SettingsView: View {
         .environment(\.settingsExplain, store.settingsExplain)
         .task {
             // Freshen the allocator status only. This used to also fire a full GitHub
-            // poll on EVERY Settings open — two GraphQL searches against the shared
+            // poll on EVERY Settings open — three GraphQL searches against the shared
             // 5000 pt/hr budget (and potential agent dispatch) from a view-appear
             // hook; the monitor's own cadence + wake trigger keep the rows fresh.
             await store.refreshAllocatorInstall()

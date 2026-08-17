@@ -119,11 +119,30 @@ def no_github_reads(monkeypatch):
     def refuse(args, timeout=60.0):
         raise AssertionError(
             f"a test reached the real `gh` ({' '.join(args[:2])}…) — stub the fetch "
-            "it goes through (autofixmonitor.fetch_snapshots / fetch_review_requests)"
+            "it goes through (autofixmonitor.fetch_snapshots / fetch_review_requests "
+            "/ fetch_closed_prs)"
         )
 
     monkeypatch.setattr(gh, "run", refuse)
     yield
+
+
+@pytest.fixture(autouse=True)
+def nothing_closed(monkeypatch):
+    """Answer the poll's closed-PR read with "nothing has closed", and yield the real
+    function for the one test that is about the read itself.
+
+    The third fetch of a cycle, and the only one whose neutral answer is not the one a
+    missing stub gives: unreachable, it reads as a poll failure and stands the whole
+    drain down (:meth:`Store._fetch_closed_prs`), which would silently take the queue
+    out of every test that is not about closure. An empty set is what those were
+    written against; a test about a PR leaving the open state names the numbers itself.
+    """
+    from diplomat_app import autofixmonitor
+
+    real = autofixmonitor.fetch_closed_prs
+    monkeypatch.setattr(autofixmonitor, "fetch_closed_prs", lambda *a, **k: set())
+    yield real
 
 
 @pytest.fixture(autouse=True)

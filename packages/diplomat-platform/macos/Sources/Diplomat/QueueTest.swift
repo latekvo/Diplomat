@@ -428,7 +428,8 @@ enum QueueTest {
         }
         // #21 is still conflicting; #22 came out of conflict while it waited.
         await store.drainQueuedTasks(snaps: [snap(21, mergeable: "CONFLICTING"),
-                                             snap(22, mergeable: "MERGEABLE")])
+                                             snap(22, mergeable: "MERGEABLE")],
+                                     closed: [])
         check("a conflict fix the branch no longer needs leaves the list",
               store.queuedTasks.map(\.id) == ["review-req:23", "conflicts:21"])
         check("…and one it still needs keeps its place",
@@ -437,6 +438,13 @@ enum QueueTest {
         // review request on the panel would vanish the first time the drain ran.
         check("a review request is not retired by a fetch that cannot see it",
               store.queuedTasks.contains { $0.id == "review-req:23" })
+        // What does retire it is its PR leaving the open state — the one answer that
+        // reaches a verb the my-PRs fetch cannot speak for. #21 stays: it is the
+        // arrangement, not the closure, that decides the rest of the list.
+        await store.drainQueuedTasks(snaps: [snap(21, mergeable: "CONFLICTING")],
+                                     closed: [23])
+        check("…and one whose PR has closed leaves the list all the same",
+              store.queuedTasks.map(\.id) == ["conflicts:21"])
         emptyBook()
         store.queuedTasks = []
 
@@ -507,8 +515,9 @@ enum QueueTest {
               store.queuedTasks.map(\.id)
                   == ["review-req:35", "review:31", "review:32", "review:33", "conflicts:36"])
 
-        // Cancel is the only way out: nothing else retires an ask, so a mis-aimed sweep
-        // would otherwise be a day of agents nobody can call off.
+        // Cancel is the way out of an ask the sweep should never have caught — nothing
+        // GitHub does retires one while its PR is open, so a mis-aimed sweep would
+        // otherwise be a day of agents nobody can call off.
         store.cancelRequestedReview("review:32")
         store.offerRequestedReviews()
         store.commitQueue()
@@ -525,13 +534,26 @@ enum QueueTest {
         check("…and a monitor's row is not cancellable at all",
               store.queuedTasks.contains { $0.id == "review-req:35" })
 
+        // The other way out, and the only one nobody pressed: #33 landed while it
+        // waited. The ask has to go with the row — the row is rebuilt from the ask on
+        // every poll, so a list that kept it would offer the same review straight back.
+        // (Still at capacity, so the drain sweeps and then returns without spawning.)
+        await store.drainQueuedTasks(snaps: [], closed: [33])
+        check("a swept PR that landed before its turn takes its ask with it",
+              store.requestedReviews.map(\.number) == [31]
+                  && !store.queuedTasks.contains { $0.id == "review:33" })
+        store.offerRequestedReviews()
+        store.commitQueue()
+        check("…so the next poll has nothing left to offer for it",
+              !store.queuedTasks.contains { $0.id == "review:33" })
+
         // The dispatch is what answers an ask. #31's PR gains an agent, so the dispatch
         // is refused and the ask stands; a refusal that dropped it would silently
         // abandon the review.
         bookAgent(31)
         await store.executeQueuedTask("review:31")
         check("an ask refused because the PR is busy is still asked for",
-              store.requestedReviews.map(\.number) == [31, 33])
+              store.requestedReviews.map(\.number) == [31])
         store.error = nil
         emptyBook()
         store.requestedReviews = []

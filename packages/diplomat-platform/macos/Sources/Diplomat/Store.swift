@@ -1187,6 +1187,11 @@ final class Store: ObservableObject {
             // whole point of the check is that it reads THIS cycle's evidence, not the
             // one the queue was built from.
             let snaps = await fetchMySnapshots(owner: owner, repo: repo)
+            // And which PRs have left the open state — the one thing the fetch above
+            // cannot answer, because it lists what is open and the queue has to be
+            // checked against what is not. Every verb answers to it, the operator's
+            // own ask included (`AgentTaskQueue.stillOwed`).
+            let closed = await fetchClosedPRs(owner: owner, repo: repo)
             // The queue first, in the operator's order: a slot that freed since the
             // last cycle belongs to work already waiting for it, not to whichever PR
             // this poll's fetch happens to return first.
@@ -1196,8 +1201,11 @@ final class Store: ObservableObject {
             // being current: while `gh` is down the list freezes, and a drain that kept
             // firing from it would spawn agents at work answered by hand hours ago. A
             // fetch that failed just now is the same blindness one cycle earlier, so it
-            // holds the drain too.
-            if autofixPollError == nil, let snaps { await drainQueuedTasks(snaps: snaps) }
+            // holds the drain too — either of them, since a missing answer is not a
+            // pass.
+            if autofixPollError == nil, let snaps, let closed {
+                await drainQueuedTasks(snaps: snaps, closed: closed)
+            }
             // Start this cycle's staging empty. A commit clears it too, so this is
             // what discards the offers of a cycle that failed part-way and never
             // committed — they are re-offered by the cycle that succeeds.
@@ -1237,6 +1245,18 @@ final class Store: ObservableObject {
             return try await AutofixMonitor.fetchSnapshots(owner: owner, repo: repo, me: effectiveMe)
         } catch {
             notePollFailure(error)   // leave state as-is, retry next tick
+            return nil
+        }
+    }
+
+    /// This cycle's read of the PRs that have merged or closed, or `nil` if the read
+    /// failed — which is not the same as an empty set, and is why the failure stands
+    /// the drain down rather than letting it read every PR as open.
+    private func fetchClosedPRs(owner: String, repo: String) async -> Set<Int>? {
+        do {
+            return try await AutofixMonitor.fetchClosedPRs(owner: owner, repo: repo)
+        } catch {
+            notePollFailure(error)
             return nil
         }
     }
@@ -1621,11 +1641,13 @@ final class Store: ObservableObject {
     /// the last cycle goes to the work already waiting for it rather than to whatever
     /// this poll's fetch happens to list first.
     ///
-    /// The list is re-checked against `snaps` — this cycle's read of my PRs — before
-    /// any of it is run: a queued task carries the verdict of the poll that staged it,
-    /// which is as old as a whole poll period by the time a bay frees, and what filled
-    /// that bay in the meantime was an agent working one of these same branches. Work
-    /// the fetch no longer owes leaves the list instead of spawning
+    /// The list is re-checked against `snaps` — this cycle's read of my PRs — and
+    /// against `closed`, the PRs that have left the open state, before any of it is
+    /// run: a queued task carries the verdict of the poll that staged it, which is as
+    /// old as a whole poll period by the time a bay frees, and what filled that bay in
+    /// the meantime was an agent working one of these same branches — or the author,
+    /// landing the PR. Work the fetch no longer owes, and work on a PR that is no
+    /// longer there to work on, leaves the list instead of spawning
     /// (`AgentTaskQueue.stillOwed`).
     ///
     /// That pass covers the whole queue, not the part the drain reaches: a row
@@ -1642,7 +1664,7 @@ final class Store: ObservableObject {
     /// Not private: the refresh pass is what `QueueTest` drives. It runs before the
     /// capacity guard and starts nothing by itself, so a self-test at capacity — the
     /// state that whole test sets up — exercises it without a spawn.
-    func drainQueuedTasks(snaps: [PRSnapshot]) async {
+    func drainQueuedTasks(snaps: [PRSnapshot], closed: Set<Int>) async {
         let conflicting = Set(snaps.filter { $0.mergeable == "CONFLICTING" }.map(\.number))
         let owingReply = Set(snaps.filter { $0.threadsIOwe > 0 }.map(\.number))
         // Dropped here rather than left for this cycle's commit to omit: the commit is
@@ -1653,15 +1675,28 @@ final class Store: ObservableObject {
         //
         // A queued task always carries its PR (`stageQueued` stages nothing without
         // one); one there were no way to ask about stands, which is the answer
-        // `stillOwed` gives a verb this fetch does not cover.
+        // `stillOwed` gives a verb these fetches do not cover.
         let answered = queuedTasks.filter { entry in
             guard let number = entry.job.prNumber else { return false }
             return !AgentTaskQueue.stillOwed(auditAction: entry.job.auditAction,
                                              prNumber: number,
                                              conflicting: conflicting,
-                                             owingReply: owingReply)
+                                             owingReply: owingReply,
+                                             closed: closed)
         }
-        for entry in answered { dropQueuedTask(entry.id) }
+        for entry in answered {
+            // An ask outlives its row by design — the row is rebuilt from it on every
+            // poll — so it has to be forgotten as well as dropped, or this same cycle
+            // offers it straight back. Logged because it is the one retirement neither
+            // a dispatch nor the operator is behind: a row that vanished in silence
+            // reads exactly like the review having run.
+            if entry.job.requested {
+                forgetRequested(entry.job.prNumber)
+                AuditLog.log("panel", "queue-drop",
+                             "\(entry.job.label) — PR no longer open, not run")
+            }
+            dropQueuedTask(entry.id)
+        }
         for entry in drainableTasks {
             // The list moves under this loop: it awaits a spawn per task, and an
             // "execute now" during one of those takes its row off the queue and
@@ -1742,10 +1777,9 @@ final class Store: ObservableObject {
     ///
     /// The PRs come from the panel's own last fetch rather than a fresh one: it is the
     /// list the operator was looking at when they pressed the button, which is the list
-    /// they meant. One that closes before its turn comes is reviewed anyway: an ask
-    /// stands on the operator's word rather than GitHub's, so the drain has nothing to
-    /// retire it by (`AgentTaskQueue.stillOwed`) and **cancel** is the way out of one a
-    /// sweep should not have caught.
+    /// they meant. One that merges or closes before its turn comes is dropped by the
+    /// drain (`AgentTaskQueue.stillOwed`); one the sweep should not have caught in the
+    /// first place is what **cancel** is for.
     ///
     /// A PR already waiting for a review keeps the ask it has instead of gaining a
     /// second: the queue is keyed by PR, so two would be one row that dispatches twice
@@ -1806,7 +1840,7 @@ final class Store: ObservableObject {
     /// This is the list's whole job in a poll. A monitor re-offers its work by finding
     /// it on GitHub again; nothing on GitHub says a PR was swept, so what re-offers
     /// these is the ask itself, until the dispatch that starts one takes it off
-    /// (`settleRequested`).
+    /// (`settleRequested`) or the drain finds its PR closed (`drainQueuedTasks`).
     ///
     /// Not private: the queue self-test commits a cycle directly, which is the only way
     /// to exercise the offer without a live GitHub fetch.
@@ -1840,9 +1874,9 @@ final class Store: ObservableObject {
     /// about, without starting it.
     ///
     /// A sweep is the one thing in this list that can be asked for by the fifty, and
-    /// the only one nothing else will retire — a monitor's row leaves when GitHub stops
-    /// owing the work, but an ask stands until it runs. Without a way back out, a
-    /// mis-aimed sweep is a day of agents nobody can call off.
+    /// the only one GitHub does not answer for: a monitor's row leaves when the work is
+    /// no longer owed, while an ask on a PR that is still open stands until it runs.
+    /// Without a way back out, a mis-aimed sweep is a day of agents nobody can call off.
     func cancelRequestedReview(_ id: String) {
         guard let entry = queuedTasks.first(where: { $0.id == id }), entry.job.requested
         else { return }
