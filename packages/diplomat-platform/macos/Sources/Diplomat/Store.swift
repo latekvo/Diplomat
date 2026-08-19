@@ -2670,7 +2670,7 @@ final class Store: ObservableObject {
         for s in sessions {
             // Out-of-quota banners return false here (looksLikeApiError ignores them):
             // a quota-limited agent can't progress until its window resets, so nudging
-            // it is pointless — only transient server/connectivity errors are nudged.
+            // it is pointless — only transient failures are nudged.
             guard ApiErrorMatch.looksLikeApiError(s.tail) else { continue }
             erroring.insert(s.tty)
             // Idle-confirmation (ApiErrorMatch.isConfirmedStall): only nudge a session
