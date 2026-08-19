@@ -285,9 +285,15 @@ def _telemetry_ledger_fixture() -> None:
             session_left = 1.0  # the 5-hour window rolled and refilled
         if week_left <= 0.05:
             week_left = 1.0
+        # Readings the probe could not answer, which every real ledger has: the
+        # scattered misses are what the quota chart bridges and the half-day outage
+        # what still breaks its line, so an unbroken series would render a screen no
+        # machine has ever recorded. The window is spent through them all the same.
+        outage = now - 6 * day < at < now - 5.5 * day
+        answered = not outage and rng.random() > 0.08
         telemetry.append({"at": at, "ev": "sample",
-                          "sessionLeft": round(session_left, 4),
-                          "weekLeft": round(week_left, 4),
+                          "sessionLeft": round(session_left, 4) if answered else None,
+                          "weekLeft": round(week_left, 4) if answered else None,
                           "repoTokens": repo, "otherTokens": other})
         at += 900.0
 

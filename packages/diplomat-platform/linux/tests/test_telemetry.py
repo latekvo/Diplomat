@@ -739,3 +739,78 @@ def test_a_body_that_is_not_a_window_prices_nothing():
     assert quota._fraction_left({}) is None
     assert quota._fraction_left({"utilization": "80"}) is None
     assert quota._fraction_left({"utilization": True}) is None
+
+
+# MARK: - Insisting
+
+
+@pytest.fixture
+def refusals(monkeypatch):
+    """A probe whose endpoint refuses the first ``n`` attempts, as the real one does
+    when another Claude Code session on the machine got to the shared bucket first.
+    Yields a setter returning the attempt log, and takes the waits out of the clock so
+    a test costs nothing to run."""
+    monkeypatch.setenv("DIPLOMAT_QUOTA_PROBE", "1")
+    monkeypatch.setattr(quota, "_oauth_token", lambda: "oat-test")
+    monkeypatch.setattr(quota.time, "sleep", lambda _: None)
+    quota._reset_cache()
+
+    def refuse(n: int) -> list[int]:
+        log: list[int] = []
+
+        def fetch():
+            log.append(len(log))
+            if len(log) <= n:
+                return None
+            return {"five_hour": {"utilization": 40},
+                    "seven_day": {"utilization": 10}}
+
+        monkeypatch.setattr(quota, "_fetch", fetch)
+        return log
+
+    return refuse
+
+
+def test_one_refusal_costs_an_insisting_probe_an_attempt_not_the_reading(refusals):
+    """The whole point: the endpoint is one per-account bucket shared with every
+    Claude Code session on the machine, so a refusal is routine. Settling for it
+    leaves a hole in the ledger and a break in the quota chart."""
+    log = refusals(2)
+    assert quota.fractions_left(insist=True) == (0.6, 0.9)
+    assert len(log) == 3
+
+
+def test_a_probe_that_is_not_insisting_takes_the_one_attempt(refusals):
+    """The control, and what still gates a dispatch: `AutoBudget` asks between
+    deciding to spawn an agent and spawning it, where two and a half minutes of
+    retries would cost more than the stale reading it already has."""
+    log = refusals(2)
+    assert quota.fractions_left() == (None, None)
+    assert len(log) == 1
+
+
+def test_an_insisting_probe_gives_up_after_its_last_attempt(refusals):
+    """An endpoint that refuses everything must end the sample, not hold the worker
+    (and, on macOS, the process poll behind it) indefinitely."""
+    log = refusals(999)
+    assert quota.fractions_left(insist=True) == (None, None)
+    assert len(log) == quota._INSIST_ATTEMPTS + 1
+
+
+def test_a_logged_out_machine_is_not_worth_insisting_to(refusals, monkeypatch):
+    """No token is the one failure retrying cannot fix. Without this the sample of a
+    machine that is simply logged out would sleep out the whole schedule, every
+    quarter of an hour, for nothing."""
+    log = refusals(999)
+    monkeypatch.setattr(quota, "_oauth_token", lambda: None)
+    assert quota.fractions_left(insist=True) == (None, None)
+    assert len(log) == 1
+
+
+def test_an_insisting_probe_reads_the_cache_before_it_spends_an_attempt(refusals):
+    """The TTL still rules: a reading seconds old is answered from the cache, so an
+    open panel cannot turn into a burst of requests against the shared bucket."""
+    log = refusals(0)
+    assert quota.fractions_left(insist=True) == (0.6, 0.9)
+    assert quota.fractions_left(insist=True) == (0.6, 0.9)
+    assert len(log) == 1

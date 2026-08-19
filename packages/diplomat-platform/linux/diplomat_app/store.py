@@ -297,6 +297,7 @@ class Store(QObject):
         self._apiwatch_backoff: dict[str, dict] = {}  # pane_id -> {nextAllowed, interval}
         self._apiwatch_seen_tail: dict[str, str] = {}  # pane_id -> last erroring tail
         self._apiwatch_lock = threading.Lock()
+        self._telemetry_sample_lock = threading.Lock()
 
         # Honor the process-wide default format (NativeFormat unless overridden):
         # the two-arg QSettings(org, app) constructor is hardwired to NativeFormat,
@@ -2262,19 +2263,30 @@ class Store(QObject):
         the monitors are enabled, and pricing the rate-limit window needs an
         unbroken sample series regardless. :func:`telemetry.sample_due` does the pacing, so calling
         this more often than the sample interval is free.
+
+        The quota probe insists (:func:`quota.fractions_left`), so a worker can outlive
+        the gap between turns — and until it writes, :func:`telemetry.sample_due` still
+        says a sample is owed. The lock is what keeps that from becoming several.
         """
         if not telemetry.sample_due():
             return
+        if not self._telemetry_sample_lock.acquire(blocking=False):
+            return  # a sample is already being taken
 
         def work() -> None:
             from diplomat_runtime import quota, usagescan
 
             try:
-                session, week = quota.fractions_left()
-                totals = usagescan.totals()
-            except OSError:
-                return  # an unreadable ~/.claude costs this sample, nothing else
-            telemetry.record_sample(session, week, totals.repo, totals.other)
+                try:
+                    session, week = quota.fractions_left(insist=True)
+                    totals = usagescan.totals()
+                except OSError:
+                    return  # an unreadable ~/.claude costs this sample, nothing else
+                telemetry.record_sample(session, week, totals.repo, totals.other)
+            finally:
+                # Held until the sample is on disk: released a moment earlier, the
+                # next turn would find `sample_due` still true and take a second one.
+                self._telemetry_sample_lock.release()
             self.telemetry_changed.emit()
 
         threading.Thread(target=work, daemon=True).start()
