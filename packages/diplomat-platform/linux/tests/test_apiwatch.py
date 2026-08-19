@@ -33,6 +33,25 @@ def test_matches_status_page_and_connectivity():
     assert apiwatch.looks_like_api_error("API Error: Connection error.") is True
 
 
+def test_matches_cut_off_stream_banners():
+    # Every wording the CLI builds this family from — a cause plus one of two endings.
+    # The endings are what the matcher reads, so all seven have to nudge.
+    for banner in (
+        "Server error mid-response. The response above may be incomplete.",
+        "Connection lost mid-response. The response above may be incomplete.",
+        "Your computer went to sleep mid-response. The response above may be incomplete.",
+        "The response stopped arriving. The response above may be incomplete.",
+        "The response stalled before a response was produced. Try again.",
+        "Connection lost before a response was produced. Try again.",
+        "Your computer went to sleep before a response was produced. Try again.",
+    ):
+        assert apiwatch.looks_like_api_error(f"\u23fa API Error: {banner}") is True, banner
+    # An ending without the prefix is ordinary prose, not a banner.
+    assert apiwatch.looks_like_api_error(
+        "note: the response above may be incomplete"
+    ) is False
+
+
 def test_quota_banners_are_ignored():
     assert apiwatch.looks_like_api_error("You've hit your weekly limit.") is False
     assert apiwatch.looks_like_api_error(

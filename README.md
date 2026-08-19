@@ -773,15 +773,15 @@ nudge opens no window at all - it types into a session that already exists.)
   portable way to read or type into an arbitrary Linux emulator, so the Linux
   spawner opens each agent in a tmux session of its own and an agent started
   outside one is not watched). An agent stalled on a transient API error
-  (overloads, connection failures, bare `429` rate-limits, status-page errors) gets
-  a continue nudge typed into that exact session, with a per-session 2m → 3h
-  backoff so a persistently broken one isn't hammered. A single erroring scan never
-  nudges: the tail must come back **byte-identical on the next scan** before it
-  counts as a stall, so the real floor is ~2 scans. An **out-of-quota** banner is
-  never nudged - it's not transient - and it suppresses any API error sharing the
-  same tail. An org **budget cap** (`403 … budget limit exceeded`) counts as one
-  of those, whatever its status code: it holds until the window rolls over or an
-  admin raises it.
+  (overloads, connection failures, a turn cut short mid-stream, bare `429`
+  rate-limits, status-page errors) gets a continue nudge typed into that exact
+  session, with a per-session 2m → 3h backoff so a persistently broken one isn't
+  hammered. A single erroring scan never nudges: the tail must come back
+  **byte-identical on the next scan** before it counts as a stall, so the real
+  floor is ~2 scans. An **out-of-quota** banner is never nudged - it's not
+  transient - and it suppresses any API error sharing the same tail. An org
+  **budget cap** (`403 … budget limit exceeded`) counts as one of those, whatever
+  its status code: it holds until the window rolls over or an admin raises it.
 
 Poll failures (gh / auth / network) surface in Settings and the activity log
 rather than silently freezing stale counts. Rate-limit note: the GitHub GraphQL

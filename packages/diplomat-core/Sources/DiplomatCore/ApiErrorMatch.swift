@@ -9,14 +9,19 @@ import Foundation
 // it passes to the last few visible lines, which is what keeps this from firing on a
 // session that merely mentions the phrase higher up.
 public enum ApiErrorMatch {
-    /// Connectivity failures that the CLI prints with NO status code — e.g.
-    ///   "API Error: Unable to connect to API"
-    ///   "API Error: Connection error."
-    /// so a dropped/returning network resumes the agent just like a 5xx would.
-    private static let connectivityPhrases = [
+    /// Transient failures the CLI prints with NO status code, all under its "API Error:"
+    /// prefix — a connectivity drop ("Unable to connect to API", "Connection error.") or
+    /// a turn cut short ("Server error mid-response. The response above may be
+    /// incomplete.", "Connection lost before a response was produced. Try again."). Both
+    /// resume on a nudge exactly as a 5xx does. The CLI builds the cut-short line from a
+    /// cause — server error, lost connection, a sleeping computer, a response that
+    /// stopped arriving — plus one of two endings; the endings are what's listed here, so
+    /// a new cause is covered too.
+    private static let codelessPhrases = [
         "unable to connect", "connection error", "connection refused",
         "connection reset", "connection timed out", "network error",
         "fetch failed", "econnrefused", "enotfound", "etimedout", "getaddrinfo",
+        "the response above may be incomplete", "before a response was produced",
     ]
 
     /// Out-of-token-quota banners. The CLI prints these WITHOUT any "API Error"
@@ -51,7 +56,7 @@ public enum ApiErrorMatch {
 
     /// True when `text` shows a transient Claude API error the watcher should nudge
     /// past — a server 5xx / rate-limit ("API Error: <3-digit code>"), a status-page
-    /// error, or a codeless connectivity failure (network out, DNS, timeout).
+    /// error, or a codeless failure (network out, DNS, timeout, a stream cut off).
     ///
     /// Out-of-quota and org budget-cap banners return false: nudging a capped session
     /// does nothing until the window resets, so the watcher intentionally leaves them
@@ -84,8 +89,8 @@ public enum ApiErrorMatch {
         if lower.contains("api error") && lower.contains("status.claude.com") {
             return true
         }
-        // Or a codeless API connectivity error (network out, DNS, timeout, …).
-        if lower.contains("api error") && connectivityPhrases.contains(where: lower.contains) {
+        // Or a codeless API failure: connectivity, or a stream cut off part-way.
+        if lower.contains("api error") && codelessPhrases.contains(where: lower.contains) {
             return true
         }
         return false

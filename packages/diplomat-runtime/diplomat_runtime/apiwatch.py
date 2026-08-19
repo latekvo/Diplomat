@@ -46,13 +46,18 @@ SCANNED_TAIL_LINES = 30
 APIWATCH_COOLDOWN = 120.0
 APIWATCH_MAX_BACKOFF = 3 * 60 * 60.0  # 3h
 
-# Connectivity failures the CLI prints with NO status code — e.g.
-#   "API Error: Unable to connect to API" / "API Error: Connection error."
-# so a dropped/returning network resumes the agent just like a 5xx would.
-_CONNECTIVITY_PHRASES = [
+# Transient failures the CLI prints with NO status code, all under its "API Error:"
+# prefix — a connectivity drop ("Unable to connect to API", "Connection error.") or a
+# turn cut short ("Server error mid-response. The response above may be incomplete.",
+# "Connection lost before a response was produced. Try again."). Both resume on a nudge
+# exactly as a 5xx does. The CLI builds the cut-short line from a cause — server error,
+# lost connection, a sleeping computer, a response that stopped arriving — plus one of
+# two endings; the endings are what's listed here, so a new cause is covered too.
+_CODELESS_PHRASES = [
     "unable to connect", "connection error", "connection refused",
     "connection reset", "connection timed out", "network error",
     "fetch failed", "econnrefused", "enotfound", "etimedout", "getaddrinfo",
+    "the response above may be incomplete", "before a response was produced",
 ]
 
 # Out-of-token-quota banners. The CLI prints these WITHOUT any "API Error" prefix.
@@ -85,7 +90,7 @@ _BARE_429 = re.compile(r"\b429\b")
 def looks_like_api_error(text: str) -> bool:
     """True when ``text`` shows a transient Claude API error the watcher should nudge
     past — a server 5xx / rate-limit ("API Error: <3-digit code>"), a status-page
-    error, or a codeless connectivity failure (network out, DNS, timeout).
+    error, or a codeless failure (network out, DNS, timeout, a stream cut off).
 
     Out-of-quota and org budget-cap banners return False: nudging a capped session
     does nothing until the window resets, so the watcher intentionally leaves them
@@ -112,8 +117,8 @@ def looks_like_api_error(text: str) -> bool:
     # Or any API error that points at the status page.
     if "api error" in lower and "status.claude.com" in lower:
         return True
-    # Or a codeless API connectivity error (network out, DNS, timeout, …).
-    if "api error" in lower and any(p in lower for p in _CONNECTIVITY_PHRASES):
+    # Or a codeless API failure: connectivity, or a stream cut off part-way.
+    if "api error" in lower and any(p in lower for p in _CODELESS_PHRASES):
         return True
     return False
 

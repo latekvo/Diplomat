@@ -1664,6 +1664,21 @@ check(ApiErrorMatch.looksLikeApiError("something API error, see status.claude.co
 check(ApiErrorMatch.looksLikeApiError("⏺ API Error: Unable to connect to API"))
 check(ApiErrorMatch.looksLikeApiError("API Error: Connection error."))
 check(ApiErrorMatch.looksLikeApiError("API Error: getaddrinfo ENOTFOUND api.anthropic.com"))
+// A turn cut short: every wording the CLI builds this family from — a cause plus one of
+// two endings. The endings are what the matcher reads, so all seven must nudge.
+for banner in [
+    "Server error mid-response. The response above may be incomplete.",
+    "Connection lost mid-response. The response above may be incomplete.",
+    "Your computer went to sleep mid-response. The response above may be incomplete.",
+    "The response stopped arriving. The response above may be incomplete.",
+    "The response stalled before a response was produced. Try again.",
+    "Connection lost before a response was produced. Try again.",
+    "Your computer went to sleep before a response was produced. Try again.",
+] {
+    check(ApiErrorMatch.looksLikeApiError("⏺ API Error: \(banner)"), banner)
+}
+// An ending without the prefix is ordinary prose, not a banner.
+check(!ApiErrorMatch.looksLikeApiError("note: the response above may be incomplete"))
 // Out-of-token-quota banners (no "API Error" prefix) are intentionally IGNORED — an
 // out-of-quota agent can't progress until its window resets, so nudging just churns.
 // Every format the CLI has used for the limit message must return false.
