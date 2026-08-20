@@ -12,8 +12,7 @@ enum AutofixMonitor {
     /// diff and the reconcilers need, in a single request (`assets/graphql/monitor-prs`).
     static func fetchSnapshots(owner: String, repo: String, me: String) async throws -> [PRSnapshot] {
         let q = "repo:\(owner)/\(repo) author:\(me) is:pr is:open"
-        let query = try CoreAssets.graphql("monitor-prs")
-        let data = try await GH.run(["api", "graphql", "-f", "query=\(query)", "-f", "q=\(q)"])
+        let data = try await GH.graphql("monitor-prs", withRepo: false, variables: [("q", q)])
         return try parse(data, me: me)
     }
 
@@ -80,9 +79,9 @@ enum AutofixMonitor {
     static func fetchReviewRequests(owner: String, repo: String, me: String,
                                     includeFiles: Bool = false) async throws -> [ReviewRequest] {
         let q = "repo:\(owner)/\(repo) review-requested:\(me) is:pr is:open"
-        let query = try CoreAssets.graphql("review-requests")
-        let data = try await GH.run(["api", "graphql", "-f", "query=\(query)", "-f", "q=\(q)",
-                                     "-F", "withFiles=\(includeFiles)"])
+        let data = try await GH.graphql("review-requests", withRepo: false,
+                                        variables: [("q", q)],
+                                        typedVariables: [("withFiles", "\(includeFiles)")])
         struct Resp: Decodable {
             let data: D
             struct D: Decodable { let search: S }

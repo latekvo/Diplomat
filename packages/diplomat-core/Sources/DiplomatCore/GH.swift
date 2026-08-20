@@ -113,13 +113,35 @@ public enum GH {
 
     /// Run a shared `assets/graphql` query. When `withRepo` is true the repo
     /// coordinates from `assets/config.json` are passed as `$owner`/`$name`.
-    public static func graphql(_ queryName: String, withRepo: Bool) async throws -> Data {
+    /// `variables` go through gh's `-f`, which sends the value as a string;
+    /// `typedVariables` through `-F`, which lets gh parse it into the JSON type the
+    /// query declares — the spelling a `Boolean!` needs.
+    ///
+    /// Retries once on failure. GitHub intermittently times the heavier queries out,
+    /// so a single retry turns a transient blip into a non-event. It lives here
+    /// rather than in `run` because that one also carries mutations (`pr merge`),
+    /// which must never be replayed.
+    public static func graphql(_ queryName: String, withRepo: Bool,
+                               variables: [(String, String)] = [],
+                               typedVariables: [(String, String)] = []) async throws -> Data {
         let query = try CoreAssets.graphql(queryName)
         var args = ["api", "graphql", "-f", "query=\(query)"]
         if withRepo {
             let cfg = try CoreAssets.config()
             args += ["-f", "owner=\(cfg.owner)", "-f", "name=\(cfg.repo)"]
         }
-        return try await run(args)
+        for (k, v) in variables { args += ["-f", "\(k)=\(v)"] }
+        for (k, v) in typedVariables { args += ["-F", "\(k)=\(v)"] }
+
+        var lastError: Error?
+        for attempt in 0..<2 {
+            do {
+                return try await run(args)
+            } catch {
+                lastError = error
+                if attempt == 0 { try? await Task.sleep(nanoseconds: 800_000_000) }
+            }
+        }
+        throw lastError!
     }
 }
