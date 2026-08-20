@@ -1,7 +1,7 @@
 """Whether an agent's turn is over, asked of the agent's own CLI.
 
-Three mechanisms used to answer this and none of them could, because all three
-describe a process and the question is about a *turn*:
+Three other mechanisms watch a run and none of them can answer it, because all
+three describe a process and the question is about a *turn*:
 
 * the exit-code sentinel (``review.shell_command``) fires only when the agent
   EXITS, and a spawned agent is interactive — finishing its work is not exiting;
@@ -10,8 +10,8 @@ describe a process and the question is about a *turn*:
   its absence is an inference — the same absence a redraw, a resize or a reworded
   hint produces.
 
-So a finished run sat at ``awaiting_input`` for as long as its window stayed open,
-which is not a retirable state, and nothing ever marked it complete.
+Left to those three, a finished run reads as ``awaiting_input`` for as long as its
+window stays open, which is not a retirable state, so nothing ever marks it complete.
 
 The CLI already knows, and will say so: a **hook** is a command it runs itself at a
 named point in its own lifecycle. Two of them bracket a turn —
@@ -68,13 +68,13 @@ def hook_settings(activity_path: str, done_path: str | None = None) -> dict:
 
     The timestamp is the hook's own ``date``, not the poll's clock — it is when the
     turn actually ended, which is what the ledger prices a run by. A poll can be a
-    period late and used to make every run look that much longer.
+    period late, which would make every run look that much longer.
 
     ``done_path`` is the mesh's reader of this same report. A szpontnet executor holds
     its claim on a work key until the agent's exit-code sentinel appears
-    (``node._watch_agent``), and that sentinel fires on EXIT — so a peer's claim
-    outlived the finished work by however long its window stayed open, up to the
-    backstop. Writing it on the terminal verbs instead releases the key when the turn
+    (``node._watch_agent``), and that sentinel fires on EXIT — which on its own
+    would hold the key for however long the finished agent's window stays open, up to
+    the backstop. Writing it on the terminal verbs releases the key when the turn
     ends. It is done HERE, in the settings, rather than in szpontnet: the node is a
     standalone library that must not import this one, and it already watches the file.
     """

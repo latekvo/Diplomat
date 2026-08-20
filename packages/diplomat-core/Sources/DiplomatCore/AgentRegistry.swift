@@ -108,8 +108,7 @@ public enum AgentRegistry {
     ///
     /// A run is absent when its activity file says nothing yet: spawned without hooks,
     /// under a runner that has none, or in the seconds before its first hook fires.
-    /// Absent means "ask the other evidence", which is what every run used to rely on
-    /// entirely.
+    /// Absent means "ask the other evidence".
     ///
     /// Always `.present`, like `sentinels`: this reads our own directory, so a run with
     /// no line is positively "has not reported a turn" rather than unknown.

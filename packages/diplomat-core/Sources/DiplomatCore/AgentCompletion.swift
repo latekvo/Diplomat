@@ -24,9 +24,9 @@ public enum AgentCompletion {
     ///
     /// `donePath` is the mesh's reader of this same report: a szpontnet executor holds
     /// its claim on a work key until the agent's exit-code sentinel appears, and that
-    /// fires on EXIT — so a peer's claim outlived the finished work for as long as its
-    /// window stayed open. Writing it on the terminal verbs releases the key when the
-    /// turn ends.
+    /// fires on EXIT — which on its own would hold the key for as long as the
+    /// finished agent's window stays open. Writing it on the terminal verbs releases
+    /// the key when the turn ends.
     public static func settingsJSON(activityPath: String,
                                     donePath: String? = nil) -> String? {
         var hooks: [String: Any] = [:]

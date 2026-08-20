@@ -200,9 +200,9 @@ def _stage_hooks(done_path: str | None) -> str | None:
 
     The executor holds its claim on the work key until ``done_path`` exists
     (``node._watch_agent``), and an interactive agent writes that only when it EXITS —
-    so the key stayed claimed for as long as the window stayed open, and the same work
-    could not be re-run until the backstop expired. The ``Stop`` hook writes it when
-    the TURN ends instead, which is when the work is actually over.
+    which would hold the key for as long as the window stays open, blocking a re-run of
+    the same work until the backstop expires. The ``Stop`` hook writes it when the TURN
+    ends, which is when the work is actually over.
 
     Beside ``done_path`` rather than in a directory of its own, because that file is
     the only path this side is given; the node names it and cleans it up.

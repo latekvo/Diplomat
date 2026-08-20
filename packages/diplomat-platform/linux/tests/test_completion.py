@@ -1,13 +1,11 @@
 """The turn-report mechanism: how a run says its work is done.
 
-The question this answers used to have no honest answer at all. An agent is spawned
-interactively, so finishing is not exiting — the exit sentinel never fires, the pid
-probe sees the same live process before and after, and the screen scrape reads a
-string off someone else's status bar. A finished run therefore sat at
-``awaiting_input`` until a human closed its window, which is not a retirable state.
+An agent is spawned interactively, so finishing is not exiting — the exit sentinel
+never fires, the pid probe sees the same live process before and after, and the screen
+scrape reads a string off someone else's status bar. Nothing there can end a run, so
+the CLI is asked to report its own turn boundaries through hooks it runs itself.
 
-So the CLI is asked to report its own turn boundaries, through hooks it runs itself.
-The tests here cover the three halves of that: the FORMAT (:mod:`completion`), the
+The tests here cover the three layers of that: the FORMAT (:mod:`completion`), the
 WIRING that reaches a real spawn, and the shell snippet actually running in a real
 shell — because a quoting bug in that snippet is invisible to every test that only
 inspects the JSON.

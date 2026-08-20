@@ -334,8 +334,7 @@ def activity(records: list[RunRecord]) -> Observation:
 
     A run is absent from the map when its activity file says nothing yet: it was
     spawned without hooks, under a runner that has none, or in the seconds before its
-    first hook fires. Absent means "ask the other evidence", which is what every run
-    used to rely on entirely.
+    first hook fires. Absent means "ask the other evidence".
 
     Always PRESENT, like :func:`sentinels`: this reads our own directory, so a run
     with no line is positively "has not reported a turn" rather than unknown. An

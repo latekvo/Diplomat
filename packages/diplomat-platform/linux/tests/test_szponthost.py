@@ -133,8 +133,8 @@ def test_run_job_uses_the_applets_terminal_spawner_on_linux(host, monkeypatch,
 def test_a_mesh_run_writes_its_exit_sentinel_when_the_TURN_ends(host, monkeypatch,
                                                                 tmp_path):
     """The executor holds its claim until ``done_path`` exists, and an interactive
-    agent only writes that on EXIT — so the key stayed claimed for as long as the
-    window stayed open. The hooks staged here move it to the end of the turn."""
+    agent only writes that on EXIT, which would hold the key for as long as the window
+    stays open. The hooks staged here put it at the end of the turn."""
     monkeypatch.setattr(platform, "system", lambda: "Linux")
     monkeypatch.setattr(review, "spawn",
                         lambda *a, **k: "/tmp/p.txt")
