@@ -57,6 +57,32 @@ enum AgentWindows {
         return OSAScript.runSilently(script)
     }
 
+    /// Close a session's terminal window. Returns whether AppleScript accepted it.
+    ///
+    /// The mirror of `focus`, and used for exactly one thing: a run the quiescence
+    /// backstop ended (`AgentState.wentQuiet`) — twenty minutes of a byte-identical
+    /// screen, so nothing is being read and nothing is being typed. A run that ends the
+    /// ordinary way keeps its window: its agent is alive at its prompt with the whole
+    /// task in context, and that is a session the operator may still want to read.
+    @discardableResult
+    static func close(_ handle: Handle) -> Bool {
+        guard !handle.windowID.isEmpty else { return false }
+        let term = SpawnTerminal(rawValue: handle.terminal) ?? .iterm
+        return OSAScript.runSilently(closeScript(term: term, windowID: handle.windowID))
+    }
+
+    /// AppleScript that closes the window with the captured id. A window the operator
+    /// already closed simply matches nothing, which is not a failure.
+    static func closeScript(term: SpawnTerminal, windowID: String) -> String {
+        """
+        tell application "\(term.appName)"
+            repeat with w in windows
+                if (id of w as string) is "\(windowID)" then close w
+            end repeat
+        end tell
+        """
+    }
+
     /// AppleScript that selects the window with the captured id (erroring if it's gone, so
     /// the caller sees a non-zero exit). iTerm also re-selects the exact session; Terminal
     /// raises + fronts the window.

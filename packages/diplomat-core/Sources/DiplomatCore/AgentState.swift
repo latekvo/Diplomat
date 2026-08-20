@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 // MARK: - What every dispatched agent is doing right now
@@ -119,6 +120,21 @@ public enum AgentState {
     /// between the dispatch stamp and the exec, plus `etime` rounding.
     public static let pidAdoptionSlack: TimeInterval = 30
 
+    /// How long a run's screen may sit perfectly unchanged before it is called over.
+    ///
+    /// The backstop, for the runs the turn report cannot reach: a runner with no hooks,
+    /// a spawn whose settings could not be staged, an agent wedged mid-turn with its
+    /// status bar frozen. It is INDEPENDENT of that report rather than derived from it,
+    /// which is the only thing that makes it a fallback — a backstop that fails whenever
+    /// the primary fails is not one.
+    ///
+    /// Twenty minutes because a working agent's screen is never still for anywhere near
+    /// that long: the CLI redraws a spinner, a token count and an elapsed timer every
+    /// second it is thinking, so a byte-identical pane over this window means nothing is
+    /// happening in it. Long enough that a slow tool call, a long build or a human
+    /// reading the window is not mistaken for a dead one.
+    public static let quietTimeout: TimeInterval = 20 * 60
+
     /// How long a mesh origination claim may go unseen before the peer's run reads as
     /// over.
     ///
@@ -203,6 +219,12 @@ public enum AgentState {
         /// When this device last saw the executor's claim for `workKey`, for a
         /// mesh-peer run. `nil` when it has never been seen.
         public var claimSeenAt: TimeInterval?
+        /// A digest of this run's screen when it last CHANGED, with the time it
+        /// changed. The memory behind `quietTimeout` — absence of motion is only
+        /// measurable against when there was last some. Empty/`nil` until its screen
+        /// is first read.
+        public var quietDigest: String
+        public var quietSince: TimeInterval?
         /// True for a run nothing dispatched — a live agent found in the process table
         /// with no record behind it. It gets a row and blocks a second dispatch, but
         /// carries no label, no ledger key and no start time.
@@ -214,6 +236,7 @@ public enum AgentState {
                     placement: Placement = .local, node: String = "",
                     workKey: String = "", ledgerKey: String = "", pid: Int? = nil,
                     tty: String = "", claimSeenAt: TimeInterval? = nil,
+                    quietDigest: String = "", quietSince: TimeInterval? = nil,
                     untracked: Bool = false) {
             self.runID = runID
             self.dispatchedAt = dispatchedAt
@@ -229,6 +252,8 @@ public enum AgentState {
             self.pid = pid
             self.tty = tty
             self.claimSeenAt = claimSeenAt
+            self.quietDigest = quietDigest
+            self.quietSince = quietSince
             self.untracked = untracked
         }
 
@@ -259,6 +284,13 @@ public enum AgentState {
         /// that serves one appears here, so a run's absence is ordinary and reads as
         /// "ask the screen" rather than as anything about the run.
         public var sessions: Observation<[String: SessionState]>
+        /// run id → `(verb, when)` the run's own CLI last reported for itself, via the
+        /// hooks staged into its settings (`AgentCompletion`). The only evidence here
+        /// that is a REPORT rather than an observation: everything else in this bundle
+        /// is something a probe went and looked at, and this is the agent saying so
+        /// itself at the instant it happened. A run is absent when it has reported
+        /// nothing yet.
+        public var activity: Observation<[String: TurnReport]>
 
         /// Defaults are `.unavailable` rather than empty, so a caller that forgets to
         /// wire a probe gets rows reading "unknown" instead of a machine that
@@ -269,7 +301,8 @@ public enum AgentState {
                     claims: Observation<Set<String>> = .unavailable("not probed"),
                     mergedPRs: Observation<Set<Int>> = .unavailable("not probed"),
                     liveAgents: Observation<[Int: String]> = .unavailable("not probed"),
-                    sessions: Observation<[String: SessionState]> = .unavailable("not probed")) {
+                    sessions: Observation<[String: SessionState]> = .unavailable("not probed"),
+                    activity: Observation<[String: TurnReport]> = .unavailable("not probed")) {
             self.processes = processes
             self.sentinels = sentinels
             self.tails = tails
@@ -277,6 +310,7 @@ public enum AgentState {
             self.mergedPRs = mergedPRs
             self.liveAgents = liveAgents
             self.sessions = sessions
+            self.activity = activity
         }
     }
 
@@ -319,6 +353,103 @@ public enum AgentState {
         }
     }
 
+    // MARK: - Turn reports
+
+    /// One verb the agent's own CLI wrote, and when. The Swift twin of
+    /// `diplomat_runtime.completion` — that module owns the format; this only reads it.
+    public struct TurnReport: Equatable {
+        public enum Verb: String {
+            /// A turn is in flight — `UserPromptSubmit` ran and no `Stop` has since.
+            case busy
+            /// The turn ended. The agent is alive at its prompt, and its work is done.
+            case idle
+            /// The session itself is over — the agent exited rather than returning to
+            /// a prompt.
+            case ended
+
+            /// The reason line for a verb that ends a run, or `nil` for one that does
+            /// not. Both terminal verbs, and only on a verb actually read: an absent
+            /// report can never end a run.
+            var overReason: String? {
+                switch self {
+                case .busy: return nil
+                case .idle: return "its CLI reported the turn over"
+                case .ended: return "its CLI reported the session ended"
+                }
+            }
+        }
+
+        public var verb: Verb
+        public var at: TimeInterval
+
+        public init(verb: Verb, at: TimeInterval) {
+            self.verb = verb
+            self.at = at
+        }
+    }
+
+    /// What this run last reported about itself, or `nil` if it reports nothing.
+    ///
+    /// `nil` covers three ordinary cases and is never evidence about the run: the probe
+    /// could not read the directory, the run was spawned without hooks (a foreign
+    /// runner, or settings that would not stage), and the seconds before a fresh run's
+    /// first hook fires. Each falls through to the evidence such a run always had.
+    private static func reported(_ record: RunRecord, _ evidence: Evidence) -> TurnReport? {
+        evidence.activity.value?[record.runID]
+    }
+
+    /// How long this run's screen has been perfectly still, once that is long enough to
+    /// call it over — `nil` otherwise.
+    ///
+    /// A function rather than a comparison at each site because two of them ask: the
+    /// resolver, to end the run, and the reaper, to close the window it was in. Those
+    /// two answers agreeing is the whole contract — a window killed under a run still
+    /// counted as working is the one mistake this backstop could make.
+    public static func wentQuiet(_ record: RunRecord, now: TimeInterval) -> TimeInterval? {
+        guard let since = record.quietSince else { return nil }
+        let quiet = now - since
+        return quiet >= quietTimeout ? quiet : nil
+    }
+
+    /// Refresh each run's record of when its screen last CHANGED, returning updated
+    /// records.
+    ///
+    /// Beside `observeClaims` and for the same reason: absence is only measurable
+    /// against a memory of presence, and `resolve` stays a function of its arguments
+    /// alone. What is remembered is a digest rather than the screen itself — the book is
+    /// rewritten every tick and read by other processes, so storing every watched pane's
+    /// contents in it would be both large and pointless.
+    ///
+    /// A tail that could not be read updates nothing. That is what keeps a tmux server
+    /// going down from looking like twenty minutes of stillness across every run at
+    /// once: the clock only advances on ticks that actually SAW the screen, and it
+    /// restarts from the first one that does.
+    public static func observeQuiescence(_ records: [RunRecord],
+                                         tails: Observation<[String: String]>,
+                                         now: TimeInterval) -> [RunRecord] {
+        guard let seen = tails.value else { return records }
+        return records.map { r in
+            guard !r.tty.isEmpty, let tail = seen[r.tty] else { return r }
+            var out = r
+            let digest = paneDigest(tail)
+            if digest != r.quietDigest {
+                out.quietDigest = digest
+                out.quietSince = now
+            } else if r.quietSince == nil {
+                out.quietSince = now
+            }
+            return out
+        }
+    }
+
+    /// The first 16 hex characters of the pane's SHA-256, matching Python's
+    /// `hashlib.sha256(...).hexdigest()[:16]` — the two sides persist this into the
+    /// same book, so a differing digest would restart the clock on every hand-over.
+    private static func paneDigest(_ tail: String) -> String {
+        let hash = SHA256.hash(data: Data(tail.utf8))
+        return hash.map { String(format: "%02x", $0) }.joined().prefix(16).description
+    }
+
     // MARK: - The resolver
 
     /// Every run's state, from one pass of evidence. Pure.
@@ -336,9 +467,12 @@ public enum AgentState {
     ///
     /// 1. the PR landed — a terminal outcome that outranks whatever the process is doing;
     /// 2. the completion sentinel exists — the agent returned an exit code;
-    /// 3. a mesh-peer run is judged by the executor's claim, because no probe on this
+    /// 3. the agent itself reported its turn over — the one rung that answers the
+    ///    question actually being asked, since a run that finished is alive at its
+    ///    prompt and every rung below this one sees a live process either way;
+    /// 4. a mesh-peer run is judged by the executor's claim, because no probe on this
     ///    machine can see a process on another one;
-    /// 4. a local run is judged by its pid, and its screen only classifies a pid that is
+    /// 5. a local run is judged by its pid, and its screen only classifies a pid that is
     ///    already known to be alive.
     public static func resolveOne(_ record: RunRecord, evidence: Evidence,
                                   now: TimeInterval) -> Resolution {
@@ -351,6 +485,9 @@ public enum AgentState {
         }
         if let sentinels = evidence.sentinels.value, sentinels.contains(record.runID) {
             return done(.finished, "completion sentinel present")
+        }
+        if let report = reported(record, evidence), let why = report.verb.overReason {
+            return done(.finished, why)
         }
         if record.placement == .meshPeer {
             return resolvePeer(record, evidence: evidence, now: now, done: done)
@@ -410,10 +547,10 @@ public enum AgentState {
             // An untracked run IS its process-table sighting, so it has no pid of its
             // own and no dispatch stamp to be young against; it is alive by construction.
             if record.untracked {
-                return classifyActivity(record, evidence: evidence, done: done,
+                return classifyActivity(record, evidence: evidence, now: now, done: done,
                                         aliveReason: "found in process table")
             }
-            return resolveWithoutPid(record, evidence: evidence, age: age, done: done)
+            return resolveWithoutPid(record, evidence: evidence, now: now, age: age, done: done)
         }
         guard let proc = table[pid] else {
             return done(.finished, "pid \(pid) absent from the process table")
@@ -427,7 +564,7 @@ public enum AgentState {
             return done(.finished,
                         "pid \(pid) is \(secs(proc.elapsed)) old but the run is \(secs(age)) old")
         }
-        return classifyActivity(record, evidence: evidence, done: done,
+        return classifyActivity(record, evidence: evidence, now: now, done: done,
                                 aliveReason: "pid \(pid) alive")
     }
 
@@ -451,7 +588,7 @@ public enum AgentState {
     /// agent for this PR is up" are both positive answers, and the second is what
     /// finally ends the run.
     private static func resolveWithoutPid(_ record: RunRecord, evidence: Evidence,
-                                          age: TimeInterval,
+                                          now: TimeInterval, age: TimeInterval,
                                           done: (RunState, String) -> Resolution) -> Resolution {
         guard let live = evidence.liveAgents.value else {
             let why = evidence.liveAgents.reason.isEmpty
@@ -459,7 +596,7 @@ public enum AgentState {
             return done(.unknown, "no pid, and the agent scan \(why)")
         }
         if let pr = record.prNumber, live[pr] != nil {
-            return classifyActivity(record, evidence: evidence, done: done,
+            return classifyActivity(record, evidence: evidence, now: now, done: done,
                                     aliveReason: "an agent is up on PR #\(pr)")
         }
         if age <= spawnGrace {
@@ -479,18 +616,38 @@ public enum AgentState {
     /// exiting: it sits at the prompt until a human closes the window, and the process
     /// table shows the same live agent either way. Something has to separate the two.
     ///
-    /// Two things can, and the agent's own session is asked first because it is the
-    /// only one that is positive evidence: a turn carries a completion stamp, set when
-    /// it ends. The screen is the fallback, and it is an inference — it reads whether
-    /// the CLI's interrupt hint was on the status bar when we looked, which is a string
-    /// from someone else's UI that says nothing at all if they reword it.
+    /// A run that reports its own turns never reaches here still working — the ladder
+    /// above ends it — so what this rung answers for one is the other half: its CLI
+    /// said a turn is in flight, which outranks anything read off a screen.
+    ///
+    /// For a run that reports nothing, the agent's own session is asked next, because
+    /// it is the only remaining positive evidence: a turn carries a completion stamp,
+    /// set when it ends. The screen is the last fallback, and it is an inference — it
+    /// reads whether the CLI's interrupt hint was on the status bar when we looked,
+    /// which is a string from someone else's UI that says nothing at all if they
+    /// reword it.
     ///
     /// Every gap here reads as `.running`, which costs a bay rather than correctness —
     /// but it is also the one rung that fails silently, so the probe layer counts how
     /// often the tail is missing and says so out loud.
+    ///
+    /// The quiescence backstop is asked FIRST, ahead of every "it is working" answer,
+    /// because it exists precisely to overrule one: a run whose screen has not changed
+    /// in `quietTimeout` is wedged whatever its status bar still claims, and the frozen
+    /// `esc to interrupt` of an agent that died mid-turn is the exact case that
+    /// otherwise holds a bay until a human closes the window.
     private static func classifyActivity(_ record: RunRecord, evidence: Evidence,
+                                         now: TimeInterval,
                                          done: (RunState, String) -> Resolution,
                                          aliveReason: String) -> Resolution {
+        if let quiet = wentQuiet(record, now: now) {
+            return done(.finished,
+                        "\(aliveReason); its screen has not changed in "
+                        + "\(ApiErrorMatch.humanInterval(quiet))")
+        }
+        if let report = reported(record, evidence), report.verb == .busy {
+            return done(.running, "\(aliveReason); its CLI reported a turn in flight")
+        }
         if let known = evidence.sessions.value, let session = known[record.runID] {
             if session.busy { return done(.running, "\(aliveReason); its session is mid-turn") }
             return done(.awaitingInput, "\(aliveReason); its session finished its turn")
@@ -665,6 +822,10 @@ public enum AgentState {
         public var capLoad: Set<String>
         public var retirable: [RunRecord]
         public var freeSlots: Int
+        /// The instant this pass was resolved against. Carried so a consequence of the
+        /// tick — closing a wedged run's window — measures stillness against the clock
+        /// that ended the run, not one read a moment later.
+        public var now: TimeInterval = 0
 
         public func inFlight(prNumber: Int) -> Bool {
             AgentState.inFlight(records: records, states: states, prNumber: prNumber)
@@ -685,12 +846,13 @@ public enum AgentState {
         var recs = observeClaims(records, claims: evidence.claims, now: now)
         recs = adoptTTYs(recs, processes: evidence.processes,
                          liveAgents: evidence.liveAgents)
+        recs = observeQuiescence(recs, tails: evidence.tails, now: now)
         recs = synthesizeUntracked(recs, liveAgents: evidence.liveAgents, now: now)
         let states = resolve(records: recs, evidence: evidence, now: now)
         let load = capLoad(records: recs, states: states)
         return Tick(records: recs, states: states,
                     rows: rows(records: recs, states: states),
                     capLoad: load, retirable: retirable(records: recs, states: states),
-                    freeSlots: freeSlots(limit: limit, occupied: load.count))
+                    freeSlots: freeSlots(limit: limit, occupied: load.count), now: now)
     }
 }

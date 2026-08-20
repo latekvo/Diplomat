@@ -51,7 +51,7 @@ def proc(elapsed: float = 60.0, tty: str = "pts/3", is_agent: bool = True):
 
 
 def ev(*, processes=None, sentinels=None, tails=None, claims=None,
-       merged=None, live_agents=None, sessions=None) -> A.Evidence:
+       merged=None, live_agents=None, sessions=None, activity=None) -> A.Evidence:
     """An evidence bundle where anything not named is PRESENT-and-empty.
 
     Empty, not unavailable: these cases are about a machine that was successfully
@@ -71,6 +71,7 @@ def ev(*, processes=None, sentinels=None, tails=None, claims=None,
         merged_prs=obs(merged, set()),
         live_agents=obs(live_agents, {}),
         sessions=obs(sessions, {}),
+        activity=obs(activity, {}),
     )
 
 
@@ -95,6 +96,47 @@ CASES = [
     ("a live pid back at its prompt is awaiting input",
      rec(), ev(processes={4242: proc()}, tails={"pts/3": AT_PROMPT}),
      A.AWAITING_INPUT, "at the prompt"),
+
+    # --- a run that reports its own turn boundaries -------------------------
+    #
+    # The mechanism that finally answers the question. A finished agent is alive at
+    # its prompt, so every rung above this one sees exactly what a working agent
+    # shows; the CLI saying so itself is the only thing that separates them.
+    ("its CLI reporting the turn over ends a run whose process is still alive",
+     rec(), ev(processes={4242: proc()}, tails={"pts/3": AT_PROMPT},
+               activity={"r1": ("idle", T0 - 5)}),
+     A.FINISHED, "its CLI reported the turn over"),
+    ("its CLI reporting a turn in flight outranks a screen that looks idle",
+     rec(), ev(processes={4242: proc()}, tails={"pts/3": AT_PROMPT},
+               activity={"r1": ("busy", T0 - 5)}),
+     A.RUNNING, "its CLI reported a turn in flight"),
+    ("a session that ended outright is over too",
+     rec(), ev(processes={4242: proc()}, tails={"pts/3": WORKING},
+               activity={"r1": ("ended", T0 - 5)}),
+     A.FINISHED, "its CLI reported the session ended"),
+    ("another run's report says nothing about this one",
+     rec(), ev(processes={4242: proc()}, tails={"pts/3": WORKING},
+               activity={"other": ("idle", T0 - 5)}),
+     A.RUNNING, "working"),
+    ("a run that reports nothing is still read off its screen",
+     rec(), ev(processes={4242: proc()}, tails={"pts/3": WORKING},
+               activity=A.Observation.unavailable("could not be read")),
+     A.RUNNING, "working"),
+
+    # --- the quiescence backstop, for the runs no report reaches ------------
+    ("a screen unchanged for twenty minutes is over whatever the status bar says",
+     rec(quiet_digest="d", quiet_since=T0 - A.QUIET_TIMEOUT),
+     ev(processes={4242: proc()}, tails={"pts/3": WORKING}),
+     A.FINISHED, "its screen has not changed in 20m"),
+    ("a screen still for nineteen minutes is not over yet",
+     rec(quiet_digest="d", quiet_since=T0 - A.QUIET_TIMEOUT + 60),
+     ev(processes={4242: proc()}, tails={"pts/3": WORKING}),
+     A.RUNNING, "working"),
+    ("stillness outranks the CLI's own claim to be working, which is the point",
+     rec(quiet_digest="d", quiet_since=T0 - A.QUIET_TIMEOUT),
+     ev(processes={4242: proc()}, tails={"pts/3": WORKING},
+        activity={"r1": ("busy", T0 - 3000)}),
+     A.FINISHED, "its screen has not changed in 20m"),
 
     # --- a run that serves its own session, which outranks its screen -------
     #

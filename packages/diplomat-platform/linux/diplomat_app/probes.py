@@ -481,6 +481,7 @@ def gather(records: list[RunRecord], now: float, *,
     # is never captured, and it reads as working until its window closes.
     looked_up = agentstate.synthesize_untracked(looked_up, scan, now)
     return Evidence(
+        activity=_note("turn reports", agentregistry.activity(records), now),
         processes=table,
         sentinels=_note("sentinels", agentregistry.sentinels(records), now),
         tails=_note("screens", pane_tails(looked_up, now), now),

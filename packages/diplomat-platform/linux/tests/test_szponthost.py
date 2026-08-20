@@ -115,15 +115,40 @@ def test_the_node_narrates_through_the_host(monkeypatch):
 # ---- run_job -------------------------------------------------------------
 
 
-def test_run_job_uses_the_applets_terminal_spawner_on_linux(host, monkeypatch):
+def test_run_job_uses_the_applets_terminal_spawner_on_linux(host, monkeypatch,
+                                                            tmp_path):
     calls: list[tuple] = []
     monkeypatch.setattr(platform, "system", lambda: "Linux")
-    monkeypatch.setattr(review, "spawn",
-                        lambda prompt, term, done_path=None: calls.append(
-                            (prompt, term, done_path)) or "/tmp/p.txt")
+    monkeypatch.setattr(
+        review, "spawn",
+        lambda prompt, term, done_path=None, settings_file=None: calls.append(
+            (prompt, term, done_path, settings_file)) or "/tmp/p.txt")
 
-    assert host.run_job("do a review", "/tmp/done") == "/tmp/p.txt"
-    assert calls == [("do a review", None, "/tmp/done")]
+    done = tmp_path / "done"
+    assert host.run_job("do a review", str(done)) == "/tmp/p.txt"
+    assert calls == [("do a review", None, str(done),
+                      str(tmp_path / "done.hooks.json"))]
+
+
+def test_a_mesh_run_writes_its_exit_sentinel_when_the_TURN_ends(host, monkeypatch,
+                                                                tmp_path):
+    """The executor holds its claim until ``done_path`` exists, and an interactive
+    agent only writes that on EXIT — so the key stayed claimed for as long as the
+    window stayed open. The hooks staged here move it to the end of the turn."""
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    monkeypatch.setattr(review, "spawn",
+                        lambda *a, **k: "/tmp/p.txt")
+
+    done = tmp_path / "job.done"
+    host.run_job("do a review", str(done))
+
+    settings = json.loads((tmp_path / "job.hooks.json").read_text())
+    fired = {event: spec[0]["hooks"][0]["command"]
+             for event, spec in settings["hooks"].items()}
+    assert str(done) in fired["Stop"], "the turn ending must free the work key"
+    assert str(done) in fired["SessionEnd"]
+    assert str(done) not in fired["UserPromptSubmit"], \
+        "a turn STARTING must never look like a finished job"
 
 
 def test_run_job_opens_a_terminal_through_osascript_on_macos(host, monkeypatch, tmp_path):

@@ -41,6 +41,8 @@ enum AgentRegistryCommand {
             "placement": r.placement.rawValue, "node": r.node, "workKey": r.workKey,
             "ledgerKey": r.ledgerKey, "pid": r.pid.map { $0 as Any } ?? NSNull(),
             "tty": r.tty, "claimSeenAt": r.claimSeenAt.map { $0 as Any } ?? NSNull(),
+            "quietDigest": r.quietDigest,
+            "quietSince": r.quietSince.map { $0 as Any } ?? NSNull(),
             "untracked": r.untracked,
         ]
     }
@@ -62,6 +64,8 @@ enum AgentRegistryCommand {
             pid: (d["pid"] as? NSNumber)?.intValue,
             tty: d["tty"] as? String ?? "",
             claimSeenAt: (d["claimSeenAt"] as? NSNumber)?.doubleValue,
+            quietDigest: d["quietDigest"] as? String ?? "",
+            quietSince: (d["quietSince"] as? NSNumber)?.doubleValue,
             untracked: d["untracked"] as? Bool ?? false)
     }
 }

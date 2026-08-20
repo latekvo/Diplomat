@@ -38,10 +38,11 @@ than letting it pass silently.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from . import apiwatch
+from . import apiwatch, completion
 
 # MARK: - Observations: evidence, or a named reason there is none
 
@@ -167,6 +168,21 @@ SPAWN_GRACE = 20.0
 #: dispatch stamp and the exec, plus ``etime`` rounding.
 PID_ADOPTION_SLACK = 30.0
 
+#: How long a run's screen may sit perfectly unchanged before it is called over.
+#:
+#: The backstop, for the runs the turn report cannot reach: a runner with no hooks, a
+#: spawn whose settings could not be staged, an agent wedged mid-turn with its status
+#: bar frozen. It is INDEPENDENT of that report rather than derived from it, which is
+#: the only thing that makes it a fallback — a backstop that fails whenever the
+#: primary fails is not one.
+#:
+#: Twenty minutes because a working agent's screen is never still for anywhere near
+#: that long: the CLI redraws a spinner, a token count and an elapsed timer every
+#: second it is thinking, so a byte-identical pane over this window means nothing is
+#: happening in it. Long enough that a slow tool call, a long build or a human reading
+#: the window is not mistaken for a dead one.
+QUIET_TIMEOUT = 20 * 60.0
+
 #: How long a mesh origination claim may go unseen before the peer's run reads as
 #: over.
 #:
@@ -267,6 +283,11 @@ class RunRecord:
     #: When this device last saw the executor's claim for :attr:`work_key`, for a
     #: mesh-peer run. ``None`` when it has never been seen.
     claim_seen_at: float | None = None
+    #: A digest of this run's screen when it last CHANGED, with the time it changed.
+    #: The memory behind :data:`QUIET_TIMEOUT` — absence of motion is only measurable
+    #: against when there was last some. ``""``/``None`` until its screen is first read.
+    quiet_digest: str = ""
+    quiet_since: float | None = None
     #: True for a run nothing dispatched — a live agent found in the process table
     #: with no record behind it. It gets a row and blocks a second dispatch, but
     #: carries no label, no ledger key and no start time.
@@ -285,7 +306,8 @@ class RunRecord:
             "label": self.label, "source": self.source, "placement": self.placement,
             "node": self.node, "workKey": self.work_key,
             "ledgerKey": self.ledger_key, "pid": self.pid, "tty": self.tty,
-            "claimSeenAt": self.claim_seen_at, "untracked": self.untracked,
+            "claimSeenAt": self.claim_seen_at, "quietDigest": self.quiet_digest,
+            "quietSince": self.quiet_since, "untracked": self.untracked,
         }
 
     @staticmethod
@@ -305,6 +327,8 @@ class RunRecord:
             pid=obj.get("pid"),
             tty=obj.get("tty", ""),
             claim_seen_at=obj.get("claimSeenAt"),
+            quiet_digest=obj.get("quietDigest", ""),
+            quiet_since=obj.get("quietSince"),
             untracked=bool(obj.get("untracked", False)),
         )
 
@@ -340,6 +364,13 @@ class Evidence:
     #: here, whose pid file belongs to the node that spawned it.
     live_agents: Observation = field(
         default_factory=lambda: Observation.unavailable("not probed"))
+    #: run id → ``(verb, when)`` the run's own CLI last reported for itself, via the
+    #: hooks staged into its settings (:mod:`completion`). The only evidence here that
+    #: is a REPORT rather than an observation: everything else in this bundle is
+    #: something a probe went and looked at, and this is the agent saying so itself at
+    #: the instant it happened. A run is absent when it has reported nothing yet.
+    activity: Observation = field(
+        default_factory=lambda: Observation.unavailable("not probed"))
     #: run id → what that run's own agent session says about it. Only a runner that
     #: serves one appears here, so a run's absence is ordinary and reads as "ask the
     #: screen" rather than as anything about the run.
@@ -347,7 +378,8 @@ class Evidence:
         default_factory=lambda: Observation.unavailable("not probed"))
 
     def to_json(self) -> dict:
-        return {"processes": self.processes.to_json(),
+        return {"activity": self.activity.to_json(),
+                "processes": self.processes.to_json(),
                 "sentinels": self.sentinels.to_json(),
                 "tails": self.tails.to_json(),
                 "claims": self.claims.to_json(),
@@ -358,6 +390,10 @@ class Evidence:
     @staticmethod
     def from_json(obj: dict) -> "Evidence":
         return Evidence(
+            activity=Observation.from_json(
+                obj.get("activity"),
+                lambda v: {str(k): (str(t[0]), float(t[1]))
+                           for k, t in (v or {}).items() if len(t) == 2}),
             processes=Observation.from_json(
                 obj.get("processes"),
                 lambda v: {int(k): ProcInfo.from_json(p) for k, p in (v or {}).items()}),
@@ -428,7 +464,77 @@ def observe_claims(records: list[RunRecord], claims: Observation,
     return out
 
 
+def observe_quiescence(records: list[RunRecord], tails: Observation,
+                       now: float) -> list[RunRecord]:
+    """Refresh each run's record of when its screen last CHANGED, returning updated
+    records.
+
+    Beside :func:`observe_claims` and for the same reason: absence is only measurable
+    against a memory of presence, and :func:`resolve` stays a function of its
+    arguments alone. What is remembered is a digest rather than the screen itself —
+    the book is rewritten every tick and read by other processes, so storing every
+    watched pane's contents in it would be both large and pointless.
+
+    A tail that could not be read updates nothing. That is what keeps a tmux server
+    going down from looking like twenty minutes of stillness across every run at once:
+    the clock only advances on ticks that actually SAW the screen, and it restarts
+    from the first one that does.
+    """
+    if not tails.ok:
+        return records
+    seen: dict[str, str] = tails.value
+    out = []
+    for r in records:
+        tail = seen.get(r.tty) if r.tty else None
+        if tail is None:
+            out.append(r)
+            continue
+        digest = hashlib.sha256(tail.encode("utf-8", "replace")).hexdigest()[:16]
+        if digest != r.quiet_digest:
+            out.append(replace(r, quiet_digest=digest, quiet_since=now))
+        elif r.quiet_since is None:
+            out.append(replace(r, quiet_since=now))
+        else:
+            out.append(r)
+    return out
+
+
+def went_quiet(record: RunRecord, now: float) -> float | None:
+    """How long this run's screen has been perfectly still, once that is long enough
+    to call it over — ``None`` otherwise.
+
+    A function rather than a comparison at each site because two of them ask: the
+    resolver, to end the run, and the reaper, to close the window it was in. Those two
+    answers agreeing is the whole contract — a window killed under a run still counted
+    as working is the one mistake this backstop could make.
+    """
+    if record.quiet_since is None:
+        return None
+    quiet = now - record.quiet_since
+    return quiet if quiet >= QUIET_TIMEOUT else None
+
+
 # MARK: - The resolver
+
+
+#: What each terminal verb means, for the reason line the debug dump prints.
+_REPORTED_REASON = {
+    completion.IDLE: "its CLI reported the turn over",
+    completion.ENDED: "its CLI reported the session ended",
+}
+
+
+def _reported(record: RunRecord, evidence: Evidence) -> tuple[str, float] | None:
+    """What this run last reported about itself, or ``None`` if it reports nothing.
+
+    ``None`` covers three ordinary cases and is never evidence about the run: the
+    probe could not read the directory, the run was spawned without hooks (a foreign
+    runner, or settings that would not stage), and the seconds before a fresh run's
+    first hook fires.
+    """
+    if not evidence.activity.ok:
+        return None
+    return evidence.activity.value.get(record.run_id)
 
 
 def resolve(records: list[RunRecord], evidence: Evidence,
@@ -445,9 +551,12 @@ def resolve_one(record: RunRecord, evidence: Evidence, now: float) -> Resolution
 
     1. the PR landed — a terminal outcome that outranks whatever the process is doing;
     2. the completion sentinel exists — the agent returned an exit code;
-    3. a mesh-peer run is judged by the executor's claim, because no probe on this
+    3. the agent itself reported its turn over — the one rung that answers the
+       question actually being asked, since a run that finished is alive at its prompt
+       and every rung below this one sees a live process either way;
+    4. a mesh-peer run is judged by the executor's claim, because no probe on this
        machine can see a process on another one;
-    4. a local run is judged by its pid, and its screen only classifies a pid that is
+    5. a local run is judged by its pid, and its screen only classifies a pid that is
        already known to be alive.
     """
     def done(state: str, reason: str) -> Resolution:
@@ -459,6 +568,10 @@ def resolve_one(record: RunRecord, evidence: Evidence, now: float) -> Resolution
 
     if evidence.sentinels.ok and record.run_id in evidence.sentinels.value:
         return done(FINISHED, "completion sentinel present")
+
+    reported = _reported(record, evidence)
+    if reported is not None and completion.is_over(reported[0]):
+        return done(FINISHED, _REPORTED_REASON[reported[0]])
 
     if record.placement == PLACEMENT_MESH_PEER:
         return _resolve_peer(record, evidence, now, done)
@@ -514,8 +627,9 @@ def _resolve_local(record: RunRecord, evidence: Evidence, now: float,
         # An untracked run IS its process-table sighting, so it has no pid of its own
         # and no dispatch stamp to be young against; it is alive by construction.
         if record.untracked:
-            return _classify_activity(record, evidence, done, "found in process table")
-        return _resolve_without_pid(record, evidence, age, done)
+            return _classify_activity(record, evidence, now, done,
+                                      "found in process table")
+        return _resolve_without_pid(record, evidence, now, age, done)
 
     proc = table.get(record.pid)
     if proc is None:
@@ -528,11 +642,12 @@ def _resolve_local(record: RunRecord, evidence: Evidence, now: float,
         return done(FINISHED,
                     f"pid {record.pid} is {proc.elapsed:.0f}s old but the run is "
                     f"{age:.0f}s old")
-    return _classify_activity(record, evidence, done, f"pid {record.pid} alive")
+    return _classify_activity(record, evidence, now, done,
+                              f"pid {record.pid} alive")
 
 
-def _resolve_without_pid(record: RunRecord, evidence: Evidence, age: float,
-                         done) -> Resolution:
+def _resolve_without_pid(record: RunRecord, evidence: Evidence, now: float,
+                         age: float, done) -> Resolution:
     """A run this applet booked but has no pid for.
 
     Two things produce one. A spawn whose shell has not written its pid file yet — the
@@ -557,7 +672,7 @@ def _resolve_without_pid(record: RunRecord, evidence: Evidence, age: float,
         return done(UNKNOWN,
                     f"no pid, and the agent scan {evidence.live_agents.reason or 'failed'}")
     if record.pr_number is not None and record.pr_number in evidence.live_agents.value:
-        return _classify_activity(record, evidence, done,
+        return _classify_activity(record, evidence, now, done,
                                   f"an agent is up on PR #{record.pr_number}")
     if age <= SPAWN_GRACE:
         return done(STARTING, f"dispatched {age:.0f}s ago, no pid yet")
@@ -568,7 +683,7 @@ def _resolve_without_pid(record: RunRecord, evidence: Evidence, age: float,
     return done(FINISHED, f"no agent for PR #{record.pr_number} in the process table")
 
 
-def _classify_activity(record: RunRecord, evidence: Evidence, done,
+def _classify_activity(record: RunRecord, evidence: Evidence, now: float, done,
                        alive_reason: str) -> Resolution:
     """Working, or finished its turn and waiting at the prompt?
 
@@ -576,16 +691,35 @@ def _classify_activity(record: RunRecord, evidence: Evidence, done,
     exiting: it sits at the prompt until a human closes the window, and the process
     table shows the same live agent either way. Something has to separate the two.
 
-    Two things can, and the agent's own session is asked first because it is the only
-    one that is positive evidence: a turn carries a completion stamp, set when it
-    ends. The screen is the fallback, and it is an inference — it reads whether the
-    CLI's interrupt hint was on the status bar when we looked, which is a string from
-    someone else's UI that says nothing at all if they reword it.
+    A run that reports its own turns never reaches here still working — the ladder
+    above ends it — so what this rung answers for one is the other half: its CLI said a
+    turn is in flight, which outranks anything read off a screen.
+
+    For a run that reports nothing, the agent's own session is asked next, because it
+    is the only remaining positive evidence: a turn carries a completion stamp, set
+    when it ends. The screen is the last fallback, and it is an inference — it reads
+    whether the CLI's interrupt hint was on the status bar when we looked, which is a
+    string from someone else's UI that says nothing at all if they reword it.
 
     Every gap here reads as RUNNING, which costs a bay rather than correctness — but
     it is also the one rung that fails silently, so the probe layer counts
     how often the tail is missing and says so out loud.
+
+    The quiescence backstop is asked FIRST, ahead of every "it is working" answer,
+    because it exists precisely to overrule one: a run whose screen has not changed in
+    :data:`QUIET_TIMEOUT` is wedged whatever its status bar still claims, and the
+    frozen ``esc to interrupt`` of an agent that died mid-turn is the exact case that
+    otherwise holds a bay until a human closes the window.
     """
+    quiet = went_quiet(record, now)
+    if quiet is not None:
+        return done(FINISHED, f"{alive_reason}; its screen has not changed in "
+                              f"{apiwatch.human_interval(quiet)}")
+
+    reported = _reported(record, evidence)
+    if reported is not None and reported[0] == completion.BUSY:
+        return done(RUNNING, f"{alive_reason}; its CLI reported a turn in flight")
+
     if evidence.sessions.ok:
         session: SessionState | None = evidence.sessions.value.get(record.run_id)
         if session is not None:
@@ -745,6 +879,10 @@ class Tick:
     cap_load: set[str]
     retirable: list[RunRecord]
     free_slots: int
+    #: The instant this pass was resolved against. Carried so a consequence of the
+    #: tick — closing a wedged run's window — measures stillness against the clock
+    #: that ended the run, not one read a moment later.
+    now: float = 0.0
 
     def in_flight(self, pr_number: int) -> bool:
         return in_flight(self.records, self.states, pr_number)
@@ -756,17 +894,19 @@ def tick(records: list[RunRecord], evidence: Evidence, now: float,
 
     The order is the reason this is a function rather than a convention each caller
     repeats: claims are observed and ttys adopted BEFORE resolving, so both count this
-    tick rather than a tick late; and untracked agents are synthesized AFTER, so a
-    live agent that already has a record is not drawn twice — and so it keeps the tty
+    tick rather than a tick late; quiescence is observed after ttys are adopted, since
+    a run with no tty yet has no screen to compare; and untracked agents are
+    synthesized AFTER, so a live agent that already has a record is not drawn twice — and so it keeps the tty
     the scan found it on rather than having one adopted for a pid it does not have.
     Both front-ends and the parity CLI go through here, so neither can get the
     sequence subtly different from the other.
     """
     records = observe_claims(records, evidence.claims, now)
     records = adopt_ttys(records, evidence.processes, evidence.live_agents)
+    records = observe_quiescence(records, evidence.tails, now)
     records = synthesize_untracked(records, evidence.live_agents, now)
     states = resolve(records, evidence, now)
     load = cap_load(records, states)
     return Tick(records=records, states=states, rows=rows(records, states),
                 cap_load=load, retirable=retirable(records, states),
-                free_slots=free_slots(limit, len(load)))
+                free_slots=free_slots(limit, len(load)), now=now)
