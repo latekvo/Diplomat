@@ -13,7 +13,9 @@ nothing is committed until a cycle succeeds. So they go through
 
 from __future__ import annotations
 
-from diplomat_runtime import gh
+import json
+
+from diplomat_runtime import core, gh
 from diplomat_runtime.autofix import PRSnapshot, ReviewRequest
 
 
