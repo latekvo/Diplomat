@@ -1,6 +1,6 @@
 """GitHub reads for the PR auto-fix monitor — the Linux port of AutofixMonitor.swift.
 
-Two GraphQL searches over the `gh` CLI, decoded into the pure types in
+Three GraphQL searches over the `gh` CLI, decoded into the pure types in
 :mod:`autofix`. The queries themselves are the shared ones in ``assets/graphql/``
 (single source of truth with the macOS monitor), driven by a search ``$q``
 qualifier rather than the owner/name form that :func:`gh.graphql` wraps — so the
@@ -65,6 +65,22 @@ def fetch_snapshots(owner: str, repo: str, me: str) -> list[PRSnapshot]:
     query = core.read_graphql("monitor-prs")
     data = gh.run(["api", "graphql", "-f", f"query={query}", "-f", f"q={q}"])
     return _parse_snapshots(json.loads(data), me)
+
+
+def fetch_closed_prs(owner: str, repo: str) -> set[int]:
+    """The PRs this repo has recently merged or closed — what the queue is re-checked
+    against (``assets/graphql/closed-prs``).
+
+    Not scoped to me, to my queue, or to a monitor's verb: any PR can be sitting in
+    the queue (a sweep asks for whoever's PRs the operator aimed it at), and a search
+    cannot be given a list of numbers to ask about. So it asks the cheap question the
+    other way round — who closed lately — and the caller intersects.
+    """
+    q = f"repo:{owner}/{repo} is:pr is:closed sort:updated-desc"
+    query = core.read_graphql("closed-prs")
+    data = gh.run(["api", "graphql", "-f", f"query={query}", "-f", f"q={q}"])
+    nodes = ((json.loads(data).get("data") or {}).get("search") or {}).get("nodes") or []
+    return {n["number"] for n in nodes if n and n.get("number") is not None}
 
 
 def _parse_review_requests(env: dict, me: str) -> list[ReviewRequest]:

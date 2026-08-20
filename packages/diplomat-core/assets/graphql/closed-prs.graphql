@@ -1,0 +1,19 @@
+# The PRs that have recently left the open state — what the Agent-tasks queue is
+# re-checked against, so a row standing for work on a landed PR is dropped instead of
+# opening an agent on a diff nobody will read again. `is:closed` in $q covers merged
+# and closed-unmerged alike.
+#
+# The cheapest query here, and deliberately: one search, one field per node, no nested
+# connections (1 rate-limit point). Newest-update-first and capped, so it answers
+# "closed lately" rather than "closed ever" — a PR that fell off the end reads as open
+# and its row stands one more poll, which is the safe direction for an answer that also
+# forgets the operator's ask behind the row.
+query ($q: String!) {
+  search(query: $q, type: ISSUE, first: 50) {
+    nodes {
+      ... on PullRequest {
+        number
+      }
+    }
+  }
+}

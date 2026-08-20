@@ -226,8 +226,8 @@ an idle machine with a cap of two reads `0 · 2 free` over two empty bays.
 - **Requested reviews** - one row per PR of a Review-PRs sweep - run after every
   auto-fix and auto-review and before the conflict fixes, because what the monitors
   find is a debt other people can see and a sweep is work you started when you had
-  the time for it. Each also carries **cancel**: you asked for it, so nothing else
-  will ever take it off the list.
+  the time for it. Each also carries **cancel**: while its PR is open, nothing GitHub
+  does takes one off the list - you asked for it.
 - **Resolve-conflicts** rows run last of all, whatever
   order the monitors found them in, and no drag lifts one out of its band (that
   drag is refused rather than sprung back on the next poll). An agent working the
@@ -333,10 +333,12 @@ the one that picks it up.
 The queue is a view of what the monitors would re-offer, not a second copy of
 their state: it is rebuilt from live GitHub evidence on every 3-minute poll, so a
 task drops out the moment the work is taken by an agent, resolved, or its author
-banned. Every poll also re-checks the rows it is about to run against the fetch it
+banned. Every poll also re-checks the rows it is about to run against the fetches it
 has just made - a conflict fix on a PR GitHub no longer calls conflicting, or a
 reply on threads that have been answered, leaves the list instead of opening an
-agent on work somebody already did. (Not on a mesh claim: the cap outranks the mesh gate, so a machine with
+agent on work somebody already did. **A PR that has merged or closed retires every
+kind of row at once**, whoever queued it: waiting for a bay can take a day at two
+at a time, and a review of a landed diff is one nobody will read. (Not on a mesh claim: the cap outranks the mesh gate, so a machine with
 anything queued is one that never asked a peer - peer-owned work leaves when the
 drain reaches it and the mesh answers.) The key order is remembered, so your
 arrangement survives the rebuild and a restart.
@@ -345,10 +347,12 @@ The one exception is the reviews **you** ask for by sweeping your PRs (below):
 nothing on GitHub records that a PR was swept, so those are remembered instead of
 re-derived, offered on every poll until each is dispatched, wear your own label
 rather than `Auto · `, and carry a **cancel** button beside *execute now* because
-short of a ban on the PR's author nothing else will ever retire one. They wait in a
-band of their own - behind everything GitHub is already owed (a review requested of
-you, a thread waiting on your reply), ahead of the conflict fixes - so sweeping
-fifty drafts does not bury a review request behind them for a day.
+while the PR is open only a ban on its author would otherwise retire one. They wait
+in a band of their own - behind everything GitHub is already owed (a review requested
+of you, a thread waiting on your reply), ahead of the conflict fixes - so sweeping
+fifty drafts does not bury a review request behind them for a day. A swept PR that
+lands before its turn comes is dropped and forgotten, with a line in the feed saying
+so - a row that vanished silently would read exactly like one that ran.
 
 *Execute now* keeps the task automatic in every other respect:
 same label, same auto-handled counter, same mesh routing - the cap and

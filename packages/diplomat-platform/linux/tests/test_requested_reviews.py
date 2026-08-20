@@ -62,12 +62,15 @@ def _sweep(store, **kwargs) -> review.ReviewConfig:  # noqa: F811
     return review.ReviewConfig(**cfg)
 
 
-def _poll(store, monkeypatch) -> None:  # noqa: F811
-    """One monitor cycle with both GitHub fetches empty, so what the queue holds
-    afterwards is what the ask put there."""
+def _poll(store, monkeypatch, closed=()) -> None:  # noqa: F811
+    """One monitor cycle with both PR fetches empty, so what the queue holds afterwards
+    is what the ask put there. ``closed`` is the third read — the PRs this cycle finds
+    merged or closed."""
     monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_snapshots", lambda *a, **k: [])
     monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_review_requests",
                         lambda *a, **k: [])
+    monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_closed_prs",
+                        lambda *a, **k: set(closed))
     monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
     store._autofix_poll_once()
 
@@ -330,10 +333,46 @@ def test_a_banned_author_retires_the_ask(swept_store, monkeypatch):
     assert swept_store.requested_reviews == []
 
 
+def test_an_ask_whose_pr_landed_is_dropped_and_forgotten(swept_store, monkeypatch):
+    """A sweep asks for the PRs as they were when the button was pressed, and fifty of
+    them take a day to work through at two bays. One that merges while it waits is a
+    review of a diff nobody will open again.
+
+    The ask has to go with the row: the row is rebuilt from the ask on every poll, so
+    dropping one and keeping the other is a row that comes straight back."""
+    from diplomat_runtime import activity
+
+    fake_probes(monkeypatch, live_prs=CAP_FULL)  # no bay, so nothing starts either way
+    swept_store.request_review_sweep(_sweep(swept_store))
+
+    _poll(swept_store, monkeypatch, closed=[1])
+
+    assert [t.id for t in swept_store.queued_tasks] == ["review:2"]
+    assert [r.number for r in swept_store.requested_reviews] == [2]
+    # And said out loud. This is the only thing that takes an ask off the list without
+    # the operator, and a row that vanished silently reads exactly like one that ran.
+    assert [e.detail for e in activity.read() if e.action == "queue-drop"] == [
+        "Review · #1 · deep — PR no longer open, not run"
+    ]
+
+
+def test_a_closed_pr_retires_only_its_own_ask(swept_store, monkeypatch):
+    """The read is the repo's recent closures, not an answer about this queue: it names
+    PRs nothing here asked for, and every other row has to survive it. One merge that
+    emptied the panel would take the whole sweep with it."""
+    fake_probes(monkeypatch, live_prs=CAP_FULL)
+    swept_store.request_review_sweep(_sweep(swept_store))
+
+    _poll(swept_store, monkeypatch, closed=[3, 4, 99])
+
+    assert [t.id for t in swept_store.queued_tasks] == ["review:1", "review:2"]
+    assert [r.number for r in swept_store.requested_reviews] == [1, 2]
+
+
 def test_cancelling_drops_an_ask_and_it_does_not_come_back(swept_store, monkeypatch):
-    """A sweep is the one thing here that can be asked for by the fifty, and nothing
-    else retires it. Without a way out, a mis-aimed sweep is a day of agents nobody
-    can call off."""
+    """A sweep is the one thing here that can be asked for by the fifty, and while its
+    PR is open nothing GitHub does retires it. Without a way out, a mis-aimed sweep is
+    a day of agents nobody can call off."""
     fake_probes(monkeypatch, live_prs=CAP_FULL)
     swept_store.request_review_sweep(_sweep(swept_store))
 

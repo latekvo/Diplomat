@@ -18,6 +18,7 @@ threshold in one file and both platforms pick it up; the golden-prompt tests
 | `graphql/issues.graphql` | open-issue query (uses `$owner`/`$name` variables) |
 | `graphql/monitor-prs.graphql` | the PR auto-fix monitor's snapshot of my open PRs (search query in `$q`): mergeability, review verdict, per-thread resolution |
 | `graphql/review-requests.graphql` | PRs requesting my review (`$q`), with the request/last-review timestamps; `$withFiles` optionally pulls changed paths for the verdict gate |
+| `graphql/closed-prs.graphql` | the PRs that have recently merged or closed (`$q`) — numbers only, which is all the Agent-tasks queue needs to drop a row whose PR has landed. The cheapest query here (1 point) and the only one whose cap makes it "closed lately" rather than "closed ever" |
 | `catalog.json` | the six tools: id, title, subtitle, icon (`sfSymbol` for macOS, `emoji` for Linux), colour (`color` name for macOS, `colorHex` for Linux), in display order |
 | `filters.json` | filter constants: skill-file suffix, installer path prefixes, team/org/trusted associations, stale-ready day threshold, the `APPROVED` sentinel |
 | `review.json` | the Review-PRs prompt model: depth levels + scope/action text blocks the wizard assembles |
@@ -34,7 +35,7 @@ threshold in one file and both platforms pick it up; the golden-prompt tests
 - **GraphQL variables, not interpolation.** The PR/issue queries declare
   `$owner`/`$name` and the monitor queries `$q` (+`$withFiles`); each front-end
   passes them via `gh api graphql -f …` so the query text stays repo-agnostic.
-  Both applets now run the monitors, so both execute all five.
+  Both applets now run the monitors, so both execute all six.
 - **Icons/colours are intentionally dual.** `sfSymbol`+`color` are the macOS
   (SF Symbols + SwiftUI semantic colours) assets; `emoji`+`colorHex` are the
   Linux assets. These are rendering choices, not logic — both are kept here so

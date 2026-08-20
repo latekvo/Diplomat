@@ -17,6 +17,27 @@ enum AutofixMonitor {
         return try parse(data, me: me)
     }
 
+    /// The PRs this repo has recently merged or closed — what the queue is re-checked
+    /// against (`assets/graphql/closed-prs`).
+    ///
+    /// Not scoped to me, to my queue, or to a monitor's verb: any PR can be sitting in
+    /// the queue (a sweep asks for whoever's PRs the operator aimed it at), and a
+    /// search cannot be given a list of numbers to ask about. So it asks the cheap
+    /// question the other way round — who closed lately — and the caller intersects.
+    static func fetchClosedPRs(owner: String, repo: String) async throws -> Set<Int> {
+        let q = "repo:\(owner)/\(repo) is:pr is:closed sort:updated-desc"
+        let query = try CoreAssets.graphql("closed-prs")
+        let data = try await GH.run(["api", "graphql", "-f", "query=\(query)", "-f", "q=\(q)"])
+        struct Resp: Decodable {
+            let data: D
+            struct D: Decodable { let search: S }
+            struct S: Decodable { let nodes: [Node] }
+            struct Node: Decodable { let number: Int? }
+        }
+        let r = try JSONDecoder().decode(Resp.self, from: data)
+        return Set(r.data.search.nodes.compactMap(\.number))
+    }
+
     /// A PR that has requested my review, with the timestamps needed to decide whether I
     /// still owe a review — robustly, without depending on observing a "request removed"
     /// transition (which a re-request can slip past).

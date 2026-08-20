@@ -90,7 +90,7 @@ public enum AgentTaskStatus: Int, Comparable, CaseIterable {
 /// (`requestedAction`). GitHub has nothing to re-offer them from — a PR does not
 /// record that someone wanted it reviewed — so that ask is the front-end's own list,
 /// and it is the front-end that offers one task per PR on each poll until each is
-/// dispatched.
+/// dispatched or its PR leaves the open state.
 public enum AgentTaskQueue {
     /// A queued task's identity, stable across polls and applet restarts: the
     /// monitor's verb plus the PR. Not the mesh work key — that one is scoped to a
@@ -151,15 +151,24 @@ public enum AgentTaskQueue {
     /// on a PR GitHub no longer calls conflicting, or a reply on a PR whose threads
     /// are answered, is work somebody already did.
     ///
-    /// Only the two verbs that fetch covers are answerable — both are jobs on MY
-    /// PRs, and `snapshots` is the fetch of exactly those. A review requested of me
-    /// lives in the other fetch, and nothing on this machine can retire it early
-    /// anyway: it is owed until I review it, which is what the agent is for. A review
-    /// the operator asked for is owed for the same reason, by their word rather than
-    /// GitHub's. Unanswerable is not stale, so it stands.
+    /// A PR that has left the open state retires every verb, the operator's own ask
+    /// included: merged or closed, there is no branch left to fix and a review lands
+    /// on a diff nobody will open again. `closed` is positive evidence — the PRs this
+    /// cycle SAW closed — so a PR missing from it reads as open and its row stands,
+    /// which is the safe direction for the one answer that also forgets the ask
+    /// behind the row.
+    ///
+    /// While the PR is open, only the two verbs `conflicting`/`owingReply` come from
+    /// are answerable — both are jobs on MY PRs, and `snapshots` is the fetch of
+    /// exactly those. A review requested of me lives in the other fetch, and nothing
+    /// on this machine retires it: it is owed until I review it, which is what the
+    /// agent is for. A review the operator asked for is owed for the same reason, by
+    /// their word rather than GitHub's. Unanswerable is not stale, so it stands.
     public static func stillOwed(auditAction: String, prNumber: Int,
                                  conflicting: Set<Int>,
-                                 owingReply: Set<Int>) -> Bool {
+                                 owingReply: Set<Int>,
+                                 closed: Set<Int>) -> Bool {
+        if closed.contains(prNumber) { return false }
         switch auditAction {
         case "conflicts":    return conflicting.contains(prNumber)
         case "review-reply": return owingReply.contains(prNumber)
