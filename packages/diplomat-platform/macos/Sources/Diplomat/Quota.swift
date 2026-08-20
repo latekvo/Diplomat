@@ -3,9 +3,11 @@ import Foundation
 /// How much of the Claude rate-limit windows is left — the other half of the
 /// telemetry sample, and the macOS twin of the shared runtime's `quota.py`.
 ///
-/// One GET against the OAuth usage endpoint (the same data Claude Code's `/usage`
+/// A GET against the OAuth usage endpoint (the same data Claude Code's `/usage`
 /// screen shows) using the OAuth access token Claude Code already holds, converted
-/// to the fraction of each window still unspent. That, paired with the token
+/// to the fraction of each window still unspent. The endpoint's budget is per account
+/// and every Claude Code session on the machine spends it, so a caller that can afford
+/// to wait retries the refusals (`insist`). That, paired with the token
 /// counters from `UsageScan`, is what lets the Telemetry screen say a task cost a
 /// *share of the limit* rather than an unanchored token count: Anthropic publishes a
 /// utilization percentage and never a token budget, and the budget is dynamic, so
@@ -26,12 +28,25 @@ enum Quota {
     private static let beta = "oauth-2025-04-20"
     private static let timeoutSecs: TimeInterval = 4
 
-    /// Minimum gap between endpoint attempts. The sample cadence is already 15
-    /// minutes, so this only guards a panel that opens repeatedly.
+    /// How old a reading may be before a caller probes again rather than taking it.
+    /// The sample cadence is already 15 minutes, so this only guards a panel that
+    /// opens repeatedly. An insisting caller's retries are inside the probe this
+    /// gates, and pace themselves.
     private static let ttlSecs: TimeInterval = 55
     /// Faster retry while there is no good reading yet, so a transient failure at
     /// startup doesn't leave the screen blank for a full TTL.
     private static let retrySecs: TimeInterval = 10
+    /// The extra attempts an *insisting* caller makes once the first is refused, and
+    /// the wait between them: six attempts over two and a half minutes.
+    ///
+    /// On a machine running several Claude Code sessions a single attempt is refused
+    /// (HTTP 429) more often than it succeeds, which is what leaves most of the
+    /// telemetry ledger's readings missing and the quota chart in fragments. The bucket
+    /// was seen refilling on a roughly two-minute cycle, so the waits are even rather
+    /// than doubling: what decides whether an attempt lands is how soon after a refill
+    /// it arrives.
+    private static let insistAttempts = 5
+    private static let insistWaitSecs: TimeInterval = 30
     /// How long a last-good reading keeps answering through failures before the probe
     /// admits it doesn't know. A sample carrying a stale fraction would price the
     /// window against tokens that were spent after it, so this is deliberately short
@@ -132,23 +147,48 @@ enum Quota {
         return (left * 10_000).rounded() / 10_000
     }
 
+    /// One fetch, folded into the cache. True when it came back with a reading.
+    /// Called with `lock` held.
+    private static func attempt(_ now: TimeInterval) -> Bool {
+        cache.attempt = now
+        let payload = fetch()
+        guard let session = fractionLeft(payload?["five_hour"]) else { return false }
+        cache.good = now
+        cache.session = session
+        cache.week = fractionLeft(payload?["seven_day"])
+        return true
+    }
+
     /// `(session, week)` — the unspent fraction of the 5-hour and 7-day windows, or
     /// `(nil, nil)` when unavailable (probe disabled, no credentials, or offline past
     /// the keep window). Never throws.
-    static func fractionsLeft() -> (session: Double?, week: Double?) {
+    ///
+    /// `insist` keeps trying (`insistAttempts`) rather than settling for one refused
+    /// attempt, so the call blocks for up to two and a half minutes. It is for a caller
+    /// with its own long cadence and nobody waiting on it — the telemetry sample, which
+    /// gets one turn every 15 minutes and leaves a hole in the ledger if it comes back
+    /// empty. A caller gating a dispatch takes the single attempt: a stale reading now
+    /// beats a fresh one after the agent should have started.
+    static func fractionsLeft(insist: Bool = false) -> (session: Double?, week: Double?) {
         guard probeEnabled else { return (nil, nil) }
         lock.lock()
         defer { lock.unlock() }
-        let now = Date().timeIntervalSinceReferenceDate
+        var now = Date().timeIntervalSinceReferenceDate
         let interval = cache.session != nil ? ttlSecs : retrySecs
         if cache.attempt == 0 || now - cache.attempt >= interval {
-            cache.attempt = now
-            let payload = fetch()
-            if let session = fractionLeft(payload?["five_hour"]) {
-                cache.good = now
-                cache.session = session
-                cache.week = fractionLeft(payload?["seven_day"])
+            // No token is the one failure retrying cannot fix.
+            if !attempt(now), insist, oauthToken() != nil {
+                for _ in 0..<insistAttempts {
+                    // The lock is dropped across the wait: `cache.attempt` is already
+                    // stamped, so a dispatch asking meanwhile reads the cache instead
+                    // of queueing behind the retries.
+                    lock.unlock()
+                    Thread.sleep(forTimeInterval: insistWaitSecs)
+                    lock.lock()
+                    if attempt(Date().timeIntervalSinceReferenceDate) { break }
+                }
             }
+            now = Date().timeIntervalSinceReferenceDate
         }
         if cache.session != nil, now - cache.good > keepSecs {
             cache.session = nil   // stale beyond trust

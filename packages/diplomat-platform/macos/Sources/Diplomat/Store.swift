@@ -2722,7 +2722,7 @@ final class Store: ObservableObject {
                 await self?.refreshDeviceState()
                 self?.refreshBanList()
                 self?.refreshAudit()
-                await self?.runTelemetrySampleOnce()
+                self?.runTelemetrySampleOnce()
                 let ns = UInt64(Store.processPollInterval * 1_000_000_000)
                 try? await Task.sleep(nanoseconds: ns)
             }
@@ -2748,6 +2748,12 @@ final class Store: ObservableObject {
         refreshTelemetry()
     }
 
+    /// True while a sample worker is out. The insisting probe can keep one alive for
+    /// minutes — far longer than the gap between process polls — and until it writes,
+    /// `TelemetryLog.sampleDue` still says a sample is owed, so without this the ledger
+    /// would collect a burst of samples for one turn.
+    private var takingTelemetrySample = false
+
     /// Take one quota/token reading for the ledger, off the main actor.
     ///
     /// Rides the process poll but answers to its own pacing: the share of this
@@ -2755,14 +2761,30 @@ final class Store: ObservableObject {
     /// not the monitors are enabled, and pricing the rate-limit window needs an
     /// unbroken sample series regardless. `TelemetryLog.sampleDue` does the pacing, so calling
     /// this more often than the sample interval is free.
-    func runTelemetrySampleOnce() async {
-        guard TelemetryLog.sampleDue() else { return }
-        await Task.detached(priority: .utility) {
-            let quota = Quota.fractionsLeft()
+    ///
+    /// The worker is launched rather than awaited: its probe insists
+    /// (`Quota.fractionsLeft`), and the poll loop this rides has agent rows and device
+    /// state to refresh every few seconds. It runs on a plain background queue rather
+    /// than as a `Task`, because insisting means waiting out the endpoint's bucket —
+    /// minutes of blocking, which must not sit on one of the cooperative pool's few
+    /// threads.
+    func runTelemetrySampleOnce() {
+        guard !takingTelemetrySample, TelemetryLog.sampleDue() else { return }
+        takingTelemetrySample = true
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let quota = Quota.fractionsLeft(insist: true)
             let totals = UsageScan.totals()
             TelemetryLog.sample(sessionLeft: quota.session, weekLeft: quota.week,
                                 repoTokens: totals.repo, otherTokens: totals.other)
-        }.value
+            let store = self
+            Task { @MainActor in store?.finishTelemetrySample() }
+        }
+    }
+
+    /// The sample is on disk: let the next turn take one, and re-fold for an open
+    /// screen.
+    private func finishTelemetrySample() {
+        takingTelemetrySample = false
         refreshTelemetry()
     }
 

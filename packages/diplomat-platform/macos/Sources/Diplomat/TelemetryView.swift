@@ -229,12 +229,13 @@ struct TelemetryView: View {
                 legend([(tint("quotaLeft"), "5-hour \(sessionText)"),
                         (tint("quotaWeek"), "\(title("quotaWeek")) \(weekText)")])
                 // A gap is the probe failing to answer, not the window emptying. The
-                // chart breaks its line across one; saying how many keeps a blind
-                // stretch from reading as a quiet one.
+                // chart draws through a short one and breaks across a long one; saying
+                // how many keeps a blind stretch from reading as a quiet one.
                 if gaps > 0 {
                     note("\(gaps) reading\(gaps == 1 ? "" : "s") missing of "
-                         + "\(s.quota.count) — the probe could not answer then, so the "
-                         + "line breaks rather than dropping to zero.")
+                         + "\(s.quota.count) — the probe could not answer then. A short "
+                         + "silence is drawn through, a long one breaks the line; "
+                         + "neither drops it to zero.")
                 }
             }
         }
@@ -522,22 +523,33 @@ private struct QuotaChart: View {
     let sessionTint: Color
     let weekTint: Color
 
-    /// The readings split into unbroken runs, cut at every gap. A missing reading is
-    /// not a zero — it is a probe that could not answer — so the line has to stop and
-    /// restart rather than dive to the floor and back, which would read as an
-    /// exhausted window that recovered.
+    /// How long a silence the chart draws through rather than breaks at. Isolated
+    /// missing readings are normal, and cutting at each one turns a fortnight into
+    /// specks. Four missed samples is well under the 5-hour window's own length, so a
+    /// bridge can span a reset instant but never a whole rise and fall.
+    private var bridgeSecs: Double { 4 * TelemetryLog.sampleInterval }
+
+    /// The readings split into runs, cut wherever the probe stayed silent for longer
+    /// than `bridgeSecs`.
+    ///
+    /// A missing reading is not a zero — it is a probe that could not answer — so the
+    /// line must never dive to the floor and back, which would read as an exhausted
+    /// window that recovered. Short silences are drawn through instead: the remaining
+    /// share is a continuous quantity, and joining the readings either side of one
+    /// missed sample says what happened more nearly than stopping there does.
     private func runs(_ value: (Telemetry.QuotaPoint) -> Double?) -> [[(Double, Double)]] {
+        let bridge = bridgeSecs
         var out: [[(Double, Double)]] = []
         var current: [(Double, Double)] = []
         for p in points {
-            guard let v = value(p) else {
-                if current.count > 1 { out.append(current) }
+            guard let v = value(p) else { continue }
+            if let last = current.last, p.at - last.0 > bridge {
+                out.append(current)
                 current = []
-                continue
             }
             current.append((p.at, v))
         }
-        if current.count > 1 { out.append(current) }
+        if !current.isEmpty { out.append(current) }
         return out
     }
 
@@ -554,6 +566,12 @@ private struct QuotaChart: View {
             func yOf(_ pct: Double) -> CGFloat {
                 padT + h * CGFloat(1 - min(100, max(0, pct)) / 100)
             }
+            /// Where a run's drawing stops. A run narrower than a point — a lone
+            /// reading, or a few taken minutes apart on a fortnight's axis — is widened
+            /// to one, since a zero-width shape draws as nothing at all.
+            func xEnd(_ run: [(Double, Double)]) -> CGFloat {
+                max(xOf(run[run.count - 1].0), xOf(run[0].0) + 1)
+            }
 
             // The half-way rule, so a glance can place a run against "half spent".
             var half = Path()
@@ -565,7 +583,8 @@ private struct QuotaChart: View {
                 var fill = Path()
                 fill.move(to: CGPoint(x: xOf(run[0].0), y: padT + h))
                 for (at, pct) in run { fill.addLine(to: CGPoint(x: xOf(at), y: yOf(pct))) }
-                fill.addLine(to: CGPoint(x: xOf(run[run.count - 1].0), y: padT + h))
+                fill.addLine(to: CGPoint(x: xEnd(run), y: yOf(run[run.count - 1].1)))
+                fill.addLine(to: CGPoint(x: xEnd(run), y: padT + h))
                 fill.closeSubpath()
                 ctx.fill(fill, with: .color(sessionTint.opacity(0.30)))
             }
@@ -576,6 +595,7 @@ private struct QuotaChart: View {
                     let p = CGPoint(x: xOf(point.0), y: yOf(point.1))
                     if i == 0 { line.move(to: p) } else { line.addLine(to: p) }
                 }
+                line.addLine(to: CGPoint(x: xEnd(run), y: yOf(run[run.count - 1].1)))
                 ctx.stroke(line, with: .color(weekTint), lineWidth: 1.8)
             }
 

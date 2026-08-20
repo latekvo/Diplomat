@@ -1,9 +1,11 @@
 """How much of the Claude rate-limit windows is left — the other half of the
 telemetry sample.
 
-One GET against the OAuth usage endpoint (the same data Claude Code's ``/usage``
+A GET against the OAuth usage endpoint (the same data Claude Code's ``/usage``
 screen shows) using the OAuth access token Claude Code already holds, converted
-to the fraction of each window still unspent. That, paired with the token
+to the fraction of each window still unspent. The endpoint's budget is per account
+and every Claude Code session on the machine spends it, so a caller that can
+afford to wait retries the refusals (``insist``). That, paired with the token
 counters from :mod:`usagescan`, is what lets the Telemetry screen say a task cost
 a *share of the limit* rather than an unanchored token count: Anthropic publishes
 a utilization percentage and never a token budget, and the budget is dynamic, so
@@ -34,12 +36,25 @@ _USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 _BETA = "oauth-2025-04-20"
 _TIMEOUT_SECS = 4.0
 
-#: Minimum gap between endpoint attempts. The sample cadence is already 15
-#: minutes, so this only guards a panel that opens repeatedly.
+#: How old a reading may be before a caller probes again rather than taking it. The
+#: sample cadence is already 15 minutes, so this only guards a panel that opens
+#: repeatedly. An insisting caller's retries are inside the probe this gates, and
+#: pace themselves.
 _TTL_SECS = 55.0
 #: Faster retry while there is no good reading yet, so a transient failure at
 #: startup doesn't leave the screen blank for a full TTL.
 _RETRY_SECS = 10.0
+#: The extra attempts an *insisting* caller makes once the first is refused, and the
+#: wait between them: six attempts over two and a half minutes.
+#:
+#: On a machine running several Claude Code sessions a single attempt is refused
+#: (HTTP 429) more often than it succeeds, which is what leaves most of the telemetry
+#: ledger's readings missing and the quota chart in fragments. The bucket was seen
+#: refilling on a roughly two-minute cycle, so the waits are even rather than
+#: doubling: what decides whether an attempt lands is how soon after a refill it
+#: arrives.
+_INSIST_ATTEMPTS = 5
+_INSIST_WAIT_SECS = 30.0
 
 #: (last attempt, last good, session fraction, week fraction).
 _cache: dict = {"attempt": 0.0, "good": 0.0, "session": None, "week": None}
@@ -122,22 +137,43 @@ def _fraction_left(window: object) -> float | None:
     return round(max(0.0, min(1.0, 1.0 - float(util) / 100.0)), 4)
 
 
-def fractions_left() -> tuple[float | None, float | None]:
+def _attempt(now: float) -> bool:
+    """One fetch, folded into the cache. True when it came back with a reading."""
+    _cache["attempt"] = now
+    payload = _fetch()
+    session = _fraction_left((payload or {}).get("five_hour"))
+    if session is None:
+        return False
+    _cache["good"] = now
+    _cache["session"] = session
+    _cache["week"] = _fraction_left(payload.get("seven_day"))
+    return True
+
+
+def fractions_left(*, insist: bool = False) -> tuple[float | None, float | None]:
     """``(session, week)`` — the unspent fraction of the 5-hour and 7-day windows,
     or ``(None, None)`` when unavailable (probe disabled, no credentials, or
-    offline past the keep window). Never raises."""
+    offline past the keep window). Never raises.
+
+    ``insist`` keeps trying (:data:`_INSIST_ATTEMPTS`) rather than settling for one
+    refused attempt, so the call blocks for up to two and a half minutes. It is for a
+    caller with its own long cadence and nobody waiting on it — the telemetry sample,
+    which gets one turn every 15 minutes and leaves a hole in the ledger if it comes
+    back empty. A caller gating a dispatch takes the single attempt: a stale reading
+    now beats a fresh one after the agent should have started.
+    """
     if not probe_enabled():
         return None, None
     now = time.monotonic()
     interval = _TTL_SECS if _cache["session"] is not None else _RETRY_SECS
     if _cache["attempt"] == 0.0 or now - _cache["attempt"] >= interval:
-        _cache["attempt"] = now
-        payload = _fetch()
-        session = _fraction_left((payload or {}).get("five_hour"))
-        if session is not None:
-            _cache["good"] = now
-            _cache["session"] = session
-            _cache["week"] = _fraction_left(payload.get("seven_day"))
+        # No token is the one failure retrying cannot fix.
+        if not _attempt(now) and insist and _oauth_token() is not None:
+            for _ in range(_INSIST_ATTEMPTS):
+                time.sleep(_INSIST_WAIT_SECS)
+                if _attempt(time.monotonic()):
+                    break
+        now = time.monotonic()
     if _cache["session"] is not None and now - _cache["good"] > _KEEP_SECS:
         _cache["session"] = _cache["week"] = None  # stale beyond trust
     return _cache["session"], _cache["week"]

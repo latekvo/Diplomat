@@ -316,6 +316,13 @@ class PendingChart(QWidget):
         painter.end()
 
 
+#: How long a silence the quota chart draws through rather than breaks at. Isolated
+#: missing readings are normal, and cutting at each one turns a fortnight into specks.
+#: Four missed samples is well under the 5-hour window's own length, so a bridge can
+#: span a reset instant but never a whole rise and fall.
+_BRIDGE_SECS = 4 * telemetry.SAMPLE_INTERVAL_SECS
+
+
 class QuotaChart(QWidget):
     """Both rate-limit windows over the lookback, on a fixed 0-100% axis.
 
@@ -349,23 +356,26 @@ class QuotaChart(QWidget):
 
     @staticmethod
     def _runs(points, value_of) -> list[list[tuple[float, float]]]:
-        """Split the readings into unbroken runs, cutting at every gap.
+        """Split the readings into runs, cutting wherever the probe stayed silent for
+        longer than :data:`_BRIDGE_SECS`.
 
-        A missing reading is not a zero — it is a probe that could not answer — so
-        the line has to stop and restart rather than dive to the floor and back,
-        which would read as an exhausted window that recovered.
+        A missing reading is not a zero — it is a probe that could not answer — so the
+        line must never dive to the floor and back, which would read as an exhausted
+        window that recovered. Short silences are drawn through instead: the remaining
+        share is a continuous quantity, and joining the readings either side of one
+        missed sample says what happened more nearly than stopping there does.
         """
         runs: list[list[tuple[float, float]]] = []
         current: list[tuple[float, float]] = []
         for p in points:
             value = value_of(p)
             if value is None:
-                if len(current) > 1:
-                    runs.append(current)
-                current = []
                 continue
+            if current and p.at - current[-1][0] > _BRIDGE_SECS:
+                runs.append(current)
+                current = []
             current.append((p.at, value))
-        if len(current) > 1:
+        if current:
             runs.append(current)
         return runs
 
@@ -389,19 +399,25 @@ class QuotaChart(QWidget):
         def y_of(pct: float) -> float:
             return pad_t + h * (1.0 - min(100.0, max(0.0, pct)) / 100.0)
 
+        def x_end(run) -> float:
+            """Where a run's drawing stops. A run narrower than a pixel — a lone
+            reading, or a few taken minutes apart on a fortnight's axis — is widened to
+            one, since a zero-width shape draws as nothing at all."""
+            return max(x_of(run[-1][0]), x_of(run[0][0]) + 1.0)
+
         # The half-way rule, so a glance can place a run against "half spent".
         pen = QPen(QColor(255, 255, 255, 18))
         pen.setWidthF(1.0)
         painter.setPen(pen)
         painter.drawLine(int(pad_l), int(y_of(50)), int(pad_l + w), int(y_of(50)))
 
-        session_runs = self._runs(pts, lambda p: p.session_pct)
-        for run in session_runs:
+        for run in self._runs(pts, lambda p: p.session_pct):
             fill = QPainterPath()
             fill.moveTo(x_of(run[0][0]), pad_t + h)
             for at, pct in run:
                 fill.lineTo(x_of(at), y_of(pct))
-            fill.lineTo(x_of(run[-1][0]), pad_t + h)
+            fill.lineTo(x_end(run), y_of(run[-1][1]))
+            fill.lineTo(x_end(run), pad_t + h)
             fill.closeSubpath()
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(_qcolor(_tint("quotaLeft"), 0.30))
@@ -412,6 +428,7 @@ class QuotaChart(QWidget):
             for i, (at, pct) in enumerate(run):
                 px, py = x_of(at), y_of(pct)
                 line.moveTo(px, py) if i == 0 else line.lineTo(px, py)
+            line.lineTo(x_end(run), y_of(run[-1][1]))
             pen = QPen(QColor(_tint("quotaWeek")))
             pen.setWidthF(1.8)
             painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -712,14 +729,15 @@ class TelemetryView(QWidget):
         ]))
 
         # A gap is the probe failing to answer, not the window emptying. The chart
-        # breaks its line across one; saying how many keeps a blind stretch from
-        # reading as a quiet one.
+        # draws through a short one and breaks across a long one; saying how many
+        # keeps a blind stretch from reading as a quiet one.
         gaps = sum(1 for q in s.quota if q.session_pct is None)
         if gaps:
             note = QLabel(
                 f"{gaps} reading{'' if gaps == 1 else 's'} missing of "
-                f"{len(s.quota)} — the probe could not answer then, so the line "
-                f"breaks rather than dropping to zero."
+                f"{len(s.quota)} — the probe could not answer then. A short silence "
+                f"is drawn through, a long one breaks the line; neither drops it to "
+                f"zero."
             )
             note.setWordWrap(True)
             note.setStyleSheet(muted(9))

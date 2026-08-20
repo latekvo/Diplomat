@@ -354,9 +354,18 @@ enum Render {
             weekLeft -= spent / weekPrice
             if sessionLeft <= 0.05 { sessionLeft = 1 }   // the 5-hour window refilled
             if weekLeft <= 0.05 { weekLeft = 1 }
+            // Readings the probe could not answer, which every real ledger has: the
+            // scattered misses are what the quota chart bridges and the half-day
+            // outage what still breaks its line, so an unbroken series would render a
+            // screen no machine has ever recorded. The window is spent through them
+            // all the same.
+            let outage = at > now - 6 * day && at < now - 5.5 * day
+            let answered = !outage && rng.uniform(0, 1) > 0.08
             TelemetryLog.append(["at": at, "ev": "sample",
-                                 "sessionLeft": (sessionLeft * 10_000).rounded() / 10_000,
-                                 "weekLeft": (weekLeft * 10_000).rounded() / 10_000,
+                                 "sessionLeft": answered
+                                     ? (sessionLeft * 10_000).rounded() / 10_000 : NSNull(),
+                                 "weekLeft": answered
+                                     ? (weekLeft * 10_000).rounded() / 10_000 : NSNull(),
                                  "repoTokens": repo, "otherTokens": other])
             at += 900
         }

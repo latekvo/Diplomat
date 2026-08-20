@@ -388,3 +388,85 @@ def test_work_running_on_a_peer_is_not_charged_to_this_machine(store):
 
     view = _view(store)
     assert any("1 on mesh peers" in t for t in _labels(view))
+
+
+# MARK: - The quota chart's gaps
+
+
+def _quota_runs(readings: list[float | None]):
+    """The runs ``QuotaChart`` would draw the 5-hour series as, over readings taken
+    one sample interval apart with ``None`` where the probe could not answer."""
+    from diplomat_app.telemetryview import QuotaChart
+
+    now = 1_785_000_000.0
+    step = telemetry.SAMPLE_INTERVAL_SECS
+    points = tuple(
+        telemetry.QuotaPoint(at=now - (len(readings) - i) * step,
+                             session_pct=v, week_pct=v)
+        for i, v in enumerate(readings)
+    )
+    return QuotaChart._runs(points, lambda p: p.session_pct)
+
+
+def test_a_short_silence_is_drawn_through_rather_than_cut():
+    """The usage endpoint is one per-account bucket shared with every Claude Code
+    session on the machine, so a refused attempt here and there is routine. Cutting at
+    each one turned a fortnight of readings into a scatter of specks."""
+    assert len(_quota_runs([80.0, 70.0, None, 60.0, 50.0])) == 1
+
+
+def test_a_long_silence_still_breaks_the_line():
+    """The other half: joining across a probe that was down for hours would draw a
+    slope nobody measured."""
+    runs = _quota_runs([80.0, 70.0] + [None] * 8 + [60.0, 50.0])
+    assert [len(r) for r in runs] == [2, 2]
+
+
+def test_a_reading_alone_between_two_silences_is_still_a_reading():
+    """It is a measurement the probe did return, and the card counts it in "N of M
+    missing". Dropping it made the chart disagree with its own caption."""
+    assert [len(r) for r in _quota_runs([None] * 8 + [42.0] + [None] * 8)] == [1]
+
+
+def _quota_chart(readings: list[float | None]):
+    """The quota chart rendered 400x120 over a fortnight of those readings, on a
+    transparent ground so every painted pixel is one the chart put there."""
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtGui import QImage, QRegion
+    from PySide6.QtWidgets import QWidget
+
+    from diplomat_app.telemetryview import QuotaChart
+
+    now = 1_785_000_000.0
+    step = telemetry.SAMPLE_INTERVAL_SECS
+    chart = QuotaChart()
+    chart.set_series(
+        tuple(telemetry.QuotaPoint(at=now - (len(readings) - i) * step,
+                                   session_pct=v, week_pct=v)
+              for i, v in enumerate(readings)),
+        14.0, now,
+    )
+    chart.resize(400, 120)
+    image = QImage(chart.size(), QImage.Format.Format_ARGB32)
+    image.fill(Qt.GlobalColor.transparent)
+    chart.render(image, QPoint(), QRegion(), QWidget.RenderFlag.DrawChildren)
+    return image
+
+
+def test_a_lone_reading_is_painted_and_not_a_zero_width_nothing(app):
+    """A fortnight of readings is 1300 samples across 400 pixels, so a run of one —
+    or of a few minutes — is narrower than a pixel. Drawn as a polygon between its own
+    two edges it covers nothing at all, however honestly it was measured."""
+    def series_ink(image) -> int:
+        """Pixels the two series painted. The band is the top of the plot, right of
+        the "100%" caption and above both the half-way rule and the date labels, so
+        nothing but a reading near the ceiling can put ink in it."""
+        return sum(image.pixelColor(x, y).alpha() > 0
+                   for x in range(60, 396) for y in range(8, 40))
+
+    assert series_ink(_quota_chart([None] * 8 + [95.0] + [None] * 8)) > 0, (
+        "a lone reading painted nothing"
+    )
+    assert series_ink(_quota_chart([None] * 17)) == 0, (
+        "ink appeared with no reading at all — the check above proves nothing"
+    )
