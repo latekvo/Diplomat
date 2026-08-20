@@ -38,7 +38,6 @@ than letting it pass silently.
 
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -464,6 +463,30 @@ def observe_claims(records: list[RunRecord], claims: Observation,
     return out
 
 
+#: FNV-1a 64-bit, as :func:`pane_digest` computes it.
+_FNV_OFFSET = 0xCBF29CE484222325
+_FNV_PRIME = 0x100000001B3
+_FNV_MASK = 0xFFFFFFFFFFFFFFFF
+
+
+def pane_digest(tail: str) -> str:
+    """A screen's fingerprint, for telling "unchanged" from "changed".
+
+    FNV-1a rather than a cryptographic hash for one reason: both front-ends persist
+    this into the SAME book, so the two must agree byte for byte or a hand-over
+    restarts the stillness clock — and the Swift core is a Foundation-only target that
+    builds on Linux, where ``CryptoKit`` does not exist. FNV-1a is a dozen lines in
+    either language and needs nothing imported.
+
+    Collision resistance is not a property this needs: the question asked of it is only
+    whether THIS pane differs from what the last tick saw of the SAME pane.
+    """
+    h = _FNV_OFFSET
+    for byte in tail.encode("utf-8", "replace"):
+        h = ((h ^ byte) * _FNV_PRIME) & _FNV_MASK
+    return f"{h:016x}"
+
+
 def observe_quiescence(records: list[RunRecord], tails: Observation,
                        now: float) -> list[RunRecord]:
     """Refresh each run's record of when its screen last CHANGED, returning updated
@@ -489,7 +512,7 @@ def observe_quiescence(records: list[RunRecord], tails: Observation,
         if tail is None:
             out.append(r)
             continue
-        digest = hashlib.sha256(tail.encode("utf-8", "replace")).hexdigest()[:16]
+        digest = pane_digest(tail)
         if digest != r.quiet_digest:
             out.append(replace(r, quiet_digest=digest, quiet_since=now))
         elif r.quiet_since is None:

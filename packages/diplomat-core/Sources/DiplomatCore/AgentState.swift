@@ -1,4 +1,3 @@
-import CryptoKit
 import Foundation
 
 // MARK: - What every dispatched agent is doing right now
@@ -442,12 +441,20 @@ public enum AgentState {
         }
     }
 
-    /// The first 16 hex characters of the pane's SHA-256, matching Python's
-    /// `hashlib.sha256(...).hexdigest()[:16]` — the two sides persist this into the
-    /// same book, so a differing digest would restart the clock on every hand-over.
-    private static func paneDigest(_ tail: String) -> String {
-        let hash = SHA256.hash(data: Data(tail.utf8))
-        return hash.map { String(format: "%02x", $0) }.joined().prefix(16).description
+    /// A screen's fingerprint, for telling "unchanged" from "changed".
+    ///
+    /// FNV-1a 64-bit, matching `agentstate.pane_digest` exactly: both front-ends
+    /// persist this into the SAME book, so the two must agree byte for byte or a
+    /// hand-over restarts the stillness clock. Not a cryptographic hash, because this
+    /// target is Foundation-only and builds on Linux, where `CryptoKit` does not
+    /// exist — and collision resistance is not a property this needs, the question
+    /// being only whether THIS pane differs from what the last tick saw of it.
+    static func paneDigest(_ tail: String) -> String {
+        var h: UInt64 = 0xCBF2_9CE4_8422_2325
+        for byte in Array(tail.utf8) {
+            h = (h ^ UInt64(byte)) &* 0x100_0000_01B3
+        }
+        return String(format: "%016llx", h)
     }
 
     // MARK: - The resolver

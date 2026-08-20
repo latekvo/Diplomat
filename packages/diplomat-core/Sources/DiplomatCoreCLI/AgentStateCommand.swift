@@ -49,7 +49,9 @@ enum AgentStateCommand {
             "inFlight": inFlight,
             "records": t.records.map { r -> [String: Any] in
                 ["runId": r.runID, "claimSeenAt": r.claimSeenAt.map { $0 as Any } ?? NSNull(),
-                 "untracked": r.untracked, "placement": r.placement.rawValue]
+                 "untracked": r.untracked, "placement": r.placement.rawValue,
+                 "quietDigest": r.quietDigest,
+                 "quietSince": r.quietSince.map { $0 as Any } ?? NSNull()]
             },
         ]
         guard let data = try? JSONSerialization.data(
