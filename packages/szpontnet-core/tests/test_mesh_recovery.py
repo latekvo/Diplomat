@@ -33,7 +33,9 @@ def test_a_silent_peer_is_marked_down_and_its_work_moves(simnet):
         await simnet.until(lambda: a.assigned("audit") == (a.id, b.id), 4.0,
                            "the two machines never covered both platforms")
 
-        a.link_to(b).freeze()
+        # The machine, not just its link: a frozen link is redialled, and the state
+        # below then holds only for the ~50ms between the reap and the reconnect.
+        simnet.isolate(b)
         await simnet.until(lambda: a.link_state(b) == "down", 4.0,
                            "a silent peer was never marked down")
         await simnet.until(lambda: a.assigned("audit") == (a.id,), 4.0,
