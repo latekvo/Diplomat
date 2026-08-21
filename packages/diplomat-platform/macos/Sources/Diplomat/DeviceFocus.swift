@@ -7,7 +7,7 @@ import AppKit
 // that window forward. Two paths:
 //   1. Precise — the applet itself spawned that agent, so a run with the same tty has
 //      a window handle recorded; raise it (`AgentWindows.focus`).
-//   2. Fallback — any other agent session; locate the tty across iTerm/Terminal.
+//   2. Fallback — any other agent session; walk out to its window (`TerminalFocus`).
 // Either can fail (agent not in a terminal, window closed, unsupported terminal);
 // the caller treats a false return as a silent no-op.
 enum DeviceFocus {
@@ -26,7 +26,7 @@ enum DeviceFocus {
         guard let out = String(data: data, encoding: .utf8)?
                 .trimmingCharacters(in: .whitespacesAndNewlines),
               !out.isEmpty, out != "??" else { return nil }
-        return out.hasPrefix("/dev/") ? String(out.dropFirst(5)) : out
+        return AgentProbes.shortTTY(out)
     }
 
     /// Bring forward the terminal window of the agent holding `dev`. Returns false
@@ -37,65 +37,6 @@ enum DeviceFocus {
         // Precise: an applet-spawned session with this exact tty.
         if let handle = tracked.first(where: { $0.record.tty == t })?.window,
            AgentWindows.focus(handle) { return true }
-        // Fallback: find the tty across the known terminals.
-        return focusByTTY(t)
-    }
-
-    // MARK: tty → window
-
-    /// Only queries an app that is ALREADY running — a bare `tell application` would
-    /// LAUNCH iTerm/Terminal just to be told the tty isn't there (every sibling
-    /// watcher guards this way; DeviceFocus was the one that skipped it).
-    private static func isRunning(_ bundleID: String) -> Bool {
-        !NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).isEmpty
-    }
-
-    private static func focusByTTY(_ tty: String) -> Bool {
-        let devPath = "/dev/\(tty)"
-        if isRunning("com.googlecode.iterm2"), OSAScript.runSilently(itermByTTY(devPath)) { return true }
-        if isRunning("com.apple.Terminal"), OSAScript.runSilently(terminalByTTY(devPath)) { return true }
-        return false
-    }
-
-    private static func itermByTTY(_ devPath: String) -> String {
-        """
-        tell application "iTerm"
-            set _hit to false
-            repeat with w in windows
-                repeat with t in tabs of w
-                    repeat with s in sessions of t
-                        if (tty of s) is "\(devPath)" then
-                            activate
-                            select w
-                            select t
-                            tell t to select s
-                            set _hit to true
-                        end if
-                    end repeat
-                end repeat
-            end repeat
-            if not _hit then error "tty not found"
-        end tell
-        """
-    }
-
-    private static func terminalByTTY(_ devPath: String) -> String {
-        """
-        tell application "Terminal"
-            set _hit to false
-            repeat with w in windows
-                repeat with t in tabs of w
-                    if (tty of t) is "\(devPath)" then
-                        activate
-                        set index of w to 1
-                        set frontmost of w to true
-                        set selected of t to true
-                        set _hit to true
-                    end if
-                end repeat
-            end repeat
-            if not _hit then error "tty not found"
-        end tell
-        """
+        return TerminalFocus.focus(tty: t, pid: pid)
     }
 }

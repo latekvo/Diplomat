@@ -504,9 +504,11 @@ enum Render {
                 kind: kind, label: label, source: source.rawValue, placement: placement,
                 node: node)
             record.untracked = untracked
-            // Only a run this applet opened a window for can be clicked, so only those
-            // carry a handle — which is what the mesh row and the untracked one are here
-            // to show the absence of.
+            // Every agent running on THIS machine can be clicked — by the handle its
+            // spawn kept, or, for one nobody dispatched, by walking its own process out
+            // to the window showing it. Only the mesh row has neither, which is what it
+            // is here to show.
+            if placement == .local { record.tty = "ttys0\(number ?? 0)" }
             let window = placement == .local && !untracked
                 ? AgentWindows.Handle(terminal: "iterm", windowID: "\(number ?? 0)",
                                       sessionID: "s\(number ?? 0)")

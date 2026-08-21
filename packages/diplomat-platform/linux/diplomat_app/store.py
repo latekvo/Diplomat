@@ -2180,6 +2180,16 @@ class Store(QObject):
              agentregistry.run_runner(r.run_id))
             for r in gone if r.ledger_key
         ]
+        # Logged with the evidence that ended it, because forgetting deletes every trace
+        # a run leaves: the record, the directory and the prompt all go, and a retirement
+        # that turns out to be wrong is then a row that was simply not there any more.
+        # This is the one line that says which rung decided.
+        for r in gone:
+            verdict = t.states.get(r.run_id)
+            activity.log(r.source, "retire",
+                         f"{r.label or r.run_id} — "
+                         f"{verdict.reason if verdict else 'no verdict'}")
+        self.refresh_activity()
         agentregistry.forget({r.run_id for r in gone})
         for r, exited_at, prompt, session_id, agent_runner in retired:
             telemetry.record_completion(r.ledger_key, prompt, r.dispatched_at,
