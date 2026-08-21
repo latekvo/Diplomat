@@ -620,7 +620,7 @@ class SimNet:
         mp.setattr(asyncio, "open_connection", self._open_connection)
         mp.setattr(usage, "token_state", self._token_state)
 
-    def _token_state(self, _plan, _now=None):
+    def _token_state(self, _plan, _now=None, **_):
         """The quota probe, answered per node instead of from this machine."""
         sim = CURRENT.get()
         return sim.quota if sim is not None else ("ok", 1.0, None, None, 1.0)

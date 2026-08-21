@@ -38,6 +38,7 @@ import os
 import secrets
 import socket
 import struct
+import threading
 import time
 import uuid
 from collections.abc import Callable
@@ -63,9 +64,14 @@ _DOWN_RETENTION_SECS = 300.0
 # message for a total beacon-send outage (see _classify_beacon_block).
 _LAN_GATE_ERRNOS = frozenset({errno.EHOSTUNREACH, errno.EACCES, errno.EPERM})
 
-# How often the node re-measures real token usage from the local logs. The budget
-# doesn't move second-to-second, and scanning ~/.claude costs real file I/O, so this
-# is decoupled from the (fast) snapshot cadence rather than run every write.
+# How often the node re-derives its token budget. The budget doesn't move
+# second-to-second, and the measurement is not free at either source — scanning
+# ~/.claude for the local-log heuristic is real file I/O, and the quota endpoint
+# behind the other is a shared bucket with its own, far longer, cadence
+# (`usage._PROBE_TTL_SECS`) — so this is decoupled from the fast snapshot cadence
+# rather than run on every write. It is its own loop, not a throttle inside the
+# snapshot one, because the probe insists through a refusal and may take minutes:
+# awaited inline, that would stop the state file being written for as long.
 _TOKEN_REFRESH_SECS = 30.0
 
 # A sane home/office LAN has a handful of machines; this only bounds a beacon
@@ -358,9 +364,9 @@ class MeshNode:
         self._default_trust = trust.load_default_level() or config.default_trust()
         self.platform = identity.detect_platform()
         self.epoch = time.time()
-        # Cached automatic token-budget read (refreshed on a throttle, so neither the
-        # hot `info` path nor the 2s snapshot tick touches the filesystem/network).
-        # See _refresh_tokens / _TOKEN_REFRESH_SECS. session/week are the REAL
+        # Cached automatic token-budget read (refreshed on its own loop, so neither
+        # the hot `info` path nor the 2s snapshot tick touches the filesystem/network).
+        # See _token_loop / _TOKEN_REFRESH_SECS. session/week are the REAL
         # remaining fractions per rate-limit window (None on the heuristic fallback).
         self._token_state = "ok"
         self._token_frac = 1.0
@@ -370,7 +376,6 @@ class MeshNode:
         # until they reset. The figure dispatch ranks on; None on the heuristic
         # fallback, where the local bookkeeping window is paced instead.
         self._token_pace: float | None = None
-        self._last_token_refresh = 0.0  # monotonic; 0 => refresh on the first tick
         self.tcp_port = 0  # bound in start()
         self.peers: dict[str, Peer] = {}
         self.overrides = PlacementOverrides()
@@ -381,6 +386,9 @@ class MeshNode:
         self._udp_send: socket.socket | None = None
         self._udp_recv: socket.socket | None = None
         self._stopping = asyncio.Event()
+        # Stop signal for the quota probe, which insists from a worker thread and
+        # cannot see the asyncio Event above.
+        self._probe_stopping = threading.Event()
         # In-flight remote dispatches awaiting a job-status answer, by job id.
         # Each entry is (future, target_node_id) so a job-status is only honored
         # from the peer we actually dispatched to (not any other linked peer).
@@ -559,16 +567,23 @@ class MeshNode:
         return (self.current_tokens(), r(self._token_frac),
                 r(self._token_session), r(self._token_week), pace)
 
-    async def _refresh_tokens(self) -> bool:
+    async def _refresh_tokens(self, *, insist: bool = False) -> bool:
         """Re-probe the token budget (real quota endpoint, else local-log heuristic)
         and recompute the auto state + remaining fractions. Returns True when what
         peers see changed — the state flipped or a percentage moved — so the caller
-        can re-gossip. Runs the probe in a worker thread: it may touch the network
-        (~1s, worst case a few seconds' timeout) and must not stall the event loop."""
+        can re-gossip. Runs the probe in a worker thread: it touches the network and
+        the filesystem, and must not stall the event loop.
+
+        ``insist`` lets the probe sit out a refusal from the shared quota endpoint
+        rather than come back empty, which takes minutes — so only :meth:`_token_loop`
+        passes it. The seed in :meth:`start` does not: the first advert waits on it,
+        and a node that takes two and a half minutes to appear on the mesh has traded
+        a rough fraction for a real absence."""
         before = self._gossiped_tokens()
         try:
             state, frac, session, week, pace = await asyncio.to_thread(
-                usage.token_state, self.stats.plan)
+                usage.token_state, self.stats.plan, insist=insist,
+                stopping=self._probe_stopping)
         except Exception:  # noqa: BLE001 — a broken probe must never take the node down
             state, frac = self._token_state, self._token_frac
             session, week = self._token_session, self._token_week
@@ -651,12 +666,16 @@ class MeshNode:
             self._tasks.append(loop.create_task(self._wan_redial_loop(),
                                                 name="mesh-wan-redial"))
         await self._refresh_tokens()  # seed the auto token state before the first advert
-        self._last_token_refresh = time.monotonic()
+        self._tasks.append(loop.create_task(self._token_loop(), name="mesh-tokens"))
         self._recompute("start")
         log("mesh-up",
             f"Mesh node up: {self.local.name} ({self.platform}) :{self.tcp_port}")
 
     async def stop(self) -> None:
+        # Cancelling the task that awaits the probe's worker thread does not end the
+        # thread, and the interpreter joins it on the way out — so a stop landing
+        # mid-schedule holds the process there unless the probe is told to give up.
+        self._probe_stopping.set()
         for t in self._tasks:
             t.cancel()
         for t in self._tasks:
@@ -3807,13 +3826,21 @@ class MeshNode:
             # Age the local accounting so the displayed usageAvg/quota decay even
             # while idle (local only — no gossip churn; peers hear on real change).
             self.stats = self.stats.decayed(time.time())
-            # Re-probe the budget on a throttle (not every 2s write); if what peers
-            # see changed (state flip, or a remaining-percentage moved), tell them
-            # so their consoles and load balancing stay current.
-            if time.monotonic() - self._last_token_refresh >= _TOKEN_REFRESH_SECS:
-                self._last_token_refresh = time.monotonic()
-                if await self._refresh_tokens():
-                    self._bump_and_gossip()
-                    self._recompute("token state")
             statefile.write_state(self.snapshot())
             await asyncio.sleep(self.proto["stateWriteIntervalSecs"])
+
+    async def _token_loop(self) -> None:
+        """Re-derive the token budget on its own clock, and tell the mesh when what
+        peers see changed (a state flip, or a remaining percentage moving) so their
+        consoles and load balancing stay current.
+
+        Its own task rather than a branch of :meth:`_snapshot_loop`: the quota probe
+        insists through a refusal (`usage.windows`) and can take minutes, and the
+        snapshot loop is what keeps `state.json` — every peer row, every claim, the
+        whole of what a front-end reads — current on a two-second beat.
+        """
+        while True:
+            await asyncio.sleep(_TOKEN_REFRESH_SECS)
+            if await self._refresh_tokens(insist=True):
+                self._bump_and_gossip()
+                self._recompute("token state")
