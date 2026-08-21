@@ -115,15 +115,85 @@ enum TrackTest {
               AgentRegistry.runRunner(mesh.runID) == AgentRunner.opencode.rawValue
                 && AgentRegistry.port(mesh.runID) == 47_910)
         check("…and where its window is", AgentWindows.handle(mesh.runID)?.windowID == "999")
-        check("a run with no handle simply cannot be clicked",
+        check("a run this applet never spawned has no handle staged",
               AgentWindows.handle("never-existed") == nil)
         AgentRegistry.forget([mesh.runID])
         check("forgetting a run takes its whole directory, sidecars and all",
               AgentRegistry.load().isEmpty && AgentWindows.handle(mesh.runID) == nil)
 
-        // 4. Focus script embeds the captured ids (so it targets the right window).
+        // 4. Focus script embeds the captured ids (so it targets the right window), and
+        //    addresses the window by id rather than searching for it: `activate` returns
+        //    before the app has reordered its windows, which renumbers the index-based
+        //    references a search is walking, and the search then steps over the very
+        //    window it was given the id of.
         let fs = AgentWindows.focusScript(term: .iterm, windowID: "999", sessionID: "SID")
         check("focusScript embeds windowID + sessionID", fs.contains("999") && fs.contains("SID"))
+        check("focusScript addresses the window by id, and activates last",
+              fs.contains("window id 999") && !fs.contains("repeat with w in windows")
+                && (fs.range(of: "activate").map { fs.range(of: "select w")!.upperBound < $0.lowerBound }
+                    ?? false))
+
+        // 4b. The walk from an agent's own tty out to the window showing it — the only
+        //     route to a session this applet did not open, and the one thing between a
+        //     pane and its window that a parent chain cannot cross.
+        //
+        //     The tree below is the real shape of a spawn on a box whose rc starts every
+        //     interactive shell inside tmux, with a shell wrapper on top of it: the agent
+        //     sits two ptys below its pane, and the pane's parent is the tmux SERVER, so
+        //     the window is only reachable by hopping to the client attached to that
+        //     pane's session and walking out from there.
+        let wrapped: [Int: TerminalFocus.Proc] = [
+            392: .init(ppid: 139, tty: "ttys038"),      // the agent
+            139: .init(ppid: 132, tty: "ttys038"),      // the shell that exec'd it
+            132: .init(ppid: 2212, tty: "ttys037"),     // the pane's own shell
+            2212: .init(ppid: 1, tty: ""),              // the tmux server — a dead end
+            107: .init(ppid: 100, tty: "ttys036"),      // the client attached to it
+            100: .init(ppid: 99998, tty: "ttys034"),    // the window's shell
+            99998: .init(ppid: 1, tty: ""),
+        ]
+        let panes = ["ttys037": TerminalFocus.Pane(id: "%80", session: "80")]
+        let attached = ["80": "ttys036"]
+        let hop = TerminalFocus.walk(tty: "ttys038", pid: 392, processes: wrapped,
+                                     panes: panes, clients: attached)
+        check("the walk crosses tmux and ends on the window's tty",
+              hop.ttys == ["ttys038", "ttys037", "ttys036", "ttys034"]
+                && hop.panes == ["%80"])
+        check("…and starts from the tty alone when no pid is known",
+              TerminalFocus.walk(tty: "ttys038", pid: nil, processes: wrapped,
+                                 panes: panes, clients: attached) == hop)
+        // A parked session has no client, so there is no window to raise and the walk
+        // stops at the pane rather than wandering up the server's ancestry.
+        check("a detached tmux session leads nowhere",
+              TerminalFocus.walk(tty: "ttys038", pid: 392, processes: wrapped,
+                                 panes: panes, clients: [:]).ttys == ["ttys038", "ttys037"])
+        // Nothing wrapping the session: the agent's own tty IS the window's, which is
+        // the pre-tmux shape and must still be one step.
+        check("an unwrapped session is one step",
+              TerminalFocus.walk(tty: "ttys001", pid: 700,
+                                 processes: [700: .init(ppid: 50, tty: "ttys001"),
+                                             50: .init(ppid: 1, tty: "")],
+                                 panes: [:], clients: [:]).ttys == ["ttys001"])
+        check("a run with no tty has nothing to walk",
+              TerminalFocus.walk(tty: "", pid: nil, processes: wrapped,
+                                 panes: panes, clients: attached).ttys.isEmpty)
+        check("the lookup script tries every candidate, nearest first",
+              TerminalFocus.itermScript(["/dev/ttys038", "/dev/ttys034"])
+                .contains("{\"/dev/ttys038\", \"/dev/ttys034\"}"))
+
+        // 4c. Which rows offer the click at all. Both the button and the click itself
+        //     ask this one question, so a row can never be pressable and inert.
+        func rowFor(_ tty: String, handle: AgentWindows.Handle?) -> Store.AgentRow {
+            var r = AgentState.RunRecord(runID: "r", dispatchedAt: 0, kind: "review")
+            r.tty = tty
+            return Store.AgentRow(record: r, state: .running, reason: "", window: handle)
+        }
+        let staged = AgentWindows.Handle(terminal: "iterm", windowID: "7", sessionID: "S")
+        check("a run this applet spawned is clickable by its handle",
+              rowFor("", handle: staged).isFocusable)
+        check("…one nobody dispatched, by the tty its agent is on",
+              rowFor("ttys029", handle: nil).isFocusable)
+        check("…and one running on a peer by neither",
+              !rowFor("", handle: nil).isFocusable)
 
         // 5. Snapshot parse computes "threads I owe" (the offline-review reconcile signal):
         //    unresolved + I-can-resolve + last comment isn't mine. Threads I already
@@ -228,8 +298,19 @@ enum TrackTest {
         check("a live run is found by the pid its own shell wrote",
               found.map { AgentState.blocking.contains($0.state) } == true
                 && found?.reason.contains("alive") == true)
-        check("its window is raisable from the handle its spawn kept",
-              AgentWindows.handle(record.runID).map(AgentWindows.focus) == true)
+        // Raised repeatedly, because the failure this replaced was intermittent: one
+        // click in three landed on a window search that had been renumbered under it.
+        let handle = AgentWindows.handle(record.runID)
+        check("its window is raisable from the handle its spawn kept, every time",
+              handle != nil && (1...4).allSatisfy { _ in handle.map(AgentWindows.focus) == true })
+        // The other route, and the only one a run without a handle has: the agent's OWN
+        // tty, which is the window's only when nothing wraps the session. Under tmux, or
+        // a shell wrapper that opens a pty of its own, it is a pty no terminal shows.
+        let agentPID = AgentRegistry.adoptPids(AgentRegistry.load())
+            .first { $0.runID == record.runID }?.pid
+        let agentTTY = agentPID.flatMap(DeviceFocus.tty(forPid:)) ?? ""
+        check("…and from the agent's own process, with no handle at all",
+              !agentTTY.isEmpty && TerminalFocus.focus(tty: agentTTY, pid: agentPID))
         check("focus of a vanished window fails (→ the row is dismissed)",
               !AgentWindows.focus(.init(terminal: term.rawValue, windowID: "99999999",
                                         sessionID: "nope")))

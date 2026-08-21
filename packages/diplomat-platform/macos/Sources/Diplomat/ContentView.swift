@@ -984,25 +984,21 @@ private struct AgentRunRow: View {
     // Resolved out of the ViewBuilder, where a ternary over concatenations is what
     // tips this file past the type-checker's time limit on a CI runner.
     private static let localHelp = "Bring this session's window to the front."
-    private static let untrackedHelp =
-        "An agent nobody here dispatched. Nothing to focus — this applet did not open "
-        + "its window."
+    /// A local agent the applet can see no terminal for: it has neither a handle of its
+    /// own nor a tty to walk out from, which is what a run reads as in the seconds
+    /// before its shell has started.
+    private static let noTerminalHelp =
+        "No window to raise yet — this agent is not on a terminal this machine can see."
     private static func meshHelp(_ node: String) -> String {
         node.isEmpty
             ? "Running on a mesh node. Nothing to focus here — the agent is on another machine."
             : "Running on mesh node \(node). Nothing to focus here — the agent is on that machine."
     }
-    /// A placement the mesh sent back here: this machine's own agent, but the node
-    /// opened its window, so this applet never captured a handle to raise.
-    private static let meshHereHelp =
-        "Placed on this machine by the mesh. Nothing to focus — the node opened its window, "
-        + "not this applet."
-    /// Why a run with no window handle cannot be clicked.
+    /// Why a row cannot be clicked: nothing here can reach its terminal.
     private static func help(for record: AgentState.RunRecord) -> String {
         switch record.placement {
-        case .meshPeer: return meshHelp(record.node)
-        case .meshHere: return meshHereHelp
-        case .local:    return untrackedHelp
+        case .meshPeer:          return meshHelp(record.node)
+        case .meshHere, .local:  return noTerminalHelp
         }
     }
     /// The note beside the status word. Built here rather than in the `Text(...)`
@@ -1014,12 +1010,13 @@ private struct AgentRunRow: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            // A row with no window handle has nothing to raise — an agent on a peer, one
-            // the mesh placed back here, or one nobody dispatched. Offering the click and
-            // doing nothing would read as a session whose window had gone missing. Each
-            // placement answers differently: the status line says "on mesh" for both mesh
-            // rows, which "nobody here dispatched this" would contradict.
-            if row.window == nil {
+            // Clickable when this applet can reach the terminal: the handle its own spawn
+            // kept, or — for an agent it did not open — the agent's process, walked out to
+            // whatever window is showing it. An agent on a peer has neither, and offering
+            // the click and doing nothing would read as a session whose window had gone
+            // missing. The two answers differ because the status line says "on mesh" for a
+            // peer row, which a local "no terminal here" would contradict.
+            if !row.isFocusable {
                 content.help(AgentRunRow.help(for: row.record))
             } else {
                 Button(action: onTap) { content.contentShape(Rectangle()) }

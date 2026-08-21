@@ -328,8 +328,7 @@ final class Store: ObservableObject {
     @Published private(set) var agentRows: [AgentRow] = []
 
     /// One row of the Agent-tasks list: the record, what this tick resolved it to, and
-    /// the window handle — nil for a run with no terminal on this machine, which is a
-    /// row that draws and cannot be clicked.
+    /// the window handle — nil for a run this applet did not open a window for.
     struct AgentRow: Identifiable, Equatable {
         var record: AgentState.RunRecord
         var state: AgentState.RunState
@@ -341,6 +340,14 @@ final class Store: ObservableObject {
 
         var id: String { record.runID }
         var status: AgentTaskStatus { AgentTaskStatus.of(state) }
+
+        /// Whether a click can reach a terminal: the handle this applet's own spawn kept,
+        /// or the agent's own process to walk out from (`TerminalFocus`). A run on a peer
+        /// has neither, and is the one row that draws and cannot be clicked.
+        ///
+        /// One place, because the two callers disagree visibly: the row stops being a
+        /// button, or it stays one and does nothing when pressed.
+        var isFocusable: Bool { window != nil || !record.tty.isEmpty }
     }
 
     /// The folded telemetry ledger the Telemetry screen draws. Republished when a
@@ -979,6 +986,13 @@ final class Store: ObservableObject {
         let gone = t.retirable.filter { !$0.untracked }
         guard !gone.isEmpty else { return }
         let priced = Store.pricingInputs(gone)
+        // Forgetting deletes every trace a run leaves — record, directory, prompt,
+        // handle — so a retirement that was wrong is otherwise just a row that stopped
+        // being there. This line is the only thing that says which rung decided.
+        for r in gone {
+            AuditLog.log(r.source, "retire",
+                         "\(r.label.isEmpty ? r.runID : r.label) — \(t.states[r.runID]?.reason ?? "no verdict")")
+        }
         AgentRegistry.forget(Set(gone.map(\.runID)))
         await settleLedger(priced)
     }
@@ -2824,15 +2838,21 @@ final class Store: ObservableObject {
 
     /// Click a row: bring its terminal window to the front.
     ///
-    /// A run the mesh placed on a peer has no window here, and one this applet never
-    /// spawned has no handle to raise — both are rows that draw and cannot be clicked, so
-    /// they dismiss rather than pretending. If the focus fails the window is gone, so the
-    /// tick is re-run to drop the dead row immediately rather than leaving it to linger.
-    /// The AppleScript runs off the main thread so the popover never hitches.
+    /// The handle is exact, and belongs to a run this applet spawned. Failing it — a run
+    /// nobody dispatched, one whose handle never landed — the agent's own process is
+    /// walked out to whatever window is showing it (`TerminalFocus`), which is the only
+    /// route to a live agent this applet did not open.
+    ///
+    /// A run on a peer has neither and dismisses rather than pretending. If both fail the
+    /// window is gone, so the tick is re-run to drop the dead row immediately rather than
+    /// leaving it to linger. The AppleScript runs off the main thread so the popover
+    /// never hitches.
     func activate(_ row: AgentRow) async -> FocusOutcome {
-        guard let handle = row.window else { return .dismissed }
+        guard row.isFocusable else { return .dismissed }
+        let (handle, tty, pid) = (row.window, row.record.tty, row.record.pid)
         let focused = await Task.detached(priority: .userInitiated) {
-            AgentWindows.focus(handle)
+            if let handle, AgentWindows.focus(handle) { return true }
+            return TerminalFocus.focus(tty: tty, pid: pid)
         }.value
         if focused { return .focused }
         await settleAgents()

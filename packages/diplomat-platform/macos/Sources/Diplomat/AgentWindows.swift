@@ -9,10 +9,11 @@ import DiplomatCore
 /// run directory next to `runner` / `port` / `session`. `AgentRegistry.forget` deletes
 /// the directory, so a retired run takes its handle with it.
 ///
-/// The handle is the applet's ONLY way back to a session: a spawn walks away from a fully
-/// detached terminal, and these three ids are what the focus AppleScript addresses. A run
-/// with no handle — one the mesh node opened, or a live agent nobody dispatched — is a row
-/// that draws and resolves like any other and simply cannot be clicked.
+/// The handle is the exact way back to a session: a spawn walks away from a fully detached
+/// terminal, and these three ids are what the focus AppleScript addresses. A run with no
+/// handle — one the mesh node opened, or a live agent nobody dispatched — is reached the
+/// inexact way instead, by walking its own process out to the window showing it
+/// (`TerminalFocus`). Only a run whose agent is on another machine cannot be clicked.
 ///
 /// Whether a run is still going is not asked here and never was a window question: the
 /// answer is its agent's pid in the process table (`AgentState`), and closing a window
@@ -60,43 +61,38 @@ enum AgentWindows {
     /// AppleScript that selects the window with the captured id (erroring if it's gone, so
     /// the caller sees a non-zero exit). iTerm also re-selects the exact session; Terminal
     /// raises + fronts the window.
+    ///
+    /// The window is addressed by id rather than found by walking `windows`, and the app
+    /// is activated last. `activate` returns before the app has finished coming forward,
+    /// and reordering its windows renumbers the index-based references a `repeat with w in
+    /// windows` is walking — so a search that activates first intermittently steps over
+    /// the very window it was given the id of. A direct specifier cannot: it is resolved
+    /// once, by id, against whatever order the app is in.
     static func focusScript(term: SpawnTerminal, windowID: String, sessionID: String) -> String {
         switch term {
         case .iterm:
             return """
             tell application "iTerm"
-                activate
-                set _found to false
-                repeat with w in windows
-                    if (id of w as string) is "\(windowID)" then
-                        select w
-                        set _found to true
-                        repeat with t in tabs of w
-                            repeat with s in sessions of t
-                                if (id of s) is "\(sessionID)" then
-                                    select t
-                                    tell t to select s
-                                end if
-                            end repeat
-                        end repeat
-                    end if
+                set w to window id \(windowID)
+                select w
+                repeat with t in tabs of w
+                    repeat with s in sessions of t
+                        if (id of s) is "\(sessionID)" then
+                            select t
+                            tell t to select s
+                        end if
+                    end repeat
                 end repeat
-                if not _found then error "window gone"
+                activate
             end tell
             """
         case .terminal:
             return """
             tell application "Terminal"
+                set w to window id \(windowID)
+                set index of w to 1
+                set frontmost of w to true
                 activate
-                set _found to false
-                repeat with w in windows
-                    if (id of w as string) is "\(windowID)" then
-                        set index of w to 1
-                        set frontmost of w to true
-                        set _found to true
-                    end if
-                end repeat
-                if not _found then error "window gone"
             end tell
             """
         }
