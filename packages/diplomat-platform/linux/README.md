@@ -10,9 +10,10 @@ assets — and it doesn't re-implement prompt assembly at all: it shells out to 
 
 **Still macOS-only:** the per-row **Merge** button; the **clickable session rows** of
 the [Agent tasks](#agent-tasks) list — a spawn here is a detached `Popen` with no
-window handle to track it by, so a running agent gets a row but no window to focus,
-and none of the *awaiting input* / *done* / *merged* statuses that come from reading
-a session's terminal. Also macOS-only: reading/typing into *arbitrary* terminal windows — Linux
+window handle to track it by, so a running agent gets a row but no window to focus.
+The window, and not the row's status: both front-ends resolve a run through the same
+`agentstate`, and *awaiting input* is read here off the agent's own tmux pane. Also
+macOS-only: reading/typing into *arbitrary* terminal windows — Linux
 has no portable hook for that, so the API-error watcher drives **tmux panes**
 instead. Every SPAWN opens its agent in a tmux session of its own wherever tmux is
 installed, so the watcher reaches them; an agent started any other way is outside it.
@@ -37,10 +38,10 @@ slot**, then the **queue** that has no bay yet.
 - **Running** is an automatic agent up on this machine, drawn in the bay it took,
   with the label its dispatch logged and how long it has been going. A spawn here is
   a detached `Popen` in a terminal the applet does not own, so the row is a status
-  and nothing more — there is no window to click, and none of the *awaiting
-  input* / *done* / *merged* macOS reads off a session. A job the mesh placed **back
-  on this machine** is one of these like any other; one it placed on a peer shows in
-  the activity feed instead, having taken no bay here.
+  and nothing more — there is no window to click. The status itself is the one macOS
+  draws, *awaiting input* included, read off the agent's own tmux pane. A job the
+  mesh placed **back on this machine** is one of these like any other; one it placed
+  on a peer shows in the activity feed instead, having taken no bay here.
 
   An agent found only by the `ps` scan — no in-flight record behind it, which is
   what an applet restart leaves — still gets a row, marked *untracked* and drawn by
