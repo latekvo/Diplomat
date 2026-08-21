@@ -24,9 +24,17 @@ one line to the run's ``activity`` file, and **the last line is the answer**. No
 polling, no scraping, no inference: the transition is reported by the process that
 performs it, at the instant it performs it.
 
-``SubagentStop`` is deliberately not among them. A subagent finishing is not the
+``Stop`` alone is not taken at face value. It ends the *model's* turn, not the work:
+a turn that dispatched subagents or backgrounded a command hands control back while
+they are still running, and the CLI re-enters when one reports. So the hook reads the
+payload it is handed and writes ``busy`` instead whenever ``background_tasks`` still
+lists something. Without that guard a run that fanned out is finished seconds after
+dispatch, with its whole swarm still working.
+
+``SubagentStop`` is deliberately not among the events. A subagent finishing is not the
 task finishing, and treating it as one would retire every run that delegated at the
-moment its first helper returned.
+moment its first helper returned. The guard above is what a delegating run needs, and
+it is asked at the boundary that actually decides.
 
 The hooks are injected per run via ``claude --settings <file>``, which MERGES with
 the user's own settings rather than replacing them (verified against 2.1.237), so a
@@ -58,6 +66,28 @@ VERBS = (BUSY, IDLE, ENDED)
 #: transition happens, never inferred afterwards by something looking at it.
 EVENTS = {"UserPromptSubmit": BUSY, "Stop": IDLE, "SessionEnd": ENDED}
 
+#: Events whose verb holds only if the CLI has no background work outstanding.
+#:
+#: ``Stop`` marks the end of the *model's* turn, and a turn that dispatched subagents
+#: or a background shell ends while they are still running — the CLI hands the turn
+#: back and re-enters when one reports. Taken at face value that is a finished run
+#: seconds after dispatch, with its subagents still working. ``SessionEnd`` needs no
+#: such guard: background work does not outlive the process it was started from.
+GUARDED = frozenset({"Stop"})
+
+#: What a guarded event greps its own payload for, whitespace already stripped.
+#:
+#: The CLI hands every hook a JSON payload on stdin, and ``background_tasks`` is the
+#: list of subagents and background shells still outstanding — ``[]`` exactly when
+#: there are none. A pending one makes it ``[{``, which is the whole test.
+#:
+#: It cannot be forged from inside the payload: a decoy in ``last_assistant_message``
+#: has to escape its quotes to be valid JSON, and ``background_tasks\":[{`` does not
+#: match. A payload that is unreadable, absent or reworded greps clean and so reports
+#: the turn over — the one direction that can be wrong, and the direction the
+#: stillness backstop already covers.
+PENDING = r'"background_tasks":\[{'
+
 
 def hook_settings(activity_path: str, done_path: str | None = None) -> dict:
     """The ``--settings`` payload that makes a run report its own turn boundaries.
@@ -80,16 +110,30 @@ def hook_settings(activity_path: str, done_path: str | None = None) -> dict:
     """
     return {"hooks": {event: [{"hooks": [{"type": "command",
                                           "command": _append(verb, activity_path,
-                                                             done_path)}]}]
+                                                             done_path,
+                                                             event in GUARDED)}]}]
                       for event, verb in EVENTS.items()}}
 
 
-def _append(verb: str, activity_path: str, done_path: str | None = None) -> str:
-    cmd = f"printf '%s %s\\n' {verb} \"$(date +%s)\" >> {shlex.quote(activity_path)}"
+def _append(verb: str, activity_path: str, done_path: str | None = None,
+            guarded: bool = False) -> str:
+    cmd = ""
+    word = verb
+    if guarded:
+        # The payload is read from stdin once, and the verb it chooses is reused
+        # below so the line and the sentinel can never disagree about it.
+        cmd += (f"v={verb}; tr -d ' \\t\\n' | grep -q {shlex.quote(PENDING)}"
+                f" && v={BUSY}; ")
+        word = '"$v"'
+    cmd += f"printf '%s %s\\n' {word} \"$(date +%s)\" >> {shlex.quote(activity_path)}"
     if done_path and verb in (IDLE, ENDED):
         # `>` not `>>`: the sentinel is read by existence and dated by mtime, and a
         # second turn's line would only move that date later.
-        cmd += f"; printf 0 > {shlex.quote(done_path)}"
+        sentinel = f"printf 0 > {shlex.quote(done_path)}"
+        # `case` rather than `[ ]` so the miss is a no-op that still exits 0: a hook
+        # that exits non-zero is reported to the agent as a failing hook.
+        cmd += (f'; case "$v" in {verb}) {sentinel} ;; esac' if guarded
+                else f"; {sentinel}")
     return cmd
 
 

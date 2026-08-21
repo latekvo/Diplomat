@@ -9,6 +9,11 @@ The tests here cover the three layers of that: the FORMAT (:mod:`completion`), t
 WIRING that reaches a real spawn, and the shell snippet actually running in a real
 shell — because a quoting bug in that snippet is invisible to every test that only
 inspects the JSON.
+
+The snippet is where the subtlety lives. ``Stop`` ends the model's turn rather than
+the work, so the hook reads the payload it is handed and reports ``busy`` while any
+subagent or backgrounded command is still outstanding; those cases are driven through
+``/bin/sh`` with real payload shapes rather than asserted against the JSON.
 """
 
 from __future__ import annotations
@@ -75,14 +80,43 @@ def test_a_subagent_finishing_is_not_the_task_finishing():
     assert "SubagentStop" not in completion.EVENTS
 
 
+def test_every_guarded_event_is_one_the_hooks_actually_write():
+    """Anti-drift: a guard on an event nothing writes protects nothing, and would read
+    as coverage this has."""
+    assert completion.GUARDED <= set(completion.EVENTS)
+
+
+def test_only_the_turn_boundary_is_guarded():
+    """``SessionEnd`` fires when the process is going away, and background work does
+    not outlive the process that started it — guarding it would leave a run that
+    exited mid-subagent reporting ``busy`` until the stillness backstop."""
+    assert completion.GUARDED == {"Stop"}
+
+
 # MARK: - The shell snippet, run in a real shell
 
 
-def _fire(event: str, activity, done=None) -> None:
-    """Run one hook's command the way the CLI would."""
+def _payload(*pending: str) -> str:
+    """A hook payload as the CLI writes it: minified, with the fields around
+    ``background_tasks`` that a naive match could trip over."""
+    tasks = ",".join(json.dumps({"id": f"a{i}", "type": kind, "status": "running",
+                                 "description": f"probe {i}"})
+                     for i, kind in enumerate(pending))
+    return ('{"session_id":"ac238dab","hook_event_name":"Stop","stop_hook_active":false,'
+            f'"last_assistant_message":"working","background_tasks":[{tasks}],'
+            '"session_crons":[]}')
+
+
+def _fire(event: str, activity, done=None, payload: str = "") -> int:
+    """Run one hook's command the way the CLI would, payload on stdin.
+
+    Returned rather than asserted so the exit status is a fact each test can make its
+    own claim about; a hook that exits non-zero is reported to the agent as failing.
+    """
     cmd = completion.hook_settings(str(activity), done and str(done))
     snippet = cmd["hooks"][event][0]["hooks"][0]["command"]
-    subprocess.run(["/bin/sh", "-c", snippet], check=True)
+    return subprocess.run(["/bin/sh", "-c", snippet], input=payload,
+                          text=True).returncode
 
 
 def test_the_hook_command_actually_writes_a_line_parse_can_read(tmp_path):
@@ -104,6 +138,85 @@ def test_a_path_with_spaces_survives_the_snippet(tmp_path):
     activity = tmp_path / "a dir with spaces" / "activity"
     activity.parent.mkdir()
     _fire("Stop", activity)
+    assert completion.parse(activity.read_text())[0] == completion.IDLE
+
+
+# MARK: - A turn that ended with work still outstanding
+
+
+def test_a_turn_that_dispatched_subagents_is_not_over(tmp_path):
+    """``Stop`` marks the end of the MODEL's turn, and a turn that dispatched subagents
+    ends while they are still running — the CLI hands the turn back and re-enters when
+    one reports.
+
+    Read at face value that is a run finished seconds after dispatch, with three
+    subagents still working, its bay freed and its run directory deleted under it.
+    Measured against a real session: ``idle`` landed 6s in and stood for the next 50.
+    """
+    activity = tmp_path / "activity"
+    assert _fire("Stop", activity, payload=_payload("subagent", "subagent")) == 0
+    assert completion.parse(activity.read_text())[0] == completion.BUSY
+
+
+def test_a_backgrounded_shell_holds_the_turn_open_too(tmp_path):
+    """Same mechanism, other kind: a backgrounded command re-invokes the agent when it
+    exits, so the turn it was started in is not the last one."""
+    activity = tmp_path / "activity"
+    _fire("Stop", activity, payload=_payload("shell"))
+    assert completion.parse(activity.read_text())[0] == completion.BUSY
+
+
+def test_a_turn_with_nothing_outstanding_is_over(tmp_path):
+    """The other half, without which the guard would be a run that never finishes."""
+    activity = tmp_path / "activity"
+    assert _fire("Stop", activity, payload=_payload()) == 0
+    assert completion.parse(activity.read_text())[0] == completion.IDLE
+
+
+def test_the_mesh_key_is_held_until_the_subagents_are_done(tmp_path):
+    """The sentinel releases a szpontnet work key. Writing it on a turn that only
+    dispatched subagents would let a peer re-run work still in flight."""
+    activity, done = tmp_path / "activity", tmp_path / "done"
+    _fire("Stop", activity, done, payload=_payload("subagent"))
+    assert not done.exists()
+
+    _fire("Stop", activity, done, payload=_payload())
+    assert done.read_text() == "0"
+
+
+@pytest.mark.parametrize("payload", [
+    "",                                        # stdin closed, or a hook run with none
+    '{"hook_event_name":"Stop"}',              # a CLI that carries no such field
+    '{"background_tasks":[]}',                 # the field, empty
+    '{\n  "background_tasks": [\n  ]\n}',      # pretty-printed and empty
+])
+def test_a_payload_that_says_nothing_reports_the_turn_over(tmp_path, payload):
+    """The one direction this guard can be wrong in, and the direction it is chosen to
+    be wrong in: a payload it cannot read reports the turn over rather than holding a
+    finished run open forever. The stillness backstop covers the miss; nothing covers a
+    run that can never be retired."""
+    activity = tmp_path / "activity"
+    _fire("Stop", activity, payload=payload)
+    assert completion.parse(activity.read_text())[0] == completion.IDLE
+
+
+def test_pending_work_is_seen_through_a_reformatted_payload(tmp_path):
+    """Whitespace is stripped before the match, so the guard does not quietly stop
+    guarding if the CLI ever pretty-prints what it hands the hook."""
+    activity = tmp_path / "activity"
+    _fire("Stop", activity, payload='{\n  "background_tasks": [\n    {"type": '
+                                    '"subagent", "status": "running"}\n  ]\n}')
+    assert completion.parse(activity.read_text())[0] == completion.BUSY
+
+
+def test_a_decoy_in_the_transcript_cannot_forge_pending_work(tmp_path):
+    """``last_assistant_message`` carries whatever the agent last said, which can be
+    this module's own source. To be valid JSON a decoy has to escape its quotes, and
+    the escape is what breaks the match."""
+    activity = tmp_path / "activity"
+    decoy = json.dumps(completion.PENDING + ' and no real work')
+    _fire("Stop", activity,
+          payload=f'{{"last_assistant_message":{decoy},"background_tasks":[]}}')
     assert completion.parse(activity.read_text())[0] == completion.IDLE
 
 

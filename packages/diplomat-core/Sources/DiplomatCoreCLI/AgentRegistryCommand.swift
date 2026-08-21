@@ -17,10 +17,22 @@ import Foundation
 ///
 /// Input:  `{ "mode": "read" }`
 ///      or `{ "mode": "write", "runs": [ {…}, … ] }`
+///      or `{ "mode": "hooks", "activityPath": "…", "donePath": "…" | null }`
 /// Output: `{ "runs": [ … ] }` — whatever the registry holds afterwards, as it decodes
-/// it. `$DIPLOMAT_AGENTS_DIR` says where; the test points it at a temp dir.
+/// it — or, for `hooks`, `{ "settings": {…} }`. `$DIPLOMAT_AGENTS_DIR` says where; the
+/// test points it at a temp dir.
+///
+/// `hooks` is here for the same reason the rest is: the settings are shell commands
+/// that WRITE the activity file, so a difference of one byte between the two front-ends
+/// is a run that reports its turns differently depending on which applet spawned it —
+/// and that file is read back by both.
 enum AgentRegistryCommand {
     static func run(_ obj: [String: Any]) {
+        if (obj["mode"] as? String) == "hooks" {
+            emitHooks(activityPath: obj["activityPath"] as? String ?? "",
+                      donePath: obj["donePath"] as? String)
+            return
+        }
         if (obj["mode"] as? String) == "write" {
             let runs = (obj["runs"] as? [[String: Any]] ?? []).map(decode)
             AgentRegistry.save(runs)
@@ -29,6 +41,23 @@ enum AgentRegistryCommand {
         guard let data = try? JSONSerialization.data(
             withJSONObject: out, options: [.sortedKeys, .prettyPrinted]) else {
             die("could not serialise the registry", 1)
+        }
+        FileHandle.standardOutput.write(data)
+    }
+
+    /// The `--settings` payload this side would stage, re-parsed so the comparison is
+    /// over the commands rather than over JSON key order.
+    private static func emitHooks(activityPath: String, donePath: String?) {
+        guard let json = AgentCompletion.settingsJSON(activityPath: activityPath,
+                                                      donePath: donePath),
+              let settings = try? JSONSerialization.jsonObject(
+                  with: Data(json.utf8)) else {
+            die("could not build the hook settings", 1)
+        }
+        guard let data = try? JSONSerialization.data(
+            withJSONObject: ["settings": settings],
+            options: [.sortedKeys, .prettyPrinted]) else {
+            die("could not serialise the hook settings", 1)
         }
         FileHandle.standardOutput.write(data)
     }
