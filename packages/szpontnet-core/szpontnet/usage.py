@@ -5,10 +5,12 @@ Primary source — the **OAuth usage endpoint** (the same data Claude Code's
 rate-limit windows, the 5-hour session and the 7-day week. The probe reads the
 Claude Code OAuth access token (``~/.claude/.credentials.json``, or the macOS
 Keychain item ``Claude Code-credentials``), GETs the endpoint, and converts each
-window's utilization into a remaining fraction. Results are cached ~1 min and a
-last-good read outlives transient failures, so the node never hammers the
-endpoint nor flaps on a dropped packet. ``SZPONTNET_OAUTH_PROBE=0`` disables
-the probe entirely (the tests run offline and deterministic).
+window's utilization into a remaining fraction. The endpoint answers out of one
+small per-account bucket every Claude Code session on the machine also spends, so
+a reading is sampled rarely and insisted on when it is (see
+:data:`_PROBE_TTL_SECS`), and a last-good read outlives the failures in between.
+``SZPONTNET_OAUTH_PROBE=0`` disables the probe entirely (the tests run offline and
+deterministic).
 
 Fallback — when no token is available (or the probe is disabled/offline for
 long), a node measures its *own* recent consumption instead: Claude Code appends
@@ -43,16 +45,37 @@ _DAY_SECS = 86_400.0
 _OAUTH_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 _OAUTH_BETA = "oauth-2025-04-20"
 _PROBE_TIMEOUT_SECS = 4.0
-# Min interval between endpoint attempts — the node refreshes its token state
-# every 30s, so this makes roughly every other refresh hit the network (the
-# cadence Claude statusline tools poll at).
-_PROBE_TTL_SECS = 55.0
-# Faster retry while there is NO last-good read yet (e.g. the seed fetch hit a
-# transient failure): stuck on the rough heuristic, the next refresh should try
-# again rather than wait out the full TTL.
-_PROBE_RETRY_SECS = 10.0
+# Min interval between endpoint attempts. The endpoint is one small per-account
+# bucket that every Claude Code session on the machine spends too, so what this
+# costs is not bandwidth but every other reader's chance of getting an answer at
+# all — and among those readers a node's own is the cheapest to make stale. What
+# it feeds is a routing signal quantised by `protocol.surplus_bucket` before any
+# peer sees it, and re-gossiped only when a percentage moves; refreshed faster
+# than that it changes no decision. So the node samples on a quarter-hour and
+# insists when it does, rather than asking every minute and settling for whatever
+# comes back.
+_PROBE_TTL_SECS = 900.0
+# The extra attempts one refresh makes after the first is refused, and the wait
+# between them: six attempts over two and a half minutes.
+#
+# On a machine running several Claude Code sessions a single attempt is refused
+# (HTTP 429) more often than it succeeds. The bucket was measured refilling on a
+# roughly two-minute cycle and the refusal's `Retry-After` is 0, so what decides
+# whether an attempt lands is how soon after a refill it arrives — hence even
+# waits rather than a doubling backoff, spanning more than one refill.
+_INSIST_ATTEMPTS = 5
+_INSIST_WAIT_SECS = 30.0
+# Retry interval while there is NO last-good read at all — a first probe that came
+# up empty leaves the node on the rough heuristic, and it should not sit there for
+# a full TTL. Longer than one refresh's own attempts: six of those spanning two
+# refills and still coming back empty is an endpoint that is unreachable rather
+# than merely busy, and hammering an unreachable one spends the shared bucket the
+# same as hammering a busy one.
+_PROBE_RETRY_SECS = 300.0
 # How long a last-good read keeps answering through failures before the module
-# gives up and falls back to the local heuristic.
+# gives up and falls back to the local heuristic. Two sampling cycles: one refresh
+# whose whole insisting schedule was refused is an ordinary busy minute, two in a
+# row is the endpoint being gone.
 _PROBE_KEEP_SECS = 1800.0
 
 # Nominal lengths of the account's real rate-limit windows. The endpoint reports
@@ -209,23 +232,43 @@ def _window(raw: object, length_secs: float, now: float | None = None
     return QuotaWindow(frac_left=frac, resets_at=resets_at, length_secs=length_secs)
 
 
-def windows() -> tuple[QuotaWindow | None, QuotaWindow | None]:
+def _attempt(now: float) -> bool:
+    """One GET, folded into the cache. True when it came back with a reading."""
+    _probe_cache["attempt"] = now
+    payload = _fetch_usage_payload()
+    session = _window((payload or {}).get("five_hour"), _SESSION_WINDOW_SECS)
+    if session is None:
+        return False
+    _probe_cache["good"] = now
+    _probe_cache["session"] = session
+    _probe_cache["week"] = _window(payload.get("seven_day"), _WEEK_WINDOW_SECS)
+    return True
+
+
+def windows(*, insist: bool = False) -> tuple[QuotaWindow | None, QuotaWindow | None]:
     """(session, week) as REAL rate-limit windows — remaining budget *and* the
     instant each resets, so callers can compare nodes on pace rather than on raw
     remaining percentages. (None, None) when unavailable: probe disabled, no
-    credentials, or offline past the keep window."""
+    credentials, or offline past the keep window.
+
+    ``insist`` keeps trying (:data:`_INSIST_ATTEMPTS`) rather than settling for one
+    refusal, so the call BLOCKS for up to two and a half minutes. It is for the
+    node's own refresh loop, which runs beside everything else and has nobody
+    waiting on it; a caller on a request path takes the single attempt, since a
+    stale reading now beats a fresh one after the decision has been made.
+    """
     if not probe_enabled():
         return None, None
     now = time.monotonic()
     interval = _PROBE_TTL_SECS if _probe_cache["session"] is not None else _PROBE_RETRY_SECS
     if now - _probe_cache["attempt"] >= interval or _probe_cache["attempt"] == 0.0:
-        _probe_cache["attempt"] = now
-        payload = _fetch_usage_payload()
-        session = _window((payload or {}).get("five_hour"), _SESSION_WINDOW_SECS)
-        if session is not None:
-            _probe_cache["good"] = now
-            _probe_cache["session"] = session
-            _probe_cache["week"] = _window(payload.get("seven_day"), _WEEK_WINDOW_SECS)
+        # No token is the one failure retrying cannot fix.
+        if not _attempt(now) and insist and _oauth_token() is not None:
+            for _ in range(_INSIST_ATTEMPTS):
+                time.sleep(_INSIST_WAIT_SECS)
+                if _attempt(time.monotonic()):
+                    break
+        now = time.monotonic()
     if _probe_cache["session"] is not None and now - _probe_cache["good"] > _PROBE_KEEP_SECS:
         _probe_cache["session"] = _probe_cache["week"] = None  # stale beyond trust
     return _probe_cache["session"], _probe_cache["week"]
@@ -363,7 +406,7 @@ def state_from_fraction(frac: float) -> str:
     return "ok"
 
 
-def token_state(plan: str, now: float | None = None
+def token_state(plan: str, now: float | None = None, *, insist: bool = False
                 ) -> tuple[str, float, float | None, float | None, float | None]:
     """(ok|low|out, binding_fraction, session_frac, week_frac, pace) for this machine.
 
@@ -374,8 +417,10 @@ def token_state(plan: str, now: float | None = None
     The coarse state stays keyed to the raw *fraction*, deliberately: ok/low/out
     answers "can this node run a job at all", which is an absolute question about
     budget on hand. ``pace`` answers the separate, relative question of whether it
-    should be *preferred* — that is what routing ranks on."""
-    session, week = windows()
+    should be *preferred* — that is what routing ranks on.
+
+    ``insist`` is handed to :func:`windows`, and blocks for as long as it says."""
+    session, week = windows(insist=insist)
     if session is not None:
         fracs = [w.frac_left for w in (session, week) if w is not None]
         frac = min(fracs)

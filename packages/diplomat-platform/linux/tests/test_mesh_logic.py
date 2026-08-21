@@ -1066,7 +1066,7 @@ def test_token_state_prefers_real_quota_over_heuristic(monkeypatch):
     now = 1_000_000.0
     session = usage.QuotaWindow(0.64, now + 2.5 * 3600, 5 * 3600.0)   # half the clock left
     week = usage.QuotaWindow(0.27, now + 3.5 * 86400, 7 * 86400.0)    # half the clock left
-    monkeypatch.setattr(usage, "windows", lambda: (session, week))
+    monkeypatch.setattr(usage, "windows", lambda **_: (session, week))
     state, frac, sess, wk, pace = usage.token_state("pro", now=now)
     assert (sess, wk) == (0.64, 0.27)
     assert frac == 0.27              # the week window binds
@@ -1079,7 +1079,7 @@ def test_token_state_prefers_real_quota_over_heuristic(monkeypatch):
 def test_token_state_falls_back_to_heuristic_when_probe_dark(tmp_path, monkeypatch):
     from szpontnet import usage
     monkeypatch.setenv("HOME", str(tmp_path))  # empty logs → fresh heuristic
-    monkeypatch.setattr(usage, "windows", lambda: (None, None))
+    monkeypatch.setattr(usage, "windows", lambda **_: (None, None))
     state, frac, sess, week, pace = usage.token_state("pro")
     assert (state, frac) == ("ok", 1.0)
     # All three None mark the fraction an estimate; with no reset instants there
