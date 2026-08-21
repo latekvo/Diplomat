@@ -38,6 +38,7 @@ import os
 import secrets
 import socket
 import struct
+import threading
 import time
 import uuid
 from collections.abc import Callable
@@ -385,6 +386,9 @@ class MeshNode:
         self._udp_send: socket.socket | None = None
         self._udp_recv: socket.socket | None = None
         self._stopping = asyncio.Event()
+        # Stop signal for the quota probe, which insists from a worker thread and
+        # cannot see the asyncio Event above.
+        self._probe_stopping = threading.Event()
         # In-flight remote dispatches awaiting a job-status answer, by job id.
         # Each entry is (future, target_node_id) so a job-status is only honored
         # from the peer we actually dispatched to (not any other linked peer).
@@ -578,7 +582,8 @@ class MeshNode:
         before = self._gossiped_tokens()
         try:
             state, frac, session, week, pace = await asyncio.to_thread(
-                usage.token_state, self.stats.plan, insist=insist)
+                usage.token_state, self.stats.plan, insist=insist,
+                stopping=self._probe_stopping)
         except Exception:  # noqa: BLE001 — a broken probe must never take the node down
             state, frac = self._token_state, self._token_frac
             session, week = self._token_session, self._token_week
@@ -667,6 +672,10 @@ class MeshNode:
             f"Mesh node up: {self.local.name} ({self.platform}) :{self.tcp_port}")
 
     async def stop(self) -> None:
+        # Cancelling the task that awaits the probe's worker thread does not end the
+        # thread, and the interpreter joins it on the way out — so a stop landing
+        # mid-schedule holds the process there unless the probe is told to give up.
+        self._probe_stopping.set()
         for t in self._tasks:
             t.cancel()
         for t in self._tasks:

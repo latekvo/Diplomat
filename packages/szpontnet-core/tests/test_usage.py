@@ -100,6 +100,23 @@ def test_a_reading_inside_the_ttl_is_answered_from_the_cache(refusals):
     assert len(log) == 1
 
 
+def test_a_stop_lands_inside_a_wait_rather_than_after_it(refusals, monkeypatch):
+    """What a node's shutdown rides on. The schedule runs in a worker thread, and
+    cancelling the task awaiting that thread does not end it — the interpreter joins
+    the thread on the way out either way, so a stop arriving mid-refusal would hold
+    the process for the rest of the two and a half minutes. The wait has to see the
+    stop while it is in it, not between attempts."""
+    log = refusals(999)
+    monkeypatch.setattr(usage, "_INSIST_WAIT_SECS", 30.0)  # a wait worth cutting short
+    stopping = threading.Event()
+    threading.Timer(0.2, stopping.set).start()
+
+    started = time.monotonic()
+    assert usage.windows(insist=True, stopping=stopping) == (None, None)
+    assert time.monotonic() - started < 5.0, "the stop waited out the attempt it was in"
+    assert len(log) == 1, "attempts kept going after the stop"
+
+
 # MARK: - the node's own loop
 
 
@@ -114,11 +131,13 @@ _MEASURE_SECS = 1.0
 def _probe_recording(calls: list[bool], block: threading.Event | None = None):
     """A stand-in for ``usage.token_state`` that records how each caller asked, and
     optionally sits there once the way an insisting probe does through a refusal."""
-    def token_state(_plan, _now=None, *, insist=False):
+    def token_state(_plan, _now=None, *, insist=False, stopping=None):
         calls.append(insist)
         if block is not None and insist and not block.is_set():
             block.set()
-            time.sleep(_STALL_SECS)
+            # Sits there as an insisting probe does, and gives up when the node stops
+            # — so the node's own teardown is not what a test ends up measuring.
+            stopping.wait(_STALL_SECS)
         return "ok", 1.0, None, None, 1.0
 
     return token_state
@@ -168,5 +187,33 @@ def test_a_probe_that_sits_out_a_refusal_does_not_stop_the_state_file(
         await simnet.quiet(_MEASURE_SECS)
         assert len(writes) - mark >= 3, \
             "the stalled probe took the state file with it"
+
+    simnet.run(scenario())
+
+
+def test_stopping_a_node_lets_go_of_a_probe_mid_schedule(simnet, monkeypatch):
+    """The other half of the same problem, on the node's side. A probe two attempts
+    into its schedule is sitting in a worker thread, and the interpreter joins that
+    thread on the way out no matter that the task awaiting it was cancelled — so a
+    stop that does not tell the probe to give up is a ``--stop`` that appears to hang,
+    and a node the next one reaps with SIGKILL instead of the SIGTERM it slept through."""
+    stalled, released = threading.Event(), threading.Event()
+    monkeypatch.setattr(nodemod, "_TOKEN_REFRESH_SECS", 0.05)
+
+    def token_state(_plan, _now=None, *, insist=False, stopping=None):
+        if insist and not stalled.is_set():
+            stalled.set()
+            if stopping.wait(_STALL_SECS):   # False when it timed out un-stopped
+                released.set()
+        return "ok", 1.0, None, None, 1.0
+
+    monkeypatch.setattr(usage, "token_state", token_state)
+
+    async def scenario():
+        node = await simnet.node("a")
+        await simnet.until(stalled.is_set, 4.0, "the probe never stalled")
+        await node.stop()
+        await simnet.until(released.is_set, 2.0,
+                           "the stopped node still sat out the probe's schedule")
 
     simnet.run(scenario())

@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 from dataclasses import dataclass
@@ -232,6 +233,15 @@ def _window(raw: object, length_secs: float, now: float | None = None
     return QuotaWindow(frac_left=frac, resets_at=resets_at, length_secs=length_secs)
 
 
+def _wait(secs: float, stopping: threading.Event | None) -> bool:
+    """Sit out the gap between two attempts. True when ``stopping`` was set instead
+    — the caller is shutting down and wants the schedule abandoned, not finished."""
+    if stopping is None:
+        time.sleep(secs)
+        return False
+    return stopping.wait(secs)
+
+
 def _attempt(now: float) -> bool:
     """One GET, folded into the cache. True when it came back with a reading."""
     _probe_cache["attempt"] = now
@@ -245,7 +255,8 @@ def _attempt(now: float) -> bool:
     return True
 
 
-def windows(*, insist: bool = False) -> tuple[QuotaWindow | None, QuotaWindow | None]:
+def windows(*, insist: bool = False, stopping: threading.Event | None = None,
+            ) -> tuple[QuotaWindow | None, QuotaWindow | None]:
     """(session, week) as REAL rate-limit windows — remaining budget *and* the
     instant each resets, so callers can compare nodes on pace rather than on raw
     remaining percentages. (None, None) when unavailable: probe disabled, no
@@ -256,6 +267,11 @@ def windows(*, insist: bool = False) -> tuple[QuotaWindow | None, QuotaWindow | 
     node's own refresh loop, which runs beside everything else and has nobody
     waiting on it; a caller on a request path takes the single attempt, since a
     stale reading now beats a fresh one after the decision has been made.
+
+    An insisting caller that can be shut down passes ``stopping``: the waits watch
+    it and abandon the schedule within one attempt's timeout. A caller probing on a
+    worker thread needs it even if it can cancel whatever awaits the thread — the
+    interpreter joins the thread itself on the way out regardless.
     """
     if not probe_enabled():
         return None, None
@@ -265,8 +281,7 @@ def windows(*, insist: bool = False) -> tuple[QuotaWindow | None, QuotaWindow | 
         # No token is the one failure retrying cannot fix.
         if not _attempt(now) and insist and _oauth_token() is not None:
             for _ in range(_INSIST_ATTEMPTS):
-                time.sleep(_INSIST_WAIT_SECS)
-                if _attempt(time.monotonic()):
+                if _wait(_INSIST_WAIT_SECS, stopping) or _attempt(time.monotonic()):
                     break
         now = time.monotonic()
     if _probe_cache["session"] is not None and now - _probe_cache["good"] > _PROBE_KEEP_SECS:
@@ -406,7 +421,8 @@ def state_from_fraction(frac: float) -> str:
     return "ok"
 
 
-def token_state(plan: str, now: float | None = None, *, insist: bool = False
+def token_state(plan: str, now: float | None = None, *, insist: bool = False,
+                stopping: threading.Event | None = None,
                 ) -> tuple[str, float, float | None, float | None, float | None]:
     """(ok|low|out, binding_fraction, session_frac, week_frac, pace) for this machine.
 
@@ -419,8 +435,9 @@ def token_state(plan: str, now: float | None = None, *, insist: bool = False
     budget on hand. ``pace`` answers the separate, relative question of whether it
     should be *preferred* — that is what routing ranks on.
 
-    ``insist`` is handed to :func:`windows`, and blocks for as long as it says."""
-    session, week = windows(insist=insist)
+    ``insist`` and ``stopping`` are handed to :func:`windows`; the first decides how
+    long this blocks, the second cuts it short."""
+    session, week = windows(insist=insist, stopping=stopping)
     if session is not None:
         fracs = [w.frac_left for w in (session, week) if w is not None]
         frac = min(fracs)
