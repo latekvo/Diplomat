@@ -107,7 +107,7 @@ public enum AgentState {
     // MARK: - Timing constants
 
     /// How long after dispatch a run with no observed process still reads as
-    /// `.starting`. The inner shell writes its pid before it execs the agent, but a
+    /// `.starting`. The inner shell writes its pid before the agent starts, but a
     /// terminal emulator, a tmux server and the user's rc all run first. Past this the
     /// run is not called finished — it becomes `.unknown`, because a spawn that never
     /// landed and a pid file we have not read yet look identical from here.
@@ -196,8 +196,9 @@ public enum AgentState {
         public var node: String
         public var workKey: String
         public var ledgerKey: String
-        /// The agent's real pid, written by the inner shell before it execs (see
-        /// `AgentSpawner`). `nil` until the registry has read the pid file.
+        /// The agent's pid, written by the inner shell before the agent starts (see
+        /// `AgentSpawner.shellCommand` for what "the agent's" rests on, and where it is
+        /// instead the shell wrapping it). `nil` until the registry has read the file.
         public var pid: Int?
         public var tty: String
         /// When this device last saw the executor's claim for `workKey`, for a
@@ -392,8 +393,10 @@ public enum AgentState {
 
     /// A run whose agent is a process on this machine.
     ///
-    /// The pid is the identity — written by the inner shell before it execs the agent,
-    /// so it is the agent's own, not a wrapper's. Matching on it replaces reading
+    /// The pid is the identity — written by the inner shell, and naming the agent itself
+    /// or the shell that wraps it, per `AgentSpawner.shellCommand`. Every rung below
+    /// reads only what holds for both: the process is there, its argv is an agent's, and
+    /// it is no younger than the record. Matching on it replaces reading
     /// `PR #<n> in <owner>/<repo>` out of a prompt in `ps` output, which could not tell
     /// two runs on one PR apart and matched any unrelated session that mentioned the
     /// number.

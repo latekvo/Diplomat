@@ -1,9 +1,15 @@
 """The pid mechanism, run for real against a stub agent.
 
 Everything downstream of it — the dedup, the cap, the rows, the retirement — trusts
-that the pid in a run's ``pid`` file is the AGENT'S, not a wrapper shell's and not a
-tmux client's. That is a claim about how a real shell behaves across ``exec``, so it
-is asserted by running one rather than by inspecting the command string.
+that the pid in a run's ``pid`` file is one run's own, and never a tmux client's. That
+is a claim about how a real shell behaves, so it is asserted by running one rather
+than by inspecting the command string.
+
+Which shell decides how much it says. Where the shell elides the fork for the last
+command of a ``-c`` string — zsh, and bash from 5 — the pid is the agent's own; bash
+3.2 forks, and records the shell that starts the agent, shares its terminal and dies
+with it (``review.shell_command``). These run under ``$SHELL``, so on a box where
+that is bash 3.2 the argv assertion below reads "wrapper" and is right to.
 
 The old identity mechanism (matching ``PR #<n> in <owner>/<repo>`` against prompt
 text in ``ps`` output) is what this replaces, and the last test here is the case it
@@ -87,9 +93,12 @@ def _await_exec(pid: int, timeout: float = 10.0) -> str:
 
 
 def test_the_recorded_pid_is_the_agents_own_process(tmp_path):
-    """The claim the whole identity mechanism rests on: the inner shell writes its own
-    ``$$`` and then ``exec``s the agent, so the pid outlives the shell it came from
-    and names the agent itself."""
+    """The strongest form of the claim, on the shells that can give it: the inner shell
+    writes its own ``$$`` and then execs the agent, so the pid outlives the shell it
+    came from and names the agent itself.
+
+    The ``/proc`` gate above keeps this on Linux, where ``$SHELL`` is a bash 5 or a
+    zsh and the elision is there to assert."""
     bindir = _stub_agent(tmp_path)
     proc, pid_file, _done = _run_agent(tmp_path, bindir)
     try:

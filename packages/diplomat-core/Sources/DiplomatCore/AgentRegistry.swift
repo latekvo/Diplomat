@@ -10,7 +10,7 @@ import Foundation
 ///
 ///     runs.json            the records — the book itself
 ///     <run-id>/prompt.txt  what the agent was asked (also its transcript's first message)
-///     <run-id>/pid         the agent's real pid, written by the agent's own shell
+///     <run-id>/pid         the agent's pid, written by the shell that runs it
 ///     <run-id>/done        its exit code, written when it returns
 ///     <run-id>/runner      which agent CLI was spawned into it
 ///     <run-id>/port        the loopback port its OpenCode server answers on
@@ -18,11 +18,13 @@ import Foundation
 ///     <run-id>/window      the terminal window handle a macOS spawn can raise again
 ///
 /// The per-run directory is what makes identity exact. The shell that runs the agent
-/// writes its own `$$` into `pid` and then `exec`s the agent, so the pid in that file IS
-/// the agent's — not a wrapper's, not a tmux client's. Before this, a run was identified
-/// by matching `PR #<n> in <owner>/<repo>` against prompts in `ps` output, which could
-/// not tell two runs on one PR apart and matched any unrelated session that mentioned
-/// the number.
+/// writes its own `$$` into `pid` and the agent is its last command, so the pid in that
+/// file names the agent itself — or, under a shell that forks that command rather than
+/// exec-ing it, the process that starts the agent, shares its terminal and dies with it
+/// (`AgentSpawner.shellCommand`). Either way it is one run's own: never a tmux client,
+/// and never the other run on the same PR. Before this, a run was identified by matching
+/// `PR #<n> in <owner>/<repo>` against prompts in `ps` output, which could not tell two
+/// runs on one PR apart and matched any unrelated session that mentioned the number.
 public enum AgentRegistry {
     /// Bumped only if the on-disk shape changes incompatibly. A file from the future is
     /// ignored rather than misread — an older applet must not act on records whose

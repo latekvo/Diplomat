@@ -52,9 +52,9 @@ Targets `software-mansion/argent` and shells out to the authenticated `gh` CLI.
 > as "it is gone": a run ends only on positive evidence (its sentinel, its pid
 > missing from a process table that was actually read, or its mesh claim
 > released), and anything else resolves to `unknown`, which keeps its slot and
-> says so. A run is identified by its agent's own pid, written into
-> `~/.diplomat/agents/<run-id>/pid` by the shell that then `exec`s the agent, and
-> the book survives a restart on both platforms. `DIPLOMAT_AGENTS=1 python -m
+> says so. A run is identified by the pid the shell that runs the agent writes into
+> `~/.diplomat/agents/<run-id>/pid` before handing over to it, and the book survives
+> a restart on both platforms. `DIPLOMAT_AGENTS=1 python -m
 > diplomat_app` prints the whole chain: every record, every probe's raw answer,
 > every verdict and the one fact that decided it.
 

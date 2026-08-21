@@ -62,7 +62,8 @@ enum TrackTest {
               table[701]?.tty == "ttys001" && table[701]?.elapsed == 187)
         // The spawning shell's own argv carries the agent's name, so it reads as an
         // agent process. That is deliberate and is what the age half of the pid-adoption
-        // guard is for — a wrapper and the agent it becomes share one pid anyway.
+        // guard is for — a wrapper and the agent share a terminal and a lifetime, and
+        // under a shell that execs the agent over the wrapper, one pid.
         check("a wrapper shell counts as an agent line", table[704]?.isAgent == true)
         check("a line that merely mentions a runner is not one", table[706]?.isAgent == false)
 

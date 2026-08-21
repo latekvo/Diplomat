@@ -11,7 +11,7 @@ same whichever it is:
 
 Only the *agent word and its flags* differ. Everything the spawn is built out of
 — the interactive shell, the ``$(cat …)`` prompt hand-off, the pid file written
-before the shell execs the agent over itself, the completion sentinel — is
+before the agent starts, the completion sentinel — is
 identical, and deliberately so: those mechanisms are what :mod:`agentregistry`
 and :mod:`probes` identify a run by, and a second spawn shape would be a second
 set of them to keep true.
@@ -111,11 +111,12 @@ def agent_command(prompt_file: str, port: int | None = None) -> str:
 
     It must stay a *simple command* with the agent word first. Under Claude Code
     that word has to be alias-expandable (the alias is what carries
-    ``--dangerously-skip-permissions``); for both runners it has to be the shell's
-    last command, so the shell execs the agent over itself and the pid already
-    written to the run's ``pid`` file is the agent's own. A leading variable
-    assignment keeps both properties — the shell still execs the command it prefixes,
-    so the recorded pid stays the agent's.
+    ``--dangerously-skip-permissions``); for every runner it has to be the shell's
+    last command, which is the one an eliding shell execs over itself so that the pid
+    already written to the run's ``pid`` file is the agent's own
+    (:func:`review.shell_command` for what that rests on). A leading variable
+    assignment keeps both properties — measured under zsh 5.9 and bash 5.3, the
+    ``VAR=x agent`` form records the same pid the bare one does.
 
     ``port`` puts an OpenCode run's own server on a port the applet already knows,
     which is what lets :mod:`opencodeapi` ask the agent what it is doing instead of

@@ -161,9 +161,10 @@ def test_a_prompt_path_with_a_space_survives_the_hand_off(opencode):
 
 def test_the_agent_is_the_last_command_of_the_inner_shell(opencode):
     """The pid the applet identifies a run by is written by the inner shell, which then
-    execs the agent over itself. That only happens for the shell's LAST command — an
-    agent with anything after it inside those quotes records the wrapper's pid, and
-    every later probe then reads the wrong process."""
+    hands over to the agent — exec-ing it over itself on the shells that elide the fork
+    for a `-c` string's LAST command, which is every current one. An agent with anything
+    after it inside those quotes forfeits that under every shell, and the recorded pid
+    is then a wrapper that outlives it."""
     cmd = review.shell_command("/tmp/p.txt", done_path="/tmp/d", pid_path="/tmp/pid")
     # The inner shell's `-c` argument, unquoted the way the outer shell will unquote it.
     inner = shlex.split(cmd.split("2>/dev/null; ", 1)[1])[3].rstrip(";")
