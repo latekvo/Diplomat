@@ -19,6 +19,7 @@ import subprocess
 import pytest
 
 from diplomat_runtime import agentregistry as R
+from diplomat_runtime import completion
 from diplomat_runtime import agentstate as A
 
 CORE_BIN = os.environ.get("DIPLOMAT_CORE_BIN")
@@ -37,7 +38,8 @@ def _records() -> list[A.RunRecord]:
                     kind="review", label="Auto · Review-req · #337 (@octocat)",
                     source=A.SOURCE_AUTO, placement=A.PLACEMENT_LOCAL,
                     ledger_key="review:github.com/o/r#337@beef", pid=4242,
-                    tty="pts/3"),
+                    tty="pts/3", quiet_digest="9f86d081884c7d65",
+                    quiet_since=1786000020.5),
         A.RunRecord(run_id="1786000001-bbbbbbbb", dispatched_at=1786000001.25,
                     pr_number=508, pr_url="https://github.com/o/r/pull/508",
                     kind="conflicts", label="Resolve · #508",
@@ -119,3 +121,31 @@ def test_a_schema_the_other_side_does_not_know_is_ignored_by_both():
                              "runs": [r.to_json() for r in _records()]})
     assert R.load() == []
     assert _swift({"mode": "read"}) == []
+
+
+# MARK: - The hooks both sides stage
+
+
+def _swift_hooks(activity: str, done: str | None) -> dict:
+    proc = subprocess.run([CORE_BIN, "agent-registry"],
+                          input=json.dumps({"mode": "hooks", "activityPath": activity,
+                                            "donePath": done}).encode("utf-8"),
+                          capture_output=True, timeout=60, check=False,
+                          env={**os.environ})
+    assert proc.returncode == 0, \
+        f"diplomat-core agent-registry failed: {proc.stderr.decode('utf-8', 'replace')}"
+    return json.loads(proc.stdout)["settings"]
+
+
+@pytest.mark.parametrize("done", [None, "/home/a b/.diplomat/agents/r/done"])
+def test_both_sides_stage_the_same_hook_commands(done):
+    """The settings are shell commands that WRITE the activity file, and both sides
+    READ it — a run this applet spawned is resolved by the other one after a hand-over.
+    One byte of drift is a run whose turns are reported differently depending on which
+    applet happened to spawn it, and nothing about that fails loudly.
+
+    Compared as parsed JSON so key order is free, but the commands themselves are
+    string values and so are compared byte for byte, quoting and all.
+    """
+    activity = "/home/a b/.diplomat/agents/r/activity"
+    assert _swift_hooks(activity, done) == completion.hook_settings(activity, done)

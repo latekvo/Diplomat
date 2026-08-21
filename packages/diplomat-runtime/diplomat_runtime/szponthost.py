@@ -67,10 +67,12 @@ class DiplomatHost(szpont_host.Host):
         """
         from . import review
 
+        settings = _stage_hooks(done_path)
         if platform.system() == "Darwin":
-            return _spawn_macos(prompt, done_path)
+            return _spawn_macos(prompt, done_path, settings)
         try:
-            return review.spawn(prompt, None, done_path=done_path)
+            return review.spawn(prompt, None, done_path=done_path,
+                                settings_file=settings)
         except review.SpawnError as exc:
             raise szpont_host.NoRunner(str(exc)) from exc
 
@@ -192,13 +194,43 @@ def _ps_dump() -> str:
         return ""
 
 
-def _spawn_macos(prompt: str, done_path: str | None) -> str:
+def _stage_hooks(done_path: str | None) -> str | None:
+    """Write the hooks that make this mesh-placed run report its own turn boundaries,
+    and return the settings path to hand the agent.
+
+    The executor holds its claim on the work key until ``done_path`` exists
+    (``node._watch_agent``), and an interactive agent writes that only when it EXITS —
+    which would hold the key for as long as the window stays open, blocking a re-run of
+    the same work until the backstop expires. The ``Stop`` hook writes it when the TURN
+    ends, which is when the work is actually over.
+
+    Beside ``done_path`` rather than in a directory of its own, because that file is
+    the only path this side is given; the node names it and cleans it up.
+    """
+    from . import completion
+
+    if not done_path:
+        return None
+    base = Path(done_path)
+    settings = base.with_suffix(".hooks.json")
+    try:
+        settings.write_text(
+            completion.settings_json(str(base.with_suffix(".activity")), done_path),
+            encoding="utf-8")
+    except OSError:
+        return None
+    return str(settings)
+
+
+def _spawn_macos(prompt: str, done_path: str | None,
+                 settings_file: str | None = None) -> str:
     """Terminal.app via ``osascript``, on the shell command the Linux spawner
     builds. Returns the staged prompt path."""
     from . import review
 
     prompt_file = review.write_prompt(prompt)
-    shell_cmd = review.shell_command(prompt_file, done_path)
+    shell_cmd = review.shell_command(prompt_file, done_path,
+                                     settings_file=settings_file)
     script = f'tell application "Terminal" to do script {_applescript_quote(shell_cmd)}'
     try:
         review.popen_detached(["osascript", "-e", script])

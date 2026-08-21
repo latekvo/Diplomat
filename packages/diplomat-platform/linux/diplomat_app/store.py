@@ -1320,7 +1320,10 @@ class Store(QObject):
 
         The agent's shell writes its own pid into the run directory and then execs, so
         what identifies this run afterwards is that pid rather than the wording of its
-        prompt (:func:`review.shell_command`).
+        prompt (:func:`review.shell_command`). The hooks staged beside it are what let
+        the run say when its turn is over (:mod:`diplomat_runtime.completion`), which
+        is the only evidence that distinguishes a finished agent from a working one —
+        both are the same live process at the same pid.
 
         Which runner is spawned is written down here rather than re-read later: the
         setting is what the NEXT spawn will use, so a run started under one runner and
@@ -1345,7 +1348,8 @@ class Store(QObject):
                          done_path=str(agentregistry.done_path(record.run_id)),
                          pid_path=str(agentregistry.pid_path(record.run_id)),
                          prompt_file=str(agentregistry.prompt_path(record.run_id)),
-                         port=port)
+                         port=port,
+                         settings_file=agentregistry.stage_hooks(record.run_id))
         except review.SpawnError:
             agentregistry.forget({record.run_id})
             return False
@@ -2128,9 +2132,15 @@ class Store(QObject):
         self.refresh_activity()
 
     def _persist_run_changes(self, t: agentstate.Tick) -> None:
-        """Write back the three things a tick learns about a run: the pid its shell has
-        since written, the tty its process turned out to be on, and when its mesh claim
-        was last seen.
+        """Write back the four things a tick learns about a run: the pid its shell has
+        since written, the tty its process turned out to be on, when its mesh claim was
+        last seen, and how its screen compared to the one the last tick saw.
+
+        The last of those is the only one measured ACROSS ticks rather than within one,
+        so it is the only one that is worthless unless written down: unpersisted, every
+        tick re-reads a screen it has no memory of, the stillness clock restarts at
+        zero, and the twenty-minute backstop can never elapse however long a wedged
+        agent sits there.
 
         Merged into whatever is on disk NOW rather than replacing the book with this
         tick's copy of it. A spawn that registered while this tick was resolving would
@@ -2152,6 +2162,8 @@ class Store(QObject):
                 pid=r.pid if r.pid is not None else fresh.pid,
                 tty=r.tty or fresh.tty,
                 claim_seen_at=fresh.claim_seen_at or r.claim_seen_at,
+                quiet_digest=fresh.quiet_digest,
+                quiet_since=fresh.quiet_since,
             )
             changed = changed or merged != r
             out.append(merged)
@@ -2167,6 +2179,7 @@ class Store(QObject):
         and every such run landed in the ledger unpriced.
         """
         gone = [r for r in t.retirable if not r.untracked]
+        self._reap_quiet_windows(t)
         if not gone:
             return
         # Every pricing input comes out of the run directory, so all of them must be
@@ -2187,6 +2200,28 @@ class Store(QObject):
                                         agent_runner=agent_runner)
         if retired:
             self.telemetry_changed.emit()
+
+    def _reap_quiet_windows(self, t: agentstate.Tick) -> None:
+        """Close the terminal of every run the quiescence backstop ended.
+
+        Only those. A run that finished the ordinary way keeps its window — its agent
+        is alive at its prompt holding the whole task, and the operator may still want
+        to read it. One whose screen has not changed in twenty minutes is nobody's.
+
+        Untracked runs are reaped too, unlike in the retirement below: this closes a
+        window rather than pricing a run, and a wedged session nobody dispatched is
+        just as dead as one we did. It also has no record to drop, so nothing else here
+        would ever reach it.
+        """
+        for record, resolution in t.rows:
+            if resolution.state != agentstate.FINISHED or not record.runs_here:
+                continue
+            if agentstate.went_quiet(record, t.now) is None:
+                continue
+            if tmuxwatch.kill_session_for_tty(record.tty):
+                activity.log("auto", "kill-device",
+                             f"closed {record.label or record.run_id}'s window — "
+                             f"{resolution.reason.split('; ')[-1]}")
 
     def _in_flight(self, url: str) -> bool:
         """Does this PR already have an agent? Every state that is not over counts,

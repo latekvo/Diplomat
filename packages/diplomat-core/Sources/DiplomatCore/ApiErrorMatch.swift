@@ -109,4 +109,18 @@ public enum ApiErrorMatch {
     public static func isConfirmedStall(previousTail: String?, currentTail: String) -> Bool {
         looksLikeApiError(currentTail) && previousTail == currentTail
     }
+
+    /// A short human duration for the audit line: "2m", "45m", "1h 30m", "3h".
+    /// Twin of `apiwatch.human_interval`; the resolver puts its output in a reason
+    /// string the parity diff compares verbatim.
+    public static func humanInterval(_ seconds: TimeInterval) -> String {
+        let total = Int(seconds.rounded())
+        let hours = total / 3600
+        let minutes = (total % 3600) / 60
+        if hours > 0 && minutes > 0 { return "\(hours)h \(minutes)m" }
+        if hours > 0 { return "\(hours)h" }
+        if minutes > 0 { return "\(minutes)m" }
+        return "\(total)s"
+    }
+
 }

@@ -142,6 +142,38 @@ def send_continue(pane_id: str, message: str) -> bool:
     return _run(["tmux", "send-keys", "-t", pane_id, "Enter"]) is not None
 
 
+def kill_session_for_tty(tty: str) -> bool:
+    """Close the tmux session whose pane runs on ``tty``. Returns whether it was
+    killed.
+
+    The window is reaped only for a run the quiescence backstop ended
+    (:func:`agentstate.went_quiet`) — twenty minutes of a byte-identical screen, so
+    nothing is being read and nothing is being typed. A run that ends the ordinary way
+    keeps its window: its agent is alive at its prompt with the whole task in context,
+    and that is a session the operator may still want to read or type into.
+
+    The SESSION, not the pane: each spawn opens one of its own
+    (:func:`review.terminal_argv`), so killing it takes the window with it, which is
+    what leaves nothing behind. Panes are matched on the tty rather than the pane id
+    because the tty is what a run records — the two sources spell it differently, so
+    the comparison is normalised the way :func:`pane_tails_for_ttys` normalises it.
+    """
+    if not tty or shutil.which("tmux") is None:
+        return False
+    listing = _run(
+        ["tmux", "list-panes", "-a", "-F", f"#{{pane_tty}}{_UNIT}#{{session_id}}"])
+    if listing is None:
+        return False
+    want = tty.removeprefix("/dev/")
+    for line in listing.splitlines():
+        if _UNIT not in line:
+            continue
+        pane_tty, session = (x.strip() for x in line.split(_UNIT, 1))
+        if pane_tty.removeprefix("/dev/") == want and session:
+            return _run(["tmux", "kill-session", "-t", session]) is not None
+    return False
+
+
 def _run(argv: list[str]) -> str | None:
     """Run a tmux command; ``None`` on ANY failure (missing binary, non-zero exit,
     timeout), stdout otherwise — so a broken/absent tmux is distinguishable from a

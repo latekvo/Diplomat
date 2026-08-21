@@ -81,13 +81,22 @@ public enum AgentRunner: String, CaseIterable, Sendable {
     /// Hermes answers the same question from its own session store. Omitting it is a
     /// supported spawn, not a broken one: the run works exactly as before and is tracked
     /// by its screen.
-    public func agentCommand(promptFile: String, model: String = "", port: Int = 0) -> String {
+    /// `settingsFile` is where Claude Code finds the hooks that make it report its own
+    /// turn boundaries (`AgentCompletion`). `--settings` MERGES with the user's own
+    /// settings rather than replacing them, so a spawned agent keeps whatever hooks its
+    /// user configured. The flag goes AFTER the agent word, which is what keeps that
+    /// word alias-expandable — the alias is what carries
+    /// `--dangerously-skip-permissions`. The other two runners take no such flag and
+    /// are read from their session stores instead.
+    public func agentCommand(promptFile: String, model: String = "", port: Int = 0,
+                             settingsFile: String? = nil) -> String {
         let prompt = "\"$(cat \(Self.shq(promptFile)))\""
         let trimmed = model.trimmingCharacters(in: .whitespaces)
         let flag = trimmed.isEmpty ? "" : " -m \(Self.shq(trimmed))"
         switch self {
         case .claude:
-            return "claude \(prompt)"
+            let hooks = settingsFile.map { " --settings \(Self.shq($0))" } ?? ""
+            return "claude\(hooks) \(prompt)"
         case .hermes:
             // `--yolo` bypasses the approval prompts, the same autonomy the Claude
             // alias carries and `OPENCODE_PERMISSION` grants below. `-q` submits the

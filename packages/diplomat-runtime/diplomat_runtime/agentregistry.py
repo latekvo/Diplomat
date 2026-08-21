@@ -18,6 +18,8 @@ also how the tests get an isolated one):
     <run-id>/runner      which agent CLI was spawned into it
     <run-id>/port        the loopback port its OpenCode server answers on
     <run-id>/session     which of that runner's sessions turned out to be this run's
+    <run-id>/hooks.json  the settings that make the agent report its own turns
+    <run-id>/activity    one line per turn boundary, written by those hooks
 
 The per-run directory is what makes identity exact. The shell that runs the agent
 writes its own ``$$`` into ``pid`` and then ``exec``s the agent, so the pid in that
@@ -85,6 +87,14 @@ def port_path(run_id: str) -> Path:
 
 def session_path(run_id: str) -> Path:
     return run_dir(run_id) / "session"
+
+
+def hooks_path(run_id: str) -> Path:
+    return run_dir(run_id) / "hooks.json"
+
+
+def activity_path(run_id: str) -> Path:
+    return run_dir(run_id) / "activity"
 
 
 def new_run_id(now: float) -> str:
@@ -295,6 +305,54 @@ def bind_session(run_id: str, session_id: str) -> None:
         session_path(run_id).write_text(session_id, encoding="utf-8")
     except OSError:
         pass
+
+
+# MARK: - What the agent says it is doing
+
+
+def stage_hooks(run_id: str) -> str | None:
+    """Write the settings that make this run report its own turn boundaries, and
+    return the path to hand the agent — ``None`` if it could not be written.
+
+    ``None`` is a supported spawn, not a broken one: the run goes ahead and is read
+    off its screen, exactly as one under a runner that has no hooks is. What it costs
+    is the deterministic answer, so it is the fallback rather than the plan.
+    """
+    from . import completion
+
+    path = hooks_path(run_id)
+    try:
+        path.write_text(completion.settings_json(str(activity_path(run_id))),
+                        encoding="utf-8")
+    except OSError:
+        return None
+    return str(path)
+
+
+def activity(records: list[RunRecord]) -> Observation:
+    """run id → the turn state its own CLI last reported, for the runs that report one.
+
+    A run is absent from the map when its activity file says nothing yet: it was
+    spawned without hooks, under a runner that has none, or in the seconds before its
+    first hook fires. Absent means "ask the other evidence".
+
+    Always PRESENT, like :func:`sentinels`: this reads our own directory, so a run
+    with no line is positively "has not reported a turn" rather than unknown. An
+    unreadable file leaves that run absent, which degrades it to the screen rather
+    than ending it.
+    """
+    from . import completion
+
+    out: dict[str, tuple[str, float]] = {}
+    for r in records:
+        try:
+            text = activity_path(r.run_id).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        state = completion.parse(text)
+        if state is not None:
+            out[r.run_id] = state
+    return Observation.present(out)
 
 
 def sentinels(records: list[RunRecord]) -> Observation:
