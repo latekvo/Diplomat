@@ -733,9 +733,9 @@ final class Store: ObservableObject {
     /// window; a run booked only on success is a PR that reads free while its agent is
     /// starting.
     ///
-    /// The agent's shell writes its own pid into the run directory and then execs, so
-    /// what identifies this run afterwards is that pid rather than the wording of its
-    /// prompt (`AgentSpawner.shellCommand`).
+    /// The agent's shell writes its own pid into the run directory before handing over
+    /// to the agent, so what identifies this run afterwards is that pid rather than the
+    /// wording of its prompt (`AgentSpawner.shellCommand`).
     ///
     /// Which runner is spawned is written down here rather than re-read later: the setting
     /// is what the NEXT spawn will use, so a run started under one runner and asked about

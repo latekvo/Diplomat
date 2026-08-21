@@ -163,22 +163,34 @@ enum AgentSpawner {
     /// OpenCode spelling of the same thing. Everything around it is identical for both,
     /// because everything around it is what a run is *identified* by.
     ///
-    /// The agent runs one shell deeper, and the pid that shell records is the AGENT'S
-    /// OWN: the inner shell writes its `$$` first, then execs the agent over itself,
-    /// which replaces the process image without changing the pid. That pid is what
-    /// `AgentState` identifies the run by, in place of matching
+    /// The agent runs one shell deeper, and what that shell records is its own `$$`.
+    /// `AgentState` identifies the run by it, in place of matching
     /// `PR #<n> in <owner>/<repo>` against prompt text in `ps` output — which could not
     /// tell two runs on one PR apart, matched any unrelated session that mentioned the
     /// number, and matched the wrapper shell as readily as the agent.
     ///
-    /// That exec is the shell's own, on the last command of a `-c` string, and must NOT
-    /// be written out as the `exec` keyword: alias expansion applies to the first word of
-    /// a simple command, so under an explicit `exec claude` the word checked is `exec`,
-    /// the user's `claude` alias never expands, and the agent loses the
-    /// `--dangerously-skip-permissions` that alias carries. The inner shell is
+    /// It is the AGENT'S OWN pid wherever the shell elides the fork for the last command
+    /// of a `-c` string: the shell execs the agent over itself, replacing the process
+    /// image without changing the pid. Every shell in current use does — measured on
+    /// macOS 15.5, `$SHELL -i -c 'printf %s $$ > p; sleep 4'` records `sleep` under zsh
+    /// 5.9 and under bash 5.3. The exception is bash `3.2`, the last GPLv2 release and
+    /// what macOS still ships as `/bin/bash`, which forks; `$SHELL` is the operator's own
+    /// and unconstrained here, so a login shell set to that one records the wrapper.
+    /// Nothing downstream minds: it shares the agent's controlling terminal and start
+    /// instant, its argv carries the runner word (`AgentRunner.isAgentLine`), and it
+    /// exits when the agent does — every input `AgentState.resolveLocal` reads. What it
+    /// is not, there, is a handle on the agent *process* — its argv, a signal sent to
+    /// it — so nothing should be built on that.
+    ///
+    /// The agent must stay the LAST command inside those quotes, and that exec must stay
+    /// the shell's own rather than the written-out `exec` keyword. Spelling it out would
+    /// settle bash 3.2 too, and costs more than it settles: alias expansion applies to
+    /// the first word of a simple command, so under an explicit `exec claude` the word
+    /// checked is `exec`, the user's `claude` alias never expands, and the agent loses
+    /// the `--dangerously-skip-permissions` that alias carries. The inner shell is
     /// interactive for the same reason — aliases do not survive into a non-interactive
-    /// child. `$?` after it is still the agent's own exit code; the exec made them one
-    /// process.
+    /// child. `$?` after it is the agent's own exit code either way: one process where
+    /// the exec happened, and the wrapper's own status where it did not.
     ///
     /// The trailing `printf … > done` writes a sentinel the moment the agent returns, so
     /// the applet can price the run even while its window stays open.

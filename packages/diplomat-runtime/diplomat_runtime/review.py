@@ -436,26 +436,37 @@ def shell_command(prompt_file: str, done_path: str | None = None,
     prompt. That is what ``pid_path`` is for.
 
     When ``pid_path`` is given the agent runs one shell deeper —
-    ``"$SHELL" -i -c 'printf %s $$ > <pid>; <agent>'`` — and the pid recorded is the
-    AGENT'S OWN: the inner shell writes its own ``$$`` first, then execs the agent over
-    itself, which replaces the process image without changing the pid. The applet
-    identifies a run by that pid instead of by matching ``PR #<n> in <owner>/<repo>``
-    against prompt text in ``ps`` output, which could not tell two runs on one PR
-    apart, matched any unrelated session that mentioned the number, and matched the
-    wrapper shell and tmux client as readily as the agent.
+    ``"$SHELL" -i -c 'printf %s $$ > <pid>; <agent>'`` — and what lands in the file is
+    that inner shell's ``$$``. The applet identifies a run by it instead of by matching
+    ``PR #<n> in <owner>/<repo>`` against prompt text in ``ps`` output, which could not
+    tell two runs on one PR apart, matched any unrelated session that mentioned the
+    number, and matched the wrapper shell and tmux client as readily as the agent.
 
-    That exec is the shell's own, on the last command of a ``-c`` string, and must NOT
-    be written out as the `exec` keyword. Both runners need it left implicit, for
-    reasons that happen to differ: alias expansion applies to the first word of a
-    simple command, so under an explicit ``exec claude`` the word checked is `exec`,
-    the user's `claude` alias never expands, and the agent loses the
-    ``--dangerously-skip-permissions`` that alias carries; and the shell only elides
-    the fork for a command it recognises as the last one, which is what makes the
-    written pid the agent's rather than the wrapper shell's under either CLI.
+    It is the AGENT'S OWN pid wherever the shell elides the fork for the last command
+    of a ``-c`` string: the shell execs the agent over itself, replacing the process
+    image without changing the pid. Every shell in current use does — measured on macOS
+    15.5, ``$SHELL -i -c 'printf %s $$ > p; sleep 4'`` records ``sleep`` under zsh 5.9
+    and under bash 5.3. The exception is bash ``3.2``, the last GPLv2 release and what
+    macOS still ships as ``/bin/bash``, which forks; ``$SHELL`` is the operator's own
+    and unconstrained here, so a login shell set to that one records the wrapper.
+    Nothing downstream minds: it shares the agent's controlling terminal and start
+    instant, its argv carries the runner word (:func:`runner.is_agent_line`), and it
+    exits when the agent does — every input :func:`agentstate._resolve_local` reads.
+    What it is not, there, is a handle on the agent *process* — its argv, a signal sent
+    to it — so nothing should be built on that.
+
+    The agent must stay the LAST command inside those quotes, and that exec must stay
+    the shell's own rather than the written-out `exec` keyword. Spelling it out would
+    settle bash 3.2 too, and costs more than it settles: alias expansion applies to the
+    first word of a simple command, so under an explicit ``exec claude`` the word
+    checked is `exec`, the user's `claude` alias never expands, and the agent loses the
+    ``--dangerously-skip-permissions`` that alias carries. Measured the same way, and
+    under both shells.
 
     The inner shell is interactive for the same reason the outer one is: an alias has
     to resolve, and aliases do not survive into a non-interactive child. ``$?`` after
-    it is still the agent's own exit code — the exec made them one process.
+    it is the agent's own exit code either way — one process where the exec happened,
+    and the wrapper's own status where it did not, which is the agent's.
 
     ``port`` is where an OpenCode run's own server answers, so :mod:`opencodeapi` can
     ask the agent whether it is working rather than inferring it from the pane. The
