@@ -369,10 +369,11 @@ A **specific PR** is one agent: a fresh terminal window (iTerm if installed, els
 Terminal) running a detached review session in your **repo root** (Settings;
 default `~/dev/<repo>`) that you watch and steer yourself. The prompt is staged to
 a file and the window runs
-`<agent> "$(cat <promptfile>)"; printf %s $? > <done>` - where `<agent>` is the
-[agent runner](#agent-runner) you picked, and the trailing sentinel
-(under `~/.diplomat/pr-monitor/done/`) is how the Agent-tasks list knows the
-agent finished.
+`<agent> [--settings <hooks>] "$(cat <promptfile>)"; printf %s $? > <done>` - where
+`<agent>` is the [agent runner](#agent-runner) you picked, `<hooks>` is how a Claude
+Code run reports its own turn boundaries, and the trailing sentinel (under
+`~/.diplomat/pr-monitor/done/`) is how the Agent-tasks list knows a run that
+*exited* is over.
 
 A **whose-PRs sweep** is not one agent for all of them. It queues one review per PR
 it covers, so the task cap starts them a few at a time and each is a row you can
@@ -807,16 +808,28 @@ whose-PRs sweep - is on the cap like every other queued task.
 
 An agent is spawned into an *interactive* session, so finishing its work is not
 exiting - it waits at its prompt until someone closes the window, and `ps` shows
-it either way. What frees its bay is therefore the terminal, not the process: an
-agent whose session shows the CLI back at its prompt reads *awaiting input*, and
-gives its slot back while keeping its row. Both front-ends read that the same
-way, off the CLI's own status bar (`AgentActivity`), from whatever each platform
-can see of a terminal - iTerm/Terminal sessions on macOS, tmux panes on Linux.
-(Only positive evidence counts. An agent whose terminal can't be read - one
-outside tmux, or a dump that failed - keeps its bay: the failure direction is
-deferring work, never doubling up on it. Its PR stays in-flight regardless, since
-that session still holds the context, so nothing else is dispatched onto the same
-PR.)
+it either way. What frees its bay is therefore the turn, not the process, and the
+agent reports its own: a Claude Code spawn is handed hooks
+(`AgentCompletion`, staged into the run directory and passed with `--settings`)
+that append one line to the run's `activity` file as each turn opens and closes,
+and the last line is the answer. `Stop` is not taken at face value - a turn that
+dispatched subagents or backgrounded a shell hands control back while they are
+still running, so the hook writes *busy* instead whenever the payload it is given
+still lists background tasks.
+
+A runner with no hooks, or a spawn whose settings would not stage, falls back to
+the CLI's own status bar (`AgentActivity`) read off whatever each platform can see
+of a terminal - iTerm/Terminal sessions on macOS, tmux panes on Linux; an agent
+whose session shows the CLI back at its prompt reads *awaiting input* and gives
+its slot back while keeping its row. Behind both sits a twenty-minute quiescence
+backstop for a session wedged mid-turn: a screen that has not changed a byte in
+that long is over, and its window is closed.
+
+(Only positive evidence counts. An agent that reports nothing and whose terminal
+can't be read - one outside tmux, or a dump that failed - keeps its bay: the
+failure direction is deferring work, never doubling up on it. Its PR stays
+in-flight regardless, since that session still holds the context, so nothing else
+is dispatched onto the same PR.)
 
 Nothing is dropped - work over the cap gets no attempt record, so
 the next 3-minute tick offers it again as soon as a bay comes back, and it waits
@@ -1250,6 +1263,7 @@ packages/
         AgentTasks.swift           the Agent-tasks list's sort order + the queue behind the task cap
         ReviewReconcile.swift      pure retry/backoff/dedup decisions for the monitors
         AgentActivity.swift        terminal-tail classification: running vs awaiting input
+        AgentCompletion.swift      the turn report: the hooks a run is spawned with, and reading them back
         AgentRunner.swift          which agent CLI a spawn runs, and the one command that runs it
         OpenCodeAPI.swift          reading an OpenCode run's own session: whose it is, mid-turn or not, spend
         HermesStore.swift          the same, for a Hermes run's session in its SQLite store
