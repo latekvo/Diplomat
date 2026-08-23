@@ -3,6 +3,7 @@ Store orchestration (poll → diff → dispatch → reconcile, with dedup + back
 
 from __future__ import annotations
 
+import dataclasses
 import math
 import time
 
@@ -245,7 +246,7 @@ def store(monkeypatch):
 
 
 def fake_probes(monkeypatch, *, processes=None, claims=None, merged=None,
-                live_prs=None, idle_prs=(), tails=None):
+                live_prs=None, idle_prs=(), tails=None, activity=None):
     """Replace the whole evidence layer with a literal.
 
     This is the seam the old `monkeypatch.setattr(Store, "_live_pr_agents", …)` became.
@@ -276,8 +277,10 @@ def fake_probes(monkeypatch, *, processes=None, claims=None, merged=None,
     def gather(records, now, merged=None):
         return A.Evidence(
             processes=obs(processes, {}),
-            # Real, because it reads the run directories the test itself created.
+            # Real, because they read the run directories the test itself created.
             sentinels=agentregistry.sentinels(records),
+            activity=(obs(activity, {}) if activity is not None
+                      else agentregistry.activity(records)),
             tails=obs(screens, {}),
             claims=obs(claims, set()),
             merged_prs=obs(merged, set()),
@@ -318,9 +321,10 @@ def _spawn_recorder(monkeypatch, finish=False):
     calls = []
 
     def fake_spawn(prompt, preferred, done_path=None, pid_path=None, prompt_file=None,
-                   port=None):
+                   port=None, settings_file=None):
         calls.append({"prompt": prompt, "done": done_path, "pid": pid_path,
-                      "prompt_file": prompt_file, "port": port})
+                      "prompt_file": prompt_file, "port": port,
+                      "settings_file": settings_file})
         if finish and done_path:
             with open(done_path, "w") as fh:
                 fh.write("0")
@@ -2498,7 +2502,7 @@ def test_a_spawn_failure_stops_the_drain_rather_than_clearing_the_queue(store, m
     attempted: list = []
 
     def refuse(prompt, preferred, done_path=None, pid_path=None, prompt_file=None,
-               port=None):
+               port=None, settings_file=None):
         attempted.append(prompt)
         raise review.SpawnError("no terminal emulator found")
 
@@ -2545,6 +2549,97 @@ def test_work_no_monitor_owns_is_not_queued(store, monkeypatch):
 
 
 # MARK: - reading what the agents are doing must not change it
+
+
+# MARK: - Closing the window of a run that went quiet
+#
+# The one destructive consequence of a tick, so what must be pinned is mostly what it
+# does NOT do: a window is the operator's, and one killed under a live agent takes the
+# task's whole context with it.
+
+
+def _killed(monkeypatch):
+    """Record the ttys the reaper closes instead of closing them."""
+    from diplomat_runtime import tmuxwatch
+
+    seen: list[str] = []
+    monkeypatch.setattr(tmuxwatch, "kill_session_for_tty",
+                        lambda tty: seen.append(tty) or True)
+    return seen
+
+
+def _age_the_stillness(seconds):
+    """Backdate every run's stillness clock, keeping the digest the last tick actually
+    recorded — the screen has not changed, it has merely been that way for longer."""
+    import time as _time
+
+    from diplomat_runtime import agentregistry
+
+    agentregistry.save([dataclasses.replace(r, quiet_since=_time.time() - seconds)
+                        for r in agentregistry.load()])
+
+
+def test_a_window_still_at_twenty_minutes_of_stillness_is_closed(store, monkeypatch):
+    import time as _time
+    from diplomat_runtime import agentregistry
+    from diplomat_runtime import agentstate as A
+
+    killed = _killed(monkeypatch)
+    now = _time.time()
+    register_run(700, pid=7000, tty="pts/70", dispatched_at=now - 4000)
+    fake_probes(monkeypatch, processes=agent_alive(7000, tty="pts/70", elapsed=4000),
+                tails={"pts/70": WORKING})
+
+    # The first tick only records what the screen looks like; stillness is measured
+    # from there, so it takes a second one to have lasted any time at all.
+    store._settle_agents()
+    assert killed == [], "a screen seen once has not been still for anything yet"
+    _age_the_stillness(A.QUIET_TIMEOUT + 5)
+
+    store._settle_agents()
+
+    assert killed == ["pts/70"]
+
+
+def test_a_run_that_merely_finished_keeps_its_window(store, monkeypatch):
+    """Its agent is alive at its prompt holding the whole task, and the operator may
+    still want to read it or type into it. Closing this one is the mistake the
+    backstop must not make on the way to closing the wedged one."""
+    import time as _time
+    from diplomat_runtime import agentregistry
+    from diplomat_runtime import agentstate as A
+
+    killed = _killed(monkeypatch)
+    now = _time.time()
+    rec = register_run(701, pid=7001, tty="pts/71", dispatched_at=now - 60)
+    fake_probes(monkeypatch, processes=agent_alive(7001, tty="pts/71", elapsed=60),
+                tails={"pts/71": AT_PROMPT},
+                activity={rec.run_id: ("idle", now - 5)})
+
+    tick = store._agent_tick()
+
+    assert tick.states[rec.run_id].state == A.FINISHED, \
+        "the run must actually be finished, or this pins nothing"
+    store._settle_agents()
+    assert killed == [], "a finished run's window is not the reaper's to close"
+
+
+def test_a_run_short_of_the_timeout_keeps_its_window(store, monkeypatch):
+    import time as _time
+    from diplomat_runtime import agentregistry
+    from diplomat_runtime import agentstate as A
+
+    killed = _killed(monkeypatch)
+    now = _time.time()
+    register_run(702, pid=7002, tty="pts/72", dispatched_at=now - 4000)
+    fake_probes(monkeypatch, processes=agent_alive(7002, tty="pts/72", elapsed=4000),
+                tails={"pts/72": WORKING})
+    store._settle_agents()
+    _age_the_stillness(A.QUIET_TIMEOUT - 120)
+
+    store._settle_agents()
+
+    assert killed == []
 
 
 def test_drawing_the_rows_retires_nothing_and_writes_nothing(store, monkeypatch,

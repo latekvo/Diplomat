@@ -80,6 +80,50 @@ public enum AgentRegistry {
         runDir(runID).appendingPathComponent("session")
     }
 
+    public static func hooksPath(_ runID: String) -> URL {
+        runDir(runID).appendingPathComponent("hooks.json")
+    }
+
+    public static func activityPath(_ runID: String) -> URL {
+        runDir(runID).appendingPathComponent("activity")
+    }
+
+    /// Write the settings that make this run report its own turn boundaries, and
+    /// return the path to hand the agent — `nil` if it could not be written.
+    ///
+    /// `nil` is a supported spawn, not a broken one: the run goes ahead and is read off
+    /// its screen, exactly as one under a runner that has no hooks is. What it costs is
+    /// the deterministic answer, so it is the fallback rather than the plan.
+    public static func stageHooks(_ runID: String) -> String? {
+        guard let json = AgentCompletion.settingsJSON(
+            activityPath: activityPath(runID).path) else { return nil }
+        let path = hooksPath(runID)
+        do {
+            try json.write(to: path, atomically: true, encoding: .utf8)
+        } catch {
+            return nil
+        }
+        return path.path
+    }
+
+    /// run id → the turn state its own CLI last reported, for the runs that report one.
+    ///
+    /// A run is absent when its activity file says nothing yet: spawned without hooks,
+    /// under a runner that has none, or in the seconds before its first hook fires.
+    /// Absent means "ask the other evidence".
+    ///
+    /// Always `.present`, like `sentinels`: this reads our own directory, so a run with
+    /// no line is positively "has not reported a turn" rather than unknown.
+    public static func activity(_ records: [AgentState.RunRecord])
+        -> Observation<[String: AgentState.TurnReport]> {
+        var out: [String: AgentState.TurnReport] = [:]
+        for r in records {
+            let text = try? String(contentsOf: activityPath(r.runID), encoding: .utf8)
+            if let report = AgentCompletion.parse(text) { out[r.runID] = report }
+        }
+        return .present(out)
+    }
+
     /// A run's identity: the dispatch second, then random.
     ///
     /// The timestamp leads so a directory listing sorts into dispatch order while
@@ -306,6 +350,8 @@ public enum AgentRegistry {
             "pid": r.pid.map { $0 as Any } ?? NSNull(),
             "tty": r.tty,
             "claimSeenAt": r.claimSeenAt.map { $0 as Any } ?? NSNull(),
+            "quietDigest": r.quietDigest,
+            "quietSince": r.quietSince.map { $0 as Any } ?? NSNull(),
             "untracked": r.untracked,
         ]
     }
@@ -328,6 +374,8 @@ public enum AgentRegistry {
             pid: (d["pid"] as? NSNumber)?.intValue,
             tty: d["tty"] as? String ?? "",
             claimSeenAt: (d["claimSeenAt"] as? NSNumber)?.doubleValue,
+            quietDigest: d["quietDigest"] as? String ?? "",
+            quietSince: (d["quietSince"] as? NSNumber)?.doubleValue,
             untracked: d["untracked"] as? Bool ?? false)
     }
 }

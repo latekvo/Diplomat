@@ -94,6 +94,11 @@ enum AgentSpawner {
         /// every Claude Code and Hermes run, and any OpenCode run no port could be
         /// reserved for.
         let port: Int
+        /// Where Claude Code finds the hooks it reports its own turn boundaries
+        /// through (`AgentCompletion`), or nil for a run spawned without them. That
+        /// report is the only evidence that separates a finished agent from a working
+        /// one — both are the same live process at the same pid.
+        var settingsPath: String? = nil
     }
 
     /// What a spawn produced: the handle the applet keeps so it can raise the window
@@ -193,10 +198,13 @@ enum AgentSpawner {
     /// the exec happened, and the wrapper's own status where it did not.
     ///
     /// The trailing `printf … > done` writes a sentinel the moment the agent returns, so
-    /// the applet can price the run even while its window stays open.
+    /// the applet can price the run even while its window stays open. It only ever
+    /// fires on EXIT, though, and finishing a turn is not exiting — which is what the
+    /// hooks in `plan.settingsPath` answer.
     static func shellCommand(_ plan: SpawnPlan) -> String {
         let agent = plan.runner.agentCommand(promptFile: plan.promptFile.path,
-                                             model: AppConfig.agentModel, port: plan.port)
+                                             model: AppConfig.agentModel, port: plan.port,
+                                             settingsFile: plan.settingsPath)
         let inner = "printf %s $$ > \(shq(plan.pidPath)); \(agent)"
         return "cd \(shq(repoPath)) 2>/dev/null; \"$SHELL\" -i -c \(shq(inner)); "
             + "printf %s $? > \(shq(plan.donePath))"

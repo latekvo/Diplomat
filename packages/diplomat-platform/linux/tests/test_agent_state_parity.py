@@ -71,8 +71,14 @@ def _python(records, evidence, now=T0, limit=LIMIT) -> dict:
         "inFlight": {str(pr): t.in_flight(pr)
                      for pr in {r.pr_number for r in t.records
                                 if r.pr_number is not None}},
+        # quietDigest is compared because the two languages COMPUTE it, rather than
+        # merely carrying it: it is persisted into the one book both front-ends read,
+        # so a digest that differed would restart the stillness clock on every
+        # hand-over. The mixed fixture gives several runs a screen, so a drift in
+        # either implementation of `pane_digest` fails here.
         "records": [{"runId": r.run_id, "claimSeenAt": r.claim_seen_at,
-                     "untracked": r.untracked, "placement": r.placement}
+                     "untracked": r.untracked, "placement": r.placement,
+                     "quietDigest": r.quiet_digest, "quietSince": r.quiet_since}
                     for r in t.records],
     }
 

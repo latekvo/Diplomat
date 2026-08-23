@@ -376,7 +376,8 @@ enum AgentProbes {
             mergedPRs: merged,
             liveAgents: scan,
             sessions: note("agent sessions",
-                           agentSessions(records, directory: directory, now: now)))
+                           agentSessions(records, directory: directory, now: now)),
+            activity: note("turn reports", AgentRegistry.activity(records)))
     }
 
     /// Run a command, returning its stdout — nil on any failure, which every caller reads

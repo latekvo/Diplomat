@@ -778,7 +778,8 @@ final class Store: ObservableObject {
             promptFile: AgentRegistry.promptPath(record.runID),
             donePath: AgentRegistry.donePath(record.runID).path,
             pidPath: AgentRegistry.pidPath(record.runID).path,
-            runner: runner, port: port)
+            runner: runner, port: port,
+            settingsPath: AgentRegistry.stageHooks(record.runID))
         do {
             // Detached: the spawn's `osascript` blocks for `inputSettleDelay` seconds,
             // and this actor draws the panel.
@@ -970,6 +971,13 @@ final class Store: ObservableObject {
             if merged.pid == nil { merged.pid = f.pid }
             if merged.tty.isEmpty { merged.tty = f.tty }
             if let seen = f.claimSeenAt { merged.claimSeenAt = seen }
+            // Taken wholesale, unlike the three above: this pair is the only thing a
+            // tick learns by comparing itself to the LAST one, so it is the only one
+            // worthless unless written down. Unpersisted, every tick re-reads a screen
+            // it has no memory of, the stillness clock restarts at zero, and the
+            // twenty-minute backstop can never elapse however long an agent sits wedged.
+            merged.quietDigest = f.quietDigest
+            merged.quietSince = f.quietSince
             changed = changed || merged != r
             out.append(merged)
         }
@@ -983,6 +991,7 @@ final class Store: ObservableObject {
     /// attribute the run to its transcript; the in-memory list could not, and every such
     /// run landed in the ledger unpriced.
     private func retireFinished(_ t: AgentState.Tick) async {
+        reapQuietWindows(t)
         let gone = t.retirable.filter { !$0.untracked }
         guard !gone.isEmpty else { return }
         let priced = Store.pricingInputs(gone)
@@ -995,6 +1004,27 @@ final class Store: ObservableObject {
         }
         AgentRegistry.forget(Set(gone.map(\.runID)))
         await settleLedger(priced)
+    }
+
+    /// Close the terminal of every run the quiescence backstop ended.
+    ///
+    /// Only those. A run that finished the ordinary way keeps its window — its agent is
+    /// alive at its prompt holding the whole task, and the operator may still want to
+    /// read it. One whose screen has not changed in twenty minutes is nobody's.
+    ///
+    /// Untracked runs are reaped too, unlike the retirement below: this closes a window
+    /// rather than pricing a run, and a wedged session nobody dispatched is just as dead
+    /// as one we did.
+    private func reapQuietWindows(_ t: AgentState.Tick) {
+        for (record, resolution) in t.rows
+        where resolution.state == .finished && record.runsHere {
+            guard AgentState.wentQuiet(record, now: t.now) != nil,
+                  let handle = AgentWindows.handle(record.runID),
+                  AgentWindows.close(handle) else { continue }
+            let who = record.label.isEmpty ? record.runID : record.label
+            let why = resolution.reason.components(separatedBy: "; ").last ?? ""
+            AuditLog.log("auto", "kill-device", "closed \(who)'s window — \(why)")
+        }
     }
 
     /// What pricing a finished run needs, read off disk while its run directory still exists.

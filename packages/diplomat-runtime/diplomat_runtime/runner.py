@@ -101,7 +101,8 @@ def model() -> str:
     return appconfig.get(appconfig.AGENT_MODEL).strip()
 
 
-def agent_command(prompt_file: str, port: int | None = None) -> str:
+def agent_command(prompt_file: str, port: int | None = None,
+                  settings_file: str | None = None) -> str:
     """The one command that runs the agent: ``<cli> <prompt-bearing args>``.
 
     This is the *whole* of what a runner changes about a spawn, and it is a shell
@@ -124,11 +125,20 @@ def agent_command(prompt_file: str, port: int | None = None) -> str:
     such server — Hermes answers the same question from its own session store.
     Omitting it is a supported spawn, not a broken one: the run works exactly as
     before and is tracked by its screen.
+
+    ``settings_file`` is where Claude Code finds the hooks that make it report its own
+    turn boundaries (:mod:`completion`) — the one mechanism that answers "is this run
+    done" from the CLI rather than from its screen. ``--settings`` MERGES with the
+    user's own settings rather than replacing them, so a spawned agent keeps whatever
+    hooks its user configured. The flag goes AFTER the agent word, which is what keeps
+    that word alias-expandable. The other two runners take no such flag and are read
+    from their session stores instead.
     """
     pf = shlex.quote(prompt_file)
     chosen = selected()
     if chosen == CLAUDE:
-        return f'claude "$(cat {pf})"'
+        hooks = f" --settings {shlex.quote(settings_file)}" if settings_file else ""
+        return f'claude{hooks} "$(cat {pf})"'
     pinned = model()
     flag = f" -m {shlex.quote(pinned)}" if pinned else ""
     if chosen == HERMES:

@@ -49,7 +49,9 @@ enum AgentStateCommand {
             "inFlight": inFlight,
             "records": t.records.map { r -> [String: Any] in
                 ["runId": r.runID, "claimSeenAt": r.claimSeenAt.map { $0 as Any } ?? NSNull(),
-                 "untracked": r.untracked, "placement": r.placement.rawValue]
+                 "untracked": r.untracked, "placement": r.placement.rawValue,
+                 "quietDigest": r.quietDigest,
+                 "quietSince": r.quietSince.map { $0 as Any } ?? NSNull()]
             },
         ]
         guard let data = try? JSONSerialization.data(
@@ -118,6 +120,18 @@ enum AgentStateCommand {
                     out[runID] = AgentState.SessionState(busy: sd["busy"] as? Bool ?? false)
                 }
                 return out
+            },
+            activity: decodeObs(d["activity"]) { v in
+                guard let m = v as? [String: Any] else { return nil }
+                var out: [String: AgentState.TurnReport] = [:]
+                for (runID, pair) in m {
+                    guard let t = pair as? [Any], t.count == 2,
+                          let raw = t[0] as? String,
+                          let verb = AgentState.TurnReport.Verb(rawValue: raw),
+                          let at = (t[1] as? NSNumber)?.doubleValue else { continue }
+                    out[runID] = AgentState.TurnReport(verb: verb, at: at)
+                }
+                return out
             })
     }
 
@@ -138,6 +152,8 @@ enum AgentStateCommand {
             pid: (d["pid"] as? NSNumber)?.intValue,
             tty: d["tty"] as? String ?? "",
             claimSeenAt: (d["claimSeenAt"] as? NSNumber)?.doubleValue,
+            quietDigest: d["quietDigest"] as? String ?? "",
+            quietSince: (d["quietSince"] as? NSNumber)?.doubleValue,
             untracked: d["untracked"] as? Bool ?? false)
     }
 }
