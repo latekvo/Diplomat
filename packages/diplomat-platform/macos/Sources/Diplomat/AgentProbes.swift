@@ -246,6 +246,12 @@ enum AgentProbes {
                 guard !key.isEmpty, tails[key] == nil else { continue }
                 tails[key] = s.tail
             }
+            if records.contains(where: { !$0.tty.isEmpty && tails[$0.tty] == nil }) {
+                tails = adoptWrappedTails(records, into: tails,
+                                          processes: TerminalFocus.processes(),
+                                          panes: TerminalFocus.panes(),
+                                          clients: TerminalFocus.clients())
+            }
             let ours = Set(records.map(\.tty)).subtracting([""]).compactMap { tails[$0] }
             lock.lock()
             tailsRead += ours.count
@@ -259,6 +265,38 @@ enum AgentProbes {
         tailsCache = (now, answer)
         lock.unlock()
         return answer
+    }
+
+    /// Key each run's own tty to the tail of whatever terminal session is really showing
+    /// it, for the runs sitting behind a wrapper.
+    ///
+    /// A terminal reports the tty it opened; `ps` reports the one the agent ended up on.
+    /// For a run this applet spawned they are the same, because the spawn captures the
+    /// window's tty as it opens it. For a run it did not — one a peer's node started, one
+    /// the operator opened by hand — the only tty known is the agent's own, read out of
+    /// the process table, and on a box whose shells wrap themselves in tmux that tty
+    /// belongs to no window at all. Its screen is then unreadable for as long as the
+    /// session lives, which resolves to RUNNING, and RUNNING holds a bay of the
+    /// automatic-task cap: one finished agent nobody dispatched starves the machine.
+    ///
+    /// The route out is the walk a clicked row already takes (`TerminalFocus`), asked of
+    /// the screen rather than the window. It is the same question, and asking it twice in
+    /// two ways is how two answers drift.
+    ///
+    /// Tails are read from the dump rather than from the result, so a run can only adopt a
+    /// screen a terminal actually reported — never one another run just adopted.
+    static func adoptWrappedTails(_ records: [AgentState.RunRecord],
+                                  into tails: [String: String],
+                                  processes: [Int: TerminalFocus.Proc],
+                                  panes: [String: TerminalFocus.Pane],
+                                  clients: [String: String]) -> [String: String] {
+        var out = tails
+        for r in records where !r.tty.isEmpty && out[r.tty] == nil {
+            let walk = TerminalFocus.walk(tty: r.tty, pid: r.pid, processes: processes,
+                                          panes: panes, clients: clients)
+            if let tail = walk.ttys.lazy.compactMap({ tails[$0] }).first { out[r.tty] = tail }
+        }
+        return out
     }
 
     /// One spelling of a tty, because the two sources that have to meet on it do not
