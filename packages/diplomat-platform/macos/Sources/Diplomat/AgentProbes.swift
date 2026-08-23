@@ -230,7 +230,7 @@ enum AgentProbes {
     /// is kept for is "how often does an AGENT's status bar show its interrupt hint" —
     /// counting the operator's own shells would bury the answer under windows that could
     /// never have shown one.
-    static func paneTails(_ records: [AgentState.RunRecord],
+    static func paneTails(_ records: [AgentState.RunRecord], unbooked: [String],
                           now: TimeInterval) -> Observation<[String: String]> {
         lock.lock()
         if let cached = tailsCache, now - cached.at < cacheSecs {
@@ -246,8 +246,10 @@ enum AgentProbes {
                 guard !key.isEmpty, tails[key] == nil else { continue }
                 tails[key] = s.tail
             }
-            if records.contains(where: { !$0.tty.isEmpty && tails[$0.tty] == nil }) {
-                tails = adoptWrappedTails(records, into: tails,
+            let wanted = records.map { (tty: $0.tty, pid: $0.pid) }
+                + unbooked.map { (tty: $0, pid: Int?.none) }
+            if wanted.contains(where: { !$0.tty.isEmpty && tails[$0.tty] == nil }) {
+                tails = adoptWrappedTails(wanted, into: tails,
                                           processes: TerminalFocus.processes(),
                                           panes: TerminalFocus.panes(),
                                           clients: TerminalFocus.clients())
@@ -285,16 +287,34 @@ enum AgentProbes {
     ///
     /// Tails are read from the dump rather than from the result, so a run can only adopt a
     /// screen a terminal actually reported — never one another run just adopted.
-    static func adoptWrappedTails(_ records: [AgentState.RunRecord],
+    /// The ttys of live agents no record covers — the untracked runs `AgentState.tick`
+    /// will invent once this evidence is resolved.
+    ///
+    /// Gathered HERE because the probe is the only place their tty is known before they
+    /// exist: an untracked run is synthesized from this same scan a step later, by which
+    /// time the screens have already been read. Left out, the one kind of run whose tty
+    /// is always the agent's own — the kind the walk above exists for — is the one kind
+    /// never walked, and it holds its bay of the cap for the life of its session.
+    ///
+    /// Selected by `synthesizeUntracked`'s own rule, on PR number, so these are exactly
+    /// the ttys the records about to be made will carry.
+    static func unbookedTTYs(_ records: [AgentState.RunRecord],
+                             _ liveAgents: Observation<[Int: String]>) -> [String] {
+        guard let scan = liveAgents.value else { return [] }
+        let known = Set(records.compactMap(\.prNumber))
+        return scan.filter { !known.contains($0.key) }.map(\.value)
+    }
+
+    static func adoptWrappedTails(_ agents: [(tty: String, pid: Int?)],
                                   into tails: [String: String],
                                   processes: [Int: TerminalFocus.Proc],
                                   panes: [String: TerminalFocus.Pane],
                                   clients: [String: String]) -> [String: String] {
         var out = tails
-        for r in records where !r.tty.isEmpty && out[r.tty] == nil {
-            let walk = TerminalFocus.walk(tty: r.tty, pid: r.pid, processes: processes,
+        for a in agents where !a.tty.isEmpty && out[a.tty] == nil {
+            let walk = TerminalFocus.walk(tty: a.tty, pid: a.pid, processes: processes,
                                           panes: panes, clients: clients)
-            if let tail = walk.ttys.lazy.compactMap({ tails[$0] }).first { out[r.tty] = tail }
+            if let tail = walk.ttys.lazy.compactMap({ tails[$0] }).first { out[a.tty] = tail }
         }
         return out
     }
@@ -409,7 +429,8 @@ enum AgentProbes {
         return AgentState.Evidence(
             processes: table,
             sentinels: note("sentinels", AgentRegistry.sentinels(records)),
-            tails: note("screens", paneTails(lookedUp, now: now)),
+            tails: note("screens", paneTails(lookedUp, unbooked: unbookedTTYs(lookedUp, scan),
+                                             now: now)),
             claims: note("mesh claims", meshClaims(enabled: meshEnabled, snapshot: meshState)),
             mergedPRs: merged,
             liveAgents: scan,

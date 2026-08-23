@@ -186,25 +186,36 @@ enum TrackTest {
         //     outright; a run it did not carries the agent's own, which on the shape above
         //     names no window at all — and a screen that cannot be read is RUNNING for as
         //     long as the session lives, holding a bay of the automatic-task cap.
-        func onTTY(_ tty: String, pid: Int?) -> AgentState.RunRecord {
-            var r = AgentState.RunRecord(runID: "r-\(tty)", dispatchedAt: 0, kind: "review")
-            r.tty = tty
-            r.pid = pid
-            return r
-        }
         let screens = ["ttys034": "the agent's screen", "ttys001": "an unwrapped shell"]
-        let adopted = AgentProbes.adoptWrappedTails([onTTY("ttys038", pid: 392)], into: screens,
-                                                    processes: wrapped, panes: panes,
-                                                    clients: attached)
+        let adopted = AgentProbes.adoptWrappedTails([(tty: "ttys038", pid: 392)],
+                                                    into: screens, processes: wrapped,
+                                                    panes: panes, clients: attached)
         check("a wrapped run reads the screen of the window showing it",
               adopted["ttys038"] == "the agent's screen" && adopted.count == 3)
+        // An agent nobody dispatched has no record yet, so it arrives as a bare tty out
+        // of the process scan. It is the whole reason the walk is asked of the screen:
+        // its tty is ALWAYS the agent's own, never a window's.
+        check("…and so does one known only by its tty",
+              AgentProbes.adoptWrappedTails([(tty: "ttys038", pid: nil)], into: screens,
+                                            processes: wrapped, panes: panes,
+                                            clients: attached) == adopted)
         check("a run whose own tty the dump already carries is not walked",
-              AgentProbes.adoptWrappedTails([onTTY("ttys001", pid: 700)], into: screens,
-                                            processes: [:], panes: [:], clients: [:]) == screens)
+              AgentProbes.adoptWrappedTails([(tty: "ttys001", pid: 700)], into: screens,
+                                            processes: [:], panes: [:],
+                                            clients: [:]) == screens)
         check("a walk that reaches no terminal adopts nothing",
-              AgentProbes.adoptWrappedTails([onTTY("ttys038", pid: 392)], into: screens,
+              AgentProbes.adoptWrappedTails([(tty: "ttys038", pid: 392)], into: screens,
                                             processes: wrapped, panes: panes,
                                             clients: [:]) == screens)
+        // Which of those bare ttys are gathered at all: an agent whose PR a record
+        // already covers is walked as that record, and must not be walked twice.
+        var booked = AgentState.RunRecord(runID: "booked", dispatchedAt: 0, kind: "review")
+        booked.prNumber = 705
+        check("only the live agents no record covers are gathered",
+              AgentProbes.unbookedTTYs([booked], .present([705: "ttys038", 703: "ttys029"]))
+                == ["ttys029"])
+        check("a scan that failed gathers nothing",
+              AgentProbes.unbookedTTYs([booked], .unavailable("no dump")).isEmpty)
 
         // 4c. Which rows offer the click at all. Both the button and the click itself
         //     ask this one question, so a row can never be pressable and inert.
