@@ -73,14 +73,12 @@ except szpont.Unavailable as exc:
     dispatch = "refused: %s" % exc
 
 # Building a Store and a Panel starts workers, and this process is about to end.
-# Whatever is still running when it does gets its widgets pulled out from under it
-# mid-signal, which is a traceback onto a stderr the finaliser is closing — a
-# SIGABRT that reads, in this file's own output, exactly like the applet failing to
-# start. So the probe waits, then counts the threads itself: what the wait *reports*
-# it left behind is the wait's own account of the thing under test.
-# Longer than the longest worker on this path is allowed to take (the allocator
-# installer's 90s subprocess cap), so exceeding it means wedged, not slow.
-store.wait_for_background(120)
+# One still running when it does gets its widgets pulled out mid-signal, and the
+# traceback lands on a stderr the finaliser is closing — a SIGABRT that reads, in
+# this file's own output, exactly like the applet failing to start. So the probe
+# waits it out, then counts the threads itself rather than repeating what the wait
+# says it left behind: the wait is the thing under test.
+store.wait_for_background(60)
 left_running = sorted(
     t.name for t in threading.enumerate() if t is not threading.main_thread()
 )

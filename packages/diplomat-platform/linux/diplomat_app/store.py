@@ -300,8 +300,7 @@ class Store(QObject):
         self._apiwatch_lock = threading.Lock()
         self._telemetry_sample_lock = threading.Lock()
 
-        # The workers started through `start_background`, so that something can wait
-        # for them. Pruned as it grows: a Store outlives thousands of polls.
+        # Pruned on every start — a Store outlives thousands of polls.
         self._workers: list[threading.Thread] = []
         self._workers_lock = threading.Lock()
 
@@ -324,14 +323,13 @@ class Store(QObject):
     def start_background(self, work, name: str | None = None) -> threading.Thread:
         """Run ``work`` off the GUI thread, on a worker the process can wait for.
 
-        Every worker here ends by touching Qt — a signal emit, or a callback that
-        does. One still in flight while the process tears its widgets down raises
-        ``RuntimeError: Signal source has been deleted`` there, and an unhandled
-        exception on a thread prints a traceback to ``sys.stderr``; if the
-        interpreter is finalising at that moment it cannot take the buffer lock the
-        worker holds, and the process dies of SIGABRT instead of exiting. So the
-        threads are kept, and :meth:`wait_for_background` is where a caller about to
-        end the process gives them the moment they need to land.
+        These workers signal back into Qt when they are done, so one still in flight
+        while the process tears its widgets down raises ``RuntimeError: Signal source
+        has been deleted`` there. An unhandled exception on a thread prints a
+        traceback to ``sys.stderr``, and an interpreter already finalising cannot take
+        the buffer lock the worker is holding to write it — so the process dies of
+        SIGABRT rather than exiting. Hence the handle: :meth:`wait_for_background` is
+        where a caller about to end the process lets them land first.
 
         Daemon, still: the wait is bounded and a wedged worker must never be able to
         hold the applet open past it.

@@ -231,7 +231,7 @@ class DiplomatApp:
         SingleInstance.release()
         self.tray.hide()
         # Before the widgets a worker is about to signal go away. The tray is already
-        # gone, so the pause this can cost is spent on a window nobody is looking at.
+        # hidden, so the pause this can cost is spent on a window nobody can see.
         self.store.wait_for_background()
         self.app.quit()
 

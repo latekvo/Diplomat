@@ -155,10 +155,11 @@ def test_switching_away_from_specific_resets_disposition(qapp):
 
 def test_entering_specific_pr_starts_loading(qapp, monkeypatch):
     # A fresh, valid PR ref flips the wizard into the loading state and spawns a
-    # background poll (which we stub so no gh runs and no thread lingers).
+    # background poll — stubbed at the store's worker seam, so no gh runs and no
+    # thread lingers.
     monkeypatch.setattr(
-        "diplomat_app.wizardview.threading.Thread",
-        lambda *a, **k: type("T", (), {"start": lambda self: None})(),
+        "diplomat_app.store.Store.start_background",
+        lambda self, work, name=None: None,
     )
     store = Store()
     store.me = "latekvo"
