@@ -135,6 +135,17 @@ def test_an_unpinned_opencode_is_named_by_its_config_over_its_picker():
     assert tag_prefix("GPT 5.2") in review_prompt()
 
 
+def test_a_model_whose_name_is_not_in_its_id_is_named_from_the_asset():
+    """``x-preview-f-free`` is a codename: the rules can only title-case it back into
+    "X Preview F Free", naming no model a reader would recognise. ``displayNames`` in
+    ``models.json`` is the one place a name no rule can reach is stated, and this is the
+    path that carries it — a real recent list, through the real binary."""
+    appconfig.set_value(appconfig.AGENT_RUNNER, runner.OPENCODE)
+    opencode_state('{"recent": [{"providerID": "opencode", "modelID": "x-preview-f-free"}]}')
+    assert tag_prefix("Ox Alpha") in review_prompt()
+    assert "[Diplomat, Ox Alpha]: <your text>" in review_prompt()
+
+
 def test_a_machine_with_no_opencode_settings_tags_as_it_always_has():
     """OpenCode need not have been run for it to be the selected runner, and a machine
     where it has written nothing down is the "say nothing" case the tag has always had."""
