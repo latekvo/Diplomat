@@ -250,9 +250,8 @@ def test_the_socks_port_is_picked_after_the_forward_listener_binds(
     the kernel cannot hand out one that is taken.
 
     A ratio rather than a rarity — with the pick first, the listener was handed the
-    SOCKS port on 19 of 200000 starts on a Linux runner, which reaches CI as
-    ``start()`` returning False on a clean directory about once every few hundred
-    runs of this file.
+    SOCKS port on 19 of 200000 starts on Linux, and this file makes 26 of them, so
+    ``start()`` returns False on a clean directory about once every 400 runs.
     """
     order: list[str] = []
     real_free_port = tor._free_port
