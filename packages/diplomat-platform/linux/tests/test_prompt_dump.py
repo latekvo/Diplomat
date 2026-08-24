@@ -34,12 +34,8 @@ pytestmark = pytest.mark.skipif(
     ("audit-issues", "== AuditConfig: full-repo E2E test · fixIssues=True openPRs=False =="),
     ("audit-prs", "== AuditConfig: full-repo E2E test · fixIssues=False openPRs=True =="),
     ("audit-all", "== AuditConfig: full-repo E2E test · fixIssues=True openPRs=True =="),
-    ("issues", "== IssueConfig: all open issues · depth="),
-    ("issues-mine", "== IssueConfig: my issues · depth="),
-    ("issues-user", "== IssueConfig: someone else's issues · depth="),
-    ("issues-contributors", "== IssueConfig: contributors' issues · depth="),
-    ("issues-members", "== IssueConfig: org members' issues · depth="),
-    ("issues-single", "== IssueConfig: single issue #421 · depth="),
+    ("issues", "== IssueConfig: issue #421, out of a sweep · depth="),
+    ("issues-single", "== IssueConfig: issue #421, named by hand · depth="),
 ])
 def test_each_mode_dumps_the_config_it_names(capsys, mode, header):
     """All four wizards are reachable, and each toggle in the mode string reaches

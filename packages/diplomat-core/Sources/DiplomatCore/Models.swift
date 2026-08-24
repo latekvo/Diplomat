@@ -181,6 +181,44 @@ public enum Filters {
             $0.author.lowercased() == handle && ($0.isDraft ? includeDrafts : includeReady)
         }
     }
+
+    /// The issues one Fix-issues sweep covers: the repo's open issues narrowed to the
+    /// chosen scope, and to the unclaimed ones when that filter is on.
+    ///
+    /// This is what the sweep is *expanded* into — one queued fix per issue rather
+    /// than one agent told to work through all of them — so it decides how many
+    /// agents a single SPAWN eventually starts, and the two front-ends must agree on
+    /// it exactly.
+    ///
+    /// The association scopes are cut here rather than in the prompt because the open
+    /// issues the panel already holds carry `authorAssociation` (the GraphQL fetch
+    /// asks for it), so the whole six-way axis is one filter over one list. `author`
+    /// is `IssueConfig.sweepAuthor` — read only by the two scopes that name a person,
+    /// and compared case-insensitively because one side of it is typed by hand into
+    /// the wizard's username field while GitHub logins are: `@OctoCat` asking for
+    /// octocat's issues is not a request for nothing.
+    ///
+    /// `.specific` sweeps nothing: that scope names its one issue by hand, and the
+    /// wizard dispatches it directly instead of queueing.
+    public static func sweptIssues(_ issues: [OpenIssue], target: IssueTarget,
+                                   author: String, unassignedOnly: Bool) -> [OpenIssue] {
+        let inScope: [OpenIssue]
+        switch target {
+        case .all:
+            inScope = issues
+        case .mine, .someone:
+            let handle = author.lowercased()
+            guard !handle.isEmpty else { return [] }
+            inScope = issues.filter { $0.author.lowercased() == handle }
+        case .contributors:
+            inScope = issues.filter(\.isExternal)
+        case .members:
+            inScope = issues.filter { !$0.isExternal }
+        case .specific:
+            return []
+        }
+        return unassignedOnly ? inScope.filter { $0.assignees.isEmpty } : inScope
+    }
 }
 
 // MARK: - Tiny formatting helpers

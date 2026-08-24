@@ -235,7 +235,8 @@ def store(monkeypatch):
     # Never run the diplomat-core CLI in a unit test: stub the prompt builder.
     monkeypatch.setattr(
         "diplomat_runtime.promptcore.build_prompt",
-        lambda cfg: f"PROMPT:{cfg.get('kind')}:{cfg.get('specificPR')}",
+        lambda cfg: f"PROMPT:{cfg.get('kind')}:"
+                    f"{cfg.get('specificPR') or cfg.get('specificIssue')}",
     )
     # The probes would read this MACHINE's real processes, tmux panes and mesh —
     # neutralize them so a test exercises the registry and the resolver rather than
@@ -1672,13 +1673,16 @@ def test_the_cap_spans_both_monitors(store, monkeypatch):
 # MARK: - the queue behind the cap
 
 
-def test_queue_key_names_the_monitor_and_the_pr():
+def test_queue_key_names_the_verb_and_the_number():
     """Stable across polls and restarts, which is what lets the operator's drag order
     outlive the list. Not the mesh work key: that one is scoped to a head sha, so a
     push during the wait would read as a different task."""
     assert autofix.queue_key("conflicts", 7) == "conflicts:7"
     # One PR can owe two monitors at once — a conflict AND an unaddressed review.
     assert autofix.queue_key("review-req", 7) != autofix.queue_key("review-reply", 7)
+    # And the number is not even always a PR's: issue #7 and PR #7 are different work
+    # on different things, so a fix and a review of "7" must be two rows.
+    assert autofix.queue_key("issues", 7) != autofix.queue_key("review", 7)
 
 
 def test_free_slots_never_go_negative():
@@ -1718,23 +1722,28 @@ def test_a_conflict_fix_sorts_last_whatever_the_arrangement_says():
     assert autofix.queue_band("a") == 0
 
 
-def test_a_requested_review_waits_behind_the_monitors_and_ahead_of_a_conflict_fix():
+def test_requested_work_waits_behind_the_monitors_and_ahead_of_a_conflict_fix():
     """Three bands, in the order the operator would have chosen by hand: what GitHub
     is already owed, then the sweep they asked for when they had time for it, then the
     conflict fix another agent's run may make unnecessary. Sweeping fifty drafts
-    otherwise buries every review request behind them for a day."""
+    otherwise buries every review request behind them for a day.
+
+    Both kinds of ask share the middle band. A Fix-issues sweep is the same promise as
+    a whose-PRs one — work the operator started when they had time for it — so a fix
+    banded with the conflict fixes would sit behind every one of them for a day."""
     order = autofix.queue_order
-    offered = ["conflicts:1", "review:2", "review-req:3", "review-reply:4"]
+    offered = ["conflicts:1", "review:2", "review-req:3", "review-reply:4", "issues:5"]
     assert order(offered, []) == ["review-req:3", "review-reply:4",
-                                  "review:2", "conflicts:1"]
+                                  "review:2", "issues:5", "conflicts:1"]
     # And the arrangement cannot lift one out of its band, in either direction.
-    assert order(offered, ["review:2", "conflicts:1", "review-req:3"]) == [
-        "review-req:3", "review-reply:4", "review:2", "conflicts:1"
+    assert order(offered, ["issues:5", "conflicts:1", "review-req:3"]) == [
+        "review-req:3", "review-reply:4", "issues:5", "review:2", "conflicts:1"
     ]
-    assert (autofix.queue_band("review:2"), autofix.queue_band("conflicts:1")) == (1, 2)
+    assert (autofix.queue_band("review:2"), autofix.queue_band("issues:5"),
+            autofix.queue_band("conflicts:1")) == (1, 1, 2)
     # Within the requested band the arrangement still decides.
-    assert (order(["review:1", "review:2"], ["review:2"])
-            == ["review:2", "review:1"])
+    assert (order(["review:1", "issues:2"], ["issues:2"])
+            == ["issues:2", "review:1"])
 
 
 def test_queue_reorder_can_reach_every_position():

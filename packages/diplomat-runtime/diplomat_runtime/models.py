@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from . import core, gh
+from .issuetarget import IssueTarget
 
 
 # MARK: - Datetime helpers
@@ -197,6 +198,41 @@ class Filters:
             if p.author.lower() == handle
             and (include_drafts if p.is_draft else include_ready)
         ]
+
+    @staticmethod
+    def swept_issues(issues: list[OpenIssue], target: IssueTarget, author: str,
+                     unassigned_only: bool) -> list[OpenIssue]:
+        """The issues one Fix-issues sweep covers: the repo's open issues narrowed to
+        the chosen scope, and to the unclaimed ones when that filter is on.
+
+        This is what the sweep is *expanded* into — one queued fix per issue rather
+        than one agent told to work through all of them — so it decides how many agents
+        a single SPAWN eventually starts, and the two front-ends must agree on it
+        exactly (Swift: ``Filters.sweptIssues``).
+
+        The association scopes are cut here rather than in the prompt because the open
+        issues the panel already holds carry ``author_association`` (the GraphQL fetch
+        asks for it), so the whole six-way axis is one filter over one list. ``author``
+        is :attr:`IssueConfig.sweep_author` — read only by the two scopes that name a
+        person, and compared case-insensitively because one side of it is typed by hand
+        into the wizard's username field while GitHub logins are.
+
+        ``SPECIFIC`` sweeps nothing: that scope names its one issue by hand, and the
+        wizard dispatches it directly instead of queueing."""
+        if target == IssueTarget.ALL:
+            in_scope = list(issues)
+        elif target in (IssueTarget.MINE, IssueTarget.SOMEONE):
+            handle = author.lower()
+            if not handle:
+                return []
+            in_scope = [i for i in issues if i.author.lower() == handle]
+        elif target == IssueTarget.CONTRIBUTORS:
+            in_scope = [i for i in issues if i.is_external]
+        elif target == IssueTarget.MEMBERS:
+            in_scope = [i for i in issues if not i.is_external]
+        else:
+            return []
+        return [i for i in in_scope if not i.assignees] if unassigned_only else in_scope
 
 
 # MARK: - Tiny formatting helpers

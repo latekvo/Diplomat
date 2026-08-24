@@ -448,16 +448,17 @@ enum QueueTest {
         emptyBook()
         store.queuedTasks = []
 
-        // 14. The reviews the operator asks for. A whose-PRs sweep is queued one PR at a
-        //    time rather than handed to a single agent, and these are the only queued
-        //    tasks nothing on GitHub would re-offer — so the list that remembers the ask
-        //    has to survive a commit, and the dispatch that answers one has to take it
-        //    off. (Seeded empty: a headless Store reads the operator's real list, and a
-        //    developer mid-sweep would otherwise fail every count below.)
+        // 14. The work the operator asks for. A whose-PRs sweep is queued one PR at a
+        //    time — and a Fix-issues scope one ISSUE at a time — rather than handed to a
+        //    single agent, and these are the only queued tasks nothing on GitHub would
+        //    re-offer, so the list that remembers the ask has to survive a commit and
+        //    the dispatch that answers one has to take it off. (Seeded empty: a headless
+        //    Store reads the operator's real list, and a developer mid-sweep would
+        //    otherwise fail every count below.)
         //
         //    The band, the key and the arrangement are pinned in DiplomatCoreSmoke; what
         //    is here is the wiring those rules hang off.
-        store.requestedReviews = []
+        store.requestedWork = []
         store.queuedTasks = []
         func openPR(_ number: Int, author: String = "alice", draft: Bool = true) -> OpenPR {
             OpenPR(number: number, title: "PR \(number)",
@@ -495,7 +496,7 @@ enum QueueTest {
 
         // Nothing on GitHub says a PR was swept, so the ask itself is what re-offers
         // these — a commit built from the monitors alone would empty the panel of them.
-        store.offerRequestedReviews()
+        store.offerRequestedWork()
         store.commitQueue()
         check("a poll re-offers every ask nothing has started",
               store.queuedTasks.map(\.id) == ["review:31", "review:32", "review:33"])
@@ -509,7 +510,7 @@ enum QueueTest {
         _ = await offer(job(35))
         _ = await offer(job(36, action: "conflicts", label: "Resolve · #36",
                             counter: .conflicts))
-        store.offerRequestedReviews()
+        store.offerRequestedWork()
         store.commitQueue()
         check("a requested review waits behind a monitor's find and ahead of a conflict fix",
               store.queuedTasks.map(\.id)
@@ -518,19 +519,19 @@ enum QueueTest {
         // Cancel is the way out of an ask the sweep should never have caught — nothing
         // GitHub does retires one while its PR is open, so a mis-aimed sweep would
         // otherwise be a day of agents nobody can call off.
-        store.cancelRequestedReview("review:32")
-        store.offerRequestedReviews()
+        store.cancelRequestedWork("review:32")
+        store.offerRequestedWork()
         store.commitQueue()
         check("a cancelled ask does not come back on the next poll",
-              store.requestedReviews.map(\.number) == [31, 33]
+              store.requestedWork.map(\.number) == [31, 33]
                   && !store.queuedTasks.contains { $0.id == "review:32" })
         // Cancel refuses a row no ask stands behind. The monitor's find has to be
         // offered again to be in the queue at all: the commit above rebuilt it from
         // that cycle's offers, and that cycle offered only the asks.
         _ = await offer(job(35))
-        store.offerRequestedReviews()
+        store.offerRequestedWork()
         store.commitQueue()
-        store.cancelRequestedReview("review-req:35")
+        store.cancelRequestedWork("review-req:35")
         check("…and a monitor's row is not cancellable at all",
               store.queuedTasks.contains { $0.id == "review-req:35" })
 
@@ -540,9 +541,9 @@ enum QueueTest {
         // (Still at capacity, so the drain sweeps and then returns without spawning.)
         await store.drainQueuedTasks(snaps: [], closed: [33])
         check("a swept PR that landed before its turn takes its ask with it",
-              store.requestedReviews.map(\.number) == [31]
+              store.requestedWork.map(\.number) == [31]
                   && !store.queuedTasks.contains { $0.id == "review:33" })
-        store.offerRequestedReviews()
+        store.offerRequestedWork()
         store.commitQueue()
         check("…so the next poll has nothing left to offer for it",
               !store.queuedTasks.contains { $0.id == "review:33" })
@@ -553,11 +554,50 @@ enum QueueTest {
         bookAgent(31)
         await store.executeQueuedTask("review:31")
         check("an ask refused because the PR is busy is still asked for",
-              store.requestedReviews.map(\.number) == [31])
+              store.requestedWork.map(\.number) == [31])
         store.error = nil
         emptyBook()
-        store.requestedReviews = []
+        store.requestedWork = []
         store.queuedTasks = []
+
+        // 15. A Fix-issues scope is the same fan-out over the other numbering space.
+        //    What is worth pinning here is that the two never collide: issue #31 and
+        //    PR #31 are unrelated work, and only the queue verb says which a row is.
+        func openIssue(_ number: Int, author: String = "alice",
+                       assignees: [String] = []) -> OpenIssue {
+            OpenIssue(number: number, title: "issue \(number)",
+                      url: "https://github.com/software-mansion/argent/issues/\(number)",
+                      author: author, authorAssociation: "MEMBER", createdAt: Date(),
+                      updatedAt: Date(), commentCount: 0, assignees: assignees,
+                      labels: [], memberResponded: false)
+        }
+        store.issues = [openIssue(31), openIssue(41), openIssue(42, assignees: ["bob"])]
+        let issueFanOut = store.requestIssueSweep(IssueConfig(depth: "deep", me: "alice"))
+        check("a scope queues one fix per unclaimed issue, not one agent for all",
+              issueFanOut.queued == 2 && issueFanOut.already == 0
+                  && store.queuedTasks.map(\.id) == ["issues:31", "issues:41"])
+        check("…each labelled as the operator's own fix of that one issue",
+              store.queuedTasks.map(\.job.label) == ["Issues · #31 · deep",
+                                                     "Issues · #41 · deep"]
+                  && store.queuedTasks.allSatisfy(\.job.requested))
+        check("…and none of them PR-scoped, so issue #31 cannot dedup against PR #31",
+              store.queuedTasks.allSatisfy { $0.job.prNumber == nil && $0.job.prURL == nil })
+
+        // The two asks live in one list, told apart by their key alone — so a review of
+        // PR #31 queued alongside is a second row, and cancelling one leaves the other.
+        _ = store.requestReviewSweep(ReviewConfig(depth: "deep", target: .mine, me: "alice",
+                                                  includeDrafts: true, includeReady: false))
+        check("a review of the PR with the same number is a row of its own",
+              store.requestedWork.map(\.key).sorted()
+                  == ["issues:31", "issues:41", "review:31", "review:32"])
+        store.cancelRequestedWork("issues:31")
+        check("…and cancelling the fix leaves the review of that number standing",
+              store.requestedWork.map(\.key).sorted()
+                  == ["issues:41", "review:31", "review:32"])
+        store.requestedWork = []
+        store.queuedTasks = []
+        store.issues = []
+        store.prs = []
 
         // 13. The redirect above is the only thing between a run of this test and the
         //    operator's real activity log, so prove it caught the writes.

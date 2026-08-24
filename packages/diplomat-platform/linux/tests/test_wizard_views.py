@@ -14,9 +14,9 @@ not flatten:
 * the mesh dispatch path — that it routes through the row instead, disables the
   button, and logs the dispatch;
 * the Fix-issues wizard's six scopes, and which of them narrow to unassigned issues;
-* the Review wizard's third path, where a whose-PRs sweep queues a review per PR
-  instead of dispatching anything (what the queue then does with them is
-  ``test_requested_reviews.py``);
+* the third path the two wizards with a scope share, where a sweep queues one task
+  per PR / per issue instead of dispatching anything (what the queue then does with
+  them is ``test_requested_work.py``);
 * the status line each outcome produces.
 
 Every test drives the real widget under the offscreen Qt platform; the store's
@@ -92,11 +92,11 @@ def mesh_live(monkeypatch):
 def swept(monkeypatch, store):
     """Capture the sweeps handed to the fan-out worker, and hand back its callback.
 
-    The real one assembles a prompt per PR on a thread; a test that let it run would
-    be timing a subprocess per PR and racing the signal that reports it. Each entry is
-    ``(config, done)`` — call ``done`` to drive the reporting half."""
+    The real one assembles a prompt per item on a thread; a test that let it run would
+    be timing a subprocess per item and racing the signal that reports it. Each entry
+    is ``(config, done)`` — call ``done`` to drive the reporting half."""
     calls: list[tuple] = []
-    monkeypatch.setattr(store, "request_review_sweep_async",
+    monkeypatch.setattr(store, "request_sweep_async",
                         lambda cfg, done: calls.append((cfg, done)))
     return calls
 
@@ -109,6 +109,37 @@ def _review_wizard(store):
     w.target.setCurrentIndex(w.target.findData(PRTarget.SPECIFIC))
     w.specific_pr.setText("455")
     return w
+
+
+def _issue_wizard(store):
+    """The Fix-issues wizard on its dispatching path, for the same reason: one issue
+    named by hand. Every other scope sweeps."""
+    w = IssueWizardView(store)
+    w.target.setCurrentIndex(w.target.findData(issues.Target.SPECIFIC))
+    w.specific_issue.setText("421")
+    return w
+
+
+def _review_sweep(store):
+    """…and the same wizard on the path that queues instead: a whose-PRs scope."""
+    w = WizardView(store)
+    w.target.setCurrentIndex(w.target.findData(PRTarget.MINE))
+    return w
+
+
+def _issue_sweep(store):
+    w = IssueWizardView(store)
+    w.target.setCurrentIndex(w.target.findData(issues.Target.CONTRIBUTORS))
+    return w
+
+
+#: The two wizards with a scope axis, each with the nouns its status line is written
+#: out of: what it queues one of per item (singular, then plural), and the items
+#: themselves.
+SWEEPERS = [
+    pytest.param(_review_sweep, "review", "reviews", "PRs", id="review"),
+    pytest.param(_issue_sweep, "fix", "fixes", "issues", id="issues"),
+]
 
 
 # ---- Review wizard: contextual fields follow the target -------------------
@@ -212,98 +243,6 @@ def test_review_passes_the_polled_author_for_the_ban_check(store, dispatched, lo
     w._specific_author = SpecificAuthor.MINE
     w._spawn()
     assert dispatched[-1][0].author_login is None
-
-
-def test_review_sweep_queues_instead_of_spawning(store, dispatched, swept, local_only):
-    """The whole point of this wizard's sweep: it queues a review per PR instead of
-    handing one agent every PR at once, and the queue starts them a bay at a time."""
-    w = WizardView(store)
-    w.target.setCurrentIndex(w.target.findData(PRTarget.MINE))
-    w._spawn()
-
-    assert dispatched == []  # nothing was launched…
-    assert len(swept) == 1  # …the sweep went to the fan-out instead
-    cfg, _ = swept[0]
-    assert cfg.target == PRTarget.MINE
-
-
-def test_review_sweep_holds_spawn_until_the_fan_out_answers(store, swept, local_only):
-    """The fan-out assembles a prompt per PR, which takes long enough to press again;
-    a second press would ask for the whole sweep twice."""
-    w = WizardView(store)
-    w._spawn()
-    assert not w.spawn_btn.isEnabled()
-
-    swept[0][1](3, 0, "")
-    assert w.spawn_btn.isEnabled()
-    assert "3 reviews" in w.status.text()
-
-
-def test_a_sync_mid_fan_out_does_not_hand_spawn_back(store, swept, local_only):
-    """The hold has to survive a ``_sync``, which re-derives SPAWN from validity
-    alone and knows nothing of a dispatch in flight.
-
-    Something calls one throughout the wait: every input the operator nudges while
-    watching, and the panel's own periodic ``refresh_identity``. Either would arm the
-    button mid-fan-out, and the press it invites is a second sweep of the same scope."""
-    w = WizardView(store)
-    w._spawn()
-
-    w.refresh_identity()  # what the panel does on every data refresh
-    assert not w.spawn_btn.isEnabled()
-    w.slider.setValue(w.slider.value() + 1)  # …and what the operator does while waiting
-    assert not w.spawn_btn.isEnabled()
-
-    swept[0][1](1, 0, "")
-    assert w.spawn_btn.isEnabled()
-    assert len(swept) == 1
-
-
-def test_review_sweep_says_when_it_queued_nothing(store, swept, local_only):
-    """A sweep whose scope matches no open PR must say so: the queue looking exactly
-    as it did before the press is otherwise indistinguishable from a dead button."""
-    w = WizardView(store)
-    w._spawn()
-    swept[0][1](0, 0, "")
-
-    assert "no open prs" in w.status.text().lower()
-
-
-def test_review_sweep_reports_a_fan_out_failure(store, swept, local_only):
-    """A missing or wedged core binary fails while assembling the prompts — a
-    refusal, not a launch, and the wizard has to say which."""
-    w = WizardView(store)
-    w._spawn()
-    swept[0][1](0, 0, "diplomat-core not found")
-
-    assert "diplomat-core not found" in w.status.text()
-    assert w.spawn_btn.isEnabled()
-
-
-def test_review_sweep_waits_for_the_pr_list(store, swept, local_only):
-    """The sweep expands the PRs the panel last fetched. Before the first fetch that
-    list is empty, and queueing nothing from it would read as "you have no drafts"."""
-    store.has_loaded = False
-    w = WizardView(store)
-    w._spawn()
-
-    assert swept == []
-    assert "refresh" in w.status.text().lower()
-
-
-def test_review_hides_mesh_routing_for_a_sweep(store):
-    """Nothing to route: a sweep opens no session here or anywhere. The row is left
-    for the single-PR spawn that does."""
-    w = WizardView(store)
-    w.target.setCurrentIndex(w.target.findData(PRTarget.SPECIFIC))
-    w.specific_pr.setText("455")
-    # Applicability, not `use_mesh`, is what the target decides: `use_mesh` is false
-    # for want of a live node either way here, so it cannot tell the two apart.
-    assert w.mesh_row._applicable
-
-    w.target.setCurrentIndex(w.target.findData(PRTarget.MINE))
-    assert not w.mesh_row._applicable
-    assert not w.mesh_row.use_mesh()
 
 
 def test_review_mesh_spawn_routes_over_the_mesh_and_disables_the_button(
@@ -496,51 +435,154 @@ def test_issues_config_mirrors_the_widgets(store):
 def test_issues_local_spawn_dispatches_an_unscoped_issues_job(store, dispatched, local_only):
     """Not PR-scoped: the pipeline's dedup key is a PR URL, so handing it an issue
     number would collide with the PR that shares it. The GitHub assignee claim is
-    what keeps two agents off one issue."""
-    w = IssueWizardView(store)
-    w.target.setCurrentIndex(w.target.findData(issues.Target.SPECIFIC))
-    w.specific_issue.setText("421")
+    what keeps two agents off one issue.
+
+    Nor is there an author to ban-check: whoever filed the issue is not the handle
+    typed into the scope picker, and this wizard never fetches it. A swept issue is
+    where that dimension lives, and each ask carries its own issue's author."""
+    w = _issue_wizard(store)
     w._spawn()
 
     job, source = dispatched[0]
     assert (job.kind, job.duty, job.audit_action) == ("issues", "issues", "issues")
     assert job.pr_number is None
     assert job.pr_url is None
+    assert job.author_login is None
     assert source == autofix.SOURCE_PANEL
 
 
-def test_issues_label_names_the_scope_and_the_depth(store, dispatched, local_only):
-    """The ongoing-sessions row has to say which issues this run is working."""
-    w = IssueWizardView(store)
-    w.target.setCurrentIndex(w.target.findData(issues.Target.CONTRIBUTORS))
+def test_issues_label_names_the_issue_and_the_depth(store, dispatched, local_only):
+    """The ongoing-sessions row has to say which issue this run is working — one
+    issue, because one issue is all a dispatch from here ever covers."""
+    w = _issue_wizard(store)
     w.slider.setValue(w._depth_ids.index("max"))
     w._spawn()
 
     job, _ = dispatched[0]
-    assert "contributors" in job.label
+    assert "#421" in job.label
     assert issues.depth_by_id("max")["title"] in job.label
 
 
-def test_issues_names_the_author_only_when_the_scope_names_one(store, dispatched, local_only):
-    """The ban check keys on that login — an association sweep names nobody to ban."""
-    w = IssueWizardView(store)
-    w.target.setCurrentIndex(w.target.findData(issues.Target.SOMEONE))
-    w.username.setText("octocat")
-    w._spawn()
-    assert dispatched[-1][0].author_login == "octocat"
-
-    w.target.setCurrentIndex(w.target.findData(issues.Target.CONTRIBUTORS))
-    w._spawn()
-    assert dispatched[-1][0].author_login is None
-
-
 def test_issues_mesh_spawn_routes_over_the_mesh(store, dispatched, mesh_live):
-    w = IssueWizardView(store)
+    w = _issue_wizard(store)
     w._spawn()
 
     assert len(mesh_live) == 1
     assert dispatched == []
     assert not w.spawn_btn.isEnabled()
+
+
+# ---- a scope queues instead of dispatching (Review + Fix-issues) ----------
+#
+# Both wizards with a scope answer SPAWN the same way, and must: one agent handed a
+# whole scope is one agent doing a repo's worth of work in a single session, with no
+# cap, no queue order and nothing to cancel. What differs is only the nouns.
+
+
+@pytest.mark.parametrize("build, unit, units, plural", SWEEPERS)
+def test_a_sweep_queues_instead_of_spawning(store, dispatched, swept, local_only,
+                                            build, unit, units, plural):
+    """The whole point of the sweep: it queues one task per item instead of handing
+    one agent every item at once, and the queue starts them a bay at a time."""
+    w = build(store)
+    w._spawn()
+
+    assert dispatched == []  # nothing was launched…
+    assert len(swept) == 1  # …the sweep went to the fan-out instead
+    cfg, _ = swept[0]
+    assert cfg == w._config()  # …with the scope on screen, not a rebuilt one
+
+
+@pytest.mark.parametrize("build, unit, units, plural", SWEEPERS)
+def test_a_sweep_holds_spawn_until_the_fan_out_answers(store, swept, local_only,
+                                                       build, unit, units, plural):
+    """The fan-out assembles a prompt per item, which takes long enough to press
+    again; a second press would ask for the whole sweep twice."""
+    w = build(store)
+    w._spawn()
+    assert not w.spawn_btn.isEnabled()
+
+    swept[0][1](3, 0, "")
+    assert w.spawn_btn.isEnabled()
+    assert f"3 {units}" in w.status.text()
+
+
+@pytest.mark.parametrize("build, unit, units, plural", SWEEPERS)
+def test_a_sync_mid_fan_out_does_not_hand_spawn_back(store, swept, local_only,
+                                                     build, unit, units, plural):
+    """The hold has to survive a ``_sync``, which re-derives SPAWN from validity
+    alone and knows nothing of a dispatch in flight.
+
+    Something calls one throughout the wait: every input the operator nudges while
+    watching, and the panel's own periodic ``refresh_identity``. Either would arm the
+    button mid-fan-out, and the press it invites is a second sweep of the same scope."""
+    w = build(store)
+    w._spawn()
+
+    w.refresh_identity()  # what the panel does on every data refresh
+    assert not w.spawn_btn.isEnabled()
+    w.slider.setValue(w.slider.value() + 1)  # …and what the operator does while waiting
+    assert not w.spawn_btn.isEnabled()
+
+    swept[0][1](1, 0, "")
+    assert w.spawn_btn.isEnabled()
+    assert len(swept) == 1
+    # …and one queued task is reported as one, not as "1 fixs".
+    assert f"Queued 1 {unit} " in w.status.text()
+
+
+@pytest.mark.parametrize("build, unit, units, plural", SWEEPERS)
+def test_a_sweep_says_when_it_queued_nothing(store, swept, local_only,
+                                             build, unit, units, plural):
+    """A sweep whose scope matches no open item must say so: the queue looking exactly
+    as it did before the press is otherwise indistinguishable from a dead button."""
+    w = build(store)
+    w._spawn()
+    swept[0][1](0, 0, "")
+
+    assert f"no open {plural.lower()}" in w.status.text().lower()
+
+
+@pytest.mark.parametrize("build, unit, units, plural", SWEEPERS)
+def test_a_sweep_reports_a_fan_out_failure(store, swept, local_only,
+                                           build, unit, units, plural):
+    """A missing or wedged core binary fails while assembling the prompts — a
+    refusal, not a launch, and the wizard has to say which."""
+    w = build(store)
+    w._spawn()
+    swept[0][1](0, 0, "diplomat-core not found")
+
+    assert "diplomat-core not found" in w.status.text()
+    assert w.spawn_btn.isEnabled()
+
+
+@pytest.mark.parametrize("build, unit, units, plural", SWEEPERS)
+def test_a_sweep_waits_for_the_list_it_expands(store, swept, local_only,
+                                               build, unit, units, plural):
+    """The sweep expands what the panel last fetched. Before the first fetch that list
+    is empty, and queueing nothing from it would read as "there are none"."""
+    store.has_loaded = False
+    w = build(store)
+    w._spawn()
+
+    assert swept == []
+    assert "refresh" in w.status.text().lower()
+
+
+@pytest.mark.parametrize("single, sweep", [
+    pytest.param(_review_wizard, _review_sweep, id="review"),
+    pytest.param(_issue_wizard, _issue_sweep, id="issues"),
+])
+def test_a_sweep_offers_no_mesh_routing(store, single, sweep):
+    """Nothing to route: a sweep opens no session here or anywhere. The row is left
+    for the single-item spawn that does."""
+    # Applicability, not `use_mesh`, is what the target decides: `use_mesh` is false
+    # for want of a live node either way here, so it cannot tell the two apart.
+    assert single(store).mesh_row._applicable
+
+    w = sweep(store)
+    assert not w.mesh_row._applicable
+    assert not w.mesh_row.use_mesh()
 
 
 # ---- shared chrome behaves the same in all four ---------------------------
@@ -550,7 +592,7 @@ def test_issues_mesh_spawn_routes_over_the_mesh(store, dispatched, mesh_live):
     pytest.param(_review_wizard, id="review"),
     pytest.param(lambda s: ConflictWizardView(s), id="conflicts"),
     pytest.param(lambda s: AuditWizardView(s), id="audit"),
-    pytest.param(lambda s: IssueWizardView(s), id="issues"),
+    pytest.param(_issue_wizard, id="issues"),
 ])
 def test_every_wizard_starts_with_an_empty_status_line(store, build):
     assert build(store).status.text() == ""
@@ -560,7 +602,7 @@ def test_every_wizard_starts_with_an_empty_status_line(store, build):
     pytest.param(_review_wizard, id="review"),
     pytest.param(lambda s: ConflictWizardView(s), id="conflicts"),
     pytest.param(lambda s: AuditWizardView(s), id="audit"),
-    pytest.param(lambda s: IssueWizardView(s), id="issues"),
+    pytest.param(_issue_wizard, id="issues"),
 ])
 def test_every_wizard_reports_a_local_dispatch_in_its_status_line(
     store, dispatched, local_only, build
@@ -577,7 +619,7 @@ def test_every_wizard_reports_a_local_dispatch_in_its_status_line(
     pytest.param(_review_wizard, id="review"),
     pytest.param(lambda s: ConflictWizardView(s), id="conflicts"),
     pytest.param(lambda s: AuditWizardView(s), id="audit"),
-    pytest.param(lambda s: IssueWizardView(s), id="issues"),
+    pytest.param(_issue_wizard, id="issues"),
 ])
 def test_every_wizard_re_enables_spawn_when_a_mesh_dispatch_returns(
     store, mesh_live, build
@@ -596,7 +638,7 @@ def test_every_wizard_re_enables_spawn_when_a_mesh_dispatch_returns(
     pytest.param(_review_wizard, id="review"),
     pytest.param(lambda s: ConflictWizardView(s), id="conflicts"),
     pytest.param(lambda s: AuditWizardView(s), id="audit"),
-    pytest.param(lambda s: IssueWizardView(s), id="issues"),
+    pytest.param(_issue_wizard, id="issues"),
 ])
 def test_every_wizard_holds_spawn_across_a_sync_mid_mesh_dispatch(
     store, mesh_live, build
@@ -633,7 +675,7 @@ def test_mesh_completion_leaves_spawn_disabled_while_input_is_invalid(
     pytest.param(_review_wizard, id="review"),
     pytest.param(lambda s: ConflictWizardView(s), id="conflicts"),
     pytest.param(lambda s: AuditWizardView(s), id="audit"),
-    pytest.param(lambda s: IssueWizardView(s), id="issues"),
+    pytest.param(_issue_wizard, id="issues"),
 ])
 def test_every_wizard_survives_refresh_identity(store, build):
     """The panel calls this on every data refresh, including on the audit wizard

@@ -207,7 +207,7 @@ an idle machine with a cap of two reads `0 · 2 free` over two empty bays.
   the click deleting the task. It holds a bay from the moment it starts, and the
   session or mesh row that replaces it takes its place in the list.
 - **Free slots** are the rest of the cap. Each running automatic agent takes one, a
-  review from a sweep included - the queue picked the moment for it, so it holds a
+  task from a sweep included - the queue picked the moment for it, so it holds a
   bay like anything else that waited there. An agent a wizard press opened on the
   spot takes none, and neither does work the mesh placed on another machine - that
   spends the peer's capacity, not yours. Queued work starts here on the next poll.
@@ -216,18 +216,21 @@ an idle machine with a cap of two reads `0 · 2 free` over two empty bays.
   finding work and queueing it either way. It stays on screen while it is off even
   with the list empty - otherwise the state that empties the list would be the one
   you cannot leave.
-- **Queued** rows are auto-fixes, auto-reviews and reviews you asked for that
-  nothing has started yet. Each
+- **Queued** rows are auto-fixes, auto-reviews and the work you asked for by
+  sweeping that nothing has started yet. Each
   carries **execute now** - start it immediately, past whatever is holding it -
   and a drag grip: drop a row on another to set the order the queue runs in. That
   order is honoured at the top of the next poll, *before* the monitors go looking
   for more work, so a slot that just freed goes to whatever you put first rather
   than to whichever PR GitHub happened to list first.
-- **Requested reviews** - one row per PR of a Review-PRs sweep - run after every
-  auto-fix and auto-review and before the conflict fixes, because what the monitors
-  find is a debt other people can see and a sweep is work you started when you had
-  the time for it. Each also carries **cancel**: while its PR is open, nothing GitHub
-  does takes one off the list - you asked for it.
+- **Requested work** - one row per PR of a Review-PRs sweep, one row per issue of a
+  Fix-issues sweep - runs after every auto-fix and auto-review and before the
+  conflict fixes, because what the monitors find is a debt other people can see and a
+  sweep is work you started when you had the time for it. Each also carries
+  **cancel**: nothing GitHub does takes one off the list while its PR is open - you
+  asked for it - and nothing does at all for a fix, since the monitors read PRs and
+  never look at an issue. A fix is keyed by its ISSUE number, so it is a row of its
+  own beside a review of the PR that happens to share it.
 - **Resolve-conflicts** rows run last of all, whatever
   order the monitors found them in, and no drag lifts one out of its band (that
   drag is refused rather than sprung back on the next poll). An agent working the
@@ -338,22 +341,26 @@ banned. Every poll also re-checks the rows it is about to run against the fetche
 has just made - a conflict fix on a PR GitHub no longer calls conflicting, or a
 reply on threads that have been answered, leaves the list instead of opening an
 agent on work somebody already did. **A PR that has merged or closed retires every
-kind of row at once**, whoever queued it: waiting for a bay can take a day at two
-at a time, and a review of a landed diff is one nobody will read. (Not on a mesh claim: the cap outranks the mesh gate, so a machine with
+kind of row that names it**, whoever queued it: waiting for a bay can take a day at
+two at a time, and a review of a landed diff is one nobody will read. (A queued fix
+is numbered in the ISSUE space and no PR speaks for it, so that pass steps over it:
+the fix's own prompt re-reads the issue when its turn comes and stops if somebody has
+closed it since.) (Not on a mesh claim: the cap outranks the mesh gate, so a machine with
 anything queued is one that never asked a peer - peer-owned work leaves when the
 drain reaches it and the mesh answers.) The key order is remembered, so your
 arrangement survives the rebuild and a restart.
 
-The one exception is the reviews **you** ask for by sweeping your PRs (below):
-nothing on GitHub records that a PR was swept, so those are remembered instead of
-re-derived, offered on every poll until each is dispatched, wear your own label
-rather than `Auto · `, and carry a **cancel** button beside *execute now* because
-while the PR is open only a ban on its author would otherwise retire one. They wait
-in a band of their own - behind everything GitHub is already owed (a review requested
-of you, a thread waiting on your reply), ahead of the conflict fixes - so sweeping
-fifty drafts does not bury a review request behind them for a day. A swept PR that
-lands before its turn comes is dropped and forgotten, with a line in the feed saying
-so - a row that vanished silently would read exactly like one that ran.
+The one exception is the work **you** ask for by sweeping - a review per PR, or a fix
+per issue (both below): nothing on GitHub records that a PR or an issue was swept, so
+those are remembered instead of re-derived, offered on every poll until each is
+dispatched, wear your own label rather than `Auto · `, and carry a **cancel** button
+beside *execute now* because otherwise only a ban on the author would retire one
+while the PR is open - and nothing at all would retire a fix. They wait in a band of
+their own - behind everything GitHub is already owed (a review requested of you, a
+thread waiting on your reply), ahead of the conflict fixes - so sweeping fifty drafts
+does not bury a review request behind them for a day. A swept PR that lands before
+its turn comes is dropped and forgotten, with a line in the feed saying so - a row
+that vanished silently would read exactly like one that ran.
 
 *Execute now* keeps the task automatic in every other respect:
 same label, same auto-handled counter, same mesh routing - the cap and
@@ -416,10 +423,19 @@ banned authors get a flashing warning instead).
 
 ## Actions - Fix issues
 
-The second card, **Fix issues**, points a detached agent at the repo's open
-*issues* rather than its PRs (prompt model in `assets/issues.json`). It
-reproduces each one, fixes it, and re-runs the same reproduction to prove the fix
-lands; anything it cannot reproduce is reported as that, never guessed at.
+The second card, **Fix issues**, points detached agents at the repo's open *issues*
+rather than its PRs (prompt model in `assets/issues.json`). One agent works one
+issue: it reproduces that issue, fixes it, and re-runs the same reproduction to prove
+the fix lands; anything it cannot reproduce is reported as that, never guessed at.
+
+A **scope** is not one agent for all of them, exactly as a whose-PRs sweep is not. It
+queues one fix per issue it covers, so the task cap starts them a few at a time and
+each is a row you can reorder, run ahead of the rest, or cancel - forty open issues
+are forty fixes, not one session told to work through forty. (Which is also why the
+mesh row is offered for one hand-named issue only: a scope opens no session to place.)
+Each queued fix carries the same choices you made, aimed at its own issue, and
+re-reads that issue when its turn comes - hours can pass first, so a fix whose issue
+has been closed or claimed since stops there and reports it as skipped.
 
 Which issues is a six-way scope selector - wider than the three-way whose-PRs
 axis the other wizards share, because an issue's **author association** is a scope
@@ -431,28 +447,28 @@ in its own right:
 - **Contributors** — everything filed from *outside* the org (author association
   anything but `MEMBER` / `OWNER`, per `assets/filters.json`).
 - **Org members** — everything filed from *inside* it.
-- **Specific issue** — a number/URL field lights up; do just that one. It takes an
-  issue link, not a PR link: the two differ by one path segment, and a PR pasted
-  here would otherwise be worked as the issue of the same number.
+- **Specific issue** — a number/URL field lights up; do just that one, on the spot,
+  with no queueing. It takes an issue link, not a PR link: the two differ by one path
+  segment, and a PR pasted here would otherwise be worked as the issue of the same
+  number.
 
-The association scopes change how the agent is told to enumerate, because
-`gh issue list --json` has no `authorAssociation` field: those two go to the REST
-issues endpoint (which also returns pull requests, so the prompt says to skip
-every node carrying a `pull_request` key), while every other scope takes the
-simpler `gh issue list`.
+The scope never reaches an agent - it is applied here, against the issue list the
+panel last fetched, and all it decides is which issues get queued. The two
+association scopes cost nothing extra for it: the author association comes back with
+every issue in that fetch already.
 
 - **Fix depth** — a slider from a quick read-only pass → reproduce & fix →
   swarm the review moves over your own fix → drive the bug in the real app,
   swarming until one clean pass.
 - **Only unassigned issues** — *(on by default; hidden for one hand-named issue)*
-  an issue that already has an assignee is somebody else's to work, so it is
-  skipped outright. On a sweep this also narrows the enumeration itself
-  (`--search "no:assignee"`).
+  an issue that already has an assignee is somebody else's to work, so it is never
+  queued - and the fix re-checks its issue's assignees when its turn comes, because
+  somebody may have claimed it in the meantime.
 - **Assign each issue to me while working it** — *(on by default)* claim the issue
   on GitHub *before* the work starts, and hand it back if the run abandons it.
-  This is what keeps two agents off one issue: an issue run is deliberately not
-  PR-scoped, so the dispatch pipeline's PR dedup does not apply, and the assignee
-  is a claim every machine can see rather than only this one.
+  This is what keeps two agents off one issue: a fix is deliberately not PR-scoped,
+  so the dispatch pipeline's PR dedup does not apply, and the assignee is a claim
+  every machine can see rather than only this one.
 - **Open a draft PR per fix** — *(on by default)* one focused draft PR per fix,
   closing its issue (`Fixes #n`), carrying a regression test that the unfixed code
   would fail, and checked against the repo's open PRs by real `gh pr diff` content
@@ -467,7 +483,7 @@ simpler `gh issue list`.
 
 > Preview the assembled prompt without launching anything:
 > ```bash
-> DIPLOMAT_PRINT_PROMPT=issues swift run Diplomat   # also: =issues-mine, =issues-user, =issues-contributors, =issues-members, =issues-single; append -features
+> DIPLOMAT_PRINT_PROMPT=issues swift run Diplomat   # one issue out of a sweep; also: =issues-single (named by hand); append -features
 > ```
 
 ## Actions - Resolve conflicts
@@ -556,9 +572,9 @@ first target declines — gone, or out of tokens — the dispatch fails over to 
 next candidate by rank. While the mesh is live, the four wizards grow a
 **⬡ Run on mesh** row (checked by default, with a preview of where the duty
 currently routes): SPAWN AGENT then hands the job to the node instead of always
-opening a local terminal — on both front-ends. The Review wizard offers the row for
-a single PR only: a whose-PRs sweep opens no session to place, it queues one review
-per PR for this machine's own cap to start.
+opening a local terminal — on both front-ends. The two wizards with a scope offer the
+row for one named item only: a sweep opens no session to place, it queues one review
+per PR / one fix per issue for this machine's own cap to start.
 
 Both front-ends grow a **Mesh screen** (the ⬡ button in the panel header, beside
 [Telemetry](#telemetry) and Settings): the live node graph (link states), per-node tier/token editors (editing
@@ -867,11 +883,12 @@ are level-triggered over everything GitHub currently owes, so one poll of a busy
 day would otherwise dispatch every pending unit in a single pass - a terminal
 window and an agent session per conflicted PR and per owed review, all at the
 same moment. The cap is the *machine's*, not a monitor's: it spans both monitors,
-the reviews a PR sweep queues, and any work a mesh peer routes here, and it counts
+the work a sweep queues, and any work a mesh peer routes here, and it counts
 agents that are really running (`ps`, so it survives an applet restart) rather than
 a tally that can drift. The agent a wizard press opens on the spot is outside it
 and is never refused; what a press leaves in the queue instead - the reviews of a
-whose-PRs sweep - is on the cap like every other queued task.
+whose-PRs sweep, the fixes of a Fix-issues one - is on the cap like every other
+queued task.
 
 An agent is spawned into an *interactive* session, so finishing its work is not
 exiting - it waits at its prompt until someone closes the window, and `ps` shows
@@ -1034,7 +1051,7 @@ and ⏻) swaps the panel to a settings screen:
   three withhold-the-verdict suppressors (SKILL / installer / community).
 - **Run at most N automatic tasks at a time** - this machine's hard cap on
   concurrent automatic agents (**default 2**, range 1-16), across both monitors,
-  the reviews a PR sweep queues, and any work a mesh peer routes here. The agent a
+  the work a sweep queues, and any work a mesh peer routes here. The agent a
   wizard press opens on the spot is never capped and doesn't count against it; work
   over the cap is deferred to the next poll, not dropped. Like the repo root and for
   the same reason, it lives in the shared `~/.diplomat/config.json` rather than
@@ -1211,8 +1228,8 @@ DIPLOMAT_DUMP=1 swift run Diplomat            # real fetch+filter pipeline, prin
 DIPLOMAT_LOOKUP=337 swift run Diplomat        # reverse-lookup one number through the real Store
 DIPLOMAT_PRINT_PROMPT=mine swift run Diplomat # assemble + print a prompt: mine|user|single (append
                                                      #   -final for the verdict pass), conflicts[-user|-single],
-                                                     #   issues[-mine|-user|-contributors|-members|-single]
-                                                     #   (append -features), audit[-issues|-prs|-all]
+                                                     #   issues[-single] (append -features),
+                                                     #   audit[-issues|-prs|-all]
 DIPLOMAT_SETTINGS_DUMP=1 ./Diplomat.app/Contents/MacOS/Diplomat  # resolved persisted settings
 DIPLOMAT_QUEUE_TEST=1 swift run Diplomat      # self-test: the queue behind the automatic-task cap
                                                      #   (capture, dedup, arrangement, what a paused

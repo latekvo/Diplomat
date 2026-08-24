@@ -4,6 +4,10 @@ Wider than the whose-PRs axis the Review and Resolve-conflicts wizards share
 (:mod:`prtarget`), because an issue's AUTHOR ASSOCIATION is a scope in its own
 right: "everything the community filed" and "everything the org filed" are the two
 cuts a triage sweep actually wants, and neither of them is one @handle.
+
+Read by the front-end, which enumerates the scope itself (``Filters.swept_issues``)
+and queues one run per issue; the prompt an agent gets names one issue and never a
+scope.
 """
 
 from __future__ import annotations

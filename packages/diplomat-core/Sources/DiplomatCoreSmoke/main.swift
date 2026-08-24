@@ -887,10 +887,12 @@ print("audit prompt assertions passed")
 
 // ---- Fix-issues prompts ----
 section("issue prompts")
-// The goldens are regenerated from issues.json, so they re-bless whatever it says.
-// These are what actually pin the meaning: the six scopes, both enumeration paths,
-// and every block a toggle turns on — each with the negative that proves the block
-// is gated rather than always present.
+// A Fix-issues sweep is expanded into one queued run per issue, so EVERY prompt this
+// builds works one issue: the scope decides which issues get queued and never reaches
+// the agent. The goldens are regenerated from issues.json, so they re-bless whatever
+// it says. These are what actually pin the meaning: the six scopes as an enumeration,
+// the swept-vs-named split, and every block a toggle turns on — each with the negative
+// that proves the block is gated rather than always present.
 let goldenMeSeed = "testuser"
 let iAll = IssueConfig(me: goldenMeSeed)
 print("issues valid=\(iAll.isValid) depth=\(IssueCatalog.depth(id: iAll.depth).title)")
@@ -912,93 +914,119 @@ check(IssueConfig(target: .specific,
                   specificIssue: "https://github.com/\(cfg.owner)/\(cfg.repo)/pull/421")
         .issueRef.number == nil, "a PR URL is not an issue reference")
 
-// The scope sentence, one per target — a target falling through to another would
-// still print a prompt, just the wrong set of issues.
-let iAllP = iAll.buildPrompt()
-check(iAllP.contains("go through every currently-open issue,"), "all-issues scope")
-check(IssueConfig(target: .mine, me: goldenMeSeed).buildPrompt()
-        .contains("issue I opened (@\(goldenMeSeed))"), "my-issues scope")
-check(IssueConfig(target: .someone, username: "someuser").buildPrompt()
-        .contains("opened by @someuser"), "one user's issues scope")
-let iContrib = IssueConfig(target: .contributors).buildPrompt()
-let iMembers = IssueConfig(target: .members).buildPrompt()
-check(iContrib.contains("OUTSIDE the organisation"), "contributors scope")
-check(iMembers.contains("INSIDE the organisation"), "org-members scope")
-// Both association scopes name the associations from filters.json, not a hardcoded pair.
-check(iContrib.contains("MEMBER or OWNER") && iMembers.contains("MEMBER or OWNER"),
-      "the org/outside split is filters.json's orgAssociations")
+// The scope is enumerated HERE, against the open issues the panel already holds —
+// which is what lets one SPAWN become one agent per issue. `authorAssociation` comes
+// off the same fetch, so the community/org cut is a filter like the rest rather than
+// an enumeration the agent is talked through.
+let sweepIssues: [OpenIssue] = [
+    OpenIssue(number: 301, title: "outsider", url: "i/301", author: "ext",
+              authorAssociation: "NONE", createdAt: now, updatedAt: now, commentCount: 0,
+              assignees: [], labels: [], memberResponded: false),
+    OpenIssue(number: 302, title: "mine", url: "i/302", author: goldenMeSeed,
+              authorAssociation: "OWNER", createdAt: now, updatedAt: now, commentCount: 0,
+              assignees: [], labels: [], memberResponded: false),
+    OpenIssue(number: 303, title: "claimed", url: "i/303", author: "someuser",
+              authorAssociation: "MEMBER", createdAt: now, updatedAt: now, commentCount: 0,
+              assignees: ["dev"], labels: [], memberResponded: false),
+]
+func swept(_ target: IssueTarget, author: String = "", unassignedOnly: Bool = true) -> [Int] {
+    Filters.sweptIssues(sweepIssues, target: target, author: author,
+                        unassignedOnly: unassignedOnly).map(\.number)
+}
+check(swept(.all) == [301, 302], "the whole open list, minus what somebody holds")
+check(swept(.all, unassignedOnly: false) == [301, 302, 303],
+      "…and with the filter off, the claimed one is swept too")
+check(swept(.mine, author: goldenMeSeed) == [302] && swept(.someone, author: "SOMEUSER",
+                                                           unassignedOnly: false) == [303],
+      "a scope that names a person matches its author, case-insensitively")
+check(swept(.mine) == [], "…and sweeps nobody at all before that login resolves")
+check(swept(.contributors) == [301] && swept(.members, unassignedOnly: false) == [302, 303],
+      "the association scopes cut on filters.json's orgAssociations")
+check(swept(.specific) == [], "one named issue is dispatched, never swept")
+check(IssueConfig(target: .mine, me: goldenMeSeed).sweepAuthor == goldenMeSeed
+      && IssueConfig(target: .someone, username: "someuser").sweepAuthor == "someuser"
+      && IssueConfig(target: .all, me: goldenMeSeed).sweepAuthor.isEmpty,
+      "the sweep's author is the real login, never the prompt's \"me\" fallback")
+check(IssueConfig(target: .mine, me: "").sweepAuthor.isEmpty
+      && IssueConfig(target: .mine, me: "").authorHandle == "me",
+      "…which is the whole difference: an unresolved login sweeps nobody")
 
-// Enumeration: `gh issue list --json` has no authorAssociation field, so the two
-// association scopes must be sent to the REST endpoint — and warned about the pull
-// requests it returns alongside issues. Every other scope takes `gh issue list`.
-check(iAllP.contains("gh issue list"), "a plain scope enumerates with gh issue list")
-check(!iAllP.contains("author_association"), "a plain scope needs no association read")
-check(iContrib.contains("author_association") && iContrib.contains("pull_request"),
-      "the association path reads REST and skips the PRs it returns")
-check(!iContrib.contains("gh issue list --repo"),
-      "the association path never enumerates with gh issue list")
+// `forIssue` is the config behind one queued fix: the operator's depth and toggles,
+// narrowed to that issue, and the SCOPE KEPT — it is what still says this issue was
+// swept rather than named, and so has to be re-checked before it is worked.
+let sweptIssue = IssueConfig(depth: "quick", me: goldenMeSeed).forIssue(302)
+check(sweptIssue.specificIssue == "302" && sweptIssue.target == .all
+      && sweptIssue.depth == "quick",
+      "a swept issue keeps the sweep's depth and its scope")
+let sweptPrompt = sweptIssue.buildPrompt()
+check(sweptPrompt.hasPrefix("Take issue #302 in \(cfg.owner)/\(cfg.repo),"),
+      "a queued fix is the one-issue prompt, not the sweep's")
 
-// The unassigned filter: on by default for a sweep, and it reaches BOTH the search
-// qualifier and the hard rule. Off, neither survives.
-check(iAllP.contains("no:assignee") && iAllP.contains("NARROW THAT SET TO THE UNASSIGNED"),
-      "unassigned-only narrows the search and states the rule")
-let iAssignedToo = IssueConfig(me: goldenMeSeed, unassignedOnly: false).buildPrompt()
-check(!iAssignedToo.contains("no:assignee") && !iAssignedToo.contains("UNASSIGNED"),
+// What a swept issue carries that a hand-named one does not: its turn can come hours
+// later, so the state the sweep selected on is re-read before anything is touched.
+check(sweptPrompt.contains("CAME OUT OF A SWEEP") && sweptPrompt.contains("closed since"),
+      "a swept issue re-checks that nobody has closed it in the meantime")
+check(sweptPrompt.contains("UNASSIGNED WHEN THE SWEEP PICKED IT UP"),
+      "…and that nobody has claimed it")
+let iAssignedToo = IssueConfig(me: goldenMeSeed, unassignedOnly: false).forIssue(302).buildPrompt()
+check(!iAssignedToo.contains("UNASSIGNED"),
       "unassigned-only off leaves no trace of the filter")
-// A named single issue is never filtered back out by it.
 let iSingle = IssueConfig(target: .specific, specificIssue: "421").buildPrompt()
-check(iSingle.hasPrefix("Take issue #421 in"), "single-issue scope")
-check(!iSingle.contains("UNASSIGNED"), "a hand-named issue is not filtered by assignee")
-// …and the wizards do not offer the tick there either — the prompt above is the same
+check(iSingle.hasPrefix("Take issue #421 in"), "a hand-named issue names itself")
+check(!iSingle.contains("CAME OUT OF A SWEEP") && !iSingle.contains("UNASSIGNED"),
+      "…and re-checks nothing: it was named just now, by hand")
+// …and the wizard does not offer the tick there either — the prompt above is the same
 // whichever way it is left, so a tick that changed nothing would be the only lie.
 check(IssueConfig().canFilterUnassigned && !IssueConfig(target: .specific).canFilterUnassigned,
       "the unassigned tick is offered for a sweep, not for one named issue")
 
 // The claim: assigning the issue to me is what stops a second agent taking it, so it
 // has to name the command and happen BEFORE the work.
-check(iAllP.contains("--add-assignee @me") && iAllP.contains("--remove-assignee @me"),
+check(sweptPrompt.contains("--add-assignee @me") && sweptPrompt.contains("--remove-assignee @me"),
       "the claim is taken and handed back")
-check(!IssueConfig(me: goldenMeSeed, assignToMe: false).buildPrompt().contains("add-assignee"),
-      "no claim when the toggle is off")
+check(!IssueConfig(me: goldenMeSeed, assignToMe: false).forIssue(302).buildPrompt()
+        .contains("add-assignee"), "no claim when the toggle is off")
 
 // Bugs only unless the escalation is ticked — and the escalation replaces it rather
 // than stacking, so the run is never told both to skip and to take feature requests.
-check(iAllP.contains("SKIP every feature request"), "bugs only by default")
-let iFeatures = IssueConfig(me: goldenMeSeed, includeFeatures: true).buildPrompt()
-check(iFeatures.contains("FEATURE REQUESTS ARE IN SCOPE TOO"), "the escalation opens them up")
-check(!iFeatures.contains("SKIP every feature request"), "and withdraws the skip rule")
+check(sweptPrompt.contains("ONLY A REAL BUG REPORT"), "bugs only by default")
+let iFeatures = IssueConfig(me: goldenMeSeed, includeFeatures: true).forIssue(302).buildPrompt()
+check(iFeatures.contains("FEATURE REQUEST IS IN SCOPE TOO"), "the escalation opens them up")
+check(!iFeatures.contains("ONLY A REAL BUG REPORT"), "and withdraws the skip rule")
 
 // The bar every depth is held to, and the depth ladder itself. `quick` is the one
 // level that runs nothing, so it must NOT claim a reproduction.
-check(iAllP.contains("DONE MEANS OBSERVABLE PROOF"), "the bar is always present")
-check(iAllP.contains("CANNOT REPRODUCE"), "an unreproducible issue is a reported result")
-check(iAllP.contains("CONCRETE REPRODUCTION"), "the default depth reproduces")
-check(IssueConfig(depth: "quick", me: goldenMeSeed).buildPrompt()
-        .contains("QUICK PASS"), "the quick level is a read-only pass")
-check(!IssueConfig(depth: "quick", me: goldenMeSeed).buildPrompt()
-        .contains("CONCRETE REPRODUCTION"), "the quick level promises no reproduction")
-check(IssueConfig(depth: "max", me: goldenMeSeed).buildPrompt()
+check(sweptPrompt.contains("DONE MEANS OBSERVABLE PROOF"), "the bar is always present")
+check(sweptPrompt.contains("CANNOT REPRODUCE"), "an unreproducible issue is a reported result")
+check(sweptPrompt.contains("QUICK PASS"), "the quick level is a read-only pass")
+check(!sweptPrompt.contains("CONCRETE REPRODUCTION"), "the quick level promises no reproduction")
+let iDefault = IssueConfig(me: goldenMeSeed).forIssue(302).buildPrompt()
+check(iDefault.contains("CONCRETE REPRODUCTION"), "the default depth reproduces")
+check(IssueConfig(depth: "max", me: goldenMeSeed).forIssue(302).buildPrompt()
         .contains("DRIVE THE BUG THROUGH THE REAL ENTRY POINT"), "the max level runs the app")
 
-// Delivery: a draft PR that closes the issue, or nothing on the remote at all.
-check(iAllP.contains("DRAFT") && iAllP.contains("Fixes #<n>"), "a draft PR closes the issue")
-check(iAllP.contains("REGRESSION TEST WITH EVERY FIX"), "each fix ships a test that pins it")
-check(iAllP.contains("DUPLICATE") && iAllP.contains("gh pr diff"), "no duplicate PRs")
-let iHandsOff = IssueConfig(me: goldenMeSeed, openPRs: false, commentOnIssue: false).buildPrompt()
+// Delivery: a draft PR that closes the issue, or nothing on the remote at all. The
+// closing reference names THIS issue — a run that works one issue can spell it out.
+check(iDefault.contains("DRAFT") && iDefault.contains("Fixes #302"),
+      "a draft PR closes the issue it was queued for")
+check(iDefault.contains("REGRESSION TEST WITH THE FIX"), "the fix ships a test that pins it")
+check(iDefault.contains("DUPLICATE") && iDefault.contains("gh pr diff"), "no duplicate PRs")
+let iHandsOff = IssueConfig(me: goldenMeSeed, openPRs: false,
+                            commentOnIssue: false).forIssue(302).buildPrompt()
 check(iHandsOff.contains("opens NO pull requests"), "PRs off ⇒ nothing reaches the remote")
 check(!iHandsOff.contains("gh pr create"), "and no PR is opened")
 check(!iHandsOff.contains("No AI attribution"),
       "commit-authoring guidance only where we might commit")
 // The attribution tag rides on posting something — a run that posts nothing wears none.
-check(iAllP.contains("Made by Diplomat"), "a posting run carries the attribution tag")
+check(iDefault.contains("Made by Diplomat"), "a posting run carries the attribution tag")
 check(!iHandsOff.contains("Made by Diplomat"), "a silent run carries none")
-check(IssueConfig(me: goldenMeSeed, openPRs: false).buildPrompt().contains("Made by Diplomat"),
-      "the issue comment alone still earns the tag")
-check(iAllP.contains("gh issue comment"), "the outcome is reported on the issue")
-check(!IssueConfig(me: goldenMeSeed, commentOnIssue: false).buildPrompt()
+check(IssueConfig(me: goldenMeSeed, openPRs: false).forIssue(302).buildPrompt()
+        .contains("Made by Diplomat"), "the issue comment alone still earns the tag")
+check(iDefault.contains("gh issue comment 302"), "the outcome is reported on the issue")
+check(!IssueConfig(me: goldenMeSeed, commentOnIssue: false).forIssue(302).buildPrompt()
         .contains("gh issue comment"), "no comment when the toggle is off")
-// Every scope ends with the report that accounts for each issue it was handed.
-check(iAllP.contains("exactly one bucket"), "the summary accounts for every issue")
+// The run ends by accounting for the one issue it was handed, in one bucket.
+check(iDefault.contains("one report on issue #302"), "the report is about that issue")
 print("issue prompt assertions passed")
 
 // ---- Auto-fix monitor diff (edge-triggering) ----
@@ -1286,11 +1314,14 @@ check(AgentTaskQueue.freeSlots(limit: 1, running: 4) == 0,
 
 // Queue identity: two monitors owing the same PR are two tasks, and a push must
 // not lose the operator's place for either (so: not the sha-scoped mesh key).
-check(AgentTaskQueue.key(auditAction: "conflicts", prNumber: 7) == "conflicts:7",
-      "queue key is the monitor's verb plus the PR")
-check(AgentTaskQueue.key(auditAction: "review-req", prNumber: 7)
-      != AgentTaskQueue.key(auditAction: "review-reply", prNumber: 7),
+check(AgentTaskQueue.key(auditAction: "conflicts", number: 7) == "conflicts:7",
+      "queue key is the monitor's verb plus the item")
+check(AgentTaskQueue.key(auditAction: "review-req", number: 7)
+      != AgentTaskQueue.key(auditAction: "review-reply", number: 7),
       "one PR can owe two monitors — two tasks, two keys")
+check(AgentTaskQueue.key(auditAction: "review", number: 421)
+      != AgentTaskQueue.key(auditAction: "issues", number: 421),
+      "…and the verb is what keeps issue #421 off the PR of the same number")
 
 check(AgentTaskQueue.order(offered: ["a", "b", "c"], saved: []) == ["a", "b", "c"],
       "never arranged ⇒ the order the monitors found it in")
@@ -1320,17 +1351,18 @@ check(AgentTaskQueue.reorder(["a", "b"], moving: "z", onto: "a") == ["a", "b"]
 // the band is the one rule that outranks the operator's, so the two front-ends must
 // not disagree about where a conflict fix waits.
 check(AgentTaskQueue.band("conflicts:1") == 2 && AgentTaskQueue.band("review:2") == 1
-      && AgentTaskQueue.band("review-req:3") == 0 && AgentTaskQueue.band("a") == 0,
-      "a conflict fix bands last, a requested review behind the monitors' own finds, "
-      + "and everything else — including a verbless key — first")
+      && AgentTaskQueue.band("issues:3") == 1
+      && AgentTaskQueue.band("review-req:4") == 0 && AgentTaskQueue.band("a") == 0,
+      "a conflict fix bands last, both sweeps the operator asks for behind the "
+      + "monitors' own finds, and everything else — including a verbless key — first")
 check(AgentTaskQueue.order(offered: ["conflicts:1", "review:2", "review-req:3",
-                                     "review-reply:4"], saved: [])
-      == ["review-req:3", "review-reply:4", "review:2", "conflicts:1"],
-      "what GitHub is owed runs before the sweep the operator asked for, which runs "
+                                     "review-reply:4", "issues:5"], saved: [])
+      == ["review-req:3", "review-reply:4", "review:2", "issues:5", "conflicts:1"],
+      "what GitHub is owed runs before the sweeps the operator asked for, which run "
       + "before the conflict fix another agent may make unnecessary")
-check(AgentTaskQueue.order(offered: ["review:1", "review:2"], saved: ["review:2"])
-      == ["review:2", "review:1"],
-      "within the requested band the arrangement still decides")
+check(AgentTaskQueue.order(offered: ["review:1", "issues:2"], saved: ["issues:2"])
+      == ["issues:2", "review:1"],
+      "the two sweeps share one band, so the arrangement alone decides between them")
 check(AgentTaskQueue.reorder(["review-req:1", "review:2", "conflicts:3"],
                              moving: "review:2", onto: "review-req:1")
       == ["review-req:1", "review:2", "conflicts:3"]
@@ -1339,6 +1371,9 @@ check(AgentTaskQueue.reorder(["review-req:1", "review:2", "conflicts:3"],
       == ["review-req:1", "review:2", "conflicts:3"],
       "the requested band is a band like the others — a drag out of it is refused "
       + "whichever side it heads for")
+check(AgentTaskQueue.reorder(["review:1", "issues:2"], moving: "issues:2", onto: "review:1")
+      == ["issues:2", "review:1"],
+      "…and inside it a fix and a review are draggable past each other")
 check(AgentTaskQueue.order(offered: ["conflicts:1", "review-req:2"], saved: [])
       == ["review-req:2", "conflicts:1"],
       "a conflict fix waits behind a review however the monitors found them")
@@ -2052,21 +2087,19 @@ let goldenModes: [(String, String)] = [
     ("audit-issues", AuditConfig(fixIssues: true).buildPrompt()),
     ("audit-prs", AuditConfig(openPRs: true).buildPrompt()),
     ("audit-all", AuditConfig(fixIssues: true, openPRs: true).buildPrompt()),
-    ("issues-all", IssueConfig(me: goldenMe).buildPrompt()),
-    ("issues-mine", IssueConfig(target: .mine, me: goldenMe).buildPrompt()),
-    ("issues-user", IssueConfig(target: .someone, username: "someuser",
-                                me: goldenMe).buildPrompt()),
-    ("issues-contributors", IssueConfig(target: .contributors, me: goldenMe).buildPrompt()),
-    ("issues-members", IssueConfig(target: .members, me: goldenMe).buildPrompt()),
+    // The two shapes a Fix-issues run comes in. A scope never reaches the agent — it
+    // is enumerated into one queued fix per issue — so the six scopes are one golden
+    // between them, taken through `forIssue` as the sweep queues them.
+    ("issues-swept", IssueConfig(me: goldenMe).forIssue(421).buildPrompt()),
     ("issues-single", IssueConfig(target: .specific, me: goldenMe,
                                   specificIssue: "421").buildPrompt()),
     // Every action toggle off — the one golden that holds the complementary blocks
-    // (no-PRs instead of open-PRs, no unassigned filter, no claim, no attribution tag).
+    // (no-PRs instead of open-PRs, no unassigned re-check, no claim, no attribution tag).
     ("issues-hands-off", IssueConfig(me: goldenMe, unassignedOnly: false,
                                      assignToMe: false, openPRs: false,
-                                     commentOnIssue: false).buildPrompt()),
+                                     commentOnIssue: false).forIssue(421).buildPrompt()),
     ("issues-features-max", IssueConfig(depth: "max", me: goldenMe,
-                                        includeFeatures: true).buildPrompt()),
+                                        includeFeatures: true).forIssue(421).buildPrompt()),
 ]
 let goldenDir = try CoreAssets.assetsDir().appendingPathComponent("golden-prompts")
 if ProcessInfo.processInfo.environment["DIPLOMAT_GOLDEN_WRITE"] == "1" {

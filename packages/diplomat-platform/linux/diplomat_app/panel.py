@@ -734,7 +734,7 @@ class Panel(QWidget):
                 lambda tid=task.id: self.store.execute_queued_task_async(tid)
             )
             row.cancel_requested.connect(
-                lambda tid=task.id: self.store.cancel_requested_review(tid)
+                lambda tid=task.id: self.store.cancel_requested_work(tid)
             )
             row.dropped.connect(
                 lambda dragged, tid=task.id: self.store.move_queued_task(dragged, tid)

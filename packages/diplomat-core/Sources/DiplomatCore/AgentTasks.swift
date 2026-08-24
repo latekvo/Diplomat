@@ -86,39 +86,44 @@ public enum AgentTaskStatus: Int, Comparable, CaseIterable {
 /// Only the operator's arrangement of it is remembered, because that is the one
 /// thing a poll cannot reconstruct.
 ///
-/// The exception is the reviews the operator asks for by sweeping their PRs
-/// (`requestedAction`). GitHub has nothing to re-offer them from — a PR does not
-/// record that someone wanted it reviewed — so that ask is the front-end's own list,
-/// and it is the front-end that offers one task per PR on each poll until each is
-/// dispatched or its PR leaves the open state.
+/// The exception is the work the operator asks for by sweeping a scope
+/// (`requestedActions`) — a Review-PRs sweep's reviews, a Fix-issues sweep's fixes.
+/// GitHub has nothing to re-offer them from — a PR does not record that someone
+/// wanted it reviewed, nor an issue that someone swept it — so that ask is the
+/// front-end's own list, and it is the front-end that offers one task per item on
+/// each poll until each is dispatched.
 public enum AgentTaskQueue {
     /// A queued task's identity, stable across polls and applet restarts: the
-    /// monitor's verb plus the PR. Not the mesh work key — that one is scoped to a
-    /// head sha, so a push during the wait would read as a different task and lose
-    /// the operator's place for it.
+    /// monitor's verb plus the item it is about. Not the mesh work key — that one is
+    /// scoped to a head sha, so a push during the wait would read as a different task
+    /// and lose the operator's place for it.
     ///
     /// The verb is part of the key because a PR can owe two different monitors at
     /// once (a conflict *and* an unaddressed review); they are two tasks, and the
     /// one that dispatches first makes the other read as in-flight rather than
-    /// overwriting it.
-    public static func key(auditAction: String, prNumber: Int) -> String {
-        "\(auditAction):\(prNumber)"
+    /// overwriting it. It is also what keeps the two numbering spaces apart: issue
+    /// #421 and PR #421 are unrelated pieces of work, and only the verb says which
+    /// one a key names.
+    public static func key(auditAction: String, number: Int) -> String {
+        "\(auditAction):\(number)"
     }
 
-    /// The verb a review the operator asked for is queued under — the same one a
-    /// Review-PRs spawn writes to the activity feed, because it is that spawn, split
-    /// into one task per PR.
-    public static let requestedAction = "review"
+    /// The two verbs a sweep's work is queued under — the same ones the Review-PRs
+    /// and Fix-issues spawns write to the activity feed, because each ask is that
+    /// spawn, split into one task per PR / per issue.
+    public static let reviewAction = "review"
+    public static let issuesAction = "issues"
+    public static let requestedActions: Set<String> = [reviewAction, issuesAction]
 
-    /// The verbs whose work waits behind the rest, nearest-first — a requested
-    /// review, then a conflict fix, which waits behind everything. Matched off the
-    /// queue key rather than the job, because the operator's saved arrangement is a
-    /// list of keys and has to be banded the same way after a restart, with no job to
-    /// consult (`order`).
-    public static let lastActions = [requestedAction, "conflicts"]
+    /// The bands whose work waits behind the rest, nearest-first — everything the
+    /// operator asked for, then a conflict fix, which waits behind everything.
+    /// Matched off the queue key rather than the job, because the operator's saved
+    /// arrangement is a list of keys and has to be banded the same way after a
+    /// restart, with no job to consult (`order`).
+    public static let lastBands: [Set<String>] = [requestedActions, ["conflicts"]]
 
     /// Which band of the queue a task waits in: 0 for the monitors' own finds, 1 for
-    /// a review the operator asked for, 2 for a conflict fix. Bands outrank the
+    /// work the operator asked for, 2 for a conflict fix. Bands outrank the
     /// operator's arrangement; within one, the arrangement decides.
     ///
     /// A monitor's find is first because it is answering something GitHub is already
@@ -139,7 +144,7 @@ public enum AgentTaskQueue {
     /// deferred is never a fix lost.
     public static func band(_ key: String) -> Int {
         let verb = String(key.prefix(while: { $0 != ":" }))
-        return (lastActions.firstIndex(of: verb).map { $0 + 1 }) ?? 0
+        return (lastBands.firstIndex { $0.contains(verb) }.map { $0 + 1 }) ?? 0
     }
 
     /// Does the evidence of THIS poll still owe a task the queue is holding?
@@ -164,6 +169,10 @@ public enum AgentTaskQueue {
     /// on this machine retires it: it is owed until I review it, which is what the
     /// agent is for. A review the operator asked for is owed for the same reason, by
     /// their word rather than GitHub's. Unanswerable is not stale, so it stands.
+    ///
+    /// Only ever asked about a task whose number is a PR's. An issue fix the operator
+    /// asked for is numbered in the other space entirely, and the caller stands it
+    /// down rather than pricing issue #421 against the PRs closed this cycle.
     public static func stillOwed(auditAction: String, prNumber: Int,
                                  conflicting: Set<Int>,
                                  owingReply: Set<Int>,
@@ -218,7 +227,7 @@ public enum AgentTaskQueue {
         // Banded by a stable partition rather than `sort`, which is not guaranteed
         // stable in the standard library: everything above keeps its place within
         // the band it lands in, and that order is the operator's arrangement.
-        return (0...lastActions.count).flatMap { b in out.filter { band($0) == b } }
+        return (0...lastBands.count).flatMap { b in out.filter { band($0) == b } }
     }
 
     /// One drag: `moving` lands where it was dropped relative to `onto` — after it

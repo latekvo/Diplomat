@@ -205,7 +205,7 @@ class ReviewConfig(PRSweepConfig):
         nothing derived. Split out of :meth:`build_prompt` because a queued review is
         stored as this payload: it is already the serialised form of the config, kept
         in step with the Swift builder by the golden-prompt tests, so persisting it
-        needs no second spelling of these fields (``Store.requested_reviews``)."""
+        needs no second spelling of these fields (``Store.requested_work``)."""
         return {
             "kind": "review",
             "depth": self.depth,
@@ -229,59 +229,6 @@ class ReviewConfig(PRSweepConfig):
         from . import promptcore
 
         return promptcore.build_prompt(self.prompt_payload())
-
-
-# MARK: - A review the operator has asked for
-
-
-@dataclass(frozen=True)
-class RequestedReview:
-    """One PR a Review-PRs sweep asked to have reviewed, waiting for a free slot.
-
-    A sweep is expanded into one of these per PR it covers instead of one agent told
-    to work through all fifty, so each gets a bay of the task cap to itself and the
-    panel can show, hold and reorder them one by one.
-
-    This is the only work in the queue the applet has to REMEMBER. Everything else
-    there is a monitor's find, re-derived from GitHub on every poll — but a PR records
-    nothing about somebody having wanted it reviewed, so if this list is lost the ask
-    is lost with it. Hence the whole payload rather than a PR number: it is what the
-    prompt is assembled from, at the press and again after a restart, so the agent
-    that eventually runs is the one the wizard would have opened at the click.
-    """
-
-    number: int
-    url: str
-    #: Whose PR — the pipeline's ban dimension. Empty for my own.
-    author: str
-    #: :meth:`ReviewConfig.prompt_payload` for this one PR.
-    config: dict
-
-    @property
-    def label(self) -> str:
-        """The row this task wears in the panel and the activity feed. Carries the
-        depth because that is the choice a sweep is worth re-reading later: the same
-        PR queued from a `max` sweep and from a `quick` one are different jobs."""
-        return f"Review · #{self.number} · {self.config.get('depth', '')}"
-
-    def to_json(self) -> dict:
-        return {"pr": self.number, "url": self.url, "author": self.author,
-                "config": self.config}
-
-    @staticmethod
-    def from_json(obj: dict) -> "RequestedReview | None":
-        """One stored row, or ``None`` when it is not one. A hand-edited or
-        part-written entry drops out of the list rather than taking the applet's whole
-        queue down with it — the same degradation every other state file here gets."""
-        try:
-            number = int(obj["pr"])
-            config = obj["config"]
-        except (KeyError, TypeError, ValueError):
-            return None
-        if not isinstance(config, dict):
-            return None
-        return RequestedReview(number=number, url=str(obj.get("url", "")),
-                               author=str(obj.get("author", "")), config=config)
 
 
 # MARK: - Terminal choice + spawning

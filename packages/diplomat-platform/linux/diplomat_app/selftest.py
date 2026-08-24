@@ -6,7 +6,7 @@ Mirrors the macOS ``Dump`` enum so the two front-ends can be cross-checked:
     DIPLOMAT_LOOKUP=337       reverse-lookup one number through the real Store
     DIPLOMAT_PRINT_PROMPT=... assemble + print a wizard's prompt: mine|user|single for
                               Review, conflicts[-user|-single], audit[-issues|-prs|-all],
-                              issues[-mine|-user|-contributors|-members|-single][-features]
+                              issues[-single][-features]
 
 None of these need a display; they only touch QtCore (QSettings) + gh.
 """
@@ -168,35 +168,22 @@ def _run_audit_prompt(m: str) -> int:
 
 
 def _run_issue_prompt(m: str) -> int:
-    """Fix-issues variant: issues[-mine|-user|-contributors|-members|-single][-features]."""
+    """Fix-issues variant: issues[-single][-features].
+
+    Every Fix-issues run works ONE issue, so the mode picks between the two shapes one
+    comes in: "issues-single" (an issue named by hand in the wizard) and anything else
+    (e.g. "issues") = one issue of a sweep, which carries the re-checks a named one
+    does not. Mirrors ``printIssuePrompt`` in DiplomatApp.swift."""
     from .issues import IssueConfig, Target, depth_by_id
 
-    if "single" in m or "specific" in m:
-        target = Target.SPECIFIC
-    elif "contributors" in m:
-        target = Target.CONTRIBUTORS
-    elif "members" in m:
-        target = Target.MEMBERS
-    elif "user" in m:
-        target = Target.SOMEONE
-    elif "mine" in m:
-        target = Target.MINE
-    else:
-        target = Target.ALL
-    cfg = IssueConfig(
-        target=target,
-        username="someuser" if target == Target.SOMEONE else "",
+    named = "single" in m or "specific" in m
+    wizard = IssueConfig(
+        target=Target.SPECIFIC if named else Target.ALL,
         me="latekvo",
-        specific_issue="421" if target == Target.SPECIFIC else "",
+        specific_issue="421" if named else "",
         include_features="features" in m,
     )
-    label = {
-        Target.ALL: "all open issues",
-        Target.MINE: "my issues",
-        Target.SOMEONE: "someone else's issues",
-        Target.CONTRIBUTORS: "contributors' issues",
-        Target.MEMBERS: "org members' issues",
-        Target.SPECIFIC: "single issue #421",
-    }[target]
+    cfg = wizard if named else wizard.for_issue(421)
+    label = "issue #421, named by hand" if named else "issue #421, out of a sweep"
     depth = depth_by_id(cfg.depth)["title"]
     return _print_prompt_dump(f"IssueConfig: {label} · depth={depth}", cfg.build_prompt())

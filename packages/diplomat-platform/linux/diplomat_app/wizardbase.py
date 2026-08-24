@@ -3,8 +3,11 @@
 Review, Fix-issues, Resolve-conflicts and Full-E2E each collect different inputs,
 but from the SPAWN click onwards they are one routine, which lives here once:
 
-* if the mesh row is live and ticked, hand the prompt to the local node and let
-  it place the job — disabling SPAWN so a second click can't double-dispatch;
+* a Review-PRs or Fix-issues SCOPE opens no session at all — it queues one task
+  per PR / per issue for the task cap to start (:meth:`_queue_sweep`);
+* otherwise, if the mesh row is live and ticked, hand the prompt to the local node
+  and let it place the job — disabling SPAWN so a second click can't
+  double-dispatch;
 * otherwise run the job through :meth:`Store.dispatch_agent`, the same gate the
   PR auto-fix monitor rides (dedup by PR, ban check, registration) — only the
   trigger and its policies differ;
@@ -22,6 +25,7 @@ ConflictWizard/AuditWizard.swift, which mirror this same branch.
 
 from __future__ import annotations
 
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 
 from diplomat_runtime import review
@@ -32,11 +36,25 @@ from .store import Store
 
 class SpawnWizard(QWidget):
     """Base for the four wizards: owns the mesh row, the SPAWN button and the
-    dispatch branch. Subclasses build their own inputs and supply the four hooks
-    below."""
+    dispatch branch. Subclasses build their own inputs and supply the hooks below."""
+
+    #: ``(queued, already_queued, error)`` from a sweep's fan-out worker, which
+    #: assembles a prompt per item off the UI thread. Queued to the main thread,
+    #: because that is the only one Qt lets touch the status line.
+    _swept = Signal(int, int, str)
+
+    #: The nouns a sweep's status line is written out of: one item it covers ("PR" /
+    #: "issue"), many of them ("PRs" / "issues"), and what it queues one of per item,
+    #: singular and plural ("review"/"reviews", "fix"/"fixes" — the plural is spelt
+    #: out because "fix" does not take a bare -s). Set by the two wizards that sweep.
+    _sweep_item = ""
+    _sweep_plural = ""
+    _sweep_unit = ""
+    _sweep_units = ""
 
     def __init__(self, store: Store, *, kind: str, tint: str) -> None:
         super().__init__()
+        self._swept.connect(self._sweep_queued)
         self.store = store
         # The duty id, the AgentJob kind and the activity-feed action verb are one
         # and the same string for every wizard ("review" / "issues" / "conflicts" /
@@ -102,9 +120,18 @@ class SpawnWizard(QWidget):
 
     # ---- the dispatch branch ---------------------------------------------
 
+    def _sweeps(self) -> bool:
+        """Whether this click queues a sweep instead of opening one session. False for
+        the two wizards that have no scope axis at all; the other two override the hook
+        below and answer it from their target."""
+        return False
+
     def _spawn(self) -> None:
         from diplomat_runtime import activity, autofix
 
+        if self._sweeps():
+            self._queue_sweep()
+            return
         cfg = self._config()
         label = self._label()
         if self.mesh_row.use_mesh():
@@ -134,6 +161,41 @@ class SpawnWizard(QWidget):
             autofix.SOURCE_PANEL,
         )
         self.status.setText(widgets.dispatch_status_text(verdict, term.title))
+
+    def _queue_sweep(self) -> None:
+        """Expand a scope into one queued task per item it covers.
+
+        SPAWN is disabled for the round trip, as the mesh branch does with its own —
+        the fan-out assembles a prompt per item and a second press meanwhile would ask
+        for the sweep twice. What lands is reported by :meth:`_sweep_queued`, back on
+        the GUI thread."""
+        if not self.store.has_loaded:
+            self.status.setText(
+                f"{self._sweep_plural} haven't loaded yet — refresh, then sweep.")
+            return
+        self._dispatch_inflight = True
+        self._restyle_spawn()
+        self.status.setText(f"Queueing one {self._sweep_unit} per {self._sweep_item}…")
+        self.store.request_sweep_async(
+            self._config(),
+            lambda queued, already, err: self._swept.emit(queued, already, err))
+
+    def _sweep_queued(self, queued: int, already: int, err: str) -> None:
+        """Report what the sweep put in the queue, and hand SPAWN back through
+        ``_sync`` so it returns to whatever the CURRENT inputs warrant."""
+        self._dispatch_inflight = False
+        if err:
+            self.status.setText(f"Couldn't queue the sweep: {err}")
+        elif queued:
+            waiting = f" ({already} already queued)" if already else ""
+            unit = self._sweep_unit if queued == 1 else self._sweep_units
+            self.status.setText(
+                f"Queued {queued} {unit}{waiting} — they start as slots free.")
+        elif already:
+            self.status.setText(f"All {already} are queued already.")
+        else:
+            self.status.setText(f"No open {self._sweep_plural} in that scope.")
+        self._sync()
 
     def _mesh_done(self, results: list, err: str) -> None:
         """A mesh dispatch settled: hand SPAWN back and report where it landed.

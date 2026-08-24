@@ -368,35 +368,18 @@ enum Dump {
                         prompt: cfg.buildPrompt())
     }
 
-    /// Same as `printPrompt`, but for the Fix-issues wizard. `mode` selects the
-    /// scope: "issues-single" (one issue), "issues-user" (someone else's),
-    /// "issues-contributors", "issues-members", "issues-mine", anything else
-    /// (e.g. "issues") = every open issue. A "-features" suffix ticks the escalation.
+    /// Same as `printPrompt`, but for the Fix-issues wizard. Every Fix-issues run
+    /// works ONE issue, so `mode` picks between the two shapes one comes in:
+    /// "issues-single" (an issue named by hand in the wizard) and anything else
+    /// (e.g. "issues") = one issue of a sweep, which carries the re-checks a named
+    /// one does not. A "-features" suffix ticks the escalation.
     static func printIssuePrompt(mode: String) {
-        let target: IssueTarget = {
-            if mode.contains("single") || mode.contains("specific") { return .specific }
-            if mode.contains("contributors") { return .contributors }
-            if mode.contains("members") { return .members }
-            if mode.contains("user") { return .someone }
-            if mode.contains("mine") { return .mine }
-            return .all
-        }()
-        let cfg = IssueConfig(
-            target: target,
-            username: target == .someone ? "someuser" : "",
-            me: "latekvo",
-            specificIssue: target == .specific ? "421" : "",
-            includeFeatures: mode.contains("features"))
-        let label: String = {
-            switch target {
-            case .all:          return "all open issues"
-            case .mine:         return "my issues"
-            case .someone:      return "someone else's issues"
-            case .contributors: return "contributors' issues"
-            case .members:      return "org members' issues"
-            case .specific:     return "single issue #421"
-            }
-        }()
+        let named = mode.contains("single") || mode.contains("specific")
+        let wizard = IssueConfig(target: named ? .specific : .all, me: "latekvo",
+                                 specificIssue: named ? "421" : "",
+                                 includeFeatures: mode.contains("features"))
+        let cfg = named ? wizard : wizard.forIssue(421)
+        let label = named ? "issue #421, named by hand" : "issue #421, out of a sweep"
         let depth = IssueCatalog.depth(id: cfg.depth).title
         printPromptDump(header: "IssueConfig: \(label) · depth=\(depth)",
                         prompt: cfg.buildPrompt())

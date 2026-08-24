@@ -562,8 +562,13 @@ enum Render {
             // One PR of a sweep the operator asked for: no "Auto · " on its label, and
             // the one kind of row that can be cancelled.
             queuedFixture(number: 503, kind: "review",
-                          auditAction: AgentTaskQueue.requestedAction,
+                          auditAction: AgentTaskQueue.reviewAction,
                           label: "Review · #503 · deep", counter: nil),
+            // …and one issue of a Fix-issues sweep, which shares that band and is
+            // cancellable for the same reason.
+            queuedFixture(number: 421, kind: "issues",
+                          auditAction: AgentTaskQueue.issuesAction,
+                          label: "Issues · #421 · deep", counter: nil),
             queuedFixture(number: 508, kind: "conflicts", auditAction: "conflicts",
                           label: "Resolve · #508", counter: .conflicts, attemptNumber: 2),
             starting,
@@ -585,16 +590,21 @@ enum Render {
     /// One queued-task fixture. The prompt is empty on purpose: a render never
     /// dispatches, and an assembled prompt here would only be a second, drifting copy
     /// of the golden ones.
+    ///
+    /// A Fix-issues row carries no PR, matching what the sweep queues: the number is
+    /// an issue's, and the pipeline's dedup is PR-shaped.
     @MainActor
     private static func queuedFixture(number: Int, kind: String, auditAction: String,
                                       label: String, counter: Store.AutoCounter?,
                                       attemptNumber: Int = 1) -> Store.QueuedAgentTask {
-        let url = "https://github.com/software-mansion/argent/pull/\(number)"
+        let isPR = kind != "issues"
         return Store.QueuedAgentTask(
-            id: AgentTaskQueue.key(auditAction: auditAction, prNumber: number),
-            job: Store.AgentJob(kind: kind, auditAction: auditAction, label: label,
-                                prompt: "", prURL: url, prNumber: number,
-                                authorLogin: nil, duty: kind, workKey: "", counter: counter),
+            id: AgentTaskQueue.key(auditAction: auditAction, number: number),
+            job: Store.AgentJob(
+                kind: kind, auditAction: auditAction, label: label, prompt: "",
+                prURL: isPR ? "https://github.com/software-mansion/argent/pull/\(number)" : nil,
+                prNumber: isPR ? number : nil,
+                authorLogin: nil, duty: kind, workKey: "", counter: counter),
             attemptNumber: attemptNumber)
     }
 

@@ -38,9 +38,12 @@ class WizardView(SpawnWizard):
     # Carries (pending_pr_text, author_login_or_empty) so the slot can ignore a
     # result superseded by newer keystrokes - mirrors the macOS `pending` guard.
     _author_resolved = Signal(str, str)
-    # (queued, already_queued, error) from a sweep's fan-out worker, which assembles a
-    # prompt per PR off the UI thread.
-    _sweep_queued = Signal(int, int, str)
+
+    # A whose-PRs sweep queues one review per PR (SpawnWizard._queue_sweep).
+    _sweep_item = "PR"
+    _sweep_plural = "PRs"
+    _sweep_unit = "review"
+    _sweep_units = "reviews"
 
     def __init__(self, store: Store) -> None:
         super().__init__(store, kind="review", tint=_TINT)
@@ -56,7 +59,6 @@ class WizardView(SpawnWizard):
         # The PR text the in-flight poll was launched for (debounce/supersede guard).
         self._author_pending: str | None = None
         self._author_resolved.connect(self._on_author_resolved)
-        self._sweep_queued.connect(self._on_sweep_queued)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -333,46 +335,12 @@ class WizardView(SpawnWizard):
 
     # MARK: spawn — one PR opens a session, a sweep fills the queue
 
-    def _spawn(self) -> None:
+    def _sweeps(self) -> bool:
         """A single PR is one agent, and the base class dispatches it. A whose-PRs
-        sweep is not: it becomes one queued review per PR (``Store.request_review_sweep``)
-        so the task cap decides how many run at once, rather than one agent being
-        handed every draft in the repo at the same time.
-
-        SPAWN is disabled for the round trip, as the mesh branch does with its own —
-        the fan-out assembles a prompt per PR and a second press meanwhile would ask
-        for the sweep twice."""
-        cfg = self._config()
-        if cfg.is_single_pr:
-            super()._spawn()
-            return
-        if not self.store.has_loaded:
-            self.status.setText("PRs haven't loaded yet — refresh, then sweep.")
-            return
-        self._dispatch_inflight = True
-        self._restyle_spawn()
-        self.status.setText("Queueing one review per PR…")
-        self.store.request_review_sweep_async(
-            cfg, lambda queued, already, err: self._sweep_queued.emit(queued, already, err)
-        )
-
-    def _on_sweep_queued(self, queued: int, already: int, err: str) -> None:
-        """Main-thread slot: report what the sweep put in the queue, and hand SPAWN
-        back through ``_sync`` so it returns to whatever the CURRENT inputs warrant."""
-        self._dispatch_inflight = False
-        if err:
-            self.status.setText(f"Couldn't queue the sweep: {err}")
-        elif queued:
-            waiting = f" ({already} already queued)" if already else ""
-            self.status.setText(
-                f"Queued {queued} review{'' if queued == 1 else 's'}{waiting} — "
-                "they start as slots free."
-            )
-        elif already:
-            self.status.setText(f"All {already} are queued already.")
-        else:
-            self.status.setText("No open PRs in that scope.")
-        self._sync()
+        sweep is not: it becomes one queued review per PR
+        (``Store.request_review_sweep``) so the task cap decides how many run at once,
+        rather than one agent being handed every draft in the repo at the same time."""
+        return not self._config().is_single_pr
 
     def _label(self) -> str:
         cfg = self._config()
