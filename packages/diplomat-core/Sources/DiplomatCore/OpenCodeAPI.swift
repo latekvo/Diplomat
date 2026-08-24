@@ -3,13 +3,21 @@ import Foundation
 /// Reading an OpenCode agent's own session — the Swift twin of `diplomat_runtime/opencodeapi.py`.
 ///
 /// An OpenCode TUI given `--port` serves its session over HTTP on loopback while it
-/// works, and that server answers the two questions the applet has always had to guess
-/// at:
+/// works, and that server answers the question the applet has always had to guess at:
+/// **is this run working, or back at its prompt?** It keeps a status per session —
+/// `busy`, `retry` or idle — the same one its own TUI draws from, and it stamps each
+/// message it finishes. Neither is an inference from how a status bar happened to be
+/// drawn.
 ///
-/// * **is this run working, or back at its prompt?** — its last message carries a
-///   completion stamp, set the instant the turn ends. A stamp is positive evidence the
-///   turn is over; its absence is positive evidence it is still in flight. Neither is an
-///   inference from how a status bar happened to be drawn.
+/// Both are read, and a turn is over only when they agree: the server is running no
+/// turn in this session AND the last thing it wrote was a finished message. Each covers
+/// the other's one blind spot. The status alone calls a session idle in the moment
+/// between its server coming up and its first turn starting, which would retire a run
+/// seconds after it launched. The stamp alone calls a turn over between every two STEPS
+/// of one: OpenCode writes an assistant message per step, each stamped as it completes,
+/// and the gaps between them are short but there are hundreds of them in a long review
+/// (1.4.3: 164 gaps in one 2.5-hour session, up to 757ms each) — enough that a poll
+/// lands in one.
 ///
 /// What the run SPENT is not asked here. A turn's price is per-message, so a run's is a
 /// sum over its whole transcript, and this poll reads one message; a finished run is
@@ -97,20 +105,41 @@ public enum OpenCodeAPI {
         return text == prompt
     }
 
-    /// What the last message says: working or done, and what it cost.
+    /// Is a turn in flight in this session, per `GET /session/status`?
     ///
-    /// `nil` when there is no message to read — a session created but not yet written to.
-    /// That is not "idle": a run whose turn has not started has not finished either, and
-    /// saying so would retire an agent seconds after it launched.
+    /// A session the server is not working on is absent from the map, so absence is the
+    /// ordinary way to be idle. An entry that names itself `idle` is read as idle too,
+    /// rather than as "present, therefore busy" — the two spellings mean one thing, and
+    /// the resolver must not hold a run open because its server chose the other.
     ///
-    /// A message with no completion stamp is a turn in flight. That covers a provider
-    /// retry as well as ordinary work, which is the right reading of both: the agent is
-    /// not back at its prompt and nothing else may be dispatched over it.
-    public static func stateOf(_ messages: [[String: Any]]) -> AgentState.SessionState? {
-        guard let last = messages.last,
+    /// Every other entry is a turn in flight, `retry` included: an agent waiting out a
+    /// provider's backoff is not back at its prompt and nothing may be dispatched over
+    /// it. An entry of a shape this does not know is one too — being listed at all is
+    /// the server tracking the session, and only the two readings above are safe to end
+    /// a run on.
+    public static func isRunning(_ statuses: [String: Any], sessionID: String) -> Bool {
+        guard let entry = statuses[sessionID] else { return false }
+        return (entry as? [String: Any])?["type"] as? String != "idle"
+    }
+
+    /// Whether this session's turn is still in flight — from its server's status and its
+    /// last message together, which is the whole of what makes the answer safe.
+    ///
+    /// `nil` — "ask the screen instead" — for either half being missing: a status the
+    /// server would not report, and a session created but not yet written to. Neither is
+    /// "idle". A run whose turn has not started has not finished either, and saying so
+    /// would retire an agent seconds after it launched.
+    ///
+    /// Busy while the server says a turn is running, and busy again for a last message
+    /// with no completion stamp. It takes both to call a turn over: the status is what
+    /// holds a run open across the sub-second gaps between the steps of one turn, and the
+    /// stamp is what holds it open before its first turn has begun.
+    public static func stateOf(_ messages: [[String: Any]],
+                               running: Bool?) -> AgentState.SessionState? {
+        guard let running, let last = messages.last,
               let info = last["info"] as? [String: Any] else { return nil }
         let time = info["time"] as? [String: Any] ?? [:]
-        return AgentState.SessionState(busy: (time["completed"] as? NSNumber) == nil)
+        return AgentState.SessionState(busy: running || (time["completed"] as? NSNumber) == nil)
     }
 
     /// What a whole session spent, from the messages `opencode export` returns.

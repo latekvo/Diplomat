@@ -43,12 +43,19 @@ enum OpenCodeProbe {
         return ""
     }
 
-    /// What that session's last message says: working, or back at its prompt.
+    /// Whether that session's turn is still in flight.
+    ///
+    /// Both halves of the answer — see `OpenCodeAPI.stateOf` for which blind spot each
+    /// of them covers.
     static func state(_ r: AgentState.RunRecord, sessionID: String) -> AgentState.SessionState? {
-        guard let port = AgentRegistry.port(r.runID),
-              let messages = messages(port: port, sessionID: sessionID, limit: 1)
-        else { return nil }
-        return OpenCodeAPI.stateOf(messages)
+        guard let port = AgentRegistry.port(r.runID) else { return nil }
+        let running = statuses(port: port).map {
+            OpenCodeAPI.isRunning($0, sessionID: sessionID)
+        }
+        // Nothing is fetched to pair with a status that is not there: the answer is
+        // already "ask the screen", and an unreachable port charges a full timeout.
+        let last = running == nil ? [] : messages(port: port, sessionID: sessionID, limit: 1) ?? []
+        return OpenCodeAPI.stateOf(last, running: running)
     }
 
     /// A port nothing is listening on, or nil if one cannot be had.
@@ -96,6 +103,18 @@ enum OpenCodeProbe {
         get(port: port, path: "/session")
     }
 
+    /// What this run's server is working on, session id → its status.
+    ///
+    /// Scoped to the server asked, not to the machine: unlike `GET /session`, which
+    /// answers out of the shared store, this is the live state of the process holding the
+    /// port — a run's own turn and its subagents', and nothing another run is doing.
+    ///
+    /// An idle session is simply absent, so this is a small response whatever the agent is
+    /// up to. `nil` when the server could not answer, which is never "idle".
+    static func statuses(port: Int) -> [String: Any]? {
+        get(port: port, path: "/session/status")
+    }
+
     /// A session's messages, oldest first. `limit` keeps only the last that many.
     ///
     /// The sweep wants one message and the binding wants the first, so both spellings are
@@ -106,15 +125,21 @@ enum OpenCodeProbe {
         return get(port: port, path: "/session/\(sessionID)/message\(suffix)")
     }
 
-    private static func get(port: Int, path: String) -> [[String: Any]]? {
+    /// One GET against a run's server, decoded to whatever shape the caller asked for —
+    /// an array of objects for the two listings, one object for the statuses.
+    ///
+    /// A payload of the wrong shape reads as nil, like every other failure: a port the
+    /// kernel handed to some other daemon between the reservation and the agent's own
+    /// bind answers something, and answering something is not answering this.
+    private static func get<T>(port: Int, path: String) -> T? {
         guard let url = URL(string: "http://\(OpenCodeAPI.host):\(port)\(path)") else { return nil }
-        var payload: [[String: Any]]?
+        var payload: T?
         let done = DispatchSemaphore(value: 0)
         URLSession.shared.dataTask(with: URLRequest(url: url,
                                                     timeoutInterval: OpenCodeAPI.timeout)) { data, _, _ in
             defer { done.signal() }
             guard let data, data.count <= OpenCodeAPI.maxBytes else { return }
-            payload = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]]
+            payload = (try? JSONSerialization.jsonObject(with: data)) as? T
         }.resume()
         // The request carries its own timeout; the wait is bounded a little wider so a
         // sweep can never park here forever if the task never calls back.

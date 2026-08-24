@@ -2,10 +2,19 @@
 
 An OpenCode TUI given ``--port`` serves its own session over HTTP on loopback while
 it works, and that server answers the question the applet has always had to guess at:
-**is this run working, or back at its prompt?** Its last message carries a completion
-stamp, set the instant the turn ends. A stamp is positive evidence the turn is over;
-its absence is positive evidence it is still in flight. Neither is an inference from
-how a status bar happened to be drawn.
+**is this run working, or back at its prompt?** It keeps a status per session —
+``busy``, ``retry`` or idle — the same one its own TUI draws from, and it stamps each
+message it finishes. Neither is an inference from how a status bar happened to be
+drawn.
+
+Both are read, and a turn is over only when they agree: the server is running no turn
+in this session AND the last thing it wrote was a finished message. Each covers the
+other's one blind spot. The status alone calls a session idle in the moment between
+its server coming up and its first turn starting, which would retire a run seconds
+after it launched. The stamp alone calls a turn over between every two STEPS of one:
+OpenCode writes an assistant message per step, each stamped as it completes, and the
+gaps between them are short but there are hundreds of them in a long review (1.4.3:
+164 gaps in one 2.5-hour session, up to 757ms each) — enough that a poll lands in one.
 
 What the run SPENT is not asked here. A turn's price is per-message, so a run's is a
 sum over its whole transcript, and this poll reads one message — :mod:`usagescan`
@@ -131,6 +140,20 @@ def sessions(port: int) -> list[dict] | None:
     return data if isinstance(data, list) else None
 
 
+def statuses(port: int) -> dict | None:
+    """What this run's server is working on, session id → its status.
+
+    Scoped to the server asked, not to the machine: unlike ``GET /session``, which
+    answers out of the shared store, this is the live state of the process holding the
+    port — a run's own turn and its subagents', and nothing another run is doing.
+
+    An idle session is simply absent, so this is a small response whatever the agent is
+    up to. ``None`` when the server could not answer, which is never "idle".
+    """
+    data = _get(port, "/session/status")
+    return data if isinstance(data, dict) else None
+
+
 def messages(port: int, session_id: str, limit: int = 0) -> list[dict] | None:
     """A session's messages, oldest first. ``limit`` keeps only the last that many.
 
@@ -204,18 +227,41 @@ def is_ours(session_messages: list[dict], prompt: str) -> bool:
     return "".join(texts) == prompt
 
 
-def state_of(session_messages: list[dict]) -> SessionState | None:
-    """What the last message says: working or done, and what it cost.
+def is_running(session_statuses: dict, session_id: str) -> bool:
+    """Is a turn in flight in this session, per :func:`statuses`?
 
-    ``None`` when there is no message to read — a session created but not yet
-    written to. That is not "idle": a run whose turn has not started has not
-    finished either, and saying so would retire an agent seconds after it launched.
+    A session the server is not working on is absent from the map, so absence is the
+    ordinary way to be idle. An entry that names itself ``idle`` is read as idle too,
+    rather than as "present, therefore busy" — the two spellings mean one thing, and
+    the ladder above must not hold a run open because its server chose the other.
 
-    A message with no completion stamp is a turn in flight. That covers a provider
-    retry as well as ordinary work, which is the right reading of both: the agent is
-    not back at its prompt and nothing else may be dispatched over it.
+    Every other entry is a turn in flight, ``retry`` included: an agent waiting out a
+    provider's backoff is not back at its prompt and nothing may be dispatched over it.
+    An entry of a shape this does not know is one too — being listed at all is the
+    server tracking the session, and only the two readings above are safe to end a run
+    on.
     """
-    if not session_messages:
+    if session_id not in session_statuses:
+        return False
+    entry = session_statuses[session_id]
+    return not (isinstance(entry, dict) and entry.get("type") == "idle")
+
+
+def state_of(session_messages: list[dict], running: bool | None) -> SessionState | None:
+    """Whether this session's turn is still in flight — from its server's status and
+    its last message together, which is the whole of what makes the answer safe.
+
+    ``None`` — "ask the screen instead" — for either half being missing: a status the
+    server would not report, and a session created but not yet written to. Neither is
+    "idle". A run whose turn has not started has not finished either, and saying so
+    would retire an agent seconds after it launched.
+
+    Busy while the server says a turn is running, and busy again for a last message
+    with no completion stamp. It takes both to call a turn over: the status is what
+    holds a run open across the sub-second gaps between the steps of one turn, and the
+    stamp is what holds it open before its first turn has begun.
+    """
+    if running is None or not session_messages:
         return None
     last = session_messages[-1]
     if not isinstance(last, dict):
@@ -224,7 +270,7 @@ def state_of(session_messages: list[dict]) -> SessionState | None:
     if not isinstance(info, dict):
         return None
     completed = _sub(info, "time").get("completed")
-    return SessionState(busy=not isinstance(completed, (int, float)))
+    return SessionState(busy=running or not isinstance(completed, (int, float)))
 
 
 def session_tokens(session_messages: list) -> float:

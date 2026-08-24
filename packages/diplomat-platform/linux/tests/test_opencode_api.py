@@ -2,14 +2,15 @@
 
 The screen was never evidence. ``esc interrupt`` is a string from someone else's UI,
 and every agent reads as idle the moment they reword it — the cap empties, the
-monitors burst, and nothing anywhere says so. A run that serves its own session can
-be asked instead, and the answer is a completion stamp: present means the turn ended,
-absent means it did not.
+monitors burst, and nothing anywhere says so. A run that serves its own session can be
+asked instead, and it answers twice: the server's own status for the session, and a
+completion stamp on the last message it wrote. A turn is over only when both say so.
 
 Three things have to hold for that to be worth having, and each is a group below:
 
 * the answer must be **read correctly** — including that "no messages yet" is not
-  "idle", which would retire an agent seconds after it launched;
+  "idle", which would retire an agent seconds after it launched, and that a stamped
+  message is not a finished turn while the server is still running one;
 * the run must be matched to **its own** session — OpenCode keeps one store for the
   whole machine, so a run's own server lists the box's recent history, and the
   applet's task cap makes "two agents in one checkout" the ordinary case;
@@ -38,6 +39,10 @@ PROMPT = "Review PR #7 in o/r"
 #: One session, mid-turn: an assistant message with no completion stamp.
 WORKING = [{"info": {"role": "assistant", "time": {"created": 1.0}}}]
 
+#: ``GET /session/status`` while a turn is running in ``ses_ours`` — the shape a real
+#: 1.4.3 server answers with, its own session and its subagents' and nobody else's.
+BUSY_STATUS = {"ses_ours": {"type": "busy"}}
+
 #: The same message once the turn ended — verbatim in shape from a real OpenCode
 #: 1.4.3 run, including the token split the applet has to be selective about.
 FINISHED = [{"info": {
@@ -59,18 +64,34 @@ def opening(text: str) -> list[dict]:
 
 
 def test_a_turn_with_no_completion_stamp_is_still_in_flight():
-    assert opencodeapi.state_of(WORKING) == SessionState(busy=True)
+    assert opencodeapi.state_of(WORKING, False) == SessionState(busy=True)
 
 
 def test_a_completed_turn_reads_as_back_at_the_prompt():
-    assert opencodeapi.state_of(FINISHED) == SessionState(busy=False)
+    assert opencodeapi.state_of(FINISHED, False) == SessionState(busy=False)
+
+
+def test_a_stamped_step_is_not_a_finished_turn():
+    """OpenCode writes an assistant message per STEP of a turn, each stamped as it
+    completes, so between two steps the last message reads finished while the agent is
+    mid tool call. Rare per poll and certain over a run: one real 1.4.3 review left 164
+    such gaps, up to 757ms each. The server's status is what spans them, and reading
+    the stamp alone is what would retire an agent in the middle of its work."""
+    assert opencodeapi.state_of(FINISHED, True) == SessionState(busy=True)
 
 
 def test_a_session_with_no_messages_is_not_idle():
     """It has not started, which is not the same as having finished. Reading it as
     idle would hand a bay back — and let a second agent onto the PR — seconds after
     the first one launched."""
-    assert opencodeapi.state_of([]) is None
+    assert opencodeapi.state_of([], False) is None
+
+
+def test_a_status_the_server_would_not_report_is_not_a_finished_turn():
+    """The other half of the same rule. A server still coming up, or one that answered
+    something that is not a status, is a run to read off its screen — never one to
+    end."""
+    assert opencodeapi.state_of(FINISHED, None) is None
 
 
 @pytest.mark.parametrize("payload", [
@@ -82,8 +103,44 @@ def test_a_session_with_no_messages_is_not_idle():
 def test_a_malformed_message_never_reads_as_finished(payload):
     """The one direction that must not be reachable by accident: every gap has to cost
     a bay, not end a run."""
-    state = opencodeapi.state_of(payload)
+    state = opencodeapi.state_of(payload, False)
     assert state is None or state.busy is True
+
+
+# MARK: - Is a turn running right now
+
+
+def test_a_session_the_server_is_not_working_on_is_absent_from_the_map():
+    assert opencodeapi.is_running({}, "ses_ours") is False
+    assert opencodeapi.is_running(BUSY_STATUS, "ses_ours") is True
+
+
+def test_another_sessions_turn_says_nothing_about_this_one():
+    """A run's server reports its own session and its subagents'. Reading the map as
+    "anything running" would make every run with a subagent — and every run beside one
+    — permanently busy."""
+    assert opencodeapi.is_running(BUSY_STATUS, "ses_theirs") is False
+
+
+def test_a_provider_retry_is_a_turn_still_in_flight():
+    """The agent is waiting out a backoff, not back at its prompt, and nothing may be
+    dispatched over it."""
+    assert opencodeapi.is_running({"ses_ours": {"type": "retry"}}, "ses_ours") is True
+
+
+def test_a_status_that_names_itself_idle_is_idle():
+    """Absence is the ordinary spelling and the only one 1.4.3 uses, but the two mean
+    one thing — read as "present, therefore busy", the explicit spelling would hold
+    every finished run open for ever, which is the bug this evidence exists to end."""
+    assert opencodeapi.is_running({"ses_ours": {"type": "idle"}}, "ses_ours") is False
+
+
+@pytest.mark.parametrize("payload", [{"ses_ours": "busy"}, {"ses_ours": None},
+                                    {"ses_ours": {}}])
+def test_a_status_entry_of_a_shape_we_cannot_read_is_a_turn_in_flight(payload):
+    """Listed at all is the server tracking the session. Absence is the one answer that
+    ends a run, so a reworded status has to cost a bay rather than a verdict."""
+    assert opencodeapi.is_running(payload, "ses_ours") is True
 
 
 # MARK: - Which session is this run's
@@ -132,7 +189,7 @@ def test_a_session_whose_first_message_is_not_the_users_is_not_ours():
 
 
 class _Canned(BaseHTTPRequestHandler):
-    """Answers the two routes the probe uses, and records what it was asked."""
+    """Answers the routes the probe uses, and records what it was asked."""
 
     routes: dict = {}
     seen: list = []
@@ -158,8 +215,13 @@ class _Canned(BaseHTTPRequestHandler):
 @pytest.fixture
 def server():
     """A real OpenCode-shaped server on a real port, so the request shapes are under
-    test too and not just the parsing."""
-    _Canned.routes, _Canned.seen = {}, []
+    test too and not just the parsing.
+
+    Idle out of the box, the way a real server answers when no turn is running: the
+    status map is empty rather than missing, and a case that wants a turn in flight
+    replaces it.
+    """
+    _Canned.routes, _Canned.seen = {"/session/status": {}}, []
     httpd = ThreadingHTTPServer((opencodeapi.HOST, 0), _Canned)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     yield httpd
@@ -239,7 +301,7 @@ def test_a_run_finds_its_own_session_and_remembers_it(server, monkeypatch):
     assert agentregistry.bound_session("r1") == "ses_ours"
     _Canned.seen.clear()
     probes.agent_sessions([record], "/repo", T0 + probes._CACHE_SECS + 1)
-    assert _Canned.seen == ["/session/ses_ours/message?limit=1"]
+    assert _Canned.seen == ["/session/status", "/session/ses_ours/message?limit=1"]
 
 
 def test_a_repaint_moments_later_is_answered_without_dialling_again(server):
@@ -299,6 +361,39 @@ def test_two_runs_in_one_checkout_do_not_take_each_others_session(server):
     assert agentregistry.bound_session("r1") == "ses_2"
     assert agentregistry.bound_session("r2") == "ses_1"
     assert obs.value["r1"].busy is False and obs.value["r2"].busy is True
+
+
+def test_a_server_that_will_not_report_its_status_falls_back_to_the_screen(server):
+    """A finished turn is two answers agreeing, so one of them missing is a run to read
+    off its screen. An OpenCode too old to serve the route is the ordinary way here —
+    its runs are tracked exactly as they were before this evidence existed."""
+    port = server.server_address[1]
+    _Canned.routes["/session"] = [
+        {"id": "ses_ours", "directory": "/repo", "time": {"created": T0 * 1000 + 2}},
+    ]
+    _Canned.routes["/session/ses_ours/message"] = opening(PROMPT)
+    _Canned.routes["/session/ses_ours/message?limit=1"] = FINISHED
+    del _Canned.routes["/session/status"]
+
+    obs = probes.agent_sessions([staged("r1", port)], "/repo", T0)
+
+    assert obs.ok and "r1" not in obs.value
+
+
+def test_a_run_the_server_is_still_working_on_is_not_at_its_prompt(server):
+    """Its last message is stamped, which on its own reads as a finished turn — the
+    gap between two steps of one. The status is what spans it."""
+    port = server.server_address[1]
+    _Canned.routes["/session"] = [
+        {"id": "ses_ours", "directory": "/repo", "time": {"created": T0 * 1000 + 2}},
+    ]
+    _Canned.routes["/session/ses_ours/message"] = opening(PROMPT)
+    _Canned.routes["/session/ses_ours/message?limit=1"] = FINISHED
+    _Canned.routes["/session/status"] = BUSY_STATUS
+
+    obs = probes.agent_sessions([staged("r1", port)], "/repo", T0)
+
+    assert obs.value["r1"] == SessionState(busy=True)
 
 
 def test_a_run_whose_session_cannot_be_found_is_simply_absent(server):

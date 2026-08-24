@@ -730,20 +730,36 @@ let opening: [[String: Any]] = [["info": ["role": "user"], "parts": [["type": "t
 check(OpenCodeAPI.isOurs(opening, prompt: ours))
 check(!OpenCodeAPI.isOurs(opening, prompt: "Review PR #8 in o/r"))
 check(!OpenCodeAPI.isOurs([], prompt: ours), "a session with no messages is nobody's")
-// Busy/idle, and the price. A turn with no completion stamp has not ended — which is
-// also the right reading of a provider retry.
-check(OpenCodeAPI.stateOf([]) == nil,
+// Busy/idle, and the price. It takes the server's status AND a stamped last message to
+// call a turn over; each of the two covers the other's blind spot, and the same cases
+// `tests/test_opencode_api.py` pins.
+let idle: [String: Any] = [:]
+let busy: [String: Any] = ["ses_a": ["type": "busy"]]
+check(!OpenCodeAPI.isRunning(idle, sessionID: "ses_a"),
+      "a session the server is running no turn in is absent from the map")
+check(OpenCodeAPI.isRunning(busy, sessionID: "ses_a"))
+check(!OpenCodeAPI.isRunning(busy, sessionID: "ses_b"),
+      "another session's turn says nothing about this one")
+check(OpenCodeAPI.isRunning(["ses_a": ["type": "retry"]], sessionID: "ses_a"),
+      "an agent waiting out a provider's backoff is not back at its prompt")
+check(!OpenCodeAPI.isRunning(["ses_a": ["type": "idle"]], sessionID: "ses_a"),
+      "a status that names itself idle is idle, present or not")
+check(OpenCodeAPI.stateOf([], running: false) == nil,
       "a session not yet written to is not idle; it has not started")
 let working: [[String: Any]] = [["info": ["role": "assistant", "time": ["created": 1.0]]]]
-check(OpenCodeAPI.stateOf(working)?.busy == true)
+check(OpenCodeAPI.stateOf(working, running: false)?.busy == true)
 let finished: [[String: Any]] = [["info": [
     "role": "assistant", "time": ["created": 1.0, "completed": 2.0]]]]
-check(OpenCodeAPI.stateOf(finished)?.busy == false)
+check(OpenCodeAPI.stateOf(finished, running: false)?.busy == false)
+check(OpenCodeAPI.stateOf(finished, running: true)?.busy == true,
+      "a stamped step is not a finished turn while the server is still running one")
+check(OpenCodeAPI.stateOf(finished, running: nil) == nil,
+      "a status the server would not report is not a turn that ended")
 // A stamp that is not a time is not a stamp. The one direction that must not be
 // reachable by accident is a gap reading as a finished turn.
 let halfStamped: [[String: Any]] = [["info": [
     "role": "assistant", "time": ["created": 1.0, "completed": "soon"]]]]
-check(OpenCodeAPI.stateOf(halfStamped)?.busy == true)
+check(OpenCodeAPI.stateOf(halfStamped, running: false)?.busy == true)
 // What a run SPENT is a sum over every message, because OpenCode prices a turn per
 // message — and it counts input, output and cache WRITES only. This session reports
 // 60505 tokens of `total`, nearly all of it cache reads; counting those would make the

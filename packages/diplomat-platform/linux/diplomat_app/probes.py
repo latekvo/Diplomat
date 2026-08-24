@@ -356,13 +356,21 @@ class _OpenCodeBackend:
 
     @staticmethod
     def state(record: RunRecord, session_id: str):
+        """Both halves of the answer — see :func:`opencodeapi.state_of` for which
+        blind spot each of them covers."""
         from diplomat_runtime import agentregistry, opencodeapi
 
         port = agentregistry.port(record.run_id)
         if port is None:
             return None
-        return opencodeapi.state_of(
-            opencodeapi.messages(port, session_id, limit=1) or [])
+        statuses = opencodeapi.statuses(port)
+        running = (None if statuses is None
+                   else opencodeapi.is_running(statuses, session_id))
+        # Nothing is fetched to pair with a status that is not there: the answer is
+        # already "ask the screen", and an unreachable port charges a full timeout.
+        messages = ([] if running is None
+                    else opencodeapi.messages(port, session_id, limit=1) or [])
+        return opencodeapi.state_of(messages, running)
 
 
 class _HermesBackend:

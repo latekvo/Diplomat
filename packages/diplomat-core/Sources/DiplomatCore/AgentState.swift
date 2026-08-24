@@ -23,11 +23,12 @@ import Foundation
 // strings are compared verbatim, so any text change here needs the same text there.
 //
 // THE ONE RULE THE WHOLE LADDER IS BUILT TO KEEP: absence of evidence never resolves to
-// `.finished`. A run is finished only on positive evidence — its sentinel exists, its
-// process was looked for in a table we actually read and was not there, or its mesh
-// claim was seen and has since been released. Every other gap resolves to `.unknown`,
-// which holds its bay and says so. Reading "I could not look" as "it is gone" is what
-// produced already-complete verdicts on agents that were still working.
+// `.finished`. A run is finished only on positive evidence — its runner said the turn
+// is over, its sentinel exists, its process was looked for in a table we actually read
+// and was not there, or its mesh claim was seen and has since been released. Every
+// other gap resolves to `.unknown`, which holds its bay and says so. Reading "I could
+// not look" as "it is gone" is what produced already-complete verdicts on agents that
+// were still working.
 
 /// One probe's answer: a value, or a named reason there isn't one.
 ///
@@ -129,9 +130,10 @@ public enum AgentState {
     ///
     /// Twenty minutes because a working agent's screen is never still for anywhere near
     /// that long: the CLI redraws a spinner, a token count and an elapsed timer every
-    /// second it is thinking, so a byte-identical pane over this window means nothing is
-    /// happening in it. Long enough that a slow tool call, a long build or a human
-    /// reading the window is not mistaken for a dead one.
+    /// second it is thinking, so a pane still for this whole window — its terminal's own
+    /// clock aside, see `maskClocks` — means nothing is happening in it. Long enough that
+    /// a slow tool call, a long build or a human reading the window is not mistaken for a
+    /// dead one.
     public static let quietTimeout: TimeInterval = 20 * 60
 
     /// How long a mesh origination claim may go unseen before the peer's run reads as
@@ -452,10 +454,43 @@ public enum AgentState {
     /// being only whether THIS pane differs from what the last tick saw of it.
     static func paneDigest(_ tail: String) -> String {
         var h: UInt64 = 0xCBF2_9CE4_8422_2325
-        for byte in Array(tail.utf8) {
+        for byte in Array(maskClocks(tail).utf8) {
             h = (h ^ UInt64(byte)) &* 0x100_0000_01B3
         }
         return String(format: "%016llx", h)
+    }
+
+    /// A screen with every time of day blanked, matching `agentstate._CLOCK` — the
+    /// pattern `[0-9]{1,2}:[0-9]{2}(:[0-9]{2})?`, replaced by `~`. That constant carries
+    /// why a screen's fingerprint has to ignore a clock, and why only a clock.
+    ///
+    /// Scanned by hand rather than by `NSRegularExpression`: the digest goes into the one
+    /// book both front-ends read, so this has to agree with Python's `re` character for
+    /// character, and a shared explicit scan is what guarantees that where two regex
+    /// engines only make it likely.
+    static func maskClocks(_ tail: String) -> String {
+        let chars = Array(tail.unicodeScalars)
+        func isDigit(_ i: Int) -> Bool { i < chars.count && chars[i] >= "0" && chars[i] <= "9" }
+        func isColon(_ i: Int) -> Bool { i < chars.count && chars[i] == ":" }
+        // Length of the `:[0-9][0-9]` group at `i`, or 0 — minutes, then seconds.
+        func pair(_ i: Int) -> Int { isColon(i) && isDigit(i + 1) && isDigit(i + 2) ? 3 : 0 }
+        var out = String.UnicodeScalarView()
+        var i = 0
+        while i < chars.count {
+            // Greedy on the leading run, as `[0-9]{1,2}` is: two digits before one.
+            var head = 0
+            if isDigit(i) && isDigit(i + 1) && pair(i + 2) > 0 { head = 2 }
+            else if isDigit(i) && pair(i + 1) > 0 { head = 1 }
+            guard head > 0 else {
+                out.append(chars[i])
+                i += 1
+                continue
+            }
+            let seconds = pair(i + head + 3)
+            out.append("~")
+            i += head + 3 + seconds
+        }
+        return String(out)
     }
 
     // MARK: - The resolver
@@ -475,9 +510,11 @@ public enum AgentState {
     ///
     /// 1. the PR landed — a terminal outcome that outranks whatever the process is doing;
     /// 2. the completion sentinel exists — the agent returned an exit code;
-    /// 3. the agent itself reported its turn over — the one rung that answers the
-    ///    question actually being asked, since a run that finished is alive at its
-    ///    prompt and every rung below this one sees a live process either way;
+    /// 3. the agent's CLI reported its turn over — a report rather than an inference,
+    ///    and above what follows because a run that finished is alive at its prompt and
+    ///    every rung below this one sees a live process either way. A runner that keeps
+    ///    a session instead of running hooks says the same thing further down, once its
+    ///    pid is known alive;
     /// 4. a mesh-peer run is judged by the executor's claim, because no probe on this
     ///    machine can see a process on another one;
     /// 5. a local run is judged by its pid, and its screen only classifies a pid that is
@@ -630,12 +667,16 @@ public enum AgentState {
     /// above ends it — so what this rung answers for one is the other half: its CLI
     /// said a turn is in flight, which outranks anything read off a screen.
     ///
-    /// For a run that reports nothing, the agent's own session is asked next, because
-    /// it is the only remaining positive evidence: a turn carries a completion stamp,
-    /// set when it ends. The screen is the last fallback, and it is an inference — it
-    /// reads whether the CLI's interrupt hint was on the status bar when we looked,
-    /// which is a string from someone else's UI that says nothing at all if they
-    /// reword it.
+    /// For a run that reports nothing, the agent's own session is asked next, and its
+    /// answer ENDS the run exactly as the CLI's own does: a runner that keeps a session
+    /// and one that runs a hook are two spellings of "ask the agent". Read as merely
+    /// idle, every OpenCode and Hermes run stayed in the book until somebody closed its
+    /// window by hand.
+    ///
+    /// The screen is the last fallback, and it is an inference — it reads whether the
+    /// CLI's interrupt hint was on the status bar when we looked, which is a string from
+    /// someone else's UI that says nothing at all if they reword it. It is the one
+    /// source here that cannot end a run: `.awaitingInput` is what a stale hint reads as.
     ///
     /// Every gap here reads as `.running`, which costs a bay rather than correctness —
     /// but it is also the one rung that fails silently, so the probe layer counts how
@@ -660,7 +701,7 @@ public enum AgentState {
         }
         if let known = evidence.sessions.value, let session = known[record.runID] {
             if session.busy { return done(.running, "\(aliveReason); its session is mid-turn") }
-            return done(.awaitingInput, "\(aliveReason); its session finished its turn")
+            return done(.finished, "\(aliveReason); its runner reported the turn over")
         }
         guard let tails = evidence.tails.value else {
             let why = evidence.tails.reason.isEmpty ? "unavailable" : evidence.tails.reason
