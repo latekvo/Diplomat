@@ -2781,9 +2781,9 @@ def test_a_kept_records_tty_follows_its_prs_sighting_onto_disk(store, monkeypatc
 def test_the_merged_probe_is_never_asked_about_an_untracked_runs_pr(store, monkeypatch):
     """A merged verdict ends a run so it can be priced and its bay handed back —
     neither of which a synthesized run has any use for, and its agent is manifestly
-    still in the process table. Asked about, a landed PR whose agent is still sitting in its window
-    would retire the record and have the next tick synthesize it straight back, one
-    `gh` call and one audit line per tick."""
+    still in the process table. Asked about, a landed PR whose agent is still sitting
+    in its window would retire the record and have the next tick synthesize it straight
+    back, one `gh` call and one audit line per tick."""
     from diplomat_app import probes
     from diplomat_runtime import agentregistry
     from diplomat_runtime import agentstate as A
