@@ -1,5 +1,10 @@
 {
-  "_comment": "The three exception lists behind AgentModel.displayName, which turns whichever model id a spawn will run on into the name the Diplomat attribution tag wears — `claude-opus-5` into `Opus 5`, `openrouter/moonshotai/kimi-k3` into `Kimi K3`. The general shape of an id (a provider path, dash-separated words, a version split across segments, a release stamp) is handled by rules in that file, because a lookup table would name the models that existed the day it was written and go quietly wrong for every one released after. Only what no rule can derive lives here.",
+  "_comment": "The four exception lists behind AgentModel.displayName, which turns whichever model id a spawn will run on into the name the Diplomat attribution tag wears — `claude-opus-5` into `Opus 5`, `openrouter/moonshotai/kimi-k3` into `Kimi K3`. The general shape of an id (a provider path, dash-separated words, a version split across segments, a release stamp) is handled by rules in that file, because naming models one at a time would cover the ones that existed the day the list was written and go quietly wrong for every one released after. Only what no rule can derive lives here.",
+
+  "_displayNamesComment": "Ids whose name is simply not in them — a model shipped under a codename, or one spelling something other than what it is called. The key is the id with the provider path and any `:variant` / `[…]` suffix already stripped, matched case-insensitively; the value is the tag's text verbatim, so it wins over every rule and over `ignore`. Reach for this only where no rule can arrive at the name: `opus-4-5` needs no entry, and keeps being named correctly however the next one is numbered, whereas anything written here is frozen the day it is written.",
+  "displayNames": {
+    "x-preview-f-free": "Ox Alpha"
+  },
 
   "_ignoreComment": "Values that name no single model, and so leave the tag with no model in it at all. Both are Claude Code settings aliases standing for a policy rather than a model: `default` is whatever the account is given, `opusplan` is two models, one per mode. Sentinels of the `<synthetic>` shape are rejected by AgentModel on their punctuation instead, so a successor to that one needs no entry here.",
   "ignore": ["default", "opusplan"],

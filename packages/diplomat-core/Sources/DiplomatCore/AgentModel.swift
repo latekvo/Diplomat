@@ -70,9 +70,11 @@ public enum AgentModel {
     /// `openrouter/moonshotai/kimi-k3` → `Kimi K3`, `qwen/qwen-3.8-max` → `Qwen 3.8 Max`.
     ///
     /// Ids are one per provider and none of them is a display name, so this is rules
-    /// rather than a lookup table — a table would name the handful of models that
-    /// existed when it was written and go quietly wrong for the rest. The three lists
-    /// the rules consult live in `assets/models.json`.
+    /// rather than a table of models — a table would name the handful that existed when
+    /// it was written and go quietly wrong for the rest. An id the rules cannot reach a
+    /// name from, because the name is not in the id at all (`x-preview-f-free` is
+    /// `Ox Alpha`), is named outright in `assets/models.json`, beside the three
+    /// exception lists the rules consult.
     ///
     /// Returns "" for anything that names no single model, which the tag renders as no
     /// model at all: an empty id, one of the aliases that stands for a *policy* rather
@@ -89,6 +91,11 @@ public enum AgentModel {
         if let bracket = s.firstIndex(of: "["), s.hasSuffix("]") { s = String(s[s.startIndex..<bracket]) }
         s = s.trimmingCharacters(in: .whitespaces)
         guard !s.isEmpty else { return "" }
+        // First, so a stated name beats every rule below, `ignore` included.
+        if let named = naming?.displayNames?
+            .first(where: { $0.key.caseInsensitiveCompare(s) == .orderedSame }) {
+            return named.value
+        }
         let ignore = naming?.ignore ?? []
         if ignore.contains(where: { $0.caseInsensitiveCompare(s) == .orderedSame }) { return "" }
         guard s.allSatisfy(isIDCharacter) else { return "" }

@@ -509,6 +509,11 @@ check(AgentModel.displayName("moonshotai/kimi-k2:free") == "Kimi K2",
       "an OpenRouter variant suffix qualifies a model, it does not name another")
 check(AgentModel.displayName("opus[1m]") == "Opus",
       "Claude Code's context-window suffix is not part of the name")
+// Without a stated name the rules would title-case this into "X Preview F Free".
+check(AgentModel.displayName("opencode/x-preview-f-free") == "Ox Alpha",
+      "an id whose name is not in it is named outright")
+check(AgentModel.displayName("X-Preview-F-Free") == "Ox Alpha",
+      "stated names match case-insensitively, as every other list in models.json does")
 // Everything that names no single model leaves the tag exactly as it has always read.
 check(AgentModel.displayName("") == "")
 check(AgentModel.displayName("<synthetic>") == "",

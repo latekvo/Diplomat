@@ -91,6 +91,10 @@ public enum CoreAssets {
     /// into the name the attribution tag wears. The rules themselves are in
     /// `AgentModel`; these are the parts no rule can derive.
     public struct Models: Decodable {
+        /// Ids the rules cannot arrive at a name for, mapped to the name the tag wears.
+        /// Optional so an assets dir older than the map — what a relocated
+        /// `diplomat-core` may be pointed at — still decodes the three lists below.
+        public let displayNames: [String: String]?
         /// Ids that name no single model, and so leave the tag with no model at all.
         public let ignore: [String]
         /// Leading id segments that name the vendor rather than the model.
