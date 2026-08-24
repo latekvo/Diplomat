@@ -484,9 +484,10 @@ def gather(records: list[RunRecord], now: float, *,
     scan = _note("agent scan", live_agents(dump), now)
     looked_up = agentstate.adopt_ttys(records, table, scan)
     # Synthesized here as well as in `tick`, which adds them only AFTER this bundle is
-    # built. An untracked run has no record, so no sentinel and no session to ask —
-    # left out, the one run that depends entirely on its screen is the one whose screen
-    # is never captured, and it reads as working until its window closes.
+    # built — so the tick that FIRST sees one would resolve it against a screen nobody
+    # captured. It has no run directory, so no sentinel and no session to ask either:
+    # its screen is the whole of the evidence about it, and left out it reads as
+    # working until its window closes.
     looked_up = agentstate.synthesize_untracked(looked_up, scan, now)
     return Evidence(
         activity=_note("turn reports", agentregistry.activity(records), now),

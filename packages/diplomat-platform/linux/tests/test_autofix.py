@@ -259,7 +259,8 @@ def fake_probes(monkeypatch, *, processes=None, claims=None, merged=None,
     ``live_prs`` are PRs with an agent this applet has no record of, as the legacy
     prompt-text scan finds them; each is given a tty and a screen, because without a
     screen such an agent can never be seen to finish its turn. ``idle_prs`` are the
-    ones sitting at their prompt.
+    ones sitting at their prompt. An ``Observation`` passes straight through, which is
+    how a test says the scan itself could not be read.
     """
     from diplomat_runtime import agentregistry
     from diplomat_runtime import agentstate as A
@@ -270,9 +271,11 @@ def fake_probes(monkeypatch, *, processes=None, claims=None, merged=None,
             return A.Observation.present(empty)
         return v if isinstance(v, A.Observation) else A.Observation.present(v)
 
-    live = None if live_prs is None else {pr: f"pts/{pr}" for pr in live_prs}
-    screens = {} if live_prs is None else {
-        f"pts/{pr}": (AT_PROMPT if pr in idle_prs else WORKING) for pr in live_prs}
+    live = (live_prs if isinstance(live_prs, A.Observation)
+            else None if live_prs is None
+            else {pr: f"pts/{pr}" for pr in live_prs})
+    screens = {} if not isinstance(live, dict) else {
+        f"pts/{pr}": (AT_PROMPT if pr in idle_prs else WORKING) for pr in live}
     screens.update(tails or {})
 
     def gather(records, now, merged=None):
@@ -2674,6 +2677,145 @@ def test_a_run_short_of_the_timeout_keeps_its_window(store, monkeypatch):
     store._settle_agents()
 
     assert killed == []
+
+
+# MARK: - …including the window of an agent nobody dispatched
+#
+# The ordinary end state, not a rare one: a run retired by its runner's turn report
+# keeps its window on purpose, its record is forgotten, and its still-live agent is
+# re-derived as `untracked:<pr>` on the very next tick. Everything below is about the
+# record that re-derivation leaves — which has to be remembered long enough for the
+# stillness clock to run, and dropped the moment the agent it describes is gone.
+
+
+def test_an_untracked_runs_stillness_clock_leaves_zero(store, monkeypatch):
+    """A tick that throws its synthesized records away hands the next one a screen it
+    has no memory of, so ``quiet_since`` restarts from nothing every time: two hours
+    on it is still None, ``went_quiet`` is still None, and the row can never reach
+    FINISHED by stillness however long its agent sits there."""
+    from diplomat_runtime import agentregistry
+    from diplomat_runtime import agentstate as A
+
+    fake_probes(monkeypatch, live_prs={337}, idle_prs={337})
+
+    store._settle_agents()
+
+    (first,) = agentregistry.load()
+    assert first.run_id == "untracked:337", "the synthesized record must be kept"
+    assert first.quiet_since is None, \
+        "the tick that makes a record has no screen of its own to compare against yet"
+
+    store._settle_agents()
+
+    (second,) = agentregistry.load()
+    assert second.quiet_digest and second.quiet_since is not None, \
+        "the second tick is the one that has something to compare, and starts the clock"
+    assert A.went_quiet(second, second.quiet_since + A.QUIET_TIMEOUT) is not None
+
+
+def test_an_untracked_agents_wedged_window_is_closed(store, monkeypatch):
+    """The whole point of remembering one: twenty minutes of a screen that has not
+    moved, and the session nobody dispatched is closed like any other."""
+    from diplomat_runtime import agentregistry
+    from diplomat_runtime import agentstate as A
+
+    killed = _killed(monkeypatch)
+    fake_probes(monkeypatch, live_prs={337})
+    store._settle_agents()
+    store._settle_agents()
+    _age_the_stillness(A.QUIET_TIMEOUT + 5)
+
+    store._settle_agents()
+
+    assert killed == ["pts/337"]
+    assert agentregistry.load() == [], "and the record it was kept for is dropped"
+
+
+def test_an_untracked_record_does_not_outlive_its_agent(store, monkeypatch):
+    """The other end of remembering one. Kept past its agent it would hold that PR
+    against a fresh agent, and a bay of the cap, for the life of the applet — and
+    nothing would ever drop it, because the scan that made it is all there is."""
+    from diplomat_runtime import agentregistry
+
+    url = "https://github.com/o/r/pull/337"
+    fake_probes(monkeypatch, live_prs={337})
+    store._settle_agents()
+    assert [r.run_id for r in agentregistry.load()] == ["untracked:337"]
+    assert store._in_flight(url), "a live agent's PR is deduped against"
+
+    fake_probes(monkeypatch, live_prs=set())  # its agent exited
+    store._settle_agents()
+
+    assert agentregistry.load() == []
+    assert not store._in_flight(url), "and its PR is free again"
+
+
+def test_a_kept_records_tty_follows_its_prs_sighting_onto_disk(store, monkeypatch):
+    """The scan reports one agent per PR, so an operator's second session becomes the
+    sighting the moment the first exits. A record left on the gone one has no screen to
+    be judged by, so it reads as working and holds its bay for as long as the second
+    session lives."""
+    from diplomat_runtime import agentregistry
+    from diplomat_runtime import agentstate as A
+
+    fake_probes(monkeypatch, live_prs={337})
+    store._settle_agents()
+    store._settle_agents()
+    (before,) = agentregistry.load()
+    assert (before.tty, before.quiet_since is None) == ("pts/337", False)
+
+    fake_probes(monkeypatch, live_prs=A.Observation.present({337: "pts/9"}),
+                tails={"pts/9": WORKING})
+    store._settle_agents()
+
+    (after,) = agentregistry.load()
+    assert after.tty == "pts/9"
+    assert after.quiet_since is None, "and the new window starts its own clock"
+
+
+def test_the_merged_probe_is_never_asked_about_an_untracked_runs_pr(store, monkeypatch):
+    """"Merged" ends a run so it can be priced and its bay handed back — neither of
+    which a synthesized run has any use for, and its agent is manifestly still in the
+    process table. Asked about, a landed PR whose agent is still sitting in its window
+    would retire the record and have the next tick synthesize it straight back, one
+    `gh` call and one audit line per tick."""
+    from diplomat_app import probes
+    from diplomat_runtime import agentregistry
+    from diplomat_runtime import agentstate as A
+
+    asked = []
+
+    def record_and_answer(prs):
+        asked.append(prs)
+        return A.Observation.present(set())
+
+    monkeypatch.setattr(probes, "merged_prs", record_and_answer)
+    register_run(512, pid=4242, tty="pts/3")
+    fake_probes(monkeypatch, processes=agent_alive(4242, tty="pts/3"),
+                live_prs={337}, tails={"pts/3": WORKING})
+    store._settle_agents()
+    assert {r.pr_number for r in agentregistry.load()} == {512, 337}, \
+        "both runs must be in the book, or the filter below is asserting nothing"
+
+    store.refresh_merged_statuses()
+
+    assert asked == [{512}]
+
+
+def test_an_unreadable_scan_does_not_drop_an_untracked_record(store, monkeypatch):
+    """The scan is the sole evidence about one, which is exactly why "could not look"
+    must not read as "it is gone": every untracked row on the machine would be dropped
+    at once, and every one of their PRs handed a second agent."""
+    from diplomat_runtime import agentregistry
+    from diplomat_runtime import agentstate as A
+
+    fake_probes(monkeypatch, live_prs={337})
+    store._settle_agents()
+
+    fake_probes(monkeypatch, live_prs=A.Observation.unavailable("ps failed"))
+    store._settle_agents()
+
+    assert [r.run_id for r in agentregistry.load()] == ["untracked:337"]
 
 
 def test_drawing_the_rows_retires_nothing_and_writes_nothing(store, monkeypatch,
