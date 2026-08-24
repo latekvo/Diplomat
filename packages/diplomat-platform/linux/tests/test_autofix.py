@@ -2601,6 +2601,31 @@ def test_a_window_still_at_twenty_minutes_of_stillness_is_closed(store, monkeypa
     assert killed == ["pts/70"]
 
 
+def test_the_terminals_own_clock_does_not_keep_a_window_open(store, monkeypatch):
+    """The whole reaper, end to end, on a screen shaped the way a real one is. A dump
+    carries the multiplexer's status line too, and tmux draws a wall clock in it — so
+    on any box whose shells wrap themselves in tmux this pane changed once a minute,
+    the stillness clock restarted every time, and no window was ever closed."""
+    import time as _time
+    from diplomat_runtime import agentstate as A
+
+    wrapped = WORKING + '\n[0] 0:zsh*  "agent" %s 24-sie-26'
+    killed = _killed(monkeypatch)
+    now = _time.time()
+    register_run(703, pid=7003, tty="pts/73", dispatched_at=now - 4000)
+    fake_probes(monkeypatch, processes=agent_alive(7003, tty="pts/73", elapsed=4000),
+                tails={"pts/73": wrapped % "16:31"})
+    store._settle_agents()
+    _age_the_stillness(A.QUIET_TIMEOUT + 5)
+
+    # A minute of the clock, and nothing else, has moved.
+    fake_probes(monkeypatch, processes=agent_alive(7003, tty="pts/73", elapsed=4060),
+                tails={"pts/73": wrapped % "16:32"})
+    store._settle_agents()
+
+    assert killed == ["pts/73"]
+
+
 def test_a_run_that_merely_finished_keeps_its_window(store, monkeypatch):
     """Its agent is alive at its prompt holding the whole task, and the operator may
     still want to read it or type into it. Closing this one is the mistake the
