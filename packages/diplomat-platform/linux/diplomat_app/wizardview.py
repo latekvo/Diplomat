@@ -148,17 +148,10 @@ class WizardView(SpawnWizard):
         for cb in (self.mark_ready, self.leave_reviews, self.reply, self.soft_approve):
             root.addWidget(cb)
 
-        # The "final pass" escalation — off by default, visually highlighted (amber)
-        # so it reads as the special "go all the way" option.
-        self.final_pass = QCheckBox(f"{glyphs.G_FINAL}  Final E2E pass + verdict")
-        self.final_pass.setChecked(False)
-        self.final_pass.setStyleSheet(
-            "QCheckBox { font-weight: 600; padding: 6px; border: 1px solid #d8a200;"
-            " border-radius: 7px; background: rgba(255, 214, 0, 0.16); }"
-        )
-        self.final_pass.setToolTip(
+        self.final_pass = widgets.wizard_escalation(
+            glyphs.G_FINAL, "Final E2E pass + verdict",
             "One last full-E2E pass with big swarms: approve clean PRs, "
-            "request changes on real blockers."
+            "request changes on real blockers.",
         )
         root.addWidget(self.final_pass)
 

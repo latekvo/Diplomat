@@ -267,12 +267,13 @@ DIPLOMAT_DUMP=1        python -m diplomat_app   # real fetch+filter, prints all 
 DIPLOMAT_LOOKUP=337    python -m diplomat_app   # reverse-lookup one number
 DIPLOMAT_PRINT_PROMPT=mine python -m diplomat_app  # assemble a Review prompt (mine|user|single)
                                                        #   conflicts-mine|conflicts-user|conflicts-single → Resolve-conflicts prompt
+                                                       #   issues[-mine|-user|-contributors|-members|-single][-features] → Fix-issues prompt
 
 DIPLOMAT_SELF_UPDATE=1 python -m diplomat_app       # the unattended 06:00 update, run once
 
 # Snapshot a panel state to PNG (no real display required):
 DIPLOMAT_RENDER=panel DIPLOMAT_RENDER_OUT=/tmp/p.png \
-    QT_QPA_PLATFORM=offscreen python -m diplomat_app   # panel|lookup|wizard|conflicts|audit|devices|mesh
+    QT_QPA_PLATFORM=offscreen python -m diplomat_app   # panel|lookup|wizard|issues|conflicts|audit|devices|mesh
                                                        #   settings[-explain] (-explain opens every row's
                                                        #   long-form paragraph, the only state that draws them)
 DIPLOMAT_REFRESH_SECS=30 ./diplomat            # faster auto-refresh, for tuning

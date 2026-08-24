@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QAbstractButton,
     QApplication,
     QButtonGroup,
+    QCheckBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -779,7 +780,7 @@ def hline() -> QFrame:
 
 def dispatch_status_text(verdict: str, terminal_title: str) -> str:
     """The wizard status line for one ``Store.dispatch_agent`` verdict - shared by
-    all three wizards so refusals read identically everywhere (macOS twin:
+    all four wizards so refusals read identically everywhere (macOS twin:
     ``statusText(for:terminal:)``)."""
     from diplomat_runtime import autofix
 
@@ -805,7 +806,7 @@ def dispatch_status_text(verdict: str, terminal_title: str) -> str:
 
 # ---- Spawn-wizard chrome --------------------------------------------------
 #
-# The Review / Resolve-conflicts / Full-E2E wizards are three renderers over one
+# The Review / Fix-issues / Resolve-conflicts / Full-E2E wizards are four renderers over one
 # layout: a title, contextual rows, a mesh row + SPAWN button, a status line. Each
 # piece of it lives here once, including the SPAWN button's fill rule — the audit's
 # config is always valid, so that wizard is the one most likely to end up with a
@@ -815,6 +816,10 @@ def dispatch_status_text(verdict: str, terminal_title: str) -> str:
 # The two chrome styles that are not plain muted text (see :func:`muted`).
 _TITLE_CSS = "font-weight: 700; font-size: 13px;"
 _WARNING_CSS = "color: #e0563f; font-size: 10px;"
+_ESCALATION_CSS = (
+    "QCheckBox { font-weight: 600; padding: 6px; border: 1px solid #d8a200;"
+    " border-radius: 7px; background: rgba(255, 214, 0, 0.16); }"
+)
 # The fill a SPAWN button takes while its config is not spawnable.
 SPAWN_DISABLED_TINT = "#888888"
 
@@ -840,6 +845,17 @@ def wizard_warning() -> QLabel:
     label.setWordWrap(True)
     label.setStyleSheet(_WARNING_CSS)
     return label
+
+
+def wizard_escalation(glyph: str, text: str, tooltip: str) -> QCheckBox:
+    """A wizard's one escalation toggle — off by default and amber-boxed, so the
+    option that lets a run go past what it was asked for does not read as another
+    tick in the list. Twin of ``EscalationToggle`` on macOS."""
+    box = QCheckBox(f"{glyph}  {text}")
+    box.setChecked(False)
+    box.setStyleSheet(_ESCALATION_CSS)
+    box.setToolTip(tooltip)
+    return box
 
 
 def wizard_status() -> QLabel:

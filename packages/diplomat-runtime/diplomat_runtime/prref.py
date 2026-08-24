@@ -1,10 +1,13 @@
-"""Parse a single-PR reference from a wizard text field.
+"""Parse a PR or issue reference from a wizard's single-item text field.
 
 Mirrors ``PRRef.swift`` verbatim: accepts a bare number (``337`` / ``#337``), a
-full GitHub PR URL (``https://github.com/owner/repo/pull/337`` with any trailing
+full GitHub URL (``https://github.com/owner/repo/pull/337`` with any trailing
 path/query), or the ``owner/repo#337`` shorthand. When the input names a repo it's
 checked against the configured target repo, so a link to the wrong project is
-rejected instead of silently reviewing the wrong PR.
+rejected instead of silently reviewing the wrong PR. ``kind`` picks the URL path
+segment a pasted link must carry — a PR link and an issue link differ by that
+segment alone, and accepting either everywhere would let an issue URL through the
+Review wizard as a PR number.
 """
 
 from __future__ import annotations
@@ -14,11 +17,14 @@ from dataclasses import dataclass
 
 # PR numbers are ASCII digits only ([0-9], not \d): Python's \d / str.isdigit()
 # also match non-ASCII digits like "٣٣٧", which Swift's Int(_:) rejects.
-# github.com/OWNER/REPO/pull/N — scheme/www optional, trailing path/query allowed.
-_URL = re.compile(
-    r"(?:https?://)?(?:www\.)?github\.com/([\w.-]+)/([\w.-]+)/pull/([0-9]+)",
-    re.IGNORECASE,
-)
+# github.com/OWNER/REPO/<kind>/N — scheme/www optional, trailing path/query allowed.
+_URL = {
+    kind: re.compile(
+        rf"(?:https?://)?(?:www\.)?github\.com/([\w.-]+)/([\w.-]+)/{kind}/([0-9]+)",
+        re.IGNORECASE,
+    )
+    for kind in ("pull", "issues")
+}
 # OWNER/REPO#N shorthand (whole string).
 _SHORTHAND = re.compile(r"^([\w.-]+)/([\w.-]+)#([0-9]+)$")
 # A bare PR number (after any leading '#' is stripped).
@@ -54,13 +60,14 @@ class PRRef:
         return str(self.number) if self.number is not None else ""
 
 
-def parse_pr_ref(raw: str, owner: str, repo: str) -> PRRef:
-    """Parse ``raw`` against the expected ``owner``/``repo`` (case-insensitive)."""
+def parse_pr_ref(raw: str, owner: str, repo: str, kind: str = "pull") -> PRRef:
+    """Parse ``raw`` against the expected ``owner``/``repo`` (case-insensitive).
+    ``kind`` is ``"pull"`` for a PR field or ``"issues"`` for an issue one."""
     s = raw.strip()
     if not s:
         return PRRef(None, False)
 
-    m = _URL.search(s) or _SHORTHAND.match(s)
+    m = _URL[kind].search(s) or _SHORTHAND.match(s)
     if m:
         o, r, n = m.group(1), m.group(2), _int64(m.group(3))
         matches = o.lower() == owner.lower() and r.lower() == repo.lower()

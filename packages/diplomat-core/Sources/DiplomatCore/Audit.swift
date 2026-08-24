@@ -7,7 +7,7 @@ import Foundation
 /// the machine is which model the agent runs on (`AgentModel`), which the attribution
 /// tag names.
 ///
-/// Unlike Review / Resolve-conflicts there is no whose-PRs axis: the audit always
+/// Unlike the other three wizards there is no scope axis at all: the audit always
 /// targets the whole repository. Two independent toggles gate the optional scope:
 ///   - `fixIssues` — also reproduce + fix the repo's OPEN BUG issues (never feature
 ///     requests), in addition to auditing the existing code.

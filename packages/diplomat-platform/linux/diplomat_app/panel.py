@@ -52,6 +52,7 @@ from .widgets import (
     tint_bg,
 )
 from .conflictwizardview import ConflictWizardView
+from .issuewizardview import IssueWizardView
 from .auditwizardview import AuditWizardView
 from .telemetryview import TelemetryView
 from .wizardview import WizardView
@@ -60,6 +61,7 @@ from .wizardview import WizardView
 # here would make the add-on a hard dependency of the whole applet.
 
 _REVIEW_TINT = "#FF2D78"
+_ISSUES_TINT = "#00C7BE"
 _CONFLICT_TINT = "#32ADE6"
 _AUDIT_TINT = "#5856D6"
 
@@ -106,6 +108,8 @@ def _task_look(kind: str) -> tuple[str, str]:
         return glyphs.G_CONFLICT, _CONFLICT_TINT
     if kind == "audit":
         return glyphs.G_AUDIT, _AUDIT_TINT
+    if kind == "issues":
+        return glyphs.G_ISSUES, _ISSUES_TINT
     return glyphs.G_REVIEW, _REVIEW_TINT
 
 
@@ -195,7 +199,7 @@ class Panel(QWidget):
         self.store = store
         # Which screen the body shows: "main" (Actions) | "settings" | "mesh".
         self._screen = "main"
-        self._active_action: str | None = None  # None | "review" | "conflicts" | "audit"
+        self._active_action: str | None = None  # None | "review" | "issues" | "conflicts" | "audit"
         # Devices section: In use expanded, Free collapsed by default. Persisted on the
         # instance so a poll-driven rebuild doesn't reset the user's collapse choice.
         self._inuse_expanded = True
@@ -508,19 +512,26 @@ class Panel(QWidget):
         wizard_scroll.setWidget(self.wizard)
         self.results.addWidget(wizard_scroll)  # index 3
 
+        self.issue_wizard = IssueWizardView(self.store)
+        issue_scroll = QScrollArea()
+        issue_scroll.setWidgetResizable(True)
+        issue_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        issue_scroll.setWidget(self.issue_wizard)
+        self.results.addWidget(issue_scroll)  # index 4
+
         self.conflict_wizard = ConflictWizardView(self.store)
         conflict_scroll = QScrollArea()
         conflict_scroll.setWidgetResizable(True)
         conflict_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         conflict_scroll.setWidget(self.conflict_wizard)
-        self.results.addWidget(conflict_scroll)  # index 4
+        self.results.addWidget(conflict_scroll)  # index 5
 
         self.audit_wizard = AuditWizardView(self.store)
         audit_scroll = QScrollArea()
         audit_scroll.setWidgetResizable(True)
         audit_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         audit_scroll.setWidget(self.audit_wizard)
-        self.results.addWidget(audit_scroll)  # index 5
+        self.results.addWidget(audit_scroll)  # index 6
 
         return host
 
@@ -556,6 +567,20 @@ class Panel(QWidget):
         )
         review_card.clicked.connect(lambda: self._open_action("review"))
         self.grid.addWidget(review_card, rowi, col)
+        col += 1
+        if col == 2:
+            col = 0
+            rowi += 1
+
+        issue_card = ActionCard(
+            emoji=glyphs.G_ISSUES,
+            title="Fix issues",
+            subtitle="reproduce & fix open issues",
+            hex_color=_ISSUES_TINT,
+            selected=self._active_action == "issues",
+        )
+        issue_card.clicked.connect(lambda: self._open_action("issues"))
+        self.grid.addWidget(issue_card, rowi, col)
         col += 1
         if col == 2:
             col = 0
@@ -913,11 +938,14 @@ class Panel(QWidget):
         if self._active_action == "review":
             self.results.setCurrentIndex(3)
             return
-        if self._active_action == "conflicts":
+        if self._active_action == "issues":
             self.results.setCurrentIndex(4)
             return
-        if self._active_action == "audit":
+        if self._active_action == "conflicts":
             self.results.setCurrentIndex(5)
+            return
+        if self._active_action == "audit":
+            self.results.setCurrentIndex(6)
             return
         if trimmed and trimmed.isdigit():
             self._rebuild_lookup(int(trimmed))
@@ -1048,6 +1076,7 @@ class Panel(QWidget):
             self.error_banner.setText(self.store.error)
         self._rebuild_grid()
         self.wizard.refresh_identity()
+        self.issue_wizard.refresh_identity()
         self.conflict_wizard.refresh_identity()
         self.audit_wizard.refresh_identity()
         if self._screen == "main":

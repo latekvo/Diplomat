@@ -6,8 +6,8 @@ a real display by grabbing the widget's own pixels:
     DIPLOMAT_RENDER=panel DIPLOMAT_RENDER_OUT=/tmp/p.png \
         QT_QPA_PLATFORM=offscreen python -m diplomat_app
 
-what ∈ {panel, lookup, wizard, conflicts, settings[-explain], devices, mesh,
-telemetry}.
+what ∈ {panel, lookup, wizard, issues, conflicts, audit, settings[-explain],
+devices, mesh, telemetry}.
 With DIPLOMAT_RENDER_LIVE=1 it fetches real data first; otherwise it uses a small
 synthetic fixture.
 """
@@ -410,7 +410,8 @@ def run(what: str, out: str) -> int:
     # every one of those is absent, and the fixture would be a synthetic topology
     # nothing reads.
     if szpont.AVAILABLE and what in (
-        "mesh", "panel", "settings", "settings-explain", "wizard", "conflicts", "audit"
+        "mesh", "panel", "settings", "settings-explain", "wizard", "issues",
+        "conflicts", "audit"
     ):
         _mesh_fixture(store)
 
@@ -430,6 +431,8 @@ def run(what: str, out: str) -> int:
         panel._update_results()
     elif what == "wizard":
         panel._open_action("review")
+    elif what == "issues":
+        panel._open_action("issues")
     elif what == "conflicts":
         panel._open_action("conflicts")
     elif what == "audit":

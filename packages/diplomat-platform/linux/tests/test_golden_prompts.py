@@ -20,6 +20,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from diplomat_app.audit import AuditConfig  # noqa: E402
 from diplomat_app.conflicts import ConflictConfig  # noqa: E402
+from diplomat_app.issues import IssueConfig  # noqa: E402
+from diplomat_runtime.issuetarget import IssueTarget  # noqa: E402
 from diplomat_runtime.prtarget import PRTarget  # noqa: E402
 from diplomat_runtime.review import ReviewConfig  # noqa: E402
 
@@ -49,6 +51,21 @@ GOLDEN_MODES: dict[str, object] = {
     "audit-issues": lambda: AuditConfig(fix_issues=True),
     "audit-prs": lambda: AuditConfig(open_prs=True),
     "audit-all": lambda: AuditConfig(fix_issues=True, open_prs=True),
+    "issues-all": lambda: IssueConfig(me=ME),
+    "issues-mine": lambda: IssueConfig(target=IssueTarget.MINE, me=ME),
+    "issues-user": lambda: IssueConfig(
+        target=IssueTarget.SOMEONE, username="someuser", me=ME
+    ),
+    "issues-contributors": lambda: IssueConfig(target=IssueTarget.CONTRIBUTORS, me=ME),
+    "issues-members": lambda: IssueConfig(target=IssueTarget.MEMBERS, me=ME),
+    "issues-single": lambda: IssueConfig(
+        target=IssueTarget.SPECIFIC, me=ME, specific_issue="421"
+    ),
+    "issues-hands-off": lambda: IssueConfig(
+        me=ME, unassigned_only=False, assign_to_me=False, open_prs=False,
+        comment_on_issue=False
+    ),
+    "issues-features-max": lambda: IssueConfig(depth="max", me=ME, include_features=True),
 }
 
 

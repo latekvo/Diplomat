@@ -3,7 +3,7 @@ import Foundation
 
 // diplomat-core: a thin CLI over DiplomatCore so the Linux (Qt6/PySide6) front-end
 // can shell out for prompt assembly instead of re-implementing it in Python. This
-// keeps the Review/Conflicts/Audit prompts single-sourced in Swift (the canonical
+// keeps the Review/Issues/Conflicts/Audit prompts single-sourced in Swift (the canonical
 // implementation), eliminating the drift where the Linux side emitted stale prompts.
 //
 // Usage:
@@ -13,9 +13,9 @@ import Foundation
 //   diplomat-core agent-state       < fixture.json   # prints what every agent run resolves to
 //   diplomat-core agent-registry    < runs.json      # round-trips the run book on disk
 //
-// build-prompt: the JSON config's "kind" field ("review" | "conflicts" | "audit")
-// selects the builder; remaining fields mirror the Swift *Config structs (defaults
-// applied when a field is absent).
+// build-prompt: the JSON config's "kind" field ("review" | "conflicts" | "audit" |
+// "issues") selects the builder; remaining fields mirror the Swift *Config structs
+// (defaults applied when a field is absent).
 //
 // tool-data: runs `ToolData.items` over a fixture of PRs/issues and prints one row
 // list per tool. The Linux front-end does NOT use this at runtime — it has its own
@@ -44,6 +44,11 @@ func prTarget(_ s: String?) -> PRTarget {
     case "specific": return .specific
     default: return .mine
     }
+}
+
+func issueTarget(_ s: String?) -> IssueTarget {
+    let want = (s ?? "all").lowercased()
+    return IssueTarget.allCases.first { $0.wireName == want } ?? .all
 }
 
 func specificAuthor(_ s: String?) -> SpecificAuthor {
@@ -121,8 +126,22 @@ case "conflicts":
 case "audit":
     let cfg = AuditConfig(fixIssues: flag("fixIssues", false), openPRs: flag("openPRs", false))
     prompt = cfg.buildPrompt()
+case "issues":
+    let cfg = IssueConfig(
+        depth: str("depth"),
+        target: issueTarget(obj["target"] as? String),
+        username: str("username"),
+        me: str("me"),
+        specificIssue: str("specificIssue"),
+        unassignedOnly: flag("unassignedOnly", true),
+        assignToMe: flag("assignToMe", true),
+        openPRs: flag("openPRs", true),
+        commentOnIssue: flag("commentOnIssue", true),
+        includeFeatures: flag("includeFeatures", false)
+    )
+    prompt = cfg.buildPrompt()
 default:
-    die("unknown kind \"\(kind)\" (expected review | conflicts | audit)", 1)
+    die("unknown kind \"\(kind)\" (expected review | conflicts | audit | issues)", 1)
 }
 
 FileHandle.standardOutput.write(Data(prompt.utf8))

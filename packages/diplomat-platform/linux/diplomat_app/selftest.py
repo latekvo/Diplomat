@@ -5,7 +5,8 @@ Mirrors the macOS ``Dump`` enum so the two front-ends can be cross-checked:
     DIPLOMAT_DUMP=1           full fetch+filter pipeline, prints all 6 tools
     DIPLOMAT_LOOKUP=337       reverse-lookup one number through the real Store
     DIPLOMAT_PRINT_PROMPT=... assemble + print a wizard's prompt: mine|user|single for
-                              Review, conflicts[-user|-single], audit[-issues|-prs|-all]
+                              Review, conflicts[-user|-single], audit[-issues|-prs|-all],
+                              issues[-mine|-user|-contributors|-members|-single][-features]
 
 None of these need a display; they only touch QtCore (QSettings) + gh.
 """
@@ -114,6 +115,8 @@ def run_print_prompt(mode: str) -> int:
         return _run_conflict_prompt(m)
     if m.startswith("audit"):
         return _run_audit_prompt(m)
+    if m.startswith("issues"):
+        return _run_issue_prompt(m)
     is_user = m.startswith("user")
     is_single = m.startswith("single")
     target = (
@@ -162,3 +165,38 @@ def _run_audit_prompt(m: str) -> int:
     )
     flags = f"fixIssues={cfg.fix_issues} openPRs={cfg.open_prs}"
     return _print_prompt_dump(f"AuditConfig: full-repo E2E test · {flags}", cfg.build_prompt())
+
+
+def _run_issue_prompt(m: str) -> int:
+    """Fix-issues variant: issues[-mine|-user|-contributors|-members|-single][-features]."""
+    from .issues import IssueConfig, Target, depth_by_id
+
+    if "single" in m or "specific" in m:
+        target = Target.SPECIFIC
+    elif "contributors" in m:
+        target = Target.CONTRIBUTORS
+    elif "members" in m:
+        target = Target.MEMBERS
+    elif "user" in m:
+        target = Target.SOMEONE
+    elif "mine" in m:
+        target = Target.MINE
+    else:
+        target = Target.ALL
+    cfg = IssueConfig(
+        target=target,
+        username="someuser" if target == Target.SOMEONE else "",
+        me="latekvo",
+        specific_issue="421" if target == Target.SPECIFIC else "",
+        include_features="features" in m,
+    )
+    label = {
+        Target.ALL: "all open issues",
+        Target.MINE: "my issues",
+        Target.SOMEONE: "someone else's issues",
+        Target.CONTRIBUTORS: "contributors' issues",
+        Target.MEMBERS: "org members' issues",
+        Target.SPECIFIC: "single issue #421",
+    }[target]
+    depth = depth_by_id(cfg.depth)["title"]
+    return _print_prompt_dump(f"IssueConfig: {label} · depth={depth}", cfg.build_prompt())

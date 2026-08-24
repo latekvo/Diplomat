@@ -2,7 +2,7 @@ import SwiftUI
 import DiplomatCore
 
 // Small shared UI atoms. Each of these existed as 3-8 hand-copied blocks across
-// ContentView/SettingsView and the three spawn wizards that had already started
+// ContentView/SettingsView and the spawn wizards that had already started
 // drifting (font sizes, opacities, capsule colors); one definition freezes the drift.
 
 /// The recurring rounded icon tile: a bold white SF Symbol on a tinted rounded
@@ -148,7 +148,7 @@ struct GridCard<Trailing: View>: View {
 
 // MARK: - Spawn-wizard chrome
 
-// The Review / Resolve-conflicts / Full-E2E wizards are three renderers over one
+// The Review / Fix-issues / Resolve-conflicts / Full-E2E wizards are four renderers over one
 // layout: title, contextual rows, a mesh row + SPAWN button, a status line. Each
 // piece of that layout lives here once, so two wizards cannot disagree about it -
 // the kind of divergence that reads as a design choice and is not one. Each is a
@@ -272,6 +272,36 @@ struct EscalationToggle: View {
         .overlay(RoundedRectangle(cornerRadius: 7).stroke(.orange.opacity(isOn ? 0.9 : 0.5),
                                                           lineWidth: isOn ? 1.4 : 1))
         .help(help)
+    }
+}
+
+/// The flashing red warning a wizard shows while the author it is aimed at is banned
+/// for prompt injection. Flashes for as long as the ban stands (it clears the instant
+/// they're un-banned). `detail` names what this particular wizard would do to their
+/// work, which is the only part that differs between them.
+struct WizardBanWarning: View {
+    let login: String
+    let detail: String
+
+    var body: some View {
+        TimelineView(.periodic(from: Date(), by: 0.5)) { ctx in
+            let on = Int(ctx.date.timeIntervalSince1970 * 2) % 2 == 0
+            HStack(spacing: 7) {
+                Image(systemName: "exclamationmark.octagon.fill")
+                    .font(.system(size: 13)).foregroundStyle(.white)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("@\(login) is BANNED for prompt injection")
+                        .font(.caption.bold()).foregroundStyle(.white)
+                    Text(detail)
+                        .font(.system(size: 10)).foregroundStyle(.white.opacity(0.92))
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(9)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color.red.opacity(on ? 0.95 : 0.5)))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.red, lineWidth: on ? 2.5 : 0.5))
+        }
     }
 }
 

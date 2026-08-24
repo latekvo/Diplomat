@@ -29,7 +29,7 @@ let package = Package(
         ),
         // Thin CLI over the core so the Linux (Qt6) front-end can shell out for
         // prompt assembly instead of re-implementing it — a single source of truth
-        // for the Review/Conflicts/Audit prompts. Foundation-only; builds on Linux.
+        // for the Review/Issues/Conflicts/Audit prompts. Foundation-only; builds on Linux.
         .executableTarget(
             name: "DiplomatCoreCLI",
             dependencies: ["DiplomatCore"],

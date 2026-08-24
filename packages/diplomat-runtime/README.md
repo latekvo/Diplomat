@@ -37,7 +37,7 @@ diplomat_runtime/
   appconfig.py    ~/.diplomat/config.json — the settings a stdlib-only mesh node must read too
                   (the repo root, the cap on concurrent automatic agents, and the
                   rate-limit budget those agents are started against)
-  configbase.py   what the three wizards' configs share
+  configbase.py   what the four wizards' configs share
   prref.py        single-PR reference parsing (number / URL / owner-repo#337)
   prtarget.py     the whose-PRs axis shared by the wizards
   promptcore.py   shells out to the diplomat-core binary — the ONLY prompt assembly

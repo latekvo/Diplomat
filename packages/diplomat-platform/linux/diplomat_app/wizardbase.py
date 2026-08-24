@@ -1,7 +1,7 @@
-"""What the three spawn wizards do, as opposed to how they look.
+"""What the four spawn wizards do, as opposed to how they look.
 
-Review, Resolve-conflicts and Full-E2E each collect different inputs, but from
-the SPAWN click onwards they are one routine, which lives here once:
+Review, Fix-issues, Resolve-conflicts and Full-E2E each collect different inputs,
+but from the SPAWN click onwards they are one routine, which lives here once:
 
 * if the mesh row is live and ticked, hand the prompt to the local node and let
   it place the job — disabling SPAWN so a second click can't double-dispatch;
@@ -10,14 +10,14 @@ the SPAWN click onwards they are one routine, which lives here once:
   trigger and its policies differ;
 * either way, report the outcome in the status line.
 
-Three copies of a dispatch decision is the kind of duplication that goes wrong
-quietly: the two branches decide whether an agent runs on this machine or
-someone else's, and a guard added to one copy is a guard the other two skip.
+A copy of the dispatch decision per wizard is the kind of duplication that goes
+wrong quietly: the two branches decide whether an agent runs on this machine or
+someone else's, and a guard added to one copy is a guard the others skip.
 The per-wizard parts stay in the subclasses — the label a run is tracked under,
 the PR it is scoped to, and whose PRs it touches.
 
-The macOS twins are the `spawn()` methods in ReviewWizard/ConflictWizard/
-AuditWizard.swift, which mirror this same branch.
+The macOS twins are the `spawn()` methods in ReviewWizard/IssueWizard/
+ConflictWizard/AuditWizard.swift, which mirror this same branch.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ from .store import Store
 
 
 class SpawnWizard(QWidget):
-    """Base for the three wizards: owns the mesh row, the SPAWN button and the
+    """Base for the four wizards: owns the mesh row, the SPAWN button and the
     dispatch branch. Subclasses build their own inputs and supply the four hooks
     below."""
 
@@ -39,7 +39,8 @@ class SpawnWizard(QWidget):
         super().__init__()
         self.store = store
         # The duty id, the AgentJob kind and the activity-feed action verb are one
-        # and the same string for every wizard ("review" / "conflicts" / "audit").
+        # and the same string for every wizard ("review" / "issues" / "conflicts" /
+        # "audit").
         self._kind = kind
         self._tint = tint
         # Set while a dispatch this wizard started has yet to answer — a mesh round

@@ -14,6 +14,8 @@ public enum AuditCategory: String, CaseIterable, Sendable {
     case conflicts
     /// Full E2E repo audits.
     case audit
+    /// Fix-issues agents working the repo's open issues.
+    case issues
     /// The API-error watcher nudging a stalled agent back to work.
     case apiRestart
     /// Out-of-quota stall handling. The auto-resume itself is currently disabled (a
@@ -37,6 +39,7 @@ public enum AuditCategory: String, CaseIterable, Sendable {
         case .reply:      return "Replies"
         case .conflicts:  return "Conflicts"
         case .audit:      return "Audit"
+        case .issues:     return "Issues"
         case .apiRestart: return "API restart"
         case .quota:      return "Out of quota"
         case .merge:      return "Merges"
@@ -53,6 +56,7 @@ public enum AuditCategory: String, CaseIterable, Sendable {
         case .reply:      return "arrowshape.turn.up.left.fill"
         case .conflicts:  return "arrow.triangle.merge"
         case .audit:      return "ladybug.fill"
+        case .issues:     return "wrench.and.screwdriver.fill"
         case .apiRestart: return "bolt.fill"
         case .quota:      return "hourglass"
         case .merge:      return "checkmark.seal.fill"
@@ -77,6 +81,8 @@ public enum AuditCategory: String, CaseIterable, Sendable {
             return .conflicts
         case "audit":
             return .audit
+        case "issues":
+            return .issues
         case "nudge":
             return .apiRestart
         case "quota-stall", "quota-resume":
