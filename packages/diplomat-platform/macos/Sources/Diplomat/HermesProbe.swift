@@ -48,13 +48,31 @@ enum HermesProbe {
         return ""
     }
 
-    /// What that session's last message says: mid-turn, or back at the prompt.
+    /// What that session says: mid-turn, or back at its prompt with nothing owed to it.
     static func state(sessionID: String) -> AgentState.SessionState? {
         guard let last = row("SELECT role, finish_reason FROM messages WHERE session_id = ? "
                              + "ORDER BY id DESC LIMIT 1", columns: 2, text: [sessionID])
         else { return nil }
         return HermesStore.stateOf(role: last[0] as? String,
-                                   finishReason: last[1] as? String)
+                                   finishReason: last[1] as? String,
+                                   delegating: delegating(sessionID: sessionID))
+    }
+
+    /// Does a background subagent still owe this session a result? `nil` where the store
+    /// could not say, which `HermesStore.stateOf` keeps rather than reading as nothing
+    /// outstanding. The Python twin is `hermesstore.delegating`, which carries why the
+    /// table is asked for first and why both columns are matched.
+    private static func delegating(sessionID: String) -> Bool? {
+        guard let present = maybe("SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                                  + "AND name = ?", columns: 1,
+                                  text: ["async_delegations"]) else { return nil }
+        if present.isEmpty { return false }
+        guard let owed = maybe("SELECT 1 FROM async_delegations WHERE delivery_state = ? "
+                               + "AND (parent_session_id = ? OR origin_session = ?) LIMIT 1",
+                               columns: 1,
+                               text: [HermesStore.undelivered, sessionID, sessionID])
+        else { return nil }
+        return !owed.isEmpty
     }
 
     /// What one finished run spent, or nil if the store cannot say.
@@ -107,24 +125,31 @@ enum HermesProbe {
         query(sql, columns: columns, text: text, double: []).first
     }
 
-    /// One read-only query. Every failure is an empty result: an absent store, a schema
-    /// this build does not know, an agent holding the write lock longer than the tick can
-    /// wait — all of them mean the same thing to the caller.
+    /// One read-only query, where a failure and an empty result mean the same thing to
+    /// the caller: an absent store, a schema this build does not know, an agent holding
+    /// the write lock longer than the tick can wait.
     private static func query(_ sql: String, columns: Int, text: [String],
                               double: [Double]) -> [[Any?]] {
-        guard FileManager.default.fileExists(atPath: dbPath) else { return [] }
+        maybe(sql, columns: columns, text: text, double: double) ?? []
+    }
+
+    /// The same read, for the one caller that must tell those two apart: `nil` where the
+    /// store would not answer, `[]` where it answered with no rows.
+    private static func maybe(_ sql: String, columns: Int, text: [String],
+                              double: [Double] = []) -> [[Any?]]? {
+        guard FileManager.default.fileExists(atPath: dbPath) else { return nil }
         var db: OpaquePointer?
         guard sqlite3_open_v2("file:\(dbPath)?mode=ro", &db,
                               SQLITE_OPEN_READONLY | SQLITE_OPEN_URI, nil) == SQLITE_OK else {
             sqlite3_close(db)
-            return []
+            return nil
         }
         defer { sqlite3_close(db) }
         sqlite3_busy_timeout(db, Int32(HermesStore.busyTimeout * 1000))
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
             sqlite3_finalize(stmt)
-            return []
+            return nil
         }
         defer { sqlite3_finalize(stmt) }
         // SQLITE_TRANSIENT: the parameters are Swift strings whose buffers this call does
@@ -137,7 +162,8 @@ enum HermesProbe {
             sqlite3_bind_double(stmt, Int32(text.count + i + 1), value)
         }
         var out: [[Any?]] = []
-        while sqlite3_step(stmt) == SQLITE_ROW {
+        var step = sqlite3_step(stmt)
+        while step == SQLITE_ROW {
             out.append((0..<columns).map { column -> Any? in
                 switch sqlite3_column_type(stmt, Int32(column)) {
                 case SQLITE_INTEGER: return Int(sqlite3_column_int64(stmt, Int32(column)))
@@ -147,7 +173,11 @@ enum HermesProbe {
                 default: return nil
                 }
             })
+            step = sqlite3_step(stmt)
         }
-        return out
+        // A walk that ended anywhere but `SQLITE_DONE` — the writer held its lock past
+        // the busy timeout — read no fewer rows than are there, it read an unknown
+        // number of them.
+        return step == SQLITE_DONE ? out : nil
     }
 }

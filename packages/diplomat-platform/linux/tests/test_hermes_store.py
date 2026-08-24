@@ -8,7 +8,8 @@ own message ``finish_reason``.
 The same three things have to hold, and each is a group below:
 
 * the answer must be **read correctly** — including that a tool call in flight is the
-  middle of a turn, and that "no messages yet" is not "idle";
+  middle of a turn, that "no messages yet" is not "idle", and that a turn the agent
+  ended is not the end of a run a background subagent still owes a result to;
 * the run must be matched to **its own** session — the store is machine-wide, so it
   holds every session on the box, and the task cap makes "two agents in one checkout"
   the ordinary case;
@@ -47,6 +48,20 @@ CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, cwd TEXT, started_at RE
   actual_cost_usd REAL);
 CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT,
   role TEXT, content TEXT, finish_reason TEXT);
+CREATE TABLE async_delegations (delegation_id TEXT PRIMARY KEY, origin_session TEXT,
+  parent_session_id TEXT, state TEXT, dispatched_at REAL, delivery_state TEXT);
+"""
+
+#: A store from before Hermes could delegate in the background, which has no such
+#: table at all. Kept whole for the same reason :data:`SCHEMA_UNPRICED` is: the reader
+#: is held to a shape that really existed rather than to a subset this file invented.
+SCHEMA_UNDELEGATED = """
+CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, cwd TEXT, started_at REAL,
+  input_tokens INTEGER, output_tokens INTEGER, cache_read_tokens INTEGER,
+  cache_write_tokens INTEGER, model TEXT, estimated_cost_usd REAL,
+  actual_cost_usd REAL);
+CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT,
+  role TEXT, content TEXT, finish_reason TEXT);
 """
 
 #: The pre-pricing schema, which a store written by an older Hermes still has. Kept
@@ -64,20 +79,28 @@ CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT,
 MODEL = "deepseek/deepseek-v4-flash-0731"
 
 
-def store(sessions: dict, cwds: dict | None = None) -> None:
+def store(sessions: dict, cwds: dict | None = None,
+          delegations: list[tuple] | None = None, schema: str = SCHEMA) -> None:
     """Write a Hermes store where the fenced-off reader is looking.
 
     ``sessions`` maps a session id to its messages — ``(role, content,
     finish_reason)`` triples, oldest first — in the order they were started, one
     second apart. That is the arrangement the applet's task cap makes ordinary:
     several agents in one checkout, seconds apart. ``cwds`` overrides where one was
-    started.
+    started, and ``delegations`` are ``(parent_session_id, origin_session,
+    delivery_state)`` rows of the background fan-outs those sessions dispatched.
     """
     path = hermesstore.db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     try:
-        conn.executescript(SCHEMA)
+        conn.executescript(schema)
+        for i, (parent, origin, delivery) in enumerate(delegations or []):
+            conn.execute(
+                "INSERT INTO async_delegations (delegation_id, origin_session, "
+                "parent_session_id, state, dispatched_at, delivery_state) "
+                "VALUES (?, ?, ?, 'running', ?, ?)",
+                (f"deleg_{i}", origin, parent, T0, delivery))
         for i, (session_id, messages) in enumerate(sessions.items()):
             conn.execute(
                 "INSERT INTO sessions (id, source, cwd, started_at, input_tokens, "
@@ -144,6 +167,72 @@ def test_a_store_that_is_not_there_answers_nothing_at_all():
     assert hermesstore.state_of(OURS) is None
     assert hermesstore.candidates(REPO, T0, set()) == []
     assert hermesstore.session_tokens(OURS) is None
+
+
+# MARK: - What the turn left running behind it
+
+
+def test_a_background_subagent_that_has_not_reported_holds_its_run_open():
+    """``delegate_task(background=true)`` hands the turn straight back and reports
+    later as a fresh user turn, so the agent sits at its prompt with the fan-out still
+    spending. Read as a finished run, its bay and its PR go to another agent while
+    this one is about to wake up and keep working on the same review."""
+    store({OURS: [user(PROMPT), FINISHED]}, delegations=[(OURS, "", "pending")])
+    assert hermesstore.state_of(OURS) == SessionState(busy=True)
+
+
+def test_a_result_already_folded_back_in_holds_nothing_open():
+    """Delivered is the whole point of the state: the completion has been handed to
+    the agent, so whatever it did with it is in the messages this reads. ``dropped`` is
+    Hermes giving up on one, which will never wake anybody either."""
+    store({OURS: [user(PROMPT), FINISHED]},
+          delegations=[(OURS, OURS, "delivered"), (OURS, OURS, "dropped")])
+    assert hermesstore.state_of(OURS) == SessionState(busy=False)
+
+
+def test_another_session_s_fan_out_says_nothing_about_this_one():
+    """The store is machine-wide, and the box the applet runs on has every agent's
+    delegations in it — including the ones its own subagents dispatch."""
+    store({OURS: [user(PROMPT), FINISHED], THEIRS: [user(OTHER_PROMPT), WORKING]},
+          delegations=[(THEIRS, THEIRS, "pending")])
+    assert hermesstore.state_of(OURS) == SessionState(busy=False)
+
+
+def test_a_delegation_stamped_only_with_its_routing_key_still_counts():
+    """``parent_session_id`` is read off the agent and is nullable; the routing key
+    beside it is stamped from that same id on the ``--tui`` spawn this applet makes.
+    Either column naming the session is the fan-out being this one's."""
+    store({OURS: [user(PROMPT), FINISHED]}, delegations=[(None, OURS, "pending")])
+    assert hermesstore.state_of(OURS) == SessionState(busy=True)
+
+
+def test_a_store_too_old_to_delegate_in_the_background_still_ends_a_turn():
+    """A Hermes that cannot dispatch one owes nothing, so the missing table is an
+    answer rather than a failure — otherwise every run on such a build falls back to
+    its screen, which is the inference this whole module exists to replace."""
+    store({OURS: [user(PROMPT), FINISHED]}, schema=SCHEMA_UNDELEGATED)
+    assert hermesstore.delegating(OURS) is False
+    assert hermesstore.state_of(OURS) == SessionState(busy=False)
+
+
+def test_a_delegation_table_this_build_cannot_read_leaves_the_turn_unjudged():
+    """The other way the store goes quiet: the table is there but not in a shape this
+    knows. Nothing is proved either way, so the run keeps its older evidence — reading
+    it as a finished turn would end a run on a delegation nobody could read."""
+    store({OURS: [user(PROMPT), FINISHED], THEIRS: [user(OTHER_PROMPT), WORKING]})
+    conn = sqlite3.connect(hermesstore.db_path())
+    try:
+        conn.executescript("DROP TABLE async_delegations;"
+                           "CREATE TABLE async_delegations (delegation_id TEXT);")
+        conn.commit()
+    finally:
+        conn.close()
+
+    assert hermesstore.delegating(OURS) is None
+    assert hermesstore.state_of(OURS) is None
+    # A turn still in flight is answered by the message alone, so the same broken
+    # table costs it nothing: only the end of a turn has to ask what is outstanding.
+    assert hermesstore.state_of(THEIRS) == SessionState(busy=True)
 
 
 # MARK: - Which session is this run's
@@ -278,6 +367,18 @@ def test_a_hermes_run_finds_its_own_session_and_remembers_it():
 
     assert obs.ok and obs.value["r1"] == SessionState(busy=False)
     assert agentregistry.bound_session("r1") == OURS
+
+
+def test_a_run_still_owed_a_fan_out_reads_as_working_through_the_probe():
+    """The whole path a tick takes: the run's runner and prompt out of its directory,
+    the session matched by prompt, and both halves of the answer read from the store
+    the agent is writing."""
+    store({OURS: [user(PROMPT), FINISHED]}, delegations=[(OURS, OURS, "pending")])
+    record = staged("r1")
+
+    obs = probes.agent_sessions([record], REPO)
+
+    assert obs.ok and obs.value["r1"] == SessionState(busy=True)
 
 
 def test_two_hermes_runs_in_one_checkout_do_not_take_each_others_session():

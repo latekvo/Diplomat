@@ -71,6 +71,37 @@ enum SweepTest {
         let theirs = AgentSessionProbe.states(for: [other], directory: fixture.cwd)[other.runID]
         check("a Hermes turn its agent marked finished reads as back at the prompt",
               AgentRegistry.boundSession(other.runID) == "ses_done" && theirs?.busy == false)
+        // The same finished turn, with a background fan-out that has not reported yet: it
+        // will wake this agent as a fresh user turn, so the run is not over. `ses_done`
+        // above carries a delegation of its own that was delivered, which is what makes
+        // this the delivery state being read rather than a row being there at all.
+        let owed = staged(.hermes, prompt: fixture.owedPrompt)
+        let pending = AgentSessionProbe.states(for: [owed], directory: fixture.cwd)[owed.runID]
+        check("a Hermes run whose background subagent still owes it a result stays open",
+              AgentRegistry.boundSession(owed.runID) == "ses_owed" && pending?.busy == true)
+        // The two ways that store goes quiet, told apart on the same bound session. A
+        // Hermes too old to delegate in the background has no such table and owes
+        // nothing, so its turns still end; a table in a shape this build cannot read
+        // proves nothing either way, and a run is never ended on that.
+        func reshapeDelegations(_ sql: String) -> Bool {
+            var db: OpaquePointer?
+            guard sqlite3_open_v2(fixture.db, &db, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK
+            else {
+                sqlite3_close(db)
+                return false
+            }
+            defer { sqlite3_close(db) }
+            return sqlite3_exec(db, "DROP TABLE IF EXISTS async_delegations;" + sql,
+                                nil, nil, nil) == SQLITE_OK
+        }
+        check("a Hermes too old to delegate in the background still ends its turns",
+              reshapeDelegations("")
+                  && AgentSessionProbe.states(for: [owed],
+                                              directory: fixture.cwd)[owed.runID]?.busy == false)
+        check("a delegation table this build cannot read leaves the turn unjudged",
+              reshapeDelegations("CREATE TABLE async_delegations (delegation_id TEXT);")
+                  && AgentSessionProbe.states(for: [owed],
+                                              directory: fixture.cwd)[owed.runID] == nil)
 
         // 2. The match costs a fetch of a session's opening message; the run's directory
         //    is where the answer is kept, so the next tick asks a session it already
@@ -161,13 +192,15 @@ enum SweepTest {
         return shell.path
     }
 
-    /// A throwaway Hermes store: two sessions a second apart in one directory, told apart
-    /// only by their opening message, plus the token counts a finished one is priced from.
+    /// A throwaway Hermes store: three sessions a second apart in one directory, told
+    /// apart only by their opening message, plus the token counts a finished one is priced
+    /// from and the delegation rows that say whether a finished turn is a finished run.
     ///
     /// Written with SQLite rather than checked in as a binary so the schema this reads is
     /// stated in the test that depends on it.
     private static func hermesFixture()
-        -> (db: String, cwd: String, oursPrompt: String, donePrompt: String)? {
+        -> (db: String, cwd: String, oursPrompt: String, donePrompt: String,
+            owedPrompt: String)? {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("diplomat-sweep-\(UUID().uuidString)")
         guard (try? FileManager.default.createDirectory(at: dir,
@@ -177,6 +210,7 @@ enum SweepTest {
         let started = Date().timeIntervalSince1970 - 500
         let ours = "Review PR #7 in o/r"
         let done = "Review PR #8 in o/r"
+        let owed = "Review PR #9 in o/r"
         var db: OpaquePointer?
         guard sqlite3_open_v2(dir.appendingPathComponent("state.db").path, &db,
                               SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE, nil) == SQLITE_OK
@@ -191,17 +225,25 @@ enum SweepTest {
           cache_write_tokens INTEGER);
         CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT,
           role TEXT, content TEXT, finish_reason TEXT);
+        CREATE TABLE async_delegations (delegation_id TEXT PRIMARY KEY,
+          origin_session TEXT, parent_session_id TEXT, state TEXT, delivery_state TEXT);
         INSERT INTO sessions VALUES ('ses_theirs', '\(cwd)', \(started), 0, 0, 0, 0);
         INSERT INTO sessions VALUES ('ses_ours', '\(cwd)', \(started + 1), 100, 20, 9000, 5);
         INSERT INTO sessions VALUES ('ses_done', '\(cwd)', \(started + 2), 1, 1, 0, 0);
+        INSERT INTO sessions VALUES ('ses_owed', '\(cwd)', \(started + 3), 1, 1, 0, 0);
         INSERT INTO messages (session_id, role, content, finish_reason)
           VALUES ('ses_theirs', 'user', 'something else entirely', NULL),
                  ('ses_ours', 'user', '\(ours)', NULL),
                  ('ses_ours', 'assistant', '', 'tool_calls'),
                  ('ses_done', 'user', '\(done)', NULL),
-                 ('ses_done', 'assistant', 'posted', 'stop');
+                 ('ses_done', 'assistant', 'posted', 'stop'),
+                 ('ses_owed', 'user', '\(owed)', NULL),
+                 ('ses_owed', 'assistant', 'dispatched', 'stop');
+        INSERT INTO async_delegations
+          VALUES ('deleg_done', 'ses_done', 'ses_done', 'completed', 'delivered'),
+                 ('deleg_owed', '', 'ses_owed', 'running', 'pending');
         """
         guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else { return nil }
-        return (dir.appendingPathComponent("state.db").path, cwd, ours, done)
+        return (dir.appendingPathComponent("state.db").path, cwd, ours, done, owed)
     }
 }
