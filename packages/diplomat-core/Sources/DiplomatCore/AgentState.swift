@@ -657,7 +657,7 @@ public enum AgentState {
     /// A run synthesized from a sighting in the process table.
     ///
     /// It has no pid of its own and no dispatch stamp to be young against, so the scan
-    /// that made it is also the only thing that can end it — and something must, now that
+    /// that made it is also the only thing that can end it — and something must, because
     /// the record is kept across ticks for the stillness backstop's sake: one that
     /// outlived its agent would hold that PR against a fresh agent, and a bay of the cap,
     /// for the life of the applet.
