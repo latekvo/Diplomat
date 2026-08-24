@@ -276,6 +276,14 @@ public enum Telemetry {
         return tokens / util
     }
 
+    /// Each task as a percentage of one rate-limit window, or nothing at all while
+    /// that window has no price. Empty rather than zeroed: a share of a window nobody
+    /// has measured is a made-up number, and the screen says so instead of drawing it.
+    static func shares(_ taskTokens: [Double], limit: Double?) -> [Double] {
+        guard let limit, limit > 0 else { return [] }
+        return taskTokens.map { 100 * $0 / limit }
+    }
+
     // MARK: - Distribution (the bell curve)
 
     public struct Bin: Equatable {
@@ -319,7 +327,11 @@ public enum Telemetry {
     /// the same polyline.
     public static let curveResolution = 4
 
-    public static func distribution(_ values: [Double], binCount: Int, z: Double) -> Distribution {
+    /// `span` widens the histogram's top edge past the largest observation, so two
+    /// distributions drawn on one axis share their bin edges. Without it each scales
+    /// to its own maximum, and the same task lands in a different bin on each.
+    public static func distribution(_ values: [Double], binCount: Int, z: Double,
+                                    span: Double? = nil) -> Distribution {
         guard !values.isEmpty else { return .empty }
         let n = Double(values.count)
         let mean = values.reduce(0, +) / n
@@ -336,7 +348,7 @@ public enum Telemetry {
 
         // Bins run from 0, not from the smallest observation: this is a share of a
         // budget, so how close the mass sits to zero is the point of looking.
-        let hi = Swift.max(sorted.last ?? 0, 1e-9)
+        let hi = Swift.max(span ?? 0, sorted.last ?? 0, 1e-9)
         let width = hi / Double(binCount)
         var counts = [Int](repeating: 0, count: binCount)
         for v in values {
@@ -447,11 +459,15 @@ public enum Telemetry {
         public let sessionLimitTokens: Double?
         public let weekLimitTokens: Double?
 
-        /// Share of the session window one task consumes, in percent.
+        /// What a task costs as a share of the 5-hour window, and the same tasks as
+        /// a share of the 7-day one, both in percent. Two distributions rather than
+        /// one and a ratio: each window is priced from its own quota readings
+        /// (`calibrate`), so either can be measurable while the other is not, and the
+        /// screen draws them on one axis — whichever hump sits further right is the
+        /// ceiling that runs out first. They share bin edges, so a bin means the same
+        /// slice of the axis on both.
         public let perTask: Distribution
-        /// The same tasks against the 7-day window — one number, since the shape is
-        /// the shape of `perTask` rescaled.
-        public let perTaskWeekMean: Double
+        public let perTaskWeek: Distribution
         /// Mean RAW tokens per task. Independent of the quota probe, so it is what
         /// the screen shows while the window has no price yet — an unanchored
         /// number, but a measured one.
@@ -547,14 +563,11 @@ public enum Telemetry {
         // is a token count whoever billed it, while a share of a window is the
         // account's and only its own tasks may be measured against it.
         let charged = priced.filter(\.anthropic).compactMap(\.tokens)
-        var pct: [Double] = []
-        if let limit = sessionLimit, limit > 0 {
-            pct = charged.map { 100 * $0 / limit }
-        }
-        var weekMean = 0.0
-        if let limit = weekLimit, limit > 0, !charged.isEmpty {
-            weekMean = charged.reduce(0) { $0 + 100 * $1 / limit } / Double(charged.count)
-        }
+        let pct = shares(charged, limit: sessionLimit)
+        let pctWeek = shares(charged, limit: weekLimit)
+        // One axis for both histograms, so the distance between the humps is readable
+        // as what it is: how much more of a 5-hour window a task eats than of a week.
+        let span = Swift.max(pct.max() ?? 0, pctWeek.max() ?? 0)
 
         // The dollar half of the same question. Restricted to the model that ran most
         // recently, because a switch of model is a switch of rates: keeping the older
@@ -580,8 +593,8 @@ public enum Telemetry {
         return Summary(
             sessionLimitTokens: sessionLimit,
             weekLimitTokens: weekLimit,
-            perTask: distribution(pct, binCount: binCount, z: z),
-            perTaskWeekMean: weekMean,
+            perTask: distribution(pct, binCount: binCount, z: z, span: span),
+            perTaskWeek: distribution(pctWeek, binCount: binCount, z: z, span: span),
             perTaskTokensMean: priced.isEmpty
                 ? 0 : priced.compactMap(\.tokens).reduce(0, +) / Double(priced.count),
             perTaskUsd: distribution(usd, binCount: binCount, z: z),

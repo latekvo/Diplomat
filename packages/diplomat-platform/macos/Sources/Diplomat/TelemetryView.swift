@@ -9,8 +9,8 @@ import DiplomatCore
 /// (`DiplomatCore.Telemetry`), and draws eight figures:
 ///
 /// * what share of the 5-hour rate-limit window one auto-task consumes, on average;
-/// * how that share is distributed, as a histogram with a fitted normal and a
-///   confidence interval on the mean;
+/// * how that share is distributed against BOTH rate-limit windows, as two histograms
+///   on one axis, each with a fitted normal and a confidence interval on its mean;
 /// * what the probe measured to be left of each rate-limit window, over the lookback;
 /// * how many auto-reviews were owed but unstarted, over the lookback;
 /// * the same for auto-fixes;
@@ -149,6 +149,22 @@ struct TelemetryView: View {
         }
     }
 
+    /// `(metric id, line)` per priced window — the chart's key and its figures in
+    /// one. Built outside the ViewBuilder: a string this long interpolated inside
+    /// `Text(...)` blows past SwiftUI's type-check budget.
+    private func spreadLines(_ session: Telemetry.Distribution,
+                             _ week: Telemetry.Distribution) -> [(String, String)] {
+        let ci = model?.confidence.title ?? "95% CI"
+        return [("spreadSession", session), ("spreadWeek", week)]
+            .filter { $0.1.count > 0 }
+            .map { id, d in
+                (id, "◼ \(title(id))  \(Telemetry.percent(d.mean))  ·  "
+                    + "\(ci) \(Telemetry.percent(d.ciLow)) – "
+                    + "\(Telemetry.percent(d.ciHigh))  ·  "
+                    + "sd \(Telemetry.percent(d.sd))  ·  n=\(d.count)")
+            }
+    }
+
     private func note(_ text: String) -> some View {
         Text(text).font(.system(size: 9)).foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
@@ -157,6 +173,7 @@ struct TelemetryView: View {
     @ViewBuilder
     private func costCard(_ s: Telemetry.Summary) -> some View {
         let d = s.perTask
+        let week = s.perTaskWeek
         let priced = s.sessionLimitTokens != nil && d.count > 0
         // Built outside the ViewBuilder: a chain of ternaries over concatenated
         // strings inside `Text(...)` blows past SwiftUI's type-check budget.
@@ -169,9 +186,11 @@ struct TelemetryView: View {
         }()
         let caption: String = {
             if priced {
-                return "of the 5-hour window, per task · median "
-                    + "\(Telemetry.percent(d.median)) · "
-                    + "\(Telemetry.percent(s.perTaskWeekMean)) of the week"
+                let head = "of the 5-hour window, per task · median "
+                    + Telemetry.percent(d.median)
+                return week.count > 0
+                    ? head + " · \(Telemetry.percent(week.mean)) of the 7-day window"
+                    : head
             }
             if d.count == 0 && s.perTaskTokensMean > 0 {
                 return "tokens per task. The share of the limit is Claude Code's "
@@ -184,11 +203,18 @@ struct TelemetryView: View {
             cardHead("limitPerTask", headline)
             note(caption)
             if priced {
-                SpreadChart(dist: d, tint: tint("limitSpread")).frame(height: 150)
-                Text("\(model?.confidence.title ?? "95% CI") "
-                     + "\(Telemetry.percent(d.ciLow)) – \(Telemetry.percent(d.ciHigh))"
-                     + "  ·  sd \(Telemetry.percent(d.sd))  ·  n=\(d.count)")
-                    .font(.system(size: 9).monospaced()).foregroundStyle(.secondary)
+                SpreadChart(session: d, week: week, sessionTint: tint("spreadSession"),
+                            weekTint: tint("spreadWeek")).frame(height: 150)
+                // One line per window, in that window's colour — the chart has no
+                // other key.
+                ForEach(spreadLines(d, week), id: \.0) { id, line in
+                    Text(line).font(.system(size: 9).monospaced())
+                        .foregroundStyle(tint(id))
+                }
+                if week.count == 0 {
+                    note("The 7-day window has no price yet — it moves slowly, so it "
+                         + "takes longer than the 5-hour one to measure a task against.")
+                }
                 if d.count < (model?.minSample ?? 5) {
                     Text("Only \(d.count) finished task\(d.count == 1 ? "" : "s") — the "
                          + "curve is a guess until there are \(model?.minSample ?? 5).")
@@ -324,6 +350,9 @@ struct TelemetryView: View {
         if let limit = s.sessionLimitTokens {
             parts.append("5-hour window priced at ≈\(Telemetry.tokens(limit)) tokens, measured")
         }
+        if let limit = s.weekLimitTokens {
+            parts.append("7-day window at ≈\(Telemetry.tokens(limit)) tokens")
+        }
         if s.unattributedCount > 0 {
             parts.append("\(s.unattributedCount) finished task"
                          + "\(s.unattributedCount == 1 ? "" : "s") could not be matched "
@@ -337,74 +366,114 @@ struct TelemetryView: View {
 
 // MARK: - Charts
 
-/// The bell curve: a histogram of per-task cost, the fitted normal over it, and the
-/// confidence interval on the mean as a shaded band.
+/// The bell curves: the same auto-tasks as a histogram of what they cost each
+/// rate-limit window, the fitted normal over each, and the confidence interval on each
+/// mean as a shaded band.
 ///
-/// The band is deliberately drawn *behind* the bars and the mean as a solid rule, so
-/// the eye reads "the average is here, and this is how well we know it" rather than
+/// Both windows on one x axis, because the whole question the card answers is *which
+/// ceiling this work is really spending against* — and that is the distance between the
+/// two humps. A task is a large slice of a 5-hour window and a sliver of a week, so the
+/// weekly series sits far to the left; the axis is honest about that rather than giving
+/// each series a scale of its own.
+///
+/// The bars are grouped inside each bin, red then yellow, rather than stacked or
+/// overlaid: near zero the two series share bins, and a translucent overlay there would
+/// hide whichever was drawn first. Each series is scaled to its own tallest bar — see
+/// `topOf`.
+///
+/// Each band is deliberately drawn *behind* the bars, with the mean as a rule, so the
+/// eye reads "the average is here, and this is how well we know it" rather than
 /// mistaking the interval for the spread of the tasks themselves — which is the
 /// histogram, and is much wider.
 private struct SpreadChart: View {
-    let dist: Telemetry.Distribution
-    let tint: Color
+    let session: Telemetry.Distribution
+    let week: Telemetry.Distribution
+    let sessionTint: Color
+    let weekTint: Color
+
+    /// The 5-hour window first, so it is the one drawn in the left half of each bin —
+    /// the same order the stats lines list them in. A window with no price yet has no
+    /// series.
+    private var drawn: [(Telemetry.Distribution, Color)] {
+        [(session, sessionTint), (week, weekTint)].filter {
+            $0.0.count > 0 && !$0.0.bins.isEmpty
+        }
+    }
 
     var body: some View {
         Canvas { ctx, size in
-            guard dist.count > 0, let last = dist.bins.last else { return }
+            guard let first = drawn.first, let last = first.0.bins.last else { return }
             let padL: CGFloat = 4, padR: CGFloat = 4, padT: CGFloat = 8, padB: CGFloat = 16
             let w = size.width - padL - padR
             let h = size.height - padT - padB
+            // The two share bin edges (`summarize` spans them together), so either
+            // names the axis.
             let hi = last.upper > 0 ? last.upper : 1
-            // The curve's peak can exceed the tallest bar (a tight distribution
-            // sampled into wide bins), so both share one scale or the fit would be
-            // clipped where it matters most.
-            let top = max(Double(dist.bins.map(\.count).max() ?? 1),
-                          dist.curve.max() ?? 0, 1)
 
             func xOf(_ value: Double) -> CGFloat {
                 padL + w * CGFloat(min(1, max(0, value / hi)))
             }
-            func yOf(_ count: Double) -> CGFloat {
+            /// One series' full height. Each is scaled to its OWN peak, not to a count
+            /// axis shared with the other: both hold the same tasks, so a bin is a
+            /// share of the same population either way — and shared, the wider spread
+            /// is drawn as a smear along the floor of the narrower one's spike. The
+            /// curve's peak can exceed the tallest bar (a tight distribution sampled
+            /// into wide bins), so it is in the scale too or the fit would be clipped
+            /// where it matters most.
+            func topOf(_ d: Telemetry.Distribution) -> Double {
+                max((d.bins.map { Double($0.count) } + d.curve).max() ?? 1, 1)
+            }
+            func yOf(_ count: Double, _ top: Double) -> CGFloat {
                 padT + h * CGFloat(1 - min(1, count / top))
             }
 
-            // Confidence band on the mean, behind everything else so it reads as
-            // context for the mean rule rather than as another series.
-            if dist.ciHigh > dist.ciLow {
+            // Confidence bands on the means, behind everything else so they read as
+            // context for the mean rules rather than as more series.
+            for (dist, tint) in drawn where dist.ciHigh > dist.ciLow {
                 let lo = xOf(dist.ciLow), hiX = xOf(dist.ciHigh)
                 ctx.fill(Path(CGRect(x: lo, y: padT, width: max(1, hiX - lo), height: h)),
                          with: .color(tint.opacity(0.16)))
             }
 
-            for bin in dist.bins where bin.count > 0 {
-                let x0 = xOf(bin.lower), x1 = xOf(bin.upper), y = yOf(Double(bin.count))
-                let rect = CGRect(x: x0 + 0.8, y: y, width: max(1, x1 - x0 - 1.6),
-                                  height: padT + h - y)
-                ctx.fill(Path(roundedRect: rect, cornerRadius: 2),
-                         with: .color(tint.opacity(0.55)))
-            }
-
-            if dist.curve.count > 1 {
-                var path = Path()
-                for (i, value) in dist.curve.enumerated() {
-                    let px = padL + w * CGFloat(i) / CGFloat(dist.curve.count - 1)
-                    let py = yOf(value)
-                    if i == 0 { path.move(to: CGPoint(x: px, y: py)) }
-                    else { path.addLine(to: CGPoint(x: px, y: py)) }
+            // Histogram bars, each series in its own half of every bin.
+            for (slot, (dist, tint)) in drawn.enumerated() {
+                let top = topOf(dist)
+                for bin in dist.bins where bin.count > 0 {
+                    let x0 = xOf(bin.lower), x1 = xOf(bin.upper)
+                    let share = (x1 - x0) / CGFloat(drawn.count)
+                    let y = yOf(Double(bin.count), top)
+                    let rect = CGRect(x: x0 + share * CGFloat(slot) + 0.8, y: y,
+                                      width: max(1, share - 1.6), height: padT + h - y)
+                    ctx.fill(Path(roundedRect: rect, cornerRadius: 2),
+                             with: .color(tint.opacity(0.55)))
                 }
-                ctx.stroke(path, with: .color(tint), lineWidth: 1.8)
             }
 
-            // The mean, as a full-height rule.
-            var rule = Path()
-            rule.move(to: CGPoint(x: xOf(dist.mean), y: padT))
-            rule.addLine(to: CGPoint(x: xOf(dist.mean), y: padT + h))
-            ctx.stroke(rule, with: .color(.white), style: StrokeStyle(lineWidth: 1.2,
-                                                                      dash: [3, 3]))
+            for (dist, tint) in drawn {
+                if dist.curve.count > 1 {
+                    let top = topOf(dist)
+                    var path = Path()
+                    for (i, value) in dist.curve.enumerated() {
+                        let px = padL + w * CGFloat(i) / CGFloat(dist.curve.count - 1)
+                        let py = yOf(value, top)
+                        if i == 0 { path.move(to: CGPoint(x: px, y: py)) }
+                        else { path.addLine(to: CGPoint(x: px, y: py)) }
+                    }
+                    ctx.stroke(path, with: .color(tint), lineWidth: 1.8)
+                }
 
-            // Axis: 0 on the left, the largest observation on the right.
+                // The mean, as a full-height rule, in the series' own colour: with
+                // two of them on the axis, a white one would match neither.
+                var rule = Path()
+                rule.move(to: CGPoint(x: xOf(dist.mean), y: padT))
+                rule.addLine(to: CGPoint(x: xOf(dist.mean), y: padT + h))
+                ctx.stroke(rule, with: .color(tint), style: StrokeStyle(lineWidth: 1.2,
+                                                                        dash: [3, 3]))
+            }
+
+            // Axis: 0 on the left, the top of the shared span on the right.
             ctx.draw(axisText("0%"), at: CGPoint(x: padL, y: padT + h + 8), anchor: .leading)
-            ctx.draw(axisText(Telemetry.percent(dist.max)),
+            ctx.draw(axisText(Telemetry.percent(hi)),
                      at: CGPoint(x: padL + w, y: padT + h + 8), anchor: .trailing)
         }
     }

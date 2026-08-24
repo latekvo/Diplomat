@@ -25,7 +25,7 @@ import time
 
 import pytest
 
-from diplomat_runtime import telemetry
+from diplomat_runtime import core, telemetry
 from diplomat_app.store import Store
 
 pytest.importorskip("PySide6")
@@ -59,17 +59,24 @@ def _labels(widget) -> list[str]:
     return [lbl.text() for lbl in widget.findChildren(QLabel)]
 
 
-def _seed(*, samples: bool = True, tasks: int = 8, priced: bool = True) -> None:
+def _seed(*, samples: bool = True, tasks: int = 8, priced: bool = True,
+          week_moves: bool = True) -> None:
     """A ledger with `tasks` finished local tasks. ``priced`` decides whether the
     samples carry quota readings — i.e. whether the 5-hour window can be priced at
-    all — and ``samples`` whether there are any samples to begin with."""
+    all — and ``samples`` whether there are any samples to begin with.
+    ``week_moves`` off holds the weekly reading still, which is what a quiet
+    account's ledger looks like: the 5-hour window is measurable and the week isn't.
+
+    Priced, the readings make the 5-hour window worth 2.5M tokens and the week 25M,
+    so the default eight tasks (40k-61k tokens) cost 1.6-2.44% of one and
+    0.16-0.24% of the other."""
     now = time.time()
     if samples:
         for i in range(4):
             telemetry.append({
                 "at": now - (4 - i) * 3600, "ev": "sample",
                 "sessionLeft": (1.0 - 0.2 * i) if priced else None,
-                "weekLeft": (1.0 - 0.02 * i) if priced else None,
+                "weekLeft": (1.0 - 0.02 * i if week_moves else 1.0) if priced else None,
                 "repoTokens": 400_000.0 * i, "otherTokens": 100_000.0 * i,
             })
     for i in range(tasks):
@@ -82,6 +89,30 @@ def _seed(*, samples: bool = True, tasks: int = 8, priced: bool = True) -> None:
         telemetry.append({"at": at + 900, "ev": "done", "key": key,
                           "tokens": 40_000.0 + 3_000.0 * i})
     telemetry._reset_cache()
+
+
+#: The series colours, read from the shared model rather than restated here — the
+#: palette is the one thing the two platforms' charts must agree on.
+_TINT = {m["id"]: m["colorHex"].lower() for m in core.telemetry()["metrics"]}
+
+
+def _chart_colours(view) -> set[str]:
+    """Every colour the spread chart actually paints. The stats lines below it are
+    built from the summary separately, so they would still read correctly if the
+    chart itself drew one window and dropped the other."""
+    from diplomat_app.telemetryview import SpreadChart
+
+    chart = view.findChild(SpreadChart)
+    assert chart is not None, "the cost card drew no spread chart"
+    chart.resize(400, 150)  # the view is never shown, so nothing else sizes it
+    image = chart.grab().toImage()
+    return {image.pixelColor(x, y).name()
+            for y in range(image.height()) for x in range(image.width())}
+
+
+def _spread_lines(view) -> list[str]:
+    """The cost card's per-window figures — the only labels carrying an interval."""
+    return [t for t in _labels(view) if "95% CI" in t]
 
 
 def test_an_empty_ledger_says_so_instead_of_drawing_zeroes(store):
@@ -105,6 +136,52 @@ def test_the_share_of_the_limit_is_shown_once_the_window_has_a_price(store):
     assert "of the 5-hour window, per task" in text
     assert "5-hour window priced at" in text, "the coverage line hid the calibration"
     assert "95% CI" in text
+
+
+def test_the_chart_paints_one_series_per_priced_window(store):
+    """Red for the 5-hour window, yellow for the week, both on the one axis. The
+    fitted normal and the mean rule are stroked at full opacity, so each series'
+    tint lands in the image exactly."""
+    _seed()
+    view = _view(store)
+    colours = _chart_colours(view)
+    assert _TINT["spreadSession"] in colours, "the 5-hour series was not drawn"
+    assert _TINT["spreadWeek"] in colours, "the weekly series was not drawn"
+
+
+def test_the_chart_paints_nothing_for_a_window_with_no_price(store):
+    _seed(week_moves=False)
+    colours = _chart_colours(_view(store))
+    assert _TINT["spreadSession"] in colours
+    assert _TINT["spreadWeek"] not in colours, (
+        "a window the ledger cannot price was drawn as a series at zero"
+    )
+
+
+def test_the_spread_measures_each_window_separately(store):
+    """The chart draws both, so both need their own figures under it: a mean and an
+    interval per window, in the order the bars are grouped. A screen that rescaled
+    one series from the other would print the same spread twice."""
+    _seed()
+    view = _view(store)
+    lines = _spread_lines(view)
+    assert len(lines) == 2, "a window was drawn without figures of its own"
+    assert lines[0].startswith("◼ 5-hour  2.0%"), "50.5k of a 2.5M window"
+    assert lines[1].startswith("◼ 7-day  0.20%"), "the same 50.5k of a 25M week"
+    assert "0.20% of the 7-day window" in "\n".join(_labels(view))
+
+
+def test_a_week_the_samples_never_priced_says_so_instead_of_drawing_zero(store):
+    """The weekly window barely moves, so a quiet fortnight can price the 5-hour one
+    and not the week. Its series is absent rather than flat at zero, which would
+    read as "a task costs the week nothing"."""
+    _seed(week_moves=False)
+    view = _view(store)
+    lines = _spread_lines(view)
+    assert len(lines) == 1 and lines[0].startswith("◼ 5-hour")
+    text = "\n".join(_labels(view))
+    assert "The 7-day window has no price yet" in text
+    assert "of the 7-day window" not in text, "a figure was printed for it anyway"
 
 
 def test_without_two_quota_readings_it_reports_tokens_not_a_percentage(store):

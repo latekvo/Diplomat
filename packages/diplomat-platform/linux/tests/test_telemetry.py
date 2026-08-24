@@ -698,6 +698,89 @@ def test_a_range_with_no_readings_in_it_counts_nothing():
     assert s.repo_tokens == 0.0 and s.other_tokens == 0.0
 
 
+# MARK: - Both rate-limit windows, priced separately
+
+
+#: A fixed instant, so the fold never reads the clock.
+_WINDOWS_NOW = 1_785_000_000.0
+
+
+def _both_windows(*, week_moves: bool = True) -> telemetry.Ledger:
+    """A ledger that prices each window from its own readings, plus three finished
+    local tasks to lay against them.
+
+    200k tokens buy 10% of the 5-hour window and 2% of the week, so the two come out
+    worth 2M and 10M tokens and a 100k task is exactly 5% of one and 1% of the other
+    — exact figures, so a failure below names the arithmetic rather than a rounding.
+    ``week_moves`` off holds the weekly reading still, which is what a quiet
+    account's ledger looks like: the 5-hour window is measurable and the week is
+    not."""
+    lines = [
+        json.dumps({"at": _WINDOWS_NOW - 7200, "ev": "sample", "sessionLeft": 1.0,
+                    "weekLeft": 1.0, "repoTokens": 0.0, "otherTokens": 0.0}),
+        json.dumps({"at": _WINDOWS_NOW - 6300, "ev": "sample", "sessionLeft": 0.9,
+                    "weekLeft": 0.98 if week_moves else 1.0,
+                    "repoTokens": 200_000.0, "otherTokens": 0.0}),
+    ]
+    for i, tok in enumerate((80_000.0, 100_000.0, 120_000.0)):
+        key = f"review:h/o/r#{i}@sha{i}"
+        lines += [
+            json.dumps({"at": _WINDOWS_NOW - 3600, "ev": "started", "key": key,
+                        "remote": False, "attempt": 1}),
+            json.dumps({"at": _WINDOWS_NOW - 3000, "ev": "done", "key": key,
+                        "tokens": tok}),
+        ]
+    return telemetry.fold(lines)
+
+
+def _windows_summary(**kwargs) -> telemetry.Summary:
+    return telemetry.summarize(_both_windows(**kwargs), now=_WINDOWS_NOW, days=14.0,
+                               steps=2, bin_count=4, z=1.96)
+
+
+def test_each_window_is_measured_against_its_own_calibration():
+    """The two are not one figure and a ratio. Anthropic publishes a utilization
+    percentage per window and never a token budget, so each is priced from its own
+    readings — and a task is a large slice of a 5-hour window and a sliver of a
+    week."""
+    s = _windows_summary()
+    assert s.session_limit_tokens == pytest.approx(2_000_000.0)
+    assert s.week_limit_tokens == pytest.approx(10_000_000.0)
+    assert s.per_task.count == s.per_task_week.count == 3
+    assert s.per_task.mean == pytest.approx(5.0)       # 100k of a 2M window
+    assert s.per_task_week.mean == pytest.approx(1.0)  # the same 100k of a 10M one
+
+
+def test_the_two_histograms_share_one_set_of_bin_edges():
+    """They are drawn on one axis, so a bin has to mean the same slice of it for
+    both. Scaled to its own largest observation the weekly histogram would top out
+    at 1.2% — the same width of bar as the 5-hour one, saying a task costs the two
+    windows the same, which is the one thing the chart exists to disprove."""
+    s = _windows_summary()
+    assert s.per_task.bins[-1].upper == pytest.approx(6.0)  # 120k of a 2M window
+    assert s.per_task_week.bins[-1].upper == pytest.approx(6.0)
+    assert sum(b.count for b in s.per_task_week.bins) == 3, "a task fell off the axis"
+
+
+def test_a_window_the_samples_cannot_price_gets_no_distribution_at_all():
+    """A weekly reading that never fell prices nothing, and the window that IS
+    measurable must keep its own figures rather than both going empty together."""
+    s = _windows_summary(week_moves=False)
+    assert s.week_limit_tokens is None
+    assert s.per_task_week.count == 0
+    assert s.per_task.mean == pytest.approx(5.0)
+    assert s.per_task.bins[-1].upper == pytest.approx(6.0)
+
+
+def test_a_span_widens_a_histogram_past_its_own_largest_value():
+    """What lets the two share an axis. The observations are unchanged — only the
+    top edge moves, so `max` still reports what was actually measured."""
+    d = telemetry.distribution([1.0, 2.0], bin_count=4, z=1.96, span=8.0)
+    assert d.bins[-1].upper == 8.0
+    assert [b.count for b in d.bins] == [1, 1, 0, 0]
+    assert d.max == 2.0, "the span was reported as an observation"
+
+
 # MARK: - The quota probe
 
 

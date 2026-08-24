@@ -6,8 +6,8 @@ screens: Actions · Mesh · **Telemetry** · Settings. It reads
 arithmetic, and draws eight figures:
 
 * what share of the 5-hour rate-limit window one auto-task consumes, on average;
-* how that share is distributed, as a histogram with a fitted normal and a
-  confidence interval on the mean;
+* how that share is distributed against BOTH rate-limit windows, as two histograms
+  on one axis, each with a fitted normal and a confidence interval on its mean;
 * what the probe measured to be left of each rate-limit window, over the lookback;
 * how many auto-reviews were owed but unstarted, over the lookback;
 * the same for auto-fixes;
@@ -113,11 +113,23 @@ def _clear_layout(layout) -> None:
 
 
 class SpreadChart(QWidget):
-    """The bell curve: a histogram of per-task cost, the fitted normal over it, and
-    the confidence interval on the mean as a shaded band.
+    """The bell curves: the same auto-tasks as a histogram of what they cost each
+    rate-limit window, the fitted normal over each, and the confidence interval on
+    each mean as a shaded band.
 
-    The band is deliberately drawn *behind* the bars and the mean as a solid rule,
-    so the eye reads "the average is here, and this is how well we know it" rather
+    Both windows on one x axis, because the whole question the card answers is
+    *which ceiling this work is really spending against* — and that is the distance
+    between the two humps. A task is a large slice of a 5-hour window and a sliver
+    of a week, so the weekly series sits far to the left; the axis is honest about
+    that rather than giving each series a scale of its own.
+
+    The bars are grouped inside each bin, red then yellow, rather than stacked or
+    overlaid: near zero the two series share bins, and a translucent overlay there
+    would hide whichever was drawn first. Each series is scaled to its own tallest
+    bar — see :func:`top_of`.
+
+    Each band is deliberately drawn *behind* the bars, with the mean as a rule, so
+    the eye reads "the average is here, and this is how well we know it" rather
     than mistaking the interval for the spread of the tasks themselves — which is
     the histogram, and is much wider.
     """
@@ -125,16 +137,21 @@ class SpreadChart(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self.setFixedHeight(150)
-        self._dist: telemetry.Distribution | None = None
-        self._tint = _tint("limitSpread")
+        self._series: list[tuple[telemetry.Distribution, str]] = []
 
-    def set_distribution(self, dist: telemetry.Distribution | None) -> None:
-        self._dist = dist
+    def set_distributions(self, session: telemetry.Distribution,
+                          week: telemetry.Distribution) -> None:
+        """The 5-hour window first, so it is the one drawn in the left half of each
+        bin — the same order the stats lines under it are listed in. A window with no
+        price yet has no series."""
+        self._series = [(d, _tint(mid)) for d, mid in
+                        ((session, "spreadSession"), (week, "spreadWeek"))
+                        if d.count > 0 and d.bins]
         self.update()
 
     def paintEvent(self, event) -> None:  # noqa: N802
-        d = self._dist
-        if d is None or d.count == 0 or not d.bins:
+        drawn = self._series
+        if not drawn:
             return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -143,62 +160,77 @@ class SpreadChart(QWidget):
         pad_l, pad_r, pad_t, pad_b = 4.0, 4.0, 8.0, 16.0
         w = self.width() - pad_l - pad_r
         h = self.height() - pad_t - pad_b
-        hi = d.bins[-1].upper or 1.0
-        # The curve's peak can exceed the tallest bar (a tight distribution
-        # sampled into wide bins), so both share one scale or the fit would be
-        # clipped where it matters most.
-        top = max(max((b.count for b in d.bins), default=1),
-                  max(d.curve, default=0.0), 1.0)
+        # The two share bin edges (summarize spans them together), so either names
+        # the axis.
+        hi = drawn[0][0].bins[-1].upper or 1.0
 
         def x_of(value: float) -> float:
             return pad_l + w * min(1.0, max(0.0, value / hi))
 
-        def y_of(count: float) -> float:
+        def top_of(d: telemetry.Distribution) -> float:
+            """One series' full height. Each is scaled to its OWN peak, not to a
+            count axis shared with the other: both hold the same tasks, so a bin is a
+            share of the same population either way — and shared, the wider spread is
+            drawn as a smear along the floor of the narrower one's spike. The curve's
+            peak can exceed the tallest bar (a tight distribution sampled into wide
+            bins), so it is in the scale too or the fit would be clipped where it
+            matters most."""
+            return max([1.0] + [float(b.count) for b in d.bins] + list(d.curve))
+
+        def y_of(count: float, top: float) -> float:
             return pad_t + h * (1.0 - min(1.0, count / top))
 
-        # Confidence band on the mean, behind everything else so it reads as
-        # context for the mean rule rather than as another series.
-        if d.ci_high > d.ci_low:
-            lo, hi_ci = x_of(d.ci_low), x_of(d.ci_high)
-            painter.fillRect(QRectF(lo, pad_t, max(1.0, hi_ci - lo), h),
-                             _qcolor(self._tint, 0.16))
+        # Confidence bands on the means, behind everything else so they read as
+        # context for the mean rules rather than as more series.
+        for d, tint in drawn:
+            if d.ci_high > d.ci_low:
+                lo, hi_ci = x_of(d.ci_low), x_of(d.ci_high)
+                painter.fillRect(QRectF(lo, pad_t, max(1.0, hi_ci - lo), h),
+                                 _qcolor(tint, 0.16))
 
-        # Histogram bars.
+        # Histogram bars, each series in its own half of every bin.
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(_qcolor(self._tint, 0.55))
-        for b in d.bins:
-            if b.count <= 0:
-                continue
-            x0, x1 = x_of(b.lower), x_of(b.upper)
-            y = y_of(b.count)
-            painter.drawRoundedRect(QRectF(x0 + 0.8, y, max(1.0, x1 - x0 - 1.6),
-                                           pad_t + h - y), 2, 2)
+        for slot, (d, tint) in enumerate(drawn):
+            painter.setBrush(_qcolor(tint, 0.55))
+            top = top_of(d)
+            for b in d.bins:
+                if b.count <= 0:
+                    continue
+                x0, x1 = x_of(b.lower), x_of(b.upper)
+                share = (x1 - x0) / len(drawn)
+                y = y_of(b.count, top)
+                painter.drawRoundedRect(
+                    QRectF(x0 + share * slot + 0.8, y, max(1.0, share - 1.6),
+                           pad_t + h - y), 2, 2)
 
-        # The fitted normal.
-        if len(d.curve) > 1:
-            path = QPainterPath()
-            for i, value in enumerate(d.curve):
-                px = pad_l + w * i / (len(d.curve) - 1)
-                py = y_of(value)
-                if i == 0:
-                    path.moveTo(px, py)
-                else:
-                    path.lineTo(px, py)
-            pen = QPen(QColor(self._tint))
-            pen.setWidthF(1.8)
-            painter.setBrush(Qt.BrushStyle.NoBrush)
+        for d, tint in drawn:
+            # The fitted normal.
+            if len(d.curve) > 1:
+                top = top_of(d)
+                path = QPainterPath()
+                for i, value in enumerate(d.curve):
+                    px = pad_l + w * i / (len(d.curve) - 1)
+                    py = y_of(value, top)
+                    if i == 0:
+                        path.moveTo(px, py)
+                    else:
+                        path.lineTo(px, py)
+                pen = QPen(QColor(tint))
+                pen.setWidthF(1.8)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.setPen(pen)
+                painter.drawPath(path)
+
+            # The mean, as a full-height rule, in the series' own colour: with two
+            # of them on the axis, a white one would match neither.
+            mean_x = x_of(d.mean)
+            pen = QPen(QColor(tint))
+            pen.setWidthF(1.2)
+            pen.setStyle(Qt.PenStyle.DashLine)
             painter.setPen(pen)
-            painter.drawPath(path)
+            painter.drawLine(int(mean_x), int(pad_t), int(mean_x), int(pad_t + h))
 
-        # The mean, as a full-height rule.
-        mean_x = x_of(d.mean)
-        pen = QPen(QColor("#FFFFFF"))
-        pen.setWidthF(1.2)
-        pen.setStyle(Qt.PenStyle.DashLine)
-        painter.setPen(pen)
-        painter.drawLine(int(mean_x), int(pad_t), int(mean_x), int(pad_t + h))
-
-        # Axis: 0 on the left, the largest observation on the right.
+        # Axis: 0 on the left, the top of the shared span on the right.
         painter.setPen(QColor(glyphs.MUTED))
         f = painter.font()
         f.setPixelSize(8)
@@ -206,7 +238,7 @@ class SpreadChart(QWidget):
         painter.drawText(QRectF(pad_l, pad_t + h + 2, 60, 12),
                          int(Qt.AlignmentFlag.AlignLeft), "0%")
         painter.drawText(QRectF(pad_l + w - 60, pad_t + h + 2, 60, 12),
-                         int(Qt.AlignmentFlag.AlignRight), telemetry.percent(d.max))
+                         int(Qt.AlignmentFlag.AlignRight), telemetry.percent(hi))
         painter.end()
 
 
@@ -646,13 +678,15 @@ class TelemetryView(QWidget):
     def _rebuild_cost(self, s: telemetry.Summary) -> None:
         _clear_layout(self.cost_col)
         d = s.per_task
+        week = s.per_task_week
         priced = s.session_limit_tokens is not None and d.count > 0
 
         if priced:
             headline = telemetry.percent(d.mean)
             caption = (f"of the 5-hour window, per task · median "
-                       f"{telemetry.percent(d.median)} · "
-                       f"{telemetry.percent(s.per_task_week_mean)} of the week")
+                       f"{telemetry.percent(d.median)}")
+            if week.count:
+                caption += f" · {telemetry.percent(week.mean)} of the 7-day window"
         elif d.count == 0 and s.per_task_tokens_mean > 0:
             headline = telemetry.tokens(s.per_task_tokens_mean)
             caption = ("tokens per task. The share of the limit is Claude Code's "
@@ -668,15 +702,30 @@ class TelemetryView(QWidget):
 
         chart = SpreadChart()
         self.cost_col.addWidget(chart)
-        chart.set_distribution(d)
+        chart.set_distributions(d, week)
 
-        stats = QLabel(
-            f"{self._ci_title} {telemetry.percent(d.ci_low)} – "
-            f"{telemetry.percent(d.ci_high)}  ·  sd {telemetry.percent(d.sd)}  ·  "
-            f"n={d.count}"
-        )
-        stats.setStyleSheet(muted(9, mono=True))
-        self.cost_col.addWidget(stats)
+        # One line per window, in that window's colour — the chart has no other key.
+        for dist, metric_id in ((d, "spreadSession"), (week, "spreadWeek")):
+            if not dist.count:
+                continue
+            line = QLabel(
+                f"◼ {_title(metric_id)}  {telemetry.percent(dist.mean)}  ·  "
+                f"{self._ci_title} {telemetry.percent(dist.ci_low)} – "
+                f"{telemetry.percent(dist.ci_high)}  ·  "
+                f"sd {telemetry.percent(dist.sd)}  ·  n={dist.count}"
+            )
+            line.setStyleSheet(
+                f"color: {_tint(metric_id)}; font-size: 9px; font-family: monospace;")
+            self.cost_col.addWidget(line)
+
+        if not week.count:
+            unpriced = QLabel(
+                "The 7-day window has no price yet — it moves slowly, so it takes "
+                "longer than the 5-hour one to measure a task against."
+            )
+            unpriced.setWordWrap(True)
+            unpriced.setStyleSheet(muted(9))
+            self.cost_col.addWidget(unpriced)
 
         if d.count < self._min_sample:
             warn = QLabel(
@@ -832,6 +881,10 @@ class TelemetryView(QWidget):
             parts.append(
                 f"5-hour window priced at ≈{telemetry.tokens(s.session_limit_tokens)} "
                 "tokens, measured"
+            )
+        if s.week_limit_tokens:
+            parts.append(
+                f"7-day window at ≈{telemetry.tokens(s.week_limit_tokens)} tokens"
             )
         if s.unattributed_count:
             parts.append(

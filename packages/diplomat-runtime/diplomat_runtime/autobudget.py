@@ -189,23 +189,19 @@ def _decide_money() -> autofix.Budget:
 
 def _costs(summary, *, z: float, min_sample: int) -> tuple[float | None, float | None]:
     """``(session, week)`` upper bounds on what one more task costs, each as a
-    percentage of its own window, or None where the ledger cannot price it.
+    percentage of its own window, or None where the ledger cannot price that window.
 
-    ``summary.per_task`` is already a share-of-the-5-hour-window distribution. The
-    week's is that one scaled by ``sessionLimitTokens / weekLimitTokens``: both
-    windows are priced in tokens from the same samples (:func:`telemetry.calibrate`),
-    so a task worth *t* tokens is ``100·t/session`` of one and ``100·t/week`` of the
-    other — a constant ratio, which mean, spread and bound all carry.
+    One bound per window from that window's own distribution — the same pair the
+    Telemetry screen draws. Each is priced from its own quota readings, so a week the
+    samples cannot price leaves the 5-hour gate measured, and the reverse.
     """
-    d = summary.per_task
-    session = autofix.task_cost_bound(d.mean, d.sd, d.count, z=z, min_sample=min_sample)
-    if session is None:
-        return None, None
-    week_limit = summary.week_limit_tokens
-    session_limit = summary.session_limit_tokens
-    if not week_limit or not session_limit or week_limit <= 0 or session_limit <= 0:
-        return session, None  # the 5-hour window is priced, the weekly one isn't
-    return session, session * session_limit / week_limit
+    return (
+        autofix.task_cost_bound(summary.per_task.mean, summary.per_task.sd,
+                                summary.per_task.count, z=z, min_sample=min_sample),
+        autofix.task_cost_bound(summary.per_task_week.mean, summary.per_task_week.sd,
+                                summary.per_task_week.count, z=z,
+                                min_sample=min_sample),
+    )
 
 
 #: What each ceiling is called in the one line the feed prints about it.
