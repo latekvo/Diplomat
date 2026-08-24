@@ -278,10 +278,25 @@ enum TrackTest {
         try? FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: bin) }
         let stand = bin.appendingPathComponent(AgentRunner.claude.rawValue)
+        // Released by the test rather than run on a clock: nothing below it is bounded —
+        // the resolve loop allows fifteen passes of the whole evidence gather, and raising
+        // a window walks every session the operator has open. A stand-in that outlives
+        // those on a quiet machine is gone before them on a busy one, where `ps` then
+        // reports no tty and the checks below read a departed agent as an unreachable one.
+        // The 1500 turns cap it at five minutes if the test dies without releasing it.
+        let release = bin.appendingPathComponent("release")
         guard FileManager.default.createFile(
                 atPath: stand.path,
-                contents: Data("#!/bin/sh\necho 'diplomat tracking self-test — this "
-                               .appending("window closes itself'\nsleep 8\n").utf8),
+                contents: Data("""
+                    #!/bin/sh
+                    echo 'diplomat tracking self-test — this window closes itself'
+                    n=0
+                    while [ ! -f \(AgentSpawner.shq(release.path)) ] && [ "$n" -lt 1500 ]
+                    do
+                        sleep 0.2
+                        n=$((n + 1))
+                    done
+                    """.utf8),
                 attributes: [.posixPermissions: 0o755]) else {
             check("a stand-in agent could be staged", false)
             return
@@ -346,12 +361,17 @@ enum TrackTest {
         let agentPID = AgentRegistry.adoptPids(AgentRegistry.load())
             .first { $0.runID == record.runID }?.pid
         let agentTTY = agentPID.flatMap(DeviceFocus.tty(forPid:)) ?? ""
+        // Split from the focus below: no tty is an agent that has gone rather than a
+        // route that failed, and the two together read as the second.
+        check("the agent is still on a terminal to be walked from", !agentTTY.isEmpty)
         check("…and from the agent's own process, with no handle at all",
-              !agentTTY.isEmpty && TerminalFocus.focus(tty: agentTTY, pid: agentPID))
+              TerminalFocus.focus(tty: agentTTY, pid: agentPID))
         check("focus of a vanished window fails (→ the row is dismissed)",
               !AgentWindows.focus(.init(terminal: term.rawValue, windowID: "99999999",
                                         sessionID: "nope")))
 
+        // Releases the stand-in, whose shell then writes the sentinel the last check waits for.
+        FileManager.default.createFile(atPath: release.path, contents: nil)
         var finished = false
         for _ in 0..<25 {
             if resolve()?.state == .finished { finished = true; break }
