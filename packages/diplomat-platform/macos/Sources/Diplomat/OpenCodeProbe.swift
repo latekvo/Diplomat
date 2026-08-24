@@ -18,10 +18,12 @@ enum OpenCodeProbe {
     /// Which session on this run's server is this run's, by its opening prompt.
     ///
     /// Every run has its own server but they share one session store, so the port alone
-    /// narrows nothing — `GET /session` lists the machine's own recent history whichever
-    /// port it is asked on. The prompt is what makes the match exact, and exact is worth the
-    /// fetch: the applet runs several agents in one checkout at a time, so two sessions a
-    /// second apart in the same directory is the ordinary case, not the pathological one.
+    /// narrows nothing — the same shared history answers whichever port it is asked on.
+    /// The directory narrows it to this checkout, and the server does that much itself
+    /// (`sessions(port:directory:)`). The prompt is what makes the match exact, and exact
+    /// is worth the fetch: the applet runs several agents in one checkout at a time, so two
+    /// sessions a second apart in the same directory is the ordinary case, not the
+    /// pathological one.
     ///
     /// A run with no port serves nothing to ask, so it never matches — that is an
     /// OpenCode run the spawn could not reserve one for.
@@ -30,7 +32,7 @@ enum OpenCodeProbe {
         guard let port = AgentRegistry.port(r.runID),
               let prompt = try? String(contentsOf: AgentRegistry.promptPath(r.runID),
                                        encoding: .utf8),
-              let listing = sessions(port: port) else { return "" }
+              let listing = sessions(port: port, directory: directory) else { return "" }
         let found = OpenCodeAPI.candidates(listing, directory: directory,
                                            sinceMs: r.dispatchedAt * 1000,
                                            taken: taken)
@@ -95,12 +97,25 @@ enum OpenCodeProbe {
         return port > 0 ? port : nil
     }
 
-    /// The machine's recent sessions, newest first, as this run's server reports them.
+    /// That directory's sessions, most recently touched first, as this run's server
+    /// reports them.
     ///
-    /// A hundred of them, not the whole store (1.4.3) — a bound a run's own session is
-    /// always inside, since it is matched within seconds of being created.
-    static func sessions(port: Int) -> [[String: Any]]? {
-        get(port: port, path: "/session")
+    /// The filter is the server's own and is the same comparison `OpenCodeAPI.candidates`
+    /// makes over the answer — exact string equality on the session's directory — so it
+    /// changes nothing about which sessions match, only how many rows the answer has to
+    /// hold them.
+    ///
+    /// Ordered by last touch, so what `OpenCodeAPI.sessionLimit` cuts is the least
+    /// recently touched — every one of which a session created since the run was
+    /// dispatched outranks.
+    ///
+    /// It has to be a directory OpenCode has worked in: one it has no project or sandbox
+    /// for answers empty however many sessions the store holds against it — a checkout
+    /// deleted since, say. A run's own never is, because the server being asked is the
+    /// one running in it.
+    static func sessions(port: Int, directory: String) -> [[String: Any]]? {
+        guard let path = OpenCodeAPI.sessionPath(directory: directory) else { return nil }
+        return get(port: port, path: path)
     }
 
     /// What this run's server is working on, session id → its status.

@@ -1012,8 +1012,10 @@ and ⏻) swaps the panel to a settings screen:
     later as a fresh user turn, so a fan-out whose result is still undelivered holds
     the run open exactly as an unfinished message does. Either way
     the session is matched to the run by the staged prompt, which both runners store
-    verbatim as the session's opening message - the only exact key, since both keep
-    one session store for the whole machine. And either way the answer *ends* the
+    verbatim as the session's opening message - the only exact key, since neither
+    keeps a store per run: Hermes' is the machine's, OpenCode's is the checkout's and
+    every worktree of it, and a busy one holds hundreds of sessions that are not this
+    run's. And either way the answer *ends* the
     run, exactly as a Claude Code hook's does: it is the same fact from the same kind
     of source, the agent's own word rather than a screen read for signs of one. A run
     that cannot be reached - the port was taken, the server has not come up, the store
