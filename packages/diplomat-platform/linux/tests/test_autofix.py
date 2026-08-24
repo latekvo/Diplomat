@@ -2717,7 +2717,7 @@ def test_an_untracked_runs_stillness_clock_runs_across_ticks(store, monkeypatch)
 def test_an_untracked_agents_wedged_window_is_closed(store, monkeypatch):
     """The whole point of remembering one: twenty minutes of a screen that has not
     moved, and the session nobody dispatched is closed like any other."""
-    from diplomat_runtime import agentregistry
+    from diplomat_runtime import activity, agentregistry
     from diplomat_runtime import agentstate as A
 
     killed = _killed(monkeypatch)
@@ -2730,6 +2730,9 @@ def test_an_untracked_agents_wedged_window_is_closed(store, monkeypatch):
 
     assert killed == ["pts/337"]
     assert agentregistry.load() == [], "and the record it was kept for is dropped"
+    assert [e.detail for e in activity.read() if e.action == "kill-device"] == \
+        ["closed untracked:337's window — its screen has not changed in 20m"], \
+        "the audit line the issue counted zero of"
 
 
 def test_an_untracked_record_does_not_outlive_its_agent(store, monkeypatch):
