@@ -7,6 +7,10 @@ import Foundation
 /// (`PRTarget`), because an issue's AUTHOR ASSOCIATION is a scope in its own right:
 /// "everything the community filed" and "everything the org filed" are the two cuts
 /// a triage sweep actually wants, and neither of them is one @handle.
+///
+/// Read by the front-end, which enumerates the scope itself (`Filters.sweptIssues`)
+/// and queues one run per issue; the prompt an agent gets names one issue and never
+/// a scope.
 public enum IssueTarget: Int, CaseIterable, Identifiable, Codable {
     case all, mine, someone, contributors, members, specific
 
@@ -34,13 +38,6 @@ public enum IssueTarget: Int, CaseIterable, Identifiable, Codable {
         case .members:      return "members"
         case .specific:     return "specific"
         }
-    }
-
-    /// Whether this scope selects on the issue's author association — which decides
-    /// how the prompt tells the agent to enumerate. `gh issue list --json` has no
-    /// such field, so those two scopes have to go through the REST issues endpoint.
-    public var needsAuthorAssociation: Bool {
-        self == .contributors || self == .members
     }
 
     /// Whether this scope names one person, and so needs a @handle to be usable.

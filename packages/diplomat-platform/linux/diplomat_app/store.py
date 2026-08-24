@@ -46,6 +46,7 @@ from . import (
     bans,
     conflicts,
     deviceallocator,
+    issues,
     probes,
     szpont,
 )
@@ -238,7 +239,7 @@ class Store(QObject):
         # be a staler answer to a question already being re-asked, and would hand
         # "execute now" a prompt assembled against a PR that has since moved on. What
         # IS persisted is `queued_task_order` — the operator's arrangement — and
-        # `requested_reviews`, the sweeps the operator asked for, both being things a
+        # `requested_work`, the sweeps the operator asked for, both being things a
         # poll cannot reconstruct. Always REPLACED, never mutated in place: the poll
         # worker writes it while the GUI thread reads it to draw the rows.
         self.queued_tasks: list[autofix.QueuedTask] = []
@@ -256,18 +257,18 @@ class Store(QObject):
         # has succeeded: a failed fetch means "we no longer know what is owed", which
         # is not the same as "nothing is owed", and must not empty the list.
         self._staged_queue: list[autofix.QueuedTask] = []
-        # The task each stored ask has been built into, as (config, task) by PR number
+        # The task each stored ask has been built into, as (config, task) by queue key
         # — an assembled prompt is the expensive half and cannot change while the ask
         # stands, so it is built once rather than once per poll (:meth:`_requested_task`).
-        self._requested_tasks: dict[int, tuple[dict, autofix.QueuedTask]] = {}
+        self._requested_tasks: dict[str, tuple[dict, autofix.QueuedTask]] = {}
         # Asks already reported as un-assemblable, so the poll says it once rather
         # than every cycle for as long as the ask stands (:meth:`_note_unbuildable_ask`).
-        self._unbuildable_logged: set[int] = set()
+        self._unbuildable_logged: set[str] = set()
         # Serializes the read-modify-write of the stored asks. Three threads reach it:
         # the fan-out worker adding a sweep's, the poll worker dropping the one it
         # just dispatched, and the GUI thread cancelling a row. Unguarded, a sweep that
         # read the list before a dispatch removed an entry would write that entry back,
-        # and the PR would be reviewed twice.
+        # and the item would be worked twice.
         self._requested_lock = threading.Lock()
         # Guards the _dispatching_prs set (below). MUST stay distinct from the
         # poll-overlap guard: run_autofix_poll_async holds that one across the whole
@@ -515,16 +516,19 @@ class Store(QObject):
         self._settings.setValue("queueAutoRun", bool(value))
 
     @property
-    def requested_reviews(self) -> list[review.RequestedReview]:
-        """The reviews the operator has asked for and nothing has started yet, in the
-        order their sweeps asked for them.
+    def requested_work(self) -> list[autofix.RequestedWork]:
+        """The work the operator has asked for by sweeping a scope and nothing has
+        started yet, in the order their sweeps asked for it.
 
         Persisted, alone among the things the queue is built from, because it is the
         only one GitHub cannot answer for: a poll can always re-derive that a PR
         conflicts or that a thread is waiting on me, but nothing about a PR records
-        that somebody swept it into a review. Losing this list on a restart would
-        silently drop the rest of a fifty-PR sweep, which is exactly the run long
-        enough to be interrupted."""
+        that somebody swept it into a review, nor about an issue that somebody swept it
+        into a fix. Losing this list on a restart would silently drop the rest of a
+        fifty-item sweep, which is exactly the run long enough to be interrupted.
+
+        Stored under the name this list has always had, so the asks a Review-PRs sweep
+        left standing outlive the upgrade that widened it to issue fixes."""
         raw = self._settings.value("requestedReviews", "", str)
         try:
             rows = json.loads(raw) if raw else []
@@ -532,11 +536,11 @@ class Store(QObject):
             return []
         if not isinstance(rows, list):
             return []
-        parsed = [review.RequestedReview.from_json(r) for r in rows if isinstance(r, dict)]
+        parsed = [autofix.RequestedWork.from_json(r) for r in rows if isinstance(r, dict)]
         return [r for r in parsed if r is not None]
 
-    @requested_reviews.setter
-    def requested_reviews(self, value: list[review.RequestedReview]) -> None:
+    @requested_work.setter
+    def requested_work(self, value: list[autofix.RequestedWork]) -> None:
         self._settings.setValue(
             "requestedReviews", json.dumps([r.to_json() for r in value])
         )
@@ -804,10 +808,10 @@ class Store(QObject):
                     self._poll_my_prs(snaps)
                 self._poll_review_requests(owner, repo)
                 # Last, so the monitors' finds keep the places they were found in:
-                # the operator's own sweep bands behind them anyway, and a fifty-PR
+                # the operator's own sweep bands behind them anyway, and a fifty-item
                 # ask offered first would otherwise decide the arrangement of a queue
                 # it is meant to wait in.
-                self._offer_requested_reviews()
+                self._offer_requested_work()
                 # A cycle that failed part-way knows what it fetched, not what is
                 # owed — committing then would drop every task the failing half would
                 # have re-offered, and with it the operator's arrangement of them.
@@ -1530,7 +1534,7 @@ class Store(QObject):
         # would be the only record of it, and a poll that never happened would lose it.
         # (Every automatic job is both. A review the operator asked for is neither, and
         # is re-offered from the list that remembers the ask instead —
-        # :meth:`_offer_requested_reviews`. A wizard click is uncapped and never
+        # :meth:`_offer_requested_work`. A wizard click is uncapped and never
         # refused.)
         if job.pr_number is None or job.counter is None:
             return
@@ -1567,15 +1571,16 @@ class Store(QObject):
         if self.queued_tasks != before:
             self.tasks_changed.emit()
 
-    # MARK: - the reviews the operator asks for
+    # MARK: - the work the operator asks for
     #
-    # A Review-PRs sweep is expanded here into one queued review per PR, rather than
-    # handed to a single agent as "review every draft PR of mine". On a repo with fifty
-    # drafts that agent is fifty reviews in one session: one context, one terminal, one
-    # machine, and no way to see where it has got to or to stop it halfway. Split, each
-    # PR is a row of the Agent-tasks list, gets a bay of the task cap to itself, and
-    # runs when the cap has room — behind the monitors' finds, ahead of the conflict
-    # fixes (:func:`autofix.queue_band`).
+    # A Review-PRs or Fix-issues sweep is expanded here into one queued task per PR /
+    # per issue, rather than handed to a single agent as "review every draft PR of
+    # mine" or "fix every open issue". On a repo with fifty of either that agent is
+    # fifty jobs in one session: one context, one terminal, one machine, and no way to
+    # see where it has got to or to stop it halfway. Split, each item is a row of the
+    # Agent-tasks list, gets a bay of the task cap to itself, and runs when the cap has
+    # room — behind the monitors' finds, ahead of the conflict fixes
+    # (:func:`autofix.queue_band`).
 
     def request_review_sweep(self, cfg: review.ReviewConfig) -> tuple[int, int]:
         """Queue one review per PR ``cfg`` sweeps. Returns ``(queued, already)``.
@@ -1586,56 +1591,91 @@ class Store(QObject):
         dropped by the drain (:func:`autofix.still_owed`); one the sweep should not
         have caught in the first place is what **cancel** is for.
 
-        A PR already waiting for a review keeps the ask it has instead of gaining a
-        second: the queue is keyed by PR, so two would be one row that dispatches twice
-        (and the second dispatch would find the first agent still on the PR). That
-        makes pressing SPAWN twice, or sweeping a scope that overlaps an earlier one,
-        idempotent rather than a way to double up.
-
         Assembles a prompt per PR, so it runs OFF the UI thread (see
-        :meth:`request_review_sweep_async`)."""
+        :meth:`request_sweep_async`)."""
         targets = Filters.swept_prs(self.prs, cfg.sweep_author,
                                     cfg.include_drafts, cfg.include_ready)
-        known = {r.number for r in self.requested_reviews}
-        fresh = [
-            review.RequestedReview(
+        return self._request([
+            autofix.RequestedWork(
                 number=pr.number,
                 url=pr.url,
                 # The ban dimension, and only someone else's PR has one.
                 author=pr.author if cfg.disposition == review.SpecificAuthor.THEIRS else "",
                 config=cfg.for_pr(pr.number).prompt_payload(),
             )
-            for pr in targets if pr.number not in known
-        ]
+            for pr in targets
+        ])
+
+    def request_issue_sweep(self, cfg: issues.IssueConfig) -> tuple[int, int]:
+        """Queue one fix per issue ``cfg`` sweeps. Returns ``(queued, already)``.
+
+        The issues come from the panel's own last fetch, for the same reason the PRs
+        above do. What the drain cannot do for these is retire them: the monitor poll
+        reads PRs, so nothing there notices an issue closing under a waiting ask. The
+        swept prompt covers it instead — it re-reads the issue's state and stops if it
+        has been dealt with since — and **cancel** is the way out of an ask the sweep
+        should not have caught.
+
+        Assembles a prompt per issue, so it runs OFF the UI thread (see
+        :meth:`request_sweep_async`)."""
+        targets = Filters.swept_issues(self.issues, cfg.target, cfg.sweep_author,
+                                       cfg.unassigned_only)
+        return self._request([
+            autofix.RequestedWork(
+                number=issue.number,
+                url=issue.url,
+                # The ban dimension. Only a scope that names one person has one,
+                # matching the login the wizard would ban-check.
+                author=issue.author if cfg.target == issues.Target.SOMEONE else "",
+                config=cfg.for_issue(issue.number).prompt_payload(),
+            )
+            for issue in targets
+        ])
+
+    def _request(self, asks: list[autofix.RequestedWork]) -> tuple[int, int]:
+        """Store and publish whichever of ``asks`` is not already queued, and say how
+        many of each there were.
+
+        An item already waiting keeps the ask it has instead of gaining a second: the
+        queue is keyed by the ask, so two would be one row that dispatches twice (and
+        the second dispatch would find the first agent still on it). That makes
+        pressing SPAWN twice, or sweeping a scope that overlaps an earlier one,
+        idempotent rather than a way to double up."""
+        known = {r.key for r in self.requested_work}
+        fresh = [a for a in asks if a.key not in known]
         if fresh:
             # Assembled BEFORE the asks are stored, so a core binary that cannot build
             # a prompt costs this press an error message rather than a list of asks
             # that fails the same way on every poll from here on.
-            built = {e.number: self._requested_task(e) for e in fresh}
+            built = {a.key: self._requested_task(a) for a in fresh}
             with self._requested_lock:
                 # Re-read under the lock and drop whatever arrived while the prompts
                 # were being assembled. The set read above is stale by then: assembly
-                # is a core subprocess per PR, which is long enough for a second sweep
-                # of an overlapping scope to have stored its own asks in the meantime,
-                # and appending against the stale set would store those PRs twice.
-                stored = self.requested_reviews
-                taken = {r.number for r in stored}
-                fresh = [e for e in fresh if e.number not in taken]
-                self.requested_reviews = stored + fresh
-            self._publish_requested([built[e.number] for e in fresh])
-        return len(fresh), len(targets) - len(fresh)
+                # is a core subprocess per item, which is long enough for a second
+                # sweep of an overlapping scope to have stored its own asks in the
+                # meantime, and appending against the stale set would store those
+                # items twice.
+                stored = self.requested_work
+                taken = {r.key for r in stored}
+                fresh = [a for a in fresh if a.key not in taken]
+                self.requested_work = stored + fresh
+            self._publish_requested([built[a.key] for a in fresh])
+        return len(fresh), len(asks) - len(fresh)
 
-    def request_review_sweep_async(self, cfg: review.ReviewConfig, done) -> None:
-        """:meth:`request_review_sweep` on a worker thread, reporting
+    def request_sweep_async(self, cfg, done) -> None:
+        """The sweep behind ``cfg`` on a worker thread, reporting
         ``(queued, already, error)`` through ``done``.
 
-        On a thread because it assembles a prompt per PR, and each of those is a
+        On a thread because it assembles a prompt per item, and each of those is a
         ``diplomat-core`` subprocess: fifty of them on the UI thread is a frozen tray
         for as long as it takes. ``done`` is called from the worker, so a Qt caller
-        marshals it back itself (the wizard emits a signal)."""
+        marshals it back itself (the wizards emit a signal)."""
+        fan_out = (self.request_issue_sweep if isinstance(cfg, issues.IssueConfig)
+                   else self.request_review_sweep)
+
         def work() -> None:
             try:
-                queued, already = self.request_review_sweep(cfg)
+                queued, already = fan_out(cfg)
             except Exception as exc:  # noqa: BLE001 — a missing/wedged core binary
                 done(0, 0, str(exc))
                 return
@@ -1643,40 +1683,46 @@ class Store(QObject):
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _requested_task(self, entry: review.RequestedReview) -> autofix.QueuedTask:
-        """One ask as the queued task it stands for, memoised by PR and config.
+    def _requested_task(self, entry: autofix.RequestedWork) -> autofix.QueuedTask:
+        """One ask as the queued task it stands for, memoised by ask and config.
 
         The memo is what keeps the prompt assembly to once per ask rather than once
         per poll: a task can wait in this list for hours, every poll re-offers it, and
         re-running the core binary fifty times each cycle to rebuild strings that
         cannot have changed is a subprocess storm for nothing.
 
-        Keyed by the config as well as the PR, because the same PR can be asked for
+        Keyed by the config as well as the ask, because the same item can be asked for
         twice with different answers — cancel a sweep, change the depth, sweep again —
-        and a memo that matched on the number alone would hand the second ask the first
+        and a memo that matched on the key alone would hand the second ask the first
         one's prompt.
 
         Carries no ``counter``, no ``work_key`` and no ``ledger_key``: no monitor owns
         it (so no toggle pauses it and no auto-handled counter counts it), and the
         telemetry ledger measures the monitors, not the operator."""
-        cached = self._requested_tasks.get(entry.number)
+        cached = self._requested_tasks.get(entry.key)
         if cached is not None and cached[0] == entry.config:
             return cached[1]
+        # A fix is deliberately NOT PR-scoped. The dispatch pipeline's dedup is
+        # PR-shaped throughout — the in-flight check matches a ``/pull/<n>`` URL and
+        # keys on a PR number — so handing it an issue number would collide with the PR
+        # that happens to share it. What keeps two agents off one issue instead is the
+        # assignee claim, which every machine can see rather than just this one.
+        is_pr = entry.action == autofix.QUEUE_REVIEW_ACTION
         task = autofix.QueuedTask(
-            id=autofix.queue_key(autofix.QUEUE_REQUESTED_ACTION, entry.number),
+            id=entry.key,
             job=autofix.AgentJob(
-                kind="review",
-                audit_action=autofix.QUEUE_REQUESTED_ACTION,
+                kind=entry.action,
+                audit_action=entry.action,
                 label=entry.label,
                 prompt=promptcore.build_prompt(entry.config),
-                pr_url=entry.url,
-                pr_number=entry.number,
+                pr_url=entry.url if is_pr else None,
+                pr_number=entry.number if is_pr else None,
                 author_login=entry.author or None,
-                duty="review",
+                duty=entry.action,
             ),
             attempt=1,
         )
-        self._requested_tasks[entry.number] = (entry.config, task)
+        self._requested_tasks[entry.key] = (entry.config, task)
         return task
 
     def _publish_requested(self, entries: list[autofix.QueuedTask]) -> None:
@@ -1694,14 +1740,14 @@ class Store(QObject):
         self.queued_tasks = [by_id[k] for k in ordered]
         self.tasks_changed.emit()
 
-    def _offer_requested_reviews(self) -> None:
-        """Offer every review still asked for, alongside the monitors' own finds.
+    def _offer_requested_work(self) -> None:
+        """Offer every ask nothing has started, alongside the monitors' own finds.
 
         This is the list's whole job in a poll. A monitor re-offers its work by finding
-        it on GitHub again; nothing on GitHub says a PR was swept, so what re-offers
-        these is the ask itself, until the dispatch that starts one takes it off
-        (:meth:`_settle_requested`) or the drain finds its PR closed
-        (:meth:`_drain_queued_tasks`).
+        it on GitHub again; nothing on GitHub says a PR or an issue was swept, so what
+        re-offers these is the ask itself, until the dispatch that starts one takes it
+        off (:meth:`_settle_requested`), the operator cancels it, or — for a review —
+        the drain finds its PR closed (:meth:`_drain_queued_tasks`).
 
         An ask whose prompt will not assemble is skipped rather than allowed to end
         the cycle. The press assembles every prompt before storing anything, but the
@@ -1712,7 +1758,7 @@ class Store(QObject):
         the monitors' finds included, and with no row for the operator to cancel the
         offending ask by. Skipping keeps the ask for a later poll, which is what a
         core mid-self-update wants anyway."""
-        for entry in self.requested_reviews:
+        for entry in self.requested_work:
             try:
                 task = self._requested_task(entry)
             except Exception as exc:  # noqa: BLE001 — a missing/wedged core binary
@@ -1720,14 +1766,14 @@ class Store(QObject):
                 continue
             self._staged_queue = self._staged_queue + [task]
 
-    def _note_unbuildable_ask(self, entry: review.RequestedReview, exc: Exception) -> None:
+    def _note_unbuildable_ask(self, entry: autofix.RequestedWork, exc: Exception) -> None:
         """Say once, per ask, that its prompt would not assemble.
 
         Once because the poll meets the same ask every three minutes for as long as
         it stands, and a feed that repeats itself that often is one nobody reads."""
-        if entry.number in self._unbuildable_logged:
+        if entry.key in self._unbuildable_logged:
             return
-        self._unbuildable_logged.add(entry.number)
+        self._unbuildable_logged.add(entry.key)
         activity.log("panel", "queue-skip",
                      f"{entry.label} — prompt would not assemble: {exc}")
 
@@ -1744,33 +1790,32 @@ class Store(QObject):
             return
         if verdict not in ("spawned", autofix.VERDICT_STAND_DOWN, autofix.VERDICT_BANNED):
             return
-        self._forget_requested(entry.job.pr_number)
+        self._forget_requested(entry.id)
 
-    def _forget_requested(self, number: int | None) -> None:
-        """Drop one PR's ask, and with it the task built from it."""
-        if number is None:
-            return
+    def _forget_requested(self, key: str) -> None:
+        """Drop one ask by the queue key that is its identity, and with it the task
+        built from it."""
         with self._requested_lock:
-            self.requested_reviews = [r for r in self.requested_reviews
-                                      if r.number != number]
-        self._requested_tasks.pop(number, None)
-        # A later sweep of the same PR is a new ask, and is owed the same one report
+            self.requested_work = [r for r in self.requested_work if r.key != key]
+        self._requested_tasks.pop(key, None)
+        # A later sweep of the same item is a new ask, and is owed the same one report
         # if its prompt will not assemble either.
-        self._unbuildable_logged.discard(number)
+        self._unbuildable_logged.discard(key)
 
-    def cancel_requested_review(self, task_id: str) -> None:
+    def cancel_requested_work(self, task_id: str) -> None:
         """The queued row's "cancel": drop an ask the operator has changed their mind
         about, without starting it.
 
         A sweep is the one thing in this list that can be asked for by the fifty, and
         the only one GitHub does not answer for: a monitor's row leaves when the work
         is no longer owed, while an ask on a PR that is still open stands until it
-        runs. Without a way back out, a mis-aimed sweep is a day of agents nobody can
+        runs — and a fix stands whatever happens to its issue, the poll reading PRs
+        alone. Without a way back out, a mis-aimed sweep is a day of agents nobody can
         call off."""
         entry = next((e for e in self.queued_tasks if e.id == task_id), None)
         if entry is None or not entry.job.requested:
             return
-        self._forget_requested(entry.job.pr_number)
+        self._forget_requested(entry.id)
         self._drop_queued_task(task_id)
         activity.log("panel", "queue-cancel", f"{entry.job.label} — cancelled, not run")
         self.refresh_activity()
@@ -1809,6 +1854,12 @@ class Store(QObject):
         # from spawning. Paused work is swept too — a switched-off monitor's row is
         # still a claim about what the PR owes.
         for entry in list(self.queued_tasks):
+            # A task with no PR to ask about stands: that is a Fix-issues ask, numbered
+            # in the issue space, and pricing issue #421 against the PRs closed this
+            # cycle would retire it for something that happened to the PR of the same
+            # number.
+            if entry.job.pr_number is None:
+                continue
             if autofix.still_owed(entry.job.audit_action, entry.job.pr_number,
                                   conflicting, owing_reply, closed):
                 continue
@@ -1818,7 +1869,7 @@ class Store(QObject):
             # a dispatch nor the operator is behind: a row that vanished in silence
             # reads exactly like the review having run.
             if entry.job.requested:
-                self._forget_requested(entry.job.pr_number)
+                self._forget_requested(entry.id)
                 activity.log("panel", "queue-drop",
                              f"{entry.job.label} — PR no longer open, not run")
             self._drop_queued_task(entry.id)

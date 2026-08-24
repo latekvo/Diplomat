@@ -672,7 +672,7 @@ struct ReviewWizardView: View {
     /// A short label for the ongoing-processes list, e.g. "Review · #337 · Deep".
     /// One shape, because a single PR is the only thing this wizard spawns: a sweep is
     /// queued a PR at a time and each of those rows is labelled by its own
-    /// `Store.RequestedReview`.
+    /// `Store.RequestedWork`.
     private var trackingLabel: String {
         let n = config.prRef.number.map { "#\($0)" } ?? "PR"
         return "Review · \(n) · \(depth.title)"

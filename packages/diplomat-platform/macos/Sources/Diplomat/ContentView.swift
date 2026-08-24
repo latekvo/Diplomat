@@ -695,7 +695,7 @@ struct ContentView: View {
                 paused: store.isPaused(task.job.counter),
                 onRun: { Task { await store.executeQueuedTask(task.id) } },
                 cancellable: task.job.requested,
-                onCancel: { store.cancelRequestedReview(task.id) },
+                onCancel: { store.cancelRequestedWork(task.id) },
                 onDropped: { store.moveQueuedTask($0, onto: task.id) }
             )
         case .starting(let task):
@@ -1202,8 +1202,8 @@ private struct QueuedTaskRow: View {
         the cap like any automatic agent.
         """
     private static let cancelHelp = """
-        Drop this review from the queue without running it. You asked for it by \
-        sweeping your PRs, so nothing else will bring it back.
+        Drop this task from the queue without running it. You asked for it by \
+        sweeping, so nothing else will bring it back.
         """
     private var runHelp: String {
         paused ? QueuedTaskRow.pausedHelp : QueuedTaskRow.heldHelp

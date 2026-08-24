@@ -716,48 +716,54 @@ def dispatch_bumps_counter(source: str, attempt: int) -> bool:
 # the operator's arrangement of it is remembered, because that is the one thing a
 # poll cannot reconstruct.
 #
-# The exception is the reviews the operator asks for by sweeping their PRs
-# (QUEUE_REQUESTED_ACTION). GitHub has nothing to re-offer them from — a PR does not
-# record that someone wanted it reviewed — so that ask is the front-end's own list
-# (``Store.requested_reviews``), and it is the front-end that offers one task per PR
-# on each poll until each is dispatched or its PR leaves the open state.
+# The exception is the work the operator asks for by sweeping a scope
+# (QUEUE_REQUESTED_ACTIONS) — a Review-PRs sweep's reviews, a Fix-issues sweep's
+# fixes. GitHub has nothing to re-offer them from — a PR does not record that someone
+# wanted it reviewed, nor an issue that someone swept it — so that ask is the
+# front-end's own list (``Store.requested_work``), and it is the front-end that offers
+# one task per item on each poll until each is dispatched.
 
 
-def queue_key(audit_action: str, pr_number: int) -> str:
+def queue_key(audit_action: str, number: int) -> str:
     """A queued task's identity, stable across polls and applet restarts: the
-    monitor's verb plus the PR. Not the mesh work key — that one is scoped to a head
-    sha, so a push during the wait would read as a different task and lose the
-    operator's place for it.
+    monitor's verb plus the item it is about. Not the mesh work key — that one is
+    scoped to a head sha, so a push during the wait would read as a different task and
+    lose the operator's place for it.
 
     The verb is part of the key because a PR can owe two different monitors at once
     (a conflict *and* an unaddressed review); they are two tasks, and the one that
-    dispatches first makes the other read as in-flight rather than overwriting it."""
-    return f"{audit_action}:{pr_number}"
+    dispatches first makes the other read as in-flight rather than overwriting it. It
+    is also what keeps the two numbering spaces apart: issue #421 and PR #421 are
+    unrelated pieces of work, and only the verb says which one a key names."""
+    return f"{audit_action}:{number}"
 
 
-# The verb a review the operator asked for is queued under — the same one a
-# Review-PRs spawn writes to the activity feed, because it is that spawn, split into
-# one task per PR.
-QUEUE_REQUESTED_ACTION = "review"
+# The two verbs a sweep's work is queued under — the same ones the Review-PRs and
+# Fix-issues spawns write to the activity feed, because each ask is that spawn, split
+# into one task per PR / per issue.
+QUEUE_REVIEW_ACTION = "review"
+QUEUE_ISSUES_ACTION = "issues"
+QUEUE_REQUESTED_ACTIONS = frozenset({QUEUE_REVIEW_ACTION, QUEUE_ISSUES_ACTION})
 
-# The verbs whose work waits behind the rest, nearest-first — a requested review, then
-# a conflict fix, which waits behind everything. Matched off the queue key rather than
-# the job, because the operator's saved arrangement is a list of keys and has to be
-# banded the same way after a restart, with no job to consult (`queue_order`).
-QUEUE_LAST_ACTIONS = (QUEUE_REQUESTED_ACTION, "conflicts")
+# The bands whose work waits behind the rest, nearest-first — everything the operator
+# asked for, then a conflict fix, which waits behind everything. Matched off the queue
+# key rather than the job, because the operator's saved arrangement is a list of keys
+# and has to be banded the same way after a restart, with no job to consult
+# (`queue_order`).
+QUEUE_LAST_BANDS = (QUEUE_REQUESTED_ACTIONS, frozenset({"conflicts"}))
 
 
 def queue_band(key: str) -> int:
-    """Which band of the queue a task waits in: 0 for the monitors' own finds, 1 for a
-    review the operator asked for, 2 for a conflict fix. Bands outrank the operator's
+    """Which band of the queue a task waits in: 0 for the monitors' own finds, 1 for
+    work the operator asked for, 2 for a conflict fix. Bands outrank the operator's
     arrangement; within one, the arrangement decides.
 
     A monitor's find is first because it is answering something GitHub is already owed
     — a review requested of me, a thread on my PR waiting on a reply — and that debt is
-    visible to other people. A requested review is a sweep the operator started when
-    they had the time for it; it is worth the whole cap eventually, but not ahead of
-    the work the repository is waiting on. Sweeping fifty drafts otherwise buries every
-    review request behind them for a day.
+    visible to other people. A requested review or issue fix is a sweep the operator
+    started when they had the time for it; it is worth the whole cap eventually, but
+    not ahead of the work the repository is waiting on. Sweeping fifty drafts otherwise
+    buries every review request behind them for a day.
 
     Resolving a conflict stays last: it is the one unit of work that another agent's
     run routinely makes unnecessary — a review-reply agent works the same branch and
@@ -768,7 +774,7 @@ def queue_band(key: str) -> int:
     cheapest to re-derive: the reconciler re-offers it every poll for as long as
     GitHub still calls the PR conflicting, so a fix deferred is never a fix lost."""
     verb, _, _ = key.partition(":")
-    return QUEUE_LAST_ACTIONS.index(verb) + 1 if verb in QUEUE_LAST_ACTIONS else 0
+    return next((i + 1 for i, band in enumerate(QUEUE_LAST_BANDS) if verb in band), 0)
 
 
 def still_owed(audit_action: str, pr_number: int, conflicting: set[int],
@@ -793,7 +799,11 @@ def still_owed(audit_action: str, pr_number: int, conflicting: set[int],
     those. A review requested of me lives in the other fetch, and nothing on this
     machine retires it: it is owed until I review it, which is what the agent is for.
     A review the operator asked for is owed for the same reason, by their word rather
-    than GitHub's. Unanswerable is not stale, so it stands."""
+    than GitHub's. Unanswerable is not stale, so it stands.
+
+    Only ever asked about a task whose number is a PR's. A Fix-issues ask the operator
+    made is numbered in the other space entirely, and the caller stands it down rather
+    than pricing issue #421 against the PRs closed this cycle."""
     if pr_number in closed:
         return False
     if audit_action == "conflicts":
@@ -885,7 +895,7 @@ class AgentJob:
     label: str  # label core (source prefix / retry suffix added by dispatch_label)
     prompt: str
     pr_url: str | None = None  # None = not PR-scoped -> no PR dedup possible
-    pr_number: int | None = None
+    pr_number: int | None = None  # a PR number, never an issue's
     author_login: str | None = None  # whose PR we'd review - the ban dimension
     duty: str = ""  # mesh duty, for auto-origination gating
     work_key: str = ""  # mesh claim key ("" = no claim)
@@ -907,11 +917,86 @@ class AgentJob:
     def requested(self) -> bool:
         """Whether the operator asked for this exact unit of work, as opposed to a
         monitor having found it. Read off the verb, which already distinguishes them:
-        the monitors dispatch under ``review-req`` and ``review-reply``, and a plain
-        ``review`` is a Review-PRs spawn — a click, or one PR of the sweep a click
-        queued. It decides the label (:func:`dispatch_label`) and, in the front-end,
-        which queued rows can be cancelled."""
-        return self.audit_action == QUEUE_REQUESTED_ACTION
+        the monitors dispatch under ``review-req`` and ``review-reply``, while a plain
+        ``review`` or ``issues`` is a wizard spawn — a click, or one item of the sweep
+        a click queued. It decides the label (:func:`dispatch_label`) and, in the
+        front-end, which queued rows can be cancelled."""
+        return self.audit_action in QUEUE_REQUESTED_ACTIONS
+
+
+@dataclass(frozen=True)
+class RequestedWork:
+    """One PR a Review-PRs sweep asked to have reviewed, or one issue a Fix-issues
+    sweep asked to have fixed, waiting for a free slot.
+
+    A sweep is expanded into one of these per item it covers instead of one agent told
+    to work through all fifty, so each gets a bay of the task cap to itself and the
+    panel can show, hold and reorder them one by one.
+
+    This is the only work in the queue the applet has to REMEMBER. Everything else
+    there is a monitor's find, re-derived from GitHub on every poll — but a PR records
+    nothing about somebody having wanted it reviewed, nor an issue about somebody
+    having swept it, so if this list is lost the ask is lost with it. Hence the whole
+    payload rather than a number: it is what the prompt is assembled from, at the press
+    and again after a restart, so the agent that eventually runs is the one the wizard
+    would have opened at the click.
+
+    Twin of Store.RequestedWork on macOS.
+    """
+
+    #: The PR number, or the issue number — two numbering spaces, told apart by the
+    #: verb in :attr:`key` and nowhere else.
+    number: int
+    url: str
+    #: Whose PR / issue — the pipeline's ban dimension. Empty where the sweep names
+    #: nobody (my own PRs, an association scope).
+    author: str
+    #: The wizard config's ``prompt_payload`` for this one item. Its ``kind`` is also
+    #: the queue verb the ask waits under, so the payload carries its own discriminator.
+    config: dict
+
+    @property
+    def action(self) -> str:
+        """The queue verb this ask waits under, which is also its
+        :class:`AgentJob` kind, its mesh duty and the verb its dispatch writes to the
+        activity feed."""
+        return self.config.get("kind") or QUEUE_REVIEW_ACTION
+
+    @property
+    def key(self) -> str:
+        """This ask's identity everywhere it has one: the queued task's id, the row the
+        panel draws it as, and what ``_forget_requested`` drops it by."""
+        return queue_key(self.action, self.number)
+
+    @property
+    def label(self) -> str:
+        """The row this task wears in the panel and the activity feed. Carries the
+        depth because that is the choice a sweep is worth re-reading later: the same PR
+        queued from a `max` sweep and from a `quick` one are different jobs."""
+        noun = "Issues" if self.action == QUEUE_ISSUES_ACTION else "Review"
+        return f"{noun} · #{self.number} · {self.config.get('depth', '')}"
+
+    def to_json(self) -> dict:
+        return {"number": self.number, "url": self.url, "author": self.author,
+                "config": self.config}
+
+    @staticmethod
+    def from_json(obj: dict) -> "RequestedWork | None":
+        """One stored row, or ``None`` when it is not one. A hand-edited or
+        part-written entry drops out of the list rather than taking the applet's whole
+        queue down with it — the same degradation every other state file here gets."""
+        try:
+            # "pr" is the key the number was written under while this list held
+            # reviews alone, so the asks a sweep left standing outlive the upgrade
+            # that widened it.
+            number = int(obj["number"] if "number" in obj else obj["pr"])
+            config = obj["config"]
+        except (KeyError, TypeError, ValueError):
+            return None
+        if not isinstance(config, dict):
+            return None
+        return RequestedWork(number=number, url=str(obj.get("url", "")),
+                             author=str(obj.get("author", "")), config=config)
 
 
 @dataclass(frozen=True)

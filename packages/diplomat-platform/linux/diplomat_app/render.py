@@ -147,14 +147,18 @@ def _queue_fixture(store: Store) -> None:
 
     def task(number: int, kind: str, action: str, label: str, counter: str | None,
              attempt=1):
+        # A Fix-issues row carries no PR, matching what the sweep queues: the number
+        # is an issue's, and the pipeline's dedup is PR-shaped.
+        is_pr = kind != "issues"
         return autofix.QueuedTask(
             id=autofix.queue_key(action, number),
             job=autofix.AgentJob(
                 kind=kind, audit_action=action, label=label,
                 # No prompt: a render never dispatches, and an assembled one here
                 # would only be a second, drifting copy of the golden fixtures.
-                prompt="", pr_url=f"https://github.com/x/pull/{number}",
-                pr_number=number, duty=kind, counter=counter,
+                prompt="",
+                pr_url=f"https://github.com/x/pull/{number}" if is_pr else None,
+                pr_number=number if is_pr else None, duty=kind, counter=counter,
             ),
             attempt=attempt,
         )
@@ -167,7 +171,10 @@ def _queue_fixture(store: Store) -> None:
              "review_requests"),
         # One PR of a sweep the operator asked for: no "Auto · " on its label, and the
         # one kind of row that can be cancelled.
-        task(503, "review", autofix.QUEUE_REQUESTED_ACTION, "Review · #503 · deep", None),
+        task(503, "review", autofix.QUEUE_REVIEW_ACTION, "Review · #503 · deep", None),
+        # …and one issue of a Fix-issues sweep, which shares that band and is
+        # cancellable for the same reason.
+        task(421, "issues", autofix.QUEUE_ISSUES_ACTION, "Issues · #421 · deep", None),
         task(508, "conflicts", "conflicts", "Resolve · #508", "conflicts", attempt=2),
         starting,
     ]

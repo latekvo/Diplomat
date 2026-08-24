@@ -51,21 +51,20 @@ GOLDEN_MODES: dict[str, object] = {
     "audit-issues": lambda: AuditConfig(fix_issues=True),
     "audit-prs": lambda: AuditConfig(open_prs=True),
     "audit-all": lambda: AuditConfig(fix_issues=True, open_prs=True),
-    "issues-all": lambda: IssueConfig(me=ME),
-    "issues-mine": lambda: IssueConfig(target=IssueTarget.MINE, me=ME),
-    "issues-user": lambda: IssueConfig(
-        target=IssueTarget.SOMEONE, username="someuser", me=ME
-    ),
-    "issues-contributors": lambda: IssueConfig(target=IssueTarget.CONTRIBUTORS, me=ME),
-    "issues-members": lambda: IssueConfig(target=IssueTarget.MEMBERS, me=ME),
+    # The two shapes a Fix-issues run comes in. A scope never reaches the agent — it
+    # is enumerated into one queued fix per issue — so the six scopes are one golden
+    # between them, taken through `for_issue` as the sweep queues them.
+    "issues-swept": lambda: IssueConfig(me=ME).for_issue(421),
     "issues-single": lambda: IssueConfig(
         target=IssueTarget.SPECIFIC, me=ME, specific_issue="421"
     ),
     "issues-hands-off": lambda: IssueConfig(
         me=ME, unassigned_only=False, assign_to_me=False, open_prs=False,
         comment_on_issue=False
-    ),
-    "issues-features-max": lambda: IssueConfig(depth="max", me=ME, include_features=True),
+    ).for_issue(421),
+    "issues-features-max": lambda: IssueConfig(
+        depth="max", me=ME, include_features=True
+    ).for_issue(421),
 }
 
 

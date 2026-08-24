@@ -365,21 +365,21 @@ final class Store: ObservableObject {
     /// be a staler answer to a question already being re-asked, and would hand
     /// "execute now" a prompt assembled against a PR that has since moved on. What
     /// IS persisted is `queuedTaskOrder` — the operator's arrangement — and
-    /// `requestedReviews`, the sweeps the operator asked for, both being things a
+    /// `requestedWork`, the sweeps the operator asked for, both being things a
     /// poll cannot reconstruct.
     @Published var queuedTasks: [QueuedAgentTask] = []
 
-    /// The reviews the operator has asked for and nothing has started yet, in the
-    /// order their sweeps asked for them.
+    /// The work the operator has asked for by sweeping a scope and nothing has
+    /// started yet, in the order their sweeps asked for it.
     ///
     /// Persisted, alone among the things the queue is built from, because it is the
     /// only one GitHub cannot answer for: a poll can always re-derive that a PR
     /// conflicts or that a thread is waiting on me, but nothing about a PR records
-    /// that somebody swept it into a review. Losing this list on a restart would
-    /// silently drop the rest of a fifty-PR sweep, which is exactly the run long
-    /// enough to be interrupted.
-    var requestedReviews: [RequestedReview] {
-        didSet { persistJSON(requestedReviews, forKey: Keys.requestedReviews) }
+    /// that somebody swept it into a review, nor about an issue that somebody swept
+    /// it into a fix. Losing this list on a restart would silently drop the rest of a
+    /// fifty-item sweep, which is exactly the run long enough to be interrupted.
+    var requestedWork: [RequestedWork] {
+        didSet { persistJSON(requestedWork, forKey: Keys.requestedWork) }
     }
 
     /// Queued work whose dispatch is under way: it has left the queue and its spawn
@@ -437,7 +437,11 @@ final class Store: ObservableObject {
         static let allocatorSetupDone = "allocatorSetupDone"
         static let queuedTaskOrder = "queuedTaskOrder"
         static let queueAutoRun = "queueAutoRun"
-        static let requestedReviews = "requestedReviews"
+        /// The name this list has always been stored under. Kept when it widened
+        /// from reviews alone to every sweep, so the asks a Review-PRs sweep left
+        /// standing outlive the upgrade that widened it (`RequestedWork` decodes a
+        /// row with no verb as the review it was written as).
+        static let requestedWork = "requestedReviews"
     }
 
     /// The persisted terminal choice, readable before a Store exists (the AppDelegate's
@@ -544,7 +548,7 @@ final class Store: ObservableObject {
         meshTrustReminderSuppressed = defaults.bool(forKey: Keys.meshTrustReminderSuppressed)
         settingsExplain = defaults.bool(forKey: Keys.settingsExplain)
         queuedTaskOrder = defaults.stringArray(forKey: Keys.queuedTaskOrder) ?? []
-        requestedReviews = Store.loadRequestedReviews()
+        requestedWork = Store.loadRequestedWork()
         if hiddenTools.contains(selected.rawValue),
            let first = ToolKind.allCases.first(where: { !hiddenTools.contains($0.rawValue) }) {
             selected = first
@@ -1276,10 +1280,10 @@ final class Store: ObservableObject {
             if let snaps { await pollMyPRs(snaps: snaps) }
             await pollReviewRequests(owner: owner, repo: repo)
             // Last, so the monitors' finds keep the places they were found in: the
-            // operator's own sweep bands behind them anyway, and a fifty-PR ask
+            // operator's own sweep bands behind them anyway, and a fifty-item ask
             // offered first would otherwise decide the arrangement of a queue it is
             // meant to wait in.
-            offerRequestedReviews()
+            offerRequestedWork()
             // A cycle that failed part-way knows what it fetched, not what is owed —
             // committing then would drop every task the failing half would have
             // re-offered, and with it the operator's arrangement of them.
@@ -1659,12 +1663,12 @@ final class Store: ObservableObject {
         // nothing can name is one the next poll cannot recognise as the same one, and a
         // task no monitor owns is one nothing would re-offer from here — so the refusal
         // would be the only record of it, and a poll that never happened would lose it.
-        // (Every automatic job is both. A review the operator asked for is neither, and
+        // (Every automatic job is both. Work the operator asked for is neither, and
         // is re-offered from the list that remembers the ask instead —
-        // `offerRequestedReviews`. A wizard click is uncapped and never refused.)
+        // `offerRequestedWork`. A wizard click is uncapped and never refused.)
         guard let number = job.prNumber, job.counter != nil else { return }
         let entry = QueuedAgentTask(
-            id: AgentTaskQueue.key(auditAction: job.auditAction, prNumber: number),
+            id: AgentTaskQueue.key(auditAction: job.auditAction, number: number),
             job: job, attemptNumber: attemptNumber)
         if let i = stagedQueue.firstIndex(where: { $0.id == entry.id }) {
             stagedQueue[i] = entry
@@ -1736,9 +1740,9 @@ final class Store: ObservableObject {
         // from spawning. Paused work is swept too — a switched-off monitor's row is
         // still a claim about what the PR owes.
         //
-        // A queued task always carries its PR (`stageQueued` stages nothing without
-        // one); one there were no way to ask about stands, which is the answer
-        // `stillOwed` gives a verb these fetches do not cover.
+        // A task with no PR to ask about stands: that is a Fix-issues ask, numbered
+        // in the issue space, and pricing issue #421 against the PRs closed this cycle
+        // would retire it for something that happened to the PR of the same number.
         let answered = queuedTasks.filter { entry in
             guard let number = entry.job.prNumber else { return false }
             return !AgentTaskQueue.stillOwed(auditAction: entry.job.auditAction,
@@ -1754,7 +1758,7 @@ final class Store: ObservableObject {
             // a dispatch nor the operator is behind: a row that vanished in silence
             // reads exactly like the review having run.
             if entry.job.requested {
-                forgetRequested(entry.job.prNumber)
+                forgetRequested(entry.id)
                 AuditLog.log("panel", "queue-drop",
                              "\(entry.job.label) — PR no longer open, not run")
             }
@@ -1784,56 +1788,146 @@ final class Store: ObservableObject {
         }
     }
 
-    // MARK: - the reviews the operator asks for
+    // MARK: - the work the operator asks for
     //
-    // A Review-PRs sweep is expanded here into one queued review per PR, rather than
-    // handed to a single agent as "review every draft PR of mine". On a repo with
-    // fifty drafts that agent is fifty reviews in one session: one context, one
-    // terminal, one machine, and no way to see where it has got to or to stop it
-    // halfway. Split, each PR is a row of the Agent-tasks list, gets a bay of the task
-    // cap to itself, and runs when the cap has room — behind the monitors' finds,
-    // ahead of the conflict fixes (`AgentTaskQueue.band`).
+    // A Review-PRs or Fix-issues sweep is expanded here into one queued task per PR /
+    // per issue, rather than handed to a single agent as "review every draft PR of
+    // mine" or "fix every open issue". On a repo with fifty of either that agent is
+    // fifty jobs in one session: one context, one terminal, one machine, and no way to
+    // see where it has got to or to stop it halfway. Split, each item is a row of the
+    // Agent-tasks list, gets a bay of the task cap to itself, and runs when the cap
+    // has room — behind the monitors' finds, ahead of the conflict fixes
+    // (`AgentTaskQueue.band`).
 
-    /// One PR a Review-PRs sweep asked to have reviewed, waiting for a free slot.
+    /// The config behind one ask, and so which of the two sweeps asked for it.
+    ///
+    /// Everything downstream reads an ask through `action` / `noun` / `depth` /
+    /// `buildPrompt`, so the queue, the panel and the drain never branch on which kind
+    /// it is — the one place that does is `requestedTask`, where a PR is dedup-able
+    /// work and an issue is not.
+    enum RequestedConfig: Equatable {
+        case review(ReviewConfig)
+        case issues(IssueConfig)
+
+        /// The queue verb this ask waits under, which is also its `AgentJob.kind`,
+        /// its mesh duty and the verb its dispatch writes to the activity feed.
+        var action: String {
+            switch self {
+            case .review: return AgentTaskQueue.reviewAction
+            case .issues: return AgentTaskQueue.issuesAction
+            }
+        }
+
+        /// What the row calls itself — the wizard's own word for the work.
+        var noun: String {
+            switch self {
+            case .review: return "Review"
+            case .issues: return "Issues"
+            }
+        }
+
+        var depth: String {
+            switch self {
+            case .review(let cfg): return cfg.depth
+            case .issues(let cfg): return cfg.depth
+            }
+        }
+
+        func buildPrompt() -> String {
+            switch self {
+            case .review(let cfg): return cfg.buildPrompt()
+            case .issues(let cfg): return cfg.buildPrompt()
+            }
+        }
+    }
+
+    /// One PR a Review-PRs sweep asked to have reviewed, or one issue a Fix-issues
+    /// sweep asked to have fixed, waiting for a free slot.
     ///
     /// This is the only work in the queue the applet has to REMEMBER. Everything else
     /// there is a monitor's find, re-derived from GitHub on every poll — but a PR
-    /// records nothing about somebody having wanted it reviewed, so if this list is
-    /// lost the ask is lost with it. Hence the whole config rather than a PR number:
-    /// the prompt for each is assembled from it when the task is offered, exactly as
-    /// the wizard would have assembled it at the moment of the click.
-    struct RequestedReview: Codable, Equatable {
+    /// records nothing about somebody having wanted it reviewed, nor an issue about
+    /// somebody having swept it, so if this list is lost the ask is lost with it.
+    /// Hence the whole config rather than a number: the prompt for each is assembled
+    /// from it when the task is offered, exactly as the wizard would have assembled it
+    /// at the moment of the click.
+    struct RequestedWork: Codable, Equatable {
+        /// The PR number, or the issue number — two numbering spaces, told apart by
+        /// the verb in `key` and nowhere else.
         let number: Int
         let url: String
-        /// Whose PR — the pipeline's ban dimension. Empty for my own.
+        /// Whose PR / issue — the pipeline's ban dimension. Empty where the sweep
+        /// names nobody (my own PRs, an association scope).
         let author: String
-        let config: ReviewConfig
+        let config: RequestedConfig
+
+        /// This ask's identity everywhere it has one: the queued task's id, the row
+        /// the panel draws it as, and what `forgetRequested` drops it by.
+        var key: String {
+            AgentTaskQueue.key(auditAction: config.action, number: number)
+        }
 
         /// The row this task wears in the panel and the activity feed. Carries the
         /// depth because that is the choice a sweep is worth re-reading later: the
         /// same PR queued from a `max` sweep and from a `quick` one are different jobs.
-        var label: String { "Review · #\(number) · \(config.depth)" }
+        var label: String { "\(config.noun) · #\(number) · \(config.depth)" }
+
+        private enum CodingKeys: String, CodingKey { case number, url, author, action, config }
+
+        init(number: Int, url: String, author: String, config: RequestedConfig) {
+            self.number = number
+            self.url = url
+            self.author = author
+            self.config = config
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            number = try c.decode(Int.self, forKey: .number)
+            url = try c.decodeIfPresent(String.self, forKey: .url) ?? ""
+            author = try c.decodeIfPresent(String.self, forKey: .author) ?? ""
+            // No verb means a row written while this list held reviews alone, whose
+            // `config` is the bare `ReviewConfig` it was stored as.
+            let action = try c.decodeIfPresent(String.self, forKey: .action)
+            if action == AgentTaskQueue.issuesAction {
+                config = .issues(try c.decode(IssueConfig.self, forKey: .config))
+            } else {
+                config = .review(try c.decode(ReviewConfig.self, forKey: .config))
+            }
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(number, forKey: .number)
+            try c.encode(url, forKey: .url)
+            try c.encode(author, forKey: .author)
+            try c.encode(config.action, forKey: .action)
+            switch config {
+            case .review(let cfg): try c.encode(cfg, forKey: .config)
+            case .issues(let cfg): try c.encode(cfg, forKey: .config)
+            }
+        }
     }
 
     /// One stored ask, decoded so that a row which will not read costs only itself.
     ///
     /// Decoding the array whole would make any single bad row empty the list, and the
-    /// stored element is the entire `ReviewConfig` — a shared type that gains fields.
-    /// The first release to add one would silently drop every ask a sweep left
-    /// standing, which is the loss this list is persisted to prevent.
+    /// stored element is an entire `ReviewConfig` / `IssueConfig` — shared types that
+    /// gain fields. The first release to add one would silently drop every ask a sweep
+    /// left standing, which is the loss this list is persisted to prevent.
     private struct StoredAsk: Decodable {
-        let review: RequestedReview?
+        let work: RequestedWork?
 
         init(from decoder: Decoder) throws {
-            review = try? decoder.singleValueContainer().decode(RequestedReview.self)
+            work = try? decoder.singleValueContainer().decode(RequestedWork.self)
         }
     }
 
-    private static func loadRequestedReviews() -> [RequestedReview] {
-        guard let data = UserDefaults.standard.data(forKey: Keys.requestedReviews),
+    private static func loadRequestedWork() -> [RequestedWork] {
+        guard let data = UserDefaults.standard.data(forKey: Keys.requestedWork),
               let rows = try? JSONDecoder().decode([StoredAsk].self, from: data)
         else { return [] }
-        return rows.compactMap(\.review)
+        return rows.compactMap(\.work)
     }
 
     /// Queue one review per PR `cfg` sweeps. Returns `(queued, already)`.
@@ -1843,28 +1937,56 @@ final class Store: ObservableObject {
     /// they meant. One that merges or closes before its turn comes is dropped by the
     /// drain (`AgentTaskQueue.stillOwed`); one the sweep should not have caught in the
     /// first place is what **cancel** is for.
-    ///
-    /// A PR already waiting for a review keeps the ask it has instead of gaining a
-    /// second: the queue is keyed by PR, so two would be one row that dispatches twice
-    /// (and the second dispatch would find the first agent still on the PR). That makes
-    /// pressing SPAWN twice, or sweeping a scope that overlaps an earlier one,
-    /// idempotent rather than a way to double up.
     @discardableResult
     func requestReviewSweep(_ cfg: ReviewConfig) -> (queued: Int, already: Int) {
         let targets = Filters.sweptPRs(prs, author: cfg.sweepAuthor,
                                        includeDrafts: cfg.includeDrafts,
                                        includeReady: cfg.includeReady)
-        let known = Set(requestedReviews.map(\.number))
-        let fresh = targets.filter { !known.contains($0.number) }.map { pr in
-            RequestedReview(number: pr.number, url: pr.url,
-                            // The ban dimension, and only someone else's PR has one.
-                            author: cfg.disposition == .theirs ? pr.author : "",
-                            config: cfg.forPR(pr.number))
-        }
-        guard !fresh.isEmpty else { return (0, targets.count) }
-        requestedReviews += fresh
+        return request(targets.map { pr in
+            RequestedWork(number: pr.number, url: pr.url,
+                          // The ban dimension, and only someone else's PR has one.
+                          author: cfg.disposition == .theirs ? pr.author : "",
+                          config: .review(cfg.forPR(pr.number)))
+        })
+    }
+
+    /// Queue one fix per issue `cfg` sweeps. Returns `(queued, already)`.
+    ///
+    /// The issues come from the panel's own last fetch, for the same reason the PRs
+    /// above do. What the drain cannot do for these is retire them: the monitor poll
+    /// reads PRs, so nothing there notices an issue closing under a waiting ask. The
+    /// swept prompt covers it instead — it re-reads the issue's state and stops if it
+    /// has been dealt with since — and **cancel** is the way out of an ask the sweep
+    /// should not have caught.
+    @discardableResult
+    func requestIssueSweep(_ cfg: IssueConfig) -> (queued: Int, already: Int) {
+        let targets = Filters.sweptIssues(issues, target: cfg.target,
+                                          author: cfg.sweepAuthor,
+                                          unassignedOnly: cfg.unassignedOnly)
+        return request(targets.map { issue in
+            RequestedWork(number: issue.number, url: issue.url,
+                          // The ban dimension. Only a scope that names one person has
+                          // one, matching the login the wizard would ban-check.
+                          author: cfg.target == .someone ? issue.author : "",
+                          config: .issues(cfg.forIssue(issue.number)))
+        })
+    }
+
+    /// Store and publish whichever of `asks` is not already queued, and say how many
+    /// of each there were.
+    ///
+    /// An item already waiting keeps the ask it has instead of gaining a second: the
+    /// queue is keyed by the ask, so two would be one row that dispatches twice (and
+    /// the second dispatch would find the first agent still on it). That makes
+    /// pressing SPAWN twice, or sweeping a scope that overlaps an earlier one,
+    /// idempotent rather than a way to double up.
+    private func request(_ asks: [RequestedWork]) -> (queued: Int, already: Int) {
+        let known = Set(requestedWork.map(\.key))
+        let fresh = asks.filter { !known.contains($0.key) }
+        guard !fresh.isEmpty else { return (0, asks.count) }
+        requestedWork += fresh
         publishRequested(fresh)
-        return (fresh.count, targets.count - fresh.count)
+        return (fresh.count, asks.count - fresh.count)
     }
 
     /// One stored ask as the queued task it stands for.
@@ -1872,43 +1994,51 @@ final class Store: ObservableObject {
     /// Carries no `counter`, no `workKey` and no `ledgerKey`: no monitor owns it (so no
     /// toggle pauses it and no auto-handled counter counts it), and the telemetry
     /// ledger measures the monitors, not the operator.
-    private func requestedTask(_ entry: RequestedReview) -> QueuedAgentTask {
-        QueuedAgentTask(
-            id: AgentTaskQueue.key(auditAction: AgentTaskQueue.requestedAction,
-                                   prNumber: entry.number),
-            job: AgentJob(kind: "review", auditAction: AgentTaskQueue.requestedAction,
+    private func requestedTask(_ entry: RequestedWork) -> QueuedAgentTask {
+        let action = entry.config.action
+        // A fix is deliberately NOT PR-scoped. The dispatch pipeline's dedup is
+        // PR-shaped throughout — the in-flight check matches a `/pull/<n>` URL and
+        // keys on a PR number — so handing it an issue number would collide with the
+        // PR that happens to share it. What keeps two agents off one issue instead is
+        // the assignee claim, which every machine can see rather than just this one.
+        let isPR = action == AgentTaskQueue.reviewAction
+        return QueuedAgentTask(
+            id: entry.key,
+            job: AgentJob(kind: action, auditAction: action,
                           label: entry.label, prompt: entry.config.buildPrompt(),
-                          prURL: entry.url, prNumber: entry.number,
+                          prURL: isPR ? entry.url : nil,
+                          prNumber: isPR ? entry.number : nil,
                           authorLogin: entry.author.isEmpty ? nil : entry.author,
-                          duty: "review", workKey: "", counter: nil),
+                          duty: action, workKey: "", counter: nil),
             attemptNumber: 1)
     }
 
-    /// Put freshly asked-for reviews into the queue there and then.
+    /// Put freshly asked-for work into the queue there and then.
     ///
-    /// Without this they would appear on the next poll, up to a poll period after the
+    /// Without this it would appear on the next poll, up to a poll period after the
     /// press — and a press that leaves the panel exactly as it was reads as a press
     /// that did nothing. Re-arranged through the same `AgentTaskQueue.order` the commit
     /// uses, so the rows land in their band and in the operator's arrangement, not
     /// merely at the end.
-    private func publishRequested(_ entries: [RequestedReview]) {
+    private func publishRequested(_ entries: [RequestedWork]) {
         let tasks = queuedTasks + entries.map(requestedTask)
         let ordered = AgentTaskQueue.order(offered: tasks.map(\.id), saved: queuedTaskOrder)
         queuedTaskOrder = ordered
         queuedTasks = ordered.compactMap { id in tasks.first { $0.id == id } }
     }
 
-    /// Offer every review still asked for, alongside the monitors' own finds.
+    /// Offer every ask nothing has started, alongside the monitors' own finds.
     ///
     /// This is the list's whole job in a poll. A monitor re-offers its work by finding
-    /// it on GitHub again; nothing on GitHub says a PR was swept, so what re-offers
-    /// these is the ask itself, until the dispatch that starts one takes it off
-    /// (`settleRequested`) or the drain finds its PR closed (`drainQueuedTasks`).
+    /// it on GitHub again; nothing on GitHub says a PR or an issue was swept, so what
+    /// re-offers these is the ask itself, until the dispatch that starts one takes it
+    /// off (`settleRequested`), the operator cancels it, or — for a review — the drain
+    /// finds its PR closed (`drainQueuedTasks`).
     ///
     /// Not private: the queue self-test commits a cycle directly, which is the only way
     /// to exercise the offer without a live GitHub fetch.
-    func offerRequestedReviews() {
-        for entry in requestedReviews { stagedQueue.append(requestedTask(entry)) }
+    func offerRequestedWork() {
+        for entry in requestedWork { stagedQueue.append(requestedTask(entry)) }
     }
 
     /// Take an ask off the list once its dispatch has answered for it.
@@ -1922,15 +2052,14 @@ final class Store: ObservableObject {
     private func settleRequested(_ entry: QueuedAgentTask, _ outcome: DispatchOutcome) {
         guard entry.job.requested else { return }
         switch outcome {
-        case .spawned, .standDown, .banned: forgetRequested(entry.job.prNumber)
+        case .spawned, .standDown, .banned: forgetRequested(entry.id)
         case .inFlight, .atCapacity, .unaffordable, .failed: break
         }
     }
 
-    /// Drop one PR's ask.
-    private func forgetRequested(_ number: Int?) {
-        guard let number else { return }
-        requestedReviews.removeAll { $0.number == number }
+    /// Drop one ask, by the queue key that is its identity.
+    private func forgetRequested(_ key: String) {
+        requestedWork.removeAll { $0.key == key }
     }
 
     /// The queued row's "cancel": drop an ask the operator has changed their mind
@@ -1938,12 +2067,13 @@ final class Store: ObservableObject {
     ///
     /// A sweep is the one thing in this list that can be asked for by the fifty, and
     /// the only one GitHub does not answer for: a monitor's row leaves when the work is
-    /// no longer owed, while an ask on a PR that is still open stands until it runs.
+    /// no longer owed, while an ask on a PR that is still open stands until it runs —
+    /// and a fix stands whatever happens to its issue, the poll reading PRs alone.
     /// Without a way back out, a mis-aimed sweep is a day of agents nobody can call off.
-    func cancelRequestedReview(_ id: String) {
+    func cancelRequestedWork(_ id: String) {
         guard let entry = queuedTasks.first(where: { $0.id == id }), entry.job.requested
         else { return }
-        forgetRequested(entry.job.prNumber)
+        forgetRequested(entry.id)
         dropQueuedTask(id)
         AuditLog.log("panel", "queue-cancel", "\(entry.job.label) — cancelled, not run")
         refreshAudit()
@@ -2264,11 +2394,11 @@ final class Store: ObservableObject {
 
         /// Whether the operator asked for this exact unit of work, as opposed to a
         /// monitor having found it. Read off the verb, which already distinguishes
-        /// them: the monitors dispatch under `review-req` and `review-reply`, and a
-        /// plain `review` is a Review-PRs spawn — a click, or one PR of the sweep a
-        /// click queued. It decides the label (`AgentDispatchGate.label`) and, in the
-        /// panel, which queued rows can be cancelled.
-        var requested: Bool { auditAction == AgentTaskQueue.requestedAction }
+        /// them: the monitors dispatch under `review-req` and `review-reply`, while a
+        /// plain `review` or `issues` is a wizard spawn — a click, or one item of the
+        /// sweep a click queued. It decides the label (`AgentDispatchGate.label`) and,
+        /// in the panel, which queued rows can be cancelled.
+        var requested: Bool { AgentTaskQueue.requestedActions.contains(auditAction) }
     }
 
     enum AutoCounter { case reviewRequests, myReviews, conflicts }

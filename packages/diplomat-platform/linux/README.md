@@ -267,7 +267,7 @@ DIPLOMAT_DUMP=1        python -m diplomat_app   # real fetch+filter, prints all 
 DIPLOMAT_LOOKUP=337    python -m diplomat_app   # reverse-lookup one number
 DIPLOMAT_PRINT_PROMPT=mine python -m diplomat_app  # assemble a Review prompt (mine|user|single)
                                                        #   conflicts-mine|conflicts-user|conflicts-single → Resolve-conflicts prompt
-                                                       #   issues[-mine|-user|-contributors|-members|-single][-features] → Fix-issues prompt
+                                                       #   issues[-single][-features] → Fix-issues prompt
 
 DIPLOMAT_SELF_UPDATE=1 python -m diplomat_app       # the unattended 06:00 update, run once
 
@@ -305,9 +305,11 @@ python tests/test_logic.py        # the logic tests, dependency-free (no pytest)
   spawn runs). Pinned against the Swift twin.
 - `tests/test_agent_tasks_panel.py` - the panel half of that queue: the rows it
   draws, and the click and the drop that reach the store.
-- `tests/test_requested_reviews.py` - the reviews a PR sweep asks for: what one
-  press queues, the list that remembers the asks across a restart, what re-offers
-  them and what finally takes each off.
+- `tests/test_requested_work.py` - the work a sweep asks for, one review per PR
+  or one fix per issue: what one press queues, the list that remembers the asks
+  across a restart, what re-offers them and what finally takes each off - including
+  that a fix is keyed in the issue number space, so the PR of the same number
+  neither collides with it nor retires it.
 - `tests/test_apiwatch.py` - the API-error matcher + the tmux watcher's backoff
   and two-scan stall confirmation.
 - `tests/test_activity.py` - the audit feed: action → category taxonomy, filtering.

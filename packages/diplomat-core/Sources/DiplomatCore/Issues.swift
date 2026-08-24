@@ -23,30 +23,37 @@ public enum IssueCatalog {
 /// off the machine is which model the agent runs on (`AgentModel`), which the
 /// attribution tag names.
 ///
-/// Three axes, deliberately independent:
-///   - `target`  — WHICH issues (all / mine / one user's / the community's / the
-///     org's / one specific issue), the widest of the three because an issue's
-///     author association is a scope of its own (see `IssueTarget`);
-///   - `unassignedOnly` — narrowed to the ones nobody has claimed, so a sweep picks
-///     up only what is actually going spare (moot for one specific issue);
-///   - `assignToMe` / `openPRs` / `commentOnIssue` / `includeFeatures` — what the
-///     run may DO about what it finds.
+/// **Every prompt this builds works ONE issue** — `specificIssue` names it. A scope
+/// is never handed to an agent as a scope: the front-end enumerates it against the
+/// repo's open issues (`Filters.sweptIssues`) and queues one run per issue, each
+/// built from `forIssue`. So the three axes below are read by different readers:
+///
+///   - `target` / `username` / `unassignedOnly` — WHICH issues the sweep picks up
+///     (all / mine / one user's / the community's / the org's / one specific issue,
+///     narrowed to the ones nobody has claimed). The front-end reads these; the
+///     prompt reads them only to know whether this issue was swept, and so whether
+///     it has to re-check the state the sweep selected on;
+///   - `depth` — how hard the one issue is proven;
+///   - `assignToMe` / `openPRs` / `commentOnIssue` / `includeFeatures` — what the run
+///     may DO about what it finds.
 public struct IssueConfig: Codable, Equatable {
     public var depth: String          // depth id; "" -> default
     public var target: IssueTarget
     public var username: String       // the "someone else's" handle
     /// The authenticated viewer login (from the Store), used as the @handle for "mine".
     public var me: String
+    /// The one issue this run works. Typed by hand under the `.specific` scope, and
+    /// filled in per issue by `forIssue` for every other one.
     public var specificIssue: String
 
     /// Skip every issue that already has an assignee — somebody is on it already.
     public var unassignedOnly: Bool
-    /// Claim each issue (assign it to me) before starting on it, and hand it back
+    /// Claim the issue (assign it to me) before starting on it, and hand it back
     /// if the run abandons it.
     public var assignToMe: Bool
-    /// Deliver each fix as its own draft PR. Off ⇒ nothing reaches the remote.
+    /// Deliver the fix as its own draft PR. Off ⇒ nothing reaches the remote.
     public var openPRs: Bool
-    /// Report the outcome on the issue itself, one comment per issue worked.
+    /// Report the outcome on the issue itself.
     public var commentOnIssue: Bool
     /// The one escalation: also take on feature requests, not just bug reports.
     public var includeFeatures: Bool
@@ -81,7 +88,7 @@ public struct IssueConfig: Codable, Equatable {
         }
     }
 
-    /// Fix exactly one issue by number/URL instead of sweeping a scope.
+    /// Fix exactly one issue named by hand, instead of sweeping a scope.
     public var isSingleIssue: Bool { target == .specific }
 
     /// Whether the wizard offers the unassigned filter at all. It only means
@@ -107,50 +114,39 @@ public struct IssueConfig: Codable, Equatable {
         return target.needsHandle ? !authorHandle.isEmpty : true
     }
 
-    /// The author associations that count as "inside the organisation", spelled the
-    /// way the prompt names them ("MEMBER or OWNER"). Data-driven from the shared
-    /// `filters.json`, so the contributors/members split the prompt describes is the
-    /// same one the Unaddressed-Issues tool card filters by.
-    private var orgList: String {
-        let all = (try? CoreAssets.filters())?.orgAssociations ?? []
-        switch all.count {
-        case 0:  return "MEMBER or OWNER"
-        case 1:  return all[0]
-        default: return all.dropLast().joined(separator: ", ") + " or " + all[all.count - 1]
-        }
-    }
-
-    private func scopeText(_ scope: [String: String]) -> String {
-        let key: String
+    /// The login whose open issues this sweep expands into one queued fix each, or ""
+    /// when the scope names nobody in particular (all / contributors / members) or
+    /// there is nothing to expand (one named issue, or my own issues before the
+    /// viewer login has resolved).
+    ///
+    /// Not `authorHandle`, which falls back to the literal "me" for the prompt to
+    /// address: matched against real issue authors, where the account called "me"
+    /// has opened nothing.
+    public var sweepAuthor: String {
         switch target {
-        case .all:          key = "scopeAll"
-        case .mine:         key = "scopeMine"
-        case .someone:      key = "scopeUser"
-        case .contributors: key = "scopeContributors"
-        case .members:      key = "scopeMembers"
-        case .specific:     key = ""
+        case .mine: return me.trimmingCharacters(in: .whitespaces)
+        case .someone: return username.trimmingCharacters(in: .whitespaces)
+        default: return ""
         }
-        return (scope[key] ?? "")
-            .replacingOccurrences(of: "{handle}", with: authorHandle)
-            .replacingOccurrences(of: "{orgList}", with: orgList)
     }
 
-    /// How the prompt tells the agent to list the issues. The association scopes go
-    /// through the REST endpoint because `gh issue list --json` cannot answer that
-    /// field; every other scope takes the simpler `gh issue list`, narrowed by the
-    /// `no:assignee` search qualifier when the unassigned filter is on.
-    private func enumerateText(_ enumerate: [String: String]) -> String {
-        if target.needsAuthorAssociation { return enumerate["association"] ?? "" }
-        let search = unassignedOnly
-            ? (enumerate["searchUnassigned"] ?? "")
-            : (enumerate["searchNone"] ?? "")
-        return (enumerate["plain"] ?? "").replacingOccurrences(of: "{searchFlag}", with: search)
+    /// This sweep, narrowed to one of the issues it covers — the config behind one
+    /// queued fix.
+    ///
+    /// Same depth and same action toggles, because they are what the operator chose;
+    /// only the issue is added. The scope is deliberately KEPT rather than collapsed
+    /// to `.specific`: it is what still says this issue was swept rather than named,
+    /// and so that the run re-checks the state the sweep selected on before working
+    /// an issue whose turn came hours later.
+    public func forIssue(_ number: Int) -> IssueConfig {
+        var out = self
+        out.specificIssue = String(number)
+        return out
     }
 
     public func buildPrompt() -> String {
         let issues = try? CoreAssets.issues()
         let scope = issues?.scope ?? [:]
-        let enumerate = issues?.enumerate ?? [:]
         let blocks = issues?.blocks ?? [:]
         let (owner, repo) = CoreAssets.repoCoordinates()
 
@@ -162,18 +158,17 @@ public struct IssueConfig: Codable, Equatable {
 
         var out: [String] = []
 
-        // 1. What is in front of the agent: one issue, or a scope it has to enumerate.
-        if isSingleIssue {
-            out.append(fill(scope["single"] ?? ""))
-        } else {
-            out.append(fill((scope["multi"] ?? "")
-                .replacingOccurrences(of: "{scope}", with: scopeText(scope))))
-            out.append(fill(enumerateText(enumerate)))
-            // 2. …narrowed to what nobody has claimed.
+        // 1. The one issue in front of the agent.
+        out.append(fill(scope["single"] ?? ""))
+
+        // 2. What a swept issue has to be re-checked for, its turn having come long
+        //    after the sweep chose it: closed since, and claimed since.
+        if !isSingleIssue {
+            if let b = blocks["swept"] { out.append(fill(b)) }
             if unassignedOnly, let b = blocks["unassigned"] { out.append(fill(b)) }
         }
 
-        // 3. Which of those are this run's business at all — bugs, or features too.
+        // 3. Whether it is this run's business at all — a bug, or a feature too.
         if includeFeatures {
             if let b = blocks["includeFeatures"] { out.append(fill(b)) }
         } else if let b = blocks["bugsOnly"] {

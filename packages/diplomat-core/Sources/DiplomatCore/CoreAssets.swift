@@ -75,11 +75,6 @@ public enum CoreAssets {
         public let defaultDepth: String
         public let depths: [DepthEntry]
         public let scope: [String: String]
-        /// How the prompt tells the agent to LIST the issues in scope. Its own map
-        /// rather than another `blocks` entry because which one applies is decided by
-        /// the scope (an author-association scope cannot use `gh issue list`), not by
-        /// a toggle. See `_enumerateComment`.
-        public let enumerate: [String: String]
         public let blocks: [String: String]
     }
 

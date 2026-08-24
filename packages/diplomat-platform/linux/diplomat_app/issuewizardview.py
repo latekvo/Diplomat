@@ -2,8 +2,9 @@
 
 The Linux analogue of IssueWizard.swift. Collects the same choices — which of the
 repo's open issues to work, how hard to prove each one, and what the run may do
-about it — and builds the prompt from the shared assets/issues.json. Dispatching it
-is :class:`~diplomat_app.wizardbase.SpawnWizard`'s job. Persistent widget (state
+about it — and builds the prompt from the shared assets/issues.json. One named issue
+opens a session; a scope queues one such session per issue it covers. Both are
+:class:`~diplomat_app.wizardbase.SpawnWizard`'s job. Persistent widget (state
 survives data refreshes).
 """
 
@@ -29,6 +30,12 @@ _TINT = "#00C7BE"  # mint, matching the macOS Fix-issues card
 
 
 class IssueWizardView(SpawnWizard):
+    # A scope queues one fix per issue (SpawnWizard._queue_sweep).
+    _sweep_item = "issue"
+    _sweep_plural = "issues"
+    _sweep_unit = "fix"
+    _sweep_units = "fixes"
+
     def __init__(self, store: Store) -> None:
         super().__init__(store, kind="issues", tint=_TINT)
 
@@ -65,9 +72,9 @@ class IssueWizardView(SpawnWizard):
         root.addWidget(self.issue_warning)
 
         root.addWidget(widgets.wizard_blurb(
-            "Reproduces each issue, fixes it, and re-runs the same reproduction to "
-            "prove the fix lands. Anything it can't reproduce is reported, never "
-            "guessed at."
+            "One agent per issue: it reproduces that issue, fixes it, and re-runs the "
+            "same reproduction to prove the fix lands. Anything it can't reproduce is "
+            "reported, never guessed at."
         ))
 
         # Depth
@@ -184,30 +191,27 @@ class IssueWizardView(SpawnWizard):
 
         self.unassigned_only.setVisible(cfg.can_filter_unassigned)
 
+        # Only a named issue is a session this row could place: a scope opens none,
+        # it queues one fix per issue for this machine's own cap to start.
+        self.mesh_row.set_applicable(is_specific)
+
         self._restyle_spawn()
 
-    def _label(self) -> str:
-        """Names the scope and the depth, so the sessions list says which issues this
-        run is working and how hard it is proving them."""
-        cfg = self._config()
-        if cfg.target == Target.SPECIFIC:
-            n = cfg.issue_ref.number
-            scope = f"#{n}" if n is not None else "issue"
-        elif cfg.target == Target.SOMEONE:
-            scope = f"@{cfg.username.strip() or 'user'}"
-        elif cfg.target == Target.MINE:
-            scope = "mine"
-        elif cfg.target == Target.CONTRIBUTORS:
-            scope = "contributors"
-        elif cfg.target == Target.MEMBERS:
-            scope = "members"
-        else:
-            scope = "all open"
-        return f"Issues · {scope} · {issues.depth_by_id(cfg.depth)['title']}"
+    def _sweeps(self) -> bool:
+        """One named issue is one agent, and the base class dispatches it. A scope is
+        not: it becomes one queued fix per issue (``Store.request_issue_sweep``) so the
+        task cap decides how many run at once, rather than one agent being handed every
+        open issue in the repo at the same time."""
+        return not self._config().is_single_issue
 
-    def _author_login(self) -> str | None:
-        """Whose issues this run touches, when it names one person — the pipeline's ban
-        dimension. Nobody in particular for every other scope."""
-        if self._config().target != Target.SOMEONE:
-            return None
-        return self.username.text().strip() or None
+    def _label(self) -> str:
+        """Names the issue and the depth, so the sessions list says which issue this
+        run is working and how hard it is proving it.
+
+        One shape, because one named issue is the only thing this wizard spawns: a
+        scope is queued an issue at a time and each of those rows is labelled by its
+        own :class:`~diplomat_runtime.autofix.RequestedWork`."""
+        cfg = self._config()
+        n = cfg.issue_ref.number
+        scope = f"#{n}" if n is not None else "issue"
+        return f"Issues · {scope} · {issues.depth_by_id(cfg.depth)['title']}"
