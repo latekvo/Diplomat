@@ -10,11 +10,10 @@ import Foundation
 ///
 /// * **OpenCode / Hermes** are pinned to a model in `~/.diplomat/config.json` (Settings,
 ///   beside the runner), and the spawn passes exactly that to the CLI. Blank means the
-///   runner uses the model its own picker remembers — a choice Diplomat deliberately
-///   does not second-guess, but one it can still *name* where the runner writes that
-///   choice down: Hermes keeps it in `~/.hermes/config.yaml`, and a spawn passed no
-///   `-m` starts on exactly that. OpenCode's equivalent is not read (see
-///   `foreignRunnerModel`), so an unpinned OpenCode still names nothing.
+///   runner picks for itself, out of settings each one writes down and this reads back:
+///   Hermes' `~/.hermes/config.yaml` names the model a session passed no `-m` starts
+///   on, and OpenCode resolves one the way `openCodeModel` mirrors — the `model` its
+///   config names, else the head of its picker's recent list.
 /// * **Claude Code** takes no model from Diplomat at all: it is started through the
 ///   user's own `claude` alias, and picks its model from its own settings, a `--model`
 ///   in that alias, or an in-session `/model`. The only source that accounts for all
@@ -37,12 +36,14 @@ public enum AgentModel {
     /// The model named in the tag for a spawn started here, or "" when nothing on this
     /// machine says which one that is.
     public static func detected() -> String {
-        detect(configFile: configURL(), claudeHome: claudeHomeURL(), hermesConfig: hermesConfigURL())
+        detect(configFile: configURL(), claudeHome: claudeHomeURL(), hermesConfig: hermesConfigURL(),
+               openCodeConfig: openCodeConfigURL(), openCodeState: openCodeStateURL())
     }
 
     /// `detected()` against explicit locations, so the smoke test can drive the whole
     /// lookup over a fixture instead of over the developer's own machine.
-    public static func detect(configFile: URL, claudeHome: URL, hermesConfig: URL) -> String {
+    public static func detect(configFile: URL, claudeHome: URL, hermesConfig: URL,
+                              openCodeConfig: URL, openCodeState: URL) -> String {
         let cfg = readJSONObject(configFile)
         // Same two keys as `AppConfig` (macOS) and the runtime's `appconfig.py` write.
         let runner = AgentRunner.from(cfg["agentRunner"] as? String ?? "")
@@ -51,7 +52,9 @@ public enum AgentModel {
         // model flag), so a pin left over from OpenCode must not be claimed here.
         if runner == .claude { return displayName(claudeCodeModel(home: claudeHome)) }
         guard pinned.isEmpty else { return displayName(pinned) }
-        return displayName(foreignRunnerModel(runner, hermesConfig: hermesConfig))
+        return displayName(foreignRunnerModel(runner, hermesConfig: hermesConfig,
+                                              openCodeConfig: openCodeConfig,
+                                              openCodeState: openCodeState))
     }
 
     /// The tag block with `{model}` filled in: `, Opus 5` when a model is known and
@@ -211,13 +214,13 @@ public enum AgentModel {
 
     // MARK: - Asking a foreign runner what it runs
 
-    /// What an unpinned OpenCode / Hermes spawn starts on, read from the runner's own
-    /// picker state.
-    ///
-    /// Only Hermes is asked: OpenCode's selection lives in its own store, whose layout
-    /// this does not read — and a guess at it would put a model in the tag that never
-    /// ran, which is worse than the empty tag it replaces.
-    private static func foreignRunnerModel(_ runner: AgentRunner, hermesConfig: URL) -> String {
+    /// What an unpinned OpenCode / Hermes spawn starts on, read from the settings each
+    /// runner picks its own model out of.
+    private static func foreignRunnerModel(_ runner: AgentRunner, hermesConfig: URL,
+                                           openCodeConfig: URL, openCodeState: URL) -> String {
+        if runner == .opencode {
+            return openCodeModel(configDir: openCodeConfig, stateDir: openCodeState)
+        }
         guard runner == .hermes,
               let text = try? String(contentsOf: hermesConfig, encoding: .utf8)
         else { return "" }
@@ -274,7 +277,113 @@ public enum AgentModel {
         return s.isEmpty ? nil : s
     }
 
-    // MARK: - The three files it reads
+    // MARK: - Asking OpenCode what it runs
+
+    /// OpenCode's global config files, in the order it merges them — later wins.
+    private static let openCodeConfigFiles = ["config.json", "opencode.json", "opencode.jsonc"]
+
+    /// What an OpenCode spawn carrying no `-m` starts on, resolved the way OpenCode's
+    /// own `Provider.defaultModel` does (read out of the 1.4.3 binary): the `model` its
+    /// config names, else the head of the recent list its model picker persists to
+    /// `<state>/model.json` — which is both the model the next TUI restores and the one
+    /// the last turn actually ran on.
+    ///
+    /// Narrower than OpenCode's own answer in two places, each costing the tag its model
+    /// rather than handing it a wrong one. A `model` set by a config file *inside the
+    /// repo* is not read: the spawn's directory is the front-ends' to resolve
+    /// (`RepoPaths.agentRepo`, `review.repo_path`), and deriving it here would be a third
+    /// copy of that lookup. And OpenCode walks past a recent entry whose provider it can
+    /// no longer reach, which takes a provider list this does not build.
+    private static func openCodeModel(configDir: URL, stateDir: URL) -> String {
+        for name in openCodeConfigFiles.reversed() {
+            if let text = try? String(contentsOf: configDir.appendingPathComponent(name),
+                                      encoding: .utf8),
+               let model = configuredModel(inOpenCodeConfig: text) { return model }
+        }
+        guard let text = try? String(contentsOf: stateDir.appendingPathComponent("model.json"),
+                                     encoding: .utf8) else { return "" }
+        return recentModel(inOpenCodeState: text) ?? ""
+    }
+
+    /// The `model` one OpenCode config file names, or nil when it names none.
+    ///
+    /// Every OpenCode config is JSONC whatever its extension — `opencode.json` and
+    /// `config.json` go through the same parser `opencode.jsonc` does — so a comment is
+    /// valid in all three and `JSONSerialization` takes none of them. Hence the strip.
+    ///
+    /// A value written as an OpenCode `{env:…}` / `{file:…}` reference is left
+    /// unresolved, and `displayName` rejects it for the punctuation: the tag loses its
+    /// model, which is the wanted outcome — the alternative is naming the reference.
+    public static func configuredModel(inOpenCodeConfig text: String) -> String? {
+        guard let data = strippedJSONC(text).data(using: .utf8),
+              let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let raw = obj["model"] as? String
+        else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespaces)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// The head of OpenCode's recent-model list, spelled `provider/model` the way its
+    /// config names one, or nil for a list that holds no model.
+    ///
+    /// An entry missing its `modelID` is walked past rather than read as a model with an
+    /// empty name, so a half-written head does not blank a tag the entry behind it can
+    /// still fill.
+    public static func recentModel(inOpenCodeState text: String) -> String? {
+        guard let data = text.data(using: .utf8),
+              let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let recent = obj["recent"] as? [[String: Any]]
+        else { return nil }
+        for entry in recent {
+            let provider = (entry["providerID"] as? String ?? "").trimmingCharacters(in: .whitespaces)
+            let model = (entry["modelID"] as? String ?? "").trimmingCharacters(in: .whitespaces)
+            guard !model.isEmpty else { continue }
+            return provider.isEmpty ? model : "\(provider)/\(model)"
+        }
+        return nil
+    }
+
+    /// JSONC as the JSON `JSONSerialization` will take: comments dropped, and only
+    /// comments — the trailing comma OpenCode's parser is configured to allow is one
+    /// `JSONSerialization` already accepts on both platforms this builds for (measured
+    /// against Foundation on macOS 15.5 and on swift:6.0 Linux), so dropping it here
+    /// would be code no fixture could hold to account.
+    ///
+    /// Inside a string literal none of that punctuation is punctuation, which is what
+    /// the `inString` arm is for: one provider `baseURL` is enough to cut a config in
+    /// half at its `//` and lose the model the whole file was opened for.
+    private static func strippedJSONC(_ text: String) -> String {
+        let c = Array(text)
+        var out = ""
+        var i = 0
+        var inString = false
+        while i < c.count {
+            let ch = c[i]
+            if inString {
+                out.append(ch)
+                if ch == "\\", i + 1 < c.count { out.append(c[i + 1]); i += 2; continue }
+                if ch == "\"" { inString = false }
+                i += 1
+                continue
+            }
+            if ch == "/", i + 1 < c.count, c[i + 1] == "/" {
+                while i < c.count, c[i] != "\n" { i += 1 }
+                continue
+            }
+            if ch == "/", i + 1 < c.count, c[i + 1] == "*" {
+                i += 2
+                while i + 1 < c.count, !(c[i] == "*" && c[i + 1] == "/") { i += 1 }
+                i = min(i + 2, c.count)
+                continue
+            }
+            if ch == "\"" { inString = true }
+            out.append(ch)
+            i += 1
+        }
+        return out
+    }
+
+    // MARK: - The state it reads
 
     /// The cross-process settings file both front-ends write — `~/.diplomat/config.json`,
     /// relocatable with `DIPLOMAT_CONFIG` exactly as `AppConfig` and `appconfig.py` do.
@@ -284,31 +393,59 @@ public enum AgentModel {
     /// second implementation of the same lookup, which is the drift the whole
     /// single-sourced prompt builder exists to prevent.
     private static func configURL() -> URL {
-        if let env = ProcessInfo.processInfo.environment["DIPLOMAT_CONFIG"], !env.isEmpty {
-            return URL(fileURLWithPath: (env as NSString).expandingTildeInPath)
-        }
-        return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".diplomat/config.json")
+        envPath("DIPLOMAT_CONFIG") ?? homePath(".diplomat/config.json")
     }
 
     /// Claude Code's own state directory, under the same `DIPLOMAT_CLAUDE_DIR` override
     /// the transcript-based token scans on both platforms already honour.
     private static func claudeHomeURL() -> URL {
-        if let env = ProcessInfo.processInfo.environment["DIPLOMAT_CLAUDE_DIR"], !env.isEmpty {
-            return URL(fileURLWithPath: (env as NSString).expandingTildeInPath)
-        }
-        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude")
+        envPath("DIPLOMAT_CLAUDE_DIR") ?? homePath(".claude")
     }
 
     /// Hermes' own config, under `DIPLOMAT_HERMES_CONFIG` — the twin of the
     /// `DIPLOMAT_HERMES_DB` override `hermesstore.py` reads its session store through,
     /// and named for a file for the same reason: one file is all either of them wants.
     private static func hermesConfigURL() -> URL {
-        if let env = ProcessInfo.processInfo.environment["DIPLOMAT_HERMES_CONFIG"], !env.isEmpty {
-            return URL(fileURLWithPath: (env as NSString).expandingTildeInPath)
+        envPath("DIPLOMAT_HERMES_CONFIG") ?? homePath(".hermes/config.yaml")
+    }
+
+    /// OpenCode's own config and state directories, under `DIPLOMAT_OPENCODE_CONFIG_DIR`
+    /// and `DIPLOMAT_OPENCODE_STATE_DIR` — named for directories the way
+    /// `DIPLOMAT_CLAUDE_DIR` is, and two of them because OpenCode keeps its config and
+    /// its state under different XDG roots.
+    ///
+    /// Unset, they resolve the way OpenCode's own `Global.Path` does, `XDG_*` included:
+    /// the spawn is a terminal window inheriting this environment, so an operator who
+    /// moves those roots moves the files the run will actually be started from.
+    private static func openCodeConfigURL() -> URL {
+        envPath("DIPLOMAT_OPENCODE_CONFIG_DIR")
+            ?? xdgPath("XDG_CONFIG_HOME", under: ".config").appendingPathComponent("opencode")
+    }
+
+    private static func openCodeStateURL() -> URL {
+        envPath("DIPLOMAT_OPENCODE_STATE_DIR")
+            ?? xdgPath("XDG_STATE_HOME", under: ".local/state").appendingPathComponent("opencode")
+    }
+
+    /// A path named by `key` in the environment, `~` expanded; nil when unset or empty.
+    private static func envPath(_ key: String) -> URL? {
+        guard let env = ProcessInfo.processInfo.environment[key], !env.isEmpty else { return nil }
+        return URL(fileURLWithPath: (env as NSString).expandingTildeInPath)
+    }
+
+    private static func homePath(_ relative: String) -> URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(relative)
+    }
+
+    /// One XDG base directory, resolved as OpenCode resolves it: the variable's value
+    /// verbatim when it is set, else the spec's default under home. Deliberately without
+    /// the tilde expansion `envPath` does — OpenCode applies none, and a path this
+    /// reads differently is a directory the run would not be started from.
+    private static func xdgPath(_ key: String, under fallback: String) -> URL {
+        if let env = ProcessInfo.processInfo.environment[key], !env.isEmpty {
+            return URL(fileURLWithPath: env)
         }
-        return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".hermes/config.yaml")
+        return homePath(fallback)
     }
 
     /// One JSON object off disk, or `[:]` for anything that isn't one — an absent,

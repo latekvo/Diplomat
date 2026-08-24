@@ -3,10 +3,10 @@
 Which model a spawn will run on is worked out by ``AgentModel`` in the shared Swift
 core, so these drive it the way the applet does — through the real ``diplomat-core``
 binary, over a fenced ``$DIPLOMAT_CLAUDE_DIR`` / ``$DIPLOMAT_CONFIG`` /
-``$DIPLOMAT_HERMES_CONFIG`` (conftest points all three at this test's tmp dir). That is
-the whole Linux path: nothing here re-implements the lookup, it asserts the one
-implementation is reached and honours the same override hooks the Python side
-documents.
+``$DIPLOMAT_HERMES_CONFIG`` / ``$DIPLOMAT_OPENCODE_*`` (conftest points them all at this
+test's tmp dir). That is the whole Linux path: nothing here re-implements the lookup, it
+asserts the one implementation is reached and honours the same override hooks the Python
+side documents.
 
 The stakes are what makes this worth a file: the tag goes out on public comments and
 reviews, so a wrong answer attributes a review to a model that never ran it.
@@ -95,10 +95,49 @@ def test_the_tag_names_the_model_a_foreign_runner_is_pinned_to():
     assert tag_prefix("Kimi K3") in review_prompt()
 
 
-def test_an_unpinned_opencode_claims_no_model():
-    """Blank means OpenCode uses the model its own picker remembers, and Diplomat does
-    not read where OpenCode writes that down — guessing would attribute a review to a
-    model nobody selected."""
+def opencode_state(body: str) -> None:
+    """OpenCode's ``model.json`` in the fenced state directory (conftest's
+    ``isolated_opencode_state`` points ``DIPLOMAT_OPENCODE_STATE_DIR`` into this test's tmp
+    dir) — the recent list its model picker persists and restores."""
+    path = Path(os.environ["DIPLOMAT_OPENCODE_STATE_DIR"]) / "model.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body, encoding="utf-8")
+
+
+def opencode_config(name: str, body: str) -> None:
+    """One of OpenCode's global config files, in the fenced config directory."""
+    path = Path(os.environ["DIPLOMAT_OPENCODE_CONFIG_DIR"]) / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body, encoding="utf-8")
+
+
+def test_an_unpinned_opencode_is_named_by_its_own_picker():
+    """Blank means OpenCode picks for itself, and where it picks from is on disk: the
+    head of the recent list is the model its TUI restores, so that is the model the
+    review will be written by.
+
+    The Claude Code transcript beside it names a different model on purpose — it is what
+    an OpenCode run read out of the wrong runner's state would be tagged with."""
+    appconfig.set_value(appconfig.AGENT_RUNNER, runner.OPENCODE)
+    claude_transcript("claude-opus-5")
+    opencode_state('{"recent": [{"providerID": "ollama-cloud", "modelID": "glm-5.2"}]}')
+    assert tag_prefix("GLM 5.2") in review_prompt()
+    assert "[Diplomat, GLM 5.2]: <your text>" in review_prompt()
+
+
+def test_an_unpinned_opencode_is_named_by_its_config_over_its_picker():
+    """OpenCode reads a configured ``model`` before its recent list, so a run started
+    with no ``-m`` is on that one whatever was used last. Naming the recent one instead
+    would attribute the review to a model the config had already overridden."""
+    appconfig.set_value(appconfig.AGENT_RUNNER, runner.OPENCODE)
+    opencode_state('{"recent": [{"providerID": "anthropic", "modelID": "claude-opus-5"}]}')
+    opencode_config("opencode.jsonc", '{\n  // pinned\n  "model": "openai/gpt-5.2",\n}\n')
+    assert tag_prefix("GPT 5.2") in review_prompt()
+
+
+def test_a_machine_with_no_opencode_settings_tags_as_it_always_has():
+    """OpenCode need not have been run for it to be the selected runner, and a machine
+    where it has written nothing down is the "say nothing" case the tag has always had."""
     appconfig.set_value(appconfig.AGENT_RUNNER, runner.OPENCODE)
     claude_transcript("claude-opus-5")
     assert PLAIN in review_prompt()
@@ -133,7 +172,7 @@ def test_a_pin_beats_what_hermes_would_have_picked():
 
 def test_a_machine_with_no_hermes_config_tags_as_it_always_has():
     """Hermes need not be installed for it to be the selected runner, and an absent or
-    unreadable config is the same answer as an unpinned OpenCode: say nothing."""
+    unreadable config is the "say nothing" case the tag has always had."""
     appconfig.set_value(appconfig.AGENT_RUNNER, runner.HERMES)
     assert PLAIN in review_prompt()
 

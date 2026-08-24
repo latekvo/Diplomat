@@ -22,8 +22,8 @@ func check(_ condition: Bool, _ message: @autoclosure () -> String = "",
 
 // Every prompt built below names the model this machine's agents run on in its
 // attribution tag (`AgentModel`), which would otherwise bake whatever the developer
-// happens to be running into the golden files they regenerate. Point both of the
-// documented overrides at paths inside a scratch directory that is never created, so
+// happens to be running into the golden files they regenerate. Point every one of the
+// documented overrides at a path inside a scratch directory that is never created, so
 // the prompts assembled here are the model-free ones the goldens hold — on a CI runner
 // and on a working machine alike. The Linux suite's conftest fences the same names.
 let fence = FileManager.default.temporaryDirectory
@@ -31,6 +31,8 @@ let fence = FileManager.default.temporaryDirectory
 setenv("DIPLOMAT_CONFIG", fence.appendingPathComponent("config.json").path, 1)
 setenv("DIPLOMAT_CLAUDE_DIR", fence.appendingPathComponent("claude").path, 1)
 setenv("DIPLOMAT_HERMES_CONFIG", fence.appendingPathComponent("hermes.yaml").path, 1)
+setenv("DIPLOMAT_OPENCODE_CONFIG_DIR", fence.appendingPathComponent("opencode-config").path, 1)
+setenv("DIPLOMAT_OPENCODE_STATE_DIR", fence.appendingPathComponent("opencode-state").path, 1)
 
 section("core assets")
 let cfg = try CoreAssets.config()
@@ -528,8 +530,22 @@ let sessions = claudeHome.appendingPathComponent("projects/-repo", isDirectory: 
 try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
 let configFile = modelFixture.appendingPathComponent("config.json")
 let hermesConfig = modelFixture.appendingPathComponent("hermes.yaml")
+let openCodeConfig = modelFixture.appendingPathComponent("opencode-config", isDirectory: true)
+let openCodeState = modelFixture.appendingPathComponent("opencode-state", isDirectory: true)
+try FileManager.default.createDirectory(at: openCodeConfig, withIntermediateDirectories: true)
+try FileManager.default.createDirectory(at: openCodeState, withIntermediateDirectories: true)
 func writeConfig(_ json: String) throws { try json.write(to: configFile, atomically: true, encoding: .utf8) }
 func writeHermes(_ yaml: String) throws { try yaml.write(to: hermesConfig, atomically: true, encoding: .utf8) }
+func writeOpenCode(_ name: String, _ json: String) throws {
+    try json.write(to: openCodeConfig.appendingPathComponent(name), atomically: true, encoding: .utf8)
+}
+func writeOpenCodeState(_ json: String) throws {
+    try json.write(to: openCodeState.appendingPathComponent("model.json"), atomically: true, encoding: .utf8)
+}
+func detectModel() -> String {
+    AgentModel.detect(configFile: configFile, claudeHome: claudeHome, hermesConfig: hermesConfig,
+                      openCodeConfig: openCodeConfig, openCodeState: openCodeState)
+}
 func writeTranscript(_ name: String, _ body: String, ageSecs: Double) throws {
     let url = sessions.appendingPathComponent(name)
     try body.write(to: url, atomically: true, encoding: .utf8)
@@ -537,36 +553,36 @@ func writeTranscript(_ name: String, _ body: String, ageSecs: Double) throws {
         [.modificationDate: Date().addingTimeInterval(-ageSecs)], ofItemAtPath: url.path)
 }
 
-check(AgentModel.detect(configFile: configFile, claudeHome: claudeHome, hermesConfig: hermesConfig) == "",
+check(detectModel() == "",
       "a machine that has said nothing must add nothing to the tag")
 
 // Claude Code is told no model by Diplomat, so what it last actually ran is the answer.
 try writeTranscript("old.jsonl", "{\"message\":{\"model\":\"claude-sonnet-5\"}}\n", ageSecs: 600)
 try writeTranscript("new.jsonl", "{\"message\":{\"model\":\"claude-opus-5\"}}\n", ageSecs: 10)
-check(AgentModel.detect(configFile: configFile, claudeHome: claudeHome, hermesConfig: hermesConfig) == "Opus 5",
+check(detectModel() == "Opus 5",
       "the newest transcript is the one that says what `claude` starts on now")
 // A synthetic last turn must fall through to the real one before it, not blank the tag.
 try writeTranscript("new.jsonl",
                     "{\"message\":{\"model\":\"claude-opus-5\"}}\n{\"message\":{\"model\":\"<synthetic>\"}}\n",
                     ageSecs: 10)
-check(AgentModel.detect(configFile: configFile, claudeHome: claudeHome, hermesConfig: hermesConfig) == "Opus 5")
+check(detectModel() == "Opus 5")
 // A session touched before its first turn was written holds no model at all, and the
 // newest file is regularly that one — stopping at it would drop the model whenever a
 // run had just been started.
 try writeTranscript("newest.jsonl", "{\"type\":\"user\",\"message\":{\"role\":\"user\"}}\n", ageSecs: 1)
-check(AgentModel.detect(configFile: configFile, claudeHome: claudeHome, hermesConfig: hermesConfig) == "Opus 5",
+check(detectModel() == "Opus 5",
       "the newest transcript with a model in it, not merely the newest transcript")
 // A model pinned in Settings belongs to the OTHER runners: `AgentRunner.claude`'s
 // command carries no model flag, so claiming it here would attribute a model that
 // never ran.
 try writeConfig("{\"agentModel\": \"openrouter/moonshotai/kimi-k3\"}")
-check(AgentModel.detect(configFile: configFile, claudeHome: claudeHome, hermesConfig: hermesConfig) == "Opus 5",
+check(detectModel() == "Opus 5",
       "a pin left over from OpenCode must not be attributed to a Claude Code run")
 try writeConfig("{\"agentRunner\": \"opencode\", \"agentModel\": \"openrouter/moonshotai/kimi-k3\"}")
-check(AgentModel.detect(configFile: configFile, claudeHome: claudeHome, hermesConfig: hermesConfig) == "Kimi K3",
+check(detectModel() == "Kimi K3",
       "for the runners Diplomat does pin, the pin is what the spawn passes them")
 try writeConfig("{\"agentRunner\": \"hermes\"}")
-check(AgentModel.detect(configFile: configFile, claudeHome: claudeHome, hermesConfig: hermesConfig) == "",
+check(detectModel() == "",
       "an unpinned runner whose own choice cannot be read still names nothing")
 // No pin means Hermes starts on the default its own picker wrote down, and a spawn
 // carries no `-m` to override it — so that file is what the run is on.
@@ -579,15 +595,65 @@ providers:
     default_model: silver:e4b
 
 """)
-check(AgentModel.detect(configFile: configFile, claudeHome: claudeHome, hermesConfig: hermesConfig) == "Kimi K3",
+check(detectModel() == "Kimi K3",
       "an unpinned Hermes run is named by the model Hermes' own config starts it on")
 try writeConfig("{\"agentRunner\": \"hermes\", \"agentModel\": \"qwen/qwen-3.8-max\"}")
-check(AgentModel.detect(configFile: configFile, claudeHome: claudeHome, hermesConfig: hermesConfig) == "Qwen 3.8 Max",
+check(detectModel() == "Qwen 3.8 Max",
       "a pin is passed as `-m` and beats the picker's default, so it is what the tag says")
-// OpenCode shares the config key but not the file, so the same blank pin names nothing.
+// An unpinned OpenCode is named out of OpenCode's own settings, in the order OpenCode
+// itself resolves them. Hermes' config is still on disk throughout: it is Hermes' alone,
+// and naming an OpenCode run out of it would attribute a model that never ran.
 try writeConfig("{\"agentRunner\": \"opencode\"}")
-check(AgentModel.detect(configFile: configFile, claudeHome: claudeHome, hermesConfig: hermesConfig) == "",
-      "Hermes' config is Hermes' — an unpinned OpenCode must not be named out of it")
+check(detectModel() == "", "a machine where OpenCode has written nothing down names nothing")
+try writeOpenCodeState("""
+{"recent": [{"providerID": "anthropic", "modelID": "claude-opus-5"},
+            {"providerID": "ollama-cloud", "modelID": "glm-5.2"}],
+ "favorite": [], "variant": {}}
+""")
+check(detectModel() == "Opus 5",
+      "the head of the recent list is the model OpenCode's picker restores")
+// A head written without its model must fall through to the entry behind it rather than
+// blanking a tag that entry can still fill.
+try writeOpenCodeState("""
+{"recent": [{"providerID": "anthropic"}, {"providerID": "ollama-cloud", "modelID": "glm-5.2"}]}
+""")
+check(detectModel() == "GLM 5.2", "an entry that names no model is walked past, not read as one")
+// A `model` in the config beats the picker's history — OpenCode reads it first, so a run
+// started with no `-m` is on that one whatever was used last.
+try writeOpenCode("config.json", "{\"model\": \"openai/gpt-5.2\"}")
+check(detectModel() == "GPT 5.2", "the config's model is what OpenCode resolves before its recent list")
+// …and the three global files merge in OpenCode's own order, later winning.
+try writeOpenCode("opencode.json", "{\"model\": \"qwen/qwen-3.8-max\"}")
+check(detectModel() == "Qwen 3.8 Max", "opencode.json is merged over config.json")
+try writeOpenCode("opencode.jsonc", """
+{
+  // The picker's own note, which the parser must drop rather than choke on.
+  "model": "openrouter/moonshotai/kimi-k3",
+  "small_model": "openai/gpt-5.4-mini",
+}
+""")
+check(detectModel() == "Kimi K3",
+      "opencode.jsonc is merged last, comments and a trailing comma and all")
+// A pin in Settings is passed as `-m`, which OpenCode reads before any of its own
+// settings — so it is what the run is on, and what the tag says.
+try writeConfig("{\"agentRunner\": \"opencode\", \"agentModel\": \"google/gemini-3.1-pro-preview\"}")
+check(detectModel() == "Gemini 3.1 Pro Preview", "`-m` beats everything OpenCode would have picked")
+try FileManager.default.removeItem(at: openCodeConfig)
+try FileManager.default.createDirectory(at: openCodeConfig, withIntermediateDirectories: true)
+try writeOpenCodeState("{}")
+// Every OpenCode config file is JSONC whatever its extension, and `model` is read off the
+// top level alone — an agent's own model is that agent's, not the one a fresh spawn starts on.
+check(AgentModel.configuredModel(inOpenCodeConfig: "{\"agent\": {\"build\": {\"model\": \"a/b\"}}}") == nil,
+      "a `model` nested under another key is not the model the config names")
+check(AgentModel.configuredModel(inOpenCodeConfig: "{\"model\": \"a/b\" /* pinned */, \"username\": \"me\"}")
+        == "a/b",
+      "a block comment is punctuation the parser drops")
+check(AgentModel.configuredModel(inOpenCodeConfig: "{\"model\": \"a/b\", \"username\": \"http://x//y\"}")
+        == "a/b",
+      "a `//` inside a string is part of the string, not the start of a comment")
+check(AgentModel.configuredModel(inOpenCodeConfig: "{\"model\": \"{env:OPENCODE_MODEL}\"}")
+        .map(AgentModel.displayName) == "",
+      "an unresolved config reference must cost the tag its model, not be named as one")
 // `providers:` entries carry a `default_model:` each, and a nested mapping can carry a
 // `default:` of its own; neither is the model Hermes starts on.
 check(AgentModel.defaultModel(inHermesConfig: "model:\n  fallbacks:\n    default: nested\n  default: real\n")
@@ -606,7 +672,7 @@ try FileManager.default.removeItem(at: sessions)
 try writeConfig("{}")
 try "{\"model\": \"opus[1m]\"}".write(to: claudeHome.appendingPathComponent("settings.json"),
                                      atomically: true, encoding: .utf8)
-check(AgentModel.detect(configFile: configFile, claudeHome: claudeHome, hermesConfig: hermesConfig) == "Opus",
+check(detectModel() == "Opus",
       "a machine that has not run `claude` yet still knows what it is set to")
 // Claude Code writes compact JSON; a reader that only accepts that spelling is one
 // pretty-printer away from silently finding nothing and dropping the model.

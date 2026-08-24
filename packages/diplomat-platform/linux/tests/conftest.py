@@ -228,6 +228,22 @@ def isolated_hermes_state(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def isolated_opencode_state(tmp_path, monkeypatch):
+    """Fence the OpenCode reader off from the developer's own OpenCode settings.
+
+    ``AgentModel`` names an unpinned OpenCode run by the model OpenCode itself would
+    start on, which it reads out of two directories the operator's own OpenCode owns:
+    the ``model`` in their config, and the recent list their model picker keeps in
+    ``model.json``. Unfenced, the attribution-tag tests would assert against whichever
+    model the developer last used in OpenCode — green on their machine and red on the
+    next one, or the reverse. Both point at directories that do not exist, which is the
+    "nothing to read" case the reader already degrades to; a test that wants one writes
+    it there."""
+    monkeypatch.setenv("DIPLOMAT_OPENCODE_CONFIG_DIR", str(tmp_path / "opencode" / "config"))
+    monkeypatch.setenv("DIPLOMAT_OPENCODE_STATE_DIR", str(tmp_path / "opencode" / "state"))
+
+
+@pytest.fixture(autouse=True)
 def isolated_app_config(tmp_path, monkeypatch):
     """Redirect the shared ``~/.diplomat/config.json`` to a per-test temp file, for the
     same reason as the two fixtures above: it holds the repo root every spawn `cd`s
