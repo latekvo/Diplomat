@@ -510,9 +510,11 @@ public enum AgentState {
     ///
     /// 1. the PR landed — a terminal outcome that outranks whatever the process is doing;
     /// 2. the completion sentinel exists — the agent returned an exit code;
-    /// 3. the agent itself reported its turn over — the one rung that answers the
-    ///    question actually being asked, since a run that finished is alive at its
-    ///    prompt and every rung below this one sees a live process either way;
+    /// 3. the agent's CLI reported its turn over — a report rather than an inference,
+    ///    and above what follows because a run that finished is alive at its prompt and
+    ///    every rung below this one sees a live process either way. A runner that keeps
+    ///    a session instead of running hooks says the same thing further down, once its
+    ///    pid is known alive;
     /// 4. a mesh-peer run is judged by the executor's claim, because no probe on this
     ///    machine can see a process on another one;
     /// 5. a local run is judged by its pid, and its screen only classifies a pid that is
