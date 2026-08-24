@@ -1,17 +1,15 @@
 """The workers the applet starts, and the wait that lets them land.
 
-Every worker in ``diplomat_app`` ends by touching Qt — a signal emit, or a
-callback that does. One still running when the process tears its widgets down
-raises there, and an unhandled exception on a thread prints a traceback into a
-``sys.stderr`` the finaliser is already closing: the interpreter cannot take the
-buffer lock the worker holds, and the process aborts (SIGABRT) instead of
-exiting. It reads in a log as "the applet crashed", which is the failure this
-costs the most to misread.
+They signal back into Qt when they finish, so one still running while the process
+tears its widgets down raises there — and an unhandled exception on a thread is a
+traceback written to a ``sys.stderr`` the finaliser may already be closing. The
+interpreter cannot take the buffer lock the worker holds and the process aborts
+(SIGABRT) rather than exits, which in a log reads as "the applet crashed".
 
-So the property under test is structural — every worker is born somewhere that
-keeps it joinable, and the wait actually joins — plus one end-to-end run that
-puts a worker in mid-``stderr``-write at the moment the process ends and asserts
-it still exits cleanly.
+The race itself has no deterministic form that a bounded wait could still win, so
+what is pinned here is structural — every worker is born where something can wait
+for it, and the wait joins — plus one run that puts a worker mid-``stderr``-write
+at the moment the process ends and asserts a clean exit anyway.
 """
 
 from __future__ import annotations
