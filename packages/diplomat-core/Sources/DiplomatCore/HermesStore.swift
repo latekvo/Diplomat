@@ -11,6 +11,8 @@ import Foundation
 ///   assistant message whose `finish_reason` is in `turnOver` ended the turn; anything
 ///   else means one is still in flight. Positive evidence either way, rather than an
 ///   inference from whether Hermes' status bar happened to read `ready` when we looked.
+///   The end of a turn is the end of the run only once nothing is owed to it, which is
+///   what the `delegating` half of `stateOf` carries.
 /// * **what did it cost?** — the session row carries running totals, so a finished run is
 ///   priced by the agent that ran it. Cumulative, unlike OpenCode's per-message figures,
 ///   so it is simply read.
@@ -34,7 +36,13 @@ public enum HermesStore {
     public static let turnOver: Set<String> = ["stop", "end_turn", "length",
                                                "content_filter", "error"]
 
-    /// What the session's last message says: mid-turn, or back at the prompt.
+    /// The `delivery_state` of a background subagent's result the agent has not been
+    /// handed yet — Hermes' own spelling, matched verbatim by the query that reads it.
+    /// It covers both halves of "outstanding": a child still working, and a finished
+    /// child whose result is queued to wake the agent.
+    public static let undelivered = "pending"
+
+    /// What the session says: mid-turn, or back at its prompt with nothing owed to it.
     ///
     /// `nil` when there is no message to read — a session created but not yet written to.
     /// That is not "idle": a run whose turn has not started has not finished either, and
@@ -43,10 +51,20 @@ public enum HermesStore {
     /// Anything that is not a finished assistant message is a turn in flight, which is the
     /// right reading of all three ways that happens: the agent is mid tool call, a tool
     /// result is waiting to be answered, or the query has not been picked up yet.
-    public static func stateOf(role: String?, finishReason: String?) -> AgentState.SessionState? {
+    ///
+    /// `delegating` is whether a background subagent still owes this session a result:
+    /// `delegate_task(background=true)` hands the turn back and reports later as a fresh
+    /// user turn, so a turn that ended with one outstanding is not a run that ended. A
+    /// `nil` there is a store that could not say, and it takes the answer with it —
+    /// ending a run on a delegation nobody could read is the mistake this half exists to
+    /// stop. See the Python twin `hermesstore.delegating` for what fills it.
+    public static func stateOf(role: String?, finishReason: String?,
+                               delegating: Bool?) -> AgentState.SessionState? {
         guard let role else { return nil }
         let over = role == "assistant" && turnOver.contains(finishReason ?? "")
-        return AgentState.SessionState(busy: !over)
+        if !over { return AgentState.SessionState(busy: true) }
+        guard let delegating else { return nil }
+        return AgentState.SessionState(busy: delegating)
     }
 
     /// Is this the session our prompt was submitted to, judged by its opening message?

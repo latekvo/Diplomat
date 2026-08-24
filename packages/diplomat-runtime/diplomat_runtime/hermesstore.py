@@ -10,6 +10,9 @@ as it goes, mid-turn, and that is enough for both things the applet needs:
   ``tool_calls``, a tool result, or a user message that has not been answered yet all
   mean a turn is still in flight. Positive evidence either way, rather than an
   inference from whether Hermes' status bar happened to read ``ready`` when we looked.
+  The end of a turn is only the end of the run once nothing is owed to it: a
+  background delegation outlives the turn that dispatched it, so ``async_delegations``
+  is read beside the message (:func:`delegating`).
 * **what did it cost?** — the session row carries running token counts, so a finished
   run is priced by the agent that ran it. This one is cumulative, unlike OpenCode's
   per-message figures, so it is simply read.
@@ -46,6 +49,13 @@ BUSY_TIMEOUT = 2.0
 #: ``tool_calls`` is deliberately absent: the agent asked for a tool and is waiting on
 #: it, which is the middle of a turn and not the end of one.
 TURN_OVER = frozenset({"stop", "end_turn", "length", "content_filter", "error"})
+
+#: The ``delivery_state`` of a background subagent's result the agent has not been
+#: handed yet. Hermes stamps it at dispatch and again at completion, and clears it to
+#: ``delivered`` once the result has been folded into the conversation (``dropped`` for
+#: a batch it gave up on). So this one value covers both halves of "outstanding": a
+#: child still working, and a finished child whose result is queued to wake the agent.
+UNDELIVERED = "pending"
 
 
 def db_path() -> Path:
@@ -123,16 +133,54 @@ def is_ours(session_id: str, prompt: str) -> bool:
 # MARK: - What it says
 
 
+def delegating(session_id: str) -> bool | None:
+    """Does a background subagent still owe this session a result?
+
+    ``delegate_task(background=true)`` runs its children on a daemon executor and hands
+    the turn straight back, so the parent ends that turn and waits at its prompt with
+    the fan-out still spending; the result arrives later as a fresh user turn. Left to
+    the last message alone, that prompt is the end of the run, and the applet retires an
+    agent whose swarm is still working on its PR — the same trap the Claude Code hook's
+    ``background_tasks`` guard exists for (:mod:`completion`).
+
+    ``None`` when the store could not say, which is not "nothing outstanding": a
+    delegation this could not read must not be what ends a run. A Hermes with no
+    ``async_delegations`` table answers ``False`` instead, because a build without
+    background delegation owes nothing — which is why the table is asked for rather
+    than a failed query being read as an absent feature.
+
+    Both columns are matched because Hermes fills them from one value by two routes:
+    ``parent_session_id`` is the agent's own session id and is nullable, and
+    ``origin_session`` is the routing key, which is that same id for the ``--tui``
+    spawn this applet makes.
+    """
+    present = _query(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        ("async_delegations",))
+    if present is None:
+        return None
+    if not present:
+        return False
+    rows = _query(
+        "SELECT 1 FROM async_delegations WHERE delivery_state = ? "
+        "AND (parent_session_id = ? OR origin_session = ?) LIMIT 1",
+        (UNDELIVERED, session_id, session_id))
+    return None if rows is None else bool(rows)
+
+
 def state_of(session_id: str) -> SessionState | None:
-    """What the session's last message says: mid-turn, or back at the prompt.
+    """What the session says: mid-turn, or back at its prompt with nothing owed to it.
 
     ``None`` when there is no message to read — a session created but not yet written
     to. That is not "idle": a run whose turn has not started has not finished either,
-    and saying so would retire an agent seconds after it launched.
+    and saying so would retire an agent seconds after it launched. A store that cannot
+    answer for the delegations reads ``None`` for the same reason.
 
     Anything that is not a finished assistant message is a turn in flight, which is
     the right reading of all three ways that happens: the agent is mid tool call, a
     tool result is waiting to be answered, or the query has not been picked up yet.
+    A turn the agent did end is the end of the run only once :func:`delegating` says
+    nothing is still coming back to it.
     """
     rows = _query(
         "SELECT role, finish_reason FROM messages WHERE session_id = ? "
@@ -140,7 +188,10 @@ def state_of(session_id: str) -> SessionState | None:
     if not rows:
         return None
     role, finish_reason = rows[0]
-    return SessionState(busy=not (role == "assistant" and finish_reason in TURN_OVER))
+    if not (role == "assistant" and finish_reason in TURN_OVER):
+        return SessionState(busy=True)
+    owed = delegating(session_id)
+    return None if owed is None else SessionState(busy=owed)
 
 
 def session_tokens(session_id: str) -> float | None:

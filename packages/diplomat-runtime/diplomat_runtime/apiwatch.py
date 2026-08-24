@@ -19,8 +19,8 @@ kind of permanent failure the quota banners below are excluded for. So a foreign
 agent that hits a transient error is not nudged. It is not stranded either, and
 its own session is what says so rather than this: an errored turn is stamped
 completed like any other (OpenCode) or carries a terminal ``finish_reason``
-(Hermes), so it reads as idle, gives its bay back, and the monitor that owed the
-work dispatches it again on a later tick.
+(Hermes), so it reads as idle once nothing is still owed to it, gives its bay
+back, and the monitor that owed the work dispatches it again on a later tick.
 
 Kept deterministic and side-effect-free so it's unit-testable in isolation: the
 terminal reads/writes live in :mod:`tmuxwatch`, and the scan/dispatch/persistence

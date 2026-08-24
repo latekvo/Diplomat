@@ -766,15 +766,28 @@ section("hermes sessions")
 // The same two questions, answered from Hermes' own SQLite store instead of a port —
 // and the same cases `tests/test_hermes_store.py` pins. A turn is over only when the
 // agent itself says so.
-check(HermesStore.stateOf(role: nil, finishReason: nil) == nil,
+check(HermesStore.stateOf(role: nil, finishReason: nil, delegating: false) == nil,
       "a session not yet written to is not idle; it has not started")
-check(HermesStore.stateOf(role: "assistant", finishReason: "stop")?.busy == false)
-check(HermesStore.stateOf(role: "assistant", finishReason: "tool_calls")?.busy == true,
+check(HermesStore.stateOf(role: "assistant", finishReason: "stop",
+                          delegating: false)?.busy == false)
+check(HermesStore.stateOf(role: "assistant", finishReason: "tool_calls",
+                          delegating: false)?.busy == true,
       "asking for a tool is the middle of a turn, not the end of one")
-check(HermesStore.stateOf(role: "tool", finishReason: nil)?.busy == true,
+check(HermesStore.stateOf(role: "tool", finishReason: nil, delegating: false)?.busy == true,
       "a tool result nobody has answered yet is a turn still in flight")
-check(HermesStore.stateOf(role: "user", finishReason: "stop")?.busy == true,
+check(HermesStore.stateOf(role: "user", finishReason: "stop", delegating: false)?.busy == true,
       "a query not picked up yet must not read as a finished turn")
+// A turn the agent ended with a background subagent still to report is not a run that
+// ended: `delegate_task(background=true)` hands the turn back and answers later as a
+// fresh user turn.
+check(HermesStore.stateOf(role: "assistant", finishReason: "stop",
+                          delegating: true)?.busy == true,
+      "a fan-out that has not reported yet holds its run open")
+check(HermesStore.stateOf(role: "assistant", finishReason: "stop", delegating: nil) == nil,
+      "a store that could not say what is outstanding must not end a run")
+check(HermesStore.stateOf(role: "assistant", finishReason: "tool_calls",
+                          delegating: nil)?.busy == true,
+      "a turn in flight is answered without asking about delegations at all")
 // `-q` stores the query verbatim, so the match is equality — the same exactness
 // `--prompt` buys under OpenCode, and the only thing separating two agents in one
 // checkout.

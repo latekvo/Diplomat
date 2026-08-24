@@ -976,8 +976,12 @@ and ⏻) swaps the panel to a settings screen:
     password but its own TUI sends none), so it is reachable by other users of the
     same machine and nothing else. Hermes serves no such port, and needs none: it
     writes every session and message to `~/.hermes/state.db` as it goes, which
-    Diplomat opens read-only, and a turn is over exactly when the agent stamps its own
-    message `finish_reason` (`tool_calls` is mid-turn, `stop` is the end). Either way
+    Diplomat opens read-only. A turn is over there when the agent stamps its own
+    message `finish_reason` (`tool_calls` is mid-turn, `stop` is the end) *and*
+    nothing is still coming back to it - `delegate_task(background=true)` runs its
+    subagents on an executor of their own and hands the turn straight back, reporting
+    later as a fresh user turn, so a fan-out whose result is still undelivered holds
+    the run open exactly as an unfinished message does. Either way
     the session is matched to the run by the staged prompt, which both runners store
     verbatim as the session's opening message - the only exact key, since both keep
     one session store for the whole machine. A run that cannot be reached - the port
