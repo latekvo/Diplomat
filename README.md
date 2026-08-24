@@ -770,22 +770,23 @@ nudge opens no window at all - it types into a session that already exists.)
   request within 1h of a dispatch is treated as churn and suppressed. Banned
   authors are never auto-reviewed.
 - **Claude API-error watcher** - Claude Code runs only; the banners it matches are
-  Claude Code's, and an OpenCode or Hermes agent that errors reads as idle instead,
-  frees its task-cap slot, and is dispatched again by whichever monitor owed the
-  work. Every ~20s it reads each agent session's visible
-  tail (macOS: any iTerm/Terminal session; Linux: **tmux panes only** - there's no
-  portable way to read or type into an arbitrary Linux emulator, so the Linux
-  spawner opens each agent in a tmux session of its own and an agent started
-  outside one is not watched). An agent stalled on a transient API error
-  (overloads, connection failures, a turn cut short mid-stream, bare `429`
-  rate-limits, status-page errors) gets a continue nudge typed into that exact
-  session, with a per-session 2m → 3h backoff so a persistently broken one isn't
-  hammered. A single erroring scan never nudges: the tail must come back
-  **byte-identical on the next scan** before it counts as a stall, so the real
-  floor is ~2 scans. An **out-of-quota** banner is never nudged - it's not
-  transient - and it suppresses any API error sharing the same tail. An org
-  **budget cap** (`403 … budget limit exceeded`) counts as one of those, whatever
-  its status code: it holds until the window rolls over or an admin raises it.
+  Claude Code's, and an OpenCode or Hermes agent that errors reads as a finished
+  turn instead - its runner says so, so the run is retired, its bay and its PR are
+  freed, and whichever monitor owed the work dispatches it again. Every ~20s it
+  reads each agent session's visible tail (macOS: any iTerm/Terminal session;
+  Linux: **tmux panes only** - there's no portable way to read or type into an
+  arbitrary Linux emulator, so the Linux spawner opens each agent in a tmux session
+  of its own and an agent started outside one is not watched). An agent stalled on
+  a transient API error (overloads, connection failures, a turn cut short
+  mid-stream, bare `429` rate-limits, status-page errors) gets a continue nudge
+  typed into that exact session, with a per-session 2m → 3h backoff so a
+  persistently broken one isn't hammered. A single erroring scan never nudges:
+  the tail must come back **byte-identical on the next scan** before it counts
+  as a stall, so the real floor is ~2 scans. An **out-of-quota** banner is never
+  nudged - it's not transient - and it suppresses any API error sharing the same
+  tail. An org **budget cap** (`403 … budget limit exceeded`) counts as one of
+  those, whatever its status code: it holds until the window rolls over or an
+  admin raises it.
 
 Poll failures (gh / auth / network) surface in Settings and the activity log
 rather than silently freezing stale counts. Rate-limit note: the GitHub GraphQL
@@ -908,15 +909,22 @@ and ⏻) swaps the panel to a settings screen:
     `--port <n>` on a port Diplomat reserved for it, so it serves its own session on
     loopback while it works; the port is unauthenticated (OpenCode's server takes a
     password but its own TUI sends none), so it is reachable by other users of the
-    same machine and nothing else. Hermes serves no such port, and needs none: it
+    same machine and nothing else. A turn is over there when two things agree - the
+    server is running no turn in that session, and the last message it wrote carries
+    a completion stamp. It takes both: OpenCode writes one message per *step* of a
+    turn and stamps each as it completes, so the stamp alone calls a turn over in the
+    gaps between steps, while the status alone calls a session idle in the moment
+    before its first turn starts. Hermes serves no such port, and needs none: it
     writes every session and message to `~/.hermes/state.db` as it goes, which
     Diplomat opens read-only, and a turn is over exactly when the agent stamps its own
     message `finish_reason` (`tool_calls` is mid-turn, `stop` is the end). Either way
     the session is matched to the run by the staged prompt, which both runners store
     verbatim as the session's opening message - the only exact key, since both keep
-    one session store for the whole machine. A run that cannot be reached - the port
-    was taken, the server has not come up, the store is not there - falls back to the
-    status bar exactly as a Claude Code run does.
+    one session store for the whole machine. And either way the answer *ends* the
+    run, exactly as a Claude Code hook's does: it is the same fact from the same kind
+    of source, the agent's own word rather than a screen read for signs of one. A run
+    that cannot be reached - the port was taken, the server has not come up, the store
+    is not there - falls back to the status bar exactly as a Claude Code run does.
   - **How a run is priced.** OpenCode reports a turn's cost per message, so a
     finished run is summed from `opencode export <session>` when it ends, not from the
     poll. Hermes keeps running totals on the session row, so it is simply read. Both
