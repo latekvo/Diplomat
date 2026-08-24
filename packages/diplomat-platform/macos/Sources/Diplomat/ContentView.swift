@@ -325,7 +325,7 @@ struct ContentView: View {
     @FocusState private var searchFocused: Bool
 
     /// The action cards in the grid that open a wizard instead of selecting a tool.
-    private enum ActionPanel: Hashable { case review, conflicts, audit }
+    private enum ActionPanel: Hashable { case review, issues, conflicts, audit }
 
     var body: some View {
         VStack(spacing: 8) {
@@ -574,6 +574,7 @@ struct ContentView: View {
         case .reply:      return .purple
         case .conflicts:  return .cyan
         case .audit:      return .indigo
+        case .issues:     return .mint
         case .apiRestart: return .orange
         case .quota:      return .yellow
         case .merge:      return .green
@@ -770,6 +771,8 @@ struct ContentView: View {
                 }
             }
             actionCard("checklist", "Review PRs", "spawn a review agent", .pink, .review)
+            actionCard("wrench.and.screwdriver.fill", "Fix issues", "reproduce & fix open issues",
+                       .mint, .issues)
             actionCard("arrow.triangle.merge", "Resolve conflicts", "merge main, fix conflicts",
                        .cyan, .conflicts)
             actionCard("ladybug.fill", "Full E2E test", "swarm-test the whole repo",
@@ -829,6 +832,7 @@ struct ContentView: View {
     private var wizardPane: some View {
         switch activeAction {
         case .review:    ReviewWizardView(scrolls: false)
+        case .issues:    IssueWizardView(scrolls: false)
         case .conflicts: ConflictWizardView(scrolls: false)
         case .audit:     AuditWizardView(scrolls: false)
         case .none:      EmptyView()
@@ -958,6 +962,7 @@ private enum DiplomatUI {
         switch kind {
         case "conflicts": return "arrow.triangle.merge"
         case "audit":     return "ladybug.fill"
+        case "issues":    return "wrench.and.screwdriver.fill"
         default:          return "checklist"
         }
     }
@@ -966,6 +971,7 @@ private enum DiplomatUI {
         switch kind {
         case "conflicts": return .cyan
         case "audit":     return .indigo
+        case "issues":    return .mint
         default:          return .pink
         }
     }

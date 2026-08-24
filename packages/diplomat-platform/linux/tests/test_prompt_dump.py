@@ -1,8 +1,8 @@
 """`DIPLOMAT_PRINT_PROMPT` - the headless dump behind every wizard's prompt.
 
 It is the only way to see what an agent would actually be handed without spawning
-one, so it has to cover all three wizards and keep the section markers a reader
-(and a diff against the macOS twin) relies on. The three dumps share one body,
+one, so it has to cover all four wizards and keep the section markers a reader
+(and a diff against the macOS twin) relies on. The four dumps share one body,
 `selftest._print_prompt_dump`; these pin the routing into it and what it emits.
 
 Skipped without DIPLOMAT_CORE_BIN: building a prompt shells out to the
@@ -34,16 +34,22 @@ pytestmark = pytest.mark.skipif(
     ("audit-issues", "== AuditConfig: full-repo E2E test · fixIssues=True openPRs=False =="),
     ("audit-prs", "== AuditConfig: full-repo E2E test · fixIssues=False openPRs=True =="),
     ("audit-all", "== AuditConfig: full-repo E2E test · fixIssues=True openPRs=True =="),
+    ("issues", "== IssueConfig: all open issues · depth="),
+    ("issues-mine", "== IssueConfig: my issues · depth="),
+    ("issues-user", "== IssueConfig: someone else's issues · depth="),
+    ("issues-contributors", "== IssueConfig: contributors' issues · depth="),
+    ("issues-members", "== IssueConfig: org members' issues · depth="),
+    ("issues-single", "== IssueConfig: single issue #421 · depth="),
 ])
 def test_each_mode_dumps_the_config_it_names(capsys, mode, header):
-    """All three wizards are reachable, and each toggle in the mode string reaches
+    """All four wizards are reachable, and each toggle in the mode string reaches
     the config - a mode that silently fell through to the Review dump would still
     print a prompt, just the wrong one."""
     assert selftest.run_print_prompt(mode) == 0
     assert capsys.readouterr().out.startswith(header)
 
 
-@pytest.mark.parametrize("mode", ["mine", "conflicts", "audit"])
+@pytest.mark.parametrize("mode", ["mine", "conflicts", "audit", "issues"])
 def test_every_dump_shows_the_prompt_and_the_command(capsys, mode):
     """Both sections, in order, with a non-empty prompt between them. The shell
     command is the half that proves the prompt would actually be handed to an

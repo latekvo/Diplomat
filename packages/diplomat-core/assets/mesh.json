@@ -78,6 +78,14 @@
       "placement": { "tokenAware": true, "spread": [] }
     },
     {
+      "id": "issues",
+      "title": "Fix issues",
+      "emoji": "🛠️",
+      "linuxGlyph": "⊙",
+      "colorHex": "#00C7BE",
+      "placement": { "tokenAware": true, "spread": [] }
+    },
+    {
       "id": "conflicts",
       "title": "Resolve conflicts",
       "emoji": "🔀",

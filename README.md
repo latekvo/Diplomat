@@ -9,14 +9,15 @@
 - Auto resolve all conflicts on your PRs
 - Enforces one device per agent
 - Manually review all PRs of the given person
+- Reproduce and fix the open issues nobody has claimed
 - `npx szpont` (or `pip install szpont`) installs and starts it — [Install](#install)
 
 ## Details
 
 A tiny **menu-bar / system-tray applet** - a personal dashboard of Argent-repo
 triage tools. Click the wrench, get a dense two-column panel with six utilities,
-three spawn-an-agent actions (Review PRs, Resolve conflicts, Full E2E test) and
-a set of [autonomous monitors](#autonomous-monitors) that spawn
+four spawn-an-agent actions (Review PRs, Fix issues, Resolve conflicts, Full E2E
+test) and a set of [autonomous monitors](#autonomous-monitors) that spawn
 those agents without being asked. Hacky on purpose, optimized for *me*, not the
 public.
 
@@ -412,9 +413,65 @@ banned authors get a flashing warning instead).
 > DIPLOMAT_PRINT_PROMPT=mine swift run Diplomat   # also: =user, =single; append -final for the verdict pass
 > ```
 
+## Actions - Fix issues
+
+The second card, **Fix issues**, points a detached agent at the repo's open
+*issues* rather than its PRs (prompt model in `assets/issues.json`). It
+reproduces each one, fixes it, and re-runs the same reproduction to prove the fix
+lands; anything it cannot reproduce is reported as that, never guessed at.
+
+Which issues is a six-way scope selector - wider than the three-way whose-PRs
+axis the other wizards share, because an issue's **author association** is a scope
+in its own right:
+
+- **All open issues** — the whole open list.
+- **Mine** — issues opened by the resolved handle (see Settings).
+- **Someone else's** — a handle field lights up; that user's issues.
+- **Contributors** — everything filed from *outside* the org (author association
+  anything but `MEMBER` / `OWNER`, per `assets/filters.json`).
+- **Org members** — everything filed from *inside* it.
+- **Specific issue** — a number/URL field lights up; do just that one. It takes an
+  issue link, not a PR link: the two differ by one path segment, and a PR pasted
+  here would otherwise be worked as the issue of the same number.
+
+The association scopes change how the agent is told to enumerate, because
+`gh issue list --json` has no `authorAssociation` field: those two go to the REST
+issues endpoint (which also returns pull requests, so the prompt says to skip
+every node carrying a `pull_request` key), while every other scope takes the
+simpler `gh issue list`.
+
+- **Fix depth** — a slider from a quick read-only pass → reproduce & fix →
+  swarm the review moves over your own fix → drive the bug in the real app,
+  swarming until one clean pass.
+- **Only unassigned issues** — *(on by default; hidden for one hand-named issue)*
+  an issue that already has an assignee is somebody else's to work, so it is
+  skipped outright. On a sweep this also narrows the enumeration itself
+  (`--search "no:assignee"`).
+- **Assign each issue to me while working it** — *(on by default)* claim the issue
+  on GitHub *before* the work starts, and hand it back if the run abandons it.
+  This is what keeps two agents off one issue: an issue run is deliberately not
+  PR-scoped, so the dispatch pipeline's PR dedup does not apply, and the assignee
+  is a claim every machine can see rather than only this one.
+- **Open a draft PR per fix** — *(on by default)* one focused draft PR per fix,
+  closing its issue (`Fixes #n`), carrying a regression test that the unfixed code
+  would fail, and checked against the repo's open PRs by real `gh pr diff` content
+  so it never files a duplicate. Off = nothing reaches the remote.
+- **Comment the outcome on the issue** — *(on by default)* one comment per issue
+  actually worked: what was reproduced, the cause, and where the fix is.
+- **✨ Also take on feature requests** — *(highlighted, off by default)* by default
+  only real bug reports are worked and every feature request, question and
+  wishlist item is skipped. Ticked, enhancements are in scope too, but held to a
+  different standard: only where the issue says clearly enough what is wanted, and
+  anything vague or amounting to a redesign is left for you to decide.
+
+> Preview the assembled prompt without launching anything:
+> ```bash
+> DIPLOMAT_PRINT_PROMPT=issues swift run Diplomat   # also: =issues-mine, =issues-user, =issues-contributors, =issues-members, =issues-single; append -features
+> ```
+
 ## Actions - Resolve conflicts
 
-A second grid card, **Resolve conflicts**, spawns a detached agent the same way
+A third grid card, **Resolve conflicts**, spawns a detached agent the same way
 (fresh terminal, staged prompt + done sentinel, in the same repo root from
 Settings) but for keeping
 branches merge-able. A single three-way selector picks *whose* PRs to sweep:
@@ -435,7 +492,7 @@ appears only for the target it applies to.
 
 ## Actions - Full E2E test
 
-The third card spawns a whole-repo audit: a swarm end-to-end tests every module,
+The fourth card spawns a whole-repo audit: a swarm end-to-end tests every module,
 flow, build and test in the target repo, hard-reproducing every HIGH / MEDIUM
 finding before reporting it (prompt model in `assets/audit.json`). Every confirmed
 finding is **classified HIGH / MEDIUM / LOW** by real impact, and that label rides
@@ -478,9 +535,9 @@ On top of that shared view, every node runs the same **deterministic duty
 assignment** — no leader, no election, no split-brain: identical inputs give
 identical answers everywhere, so the moment a machine dies (heartbeat timeout)
 or runs out of tokens, every survivor has *already* agreed where each duty
-moved. Duties are the three spawn actions, each with a configurable placement:
+moved. Duties are the four spawn actions, each with a configurable placement:
 
-- **Review PRs / Resolve conflicts** — default *surplus-first*: route to the node
+- **Review PRs / Fix issues / Resolve conflicts** — default *surplus-first*: route to the node
   with the most spare quota relative to its reset (with no quota signal this falls
   back to *weakest-first*, keeping the strong machines free for interactive work).
 - **Full E2E test** — same surplus-first default, plus a platform **spread**:
@@ -495,7 +552,7 @@ Dispatching routes a staged prompt to the chosen node over the mesh; the
 receiving machine opens its own terminal running its own agent runner exactly like a local
 SPAWN AGENT (dispatches are the `📤/📥 mesh` rows in the activity feed). If the
 first target declines — gone, or out of tokens — the dispatch fails over to the
-next candidate by rank. While the mesh is live, the three wizards grow a
+next candidate by rank. While the mesh is live, the four wizards grow a
 **⬡ Run on mesh** row (checked by default, with a preview of where the duty
 currently routes): SPAWN AGENT then hands the job to the node instead of always
 opening a local terminal — on both front-ends. The Review wizard offers the row for
@@ -1127,7 +1184,8 @@ DIPLOMAT_DUMP=1 swift run Diplomat            # real fetch+filter pipeline, prin
 DIPLOMAT_LOOKUP=337 swift run Diplomat        # reverse-lookup one number through the real Store
 DIPLOMAT_PRINT_PROMPT=mine swift run Diplomat # assemble + print a prompt: mine|user|single (append
                                                      #   -final for the verdict pass), conflicts[-user|-single],
-                                                     #   audit[-issues|-prs|-all]
+                                                     #   issues[-mine|-user|-contributors|-members|-single]
+                                                     #   (append -features), audit[-issues|-prs|-all]
 DIPLOMAT_SETTINGS_DUMP=1 ./Diplomat.app/Contents/MacOS/Diplomat  # resolved persisted settings
 DIPLOMAT_QUEUE_TEST=1 swift run Diplomat      # self-test: the queue behind the automatic-task cap
                                                      #   (capture, dedup, arrangement, what a paused
@@ -1278,7 +1336,7 @@ packages/
                                    the pending series
       DiplomatCoreSmoke/       ← Linux-buildable core self-test (filters + prompts + golden files + live dump)
       DiplomatCoreCLI/         ← thin `build-prompt` CLI over the core (ships as the `diplomat-core` binary),
-                                 so the Linux front-end shells out for Review/Conflicts/Audit prompts
+                                 so the Linux front-end shells out for Review/Issues/Conflicts/Audit prompts
                                  instead of reimplementing them; `tool-data` and `telemetry` expose the two
                                  engines the Linux side reimplements, so the parity tests can diff them
 
@@ -1300,6 +1358,7 @@ packages/
         ContentView.swift          two-column panel (left: monitoring lists, right: grid + wizards/results)
         Components.swift           shared UI atoms (cards, chips, badges)
         ReviewWizard.swift         Review-PRs wizard + AgentSpawner (staged prompt file, done sentinel, iTerm/Terminal)
+        IssueWizard.swift          the Fix-issues wizard
         ConflictWizard.swift / AuditWizard.swift   the Resolve-conflicts and Full-E2E-test wizards
         SettingsView.swift         settings (username, repo root, monitors + auto-approve + task cap + rate-limit budget, watcher, tools, terminal, allocator)
         Store.swift                ObservableObject; settings + the monitor/watcher loops; logic in ToolData

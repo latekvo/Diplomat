@@ -319,6 +319,7 @@ enum Dump {
         let m = mode.lowercased()
         if m.hasPrefix("conflict") { printConflictPrompt(mode: m); return }
         if m.hasPrefix("audit") { printAuditPrompt(mode: m); return }
+        if m.hasPrefix("issues") { printIssuePrompt(mode: m); return }
         let isUser = m.hasPrefix("user")
         let isSingle = m.hasPrefix("single")
         let cfg = ReviewConfig(
@@ -364,6 +365,40 @@ enum Dump {
             openPRs: mode.contains("prs") || mode.contains("all"))
         let flags = "fixIssues=\(cfg.fixIssues) openPRs=\(cfg.openPRs)"
         printPromptDump(header: "AuditConfig: full-repo E2E test · \(flags)",
+                        prompt: cfg.buildPrompt())
+    }
+
+    /// Same as `printPrompt`, but for the Fix-issues wizard. `mode` selects the
+    /// scope: "issues-single" (one issue), "issues-user" (someone else's),
+    /// "issues-contributors", "issues-members", "issues-mine", anything else
+    /// (e.g. "issues") = every open issue. A "-features" suffix ticks the escalation.
+    static func printIssuePrompt(mode: String) {
+        let target: IssueTarget = {
+            if mode.contains("single") || mode.contains("specific") { return .specific }
+            if mode.contains("contributors") { return .contributors }
+            if mode.contains("members") { return .members }
+            if mode.contains("user") { return .someone }
+            if mode.contains("mine") { return .mine }
+            return .all
+        }()
+        let cfg = IssueConfig(
+            target: target,
+            username: target == .someone ? "someuser" : "",
+            me: "latekvo",
+            specificIssue: target == .specific ? "421" : "",
+            includeFeatures: mode.contains("features"))
+        let label: String = {
+            switch target {
+            case .all:          return "all open issues"
+            case .mine:         return "my issues"
+            case .someone:      return "someone else's issues"
+            case .contributors: return "contributors' issues"
+            case .members:      return "org members' issues"
+            case .specific:     return "single issue #421"
+            }
+        }()
+        let depth = IssueCatalog.depth(id: cfg.depth).title
+        printPromptDump(header: "IssueConfig: \(label) · depth=\(depth)",
                         prompt: cfg.buildPrompt())
     }
 

@@ -62,9 +62,10 @@ G_UPDATE = "↓"      # pulling the latest applet
 
 # --- Action-card glyphs (grid actions) -------------------------------------
 G_REVIEW = "☑"   # Review-PRs action
+G_ISSUES = "⊙"   # Fix-issues action (GitHub's own open-issue mark)
 G_CONFLICT = "⋔" # Resolve-conflicts action
 G_AUDIT = "◉"    # Full-E2E action
-G_FINAL = "✦"    # final-pass escalation
+G_FINAL = "✦"    # escalation toggles (final pass, feature requests)
 
 # --- Device-platform glyphs ------------------------------------------------
 G_PHONE = "▯"    # handset device

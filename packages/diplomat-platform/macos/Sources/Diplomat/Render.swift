@@ -272,6 +272,22 @@ enum Render {
                                seedSpecificPR: specific ? pr : nil,
                                seedUsername: other ? "octocat" : nil)
                 .frame(height: 560)
+        case let s where s.hasPrefix("issues"):
+            // Suffix-driven states, matching the other wizards: "-other" (someone
+            // else's → handle field), "-specific" (issue field), "-wrong" (repo-
+            // mismatch warning), "-features" (the escalation ticked).
+            let wrong = s.contains("wrong")
+            let specific = wrong || s.contains("specific") || s.contains("single")
+            let other = s.contains("other")
+            let issue = wrong ? "https://github.com/some-org/other-repo/issues/42"
+                              : "https://github.com/software-mansion/argent/issues/455"
+            let _ = seedMesh(store)
+            IssueWizardView(scrolls: false,
+                            seedTarget: specific ? .specific : (other ? .someone : .all),
+                            seedSpecificIssue: specific ? issue : nil,
+                            seedUsername: other ? "octocat" : nil,
+                            seedIncludeFeatures: s.contains("features"))
+                .frame(height: 560)
         case let s where s.hasPrefix("audit"):
             // Suffix-driven toggles: "-issues" pre-checks fix-open-issues, "-prs"
             // pre-checks open-PRs, "-all" both — so each state can be eyeballed.

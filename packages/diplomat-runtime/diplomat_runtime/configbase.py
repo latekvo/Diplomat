@@ -1,17 +1,18 @@
-"""Shared config-class behaviour for the three spawn wizards.
+"""Shared config-class behaviour for the four spawn wizards.
 
-The Full-E2E-test (:mod:`audit`), Resolve-conflicts (:mod:`conflicts`) and
-Review (:mod:`review`) wizards each carry a small ``*Config`` dataclass. A few
-properties were byte-identical across them:
+The Full-E2E-test (:mod:`audit`), Fix-issues (:mod:`diplomat_app.issues`),
+Resolve-conflicts (:mod:`conflicts`) and Review (:mod:`review`) wizards each carry
+a small ``*Config`` dataclass. A few properties were byte-identical across them:
 
-* ``target_repo`` — all three target the shared core repo, and
+* ``target_repo`` — all four target the shared core repo, and
 * ``author_handle`` / ``is_single_pr`` / ``pr_ref`` — both the conflicts and
   review configs sweep a *whose-PRs* axis with an optional single-PR override.
 
 Those live here once as mix-in classes the dataclasses inherit. The per-wizard
 ``is_valid`` and ``build_prompt`` stay in their own modules — those genuinely
 differ (audit is always valid, review additionally needs a PR-state box ticked,
-each builds a different prompt payload).
+Fix-issues sweeps a wider axis of its own, each builds a different prompt
+payload).
 """
 
 from __future__ import annotations

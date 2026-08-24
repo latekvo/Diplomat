@@ -1,7 +1,7 @@
 """Bridge to the ``diplomat-core`` Swift CLI — the single source of truth for prompt
 assembly.
 
-The Review/Conflicts/Audit prompts are built by ``DiplomatCore`` (the same code
+The Review/Issues/Conflicts/Audit prompts are built by ``DiplomatCore`` (the same code
 the macOS app uses). The Linux applet shells out to the compiled ``diplomat-core``
 binary instead of re-implementing that logic in Python, so the two front-ends can
 never drift. Build the binary with ``packages/diplomat-platform/linux/install/build-core.sh``.

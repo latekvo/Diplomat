@@ -89,6 +89,12 @@ def audit() -> dict:
     return _read_json("audit.json")
 
 
+def issues() -> dict:
+    """The Fix-issues prompt model (depth ladder, scope templates, enumeration and
+    action blocks). Mirrors ``CoreAssets.Issues``; see assets/issues.json."""
+    return _read_json("issues.json")
+
+
 @functools.lru_cache(maxsize=1)
 def mesh() -> dict:
     """The shared mesh model (protocol constants, duty catalog, strategies).

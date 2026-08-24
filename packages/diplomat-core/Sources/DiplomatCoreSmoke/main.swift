@@ -157,7 +157,7 @@ print("mesh: platforms=\(mesh.platforms.map { $0.id }) tokens=\(mesh.tokens.map 
     + "strategies=\(mesh.strategies.map { $0.id }) duties=\(mesh.duties.map { $0.id })")
 // The duty catalog + placement strategies the panel edits — assert the shape the UI
 // depends on, so a mesh.json edit that drops a field fails here (like catalog.json above).
-check(mesh.duties.map { $0.id } == ["review", "conflicts", "audit"], "mesh duty ids")
+check(mesh.duties.map { $0.id } == ["review", "issues", "conflicts", "audit"], "mesh duty ids")
 check(mesh.tokens.map { $0.id } == ["ok", "low", "out"], "mesh token ids")
 check(mesh.tierBounds == (1, 5, 3), "mesh tier bounds")
 check(mesh.strategies.contains { $0.id == mesh.defaultStrategy }, "defaultStrategy is a real strategy")
@@ -170,6 +170,7 @@ check(auditPlacement.spread.map { $0.platform } == ["linux", "macos"], "audit sp
 check(auditPlacement.spread.allSatisfy { $0.count == 1 }, "audit spread counts")
 check(mesh.placement(for: "review", overrides: nil).spread.isEmpty, "review has no spread")
 check(mesh.placement(for: "review", overrides: nil).tokenAware, "review is token-aware by default")
+check(mesh.placement(for: "issues", overrides: nil).spread.isEmpty, "issues has no spread")
 // A gossiped override wins over the catalog default (mirrors config.placement_for).
 let overrideJSON = """
 {"rev":3,"updatedBy":"nodeA","duties":{"review":{"strategy":"strongest-first","tokenAware":false}}}
@@ -849,6 +850,122 @@ check(!aBase.buildPrompt().contains("SELF-REVIEW GATE"),
 let aBoth = AuditConfig(fixIssues: true, openPRs: true)
 check(aBoth.buildPrompt().contains("OPEN ISSUES") && aBoth.buildPrompt().contains("focused pull request"))
 print("audit prompt assertions passed")
+
+// ---- Fix-issues prompts ----
+section("issue prompts")
+// The goldens are regenerated from issues.json, so they re-bless whatever it says.
+// These are what actually pin the meaning: the six scopes, both enumeration paths,
+// and every block a toggle turns on — each with the negative that proves the block
+// is gated rather than always present.
+let goldenMeSeed = "testuser"
+let iAll = IssueConfig(me: goldenMeSeed)
+print("issues valid=\(iAll.isValid) depth=\(IssueCatalog.depth(id: iAll.depth).title)")
+// Every scope but the two that name a person is spawnable with no further input.
+check(iAll.isValid && IssueConfig(target: .contributors).isValid
+      && IssueConfig(target: .members).isValid, "association scopes need no handle")
+check(!IssueConfig(target: .someone).isValid, "someone else's issues needs the handle")
+// "Mine" before the viewer login resolves addresses the agent as GitHub's own @me
+// shorthand rather than refusing to spawn — the same fallback ReviewConfig makes.
+check(IssueConfig(target: .mine).isValid && IssueConfig(target: .mine).authorHandle == "me",
+      "my issues falls back to @me, like the review sweep")
+check(!IssueConfig(target: .specific).isValid, "a specific issue needs a number")
+check(IssueConfig(target: .specific, specificIssue: "421").isValid)
+// An issue URL parses; the same number as a PR URL does not (PRRef.Kind).
+check(IssueConfig(target: .specific,
+                  specificIssue: "https://github.com/\(cfg.owner)/\(cfg.repo)/issues/421")
+        .issueRef.number == 421, "an issue URL is a usable issue reference")
+check(IssueConfig(target: .specific,
+                  specificIssue: "https://github.com/\(cfg.owner)/\(cfg.repo)/pull/421")
+        .issueRef.number == nil, "a PR URL is not an issue reference")
+
+// The scope sentence, one per target — a target falling through to another would
+// still print a prompt, just the wrong set of issues.
+let iAllP = iAll.buildPrompt()
+check(iAllP.contains("go through every currently-open issue,"), "all-issues scope")
+check(IssueConfig(target: .mine, me: goldenMeSeed).buildPrompt()
+        .contains("issue I opened (@\(goldenMeSeed))"), "my-issues scope")
+check(IssueConfig(target: .someone, username: "someuser").buildPrompt()
+        .contains("opened by @someuser"), "one user's issues scope")
+let iContrib = IssueConfig(target: .contributors).buildPrompt()
+let iMembers = IssueConfig(target: .members).buildPrompt()
+check(iContrib.contains("OUTSIDE the organisation"), "contributors scope")
+check(iMembers.contains("INSIDE the organisation"), "org-members scope")
+// Both association scopes name the associations from filters.json, not a hardcoded pair.
+check(iContrib.contains("MEMBER or OWNER") && iMembers.contains("MEMBER or OWNER"),
+      "the org/outside split is filters.json's orgAssociations")
+
+// Enumeration: `gh issue list --json` has no authorAssociation field, so the two
+// association scopes must be sent to the REST endpoint — and warned about the pull
+// requests it returns alongside issues. Every other scope takes `gh issue list`.
+check(iAllP.contains("gh issue list"), "a plain scope enumerates with gh issue list")
+check(!iAllP.contains("author_association"), "a plain scope needs no association read")
+check(iContrib.contains("author_association") && iContrib.contains("pull_request"),
+      "the association path reads REST and skips the PRs it returns")
+check(!iContrib.contains("gh issue list --repo"),
+      "the association path never enumerates with gh issue list")
+
+// The unassigned filter: on by default for a sweep, and it reaches BOTH the search
+// qualifier and the hard rule. Off, neither survives.
+check(iAllP.contains("no:assignee") && iAllP.contains("NARROW THAT SET TO THE UNASSIGNED"),
+      "unassigned-only narrows the search and states the rule")
+let iAssignedToo = IssueConfig(me: goldenMeSeed, unassignedOnly: false).buildPrompt()
+check(!iAssignedToo.contains("no:assignee") && !iAssignedToo.contains("UNASSIGNED"),
+      "unassigned-only off leaves no trace of the filter")
+// A named single issue is never filtered back out by it.
+let iSingle = IssueConfig(target: .specific, specificIssue: "421").buildPrompt()
+check(iSingle.hasPrefix("Take issue #421 in"), "single-issue scope")
+check(!iSingle.contains("UNASSIGNED"), "a hand-named issue is not filtered by assignee")
+// …and the wizards do not offer the tick there either — the prompt above is the same
+// whichever way it is left, so a tick that changed nothing would be the only lie.
+check(IssueConfig().canFilterUnassigned && !IssueConfig(target: .specific).canFilterUnassigned,
+      "the unassigned tick is offered for a sweep, not for one named issue")
+
+// The claim: assigning the issue to me is what stops a second agent taking it, so it
+// has to name the command and happen BEFORE the work.
+check(iAllP.contains("--add-assignee @me") && iAllP.contains("--remove-assignee @me"),
+      "the claim is taken and handed back")
+check(!IssueConfig(me: goldenMeSeed, assignToMe: false).buildPrompt().contains("add-assignee"),
+      "no claim when the toggle is off")
+
+// Bugs only unless the escalation is ticked — and the escalation replaces it rather
+// than stacking, so the run is never told both to skip and to take feature requests.
+check(iAllP.contains("SKIP every feature request"), "bugs only by default")
+let iFeatures = IssueConfig(me: goldenMeSeed, includeFeatures: true).buildPrompt()
+check(iFeatures.contains("FEATURE REQUESTS ARE IN SCOPE TOO"), "the escalation opens them up")
+check(!iFeatures.contains("SKIP every feature request"), "and withdraws the skip rule")
+
+// The bar every depth is held to, and the depth ladder itself. `quick` is the one
+// level that runs nothing, so it must NOT claim a reproduction.
+check(iAllP.contains("DONE MEANS OBSERVABLE PROOF"), "the bar is always present")
+check(iAllP.contains("CANNOT REPRODUCE"), "an unreproducible issue is a reported result")
+check(iAllP.contains("CONCRETE REPRODUCTION"), "the default depth reproduces")
+check(IssueConfig(depth: "quick", me: goldenMeSeed).buildPrompt()
+        .contains("QUICK PASS"), "the quick level is a read-only pass")
+check(!IssueConfig(depth: "quick", me: goldenMeSeed).buildPrompt()
+        .contains("CONCRETE REPRODUCTION"), "the quick level promises no reproduction")
+check(IssueConfig(depth: "max", me: goldenMeSeed).buildPrompt()
+        .contains("DRIVE THE BUG THROUGH THE REAL ENTRY POINT"), "the max level runs the app")
+
+// Delivery: a draft PR that closes the issue, or nothing on the remote at all.
+check(iAllP.contains("DRAFT") && iAllP.contains("Fixes #<n>"), "a draft PR closes the issue")
+check(iAllP.contains("REGRESSION TEST WITH EVERY FIX"), "each fix ships a test that pins it")
+check(iAllP.contains("DUPLICATE") && iAllP.contains("gh pr diff"), "no duplicate PRs")
+let iHandsOff = IssueConfig(me: goldenMeSeed, openPRs: false, commentOnIssue: false).buildPrompt()
+check(iHandsOff.contains("opens NO pull requests"), "PRs off ⇒ nothing reaches the remote")
+check(!iHandsOff.contains("gh pr create"), "and no PR is opened")
+check(!iHandsOff.contains("No AI attribution"),
+      "commit-authoring guidance only where we might commit")
+// The attribution tag rides on posting something — a run that posts nothing wears none.
+check(iAllP.contains("Made by Diplomat"), "a posting run carries the attribution tag")
+check(!iHandsOff.contains("Made by Diplomat"), "a silent run carries none")
+check(IssueConfig(me: goldenMeSeed, openPRs: false).buildPrompt().contains("Made by Diplomat"),
+      "the issue comment alone still earns the tag")
+check(iAllP.contains("gh issue comment"), "the outcome is reported on the issue")
+check(!IssueConfig(me: goldenMeSeed, commentOnIssue: false).buildPrompt()
+        .contains("gh issue comment"), "no comment when the toggle is off")
+// Every scope ends with the report that accounts for each issue it was handed.
+check(iAllP.contains("exactly one bucket"), "the summary accounts for every issue")
+print("issue prompt assertions passed")
 
 // ---- Auto-fix monitor diff (edge-triggering) ----
 section("autofix diff")
@@ -1878,6 +1995,21 @@ let goldenModes: [(String, String)] = [
     ("audit-issues", AuditConfig(fixIssues: true).buildPrompt()),
     ("audit-prs", AuditConfig(openPRs: true).buildPrompt()),
     ("audit-all", AuditConfig(fixIssues: true, openPRs: true).buildPrompt()),
+    ("issues-all", IssueConfig(me: goldenMe).buildPrompt()),
+    ("issues-mine", IssueConfig(target: .mine, me: goldenMe).buildPrompt()),
+    ("issues-user", IssueConfig(target: .someone, username: "someuser",
+                                me: goldenMe).buildPrompt()),
+    ("issues-contributors", IssueConfig(target: .contributors, me: goldenMe).buildPrompt()),
+    ("issues-members", IssueConfig(target: .members, me: goldenMe).buildPrompt()),
+    ("issues-single", IssueConfig(target: .specific, me: goldenMe,
+                                  specificIssue: "421").buildPrompt()),
+    // Every action toggle off — the one golden that holds the complementary blocks
+    // (no-PRs instead of open-PRs, no unassigned filter, no claim, no attribution tag).
+    ("issues-hands-off", IssueConfig(me: goldenMe, unassignedOnly: false,
+                                     assignToMe: false, openPRs: false,
+                                     commentOnIssue: false).buildPrompt()),
+    ("issues-features-max", IssueConfig(depth: "max", me: goldenMe,
+                                        includeFeatures: true).buildPrompt()),
 ]
 let goldenDir = try CoreAssets.assetsDir().appendingPathComponent("golden-prompts")
 if ProcessInfo.processInfo.environment["DIPLOMAT_GOLDEN_WRITE"] == "1" {

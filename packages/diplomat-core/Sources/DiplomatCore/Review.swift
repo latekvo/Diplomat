@@ -1,13 +1,15 @@
 import Foundation
 
-/// One review-depth level, hydrated from the shared `assets/review.json`.
-public struct ReviewDepth: Identifiable {
+/// One level of a prompt's rigor ladder, hydrated from a shared asset — the review
+/// ladder in `assets/review.json`, the Fix-issues one in `assets/issues.json`.
+public struct PromptDepth: Identifiable {
     public let id: String
     public let title: String
     public let blurb: String
     public let fragment: String
     /// The "fix it on the branch" disposition for this depth, appended only when
-    /// we may actually commit. `nil` for flag-only depths / never used review-only.
+    /// we may actually commit. `nil` for flag-only depths / never used review-only,
+    /// and on ladders with no such split (the issue one, whose delivery is a toggle).
     public let onBranch: String?
 
     public init(id: String, title: String, blurb: String, fragment: String, onBranch: String? = nil) {
@@ -17,22 +19,28 @@ public struct ReviewDepth: Identifiable {
         self.fragment = fragment
         self.onBranch = onBranch
     }
+
+    /// The level `id` names, falling back to the ladder's default and then to its
+    /// first — so a depth id that no longer exists (a renamed level, a config saved
+    /// by an older build) still resolves to a real fragment instead of an empty one.
+    static func resolve(_ all: [PromptDepth], id: String, defaultID: String) -> PromptDepth {
+        if let match = all.first(where: { $0.id == id }) { return match }
+        if let def = all.first(where: { $0.id == defaultID }) { return def }
+        return all.first ?? PromptDepth(id: "", title: "", blurb: "", fragment: "")
+    }
 }
 
 /// Read-only access to the review-prompt model in `assets/review.json`.
 public enum ReviewCatalog {
-    public static func depths() -> [ReviewDepth] {
+    public static func depths() -> [PromptDepth] {
         guard let r = try? CoreAssets.review() else { return [] }
-        return r.depths.map { ReviewDepth(id: $0.id, title: $0.title, blurb: $0.blurb, fragment: $0.fragment, onBranch: $0.onBranch) }
+        return r.depths.map { PromptDepth(id: $0.id, title: $0.title, blurb: $0.blurb, fragment: $0.fragment, onBranch: $0.onBranch) }
     }
     public static func defaultDepthID() -> String {
         (try? CoreAssets.review())?.defaultDepth ?? depths().first?.id ?? ""
     }
-    public static func depth(id: String) -> ReviewDepth {
-        let all = depths()
-        if let match = all.first(where: { $0.id == id }) { return match }
-        if let def = all.first(where: { $0.id == defaultDepthID() }) { return def }
-        return all.first ?? ReviewDepth(id: "", title: "", blurb: "", fragment: "")
+    public static func depth(id: String) -> PromptDepth {
+        PromptDepth.resolve(depths(), id: id, defaultID: defaultDepthID())
     }
 }
 

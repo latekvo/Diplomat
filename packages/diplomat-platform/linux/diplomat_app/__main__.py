@@ -4,7 +4,7 @@
     DIPLOMAT_DUMP=1 python -m diplomat_app  # headless pipeline dump
     DIPLOMAT_LOOKUP=337 python -m diplomat_app
     DIPLOMAT_PRINT_PROMPT=mine python -m diplomat_app   # mine|user|single,
-                                                        # conflicts…, audit…
+                                                        # issues…, conflicts…, audit…
     DIPLOMAT_SELF_UPDATE=1 python -m diplomat_app       # headless 6AM update
     DIPLOMAT_AGENTS=1 python -m diplomat_app            # why each agent reads as it does
 """

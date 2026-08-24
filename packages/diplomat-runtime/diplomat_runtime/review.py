@@ -25,6 +25,7 @@ from enum import Enum
 
 from . import appconfig, core, runner
 from .configbase import PRSweepConfig
+from .depths import DepthLadder
 from .prtarget import PRTarget
 
 
@@ -66,28 +67,25 @@ def fetch_specific_author(owner: str, repo: str, number: int) -> str | None:
 # MARK: - Review depth
 
 
+#: The review ladder itself; the four module-level names below are what the wizard,
+#: the config and the self-test already call, kept as the ladder's public face.
+LADDER = DepthLadder(core.review)
+
+
 def depths() -> list[dict]:
-    return core.review()["depths"]
+    return LADDER.all()
 
 
 def depth_ids() -> list[str]:
-    return [d["id"] for d in depths()]
+    return LADDER.ids()
 
 
 def depth_by_id(depth_id: str) -> dict:
-    for d in depths():
-        if d["id"] == depth_id:
-            return d
-    # Fall back to the configured default, then the first level.
-    default = core.review().get("defaultDepth")
-    for d in depths():
-        if d["id"] == default:
-            return d
-    return depths()[0]
+    return LADDER.by_id(depth_id)
 
 
 def default_depth_id() -> str:
-    return core.review().get("defaultDepth", depth_ids()[0])
+    return LADDER.default_id()
 
 
 # MARK: - Review config + prompt builder

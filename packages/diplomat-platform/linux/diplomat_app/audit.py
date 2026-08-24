@@ -5,7 +5,7 @@ only the *assembly* order/conditions live here as a thin glue layer, identical t
 AuditConfig's ``buildPrompt`` in DiplomatCore. The terminal spawner is shared with
 :mod:`review` (``review.spawn`` / ``review.resolved``).
 
-Unlike Review / Resolve-conflicts there is no whose-PRs axis: the audit always
+Unlike the other three wizards there is no scope axis at all: the audit always
 targets the whole repository. Two independent toggles gate the optional scope:
 
 * ``fix_issues`` — also reproduce + fix the repo's OPEN BUG issues (never feature

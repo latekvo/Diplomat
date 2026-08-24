@@ -432,14 +432,14 @@ struct ReviewWizardView: View {
     @State private var specificAuthorLogin: String?
 
     /// The review-depth levels, loaded once from the shared core.
-    private var depths: [ReviewDepth] { ReviewCatalog.depths() }
+    private var depths: [PromptDepth] { ReviewCatalog.depths() }
     private var depthIndex: Int {
         guard !depths.isEmpty else { return 0 }
         return min(max(Int(depthValue), 0), depths.count - 1)
     }
-    private var depth: ReviewDepth {
+    private var depth: PromptDepth {
         depths.isEmpty
-            ? ReviewDepth(id: "", title: "", blurb: "", fragment: "")
+            ? PromptDepth(id: "", title: "", blurb: "", fragment: "")
             : depths[depthIndex]
     }
 
@@ -514,28 +514,10 @@ struct ReviewWizardView: View {
         }
     }
 
-    /// A flashing red warning shown while the targeted author is banned for prompt
-    /// injection — reviewing their PRs is discouraged. Flashes for as long as the ban
-    /// stands (it clears the instant they're un-banned).
     private func bannedWarning(_ login: String) -> some View {
-        TimelineView(.periodic(from: Date(), by: 0.5)) { ctx in
-            let on = Int(ctx.date.timeIntervalSince1970 * 2) % 2 == 0
-            HStack(spacing: 7) {
-                Image(systemName: "exclamationmark.octagon.fill")
-                    .font(.system(size: 13)).foregroundStyle(.white)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("@\(login) is BANNED for prompt injection")
-                        .font(.caption.bold()).foregroundStyle(.white)
-                    Text("Reviewing their PRs is strongly discouraged while the ban stands.")
-                        .font(.system(size: 10)).foregroundStyle(.white.opacity(0.92))
-                }
-                Spacer(minLength: 0)
-            }
-            .padding(9)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 8).fill(Color.red.opacity(on ? 0.95 : 0.5)))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.red, lineWidth: on ? 2.5 : 0.5))
-        }
+        WizardBanWarning(
+            login: login,
+            detail: "Reviewing their PRs is strongly discouraged while the ban stands.")
     }
 
     /// A one-line note under the single-PR field: whose PR it is once polled, so the
@@ -812,7 +794,7 @@ struct ReviewWizardView: View {
     private var reviewedAuthorLogin: String? { specificAuthorLogin }
 }
 
-/// The wizard status line for one dispatch outcome — shared by all three wizards
+/// The wizard status line for one dispatch outcome — shared by all four wizards
 /// so refusals read identically everywhere.
 ///
 /// A wizard SPAWN is a `.panel` dispatch, and none of the mesh gate, the

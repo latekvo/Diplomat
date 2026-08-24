@@ -44,19 +44,21 @@ public enum CoreAssets {
         public let trustedAssociations: [String]?
     }
 
+    /// One entry of a `depths` ladder, in whichever prompt model carries one.
+    public struct DepthEntry: Decodable {
+        public let id: String
+        public let title: String
+        public let blurb: String
+        public let fragment: String
+        // The "fix it on the branch" disposition for this depth. Only emitted
+        // when we may actually commit (our own PRs / a specific PR); absent
+        // for flag-only depths and never used for someone else's PRs.
+        public let onBranch: String?
+    }
+
     public struct Review: Decodable {
-        public struct Depth: Decodable {
-            public let id: String
-            public let title: String
-            public let blurb: String
-            public let fragment: String
-            // The "fix it on the branch" disposition for this depth. Only emitted
-            // when we may actually commit (our own PRs / a specific PR); absent
-            // for flag-only depths and never used for someone else's PRs.
-            public let onBranch: String?
-        }
         public let defaultDepth: String
-        public let depths: [Depth]
+        public let depths: [DepthEntry]
         public let scope: [String: String]
         public let blocks: [String: String]
         /// The author-conditional sub-blocks used only by the single-PR (Specific
@@ -66,6 +68,18 @@ public enum CoreAssets {
 
     public struct Conflicts: Decodable {
         public let scope: [String: String]
+        public let blocks: [String: String]
+    }
+
+    public struct Issues: Decodable {
+        public let defaultDepth: String
+        public let depths: [DepthEntry]
+        public let scope: [String: String]
+        /// How the prompt tells the agent to LIST the issues in scope. Its own map
+        /// rather than another `blocks` entry because which one applies is decided by
+        /// the scope (an author-association scope cannot use `gh issue list`), not by
+        /// a toggle. See `_enumerateComment`.
+        public let enumerate: [String: String]
         public let blocks: [String: String]
     }
 
@@ -201,6 +215,7 @@ public enum CoreAssets {
     private static let _review = try? loadJSON("review.json", as: Review.self)
     private static let _conflicts = try? loadJSON("conflicts.json", as: Conflicts.self)
     private static let _audit = try? loadJSON("audit.json", as: Audit.self)
+    private static let _issues = try? loadJSON("issues.json", as: Issues.self)
     private static let _models = try? loadJSON("models.json", as: Models.self)
     private static let _telemetry = try? loadJSON("telemetry.json", as: TelemetryModel.self)
 
@@ -247,6 +262,11 @@ public enum CoreAssets {
     public static func audit() throws -> Audit {
         guard let a = _audit else { return try loadJSON("audit.json", as: Audit.self) }
         return a
+    }
+
+    public static func issues() throws -> Issues {
+        guard let i = _issues else { return try loadJSON("issues.json", as: Issues.self) }
+        return i
     }
 
     /// The model-naming exception lists from `models.json`, used to spell the model in

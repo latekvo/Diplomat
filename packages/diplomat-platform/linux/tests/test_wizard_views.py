@@ -1,6 +1,6 @@
-"""Behavioural tests for the three Qt spawn wizards.
+"""Behavioural tests for the four Qt spawn wizards.
 
-The three wizards share their chrome and their mesh-or-local dispatch branch, so
+The four wizards share their chrome and their mesh-or-local dispatch branch, so
 what is worth pinning is what each one actually *does* with the inputs it collects
 - that is where they genuinely differ, and it is what the sharing underneath must
 not flatten:
@@ -13,6 +13,7 @@ not flatten:
   :class:`autofix.AgentJob` and hands it to the shared gate, not a bare spawn;
 * the mesh dispatch path — that it routes through the row instead, disables the
   button, and logs the dispatch;
+* the Fix-issues wizard's six scopes, and which of them narrow to unassigned issues;
 * the Review wizard's third path, where a whose-PRs sweep queues a review per PR
   instead of dispatching anything (what the queue then does with them is
   ``test_requested_reviews.py``);
@@ -27,9 +28,10 @@ from __future__ import annotations
 import pytest
 
 from diplomat_runtime import autofix, review
-from diplomat_app import audit, conflicts
+from diplomat_app import audit, conflicts, issues
 from diplomat_app.auditwizardview import AuditWizardView
 from diplomat_app.conflictwizardview import ConflictWizardView
+from diplomat_app.issuewizardview import IssueWizardView
 from diplomat_runtime.prtarget import PRTarget
 from diplomat_runtime.review import SpecificAuthor
 from diplomat_app.store import Store
@@ -413,13 +415,142 @@ def test_audit_mesh_spawn_routes_over_the_mesh(store, dispatched, mesh_live):
     assert not w.spawn_btn.isEnabled()
 
 
-# ---- shared chrome behaves the same in all three --------------------------
+# ---- Fix-issues wizard ----------------------------------------------------
+
+
+def test_issues_shows_only_the_field_its_scope_needs(store):
+    w = IssueWizardView(store)
+
+    w.target.setCurrentIndex(w.target.findData(issues.Target.SOMEONE))
+    assert not w.username.isHidden() and w.specific_issue.isHidden()
+
+    w.target.setCurrentIndex(w.target.findData(issues.Target.SPECIFIC))
+    assert not w.specific_issue.isHidden() and w.username.isHidden()
+
+    # The two association scopes name nobody, so neither field applies.
+    w.target.setCurrentIndex(w.target.findData(issues.Target.CONTRIBUTORS))
+    assert w.username.isHidden() and w.specific_issue.isHidden()
+
+
+def test_issues_warns_on_a_foreign_repo_url(store):
+    w = IssueWizardView(store)
+    w.target.setCurrentIndex(w.target.findData(issues.Target.SPECIFIC))
+    w.specific_issue.setText("https://github.com/some-org/other-repo/issues/42")
+    assert not w.issue_warning.isHidden()
+
+
+def test_issues_takes_an_issue_url_and_not_a_pr_url(store):
+    """The two links differ by one path segment, and a PR pasted into this field
+    would otherwise be worked as though it were the issue of the same number."""
+    w = IssueWizardView(store)
+    w.target.setCurrentIndex(w.target.findData(issues.Target.SPECIFIC))
+    w.specific_issue.setText("https://github.com/software-mansion/argent/issues/421")
+    assert w._config().issue_ref.number == 421
+
+    w.specific_issue.setText("https://github.com/software-mansion/argent/pull/421")
+    assert w._config().issue_ref.number is None
+    assert not w.spawn_btn.isEnabled()
+
+
+def test_issues_hides_the_unassigned_filter_for_one_named_issue(store):
+    """Filtering a hand-picked issue back out would just be a run that does nothing,
+    so the tick is not offered (mirrors macOS ``canFilterUnassigned``)."""
+    w = IssueWizardView(store)
+    assert not w.unassigned_only.isHidden()
+
+    w.target.setCurrentIndex(w.target.findData(issues.Target.SPECIFIC))
+    assert w.unassigned_only.isHidden()
+
+
+def test_issues_spawn_is_gated_on_the_scope_that_needs_a_handle(store):
+    w = IssueWizardView(store)
+    assert w.spawn_btn.isEnabled()  # "all open issues" needs nothing
+
+    w.target.setCurrentIndex(w.target.findData(issues.Target.SOMEONE))
+    assert not w.spawn_btn.isEnabled()
+    w.username.setText("octocat")
+    assert w.spawn_btn.isEnabled()
+
+    # An association scope names nobody, so it is spawnable straight away.
+    w.target.setCurrentIndex(w.target.findData(issues.Target.MEMBERS))
+    assert w.spawn_btn.isEnabled()
+
+
+def test_issues_config_mirrors_the_widgets(store):
+    w = IssueWizardView(store)
+    w.target.setCurrentIndex(w.target.findData(issues.Target.CONTRIBUTORS))
+    w.unassigned_only.setChecked(False)
+    w.assign_to_me.setChecked(False)
+    w.open_prs.setChecked(False)
+    w.comment_on_issue.setChecked(False)
+    w.include_features.setChecked(True)
+    cfg = w._config()
+
+    assert isinstance(cfg, issues.IssueConfig)
+    assert cfg.target == issues.Target.CONTRIBUTORS
+    assert cfg.me == "latekvo"
+    assert (cfg.unassigned_only, cfg.assign_to_me, cfg.open_prs,
+            cfg.comment_on_issue, cfg.include_features) == (False, False, False, False, True)
+
+
+def test_issues_local_spawn_dispatches_an_unscoped_issues_job(store, dispatched, local_only):
+    """Not PR-scoped: the pipeline's dedup key is a PR URL, so handing it an issue
+    number would collide with the PR that shares it. The GitHub assignee claim is
+    what keeps two agents off one issue."""
+    w = IssueWizardView(store)
+    w.target.setCurrentIndex(w.target.findData(issues.Target.SPECIFIC))
+    w.specific_issue.setText("421")
+    w._spawn()
+
+    job, source = dispatched[0]
+    assert (job.kind, job.duty, job.audit_action) == ("issues", "issues", "issues")
+    assert job.pr_number is None
+    assert job.pr_url is None
+    assert source == autofix.SOURCE_PANEL
+
+
+def test_issues_label_names_the_scope_and_the_depth(store, dispatched, local_only):
+    """The ongoing-sessions row has to say which issues this run is working."""
+    w = IssueWizardView(store)
+    w.target.setCurrentIndex(w.target.findData(issues.Target.CONTRIBUTORS))
+    w.slider.setValue(w._depth_ids.index("max"))
+    w._spawn()
+
+    job, _ = dispatched[0]
+    assert "contributors" in job.label
+    assert issues.depth_by_id("max")["title"] in job.label
+
+
+def test_issues_names_the_author_only_when_the_scope_names_one(store, dispatched, local_only):
+    """The ban check keys on that login — an association sweep names nobody to ban."""
+    w = IssueWizardView(store)
+    w.target.setCurrentIndex(w.target.findData(issues.Target.SOMEONE))
+    w.username.setText("octocat")
+    w._spawn()
+    assert dispatched[-1][0].author_login == "octocat"
+
+    w.target.setCurrentIndex(w.target.findData(issues.Target.CONTRIBUTORS))
+    w._spawn()
+    assert dispatched[-1][0].author_login is None
+
+
+def test_issues_mesh_spawn_routes_over_the_mesh(store, dispatched, mesh_live):
+    w = IssueWizardView(store)
+    w._spawn()
+
+    assert len(mesh_live) == 1
+    assert dispatched == []
+    assert not w.spawn_btn.isEnabled()
+
+
+# ---- shared chrome behaves the same in all four ---------------------------
 
 
 @pytest.mark.parametrize("build", [
     pytest.param(_review_wizard, id="review"),
     pytest.param(lambda s: ConflictWizardView(s), id="conflicts"),
     pytest.param(lambda s: AuditWizardView(s), id="audit"),
+    pytest.param(lambda s: IssueWizardView(s), id="issues"),
 ])
 def test_every_wizard_starts_with_an_empty_status_line(store, build):
     assert build(store).status.text() == ""
@@ -429,6 +560,7 @@ def test_every_wizard_starts_with_an_empty_status_line(store, build):
     pytest.param(_review_wizard, id="review"),
     pytest.param(lambda s: ConflictWizardView(s), id="conflicts"),
     pytest.param(lambda s: AuditWizardView(s), id="audit"),
+    pytest.param(lambda s: IssueWizardView(s), id="issues"),
 ])
 def test_every_wizard_reports_a_local_dispatch_in_its_status_line(
     store, dispatched, local_only, build
@@ -445,6 +577,7 @@ def test_every_wizard_reports_a_local_dispatch_in_its_status_line(
     pytest.param(_review_wizard, id="review"),
     pytest.param(lambda s: ConflictWizardView(s), id="conflicts"),
     pytest.param(lambda s: AuditWizardView(s), id="audit"),
+    pytest.param(lambda s: IssueWizardView(s), id="issues"),
 ])
 def test_every_wizard_re_enables_spawn_when_a_mesh_dispatch_returns(
     store, mesh_live, build
@@ -463,6 +596,7 @@ def test_every_wizard_re_enables_spawn_when_a_mesh_dispatch_returns(
     pytest.param(_review_wizard, id="review"),
     pytest.param(lambda s: ConflictWizardView(s), id="conflicts"),
     pytest.param(lambda s: AuditWizardView(s), id="audit"),
+    pytest.param(lambda s: IssueWizardView(s), id="issues"),
 ])
 def test_every_wizard_holds_spawn_across_a_sync_mid_mesh_dispatch(
     store, mesh_live, build
@@ -499,6 +633,7 @@ def test_mesh_completion_leaves_spawn_disabled_while_input_is_invalid(
     pytest.param(_review_wizard, id="review"),
     pytest.param(lambda s: ConflictWizardView(s), id="conflicts"),
     pytest.param(lambda s: AuditWizardView(s), id="audit"),
+    pytest.param(lambda s: IssueWizardView(s), id="issues"),
 ])
 def test_every_wizard_survives_refresh_identity(store, build):
     """The panel calls this on every data refresh, including on the audit wizard

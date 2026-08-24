@@ -9,7 +9,7 @@ import DiplomatCore
 /// legible before clicking.
 struct MeshSpawnRow: View {
     @EnvironmentObject var store: Store
-    /// The duty this wizard dispatches ("review" / "conflicts" / "audit").
+    /// The duty this wizard dispatches ("review" / "issues" / "conflicts" / "audit").
     let duty: String
     /// The wizard-owned toggle; effective only while `isLive`.
     @Binding var useMesh: Bool
