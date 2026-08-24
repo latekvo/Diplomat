@@ -818,13 +818,19 @@ dispatched subagents or backgrounded a shell hands control back while they are
 still running, so the hook writes *busy* instead whenever the payload it is given
 still lists background tasks.
 
-A runner with no hooks, or a spawn whose settings would not stage, falls back to
-the CLI's own status bar (`AgentActivity`) read off whatever each platform can see
-of a terminal - iTerm/Terminal sessions on macOS, tmux panes on Linux; an agent
-whose session shows the CLI back at its prompt reads *awaiting input* and gives
-its slot back while keeping its row. Behind both sits a twenty-minute quiescence
-backstop for a session wedged mid-turn: a screen that has not changed a byte in
-that long is over, and its window is closed.
+A runner with no hooks is asked rather than read: an OpenCode agent serves its own
+session over loopback while it works and a Hermes agent writes its to SQLite, and
+either one reporting the turn over ends the run exactly as a hook does - the same
+fact from the same kind of source. Only a run nothing answers for - a Claude spawn
+whose settings would not stage, a server that never came up - falls back to the
+CLI's own status bar (`AgentActivity`) read off whatever each platform can see of a
+terminal - iTerm/Terminal sessions on macOS, tmux panes on Linux; an agent whose
+status bar shows the CLI back at its prompt reads *awaiting input* and gives its
+slot back while keeping its row. That is the one source here that cannot end a run:
+it is an inference from someone else's UI, not a report. Behind all three sits a
+twenty-minute quiescence backstop for a session wedged mid-turn: a screen that has
+not changed in that long - bar the terminal's own clock, which is not the agent
+moving - is over, and its window is closed.
 
 (Only positive evidence counts. An agent that reports nothing and whose terminal
 can't be read - one outside tmux, or a dump that failed - keeps its bay: the

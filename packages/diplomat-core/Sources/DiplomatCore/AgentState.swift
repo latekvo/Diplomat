@@ -130,9 +130,10 @@ public enum AgentState {
     ///
     /// Twenty minutes because a working agent's screen is never still for anywhere near
     /// that long: the CLI redraws a spinner, a token count and an elapsed timer every
-    /// second it is thinking, so a byte-identical pane over this window means nothing is
-    /// happening in it. Long enough that a slow tool call, a long build or a human
-    /// reading the window is not mistaken for a dead one.
+    /// second it is thinking, so a pane still for this whole window — its terminal's own
+    /// clock aside, see `maskClocks` — means nothing is happening in it. Long enough that
+    /// a slow tool call, a long build or a human reading the window is not mistaken for a
+    /// dead one.
     public static let quietTimeout: TimeInterval = 20 * 60
 
     /// How long a mesh origination claim may go unseen before the peer's run reads as
