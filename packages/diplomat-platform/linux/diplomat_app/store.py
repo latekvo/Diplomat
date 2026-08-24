@@ -300,6 +300,11 @@ class Store(QObject):
         self._apiwatch_lock = threading.Lock()
         self._telemetry_sample_lock = threading.Lock()
 
+        # The workers started through `start_background`, so that something can wait
+        # for them. Pruned as it grows: a Store outlives thousands of polls.
+        self._workers: list[threading.Thread] = []
+        self._workers_lock = threading.Lock()
+
         # Honor the process-wide default format (NativeFormat unless overridden):
         # the two-arg QSettings(org, app) constructor is hardwired to NativeFormat,
         # which on macOS ignores QSettings.setPath — so the test suite couldn't
@@ -313,6 +318,44 @@ class Store(QObject):
             vis = self.visible_tools
             if vis:
                 self.selected = vis[0].id
+
+    # MARK: background work
+
+    def start_background(self, work, name: str | None = None) -> threading.Thread:
+        """Run ``work`` off the GUI thread, on a worker the process can wait for.
+
+        Every worker here ends by touching Qt — a signal emit, or a callback that
+        does. One still in flight while the process tears its widgets down raises
+        ``RuntimeError: Signal source has been deleted`` there, and an unhandled
+        exception on a thread prints a traceback to ``sys.stderr``; if the
+        interpreter is finalising at that moment it cannot take the buffer lock the
+        worker holds, and the process dies of SIGABRT instead of exiting. So the
+        threads are kept, and :meth:`wait_for_background` is where a caller about to
+        end the process gives them the moment they need to land.
+
+        Daemon, still: the wait is bounded and a wedged worker must never be able to
+        hold the applet open past it.
+        """
+        thread = threading.Thread(target=work, daemon=True, name=name)
+        with self._workers_lock:
+            self._workers = [t for t in self._workers if t.is_alive()]
+            self._workers.append(thread)
+            thread.start()
+        return thread
+
+    def wait_for_background(self, timeout: float = 5.0) -> list[str]:
+        """Wait out the workers :meth:`start_background` started, and name the ones
+        still running when ``timeout`` is spent.
+
+        Best effort by construction, so the return value is the caller's evidence of
+        what it is leaving behind rather than a promise there is nothing.
+        """
+        deadline = time.monotonic() + timeout
+        with self._workers_lock:
+            pending = list(self._workers)
+        for thread in pending:
+            thread.join(max(0.0, deadline - time.monotonic()))
+        return [t.name for t in pending if t.is_alive()]
 
     # MARK: persisted settings
 
@@ -748,7 +791,7 @@ class Store(QObject):
                 self._poll_lock.release()
                 self.autofix_changed.emit()
 
-        threading.Thread(target=work, daemon=True).start()
+        self.start_background(work)
 
     def _autofix_poll_once(self) -> None:
         self._poll_error_this_cycle = None
@@ -1424,7 +1467,7 @@ class Store(QObject):
     def refresh_auto_task_count_async(self) -> None:
         """Resolve off the UI thread — the probes shell out (see
         :mod:`diplomat_app.probes`)."""
-        threading.Thread(target=self.refresh_auto_task_count, daemon=True).start()
+        self.start_background(self.refresh_auto_task_count)
 
     @property
     def running_tasks(self) -> list[autofix.RunningAgent]:
@@ -1681,7 +1724,7 @@ class Store(QObject):
                 return
             done(queued, already, "")
 
-        threading.Thread(target=work, daemon=True).start()
+        self.start_background(work)
 
     def _requested_task(self, entry: autofix.RequestedWork) -> autofix.QueuedTask:
         """One ask as the queued task it stands for, memoised by ask and config.
@@ -2044,7 +2087,7 @@ class Store(QObject):
         def work() -> None:
             self._execute_queued_task(entry)
 
-        threading.Thread(target=work, daemon=True).start()
+        self.start_background(work)
 
     def _execute_queued_task(self, entry: autofix.QueuedTask) -> None:
         """One "execute now", start to finish.
@@ -2415,7 +2458,7 @@ class Store(QObject):
                 self._telemetry_sample_lock.release()
             self.telemetry_changed.emit()
 
-        threading.Thread(target=work, daemon=True).start()
+        self.start_background(work)
 
     # MARK: Claude-API-error watcher
 
@@ -2442,7 +2485,7 @@ class Store(QObject):
                 self._apiwatch_lock.release()
                 self.apiwatch_changed.emit()
 
-        threading.Thread(target=work, daemon=True).start()
+        self.start_background(work)
 
     def _apiwatch_scan_once(self) -> None:
         """One scan: read every pane and nudge any confirmed-stalled erroring pane
@@ -2532,7 +2575,7 @@ class Store(QObject):
         def work() -> None:
             self.allocator_install = deviceallocator.check()
             self.allocator_changed.emit()
-        threading.Thread(target=work, daemon=True).start()
+        self.start_background(work)
 
     # MARK: activity feed + bans
 
@@ -2588,7 +2631,7 @@ class Store(QObject):
                 self.allocator_setup_done = True
             self.allocator_changed.emit()
             self.refresh_device_state()
-        threading.Thread(target=work, daemon=True).start()
+        self.start_background(work)
 
     def install_allocator_async(self) -> None:
         def work() -> None:
@@ -2597,7 +2640,7 @@ class Store(QObject):
             self.allocator_setup_done = True
             self.allocator_changed.emit()
             self.refresh_device_state()
-        threading.Thread(target=work, daemon=True).start()
+        self.start_background(work)
 
     def uninstall_allocator_async(self) -> None:
         def work() -> None:
@@ -2606,7 +2649,7 @@ class Store(QObject):
             self.allocator_setup_done = True
             self.allocator_changed.emit()
             self.refresh_device_state()
-        threading.Thread(target=work, daemon=True).start()
+        self.start_background(work)
 
     # MARK: self-update
 
@@ -2623,7 +2666,7 @@ class Store(QObject):
 
         self.update_state = {"phase": "checking"}
         self.update_changed.emit()
-        threading.Thread(target=work, daemon=True).start()
+        self.start_background(work)
 
     def update_applet_async(self) -> None:
         """Pull the checkout, rebuild diplomat-core, relaunch the applet.
@@ -2663,7 +2706,7 @@ class Store(QObject):
         # start two updates.
         self.update_state = {"phase": "updating", "step": "starting…"}
         self.update_changed.emit()
-        threading.Thread(target=work, daemon=True).start()
+        self.start_background(work)
 
     # MARK: mesh (LAN P2P topology)
 
@@ -2774,7 +2817,7 @@ class Store(QObject):
                 self.mesh_error = f"could not start mesh node: {exc}"
             self.refresh_mesh_state()
 
-        threading.Thread(target=work, daemon=True).start()
+        self.start_background(work)
 
     def stop_mesh_async(self) -> None:
         """Ask the local node to stop (used when the user disables the mesh)."""
@@ -2788,7 +2831,7 @@ class Store(QObject):
                 pass  # already down — nothing to stop
             self.refresh_mesh_state()
 
-        threading.Thread(target=work, daemon=True).start()
+        self.start_background(work)
 
     def _mesh_command(self, run, what: str) -> None:
         """Run one mesh control round-trip on a daemon thread, then settle the view:
@@ -2817,7 +2860,7 @@ class Store(QObject):
                 self.mesh_error = str(exc)
             self.refresh_mesh_state()
 
-        threading.Thread(target=work, daemon=True, name=f"mesh-{what}").start()
+        self.start_background(work, f"mesh-{what}")
 
     def mesh_set_attr(self, node_id: str, attrs: dict) -> None:
         """Edit a node's attributes (self or a peer, forwarded over the mesh)."""
@@ -2874,7 +2917,7 @@ class Store(QObject):
             if done_callback is not None:
                 done_callback(results, err)
 
-        threading.Thread(target=work, daemon=True).start()
+        self.start_background(work)
 
     def count(self, tool_id: str) -> int:
         return len(self.items_for(tool_id))
