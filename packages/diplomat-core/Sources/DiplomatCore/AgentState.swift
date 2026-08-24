@@ -460,18 +460,8 @@ public enum AgentState {
     }
 
     /// A screen with every time of day blanked, matching `agentstate._CLOCK` — the
-    /// pattern `[0-9]{1,2}:[0-9]{2}(:[0-9]{2})?`, replaced by `~`.
-    ///
-    /// A dump carries the whole terminal, the multiplexer's furniture included, and
-    /// tmux's default status-right is a wall clock. So a pane showing nothing but a
-    /// finished agent changed once a minute forever, and `quietTimeout` was unreachable
-    /// on any box whose shells wrap themselves in tmux — seven dumps of one idle agent
-    /// over 72 seconds gave three digests, differing in nothing but those five
-    /// characters.
-    ///
-    /// A time of day and nothing else: not a token count, not an elapsed `1h 34m`.
-    /// Everything else on that screen is something the agent itself wrote, and a screen
-    /// where only those digits move is the one thing this fingerprint is for.
+    /// pattern `[0-9]{1,2}:[0-9]{2}(:[0-9]{2})?`, replaced by `~`. That constant carries
+    /// why a screen's fingerprint has to ignore a clock, and why only a clock.
     ///
     /// Scanned by hand rather than by `NSRegularExpression`: the digest goes into the one
     /// book both front-ends read, so this has to agree with Python's `re` character for
@@ -481,13 +471,12 @@ public enum AgentState {
         let chars = Array(tail.unicodeScalars)
         func isDigit(_ i: Int) -> Bool { i < chars.count && chars[i] >= "0" && chars[i] <= "9" }
         func isColon(_ i: Int) -> Bool { i < chars.count && chars[i] == ":" }
-        // The length of the `:[0-9][0-9]` group at `i`, or 0 — the same group twice.
+        // Length of the `:[0-9][0-9]` group at `i`, or 0 — minutes, then seconds.
         func pair(_ i: Int) -> Int { isColon(i) && isDigit(i + 1) && isDigit(i + 2) ? 3 : 0 }
         var out = String.UnicodeScalarView()
         var i = 0
         while i < chars.count {
-            // Leftmost-first, and greedy on the leading run: two digits are tried before
-            // one, exactly as `[0-9]{1,2}` backtracks.
+            // Greedy on the leading run, as `[0-9]{1,2}` is: two digits before one.
             var head = 0
             if isDigit(i) && isDigit(i + 1) && pair(i + 2) > 0 { head = 2 }
             else if isDigit(i) && pair(i + 1) > 0 { head = 1 }
@@ -676,12 +665,10 @@ public enum AgentState {
     /// said a turn is in flight, which outranks anything read off a screen.
     ///
     /// For a run that reports nothing, the agent's own session is asked next, and its
-    /// answer ENDS the run exactly as the CLI's own does — it is the same fact from the
-    /// same kind of source, a runner saying its turn is over rather than a screen being
-    /// read for signs of one. A runner that keeps a session and one that runs a hook are
-    /// two spellings of "ask the agent"; treating the second as terminal and the first
-    /// as merely idle is what left every OpenCode and Hermes run in the book until
-    /// somebody closed its window by hand.
+    /// answer ENDS the run exactly as the CLI's own does: a runner that keeps a session
+    /// and one that runs a hook are two spellings of "ask the agent". Read as merely
+    /// idle, every OpenCode and Hermes run stayed in the book until somebody closed its
+    /// window by hand.
     ///
     /// The screen is the last fallback, and it is an inference — it reads whether the
     /// CLI's interrupt hint was on the status bar when we looked, which is a string from

@@ -736,12 +736,10 @@ def _classify_activity(record: RunRecord, evidence: Evidence, now: float, done,
     turn is in flight, which outranks anything read off a screen.
 
     For a run that reports nothing, the agent's own session is asked next, and its
-    answer ENDS the run exactly as the CLI's own does — it is the same fact from the
-    same kind of source, a runner saying its turn is over rather than a screen being
-    read for signs of one. A runner that keeps a session and one that runs a hook are
-    two spellings of "ask the agent"; treating the second as terminal and the first as
-    merely idle is what left every OpenCode and Hermes run in the book until somebody
-    closed its window by hand.
+    answer ENDS the run exactly as the CLI's own does: a runner that keeps a session
+    and one that runs a hook are two spellings of "ask the agent". Read as merely idle,
+    every OpenCode and Hermes run stayed in the book until somebody closed its window
+    by hand.
 
     The screen is the last fallback, and it is an inference — it reads whether the
     CLI's interrupt hint was on the status bar when we looked, which is a string from
