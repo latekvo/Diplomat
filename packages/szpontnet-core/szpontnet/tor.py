@@ -208,7 +208,6 @@ class TorTransport:
             return False
         if bootstrap_timeout is None:
             bootstrap_timeout = config.tor_bootstrap_timeout()
-        self._socks_port = _free_port()
         try:
             self._forward_server = await asyncio.start_server(
                 inbound_handler, "127.0.0.1", 0, limit=protocol.MAX_LINE_BYTES)
@@ -217,6 +216,8 @@ class TorTransport:
                 f"Mesh/Tor: cannot open the forward listener ({exc})")
             return False
         forward_port = self._forward_server.sockets[0].getsockname()[1]
+        # After the listener above, never before — see _free_port.
+        self._socks_port = _free_port()
         try:
             torrc = _write_torrc(self._tor_dir, self._socks_port, forward_port)
         except OSError as exc:
@@ -377,8 +378,13 @@ class TorTransport:
 
 
 def _free_port() -> int:
-    """A currently-free loopback TCP port (best-effort; a small TOCTOU window is
-    fine — a failed SOCKS bind just fails start() and the node stays LAN-only)."""
+    """A currently-free loopback TCP port, found by binding one and letting it go.
+
+    Nothing reserves it: the kernel can hand the same number to the next ephemeral
+    bind anywhere on the host, and tor then exits on "address already in use" —
+    which costs a whole start and leaves the node silently LAN-only. Call it as late
+    as possible, after every port the caller takes for itself.
+    """
     import socket as _socket
 
     s = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
