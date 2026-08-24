@@ -24,6 +24,7 @@ from __future__ import annotations
 import pytest
 
 from diplomat_runtime import agentstate as A
+from diplomat_runtime import completion
 
 # A fixed clock. Every offset below is integral so the formatted seconds in a reason
 # string are the same text in both languages (see the parity test).
@@ -33,6 +34,11 @@ T0 = 1_000_000.0
 # absence means back at the prompt.
 WORKING = "● Reading files…\n⏵⏵ bypass permissions on · esc to interrupt · ← for agents"
 AT_PROMPT = "● Posted the review.\n❯\n⏵⏵ bypass permissions on (shift+tab to cycle)"
+
+# The same finished screen as a terminal actually dumps it on a box whose shells wrap
+# themselves in tmux: the multiplexer's status line, wall clock and all, sits under the
+# agent's own output. Those five characters are the only thing on it that moves.
+TMUX_WRAPPED = AT_PROMPT + '\n[159] 0:zsh*  "OpenCode" 16:31 24-sie-26'
 
 
 def rec(**kw) -> A.RunRecord:
@@ -140,19 +146,23 @@ CASES = [
 
     # --- a run that serves its own session, which outranks its screen -------
     #
-    # The session's answer is positive evidence — a turn stamped complete — where the
-    # screen is an inference from whether someone else's interrupt hint was drawn.
-    # The two disagreeing cases are the ones that matter: they are what a redrawn or
-    # reworded status bar looks like, and each is a mistake the applet used to make
-    # with no way to tell it was making one.
+    # The session's answer is positive evidence — a runner saying so — where the screen
+    # is an inference from whether someone else's interrupt hint was drawn. The two
+    # disagreeing cases are the ones that matter: they are what a redrawn or reworded
+    # status bar looks like, and each is a mistake the applet used to make with no way
+    # to tell it was making one.
+    #
+    # It ENDS a run, exactly as the hook report above does. Both are the agent's own
+    # word for the same fact; read as merely idle, every OpenCode and Hermes run stayed
+    # in the book until somebody closed its window by hand.
     ("a session mid-turn is working even though its screen looks idle",
      rec(), ev(processes={4242: proc()}, tails={"pts/3": AT_PROMPT},
                sessions={"r1": A.SessionState(busy=True)}),
      A.RUNNING, "its session is mid-turn"),
-    ("a session that finished its turn gives its bay back though the hint is stale",
+    ("a session that finished its turn ends the run though the hint is stale",
      rec(), ev(processes={4242: proc()}, tails={"pts/3": WORKING},
                sessions={"r1": A.SessionState(busy=False)}),
-     A.AWAITING_INPUT, "its session finished its turn"),
+     A.FINISHED, "its runner reported the turn over"),
     ("a run with no session of its own is still read off its screen",
      rec(), ev(processes={4242: proc()}, tails={"pts/3": WORKING},
                sessions={"someone-else": A.SessionState(busy=False)}),
@@ -165,7 +175,7 @@ CASES = [
      rec(), ev(processes={4242: proc()},
                tails=A.Observation.unavailable("is unreadable"),
                sessions={"r1": A.SessionState(busy=False)}),
-     A.AWAITING_INPUT, "its session finished its turn"),
+     A.FINISHED, "its runner reported the turn over"),
     ("a pid missing from a table we did read has finished",
      rec(), ev(processes={9999: proc()}),
      A.FINISHED, "absent from the process table"),
@@ -300,6 +310,13 @@ CASES = [
      ev(processes={}, tails={"pts/3": AT_PROMPT}),
      A.AWAITING_INPUT, "found in process table; at the prompt"),
 
+    # --- the terminal's own furniture is on the screen too -------------------
+    ("a screen still but for the terminal's clock is still still",
+     rec(quiet_digest=A.pane_digest(TMUX_WRAPPED.replace("16:31", "16:12")),
+         quiet_since=T0 - A.QUIET_TIMEOUT),
+     ev(processes={4242: proc()}, tails={"pts/3": TMUX_WRAPPED}),
+     A.FINISHED, "its screen has not changed in 20m"),
+
     # --- an hour-long local run ---------------------------------------------
     ("an hour-long local run is not ended by its own age",
      rec(dispatched_at=T0 - 7200), ev(processes={4242: proc(elapsed=7200)},
@@ -321,6 +338,58 @@ def test_every_state_is_reachable_from_the_table():
     gate, so a rung cannot be added without a scenario that reaches it."""
     reached = {A.resolve_one(r, e, T0).state for _n, r, e, _s, _r in CASES}
     assert reached == set(A.STATE_ORDER)
+
+
+# MARK: - Stillness, and what a screen dump really carries
+
+
+def test_a_screen_that_only_moved_its_clock_never_moved():
+    """The backstop's one real adversary, and for a long time its silent defeat: a
+    terminal dump carries the multiplexer's status line as well as the agent's output,
+    and tmux's default status-right is a wall clock. So a pane showing nothing but a
+    finished agent changed once a minute, the twenty-minute window restarted every
+    sixty seconds, and the reaper could not fire on any box whose shells wrap
+    themselves in tmux — measured on one, zero window closes in 4763 audit entries."""
+    later = TMUX_WRAPPED.replace("16:31", "16:32")
+    assert later != TMUX_WRAPPED
+    assert A.pane_digest(later) == A.pane_digest(TMUX_WRAPPED)
+
+
+def test_a_screen_whose_agent_wrote_something_new_did_move():
+    """The other half: masking a time of day must not mask the agent."""
+    assert A.pane_digest(TMUX_WRAPPED + "\n● Pushed.") != A.pane_digest(TMUX_WRAPPED)
+
+
+@pytest.mark.parametrize("moved", [
+    "5 files changed",       # a count is not a clock
+    "· 1h 34m",              # nor is an elapsed turn
+    "esc to interrupt · 9s",
+])
+def test_only_a_time_of_day_is_masked(moved):
+    """Narrow on purpose. Everything else on that screen is something the agent itself
+    wrote, and a digest that ignored those would call a working agent still."""
+    one = AT_PROMPT + "\n" + moved
+    two = one.replace("5", "6").replace("34", "35").replace("9s", "8s")
+    assert A.pane_digest(one) != A.pane_digest(two)
+
+
+def test_the_stillness_clock_restarts_only_when_the_screen_changes():
+    r = rec(quiet_digest="", quiet_since=None)
+    first = A.observe_quiescence([r], A.Observation.present({"pts/3": TMUX_WRAPPED}),
+                                 T0)[0]
+    assert first.quiet_since == T0
+    later = TMUX_WRAPPED.replace("16:31", "16:45")
+    ticked = A.observe_quiescence([first], A.Observation.present({"pts/3": later}),
+                                  T0 + 900)[0]
+    assert ticked.quiet_since == T0, "a clock tick restarted the twenty-minute window"
+
+
+def test_a_screen_that_could_not_be_read_advances_nothing():
+    """What keeps a tmux server going down from looking like twenty minutes of
+    stillness across every run at once."""
+    r = rec(quiet_digest="d", quiet_since=T0 - 10)
+    out = A.observe_quiescence([r], A.Observation.unavailable("tmux is down"), T0)
+    assert out[0].quiet_since == T0 - 10
 
 
 # MARK: - Claim sightings
@@ -465,6 +534,24 @@ def test_only_positive_evidence_retires_a_record():
     _r, states = _resolved(records, ev(processes={1: proc()}, merged={500}))
     assert sorted(r.run_id for r in A.retirable(records, states)) == \
         ["exited", "landed"]
+
+
+def test_a_runner_that_reported_its_turn_over_is_retired_like_any_other():
+    """The whole point of the rung. An agent alive at its prompt is what BOTH a Claude
+    Code hook and an OpenCode session describe, so one of them must not be the only one
+    that ends a run — the other's runs are then priced by nothing, drop out of no
+    ledger, and go on refusing their PR a fresh agent until a human closes the
+    window."""
+    records = [rec(run_id="hooked", pid=1), rec(run_id="served", pid=2, tty="pts/4")]
+    _r, states = _resolved(records,
+                           ev(processes={1: proc(), 2: proc(tty="pts/4")},
+                              tails={"pts/3": WORKING, "pts/4": WORKING},
+                              activity={"hooked": (completion.IDLE, T0 - 5)},
+                              sessions={"served": A.SessionState(busy=False)}))
+    assert sorted(r.run_id for r in A.retirable(records, states)) == \
+        ["hooked", "served"]
+    assert A.cap_load(records, states) == set()
+    assert A.in_flight(records, states, 337) is False
 
 
 @pytest.mark.parametrize("limit,occupied,want", [

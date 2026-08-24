@@ -24,11 +24,12 @@ via ``diplomat-core agent-state``), so the two front-ends cannot drift again.
 The one rule the whole ladder is built to keep
 ---------------------------------------------
 **Absence of evidence never resolves to FINISHED.** A run is finished only on
-positive evidence — its sentinel exists, its process was looked for in a table we
-actually read and was not there, or its mesh claim was seen and has since been
-released. Every other gap resolves to :data:`UNKNOWN`, which holds its bay and says
-so. Reading "I could not look" as "it is gone" is what produced years of
-already-complete verdicts on agents that were still working.
+positive evidence — its runner said the turn is over, its sentinel exists, its
+process was looked for in a table we actually read and was not there, or its mesh
+claim was seen and has since been released. Every other gap resolves to
+:data:`UNKNOWN`, which holds its bay and says so. Reading "I could not look" as "it
+is gone" is what produced years of already-complete verdicts on agents that were
+still working.
 
 The mirror rule costs a bay rather than correctness: a live process whose screen
 cannot be read is RUNNING, because working and waiting-at-the-prompt are genuinely
@@ -38,6 +39,7 @@ than letting it pass silently.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -469,6 +471,19 @@ _FNV_OFFSET = 0xCBF29CE484222325
 _FNV_PRIME = 0x100000001B3
 _FNV_MASK = 0xFFFFFFFFFFFFFFFF
 
+#: Clock-shaped text, blanked out of a screen before it is fingerprinted.
+#:
+#: A dump carries the whole terminal, the multiplexer's furniture included, and tmux's
+#: default status-right is a wall clock. So a pane showing nothing but a finished agent
+#: changed once a minute forever, and :data:`QUIET_TIMEOUT` was unreachable on any box
+#: whose shells wrap themselves in tmux — seven dumps of one idle agent over 72 seconds
+#: gave three digests, differing in nothing but those five characters.
+#:
+#: A time of day and nothing else: not a token count, not an elapsed ``1h 34m``.
+#: Everything else on that screen is something the agent itself wrote, and a screen
+#: where only those digits move is the one thing this fingerprint is for.
+_CLOCK = re.compile(r"[0-9]{1,2}:[0-9]{2}(?::[0-9]{2})?")
+
 
 def pane_digest(tail: str) -> str:
     """A screen's fingerprint, for telling "unchanged" from "changed".
@@ -483,7 +498,7 @@ def pane_digest(tail: str) -> str:
     whether THIS pane differs from what the last tick saw of the SAME pane.
     """
     h = _FNV_OFFSET
-    for byte in tail.encode("utf-8", "replace"):
+    for byte in _CLOCK.sub("~", tail).encode("utf-8", "replace"):
         h = ((h ^ byte) * _FNV_PRIME) & _FNV_MASK
     return f"{h:016x}"
 
@@ -720,11 +735,18 @@ def _classify_activity(record: RunRecord, evidence: Evidence, now: float, done,
     above ends it — so what this rung answers for one is the other half: its CLI said a
     turn is in flight, which outranks anything read off a screen.
 
-    For a run that reports nothing, the agent's own session is asked next, because it
-    is the only remaining positive evidence: a turn carries a completion stamp, set
-    when it ends. The screen is the last fallback, and it is an inference — it reads
-    whether the CLI's interrupt hint was on the status bar when we looked, which is a
-    string from someone else's UI that says nothing at all if they reword it.
+    For a run that reports nothing, the agent's own session is asked next, and its
+    answer ENDS the run exactly as the CLI's own does — it is the same fact from the
+    same kind of source, a runner saying its turn is over rather than a screen being
+    read for signs of one. A runner that keeps a session and one that runs a hook are
+    two spellings of "ask the agent"; treating the second as terminal and the first as
+    merely idle is what left every OpenCode and Hermes run in the book until somebody
+    closed its window by hand.
+
+    The screen is the last fallback, and it is an inference — it reads whether the
+    CLI's interrupt hint was on the status bar when we looked, which is a string from
+    someone else's UI that says nothing at all if they reword it. It is the one source
+    here that cannot end a run: AWAITING_INPUT is what a stale hint reads as.
 
     Every gap here reads as RUNNING, which costs a bay rather than correctness — but
     it is also the one rung that fails silently, so the probe layer counts
@@ -750,8 +772,7 @@ def _classify_activity(record: RunRecord, evidence: Evidence, now: float, done,
         if session is not None:
             if session.busy:
                 return done(RUNNING, f"{alive_reason}; its session is mid-turn")
-            return done(AWAITING_INPUT, f"{alive_reason}; its session finished its "
-                                        f"turn")
+            return done(FINISHED, f"{alive_reason}; its runner reported the turn over")
     if not evidence.tails.ok:
         return done(RUNNING,
                     f"{alive_reason}; screen {evidence.tails.reason or 'unavailable'}")

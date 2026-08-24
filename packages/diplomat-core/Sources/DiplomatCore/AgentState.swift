@@ -23,11 +23,12 @@ import Foundation
 // strings are compared verbatim, so any text change here needs the same text there.
 //
 // THE ONE RULE THE WHOLE LADDER IS BUILT TO KEEP: absence of evidence never resolves to
-// `.finished`. A run is finished only on positive evidence — its sentinel exists, its
-// process was looked for in a table we actually read and was not there, or its mesh
-// claim was seen and has since been released. Every other gap resolves to `.unknown`,
-// which holds its bay and says so. Reading "I could not look" as "it is gone" is what
-// produced already-complete verdicts on agents that were still working.
+// `.finished`. A run is finished only on positive evidence — its runner said the turn
+// is over, its sentinel exists, its process was looked for in a table we actually read
+// and was not there, or its mesh claim was seen and has since been released. Every
+// other gap resolves to `.unknown`, which holds its bay and says so. Reading "I could
+// not look" as "it is gone" is what produced already-complete verdicts on agents that
+// were still working.
 
 /// One probe's answer: a value, or a named reason there isn't one.
 ///
@@ -452,10 +453,54 @@ public enum AgentState {
     /// being only whether THIS pane differs from what the last tick saw of it.
     static func paneDigest(_ tail: String) -> String {
         var h: UInt64 = 0xCBF2_9CE4_8422_2325
-        for byte in Array(tail.utf8) {
+        for byte in Array(maskClocks(tail).utf8) {
             h = (h ^ UInt64(byte)) &* 0x100_0000_01B3
         }
         return String(format: "%016llx", h)
+    }
+
+    /// A screen with every time of day blanked, matching `agentstate._CLOCK` — the
+    /// pattern `[0-9]{1,2}:[0-9]{2}(:[0-9]{2})?`, replaced by `~`.
+    ///
+    /// A dump carries the whole terminal, the multiplexer's furniture included, and
+    /// tmux's default status-right is a wall clock. So a pane showing nothing but a
+    /// finished agent changed once a minute forever, and `quietTimeout` was unreachable
+    /// on any box whose shells wrap themselves in tmux — seven dumps of one idle agent
+    /// over 72 seconds gave three digests, differing in nothing but those five
+    /// characters.
+    ///
+    /// A time of day and nothing else: not a token count, not an elapsed `1h 34m`.
+    /// Everything else on that screen is something the agent itself wrote, and a screen
+    /// where only those digits move is the one thing this fingerprint is for.
+    ///
+    /// Scanned by hand rather than by `NSRegularExpression`: the digest goes into the one
+    /// book both front-ends read, so this has to agree with Python's `re` character for
+    /// character, and a shared explicit scan is what guarantees that where two regex
+    /// engines only make it likely.
+    static func maskClocks(_ tail: String) -> String {
+        let chars = Array(tail.unicodeScalars)
+        func isDigit(_ i: Int) -> Bool { i < chars.count && chars[i] >= "0" && chars[i] <= "9" }
+        func isColon(_ i: Int) -> Bool { i < chars.count && chars[i] == ":" }
+        // The length of the `:[0-9][0-9]` group at `i`, or 0 — the same group twice.
+        func pair(_ i: Int) -> Int { isColon(i) && isDigit(i + 1) && isDigit(i + 2) ? 3 : 0 }
+        var out = String.UnicodeScalarView()
+        var i = 0
+        while i < chars.count {
+            // Leftmost-first, and greedy on the leading run: two digits are tried before
+            // one, exactly as `[0-9]{1,2}` backtracks.
+            var head = 0
+            if isDigit(i) && isDigit(i + 1) && pair(i + 2) > 0 { head = 2 }
+            else if isDigit(i) && pair(i + 1) > 0 { head = 1 }
+            guard head > 0 else {
+                out.append(chars[i])
+                i += 1
+                continue
+            }
+            let seconds = pair(i + head + 3)
+            out.append("~")
+            i += head + 3 + seconds
+        }
+        return String(out)
     }
 
     // MARK: - The resolver
@@ -630,12 +675,18 @@ public enum AgentState {
     /// above ends it — so what this rung answers for one is the other half: its CLI
     /// said a turn is in flight, which outranks anything read off a screen.
     ///
-    /// For a run that reports nothing, the agent's own session is asked next, because
-    /// it is the only remaining positive evidence: a turn carries a completion stamp,
-    /// set when it ends. The screen is the last fallback, and it is an inference — it
-    /// reads whether the CLI's interrupt hint was on the status bar when we looked,
-    /// which is a string from someone else's UI that says nothing at all if they
-    /// reword it.
+    /// For a run that reports nothing, the agent's own session is asked next, and its
+    /// answer ENDS the run exactly as the CLI's own does — it is the same fact from the
+    /// same kind of source, a runner saying its turn is over rather than a screen being
+    /// read for signs of one. A runner that keeps a session and one that runs a hook are
+    /// two spellings of "ask the agent"; treating the second as terminal and the first
+    /// as merely idle is what left every OpenCode and Hermes run in the book until
+    /// somebody closed its window by hand.
+    ///
+    /// The screen is the last fallback, and it is an inference — it reads whether the
+    /// CLI's interrupt hint was on the status bar when we looked, which is a string from
+    /// someone else's UI that says nothing at all if they reword it. It is the one
+    /// source here that cannot end a run: `.awaitingInput` is what a stale hint reads as.
     ///
     /// Every gap here reads as `.running`, which costs a bay rather than correctness —
     /// but it is also the one rung that fails silently, so the probe layer counts how
@@ -660,7 +711,7 @@ public enum AgentState {
         }
         if let known = evidence.sessions.value, let session = known[record.runID] {
             if session.busy { return done(.running, "\(aliveReason); its session is mid-turn") }
-            return done(.awaitingInput, "\(aliveReason); its session finished its turn")
+            return done(.finished, "\(aliveReason); its runner reported the turn over")
         }
         guard let tails = evidence.tails.value else {
             let why = evidence.tails.reason.isEmpty ? "unavailable" : evidence.tails.reason
