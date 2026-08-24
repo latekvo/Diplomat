@@ -14,7 +14,7 @@ import Foundation
 ///
 /// Input:
 /// ```
-/// { "now": 1784000000.0, "days": 14, "steps": 56, "bins": 12, "z": 1.96,
+/// { "now": 1784000000.0, "days": 14, "steps": 56, "bins": 20, "z": 1.96,
 ///   "lines": ["{\"at\": …, \"ev\": \"queued\", …}", …] }
 /// ```
 /// Output: the folded tasks, then every figure the screen shows — including the
@@ -32,7 +32,7 @@ enum TelemetryCommand {
         let now = (obj["now"] as? NSNumber)?.doubleValue ?? 0
         let days = (obj["days"] as? NSNumber)?.doubleValue ?? 14
         let steps = (obj["steps"] as? NSNumber)?.intValue ?? 56
-        let bins = (obj["bins"] as? NSNumber)?.intValue ?? 12
+        let bins = (obj["bins"] as? NSNumber)?.intValue ?? 20
         let z = (obj["z"] as? NSNumber)?.doubleValue ?? 1.96
         let lines = obj["lines"] as? [String] ?? []
 
@@ -55,9 +55,9 @@ enum TelemetryCommand {
             "sessionLimitTokens": opt(s.sessionLimitTokens),
             "weekLimitTokens": opt(s.weekLimitTokens),
             "perTask": dist(s.perTask),
+            "perTaskWeek": dist(s.perTaskWeek),
             "perTaskUsd": dist(s.perTaskUsd),
             "perTaskUsdModel": s.perTaskUsdModel,
-            "perTaskWeekMean": r(s.perTaskWeekMean),
             "perTaskTokensMean": r(s.perTaskTokensMean),
             "avgRunSecs": r(s.avgRunSecs), "avgWaitSecs": r(s.avgWaitSecs),
             "runSamples": s.runSamples, "waitSamples": s.waitSamples,
@@ -82,7 +82,7 @@ enum TelemetryCommand {
                 "mean": Telemetry.percent(s.perTask.mean),
                 "ciLow": Telemetry.percent(s.perTask.ciLow),
                 "ciHigh": Telemetry.percent(s.perTask.ciHigh),
-                "weekMean": Telemetry.percent(s.perTaskWeekMean),
+                "weekMean": Telemetry.percent(s.perTaskWeek.mean),
                 "usdMean": Telemetry.money(s.perTaskUsd.mean),
                 "share": Telemetry.percent(s.repoSharePct),
                 "perTaskTokens": Telemetry.tokens(s.perTaskTokensMean),

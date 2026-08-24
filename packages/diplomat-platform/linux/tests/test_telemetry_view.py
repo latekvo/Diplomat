@@ -25,7 +25,7 @@ import time
 
 import pytest
 
-from diplomat_runtime import telemetry
+from diplomat_runtime import core, telemetry
 from diplomat_app.store import Store
 
 pytest.importorskip("PySide6")
@@ -59,17 +59,29 @@ def _labels(widget) -> list[str]:
     return [lbl.text() for lbl in widget.findChildren(QLabel)]
 
 
-def _seed(*, samples: bool = True, tasks: int = 8, priced: bool = True) -> None:
+def _seed(*, samples: bool = True, tasks: int = 8, priced: bool = True,
+          week_moves: bool = True, session_moves: bool = True) -> None:
     """A ledger with `tasks` finished local tasks. ``priced`` decides whether the
-    samples carry quota readings — i.e. whether the 5-hour window can be priced at
-    all — and ``samples`` whether there are any samples to begin with."""
+    samples carry quota readings — i.e. whether either window can be priced at all —
+    and ``samples`` whether there are any samples to begin with.
+
+    ``week_moves`` off holds the weekly reading still, which is what a quiet
+    account's ledger looks like: the 5-hour window is measurable and the week isn't.
+    ``session_moves`` off is the other way round — the 5-hour reading RISES between
+    every pair of samples, as it does on a ledger whose samples all straddle one of
+    its resets, so it prices nothing while the week prices fine.
+
+    Priced, the readings make the 5-hour window worth 2.5M tokens and the week 25M,
+    so the default eight tasks (40k-61k tokens) cost 1.6-2.44% of one and
+    0.16-0.24% of the other."""
     now = time.time()
     if samples:
         for i in range(4):
+            session = (1.0 - 0.2 * i) if session_moves else (0.4 + 0.2 * i)
             telemetry.append({
                 "at": now - (4 - i) * 3600, "ev": "sample",
-                "sessionLeft": (1.0 - 0.2 * i) if priced else None,
-                "weekLeft": (1.0 - 0.02 * i) if priced else None,
+                "sessionLeft": session if priced else None,
+                "weekLeft": (1.0 - 0.02 * i if week_moves else 1.0) if priced else None,
                 "repoTokens": 400_000.0 * i, "otherTokens": 100_000.0 * i,
             })
     for i in range(tasks):
@@ -82,6 +94,30 @@ def _seed(*, samples: bool = True, tasks: int = 8, priced: bool = True) -> None:
         telemetry.append({"at": at + 900, "ev": "done", "key": key,
                           "tokens": 40_000.0 + 3_000.0 * i})
     telemetry._reset_cache()
+
+
+#: The series colours, read from the shared model rather than restated here — the
+#: palette is the one thing the two platforms' charts must agree on.
+_TINT = {m["id"]: m["colorHex"].lower() for m in core.telemetry()["metrics"]}
+
+
+def _chart_colours(view) -> set[str]:
+    """Every colour the spread chart actually paints. The stats lines below it are
+    built from the summary separately, so they would still read correctly if the
+    chart itself drew one window and dropped the other."""
+    from diplomat_app.telemetryview import SpreadChart
+
+    chart = view.findChild(SpreadChart)
+    assert chart is not None, "the cost card drew no spread chart"
+    chart.resize(400, 150)  # the view is never shown, so nothing else sizes it
+    image = chart.grab().toImage()
+    return {image.pixelColor(x, y).name()
+            for y in range(image.height()) for x in range(image.width())}
+
+
+def _spread_lines(view) -> list[str]:
+    """The cost card's per-window figures — the only labels carrying an interval."""
+    return [t for t in _labels(view) if "95% CI" in t]
 
 
 def test_an_empty_ledger_says_so_instead_of_drawing_zeroes(store):
@@ -104,7 +140,76 @@ def test_the_share_of_the_limit_is_shown_once_the_window_has_a_price(store):
     text = "\n".join(_labels(view))
     assert "of the 5-hour window, per task" in text
     assert "5-hour window priced at" in text, "the coverage line hid the calibration"
+    assert "7-day window at" in text, "the coverage line quoted one window of two"
     assert "95% CI" in text
+
+
+def test_the_chart_paints_one_series_per_priced_window(store):
+    """Red for the 5-hour window, yellow for the week, both on the one axis. The
+    fitted normal and the mean rule are stroked at full opacity, so each series'
+    tint lands in the image exactly."""
+    _seed()
+    view = _view(store)
+    colours = _chart_colours(view)
+    assert _TINT["spreadSession"] in colours, "the 5-hour series was not drawn"
+    assert _TINT["spreadWeek"] in colours, "the weekly series was not drawn"
+
+
+def test_the_chart_paints_nothing_for_a_window_with_no_price(store):
+    _seed(week_moves=False)
+    colours = _chart_colours(_view(store))
+    assert _TINT["spreadSession"] in colours
+    assert _TINT["spreadWeek"] not in colours, (
+        "a window the ledger cannot price was drawn as a series at zero"
+    )
+
+
+def test_the_spread_measures_each_window_separately(store):
+    """The chart draws both, so both need their own figures under it: a mean and an
+    interval per window, in the order the bars are grouped. A screen that rescaled
+    one series from the other would print the same spread twice."""
+    _seed()
+    view = _view(store)
+    lines = _spread_lines(view)
+    assert len(lines) == 2, "a window was drawn without figures of its own"
+    assert lines[0].startswith("◼ 5-hour  2.0%"), "50.5k of a 2.5M window"
+    assert lines[1].startswith("◼ 7-day  0.20%"), "the same 50.5k of a 25M week"
+    assert "0.20% of the 7-day window" in "\n".join(_labels(view))
+
+
+def test_a_week_the_samples_never_priced_says_so_instead_of_drawing_zero(store):
+    """The weekly window barely moves, so a quiet fortnight can price the 5-hour one
+    and not the week. Its series is absent rather than flat at zero, which would
+    read as "a task costs the week nothing"."""
+    _seed(week_moves=False)
+    view = _view(store)
+    lines = _spread_lines(view)
+    assert len(lines) == 1 and lines[0].startswith("◼ 5-hour")
+    text = "\n".join(_labels(view))
+    assert "The 7-day window has no price yet" in text
+    assert "of the 7-day window" not in text, "a figure was printed for it anyway"
+
+
+def test_a_session_the_samples_never_priced_still_draws_the_week(store):
+    """The mirror of the case above, and the one the dispatch gate acts on: the
+    5-hour window resets on its own cycle, so a ledger whose samples all straddle a
+    reset prices only the week. Drawing nothing here would say "unpriced" on a
+    screen whose figures the gate is already holding work against."""
+    _seed(session_moves=False)
+    view = _view(store)
+    lines = _spread_lines(view)
+    assert len(lines) == 1 and lines[0].startswith("◼ 7-day  0.20%"), (
+        "the one window the ledger could price was left off the card"
+    )
+    colours = _chart_colours(view)
+    assert _TINT["spreadWeek"] in colours, "the priced window was not drawn"
+    assert _TINT["spreadSession"] not in colours
+    text = "\n".join(_labels(view))
+    # The headline is still the 5-hour window's, and it has no price — so it falls
+    # back to raw tokens rather than borrowing the week's percentage.
+    assert "tokens per task" in text
+    assert "of the 5-hour window, per task" not in text
+    assert "The 7-day window has no price yet" not in text
 
 
 def test_without_two_quota_readings_it_reports_tokens_not_a_percentage(store):
@@ -119,6 +224,7 @@ def test_without_two_quota_readings_it_reports_tokens_not_a_percentage(store):
     assert "needs two quota readings" in text
     assert "of the 5-hour window, per task" not in text
     assert "5-hour window priced at" not in text
+    assert "7-day window at" not in text
 
 
 def test_the_rate_limit_card_shows_the_latest_reading_of_each_window(store):
@@ -159,6 +265,14 @@ def test_a_thin_sample_is_labelled_as_one(store):
     _seed(tasks=3)
     view = _view(store)
     assert any("the curve is a guess" in t for t in _labels(view))
+
+
+def test_the_thin_sample_warning_counts_the_window_that_was_drawn(store):
+    """With only the week priced the 5-hour series is empty, and reading ITS count
+    would warn about "0 finished tasks" on a card drawing three of them."""
+    _seed(tasks=3, session_moves=False)
+    view = _view(store)
+    assert any("Only 3 finished tasks" in t for t in _labels(view))
 
 
 def test_a_full_sample_carries_no_warning(store):

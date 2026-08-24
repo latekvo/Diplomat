@@ -1474,6 +1474,14 @@ let summary = Telemetry.summarize(ledger, now: tNow, days: 14, steps: 56,
 check(summary.startedCount == 2 && summary.remoteCount == 1)
 check(summary.perTask.count == 1, "a peer's agent was priced against our own window")
 check(summary.perTask.mean == 5, "500k of a 10M window is 5%")
+// The same task against the other window: 2.8M tokens bought 3% of the week, so the
+// week is worth ~93.3M and a 500k task is ~0.54% of it — a different measurement of
+// the same work, not the 5-hour figure relabelled.
+check(abs(summary.perTaskWeek.mean - 100 * 500_000 / (2_800_000 / 0.03)) < 1e-9,
+      "the week was priced off the 5-hour calibration instead of its own")
+// One axis for both, or the same task would land in a different bin on each.
+check(summary.perTask.bins.last?.upper == summary.perTaskWeek.bins.last?.upper,
+      "the two histograms did not share their bin edges")
 check(summary.pendingReviewsNow == 1 && summary.pendingConflictsNow == 0,
       "started work is not still owed")
 check(summary.repoTokens == 1_800_000 && summary.otherTokens == 1_000_000)
@@ -1498,7 +1506,22 @@ let unpricedSummary = Telemetry.summarize(unpriced, now: tNow, days: 14, steps: 
                                           binCount: 12, z: 1.96)
 check(unpricedSummary.sessionLimitTokens == nil)
 check(unpricedSummary.perTask.count == 0, "a percentage was invented without a price")
+check(unpricedSummary.perTaskWeek.count == 0, "a weekly percentage was invented too")
 check(unpricedSummary.perTaskTokensMean == 500_000, "the raw cost is still reported")
+// And the two fail apart: the 5-hour window resets on its own cycle, so a ledger
+// whose samples straddle a reset reads as a window that went UP and prices nothing,
+// while the week only ever falls. The screen and the dispatch gate both act on the
+// week alone here, so it must not go empty with the window that failed.
+let sessionBlind = Telemetry.fold(lines: tLines.map {
+    $0.replacingOccurrences(of: #""sessionLeft": 0.85"#, with: #""sessionLeft": 1.0"#)
+      .replacingOccurrences(of: #""sessionLeft": 0.75"#, with: #""sessionLeft": 1.0"#)
+})
+let sessionBlindSummary = Telemetry.summarize(sessionBlind, now: tNow, days: 14,
+                                              steps: 56, binCount: 12, z: 1.96)
+check(sessionBlindSummary.sessionLimitTokens == nil)
+check(sessionBlindSummary.perTask.count == 0)
+check(sessionBlindSummary.perTaskWeek.count == 1,
+      "the week went unpriced with the 5-hour window rather than on its own readings")
 // A probe that has been down for an hour must not blank a figure it measured
 // perfectly well an hour ago, and a missing reading is not a window at zero.
 let blind = Telemetry.fold(lines: tLines + [

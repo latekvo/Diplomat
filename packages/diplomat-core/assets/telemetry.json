@@ -18,8 +18,8 @@
   ],
   "defaultRangeDays": 14,
 
-  "_seriesComment": "steps = how many instants the pending-over-time series is sampled at across the whole range (evenly spaced, the last one being 'now'); bins = histogram buckets for the per-task spread. Both are fixed so the two platforms draw the same chart from the same ledger.",
-  "series": { "steps": 56, "bins": 12 },
+  "_seriesComment": "steps = how many instants the pending-over-time series is sampled at across the whole range (evenly spaced, the last one being 'now'); bins = histogram buckets for the per-task spread. Both are fixed so the two platforms draw the same chart from the same ledger. The spread is TWO histograms — the same tasks against the 5-hour window and against the 7-day one — sharing one set of bin edges, so a bin is the same slice of the x axis for both and the two can be read against each other.",
+  "series": { "steps": 56, "bins": 20 },
 
   "_confidenceComment": "A normal-approximation interval on the MEAN (z x sd / sqrt(n)), not a prediction interval for one task — the shaded band answers 'where does the average sit', which is what a budget is planned against. z is the two-sided normal quantile for the level.",
   "confidence": { "level": 0.95, "z": 1.96, "title": "95% CI" },
@@ -39,12 +39,33 @@
       "colorHex": "#FF9500"
     },
     {
+      "_comment": "The card, which charts BOTH windows at once — the same tasks priced against each — so it is named for both. The two entries below are the SERIES: their titles name the two windows in the figures printed under the chart, and their colours the bars. A task is a big slice of a 5-hour window and a sliver of a week, so the two humps sit far apart on the shared axis; that distance IS the finding, and it is which ceiling the work is really spending against.",
       "id": "limitSpread",
       "title": "Spread",
-      "blurb": "How that share is distributed, with a confidence interval on the mean.",
+      "blurb": "The same tasks priced against both rate-limit windows, each as a histogram with a confidence interval on its mean. Whichever hump sits further right is the ceiling that runs out first.",
       "unit": "percent",
       "emoji": "🔔",
       "linuxGlyph": "◠",
+      "sfSymbol": "chart.bar.xaxis",
+      "colorHex": "#FF453A"
+    },
+    {
+      "id": "spreadSession",
+      "title": "5-hour",
+      "blurb": "Share of the 5-hour rate-limit window one auto-task consumes.",
+      "unit": "percent",
+      "emoji": "🔴",
+      "linuxGlyph": "◼",
+      "sfSymbol": "chart.bar.xaxis",
+      "colorHex": "#FF453A"
+    },
+    {
+      "id": "spreadWeek",
+      "title": "7-day",
+      "blurb": "Share of the 7-day rate-limit window one auto-task consumes.",
+      "unit": "percent",
+      "emoji": "🟡",
+      "linuxGlyph": "◼",
       "sfSymbol": "chart.bar.xaxis",
       "colorHex": "#FFCC00"
     },

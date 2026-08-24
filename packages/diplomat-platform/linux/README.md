@@ -370,7 +370,7 @@ diplomat_app/
   szpont.py       the one gate on "is the SzpontNet add-on here?"
   meshspawn.py    the wizards' "⬡ Run on mesh" row
   meshview.py     the ⬡ Mesh topology screen
-  telemetryview.py  the Telemetry screen: the bell curve, the rate-limit windows, the backlog series, the token split
+  telemetryview.py  the Telemetry screen: the bell curves, the rate-limit windows, the backlog series, the token split
   widgets.py      cards, chips, rows
   panel.py        the popup panel (header, search, grid, results, agent tasks, devices)
   settingsview.py two-pane settings screen

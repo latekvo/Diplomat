@@ -271,8 +271,9 @@ no gate whatsoever.
 - **Claude Code** spends Anthropic **rate-limit windows**, which that account
   publishes only as a percentage. Both windows gate - a task has to fit inside what
   is left of the 5-hour one *and* the 7-day one, since either can be the one that
-  runs out. The weekly figure is the same tasks rescaled by the ratio of the two
-  calibrations, so the two can never disagree about how big a task is.
+  runs out. Each window is bounded from its own distribution - the same pair the
+  Telemetry screen draws - so a window the ledger cannot price yet leaves the other
+  one gated on what was actually measured.
 - **Hermes** (and any other runner billed by a provider) spends **money**. Hermes
   prices each of its own sessions against the model it ran on, so the ledger carries
   what the task cost in dollars and which model's rates it was charged at - and the
@@ -656,7 +657,12 @@ default 14):
 - **Limit per task** - the share of one 5-hour rate-limit window an auto-task
   consumes on average, plus a **bell curve** of how that is distributed, with a 95%
   confidence interval on the mean drawn behind it (the histogram is the spread of
-  the tasks; the band is how well the *average* is known, and is much narrower).
+  the tasks; the band is how well the *average* is known, and is much narrower). The
+  same tasks are drawn a second time against the **7-day** window - red bars for the
+  5-hour one, yellow for the week, grouped inside shared bins on one axis, each with
+  its own fitted normal, interval and mean rule. Both windows are priced from their
+  own quota readings, so either can be measurable while the other is not, and which
+  of the two humps sits further right is the ceiling that runs out first.
 - **Rate limit left** - what the usage probe measured to be left of each window,
   drawn where it was sampled rather than resampled onto a grid: the 5-hour one saws
   (it refills on its own cycle), the 7-day one is the slower ceiling. The axis is
@@ -731,8 +737,11 @@ what actually happened**: over an interval the
 account spent `Δutil` of its window while this machine logged `Δtokens`, so the window
 is worth `Δtokens / Δutil`, summed across every interval that didn't span a reset. Until
 two quota readings exist there is no price, and the screen says so and shows raw tokens
-per task rather than inventing a percentage. Work placed on a **mesh peer** spends that
-peer's quota, so it counts as started and is kept out of the cost and run-time figures.
+per task rather than inventing a percentage. The 7-day window is priced the same way
+from its own readings. It moves slowly, so it takes longer to measure - and until it
+has a price the screen leaves its series off rather than rescaling the 5-hour figure
+into it. Work placed on a **mesh peer** spends that peer's quota, so it counts as
+started and is kept out of the cost and run-time figures.
 
 The arithmetic is shared: [`Telemetry.swift`](packages/diplomat-core/Sources/DiplomatCore/Telemetry.swift)
 and `diplomat_runtime/telemetry.py` are diffed field-for-field over one ledger by

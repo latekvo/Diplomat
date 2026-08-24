@@ -324,6 +324,21 @@ def test_the_fixture_exercises_every_figure(both):
     assert p["perTask"]["ciHigh"] > p["perTask"]["ciLow"], "degenerate interval"
     assert any(b["count"] for b in p["perTask"]["bins"]), "empty histogram"
     assert any(v > 0 for v in p["perTask"]["curve"]), "flat fitted normal"
+    # The second histogram on the same chart: the same tasks against the other window,
+    # measured from that window's own calibration and binned on the shared axis.
+    assert p["perTaskWeek"]["count"] == p["perTask"]["count"], (
+        "the two windows priced different populations"
+    )
+    assert (p["perTaskWeek"]["bins"][-1]["upper"]
+            == p["perTask"]["bins"][-1]["upper"]), (
+        "the two histograms did not share their bin edges, so one bin means two "
+        "different slices of the axis they are drawn on"
+    )
+    assert 0 < p["perTaskWeek"]["mean"] < p["perTask"]["mean"], (
+        "the fixture's week is not the roomier window, so a chart that drew one "
+        "series twice would pass"
+    )
+    assert any(v > 0 for v in p["perTaskWeek"]["curve"]), "flat fitted normal"
     assert p["avgRunSecs"] > 0 and p["avgWaitSecs"] > 0
     assert p["remoteCount"] == 2, (
         "a mesh-placed task is missing — one unfinished, and one that finished and "
@@ -380,6 +395,9 @@ def test_a_foreign_runners_task_is_priced_but_never_charged_to_the_window(both):
                   if t["runner"] == "opencode") == [8_000_000, 9_000_000]
     assert p["perTask"]["count"] == len(counted), (
         "the window's percentages counted a task billed to another provider"
+    )
+    assert p["perTaskWeek"]["count"] == len(counted), (
+        "the weekly window counted a task billed to another provider"
     )
     # It is still the same work, and the tokens-per-task figure is where it belongs.
     priced = [t["tokens"] for t in local_priced]

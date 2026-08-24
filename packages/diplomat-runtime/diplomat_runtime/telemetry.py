@@ -613,6 +613,16 @@ def calibrate(samples: list[Sample], *, session: bool) -> float | None:
     return tokens / util
 
 
+def _shares(task_tokens: list[float], limit: float | None) -> list[float]:
+    """Each task as a percentage of one rate-limit window, or nothing at all while
+    that window has no price. Empty rather than zeroed: a share of a window nobody
+    has measured is a made-up number, and the screen says so instead of drawing it.
+    """
+    if limit is None or limit <= 0:
+        return []
+    return [100 * tok / limit for tok in task_tokens]
+
+
 # MARK: - Distribution (the bell curve)
 
 
@@ -653,7 +663,11 @@ class Distribution:
     curve: tuple[float, ...] = ()
 
 
-def distribution(values: list[float], *, bin_count: int, z: float) -> Distribution:
+def distribution(values: list[float], *, bin_count: int, z: float,
+                 span: float | None = None) -> Distribution:
+    """``span`` widens the histogram's top edge past the largest observation, so two
+    distributions drawn on one axis share their bin edges. Without it each scales to
+    its own maximum, and the same task lands in a different bin on each."""
     if not values:
         return Distribution()
     n = float(len(values))
@@ -670,7 +684,7 @@ def distribution(values: list[float], *, bin_count: int, z: float) -> Distributi
 
     # Bins run from 0, not from the smallest observation: this is a share of a
     # budget, so how close the mass sits to zero is the point of looking.
-    hi = max(ordered[-1], 1e-9)
+    hi = max(span or 0.0, ordered[-1], 1e-9)
     width = hi / bin_count
     counts = [0] * bin_count
     for v in values:
@@ -796,10 +810,14 @@ class Summary:
     session_limit_tokens: float | None = None
     week_limit_tokens: float | None = None
 
+    #: What a task costs as a share of the 5-hour window, and the same tasks as a
+    #: share of the 7-day one. Two distributions rather than one and a ratio: each
+    #: window is priced from its own quota readings (:func:`calibrate`), so either can
+    #: be measurable while the other is not, and the screen draws them on one axis —
+    #: which of the two humps sits further right is the ceiling that runs out first.
+    #: They share bin edges, so a bin means the same slice of the axis on both.
     per_task: Distribution = field(default_factory=Distribution)
-    #: The same tasks against the 7-day window — one number, since the shape is
-    #: the shape of ``per_task`` rescaled.
-    per_task_week_mean: float = 0.0
+    per_task_week: Distribution = field(default_factory=Distribution)
     #: Mean RAW tokens per task. Independent of the quota probe, so it is what the
     #: screen shows while the window has no price yet — an unanchored number, but
     #: a measured one.
@@ -883,12 +901,11 @@ def summarize(ledger: Ledger, *, now: float, days: float, steps: int,
     # a token count whoever billed it, while a share of a window is the account's and
     # only its own tasks may be measured against it.
     charged = [t.tokens for t in priced if t.anthropic]
-    pct: list[float] = []
-    if session_limit is not None and session_limit > 0:
-        pct = [100 * tok / session_limit for tok in charged]
-    week_mean = 0.0
-    if week_limit is not None and week_limit > 0 and charged:
-        week_mean = sum(100 * tok / week_limit for tok in charged) / len(charged)
+    pct = _shares(charged, session_limit)
+    pct_week = _shares(charged, week_limit)
+    # One axis for both histograms, so the distance between the humps is readable as
+    # what it is: how much more of a 5-hour window a task eats than of a week.
+    span = max(max(pct, default=0.0), max(pct_week, default=0.0))
 
     # The dollar half of the same question. Restricted to the model that ran most
     # recently, because a switch of model is a switch of rates: keeping the older
@@ -912,8 +929,8 @@ def summarize(ledger: Ledger, *, now: float, days: float, steps: int,
     return Summary(
         session_limit_tokens=session_limit,
         week_limit_tokens=week_limit,
-        per_task=distribution(pct, bin_count=bin_count, z=z),
-        per_task_week_mean=week_mean,
+        per_task=distribution(pct, bin_count=bin_count, z=z, span=span),
+        per_task_week=distribution(pct_week, bin_count=bin_count, z=z, span=span),
         per_task_tokens_mean=(sum(t.tokens for t in priced) / len(priced)
                               if priced else 0.0),
         per_task_usd=distribution(usd, bin_count=bin_count, z=z),
@@ -1054,9 +1071,9 @@ def parity_payload(ledger: Ledger, summary: Summary) -> dict:
         "sessionLimitTokens": _opt(summary.session_limit_tokens),
         "weekLimitTokens": _opt(summary.week_limit_tokens),
         "perTask": _dist(d),
+        "perTaskWeek": _dist(summary.per_task_week),
         "perTaskUsd": _dist(summary.per_task_usd),
         "perTaskUsdModel": summary.per_task_usd_model,
-        "perTaskWeekMean": _r(summary.per_task_week_mean),
         "perTaskTokensMean": _r(summary.per_task_tokens_mean),
         "avgRunSecs": _r(summary.avg_run_secs),
         "avgWaitSecs": _r(summary.avg_wait_secs),
@@ -1089,7 +1106,7 @@ def parity_payload(ledger: Ledger, summary: Summary) -> dict:
             "mean": percent(d.mean),
             "ciLow": percent(d.ci_low),
             "ciHigh": percent(d.ci_high),
-            "weekMean": percent(summary.per_task_week_mean),
+            "weekMean": percent(summary.per_task_week.mean),
             "usdMean": money(summary.per_task_usd.mean),
             "share": percent(summary.repo_share_pct),
             "perTaskTokens": tokens(summary.per_task_tokens_mean),
