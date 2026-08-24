@@ -113,16 +113,15 @@ def _task_look(kind: str) -> tuple[str, str]:
     return glyphs.G_REVIEW, _REVIEW_TINT
 
 
-#: What each resolved state reads as on a row. "unknown" is the one word that used
-#: not to exist: the applet would pick "running" or drop the row entirely rather than
-#: admit a probe had failed, which is how a wrong verdict became invisible.
+#: What each state the list draws reads as on a row — every state but the two a run
+#: ends in, which `Store.running_tasks` leaves out. "unknown" is the one word
+#: that used not to exist: the applet would pick "running" or drop the row entirely
+#: rather than admit a probe had failed, which is how a wrong verdict became invisible.
 _STATE_WORD = {
     "running": "running",
     "awaiting_input": "awaiting input",
     "starting": "starting",
     "unknown": "unknown",
-    "finished": "finished",
-    "merged": "merged",
 }
 
 
@@ -661,12 +660,11 @@ class Panel(QWidget):
         and how much room it has left.
 
         What is running first, then what is starting, then the free slots, then the
-        queue — the reading order `AgentTaskStatus` fixes on macOS, for the statuses
-        this front-end can tell apart. A detached `Popen` gives it no window handle,
-        so a running agent is a status and not a session: nothing to click, and no
-        *done* (this side never learns that a window was closed, only that its
-        process left). *Awaiting input* it does have — the agents run in tmux panes,
-        which can be read (`Store._idle_pr_agents`).
+        queue — the reading order `AgentTaskStatus` fixes on macOS. A detached `Popen`
+        gives it no window handle, so a running agent is a status and not a session:
+        nothing to click. The status itself is the one macOS draws, *awaiting input*
+        included — the agents run in tmux panes, which can be read
+        (`Store._idle_pr_agents`).
 
         So the list can be longer than the cap: an agent waiting at its prompt keeps
         its row AND gives its bay back, which draws both. That pair is the point —

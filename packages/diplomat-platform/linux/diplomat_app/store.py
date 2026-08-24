@@ -1439,12 +1439,8 @@ class Store(QObject):
         nobody dispatched has none of those and is drawn by its PR alone, which is
         still a great deal more than the blank the operator gets otherwise.
 
-        Runs that are over are left out. The same tick that resolves one retires it
-        (:meth:`_retire_finished`), so drawing it would put a row on screen for one
-        redraw and then take it away again — and which redraw catches it depends on
-        when the poll happened to land, which is exactly the kind of answer this
-        module exists to stop producing. What a finished run leaves behind is its
-        activity line and its ledger entry.
+        Runs that are over are left out (:data:`agentstate.ENDED`), so the list starts
+        at *awaiting input*.
         """
         return [
             autofix.RunningAgent(
@@ -1458,7 +1454,7 @@ class Store(QObject):
                 reason=s.reason,
             )
             for r, s in self._agent_tick().rows
-            if s.state not in (agentstate.FINISHED, agentstate.MERGED)
+            if s.state not in agentstate.ENDED
         ]
 
     @property
