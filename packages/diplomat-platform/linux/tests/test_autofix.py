@@ -2688,11 +2688,12 @@ def test_a_run_short_of_the_timeout_keeps_its_window(store, monkeypatch):
 # stillness clock to run, and dropped the moment the agent it describes is gone.
 
 
-def test_an_untracked_runs_stillness_clock_leaves_zero(store, monkeypatch):
-    """A tick that throws its synthesized records away hands the next one a screen it
-    has no memory of, so ``quiet_since`` restarts from nothing every time: two hours
-    on it is still None, ``went_quiet`` is still None, and the row can never reach
-    FINISHED by stillness however long its agent sits there."""
+def test_an_untracked_runs_stillness_clock_runs_across_ticks(store, monkeypatch):
+    """The backstop measures a screen against the last one seen, so the record has to
+    survive between ticks. Thrown away, every tick reads a screen it has no memory of:
+    ``quiet_since`` restarts from nothing, ``went_quiet`` is still None two hours in,
+    and the row can never reach FINISHED by stillness however long its agent sits
+    there."""
     from diplomat_runtime import agentregistry
     from diplomat_runtime import agentstate as A
 
@@ -2762,7 +2763,8 @@ def test_a_kept_records_tty_follows_its_prs_sighting_onto_disk(store, monkeypatc
     store._settle_agents()
     store._settle_agents()
     (before,) = agentregistry.load()
-    assert (before.tty, before.quiet_since is None) == ("pts/337", False)
+    assert before.tty == "pts/337"
+    assert before.quiet_since is not None, "the first window's clock is running"
 
     fake_probes(monkeypatch, live_prs=A.Observation.present({337: "pts/9"}),
                 tails={"pts/9": WORKING})
@@ -2774,9 +2776,9 @@ def test_a_kept_records_tty_follows_its_prs_sighting_onto_disk(store, monkeypatc
 
 
 def test_the_merged_probe_is_never_asked_about_an_untracked_runs_pr(store, monkeypatch):
-    """"Merged" ends a run so it can be priced and its bay handed back — neither of
-    which a synthesized run has any use for, and its agent is manifestly still in the
-    process table. Asked about, a landed PR whose agent is still sitting in its window
+    """A merged verdict ends a run so it can be priced and its bay handed back —
+    neither of which a synthesized run has any use for, and its agent is manifestly
+    still in the process table. Asked about, a landed PR whose agent is still sitting in its window
     would retire the record and have the next tick synthesize it straight back, one
     `gh` call and one audit line per tick."""
     from diplomat_app import probes
