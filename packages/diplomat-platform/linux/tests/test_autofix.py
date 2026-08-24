@@ -2732,7 +2732,7 @@ def test_an_untracked_agents_wedged_window_is_closed(store, monkeypatch):
     assert agentregistry.load() == [], "and the record it was kept for is dropped"
     assert [e.detail for e in activity.read() if e.action == "kill-device"] == \
         ["closed untracked:337's window — its screen has not changed in 20m"], \
-        "the audit line the issue counted zero of"
+        "a closed window reaches the operator only through the feed"
 
 
 def test_an_untracked_record_does_not_outlive_its_agent(store, monkeypatch):
