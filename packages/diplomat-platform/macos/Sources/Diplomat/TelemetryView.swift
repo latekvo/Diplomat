@@ -193,21 +193,29 @@ struct TelemetryView: View {
                     : head
             }
             if d.count == 0 && s.perTaskTokensMean > 0 {
-                return "tokens per task. The share of the limit is Claude Code's "
-                    + "own — it counts only tasks that ran on it, and needs two "
-                    + "quota readings from the OAuth usage probe."
+                return "tokens per task. The share of the 5-hour window is Claude "
+                    + "Code's own — it counts only tasks that ran on it, and needs "
+                    + "two quota readings from the OAuth usage probe."
             }
             return "No finished auto-task in this range yet."
         }()
+        // Whichever windows the ledger priced — not always the 5-hour one, which
+        // resets on its own cycle, so a ledger whose samples straddle a reset prices
+        // only the week. The dispatch gate holds work against that weekly figure
+        // (`AutoBudget.costs`), so drawing nothing here would read "unpriced" over a
+        // measurement.
+        let lines = spreadLines(d, week)
+        // Both series hold the same tasks, so whichever was priced is the sample.
+        let shown = Swift.max(d.count, week.count)
         VStack(alignment: .leading, spacing: 6) {
             cardHead("limitPerTask", headline)
             note(caption)
-            if priced {
+            if !lines.isEmpty {
                 SpreadChart(session: d, week: week, sessionTint: tint("spreadSession"),
                             weekTint: tint("spreadWeek")).frame(height: 150)
                 // One line per window, in that window's colour — the chart has no
                 // other key.
-                ForEach(spreadLines(d, week), id: \.0) { id, line in
+                ForEach(lines, id: \.0) { id, line in
                     Text(line).font(.system(size: 9).monospaced())
                         .foregroundStyle(tint(id))
                 }
@@ -215,8 +223,8 @@ struct TelemetryView: View {
                     note("The 7-day window has no price yet — it moves slowly, so it "
                          + "takes longer than the 5-hour one to measure a task against.")
                 }
-                if d.count < (model?.minSample ?? 5) {
-                    Text("Only \(d.count) finished task\(d.count == 1 ? "" : "s") — the "
+                if shown < (model?.minSample ?? 5) {
+                    Text("Only \(shown) finished task\(shown == 1 ? "" : "s") — the "
                          + "curve is a guess until there are \(model?.minSample ?? 5).")
                         .font(.system(size: 9)).foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)

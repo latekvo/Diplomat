@@ -55,6 +55,16 @@ def _price_the_windows(at: float) -> None:
                       "weekLeft": 0.88, "repoTokens": 200_000.0, "otherTokens": 0.0})
 
 
+def _price_only_the_week(at: float) -> None:
+    """The same interval with the 5-hour reading RISING across it — a ledger whose
+    samples straddle one of that window's resets. It prices nothing; the week, which
+    only ever falls, prices exactly as :func:`_price_the_windows` does."""
+    telemetry.append({"at": at, "ev": "sample", "sessionLeft": 0.8, "weekLeft": 0.9,
+                      "repoTokens": 0.0, "otherTokens": 0.0})
+    telemetry.append({"at": at + 900, "ev": "sample", "sessionLeft": 0.9,
+                      "weekLeft": 0.88, "repoTokens": 200_000.0, "otherTokens": 0.0})
+
+
 def _finished_tasks(at: float, tokens: list[float]) -> None:
     """Auto-tasks that ran HERE and finished, each priced by its own transcript —
     the population the per-task distribution is built from."""
@@ -97,10 +107,11 @@ def test_the_windows_are_priced_from_the_same_samples_the_screen_uses(monkeypatc
     assert summary.per_task.mean == pytest.approx(5.0)  # 100k of a 2M window
 
 
-def test_a_measured_bound_prices_both_windows_from_one_distribution(monkeypatch):
-    """The week's figure is the session's rescaled by the ratio of the two
-    calibrations — a task is a fixed number of tokens and only the divisor
-    differs — so the two can never disagree about how big a task is."""
+def test_each_window_is_bounded_from_its_own_distribution(monkeypatch):
+    """Two bounds from two distributions, each priced from its own quota readings.
+    Where both windows are priced the pair still agrees with a rescale — a task is a
+    fixed number of tokens and only the divisor differs — which is what the figures
+    below pin. Either window standing alone is the three tests after this one."""
     _ledger_with_priced_tasks(monkeypatch, [80_000.0, 100_000.0, 120_000.0,
                                             90_000.0, 110_000.0])
     model = telemetry.model()
@@ -136,6 +147,62 @@ def test_a_week_the_ledger_cannot_price_leaves_the_session_measured(monkeypatch)
     session, week = autobudget._costs(summary, z=autofix.budget_z(95), min_sample=5)
     assert session is not None
     assert week is None
+
+
+def test_a_session_the_ledger_cannot_price_leaves_the_week_measured(monkeypatch):
+    """The other direction, and the one a rescale cannot answer: the week is priced
+    and the 5-hour window is not, so the weekly gate runs on what was measured
+    instead of falling to the floor beside the window that could not be.
+
+    Both readings come from one probe call, so this is not a missing weekly reading
+    — it is a 5-hour window that went up between every pair of samples there is."""
+    now = time.time()
+    _price_only_the_week(now - 7200)
+    _finished_tasks(now - 3600, [100_000.0] * 6)
+    telemetry._reset_cache()
+
+    model = telemetry.model()
+    summary = telemetry.summarize(
+        telemetry.load(), now=time.time(), days=float(model["defaultRangeDays"]),
+        steps=2, bin_count=1, z=1.96,
+    )
+    assert summary.session_limit_tokens is None
+    assert summary.week_limit_tokens == pytest.approx(_WEEK_LIMIT)
+
+    session, week = autobudget._costs(summary, z=autofix.budget_z(95), min_sample=5)
+    assert session is None
+    assert week == pytest.approx(1.0), "100k of a 10M week, and no spread to inflate it"
+
+
+def test_the_week_gates_on_its_own_bound_with_the_session_unpriced(monkeypatch):
+    """The same ledger, assembled: what the operator is held to is the week's
+    measured 1%, not the 20% the floor would have kept in hand — and the feed says
+    "measured" rather than quoting a reserve."""
+    now = time.time()
+    _price_only_the_week(now - 7200)
+    _finished_tasks(now - 3600, [100_000.0] * 6)
+    telemetry._reset_cache()
+    autobudget._reset_cache()
+    # Both windows are roomy, but the week is held to its measured 1% and the
+    # 5-hour one to the 20% floor — so the LESS full window is the affordable one,
+    # and which of the two is named is what proves they are gated apart.
+    _probe(monkeypatch, session=0.25, week=0.50)
+
+    budget = autobudget.decide()
+
+    assert budget.window == autofix.WINDOW_SESSION
+    assert not budget.measured
+    assert budget.needed == pytest.approx(autofix.DEFAULT_BUDGET_FLOOR_PCT)
+
+    autobudget._reset_cache()
+    _probe(monkeypatch, session=0.95, week=0.005)  # the week is now the tighter one
+
+    budget = autobudget.decide()
+
+    assert budget.window == autofix.WINDOW_WEEK
+    assert budget.measured, "the week was priced — it is not the standing floor"
+    assert budget.needed == pytest.approx(1.0)
+    assert not budget.affordable
 
 
 # MARK: - The assembled verdict

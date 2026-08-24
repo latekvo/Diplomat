@@ -139,13 +139,8 @@ enum AutoBudget {
     }
 
     /// `(session, week)` upper bounds on what one more task costs, each as a percentage
-    /// of its own window, or nil where the ledger cannot price it.
+    /// of its own window, or nil where the ledger cannot price that window.
     ///
-    /// `summary.perTask` is already a share-of-the-5-hour-window distribution. The
-    /// week's is that one scaled by `sessionLimitTokens / weekLimitTokens`: both windows
-    /// are priced in tokens from the same samples (`Telemetry.calibrate`), so a task
-    /// worth *t* tokens is `100·t/session` of one and `100·t/week` of the other — a
-    /// constant ratio, which mean, spread and bound all carry.
     /// One bound per window from that window's own distribution — the same pair the
     /// Telemetry screen draws. Each is priced from its own quota readings, so a week
     /// the samples cannot price leaves the 5-hour gate measured, and the reverse.

@@ -705,20 +705,26 @@ def test_a_range_with_no_readings_in_it_counts_nothing():
 _WINDOWS_NOW = 1_785_000_000.0
 
 
-def _both_windows(*, week_moves: bool = True) -> telemetry.Ledger:
+def _both_windows(*, week_moves: bool = True,
+                  session_moves: bool = True) -> telemetry.Ledger:
     """A ledger that prices each window from its own readings, plus three finished
     local tasks to lay against them.
 
     200k tokens buy 10% of the 5-hour window and 2% of the week, so the two come out
     worth 2M and 10M tokens and a 100k task is exactly 5% of one and 1% of the other
     — exact figures, so a failure below names the arithmetic rather than a rounding.
+
     ``week_moves`` off holds the weekly reading still, which is what a quiet
     account's ledger looks like: the 5-hour window is measurable and the week is
-    not."""
+    not. ``session_moves`` off is the other way round — the 5-hour reading RISES
+    across the interval, as it does on a ledger whose samples straddle one of its
+    resets, so it prices nothing while the week prices fine."""
     lines = [
-        json.dumps({"at": _WINDOWS_NOW - 7200, "ev": "sample", "sessionLeft": 1.0,
+        json.dumps({"at": _WINDOWS_NOW - 7200, "ev": "sample",
+                    "sessionLeft": 1.0 if session_moves else 0.9,
                     "weekLeft": 1.0, "repoTokens": 0.0, "otherTokens": 0.0}),
-        json.dumps({"at": _WINDOWS_NOW - 6300, "ev": "sample", "sessionLeft": 0.9,
+        json.dumps({"at": _WINDOWS_NOW - 6300, "ev": "sample",
+                    "sessionLeft": 0.9 if session_moves else 1.0,
                     "weekLeft": 0.98 if week_moves else 1.0,
                     "repoTokens": 200_000.0, "otherTokens": 0.0}),
     ]
@@ -770,6 +776,23 @@ def test_a_window_the_samples_cannot_price_gets_no_distribution_at_all():
     assert s.per_task_week.count == 0
     assert s.per_task.mean == pytest.approx(5.0)
     assert s.per_task.bins[-1].upper == pytest.approx(6.0)
+
+
+def test_the_5_hour_window_can_be_the_one_the_samples_cannot_price():
+    """The mirror of the case above. That window resets on its own cycle, so a
+    ledger whose samples straddle a reset reads as a window that went UP and prices
+    nothing — while the week, which only ever falls, prices fine. Both the screen
+    and the dispatch gate act on the week alone here, so the summary has to carry
+    it rather than going empty with the window that failed."""
+    s = _windows_summary(session_moves=False)
+    assert s.session_limit_tokens is None
+    assert s.per_task.count == 0
+    assert s.week_limit_tokens == pytest.approx(10_000_000.0)
+    assert s.per_task_week.count == 3
+    assert s.per_task_week.mean == pytest.approx(1.0)
+    # 120k of a 10M week, and nothing from the empty series to widen it: the span is
+    # the largest share either window was actually measured at.
+    assert s.per_task_week.bins[-1].upper == pytest.approx(1.2)
 
 
 def test_a_span_widens_a_histogram_past_its_own_largest_value():

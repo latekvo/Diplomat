@@ -100,12 +100,10 @@ def _decide_uncached() -> autofix.Budget:
 def _decide_claude() -> autofix.Budget:
     """The verdict for a machine spending Anthropic rate-limit windows.
 
-    Priced against the 5-hour window the same way the Telemetry screen prices it:
-    the ledger's finished-and-locally-run tasks, each as a share of the window it
-    was spent from, give a mean and a spread, and the upper prediction bound on
-    those is what one more task is required to fit inside. The 7-day window is the
-    same tasks rescaled by the ratio of the two calibrations, since a task is a fixed
-    number of tokens and only the divisor differs.
+    Priced against both windows the same way the Telemetry screen prices them: the
+    ledger's finished-and-locally-run tasks, each as a share of the window it was
+    spent from, give a mean and a spread per window, and the upper prediction bound
+    on those is what one more task is required to fit inside.
 
     What is LEFT comes from the probe rather than from the ledger's last sample:
     samples are written every 15 minutes, and a gate reading one of those would let

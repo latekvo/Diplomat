@@ -689,15 +689,22 @@ class TelemetryView(QWidget):
                 caption += f" · {telemetry.percent(week.mean)} of the 7-day window"
         elif d.count == 0 and s.per_task_tokens_mean > 0:
             headline = telemetry.tokens(s.per_task_tokens_mean)
-            caption = ("tokens per task. The share of the limit is Claude Code's "
-                       "own — it counts only tasks that ran on it, and needs two "
-                       "quota readings from the OAuth usage probe.")
+            caption = ("tokens per task. The share of the 5-hour window is Claude "
+                       "Code's own — it counts only tasks that ran on it, and needs "
+                       "two quota readings from the OAuth usage probe.")
         else:
             headline = "—"
             caption = "No finished auto-task in this range yet."
         self._card_head(self.cost_col, "limitPerTask", headline, caption=caption)
 
-        if not priced:
+        # Whichever windows the ledger priced — not always the 5-hour one, which
+        # resets on its own cycle, so a ledger whose samples straddle a reset prices
+        # only the week. The dispatch gate holds work against that weekly figure
+        # (:func:`autobudget._costs`), so drawing nothing here would read "unpriced"
+        # over a measurement.
+        series = [(dist, mid) for dist, mid in
+                  ((d, "spreadSession"), (week, "spreadWeek")) if dist.count]
+        if not series:
             return
 
         chart = SpreadChart()
@@ -705,9 +712,7 @@ class TelemetryView(QWidget):
         chart.set_distributions(d, week)
 
         # One line per window, in that window's colour — the chart has no other key.
-        for dist, metric_id in ((d, "spreadSession"), (week, "spreadWeek")):
-            if not dist.count:
-                continue
+        for dist, metric_id in series:
             line = QLabel(
                 f"◼ {_title(metric_id)}  {telemetry.percent(dist.mean)}  ·  "
                 f"{self._ci_title} {telemetry.percent(dist.ci_low)} – "
@@ -727,9 +732,11 @@ class TelemetryView(QWidget):
             unpriced.setStyleSheet(muted(9))
             self.cost_col.addWidget(unpriced)
 
-        if d.count < self._min_sample:
+        # Both series hold the same tasks, so whichever was priced is the sample.
+        shown = max(d.count, week.count)
+        if shown < self._min_sample:
             warn = QLabel(
-                f"Only {d.count} finished task{'' if d.count == 1 else 's'} — the "
+                f"Only {shown} finished task{'' if shown == 1 else 's'} — the "
                 f"curve is a guess until there are {self._min_sample}."
             )
             warn.setWordWrap(True)
