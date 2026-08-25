@@ -119,6 +119,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if env["DIPLOMAT_SPAWN_FOCUS_TEST"] == "1" {
             Task { @MainActor in exit(Dump.spawnFocusTest() ? 0 : 1) }
         }
+        // Spawn-script self-test: proves the restore names a WINDOW when the app it
+        // restores to is the terminal itself, and only activates the app otherwise.
+        // Reads the generated AppleScript — no window, no Automation consent, so CI
+        // can host it where DIPLOMAT_SPAWN_FOCUS_TEST cannot. Exit code = pass/fail.
+        if env["DIPLOMAT_SPAWN_SCRIPT_TEST"] == "1" {
+            exit(SpawnScriptTest.run() ? 0 : 1)
+        }
         // AppleScript-runner self-test: proves OSAScript keeps "ran and printed
         // nothing" distinct from "could not run" — the distinction every terminal
         // path depends on. Pure AppleScript, so it needs no Automation permission
@@ -404,12 +411,15 @@ enum Dump {
             + "out-of-quota stalls are ignored, never nudged)")
     }
 
-    /// Spawn focus self-test: exercise the REAL `AgentSpawner` spawn path twice against
-    /// throwaway terminal windows and assert the focus contract —
+    /// Spawn focus self-test: exercise the REAL `AgentSpawner` spawn path three times
+    /// against throwaway terminal windows and assert the focus contract —
     ///   • background spawn (auto-fix monitor, `restoreFocusTo` set) must KEEP the user's
-    ///     focus (Finder here) while still creating + driving the window; and
+    ///     focus (Finder here) while still creating + driving the window;
     ///   • foreground spawn (a user pressing SPAWN AGENT, `restoreFocusTo` nil) must still
-    ///     create + drive a window.
+    ///     create + drive a window; and
+    ///   • background spawn whose restore target IS the terminal — the dispatch every
+    ///     agent launched from a terminal makes — must leave the operator's own WINDOW
+    ///     in front, which activating the app alone does not do.
     /// The FOREGROUND case only asserts the window is created, not that the terminal came
     /// forward: macOS focus-stealing PREVENTION suppresses cross-app `activate` requests
     /// from a process that isn't itself frontmost (this backgrounded self-test), so a live
@@ -432,6 +442,17 @@ enum Dump {
         // Finder is the neutral baseline: if it stays frontmost the spawn kept focus, if
         // it's replaced by the terminal the spawn stole it.
         func neutral() { _ = osa("tell application \"Finder\" to activate"); usleep(500_000) }
+        // The terminal's front window, as an id — an app name cannot tell "the
+        // operator's window came back" from "the app did".
+        func frontWindow(_ term: SpawnTerminal) -> String {
+            osa("tell application \"\(term.appName)\" to get id of "
+                + (term == .iterm ? "current window" : "front window") + " as string")
+        }
+        func openWindow(_ term: SpawnTerminal) -> String {
+            osa(term == .iterm
+                ? "tell application \"iTerm\" to return id of (create window with default profile) as string"
+                : "tell application \"Terminal\"\n do script \"\"\n return id of front window as string\nend tell")
+        }
         func closeWindow(_ term: SpawnTerminal, _ wid: String) {
             guard !wid.isEmpty else { return }
             _ = osa("""
@@ -492,11 +513,41 @@ enum Dump {
         closeWindow(term, fgWid)
         try? FileManager.default.removeItem(atPath: done2)
 
-        // Hard assertions: the background spawn kept focus AND both paths still open a
-        // trackable window. Foreground activation is informational (see the doc comment).
-        let ok = bgOpened && bgKept && fgOpened
+        // 3. SAME-APP background spawn — the restore target IS the terminal, which is
+        // where agents are dispatched from. Finder cannot stand in for it: activating a
+        // DIFFERENT app restores the operator, activating the terminal lands them on the
+        // window the spawn just made. The throwaway window stands in for theirs, so the
+        // assertion is window identity, not whatever they happen to have open.
+        let ownWid = openWindow(term)
+        _ = osa("tell application \"\(term.appName)\" to activate")
+        usleep(500_000)
+        let frontBefore = frontWindow(term)
+        let done3 = NSTemporaryDirectory() + "diplomat-focus-same-\(UUID().uuidString)"
+        let cmd3 = "echo 'diplomat same-app focus self-test — closes itself'; sleep 2; printf %s $? > '\(done3)'"
+        let cap3 = try? AgentSpawner.runSpawn(command: cmd3, terminal: term,
+                                              restoreFocusTo: term.bundleID)
+        usleep(800_000)
+        let frontAfter = frontWindow(term)
+        let sameWid = cap3?.0 ?? ""
+        let sameOpened = !sameWid.isEmpty
+        // An empty read is a failure, not a pass: it proves nothing came back.
+        let sameKept = !frontBefore.isEmpty && frontAfter == frontBefore
+        print("\nSAME-APP background spawn (restore → \(term.title) itself):")
+        print("  window created : \(sameOpened ? "yes (\(sameWid))" : "NO")")
+        print("  front window   : before=\(frontBefore.isEmpty ? "-" : frontBefore) "
+            + "after=\(frontAfter.isEmpty ? "-" : frontAfter) → "
+            + "\(sameKept ? "PASS (operator's window restored)" : "FAIL (left on the agent's window)")")
+        closeWindow(term, sameWid)
+        closeWindow(term, ownWid)
+        try? FileManager.default.removeItem(atPath: done3)
+
+        // Hard assertions: both background spawns kept the operator where they were AND
+        // every path still opens a trackable window. Foreground activation is
+        // informational (see the doc comment).
+        let ok = bgOpened && bgKept && fgOpened && sameOpened && sameKept
         print("\nSPAWN_FOCUS_TEST \(ok ? "OK" : "FAILED")"
-            + (ok ? "" : "  [bgOpened=\(bgOpened) bgKept=\(bgKept) fgOpened=\(fgOpened)]"))
+            + (ok ? "" : "  [bgOpened=\(bgOpened) bgKept=\(bgKept) fgOpened=\(fgOpened)"
+                       + " sameOpened=\(sameOpened) sameKept=\(sameKept)]"))
         return ok
     }
 

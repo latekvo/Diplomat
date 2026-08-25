@@ -87,6 +87,8 @@ jobs:
       # and not by oversight: both drive real throwaway iTerm/Terminal windows and
       # need a granted "control <terminal>" Automation permission, which a headless
       # runner has no way to hold. They are run by hand from the installed .app.
+      # DIPLOMAT_SPAWN_SCRIPT_TEST covers the focus half of the second one here, by
+      # reading the script those windows would have run.
       - name: Headless helper self-tests
         working-directory: packages/diplomat-platform/macos
         run: |
@@ -96,6 +98,7 @@ jobs:
           DIPLOMAT_ALLOCATOR_TEST=1 swift run Diplomat
           DIPLOMAT_QUEUE_TEST=1 swift run Diplomat
           DIPLOMAT_SWEEP_TEST=1 swift run Diplomat
+          DIPLOMAT_SPAWN_SCRIPT_TEST=1 swift run Diplomat
 
   # The shared core advertises "compiles on macOS *and* Linux". This guards that
   # invariant by building + running the diplomat-core package on Linux (the SwiftUI

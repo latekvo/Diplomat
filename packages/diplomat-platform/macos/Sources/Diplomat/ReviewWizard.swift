@@ -225,12 +225,20 @@ enum AgentSpawner {
     /// wedged between window creation and the input-settle `delay`: focus is gone for
     /// a blink, not for the whole 5s settle. The captured handles are script-globals,
     /// so they survive leaving and re-entering the terminal's `tell` block.
+    ///
+    /// When the app to restore to IS the terminal, activating it restores nothing: the
+    /// window just created is already that app's front window, so the operator lands on
+    /// the agent's window rather than the one they were in. That is the common case —
+    /// agents are dispatched from a terminal — so there the front window is captured
+    /// before the spawn and re-selected after it. Restoring to any other app is
+    /// answered by the activate alone.
     static func appleScript(for term: SpawnTerminal, shellCommand cmd: String,
                             restoreFocusTo restoreBID: String? = nil) -> String {
         let esc = cmd
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
         let bid = (restoreBID?.isEmpty ?? true) ? nil : restoreBID
+        let sameApp = bid == term.bundleID
         switch term {
         case .iterm:
             guard let bid else {
@@ -253,8 +261,14 @@ enum AgentSpawner {
                 return _wid & "|" & _sid & "|" & _tty
                 """
             }
+            let prevCapture = sameApp
+                ? "\n    set _prev to missing value\n    try\n        set _prev to id of current window\n    end try"
+                : ""
+            let prevRestore = sameApp
+                ? "\n    if _prev is not missing value then\n        try\n            select (first window whose id is _prev)\n        end try\n    end if"
+                : ""
             return """
-            tell application "iTerm"
+            tell application "iTerm"\(prevCapture)
                 set w to (create window with default profile)
                 set _sid to ""
                 set _tty to ""
@@ -265,7 +279,7 @@ enum AgentSpawner {
                 set _wid to (id of w) as string
             end tell
             tell application id "\(escBundleID(bid))" to activate
-            tell application "iTerm"
+            tell application "iTerm"\(prevRestore)
                 delay \(inputSettleDelay)
                 tell current session of w
                     write text "\(esc)"
@@ -287,14 +301,20 @@ enum AgentSpawner {
                 return _wid & "||" & _tty
                 """
             }
+            let prevCapture = sameApp
+                ? "\n    set _prev to missing value\n    try\n        set _prev to id of front window\n    end try"
+                : ""
+            let prevRestore = sameApp
+                ? "\n    if _prev is not missing value then\n        try\n            set _pw to (first window whose id is _prev)\n            set index of _pw to 1\n            set frontmost of _pw to true\n        end try\n    end if"
+                : ""
             return """
-            tell application "Terminal"
+            tell application "Terminal"\(prevCapture)
                 set _tab to do script ""
                 set _tty to tty of _tab
                 set _wid to (id of front window) as string
             end tell
             tell application id "\(escBundleID(bid))" to activate
-            tell application "Terminal"
+            tell application "Terminal"\(prevRestore)
                 delay \(inputSettleDelay)
                 do script "\(esc)" in _tab
             end tell
