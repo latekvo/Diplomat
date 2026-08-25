@@ -53,6 +53,7 @@ sys.meta_path.insert(0, _NoSzpontNet())
 # variable between them.
 _PROBE = '''\
 import json
+import threading
 
 from PySide6.QtWidgets import QApplication
 
@@ -71,6 +72,17 @@ try:
 except szpont.Unavailable as exc:
     dispatch = "refused: %s" % exc
 
+# Building a Store and a Panel starts workers, and this process is about to end.
+# One still running when it does gets its widgets pulled out mid-signal, and the
+# traceback lands on a stderr the finaliser is closing — a SIGABRT that reads, in
+# this file's own output, exactly like the applet failing to start. So the probe
+# waits it out, then counts the threads itself rather than repeating what the wait
+# says it left behind: the wait is the thing under test.
+store.wait_for_background(60)
+left_running = sorted(
+    t.name for t in threading.enumerate() if t is not threading.main_thread()
+)
+
 print("PROBE " + json.dumps({
     "available": szpont.AVAILABLE,
     "mesh_enabled": store.mesh_enabled,
@@ -79,6 +91,7 @@ print("PROBE " + json.dumps({
     "screens": sorted(panel._screens),
     "mesh_timer": panel._mesh_timer is not None,
     "dispatch": dispatch,
+    "left_running": left_running,
 }))
 '''
 
@@ -152,6 +165,16 @@ def test_the_panel_paints_with_or_without_the_add_on(tmp_path, blocked):
     )
     assert done.returncode == 0, done.stderr
     assert out.stat().st_size > 0
+
+
+@pytest.mark.parametrize("blocked", [True, False])
+def test_nothing_the_probe_started_outlives_it(tmp_path, blocked):
+    """Every other case in this file reads the probe's exit code, so a worker left
+    running past the end of it can abort the process and be indistinguishable, in
+    the log, from the applet failing to start. Both parametrisations: with the
+    add-on gone the mesh dispatch never gets a thread, but Settings still puts two
+    of its own in the air while the panel is being built."""
+    assert _probe(tmp_path, blocked=blocked)["left_running"] == []
 
 
 def test_the_applet_starts_without_the_library(tmp_path):

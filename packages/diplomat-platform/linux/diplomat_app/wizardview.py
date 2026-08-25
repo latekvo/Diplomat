@@ -10,8 +10,6 @@ survives data refreshes).
 
 from __future__ import annotations
 
-import threading
-
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -304,7 +302,7 @@ class WizardView(SpawnWizard):
             # mine-vs-theirs against the (possibly changed) viewer login there.
             self._author_resolved.emit(pending, login or "")
 
-        threading.Thread(target=work, daemon=True).start()
+        self.store.start_background(work)
 
     def _on_author_resolved(self, pending: str, login: str) -> None:
         """Main-thread slot: fold a resolved author login into the disposition,

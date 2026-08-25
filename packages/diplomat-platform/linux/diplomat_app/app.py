@@ -136,7 +136,7 @@ class DiplomatApp:
         QTimer.singleShot(5000, self.store.run_apiwatch_poll_async)
 
         # Resolve identity + first fetch eagerly.
-        threading.Thread(target=self.store.fetch_me, daemon=True).start()
+        self.store.start_background(self.store.fetch_me)
         self.trigger_refresh()
 
         # First-run: auto-install the device-allocator MCP so every local agent is
@@ -211,8 +211,7 @@ class DiplomatApp:
     def trigger_refresh(self) -> None:
         if self._fetch_thread and self._fetch_thread.is_alive():
             return
-        self._fetch_thread = threading.Thread(target=self.store.refresh, daemon=True)
-        self._fetch_thread.start()
+        self._fetch_thread = self.store.start_background(self.store.refresh)
 
     # MARK: quit
 
@@ -231,6 +230,9 @@ class DiplomatApp:
     def quit(self) -> None:
         SingleInstance.release()
         self.tray.hide()
+        # Before the widgets a worker is about to signal go away. The tray is already
+        # hidden, so the pause this can cost is spent on a window nobody can see.
+        self.store.wait_for_background()
         self.app.quit()
 
     def exec(self) -> int:
