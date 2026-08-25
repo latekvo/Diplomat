@@ -1975,6 +1975,11 @@ check(ApiErrorMatch.looksLikeApiError("│ ⏺ API Error: 503 Service Unavailabl
 // Codeless on purpose: a 3-digit code would match through the code rule instead and leave
 // the digits-are-decoration intent unpinned.
 check(ApiErrorMatch.looksLikeApiError("21:28:22 API Error: Connection error."))
+// The banner is never the first line of a real tail — it sits under the transcript and
+// over the prompt box. Anchoring per LINE rather than per tail is exactly what `(?im)`
+// buys, and a tail this shape is the only thing that pins it.
+check(ApiErrorMatch.looksLikeApiError(
+    "⏺ Running the suite…\n⏺ API Error: Connection error.\n  ? for shortcuts"))
 // Suppression is read off the rejoined copy too, or a quota banner that wrapped would
 // stop suppressing and the API error sharing its tail would be nudged — the one session
 // that provably cannot make progress until its window resets.

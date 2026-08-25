@@ -51,6 +51,12 @@ def test_banner_must_open_a_line():
     # Codeless on purpose: a 3-digit code would match through the code rule instead and
     # leave the digits-are-decoration intent unpinned.
     assert apiwatch.looks_like_api_error("21:28:22 API Error: Connection error.") is True
+    # The banner is never the first line of a real tail — it sits under the transcript
+    # and over the prompt box. Anchoring per LINE rather than per tail is what the twin's
+    # `(?im)` buys, and a tail this shape is the only thing that pins it.
+    assert apiwatch.looks_like_api_error(
+        "⏺ Running the suite…\n⏺ API Error: Connection error.\n  ? for shortcuts"
+    ) is True
 
 
 def test_matches_banners_wrapped_across_terminal_lines():
