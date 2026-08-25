@@ -1018,11 +1018,11 @@ and ⏻) swaps the panel to a settings screen:
     verbatim as the session's opening message - the only exact key, since neither
     keeps a store per run: Hermes' is the machine's, OpenCode's is the checkout's and
     every worktree of it, and a busy one holds hundreds of sessions that are not this
-    run's. And either way the answer *ends* the
-    run, exactly as a Claude Code hook's does: it is the same fact from the same kind
-    of source, the agent's own word rather than a screen read for signs of one. A run
-    that cannot be reached - the port was taken, the server has not come up, the store
-    is not there - falls back to the status bar exactly as a Claude Code run does.
+    run's. And either way the answer *ends* the run, exactly as a Claude Code hook's
+    does: it is the same fact from the same kind of source, the agent's own word
+    rather than a screen read for signs of one. A run that cannot be reached - the
+    port was taken, the server has not come up, the store is not there - falls back
+    to the status bar exactly as a Claude Code run does.
   - **How a run is priced.** OpenCode reports a turn's cost per message, so a
     finished run is summed from `opencode export <session>` when it ends, not from the
     poll. Hermes keeps running totals on the session row, so it is simply read. Both
