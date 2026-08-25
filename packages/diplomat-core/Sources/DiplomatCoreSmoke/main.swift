@@ -712,9 +712,17 @@ try? FileManager.default.removeItem(at: modelFixture)
 print("agent model assertions passed")
 
 section("opencode sessions")
-// OpenCode keeps ONE session store for the whole machine, so a run's own server lists
-// every session on the box. These are the filters that get from that list to the one
-// session a run owns — and the same cases `tests/test_opencode_api.py` pins.
+// A run's own server answers out of a session store it shares with every other agent in
+// this checkout and its worktrees. These are what get from that store to the one session
+// a run owns — and the same cases `tests/test_opencode_api.py` pins.
+// Half the narrowing is the server's: the directory keeps a busier checkout next door
+// out of the answer, the limit lifts the hundred rows the route answers with by default.
+check(OpenCodeAPI.sessionPath(directory: "/repo") == "/session?directory=/repo&limit=1000")
+check(OpenCodeAPI.sessionPath(directory: "/tmp/a b+c")
+        == "/session?directory=/tmp/a%20b%2Bc&limit=1000",
+      "a checkout path is whatever the disk says, and a query cannot carry all of it")
+check(OpenCodeAPI.sessionPath(directory: "") == nil,
+      "an empty ?directory= is not a filter matching nothing, it is no filter at all")
 let ours = "Review PR #7 in o/r"
 let listing: [[String: Any]] = [
     ["id": "ses_a", "directory": "/repo", "time": ["created": 2_000.0]],

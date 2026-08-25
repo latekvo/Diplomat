@@ -26,10 +26,16 @@ OpenCode agent spawned before the port was allocated, a server that will not ans
 
 Which session is this run's
 --------------------------
-Every run gets its own server, but not its own session store: OpenCode keeps one
-global store, so ``GET /session`` on any port answers with the machine's own history
-rather than this run's — its hundred most recent sessions, newest first.
-So a run is matched to its session the only way that is exact — by the prompt.
+Every run gets its own server, but not its own session store: whichever port it is
+asked on, ``GET /session`` answers out of the store OpenCode keeps per project — every
+agent that has worked in this checkout or a worktree of it — most recently touched
+first, and cut off at a hundred rows unless the fetch asks for more. So the fetch asks
+for both halves of the narrowing the server can do (:func:`session_path`): this run's
+directory, which it matches exactly, and a limit one checkout's history does not reach.
+Otherwise a busier neighbour holds every row of the answer and this run's session is
+not in it at all.
+
+A run is matched to its session the only way that is exact — by the prompt.
 :func:`candidates` narrows the list to sessions that could be this run's (its
 directory, created no earlier than its dispatch, not already another run's), and
 :func:`is_ours` confirms one by comparing the session's opening user message against
@@ -57,6 +63,7 @@ import http.client
 import json
 import socket
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from .agentstate import SessionState
@@ -70,12 +77,18 @@ HOST = "127.0.0.1"
 #: one unavailable answer, not a frozen panel.
 TIMEOUT = 2.0
 
-#: Most a single response may be. The last-message poll is one message and the
-#: binding fetch is a session seconds old, so both are small — but a message carries
-#: its tool output inline, and one agent that cats a large file would otherwise pull
-#: it through this probe on every tick forever. Over the cap reads as unavailable,
-#: which falls back to the screen.
+#: Most a single response may be. The last-message poll is one message and the binding
+#: fetch is :data:`SESSION_LIMIT` session rows at some 500 bytes each — under a
+#: sixteenth of this between them — but a message carries its tool output inline, and
+#: one agent that cats a large file would otherwise pull it through this probe on every
+#: tick forever. Over the cap reads as unavailable, which falls back to the screen.
 MAX_BYTES = 8 * 1024 * 1024
+
+#: Most sessions a listing may hold. The server cuts the least recently touched, so this
+#: is how many of one checkout's sessions must be touched between a run's dispatch and
+#: its binding for its own to be cut too — far past what the task cap can produce in the
+#: seconds that takes.
+SESSION_LIMIT = 1000
 
 
 # MARK: - Ports
@@ -130,13 +143,45 @@ def _get(port: int, path: str):
         return None
 
 
-def sessions(port: int) -> list[dict] | None:
-    """The machine's recent sessions, newest first, as this run's server reports them.
+def session_path(directory: str) -> str | None:
+    """Where to ask for one directory's sessions, or ``None`` for no directory.
 
-    A hundred of them, not the whole store (1.4.3) — a bound a run's own session is
-    always inside, since it is matched within seconds of being created.
+    ``?directory=`` narrows the listing only while it has a value: sent empty it is not
+    a filter that matches nothing but no filter at all, and the shared store comes back
+    whole and cut to the limit — the answer the parameter is here to avoid. So an empty
+    directory is nothing to ask, and reads as a server that would not answer.
+
+    Neither parameter is in the OpenAPI document the server publishes; both are read off
+    what a 1.4.3 server answers (``?limit=abc`` is a 400, ``?limit=0`` is zero rows
+    rather than no limit, a trailing slash on the directory matches nothing).
     """
-    data = _get(port, "/session")
+    if not directory:
+        return None
+    filtered = urllib.parse.quote(directory, safe="/")
+    return f"/session?directory={filtered}&limit={SESSION_LIMIT}"
+
+
+def sessions(port: int, directory: str) -> list[dict] | None:
+    """That directory's sessions, most recently touched first, as this run's server
+    reports them.
+
+    The filter is the server's own and is the same comparison :func:`candidates` makes
+    over the answer — exact string equality on the session's directory — so it changes
+    nothing about which sessions match, only how many rows the answer has to hold them.
+
+    Ordered by last touch, so what :data:`SESSION_LIMIT` cuts is the least recently
+    touched — every one of which a session created since the run was dispatched
+    outranks.
+
+    It has to be a directory OpenCode has worked in: one it has no project or sandbox
+    for answers empty however many sessions the store holds against it — a checkout
+    deleted since, say. A run's own never is, because the server being asked is the one
+    running in it.
+    """
+    path = session_path(directory)
+    if path is None:
+        return None
+    data = _get(port, path)
     return data if isinstance(data, list) else None
 
 

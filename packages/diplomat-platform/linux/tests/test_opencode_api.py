@@ -36,6 +36,11 @@ from diplomat_runtime.agentstate import RunRecord, SessionState
 T0 = 1_000_000.0
 PROMPT = "Review PR #7 in o/r"
 
+#: Where a run working in ``/repo`` asks for the sessions it might own — spelled out
+#: rather than built from :func:`opencodeapi.session_path`, so the cases below pin the
+#: request instead of following it.
+LISTING = "/session?directory=/repo&limit=1000"
+
 #: One session, mid-turn: an assistant message with no completion stamp.
 WORKING = [{"info": {"role": "assistant", "time": {"created": 1.0}}}]
 
@@ -185,6 +190,27 @@ def test_a_session_whose_first_message_is_not_the_users_is_not_ours():
     assert opencodeapi.is_ours(WORKING, PROMPT) is False
 
 
+def test_the_listing_is_asked_for_one_directory_and_more_rows_than_the_default():
+    """Both are the server's to apply, and both have to be: the directory is what keeps
+    a neighbouring checkout out of the answer, and the cap is what a checkout of one's
+    own can fill on a machine running several agents in it."""
+    assert opencodeapi.session_path("/repo") == LISTING
+
+
+def test_a_directory_a_query_cannot_carry_verbatim_is_escaped():
+    """A checkout path is whatever the operator's disk says, and the separators of the
+    path itself stay legible — the same bytes the Swift twin sends."""
+    assert opencodeapi.session_path("/tmp/a b+c") == (
+        "/session?directory=/tmp/a%20b%2Bc&limit=1000")
+
+
+def test_no_directory_is_nothing_to_ask():
+    """An empty ``?directory=`` is not a filter matching nothing but no filter at all:
+    the shared store would come back whole and be cut to the limit, which is the answer
+    the parameter is there to avoid."""
+    assert opencodeapi.session_path("") is None
+
+
 # MARK: - Reaching the server
 
 
@@ -243,8 +269,8 @@ def test_a_response_too_large_to_hold_reads_as_unreachable(server):
     """Bounded rather than trusted: one agent that cats a large file would otherwise
     pull it through this probe on every tick forever."""
     port = server.server_address[1]
-    _Canned.routes["/session"] = b"[" + b" " * (opencodeapi.MAX_BYTES + 1) + b"]"
-    assert opencodeapi.sessions(port) is None
+    _Canned.routes[LISTING] = b"[" + b" " * (opencodeapi.MAX_BYTES + 1) + b"]"
+    assert opencodeapi.sessions(port, "/repo") is None
 
 
 def test_a_port_nothing_answers_on_reads_as_unreachable():
@@ -253,7 +279,7 @@ def test_a_port_nothing_answers_on_reads_as_unreachable():
     them is to read the screen instead."""
     port = opencodeapi.free_port()
     assert port is not None
-    assert opencodeapi.sessions(port) is None
+    assert opencodeapi.sessions(port, "/repo") is None
 
 
 def test_a_reserved_port_is_actually_free():
@@ -282,7 +308,7 @@ def staged(run_id: str, port: int, prompt: str = PROMPT, dispatched: float = T0)
 
 def test_a_run_finds_its_own_session_and_remembers_it(server, monkeypatch):
     port = server.server_address[1]
-    _Canned.routes["/session"] = [
+    _Canned.routes[LISTING] = [
         {"id": "ses_theirs", "directory": "/repo", "time": {"created": T0 * 1000 + 1}},
         {"id": "ses_ours", "directory": "/repo", "time": {"created": T0 * 1000 + 2}},
     ]
@@ -304,12 +330,49 @@ def test_a_run_finds_its_own_session_and_remembers_it(server, monkeypatch):
     assert _Canned.seen == ["/session/status", "/session/ses_ours/message?limit=1"]
 
 
+def test_a_busier_checkout_next_door_cannot_crowd_this_run_out(server):
+    """The store is shared and its rows go to whatever was touched most recently, so a
+    neighbouring checkout with enough agents in it fills every row of an unnarrowed
+    listing — and a run whose session is not in the answer is never bound at all, and
+    read off its screen for the rest of its life. The directory the fetch carries is
+    what keeps the neighbour out of the answer entirely."""
+    port = server.server_address[1]
+    _Canned.routes["/session"] = [
+        {"id": f"ses_busy{i}", "directory": "/other",
+         "time": {"created": T0 * 1000 + i}} for i in range(100)
+    ]
+    _Canned.routes[LISTING] = [
+        {"id": "ses_ours", "directory": "/repo", "time": {"created": T0 * 1000 + 2}},
+    ]
+    _Canned.routes["/session/ses_ours/message"] = opening(PROMPT)
+    _Canned.routes["/session/ses_ours/message?limit=1"] = FINISHED
+
+    obs = probes.agent_sessions([staged("r1", port)], "/repo", T0)
+
+    assert agentregistry.bound_session("r1") == "ses_ours"
+    assert obs.value["r1"] == SessionState(busy=False)
+
+
+def test_a_run_with_no_directory_asks_the_server_nothing(server):
+    """There is no filter to send, and sending the parameter empty is not a narrow
+    listing but the whole shared store, cut to the limit. Nothing to ask reads as a
+    server that would not answer: the screen is read instead."""
+    port = server.server_address[1]
+    # What a real server answers an empty ``?directory=`` with: the store, unnarrowed.
+    _Canned.routes["/session?directory=&limit=1000"] = [
+        {"id": "ses_next_door", "directory": "/other", "time": {"created": T0 * 1000}},
+    ]
+
+    assert opencodeapi.sessions(port, "") is None
+    assert _Canned.seen == []
+
+
 def test_a_repaint_moments_later_is_answered_without_dialling_again(server):
     """This probe dials a socket and the resolver re-runs for every question the applet
     asks — two per panel repaint. Uncached, one unresponsive port would cost a repaint
     two full timeouts on the Qt thread."""
     port = server.server_address[1]
-    _Canned.routes["/session"] = [
+    _Canned.routes[LISTING] = [
         {"id": "ses_ours", "directory": "/repo", "time": {"created": T0 * 1000 + 2}},
     ]
     _Canned.routes["/session/ses_ours/message"] = opening(PROMPT)
@@ -326,7 +389,7 @@ def test_a_repaint_moments_later_is_answered_without_dialling_again(server):
     # the key is the runs as well as the clock.
     _Canned.routes["/session/ses_2/message"] = opening("Review PR #8 in o/r")
     _Canned.routes["/session/ses_2/message?limit=1"] = WORKING
-    _Canned.routes["/session"] = _Canned.routes["/session"] + [
+    _Canned.routes[LISTING] = _Canned.routes[LISTING] + [
         {"id": "ses_2", "directory": "/repo", "time": {"created": T0 * 1000 + 3}},
     ]
     fresh = staged("r2", port, prompt="Review PR #8 in o/r")
@@ -345,7 +408,7 @@ def test_two_runs_in_one_checkout_do_not_take_each_others_session(server):
     the same repo, seconds apart. Getting it wrong shows each run the other's state
     and prices each against the other's tokens."""
     port = server.server_address[1]
-    _Canned.routes["/session"] = [
+    _Canned.routes[LISTING] = [
         {"id": "ses_1", "directory": "/repo", "time": {"created": T0 * 1000 + 1}},
         {"id": "ses_2", "directory": "/repo", "time": {"created": T0 * 1000 + 2}},
     ]
@@ -368,7 +431,7 @@ def test_a_server_that_will_not_report_its_status_falls_back_to_the_screen(serve
     off its screen. An OpenCode too old to serve the route is the ordinary way here —
     its runs are tracked exactly as they were before this evidence existed."""
     port = server.server_address[1]
-    _Canned.routes["/session"] = [
+    _Canned.routes[LISTING] = [
         {"id": "ses_ours", "directory": "/repo", "time": {"created": T0 * 1000 + 2}},
     ]
     _Canned.routes["/session/ses_ours/message"] = opening(PROMPT)
@@ -384,7 +447,7 @@ def test_a_run_the_server_is_still_working_on_is_not_at_its_prompt(server):
     """Its last message is stamped, which on its own reads as a finished turn — the
     gap between two steps of one. The status is what spans it."""
     port = server.server_address[1]
-    _Canned.routes["/session"] = [
+    _Canned.routes[LISTING] = [
         {"id": "ses_ours", "directory": "/repo", "time": {"created": T0 * 1000 + 2}},
     ]
     _Canned.routes["/session/ses_ours/message"] = opening(PROMPT)
@@ -400,7 +463,7 @@ def test_a_run_whose_session_cannot_be_found_is_simply_absent(server):
     """Absent, not wrong: the resolver reads its screen instead, so a run this cannot
     reach costs the older evidence and never a verdict."""
     port = server.server_address[1]
-    _Canned.routes["/session"] = []
+    _Canned.routes[LISTING] = []
     obs = probes.agent_sessions([staged("r1", port)], "/repo")
     assert obs.ok and "r1" not in obs.value
 
@@ -413,7 +476,7 @@ def test_a_session_older_than_the_run_is_never_taken_for_it(server):
     seconds. Compared unconverted, every session ever created outranks every run and
     the oldest stale one wins."""
     port = server.server_address[1]
-    _Canned.routes["/session"] = [
+    _Canned.routes[LISTING] = [
         {"id": "ses_last_run", "directory": "/repo",
          "time": {"created": (T0 - 3600) * 1000}},
     ]

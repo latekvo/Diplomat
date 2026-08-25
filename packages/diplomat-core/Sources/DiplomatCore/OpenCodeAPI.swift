@@ -28,10 +28,16 @@ import Foundation
 ///
 /// ## Which session is this run's
 ///
-/// Every run gets its own server, but not its own session store: OpenCode keeps one
-/// global store, so `GET /session` on any port answers with the machine's own history
-/// rather than this run's — its hundred most recent sessions, newest first. So a
-/// run is matched to its session the only way that is exact — by the prompt.
+/// Every run gets its own server, but not its own session store: whichever port it is
+/// asked on, `GET /session` answers out of the store OpenCode keeps per project — every
+/// agent that has worked in this checkout or a worktree of it — most recently touched
+/// first, and cut off at a hundred rows unless the fetch asks for more. So the fetch asks
+/// for both halves of the narrowing the server can do (`sessionPath`): this run's
+/// directory, which it matches exactly, and a limit one checkout's history does not
+/// reach. Otherwise a busier neighbour holds every row of the answer and this run's
+/// session is not in it at all.
+///
+/// A run is matched to its session the only way that is exact — by the prompt.
 /// `candidates` narrows the list to sessions that could be this run's, and `isOurs`
 /// confirms one against the prompt the applet staged.
 ///
@@ -57,15 +63,44 @@ public enum OpenCodeAPI {
     public static let timeout: TimeInterval = 2.0
 
     /// Most a single response may be. The last-message poll is one message and the
-    /// binding fetch is a session seconds old, so both are small — but a message carries
-    /// its tool output inline, and one agent that cats a large file would otherwise pull
-    /// it through this probe on every tick forever.
+    /// binding fetch is `sessionLimit` session rows at some 500 bytes each — under a
+    /// sixteenth of this between them — but a message carries its tool output inline, and
+    /// one agent that cats a large file would otherwise pull it through this probe on
+    /// every tick forever.
     public static let maxBytes = 8 * 1024 * 1024
+
+    /// Most sessions a listing may hold. The server cuts the least recently touched, so
+    /// this is how many of one checkout's sessions must be touched between a run's
+    /// dispatch and its binding for its own to be cut too — far past what the task cap
+    /// can produce in the seconds that takes.
+    public static let sessionLimit = 1000
 
     /// Most sessions considered when matching a run to its own. Ordinarily there is one;
     /// the cap only bites when a run never binds at all, where it is what stops a
     /// fruitless search costing one message fetch per stale session on every tick.
     public static let maxCandidates = 4
+
+    /// Where to ask for one directory's sessions, or nil for no directory.
+    ///
+    /// `?directory=` narrows the listing only while it has a value: sent empty it is not
+    /// a filter that matches nothing but no filter at all, and the shared store comes
+    /// back whole and cut to the limit — the answer the parameter is here to avoid. So an
+    /// empty directory is nothing to ask, and reads as a server that would not answer.
+    ///
+    /// Neither parameter is in the OpenAPI document the server publishes; both are read
+    /// off what a 1.4.3 server answers (`?limit=abc` is a 400, `?limit=0` is zero rows
+    /// rather than no limit, a trailing slash on the directory matches nothing).
+    public static func sessionPath(directory: String) -> String? {
+        guard !directory.isEmpty,
+              let filter = directory.addingPercentEncoding(
+                  withAllowedCharacters: unescapedInDirectory) else { return nil }
+        return "/session?directory=\(filter)&limit=\(sessionLimit)"
+    }
+
+    /// RFC 3986's unreserved set plus the path separator — what `urllib.parse.quote`
+    /// leaves alone with `safe="/"`.
+    private static let unescapedInDirectory = CharacterSet(
+        charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~/")
 
     /// Sessions that could be this run's, oldest first.
     ///

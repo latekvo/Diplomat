@@ -329,8 +329,9 @@ class _OpenCodeBackend:
         """Which session on this run's server is this run's, by its opening prompt.
 
         Every run has its own server but they share one session store, so the port
-        alone narrows nothing — ``GET /session`` lists the machine's own recent
-        history whichever port it is asked on. The prompt is what makes the match
+        alone narrows nothing — the same shared history answers whichever port it is
+        asked on. The directory narrows it to this checkout, and the server does that
+        much itself (:func:`opencodeapi.sessions`). The prompt is what makes the match
         exact, and exact is worth the fetch: the applet runs several agents in one
         checkout at a time, so two sessions a second apart in the same directory is
         the ordinary case, not the pathological one.
@@ -340,7 +341,7 @@ class _OpenCodeBackend:
         port = agentregistry.port(record.run_id)
         if port is None:
             return ""
-        listing = opencodeapi.sessions(port)
+        listing = opencodeapi.sessions(port, directory)
         if listing is None:
             return ""
         prompt = _staged_prompt(record.run_id)
