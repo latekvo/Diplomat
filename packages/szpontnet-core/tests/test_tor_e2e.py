@@ -35,15 +35,25 @@ import socket
 import pytest
 
 import tornet as tornet_module
-from szpontnet import node as nodemod, wancache, protocol, tor
+import tornet_host
+from szpontnet import host as hostmod, node as nodemod, wancache, protocol, tor
 
 pytestmark = pytest.mark.tor_e2e
 
 
 @pytest.fixture(params=tornet_module.pytest_backend_params())
-def tornet(request, tmp_path, monkeypatch):
+def tornet(request, tmp_path, monkeypatch, no_host):
     """One Tor world per test — sim or real, with every process it started torn
-    down afterwards whether the test passed or blew up."""
+    down afterwards whether the test passed or blew up.
+
+    The host is the same log sink a node process gets, because the tests below that
+    drive ``TorTransport`` drive it **in this process**: without it every "Mesh/Tor:
+    …" line naming why ``start()`` gave up goes to the null host's floor, and a
+    failed start reaches the report as a bare ``assert False``. Depends on
+    ``no_host`` explicitly, as ``simnet`` does — the registration has to happen
+    inside the isolation that later hands the previous host back.
+    """
+    hostmod.set_host(tornet_host.LoggingHost())
     net = tornet_module.TorNet(request.param, tmp_path, monkeypatch)
     try:
         yield net
@@ -225,6 +235,69 @@ def test_stop_reaps_the_daemon_and_frees_its_data_directory(tornet):
         await second.stop()
 
     _run(scenario(), tornet.backend.bootstrap * 2 + 60.0)
+
+
+def test_the_socks_port_is_picked_after_the_forward_listener_binds(
+        tornet, monkeypatch):
+    """A port number is a reservation only once something is bound to it.
+
+    ``start()`` tells the tor child which SocksPort to bind, as a number
+    ``_free_port`` got by binding an ephemeral port and releasing it — so any
+    ephemeral bind between that pick and tor's own can be handed the same number, and
+    tor then exits on "address already in use" before it ever reports bootstrap. The
+    forward listener is one such bind, and the only one ``start()`` makes itself:
+    picking after it already holds a port is what puts that port out of reach, since
+    the kernel cannot hand out one that is taken.
+
+    A ratio rather than a rarity — with the pick first, the listener was handed the
+    SOCKS port on 19 of 200000 starts on Linux, and this file makes 26 of them, so
+    ``start()`` returns False on a clean directory about once every 400 runs.
+    """
+    order: list[str] = []
+    real_free_port = tor._free_port
+    real_start_server = asyncio.start_server
+
+    def watched_free_port() -> int:
+        order.append("socks port picked")
+        return real_free_port()
+
+    async def watched_start_server(*args, **kwargs):
+        order.append("forward listener bound")
+        return await real_start_server(*args, **kwargs)
+
+    monkeypatch.setattr(tor, "_free_port", watched_free_port)
+    monkeypatch.setattr(asyncio, "start_server", watched_start_server)
+
+    async def scenario():
+        transport = tornet.transport("ordered")
+        assert await transport.start(_Echo(),
+                                     bootstrap_timeout=tornet.backend.bootstrap)
+        await transport.stop()
+
+    _run(scenario(), tornet.backend.bootstrap + 30.0)
+    assert order == ["forward listener bound", "socks port picked"]
+
+
+def test_a_socks_port_that_cannot_be_picked_hands_the_listener_back(
+        tornet, monkeypatch):
+    """``_free_port`` opens a socket of its own, so it fails when the process is out
+    of descriptors — and by then ``start()`` is already holding the forward listener.
+    Every other step past that point gives it back (``_write_torrc``, the spawn); this
+    one has to as well, or a start that failed keeps a loopback port until the node
+    exits, and says nothing on the way out."""
+    def out_of_descriptors() -> int:
+        raise OSError(24, "Too many open files")
+
+    monkeypatch.setattr(tor, "_free_port", out_of_descriptors)
+
+    async def scenario():
+        transport = tornet.transport("portless")
+        assert await transport.start(
+            _Echo(), bootstrap_timeout=tornet.backend.bootstrap) is False
+        assert transport._forward_server is None, "the listener was left bound"
+        assert transport._proc is None
+
+    _run(scenario(), tornet.backend.bootstrap + 30.0)
 
 
 # MARK: - the transport: failures of the daemon itself
