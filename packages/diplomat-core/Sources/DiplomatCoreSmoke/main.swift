@@ -1961,7 +1961,25 @@ print("agent activity assertions passed")
 section("api-error match")
 check(ApiErrorMatch.looksLikeApiError("⏺ API Error: 529 Overloaded. If it persists, check https://status.claude.com."))
 check(ApiErrorMatch.looksLikeApiError("API Error: 500 Internal Server Error"))
-check(ApiErrorMatch.looksLikeApiError("something API error, see status.claude.com for details"))
+check(ApiErrorMatch.looksLikeApiError("API Error: something, see status.claude.com for details"))
+// The banner has to OPEN a line. Quoted mid-sentence it is prose — an agent that merely
+// TALKS about API errors goes static the moment its turn ends, so the idle-confirmation
+// gate reads it as a stall and the watcher nudges a session that was never stuck.
+check(!ApiErrorMatch.looksLikeApiError("the predicate returns true on ⏺ API Error: Connection error."))
+check(!ApiErrorMatch.looksLikeApiError("quoting API Error: 529 Overloaded in a sentence"))
+// …but decoration in front of it is not prose: the transcript bullet, the tool-result
+// elbow, a pane's left border and a log timestamp all precede a real banner. Only LETTERS
+// disqualify a line — prose reaches a quoted banner through words.
+check(ApiErrorMatch.looksLikeApiError("  ⎿  API Error: Connection error."))
+check(ApiErrorMatch.looksLikeApiError("│ ⏺ API Error: 503 Service Unavailable"))
+// Codeless on purpose: a 3-digit code would match through the code rule instead and leave
+// the digits-are-decoration intent unpinned.
+check(ApiErrorMatch.looksLikeApiError("21:28:22 API Error: Connection error."))
+// Suppression is read off the rejoined copy too, or a quota banner that wrapped would
+// stop suppressing and the API error sharing its tail would be nudged — the one session
+// that provably cannot make progress until its window resets.
+check(!ApiErrorMatch.looksLikeApiError(
+    "⏺ API Error: 529 Overloaded.\nClaude usage limit\n  reached. Your limit will reset at 4pm."))
 // Codeless connectivity failures (network out / DNS / timeout) must also match.
 check(ApiErrorMatch.looksLikeApiError("⏺ API Error: Unable to connect to API"))
 check(ApiErrorMatch.looksLikeApiError("API Error: Connection error."))
@@ -1981,6 +1999,12 @@ for banner in [
 }
 // An ending without the prefix is ordinary prose, not a banner.
 check(!ApiErrorMatch.looksLikeApiError("note: the response above may be incomplete"))
+// These banners run 70-90 columns, so a narrow pane wraps them mid-phrase. The evidence
+// is read off a copy with the wrapping rejoined, so the split must not hide the banner.
+check(ApiErrorMatch.looksLikeApiError(
+    "⏺ API Error: Your computer went to sleep mid-response. The response above may be\n  incomplete."))
+check(ApiErrorMatch.looksLikeApiError(
+    "⏺ API Error: Connection lost before a response was\n  produced. Try again."))
 // Out-of-token-quota banners (no "API Error" prefix) are intentionally IGNORED — an
 // out-of-quota agent can't progress until its window resets, so nudging just churns.
 // Every format the CLI has used for the limit message must return false.

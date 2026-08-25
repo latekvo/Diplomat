@@ -5,9 +5,9 @@ import Foundation
 // error (e.g. overnight overload). The CLI prints, e.g.:
 //   ⏺ API Error: 529 Overloaded. This is a server-side issue, usually temporary —
 //     try again in a moment. If it persists, check https://status.claude.com.
-// Kept pure + in the shared core so it's unit-testable; the caller restricts the text
-// it passes to the last few visible lines, which is what keeps this from firing on a
-// session that merely mentions the phrase higher up.
+// Kept pure + in the shared core so it's unit-testable. Two things keep it off a session
+// that merely mentions the phrase: the caller passes only the last few visible lines, and
+// the banner has to OPEN one of them — an agent quoting a banner mid-sentence is prose.
 public enum ApiErrorMatch {
     /// Transient failures the CLI prints with NO status code, all under its "API Error:"
     /// prefix — a connectivity drop ("Unable to connect to API", "Connection error.") or
@@ -54,16 +54,39 @@ public enum ApiErrorMatch {
     /// window rolls over or an admin raises it, neither of which a nudge can do.
     private static let budgetLimitPattern = #"budget[a-z0-9\- ]{0,16}(exceeded|reached)"#
 
+    /// A banner OPENS its own line: only decoration may precede it — the "⏺" bullet, the
+    /// "⎿" tool-result elbow, box rules, indentation, a log timestamp. LETTERS disqualify
+    /// a line, because prose reaches a quoted banner through words and decoration never
+    /// does. That is the only thing separating the CLI's banner from an agent QUOTING
+    /// one: a session merely discussing API errors goes static the moment its turn ends,
+    /// which is indistinguishable from a stall downstream (see `isConfirmedStall`).
+    /// `(?im)`: case-insensitive, `^` per line.
+    private static let bannerOpensLinePattern = #"(?im)^[^A-Za-z]*API Error"#
+    private static let bannerCodePattern = #"(?im)^[^A-Za-z]*API Error:?\s*[0-9]{3}"#
+
+    /// `text` with terminal wrapping undone, for phrase evidence. A cut-short banner runs
+    /// 70-90 columns, so a narrow pane splits it mid-phrase ("…may be\n  incomplete.")
+    /// and a contiguous substring search finds nothing — the widest banner family the
+    /// watcher exists for, invisible to it in exactly the panes most likely to wrap. The
+    /// banner's own line-opening position is read off the ORIGINAL, where the line
+    /// structure still exists.
+    private static func rejoined(_ text: String) -> String {
+        text.replacingOccurrences(of: #"\n\s*"#, with: " ", options: .regularExpression)
+    }
+
     /// True when `text` shows a transient Claude API error the watcher should nudge
     /// past — a server 5xx / rate-limit ("API Error: <3-digit code>"), a status-page
     /// error, or a codeless failure (network out, DNS, timeout, a stream cut off).
+    ///
+    /// The banner must OPEN a line; one quoted mid-sentence is prose, not a stall.
+    /// Wrapping is rejoined first, so a banner split across terminal lines still reads.
     ///
     /// Out-of-quota and org budget-cap banners return false: nudging a capped session
     /// does nothing until the window resets, so the watcher intentionally leaves them
     /// alone. Either banner also SUPPRESSES any API-error text in the same tail, since
     /// the session is idling on the limit rather than the error.
     public static func looksLikeApiError(_ text: String) -> Bool {
-        let lower = text.lowercased()
+        let lower = rejoined(text).lowercased()
         // Quota banner present ⇒ ignore this session entirely (and suppress any stray
         // API-error text sharing the tail).
         if quotaPhrases.contains(where: lower.contains) { return false }
@@ -72,7 +95,7 @@ public enum ApiErrorMatch {
             return false
         }
         // "API Error: <3-digit code>" — the exact CLI format (529/500/503/429/…).
-        if text.range(of: #"API Error:?\s*[0-9]{3}"#, options: .regularExpression) != nil {
+        if text.range(of: bannerCodePattern, options: .regularExpression) != nil {
             return true
         }
         // A bare "429 Rate limited" banner. Newer CLI builds print a rate-limit error
@@ -85,27 +108,29 @@ public enum ApiErrorMatch {
             && (lower.contains("rate limit") || lower.contains("too many requests")) {
             return true
         }
-        // Or any API error that points at the status page (user's broader ask).
-        if lower.contains("api error") && lower.contains("status.claude.com") {
-            return true
+        guard text.range(of: bannerOpensLinePattern, options: .regularExpression) != nil else {
+            return false
         }
-        // Or a codeless API failure: connectivity, or a stream cut off part-way.
-        if lower.contains("api error") && codelessPhrases.contains(where: lower.contains) {
-            return true
-        }
-        return false
+        // A codeless API failure the banner names: the status page (user's broader ask),
+        // connectivity, or a stream cut off part-way.
+        return lower.contains("status.claude.com")
+            || codelessPhrases.contains(where: lower.contains)
     }
 
     /// Idle-confirmation gate for the terminal watcher. A session is treated as genuinely
     /// STALLED on an API error — and so eligible for a "continue" nudge — only when its
-    /// erroring tail is UNCHANGED since the previous scan. An actively-working session
-    /// changes between scans and must not be nudged: e.g. one that merely prints or
-    /// discusses an API-error string (like the session developing this very feature), one
-    /// that already recovered and moved on while the error line is still on screen, or a
-    /// CLI mid auto-retry with a live countdown. `previousTail` is nil the first scan a
-    /// tty is seen erroring, which is never a confirmed stall — a second matching,
-    /// identical scan is required. Returns false unless the current tail still looks like
-    /// an API error, so a session that stopped erroring can't be nudged on stale state.
+    /// erroring tail is UNCHANGED since the previous scan. It separates a session still
+    /// REDRAWING from one at rest: a CLI mid auto-retry with a live countdown, or one
+    /// still printing past the error, changes between scans and must not be nudged.
+    /// `previousTail` is nil the first scan a tty is seen erroring, which is never a
+    /// confirmed stall — a second matching, identical scan is required. Returns false
+    /// unless the current tail still looks like an API error, so a session that stopped
+    /// erroring can't be nudged on stale state.
+    ///
+    /// What it cannot separate is one static screen from another — a session stalled on
+    /// the banner and a finished session whose last screen merely CONTAINS one are both
+    /// frozen, and the second reads as a confirmed stall one scan after its turn ends.
+    /// Telling those apart is `looksLikeApiError`'s job, not this gate's.
     public static func isConfirmedStall(previousTail: String?, currentTail: String) -> Bool {
         looksLikeApiError(currentTail) && previousTail == currentTail
     }

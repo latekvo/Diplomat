@@ -33,6 +33,39 @@ def test_matches_status_page_and_connectivity():
     assert apiwatch.looks_like_api_error("API Error: Connection error.") is True
 
 
+def test_banner_must_open_a_line():
+    # Quoted mid-sentence it is prose, not a stall. An agent that merely TALKS about API
+    # errors goes static the moment its turn ends, so the idle-confirmation gate reads it
+    # as a stall and the watcher nudges a session that was never stuck.
+    assert apiwatch.looks_like_api_error(
+        "the predicate returns True on ⏺ API Error: Connection error."
+    ) is False
+    assert apiwatch.looks_like_api_error(
+        "quoting API Error: 529 Overloaded in a sentence"
+    ) is False
+    # Decoration in front of it is not prose: the transcript bullet, the tool-result
+    # elbow, a pane's left border and a log timestamp all precede a real banner. Only
+    # LETTERS disqualify a line — prose reaches a quoted banner through words.
+    assert apiwatch.looks_like_api_error("  ⎿  API Error: Connection error.") is True
+    assert apiwatch.looks_like_api_error("│ ⏺ API Error: 503 Service Unavailable") is True
+    # Codeless on purpose: a 3-digit code would match through the code rule instead and
+    # leave the digits-are-decoration intent unpinned.
+    assert apiwatch.looks_like_api_error("21:28:22 API Error: Connection error.") is True
+
+
+def test_matches_banners_wrapped_across_terminal_lines():
+    # These banners run 70-90 columns, so a narrow pane wraps them mid-phrase. The
+    # evidence is read off a copy with the wrapping rejoined, so the split must not hide
+    # the banner — the widest family the watcher exists for, in the panes most apt to wrap.
+    assert apiwatch.looks_like_api_error(
+        "⏺ API Error: Your computer went to sleep mid-response. "
+        "The response above may be\n  incomplete."
+    ) is True
+    assert apiwatch.looks_like_api_error(
+        "⏺ API Error: Connection lost before a response was\n  produced. Try again."
+    ) is True
+
+
 def test_matches_cut_off_stream_banners():
     # Every wording the CLI builds this family from — a cause plus one of two endings.
     # The endings are what the matcher reads, so all seven have to nudge.
@@ -49,6 +82,16 @@ def test_matches_cut_off_stream_banners():
     # An ending without the prefix is ordinary prose, not a banner.
     assert apiwatch.looks_like_api_error(
         "note: the response above may be incomplete"
+    ) is False
+
+
+def test_wrapped_quota_banner_still_suppresses():
+    # Suppression is read off the rejoined copy too, or a quota banner that wrapped
+    # would stop suppressing and the API error sharing its tail would be nudged — the
+    # one session that provably cannot make progress until its window resets.
+    assert apiwatch.looks_like_api_error(
+        "⏺ API Error: 529 Overloaded.\nClaude usage limit\n  reached. "
+        "Your limit will reset at 4pm."
     ) is False
 
 
