@@ -50,10 +50,11 @@ def _records() -> list[A.RunRecord]:
         A.RunRecord(run_id="1786000002-cccccccc", dispatched_at=1786000002.0,
                     pr_number=None, kind="", label="", source=A.SOURCE_AUTO,
                     placement=A.PLACEMENT_MESH_HERE, pid=None, tty=""),
-        # Neither applet ever persists an untracked run — it is re-derived from the
-        # process table every tick — but the field is part of the format, and a field
-        # only one side writes would survive both round-trips below (each reads its own
-        # omission back as the default). Pinned here so it cannot drift unnoticed.
+        # A run nobody dispatched. Both applets keep one in the book — the stillness
+        # backstop measures a screen against the last one seen, and a record re-derived
+        # every tick remembers none — so a field only one side wrote here would restart
+        # that clock on every hand-over, and would still survive both round-trips below
+        # (each reads its own omission back as the default).
         A.RunRecord(run_id="untracked:404", dispatched_at=1786000003.0, pr_number=404,
                     source=A.SOURCE_AUTO, placement=A.PLACEMENT_LOCAL, tty="pts/8",
                     untracked=True),

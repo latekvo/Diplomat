@@ -2198,27 +2198,33 @@ class Store(QObject):
         otherwise be dropped — an agent nothing counts, which is a bay of the cap the
         machine can then spend twice.
 
-        Synthesized rows are not written at all: a run nobody dispatched is re-derived
-        from the process table every tick and has nothing to persist.
+        A synthesized row is APPENDED, having none on disk to merge into — that memory
+        is the whole reason one is kept rather than re-derived from the process table
+        every tick. Only a synthesized one: a tracked record missing from the book was
+        retired while this tick resolved, and writing it back would raise the dead.
         """
-        learned = {r.run_id: r for r in t.records if not r.untracked}
+        learned = {r.run_id: r for r in t.records}
         out, changed = [], False
         for r in agentregistry.load():
-            fresh = learned.get(r.run_id)
+            fresh = learned.pop(r.run_id, None)
             if fresh is None:
                 out.append(r)
                 continue
             merged = dataclasses.replace(
                 r,
                 pid=r.pid if r.pid is not None else fresh.pid,
-                tty=r.tty or fresh.tty,
+                # The fresher one wins here, unlike the pid: a synthesized run's tty
+                # follows whichever agent its PR's sighting currently names.
+                tty=fresh.tty or r.tty,
                 claim_seen_at=fresh.claim_seen_at or r.claim_seen_at,
                 quiet_digest=fresh.quiet_digest,
                 quiet_since=fresh.quiet_since,
             )
             changed = changed or merged != r
             out.append(merged)
-        if changed:
+        fresh_rows = [r for r in learned.values() if r.untracked]
+        out.extend(fresh_rows)
+        if changed or fresh_rows:
             agentregistry.save(out)
 
     def _retire_finished(self, t: agentstate.Tick) -> None:
@@ -2228,8 +2234,13 @@ class Store(QObject):
         prompt comes out of the run directory, so an applet that restarted mid-agent
         can still attribute the run to its transcript; the in-memory list could not,
         and every such run landed in the ledger unpriced.
+
+        A synthesized run is dropped here too, and priced by nothing: it has no ledger
+        key, and no dispatch time, prompt or transcript to be priced from. Dropping it
+        is the whole of what it needs, and it does need it: a record kept so the
+        stillness backstop has a memory must not outlive the agent it remembers.
         """
-        gone = [r for r in t.retirable if not r.untracked]
+        gone = t.retirable
         self._reap_quiet_windows(t)
         if not gone:
             return
@@ -2269,10 +2280,8 @@ class Store(QObject):
         is alive at its prompt holding the whole task, and the operator may still want
         to read it. One whose screen has not changed in twenty minutes is nobody's.
 
-        Untracked runs are reaped too, unlike in the retirement below: this closes a
-        window rather than pricing a run, and a wedged session nobody dispatched is
-        just as dead as one we did. It also has no record to drop, so nothing else here
-        would ever reach it.
+        A run nobody dispatched is reaped like any other: a wedged session is just as
+        dead whether or not this applet opened it.
         """
         for record, resolution in t.rows:
             if resolution.state != agentstate.FINISHED or not record.runs_here:
@@ -2298,8 +2307,16 @@ class Store(QObject):
 
         On the slow refresh, not the 8-second tick: it costs a ``gh`` call per PR. The
         answer is carried forward by the fast ticks in between.
+
+        Only the runs this applet dispatched. "Merged" ends a run so it can be priced
+        and its bay handed back, and a synthesized one has nothing to price and is
+        manifestly still in the process table — asked about, a landed PR whose agent is
+        still sitting in its window would retire that record and have the next tick
+        synthesize it straight back, one ``gh`` call and one audit line per tick. What
+        ends one of those is the scan that made it.
         """
-        prs = {r.pr_number for r in agentregistry.load() if r.pr_number is not None}
+        prs = {r.pr_number for r in agentregistry.load()
+               if r.pr_number is not None and not r.untracked}
         self._merged_prs = probes.merged_prs(prs)
 
     # MARK: monitor persistence + poll-error state

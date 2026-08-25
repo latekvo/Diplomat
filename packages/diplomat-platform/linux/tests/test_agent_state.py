@@ -21,6 +21,8 @@ this whole module exists for:
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 from diplomat_runtime import agentstate as A
@@ -294,21 +296,38 @@ CASES = [
      A.AWAITING_INPUT, "at the prompt"),
 
     # --- untracked agents ---------------------------------------------------
+    #
+    # The scan is the whole of the evidence about one: it is the only thing that says
+    # the agent exists, so it is also the only thing that can say it has gone. The
+    # record outlives the tick that made it — the stillness backstop needs a screen to
+    # compare against — and one that outlived its agent too would hold that PR against
+    # a fresh agent, and a bay of the cap, for the life of the applet.
     ("an untracked agent found in the table is running",
      rec(run_id="untracked:337", pid=None, tty="pts/3", untracked=True,
          dispatched_at=T0),
-     ev(processes={}, tails={"pts/3": WORKING}),
+     ev(processes={}, tails={"pts/3": WORKING}, live_agents={337: "pts/3"}),
      A.RUNNING, "found in process table"),
     ("an untracked agent is never aged out for having no pid",
      rec(run_id="untracked:337", pid=None, tty="pts/3", untracked=True,
          dispatched_at=T0 - 99999),
-     ev(processes={}, tails={"pts/3": WORKING}),
+     ev(processes={}, tails={"pts/3": WORKING}, live_agents={337: "pts/3"}),
      A.RUNNING, "found in process table"),
     ("an untracked agent at its prompt gives its bay back like any other",
      rec(run_id="untracked:337", pid=None, tty="pts/3", untracked=True,
          dispatched_at=T0),
-     ev(processes={}, tails={"pts/3": AT_PROMPT}),
+     ev(processes={}, tails={"pts/3": AT_PROMPT}, live_agents={337: "pts/3"}),
      A.AWAITING_INPUT, "found in process table; at the prompt"),
+    ("an untracked agent gone from the table is over",
+     rec(run_id="untracked:337", pid=None, tty="pts/3", untracked=True,
+         dispatched_at=T0),
+     ev(processes={}, tails={"pts/3": WORKING}, live_agents={}),
+     A.FINISHED, "gone from the process table"),
+    ("an untracked agent whose scan could not be read is unknown",
+     rec(run_id="untracked:337", pid=None, tty="pts/3", untracked=True,
+         dispatched_at=T0),
+     ev(processes={}, tails={"pts/3": WORKING},
+        live_agents=A.Observation.unavailable("ps failed")),
+     A.UNKNOWN, "the agent scan ps failed"),
 
     # --- the terminal's own furniture is on the screen too -------------------
     ("a screen still but for the terminal's clock is still still",
@@ -429,7 +448,8 @@ def test_an_untracked_run_carries_the_tty_its_agent_was_found_on():
     which is the state the cap exists to prevent."""
     out = A.synthesize_untracked([], A.Observation.present({404: "pts/7"}), T0)
     assert out[0].tty == "pts/7"
-    states = A.resolve(out, ev(tails={"pts/7": AT_PROMPT}), T0)
+    states = A.resolve(out, ev(tails={"pts/7": AT_PROMPT},
+                               live_agents={404: "pts/7"}), T0)
     assert states["untracked:404"].state == A.AWAITING_INPUT
     assert A.cap_load(out, states) == set(), "an idle untracked agent gives its bay back"
 
@@ -438,6 +458,30 @@ def test_a_live_pr_that_already_has_a_record_is_not_duplicated():
     out = A.synthesize_untracked([rec(pr_number=404)],
                                  A.Observation.present({404: "pts/7"}), T0)
     assert [r.run_id for r in out] == ["r1"]
+
+
+def test_a_kept_record_follows_its_prs_sighting_to_a_new_tty():
+    """The scan reports one agent per PR, so a second session on that PR becomes the
+    sighting the moment the first exits. A record left on the gone one has no screen
+    to be judged by at all — and must not carry the old screen's stillness onto the
+    new window, which would close it on somebody else's twenty minutes."""
+    kept = A.synthesize_untracked([], A.Observation.present({404: "pts/7"}), T0)
+    still = [dataclasses.replace(kept[0], quiet_digest="abc", quiet_since=T0)]
+
+    (moved,) = A.synthesize_untracked(still, A.Observation.present({404: "pts/9"}),
+                                      T0 + 8)
+
+    assert moved.tty == "pts/9"
+    assert (moved.quiet_digest, moved.quiet_since) == ("", None)
+
+
+def test_a_sighting_with_no_tty_does_not_blank_the_one_a_record_has():
+    """``ps`` reports "?" for an agent with no controlling terminal, and the scan
+    passes that on as an empty tty. Keeping the screen there is is strictly better
+    than swapping it for none."""
+    kept = A.synthesize_untracked([], A.Observation.present({404: "pts/7"}), T0)
+    (same,) = A.synthesize_untracked(kept, A.Observation.present({404: ""}), T0 + 8)
+    assert same.tty == "pts/7"
 
 
 def test_an_unreadable_scan_synthesizes_nothing():

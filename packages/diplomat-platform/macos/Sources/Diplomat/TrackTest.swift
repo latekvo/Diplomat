@@ -180,6 +180,15 @@ enum TrackTest {
         check("the lookup script tries every candidate, nearest first",
               TerminalFocus.itermScript(["/dev/ttys038", "/dev/ttys034"])
                 .contains("{\"/dev/ttys038\", \"/dev/ttys034\"}"))
+        // The reaper's route for a run with no handle. It closes and does not activate:
+        // `activate` renumbers the index-based references the search is still walking,
+        // which is the bug the focus script above is written around.
+        for (term, script) in [("iTerm", TerminalFocus.itermCloseScript(["/dev/ttys038"])),
+                               ("Terminal", TerminalFocus.terminalCloseScript(["/dev/ttys038"]))] {
+            check("the \(term) close script closes the matched window and never activates",
+                  script.contains("{\"/dev/ttys038\"}") && script.contains("close w")
+                    && !script.contains("activate"))
+        }
 
         //     The same walk, asked of the SCREEN rather than the window. A run this applet
         //     spawned carries the tty of the window it opened and matches a session dump
@@ -379,7 +388,14 @@ enum TrackTest {
         }
         check("the sentinel its shell writes retires the run", finished)
 
-        closeWindow(term: term, windowID: wid)   // tidy up the throwaway window
+        // How the quiescence backstop reaps a window it has no handle for — the same
+        // walk as the focus above, asked to close rather than raise. It is the only
+        // route a session nobody dispatched ever has, and it doubles as this throwaway
+        // window's cleanup; the fallback below covers a walk that found nothing.
+        let closedByWalk = TerminalFocus.close(tty: agentTTY, pid: agentPID)
+        check("the window closes from the agent's own tty, with no handle at all",
+              closedByWalk)
+        if !closedByWalk { closeWindow(term: term, windowID: wid) }
     }
 
     private static func closeWindow(term: SpawnTerminal, windowID: String) {

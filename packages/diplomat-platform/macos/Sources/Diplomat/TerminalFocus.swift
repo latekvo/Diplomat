@@ -66,6 +66,34 @@ enum TerminalFocus {
         return false
     }
 
+    /// Close the terminal window running `tty`, or whatever wraps it — the mirror of
+    /// `focus`, and the only route to the window of a run that kept no handle.
+    ///
+    /// Used for one thing: a run the quiescence backstop ended (`AgentState.wentQuiet`) —
+    /// twenty minutes of a screen that has not moved, so nothing is being read and nothing
+    /// is being typed. What it performs is the act the operator would: a wrapped session's
+    /// window belongs to the tmux CLIENT, so closing it detaches the session exactly as a
+    /// hand on that window would, rather than reaching past it to kill something the
+    /// operator may share.
+    ///
+    /// The panes are not revealed as `focus` reveals them: selecting a pane in a window
+    /// about to close shows nobody anything.
+    ///
+    /// False means no terminal admitted to showing any tty on the way out: the window is
+    /// already gone, the agent is not in a terminal at all, or automation is not granted.
+    @discardableResult
+    static func close(tty: String, pid: Int? = nil) -> Bool {
+        let walk = walk(tty: AgentProbes.shortTTY(tty), pid: pid, processes: processes(),
+                        panes: panes(), clients: clients())
+        guard !walk.ttys.isEmpty else { return false }
+        let paths = walk.ttys.map { "/dev/\($0)" }
+        if isRunning("com.googlecode.iterm2"),
+           OSAScript.runSilently(itermCloseScript(paths)) { return true }
+        if isRunning("com.apple.Terminal"),
+           OSAScript.runSilently(terminalCloseScript(paths)) { return true }
+        return false
+    }
+
     /// The ordered ttys between a process and its window, nearest first. Pure —
     /// everything it walks over is passed in, so the shape of a wrapped session is
     /// testable without one.
@@ -227,6 +255,48 @@ enum TerminalFocus {
                                 return "ok"
                             end if
                         end repeat
+                    end repeat
+                end repeat
+            end repeat
+            error "no window on any of those ttys"
+        end tell
+        """
+    }
+
+    /// The close mirrors of the two above, erroring when no session sits on any candidate
+    /// tty so the caller can tell "closed it" from "there was nothing there". Neither
+    /// activates: the window is going away, and `activate` renumbers the index-based
+    /// references the search is still walking.
+    static func itermCloseScript(_ paths: [String]) -> String {
+        """
+        tell application "iTerm"
+            repeat with _t in \(list(paths))
+                repeat with w in windows
+                    repeat with t in tabs of w
+                        repeat with s in sessions of t
+                            if (tty of s) is (_t as string) then
+                                close w
+                                return "ok"
+                            end if
+                        end repeat
+                    end repeat
+                end repeat
+            end repeat
+            error "no window on any of those ttys"
+        end tell
+        """
+    }
+
+    static func terminalCloseScript(_ paths: [String]) -> String {
+        """
+        tell application "Terminal"
+            repeat with _t in \(list(paths))
+                repeat with w in windows
+                    repeat with t in tabs of w
+                        if (tty of t) is (_t as string) then
+                            close w
+                            return "ok"
+                        end if
                     end repeat
                 end repeat
             end repeat

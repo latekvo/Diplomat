@@ -591,11 +591,8 @@ public enum AgentState {
         }
         let age = now - record.dispatchedAt
         guard let pid = record.pid else {
-            // An untracked run IS its process-table sighting, so it has no pid of its
-            // own and no dispatch stamp to be young against; it is alive by construction.
             if record.untracked {
-                return classifyActivity(record, evidence: evidence, now: now, done: done,
-                                        aliveReason: "found in process table")
+                return resolveUntracked(record, evidence: evidence, now: now, done: done)
             }
             return resolveWithoutPid(record, evidence: evidence, now: now, age: age, done: done)
         }
@@ -655,6 +652,31 @@ public enum AgentState {
             return done(.unknown, "no pid recorded \(secs(age)) after dispatch")
         }
         return done(.finished, "no agent for PR #\(pr) in the process table")
+    }
+
+    /// A run synthesized from a sighting in the process table.
+    ///
+    /// It has no pid of its own and no dispatch stamp to be young against, so the scan
+    /// that made it is also the only thing that can end it — and something must, because
+    /// the record is kept across ticks for the stillness backstop's sake: one that
+    /// outlived its agent would hold that PR against a fresh agent, and a bay of the cap,
+    /// for the life of the applet.
+    ///
+    /// An unreadable scan ends nothing, like every other rung here. It is the sole
+    /// evidence about this run, so "could not look" must not read as "it is gone".
+    private static func resolveUntracked(_ record: RunRecord, evidence: Evidence,
+                                         now: TimeInterval,
+                                         done: (RunState, String) -> Resolution) -> Resolution {
+        guard let live = evidence.liveAgents.value else {
+            let why = evidence.liveAgents.reason.isEmpty
+                ? "failed" : evidence.liveAgents.reason
+            return done(.unknown, "the agent scan \(why)")
+        }
+        if let pr = record.prNumber, live[pr] != nil {
+            return classifyActivity(record, evidence: evidence, now: now, done: done,
+                                    aliveReason: "found in process table")
+        }
+        return done(.finished, "gone from the process table")
     }
 
     /// Working, or finished its turn and waiting at the prompt?
@@ -774,14 +796,34 @@ public enum AgentState {
     /// — which is why they are a *fallback* and not the identity mechanism: that scan
     /// cannot tell two runs on one PR apart, so at most one record per PR is made.
     ///
+    /// One is made once and then kept in the book like any other run, because the
+    /// stillness backstop measures a screen against the last one seen and a record
+    /// re-derived every tick remembers none: its clock never leaves zero, so it can never
+    /// be found wedged and its window is never closed. The dedup on PR number is what
+    /// keeps the next tick from making a second.
+    ///
     /// They count as automatic. An agent whose trigger is unknown spending a bay defers
     /// work; the opposite error dispatches a second agent onto a PR that has one.
     public static func synthesizeUntracked(_ records: [RunRecord],
                                            liveAgents: Observation<[Int: String]>,
                                            now: TimeInterval) -> [RunRecord] {
         guard let live = liveAgents.value else { return records }
-        let known = Set(records.compactMap { $0.prNumber })
-        var out = records
+        var out: [RunRecord] = []
+        for r in records {
+            // A kept record follows its PR's current sighting: the scan reports one agent
+            // per PR, so an operator's second session becomes that sighting the moment the
+            // first exits. Its memory of the old screen goes with it, or the new window
+            // inherits the old one's stillness.
+            guard r.untracked, let pr = r.prNumber, let tty = live[pr],
+                  !tty.isEmpty, tty != r.tty
+            else { out.append(r); continue }
+            var moved = r
+            moved.tty = tty
+            moved.quietDigest = ""
+            moved.quietSince = nil
+            out.append(moved)
+        }
+        let known = Set(out.compactMap { $0.prNumber })
         for pr in Set(live.keys).subtracting(known).sorted() {
             out.append(RunRecord(runID: "untracked:\(pr)", dispatchedAt: now,
                                  prNumber: pr,

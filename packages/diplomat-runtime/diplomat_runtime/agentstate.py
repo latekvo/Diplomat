@@ -667,11 +667,8 @@ def _resolve_local(record: RunRecord, evidence: Evidence, now: float,
     age = now - record.dispatched_at
 
     if record.pid is None:
-        # An untracked run IS its process-table sighting, so it has no pid of its own
-        # and no dispatch stamp to be young against; it is alive by construction.
         if record.untracked:
-            return _classify_activity(record, evidence, now, done,
-                                      "found in process table")
+            return _resolve_untracked(record, evidence, now, done)
         return _resolve_without_pid(record, evidence, now, age, done)
 
     proc = table.get(record.pid)
@@ -724,6 +721,28 @@ def _resolve_without_pid(record: RunRecord, evidence: Evidence, now: float,
         # either mechanism, so its absence is not evidence of anything.
         return done(UNKNOWN, f"no pid recorded {age:.0f}s after dispatch")
     return done(FINISHED, f"no agent for PR #{record.pr_number} in the process table")
+
+
+def _resolve_untracked(record: RunRecord, evidence: Evidence, now: float,
+                       done) -> Resolution:
+    """A run synthesized from a sighting in the process table.
+
+    It has no pid of its own and no dispatch stamp to be young against, so the scan
+    that made it is also the only thing that can end it — and something must, because
+    the record is kept across ticks for the stillness backstop's sake: one that
+    outlived its agent would hold that PR against a fresh agent, and a bay of the cap,
+    for the life of the applet.
+
+    An unreadable scan ends nothing, like every other rung here. It is the sole
+    evidence about this run, so "could not look" must not read as "it is gone".
+    """
+    if not evidence.live_agents.ok:
+        return done(UNKNOWN,
+                    f"the agent scan {evidence.live_agents.reason or 'failed'}")
+    if record.pr_number in evidence.live_agents.value:
+        return _classify_activity(record, evidence, now, done,
+                                  "found in process table")
+    return done(FINISHED, "gone from the process table")
 
 
 def _classify_activity(record: RunRecord, evidence: Evidence, now: float, done,
@@ -836,18 +855,34 @@ def synthesize_untracked(records: list[RunRecord], live_agents: Observation,
     table — which is why they are a *fallback* and not the identity mechanism: that
     scan cannot tell two runs on one PR apart, so at most one record per PR is made.
 
+    One is made once and then kept in the book like any other run, because the
+    stillness backstop measures a screen against the last one seen and a record
+    re-derived every tick remembers none: its clock never leaves zero, so it can never
+    be found wedged and its window is never closed. The dedup on PR number is what
+    keeps the next tick from making a second.
+
     They count as automatic. An agent whose trigger is unknown spending a bay defers
     work; the opposite error dispatches a second agent onto a PR that has one.
     """
     if not live_agents.ok:
         return records
-    known = {r.pr_number for r in records if r.pr_number is not None}
-    out = list(records)
-    for pr in sorted(set(live_agents.value) - known):
+    live = live_agents.value
+    out = []
+    for r in records:
+        # A kept record follows its PR's current sighting: the scan reports one agent
+        # per PR, so an operator's second session becomes that sighting the moment the
+        # first exits. Its memory of the old screen goes with it, or the new window
+        # inherits the old one's stillness.
+        tty = live.get(r.pr_number) if r.untracked else None
+        if tty and tty != r.tty:
+            r = replace(r, tty=tty, quiet_digest="", quiet_since=None)
+        out.append(r)
+    known = {r.pr_number for r in out if r.pr_number is not None}
+    for pr in sorted(set(live) - known):
         out.append(RunRecord(run_id=f"untracked:{pr}", dispatched_at=now,
                              pr_number=pr, source=SOURCE_AUTO,
                              placement=PLACEMENT_LOCAL,
-                             tty=live_agents.value[pr], untracked=True))
+                             tty=live[pr], untracked=True))
     return out
 
 

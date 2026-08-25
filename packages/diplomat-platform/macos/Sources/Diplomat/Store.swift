@@ -719,9 +719,16 @@ final class Store: ObservableObject {
     ///
     /// On the slow refresh, not the 8-second tick: it costs a `gh` call per PR. The answer
     /// is carried forward by the fast ticks in between.
+    ///
+    /// Only the runs this applet dispatched. "Merged" ends a run so it can be priced and
+    /// its bay handed back, and a synthesized one has nothing to price and is manifestly
+    /// still in the process table — asked about, a landed PR whose agent is still sitting
+    /// in its window would retire that record and have the next tick synthesize it
+    /// straight back, one `gh` call and one audit line per tick. What ends one of those is
+    /// the scan that made it.
     func refreshMergedStatuses() async {
         mergedPRs = await AgentProbes.mergedPRs(
-            Set(AgentRegistry.load().compactMap(\.prNumber)))
+            Set(AgentRegistry.load().filter { !$0.untracked }.compactMap(\.prNumber)))
     }
 
     // MARK: tracked agent runs
@@ -962,18 +969,22 @@ final class Store: ObservableObject {
     /// dropped — an agent nothing counts, which is a bay of the cap the machine can then
     /// spend twice.
     ///
-    /// Synthesized rows are not written at all: a run nobody dispatched is re-derived from
-    /// the process table every tick and has nothing to persist.
+    /// A synthesized row is APPENDED, having none on disk to merge into — that memory is
+    /// the whole reason one is kept rather than re-derived from the process table every
+    /// tick. Only a synthesized one: a tracked record missing from the book was retired
+    /// while this tick resolved, and writing it back would raise the dead.
     private static func persistRunChanges(_ learned: [AgentState.RunRecord]) {
-        let fresh = Dictionary(learned.filter { !$0.untracked }.map { ($0.runID, $0) },
+        var fresh = Dictionary(learned.map { ($0.runID, $0) },
                                uniquingKeysWith: { _, last in last })
         var out: [AgentState.RunRecord] = []
         var changed = false
         for r in AgentRegistry.load() {
-            guard let f = fresh[r.runID] else { out.append(r); continue }
+            guard let f = fresh.removeValue(forKey: r.runID) else { out.append(r); continue }
             var merged = r
             if merged.pid == nil { merged.pid = f.pid }
-            if merged.tty.isEmpty { merged.tty = f.tty }
+            // The fresher one wins here, unlike the pid: a synthesized run's tty follows
+            // whichever agent its PR's sighting currently names.
+            if !f.tty.isEmpty { merged.tty = f.tty }
             if let seen = f.claimSeenAt { merged.claimSeenAt = seen }
             // Taken wholesale, unlike the three above: this pair is the only thing a
             // tick learns by comparing itself to the LAST one, so it is the only one
@@ -985,7 +996,11 @@ final class Store: ObservableObject {
             changed = changed || merged != r
             out.append(merged)
         }
-        if changed { AgentRegistry.save(out) }
+        // What the drain above left in `fresh`: the rows with no line on disk to merge
+        // into. Taken from `learned` rather than from the dictionary, for a stable order.
+        let added = learned.filter { $0.untracked && fresh[$0.runID] != nil }
+        out.append(contentsOf: added)
+        if changed || !added.isEmpty { AgentRegistry.save(out) }
     }
 
     /// Price what has ended and drop it from the book.
@@ -994,9 +1009,14 @@ final class Store: ObservableObject {
     /// comes out of the run directory, so an applet that restarted mid-agent can still
     /// attribute the run to its transcript; the in-memory list could not, and every such
     /// run landed in the ledger unpriced.
+    ///
+    /// A synthesized run is dropped here too, and priced by nothing: it has no ledger key,
+    /// and no dispatch time, prompt or transcript to be priced from. Dropping it is the
+    /// whole of what it needs, and it does need it: a record kept so the stillness
+    /// backstop has a memory must not outlive the agent it remembers.
     private func retireFinished(_ t: AgentState.Tick) async {
         reapQuietWindows(t)
-        let gone = t.retirable.filter { !$0.untracked }
+        let gone = t.retirable
         guard !gone.isEmpty else { return }
         let priced = Store.pricingInputs(gone)
         // Forgetting deletes every trace a run leaves — record, directory, prompt,
@@ -1016,15 +1036,19 @@ final class Store: ObservableObject {
     /// alive at its prompt holding the whole task, and the operator may still want to
     /// read it. One whose screen has not changed in twenty minutes is nobody's.
     ///
-    /// Untracked runs are reaped too, unlike the retirement below: this closes a window
-    /// rather than pricing a run, and a wedged session nobody dispatched is just as dead
-    /// as one we did.
+    /// A run nobody dispatched is reaped like any other: a wedged session is just as dead
+    /// whether or not this applet opened it. Its window is reached the same two ways a
+    /// clicked row's is (`activate`) — the handle a spawn recorded, else the agent's own
+    /// process walked out to whatever terminal is showing it. A synthesized run has no run
+    /// directory, so it never has a handle and the walk is its only route; a run the mesh
+    /// placed back here is in the same position.
     private func reapQuietWindows(_ t: AgentState.Tick) {
         for (record, resolution) in t.rows
         where resolution.state == .finished && record.runsHere {
-            guard AgentState.wentQuiet(record, now: t.now) != nil,
-                  let handle = AgentWindows.handle(record.runID),
-                  AgentWindows.close(handle) else { continue }
+            guard AgentState.wentQuiet(record, now: t.now) != nil else { continue }
+            let byHandle = AgentWindows.handle(record.runID).map(AgentWindows.close) ?? false
+            guard byHandle || TerminalFocus.close(tty: record.tty, pid: record.pid)
+            else { continue }
             let who = record.label.isEmpty ? record.runID : record.label
             let why = resolution.reason.components(separatedBy: "; ").last ?? ""
             AuditLog.log("auto", "kill-device", "closed \(who)'s window — \(why)")
