@@ -622,9 +622,10 @@ struct ContentView: View {
         }
     }
 
-    /// The list in reading order: finished at the top, then the sessions that want a
-    /// human, then the ones that don't, then what nothing is known about, then this
-    /// device's empty slots, then what hasn't started (`AgentTaskStatus`).
+    /// The list in reading order: the sessions that want a human at the top, then the
+    /// ones that don't, then what is spawning, then what nothing is known about, then
+    /// this device's empty slots, then what hasn't started (`AgentTaskStatus`). A run
+    /// that has ended is not among them — `agentRows` is published without it.
     ///
     /// Ties keep the order they came in — runs as `AgentState.rows` ranked them, the
     /// queue in its execution order — which matters most for the queue, whose whole

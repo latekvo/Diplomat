@@ -181,10 +181,13 @@ tint) is shared in [`assets/audit-categories.json`](packages/diplomat-core/asset
 One list for what the machine is doing, what it is about to do, and how much room
 it has left - the agents it has **spawned**, the automatic work it is **holding**,
 and an empty bay per free slot of its [task cap](#autonomous-monitors). Rows read
-in status order: *merged*, *done*, *awaiting input*, *running*, *starting*,
-*free slot*, *queued*, so finished work (the only kind asking to be read) sits at
-the top and everything not started yet is at the bottom. The list is always there:
-an idle machine with a cap of two reads `0 · 2 free` over two empty bays.
+in status order: *awaiting input*, *running*, *starting*, *unknown*, *free slot*,
+*queued*, so the sessions asking to be read sit at the top and everything not
+started yet is at the bottom. A run that is over is not on the list at all - the
+pass that resolves one retires it, so its row would be up for a single redraw;
+what it leaves behind is its activity line and its ledger entry. The list is
+always there: an idle machine with a cap of two reads `0 · 2 free` over two empty
+bays.
 
 - **Sessions** are every spawned agent, wizard- or monitor-launched. Click a row
   to focus its terminal window, ✕ to stop tracking it.
@@ -1137,7 +1140,8 @@ DIPLOMAT_REFRESH_SECS=30 open ./Diplomat.app   # refresh every 30s
 ```
 
 Each refresh also re-checks every tracked, unmerged PR (one `gh pr view` apiece) so
-the Agent-tasks list can flip a row to *merged*. The [autonomous
+a run whose PR has landed ends there and then, whatever its process is still doing,
+and its row leaves the Agent-tasks list. The [autonomous
 monitors](#autonomous-monitors) are separate, on their own 3-minute schedule.
 
 ## Run

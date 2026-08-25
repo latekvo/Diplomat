@@ -82,9 +82,10 @@ public enum AgentState {
         case unknown
     }
 
-    /// Reading order for the panel, matching `AgentTaskStatus`: a finished outcome
-    /// first because it is the only row asking to be read, then the sessions, then the
-    /// ones nothing is known about.
+    /// Rank for the panel, matching `AgentTaskStatus`: an outcome, then a local exit,
+    /// then the sessions that want a human, then the ones that don't, then the ones
+    /// nothing is known about. The two `ended` states head the rank and no front-end
+    /// draws a row in one, so the list itself starts at `.awaitingInput`.
     public static let stateOrder: [RunState] = [
         .merged, .finished, .awaitingInput, .running, .starting, .unknown,
     ]
@@ -99,11 +100,20 @@ public enum AgentState {
     public static let occupying: Set<RunState> = [.running, .starting, .unknown]
 
     /// States that block a second dispatch onto the same PR — every state that is not
-    /// over. Wider than `occupying` by `.awaitingInput`, and the difference is the
+    /// `ended`. Wider than `occupying` by `.awaitingInput`, and the difference is the
     /// point: that session still holds the PR's context and is waiting to be typed at,
     /// so it must not get a second agent beside it even though it has given its bay
     /// back.
     public static let blocking: Set<RunState> = occupying.union([.awaitingInput])
+
+    /// The states a run is over in, both of them positive evidence.
+    ///
+    /// The pass that resolves a run into one of these retires it (`retirable`), so both
+    /// front-ends leave it out of the list they draw: a row for it would be on screen
+    /// for one redraw and gone the next, and which redraw caught it would depend on
+    /// when the poll landed. What the run leaves behind is its activity line and its
+    /// ledger entry.
+    public static let ended: Set<RunState> = [.merged, .finished]
 
     // MARK: - Timing constants
 
@@ -885,14 +895,13 @@ public enum AgentState {
     /// The runs whose agent has ended — what the registry drops and what the telemetry
     /// ledger prices.
     ///
-    /// Only `.merged` and `.finished`, both of which are positive evidence. A record is
-    /// never retired by its own age: an hour-long review is an ordinary one, and a clock
-    /// that ends records ends them mid-run.
+    /// A record is never retired by its own age: an hour-long review is an ordinary one,
+    /// and a clock that ends records ends them mid-run.
     public static func retirable(records: [RunRecord],
                                  states: [String: Resolution]) -> [RunRecord] {
         records.filter { r in
             guard let s = states[r.runID] else { return false }
-            return s.state == .merged || s.state == .finished
+            return ended.contains(s.state)
         }
     }
 

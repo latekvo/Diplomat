@@ -942,13 +942,11 @@ final class Store: ObservableObject {
 
     /// The rows and the cap load this pass produced.
     ///
-    /// Runs that are over are left out. The same tick that resolves one retires it, so
-    /// drawing it would put a row on screen for one redraw and then take it away again —
-    /// and which redraw catches it depends on when the poll happened to land. What a
-    /// finished run leaves behind is its activity line and its ledger entry.
+    /// Runs that are over are left out (`AgentState.ended`), so the list this publishes
+    /// starts at `.awaitingInput`.
     private func publish(_ pass: AgentPass) {
         let rows = pass.tick.rows
-            .filter { $0.1.state != .finished && $0.1.state != .merged }
+            .filter { !AgentState.ended.contains($0.1.state) }
             .map { AgentRow(record: $0.0, state: $0.1.state, reason: $0.1.reason,
                             window: pass.windows[$0.0.runID] ?? nil) }
         // Assigned only on a change, like every other value the 8-second poll re-derives:

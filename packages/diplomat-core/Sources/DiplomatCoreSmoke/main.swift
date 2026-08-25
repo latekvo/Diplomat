@@ -1279,12 +1279,20 @@ section("the agent-task list and the queue behind the cap")
 // only disagree about what runs next by failing one of the two suites.
 // (`AgentTaskStatus` has no twin: a Linux spawn has no session row to sort.)
 //
-// The list's reading order, which is also the Agent-tasks row's status precedence.
+// The status precedence, which is the list's reading order from `.awaitingInput` down.
 check(AgentTaskStatus.allCases
       == [.merged, .done, .awaitingInput, .running, .starting, .unknown, .free, .queued],
-      "finished first, then what wants a human, then what doesn't, then what is "
-      + "spawning, then what nothing is known about, then this device's empty slots, "
-      + "then what hasn't started")
+      "an outcome, then a local exit, then what wants a human, then what doesn't, "
+      + "then what is spawning, then what nothing is known about, then this device's "
+      + "empty slots, then what hasn't started")
+// Which of those statuses a row can actually wear is decided one enum over, on the
+// states: both front-ends drop the runs that have ENDED (`Store.publish`,
+// `Store.running_tasks`), so `.merged` and `.done` head the order and no drawn row
+// reaches them. A state in neither set would be one the list draws and the dedup
+// ignores — a second agent dispatched beside a run that is still up.
+check(AgentState.ended.union(AgentState.blocking) == Set(AgentState.RunState.allCases)
+      && AgentState.ended.isDisjoint(with: AgentState.blocking),
+      "every state either ends a run or keeps it on the list")
 check(AgentTaskStatus.merged < AgentTaskStatus.queued
       && AgentTaskStatus.awaitingInput < AgentTaskStatus.running,
       "the case order IS the sort order")

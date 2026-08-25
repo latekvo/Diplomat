@@ -132,9 +132,10 @@ RUNNING = "running"  # alive, and either working or unreadable
 STARTING = "starting"  # dispatched so recently that nothing could have observed it yet
 UNKNOWN = "unknown"  # the evidence this run turns on was unavailable
 
-#: Reading order for the panel, matching ``AgentTaskStatus`` in the Swift core: a
-#: finished outcome first because it is the only row asking to be read, then the
-#: sessions, then the ones nothing is known about.
+#: Rank for the panel, matching ``AgentTaskStatus`` in the Swift core: an outcome,
+#: then a local exit, then the sessions that want a human, then the ones that don't,
+#: then the ones nothing is known about. The two :data:`ENDED` states head the rank
+#: and no front-end draws a row in one, so the list itself starts at AWAITING_INPUT.
 STATE_ORDER = [MERGED, FINISHED, AWAITING_INPUT, RUNNING, STARTING, UNKNOWN]
 
 #: States in which a run still holds a bay of the device's automatic-task cap.
@@ -147,10 +148,20 @@ STATE_ORDER = [MERGED, FINISHED, AWAITING_INPUT, RUNNING, STARTING, UNKNOWN]
 OCCUPYING = frozenset({RUNNING, STARTING, UNKNOWN})
 
 #: States that block a second dispatch onto the same PR — every state that is not
-#: over. Wider than :data:`OCCUPYING` by AWAITING_INPUT, and the difference is the
-#: point: that session still holds the PR's context and is waiting to be typed at, so
-#: it must not get a second agent beside it even though it has given its bay back.
+#: :data:`ENDED`. Wider than :data:`OCCUPYING` by AWAITING_INPUT, and the difference
+#: is the point: that session still holds the PR's context and is waiting to be typed
+#: at, so it must not get a second agent beside it even though it has given its bay
+#: back.
 BLOCKING = OCCUPYING | {AWAITING_INPUT}
+
+#: The states a run is over in, both of them positive evidence.
+#:
+#: The pass that resolves a run into one of these retires it (:func:`retirable`), so
+#: both front-ends leave it out of the list they draw: a row for it would be on screen
+#: for one redraw and gone the next, and which redraw caught it would depend on when
+#: the poll landed. What the run leaves behind is its activity line and its ledger
+#: entry.
+ENDED = frozenset({MERGED, FINISHED})
 
 
 # MARK: - Timing constants
@@ -931,12 +942,11 @@ def retirable(records: list[RunRecord],
     """The runs whose agent has ended — what the registry drops and what the
     telemetry ledger prices.
 
-    Only MERGED and FINISHED, both of which are positive evidence. A record is never
-    retired by its own age: an hour-long review is an ordinary one, and a clock that
-    ends records ends them mid-run.
+    A record is never retired by its own age: an hour-long review is an ordinary one,
+    and a clock that ends records ends them mid-run.
     """
     return [r for r in records
-            if r.run_id in states and states[r.run_id].state in (MERGED, FINISHED)]
+            if r.run_id in states and states[r.run_id].state in ENDED]
 
 
 def free_slots(limit: int, occupied: int) -> int:

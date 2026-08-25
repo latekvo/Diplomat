@@ -488,10 +488,10 @@ enum Render {
     }
 
     /// For a render mode carrying `-procs`, inject fake agent rows and queued
-    /// tasks so the whole Agent-tasks list can be eyeballed: every session status,
-    /// the sort that puts finished work on top and the queue at the bottom, the
-    /// queued rows' drag grip and "execute now", and the row a task wears between the
-    /// two — clicked, spawn not yet answered. No-op otherwise.
+    /// tasks so the whole Agent-tasks list can be eyeballed: every session status the
+    /// list draws, the sort that puts the sessions wanting a human on top and the
+    /// queue at the bottom, the queued rows' drag grip and "execute now", and the row
+    /// a task wears between the two — clicked, spawn not yet answered. No-op otherwise.
     ///
     /// The sessions are panel spawns (the fixture default), which spend none of the
     /// automatic budget — so the device also draws the empty slots of its cap (all but
@@ -534,8 +534,6 @@ enum Render {
         store.pinAgentRows([
             row(337, "review", "Review · #337 · Deep", .running),
             row(462, "review", "Review · #462 · Full E2E", .awaitingInput),
-            row(nil, "conflicts", "Resolve · my PRs", .finished),
-            row(312, "review", "Review · #312 · Standard", .merged),
             // Work this device handed to the mesh: it runs on a peer, so the row has no
             // window at all and says where instead. Seeded because it is the one row
             // family whose whole point is a state no local session can reach — a running

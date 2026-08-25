@@ -16,8 +16,11 @@ import Foundation
 /// precedence: an outcome ("merged" — the PR landed) outranks a
 /// local exit ("done" — the `claude` process left, whatever it achieved), an idle
 /// session that wants a human ("awaiting input") outranks one that doesn't need
-/// anything ("running"), and work that has not started yet is last. Finished rows
-/// sit at the top because they are the only ones asking to be read.
+/// anything ("running"), and work that has not started yet is last.
+///
+/// The list a front-end draws starts at "awaiting input": the two statuses above it
+/// are what a run that has ENDED reads as, and an ended run is retired rather than
+/// drawn (`AgentState.ended`).
 ///
 /// `starting` is the span between the two halves of that list: a task taken off the
 /// queue whose spawn has not answered yet. It sorts directly under the running
@@ -42,7 +45,7 @@ public enum AgentTaskStatus: Int, Comparable, CaseIterable {
         lhs.rawValue < rhs.rawValue
     }
 
-    /// Where a resolved run sits in the list. A queued task has no run behind it and is
+    /// The status a run's state reads as. A queued task has no run behind it and is
     /// `.queued` by construction (`.starting` while its dispatch runs); an empty slot has
     /// no task at all and is `.free`.
     ///
