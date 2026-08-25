@@ -39,7 +39,7 @@ import sys
 from pathlib import Path
 from typing import Mapping, Sequence
 
-__version__ = "0.40.0"
+__version__ = "0.41.0"
 
 DEFAULT_REPO_URL = "https://github.com/latekvo/Diplomat.git"
 SUPPORTED = ("darwin", "linux")
