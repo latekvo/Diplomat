@@ -278,6 +278,28 @@ def test_the_socks_port_is_picked_after_the_forward_listener_binds(
     assert order == ["forward listener bound", "socks port picked"]
 
 
+def test_a_socks_port_that_cannot_be_picked_hands_the_listener_back(
+        tornet, monkeypatch):
+    """``_free_port`` opens a socket of its own, so it fails when the process is out
+    of descriptors — and by then ``start()`` is already holding the forward listener.
+    Every other step past that point gives it back (``_write_torrc``, the spawn); this
+    one has to as well, or a start that failed keeps a loopback port until the node
+    exits, and says nothing on the way out."""
+    def out_of_descriptors() -> int:
+        raise OSError(24, "Too many open files")
+
+    monkeypatch.setattr(tor, "_free_port", out_of_descriptors)
+
+    async def scenario():
+        transport = tornet.transport("portless")
+        assert await transport.start(
+            _Echo(), bootstrap_timeout=tornet.backend.bootstrap) is False
+        assert transport._forward_server is None, "the listener was left bound"
+        assert transport._proc is None
+
+    _run(scenario(), tornet.backend.bootstrap + 30.0)
+
+
 # MARK: - the transport: failures of the daemon itself
 
 

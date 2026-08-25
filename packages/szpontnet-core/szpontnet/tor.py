@@ -216,8 +216,15 @@ class TorTransport:
                 f"Mesh/Tor: cannot open the forward listener ({exc})")
             return False
         forward_port = self._forward_server.sockets[0].getsockname()[1]
-        # After the listener above, never before — see _free_port.
-        self._socks_port = _free_port()
+        # After the listener above, never before — see _free_port. Guarded like every
+        # step below it: the listener is open by now, so an escape here would keep its
+        # port for the node's whole life and say nothing.
+        try:
+            self._socks_port = _free_port()
+        except OSError as exc:
+            log("warn", f"Mesh/Tor: cannot pick a SOCKS port ({exc})")
+            await self.stop()
+            return False
         try:
             torrc = _write_torrc(self._tor_dir, self._socks_port, forward_port)
         except OSError as exc:
