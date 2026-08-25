@@ -455,7 +455,9 @@ enum TrackTest {
             if !emptied { try? await Task.sleep(nanoseconds: 200_000_000) }
         }
         check("…and the window is gone, not merely reported closed", emptied)
-        if !closed { closeWindow(term: term, windowID: cap.0) }
+        // On `emptied` rather than on `closed`: a terminal that answered ok and left the
+        // window standing has to be tidied up too.
+        if !emptied { closeWindow(term: term, windowID: cap.0) }
     }
 
     private static func closeWindow(term: SpawnTerminal, windowID: String) {
