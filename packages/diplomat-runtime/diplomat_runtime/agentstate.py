@@ -156,11 +156,12 @@ BLOCKING = OCCUPYING | {AWAITING_INPUT}
 
 #: The states a run is over in, both of them positive evidence.
 #:
-#: The pass that resolves a run into one of these retires it (:func:`retirable`), so
-#: both front-ends leave it out of the list they draw: a row for it would be on screen
-#: for one redraw and gone the next, and which redraw caught it would depend on when
-#: the poll landed. What the run leaves behind is its activity line and its ledger
-#: entry.
+#: Both front-ends leave a run in one of these off the list they draw. A dispatched one
+#: is retired by the same pass that resolves it (:func:`retirable`), so its row would be
+#: up for one redraw and which redraw caught it would depend on when the poll landed; an
+#: untracked one is never retired — it is re-synthesized from its live process every
+#: tick — so this filter is the whole of what takes its row away when its PR lands.
+#: Either way what the run leaves behind is its activity line and its ledger entry.
 ENDED = frozenset({MERGED, FINISHED})
 
 

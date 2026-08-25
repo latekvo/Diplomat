@@ -19,8 +19,8 @@ import Foundation
 /// anything ("running"), and work that has not started yet is last.
 ///
 /// The list a front-end draws starts at "awaiting input": the two statuses above it
-/// are what a run that has ENDED reads as, and an ended run is retired rather than
-/// drawn (`AgentState.ended`).
+/// are what a run that has ENDED reads as, and an ended run is filtered out rather
+/// than drawn (`AgentState.ended`).
 ///
 /// `starting` is the span between the two halves of that list: a task taken off the
 /// queue whose spawn has not answered yet. It sorts directly under the running

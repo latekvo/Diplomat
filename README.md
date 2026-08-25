@@ -184,8 +184,9 @@ and an empty bay per free slot of its [task cap](#autonomous-monitors). Rows rea
 in status order: *awaiting input*, *running*, *starting*, *unknown*, *free slot*,
 *queued*, so the sessions asking to be read sit at the top and everything not
 started yet is at the bottom. A run that is over is not on the list at all - the
-pass that resolves one retires it, so its row would be up for a single redraw;
-what it leaves behind is its activity line and its ledger entry. The list is
+pass that resolves a dispatched one retires it, so its row would be up for a
+single redraw, and an untracked one's row goes the moment its PR lands. What a run
+leaves behind is its activity line and its ledger entry. The list is
 always there: an idle machine with a cap of two reads `0 · 2 free` over two empty
 bays.
 

@@ -664,7 +664,7 @@ class Panel(QWidget):
         gives it no window handle, so a running agent is a status and not a session:
         nothing to click. The status itself is the one macOS draws, *awaiting input*
         included — the agents run in tmux panes, which can be read
-        (`Store._idle_pr_agents`).
+        (`probes.pane_tails`).
 
         So the list can be longer than the cap: an agent waiting at its prompt keeps
         its row AND gives its bay back, which draws both. That pair is the point —
