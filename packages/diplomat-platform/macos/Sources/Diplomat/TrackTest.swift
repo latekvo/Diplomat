@@ -387,15 +387,75 @@ enum TrackTest {
             try? await Task.sleep(nanoseconds: 1_000_000_000)
         }
         check("the sentinel its shell writes retires the run", finished)
+        closeWindow(term: term, windowID: wid)
 
-        // How the quiescence backstop reaps a window it has no handle for — the same
-        // walk as the focus above, asked to close rather than raise. It is the only
-        // route a session nobody dispatched ever has, and it doubles as this throwaway
-        // window's cleanup; the fallback below covers a walk that found nothing.
-        let closedByWalk = TerminalFocus.close(tty: agentTTY, pid: agentPID)
-        check("the window closes from the agent's own tty, with no handle at all",
-              closedByWalk)
-        if !closedByWalk { closeWindow(term: term, windowID: wid) }
+        await reapCycle(term: term, check: check)
+    }
+
+    /// The reaper's route to a window it has no handle for: the same walk as the focus
+    /// above, asked to close rather than raise. A window of its own, because the walk
+    /// resolves only while the process it starts from is alive, and this one has to be
+    /// closed out from under that process — which the cycle above cannot allow, since a
+    /// shell whose window went away never writes the sentinel it is waiting for.
+    ///
+    /// Alive is also what is being stood in for: what the backstop reaps is a WEDGED run,
+    /// whose agent is by definition still sitting in front of a screen that stopped
+    /// moving twenty minutes ago.
+    private static func reapCycle(term: SpawnTerminal, check: (String, Bool) -> Void) async {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("diplomat-track-reap-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        // Deleting the directory is what releases the stand-in, so the teardown cannot
+        // race the file it waits on. The 1500 turns are the leash for a close that does
+        // not land: a session left detached inside tmux still ends five minutes later.
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let keep = dir.appendingPathComponent("keep")
+        FileManager.default.createFile(atPath: keep.path, contents: nil)
+        let pidFile = dir.appendingPathComponent("pid")
+        let inner = """
+            printf %s $$ > \(AgentSpawner.shq(pidFile.path))
+            n=0
+            while [ -f \(AgentSpawner.shq(keep.path)) ] && [ "$n" -lt 1500 ]
+            do
+                sleep 0.2
+                n=$((n + 1))
+            done
+            """
+        guard let cap = try? AgentSpawner.runSpawn(
+                command: "\"$SHELL\" -i -c \(AgentSpawner.shq(inner))", terminal: term),
+              !cap.0.isEmpty else {
+            print("SKIP — live \(term.title) capture unavailable for the reap window")
+            return
+        }
+        var pid: Int?
+        for _ in 0..<50 where pid == nil {
+            pid = (try? String(contentsOf: pidFile, encoding: .utf8))
+                .flatMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            if pid == nil { try? await Task.sleep(nanoseconds: 200_000_000) }
+        }
+        let tty = pid.flatMap(DeviceFocus.tty(forPid:)) ?? ""
+        check("the reaped agent is on a terminal to be walked from", !tty.isEmpty)
+        // The same walk `close` runs internally, for the one thing its Bool cannot say:
+        // which tty the window it went for is on.
+        let window = TerminalFocus.walk(tty: AgentProbes.shortTTY(tty), pid: pid,
+                                        processes: TerminalFocus.processes(),
+                                        panes: TerminalFocus.panes(),
+                                        clients: TerminalFocus.clients()).ttys.last
+
+        let closed = TerminalFocus.close(tty: tty, pid: pid)
+        check("the window closes from the agent's own tty, with no handle at all", closed)
+        // The window's tty and never the agent's: closing a wrapped window ends the tmux
+        // client attached to it and leaves the session — and the agent — detached, which
+        // is the whole difference between closing a window and killing what is inside it.
+        var emptied = false
+        for _ in 0..<15 where !emptied {
+            emptied = window.map { t in
+                !TerminalFocus.processes().values.contains { $0.tty == t }
+            } ?? false
+            if !emptied { try? await Task.sleep(nanoseconds: 200_000_000) }
+        }
+        check("…and the window is gone, not merely reported closed", emptied)
+        if !closed { closeWindow(term: term, windowID: cap.0) }
     }
 
     private static func closeWindow(term: SpawnTerminal, windowID: String) {
