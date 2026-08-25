@@ -19,6 +19,7 @@ subagent or backgrounded command is still outstanding; those cases are driven th
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 
 import pytest
@@ -139,6 +140,40 @@ def test_a_path_with_spaces_survives_the_snippet(tmp_path):
     activity.parent.mkdir()
     _fire("Stop", activity)
     assert completion.parse(activity.read_text())[0] == completion.IDLE
+
+
+def test_the_hooks_of_a_retired_run_do_not_fail_in_the_session_they_outlive(tmp_path):
+    """The applet deletes a run's directory the moment it retires the run, and the
+    report these hooks write is what retires one — so from its first turn onwards the
+    agent is alive at its prompt with nowhere to write. Every later turn (a human
+    typing, or the API-error watcher's nudge) then ends in a hook the CLI reports to
+    the operator as failing, for the life of the session."""
+    gone = tmp_path / "1787678987-65629fdf"
+    activity, done = gone / "activity", gone / "done"
+    gone.mkdir()
+    _fire("Stop", activity, done, payload=_payload())
+    shutil.rmtree(gone)
+
+    assert _fire("UserPromptSubmit", activity, done) == 0
+    assert _fire("Stop", activity, done, payload=_payload()) == 0
+    assert _fire("SessionEnd", activity, done) == 0
+    assert not gone.exists(), \
+        "a report nothing reads must not rebuild the directory the applet dropped"
+
+
+def test_a_report_that_cannot_land_is_silent_as_well_as_successful(tmp_path):
+    """`2>/dev/null` precedes the redirect, which is the only order that also silences
+    the shell's own `No such file or directory`: the open fails before a trailing one
+    is in effect. Measured — the same snippet with the two the other way round exits 0
+    and still writes that line to the hook's stderr, once per turn."""
+    snippet = completion.hook_settings(str(tmp_path / "gone" / "activity"))
+    snippet = snippet["hooks"]["Stop"][0]["hooks"][0]["command"]
+
+    proc = subprocess.run(["/bin/sh", "-c", snippet], input="", text=True,
+                          capture_output=True)
+
+    assert proc.returncode == 0
+    assert proc.stderr == ""
 
 
 # MARK: - A turn that ended with work still outstanding

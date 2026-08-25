@@ -74,15 +74,23 @@ public enum AgentCompletion {
             cmd += " && v=\(AgentState.TurnReport.Verb.busy.rawValue); "
             word = "\"$v\""
         }
-        cmd += "printf '%s %s\\n' \(word) \"$(date +%s)\" >> \(shq(activityPath))"
+        // Best-effort, because the applet retires a run on the very report below and
+        // deletes its directory with it while the agent goes on sitting at its prompt:
+        // from then on every turn writes into a path that is gone, and an unguarded
+        // write makes each one a failing hook reported into the operator's session.
+        // `2>/dev/null` PRECEDES the redirect — the open fails before a trailing one
+        // is in effect.
+        cmd += "printf '%s %s\\n' \(word) \"$(date +%s)\""
+        cmd += " 2>/dev/null >> \(shq(activityPath)) || :"
         if let done = donePath, verb != .busy {
             // `>` not `>>`: the sentinel is read by existence and dated by mtime, and a
             // second turn's line would only move that date later.
+            let sentinel = "printf 0 2>/dev/null > \(shq(done)) || :"
             // `case` rather than `[ ]` so the miss is a no-op that still exits 0: a
             // hook that exits non-zero is reported to the agent as a failing hook.
             cmd += isGuarded
-                ? "; case \"$v\" in \(verb.rawValue)) printf 0 > \(shq(done)) ;; esac"
-                : "; printf 0 > \(shq(done))"
+                ? "; case \"$v\" in \(verb.rawValue)) \(sentinel) ;; esac"
+                : "; \(sentinel)"
         }
         return cmd
     }

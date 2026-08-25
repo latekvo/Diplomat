@@ -195,6 +195,12 @@ CASES = [
     ("a just-dispatched run with no pid yet is starting",
      rec(dispatched_at=T0 - 5, pid=None), ev(),
      A.STARTING, "no pid yet"),
+    # The table is one `ps` pass reused for several seconds, so a pid written after
+    # that pass names a process it cannot hold — and retiring on that deletes a working
+    # agent's run directory under it.
+    ("a just-dispatched run whose pid the table has not caught up with is starting",
+     rec(dispatched_at=T0 - 3), ev(processes={9999: proc()}),
+     A.STARTING, "pid 4242 not in the process table yet"),
     # --- a run whose agent this applet did not open ------------------------
     # The mesh routes a job and the NODE opens the terminal, so the pid file it
     # writes belongs to a run directory this applet never created. Judged on the
