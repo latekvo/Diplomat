@@ -296,24 +296,37 @@ def test_update_button_pulls_builds_and_relaunches(repos):
     store = Store()
     view = SettingsView(store)
 
-    def pump_until(phases: tuple[str, ...], seconds: float = 30.0) -> str:
+    def pump_until(ready, what: str, seconds: float = 30.0) -> None:
+        """Pump the Qt loop until ``ready()``.
+
+        The worker thread assigns ``store.update_state`` and only then emits
+        ``update_changed``, which reaches the view queued: a phase readable off
+        the store is not one the view has drawn. So a widget is waited for, never
+        read once the phase has landed — and since the slot runs to completion
+        inside one ``processEvents``, reaching one of its widgets is reaching all
+        of them. That lag is a turn of the loop, hence the short deadline on the
+        widget waits; the ones on a phase cover a real ``git fetch``.
+        """
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
             qapp.processEvents()
-            phase = (store.update_state or {}).get("phase")
-            if phase in phases:
-                return phase
+            if ready():
+                return
             time.sleep(0.02)
-        raise AssertionError(f"timed out waiting for {phases}, at {store.update_state}")
+        raise AssertionError(f"timed out waiting for {what}, at {store.update_state}")
+
+    def phase() -> str | None:
+        return (store.update_state or {}).get("phase")
 
     # The view kicks a check on open; it must land on "update available".
-    assert pump_until(("idle",)) == "idle"
+    pump_until(lambda: phase() == "idle", "the update check to land")
     assert store.update_state["behind"] == 1
-    assert view._update_btn.isEnabled()
+    pump_until(lambda: view._update_btn.isEnabled(), "the Update button to enable", 5.0)
     assert view._update_pill.text() == "1 behind"
 
     view._update_btn.click()
-    assert pump_until(("restarting", "error")) == "restarting"
+    pump_until(lambda: phase() in ("restarting", "error"), "the update to finish")
+    assert phase() == "restarting", store.update_state
 
     assert _git(clone, "rev-parse", "HEAD") == _git(origin, "rev-parse", "HEAD")
     assert (marker / "built").exists()
@@ -322,7 +335,8 @@ def test_update_button_pulls_builds_and_relaunches(repos):
     while not (marker / "relaunched").exists() and time.monotonic() < deadline:
         time.sleep(0.05)
     assert (marker / "relaunched").exists()
-    assert view._update_pill.text() == "restarting…"
+    pump_until(lambda: view._update_pill.text() == "restarting…",
+               "the view to show the handover", 5.0)
     assert "handing over" in view._update_row.summary()
 
     view.deleteLater()
