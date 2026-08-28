@@ -83,14 +83,15 @@ _HIT_YOUR_LIMIT = re.compile(r"hit your [a-z0-9\- ]{0,16}limit")
 # the code is the only thing transient-looking about it: the cap holds until its
 # window rolls over or an admin raises it, neither of which a nudge can do.
 _BUDGET_LIMIT = re.compile(r"budget[a-z0-9\- ]{0,16}(exceeded|reached)")
-# A banner OPENS its own line, colon and all: only decoration may precede it — the "⏺"
-# bullet, the "⎿" tool-result elbow, box rules, indentation, a log timestamp. `[\W\d_]`
-# is every character that is NOT a letter, in any script, because prose reaches a quoted
-# banner through words and decoration never does. That is what separates the CLI's banner
-# from an agent QUOTING one: a session merely discussing API errors goes static the moment
-# its turn ends, which is indistinguishable from a stall downstream (see
-# :func:`is_confirmed_stall`). Every arm below carries the anchor: any one of them alone
-# is enough to nudge, so an arm without it is a hole in the whole predicate.
+# A banner OPENS its own line: only decoration may precede it — the "⏺" bullet, the "⎿"
+# tool-result elbow, box rules, indentation, a log timestamp. `[\W\d_]` is every character
+# that is NOT a letter, in any script, because prose reaches a quoted banner through words
+# and decoration never does. That is what separates the CLI's banner from an agent QUOTING
+# one: a session merely discussing API errors goes static the moment its turn ends, which
+# is indistinguishable from a stall downstream (see :func:`is_confirmed_stall`). All three
+# carry the anchor — any one alone is enough to nudge, so an arm without it is a hole in
+# the whole predicate. The codeless rule needs the colon too, since the other two are
+# pinned by their digits and "API Error" on its own is two words a doc line can start with.
 _BANNER_OPENS_LINE = re.compile(r"^[\W\d_]*API Error:", re.IGNORECASE | re.MULTILINE)
 _API_ERROR_CODE = re.compile(r"^[\W\d_]*API Error:?\s*[0-9]{3}",
                              re.IGNORECASE | re.MULTILINE)
