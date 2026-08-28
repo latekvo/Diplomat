@@ -1978,8 +1978,10 @@ check(!ApiErrorMatch.looksLikeApiError(
 // disqualify a line — prose reaches a quoted banner through words.
 check(ApiErrorMatch.looksLikeApiError("  ⎿  API Error: Connection error."))
 check(ApiErrorMatch.looksLikeApiError("│ ⏺ API Error: 503 Service Unavailable"))
-// Casing is the CLI's to change; the watcher does not key on it.
+// Casing is the CLI's to change; the watcher does not key on it — and each rule carries
+// its own flag, so the coded one needs its own lowercase banner.
 check(ApiErrorMatch.looksLikeApiError("⏺ api error: connection error."))
+check(ApiErrorMatch.looksLikeApiError("⏺ api error: 529 overloaded."))
 // Codeless on purpose: a 3-digit code would match through the code rule instead and leave
 // the digits-are-decoration intent unpinned.
 check(ApiErrorMatch.looksLikeApiError("21:28:22 API Error: Connection error."))
@@ -2062,6 +2064,8 @@ check(ApiErrorMatch.looksLikeApiError("429 Too Many Requests"))
 // shares no pattern with the two "API Error" rules.
 check(ApiErrorMatch.looksLikeApiError(
     "⏺ Running the suite…\n✗ 429 Rate limited · retrying in 34s\n  ? for shortcuts"))
+// Its rate-limit context wraps like any other banner's, so it reads the rejoined copy.
+check(ApiErrorMatch.looksLikeApiError("⏺ 429 Rate\n  limited · retrying in 34s"))
 // But a 429 an agent WROTE is not a banner, however much rate-limit context surrounds it.
 // This arm carries no "API Error:" prefix to anchor, so the code itself has to open the
 // line — otherwise it is the widest hole in the predicate, matching any tail that mentions
