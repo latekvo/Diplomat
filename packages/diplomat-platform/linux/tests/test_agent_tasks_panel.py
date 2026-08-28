@@ -139,8 +139,11 @@ def test_a_finished_agent_keeps_its_row_and_gives_the_bay_back(panel, monkeypatc
     no explanation, which is how the wedge went unnoticed for twelve hours.
 
     So this is the one case where the rows outnumber the cap, and it says why."""
+    # Dispatched as long ago as its process has been up: a bare prompt in the first
+    # seconds of a run is an agent that has not started its turn, not one that has
+    # finished it, and reads as running.
     _live(monkeypatch, register_run(
-        512, pid=5121, tty="pts/1",
+        512, pid=5121, tty="pts/1", dispatched_at=time.time() - 60,
         label="Auto · Review-req · #512 (@octocat)", kind="review"), idle=True)
     panel._rebuild_agent_tasks()
 
