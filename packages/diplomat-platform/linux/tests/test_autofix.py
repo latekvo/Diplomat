@@ -1164,12 +1164,12 @@ def test_idle_pr_numbers_reads_the_pane_on_the_agents_own_tty():
     not be read is absent from the result, so the cap keeps counting it."""
     dump = "\n".join(
         [
-            "pts/1    claude Review PR #11 in software-mansion/argent. Use the `gh` CLI.",
-            "pts/2    claude Review PR #22 in software-mansion/argent. Use the `gh` CLI.",
-            "pts/3    claude Review PR #33 in software-mansion/argent. Use the `gh` CLI.",
+            "pts/1       04:10 claude Review PR #11 in software-mansion/argent. Use `gh`.",
+            "pts/2       04:10 claude Review PR #22 in software-mansion/argent. Use `gh`.",
+            "pts/3       04:10 claude Review PR #33 in software-mansion/argent. Use `gh`.",
             # The spawning shell holds the unexpanded $(cat …), never the prompt.
-            "pts/2    /bin/zsh -i -c cd '/x'; claude \"$(cat '/tmp/p.txt')\"",
-            "?        grep PR #44 in software-mansion/argent",
+            "pts/2       04:10 /bin/zsh -i -c cd '/x'; claude \"$(cat '/tmp/p.txt')\"",
+            "?        01-02:03:04 grep PR #44 in software-mansion/argent",
         ]
     )
     working = "● Reading files…\n⏵⏵ bypass permissions on · esc to interrupt · ← for agents"
@@ -1191,15 +1191,62 @@ def test_idle_pr_numbers_reads_the_pane_on_the_agents_own_tty():
 
 
 def test_the_agent_scans_still_read_a_ps_dump_with_no_tty_column():
-    """``live_pr_numbers`` predates the tty and is called on macOS through the mesh
-    node's own ``ps``; a dump whose first token is the command rather than a tty must
-    still yield its PRs, and must not invent a tty that could match a real pane."""
+    """``live_pr_numbers`` predates both leading columns and is called on macOS
+    through the mesh node's own ``ps``; a dump whose first token is the command rather
+    than a tty must still yield its PRs, and must not invent a tty that could match a
+    real pane or an age that could pass for one."""
     dump = "claude Review PR #11 in software-mansion/argent. Use the `gh` CLI.\n"
     assert autofix.live_pr_numbers(dump, "software-mansion", "argent") == {11}
     assert autofix.agent_ttys(dump, "software-mansion", "argent") == {"claude"}
+    assert [a.elapsed for a in autofix.agent_lines(dump, "software-mansion",
+                                                   "argent")] == [None]
     # …and "claude" matches no pane, so nothing is ever read as idle off it.
     assert autofix.idle_pr_numbers(dump, {"pts/1": "at the prompt"},
                                    "software-mansion", "argent") == set()
+
+
+def test_elapsed_seconds_reads_every_shape_of_ps_etime():
+    """``[[DD-]HH:]MM:SS``, which is what BOTH ``ps`` implementations print — macOS
+    has no ``etimes`` keyword at all. Anything else is None rather than a guess,
+    because the same column position holds an argv word on a bare ``args=`` dump."""
+    assert autofix.elapsed_seconds("00:04") == 4
+    assert autofix.elapsed_seconds("04:10") == 250
+    assert autofix.elapsed_seconds("01:02:03") == 3723
+    assert autofix.elapsed_seconds("2-03:04:05") == 2 * 86400 + 3 * 3600 + 4 * 60 + 5
+    for junk in ("", "claude", "Review", "12", "1:2:3:4", "-", "aa:bb"):
+        assert autofix.elapsed_seconds(junk) is None, junk
+
+
+def test_an_agent_that_has_not_drawn_its_first_turn_is_not_idle():
+    """A booting agent shows the bare prompt of a finished one — the interrupt hint is
+    on neither screen. Read as idle it hands its bay straight back to the poll that
+    started it, and the next dispatch of that poll is seconds behind: a cap of one,
+    two agents.
+
+    The same window and the same reasoning as the resolver's own screen rung
+    (`agentstate.FIRST_TURN_GRACE`), taken here from the process's age rather than
+    from a record, so it also covers an agent this machine has no book entry for."""
+    from diplomat_runtime import agentstate
+
+    grace = agentstate.FIRST_TURN_GRACE
+    at_prompt = "● Posted the review.\n❯\n⏵⏵ bypass permissions on (shift+tab to cycle)"
+
+    def dump(etime):
+        return f"pts/1    {etime} claude Review PR #11 in software-mansion/argent.\n"
+
+    def idle(etime):
+        return autofix.idle_pr_numbers(dump(etime), {"pts/1": at_prompt},
+                                       "software-mansion", "argent")
+
+    assert grace == 45.0
+    assert idle("00:02") == set()          # two seconds up: still booting
+    assert idle("00:45") == set()          # exactly the grace is not yet past it
+    assert idle("00:46") == {11}           # past it, and the screen is believed
+    assert idle("12:00") == {11}
+    # Live and counted the whole time — the grace holds a bay, it never hides an agent.
+    for etime in ("00:02", "00:46"):
+        assert autofix.live_pr_numbers(dump(etime), "software-mansion",
+                                       "argent") == {11}
 
 
 def test_clamp_auto_task_limit_holds_the_stepper_range():

@@ -201,6 +201,39 @@ def _ps_output(monkeypatch, text: str):
     monkeypatch.setattr(szponthost.subprocess, "run", lambda *a, **k: Result())
 
 
+def test_the_dump_asks_ps_for_the_portable_spelling_of_every_column(monkeypatch):
+    """One ``ps`` pass answers all three of the node's questions, so its argv is
+    load-bearing in three directions at once.
+
+    ``etime``, not the ``etimes`` the applet's own Linux-only probe asks for: BSD
+    ``ps`` has no such keyword and answers one by writing a line to stderr, dropping
+    the column and exiting zero. Every agent's age would then read as unknown, every
+    agent would count as working, and the node would decline every peer's job for as
+    long as it ran — with nothing on screen to say why."""
+    seen = {}
+
+    class Result:
+        stdout = ""
+
+    monkeypatch.setattr(szponthost.subprocess, "run",
+                        lambda argv, **k: (seen.setdefault("argv", argv), Result())[1])
+    szponthost._ps_dump()
+    assert seen["argv"] == ["ps", "-Ao", "tty=,etime=,args="]
+
+
+def test_the_real_ps_on_this_machine_answers_that_spelling():
+    """Against the ``ps`` this OS actually ships — the one thing a stubbed dump
+    cannot say. Every line must carry a tty, an age the scan can read, and an argv."""
+    from diplomat_runtime import autofix
+
+    lines = [ln for ln in szponthost._ps_dump().splitlines() if ln.strip()]
+    assert lines, "ps produced nothing"
+    unreadable = [ln for ln in lines
+                  if len(ln.split(maxsplit=2)) < 3
+                  or autofix.elapsed_seconds(ln.split(maxsplit=2)[1]) is None]
+    assert not unreadable, unreadable[:3]
+
+
 def test_a_live_agent_on_the_same_pr_is_reported(host, monkeypatch):
     _ps_output(monkeypatch, "claude review PR #7 owner/repo\n")
     monkeypatch.setattr("diplomat_runtime.autofix.live_pr_numbers",
@@ -223,8 +256,8 @@ def test_an_unparseable_work_key_is_not_a_match(host):
 
 def test_it_fails_open_on_undecodable_ps_output(host, monkeypatch):
     """The floor promises to FAIL OPEN like ``Store._live_pr_agents`` — a ps error
-    reads as "not seen" so a transient failure never drops work. ``ps -Ao args=``
-    under ``text=True`` decodes strict UTF-8, so any process on the box with a
+    reads as "not seen" so a transient failure never drops work.
+    ``ps -Ao tty=,etime=,args=`` under ``text=True`` decodes strict UTF-8, so any process on the box with a
     non-UTF-8 byte in its argv makes the output undecodable and raises
     UnicodeDecodeError — a ValueError, NOT an OSError/SubprocessError. Uncaught it
     escapes the guard, up through ``_spawn_local`` → ``_take_job``, tearing the
@@ -278,6 +311,38 @@ def test_the_nodes_own_fresh_jobs_count_before_ps_can_see_them(host, monkeypatch
     # …and the same job seen from both sides is one job, not two.
     _agents_on(monkeypatch, {5})
     assert host.at_job_capacity(["review:github.com/o/r#5@aa"]) is False
+
+
+def test_an_agent_the_node_started_seconds_ago_still_holds_its_bay(host, monkeypatch):
+    """The burst the cap exists to stop, coming in through the one door the union
+    left open.
+
+    ``running_auto_prs`` subtracts the idle set LAST, from the union — so it also
+    removes the keys the node handed in as its own. An agent spawned seconds ago has
+    not drawn its first status bar, and a screen with no interrupt hint on it is the
+    screen of an agent that has FINISHED. Counted idle there, the very dispatch that
+    took the bay handed it back, and a peer's next job landed on top of it.
+
+    Driven through the real matchers on a real-shaped ``ps`` dump, because the defect
+    is in what the columns of that dump can say about an agent."""
+    from diplomat_runtime import appconfig
+
+    cfg = core.config()
+    at_prompt = "● Posted the review.\n❯\n⏵⏵ bypass permissions on (shift+tab to cycle)"
+    monkeypatch.setattr("diplomat_runtime.tmuxwatch.pane_tails_for_ttys",
+                        lambda ttys: {t: at_prompt for t in ttys})
+    appconfig.set_int(appconfig.AUTO_TASK_LIMIT, 1)
+
+    def spawned(etime: str) -> bool:
+        _ps_output(monkeypatch, f"pts/7    {etime} claude Review PR #5 in "
+                                f"{cfg['owner']}/{cfg['repo']}. Use the `gh` CLI.\n")
+        return host.at_job_capacity(["review:github.com/o/r#5@aa"])
+
+    assert spawned("00:03") is True   # booting: the bay it took is still its own
+    # …and once it really is back at its prompt, the bay is handed back as before —
+    # an interactive session that has finished must not defer a peer's work for
+    # however long its window stays open.
+    assert spawned("10:00") is False
 
 
 def test_the_cap_is_the_one_the_applet_writes(host, monkeypatch):

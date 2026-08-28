@@ -138,6 +138,12 @@ class DiplomatHost(szpont_host.Host):
         fail-open direction :meth:`work_already_running` takes, for the same reason.
         An unreadable tmux degrades the other way, to "everything is working", so a
         node that cannot see its panes declines work rather than piling it on.
+
+        The idle subtraction is taken from the union, entries of ``running_keys``
+        included, so it has to be sound about an agent this node started moments ago —
+        which is why :func:`autofix.idle_pr_numbers` reads a process's age before its
+        screen. A booting agent shows the bare prompt of a finished one, and subtracted
+        there it hands back the bay its own dispatch just took.
         """
         from . import appconfig, autobudget, autofix, core, tmuxwatch
 
@@ -167,17 +173,20 @@ class DiplomatHost(szpont_host.Host):
 
 
 def _ps_dump() -> str:
-    """Every process's tty and argv, one per line — the evidence behind both of the
-    node's ground-truth answers (is this work already running here, and is the machine
-    at its cap). One place for the portable spelling and for the fail-open error
-    handling, so the two answers cannot come to disagree about either.
+    """Every process's tty, age and argv, one per line — the evidence behind both of
+    the node's ground-truth answers (is this work already running here, and is the
+    machine at its cap). One place for the portable spelling and for the fail-open
+    error handling, so the two answers cannot come to disagree about either.
 
-    ``ps -Ao tty=,args=`` is that portable spelling: on macOS ``-e`` prints the
+    ``ps -Ao tty=,etime=,args=`` is that portable spelling: on macOS ``-e`` prints the
     environment, not every process, so the store's Linux-only ``-eo`` can't be
-    reused here (a node runs on both OSes). The tty leads because it is what joins a
-    ``claude`` process to the tmux pane showing it (:func:`autofix.idle_pr_numbers`);
-    the argv scan is indifferent to it, finding its prompt wherever on the line it
-    falls.
+    reused here (a node runs on both OSes) — and ``etime``, not the ``etimes`` that
+    store asks for, because BSD ``ps`` has no such keyword and answers one by dropping
+    the column with a line on stderr and a zero exit. The tty leads because it is what
+    joins a ``claude`` process to the tmux pane showing it
+    (:func:`autofix.idle_pr_numbers`); the age is beside it because that same answer
+    must not read a booting agent as an idle one; the argv scan is indifferent to
+    both, finding its prompt wherever on the line it falls.
 
     Returns ``""`` on any failure, which is what lets both callers degrade rather
     than raise into the executor's spawn path. ``UnicodeDecodeError`` is caught by
@@ -188,7 +197,7 @@ def _ps_dump() -> str:
     identical scan.
     """
     try:
-        return subprocess.run(["ps", "-Ao", "tty=,args="],
+        return subprocess.run(["ps", "-Ao", "tty=,etime=,args="],
                               capture_output=True, text=True, timeout=10).stdout
     except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
         return ""
