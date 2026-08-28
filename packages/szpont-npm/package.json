@@ -1,6 +1,6 @@
 {
   "name": "szpont",
-  "version": "0.41.0",
+  "version": "0.42.0",
   "type": "module",
   "description": "Install-and-run for Diplomat (Szpont Yon): fetches the checkout, builds it, and starts the applet.",
   "keywords": ["diplomat", "szpont", "szpontnet", "launcher", "menu-bar", "tray"],
