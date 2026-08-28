@@ -354,6 +354,19 @@ public enum AgentState {
         public var runID: String
         public var state: RunState
         public var reason: String
+        /// Whether the STILLNESS BACKSTOP is what ended this run — set by that rung and
+        /// by nothing else.
+        ///
+        /// A verdict, not a restatement of one: a run reaches `.finished` by six roads,
+        /// and only this one says its agent was alive with a frozen screen. The window
+        /// reaper is the consumer, and the distinction is the whole of its licence to
+        /// close a terminal, so it cannot be left to be re-derived from `state` plus a
+        /// matured `wentQuiet` — a clock keeps maturing while its pane is unreadable
+        /// (`observeQuiescence` only advances on ticks that SAW the screen), so a run
+        /// whose process left the machine during an evidence outage comes back
+        /// finished-because-gone carrying twenty minutes of stillness. Reaping that
+        /// closes whatever holds its tty now.
+        public var wedged: Bool = false
 
         public var occupying: Bool { AgentState.occupying.contains(state) }
     }
@@ -741,9 +754,12 @@ public enum AgentState {
                                          done: (RunState, String) -> Resolution,
                                          aliveReason: String) -> Resolution {
         if let quiet = wentQuiet(record, now: now) {
-            return done(.finished,
-                        "\(aliveReason); its screen has not changed in "
-                        + "\(ApiErrorMatch.humanInterval(quiet))")
+            // The one rung that stamps `wedged`; see `Resolution.wedged`.
+            var out = done(.finished,
+                           "\(aliveReason); its screen has not changed in "
+                           + "\(ApiErrorMatch.humanInterval(quiet))")
+            out.wedged = true
+            return out
         }
         if let report = reported(record, evidence), report.verb == .busy {
             return done(.running, "\(aliveReason); its CLI reported a turn in flight")

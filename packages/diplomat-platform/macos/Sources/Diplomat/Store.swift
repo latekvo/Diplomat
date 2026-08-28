@@ -1030,9 +1030,19 @@ final class Store: ObservableObject {
 
     /// Close the terminal of every run the quiescence backstop ended.
     ///
-    /// Only those. A run that finished the ordinary way keeps its window — its agent is
-    /// alive at its prompt holding the whole task, and the operator may still want to
-    /// read it. One whose screen has not changed in twenty minutes is nobody's.
+    /// Only those, and the verdict is asked rather than reconstructed
+    /// (`AgentState.Resolution.wedged`). A run that finished the ordinary way keeps its
+    /// window — its agent is alive at its prompt holding the whole task, and the operator
+    /// may still want to read it. One whose screen has not changed in twenty minutes is
+    /// nobody's.
+    ///
+    /// "`.finished`, and its stillness clock is past the timeout" is a WIDER set than
+    /// that, because the clock advances only on ticks that saw the screen and so keeps
+    /// maturing while nobody can look. An evidence outage that outlasts `quietTimeout`
+    /// with the agent exiting inside it produces exactly one tick where a run is
+    /// finished-because-its-pid-is-gone while carrying twenty-plus minutes of stillness
+    /// — and `ttys<nnn>` is recycled freely, so the walk out of that tty may reach
+    /// somebody else's terminal window by then.
     ///
     /// A run nobody dispatched is reaped like any other: a wedged session is just as dead
     /// whether or not this applet opened it. Its window is reached the same two ways a
@@ -1041,9 +1051,7 @@ final class Store: ObservableObject {
     /// directory, so it never has a handle and the walk is its only route; a run the mesh
     /// placed back here is in the same position.
     private func reapQuietWindows(_ t: AgentState.Tick) {
-        for (record, resolution) in t.rows
-        where resolution.state == .finished && record.runsHere {
-            guard AgentState.wentQuiet(record, now: t.now) != nil else { continue }
+        for (record, resolution) in t.rows where resolution.wedged && record.runsHere {
             let byHandle = AgentWindows.handle(record.runID).map(AgentWindows.close) ?? false
             guard byHandle || TerminalFocus.close(tty: record.tty, pid: record.pid)
             else { continue }

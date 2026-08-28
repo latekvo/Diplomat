@@ -153,6 +153,16 @@ CASES = [
      ev(processes={4242: proc()}, tails={"pts/3": WORKING},
         activity={"r1": ("busy", T0 - 3000)}),
      A.FINISHED, "its screen has not changed in 20m"),
+    # A clock that matured while nothing could be READ. `observe_quiescence` advances
+    # only on ticks that saw the screen, so an evidence outage leaves the stillness
+    # standing and it goes on ageing; if the agent exits inside one, the tick the
+    # probes come back on is FINISHED-because-gone while carrying twenty minutes of
+    # it. The verdict is right and it is not the backstop's — see
+    # `test_only_the_stillness_backstop_marks_a_run_wedged`.
+    ("a matured clock does not turn a departed pid into a wedged screen",
+     rec(quiet_digest="d", quiet_since=T0 - A.QUIET_TIMEOUT),
+     ev(processes={}, tails={}),
+     A.FINISHED, "pid 4242 absent from the process table"),
 
     # --- a run that serves its own session, which outranks its screen -------
     #
@@ -330,6 +340,11 @@ CASES = [
          dispatched_at=T0),
      ev(processes={}, tails={"pts/3": WORKING}, live_agents={}),
      A.FINISHED, "gone from the process table"),
+    ("a matured clock does not do it for a synthesized run either",
+     rec(run_id="untracked:337", pid=None, tty="pts/3", untracked=True,
+         dispatched_at=T0, quiet_digest="d", quiet_since=T0 - A.QUIET_TIMEOUT),
+     ev(processes={}, tails={}, live_agents={}),
+     A.FINISHED, "gone from the process table"),
     ("an untracked agent whose scan could not be read is unknown",
      rec(run_id="untracked:337", pid=None, tty="pts/3", untracked=True,
          dispatched_at=T0),
@@ -358,6 +373,25 @@ def test_resolve_one(name, record, evidence, want_state, want_reason):
     got = A.resolve_one(record, evidence, T0)
     assert got.state == want_state, f"{name}: reason was {got.reason!r}"
     assert want_reason in got.reason, name
+
+
+def test_only_the_stillness_backstop_marks_a_run_wedged():
+    """``wedged`` is the whole of the window reaper's licence to close a terminal, so
+    it has to name ONE rung rather than a property several verdicts share.
+
+    The set it must not widen to is "FINISHED, and its stillness clock is past the
+    timeout": that clock only advances on ticks that SAW the screen, so it keeps
+    maturing through an evidence outage and can be twenty minutes deep on a run that
+    ended by its pid going missing instead. `pts/<n>` and `ttys<nnn>` are both
+    recycled freely, so that tty may already be somebody else's shell."""
+    for name, record, evidence, _state, _reason in CASES:
+        got = A.resolve_one(record, evidence, T0)
+        by_stillness = "its screen has not changed in" in got.reason
+        assert got.wedged is by_stillness, f"{name}: {got.reason!r}"
+    # …and the table really does contain both sides of that distinction.
+    verdicts = [A.resolve_one(r, e, T0) for _n, r, e, _s, _rr in CASES]
+    assert any(v.wedged for v in verdicts)
+    assert any(v.state == A.FINISHED and not v.wedged for v in verdicts)
 
 
 def test_every_state_is_reachable_from_the_table():

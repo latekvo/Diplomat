@@ -2313,17 +2313,25 @@ class Store(QObject):
     def _reap_quiet_windows(self, t: agentstate.Tick) -> None:
         """Close the terminal of every run the quiescence backstop ended.
 
-        Only those. A run that finished the ordinary way keeps its window — its agent
-        is alive at its prompt holding the whole task, and the operator may still want
-        to read it. One whose screen has not changed in twenty minutes is nobody's.
+        Only those, and the verdict is asked rather than reconstructed
+        (:attr:`agentstate.Resolution.wedged`). A run that finished the ordinary way
+        keeps its window — its agent is alive at its prompt holding the whole task,
+        and the operator may still want to read it. One whose screen has not changed
+        in twenty minutes is nobody's.
+
+        "FINISHED, and its stillness clock is past the timeout" is a WIDER set than
+        that, because the clock advances only on ticks that saw the screen and so
+        keeps maturing while nobody can look. An evidence outage that outlasts
+        `QUIET_TIMEOUT` with the agent exiting inside it produces exactly one tick
+        where a run is FINISHED-because-its-pid-is-gone while carrying twenty-plus
+        minutes of stillness — and `pts/<n>` is recycled freely, so the tty it left
+        behind may already belong to somebody else's shell by then.
 
         A run nobody dispatched is reaped like any other: a wedged session is just as
         dead whether or not this applet opened it.
         """
         for record, resolution in t.rows:
-            if resolution.state != agentstate.FINISHED or not record.runs_here:
-                continue
-            if agentstate.went_quiet(record, t.now) is None:
+            if not resolution.wedged or not record.runs_here:
                 continue
             if tmuxwatch.kill_session_for_tty(record.tty):
                 activity.log("auto", "kill-device",

@@ -457,13 +457,27 @@ class Resolution:
     run_id: str
     state: str
     reason: str
+    #: Whether the STILLNESS BACKSTOP is what ended this run — set by that rung and
+    #: by nothing else.
+    #:
+    #: A verdict, not a restatement of one: a run reaches FINISHED by six roads, and
+    #: only this one says its agent was alive with a frozen screen. The window reaper
+    #: is the consumer, and the distinction is the whole of its licence to close a
+    #: terminal, so it cannot be left to be re-derived from ``state`` plus a matured
+    #: :func:`went_quiet` — a clock keeps maturing while its pane is unreadable
+    #: (:func:`observe_quiescence` only advances on ticks that SAW the screen), so a
+    #: run whose process left the machine during an evidence outage comes back
+    #: FINISHED-because-gone carrying twenty minutes of stillness. Reaping that closes
+    #: whatever holds its tty now.
+    wedged: bool = False
 
     @property
     def occupying(self) -> bool:
         return self.state in OCCUPYING
 
     def to_json(self) -> dict:
-        return {"runId": self.run_id, "state": self.state, "reason": self.reason}
+        return {"runId": self.run_id, "state": self.state, "reason": self.reason,
+                "wedged": self.wedged}
 
 
 # MARK: - Claim sightings (pure, but stateful across ticks)
@@ -569,10 +583,11 @@ def went_quiet(record: RunRecord, now: float) -> float | None:
     """How long this run's screen has been perfectly still, once that is long enough
     to call it over — ``None`` otherwise.
 
-    A function rather than a comparison at each site because two of them ask: the
-    resolver, to end the run, and the reaper, to close the window it was in. Those two
-    answers agreeing is the whole contract — a window killed under a run still counted
-    as working is the one mistake this backstop could make.
+    Asked by the resolver alone. The reaper reads the verdict that came out of it
+    (:attr:`Resolution.wedged`) rather than asking again, because the two questions
+    are not the same one: this clock only advances on ticks that SAW the screen, so
+    it keeps maturing through an evidence outage and can be long past the timeout on
+    a run that ended some other way entirely.
     """
     if record.quiet_since is None:
         return None
@@ -806,8 +821,9 @@ def _classify_activity(record: RunRecord, evidence: Evidence, now: float, done,
     """
     quiet = went_quiet(record, now)
     if quiet is not None:
-        return done(FINISHED, f"{alive_reason}; its screen has not changed in "
-                              f"{apiwatch.human_interval(quiet)}")
+        # The one rung that stamps `wedged`; see :attr:`Resolution.wedged`.
+        return replace(done(FINISHED, f"{alive_reason}; its screen has not changed in "
+                                      f"{apiwatch.human_interval(quiet)}"), wedged=True)
 
     reported = _reported(record, evidence)
     if reported is not None and reported[0] == completion.BUSY:
