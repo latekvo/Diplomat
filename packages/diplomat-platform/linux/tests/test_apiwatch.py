@@ -20,9 +20,28 @@ def test_matches_api_error_code():
 
 def test_matches_bare_429_rate_limit():
     assert apiwatch.looks_like_api_error("429 too many requests") is True
-    assert apiwatch.looks_like_api_error("got a 429 rate limit, retrying") is True
-    # A stray 429 without rate-limit context is NOT an error (ordinary prose).
+    assert apiwatch.looks_like_api_error("✗ 429 Rate limited · retrying in 34s") is True
+    # Its line, not the tail's first line — this arm needs its own mid-tail fixture,
+    # since it shares no pattern with the two "API Error" rules.
+    assert apiwatch.looks_like_api_error(
+        "⏺ Running the suite…\n✗ 429 Rate limited · retrying in 34s\n  ? for shortcuts"
+    ) is True
+    # A 429 an agent WROTE is not a banner, however much rate-limit context surrounds it.
+    # This arm carries no "API Error:" prefix to anchor, so the code itself has to open
+    # the line — otherwise it is the widest hole in the predicate, matching any tail that
+    # mentions both a 429 and a rate limit anywhere.
+    assert apiwatch.looks_like_api_error("got a 429 rate limit, retrying") is False
+    assert apiwatch.looks_like_api_error(
+        "    if resp.status_code == 429:  # rate limit, back off and retry"
+    ) is False
+    assert apiwatch.looks_like_api_error(
+        "quoting API Error: 429 Rate limit exceeded in a sentence"
+    ) is False
+    assert apiwatch.looks_like_api_error("这是 429 rate limit 的例子") is False
+    # And a stray 429 with no rate-limit context is ordinary prose either way — including
+    # one that opens its line, which the anchor alone would wave through.
     assert apiwatch.looks_like_api_error("see line 429 of config") is False
+    assert apiwatch.looks_like_api_error("429 stale entries pruned from the cache") is False
 
 
 def test_matches_status_page_and_connectivity():
@@ -31,6 +50,59 @@ def test_matches_status_page_and_connectivity():
     ) is True
     assert apiwatch.looks_like_api_error("API Error: Unable to connect to API") is True
     assert apiwatch.looks_like_api_error("API Error: Connection error.") is True
+
+
+def test_banner_must_open_a_line():
+    # Quoted mid-sentence it is prose, not a stall.
+    assert apiwatch.looks_like_api_error(
+        "the predicate returns True on ⏺ API Error: Connection error."
+    ) is False
+    assert apiwatch.looks_like_api_error(
+        "quoting API Error: 529 Overloaded in a sentence"
+    ) is False
+    # An agent's prose is not always Latin, and it disqualifies a line just the same:
+    # `[^A-Za-z]` would read 这是 as decoration and nudge the session that wrote it.
+    assert apiwatch.looks_like_api_error("这是 API Error: Connection error. 的例子") is False
+    # A line that merely NAMES the banner is not one either: the CLI always prints the
+    # colon, and without it "API Error" is just two words a doc line can start with.
+    assert apiwatch.looks_like_api_error(
+        "⏺ Notes on the transport layer:\n"
+        "  - API Error is surfaced verbatim to the caller\n"
+        "  - the client retries on a transient network\n"
+        "    error before giving up"
+    ) is False
+    # Decoration in front of it is not prose: the transcript bullet, the tool-result
+    # elbow, a pane's left border and a log timestamp all precede a real banner. Only
+    # LETTERS disqualify a line — prose reaches a quoted banner through words.
+    assert apiwatch.looks_like_api_error("  ⎿  API Error: Connection error.") is True
+    assert apiwatch.looks_like_api_error("│ ⏺ API Error: 503 Service Unavailable") is True
+    # Casing is the CLI's to change; the watcher does not key on it.
+    assert apiwatch.looks_like_api_error("⏺ api error: connection error.") is True
+    # Codeless on purpose: a 3-digit code would match through the code rule instead and
+    # leave the digits-are-decoration intent unpinned.
+    assert apiwatch.looks_like_api_error("21:28:22 API Error: Connection error.") is True
+    # The banner is never the first line of a real tail — it sits under the transcript
+    # and over the prompt box. Both anchored rules need a tail of this shape to pin that
+    # `^` is per LINE and not per tail; the codeless one cannot reach the code rule.
+    assert apiwatch.looks_like_api_error(
+        "⏺ Running the suite…\n⏺ API Error: Connection error.\n  ? for shortcuts"
+    ) is True
+    assert apiwatch.looks_like_api_error(
+        "⏺ Running the suite…\n⏺ API Error: 500 Internal Server Error\n  ? for shortcuts"
+    ) is True
+
+
+def test_matches_banners_wrapped_across_terminal_lines():
+    # These banners run 70-90 columns, so a narrow pane wraps them mid-phrase. The
+    # evidence is read off a copy with the wrapping rejoined, so the split must not hide
+    # the banner.
+    assert apiwatch.looks_like_api_error(
+        "⏺ API Error: Your computer went to sleep mid-response. "
+        "The response above may be\n  incomplete."
+    ) is True
+    assert apiwatch.looks_like_api_error(
+        "⏺ API Error: Connection lost before a response was\n  produced. Try again."
+    ) is True
 
 
 def test_matches_cut_off_stream_banners():
@@ -50,6 +122,28 @@ def test_matches_cut_off_stream_banners():
     assert apiwatch.looks_like_api_error(
         "note: the response above may be incomplete"
     ) is False
+
+
+def test_rejoin_does_not_manufacture_a_quota_banner():
+    # The rejoin fuses every adjacent pair of rows, so suppression reads the ORIGINAL:
+    # off the rejoined copy, two lines of ordinary prose assemble into a limit banner
+    # and silence a session that really is stalled, with no second chance at it.
+    assert apiwatch.looks_like_api_error(
+        "⏺ The dispatcher stops as soon as the workspace token budget\n"
+        "  exceeded the daily cap.\n"
+        "⏺ API Error: 529 Overloaded. If it persists, check https://status.claude.com."
+    ) is True
+    assert apiwatch.looks_like_api_error(
+        "⏺ The client backs off long before you hit your\n"
+        "  limit, so nothing is dropped.\n"
+        "⏺ API Error: Connection error."
+    ) is True
+    # The contiguous phrase list fuses the same way the two gap regexes above do.
+    assert apiwatch.looks_like_api_error(
+        "⏺ The quota family is matched on the phrase the limit will reset\n"
+        "  at whatever hour the window rolls over.\n"
+        "⏺ API Error: Connection error."
+    ) is True
 
 
 def test_quota_banners_are_ignored():

@@ -5,8 +5,9 @@ import DiplomatCore
 // Watches every iTerm session + Terminal tab for a Claude CLI API-error line and, when
 // one is found, sends a short "continue" message to that exact session — so an agent
 // that stalled on a transient server error (e.g. overnight 529 overload) resumes on its
-// own. Detection (ApiErrorMatch) runs only over the last few visible lines, so it fires
-// on a session that just errored, not one that merely mentions the phrase in scrollback.
+// own. Detection (ApiErrorMatch) runs only over the last few visible lines and requires
+// the banner to open one of them, so it fires on a session that just errored, not one
+// that mentions the phrase in scrollback or quotes a banner mid-sentence.
 // The tty is the unifying key across both terminals.
 enum ApiErrorWatcher {
     static let continueMessage = "Go on, there was a Claude API error, continue as normal"

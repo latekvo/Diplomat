@@ -2848,12 +2848,9 @@ final class Store: ObservableObject {
     private struct ApiBackoff { var nextAllowed: Date; var interval: TimeInterval }
     private var apiErrorBackoff: [String: ApiBackoff] = [:]
 
-    /// Per-tty last erroring tail — the idle-confirmation gate. A session is nudged only
-    /// once its erroring tail has stopped changing between two consecutive scans, i.e. it
-    /// is genuinely stalled rather than actively producing output that merely mentions an
-    /// API error (e.g. a session developing/logging error strings, or one that already
-    /// recovered and moved on while the error line is still on screen). Pruned alongside
-    /// `apiErrorBackoff` to currently-erroring ttys.
+    /// Per-tty last erroring tail — the previous-scan half of
+    /// `ApiErrorMatch.isConfirmedStall`, whose doc comment carries what that gate can and
+    /// cannot separate. Pruned alongside `apiErrorBackoff` to currently-erroring ttys.
     private var apiErrorSeenTail: [String: String] = [:]
 
     /// Compact "2m" / "45m" / "3h" for the audit line.
@@ -2904,12 +2901,9 @@ final class Store: ObservableObject {
             guard ApiErrorMatch.looksLikeApiError(s.tail) else { continue }
             erroring.insert(s.tty)
             // Idle-confirmation (ApiErrorMatch.isConfirmedStall): only nudge a session
-            // whose erroring tail is UNCHANGED since the previous scan. An actively-working
-            // session (output still scrolling — one merely printing/discussing an API-error
-            // string, or a CLI mid auto-retry with a live countdown) changes between scans
-            // and must not be treated as stalled; a genuinely stuck session's tail is
-            // static. Costs one extra scan (~apiWatchInterval) of latency on a real stall —
-            // nothing against a feature meant for overnight overload stalls.
+            // whose erroring tail is UNCHANGED since the previous scan. Costs one extra
+            // scan (~apiWatchInterval) of latency on a real stall — nothing against a
+            // feature meant for overnight overload stalls.
             let stalled = ApiErrorMatch.isConfirmedStall(previousTail: apiErrorSeenTail[s.tty],
                                                          currentTail: s.tail)
             apiErrorSeenTail[s.tty] = s.tail
