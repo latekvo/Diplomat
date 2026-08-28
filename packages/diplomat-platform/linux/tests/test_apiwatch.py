@@ -374,10 +374,19 @@ def store():
     return Store()
 
 
-def _panes(monkeypatch, sequence, sent=True):
+def _panes(monkeypatch, sequence, sent=True, agent_ttys=frozenset({"pts/1"})):
     """Patch tmuxwatch so successive scans see ``sequence[i]`` (a list of Pane), and
     record every send_continue call. ``sequence`` may also hold ``None`` (a failed
-    dump). Returns the list of nudged pane_ids."""
+    dump). Returns the list of nudged pane_ids.
+
+    ``agent_ttys`` stands in for the process table, which the scan reads to decide
+    which panes are somebody's agent — as ``ps`` spells a tty, so no ``/dev/``. It
+    defaults to the one ``_pane`` runs on, because every test below that is about
+    stalls and backoff means its pane to be an agent's. Pass an ``Observation`` to
+    make the table itself unreadable.
+    """
+    from diplomat_app import probes
+
     state = {"i": 0}
     nudged: list[str] = []
 
@@ -392,11 +401,65 @@ def _panes(monkeypatch, sequence, sent=True):
         tmuxwatch, "send_continue",
         lambda pane_id, msg: (nudged.append(pane_id) or True) if sent else False,
     )
+    obs = (agent_ttys if isinstance(agent_ttys, probes.Observation)
+           else probes.Observation.present(set(agent_ttys)))
+    monkeypatch.setattr(probes, "ttys_running_an_agent", lambda now: obs)
     return nudged
 
 
 def _pane(pane_id="%0", tty="/dev/pts/1", tail="⏺ API Error: 529 Overloaded."):
     return tmuxwatch.Pane(pane_id=pane_id, tty=tty, tail=tail)
+
+
+def test_scan_never_nudges_a_pane_no_agent_is_on(store, monkeypatch):
+    """The nudge is typed into the pane and submitted. In an agent's pane that is a
+    user turn; in a plain shell it is a command — ``Go: command not found`` and a line
+    of junk in that shell's history. A shell can show a matching tail for entirely
+    innocent reasons (``cat`` of a log holding a banner, a ``git diff`` of the
+    matcher's own tests), and nothing on the screen separates those from the CLI's own
+    line."""
+    nudged = _panes(monkeypatch, [[_pane(tty="/dev/pts/9")]] * 2,
+                    agent_ttys={"pts/1"})
+    store._apiwatch_scan_once()  # sighting 1
+    store._apiwatch_scan_once()  # identical tail: a stall confirmed on any other pane
+    assert nudged == []
+    assert store.api_watch_continues == 0
+
+
+def test_scan_watches_an_agent_pane_beside_a_shell_showing_the_same_tail(
+        store, monkeypatch):
+    """Both panes are stalled on the same banner; only one has an agent on it. Pinned
+    together so a filter that dropped every pane would still be caught."""
+    nudged = _panes(
+        monkeypatch,
+        [[_pane(pane_id="%0", tty="/dev/pts/1"),
+          _pane(pane_id="%9", tty="/dev/pts/9")]] * 2,
+        agent_ttys={"pts/1"},
+    )
+    store._apiwatch_scan_once()
+    store._apiwatch_scan_once()
+    assert nudged == ["%0"]
+    # And the pill counts what is being watched, not what tmux happens to be running.
+    assert store.apiwatch_status["watching"] == 1
+
+
+def test_scan_skips_when_the_process_table_cannot_be_read(store, monkeypatch):
+    """Not knowing which panes carry an agent has to mean typing into none of them —
+    the same trade the failed pane dump makes, and for a heavier reason. State
+    survives, so a recovered table needs no fresh two-scan confirmation."""
+    from diplomat_app import probes
+
+    nudged = _panes(monkeypatch, [[_pane()]] * 4)
+    store._apiwatch_scan_once()  # seed
+    store._apiwatch_scan_once()  # nudge
+    assert nudged == ["%0"]
+    monkeypatch.setattr(probes, "ttys_running_an_agent",
+                        lambda now: probes.Observation.unavailable("exited 1"))
+    store._apiwatch_backoff["%0"]["nextAllowed"] = 0  # backoff is not what holds it
+    store._apiwatch_scan_once()
+    assert nudged == ["%0"]
+    assert store._apiwatch_backoff  # not cleared by the skipped scan
+    assert store.apiwatch_status["watching"] == 0
 
 
 def test_scan_no_nudge_on_first_sighting(store, monkeypatch):

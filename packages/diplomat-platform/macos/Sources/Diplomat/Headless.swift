@@ -23,6 +23,7 @@ enum Headless {
             || env["DIPLOMAT_DEVICE_DUMP"] == "1"
             || env["DIPLOMAT_AUTOFIX_POLL"] == "1"
             || env["DIPLOMAT_APIWATCH_SCAN"] == "1"
+            || env["DIPLOMAT_APIWATCH_TEST"] == "1"
             || env["DIPLOMAT_SPAWN_FOCUS_TEST"] == "1"
             || env["DIPLOMAT_OSA_TEST"] == "1"
             || env["DIPLOMAT_MESH_CMD_TEST"] == "1"

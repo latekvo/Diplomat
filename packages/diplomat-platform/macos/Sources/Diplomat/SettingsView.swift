@@ -554,8 +554,10 @@ struct SettingsView: View {
     }
 
     private static let apiWatchDetail = """
-        Watches every iTerm/Terminal session and sends "\(ApiErrorWatcher.continueMessage)" \
-        when a Claude API error shows up. Out-of-quota stalls ("You've hit your weekly \
+        Watches the iTerm/Terminal sessions an agent is running in and sends \
+        "\(ApiErrorWatcher.continueMessage)" when a Claude API error shows up. A session \
+        with nobody's agent behind it is left alone whatever it shows — the nudge is \
+        submitted as a line of input, which in a plain shell would run as a command. Out-of-quota stalls ("You've hit your weekly \
         limit") are left alone — nudging can't help until the limit resets. Claude Code \
         runs only: the banners it matches are Claude Code's. An OpenCode or Hermes agent \
         that hits an error reads as idle instead, frees its task-cap slot, and is \
