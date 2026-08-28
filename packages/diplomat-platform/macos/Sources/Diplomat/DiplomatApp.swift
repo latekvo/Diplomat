@@ -91,6 +91,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if env["DIPLOMAT_QUEUE_TEST"] == "1" {
             Task { @MainActor in let ok = await QueueTest.run(); exit(ok ? 0 : 1) }
         }
+        // Self-test of what a resolved tick hands the panel: the rows, and the bays
+        // measured beside them. The evidence is a literal, so it reads no `ps` and
+        // depends on nothing else running on the machine.
+        if env["DIPLOMAT_PUBLISH_TEST"] == "1" {
+            Task { @MainActor in let ok = await PublishTest.run(); exit(ok ? 0 : 1) }
+        }
         // Self-test of what the sweep decides about a live session — working, or back at
         // its prompt. Both probes are injected, so it opens no window and dials no port.
         if env["DIPLOMAT_SWEEP_TEST"] == "1" {
