@@ -18,10 +18,13 @@ import DiplomatCore
 ///
 ///   DIPLOMAT_QUEUE_TEST=1 swift run Diplomat
 ///
-/// It does read `ps` and the ban list, and the refusal it provokes writes an
-/// `at-capacity` line — so it points `DIPLOMAT_AUDIT_DIR` at a scratch directory
-/// first. `Headless.active` covers UserDefaults, not the shared feed, and a
-/// self-test has no business in the operator's activity log.
+/// It reads the ban list, and the refusal it provokes writes an `at-capacity` line —
+/// so it points `DIPLOMAT_AUDIT_DIR` at a scratch directory first. `Headless.active`
+/// covers UserDefaults, not the shared feed, and a self-test has no business in the
+/// operator's activity log. The run book and the process table are stood in for by the
+/// same reasoning: a fixture that controls the records but not the evidence they are
+/// resolved against is a fixture whose answers depend on what else the developer
+/// happens to be running.
 enum QueueTest {
     /// Returns overall pass/fail so the launcher can exit non-zero — a FAIL that
     /// still exits 0 can't gate anything.
@@ -53,6 +56,16 @@ enum QueueTest {
             .appendingPathComponent("diplomat-queuetest-agents-\(UUID().uuidString)")
         setenv("DIPLOMAT_AGENTS_DIR", agents.path, 1)
         defer { try? FileManager.default.removeItem(at: agents) }
+        // And the machine the book is resolved against. `emptyBook()` below controls the
+        // records; it cannot control `ps`, and the cap load is not a fold over records
+        // alone — `AgentState.synthesizeUntracked` makes every live agent with no record
+        // an occupying `untracked:<pr>` one. So on the machine this is written on, whose
+        // ordinary state is agents up, the two placement assertions below counted the
+        // developer's own sessions and could not pass. Present-and-empty, not
+        // unavailable: a machine that was looked at and had nothing on it, which is what
+        // every assertion here means by a quiet box.
+        AgentProbes.pinDump(.present(""))
+        defer { AgentProbes.pinDump(nil) }
 
         /// Stand one automatic agent up, the way a dispatch books it: a record with no
         /// pid yet, which is exactly what a spawn nothing has observed yet looks like —
