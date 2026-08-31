@@ -143,6 +143,11 @@ def _queue_fixture(store: Store) -> None:
     """
     from diplomat_runtime import appconfig, autofix
 
+    # Before the first `create_run` below, and here rather than at either call site:
+    # the LIVE gate does not cover this arm, so a live render reaches the same two
+    # invented agents and the same pinned process table.
+    _agents_scratch()
+
     appconfig.auto_task_limit = lambda: 4
 
     def task(number: int, kind: str, action: str, label: str, counter: str | None,
@@ -231,19 +236,30 @@ def _agents_scratch() -> None:
     """Point the run registry at a scratch dir for the rest of this render.
 
     Load-bearing for the same reason as :func:`_telemetry_scratch`, and with a
-    sharper edge: the fixture below registers its agents through the real
-    registry, and :func:`_fixed_probes` then answers every probe with a process
+    sharper edge: :func:`_queue_fixture` registers its agents through the real
+    registry, and ``_fixed_probes`` then answers every probe with a process
     table holding only the two pids it invented. A sweep run against the
     operator's own book therefore finds each of their live agents absent from
     the process table, retires it, and deletes the run directory its CLI is
     still writing turn reports into — so the agent goes on working with nothing
     left that can hear it finish.
-    """
-    import tempfile
-    from pathlib import Path
 
-    os.environ["DIPLOMAT_AGENTS_DIR"] = str(
-        Path(tempfile.mkdtemp(prefix="diplomat-render-agents-")))
+    Idempotent: both the fixture and the non-live path ask for it, and one render
+    wants one scratch book, not a second that the first one's records are missing
+    from.
+    """
+    global _agents_scratch_dir
+
+    import tempfile
+
+    if _agents_scratch_dir is None:
+        _agents_scratch_dir = tempfile.mkdtemp(prefix="diplomat-render-agents-")
+    os.environ["DIPLOMAT_AGENTS_DIR"] = _agents_scratch_dir
+
+
+#: The scratch book :func:`_agents_scratch` hands out, kept so a second ask returns
+#: the same one.
+_agents_scratch_dir: str | None = None
 
 
 def _telemetry_scratch() -> None:
