@@ -60,8 +60,9 @@ enum QueueTest {
         // records; it cannot control `ps`, and the cap load is not a fold over records
         // alone — `AgentState.synthesizeUntracked` makes every live agent with no record
         // an occupying `untracked:<pr>` one. So on the machine this is written on, whose
-        // ordinary state is agents up, the two placement assertions below counted the
-        // developer's own sessions and could not pass. Present-and-empty, not
+        // ordinary state is agents up, the two placement assertions below counted
+        // whichever of the developer's own sessions was mid-turn or had an unreadable
+        // screen — a verdict the box decides, not the fixture. Present-and-empty, not
         // unavailable: a machine that was looked at and had nothing on it, which is what
         // every assertion here means by a quiet box.
         AgentProbes.pinDump(.present(""))

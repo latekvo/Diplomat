@@ -82,8 +82,11 @@ enum AgentProbes {
     /// load nor the row list is a fold over records alone: `AgentState.synthesizeUntracked`
     /// turns every agent this scan finds with no record of its own into an occupying
     /// `untracked:<pr>` one. So on the machine the applet is developed on, whose ordinary
-    /// state is several agents up, an assertion about which bays a placement spends could
-    /// not pass — and read as a regression in the very accounting it exists to catch.
+    /// state is several agents up, an assertion about which bays a placement spends is
+    /// decided by the box rather than by the fixture: an agent mid-turn, or one whose
+    /// screen cannot be read, is an occupying run nothing put there — and reads as a
+    /// regression in the very accounting it exists to catch. (One sitting at its prompt
+    /// resolves `awaitingInput`, which blocks without occupying, so a quiet box hides it.)
     ///
     /// `.present("")` is the honest fixture for that: a machine that WAS looked at and had
     /// nothing on it, which is a different answer from a scan that failed and one the
@@ -93,7 +96,11 @@ enum AgentProbes {
     /// Deliberately outside `resetCache`: the caches are this machine, and dropping them is
     /// how a self-test asks to look at it again. This is the fixture standing in its place,
     /// and it outlives every such look.
+    /// Headless-gated like every other pin: left set in a live applet it would report
+    /// this machine as permanently empty, and `resetCache` deliberately does not clear
+    /// it, so there would be no way back.
     static func pinDump(_ dump: Observation<String>?) {
+        guard Headless.active else { return }
         lock.lock(); defer { lock.unlock() }
         pinnedPS = dump
     }

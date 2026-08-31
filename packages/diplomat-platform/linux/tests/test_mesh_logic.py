@@ -2619,7 +2619,8 @@ def test_stale_agent_sentinel_does_not_release_a_live_claim(tmp_path, monkeypatc
     # that last, and Diplomat's answers it from the real process table — so on a box
     # with agents up (the ordinary state of the one this is written on) the job is
     # declined, no claim is ever taken, and this fails on a line about sentinel paths.
-    # A re-run cannot clear it, because nothing about it is timing.
+    # It takes as many busy agents as the cap allows, so a quiet box hides it and a
+    # re-run clears it only by luck — neither is evidence about the sentinels.
     monkeypatch.setattr(node_mod, "at_job_capacity", lambda running_keys: False)
     job = protocol.Job(id="j1", duty="review", prompt="p", requested_by="me",
                        requested_at=1.0, work_key=wk)
