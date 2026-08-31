@@ -26,7 +26,13 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _PACKAGES = os.path.dirname(os.path.dirname(os.path.dirname(_HERE)))
 _APP = os.path.join(_PACKAGES, "diplomat-platform", "macos", "Sources", "Diplomat")
 
-_ENV_READ = re.compile(r'env\["(DIPLOMAT_[A-Z0-9_]+)"\]')
+# Both spellings of the read, and tolerant of the whitespace either can be written
+# with: `env` is the local alias the launch ladder binds, while
+# `ProcessInfo.processInfo.environment` is the long form used elsewhere in the same
+# file. A dispatch written the long way is exactly the one this test exists to catch,
+# so a pattern that only knew the alias would go quiet on it.
+_ENV_READ = re.compile(
+    r'(?:env|environment)\s*\[\s*"(DIPLOMAT_[A-Z0-9_]+)"\s*\]')
 
 
 def _source(name: str) -> str:
