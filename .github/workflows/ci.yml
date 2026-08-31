@@ -78,12 +78,14 @@ jobs:
       # expressions (no `tell application`, so no Automation permission),
       # MESH_CMD_TEST is pinned to a scratch state dir and a non-checkout so it can
       # neither read a real mesh node nor start one, and ALLOCATOR_TEST shells no
-      # installer and reads no ~/.claude. PUBLISH_TEST composes the tick it publishes
-      # as a literal, so no probe runs and its verdict does not depend on what else is
-      # on the runner. QUEUE_TEST is the one that touches state at all: reaching the
-      # cap's refusal branch means a `ps` scan, a ban-list read and an `at-capacity`
-      # audit line, so it points DIPLOMAT_AUDIT_DIR at a scratch dir of its own. It
-      # returns before any spawn or fetch.
+      # installer and reads no ~/.claude. APIWATCH_TEST composes every session, tail and
+      # process it reasons over, so it reads no terminal and types into none — though it
+      # does provoke a nudge's audit line, so it redirects DIPLOMAT_AUDIT_DIR.
+      # PUBLISH_TEST composes the tick it publishes as a literal, so no probe runs and
+      # its verdict does not depend on what else is on the runner. QUEUE_TEST is the one
+      # that touches state at all: reaching the cap's refusal branch means a `ps` scan, a
+      # ban-list read and an `at-capacity` audit line, so it points DIPLOMAT_AUDIT_DIR at
+      # a scratch dir of its own. It returns before any spawn or fetch.
       #
       # DIPLOMAT_TRACK_TEST and DIPLOMAT_SPAWN_FOCUS_TEST are the two that stay out,
       # and not by oversight: both drive real throwaway iTerm/Terminal windows and
@@ -100,6 +102,7 @@ jobs:
           DIPLOMAT_ALLOCATOR_TEST=1 swift run Diplomat
           DIPLOMAT_QUEUE_TEST=1 swift run Diplomat
           DIPLOMAT_SWEEP_TEST=1 swift run Diplomat
+          DIPLOMAT_APIWATCH_TEST=1 swift run Diplomat
           DIPLOMAT_PUBLISH_TEST=1 swift run Diplomat
           DIPLOMAT_SPAWN_SCRIPT_TEST=1 swift run Diplomat
 

@@ -858,13 +858,22 @@ nudge opens no window at all - it types into a session that already exists.)
   Claude Code's, and an OpenCode or Hermes agent that errors reads as a finished
   turn instead - its runner says so, so the run is retired, its bay and its PR are
   freed, and whichever monitor owed the work dispatches it again. Every ~20s it
-  reads each agent session's visible tail (macOS: any iTerm/Terminal session;
+  reads each agent session's visible tail (macOS: iTerm/Terminal sessions;
   Linux: **tmux panes only** - there's no portable way to read or type into an
   arbitrary Linux emulator, so the Linux spawner opens each agent in a tmux session
-  of its own and an agent started outside one is not watched). An agent stalled on
-  a transient API error (overloads, connection failures, a turn cut short
-  mid-stream, bare `429` rate-limits, status-page errors) gets a continue nudge
-  typed into that exact session, with a per-session 2m → 3h backoff so a
+  of its own and an agent started outside one is not watched). A screen with
+  nobody's agent behind it is never written to, whatever it happens to show: the
+  nudge is submitted as a line of input, so in a plain shell it would run as a
+  command. The process table decides that, since nothing on a screen can - a shell
+  can be showing a banner because it printed one. On macOS the session a terminal
+  reports is often not the one the agent is on (tmux, or a shell wrapper), so the
+  walk that a row click uses to find an agent's window decides it there - which
+  resolves to the terminal the agent's session is displayed in, so the line lands in
+  that session's active pane. The spawner gives each agent a session of its own,
+  which is what keeps those the same screen. An agent
+  stalled on a transient API error (overloads, connection failures, a turn cut
+  short mid-stream, bare `429` rate-limits, status-page errors) gets a continue
+  nudge typed into that exact session, with a per-session 2m → 3h backoff so a
   persistently broken one isn't hammered. A single erroring scan never nudges:
   the tail must come back **byte-identical on the next scan** before it counts
   as a stall, so the real floor is ~2 scans. An **out-of-quota** banner is never
@@ -1280,6 +1289,9 @@ DIPLOMAT_ALLOCATOR_TEST=1 ...                    # the launch-time allocator dec
 DIPLOMAT_AUTOFIX_POLL=1  ...                     # one real monitor poll: prints its dispatch decisions and
                                                      #   the exact prompts it would spawn, opens nothing
 DIPLOMAT_APIWATCH_SCAN=1 ...                     # dry-run the API-error watcher over live sessions, sends nothing
+DIPLOMAT_APIWATCH_TEST=1 ...                     # self-test: who a scan may type into (an agent's session,
+                                                     #   including one a terminal only shows through tmux;
+                                                     #   never a plain shell). Reads no terminal, sends nothing
 DIPLOMAT_SELF_UPDATE=1   ...                     # the unattended 06:00 update: merge if behind, rebuild,
                                                      #   relaunch only if an instance is running
 
@@ -1423,6 +1435,7 @@ packages/
         TrackTest.swift            E2E self-test of the run book + this platform's probes (DIPLOMAT_TRACK_TEST)
         QueueTest.swift            self-test of the deferred-task queue (DIPLOMAT_QUEUE_TEST)
         SweepTest.swift            self-test of asking each runner's own store (DIPLOMAT_SWEEP_TEST)
+        ApiWatchTest.swift         self-test of who the API-error watcher may type into (DIPLOMAT_APIWATCH_TEST)
         PublishTest.swift          self-test of what a resolved tick hands the panel (DIPLOMAT_PUBLISH_TEST)
         BanList.swift / AuditLog.swift   ban list (the daemon's banned.json) + the unified activity feed (audit.jsonl)
         DeviceAllocator.swift      allocator daemon state reader + installer bridge

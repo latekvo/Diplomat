@@ -2475,11 +2475,13 @@ class Store(QObject):
 
     # The Linux port of Store.swift's runApiErrorScanOnce. A background scan (driven
     # by a QTimer in app.py, independent of the panel) reads every tmux pane's last
-    # visible lines and, for any showing a Claude API error that has stopped changing
-    # (a confirmed stall), submits the "continue" nudge to that exact pane — so an
-    # agent that stalled on a transient server error (e.g. overnight 529 overload)
-    # resumes on its own. The pure detection/backoff logic lives in apiwatch.py; the
-    # tmux reads/writes in tmuxwatch.py.
+    # visible lines and, for any pane an AGENT is in that shows a Claude API error which
+    # has stopped changing (a confirmed stall), submits the "continue" nudge to that
+    # exact pane — so an agent that stalled on a transient server error (e.g. overnight
+    # 529 overload) resumes on its own. Read every pane, write into few: the nudge is
+    # submitted as a line of input, so a pane running a shell would RUN it. The pure
+    # detection/backoff logic lives in apiwatch.py; the tmux reads/writes in
+    # tmuxwatch.py.
 
     def run_apiwatch_poll_async(self) -> None:
         """Kick one watcher scan on a worker thread (guarded against overlap). Safe to
@@ -2499,25 +2501,33 @@ class Store(QObject):
         self.start_background(work)
 
     def _apiwatch_scan_once(self) -> None:
-        """One scan: read every pane and nudge any confirmed-stalled erroring pane
-        that's outside its backoff window."""
+        """One scan: read the panes an agent is running in and nudge any
+        confirmed-stalled erroring one that's outside its backoff window."""
         if not self.api_watch_enabled:
             return
         # None = a tmux command failed unexpectedly — skip the whole scan rather than
         # treating it as "no panes", which would wrongly clear every backoff.
         panes = tmuxwatch.dump_panes()
         available = tmuxwatch.is_available()
-        if panes is None:
+        now = time.time()
+        # The other half of "may this pane be written to". An unreadable process table
+        # skips the scan for the same reason a failed pane dump does, and more: the
+        # answer decides whether a line of text is typed into somebody's shell, so
+        # not knowing has to mean not typing.
+        on_an_agent = probes.ttys_running_an_agent(now)
+        if panes is None or not on_an_agent.ok:
             self.apiwatch_status = {
-                "updatedAt": time.time(),
+                "updatedAt": now,
                 "watching": 0,
                 "continues": self.api_watch_continues,
                 "tmux": available,
             }
             return
-        now = time.time()
+        # tmux spells a tty `/dev/pts/13` and `ps` spells it `pts/13`.
+        watched = [p for p in panes
+                   if p.tty.removeprefix("/dev/") in on_an_agent.value]
         erroring: set[str] = set()
-        for p in panes:
+        for p in watched:
             # Out-of-quota banners return False here: a quota-limited agent can't
             # progress until its window resets, so only transient errors are nudged.
             if not apiwatch.looks_like_api_error(p.tail):
@@ -2559,7 +2569,7 @@ class Store(QObject):
         }
         self.apiwatch_status = {
             "updatedAt": now,
-            "watching": len(panes),
+            "watching": len(watched),
             "continues": self.api_watch_continues,
             "tmux": available,
         }

@@ -182,6 +182,54 @@ enum AgentProbes {
         return .present(table)
     }
 
+    /// Every tty a nudge may be typed into: for each agent process on the box, its own
+    /// tty and every tty between it and the window it shows in.
+    ///
+    /// The API-error watcher reads every iTerm session and Terminal tab, and what it does
+    /// with a match is TYPE into it. In an agent's session that is a user turn; in a plain
+    /// shell it is a command, run by that shell. A shell reaches a matching tail for
+    /// entirely innocent reasons — a `cat` of a log holding a banner, a `git diff` of the
+    /// matcher's own tests — and nothing on the screen tells those from the CLI's own
+    /// line, so the process behind the tty is what decides.
+    ///
+    /// Not the agent's own tty alone, which is what the Linux twin compares (there the
+    /// screen read IS the agent's tmux pane). Here the screen read is the WINDOW, and a
+    /// window shows a tty directly only when nothing wraps it: under tmux, or a shell
+    /// wrapper like `kiro-cli-term`, the agent sits ptys below the session the dump
+    /// reports, and comparing the two would leave every wrapped agent unnudgeable — on a
+    /// box whose shells wrap themselves, every agent there is. `TerminalFocus.walk`
+    /// already crosses exactly that gap for a row click, so the answer is its walk,
+    /// unioned over the agents.
+    ///
+    /// Any runner and any task: the question is whether a human's shell is about to be
+    /// typed into, and an agent reviewing nothing in particular is still an agent.
+    static func ttysRunningAnAgent(procs: [Int: AgentState.ProcInfo],
+                                   processes: [Int: TerminalFocus.Proc],
+                                   panes: [String: TerminalFocus.Pane],
+                                   clients: [String: String]) -> Set<String> {
+        var out: Set<String> = []
+        for (pid, info) in procs where info.isAgent && !info.tty.isEmpty {
+            out.formUnion(TerminalFocus.walk(tty: info.tty, pid: pid, processes: processes,
+                                             panes: panes, clients: clients).ttys)
+        }
+        return out
+    }
+
+    /// The same, of this machine. `unavailable` when the process table could not be read
+    /// — which the watcher treats as "type into nothing", never as "no agents".
+    static func ttysRunningAnAgent(now: TimeInterval) -> Observation<Set<String>> {
+        let table = processTable(psDump(now: now))
+        guard let procs = table.value else { return .unavailable(table.reason) }
+        // The walk's three readings are another `ps` pass and two tmux calls; on a box
+        // with no agent up there is nothing for them to find.
+        guard procs.values.contains(where: { $0.isAgent && !$0.tty.isEmpty }) else {
+            return .present([])
+        }
+        return .present(ttysRunningAnAgent(procs: procs, processes: TerminalFocus.processes(),
+                                           panes: TerminalFocus.panes(),
+                                           clients: TerminalFocus.clients()))
+    }
+
     /// PR number → the tty of an agent visible in `ps` by its prompt text.
     ///
     /// The pre-registry identity mechanism, kept for the two questions a pid cannot answer:
