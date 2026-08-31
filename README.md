@@ -867,7 +867,10 @@ nudge opens no window at all - it types into a session that already exists.)
   command. The process table decides that, since nothing on a screen can - a shell
   can be showing a banner because it printed one. On macOS the session a terminal
   reports is often not the one the agent is on (tmux, or a shell wrapper), so the
-  walk that a row click uses to find an agent's window decides it there. An agent
+  walk that a row click uses to find an agent's window decides it there - which
+  resolves to the terminal the agent's session is displayed in, so the line lands in
+  that session's active pane. The spawner gives each agent a session of its own,
+  which is what keeps those the same screen. An agent
   stalled on a transient API error (overloads, connection failures, a turn cut
   short mid-stream, bare `429` rate-limits, status-page errors) gets a continue
   nudge typed into that exact session, with a per-session 2m → 3h backoff so a
