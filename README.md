@@ -1423,6 +1423,7 @@ packages/
         TrackTest.swift            E2E self-test of the run book + this platform's probes (DIPLOMAT_TRACK_TEST)
         QueueTest.swift            self-test of the deferred-task queue (DIPLOMAT_QUEUE_TEST)
         SweepTest.swift            self-test of asking each runner's own store (DIPLOMAT_SWEEP_TEST)
+        PublishTest.swift          self-test of what a resolved tick hands the panel (DIPLOMAT_PUBLISH_TEST)
         BanList.swift / AuditLog.swift   ban list (the daemon's banned.json) + the unified activity feed (audit.jsonl)
         DeviceAllocator.swift      allocator daemon state reader + installer bridge
         DeviceFocus.swift          click an in-use device → focus the holding agent's terminal
