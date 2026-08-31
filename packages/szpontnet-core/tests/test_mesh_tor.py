@@ -533,6 +533,33 @@ def test_onion_address_is_none_once_tor_has_exited(tmp_path):
     assert t.onion_address() is None
 
 
+def test_stop_leaves_the_transport_reading_as_not_started(tmp_path, monkeypatch):
+    """stop() must drop the SOCKS port along with the child and the listener it
+    tears down. That number is the whole of dial()'s "am I started" guard, so a
+    stale one sends the dial at a port this transport no longer owns — the caller
+    gets a refused connection, or a SOCKS handshake against whichever process the
+    kernel has since handed the number to, where "not started" is the true answer.
+
+    The iroh twin gets this right by construction: `IrohTransport.stop` clears the
+    endpoint its own dial() guards on.
+    """
+
+    async def _no_connect(*a, **k):
+        raise AssertionError(f"dial after stop() reached the network: {a!r}")
+
+    monkeypatch.setattr(tor.asyncio, "open_connection", _no_connect)
+
+    async def _run():
+        t = tor.TorTransport(tmp_path, binary_path="/nonexistent")
+        t._socks_port = 57689          # as a bootstrapped start() leaves it
+        await t.stop()
+        assert t._socks_port == 0      # dropped with _proc and _forward_server
+        with pytest.raises(RuntimeError, match="not started"):
+            await t.dial(_ONION_A)
+
+    asyncio.run(_run())
+
+
 def test_pdeathsig_is_callable_and_best_effort(tmp_path):
     """_pdeathsig runs in the forked child before exec; it must NEVER raise (any
     failure is swallowed so tor still execs). The kill-on-parent-death behavior itself
