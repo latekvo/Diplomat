@@ -16,7 +16,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 
-export const VERSION = '0.43.0';
+export const VERSION = '0.49.0';
 export const DEFAULT_REPO_URL = 'https://github.com/latekvo/Diplomat.git';
 export const SUPPORTED = ['darwin', 'linux'];
 export const MIN_PYTHON = [3, 10];

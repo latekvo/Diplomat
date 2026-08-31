@@ -341,6 +341,9 @@ class NodeProcess:
             # so a failure carries the node's own account of what went wrong. See
             # tornet_host.py.
             "SZPONTNET_HOST": "tornet_host",
+            # stop_all runs from a `finally` a killed pytest never reaches; this
+            # is what stops the node then (and so reaps its tor child).
+            "SZPONTNET_EXIT_WITH_PARENT": "1",
             "PYTHONPATH": os.pathsep.join([str(_PACKAGE_ROOT), str(_TESTS_DIR)]),
             "PYTHONUNBUFFERED": "1",
             **env,

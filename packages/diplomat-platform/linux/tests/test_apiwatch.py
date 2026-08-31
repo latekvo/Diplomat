@@ -26,6 +26,8 @@ def test_matches_bare_429_rate_limit():
     assert apiwatch.looks_like_api_error(
         "⏺ Running the suite…\n✗ 429 Rate limited · retrying in 34s\n  ? for shortcuts"
     ) is True
+    # Its rate-limit context wraps like any other banner's, so it reads the rejoined copy.
+    assert apiwatch.looks_like_api_error("⏺ 429 Rate\n  limited · retrying in 34s") is True
     # A 429 an agent WROTE is not a banner, however much rate-limit context surrounds it.
     # This arm carries no "API Error:" prefix to anchor, so the code itself has to open
     # the line — otherwise it is the widest hole in the predicate, matching any tail that
@@ -76,8 +78,10 @@ def test_banner_must_open_a_line():
     # LETTERS disqualify a line — prose reaches a quoted banner through words.
     assert apiwatch.looks_like_api_error("  ⎿  API Error: Connection error.") is True
     assert apiwatch.looks_like_api_error("│ ⏺ API Error: 503 Service Unavailable") is True
-    # Casing is the CLI's to change; the watcher does not key on it.
+    # Casing is the CLI's to change; the watcher does not key on it — and each rule
+    # carries its own flag, so the coded one needs its own lowercase banner.
     assert apiwatch.looks_like_api_error("⏺ api error: connection error.") is True
+    assert apiwatch.looks_like_api_error("⏺ api error: 529 overloaded.") is True
     # Codeless on purpose: a 3-digit code would match through the code rule instead and
     # leave the digits-are-decoration intent unpinned.
     assert apiwatch.looks_like_api_error("21:28:22 API Error: Connection error.") is True

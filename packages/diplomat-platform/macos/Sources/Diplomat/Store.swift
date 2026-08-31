@@ -1597,6 +1597,17 @@ final class Store: ObservableObject {
         agentRows = rows
     }
 
+    /// Drive `publish` over a tick a self-test composed itself.
+    ///
+    /// `pinAgentRows` above assigns the list directly, which is what a render needs and
+    /// is also why no render covers `publish`: the filter that keeps an ended run off the
+    /// panel is on a path the one artefact CI inspects never takes. This is the way in
+    /// for the check that does (`PublishTest`).
+    func publishForSelfTest(_ pass: AgentPass) {
+        guard Headless.active else { return }
+        publish(pass)
+    }
+
     /// Slots of this device's cap with nothing in them, as the panel draws them.
     ///
     /// Work that is starting holds one. Its spawn has not registered anywhere yet, but the

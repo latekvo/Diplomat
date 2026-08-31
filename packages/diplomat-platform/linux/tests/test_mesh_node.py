@@ -15,6 +15,7 @@ real terminal.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import subprocess
@@ -159,6 +160,9 @@ class Fleet:
         cfg = d / "diplomat-config.json"
         cfg.write_text(json.dumps({"autoTaskLimit": 999}))
         env["DIPLOMAT_CONFIG"] = str(cfg)
+        # stop_all runs from a `finally` a killed pytest never reaches; this is
+        # what stops the node then.
+        env["SZPONTNET_EXIT_WITH_PARENT"] = "1"
         # Last so a test can override anything above (e.g. isolate a node's
         # beacon channel on its own multicast port).
         env.update(extra_env or {})
@@ -200,7 +204,9 @@ class Fleet:
 
     def stop_all(self) -> None:
         for node_id in list(self.procs):
-            self.kill(node_id)
+            # Per node: one that will not die must not strand the rest of the fleet.
+            with contextlib.suppress(Exception):
+                self.kill(node_id)
 
 
 def _wait_for(predicate, timeout: float = 15.0, interval: float = 0.2, what: str = ""):
