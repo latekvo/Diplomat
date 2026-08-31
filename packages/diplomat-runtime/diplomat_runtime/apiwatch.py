@@ -83,8 +83,36 @@ _HIT_YOUR_LIMIT = re.compile(r"hit your [a-z0-9\- ]{0,16}limit")
 # the code is the only thing transient-looking about it: the cap holds until its
 # window rolls over or an admin raises it, neither of which a nudge can do.
 _BUDGET_LIMIT = re.compile(r"budget[a-z0-9\- ]{0,16}(exceeded|reached)")
-_API_ERROR_CODE = re.compile(r"API Error:?\s*[0-9]{3}")
-_BARE_429 = re.compile(r"\b429\b")
+# A banner OPENS its own line: only decoration may precede it — the "⏺" bullet, the "⎿"
+# tool-result elbow, box rules, indentation, a log timestamp. `[\W\d_]` is every character
+# that is NOT a letter, in any script, because prose reaches a quoted banner through words
+# and decoration never does. That is what separates the CLI's banner from an agent QUOTING
+# one: a session merely discussing API errors goes static the moment its turn ends, which
+# is indistinguishable from a stall downstream (see :func:`is_confirmed_stall`). All three
+# carry the anchor — any one alone is enough to nudge, so an arm without it is a hole in
+# the whole predicate. The codeless rule needs the colon too, since the other two are
+# pinned by their digits and "API Error" on its own is two words a doc line can start with.
+_BANNER_OPENS_LINE = re.compile(r"^[\W\d_]*API Error:", re.IGNORECASE | re.MULTILINE)
+_API_ERROR_CODE = re.compile(r"^[\W\d_]*API Error:?\s*[0-9]{3}",
+                             re.IGNORECASE | re.MULTILINE)
+_BARE_429 = re.compile(r"^[\W\d_]*\b429\b", re.MULTILINE)
+
+_WRAPPED_LINE = re.compile(r"\n\s*")
+
+
+def _rejoined(text: str) -> str:
+    """``text`` with terminal wrapping undone, for the phrase evidence a banner carries.
+    A cut-short banner runs 70-90 columns, so a narrow pane splits it mid-phrase ("…may
+    be\n  incomplete.") and a contiguous search finds nothing — the widest banner family
+    the watcher exists for, invisible in exactly the panes most likely to wrap. The
+    banner's own line-opening position is read off the ORIGINAL, where the line structure
+    still exists.
+
+    Blank rows are already gone by here (:func:`last_lines`), so this fuses every
+    adjacent pair, not just the halves of a wrapped line — which is why only the
+    banner's own evidence is read off it. Quota suppression is not: fusing two lines
+    of prose into "budget … exceeded" would strand the stalled session it silences."""
+    return _WRAPPED_LINE.sub(" ", text)
 
 
 def looks_like_api_error(text: str) -> bool:
@@ -92,45 +120,58 @@ def looks_like_api_error(text: str) -> bool:
     past — a server 5xx / rate-limit ("API Error: <3-digit code>"), a status-page
     error, or a codeless failure (network out, DNS, timeout, a stream cut off).
 
+    The banner must OPEN a line; one quoted mid-sentence is prose, not a stall. The
+    phrases it is read for are matched with the pane's wrapping rejoined, so a banner
+    the pane split mid-phrase still reads.
+
     Out-of-quota and org budget-cap banners return False: nudging a capped session
     does nothing until the window resets, so the watcher intentionally leaves them
     alone. Either banner also SUPPRESSES any API-error text in the same tail.
     """
     lower = text.lower()
     # Quota banner present ⇒ ignore this session entirely (and suppress any stray
-    # API-error text sharing the tail).
+    # API-error text sharing the tail). Read off the ORIGINAL rather than the rejoined
+    # copy: these phrases are short enough to survive a wrap, and suppression is the one
+    # answer that cannot be retried, so it must not be assembled out of two lines.
     if any(p in lower for p in _QUOTA_PHRASES):
         return False
     if _HIT_YOUR_LIMIT.search(lower) or _BUDGET_LIMIT.search(lower):
         return False
+    unwrapped = _rejoined(lower)
     # "API Error: <3-digit code>" — the exact CLI format (529/500/503/429/…).
     if _API_ERROR_CODE.search(text):
         return True
     # A bare "429 Rate limited" banner. Newer CLI builds print a rate-limit error
     # WITHOUT the "API Error:" prefix. A 429 is a transient RPM/TPM rate limit (the
     # window resets in seconds, unlike a weekly/usage quota cap), so nudge past it.
-    # Requiring the 429 code keeps ordinary prose about rate limits from tripping it.
-    if _BARE_429.search(lower) and (
-        "rate limit" in lower or "too many requests" in lower
+    # It opens its line like the prefixed banners do, which is what keeps ordinary prose
+    # about rate limits off it — a retry branch, a status-code table, a note about a 429.
+    # The code on its own cannot: three digits are three digits.
+    if _BARE_429.search(text) and (
+        "rate limit" in unwrapped or "too many requests" in unwrapped
     ):
         return True
-    # Or any API error that points at the status page.
-    if "api error" in lower and "status.claude.com" in lower:
-        return True
-    # Or a codeless API failure: connectivity, or a stream cut off part-way.
-    if "api error" in lower and any(p in lower for p in _CODELESS_PHRASES):
-        return True
-    return False
+    if not _BANNER_OPENS_LINE.search(text):
+        return False
+    # A codeless API failure the banner names: the status page, connectivity, or a
+    # stream cut off part-way.
+    return "status.claude.com" in unwrapped or any(
+        p in unwrapped for p in _CODELESS_PHRASES
+    )
 
 
 def is_confirmed_stall(previous_tail: str | None, current_tail: str) -> bool:
     """Idle-confirmation gate (mirrors ApiErrorMatch.isConfirmedStall). A session is
     treated as genuinely STALLED — and so eligible for a nudge — only when its erroring
-    tail is UNCHANGED since the previous scan. An actively-working session changes
-    between scans and must not be nudged: one merely printing/discussing an API-error
-    string, one that already recovered while the error line is still on screen, or a CLI
-    mid auto-retry with a live countdown. ``previous_tail`` is None the first scan a pane
-    is seen erroring, which is never a confirmed stall."""
+    tail is UNCHANGED since the previous scan. It separates a session still REDRAWING
+    from one at rest: a CLI mid auto-retry with a live countdown, or one still printing
+    past the error, changes between scans and must not be nudged. ``previous_tail`` is
+    None the first scan a pane is seen erroring, which is never a confirmed stall.
+
+    What it cannot separate is one static screen from another — a session stalled on the
+    banner and a finished session whose last screen merely CONTAINS one are both frozen,
+    and the second reads as a confirmed stall as soon as two scans see it unchanged.
+    Telling those apart is :func:`looks_like_api_error`'s job, not this gate's."""
     return looks_like_api_error(current_tail) and previous_tail == current_tail
 
 
