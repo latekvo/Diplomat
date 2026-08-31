@@ -615,7 +615,7 @@ def test_retiring_a_run_prices_it_from_the_transcript_its_prompt_names(ledger, s
     telemetry.record_started(record.ledger_key)
     Store()._retire_finished(agentstate.Tick(records=[], states={}, rows=[],
                                              cap_load=set(), retirable=[record],
-                                             free_slots=0))
+                                             reapable=[], free_slots=0))
 
     telemetry._reset_cache()
     task = telemetry.load().tasks[0]
@@ -649,7 +649,7 @@ def test_a_run_the_mesh_placed_is_dated_from_its_transcript(ledger, scanner):
     telemetry.record_started(record.ledger_key)
     Store()._retire_finished(agentstate.Tick(records=[], states={}, rows=[],
                                              cap_load=set(), retirable=[record],
-                                             free_slots=0))
+                                             reapable=[], free_slots=0))
 
     telemetry._reset_cache()
     task = telemetry.load().tasks[0]

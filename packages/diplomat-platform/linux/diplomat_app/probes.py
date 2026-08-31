@@ -465,13 +465,34 @@ def merged_prs(pr_numbers: set[int]) -> Observation:
     return Observation.present(merged)
 
 
+def tokens_left() -> Observation:
+    """Whether the account this machine's agents spend still has room in it — the
+    precondition on the resolver's run deadline.
+
+    UNSUPPORTED, not UNAVAILABLE, when no ceiling reads: a box with the probes switched
+    off, no Claude Code login, or an OpenRouter key Diplomat cannot price is an ordinary
+    box, and warning every few minutes that a probe has gone quiet on it would train the
+    operator to ignore the channel. The resolver reads both the same way — neither is
+    the positive answer the deadline needs.
+    """
+    from diplomat_runtime import autobudget
+
+    answer = autobudget.tokens_left()
+    if answer is None:
+        return Observation.unsupported(
+            "are unavailable (no spending limit this machine can read)")
+    return Observation.present(answer)
+
+
 def gather(records: list[RunRecord], now: float, *,
-           merged: Observation | None = None) -> Evidence:
+           merged: Observation | None = None,
+           tokens: Observation | None = None) -> Evidence:
     """One pass of every cheap probe.
 
-    ``merged`` is passed in rather than probed here: it costs a ``gh`` call per PR and
-    belongs to the slow refresh, so the fast tick carries forward whatever the last
-    one found (UNAVAILABLE until the first).
+    ``merged`` and ``tokens`` are passed in rather than probed here: one costs a ``gh``
+    call per PR and the other an HTTPS round trip, and both belong to the slow refresh,
+    so the fast tick carries forward whatever the last one found (UNAVAILABLE until the
+    first).
     """
     from diplomat_runtime import agentregistry, agentstate, review
 
@@ -500,4 +521,5 @@ def gather(records: list[RunRecord], now: float, *,
         live_agents=scan,
         sessions=_note("agent sessions",
                        agent_sessions(records, review.repo_path(), now), now),
+        tokens_left=tokens or Observation.unavailable("has not been probed yet"),
     )

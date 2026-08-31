@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 )
 
 from diplomat_runtime import (
+    agentstate,
     apiwatch,
     appconfig,
     autofix,
@@ -707,7 +708,32 @@ class SettingsView(QWidget):
                    "whichever monitor owed the work.",
         ))
         body.addWidget(self._apiwatch_row)
+
+        # Beside the nudge because they are the two answers to one question. The nudge
+        # gets a stalled agent moving again; this is what happens when nothing does.
+        cutoff = apiwatch.human_interval(agentstate.RUN_DEADLINE)
+        self._sw_deadline = SwitchToggle(_PINK)
+        self._sw_deadline.setChecked(appconfig.run_deadline() is not None)
+        self._sw_deadline.toggled.connect(self._on_run_deadline_toggled)
+        body.addWidget(self._track(SettingRow(
+            f"Give up on a task after {cutoff}", self._sw_deadline,
+            summary="Hand its bay back when the agent's own report never arrives.",
+            detail="Agents report their turn boundaries through hooks staged into each "
+                   "run, and a run whose report never comes — a runner without hooks, "
+                   "settings that would not stage, an agent wedged with its status bar "
+                   "frozen — holds a task-cap bay until you close its window. Past "
+                   f"{cutoff} such a run is called done whatever its screen still "
+                   "shows: its tmux session is killed, its row leaves Agent tasks and "
+                   "its bay comes back. Only while your account has limit left to "
+                   "spend — agents parked waiting for a window to refill age exactly "
+                   "like stuck ones. A peer's run is left to the machine running it, "
+                   "and so is an agent you started by hand.",
+        )))
         return card
+
+    def _on_run_deadline_toggled(self, on: bool) -> None:
+        appconfig.set_bool(appconfig.RUN_DEADLINE, on)
+        self.store.changed.emit()
 
     def _on_apiwatch_toggled(self, on: bool) -> None:
         self.store.api_watch_enabled = on

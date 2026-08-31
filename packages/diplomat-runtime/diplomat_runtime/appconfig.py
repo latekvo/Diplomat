@@ -11,6 +11,10 @@ advertises joining a mesh with "no Qt needed") and that outlives the applet, so 
 can neither read a Qt/UserDefaults store nor be handed the value in its
 environment at spawn time.
 
+One more sits with them without needing to: how long a run may go on before the
+resolver calls it over, which belongs beside the cap it modifies and is read by the
+``DIPLOMAT_AGENTS`` dump, a front-end-free path with no store of its own.
+
 So those knobs live in the shared ``~/.diplomat`` tree, the way the ban list,
 the activity feed and the mesh snapshot already cross process *and* front-end
 boundaries. Readers re-read on use, so a change reaches a running node on its next
@@ -38,6 +42,9 @@ AUTO_BUDGET_CONFIDENCE = "autoBudgetConfidence"
 AUTO_BUDGET_FLOOR_PCT = "autoBudgetFloorPct"
 #: The floor's twin for an account billed in money — see :func:`auto_budget_reserve_usd`.
 AUTO_BUDGET_RESERVE_USD = "autoBudgetReserveUsd"
+#: Whether a run that has gone on past :data:`agentstate.RUN_DEADLINE` is called over
+#: regardless of what its own evidence says — see :func:`run_deadline`.
+RUN_DEADLINE = "runDeadline"
 #: Which agent CLI a spawn runs — see :mod:`runner`, which owns the values.
 AGENT_RUNNER = "agentRunner"
 #: The model the selected runner is pinned to; "" lets that runner pick. A model id,
@@ -145,6 +152,20 @@ def auto_task_limit() -> int:
     return autofix.clamp_auto_task_limit(
         get_int(AUTO_TASK_LIMIT, autofix.DEFAULT_AUTO_TASK_LIMIT)
     )
+
+
+def run_deadline() -> float | None:
+    """How long a run this device executes may go on before the resolver calls it over
+    whatever else it sees, or ``None`` when the operator has that backstop switched off
+    (Settings → STALLED AGENTS).
+
+    The knob is a switch and the duration is :data:`agentstate.RUN_DEADLINE`; resolving
+    the two into one answer here is what keeps every caller — both applets' ticks and
+    the ``DIPLOMAT_AGENTS=1`` dump — from pairing them differently.
+    """
+    from . import agentstate
+
+    return agentstate.RUN_DEADLINE if get_bool(RUN_DEADLINE, True) else None
 
 
 def auto_budget_gate() -> bool:

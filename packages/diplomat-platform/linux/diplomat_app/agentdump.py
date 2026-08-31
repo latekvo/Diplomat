@@ -21,12 +21,14 @@ from . import probes
 def run() -> int:
     now = time.time()
     records = agentregistry.adopt_pids(agentregistry.load())
-    evidence = probes.gather(records, now)
-    limit = _limit()
-    t = agentstate.tick(records, evidence, now, limit)
+    evidence = probes.gather(records, now, tokens=probes.tokens_left())
+    limit, deadline = _limit(), _deadline()
+    t = agentstate.tick(records, evidence, now, limit, deadline)
 
     print(f"registry: {agentregistry.runs_path()}")
-    print(f"{len(records)} registered run(s), cap {limit}\n")
+    cutoff = ("off" if deadline is None
+              else f"give up after {apiwatch.human_interval(deadline)}")
+    print(f"{len(records)} registered run(s), cap {limit}, {cutoff}\n")
 
     print("PROBES")
     for name, obs in (("processes", evidence.processes),
@@ -35,7 +37,8 @@ def run() -> int:
                       ("mesh claims", evidence.claims),
                       ("merged PRs", evidence.merged_prs),
                       ("agent scan", evidence.live_agents),
-                      ("agent sessions", evidence.sessions)):
+                      ("agent sessions", evidence.sessions),
+                      ("token budget", evidence.tokens_left)):
         print(f"  {name:<15} {_describe(obs)}")
     read, seen = probes.marker_stats()
     if read:
@@ -61,6 +64,8 @@ def run() -> int:
     print(f"  bays held        {len(t.cap_load)} of {limit}  {sorted(t.cap_load)}")
     print(f"  free slots       {t.free_slots}")
     print(f"  retirable now    {sorted(r.run_id for r in t.retirable)}")
+    # The subset whose window goes with the record — "why did my terminal close".
+    print(f"  windows reaped   {sorted(r.run_id for r in t.reapable)}")
     prs = sorted({r.pr_number for r in t.records if r.pr_number is not None})
     if prs:
         blocked = [pr for pr in prs if t.in_flight(pr)]
@@ -72,7 +77,9 @@ def _describe(obs: agentstate.Observation) -> str:
     """One probe's answer, with the size of it — an empty PRESENT and an UNAVAILABLE
     look alike in a summary, and telling them apart is the whole exercise."""
     if obs.status == agentstate.PRESENT:
-        n = len(obs.value) if hasattr(obs.value, "__len__") else 1
+        if not hasattr(obs.value, "__len__"):
+            return f"ok ({obs.value})"  # a scalar answer — count it and it reads "1 item"
+        n = len(obs.value)
         return f"ok ({n} item{'' if n == 1 else 's'})"
     return f"{obs.status.upper()} — {obs.reason or 'no reason given'}"
 
@@ -81,3 +88,10 @@ def _limit() -> int:
     """The configured cap, read without building a Store (which would start timers)."""
     from diplomat_runtime import appconfig
     return appconfig.auto_task_limit()
+
+
+def _deadline() -> float | None:
+    """The configured run deadline, or None with the backstop switched off. Read the
+    same Store-free way the cap is."""
+    from diplomat_runtime import appconfig
+    return appconfig.run_deadline()

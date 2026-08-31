@@ -1524,6 +1524,45 @@ do {
         claims: .present([]), mergedPRs: .present([]),
         liveAgents: .unavailable("ps could not be read"))) == .unknown,
       "...but a scan that failed ends nothing")
+    // The outermost backstop, and the only rung that ends a run on the clock. Every
+    // check above runs with it OFF (`resolveOne`'s default), which is what keeps them
+    // about the rung each was written for.
+    func deadlined(_ r: AgentState.RunRecord, _ e: AgentState.Evidence,
+                   _ cutoff: TimeInterval?) -> AgentState.RunState {
+        AgentState.resolveOne(r, evidence: e, now: now, deadline: cutoff).state
+    }
+    let oldAndWorking = AgentState.Evidence(
+        processes: .present([4242: AgentState.ProcInfo(
+            tty: "pts/3", elapsed: AgentState.runDeadline + 3600, isAgent: true)]),
+        sentinels: .present([]), tails: .present(["pts/3": working]),
+        claims: .present([]), mergedPRs: .present([]), tokensLeft: .present(true))
+    let ancient = rec("k", age: AgentState.runDeadline + 3600)
+    check(deadlined(ancient, oldAndWorking, AgentState.runDeadline) == .finished,
+      "a run past the deadline is over whatever its screen still shows")
+    check(deadlined(ancient, oldAndWorking, nil) == .running,
+      "…and is left exactly as it was with the deadline switched off")
+    var broke = oldAndWorking
+    broke.tokensLeft = .present(false)
+    check(deadlined(ancient, broke, AgentState.runDeadline) == .running,
+      "…and with nothing left to spend: a parked agent ages like a wedged one")
+    broke.tokensLeft = .unsupported("no limit this machine can read")
+    check(deadlined(ancient, broke, AgentState.runDeadline) == .running,
+      "…and with no limit readable at all, which is not the positive answer it needs")
+    check(deadlined(rec("l", pid: nil, tty: "", age: AgentState.runDeadline + 3600,
+                        placement: .meshPeer, workKey: "w", seen: now - 10),
+                    AgentState.Evidence(processes: .present([:]), sentinels: .present([]),
+                                        tails: .present([:]), claims: .present(["w"]),
+                                        mergedPRs: .present([]),
+                                        tokensLeft: .present(true)),
+                    AgentState.runDeadline) == .running,
+      "a peer's run is not ended by THIS device's deadline — its claim still holds")
+    // The reaper asks the same function the rung above did, so a window is never closed
+    // under a run this resolver still calls working.
+    check(AgentState.pastDeadline(ancient, tokens: .present(true), now: now,
+                                  deadline: AgentState.runDeadline) != nil
+          && AgentState.pastDeadline(ancient, tokens: .present(true), now: now,
+                                     deadline: nil) == nil,
+      "the deadline the reaper reads is the one the resolver read")
     // The two sets the cap and the dedup read, which are deliberately different.
     check(AgentState.occupying.contains(.awaitingInput) == false,
       "a session at its prompt gives its bay back — the cap bounds LOAD")

@@ -408,17 +408,34 @@ enum AgentProbes {
         return .present(merged)
     }
 
+    /// Whether the account this machine's agents spend still has room in it — the
+    /// precondition on the resolver's run deadline.
+    ///
+    /// `.unsupported`, not `.unavailable`, when no ceiling reads: a box with the probes
+    /// switched off, no Claude Code login, or an OpenRouter key Diplomat cannot price is
+    /// an ordinary box, and warning every few minutes that a probe has gone quiet on it
+    /// would train the operator to ignore the channel. The resolver reads both the same
+    /// way — neither is the positive answer the deadline needs.
+    static func tokensLeft() -> Observation<Bool> {
+        guard let answer = AutoBudget.tokensLeft() else {
+            return .unsupported("are unavailable (no spending limit this machine can read)")
+        }
+        return .present(answer)
+    }
+
     // MARK: - One pass
 
     /// One pass of every cheap probe.
     ///
-    /// `merged` is passed in rather than probed here: it costs a `gh` call per PR and
-    /// belongs to the slow refresh, so the fast tick carries forward whatever the last one
-    /// found (`.unavailable` until the first).
+    /// `merged` and `tokens` are passed in rather than probed here: one costs a `gh` call
+    /// per PR and the other an HTTPS round trip, and both belong to the slow refresh, so
+    /// the fast tick carries forward whatever the last one found (`.unavailable` until
+    /// the first).
     static func gather(records: [AgentState.RunRecord], now: TimeInterval,
                        owner: String, repo: String, directory: String,
                        meshEnabled: Bool, meshState: MeshSnapshot?,
-                       merged: Observation<Set<Int>>) -> AgentState.Evidence {
+                       merged: Observation<Set<Int>>,
+                       tokens: Observation<Bool>) -> AgentState.Evidence {
         let dump = psDump(now: now)
         let table = note("processes", processTable(dump))
         let scan = note("agent scan", liveAgents(dump, owner: owner, repo: repo))
@@ -436,7 +453,8 @@ enum AgentProbes {
             liveAgents: scan,
             sessions: note("agent sessions",
                            agentSessions(records, directory: directory, now: now)),
-            activity: note("turn reports", AgentRegistry.activity(records)))
+            activity: note("turn reports", AgentRegistry.activity(records)),
+            tokensLeft: tokens)
     }
 
     /// Run a command, returning its stdout — nil on any failure, which every caller reads

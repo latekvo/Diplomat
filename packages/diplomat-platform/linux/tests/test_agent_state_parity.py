@@ -29,7 +29,9 @@ from diplomat_runtime import agentstate as A
 
 # The scenario table itself, so the two languages are pinned against exactly the
 # cases the Python side already asserts rather than a second, drifting copy.
-from test_agent_state import AT_PROMPT, CASES, T0, WORKING, ev, proc, rec
+from test_agent_state import (
+    AT_PROMPT, CASES, PAST_DEADLINE, T0, WORKING, ev, proc, rec,
+)
 
 CORE_BIN = os.environ.get("DIPLOMAT_CORE_BIN")
 pytestmark = pytest.mark.skipif(
@@ -42,10 +44,12 @@ pytestmark = pytest.mark.skipif(
 LIMIT = 2
 
 
-def _payload(records, evidence, now=T0, limit=LIMIT) -> dict:
+def _payload(records, evidence, now=T0, limit=LIMIT,
+             deadline=A.RUN_DEADLINE) -> dict:
     return {
         "now": now,
         "limit": limit,
+        "deadline": deadline,
         "records": [r.to_json() for r in records],
         "evidence": evidence.to_json(),
     }
@@ -60,13 +64,15 @@ def _swift(payload: dict) -> dict:
     return json.loads(proc_.stdout)
 
 
-def _python(records, evidence, now=T0, limit=LIMIT) -> dict:
-    t = A.tick(records, evidence, now, limit)
+def _python(records, evidence, now=T0, limit=LIMIT,
+            deadline=A.RUN_DEADLINE) -> dict:
+    t = A.tick(records, evidence, now, limit, deadline)
     return {
         "rows": [{"runId": r.run_id, "state": s.state, "reason": s.reason}
                  for r, s in t.rows],
         "capLoad": sorted(t.cap_load),
         "retirable": sorted(r.run_id for r in t.retirable),
+        "reapable": sorted(r.run_id for r in t.reapable),
         "freeSlots": t.free_slots,
         "inFlight": {str(pr): t.in_flight(pr)
                      for pr in {r.pr_number for r in t.records
@@ -124,13 +130,20 @@ def _mixed():
         # A pid-less run the mesh placed back here, found by the prompt scan.
         rec(run_id="mesh-no-pid", pid=None, tty="", placement=A.PLACEMENT_MESH_HERE,
             dispatched_at=T0 - 5000, pr_number=311),
+        # Alive, working, and past the deadline — so the fixture carries the one rung
+        # that overrules a screen rather than reading it, and the two sides have to
+        # agree on the age it quotes as well as on the verdict.
+        rec(run_id="over-deadline", pid=6, tty="pts/10",
+            dispatched_at=T0 - PAST_DEADLINE, pr_number=312),
     ]
     evidence = ev(
         processes={1: proc(elapsed=300), 2: proc(elapsed=400, tty="pts/4"),
                    3: proc(elapsed=500, tty="pts/5"), 4: proc(elapsed=700, tty="pts/6"),
-                   5: proc(elapsed=1000, tty="pts/7")},
+                   5: proc(elapsed=1000, tty="pts/7"),
+                   6: proc(elapsed=PAST_DEADLINE, tty="pts/10")},
         tails={"pts/3": WORKING, "pts/4": AT_PROMPT, "pts/5": WORKING,
-               "pts/6": WORKING, "pts/7": AT_PROMPT, "pts/9": WORKING},
+               "pts/6": WORKING, "pts/7": AT_PROMPT, "pts/9": WORKING,
+               "pts/10": WORKING},
         claims={"review:306:sha"},
         merged={305},
         live_agents={404: "pts/8", 311: "pts/9"},
@@ -162,12 +175,30 @@ def test_the_fixture_exercises_every_projection(mixed_results):
     _swift_out, python = mixed_results
     assert python["capLoad"], "no run holds a bay — the cap projection is untested"
     assert python["retirable"], "nothing retires — the retirement projection is untested"
+    assert python["reapable"], "no window is reaped — the destructive projection is untested"
     assert any(python["inFlight"].values()) and not all(python["inFlight"].values()), \
         "the dedup answer must be both True and False somewhere in the fixture"
     assert any(r["untracked"] for r in python["records"]), \
         "the untracked synthesis never ran"
     assert any(r["claimSeenAt"] is not None for r in python["records"]), \
         "no claim sighting was taken — observe_claims is untested"
+
+
+def test_the_deadline_being_off_agrees_too():
+    """The switch is the caller's, not the resolver's, so it is a parity surface of its
+    own: a side that read an absent deadline as zero would retire the whole fixture."""
+    records, evidence = _mixed()
+    payload = _payload(records, evidence, deadline=None)
+    del payload["deadline"]  # absent, the way a front-end with the switch off sends it
+    assert _swift(payload) == _python(records, evidence, deadline=None)
+
+
+def test_the_fixture_reaches_the_deadline_rung(mixed_results):
+    """Anti-vacuity: the fixture must actually contain a run the deadline ended, or the
+    rung is unpinned in both languages at once."""
+    _swift_out, python = mixed_results
+    assert any(r["runId"] == "over-deadline" and "deadline" in r["reason"]
+               for r in python["rows"])
 
 
 def test_a_case_the_two_disagree_on_would_actually_fail(mixed_results):

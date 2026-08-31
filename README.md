@@ -46,14 +46,17 @@ Targets `software-mansion/argent` and shells out to the authenticated `gh` CLI.
 >
 > **One answer about what the agents are doing.** Whether a PR is in flight, how
 > many bays of the device's [task cap](#autonomous-monitors) are full, which rows
-> the panel draws and which record is retired are four *projections* of a single
-> resolved tick (`AgentState` / `agentstate.py`), not four derivations that can
-> drift apart. Evidence reaches it typed - each probe answers *present*,
-> *unavailable* or *unsupported* - and the ladder never reads "I could not look"
-> as "it is gone": a run ends only on positive evidence (its sentinel, its pid
-> missing from a process table that was actually read, or its mesh claim
-> released), and anything else resolves to `unknown`, which keeps its slot and
-> says so. A run is identified by the pid the shell that runs the agent writes into
+> the panel draws, which record is retired and whose window is closed with it are
+> *projections* of a single resolved tick (`AgentState` / `agentstate.py`), not
+> five derivations that can drift apart. Evidence reaches it typed - each probe
+> answers *present*, *unavailable* or *unsupported* - and the ladder never reads
+> "I could not look" as "it is gone": a run ends only on positive evidence (its
+> sentinel, its pid missing from a process table that was actually read, or its
+> mesh claim released), and anything else resolves to `unknown`, which keeps its
+> slot and says so. The one clock that ends a run is the
+> [four-hour deadline](#giving-up-on-a-run) an operator switches on for the runs
+> no evidence can reach. A run is identified by the pid the shell that runs the
+> agent writes into
 > `~/.diplomat/agents/<run-id>/pid` before handing over to it, and the book survives
 > a restart on both platforms. `DIPLOMAT_AGENTS=1 python -m
 > diplomat_app` prints the whole chain: every record, every probe's raw answer,
@@ -924,6 +927,22 @@ failure direction is deferring work, never doubling up on it. Its PR stays
 in-flight regardless, since that session still holds the context, so nothing else
 is dispatched onto the same PR.)
 
+<a id="giving-up-on-a-run"></a>
+**Giving up on a run.** Every rung above reads the run itself, so a run none of them
+can reach - a runner with no hooks, settings that would not stage, an agent wedged
+behind a screen nothing can dump - holds its bay until you close the window. One
+switch answers that (Settings → **STALLED AGENTS** → *Give up on a task after 4h*,
+**default on**): a run this machine is executing and that has gone on for four hours
+is called done whatever its screen still says, its record retired and its bay handed
+back. It fires only while the account still has limit left to spend - agents parked
+waiting for a window to refill age exactly like wedged ones, and the day a limit ran
+out the whole board would otherwise be given up on at once. A peer's run is not
+touched (its claim is the machine that can see the process talking), nor is an agent
+found by the scan rather than dispatched (retiring one only has the next tick find it
+again). Four hours because the longest runs measured here - a swarm review, an issue
+reproduced from scratch - are hours long, and a deadline that retires a working agent
+is worse than a bay held.
+
 Nothing is dropped - work over the cap gets no attempt record, so
 the next 3-minute tick offers it again as soon as a bay comes back, and it waits
 visibly in the panel's [Agent tasks](#agent-tasks) list meanwhile, where it can be
@@ -1076,6 +1095,9 @@ and ⏻) swaps the panel to a settings screen:
   cap above.
 - **Auto-continue agents on API errors** - the terminal watcher toggle, plus a
   count of nudges sent.
+- **Give up on a task after 4h** (**default on**) - the last-resort backstop for a run
+  whose own report never arrives; see [Giving up on a run](#giving-up-on-a-run). In
+  `~/.diplomat/config.json` beside the cap it hands bays back to.
 - **Tools - color & visibility** - a **color well** to retint each tool plus a switch
   to hide it; hidden tools drop out of the grid and the reverse-lookup checklist.
 - **Spawn terminal** - which terminal SPAWN AGENT opens: **iTerm** or **Terminal**
@@ -1376,7 +1398,7 @@ packages/
         OpenCodeAPI.swift          reading an OpenCode run's own session: whose it is, mid-turn or not, spend
         HermesStore.swift          the same, for a Hermes run's session in its SQLite store
         AgentState.swift           the one resolver: typed evidence -> a state per agent run,
-                                   and the four projections (dedup, cap, rows, retirement)
+                                   and its projections (dedup, cap, rows, retirement, reaping)
         AgentRegistry.swift        the durable run book both applets read/write (~/.diplomat/agents)
         ApiErrorMatch.swift        "is this a Claude API error?" matcher for the watcher
         AuditCategory.swift        audit action verb → activity-feed filter category (mirrors assets/audit-categories.json)

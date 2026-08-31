@@ -265,6 +265,36 @@ def test_the_pane_probe_asks_only_about_the_ttys_of_tracked_runs(monkeypatch):
     assert asked["ttys"] == {"pts/3", "pts/9"}
 
 
+def test_the_token_probe_answers_present_when_a_limit_reads(monkeypatch):
+    monkeypatch.setattr("diplomat_runtime.autobudget.tokens_left", lambda: True)
+    obs = probes.tokens_left()
+    assert obs.ok and obs.value is True
+
+    monkeypatch.setattr("diplomat_runtime.autobudget.tokens_left", lambda: False)
+    obs = probes.tokens_left()
+    assert obs.ok and obs.value is False
+
+
+def test_a_machine_with_no_readable_limit_is_unsupported_not_a_silent_probe(monkeypatch):
+    """UNSUPPORTED, so the health watch never reports it as gone quiet: a box with the
+    usage probe switched off, or not logged into anything Diplomat can price, is an
+    ordinary box. The resolver reads it the same way it reads UNAVAILABLE — neither is
+    the positive answer the run deadline needs."""
+    monkeypatch.setattr("diplomat_runtime.autobudget.tokens_left", lambda: None)
+    obs = probes.tokens_left()
+    assert obs.status == A.UNSUPPORTED and not obs.ok
+
+
+def test_the_token_reading_is_carried_into_the_bundle_not_probed_in_it(monkeypatch):
+    """It dials an endpoint, and `gather` runs on the panel's repaint — so the reading
+    rides the slow refresh and is handed in, exactly as the merged statuses are."""
+    monkeypatch.setattr("diplomat_runtime.autobudget.tokens_left",
+                        lambda: pytest.fail("gather probed the endpoint itself"))
+    assert not probes.gather([], T0).tokens_left.ok
+    handed = A.Observation.present(True)
+    assert probes.gather([], T0, tokens=handed).tokens_left == handed
+
+
 def test_gather_captures_the_screen_of_an_agent_with_no_record(monkeypatch):
     """`tick` synthesizes untracked agents only after the evidence is built, so gather
     has to find them itself. Missed, the one run with no record — and so no sentinel

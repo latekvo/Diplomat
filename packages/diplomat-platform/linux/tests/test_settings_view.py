@@ -117,6 +117,24 @@ def test_the_budget_reserve_reads_as_money_and_persists(view):
     assert appconfig.auto_budget_reserve_usd() == 5.0
 
 
+def test_the_run_deadline_switch_opens_on_the_stored_value_and_writes_through(view):
+    """The knob that decides whether a four-hour run is given up on. It writes to the
+    SHARED config file rather than QSettings, beside the cap whose bays it hands back —
+    and the row is titled from the resolver's own constant, so the number the operator
+    reads is the number that fires."""
+    from diplomat_runtime import agentstate, apiwatch, appconfig
+
+    assert view._sw_deadline.isChecked() is True  # on unless it was turned off
+
+    view._sw_deadline.setChecked(False)
+    assert appconfig.run_deadline() is None
+    view._sw_deadline.setChecked(True)
+    assert appconfig.run_deadline() == agentstate.RUN_DEADLINE
+
+    cutoff = apiwatch.human_interval(agentstate.RUN_DEADLINE)
+    assert cutoff in view._sw_deadline.accessibleName()
+
+
 def test_every_row_names_its_control_for_a_screen_reader(view):
     """The row's name is a separate label, so an unnamed control reads as a bare
     switch. Every row is checked because the naming is one line in `SettingRow`:

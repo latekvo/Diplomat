@@ -71,6 +71,42 @@ def decide(now: float | None = None) -> autofix.Budget:
     return budget
 
 
+def tokens_left() -> bool | None:
+    """Does the account this machine's agents draw on still have room to spend, or
+    ``None`` when no ceiling on it could be read?
+
+    A cruder question than :func:`decide`, and deliberately not a call into it. That
+    one asks whether one MORE task fits, and it fails OPEN — no measurement means
+    affordable, because holding all automatic work back on a probe that went quiet is
+    worse than starting one task too many. Its caller here wants the opposite
+    degradation: this is the precondition on :data:`agentstate.RUN_DEADLINE`, which
+    RETIRES runs, so a reading nobody could take must answer "I don't know" and not
+    "plenty".
+
+    Which ceilings there are is the currency split :func:`decide` makes. One this
+    account does not have (an uncapped OpenRouter key) or that would not read is skipped
+    rather than guessed; every one that did read has to be above zero, because whichever
+    runs out first is the one that parks the agents.
+
+    Never raises: every caller is a probe layer whose whole contract is that a failure
+    to look is reported rather than thrown.
+    """
+    from . import quota, runner, spend
+
+    try:
+        if runner.selected() == runner.CLAUDE:
+            readings = quota.fractions_left()
+        else:
+            balance = spend.balance()
+            readings = (balance.key_left, balance.credit_left)
+    except Exception:  # noqa: BLE001 — a probe failure is an unknown, never a raise
+        return None
+    known = [r for r in readings if r is not None]
+    if not known:
+        return None
+    return all(r > 0 for r in known)
+
+
 def _summary():
     """The ledger, summarized the way the Telemetry screen summarizes it.
 

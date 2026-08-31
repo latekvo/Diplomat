@@ -204,7 +204,7 @@ def _queue_fixture(store: Store) -> None:
     busy = "● Reading…\n⏵⏵ bypass permissions on · esc to interrupt · ← for agents"
     at_prompt = "● Done.\n❯\n⏵⏵ bypass permissions on (shift+tab to cycle)"
 
-    def _fixed_probes(records, now, merged=None):
+    def _fixed_probes(records, now, merged=None, tokens=None):
         return agentstate.Evidence(
             processes=agentstate.Observation.present({
                 4021: agentstate.ProcInfo(tty="pts/40", elapsed=23 * 60,
@@ -222,6 +222,10 @@ def _queue_fixture(store: Store) -> None:
             # dispatched, found only by the prompt scan (what an applet restart or
             # a hand-started session leaves behind).
             live_agents=agentstate.Observation.present({351: "pts/35"}),
+            # Left unread on purpose: #377 is exactly four hours old, so a positive
+            # reading would hand it to the run deadline and cost this picture its
+            # at-the-prompt row.
+            tokens_left=agentstate.Observation.unavailable("not probed"),
         )
 
     probes.gather = _fixed_probes

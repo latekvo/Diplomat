@@ -537,8 +537,37 @@ struct SettingsView: View {
                        detail: SettingsView.apiWatchDetail) {
                 switchControl("Auto-continue on API errors", $store.apiWatchEnabled)
             }
+            runDeadlineRow
         }
     }
+
+    /// Beside the nudge because they are the two answers to one question. The nudge gets
+    /// a stalled agent moving again; this is what happens when nothing does.
+    private var runDeadlineRow: some View {
+        SettingRow(title: SettingsView.runDeadlineTitle,
+                   summary: "Hand its bay back when the agent's own report never arrives.",
+                   detail: SettingsView.runDeadlineDetail) {
+            switchControl(SettingsView.runDeadlineTitle, $store.runDeadlineEnabled)
+        }
+    }
+
+    /// Both strings are resolved before the ViewBuilder sees them, and the cutoff is read
+    /// off the constant the resolver uses, so the row cannot come to name a different
+    /// number from the one it sets.
+    private static let runDeadlineCutoff = ApiErrorMatch.humanInterval(AgentState.runDeadline)
+
+    private static let runDeadlineTitle = "Give up on a task after \(runDeadlineCutoff)"
+
+    private static let runDeadlineDetail = """
+        Agents report their turn boundaries through hooks staged into each run, and a run \
+        whose report never comes — a runner without hooks, settings that would not stage, \
+        an agent wedged with its status bar frozen — holds a task-cap bay until you close \
+        its window. Past \(runDeadlineCutoff) such a run is called done whatever its \
+        screen still shows: its terminal is closed, its row leaves Agent tasks and its \
+        bay comes back. Only while your account has limit left to spend — agents parked \
+        waiting for a window to refill age exactly like stuck ones. A peer's run is left \
+        to the machine running it, and so is an agent you started by hand.
+        """
 
     /// Every other card's pill answers "is this doing anything" before a row is read.
     /// This one drew nothing at all until the watcher had stepped in at least once.

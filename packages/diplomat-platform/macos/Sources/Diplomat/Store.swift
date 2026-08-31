@@ -179,6 +179,17 @@ final class Store: ObservableObject {
         }
     }
 
+    /// The run deadline's switch (Settings → STALLED AGENTS). Beside the budget knobs
+    /// because it lives in the same shared file, and read straight back out of
+    /// `AppConfig.runDeadline` by the tick rather than from here, so the node's file and
+    /// the resolver cannot disagree about it.
+    @Published var runDeadlineEnabled: Bool {
+        didSet {
+            guard !Headless.active else { return }
+            AppConfig.setBool(AppConfig.runDeadlineKey, runDeadlineEnabled)
+        }
+    }
+
     @Published var autoBudgetConfidence: Int {
         didSet {
             let clamped = AgentDispatchGate.clampBudgetConfidence(autoBudgetConfidence)
@@ -522,6 +533,7 @@ final class Store: ObservableObject {
         agentModel = AppConfig.agentModel
         autoTaskLimit = AppConfig.autoTaskLimit
         autoBudgetGate = AppConfig.autoBudgetGate
+        runDeadlineEnabled = AppConfig.runDeadline != nil
         autoBudgetConfidence = AppConfig.autoBudgetConfidence
         autoBudgetFloorPct = AppConfig.autoBudgetFloorPct
         autoBudgetReserveUsd = AppConfig.autoBudgetReserveUsd
@@ -712,6 +724,7 @@ final class Store: ObservableObject {
         // Best-effort and after the main load so a PR-state hiccup never blocks the
         // tool data or clobbers its error.
         await refreshMergedStatuses()
+        await refreshTokenBudget()
     }
 
     /// Ask GitHub which of the tracked PRs have landed — the one terminal outcome that
@@ -729,6 +742,18 @@ final class Store: ObservableObject {
     func refreshMergedStatuses() async {
         mergedPRs = await AgentProbes.mergedPRs(
             Set(AgentRegistry.load().filter { !$0.untracked }.compactMap(\.prNumber)))
+    }
+
+    /// Ask whether the account still has room to spend — the precondition on the
+    /// resolver's run deadline.
+    ///
+    /// On the slow refresh, not the 8-second tick, for the reason the merged statuses
+    /// are: this one dials an endpoint over HTTPS, and the tick runs on the panel's
+    /// repaint as well as on the poll. The ticks in between carry the answer forward.
+    func refreshTokenBudget() async {
+        tokensLeft = await Task.detached(priority: .utility) {
+            AgentProbes.tokensLeft()
+        }.value
     }
 
     // MARK: tracked agent runs
@@ -907,6 +932,7 @@ final class Store: ObservableObject {
         let limit = autoTaskLimit
         let (owner, repo) = coreRepo
         let (mesh, snapshot, merged) = (meshEnabled, meshState, mergedPRs)
+        let (tokens, deadline) = (tokensLeft, AppConfig.runDeadline)
         let directory = AgentSpawner.repoPath
         return await Task.detached(priority: .userInitiated) {
             let now = Date().timeIntervalSince1970
@@ -914,9 +940,9 @@ final class Store: ObservableObject {
             let evidence = AgentProbes.gather(records: records, now: now, owner: owner,
                                               repo: repo, directory: directory,
                                               meshEnabled: mesh, meshState: snapshot,
-                                              merged: merged)
+                                              merged: merged, tokens: tokens)
             let tick = AgentState.tick(records: records, evidence: evidence, now: now,
-                                       limit: limit)
+                                       limit: limit, deadline: deadline)
             var windows: [String: AgentWindows.Handle] = [:]
             for r in tick.records where !r.untracked {
                 windows[r.runID] = AgentWindows.handle(r.runID)
@@ -1003,7 +1029,8 @@ final class Store: ObservableObject {
 
     /// Price what has ended and drop it from the book.
     ///
-    /// Only on positive evidence that the agent ended — never on a record's age. The prompt
+    /// Only on positive evidence that the agent ended, or on the one clock the operator
+    /// switched on for the runs no evidence reaches (Settings → STALLED AGENTS). The prompt
     /// comes out of the run directory, so an applet that restarted mid-agent can still
     /// attribute the run to its transcript; the in-memory list could not, and every such
     /// run landed in the ledger unpriced.
@@ -1013,7 +1040,7 @@ final class Store: ObservableObject {
     /// whole of what it needs, and it does need it: a record kept so the stillness
     /// backstop has a memory must not outlive the agent it remembers.
     private func retireFinished(_ t: AgentState.Tick) async {
-        reapQuietWindows(t)
+        reapWedgedWindows(t)
         let gone = t.retirable
         guard !gone.isEmpty else { return }
         let priced = Store.pricingInputs(gone)
@@ -1028,11 +1055,18 @@ final class Store: ObservableObject {
         await settleLedger(priced)
     }
 
-    /// Close the terminal of every run the quiescence backstop ended.
+    /// Close the terminal of every run a backstop ended — the stillness clock, or the
+    /// operator's run deadline.
     ///
     /// Only those. A run that finished the ordinary way keeps its window — its agent is
     /// alive at its prompt holding the whole task, and the operator may still want to
-    /// read it. One whose screen has not changed in twenty minutes is nobody's.
+    /// read it. One whose screen has not changed in twenty minutes is nobody's, and so is
+    /// one that has been going for four hours with nothing able to say it ever stopped.
+    ///
+    /// Closing it is not decoration on either verdict: an agent left alive is found again
+    /// by the prompt scan the moment its record is retired, and comes straight back as an
+    /// untracked row holding the same bay and the same PR. Retiring without reaping frees
+    /// nothing and only costs the run its label.
     ///
     /// A run nobody dispatched is reaped like any other: a wedged session is just as dead
     /// whether or not this applet opened it. Its window is reached the same two ways a
@@ -1040,15 +1074,14 @@ final class Store: ObservableObject {
     /// process walked out to whatever terminal is showing it. A synthesized run has no run
     /// directory, so it never has a handle and the walk is its only route; a run the mesh
     /// placed back here is in the same position.
-    private func reapQuietWindows(_ t: AgentState.Tick) {
-        for (record, resolution) in t.rows
-        where resolution.state == .finished && record.runsHere {
-            guard AgentState.wentQuiet(record, now: t.now) != nil else { continue }
+    private func reapWedgedWindows(_ t: AgentState.Tick) {
+        for record in t.reapable {
             let byHandle = AgentWindows.handle(record.runID).map(AgentWindows.close) ?? false
             guard byHandle || TerminalFocus.close(tty: record.tty, pid: record.pid)
             else { continue }
             let who = record.label.isEmpty ? record.runID : record.label
-            let why = resolution.reason.components(separatedBy: "; ").last ?? ""
+            let reason = t.states[record.runID]?.reason ?? ""
+            let why = reason.components(separatedBy: "; ").last ?? ""
             AuditLog.log("auto", "kill-device", "closed \(who)'s window — \(why)")
         }
     }
@@ -1186,6 +1219,11 @@ final class Store: ObservableObject {
     /// between the slow refreshes that probe it. `.unavailable` until the first, which
     /// reads as "nothing is known about any PR" rather than as "none of them landed".
     private var mergedPRs: Observation<Set<Int>> = .unavailable("have not been probed yet")
+
+    /// Whether the account still has room to spend, carried forward the same way and for
+    /// the same reason: the probe behind it dials an endpoint, and the tick runs on every
+    /// repaint.
+    private var tokensLeft: Observation<Bool> = .unavailable("has not been probed yet")
 
     // MARK: PR auto-fix monitor
 
