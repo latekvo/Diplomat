@@ -91,6 +91,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if env["DIPLOMAT_QUEUE_TEST"] == "1" {
             Task { @MainActor in let ok = await QueueTest.run(); exit(ok ? 0 : 1) }
         }
+        // Self-test of what a resolved tick hands the panel: the rows, and the bays
+        // measured beside them. The evidence is a literal, so it reads no `ps` and
+        // depends on nothing else running on the machine.
+        if env["DIPLOMAT_PUBLISH_TEST"] == "1" {
+            Task { @MainActor in let ok = await PublishTest.run(); exit(ok ? 0 : 1) }
+        }
         // Self-test of what the sweep decides about a live session — working, or back at
         // its prompt. Both probes are injected, so it opens no window and dials no port.
         if env["DIPLOMAT_SWEEP_TEST"] == "1" {
@@ -112,6 +118,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // which ones the watcher would nudge — WITHOUT sending anything.
         if env["DIPLOMAT_APIWATCH_SCAN"] == "1" {
             Dump.apiWatchScan(); exit(0)
+        }
+        // API-error-watcher self-test: proves a scan writes into the sessions an agent is
+        // running in and no others, and that a wrapped agent's window is still one of
+        // them. Every session and process is a literal — no terminal is read and nothing
+        // is typed. Exit code = pass/fail.
+        if env["DIPLOMAT_APIWATCH_TEST"] == "1" {
+            Task { @MainActor in let ok = await ApiWatchTest.run(); exit(ok ? 0 : 1) }
         }
         // Spawn focus self-test: prove a background (auto-fix) spawn keeps the user's
         // focus while a foreground (user SPAWN) spawn still brings the terminal forward.
@@ -394,21 +407,36 @@ enum Dump {
 
     /// API-error watcher dry-run: read every terminal session's last visible lines,
     /// print which the watcher would nudge, and send NOTHING. Safe to run anytime.
+    ///
+    /// Both halves of the real decision, or the count would answer a question the
+    /// watcher does not ask: a matching tail on a session no agent is behind is a
+    /// session it leaves alone.
     static func apiWatchScan() {
         guard let sessions = ApiErrorWatcher.dumpSessions() else {
             print("== api-error scan: DUMP FAILED (automation permission? AppleEvent timeout?) ==")
             return
         }
+        let onAnAgent = AgentProbes.ttysRunningAnAgent(now: Date().timeIntervalSince1970)
+        guard let agentTTYs = onAnAgent.value else {
+            print("== api-error scan: THE PROCESS TABLE \(onAnAgent.reason) — a scan would "
+                + "send nothing, because it cannot tell an agent's session from a shell ==")
+            return
+        }
         print("== api-error scan: \(sessions.count) terminal session(s) ==\n")
+        func wouldNudge(_ s: ApiErrorWatcher.Session) -> Bool {
+            agentTTYs.contains(AgentProbes.shortTTY(s.tty))
+                && ApiErrorMatch.looksLikeApiError(s.tail)
+        }
         for s in sessions {
-            let mark = ApiErrorMatch.looksLikeApiError(s.tail) ? "⚠️ MATCH" : "  ok   "
+            let mark = wouldNudge(s) ? "⚠️ MATCH"
+                : ApiErrorMatch.looksLikeApiError(s.tail) ? "no agent"
+                : "  ok   "
             let last = s.tail.split(whereSeparator: \.isNewline).last.map(String.init) ?? ""
             print("  \(mark)  \(s.tty)   last: \(last.prefix(70))")
         }
-        let matches = sessions.filter { ApiErrorMatch.looksLikeApiError($0.tail) }
-        print("\n\(matches.count) session(s) would receive: "
-            + "\"\(ApiErrorWatcher.continueMessage)\"  (dry-run — nothing sent; "
-            + "out-of-quota stalls are ignored, never nudged)")
+        print("\n\(sessions.filter(wouldNudge).count) session(s) would receive: "
+            + "\"\(ApiErrorWatcher.continueMessage)\"  (dry-run — nothing sent; a session "
+            + "no agent is on is never written to, and out-of-quota stalls are ignored)")
     }
 
     /// Spawn focus self-test: exercise the REAL `AgentSpawner` spawn path three times

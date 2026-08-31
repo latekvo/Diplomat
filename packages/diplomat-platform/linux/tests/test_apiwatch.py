@@ -20,9 +20,30 @@ def test_matches_api_error_code():
 
 def test_matches_bare_429_rate_limit():
     assert apiwatch.looks_like_api_error("429 too many requests") is True
-    assert apiwatch.looks_like_api_error("got a 429 rate limit, retrying") is True
-    # A stray 429 without rate-limit context is NOT an error (ordinary prose).
+    assert apiwatch.looks_like_api_error("✗ 429 Rate limited · retrying in 34s") is True
+    # Its line, not the tail's first line — this arm needs its own mid-tail fixture,
+    # since it shares no pattern with the two "API Error" rules.
+    assert apiwatch.looks_like_api_error(
+        "⏺ Running the suite…\n✗ 429 Rate limited · retrying in 34s\n  ? for shortcuts"
+    ) is True
+    # Its rate-limit context wraps like any other banner's, so it reads the rejoined copy.
+    assert apiwatch.looks_like_api_error("⏺ 429 Rate\n  limited · retrying in 34s") is True
+    # A 429 an agent WROTE is not a banner, however much rate-limit context surrounds it.
+    # This arm carries no "API Error:" prefix to anchor, so the code itself has to open
+    # the line — otherwise it is the widest hole in the predicate, matching any tail that
+    # mentions both a 429 and a rate limit anywhere.
+    assert apiwatch.looks_like_api_error("got a 429 rate limit, retrying") is False
+    assert apiwatch.looks_like_api_error(
+        "    if resp.status_code == 429:  # rate limit, back off and retry"
+    ) is False
+    assert apiwatch.looks_like_api_error(
+        "quoting API Error: 429 Rate limit exceeded in a sentence"
+    ) is False
+    assert apiwatch.looks_like_api_error("这是 429 rate limit 的例子") is False
+    # And a stray 429 with no rate-limit context is ordinary prose either way — including
+    # one that opens its line, which the anchor alone would wave through.
     assert apiwatch.looks_like_api_error("see line 429 of config") is False
+    assert apiwatch.looks_like_api_error("429 stale entries pruned from the cache") is False
 
 
 def test_matches_status_page_and_connectivity():
@@ -31,6 +52,61 @@ def test_matches_status_page_and_connectivity():
     ) is True
     assert apiwatch.looks_like_api_error("API Error: Unable to connect to API") is True
     assert apiwatch.looks_like_api_error("API Error: Connection error.") is True
+
+
+def test_banner_must_open_a_line():
+    # Quoted mid-sentence it is prose, not a stall.
+    assert apiwatch.looks_like_api_error(
+        "the predicate returns True on ⏺ API Error: Connection error."
+    ) is False
+    assert apiwatch.looks_like_api_error(
+        "quoting API Error: 529 Overloaded in a sentence"
+    ) is False
+    # An agent's prose is not always Latin, and it disqualifies a line just the same:
+    # `[^A-Za-z]` would read 这是 as decoration and nudge the session that wrote it.
+    assert apiwatch.looks_like_api_error("这是 API Error: Connection error. 的例子") is False
+    # A line that merely NAMES the banner is not one either: the CLI always prints the
+    # colon, and without it "API Error" is just two words a doc line can start with.
+    assert apiwatch.looks_like_api_error(
+        "⏺ Notes on the transport layer:\n"
+        "  - API Error is surfaced verbatim to the caller\n"
+        "  - the client retries on a transient network\n"
+        "    error before giving up"
+    ) is False
+    # Decoration in front of it is not prose: the transcript bullet, the tool-result
+    # elbow, a pane's left border and a log timestamp all precede a real banner. Only
+    # LETTERS disqualify a line — prose reaches a quoted banner through words.
+    assert apiwatch.looks_like_api_error("  ⎿  API Error: Connection error.") is True
+    assert apiwatch.looks_like_api_error("│ ⏺ API Error: 503 Service Unavailable") is True
+    # Casing is the CLI's to change; the watcher does not key on it — and each rule
+    # carries its own flag, so the coded one needs its own lowercase banner.
+    assert apiwatch.looks_like_api_error("⏺ api error: connection error.") is True
+    assert apiwatch.looks_like_api_error("⏺ api error: 529 overloaded.") is True
+    # Codeless on purpose: a 3-digit code would match through the code rule instead and
+    # leave the digits-are-decoration intent unpinned.
+    assert apiwatch.looks_like_api_error("21:28:22 API Error: Connection error.") is True
+    # The banner is never the first line of a real tail — it sits under the transcript
+    # and over the prompt box. Both anchored rules need a tail of this shape to pin that
+    # `^` is per LINE and not per tail; the codeless one cannot reach the code rule.
+    assert apiwatch.looks_like_api_error(
+        "⏺ Running the suite…\n⏺ API Error: Connection error.\n  ? for shortcuts"
+    ) is True
+    assert apiwatch.looks_like_api_error(
+        "⏺ Running the suite…\n⏺ API Error: 500 Internal Server Error\n  ? for shortcuts"
+    ) is True
+
+
+def test_matches_banners_wrapped_across_terminal_lines():
+    # These banners run 70-90 columns, so a narrow pane wraps them mid-phrase. The
+    # evidence is read off a copy with the wrapping rejoined, so the split must not hide
+    # the banner.
+    assert apiwatch.looks_like_api_error(
+        "⏺ API Error: Your computer went to sleep mid-response. "
+        "The response above may be\n  incomplete."
+    ) is True
+    assert apiwatch.looks_like_api_error(
+        "⏺ API Error: Connection lost before a response was\n  produced. Try again."
+    ) is True
 
 
 def test_matches_cut_off_stream_banners():
@@ -50,6 +126,28 @@ def test_matches_cut_off_stream_banners():
     assert apiwatch.looks_like_api_error(
         "note: the response above may be incomplete"
     ) is False
+
+
+def test_rejoin_does_not_manufacture_a_quota_banner():
+    # The rejoin fuses every adjacent pair of rows, so suppression reads the ORIGINAL:
+    # off the rejoined copy, two lines of ordinary prose assemble into a limit banner
+    # and silence a session that really is stalled, with no second chance at it.
+    assert apiwatch.looks_like_api_error(
+        "⏺ The dispatcher stops as soon as the workspace token budget\n"
+        "  exceeded the daily cap.\n"
+        "⏺ API Error: 529 Overloaded. If it persists, check https://status.claude.com."
+    ) is True
+    assert apiwatch.looks_like_api_error(
+        "⏺ The client backs off long before you hit your\n"
+        "  limit, so nothing is dropped.\n"
+        "⏺ API Error: Connection error."
+    ) is True
+    # The contiguous phrase list fuses the same way the two gap regexes above do.
+    assert apiwatch.looks_like_api_error(
+        "⏺ The quota family is matched on the phrase the limit will reset\n"
+        "  at whatever hour the window rolls over.\n"
+        "⏺ API Error: Connection error."
+    ) is True
 
 
 def test_quota_banners_are_ignored():
@@ -280,10 +378,19 @@ def store():
     return Store()
 
 
-def _panes(monkeypatch, sequence, sent=True):
+def _panes(monkeypatch, sequence, sent=True, agent_ttys=frozenset({"pts/1"})):
     """Patch tmuxwatch so successive scans see ``sequence[i]`` (a list of Pane), and
     record every send_continue call. ``sequence`` may also hold ``None`` (a failed
-    dump). Returns the list of nudged pane_ids."""
+    dump). Returns the list of nudged pane_ids.
+
+    ``agent_ttys`` stands in for the process table, which the scan reads to decide
+    which panes are somebody's agent — as ``ps`` spells a tty, so no ``/dev/``. It
+    defaults to the one ``_pane`` runs on, because every test below that is about
+    stalls and backoff means its pane to be an agent's. Pass an ``Observation`` to
+    make the table itself unreadable.
+    """
+    from diplomat_app import probes
+
     state = {"i": 0}
     nudged: list[str] = []
 
@@ -298,11 +405,65 @@ def _panes(monkeypatch, sequence, sent=True):
         tmuxwatch, "send_continue",
         lambda pane_id, msg: (nudged.append(pane_id) or True) if sent else False,
     )
+    obs = (agent_ttys if isinstance(agent_ttys, probes.Observation)
+           else probes.Observation.present(set(agent_ttys)))
+    monkeypatch.setattr(probes, "ttys_running_an_agent", lambda now: obs)
     return nudged
 
 
 def _pane(pane_id="%0", tty="/dev/pts/1", tail="⏺ API Error: 529 Overloaded."):
     return tmuxwatch.Pane(pane_id=pane_id, tty=tty, tail=tail)
+
+
+def test_scan_never_nudges_a_pane_no_agent_is_on(store, monkeypatch):
+    """The nudge is typed into the pane and submitted. In an agent's pane that is a
+    user turn; in a plain shell it is a command — ``Go: command not found`` and a line
+    of junk in that shell's history. A shell can show a matching tail for entirely
+    innocent reasons (``cat`` of a log holding a banner, a ``git diff`` of the
+    matcher's own tests), and nothing on the screen separates those from the CLI's own
+    line."""
+    nudged = _panes(monkeypatch, [[_pane(tty="/dev/pts/9")]] * 2,
+                    agent_ttys={"pts/1"})
+    store._apiwatch_scan_once()  # sighting 1
+    store._apiwatch_scan_once()  # identical tail: a stall confirmed on any other pane
+    assert nudged == []
+    assert store.api_watch_continues == 0
+
+
+def test_scan_watches_an_agent_pane_beside_a_shell_showing_the_same_tail(
+        store, monkeypatch):
+    """Both panes are stalled on the same banner; only one has an agent on it. Pinned
+    together so a filter that dropped every pane would still be caught."""
+    nudged = _panes(
+        monkeypatch,
+        [[_pane(pane_id="%0", tty="/dev/pts/1"),
+          _pane(pane_id="%9", tty="/dev/pts/9")]] * 2,
+        agent_ttys={"pts/1"},
+    )
+    store._apiwatch_scan_once()
+    store._apiwatch_scan_once()
+    assert nudged == ["%0"]
+    # And the pill counts what is being watched, not what tmux happens to be running.
+    assert store.apiwatch_status["watching"] == 1
+
+
+def test_scan_skips_when_the_process_table_cannot_be_read(store, monkeypatch):
+    """Not knowing which panes carry an agent has to mean typing into none of them —
+    the same trade the failed pane dump makes, and for a heavier reason. State
+    survives, so a recovered table needs no fresh two-scan confirmation."""
+    from diplomat_app import probes
+
+    nudged = _panes(monkeypatch, [[_pane()]] * 4)
+    store._apiwatch_scan_once()  # seed
+    store._apiwatch_scan_once()  # nudge
+    assert nudged == ["%0"]
+    monkeypatch.setattr(probes, "ttys_running_an_agent",
+                        lambda now: probes.Observation.unavailable("exited 1"))
+    store._apiwatch_backoff["%0"]["nextAllowed"] = 0  # backoff is not what holds it
+    store._apiwatch_scan_once()
+    assert nudged == ["%0"]
+    assert store._apiwatch_backoff  # not cleared by the skipped scan
+    assert store.apiwatch_status["watching"] == 0
 
 
 def test_scan_no_nudge_on_first_sighting(store, monkeypatch):
