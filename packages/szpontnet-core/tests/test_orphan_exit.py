@@ -128,13 +128,48 @@ def _await_exit(pid: int, timeout: float) -> bool:
     return False
 
 
+def _published_pid(pid_file: Path) -> int:
+    """Whatever pid the launcher published, or ``-1`` when it never got that far.
+
+    Never raises: this is read from a ``finally``, where an exception would both mask
+    the failure that brought us there and abandon the node it was about to reap.
+    """
+    try:
+        return int(pid_file.read_text())
+    except (OSError, ValueError):
+        return -1
+
+
 def _reap(launcher: subprocess.Popen, pid: int) -> None:
     for target, sig in ((launcher.pid, signal.SIGKILL), (pid, signal.SIGKILL)):
+        # `os.kill(-1, ...)` is a BROADCAST — POSIX sends the signal to every process
+        # of this uid — and a pid nobody published arrives here as -1.
+        if target <= 0:
+            continue
         try:
             os.kill(target, sig)
         except ProcessLookupError:
             pass
     launcher.wait(timeout=10)
+
+
+def test_reaping_a_launcher_that_published_no_pid_signals_nobody(monkeypatch):
+    """The teardown below runs from a ``finally``, and the run that reaches it without a
+    pid is the one whose launcher died before publishing one. ``os.kill(-1, ...)`` is a
+    broadcast, so an unknown pid passed through would SIGKILL the developer's whole
+    session, or the CI runner's, out of a test that had merely failed."""
+    signalled: list[tuple[int, int]] = []
+    monkeypatch.setattr(os, "kill", lambda pid, sig: signalled.append((pid, sig)))
+
+    class _Launcher:
+        pid = 4242
+
+        def wait(self, timeout=None):
+            return 0
+
+    _reap(_Launcher(), _published_pid(Path("/nonexistent-dir/node.pid")))
+
+    assert signalled == [(4242, signal.SIGKILL)]
 
 
 def test_orphaned_node_stops_itself(tmp_path):
@@ -152,7 +187,7 @@ def test_orphaned_node_stops_itself(tmp_path):
         assert _await_exit(pid, timeout=20.0), (
             "an orphaned node kept running — the leak this flag exists to stop")
     finally:
-        _reap(launcher, _await_pid(pid_file, timeout=1.0) if pid_file.exists() else -1)
+        _reap(launcher, _published_pid(pid_file))
 
 
 def test_a_node_without_the_flag_survives_its_parent(tmp_path):
@@ -170,4 +205,4 @@ def test_a_node_without_the_flag_survives_its_parent(tmp_path):
         assert not _await_exit(pid, timeout=8.0), (
             "an unflagged node stopped itself — that would kill every --daemon node")
     finally:
-        _reap(launcher, _await_pid(pid_file, timeout=1.0) if pid_file.exists() else -1)
+        _reap(launcher, _published_pid(pid_file))
