@@ -227,6 +227,25 @@ def _queue_fixture(store: Store) -> None:
     probes.gather = _fixed_probes
 
 
+def _agents_scratch() -> None:
+    """Point the run registry at a scratch dir for the rest of this render.
+
+    Load-bearing for the same reason as :func:`_telemetry_scratch`, and with a
+    sharper edge: the fixture below registers its agents through the real
+    registry, and :func:`_fixed_probes` then answers every probe with a process
+    table holding only the two pids it invented. A sweep run against the
+    operator's own book therefore finds each of their live agents absent from
+    the process table, retires it, and deletes the run directory its CLI is
+    still writing turn reports into — so the agent goes on working with nothing
+    left that can hear it finish.
+    """
+    import tempfile
+    from pathlib import Path
+
+    os.environ["DIPLOMAT_AGENTS_DIR"] = str(
+        Path(tempfile.mkdtemp(prefix="diplomat-render-agents-")))
+
+
 def _telemetry_scratch() -> None:
     """Point the shared ``~/.diplomat/pr-monitor`` directory at a scratch dir for
     the rest of this render.
@@ -402,6 +421,7 @@ def run(what: str, out: str) -> int:
     if os.environ.get("DIPLOMAT_RENDER_LIVE") == "1":
         store.refresh()
     else:
+        _agents_scratch()
         _fixture(store)
 
     # ⬡ is a whole screen only when the add-on is installed, so asking for that

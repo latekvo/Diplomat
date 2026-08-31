@@ -498,3 +498,38 @@ def test_the_agent_scan_ignores_a_line_that_is_not_an_agent(monkeypatch):
     monkeypatch.setattr(probes.core, "config",
                         lambda: {"owner": "software-mansion", "repo": "argent"})
     assert probes.live_agents(probes._ps_dump(T0)).value == {}
+
+
+# MARK: - A render never sweeps the operator's book
+
+
+def test_render_fixture_registers_agents_away_from_the_operators_book(monkeypatch,
+                                                                     tmp_path):
+    """A headless render must not register its fixture agents in the real book.
+
+    The fixture invents two pids, registers them through the real registry, and then
+    pins ``probes.gather`` to a process table holding only those two. Left pointed at
+    the operator's own book, the sweep that follows finds every one of THEIR live
+    agents absent from that table, retires it, and — via :func:`agentregistry.forget`
+    — deletes the run directory whose ``activity`` file the agent's CLI is still
+    appending its turn reports to. The agent works on with nothing left that can hear
+    it finish.
+
+    The same hazard the autouse ``DIPLOMAT_AGENTS_DIR`` fixture in ``conftest`` exists
+    to keep out of the test suite, and ``_telemetry_scratch`` keeps out of the
+    operator's ledger.
+    """
+    from diplomat_app import render
+
+    book = tmp_path / "operators-agents"
+    monkeypatch.setenv("DIPLOMAT_AGENTS_DIR", str(book))
+    R.create_run(rec(run_id="theirs", pid=4242), "their prompt")
+
+    render._agents_scratch()
+    R.create_run(rec(run_id="rendered", pid=4021), "")
+
+    assert [r.run_id for r in R.load()] == ["rendered"]
+    monkeypatch.setenv("DIPLOMAT_AGENTS_DIR", str(book))
+    assert [r.run_id for r in R.load()] == ["theirs"], \
+        "the render registered its fixture in the operator's book"
+    assert R.run_dir("theirs").is_dir()
