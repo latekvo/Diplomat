@@ -360,7 +360,7 @@ public enum AgentState {
         /// Whether the STILLNESS BACKSTOP is what ended this run — set by that rung and
         /// by nothing else.
         ///
-        /// A verdict, not a restatement of one: a run reaches `.finished` by six roads,
+        /// A verdict, not a restatement of one: a run reaches `.finished` by many roads,
         /// and only this one says its agent was alive with a frozen screen. The window
         /// reaper is the consumer, and the distinction is the whole of its licence to
         /// close a terminal, so it cannot be left to be re-derived from `state` plus a
@@ -981,9 +981,7 @@ public enum AgentState {
         public var capLoad: Set<String>
         public var retirable: [RunRecord]
         public var freeSlots: Int
-        /// The instant this pass was resolved against. Carried so a consequence of the
-        /// tick — closing a wedged run's window — measures stillness against the clock
-        /// that ended the run, not one read a moment later.
+        /// The instant every verdict below was resolved against.
         public var now: TimeInterval = 0
 
         public func inFlight(prNumber: Int) -> Bool {

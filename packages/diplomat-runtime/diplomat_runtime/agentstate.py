@@ -463,7 +463,7 @@ class Resolution:
     #: Whether the STILLNESS BACKSTOP is what ended this run — set by that rung and
     #: by nothing else.
     #:
-    #: A verdict, not a restatement of one: a run reaches FINISHED by six roads, and
+    #: A verdict, not a restatement of one: a run reaches FINISHED by many roads, and
     #: only this one says its agent was alive with a frozen screen. The window reaper
     #: is the consumer, and the distinction is the whole of its licence to close a
     #: terminal, so it cannot be left to be re-derived from ``state`` plus a matured
@@ -1023,9 +1023,7 @@ class Tick:
     cap_load: set[str]
     retirable: list[RunRecord]
     free_slots: int
-    #: The instant this pass was resolved against. Carried so a consequence of the
-    #: tick — closing a wedged run's window — measures stillness against the clock
-    #: that ended the run, not one read a moment later.
+    #: The instant every verdict below was resolved against.
     now: float = 0.0
 
     def in_flight(self, pr_number: int) -> bool:
