@@ -26,7 +26,7 @@ from PySide6.QtCore import QUrl
 
 import time
 
-from diplomat_runtime import activity, autofix, core
+from diplomat_runtime import activity, agentstate, autofix, core
 from diplomat_runtime.models import Fmt
 from . import glyphs, szpont
 from .settingsview import SettingsView
@@ -659,11 +659,13 @@ class Panel(QWidget):
         """The Agent-tasks list: what this machine is doing, what it is about to do,
         and how much room it has left.
 
-        What is running first, then what is starting, then the free slots, then the
-        queue — the reading order `AgentTaskStatus` fixes on macOS. A detached `Popen`
-        gives it no window handle, so a running agent is a status and not a session:
-        nothing to click. The status itself is the one macOS draws, *awaiting input*
-        included — the agents run in tmux panes, which can be read
+        Sessions and starting tasks are one reading order, not two blocks: each
+        session ranks by its own state and a starting task ranks where STARTING does,
+        so an *unknown* session draws below a starting task exactly as it does on
+        macOS (`AgentTaskStatus`). Then the free slots, then the queue. A detached
+        `Popen` gives a run no window handle, so a running agent is a status and not a
+        session: nothing to click. The status itself is the one macOS draws, *awaiting
+        input* included — the agents run in tmux panes, which can be read
         (`probes.pane_tails`).
 
         So the list can be longer than the cap: an agent waiting at its prompt keeps
@@ -690,23 +692,31 @@ class Panel(QWidget):
         self.tasks_col.addWidget(header)
         if not self._tasks_expanded:
             return
+        # Ranked together, then drawn in that one order. `sorted` is stable, so a
+        # session and a starting task of equal rank keep the order they were built
+        # in — the runs as `agentstate.rows` ranked them, the spawns in the order
+        # they were taken.
+        ranked: list[tuple[int, QWidget]] = []
         for agent in running:
             glyph, tint = _task_look(agent.kind)
-            self.tasks_col.addWidget(RunningTaskRow(
+            ranked.append((agentstate.STATE_ORDER.index(agent.state), RunningTaskRow(
                 label=agent.label or f"#{agent.pr_number}",
                 detail=_running_detail(agent),
                 glyph=glyph,
                 hex_color=tint,
                 tracked=agent.tracked,
                 awaiting_input=agent.awaiting_input,
-            ))
+            )))
+        starting_rank = agentstate.STATE_ORDER.index(agentstate.STARTING)
         for task in starting:
             glyph, tint = _task_look(task.job.kind)
-            self.tasks_col.addWidget(StartingTaskRow(
+            ranked.append((starting_rank, StartingTaskRow(
                 label=_queued_label(task),
                 glyph=glyph,
                 hex_color=tint,
-            ))
+            )))
+        for _rank, row in sorted(ranked, key=lambda pair: pair[0]):
+            self.tasks_col.addWidget(row)
         for _ in range(free):
             self.tasks_col.addWidget(FreeSlotRow())
         # Drawn with the queue, and also when it is empty but switched off: otherwise

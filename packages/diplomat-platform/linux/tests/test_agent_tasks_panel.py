@@ -283,6 +283,30 @@ def test_a_starting_task_keeps_a_row_where_its_agent_will_be(panel):
                                  "QueueAutoRunRow", "QueuedTaskRow"]
 
 
+def test_a_starting_task_draws_above_a_session_nothing_is_known_about(panel, monkeypatch):
+    """Sessions and starting tasks are ONE reading order, not two blocks.
+
+    `STARTING` outranks `UNKNOWN` in `agentstate.STATE_ORDER`, and macOS ranks both
+    row families through the one `AgentTaskStatus` — so a task whose spawn is under
+    way draws above a session nothing could be learned about. Emitting every session
+    first put the unknown one on top, which is the single adjacent pair where the two
+    front-ends drew the README's order differently.
+    """
+    from diplomat_runtime import agentstate as A
+
+    panel.store.auto_task_limit = 3
+    register_run(512, pid=5121, tty="pts/1", label="Auto · #512")
+    # A process table that could not be read: the run keeps its bay and says so.
+    fake_probes(monkeypatch, processes=A.Observation.unavailable("ps failed"))
+    task = _queued(508)
+    panel.store.queued_tasks = [task]
+    panel.store._begin_starting(task)
+    panel._rebuild_agent_tasks()
+
+    assert "unknown" in _row_text(_rows(panel, RunningTaskRow)[0])
+    assert _row_kinds(panel) == ["StartingTaskRow", "RunningTaskRow", "FreeSlotRow"]
+
+
 def test_the_task_count_carries_a_starting_row(panel):
     """Clicking the last queued row would otherwise drop the count to zero for as
     long as its spawn takes."""
