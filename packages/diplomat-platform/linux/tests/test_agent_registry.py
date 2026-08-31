@@ -375,14 +375,15 @@ def test_a_real_agent_is_tracked_from_spawn_to_exit(tmp_path):
         child.kill()
         child.wait(timeout=5)
 
-    # The process is gone, and the process table is one we DID read.
+    # The process is gone, and the process table is one we DID read. Past the spawn
+    # grace, inside which an absent pid is a table that has not caught up yet.
     evidence = A.Evidence(processes=A.Observation.present({}),
                           sentinels=R.sentinels(R.load()),
                           tails=A.Observation.unavailable("not probed"),
                           claims=A.Observation.unsupported("no mesh"),
                           merged_prs=A.Observation.present(set()),
                           live_agents=A.Observation.present({}))
-    t = A.tick(R.adopt_pids(R.load()), evidence, now, 2)
+    t = A.tick(R.adopt_pids(R.load()), evidence, now + A.SPAWN_GRACE + 1, 2)
     assert t.states["r1"].state == A.FINISHED
     assert t.cap_load == set() and t.free_slots == 2
     assert not t.in_flight(337)

@@ -119,9 +119,12 @@ public enum AgentState {
 
     /// How long after dispatch a run with no observed process still reads as
     /// `.starting`. The inner shell writes its pid before the agent starts, but a
-    /// terminal emulator, a tmux server and the user's rc all run first. Past this the
-    /// run is not called finished — it becomes `.unknown`, because a spawn that never
-    /// landed and a pid file we have not read yet look identical from here.
+    /// terminal emulator, a tmux server and the user's rc all run first — and the
+    /// process table is one `ps` pass reused for several seconds, so it can predate the
+    /// pid file naming what to look for. Past this the run is judged on the evidence
+    /// there is: a known pid the table does not hold has ended, while a run that
+    /// produced neither a pid nor a PR to scan for becomes `.unknown`, because a spawn
+    /// that never landed and a pid file we have not read yet look identical from here.
     public static let spawnGrace: TimeInterval = 20
 
     /// How long after dispatch a live run whose screen has not shown a turn yet reads
@@ -624,6 +627,18 @@ public enum AgentState {
             return resolveWithoutPid(record, evidence: evidence, now: now, age: age, done: done)
         }
         guard let proc = table[pid] else {
+            // A pid the table has not caught up with, not a dead one: the pid file
+            // and the table are read at different instants, and the table is one `ps`
+            // pass reused for several seconds, so a pid written after that pass names a
+            // process it structurally cannot hold. Read as death, a run is retired
+            // seconds into its own spawn and its directory deleted under a working
+            // agent. The same record one tick earlier, with no pid at all, had exactly
+            // this grace.
+            if age <= spawnGrace {
+                return done(.starting,
+                            "dispatched \(secs(age)) ago, pid \(pid) "
+                            + "not in the process table yet")
+            }
             return done(.finished, "pid \(pid) absent from the process table")
         }
         if !proc.isAgent {

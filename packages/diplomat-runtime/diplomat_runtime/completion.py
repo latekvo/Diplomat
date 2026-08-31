@@ -125,11 +125,17 @@ def _append(verb: str, activity_path: str, done_path: str | None = None,
         cmd += (f"v={verb}; tr -d ' \\t\\n' | grep -q {shlex.quote(PENDING)}"
                 f" && v={BUSY}; ")
         word = '"$v"'
-    cmd += f"printf '%s %s\\n' {word} \"$(date +%s)\" >> {shlex.quote(activity_path)}"
+    # Best-effort, because the applet retires a run on the very report below and
+    # deletes its directory with it while the agent goes on sitting at its prompt: from
+    # then on every turn writes into a path that is gone, and an unguarded write makes
+    # each one a failing hook reported into the operator's session. `2>/dev/null`
+    # PRECEDES the redirect — the open fails before a trailing one is in effect.
+    cmd += (f"printf '%s %s\\n' {word} \"$(date +%s)\""
+            f" 2>/dev/null >> {shlex.quote(activity_path)} || :")
     if done_path and verb in (IDLE, ENDED):
         # `>` not `>>`: the sentinel is read by existence and dated by mtime, and a
         # second turn's line would only move that date later.
-        sentinel = f"printf 0 > {shlex.quote(done_path)}"
+        sentinel = f"printf 0 2>/dev/null > {shlex.quote(done_path)} || :"
         # `case` rather than `[ ]` so the miss is a no-op that still exits 0: a hook
         # that exits non-zero is reported to the agent as a failing hook.
         cmd += (f'; case "$v" in {verb}) {sentinel} ;; esac' if guarded
