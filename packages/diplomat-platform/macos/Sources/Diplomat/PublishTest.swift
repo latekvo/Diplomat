@@ -11,11 +11,11 @@ import DiplomatCore
 ///
 /// Nothing else covers it. The headless render reaches the list through
 /// `Store.pinAgentRows`, which assigns `agentRows` directly — so the one artefact CI
-/// inspects is produced by the path that BYPASSES the filter, and deleting the filter
-/// left every macOS gate green. The Linux twin of the same invariant is pinned
-/// (`test_autofix.py::test_a_peer_run_is_never_retired_by_this_machines_process_table`
+/// inspects is produced by the path that BYPASSES the filter, and this self-test is
+/// the only macOS check the filter answers to. The Linux twin of the same invariant is
+/// pinned (`test_autofix.py::test_a_peer_run_is_never_retired_by_this_machines_process_table`
 /// exercises `Store.running_tasks`), and the two front-ends are meant to draw the same
-/// list, so the coverage was one-sided across a cross-platform promise.
+/// list, so this is that cross-platform promise's macOS side.
 ///
 ///     DIPLOMAT_PUBLISH_TEST=1 swift run Diplomat
 ///
