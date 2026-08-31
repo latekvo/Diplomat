@@ -32,9 +32,34 @@ import subprocess
 import sys
 
 
+async def _stop_when_orphaned(node, parent: int, interval: float = 1.0) -> None:
+    """Stop the node once the process that launched it is gone.
+
+    Opt-in via ``SZPONTNET_EXIT_WITH_PARENT``: a shipped node is MEANT to outlive its
+    launcher (``--daemon`` orphans one deliberately), but a harness's fleet is not —
+    its teardown is a ``finally`` a killed pytest never reaches, and the nodes it
+    would have stopped go on beaconing over the fleet's ports for as long as the
+    machine stays up. ``tor.py``'s ``PR_SET_PDEATHSIG`` covers our tor child the same
+    way, but only on Linux.
+
+    ``parent`` comes from the caller because a task body first runs once the loop
+    idles — somewhere inside ``run()``'s startup, late enough that a launcher killed
+    meanwhile is already gone, so reading it here would latch onto init and wait
+    forever for a change that never comes. ``!= 1`` catches that case late; it
+    assumes a launcher that is not itself pid 1, which no harness here is.
+    """
+    while os.getppid() == parent != 1:
+        await asyncio.sleep(interval)
+    node.request_stop()
+
+
 def _run_node() -> int:
-    from . import singlelock, singleton
+    from . import env, singlelock, singleton
     from .node import MeshNode
+
+    # Captured before anything slow (lock, reaper, MeshNode startup) so it is still
+    # the real launcher; see _stop_when_orphaned.
+    launcher = os.getppid()
 
     # One node per state directory. The pre-launch node_running() checks (Swift
     # ensureRunning + _daemonize) are time-of-check/time-of-use races: several
@@ -69,9 +94,19 @@ def _run_node() -> int:
         for sig in (signal.SIGINT, signal.SIGTERM):
             with contextlib.suppress(NotImplementedError):
                 loop.add_signal_handler(sig, node.request_stop)
+        orphan_watch = (
+            asyncio.create_task(_stop_when_orphaned(node, launcher))
+            if env.get("EXIT_WITH_PARENT") == "1" else None
+        )
         print(f"mesh node {node.local.name} ({node.local.id[:8]}) starting…",
               file=sys.stderr)
-        await node.run()
+        try:
+            await node.run()
+        finally:
+            if orphan_watch is not None:
+                orphan_watch.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await orphan_watch
         print("mesh node stopped", file=sys.stderr)
 
     try:

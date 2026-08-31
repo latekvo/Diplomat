@@ -104,6 +104,14 @@ CASES = [
     ("a live pid back at its prompt is awaiting input",
      rec(), ev(processes={4242: proc()}, tails={"pts/3": AT_PROMPT}),
      A.AWAITING_INPUT, "at the prompt"),
+    # The same bare prompt, seconds after dispatch, is an agent that has not started
+    # its first turn rather than one that has finished its last. Read as idle it hands
+    # its bay straight back to the poll that filled it, and the next dispatch of that
+    # poll is seconds behind — which is a cap of 1 running two agents.
+    ("a live pid whose first turn has not reached the screen yet is not idle",
+     rec(dispatched_at=T0 - 6), ev(processes={4242: proc(elapsed=1)},
+                                   tails={"pts/3": AT_PROMPT}),
+     A.RUNNING, "dispatched 6s ago, no turn on screen yet"),
 
     # --- a run that reports its own turn boundaries -------------------------
     #

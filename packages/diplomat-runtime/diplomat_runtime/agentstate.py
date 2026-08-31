@@ -177,6 +177,21 @@ ENDED = frozenset({MERGED, FINISHED})
 #: identical from here.
 SPAWN_GRACE = 20.0
 
+#: How long after dispatch a live run whose screen has not shown a turn yet reads as
+#: working rather than as back at its prompt.
+#:
+#: The pid exists as soon as the inner shell runs, but the agent then has to boot, read
+#: its prompt file and draw its first status bar — and until it does, its screen is the
+#: screen of an agent that has FINISHED, the interrupt hint absent from both. Read as
+#: idle there, a run hands its bay straight back to the poll that started it, and the
+#: next dispatch of that poll is seconds behind: a cap of one, two agents.
+#:
+#: Well past the twelve seconds measured from dispatch to first status bar, because being
+#: too short is that burst while being too long only defers the next task by seconds —
+#: and only for a run whose own report never arrives, since a sentinel, a merged PR, the
+#: CLI's turn report and a runner's session each end one inside this window untouched.
+FIRST_TURN_GRACE = 45.0
+
 #: How much younger than its own record a process may be and still be that record's
 #: agent. Pids are recycled, and a run that dispatched an hour ago cannot be a
 #: process that started a minute ago; the slack only absorbs the seconds between the
@@ -825,6 +840,15 @@ def _classify_activity(record: RunRecord, evidence: Evidence, now: float, done,
         return done(RUNNING, f"{alive_reason}; no screen for tty {record.tty or '?'}")
     if apiwatch.looks_busy(tail):
         return done(RUNNING, f"{alive_reason}; working")
+    # An agent that has not started its first turn shows the same bare prompt as one
+    # that has finished its last, so inside FIRST_TURN_GRACE this joins the "alive, and
+    # we cannot yet tell" answers above rather than reading as idle. Only for a run we
+    # dispatched: an untracked one is stamped when the scan first saw it, which says
+    # nothing about when its agent started.
+    age = now - record.dispatched_at
+    if not record.untracked and age <= FIRST_TURN_GRACE:
+        return done(RUNNING,
+                    f"{alive_reason}; dispatched {age:.0f}s ago, no turn on screen yet")
     return done(AWAITING_INPUT, f"{alive_reason}; at the prompt")
 
 

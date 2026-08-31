@@ -2524,8 +2524,7 @@ class Store(QObject):
                 continue
             erroring.add(p.pane_id)
             # Idle-confirmation: only nudge a pane whose erroring tail is UNCHANGED
-            # since the previous scan. An actively-working pane changes between scans
-            # and must not be treated as stalled.
+            # since the previous scan.
             stalled = apiwatch.is_confirmed_stall(
                 self._apiwatch_seen_tail.get(p.pane_id), p.tail
             )

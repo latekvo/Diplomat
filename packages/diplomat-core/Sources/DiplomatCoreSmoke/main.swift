@@ -1961,7 +1961,50 @@ print("agent activity assertions passed")
 section("api-error match")
 check(ApiErrorMatch.looksLikeApiError("⏺ API Error: 529 Overloaded. If it persists, check https://status.claude.com."))
 check(ApiErrorMatch.looksLikeApiError("API Error: 500 Internal Server Error"))
-check(ApiErrorMatch.looksLikeApiError("something API error, see status.claude.com for details"))
+check(ApiErrorMatch.looksLikeApiError("API Error: something, see status.claude.com for details"))
+// The banner has to OPEN a line. Quoted mid-sentence it is prose, not a stall.
+check(!ApiErrorMatch.looksLikeApiError("the predicate returns true on ⏺ API Error: Connection error."))
+check(!ApiErrorMatch.looksLikeApiError("quoting API Error: 529 Overloaded in a sentence"))
+// An agent's prose is not always Latin, and it disqualifies a line just the same:
+// `[^A-Za-z]` would read 这是 as decoration and nudge the session that wrote it.
+check(!ApiErrorMatch.looksLikeApiError("这是 API Error: Connection error. 的例子"))
+// A line that merely NAMES the banner is not one either: the CLI always prints the colon,
+// and without it "API Error" is just two words a doc line can start with.
+check(!ApiErrorMatch.looksLikeApiError(
+    "⏺ Notes on the transport layer:\n  - API Error is surfaced verbatim to the caller\n"
+    + "  - the client retries on a transient network\n    error before giving up"))
+// …but decoration in front of it is not prose: the transcript bullet, the tool-result
+// elbow, a pane's left border and a log timestamp all precede a real banner. Only LETTERS
+// disqualify a line — prose reaches a quoted banner through words.
+check(ApiErrorMatch.looksLikeApiError("  ⎿  API Error: Connection error."))
+check(ApiErrorMatch.looksLikeApiError("│ ⏺ API Error: 503 Service Unavailable"))
+// Casing is the CLI's to change; the watcher does not key on it — and each rule carries
+// its own flag, so the coded one needs its own lowercase banner.
+check(ApiErrorMatch.looksLikeApiError("⏺ api error: connection error."))
+check(ApiErrorMatch.looksLikeApiError("⏺ api error: 529 overloaded."))
+// Codeless on purpose: a 3-digit code would match through the code rule instead and leave
+// the digits-are-decoration intent unpinned.
+check(ApiErrorMatch.looksLikeApiError("21:28:22 API Error: Connection error."))
+// The banner is never the first line of a real tail — it sits under the transcript and
+// over the prompt box. Both anchored rules need a tail of this shape to pin that `^` is
+// per LINE and not per tail; the codeless one cannot reach the code rule.
+check(ApiErrorMatch.looksLikeApiError(
+    "⏺ Running the suite…\n⏺ API Error: Connection error.\n  ? for shortcuts"))
+check(ApiErrorMatch.looksLikeApiError(
+    "⏺ Running the suite…\n⏺ API Error: 500 Internal Server Error\n  ? for shortcuts"))
+// The rejoin fuses every adjacent pair of rows, so suppression reads the ORIGINAL: off
+// the rejoined copy, two lines of ordinary prose assemble into a limit banner and silence
+// a session that really is stalled, with no second chance at it.
+check(ApiErrorMatch.looksLikeApiError(
+    "⏺ The dispatcher stops as soon as the workspace token budget\n  exceeded the daily cap.\n"
+    + "⏺ API Error: 529 Overloaded. If it persists, check https://status.claude.com."))
+check(ApiErrorMatch.looksLikeApiError(
+    "⏺ The client backs off long before you hit your\n  limit, so nothing is dropped.\n"
+    + "⏺ API Error: Connection error."))
+// The contiguous phrase list fuses the same way the two gap regexes above do.
+check(ApiErrorMatch.looksLikeApiError(
+    "⏺ The quota family is matched on the phrase the limit will reset\n"
+    + "  at whatever hour the window rolls over.\n⏺ API Error: Connection error."))
 // Codeless connectivity failures (network out / DNS / timeout) must also match.
 check(ApiErrorMatch.looksLikeApiError("⏺ API Error: Unable to connect to API"))
 check(ApiErrorMatch.looksLikeApiError("API Error: Connection error."))
@@ -1981,6 +2024,12 @@ for banner in [
 }
 // An ending without the prefix is ordinary prose, not a banner.
 check(!ApiErrorMatch.looksLikeApiError("note: the response above may be incomplete"))
+// These banners run 70-90 columns, so a narrow pane wraps them mid-phrase. The evidence
+// is read off a copy with the wrapping rejoined, so the split must not hide the banner.
+check(ApiErrorMatch.looksLikeApiError(
+    "⏺ API Error: Your computer went to sleep mid-response. The response above may be\n  incomplete."))
+check(ApiErrorMatch.looksLikeApiError(
+    "⏺ API Error: Connection lost before a response was\n  produced. Try again."))
 // Out-of-token-quota banners (no "API Error" prefix) are intentionally IGNORED — an
 // out-of-quota agent can't progress until its window resets, so nudging just churns.
 // Every format the CLI has used for the limit message must return false.
@@ -2011,10 +2060,26 @@ check(ApiErrorMatch.looksLikeApiError("⏺ API Error: 529 Overloaded"))
 check(ApiErrorMatch.looksLikeApiError("429 Rate limited"))
 check(ApiErrorMatch.looksLikeApiError("✗ 429 Rate limited · retrying in 34s"))
 check(ApiErrorMatch.looksLikeApiError("429 Too Many Requests"))
+// Its line, not the tail's first line — this arm needs its own mid-tail fixture, since it
+// shares no pattern with the two "API Error" rules.
+check(ApiErrorMatch.looksLikeApiError(
+    "⏺ Running the suite…\n✗ 429 Rate limited · retrying in 34s\n  ? for shortcuts"))
+// Its rate-limit context wraps like any other banner's, so it reads the rejoined copy.
+check(ApiErrorMatch.looksLikeApiError("⏺ 429 Rate\n  limited · retrying in 34s"))
+// But a 429 an agent WROTE is not a banner, however much rate-limit context surrounds it.
+// This arm carries no "API Error:" prefix to anchor, so the code itself has to open the
+// line — otherwise it is the widest hole in the predicate, matching any tail that mentions
+// both a 429 and a rate limit anywhere.
+check(!ApiErrorMatch.looksLikeApiError("got a 429 rate limit, retrying"))
+check(!ApiErrorMatch.looksLikeApiError("    if resp.status_code == 429:  # rate limit, back off"))
+check(!ApiErrorMatch.looksLikeApiError("quoting API Error: 429 Rate limit exceeded in a sentence"))
+check(!ApiErrorMatch.looksLikeApiError("这是 429 rate limit 的例子"))
 // But a 429 rate-limit co-occurring with a quota banner still idles on the quota.
 check(!ApiErrorMatch.looksLikeApiError("429 Rate limited\nYou've hit your weekly limit."))
-// And a bare 429 without a rate-limit phrase (e.g. a line count) must NOT trip it.
+// And a bare 429 without a rate-limit phrase (e.g. a line count) must NOT trip it —
+// including one that opens its line, which the anchor alone would wave through.
 check(!ApiErrorMatch.looksLikeApiError("Deleted 429 stale entries"))
+check(!ApiErrorMatch.looksLikeApiError("429 stale entries pruned from the cache"))
 check(!ApiErrorMatch.looksLikeApiError("● Running tests… 47 passed"))
 check(!ApiErrorMatch.looksLikeApiError("git push origin main"))
 // "unable to connect" alone (no "api error") must NOT trip it — e.g. app logs.
