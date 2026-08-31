@@ -140,14 +140,7 @@ enum AgentStateCommand {
                 }
                 return out
             },
-            tokensLeft: decodeObs(d["tokensLeft"]) { v in
-                // Strictly a bool, matching Python's `isinstance(v, bool)`: `as? Bool`
-                // alone bridges every NSNumber, so a stray 0 or 1 would answer the
-                // deadline's precondition out of whatever happened to be truthy.
-                guard let n = v as? NSNumber,
-                      CFGetTypeID(n) == CFBooleanGetTypeID() else { return nil }
-                return n.boolValue
-            })
+            tokensLeft: decodeObs(d["tokensLeft"]) { $0 as? Bool })
     }
 
     private static func decodeRecord(_ d: [String: Any]) -> AgentState.RunRecord {
