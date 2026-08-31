@@ -23,6 +23,7 @@ enum AgentProbes {
 
     private static let lock = NSLock()
     private static var psCache: (at: TimeInterval, dump: Observation<String>)?
+    private static var pinnedPS: Observation<String>?
     private static var tailsCache: (at: TimeInterval, answer: Observation<[String: String]>)?
     private static var sessionsCache: (at: TimeInterval, runs: Set<String>,
                                        answer: Observation<[String: AgentState.SessionState]>)?
@@ -74,6 +75,36 @@ enum AgentProbes {
         return (tailsRead, markerSeen)
     }
 
+    /// Stand in for what this machine's `ps` says — for a self-test whose fixture
+    /// controls the run book but not the box it is running on.
+    ///
+    /// Emptying the registry is not enough to control the answer, because neither the cap
+    /// load nor the row list is a fold over records alone: `AgentState.synthesizeUntracked`
+    /// turns every agent this scan finds with no record of its own into an occupying
+    /// `untracked:<pr>` one. So on the machine the applet is developed on, whose ordinary
+    /// state is several agents up, an assertion about which bays a placement spends is
+    /// decided by the box rather than by the fixture: an agent mid-turn, or one whose
+    /// screen cannot be read, is an occupying run nothing put there — and reads as a
+    /// regression in the very accounting it exists to catch. (One sitting at its prompt
+    /// resolves `awaitingInput`, which blocks without occupying, so a quiet box hides it.)
+    ///
+    /// `.present("")` is the honest fixture for that: a machine that WAS looked at and had
+    /// nothing on it, which is a different answer from a scan that failed and one the
+    /// resolver already distinguishes. `nil` — every path but a self-test — is the machine
+    /// itself.
+    ///
+    /// Deliberately outside `resetCache`: the caches are this machine, and dropping them is
+    /// how a self-test asks to look at it again. This is the fixture standing in its place,
+    /// and it outlives every such look.
+    /// Headless-gated like every other pin: left set in a live applet it would report
+    /// this machine as permanently empty, and `resetCache` deliberately does not clear
+    /// it, so there would be no way back.
+    static func pinDump(_ dump: Observation<String>?) {
+        guard Headless.active else { return }
+        lock.lock(); defer { lock.unlock() }
+        pinnedPS = dump
+    }
+
     /// Drop every probe cache and every counter — for self-tests that change the machine
     /// between assertions inside one cache window.
     static func resetCache() {
@@ -115,6 +146,10 @@ enum AgentProbes {
     /// resolve `unavailable` and every local run would sit at `unknown` holding its bay.
     private static func psDump(now: TimeInterval) -> Observation<String> {
         lock.lock()
+        if let pinned = pinnedPS {
+            lock.unlock()
+            return pinned
+        }
         if let cached = psCache, now - cached.at < cacheSecs {
             lock.unlock()
             return cached.dump
@@ -145,6 +180,54 @@ enum AgentProbes {
                                              isAgent: AgentRunner.isAgentLine(cols.args))
         }
         return .present(table)
+    }
+
+    /// Every tty a nudge may be typed into: for each agent process on the box, its own
+    /// tty and every tty between it and the window it shows in.
+    ///
+    /// The API-error watcher reads every iTerm session and Terminal tab, and what it does
+    /// with a match is TYPE into it. In an agent's session that is a user turn; in a plain
+    /// shell it is a command, run by that shell. A shell reaches a matching tail for
+    /// entirely innocent reasons — a `cat` of a log holding a banner, a `git diff` of the
+    /// matcher's own tests — and nothing on the screen tells those from the CLI's own
+    /// line, so the process behind the tty is what decides.
+    ///
+    /// Not the agent's own tty alone, which is what the Linux twin compares (there the
+    /// screen read IS the agent's tmux pane). Here the screen read is the WINDOW, and a
+    /// window shows a tty directly only when nothing wraps it: under tmux, or a shell
+    /// wrapper like `kiro-cli-term`, the agent sits ptys below the session the dump
+    /// reports, and comparing the two would leave every wrapped agent unnudgeable — on a
+    /// box whose shells wrap themselves, every agent there is. `TerminalFocus.walk`
+    /// already crosses exactly that gap for a row click, so the answer is its walk,
+    /// unioned over the agents.
+    ///
+    /// Any runner and any task: the question is whether a human's shell is about to be
+    /// typed into, and an agent reviewing nothing in particular is still an agent.
+    static func ttysRunningAnAgent(procs: [Int: AgentState.ProcInfo],
+                                   processes: [Int: TerminalFocus.Proc],
+                                   panes: [String: TerminalFocus.Pane],
+                                   clients: [String: String]) -> Set<String> {
+        var out: Set<String> = []
+        for (pid, info) in procs where info.isAgent && !info.tty.isEmpty {
+            out.formUnion(TerminalFocus.walk(tty: info.tty, pid: pid, processes: processes,
+                                             panes: panes, clients: clients).ttys)
+        }
+        return out
+    }
+
+    /// The same, of this machine. `unavailable` when the process table could not be read
+    /// — which the watcher treats as "type into nothing", never as "no agents".
+    static func ttysRunningAnAgent(now: TimeInterval) -> Observation<Set<String>> {
+        let table = processTable(psDump(now: now))
+        guard let procs = table.value else { return .unavailable(table.reason) }
+        // The walk's three readings are another `ps` pass and two tmux calls; on a box
+        // with no agent up there is nothing for them to find.
+        guard procs.values.contains(where: { $0.isAgent && !$0.tty.isEmpty }) else {
+            return .present([])
+        }
+        return .present(ttysRunningAnAgent(procs: procs, processes: TerminalFocus.processes(),
+                                           panes: TerminalFocus.panes(),
+                                           clients: TerminalFocus.clients()))
     }
 
     /// PR number → the tty of an agent visible in `ps` by its prompt text.

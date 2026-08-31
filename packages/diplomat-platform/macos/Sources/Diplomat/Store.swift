@@ -1597,6 +1597,17 @@ final class Store: ObservableObject {
         agentRows = rows
     }
 
+    /// Drive `publish` over a tick a self-test composed itself.
+    ///
+    /// `pinAgentRows` above assigns the list directly, which is what a render needs and
+    /// is also why no render covers `publish`: the filter that keeps an ended run off the
+    /// panel is on a path the one artefact CI inspects never takes. This is the way in
+    /// for the check that does (`PublishTest`).
+    func publishForSelfTest(_ pass: AgentPass) {
+        guard Headless.active else { return }
+        publish(pass)
+    }
+
     /// Slots of this device's cap with nothing in them, as the panel draws them.
     ///
     /// Work that is starting holds one. Its spawn has not registered anywhere yet, but the
@@ -2881,8 +2892,9 @@ final class Store: ObservableObject {
     /// map is read before and written after detached awaits).
     private var apiScanInFlight = false
 
-    /// One scan: read every terminal's last visible lines and, for any showing a Claude
-    /// API error (outside its cooldown), send the continue nudge to that exact session.
+    /// One scan: read every terminal's last visible lines and, for any session an agent
+    /// is running in that shows a Claude API error (outside its cooldown), send the
+    /// continue nudge to that exact session.
     func runApiErrorScanOnce() async {
         guard apiWatchEnabled, !apiScanInFlight else { return }
         apiScanInFlight = true
@@ -2892,9 +2904,36 @@ final class Store: ObservableObject {
         // which would wrongly clear every backoff and hide the breakage.
         let dump = await Task.detached(priority: .utility) { ApiErrorWatcher.dumpSessionsCached() }.value
         guard let sessions = dump else { return }
-        let now = Date()
+        // The other half of "may this session be written to". An unreadable process
+        // table skips the scan for the same reason a failed dump does, and more: the
+        // answer decides whether a line of text is typed into somebody's shell, so not
+        // knowing has to mean not typing.
+        let ttys = await Task.detached(priority: .utility) {
+            AgentProbes.ttysRunningAnAgent(now: Date().timeIntervalSince1970)
+        }.value
+        guard let agentTTYs = ttys.value else { return }
+        await apiErrorScanStep(sessions: sessions, agentTTYs: agentTTYs, now: Date()) { tty in
+            await Task.detached(priority: .userInitiated) {
+                ApiErrorWatcher.sendContinue(tty: tty)
+            }.value
+        }
+    }
+
+    /// The scan's whole decision — which sessions may be written to, which of those are
+    /// confirmed stalled, and which are still inside a backoff — over evidence already
+    /// read, with the writing left to `send`.
+    ///
+    /// Split out so it can be driven without a terminal: everything above is AppleEvents
+    /// and `ps`, and everything below types into somebody's session. `ApiWatchTest` is
+    /// the check that drives it.
+    func apiErrorScanStep(sessions: [ApiErrorWatcher.Session], agentTTYs: Set<String>,
+                          now: Date, send: (String) async -> Bool) async {
         var erroring = Set<String>()
         for s in sessions {
+            // A session no agent is running in is left alone whatever it shows. The
+            // nudge is submitted as a line of input, so in a plain shell it is a command
+            // — and a shell can show a matching tail for entirely innocent reasons.
+            guard agentTTYs.contains(AgentProbes.shortTTY(s.tty)) else { continue }
             // Out-of-quota banners return false here (looksLikeApiError ignores them):
             // a quota-limited agent can't progress until its window resets, so nudging
             // it is pointless — only transient failures are nudged.
@@ -2910,10 +2949,7 @@ final class Store: ObservableObject {
             guard stalled else { continue }
             // Still inside this session's current backoff window — hold off.
             if let b = apiErrorBackoff[s.tty], now < b.nextAllowed { continue }
-            let tty = s.tty
-            let sent = await Task.detached(priority: .userInitiated) {
-                ApiErrorWatcher.sendContinue(tty: tty)
-            }.value
+            let sent = await send(s.tty)
             // Only count/audit a nudge that actually landed — the send scripts now
             // report whether any session owned the tty.
             guard sent else { continue }
@@ -2924,7 +2960,7 @@ final class Store: ObservableObject {
                 ?? Store.apiWatchCooldown
             apiErrorBackoff[s.tty] = ApiBackoff(nextAllowed: now.addingTimeInterval(next), interval: next)
             AuditLog.log("auto", "nudge",
-                "Continued a stalled agent (API error) on \(tty); "
+                "Continued a stalled agent (API error) on \(s.tty); "
                 + "next retry in ≥ \(Store.humanInterval(next))")
         }
         // Keep backoff state ONLY for currently-erroring ttys: an on-screen session

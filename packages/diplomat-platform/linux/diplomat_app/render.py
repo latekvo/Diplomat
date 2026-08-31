@@ -143,6 +143,11 @@ def _queue_fixture(store: Store) -> None:
     """
     from diplomat_runtime import appconfig, autofix
 
+    # Before the first `create_run` below, and here rather than at either call site:
+    # the LIVE gate does not cover this arm, so a live render reaches the same two
+    # invented agents and the same pinned process table.
+    _agents_scratch()
+
     appconfig.auto_task_limit = lambda: 4
 
     def task(number: int, kind: str, action: str, label: str, counter: str | None,
@@ -225,6 +230,36 @@ def _queue_fixture(store: Store) -> None:
         )
 
     probes.gather = _fixed_probes
+
+
+def _agents_scratch() -> None:
+    """Point the run registry at a scratch dir for the rest of this render.
+
+    Load-bearing for the same reason as :func:`_telemetry_scratch`, and with a
+    sharper edge: :func:`_queue_fixture` registers its agents through the real
+    registry, and ``_fixed_probes`` then answers every probe with a process
+    table holding only the two pids it invented. A sweep run against the
+    operator's own book therefore finds each of their live agents absent from
+    the process table, retires it, and deletes the run directory its CLI is
+    still writing turn reports into — so the agent goes on working with nothing
+    left that can hear it finish.
+
+    Idempotent: both the fixture and the non-live path ask for it, and one render
+    wants one scratch book, not a second that the first one's records are missing
+    from.
+    """
+    global _agents_scratch_dir
+
+    import tempfile
+
+    if _agents_scratch_dir is None:
+        _agents_scratch_dir = tempfile.mkdtemp(prefix="diplomat-render-agents-")
+    os.environ["DIPLOMAT_AGENTS_DIR"] = _agents_scratch_dir
+
+
+#: The scratch book :func:`_agents_scratch` hands out, kept so a second ask returns
+#: the same one.
+_agents_scratch_dir: str | None = None
 
 
 def _telemetry_scratch() -> None:
@@ -402,6 +437,7 @@ def run(what: str, out: str) -> int:
     if os.environ.get("DIPLOMAT_RENDER_LIVE") == "1":
         store.refresh()
     else:
+        _agents_scratch()
         _fixture(store)
 
     # ⬡ is a whole screen only when the add-on is installed, so asking for that

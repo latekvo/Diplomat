@@ -168,10 +168,13 @@ ENDED = frozenset({MERGED, FINISHED})
 
 
 #: How long after dispatch a run with no observed process still reads as STARTING.
-#: The inner shell writes its pid before the agent starts, but a terminal emulator,
-#: a tmux server and the user's rc all run first. Past this the run is not called
-#: finished — it becomes UNKNOWN, because a spawn that never landed and a pid file we
-#: have not read yet look identical from here.
+#: The inner shell writes its pid before the agent starts, but a terminal emulator, a
+#: tmux server and the user's rc all run first — and the process table is one `ps` pass
+#: reused for several seconds, so it can predate the pid file naming what to look for.
+#: Past this the run is judged on the evidence there is: a known pid the table does not
+#: hold has ended, while a run that produced neither a pid nor a PR to scan for becomes
+#: UNKNOWN, because a spawn that never landed and a pid file we have not read yet look
+#: identical from here.
 SPAWN_GRACE = 20.0
 
 #: How long after dispatch a live run whose screen has not shown a turn yet reads as
@@ -699,6 +702,15 @@ def _resolve_local(record: RunRecord, evidence: Evidence, now: float,
 
     proc = table.get(record.pid)
     if proc is None:
+        # A pid the table has not caught up with, not a dead one: the pid file and the
+        # table are read at different instants, and the table is one `ps` pass reused
+        # for several seconds, so a pid written after that pass names a process it
+        # structurally cannot hold. Read as death, a run is retired seconds into its
+        # own spawn and its directory deleted under a working agent. The same record
+        # one tick earlier, with no pid at all, had exactly this grace.
+        if age <= SPAWN_GRACE:
+            return done(STARTING, f"dispatched {age:.0f}s ago, pid {record.pid} "
+                                  "not in the process table yet")
         return done(FINISHED, f"pid {record.pid} absent from the process table")
     if not proc.is_agent:
         return done(FINISHED, f"pid {record.pid} was recycled by another process")
