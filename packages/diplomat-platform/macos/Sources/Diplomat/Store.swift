@@ -786,13 +786,20 @@ final class Store: ObservableObject {
     /// are: this one dials an endpoint over HTTPS, and the tick runs on the panel's
     /// repaint as well as on the poll. The ticks in between carry the answer forward.
     ///
-    /// Skipped entirely with the deadline switched off, because then nothing reads the
-    /// answer. The endpoint behind it is one small per-account bucket shared by every
-    /// Claude Code session on the box, and the telemetry sampler already loses readings
-    /// to it; spending a round of that on a value `AgentState.pastDeadline` cannot
-    /// consult is pure contention.
+    /// With the deadline switched off the endpoint is left alone: it is one small
+    /// per-account bucket shared by every Claude Code session on the box, and the
+    /// telemetry sampler already loses readings to it, so spending a round of it on a
+    /// value `AgentState.pastDeadline` cannot consult is pure contention.
     func refreshTokenBudget() async {
-        guard AppConfig.runDeadline != nil else { return }
+        guard AppConfig.runDeadline != nil else {
+            // Dropped rather than carried. Nothing refreshes this while the switch is
+            // off, and switching it back on reaches the deadline on the panel's
+            // 8-second tick — up to a poll interval before this runs again. A reading
+            // kept across the gap would arm the backstop off an account balance as old
+            // as the switch was off for.
+            tokensLeft = .unavailable("not probed with the deadline switched off")
+            return
+        }
         tokensLeft = await Task.detached(priority: .utility) {
             AgentProbes.tokensLeft()
         }.value
@@ -1118,7 +1125,9 @@ final class Store: ObservableObject {
     /// Closing it is not decoration on either verdict: an agent left alive is found again
     /// by the prompt scan the moment its record is retired, and comes straight back as an
     /// untracked row holding the same bay and the same PR. Retiring without reaping frees
-    /// nothing and only costs the run its label.
+    /// nothing and is not free either: the run is priced into the ledger as completed and
+    /// its directory deleted, so an agent that is still working comes back stripped of its
+    /// label with a completion already recorded against it.
     ///
     /// A run nobody dispatched is reaped like any other: a wedged session is just as dead
     /// whether or not this applet opened it. Its window is reached the same two ways a

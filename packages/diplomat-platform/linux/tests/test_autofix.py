@@ -1682,7 +1682,8 @@ def test_an_agent_left_alive_comes_back_as_an_untracked_row(store, monkeypatch):
     """Why the deadline reaps rather than merely retires. Retirement drops the record;
     the process is still there, and the prompt scan that finds agents nobody booked
     finds this one on the very next tick — same bay, same PR, no label. So a `tmux` that
-    would not kill leaves the machine exactly where it started."""
+    would not kill hands the bay straight back, having already priced the run as finished
+    and deleted its directory."""
     from diplomat_runtime import agentstate as A
     from diplomat_runtime import tmuxwatch
 
@@ -1799,6 +1800,40 @@ def test_the_poll_leaves_the_endpoint_alone_with_the_deadline_switched_off(
     store._autofix_poll_once()
 
     assert not taken, "the endpoint was dialled for a reading nothing can read"
+
+
+def test_a_reading_taken_before_the_switch_went_off_is_not_carried_back_in(
+    store, monkeypatch
+):
+    """The other half of leaving the endpoint alone. Nothing refreshes the reading while
+    the switch is off, and switching it back on reaches the deadline on the panel's
+    8-second tick — a whole poll interval before `refresh_token_budget` runs again.
+    Carried across that gap, the reading taken while the account still had room arms the
+    backstop off a balance as old as the switch was off for."""
+    from diplomat_app import probes
+    from diplomat_runtime import agentstate as A
+    from diplomat_runtime import appconfig
+
+    monkeypatch.setattr(probes, "tokens_left", lambda: A.Observation.present(True))
+    store.refresh_token_budget()
+    assert store._tokens_left == A.Observation.present(True), "the switch was on"
+
+    appconfig.set_bool(appconfig.RUN_DEADLINE, False)
+    store.refresh_token_budget()
+    appconfig.set_bool(appconfig.RUN_DEADLINE, True)
+
+    seen: dict = {}
+
+    def spy(records, now, **kw):
+        seen.update(kw)
+        return A.Evidence()
+
+    monkeypatch.setattr(probes, "gather", spy)
+    store._agent_tick()
+
+    assert seen["tokens"].status == A.UNAVAILABLE
+    assert A.past_deadline(A.RunRecord(run_id="r1", dispatched_at=time.time() - 5 * 3600),
+                           seen["tokens"], time.time(), A.RUN_DEADLINE) is None
 
 
 def test_the_tick_hands_the_carried_reading_to_the_probe_layer(store, monkeypatch):
