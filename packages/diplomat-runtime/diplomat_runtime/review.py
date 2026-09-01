@@ -364,7 +364,7 @@ def user_shell() -> str:
 def shell_command(prompt_file: str, done_path: str | None = None,
                   pid_path: str | None = None, port: int | None = None,
                   settings_file: str | None = None) -> str:
-    """``cd '<repo>' 2>/dev/null; <agent>; [printf %s $? > done;] exec "$SHELL" -i``
+    """``cd '<repo>' 2>/dev/null; <agent>; [{ printf %s $? > done; } 2>/dev/null || :;] exec "$SHELL" -i``
 
     ``<agent>`` is :func:`runner.agent_command` — ``claude "$(cat '<file>')"`` or the
     OpenCode spelling of the same thing. Everything around it is identical for both,
@@ -380,6 +380,23 @@ def shell_command(prompt_file: str, done_path: str | None = None,
     EXIT, and an agent is spawned interactively: finishing its work is not exiting, so
     the sentinel says nothing at all for the hours a finished session sits at its
     prompt. That is what ``pid_path`` is for.
+
+    That write is best-effort, for the reason the hooks in :mod:`completion` are: the
+    path is inside the run directory, retirement deletes that directory, and a run is
+    retired while its agent goes on sitting at its prompt — so by the time the operator
+    exits the session the sentinel has nowhere to land. Nothing reads it then (the run
+    is long retired); an unguarded write just puts a shell diagnostic on the last screen
+    of a window somebody is closing.
+
+    The guard is a REDIRECTED GROUP rather than the ``2>/dev/null`` ahead of the
+    redirect that :mod:`completion` uses, because the two strings are run by different
+    shells. A hook runs under ``sh``, where a leading ``2>/dev/null`` is in effect
+    before the failing open. This one runs under the operator's own ``$SHELL``
+    (:func:`user_shell`), and zsh reports a redirection error on the shell's OWN
+    stderr, which no redirection of that command can reach: measured on macOS 15.5,
+    ``zsh -c 'printf %s $? 2>/dev/null > /nope/done'`` still prints
+    ``zsh:1: no such file or directory``. Wrapping the redirect in ``{ ...; } 2>/dev/null``
+    silences sh, bash, dash and zsh alike, and ``|| :`` keeps the failure out of ``$?``.
 
     When ``pid_path`` is given the agent runs one shell deeper —
     ``"$SHELL" -i -c 'printf %s $$ > <pid>; <agent>'`` — and what lands in the file is
@@ -426,7 +443,8 @@ def shell_command(prompt_file: str, done_path: str | None = None,
     """
     repo = shlex.quote(repo_path())
     agent_cmd = runner.agent_command(prompt_file, port, settings_file)
-    done = f"printf %s $? > {shlex.quote(done_path)}; " if done_path else ""
+    done = (f"{{ printf %s $? > {shlex.quote(done_path)}; }} 2>/dev/null || :; "
+            if done_path else "")
     if pid_path is None:
         return f'cd {repo} 2>/dev/null; {agent_cmd}; {done}exec "$SHELL" -i'
     inner = f'printf %s $$ > {shlex.quote(pid_path)}; {agent_cmd}'
