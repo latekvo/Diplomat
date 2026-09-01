@@ -804,7 +804,11 @@ class Store(QObject):
 
     def _autofix_poll_once(self) -> None:
         self._poll_error_this_cycle = None
-        # Ahead of the settle below, the pass that applies the deadline it gates.
+        # Both slow-refresh probes, ahead of the settle below — the pass that reads
+        # them. The macOS twin takes the same two on ITS slow refresh, and a reading
+        # only one front-end takes is two applets answering differently about one run
+        # book on one machine.
+        self.refresh_merged_statuses()
         self.refresh_token_budget()
         # Settle the agents before anything reads them. This is the one pass that runs
         # whatever the operator is looking at: the panel's own tick is gated on the

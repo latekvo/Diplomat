@@ -1760,6 +1760,48 @@ def test_the_store_opens_refusing_the_deadline_until_a_poll_has_answered(store):
                            store._tokens_left, time.time(), A.RUN_DEADLINE) is None
 
 
+def test_the_poll_takes_the_merged_reading_the_top_rung_needs(store, monkeypatch):
+    """The resolver's first and highest-precedence rung is the merged one, and it is
+    gated on a PRESENT reading. Never taken, `_merged_prs` keeps the UNAVAILABLE it is
+    constructed with for the life of the process: a run whose PR lands is never
+    resolved MERGED here, it stays whatever the process rungs say, and the ledger
+    prices it under the wrong terminal state — while the macOS applet reading the same
+    run book on the same machine says "merged"."""
+    from diplomat_runtime import agentstate as A
+
+    taken = []
+    monkeypatch.setattr("diplomat_app.probes.merged_prs",
+                        lambda prs: taken.append(prs) or A.Observation.present({7}))
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    fake_probes(monkeypatch)
+    monkeypatch.setattr(type(store), "effective_me", property(lambda self: ""))
+
+    store._autofix_poll_once()
+
+    assert taken, "the poll never asked which of the tracked PRs have landed"
+    assert store._merged_prs == A.Observation.present({7})
+
+
+def test_the_poll_reads_which_prs_landed_before_it_settles_the_agents(store, monkeypatch):
+    """Order, not merely presence — the same reason the budget is read first. Settled
+    after, the retirement pass on every poll would judge the top rung on the previous
+    cycle's answer, and the first one on no answer at all."""
+    from diplomat_runtime import agentstate as A
+
+    order: list[str] = []
+    monkeypatch.setattr("diplomat_app.probes.merged_prs",
+                        lambda prs: order.append("merged") or A.Observation.present(set()))
+    monkeypatch.setattr(type(store), "_settle_agents",
+                        lambda self: order.append("settle"))
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    fake_probes(monkeypatch)
+    monkeypatch.setattr(type(store), "effective_me", property(lambda self: ""))
+
+    store._autofix_poll_once()
+
+    assert order[:2] == ["merged", "settle"], order
+
+
 def test_the_poll_reads_the_budget_before_it_settles_the_agents(store, monkeypatch):
     """Order, not merely presence. Settled first, every poll would judge the deadline
     on the previous cycle's reading and the first one on no reading at all - which is
