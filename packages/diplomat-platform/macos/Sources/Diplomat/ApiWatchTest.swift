@@ -104,8 +104,22 @@ enum ApiWatchTest {
         await scan(" retry 5", at: t0.addingTimeInterval(80))
         await scan(" retry 5", at: t0.addingTimeInterval(100))
         check("a scan handed no ttys at all forgets the backoff of every session in it",
-              sent.filter { $0 == "/dev/ttys011" }.count == 2
-                && t0.addingTimeInterval(100) < t0.addingTimeInterval(20 + 120))
+              sent.filter { $0 == "/dev/ttys011" }.count == 2)
+
+        // The same scans with only the empty one dropped. ttys011 stays inside the
+        // backoff its t+20 nudge started, so the second nudge above is what forgetting
+        // cost and not what this sequence would have done anyway.
+        let kept = Store()
+        var keptSent: [String] = []
+        for at in [0.0, 20, 40, 80, 100] {
+            await kept.apiErrorScanStep(sessions: sessions(" retry 5"), agentTTYs: agentTTYs,
+                                        now: t0.addingTimeInterval(at)) { tty in
+                keptSent.append(tty)
+                return tty != "/dev/ttys014"
+            }
+        }
+        check("…and with nothing forgotten it is nudged once, inside that same window",
+              keptSent.filter { $0 == "/dev/ttys011" }.count == 1)
 
         // The other direction, over the tree a spawn leaves on a box whose ~/.zshrc execs
         // tmux: the window's session runs a wrapper, the wrapper runs a tmux client, and
