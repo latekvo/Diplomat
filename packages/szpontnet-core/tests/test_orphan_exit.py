@@ -12,6 +12,7 @@ shipped node deliberately, so an unconditional version would kill the product.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import signal
@@ -56,6 +57,64 @@ def test_stop_when_orphaned_does_not_wait_on_a_parent_already_gone(monkeypatch):
     monkeypatch.setattr(os, "getppid", lambda: 1)
     asyncio.run(mesh_main._stop_when_orphaned(node, 1, interval=0))
     assert node.stopped, "a node armed with no live parent must stop at once"
+
+
+#: A launcher pid, and the subreaper that adopts the node when it dies. Neither is 1:
+#: the `!= 1` term is the late catch for a launcher already gone, and it is exactly what
+#: hides the bug below on a box where orphans go to init.
+_LAUNCHER, _SUBREAPER = 1000, 4242
+
+
+def test_the_launcher_pid_is_read_before_the_node_starts_up(monkeypatch):
+    """WHERE the pid is read, not what the watchdog does with it.
+
+    A task body does not run until the loop first idles, which for a node is somewhere
+    inside ``run()``'s startup. Read there, a node whose launcher died meanwhile latches
+    onto whatever adopted it and waits forever for that to change — the first version of
+    this watchdog did exactly that and still leaked. Nothing pinned the placement: moving
+    the read into ``_stop_when_orphaned`` leaves every other test in this file green,
+    because the e2e keeps its launcher alive through startup and the unit tests hand
+    ``parent`` in themselves.
+
+    Here the launcher dies DURING startup, and is adopted by a subreaper rather than by
+    init — a systemd user session with ``PR_SET_CHILD_SUBREAPER``, or a container init —
+    so the ``!= 1`` term never fires and only the captured pid can end the node.
+    """
+    from szpontnet import singlelock, singleton
+
+    ppid = _LAUNCHER
+    monkeypatch.setattr(os, "getppid", lambda: ppid)
+    monkeypatch.setenv("SZPONTNET_EXIT_WITH_PARENT", "1")
+    # Both stubbed because they reach the machine: the flock is keyed to the real state
+    # directory, so the operator's own node holding it would return 0 out of `_run_node`
+    # before the watchdog was ever armed, and the reaper SIGTERMs live nodes.
+    monkeypatch.setattr(singlelock, "acquire", lambda: object())
+    monkeypatch.setattr(singlelock, "release", lambda lock: None)
+    monkeypatch.setattr(singleton, "terminate_other_nodes", lambda: [])
+
+    class FakeNode:
+        def __init__(self):
+            self.local = type("L", (), {"name": "orphan-unit", "id": "e" * 32})()
+            self.stop = asyncio.Event()
+
+        def request_stop(self):
+            self.stop.set()
+
+        async def run(self):
+            # The launcher is killed here: after `_run_node` has had its chance to read
+            # the pid, and before the loop has ever idled.
+            nonlocal ppid
+            ppid = _SUBREAPER
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(self.stop.wait(), timeout=10)
+
+    node = FakeNode()
+    monkeypatch.setattr("szpontnet.node.MeshNode", lambda: node)
+
+    assert mesh_main._run_node() == 0
+    assert node.stop.is_set(), (
+        "the node never stopped: the launcher pid was read after startup, by which "
+        "time it was the subreaper's")
 
 
 def _node_env(state: Path) -> dict:
