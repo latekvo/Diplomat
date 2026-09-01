@@ -21,6 +21,7 @@ enum Headless {
             || env["DIPLOMAT_QUEUE_TEST"] == "1"
             || env["DIPLOMAT_PUBLISH_TEST"] == "1"
             || env["DIPLOMAT_SWEEP_TEST"] == "1"
+            || env["DIPLOMAT_QUOTA_TEST"] == "1"
             || env["DIPLOMAT_DEVICE_DUMP"] == "1"
             || env["DIPLOMAT_AUTOFIX_POLL"] == "1"
             || env["DIPLOMAT_APIWATCH_SCAN"] == "1"

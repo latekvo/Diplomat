@@ -102,6 +102,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if env["DIPLOMAT_SWEEP_TEST"] == "1" {
             exit(SweepTest.run() ? 0 : 1)
         }
+        // Self-test of WHICH credential the quota probe spends. Both halves of the
+        // candidate list are fixtures, so it reads nothing off this machine and dials
+        // nothing.
+        if env["DIPLOMAT_QUOTA_TEST"] == "1" {
+            exit(QuotaTest.run() ? 0 : 1)
+        }
         // Device-allocator self-test: exercise the exact paths the live panel uses —
         // resolve node, shell the installer's --check, and Codable-decode the daemon's
         // real state.json — and print them. Works headless (e.g. with a locked screen).

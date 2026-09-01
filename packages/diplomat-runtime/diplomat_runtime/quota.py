@@ -58,6 +58,11 @@ _INSIST_WAIT_SECS = 30.0
 
 #: (last attempt, last good, session fraction, week fraction).
 _cache: dict = {"attempt": 0.0, "good": 0.0, "session": None, "week": None}
+#: How many probe rounds have been made, and how many came back with a reading.
+#: ``autofix.budget_decide`` SKIPS a ceiling with no reading and calls one with none
+#: affordable, so a probe that stops answering does not gate less — it stops gating,
+#: and nothing else on the machine looks wrong. Hence the ratio.
+_probes: dict = {"rounds": 0, "readings": 0}
 #: How long a last-good reading keeps answering through failures before the probe
 #: admits it doesn't know. A sample carrying a stale fraction would price the
 #: window against tokens that were spent after it, so this is deliberately short
@@ -70,8 +75,14 @@ def probe_enabled() -> bool:
 
 
 def _reset_cache() -> None:
-    """Test hook: forget any cached reading."""
+    """Test hook: forget any cached reading, and any memory of having probed."""
     _cache.update(attempt=0.0, good=0.0, session=None, week=None)
+    _probes.update(rounds=0, readings=0)
+
+
+def probe_stats() -> tuple[int, int]:
+    """``(probe rounds made, rounds that came back with a reading)``."""
+    return _probes["rounds"], _probes["readings"]
 
 
 def _claude_dir():
@@ -80,38 +91,55 @@ def _claude_dir():
     return claude_dir()
 
 
-def _oauth_token() -> str | None:
-    """Claude Code's OAuth access token: the credentials file it writes (Linux, and
-    any explicit ``DIPLOMAT_CLAUDE_DIR`` sandbox), else the macOS login Keychain.
-    Re-read per probe because Claude Code refreshes it as it runs."""
+def _token_in(raw: object) -> str | None:
+    """The ``claudeAiOauth.accessToken`` inside a credentials blob."""
+    if not isinstance(raw, dict):
+        return None
+    token = (raw.get("claudeAiOauth") or {}).get("accessToken")
+    return token if isinstance(token, str) and token else None
+
+
+def _oauth_tokens() -> list[str]:
+    """Claude Code's OAuth access tokens to try, in order: the credentials file it
+    writes (Linux, and any explicit ``DIPLOMAT_CLAUDE_DIR`` sandbox), then the macOS
+    login Keychain. Re-read per probe because Claude Code refreshes them as it runs.
+
+    A LIST rather than the first one found, because the two sources drift apart and
+    the file is the one that goes stale: on macOS Claude Code refreshes the Keychain
+    item and never rewrites a ``.credentials.json`` an older login left behind. Asking
+    only the file pins the probe to a dead credential for as long as that file exists,
+    which is not a loud failure — ``autofix.budget_decide`` skips a ceiling it cannot
+    read, so the dispatch budget just stops gating. Four days of it here, ending in a
+    night of agents dispatched into an exhausted weekly window.
+
+    The file stays FIRST, so pointing ``DIPLOMAT_CLAUDE_DIR`` at a fixture decides the
+    probe's answer rather than being shadowed by the real login Keychain.
+    """
+    out: list[str] = []
     try:
         raw = json.loads((_claude_dir() / ".credentials.json").read_text(encoding="utf-8"))
-        token = (raw.get("claudeAiOauth") or {}).get("accessToken")
-        if isinstance(token, str) and token:
-            return token
+        token = _token_in(raw)
+        if token:
+            out.append(token)
     except (OSError, ValueError, AttributeError):
         pass
     if sys.platform == "darwin":
         try:
-            out = subprocess.run(  # noqa: S603 — fixed argv, reads the user's own item
+            proc = subprocess.run(  # noqa: S603 — fixed argv, reads the user's own item
                 ["security", "find-generic-password",
                  "-s", "Claude Code-credentials", "-w"],
                 capture_output=True, text=True, timeout=_TIMEOUT_SECS, check=False)
-            raw = json.loads(out.stdout.strip() or "{}")
-            token = (raw.get("claudeAiOauth") or {}).get("accessToken")
-            if isinstance(token, str) and token:
-                return token
+            token = _token_in(json.loads(proc.stdout.strip() or "{}"))
+            if token and token not in out:
+                out.append(token)
         except (OSError, ValueError, AttributeError, subprocess.SubprocessError):
             pass
-    return None
+    return out
 
 
-def _fetch() -> dict | None:
-    """One GET. None on any failure — no token, offline, a 401 after the token
+def _fetch(token: str) -> dict | None:
+    """One GET with one token. None on any failure — offline, a 401 after the token
     expired mid-window, a body that isn't an object."""
-    token = _oauth_token()
-    if not token:
-        return None
     req = urllib.request.Request(_USAGE_URL, headers={
         "Authorization": f"Bearer {token}",
         "anthropic-beta": _BETA,
@@ -138,16 +166,30 @@ def _fraction_left(window: object) -> float | None:
 
 
 def _attempt(now: float) -> bool:
-    """One fetch, folded into the cache. True when it came back with a reading."""
+    """One round of the probe, folded into the cache. True when it came back with a
+    reading.
+
+    Every credential is tried until one answers: "the token was refused" and "the
+    account has no reading" are the same silence to every caller above, and only this
+    loop can tell them apart. It stops at the first that yields a window, so the extra
+    request is spent only where the probe was already failing.
+    """
     _cache["attempt"] = now
-    payload = _fetch()
-    session = _fraction_left((payload or {}).get("five_hour"))
-    if session is None:
-        return False
-    _cache["good"] = now
-    _cache["session"] = session
-    _cache["week"] = _fraction_left(payload.get("seven_day"))
-    return True
+    tokens = _oauth_tokens()
+    if not tokens:
+        return False   # nothing to ask with: not a round, and not a refusal
+    _probes["rounds"] += 1
+    for token in tokens:
+        payload = _fetch(token)
+        session = _fraction_left((payload or {}).get("five_hour"))
+        if session is None:
+            continue
+        _cache["good"] = now
+        _cache["session"] = session
+        _cache["week"] = _fraction_left(payload.get("seven_day"))
+        _probes["readings"] += 1
+        return True
+    return False
 
 
 def fractions_left(*, insist: bool = False) -> tuple[float | None, float | None]:
@@ -168,7 +210,7 @@ def fractions_left(*, insist: bool = False) -> tuple[float | None, float | None]
     interval = _TTL_SECS if _cache["session"] is not None else _RETRY_SECS
     if _cache["attempt"] == 0.0 or now - _cache["attempt"] >= interval:
         # No token is the one failure retrying cannot fix.
-        if not _attempt(now) and insist and _oauth_token() is not None:
+        if not _attempt(now) and insist and _oauth_tokens():
             for _ in range(_INSIST_ATTEMPTS):
                 time.sleep(_INSIST_WAIT_SECS)
                 if _attempt(time.monotonic()):
