@@ -182,8 +182,7 @@ def _ps_dump() -> str:
     environment, not every process, so the store's Linux-only ``-eo`` can't be
     reused here (a node runs on both OSes) — and ``etime``, not the ``etimes`` that
     store asks for, because BSD ``ps`` has no such keyword: it drops the column, writes
-    ``ps: etimes: keyword not found`` to stderr and exits non-zero. Neither is consulted
-    below, so the column-less output would be read as though it were whole. The tty
+    ``ps: etimes: keyword not found`` to stderr and exits non-zero. The tty
     leads because it is what
     joins a ``claude`` process to the tmux pane showing it
     (:func:`autofix.idle_pr_numbers`); the age is beside it because that same answer
@@ -191,7 +190,13 @@ def _ps_dump() -> str:
     both, finding its prompt wherever on the line it falls.
 
     Returns ``""`` on any failure, which is what lets both callers degrade rather
-    than raise into the executor's spawn path. ``UnicodeDecodeError`` is caught by
+    than raise into the executor's spawn path. A non-zero exit is one of those
+    failures rather than the stdout it managed to print: a ``ps`` that fails partway
+    prints a partial table, and this dump's callers read absence as evidence — a
+    thinner ``live`` set is fewer agents counted, so :meth:`DiplomatHost.at_job_capacity`
+    answers "there is room" and the node accepts a burst the cap exists to refuse.
+    ``probes._ps_dump`` and ``AgentProbes.run`` drop a non-zero ``ps`` for the same
+    reason. ``UnicodeDecodeError`` is caught by
     name: ``text=True`` decodes strict UTF-8, so any process on the box with a
     non-UTF-8 byte in its argv makes the output undecodable, and it is a
     ``ValueError`` — neither an ``OSError`` nor a ``SubprocessError`` — so without it
@@ -199,10 +204,11 @@ def _ps_dump() -> str:
     identical scan.
     """
     try:
-        return subprocess.run(["ps", "-Ao", "tty=,etime=,args="],
-                              capture_output=True, text=True, timeout=10).stdout
+        proc = subprocess.run(["ps", "-Ao", "tty=,etime=,args="],
+                              capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
         return ""
+    return proc.stdout if proc.returncode == 0 else ""
 
 
 def _stage_hooks(done_path: str | None) -> str | None:
