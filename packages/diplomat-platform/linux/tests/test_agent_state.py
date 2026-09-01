@@ -466,6 +466,52 @@ def test_only_the_stillness_backstop_marks_a_run_wedged():
     assert any(v.state == A.FINISHED and not v.wedged for v in verdicts)
 
 
+def test_only_the_run_deadline_marks_a_run_expired():
+    """``expired`` is the other half of the window reaper's licence, so like ``wedged``
+    it has to name ONE rung rather than a property several verdicts share.
+
+    The set it must not widen to is "FINISHED, and older than the deadline". That age
+    is true of a run for the whole rest of its life, including on the ticks after a
+    rung ABOVE the deadline ended it — so re-deriving it reaps a run that stopped for
+    a reason of its own."""
+    for name, record, evidence, _state, _reason in CASES:
+        got = A.resolve_one(record, evidence, T0, A.RUN_DEADLINE)
+        by_deadline = "past the 4h deadline" in got.reason
+        assert got.expired is by_deadline, f"{name}: {got.reason!r}"
+    # …and the table really does contain both sides of that distinction: a run the
+    # deadline ended, and a run older than the deadline that something else ended.
+    verdicts = [A.resolve_one(r, e, T0, A.RUN_DEADLINE) for _n, r, e, _s, _rr in CASES]
+    assert any(v.expired for v in verdicts)
+    assert any(v.state == A.FINISHED and not v.expired for v in verdicts)
+
+
+def test_the_reap_gate_is_the_verdict_rather_than_the_clocks():
+    """Closing a window is the one destructive thing a tick does, and the run it must
+    never do it to is the long one that finished the ordinary way.
+
+    Both clocks stay true after a rung above them ends a run: :func:`past_deadline`
+    holds for the rest of a long run's life, and :func:`went_quiet` keeps maturing
+    across an evidence outage. So the gate reads which rung actually fired. A
+    five-hour review whose agent reports its turn over is sitting at its prompt with
+    the finished task on the screen — reaping it takes that away, and the audit line
+    would even quote "its CLI reported the turn over" as the reason for closing it."""
+    def reaped(**evidence_kw) -> bool:
+        record = rec(dispatched_at=T0 - PAST_DEADLINE)
+        evidence = ev(processes={4242: proc(elapsed=PAST_DEADLINE)}, **evidence_kw)
+        states = {record.run_id: A.resolve_one(record, evidence, T0, A.RUN_DEADLINE)}
+        assert states[record.run_id].state == A.FINISHED, states[record.run_id].reason
+        return bool(A.reapable([record], states))
+
+    # Five hours, and nothing on the machine can say it ever stopped. The rung's own
+    # case, and the only one of the three whose window is nobody's.
+    assert reaped(tails={"pts/3": WORKING})
+    # Its agent reported the turn over — the primary signal, five hours in.
+    assert not reaped(tails={"pts/3": AT_PROMPT},
+                      activity={"r1": (completion.IDLE, T0)})
+    # Its exit code landed.
+    assert not reaped(tails={"pts/3": WORKING}, sentinels={"r1"})
+
+
 def test_every_state_is_reachable_from_the_table():
     """A state no case produces is a state nothing pins — the table's own coverage
     gate, so a rung cannot be added without a scenario that reaches it."""

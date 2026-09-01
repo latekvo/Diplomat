@@ -515,6 +515,17 @@ class Resolution:
     #: FINISHED-because-gone carrying twenty minutes of stillness. Reaping that closes
     #: whatever holds its tty now.
     wedged: bool = False
+    #: Whether the RUN DEADLINE is what ended this run — set by that rung and by
+    #: nothing else.
+    #:
+    #: The other half of the window reaper's licence, and a separate field for the
+    #: same reason :attr:`wedged` is one: a clock answers about a record whatever
+    #: ended it. :func:`past_deadline` still returns an age for a run that a rung
+    #: ABOVE the deadline ended — a sentinel, or the agent's own turn report — and
+    #: that run finished the ordinary way, alive at its prompt with the task on the
+    #: screen. Reaping it closes the window over the very thing the operator asked
+    #: for.
+    expired: bool = False
 
     @property
     def occupying(self) -> bool:
@@ -522,7 +533,7 @@ class Resolution:
 
     def to_json(self) -> dict:
         return {"runId": self.run_id, "state": self.state, "reason": self.reason,
-                "wedged": self.wedged}
+                "wedged": self.wedged, "expired": self.expired}
 
 
 # MARK: - Claim sightings (pure, but stateful across ticks)
@@ -708,8 +719,11 @@ def resolve_one(record: RunRecord, evidence: Evidence, now: float,
 
     expired = past_deadline(record, evidence.tokens_left, now, deadline)
     if expired is not None:
-        return done(FINISHED, f"has run for {apiwatch.human_interval(expired)}, past "
-                              f"the {apiwatch.human_interval(deadline)} deadline")
+        # The one rung that stamps `expired`; see :attr:`Resolution.expired`.
+        return replace(done(FINISHED,
+                            f"has run for {apiwatch.human_interval(expired)}, past "
+                            f"the {apiwatch.human_interval(deadline)} deadline"),
+                       expired=True)
 
     if record.placement == PLACEMENT_MESH_PEER:
         return _resolve_peer(record, evidence, now, done)
@@ -721,9 +735,11 @@ def past_deadline(record: RunRecord, tokens: Observation, now: float,
     """How long this run has been going, once that is long enough to call it over —
     ``None`` when it is not, or when nothing here may call it over at all.
 
-    A function for the reason :func:`went_quiet` is, and with the same second caller:
-    the reaper that closes the window. The age it returns is the age the reason line
-    quotes, so the verdict and the number the operator reads cannot come apart.
+    Asked by the resolver alone, like :func:`went_quiet`, and for the same reason: an
+    age is true of a run whatever ended it, so the window reaper reads the verdict that
+    came out of this (:attr:`Resolution.expired`) rather than asking again. The age
+    returned is the age the reason line quotes, so the verdict and the number the
+    operator reads cannot come apart.
 
     Four things hold it back, each a case where the clock is measuring something other
     than a run that will not end:
@@ -1084,27 +1100,30 @@ def retirable(records: list[RunRecord],
             if r.run_id in states and states[r.run_id].state in ENDED]
 
 
-def reapable(records: list[RunRecord], states: dict[str, Resolution],
-             evidence: Evidence, now: float,
-             deadline: float | None) -> list[RunRecord]:
+def reapable(records: list[RunRecord],
+             states: dict[str, Resolution]) -> list[RunRecord]:
     """The runs whose terminal is nobody's — ended by a CLOCK rather than by evidence
     that their agent stopped, so the agent may well still be sitting in the window.
 
     A projection rather than a test each front-end repeats, because it is the one
     destructive consequence a tick has: a window closed under a run this resolver still
-    calls working takes the whole task's context with it. Answered from the evidence and
-    the clock functions the verdict was, so a front-end cannot reap off a second
-    reading of either.
+    calls working takes the whole task's context with it.
 
-    A run that ended the ordinary way is absent: its agent is alive at its prompt
-    holding the finished task, and the operator may still want to read it. So is a
-    merged one, for the same reason.
+    Which rung fired is ASKED (:attr:`Resolution.wedged`, :attr:`Resolution.expired`)
+    rather than re-derived from the clocks, because a clock answers about a record
+    whatever ended it. Both of them are still true of runs the rungs above them ended:
+    :func:`went_quiet` keeps maturing across an evidence outage, and
+    :func:`past_deadline` holds for the whole life of a long run that then reports its
+    turn over the ordinary way. Those runs are absent from here — their agent is alive
+    at its prompt holding the finished task, and the operator may still want to read
+    it. So is a merged one, for the same reason.
+
+    ``runs_here`` is not re-checked: both stamps already imply it — the stillness rung
+    only runs inside :func:`_resolve_local`, and :func:`past_deadline` refuses a peer.
     """
     return [r for r in records
-            if r.run_id in states and states[r.run_id].state == FINISHED
-            and r.runs_here
-            and (went_quiet(r, now) is not None
-                 or past_deadline(r, evidence.tokens_left, now, deadline) is not None)]
+            if r.run_id in states
+            and (states[r.run_id].wedged or states[r.run_id].expired)]
 
 
 def free_slots(limit: int, occupied: int) -> int:
@@ -1160,5 +1179,5 @@ def tick(records: list[RunRecord], evidence: Evidence, now: float, limit: int,
     load = cap_load(records, states)
     return Tick(records=records, states=states, rows=rows(records, states),
                 cap_load=load, retirable=retirable(records, states),
-                reapable=reapable(records, states, evidence, now, deadline),
+                reapable=reapable(records, states),
                 free_slots=free_slots(limit, len(load)), now=now)

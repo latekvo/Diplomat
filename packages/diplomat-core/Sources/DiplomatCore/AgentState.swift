@@ -407,6 +407,16 @@ public enum AgentState {
         /// finished-because-gone carrying twenty minutes of stillness. Reaping that
         /// closes whatever holds its tty now.
         public var wedged: Bool = false
+        /// Whether the RUN DEADLINE is what ended this run — set by that rung and by
+        /// nothing else.
+        ///
+        /// The other half of the window reaper's licence, and a separate field for the
+        /// same reason `wedged` is one: a clock answers about a record whatever ended
+        /// it. `pastDeadline` still returns an age for a run that a rung ABOVE the
+        /// deadline ended — a sentinel, or the agent's own turn report — and that run
+        /// finished the ordinary way, alive at its prompt with the task on the screen.
+        /// Reaping it closes the window over the very thing the operator asked for.
+        public var expired: Bool = false
 
         public var occupying: Bool { AgentState.occupying.contains(state) }
     }
@@ -625,8 +635,12 @@ public enum AgentState {
         if let expired = pastDeadline(record, tokens: evidence.tokensLeft, now: now,
                                       deadline: deadline) {
             let cutoff = ApiErrorMatch.humanInterval(deadline ?? 0)
-            return done(.finished, "has run for \(ApiErrorMatch.humanInterval(expired)), "
-                                   + "past the \(cutoff) deadline")
+            // The one rung that stamps `expired`; see `Resolution.expired`.
+            var out = done(.finished,
+                           "has run for \(ApiErrorMatch.humanInterval(expired)), "
+                           + "past the \(cutoff) deadline")
+            out.expired = true
+            return out
         }
         if record.placement == .meshPeer {
             return resolvePeer(record, evidence: evidence, now: now, done: done)
@@ -637,9 +651,11 @@ public enum AgentState {
     /// How long this run has been going, once that is long enough to call it over — nil
     /// when it is not, or when nothing here may call it over at all.
     ///
-    /// A function for the reason `wentQuiet` is, and with the same second caller: the
-    /// reaper that closes the window. The age it returns is the age the reason line
-    /// quotes, so the verdict and the number the operator reads cannot come apart.
+    /// Asked by the resolver alone, like `wentQuiet`, and for the same reason: an age is
+    /// true of a run whatever ended it, so the window reaper reads the verdict that came
+    /// out of this (`Resolution.expired`) rather than asking again. The age returned is
+    /// the age the reason line quotes, so the verdict and the number the operator reads
+    /// cannot come apart.
     ///
     /// Four things hold it back, each a case where the clock is measuring something
     /// other than a run that will not end:
@@ -1047,22 +1063,24 @@ public enum AgentState {
     ///
     /// A projection rather than a test each front-end repeats, because it is the one
     /// destructive consequence a tick has: a window closed under a run this resolver
-    /// still calls working takes the whole task's context with it. Answered from the
-    /// evidence and the clock functions the verdict was, so a front-end cannot reap off
-    /// a second reading of either.
+    /// still calls working takes the whole task's context with it.
     ///
-    /// A run that ended the ordinary way is absent: its agent is alive at its prompt
-    /// holding the finished task, and the operator may still want to read it. So is a
-    /// merged one, for the same reason.
-    public static func reapable(records: [RunRecord], states: [String: Resolution],
-                                evidence: Evidence, now: TimeInterval,
-                                deadline: TimeInterval?) -> [RunRecord] {
+    /// Which rung fired is ASKED (`Resolution.wedged`, `Resolution.expired`) rather than
+    /// re-derived from the clocks, because a clock answers about a record whatever ended
+    /// it. Both of them are still true of runs the rungs above them ended: `wentQuiet`
+    /// keeps maturing across an evidence outage, and `pastDeadline` holds for the whole
+    /// life of a long run that then reports its turn over the ordinary way. Those runs
+    /// are absent from here — their agent is alive at its prompt holding the finished
+    /// task, and the operator may still want to read it. So is a merged one, for the
+    /// same reason.
+    ///
+    /// `runsHere` is not re-checked: both stamps already imply it — the stillness rung
+    /// only runs inside `resolveLocal`, and `pastDeadline` refuses a peer.
+    public static func reapable(records: [RunRecord],
+                                states: [String: Resolution]) -> [RunRecord] {
         records.filter { r in
-            guard let s = states[r.runID], s.state == .finished, r.runsHere
-            else { return false }
-            return wentQuiet(r, now: now) != nil
-                || pastDeadline(r, tokens: evidence.tokensLeft, now: now,
-                                deadline: deadline) != nil
+            guard let s = states[r.runID] else { return false }
+            return s.wedged || s.expired
         }
     }
 
@@ -1085,7 +1103,7 @@ public enum AgentState {
         public var capLoad: Set<String>
         public var retirable: [RunRecord]
         /// Of those, the ones a backstop ended — whose window is closed as well as
-        /// forgotten. See `reapable(records:states:evidence:now:deadline:)`.
+        /// forgotten. See `reapable(records:states:)`.
         public var reapable: [RunRecord]
         public var freeSlots: Int
         /// The instant every verdict below was resolved against.
@@ -1119,8 +1137,7 @@ public enum AgentState {
         return Tick(records: recs, states: states,
                     rows: rows(records: recs, states: states),
                     capLoad: load, retirable: retirable(records: recs, states: states),
-                    reapable: reapable(records: recs, states: states, evidence: evidence,
-                                       now: now, deadline: deadline),
+                    reapable: reapable(records: recs, states: states),
                     freeSlots: freeSlots(limit: limit, occupied: load.count), now: now)
     }
 }

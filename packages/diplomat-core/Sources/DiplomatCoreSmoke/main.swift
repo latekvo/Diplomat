@@ -1556,13 +1556,25 @@ do {
                                         tokensLeft: .present(true)),
                     AgentState.runDeadline) == .running,
       "a peer's run is not ended by THIS device's deadline — its claim still holds")
-    // The reaper asks the same function the rung above did, so a window is never closed
-    // under a run this resolver still calls working.
-    check(AgentState.pastDeadline(ancient, tokens: .present(true), now: now,
-                                  deadline: AgentState.runDeadline) != nil
-          && AgentState.pastDeadline(ancient, tokens: .present(true), now: now,
-                                     deadline: nil) == nil,
-      "the deadline the reaper reads is the one the resolver read")
+    // Closing a window is the one destructive thing a tick does, and the gate is the
+    // verdict rather than the clock: `pastDeadline` stays true for the rest of a long
+    // run's life, so re-asking it reaps a five-hour run that stopped on its own.
+    func reaps(_ e: AgentState.Evidence) -> Bool {
+        let states = AgentState.resolve(records: [ancient], evidence: e, now: now,
+                                        deadline: AgentState.runDeadline)
+        return !AgentState.reapable(records: [ancient], states: states).isEmpty
+    }
+    var reported = oldAndWorking
+    reported.tails = .present(["pts/3": atPrompt])
+    reported.activity = .present(["k": AgentState.TurnReport(verb: .idle, at: now)])
+    var sentinelled = oldAndWorking
+    sentinelled.sentinels = .present(["k"])
+    check(reaps(oldAndWorking),
+      "the window of a run nothing could say ever stopped is nobody's")
+    check(!reaps(reported),
+      "…but one whose agent reported the turn over five hours in keeps its window")
+    check(!reaps(sentinelled),
+      "…and so does one whose exit code landed")
     // The two sets the cap and the dedup read, which are deliberately different.
     check(AgentState.occupying.contains(.awaitingInput) == false,
       "a session at its prompt gives its bay back — the cap bounds LOAD")
