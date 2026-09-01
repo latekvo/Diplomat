@@ -9,7 +9,7 @@ import time
 
 import pytest
 
-from diplomat_runtime import autofix, review, telemetry
+from diplomat_runtime import autofix, review, telemetry, tmuxwatch
 from diplomat_runtime.autofix import (
     PRFingerprint,
     PRSnapshot,
@@ -336,10 +336,10 @@ def _spawn_recorder(monkeypatch, finish=False):
     calls = []
 
     def fake_spawn(prompt, preferred, done_path=None, pid_path=None, prompt_file=None,
-                   port=None, settings_file=None):
+                   port=None, settings_file=None, session=None):
         calls.append({"prompt": prompt, "done": done_path, "pid": pid_path,
                       "prompt_file": prompt_file, "port": port,
-                      "settings_file": settings_file})
+                      "settings_file": settings_file, "session": session})
         if finish and done_path:
             with open(done_path, "w") as fh:
                 fh.write("0")
@@ -1687,6 +1687,7 @@ def test_an_agent_left_alive_comes_back_as_an_untracked_row(store, monkeypatch):
     from diplomat_runtime import agentstate as A
     from diplomat_runtime import tmuxwatch
 
+    monkeypatch.setattr(tmuxwatch, "kill_session", lambda name: False)
     monkeypatch.setattr(tmuxwatch, "kill_session_for_tty", lambda tty: False)
     register_run(512, pid=4242, tty="pts/3",
                  dispatched_at=time.time() - (A.RUN_DEADLINE + 3600),
@@ -1704,6 +1705,75 @@ def test_an_agent_left_alive_comes_back_as_an_untracked_row(store, monkeypatch):
     assert not row.tracked and row.pr_number == 512 and row.label == ""
     assert store.free_auto_slots == 1
     assert store._in_flight("https://github.com/o/r/pull/512")
+
+
+def test_a_run_with_no_tty_is_closed_by_the_name_its_session_was_opened_under(
+        store, monkeypatch):
+    """The window a tty cannot reach. A dispatched run whose pid was never adopted has
+    no tty — nothing tells the applet one at spawn, so it comes off the agent process,
+    and the prompt scan that finds this one reports none. The run deadline is the first
+    backstop that can call such a run reapable at all: the stillness clock needs a pane
+    tail to compare against, so before it every reapable run had a tty.
+
+    Retired and not closed, the agent is still in its window: the scan books it straight
+    back as an untracked row holding the same bay and the same PR, having deleted the
+    run directory and priced the run as completed underneath it."""
+    from diplomat_runtime import agentregistry
+    from diplomat_runtime import agentstate as A
+
+    killed = _killed(monkeypatch, by_name=True)
+    record = register_run(512, pid=None, tty="",
+                          dispatched_at=time.time() - (A.RUN_DEADLINE + 3600),
+                          label="Auto · Review-req · #512")
+    # An agent up on the PR, on no tty the scan could name — which is what makes this
+    # run RUNNING for the deadline to overrule, and unreachable by the tty walk.
+    fake_probes(monkeypatch, live_prs=A.Observation.present({512: ""}), tokens=True)
+
+    t = store._agent_tick()
+    assert [r.run_id for r in t.reapable] == [record.run_id], \
+        "the deadline must actually have ended it, or this pins nothing"
+
+    store._settle_agents()
+
+    assert killed == [tmuxwatch.session_name(record.run_id)]
+    assert agentregistry.load() == []
+
+
+def test_the_tty_walk_still_reaches_a_session_this_applet_never_named(store, monkeypatch):
+    """The fallback, and it is not decoration: a run spawned before sessions were named
+    and one the mesh placed here — whose terminal the NODE opened — are both windows
+    with no name of ours on them."""
+    from diplomat_runtime import agentstate as A
+
+    killed = _killed(monkeypatch)   # the name route answers no, as it would for those
+    register_run(512, pid=4242, tty="pts/3",
+                 dispatched_at=time.time() - (A.RUN_DEADLINE + 3600))
+    fake_probes(monkeypatch,
+                processes={4242: A.ProcInfo(tty="pts/3",
+                                            elapsed=A.RUN_DEADLINE + 3600,
+                                            is_agent=True)},
+                live_prs={512}, tails={"pts/3": WORKING}, tokens=True)
+
+    store._settle_agents()
+
+    assert killed == ["pts/3"]
+
+
+def test_a_spawn_names_its_session_after_the_run_it_is_for(store, monkeypatch):
+    """The other end of the same mechanism: the name the reaper computes has to be the
+    name the window was opened under, so it is derived from the run id at both ends
+    rather than recorded at one."""
+    from diplomat_runtime import agentregistry
+
+    calls = _spawn_recorder(monkeypatch)
+    store.dispatch_agent(
+        autofix.AgentJob(kind="review", audit_action="review", label="L",
+                         prompt="P", pr_url="https://github.com/o/r/pull/512",
+                         pr_number=512),
+        autofix.SOURCE_PANEL)
+
+    (record,) = agentregistry.load()
+    assert calls[0]["session"] == tmuxwatch.session_name(record.run_id)
 
 
 def test_the_deadline_switched_off_holds_the_same_run_forever(store, monkeypatch):
@@ -2886,7 +2956,7 @@ def test_a_spawn_failure_stops_the_drain_rather_than_clearing_the_queue(store, m
     attempted: list = []
 
     def refuse(prompt, preferred, done_path=None, pid_path=None, prompt_file=None,
-               port=None, settings_file=None):
+               port=None, settings_file=None, session=None):
         attempted.append(prompt)
         raise review.SpawnError("no terminal emulator found")
 
@@ -2942,11 +3012,18 @@ def test_work_no_monitor_owns_is_not_queued(store, monkeypatch):
 # task's whole context with it.
 
 
-def _killed(monkeypatch):
-    """Record the ttys the reaper closes instead of closing them."""
+def _killed(monkeypatch, by_name=False):
+    """Record what the reaper closes instead of closing it.
+
+    ``by_name`` is whether the run-id route answers. Off by default, so a case says
+    nothing about which route it took unless it means to: every run built here has a
+    tty, and the tty walk is what a session this applet did not name still needs.
+    """
     from diplomat_runtime import tmuxwatch
 
     seen: list[str] = []
+    monkeypatch.setattr(tmuxwatch, "kill_session",
+                        lambda name: bool(by_name and (seen.append(name) or True)))
     monkeypatch.setattr(tmuxwatch, "kill_session_for_tty",
                         lambda tty: seen.append(tty) or True)
     return seen

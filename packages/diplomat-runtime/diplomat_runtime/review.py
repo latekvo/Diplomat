@@ -454,7 +454,8 @@ def shell_command(prompt_file: str, done_path: str | None = None,
 
 def agent_argv(prompt_file: str, done_path: str | None = None,
                pid_path: str | None = None, port: int | None = None,
-               settings_file: str | None = None) -> list[str]:
+               settings_file: str | None = None,
+               session: str | None = None) -> list[str]:
     """What the terminal is asked to run: the agent under the user's INTERACTIVE
     shell (``-i``, so their rc is sourced and a `claude` alias resolves — a plain
     `bash -c` gets neither), inside a tmux session of its own wherever tmux exists.
@@ -473,23 +474,34 @@ def agent_argv(prompt_file: str, done_path: str | None = None,
     watcher to feed, so the bare interactive shell stands.
     """
     return terminal_argv(
-        shell_command(prompt_file, done_path, pid_path, port, settings_file))
+        shell_command(prompt_file, done_path, pid_path, port, settings_file),
+        session=session)
 
 
-def terminal_argv(command: str) -> list[str]:
+def terminal_argv(command: str, session: str | None = None) -> list[str]:
     """One shell command, wrapped the way everything Diplomat opens a window on is
     wrapped: the user's interactive shell, inside a tmux session wherever tmux exists.
 
     Shared by the agent spawn and the runner's own provider-login wizard, because the
     reasons are the same for both — an rc that has to be sourced, and the tmux
     hand-off guard described in :func:`agent_argv`.
+
+    ``session`` names that session, which is what gives a run a handle on its own
+    window. Without one the session is auto-named and the only route back to the
+    window is the tty its agent happens to be on — and a run whose pid was never
+    adopted has no tty, so a backstop that ended it retired it and closed nothing
+    (:func:`tmuxwatch.kill_session_for_tty` refuses an empty tty outright). The macOS
+    spawner records an equivalent handle keyed on the run id, and tries it FIRST.
+    Left unnamed for a window nobody has to find again: the provider-login wizard.
     """
     shell = user_shell()
     if shutil.which("tmux") is None:
         return [shell, "-i", "-c", command]
+    named = ["-s", session] if session else []
     # One string, because that is the single shell-command argument `new-session`
     # takes; tmux hands it to `sh -c`, which splits it back into the argv above.
-    return ["tmux", "new-session", f"{shlex.quote(shell)} -i -c {shlex.quote(command)}"]
+    return ["tmux", "new-session", *named,
+            f"{shlex.quote(shell)} -i -c {shlex.quote(command)}"]
 
 
 def open_terminal(command: str, preferred: SpawnTerminal | None) -> None:
@@ -527,7 +539,8 @@ def spawn_env() -> dict:
 
 def spawn(prompt: str, preferred: SpawnTerminal | None, done_path: str | None = None,
           pid_path: str | None = None, prompt_file: str | None = None,
-          port: int | None = None, settings_file: str | None = None) -> str:
+          port: int | None = None, settings_file: str | None = None,
+          session: str | None = None) -> str:
     """Stage the prompt, open a new terminal window, run the agent. Returns the
     prompt file path. Fully detached from the applet.
 
@@ -536,11 +549,12 @@ def spawn(prompt: str, preferred: SpawnTerminal | None, done_path: str | None = 
     answer, and ``settings_file`` holds the hooks the run reports its own turns
     through — see :func:`shell_command`. ``prompt_file`` skips the staging when
     the caller has already written the prompt somewhere it wants to keep it (the run
-    directory in :mod:`.agentregistry`)."""
+    directory in :mod:`.agentregistry`). ``session`` names the run's tmux session, so a
+    backstop can close its window without a tty — see :func:`terminal_argv`."""
     term = resolved(preferred)
     file = prompt_file or write_prompt(prompt)
     argv = [term.exec_name, *term.prefix,
-            *agent_argv(file, done_path, pid_path, port, settings_file)]
+            *agent_argv(file, done_path, pid_path, port, settings_file, session)]
     try:
         popen_detached(argv, env=spawn_env())
     except OSError as exc:
