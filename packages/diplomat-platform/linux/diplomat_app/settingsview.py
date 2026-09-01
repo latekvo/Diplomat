@@ -720,14 +720,14 @@ class SettingsView(QWidget):
         self._sw_deadline.toggled.connect(self._on_run_deadline_toggled)
         body.addWidget(self._track(SettingRow(
             f"Give up on a task after {cutoff}", self._sw_deadline,
-            summary="Hand the bay back even if the agent still looks busy.",
+            summary="Close the window and hand the bay back, even if the agent still looks busy.",
             detail="Agents report their turn boundaries through hooks staged into each "
                    "run, and a run whose report never comes — a runner without hooks, "
                    "settings that would not stage, an agent wedged with its status bar "
                    "frozen — holds a task-cap bay until you close its window. This is "
                    "the backstop under all of them, and it reads a clock rather than "
-                   f"the run: past {cutoff} an automatic task that is still holding a "
-                   "bay is called done even if its screen says it is working. Its tmux "
+                   f"the run: past {cutoff} an automatic task this device is still "
+                   "showing as working is called done anyway. Its tmux "
                    "session is killed and its row leaves Agent tasks, and killing it is "
                    "what frees the bay — an agent left alive is found by the scan on "
                    "the next pass and takes it straight back. Only while a spending "

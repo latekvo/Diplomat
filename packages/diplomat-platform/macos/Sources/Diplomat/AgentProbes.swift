@@ -494,13 +494,19 @@ enum AgentProbes {
     /// Whether the account this machine's agents spend still has room in it — the
     /// precondition on the resolver's run deadline.
     ///
-    /// `.unsupported`, not `.unavailable`, when no ceiling reads: a box with the probes
-    /// switched off, no Claude Code login, or an OpenRouter key Diplomat cannot price is
-    /// an ordinary box, not one whose probe broke, and the debug dump is where that
-    /// difference is read. Nothing else turns on it — the resolver reads both as "not the
-    /// positive answer the deadline needs", and unlike its sibling `.unsupported` probes
-    /// this observation is not registered with `note`, so neither status reaches the
-    /// probe-health watch.
+    /// `.unsupported` covers every "no reading", including a ceiling that exists but
+    /// would not answer — `AutoBudget.tokensLeft` returns nil for a probe switched off, a
+    /// box with no Claude Code login, and an endpoint that refused alike. That is not a
+    /// distinction lost by accident: nothing downstream makes one. The resolver reads
+    /// `.unsupported` and `.unavailable` identically ("not the positive answer the
+    /// deadline needs"), and unlike its sibling `.unsupported` probes this observation is
+    /// not registered with `note`, so neither status reaches the probe-health watch.
+    ///
+    /// The consequence is worth stating out loud, because it is silent: on a machine
+    /// whose usage endpoint is rate-limiting — one small per-account bucket, shared by
+    /// every Claude Code session on the box — the deadline is disarmed while its switch
+    /// still reads ON. That is the safe direction (nothing is retired on a reading nobody
+    /// took), but it is not the visible one.
     static func tokensLeft() -> Observation<Bool> {
         guard let answer = AutoBudget.tokensLeft() else {
             return .unsupported("are unavailable (no spending limit this machine can read)")
@@ -514,7 +520,7 @@ enum AgentProbes {
     ///
     /// `merged` and `tokens` are passed in rather than probed here: one costs a `gh` call
     /// per PR and the other an HTTPS round trip, and neither belongs on a tick that also
-    /// runs on the panel's repaint. The store refreshes them on its slow poll and the
+    /// runs on the panel's repaint. The store refreshes both on its slow poll and the
     /// ticks in between carry forward whatever that last found (`.unavailable` until the
     /// first).
     static func gather(records: [AgentState.RunRecord], now: TimeInterval,

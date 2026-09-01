@@ -545,7 +545,7 @@ struct SettingsView: View {
     /// a stalled agent moving again; this is what happens when nothing does.
     private var runDeadlineRow: some View {
         SettingRow(title: SettingsView.runDeadlineTitle,
-                   summary: "Hand the bay back even if the agent still looks busy.",
+                   summary: "Close the window and hand the bay back, even if the agent still looks busy.",
                    detail: SettingsView.runDeadlineDetail) {
             switchControl(SettingsView.runDeadlineTitle, $store.runDeadlineEnabled)
         }
@@ -563,8 +563,8 @@ struct SettingsView: View {
         whose report never comes — a runner without hooks, settings that would not stage, \
         an agent wedged with its status bar frozen — holds a task-cap bay until you close \
         its window. This is the backstop under all of them, and it reads a clock rather \
-        than the run: past \(runDeadlineCutoff) an automatic task that is still holding a \
-        bay is called done even if its screen says it is working. Its terminal is closed \
+        than the run: past \(runDeadlineCutoff) an automatic task this device is still \
+        showing as working is called done anyway. Its terminal is closed \
         and its row leaves Agent tasks, and closing it is what frees the bay — an agent \
         left alive is found by the scan on the next pass and takes it straight back. Only \
         while a spending limit both reads and has room left: agents parked waiting for a \

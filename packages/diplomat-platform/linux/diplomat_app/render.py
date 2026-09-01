@@ -227,10 +227,11 @@ def _queue_fixture(store: Store) -> None:
             # dispatched, found only by the prompt scan (what an applet restart or
             # a hand-started session leaves behind).
             live_agents=agentstate.Observation.present({351: "pts/35"}),
-            # Left unread on purpose: #377 is exactly four hours old, so a positive
-            # reading would hand it to the run deadline and cost this picture its
-            # at-the-prompt row.
-            tokens_left=agentstate.Observation.unavailable("not probed"),
+            # Read, and positive: the deadline's precondition is met for this whole
+            # picture, so it doubles as the proof that nothing here is old enough and
+            # occupied enough to be given up on. #377 is exactly four hours old and
+            # keeps its row — it is at its prompt, which handed its bay back already.
+            tokens_left=agentstate.Observation.present(True),
         )
 
     probes.gather = _fixed_probes

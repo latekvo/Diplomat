@@ -55,11 +55,12 @@ enum AgentStateCommand {
             "reapable": t.reapable.map(\.runID).sorted(),
             "freeSlots": t.freeSlots,
             "inFlight": inFlight,
-            // The timing constants, so the parity diff covers the NUMBERS and not only
-            // the verdicts. Every scenario is dated off the Python constants and the
-            // deadline is passed in the payload, so a Swift constant that drifted would
-            // otherwise change nothing any case here can see — while the two applets
-            // retired runs at different ages.
+            // Three timing constants, so the parity diff covers the NUMBERS and not
+            // only the verdicts. `quietTimeout` is already pinned by the scenarios that
+            // sit either side of it, but `runDeadline` is supplied in the payload and no
+            // case lies within `spawnGrace` of its dispatch — so a Swift value that
+            // drifted from the Python one would otherwise change nothing any case here
+            // can see, while the two applets retired runs at different ages.
             "constants": ["runDeadline": AgentState.runDeadline,
                           "quietTimeout": AgentState.quietTimeout,
                           "spawnGrace": AgentState.spawnGrace],

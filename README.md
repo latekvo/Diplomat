@@ -53,9 +53,9 @@ Targets `software-mansion/argent` and shells out to the authenticated `gh` CLI.
 > "I could not look" as "it is gone": a run ends only on positive evidence (its
 > sentinel, its pid missing from a process table that was actually read, or its
 > mesh claim released), and anything else resolves to `unknown`, which keeps its
-> slot and says so. The one clock that ends a run is the
-> [four-hour deadline](#giving-up-on-a-run) an operator can switch off, for the runs
-> no evidence can reach. A run is identified by the pid the shell that runs the
+> slot and says so. The one rung that ends a run on a CLOCK rather than on evidence
+> about that run is the [four-hour deadline](#giving-up-on-a-run) an operator can
+> switch off, and it is the last rung of the ladder rather than one in the middle. A run is identified by the pid the shell that runs the
 > agent writes into
 > `~/.diplomat/agents/<run-id>/pid` before handing over to it, and the book survives
 > a restart on both platforms. `DIPLOMAT_AGENTS=1 python -m
@@ -944,8 +944,8 @@ can reach - a runner with no hooks, settings that would not stage, an agent wedg
 behind a screen nothing can dump - holds its bay until you close the window. One
 switch answers that (Settings → **STALLED AGENTS** → *Give up on a task after 4h*,
 **default on**): an automatic run this machine is executing that has gone on for four
-hours and is *still holding a bay* is called done whatever its screen still says, its
-record retired and its window closed with it.
+hours and that the ladder above still calls *working* is called done anyway, its record
+retired and its window closed with it.
 
 It is the last rung of the ladder, not the first, and that is the whole of its
 safety. Every answer above it is a better one than a clock, so each of them wins:
@@ -1117,8 +1117,8 @@ and ⏻) swaps the panel to a settings screen:
 - **Auto-continue agents on API errors** - the terminal watcher toggle, plus a
   count of nudges sent.
 - **Give up on a task after 4h** (**default on**) - the last-resort backstop under
-  every rung that reads the run itself; it hands back the bay of an automatic task
-  still holding one at four hours, working or not. See
+  every rung that reads the run itself; at four hours it closes the window of an
+  automatic task the ladder still calls working and hands its bay back. See
   [Giving up on a run](#giving-up-on-a-run). In `~/.diplomat/config.json` beside the
   cap it hands bays back to.
 - **Tools - color & visibility** - a **color well** to retint each tool plus a switch

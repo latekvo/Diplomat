@@ -767,8 +767,11 @@ def past_deadline(record: RunRecord, tokens: Observation, now: float,
       stamp is when the scan first SAW the agent, so the age here would not even be
       the run's.
 
-    Together with the RUNNING the caller requires, that is exactly :func:`cap_load`'s
-    membership test — the rung reaches a run when, and only when, it is holding a bay.
+    Every run this reaches is one :func:`cap_load` is counting — a bay is what there is
+    to hand back — but not the reverse, and the gap is deliberate on both sides. An
+    untracked run holds a bay and is exempt above. So is a run on a tick that resolved
+    UNKNOWN, because OCCUPYING counts that and the RUNNING the caller requires does not:
+    a bay held by a run nobody could look at this pass is a bay kept.
     """
     if deadline is None or not record.runs_here or record.untracked:
         return None

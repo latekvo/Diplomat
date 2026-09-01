@@ -681,8 +681,11 @@ public enum AgentState {
     ///   Its stamp is when the scan first SAW the agent, so the age here would not even
     ///   be the run's.
     ///
-    /// Together with the `.running` the caller requires, that is exactly `capLoad`'s
-    /// membership test — the rung reaches a run when, and only when, it is holding a bay.
+    /// Every run this reaches is one `capLoad` is counting — a bay is what there is to
+    /// hand back — but not the reverse, and the gap is deliberate on both sides. An
+    /// untracked run holds a bay and is exempt above. So is a run on a tick that resolved
+    /// `.unknown`, because `occupying` counts that and the `.running` the caller requires
+    /// does not: a bay held by a run nobody could look at this pass is a bay kept.
     public static func pastDeadline(_ record: RunRecord, tokens: Observation<Bool>,
                                     now: TimeInterval,
                                     deadline: TimeInterval?) -> TimeInterval? {

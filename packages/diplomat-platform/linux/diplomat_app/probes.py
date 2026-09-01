@@ -492,12 +492,19 @@ def tokens_left() -> Observation:
     """Whether the account this machine's agents spend still has room in it — the
     precondition on the resolver's run deadline.
 
-    UNSUPPORTED, not UNAVAILABLE, when no ceiling reads: a box with the probes switched
-    off, no Claude Code login, or an OpenRouter key Diplomat cannot price is an ordinary
-    box, not one whose probe broke, and the debug dump is where that difference is read.
-    Nothing else turns on it — the resolver reads both as "not the positive answer the
-    deadline needs", and unlike its four sibling UNSUPPORTED probes this observation is
-    not registered with :func:`_note`, so neither status reaches the probe-health watch.
+    UNSUPPORTED covers every "no reading", including a ceiling that exists but would not
+    answer — :func:`autobudget.tokens_left` returns ``None`` for a probe switched off, a
+    box with no Claude Code login, and an endpoint that refused alike. That is not a
+    distinction lost by accident: nothing downstream makes one. The resolver reads
+    UNSUPPORTED and UNAVAILABLE identically ("not the positive answer the deadline
+    needs"), and unlike its four sibling UNSUPPORTED probes this observation is not
+    registered with :func:`_note`, so neither status reaches the probe-health watch.
+
+    The consequence is worth stating out loud, because it is silent: on a machine whose
+    usage endpoint is rate-limiting — one small per-account bucket, shared by every
+    Claude Code session on the box — the deadline is disarmed while its switch still
+    reads ON. That is the safe direction (nothing is retired on a reading nobody took),
+    but it is not the visible one.
     """
     from diplomat_runtime import autobudget
 
@@ -515,9 +522,9 @@ def gather(records: list[RunRecord], now: float, *,
 
     ``merged`` and ``tokens`` are passed in rather than probed here: one costs a ``gh``
     call per PR and the other an HTTPS round trip, and neither belongs on a tick that
-    also runs on the panel's repaint. The store refreshes them on its slow poll and the
-    ticks in between carry forward whatever that last found (UNAVAILABLE until the
-    first).
+    also runs on the panel's repaint. Each is whatever the store last carried, and
+    UNAVAILABLE until something refreshes it — which for ``merged`` on this platform is
+    nothing at all, see #111.
     """
     from diplomat_runtime import agentregistry, agentstate, review
 
