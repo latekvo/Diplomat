@@ -417,6 +417,22 @@ public enum AgentState {
         /// finished the ordinary way, alive at its prompt with the task on the screen.
         /// Reaping it closes the window over the very thing the operator asked for.
         public var expired: Bool = false
+        /// Whether nothing on this machine had anything to LOOK FOR — set by the one
+        /// rung that answers `.unknown` about the record rather than about a probe.
+        ///
+        /// The deadline overrules a `.running` and exactly one `.unknown`, and the two
+        /// `.unknown`s are not separable by state. "The process table could not be
+        /// read" is an evidence outage, and ending a run on a clock during one retires
+        /// it for being old on the single pass that saw nothing. A run with neither a
+        /// pid nor a PR number is not an outage at all — every probe answered, and none
+        /// of them was given anything to look for — and that answer is the same on every
+        /// future tick, so without this the record holds its bay for the life of the
+        /// applet.
+        ///
+        /// It is also what keeps such a run out of `reapable`: a window is closed on the
+        /// strength of having SEEN the agent sitting in it, and this is the one ending
+        /// where nothing ever did.
+        public var unfindable: Bool = false
 
         public var occupying: Bool { AgentState.occupying.contains(state) }
     }
@@ -612,14 +628,17 @@ public enum AgentState {
     ///    machine can see a process on another one;
     /// 5. a local run is judged by its pid, and its screen only classifies a pid that is
     ///    already known to be alive;
-    /// 6. the deadline, when the operator has one, and LAST: it overrules only a
+    /// 6. the deadline, when the operator has one, and LAST: what it overrules is a
     ///    `.running` — the answer that means "this bay is spoken for and nothing here
     ///    can say when it will come back". Every other answer the ladder reaches is a
     ///    better one than a clock, and each of them is a reason this rung must not fire:
     ///    an ended run already named how it stopped, `.awaitingInput` is a session at
     ///    its prompt that gave its bay back and still holds a task worth reading, and
-    ///    `.unknown` is the tick where the evidence could not be read at all — ending a
-    ///    run on that would retire it for being old on the one pass that saw nothing.
+    ///    `.unknown` is almost always the tick where the evidence could not be read at
+    ///    all — ending a run on that would retire it for being old on the one pass that
+    ///    saw nothing. Its one exception is the `.unknown` that is about the record
+    ///    rather than a probe (`Resolution.unfindable`), which no later pass can improve
+    ///    on.
     public static func resolveOne(_ record: RunRecord, evidence: Evidence,
                                   now: TimeInterval,
                                   deadline: TimeInterval? = nil) -> Resolution {
@@ -639,7 +658,7 @@ public enum AgentState {
         let out = record.placement == .meshPeer
             ? resolvePeer(record, evidence: evidence, now: now, done: done)
             : resolveLocal(record, evidence: evidence, now: now, done: done)
-        guard out.state == .running,
+        guard out.state == .running || out.unfindable,
               let expired = pastDeadline(record, tokens: evidence.tokensLeft, now: now,
                                          deadline: deadline)
         else { return out }
@@ -652,6 +671,7 @@ public enum AgentState {
                          + "\(ApiErrorMatch.humanInterval(expired)), "
                          + "past the \(cutoff) deadline")
         ended.expired = true
+        ended.unfindable = out.unfindable
         return ended
     }
 
@@ -683,9 +703,10 @@ public enum AgentState {
     ///
     /// Every run this reaches is one `capLoad` is counting — a bay is what there is to
     /// hand back — but not the reverse, and the gap is deliberate on both sides. An
-    /// untracked run holds a bay and is exempt above. So is a run on a tick that resolved
-    /// `.unknown`, because `occupying` counts that and the `.running` the caller requires
-    /// does not: a bay held by a run nobody could look at this pass is a bay kept.
+    /// untracked run holds a bay and is exempt above. So is a run on a tick whose
+    /// evidence could not be read, which the caller keeps out by asking this about a
+    /// `.running` verdict or an unfindable one and no other: a bay held by a run nobody
+    /// could look at this pass is a bay kept.
     public static func pastDeadline(_ record: RunRecord, tokens: Observation<Bool>,
                                     now: TimeInterval,
                                     deadline: TimeInterval?) -> TimeInterval? {
@@ -816,8 +837,11 @@ public enum AgentState {
         }
         guard let pr = record.prNumber else {
             // Nothing to look for: a run with neither a pid nor a PR cannot be found by
-            // either mechanism, so its absence is not evidence of anything.
-            return done(.unknown, "no pid recorded \(secs(age)) after dispatch")
+            // either mechanism, so its absence is not evidence of anything. The one rung
+            // that stamps `unfindable`; see `Resolution.unfindable`.
+            var nowhere = done(.unknown, "no pid recorded \(secs(age)) after dispatch")
+            nowhere.unfindable = true
+            return nowhere
         }
         return done(.finished, "no agent for PR #\(pr) in the process table")
     }
@@ -1093,13 +1117,20 @@ public enum AgentState {
     /// task, and the operator may still want to read it. So is a merged one, for the
     /// same reason.
     ///
+    /// The deadline's own exception is the run nothing could find
+    /// (`Resolution.unfindable`): a clock ended that one too, but no probe ever saw its
+    /// agent, so there is no window here for the verdict to vouch for. What is left is
+    /// exactly the runs this tick SAW alive: the stillness rung only classifies a
+    /// process already known to be up, and the other verdict the deadline overrules is a
+    /// `.running`.
+    ///
     /// `runsHere` is not re-checked: both stamps already imply it — the stillness rung
     /// only runs inside `resolveLocal`, and `pastDeadline` refuses a peer.
     public static func reapable(records: [RunRecord],
                                 states: [String: Resolution]) -> [RunRecord] {
         records.filter { r in
             guard let s = states[r.runID] else { return false }
-            return s.wedged || s.expired
+            return s.wedged || (s.expired && !s.unfindable)
         }
     }
 

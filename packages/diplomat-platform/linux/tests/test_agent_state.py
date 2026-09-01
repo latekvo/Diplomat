@@ -473,6 +473,13 @@ CASES = [
      ev(processes={4242: proc(elapsed=PAST_DEADLINE)}, tails={"pts/3": WORKING},
         sentinels={"r1"}),
      A.FINISHED, "completion sentinel present"),
+    # The one UNKNOWN it does end. The scan WORKED and came back empty, and a run with
+    # neither a pid nor a PR number gave it nothing to look for either way — so this
+    # verdict is the same on every future tick and the bay never comes back on its own.
+    ("a run nothing could ever find is ended by the deadline",
+     rec(pid=None, pr_number=None, dispatched_at=T0 - PAST_DEADLINE), ev(live_agents={}),
+     A.FINISHED, "no pid recorded 18000s after dispatch; has run for 5h, "
+                 "past the 4h deadline"),
 ]
 
 
@@ -520,6 +527,53 @@ def test_only_the_run_deadline_marks_a_run_expired():
     verdicts = [A.resolve_one(r, e, T0, A.RUN_DEADLINE) for _n, r, e, _s, _rr in CASES]
     assert any(v.expired for v in verdicts)
     assert any(v.state == A.FINISHED and not v.expired for v in verdicts)
+
+
+def test_only_the_run_with_nothing_to_look_for_is_marked_unfindable():
+    """``unfindable`` is what lets a clock end one UNKNOWN and not the others, so like
+    ``wedged`` and ``expired`` it has to name ONE rung.
+
+    The set it must not widen to is UNKNOWN. Every other UNKNOWN here is a probe that
+    failed, and ending one of those retires a run for being old on the single pass that
+    could not see it — the failure the deadline was put below the evidence rungs to
+    avoid."""
+    for name, record, evidence, _state, _reason in CASES:
+        got = A.resolve_one(record, evidence, T0, A.RUN_DEADLINE)
+        by_rung = "no pid recorded" in got.reason
+        assert got.unfindable is by_rung, f"{name}: {got.reason!r}"
+    # …and the table really does contain both sides of that distinction: a run nothing
+    # had anything to look for, and an UNKNOWN that is a probe reporting it could not.
+    verdicts = [A.resolve_one(r, e, T0, A.RUN_DEADLINE) for _n, r, e, _s, _rr in CASES]
+    assert any(v.unfindable for v in verdicts)
+    assert any(v.state == A.UNKNOWN and not v.unfindable for v in verdicts)
+
+
+def test_a_bay_held_by_a_run_nothing_can_find_comes_back():
+    """What the stamp buys. A Fix-issues ask is dispatched with no PR number, and if its
+    shell dies before writing the pid file the record has neither of the two things any
+    probe here looks for — so it resolves UNKNOWN, which OCCUPYING counts, forever.
+
+    The window is left alone. No probe ever saw an agent for this run — it has no tty
+    for anything to walk out of, and whatever terminal the spawn opened is most likely
+    showing what killed the shell before it could write a pid."""
+    record = rec(pid=None, pr_number=None, dispatched_at=T0 - PAST_DEADLINE)
+    t = A.tick([record], ev(live_agents={}), T0, 4, A.RUN_DEADLINE)
+    assert t.cap_load == set()
+    assert t.free_slots == 4
+    assert [r.run_id for r in t.retirable] == ["r1"]
+    assert t.reapable == []
+
+
+def test_the_deadline_still_spares_the_run_nobody_could_look_at():
+    """The distinction, on the tick where it costs something. Same record, same age,
+    same deadline as the case above — and the only difference is that the scan FAILED
+    rather than came back empty. That one is an evidence outage, and the next pass may
+    well find the agent."""
+    record = rec(pid=None, pr_number=None, dispatched_at=T0 - PAST_DEADLINE)
+    blind = ev(live_agents=A.Observation.unavailable("ps could not be read"))
+    got = A.resolve_one(record, blind, T0, A.RUN_DEADLINE)
+    assert got.state == A.UNKNOWN, got.reason
+    assert not got.expired and not got.unfindable
 
 
 def test_the_reap_gate_is_the_verdict_rather_than_the_clocks():
