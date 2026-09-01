@@ -1152,7 +1152,39 @@ final class Store: ObservableObject {
             }
         }
         noteStaleBusyMarker()
+        noteBlindBudgetGate()
     }
+
+    /// Say out loud when the budget gate has nothing left to gate on.
+    ///
+    /// What is left of the rate-limit windows comes from one probe, and `budgetDecide`
+    /// SKIPS a ceiling it cannot read — with neither window readable every task is
+    /// affordable. So a probe that stops answering does not fail the gate closed or
+    /// loudly: it stops gating, while the toggle still reads on and nothing else looks
+    /// wrong. A stale `.credentials.json` did exactly that here for four days, ending
+    /// in a night of agents dispatched into an exhausted weekly window.
+    ///
+    /// Only what was measured is stated: rounds asked, none answered. Whether that is a
+    /// dead credential, a revoked login or an endpoint outage is the operator's to find
+    /// out, and the wording must not guess.
+    private func noteBlindBudgetGate() {
+        let (rounds, readings) = Quota.probeStats()
+        guard readings == 0, rounds >= Store.quotaSample, !quotaWarned,
+              AutoBudget.enabled else { return }
+        quotaWarned = true
+        AuditLog.log("auto", "warn",
+                     "Asked what is left of the rate-limit windows \(rounds) times "
+                     + "without one answer — the automatic budget is gating on nothing, "
+                     + "and auto work will dispatch whatever the limits have left")
+        refreshAudit()
+    }
+
+    /// How many quota probe rounds must come back empty before a blind budget gate is
+    /// called out. Low, because unlike `markerSample` there is no innocent machine that
+    /// produces this reading: a probe that is switched off or logged out never rounds at
+    /// all, so every round counted here is one that asked and was refused. Matches the
+    /// Linux applet's threshold.
+    private static let quotaSample = 20
 
     /// Say out loud when no CLI's interrupt hint has ever once matched.
     ///
@@ -1183,12 +1215,14 @@ final class Store: ObservableObject {
     /// at its prompt. Matches the Linux applet's threshold.
     private static let markerSample = 40
 
-    /// Which probes have had their silence reported, and whether the stale-marker warning
-    /// has been given. Both latch once per episode; the probe one clears when that probe
-    /// answers again, the marker one does not — a machine that has read that many screens
-    /// without a single hint says so once and then stops.
+    /// Which probes have had their silence reported, and whether the stale-marker and
+    /// blind-budget warnings have been given. All latch once per episode; the probe one
+    /// clears when that probe answers again, the other two do not — a machine that has
+    /// read that many screens without a single hint, or asked that many times without a
+    /// single answer, says so once and then stops.
     private var probeWarned: [String: Bool] = [:]
     private var markerWarned = false
+    private var quotaWarned = false
 
     /// Which of the tracked PRs GitHub calls MERGED, carried forward by the fast ticks
     /// between the slow refreshes that probe it. `.unavailable` until the first, which

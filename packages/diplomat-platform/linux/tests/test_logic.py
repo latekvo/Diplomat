@@ -680,3 +680,74 @@ if __name__ == "__main__":
         fn(**kwargs)
         print(f"PASS {fn.__name__}")
     print(f"\n{len(fns)} tests passed")
+
+
+def test_a_budget_gate_with_nothing_to_gate_on_says_so(monkeypatch):
+    """The failure that has no other symptom.
+
+    What is left of the rate-limit windows comes from one probe, and
+    ``autofix.budget_decide`` SKIPS a ceiling it cannot read — a call where neither
+    window has a reading is affordable. So a probe that stops answering does not fail
+    the gate closed or loudly: it quietly stops gating while the toggle still reads on.
+    That ran for four days here on a stale credentials file, and ended in a night of
+    agents dispatched into an exhausted weekly window.
+    """
+    from diplomat_runtime import activity, autobudget, quota
+
+    s = Store()
+    monkeypatch.setattr(autobudget, "enabled", lambda: True)
+    monkeypatch.setattr(quota, "probe_stats", lambda: (Store._QUOTA_SAMPLE, 0))
+    logged: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(activity, "log", lambda *a: logged.append(a))
+
+    s._note_blind_budget_gate()
+    assert len(logged) == 1
+    assert logged[0][1] == "warn"
+    assert "gating on nothing" in logged[0][2]
+
+    # Latched: an operator gets told once, not once every tick for the rest of the day.
+    s._note_blind_budget_gate()
+    assert len(logged) == 1
+
+
+def test_a_budget_gate_that_has_a_reading_is_not_reported(monkeypatch):
+    """The control. One answer out of the sample means the probe works and the gate is
+    gating on something — reporting that would train the operator to ignore the line."""
+    from diplomat_runtime import activity, autobudget, quota
+
+    s = Store()
+    monkeypatch.setattr(autobudget, "enabled", lambda: True)
+    monkeypatch.setattr(quota, "probe_stats", lambda: (Store._QUOTA_SAMPLE, 1))
+    logged: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(activity, "log", lambda *a: logged.append(a))
+    s._note_blind_budget_gate()
+    assert logged == []
+
+
+def test_a_switched_off_budget_gate_is_not_reported(monkeypatch):
+    """It is gating on nothing by the operator's own choice, and a warning about a
+    limit they turned off is noise. The probe still feeds the Telemetry screen, so it
+    keeps rounding either way."""
+    from diplomat_runtime import activity, autobudget, quota
+
+    s = Store()
+    monkeypatch.setattr(autobudget, "enabled", lambda: False)
+    monkeypatch.setattr(quota, "probe_stats", lambda: (Store._QUOTA_SAMPLE, 0))
+    logged: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(activity, "log", lambda *a: logged.append(a))
+    s._note_blind_budget_gate()
+    assert logged == []
+
+
+def test_a_gate_short_of_the_sample_waits(monkeypatch):
+    """A handful of refusals is an endpoint having a moment, not a blind gate. The
+    threshold is what keeps the line meaning something when it does appear."""
+    from diplomat_runtime import activity, autobudget, quota
+
+    s = Store()
+    monkeypatch.setattr(autobudget, "enabled", lambda: True)
+    monkeypatch.setattr(quota, "probe_stats", lambda: (Store._QUOTA_SAMPLE - 1, 0))
+    logged: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(activity, "log", lambda *a: logged.append(a))
+    s._note_blind_budget_gate()
+    assert logged == []

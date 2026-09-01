@@ -167,6 +167,13 @@ class Store(QObject):
     # produces the same reading: every agent really can be sitting at its prompt.
     _MARKER_SAMPLE = 40
 
+    # How many quota probe rounds must come back empty before a blind budget gate is
+    # worth reporting. Low, because unlike ``_MARKER_SAMPLE`` there is no innocent
+    # machine that produces this reading: a probe that is switched off or logged out
+    # never rounds at all, so every round counted here is one that asked and was
+    # refused.
+    _QUOTA_SAMPLE = 20
+
     def __init__(self) -> None:
         super().__init__()
         self.prs: list[OpenPR] = []
@@ -222,6 +229,7 @@ class Store(QObject):
         # per episode rather than one per tick, and another when they come back.
         self._probe_warned: dict[str, bool] = {}
         self._marker_warned = False
+        self._quota_warned = False
         # Whether the "deferring auto work" note has been logged for the current
         # at-capacity episode (see _log_at_capacity), and for the current
         # out-of-budget one (see _log_unaffordable). Two flags, not one: a machine
@@ -2193,6 +2201,35 @@ class Store(QObject):
                 activity.log("auto", "probe-recovered", f"Agent {h.name} readable again")
                 self.refresh_activity()
         self._note_stale_busy_marker()
+        self._note_blind_budget_gate()
+
+    def _note_blind_budget_gate(self) -> None:
+        """Say out loud when the budget gate has nothing left to gate on.
+
+        What is left of the rate-limit windows comes from one probe, and
+        ``budget_decide`` SKIPS a ceiling it cannot read — with neither window readable
+        every task is affordable. So a probe that stops answering does not fail the
+        gate closed or loudly: it stops gating, while the toggle still reads on and
+        nothing else looks wrong. A stale ``.credentials.json`` did exactly that here
+        for four days, ending in a night of agents dispatched into an exhausted weekly
+        window.
+
+        Only what was measured is stated: rounds asked, none answered. Whether that is
+        a dead credential, a revoked login or an endpoint outage is the operator's to
+        find out, and the wording must not guess.
+        """
+        from diplomat_runtime import quota
+
+        rounds, readings = quota.probe_stats()
+        if (readings or rounds < self._QUOTA_SAMPLE or self._quota_warned
+                or not autobudget.enabled()):
+            return
+        self._quota_warned = True
+        activity.log("auto", "warn",
+                     f"Asked what is left of the rate-limit windows {rounds} times "
+                     f"without one answer — the automatic budget is gating on nothing, "
+                     f"and auto work will dispatch whatever the limits have left")
+        self.refresh_activity()
 
     def _note_stale_busy_marker(self) -> None:
         """Say out loud when no CLI's interrupt hint has ever once matched.
