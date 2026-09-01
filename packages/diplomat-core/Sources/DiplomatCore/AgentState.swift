@@ -675,6 +675,19 @@ public enum AgentState {
         return ended
     }
 
+    /// Whether the run deadline may end THIS run at all, leaving aside its clock and
+    /// the token reading.
+    ///
+    /// Split out of `pastDeadline` because the probe layer asks it too: the reading that
+    /// gates the rung is taken in the currencies these runs spend (`AutoBudget
+    /// .tokensLeft`), and a limit that no run this answers true for is drawing on says
+    /// nothing about the rung. Two spellings of the same set would drift, and the drift
+    /// would be silent — a reading about the wrong accounts still reads true or false.
+    public static func deadlineApplies(_ record: RunRecord) -> Bool {
+        record.runsHere && !record.untracked
+            && record.source == AgentDispatchGate.Source.auto.rawValue
+    }
+
     /// How long this run has been going, once that is long enough to call it over — nil
     /// when it is not, or when nothing here may call it over at all.
     ///
@@ -710,8 +723,7 @@ public enum AgentState {
     public static func pastDeadline(_ record: RunRecord, tokens: Observation<Bool>,
                                     now: TimeInterval,
                                     deadline: TimeInterval?) -> TimeInterval? {
-        guard let cutoff = deadline, record.runsHere, !record.untracked,
-              record.source == AgentDispatchGate.Source.auto.rawValue,
+        guard let cutoff = deadline, deadlineApplies(record),
               tokens.value == true else { return nil }
         let age = now - record.dispatchedAt
         return age >= cutoff ? age : nil

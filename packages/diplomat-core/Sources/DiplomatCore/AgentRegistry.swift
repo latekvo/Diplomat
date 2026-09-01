@@ -257,6 +257,18 @@ public enum AgentRegistry {
         read(runnerPath(runID))
     }
 
+    /// Which agent CLIs the runs the run deadline could end were started under — what
+    /// `AutoBudget.tokensLeft` is asked in the currencies of.
+    ///
+    /// Only those runs: an untracked one the rung refuses by name, a peer's spends the
+    /// peer's account, and a panel click holds no bay of the automatic cap, so a limit
+    /// any of them draws on says nothing about the rung (`AgentState.deadlineApplies`).
+    /// `""` for a run with no record of its own is passed through rather than dropped —
+    /// the reader is what decides what to make of it.
+    public static func runners(of records: [AgentState.RunRecord]) -> Set<String> {
+        Set(records.filter(AgentState.deadlineApplies).map { runRunner($0.runID) })
+    }
+
     /// Record the port this run's OpenCode server will answer on.
     ///
     /// The applet picks it rather than the agent, because the applet is the one that puts

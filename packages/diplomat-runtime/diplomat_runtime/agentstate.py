@@ -774,6 +774,21 @@ def resolve_one(record: RunRecord, evidence: Evidence, now: float,
                    expired=True, unfindable=out.unfindable)
 
 
+def deadline_applies(record: RunRecord) -> bool:
+    """Whether the run deadline may end THIS run at all, leaving aside its clock and
+    the token reading.
+
+    Split out of :func:`past_deadline` because the probe layer asks it too: the reading
+    that gates the rung is taken in the currencies these runs spend
+    (:func:`autobudget.tokens_left`), and a limit that no run this answers True for is
+    drawing on says nothing about the rung. Two spellings of the same set would drift,
+    and the drift would be silent — a reading about the wrong accounts still reads True
+    or False.
+    """
+    return (record.runs_here and not record.untracked
+            and record.source == SOURCE_AUTO)
+
+
 def past_deadline(record: RunRecord, tokens: Observation, now: float,
                   deadline: float | None) -> float | None:
     """How long this run has been going, once that is long enough to call it over —
@@ -809,9 +824,7 @@ def past_deadline(record: RunRecord, tokens: Observation, now: float,
     or an unfindable one and no other: a bay held by a run nobody could look at this
     pass is a bay kept.
     """
-    if deadline is None or not record.runs_here or record.untracked:
-        return None
-    if record.source != SOURCE_AUTO:
+    if deadline is None or not deadline_applies(record):
         return None
     if not (tokens.ok and tokens.value):
         return None
