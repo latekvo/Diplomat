@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "szpont"
-version = "0.66.0"
+version = "0.67.0"
 description = "Install-and-run for Diplomat (Szpont Yon): fetches the checkout, builds it, and starts the applet"
 readme = "README.md"
 requires-python = ">=3.10"
