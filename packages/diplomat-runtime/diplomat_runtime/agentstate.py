@@ -543,6 +543,21 @@ class Resolution:
     #: screen. Reaping it closes the window over the very thing the operator asked
     #: for.
     expired: bool = False
+    #: Whether nothing on this machine had anything to LOOK FOR — set by the one rung
+    #: that answers UNKNOWN about the record rather than about a probe.
+    #:
+    #: The deadline overrules a RUNNING and exactly one UNKNOWN, and the two UNKNOWNs
+    #: are not separable by state. "The process table could not be read" is an evidence
+    #: outage, and ending a run on a clock during one retires it for being old on the
+    #: single pass that saw nothing. A run with neither a pid nor a PR number is not an
+    #: outage at all — every probe answered, and none of them was given anything to
+    #: look for — and that answer is the same on every future tick, so without this the
+    #: record holds its bay for the life of the applet.
+    #:
+    #: It is also what keeps such a run out of :func:`reapable`: a window is closed on
+    #: the strength of having SEEN the agent sitting in it, and this is the one ending
+    #: where nothing ever did.
+    unfindable: bool = False
 
     @property
     def occupying(self) -> bool:
@@ -550,7 +565,8 @@ class Resolution:
 
     def to_json(self) -> dict:
         return {"runId": self.run_id, "state": self.state, "reason": self.reason,
-                "wedged": self.wedged, "expired": self.expired}
+                "wedged": self.wedged, "expired": self.expired,
+                "unfindable": self.unfindable}
 
 
 # MARK: - Claim sightings (pure, but stateful across ticks)
@@ -715,14 +731,16 @@ def resolve_one(record: RunRecord, evidence: Evidence, now: float,
        machine can see a process on another one;
     5. a local run is judged by its pid, and its screen only classifies a pid that is
        already known to be alive;
-    6. the deadline, when the operator has one, and LAST: it overrules only a RUNNING —
-       the answer that means "this bay is spoken for and nothing here can say when it
+    6. the deadline, when the operator has one, and LAST: what it overrules is a RUNNING
+       — the answer that means "this bay is spoken for and nothing here can say when it
        will come back". Every other answer the ladder reaches is a better one than a
        clock, and each of them is a reason this rung must not fire: ENDED already named
        how the run stopped, AWAITING_INPUT is a session at its prompt that gave its bay
-       back and still holds a task worth reading, and UNKNOWN is the tick where the
-       evidence could not be read at all — ending a run on that would retire it for
-       being old on the one pass that saw nothing.
+       back and still holds a task worth reading, and UNKNOWN is almost always the tick
+       where the evidence could not be read at all — ending a run on that would retire
+       it for being old on the one pass that saw nothing. Its one exception is the
+       UNKNOWN that is about the record rather than a probe
+       (:attr:`Resolution.unfindable`), which no later pass can improve on.
     """
     def done(state: str, reason: str) -> Resolution:
         return Resolution(record.run_id, state, reason)
@@ -742,7 +760,7 @@ def resolve_one(record: RunRecord, evidence: Evidence, now: float,
         out = _resolve_peer(record, evidence, now, done)
     else:
         out = _resolve_local(record, evidence, now, done)
-    if out.state != RUNNING:
+    if out.state != RUNNING and not out.unfindable:
         return out
     expired = past_deadline(record, evidence.tokens_left, now, deadline)
     if expired is None:
@@ -753,7 +771,7 @@ def resolve_one(record: RunRecord, evidence: Evidence, now: float,
     return replace(done(FINISHED,
                         f"{out.reason}; has run for {apiwatch.human_interval(expired)}"
                         f", past the {apiwatch.human_interval(deadline)} deadline"),
-                   expired=True)
+                   expired=True, unfindable=out.unfindable)
 
 
 def past_deadline(record: RunRecord, tokens: Observation, now: float,
@@ -786,9 +804,10 @@ def past_deadline(record: RunRecord, tokens: Observation, now: float,
 
     Every run this reaches is one :func:`cap_load` is counting — a bay is what there is
     to hand back — but not the reverse, and the gap is deliberate on both sides. An
-    untracked run holds a bay and is exempt above. So is a run on a tick that resolved
-    UNKNOWN, because OCCUPYING counts that and the RUNNING the caller requires does not:
-    a bay held by a run nobody could look at this pass is a bay kept.
+    untracked run holds a bay and is exempt above. So is a run on a tick whose evidence
+    could not be read, which the caller keeps out by asking this about a RUNNING verdict
+    or an unfindable one and no other: a bay held by a run nobody could look at this
+    pass is a bay kept.
     """
     if deadline is None or not record.runs_here or record.untracked:
         return None
@@ -907,8 +926,10 @@ def _resolve_without_pid(record: RunRecord, evidence: Evidence, now: float,
         return done(STARTING, f"dispatched {age:.0f}s ago, no pid yet")
     if record.pr_number is None:
         # Nothing to look for: a run with neither a pid nor a PR cannot be found by
-        # either mechanism, so its absence is not evidence of anything.
-        return done(UNKNOWN, f"no pid recorded {age:.0f}s after dispatch")
+        # either mechanism, so its absence is not evidence of anything. The one rung
+        # that stamps `unfindable`; see :attr:`Resolution.unfindable`.
+        return replace(done(UNKNOWN, f"no pid recorded {age:.0f}s after dispatch"),
+                       unfindable=True)
     return done(FINISHED, f"no agent for PR #{record.pr_number} in the process table")
 
 
@@ -1157,12 +1178,19 @@ def reapable(records: list[RunRecord],
     at its prompt holding the finished task, and the operator may still want to read
     it. So is a merged one, for the same reason.
 
+    The deadline's own exception is the run nothing could find
+    (:attr:`Resolution.unfindable`): a clock ended that one too, but no probe ever saw
+    its agent, so there is no window here for the verdict to vouch for. What is left is
+    exactly the runs this tick SAW alive: the stillness rung only classifies a process
+    already known to be up, and the other verdict the deadline overrules is a RUNNING.
+
     ``runs_here`` is not re-checked: both stamps already imply it — the stillness rung
     only runs inside :func:`_resolve_local`, and :func:`past_deadline` refuses a peer.
     """
     return [r for r in records
             if r.run_id in states
-            and (states[r.run_id].wedged or states[r.run_id].expired)]
+            and (states[r.run_id].wedged
+                 or (states[r.run_id].expired and not states[r.run_id].unfindable))]
 
 
 def free_slots(limit: int, occupied: int) -> int:
