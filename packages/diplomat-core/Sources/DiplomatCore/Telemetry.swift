@@ -406,6 +406,15 @@ public enum Telemetry {
 
     // MARK: - Rate-limit windows over time
 
+    /// How long a quota reading stays an answer to "what is left right now" — the
+    /// silence the chart draws through, and the age past which the headline reads
+    /// "—". One bound for both, or a line that has broken ends up captioned with a
+    /// figure.
+    public static var quotaFreshSecs: Double {
+        let model = try? CoreAssets.telemetry()
+        return (model?.quotaFreshSamples ?? 4) * (model?.sampleIntervalSecs ?? 900)
+    }
+
     /// One quota reading: what fraction of each rate-limit window was still unspent.
     public struct QuotaPoint: Equatable {
         public let at: Double
@@ -587,6 +596,7 @@ public enum Telemetry {
 
         let series = pendingSeries(ledger.tasks, now: now, days: days, steps: steps)
         let quota = quotaSeries(ledger.samples, now: now, days: days)
+        let fresh = quotaFreshSecs
         let (repo, other) = tokenSplit(samples)
         let total = repo + other
 
@@ -604,11 +614,14 @@ public enum Telemetry {
             runSamples: runs.count,
             waitSamples: waits.count,
             quota: quota,
-            // The LAST reading that actually carried a value, not the last sample:
-            // a probe that has been down for an hour must not blank a figure it
-            // measured perfectly well an hour ago.
-            sessionLeftPct: quota.last(where: { $0.sessionPct != nil })?.sessionPct,
-            weekLeftPct: quota.last(where: { $0.weekPct != nil })?.weekPct,
+            // The last reading that CARRIED a value, not the last sample — but no
+            // older than `quotaFreshSecs`. The card prints this as what is left now
+            // and never says how old it is, so past that bound no number beats a
+            // stale one.
+            sessionLeftPct: quota.last(where: {
+                $0.sessionPct != nil && now - $0.at <= fresh })?.sessionPct,
+            weekLeftPct: quota.last(where: {
+                $0.weekPct != nil && now - $0.at <= fresh })?.weekPct,
             pending: series,
             pendingReviewsNow: series.last?.reviews ?? 0,
             pendingConflictsNow: series.last?.conflicts ?? 0,

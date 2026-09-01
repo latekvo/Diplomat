@@ -602,9 +602,9 @@ private struct QuotaChart: View {
 
     /// How long a silence the chart draws through rather than breaks at. Isolated
     /// missing readings are normal, and cutting at each one turns a fortnight into
-    /// specks. Four missed samples is well under the 5-hour window's own length, so a
-    /// bridge can span a reset instant but never a whole rise and fall.
-    private var bridgeSecs: Double { 4 * TelemetryLog.sampleInterval }
+    /// specks. The same bound the headline percentage trusts a reading for, so a line
+    /// that has broken is never captioned with a figure.
+    private var bridgeSecs: Double { Telemetry.quotaFreshSecs }
 
     /// The readings split into runs, cut wherever the probe stayed silent for longer
     /// than `bridgeSecs`.
