@@ -1112,7 +1112,8 @@ def retirable(records: list[RunRecord],
 
     Age alone retires nothing here: an hour-long review is an ordinary one, and a clock
     that ends records ends them mid-run. The one exception is
-    :data:`RUN_DEADLINE`, which an operator switches on knowing that.
+    :data:`RUN_DEADLINE`, which is on unless an operator turns it off — so this is
+    the one thing said here that a default-on switch can make untrue.
     """
     return [r for r in records
             if r.run_id in states and states[r.run_id].state in ENDED]

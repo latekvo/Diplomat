@@ -12,7 +12,7 @@ can neither read a Qt/UserDefaults store nor be handed the value in its
 environment at spawn time.
 
 One more sits with them without needing to: how long a run may go on before the
-resolver calls it over, which belongs beside the cap it modifies and is read by the
+resolver calls it over, which belongs beside the cap it hands bays back to and is read by the
 ``DIPLOMAT_AGENTS`` dump, a front-end-free path with no store of its own.
 
 So those knobs live in the shared ``~/.diplomat`` tree, the way the ban list,

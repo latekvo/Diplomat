@@ -62,11 +62,14 @@ enum AgentWindows {
 
     /// Close a session's terminal window. Returns whether AppleScript accepted it.
     ///
-    /// The mirror of `focus`, and used for exactly one thing: a run the quiescence
-    /// backstop ended (`AgentState.Resolution.wedged`) — twenty minutes of a screen that has
-    /// not moved, so nothing is being read and nothing is being typed. A run that ends the
-    /// ordinary way keeps its window: its agent is alive at its prompt with the whole
-    /// task in context, and that is a session the operator may still want to read.
+    /// The mirror of `focus`, and used for exactly one thing: a run a BACKSTOP ended
+    /// (`AgentState.reapable`), which is two verdicts. The quiescence one is twenty
+    /// minutes of a screen that has not moved, so nothing is being read and nothing is
+    /// being typed. The run deadline is the operator's own instruction to give up on a
+    /// task at four hours — and there the agent may well be working, which is the point:
+    /// they asked for the bay back anyway. A run that ends the ordinary way keeps its
+    /// window either way: its agent is alive at its prompt with the whole task in
+    /// context, and that is a session the operator may still want to read.
     @discardableResult
     static func close(_ handle: Handle) -> Bool {
         guard !handle.windowID.isEmpty else { return false }

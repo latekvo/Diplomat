@@ -48,8 +48,9 @@ diplomat_runtime/
                   (Autofix.swift + AgentTasks.swift's twin)
   autobudget.py   ledger + probe + knobs -> may another automatic task start here?
                   Asked by the applet's gate and by the mesh node (AutoBudget.swift's twin)
-  agentstate.py   the one resolver: typed evidence -> a state per agent run, and the four
-                  projections over it (per-PR dedup, the cap, the panel rows, retirement).
+  agentstate.py   the one resolver: typed evidence -> a state per agent run, and the five
+                  projections over it (per-PR dedup, the cap, the panel rows, retirement,
+                  and the windows a backstop's verdict closes).
                   Pure - no clock, no subprocess, no filesystem (AgentState.swift's twin)
   agentregistry.py  the durable run book at ~/.diplomat/agents — one record per dispatched
                   run, plus each run's prompt, pid and completion sentinel. Same on-disk

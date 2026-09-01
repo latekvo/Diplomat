@@ -152,12 +152,14 @@ def kill_session_for_tty(tty: str) -> bool:
     """Close the tmux session whose pane runs on ``tty``. Returns whether it was
     killed.
 
-    The window is reaped only for a run the quiescence backstop ended
-    (:attr:`agentstate.Resolution.wedged`) — twenty minutes of a screen that has not
-    moved, so
-    nothing is being read and nothing is being typed. A run that ends the ordinary way
-    keeps its window: its agent is alive at its prompt with the whole task in context,
-    and that is a session the operator may still want to read or type into.
+    The window is reaped only for a run a BACKSTOP ended (:func:`agentstate.reapable`),
+    which is two verdicts. The quiescence one is twenty minutes of a screen that has not
+    moved, so nothing is being read and nothing is being typed. The run deadline is the
+    operator's own instruction to give up on a task at four hours — and there the agent
+    may well be working, which is the point: they asked for the bay back anyway. A run
+    that ends the ordinary way keeps its window either way: its agent is alive at its
+    prompt with the whole task in context, and that is a session the operator may still
+    want to read or type into.
 
     The SESSION, not the pane: each spawn opens one of its own
     (:func:`review.terminal_argv`), so killing it takes the window with it, which is

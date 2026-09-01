@@ -92,10 +92,11 @@ enum TerminalFocus {
     /// Close the terminal window running `tty`, or whatever wraps it — the mirror of
     /// `focus`, and the only route to the window of a run that kept no handle.
     ///
-    /// Used for one thing: a run the quiescence backstop ended
-    /// (`AgentState.Resolution.wedged`) —
-    /// twenty minutes of a screen that has not moved, so nothing is being read and nothing
-    /// is being typed. What it performs is the act the operator would: a wrapped session's
+    /// Used for one thing: a run a BACKSTOP ended (`AgentState.reapable`) — twenty
+    /// minutes of a screen that has not moved, so nothing is being read and nothing is
+    /// being typed, or the four-hour deadline the operator switched on, where the agent
+    /// may well be working and the bay was asked for anyway.
+    /// What it performs is the act the operator would: a wrapped session's
     /// window belongs to the tmux CLIENT, so closing it detaches the session exactly as a
     /// hand on that window would, rather than reaching past it to kill something the
     /// operator may share.

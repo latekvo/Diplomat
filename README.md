@@ -47,14 +47,14 @@ Targets `software-mansion/argent` and shells out to the authenticated `gh` CLI.
 > **One answer about what the agents are doing.** Whether a PR is in flight, how
 > many bays of the device's [task cap](#autonomous-monitors) are full, which rows
 > the panel draws, which record is retired and whose window is closed with it are
-> *projections* of a single resolved tick (`AgentState` / `agentstate.py`), not
+> five *projections* of a single resolved tick (`AgentState` / `agentstate.py`), not
 > five derivations that can drift apart. Evidence reaches it typed - each probe
 > answers *present*, *unavailable* or *unsupported* - and the ladder never reads
 > "I could not look" as "it is gone": a run ends only on positive evidence (its
 > sentinel, its pid missing from a process table that was actually read, or its
 > mesh claim released), and anything else resolves to `unknown`, which keeps its
 > slot and says so. The one clock that ends a run is the
-> [four-hour deadline](#giving-up-on-a-run) an operator switches on for the runs
+> [four-hour deadline](#giving-up-on-a-run) an operator can switch off, for the runs
 > no evidence can reach. A run is identified by the pid the shell that runs the
 > agent writes into
 > `~/.diplomat/agents/<run-id>/pid` before handing over to it, and the book survives
@@ -943,16 +943,26 @@ is dispatched onto the same PR.)
 can reach - a runner with no hooks, settings that would not stage, an agent wedged
 behind a screen nothing can dump - holds its bay until you close the window. One
 switch answers that (Settings → **STALLED AGENTS** → *Give up on a task after 4h*,
-**default on**): a run this machine is executing and that has gone on for four hours
-is called done whatever its screen still says, its record retired and its bay handed
-back. It fires only while the account still has limit left to spend - agents parked
-waiting for a window to refill age exactly like wedged ones, and the day a limit ran
-out the whole board would otherwise be given up on at once. A peer's run is not
+**default on**): an automatic run this machine is executing that has gone on for four
+hours and is *still holding a bay* is called done whatever its screen still says, its
+record retired and its window closed with it.
+
+It is the last rung of the ladder, not the first, and that is the whole of its
+safety. Every answer above it is a better one than a clock, so each of them wins:
+a run that ended the ordinary way keeps its window, a pid missing from a table that
+was actually read ends the run for that reason instead (the reaper walks out of the
+*remembered* tty, and `pts/<n>` is recycled freely), a session already back at its
+prompt has handed its bay back and is holding a finished task worth reading, and a
+tick whose process table could not be read at all resolves `unknown` and ends
+nothing. It fires only while a spending limit both reads and has room left - agents
+parked waiting for a window to refill age exactly like wedged ones, so the day a
+limit ran out the whole board would otherwise be given up on at once, and a machine
+with no limit it can read leaves the backstop off entirely. A peer's run is not
 touched (its claim is the machine that can see the process talking), nor is an agent
 found by the scan rather than dispatched (retiring one only has the next tick find it
-again). Four hours because the longest runs measured here - a swarm review, an issue
-reproduced from scratch - are hours long, and a deadline that retires a working agent
-is worse than a bay held.
+again), nor one you started by hand from the panel - that never took a bay of the
+automatic cap, so there is nothing to hand back. Four hours because the longest runs
+measured here - a swarm review, an issue reproduced from scratch - are hours long.
 
 Nothing is dropped - work over the cap gets no attempt record, so
 the next 3-minute tick offers it again as soon as a bay comes back, and it waits
@@ -1106,9 +1116,11 @@ and ⏻) swaps the panel to a settings screen:
   cap above.
 - **Auto-continue agents on API errors** - the terminal watcher toggle, plus a
   count of nudges sent.
-- **Give up on a task after 4h** (**default on**) - the last-resort backstop for a run
-  whose own report never arrives; see [Giving up on a run](#giving-up-on-a-run). In
-  `~/.diplomat/config.json` beside the cap it hands bays back to.
+- **Give up on a task after 4h** (**default on**) - the last-resort backstop under
+  every rung that reads the run itself; it hands back the bay of an automatic task
+  still holding one at four hours, working or not. See
+  [Giving up on a run](#giving-up-on-a-run). In `~/.diplomat/config.json` beside the
+  cap it hands bays back to.
 - **Tools - color & visibility** - a **color well** to retint each tool plus a switch
   to hide it; hidden tools drop out of the grid and the reverse-lookup checklist.
 - **Spawn terminal** - which terminal SPAWN AGENT opens: **Ghostty**, **iTerm** or

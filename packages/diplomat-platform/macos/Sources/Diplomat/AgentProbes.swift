@@ -496,9 +496,11 @@ enum AgentProbes {
     ///
     /// `.unsupported`, not `.unavailable`, when no ceiling reads: a box with the probes
     /// switched off, no Claude Code login, or an OpenRouter key Diplomat cannot price is
-    /// an ordinary box, and warning every few minutes that a probe has gone quiet on it
-    /// would train the operator to ignore the channel. The resolver reads both the same
-    /// way — neither is the positive answer the deadline needs.
+    /// an ordinary box, not one whose probe broke, and the debug dump is where that
+    /// difference is read. Nothing else turns on it — the resolver reads both as "not the
+    /// positive answer the deadline needs", and unlike its sibling `.unsupported` probes
+    /// this observation is not registered with `note`, so neither status reaches the
+    /// probe-health watch.
     static func tokensLeft() -> Observation<Bool> {
         guard let answer = AutoBudget.tokensLeft() else {
             return .unsupported("are unavailable (no spending limit this machine can read)")
@@ -511,9 +513,10 @@ enum AgentProbes {
     /// One pass of every cheap probe.
     ///
     /// `merged` and `tokens` are passed in rather than probed here: one costs a `gh` call
-    /// per PR and the other an HTTPS round trip, and both belong to the slow refresh, so
-    /// the fast tick carries forward whatever the last one found (`.unavailable` until
-    /// the first).
+    /// per PR and the other an HTTPS round trip, and neither belongs on a tick that also
+    /// runs on the panel's repaint. The store refreshes them on its slow poll and the
+    /// ticks in between carry forward whatever that last found (`.unavailable` until the
+    /// first).
     static func gather(records: [AgentState.RunRecord], now: TimeInterval,
                        owner: String, repo: String, directory: String,
                        meshEnabled: Bool, meshState: MeshSnapshot?,

@@ -494,9 +494,10 @@ def tokens_left() -> Observation:
 
     UNSUPPORTED, not UNAVAILABLE, when no ceiling reads: a box with the probes switched
     off, no Claude Code login, or an OpenRouter key Diplomat cannot price is an ordinary
-    box, and warning every few minutes that a probe has gone quiet on it would train the
-    operator to ignore the channel. The resolver reads both the same way — neither is
-    the positive answer the deadline needs.
+    box, not one whose probe broke, and the debug dump is where that difference is read.
+    Nothing else turns on it — the resolver reads both as "not the positive answer the
+    deadline needs", and unlike its four sibling UNSUPPORTED probes this observation is
+    not registered with :func:`_note`, so neither status reaches the probe-health watch.
     """
     from diplomat_runtime import autobudget
 
@@ -513,8 +514,9 @@ def gather(records: list[RunRecord], now: float, *,
     """One pass of every cheap probe.
 
     ``merged`` and ``tokens`` are passed in rather than probed here: one costs a ``gh``
-    call per PR and the other an HTTPS round trip, and both belong to the slow refresh,
-    so the fast tick carries forward whatever the last one found (UNAVAILABLE until the
+    call per PR and the other an HTTPS round trip, and neither belongs on a tick that
+    also runs on the panel's repaint. The store refreshes them on its slow poll and the
+    ticks in between carry forward whatever that last found (UNAVAILABLE until the
     first).
     """
     from diplomat_runtime import agentregistry, agentstate, review

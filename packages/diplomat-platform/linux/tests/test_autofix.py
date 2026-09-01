@@ -1746,6 +1746,28 @@ def test_the_poll_takes_the_token_reading_the_deadline_needs(store, monkeypatch)
     assert store._tokens_left == A.Observation.present(True)
 
 
+def test_the_poll_leaves_the_endpoint_alone_with_the_deadline_switched_off(
+    store, monkeypatch
+):
+    """Nothing reads the answer with the switch off, and the endpoint behind it is one
+    small per-account bucket shared with every Claude Code session on the box — the
+    telemetry sampler already loses readings to it. A poll every three minutes for a
+    value `past_deadline` cannot consult is pure contention."""
+    from diplomat_runtime import agentstate as A
+
+    taken = []
+    monkeypatch.setattr("diplomat_app.probes.tokens_left",
+                        lambda: taken.append(1) or A.Observation.present(True))
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    monkeypatch.setattr("diplomat_runtime.appconfig.run_deadline", lambda: None)
+    fake_probes(monkeypatch)
+    monkeypatch.setattr(type(store), "effective_me", property(lambda self: ""))
+
+    store._autofix_poll_once()
+
+    assert not taken, "the endpoint was dialled for a reading nothing can read"
+
+
 def test_the_tick_hands_the_carried_reading_to_the_probe_layer(store, monkeypatch):
     """The other end of the same wire. The poll takes the reading; this is the tick
     putting it in the bundle the resolver judges against — dropped, the evidence is

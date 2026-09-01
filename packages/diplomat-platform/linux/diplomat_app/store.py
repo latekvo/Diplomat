@@ -2420,10 +2420,18 @@ class Store(QObject):
         """Ask whether the account still has room to spend — the precondition on the
         resolver's run deadline.
 
-        On the slow refresh, not the 8-second tick, for the reason the merged statuses
-        are: this one dials an endpoint over HTTPS, and the tick runs on the panel's
-        repaint as well as on the poll. The ticks in between carry the answer forward.
+        On the slow poll rather than the 8-second tick: this dials an endpoint over
+        HTTPS, and the tick runs on the panel's repaint as well as on the poll. The
+        ticks in between carry the answer forward.
+
+        Skipped entirely with the deadline switched off, because then nothing reads the
+        answer. The endpoint behind it is one small per-account bucket shared by every
+        Claude Code session on the box, and the telemetry sampler already loses readings
+        to it; spending a round of that on a value :func:`agentstate.past_deadline`
+        cannot consult is pure contention.
         """
+        if appconfig.run_deadline() is None:
+            return
         self._tokens_left = probes.tokens_left()
 
     # MARK: monitor persistence + poll-error state

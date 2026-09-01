@@ -545,7 +545,7 @@ struct SettingsView: View {
     /// a stalled agent moving again; this is what happens when nothing does.
     private var runDeadlineRow: some View {
         SettingRow(title: SettingsView.runDeadlineTitle,
-                   summary: "Hand its bay back when the agent's own report never arrives.",
+                   summary: "Hand the bay back even if the agent still looks busy.",
                    detail: SettingsView.runDeadlineDetail) {
             switchControl(SettingsView.runDeadlineTitle, $store.runDeadlineEnabled)
         }
@@ -562,11 +562,16 @@ struct SettingsView: View {
         Agents report their turn boundaries through hooks staged into each run, and a run \
         whose report never comes — a runner without hooks, settings that would not stage, \
         an agent wedged with its status bar frozen — holds a task-cap bay until you close \
-        its window. Past \(runDeadlineCutoff) such a run is called done whatever its \
-        screen still shows: its terminal is closed, its row leaves Agent tasks and its \
-        bay comes back. Only while your account has limit left to spend — agents parked \
-        waiting for a window to refill age exactly like stuck ones. A peer's run is left \
-        to the machine running it, and so is an agent you started by hand.
+        its window. This is the backstop under all of them, and it reads a clock rather \
+        than the run: past \(runDeadlineCutoff) an automatic task that is still holding a \
+        bay is called done even if its screen says it is working. Its terminal is closed \
+        and its row leaves Agent tasks, and closing it is what frees the bay — an agent \
+        left alive is found by the scan on the next pass and takes it straight back. Only \
+        while a spending limit both reads and has room left: agents parked waiting for a \
+        window to refill age exactly like stuck ones, and a machine with no limit it can \
+        read leaves the backstop off. A run already back at its prompt has given its bay \
+        back and is left alone, and so are a peer's run, an agent you started by hand, and \
+        one the scan found rather than this applet dispatching it.
         """
 
     /// Every other card's pill answers "is this doing anything" before a row is read.
