@@ -215,19 +215,44 @@ enum AgentProbes {
         return out
     }
 
-    /// The same, of this machine. `unavailable` when the process table could not be read
-    /// — which the watcher treats as "type into nothing", never as "no agents".
+    /// The same, of this machine. `unavailable` when the evidence the walk is made of
+    /// could not be read — which the watcher treats as "type into nothing", never as
+    /// "no agents".
     static func ttysRunningAnAgent(now: TimeInterval) -> Observation<Set<String>> {
-        let table = processTable(psDump(now: now))
-        guard let procs = table.value else { return .unavailable(table.reason) }
-        // The walk's three readings are another `ps` pass and two tmux calls; on a box
-        // with no agent up there is nothing for them to find.
-        guard procs.values.contains(where: { $0.isAgent && !$0.tty.isEmpty }) else {
+        ttysRunningAnAgent(procs: processTable(psDump(now: now)),
+                           processes: TerminalFocus.processes,
+                           tmux: TerminalFocus.walkTables)
+    }
+
+    /// The fold, given the readings — so the "could not look" rule is decided in one
+    /// place a self-test can drive, rather than at three call sites of three probes.
+    ///
+    /// The readings arrive as closures because they are not free and the first answer can
+    /// settle it: the walk costs another `ps` pass and two tmux calls, and on a box with
+    /// no agent up there is nothing for them to find.
+    ///
+    /// A tmux that would not answer is UNAVAILABLE and not an empty set. Both are "no
+    /// session may be typed into", but only the first also means "and change nothing you
+    /// remember": the API-error watcher prunes its backoff and idle-confirmation state to
+    /// the ttys it was handed, so an empty set from a `tmux` hiccup resets an escalated
+    /// 3h backoff to its 2m base. On a box where every agent is behind tmux — the
+    /// ordinary state of the one this was written on — one hiccup between two 20s scans
+    /// is enough.
+    static func ttysRunningAnAgent(
+        procs: Observation<[Int: AgentState.ProcInfo]>,
+        processes: () -> [Int: TerminalFocus.Proc],
+        tmux: () -> (panes: [String: TerminalFocus.Pane], clients: [String: String])?
+    ) -> Observation<Set<String>> {
+        guard let table = procs.value else { return .unavailable(procs.reason) }
+        guard table.values.contains(where: { $0.isAgent && !$0.tty.isEmpty }) else {
             return .present([])
         }
-        return .present(ttysRunningAnAgent(procs: procs, processes: TerminalFocus.processes(),
-                                           panes: TerminalFocus.panes(),
-                                           clients: TerminalFocus.clients()))
+        guard let listings = tmux() else {
+            return .unavailable("could not be walked out of tmux")
+        }
+        return .present(ttysRunningAnAgent(procs: table, processes: processes(),
+                                           panes: listings.panes,
+                                           clients: listings.clients))
     }
 
     /// PR number → the tty of an agent visible in `ps` by its prompt text.
