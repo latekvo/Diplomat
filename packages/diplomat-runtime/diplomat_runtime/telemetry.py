@@ -82,6 +82,11 @@ RETAIN_DAYS = float(_model_get("retainDays", 60))
 #: Size past which the next append rewrites the file to ``RETAIN_DAYS``.
 MAX_LEDGER_BYTES = int(_model_get("maxLedgerBytes", 4 * 1024 * 1024))
 
+#: How long a quota reading stays an answer to "what is left right now" — the silence
+#: the chart draws through, and the age past which the headline reads "—". One bound
+#: for both, or a line that has broken ends up captioned with a figure.
+QUOTA_FRESH_SECS = float(_model_get("quotaFreshSamples", 4)) * SAMPLE_INTERVAL_SECS
+
 #: Points the fitted normal is sampled at, per histogram bin (twin of
 #: ``Telemetry.curveResolution``).
 CURVE_RESOLUTION = 4
@@ -940,13 +945,15 @@ def summarize(ledger: Ledger, *, now: float, days: float, steps: int,
         run_samples=len(runs),
         wait_samples=len(waits),
         quota=tuple(quota),
-        # The LAST reading that actually carried a value, not the last sample: a
-        # probe that has been down for an hour must not blank a figure it measured
-        # perfectly well an hour ago.
+        # The last reading that CARRIED a value, not the last sample — but no older
+        # than :data:`QUOTA_FRESH_SECS`. The card prints this as what is left now and
+        # never says how old it is, so past that bound no number beats a stale one.
         session_left_pct=next((q.session_pct for q in reversed(quota)
-                               if q.session_pct is not None), None),
+                               if q.session_pct is not None
+                               and now - q.at <= QUOTA_FRESH_SECS), None),
         week_left_pct=next((q.week_pct for q in reversed(quota)
-                            if q.week_pct is not None), None),
+                            if q.week_pct is not None
+                            and now - q.at <= QUOTA_FRESH_SECS), None),
         pending=tuple(series),
         pending_reviews_now=series[-1].reviews if series else 0,
         pending_conflicts_now=series[-1].conflicts if series else 0,

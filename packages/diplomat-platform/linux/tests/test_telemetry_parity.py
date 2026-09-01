@@ -360,9 +360,14 @@ def test_the_fixture_exercises_every_figure(both):
         "the fixture has no probe-offline gap, so an implementation that dropped the "
         "gap (or interpolated across it) would pass"
     )
-    assert p["sessionLeftPct"] == 20 and p["weekLeftPct"] == 80, (
-        "the headline must be the last reading that CARRIED a value, not the last "
-        "sample — the fixture's newest sample is a probe-offline one"
+    assert p["sessionLeftPct"] is None and p["weekLeftPct"] is None, (
+        "the fixture's newest reading that CARRIED a value is two days old, and the "
+        "headline carries no age — past the freshness bound both platforms must "
+        "decline to answer rather than print it as what is left right now"
+    )
+    assert any(q["sessionPct"] is not None for q in p["quota"]), (
+        "the chart lost the stale readings the headline declines to quote — they "
+        "are still measurements, drawn where they were taken"
     )
     assert p["peakReviews"] > 0 and p["peakConflicts"] > 0
     assert p["pendingReviewsNow"] > 0 and p["pendingConflictsNow"] > 0, (

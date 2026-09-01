@@ -197,6 +197,61 @@ def test_sampling_is_paced_by_the_ledger_not_by_the_caller(ledger):
     assert telemetry.sample_due(time.time() + telemetry.SAMPLE_INTERVAL_SECS + 1)
 
 
+def _quota_headline(ledger, readings, *, now):
+    """``(session, week)`` as the card would print them, from ``(age_secs, session,
+    week)`` triples."""
+    for ago, session, week in readings:
+        telemetry.append({"at": now - ago, "ev": "sample", "sessionLeft": session,
+                          "weekLeft": week, "repoTokens": 0, "otherTokens": 0})
+    telemetry._reset_cache()
+    s = telemetry.summarize(telemetry.load(), now=now, days=7, steps=8,
+                            bin_count=4, z=1.96)
+    return s.session_left_pct, s.week_left_pct
+
+
+def test_a_probe_that_missed_a_few_rounds_keeps_the_figure_it_did_measure(ledger):
+    """A gap shorter than the chart draws through must not blank the headline: the
+    reading is minutes old and still answers what is left."""
+    now = 1_785_000_000.0
+    assert _quota_headline(ledger, [
+        (telemetry.QUOTA_FRESH_SECS - 60, 0.42, 0.80),
+        (0.0, None, None),
+    ], now=now) == (42.0, 80.0)
+
+
+def test_a_reading_older_than_the_chart_bridges_stops_being_the_headline(ledger):
+    """The card's percentage says what is left RIGHT NOW and carries no age. Once the
+    probe has been silent longer than the chart will draw through, the newest reading
+    describes a window that has since moved — on a 5-hour window, one that may have
+    reset outright — so the honest answer is no answer.
+
+    This is the failure that hid a dead credential for six days: the probe went blind,
+    every sample after it carried nulls, and the card went on printing the last live
+    reading as the current one on every lookback the screen offers.
+    """
+    now = 1_785_000_000.0
+    assert _quota_headline(ledger, [
+        (telemetry.QUOTA_FRESH_SECS + 60, 0.42, 0.80),
+        (0.0, None, None),
+    ], now=now) == (None, None)
+
+
+def test_the_headline_blanks_on_the_lookback_that_still_charts_the_reading(ledger):
+    """Every range the screen offers is at least a week, so a stale reading stays
+    visible on the chart long after it stops being an answer. The two must disagree
+    that way round — a drawn line the headline declines to caption — and not the
+    other, which is what a bound written in days rather than sample intervals would
+    give."""
+    now = 1_785_000_000.0
+    telemetry.append({"at": now - 6 * 86400, "ev": "sample", "sessionLeft": 0.42,
+                      "weekLeft": 0.80, "repoTokens": 0, "otherTokens": 0})
+    telemetry._reset_cache()
+    s = telemetry.summarize(telemetry.load(), now=now, days=7, steps=8,
+                            bin_count=4, z=1.96)
+    assert [q.session_pct for q in s.quota] == [42.0], "the chart lost its reading"
+    assert (s.session_left_pct, s.week_left_pct) == (None, None)
+
+
 def test_a_completion_with_no_matching_transcript_is_still_recorded(ledger):
     """Attribution fails whenever the applet restarted mid-agent. Recording that as
     a completion with no cost keeps the run time honest and lets the screen say how

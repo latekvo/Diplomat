@@ -7,6 +7,8 @@
   "_gatheringComment": "A poll runs every 3 minutes, which is far finer than any chart here needs and would grow the ledger by ~70KB a day. One sample every 15 minutes still leaves ~1300 usable intervals across a fortnight to price the rate-limit window from, and keeps two months of history under a megabyte. retainDays MUST be at least the longest range above, or the screen would offer a lookback the ledger no longer covers; the file is rewritten to that horizon once it passes maxLedgerBytes.",
   "sampleIntervalSecs": 900,
   "retainDays": 60,
+  "_quotaFreshnessComment": "quotaFreshSamples = how many missed samples a quota reading survives before it stops being an answer to \"what is left right now\" \u2014 the silence the chart draws through, and the age past which the headline reads \"\u2014\". One number for both, or a broken line ends up captioned with a figure. Four intervals is an hour: enough to span a 5-hour window's reset instant but never a whole rise and fall, and on a machine whose probe is answering it never fires at all.",
+  "quotaFreshSamples": 4,
   "maxLedgerBytes": 4194304,
 
   "_rangesComment": "The lookback the screen offers. 14 days is the default: a week is short enough that one quiet weekend halves every average, and 30+ smooths out exactly the regression you opened the screen to find.",

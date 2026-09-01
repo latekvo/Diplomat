@@ -129,6 +129,7 @@ public enum CoreAssets {
         public let ledgerFile: String
         public let cursorFile: String
         public let sampleIntervalSecs: Double
+        public let quotaFreshSamples: Double
         public let retainDays: Double
         public let maxLedgerBytes: Int
         public let ranges: [Range]
