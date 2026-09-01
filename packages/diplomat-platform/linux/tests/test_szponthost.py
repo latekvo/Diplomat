@@ -194,10 +194,11 @@ def test_the_node_reaches_the_host_runner_when_no_template_is_set(monkeypatch):
 # ---- work_already_running ------------------------------------------------
 
 
-def _ps_output(monkeypatch, text: str):
+def _ps_output(monkeypatch, text: str, returncode: int = 0):
     class Result:
         stdout = text
 
+    Result.returncode = returncode
     monkeypatch.setattr(szponthost.subprocess, "run", lambda *a, **k: Result())
 
 
@@ -207,20 +208,33 @@ def test_the_dump_asks_ps_for_the_portable_spelling_of_every_column(monkeypatch)
 
     ``etime``, not the ``etimes`` the applet's own Linux-only probe asks for: BSD
     ``ps`` has no such keyword and answers one by writing a line to stderr, dropping
-    the column and exiting non-zero — an exit this dump does not consult, so the
-    column-less output is used regardless. Every agent's age would then read as
-    unknown, every
-    agent would count as working, and the node would decline every peer's job for as
-    long as it ran — with nothing on screen to say why."""
+    the column and exiting non-zero. That exit now drops the dump, so on a Mac the
+    wrong spelling is not a thinner table but no table at all: every scan comes back
+    empty, no agent on the box is ever seen, and the node keeps taking peers' work
+    while its own agents run — with nothing on screen to say why."""
     seen = {}
 
     class Result:
         stdout = ""
+        returncode = 0
 
     monkeypatch.setattr(szponthost.subprocess, "run",
                         lambda argv, **k: (seen.setdefault("argv", argv), Result())[1])
     szponthost._ps_dump()
     assert seen["argv"] == ["ps", "-Ao", "tty=,etime=,args="]
+
+
+def test_a_ps_that_exited_non_zero_is_no_dump_at_all(monkeypatch):
+    """``ps`` prints what it managed before failing, and neither caller can tell that
+    from a whole table — so a partial one makes the node's ground truth depend on how
+    far ``ps`` got. ``""`` is the one degradation both callers are written for, the
+    same reading a missing ``ps`` gives them.
+
+    Measured shape, on Darwin 24.5.0: ``ps -Ao tty=,etimes=,args=`` exits 1, writes
+    ``ps: etimes: keyword not found`` to stderr, and still prints 686 usable-looking
+    lines with the age column gone."""
+    _ps_output(monkeypatch, "ttys001    01:02 claude … PR #7 in o/r\n", returncode=1)
+    assert szponthost._ps_dump() == ""
 
 
 def test_the_real_ps_on_this_machine_answers_that_spelling():
