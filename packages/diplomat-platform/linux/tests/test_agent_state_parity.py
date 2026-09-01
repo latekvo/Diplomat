@@ -86,10 +86,14 @@ def _python(records, evidence, now=T0, limit=LIMIT,
         # merely carrying it: it is persisted into the one book both front-ends read,
         # so a digest that differed would restart the stillness clock on every
         # hand-over. The mixed fixture gives several runs a screen, so a drift in
-        # either implementation of `pane_digest` fails here.
+        # either implementation of `pane_digest` fails here. reapRefusedAt is merely
+        # carried, and is here because a decode that dropped it would silence nothing
+        # and show nothing: the applet that lost it would simply never wait before
+        # retrying a window it cannot close, and would go on retiring the run.
         "records": [{"runId": r.run_id, "claimSeenAt": r.claim_seen_at,
                      "untracked": r.untracked, "placement": r.placement,
-                     "quietDigest": r.quiet_digest, "quietSince": r.quiet_since}
+                     "quietDigest": r.quiet_digest, "quietSince": r.quiet_since,
+                     "reapRefusedAt": r.reap_refused_at}
                     for r in t.records],
     }
 

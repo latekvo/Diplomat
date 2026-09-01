@@ -1678,12 +1678,16 @@ def test_a_run_past_the_deadline_is_reaped_and_its_bay_comes_back(store, monkeyp
     assert not store._in_flight("https://github.com/o/r/pull/512")
 
 
-def test_an_agent_left_alive_comes_back_as_an_untracked_row(store, monkeypatch):
-    """Why the deadline reaps rather than merely retires. Retirement drops the record;
-    the process is still there, and the prompt scan that finds agents nobody booked
-    finds this one on the very next tick — same bay, same PR, no label. So a `tmux` that
-    would not kill leaves the bay held by the same agent, having already deleted the run
-    directory out from under it."""
+def test_an_agent_left_alive_keeps_its_own_row_rather_than_a_nameless_one(
+        store, monkeypatch):
+    """Why the deadline reaps rather than merely retires, and what a kill that reached
+    nothing has to do instead. The process is still there, so retiring the record hands
+    the machine back a bay and a PR that are not free — and the prompt scan books the
+    same agent again on the next tick as a row with no label and no run directory,
+    having already priced the run as completed.
+
+    Kept, the run stays the one that was dispatched: its own label, its own record, and
+    a backstop that will come round again."""
     from diplomat_runtime import agentstate as A
     from diplomat_runtime import tmuxwatch
 
@@ -1698,11 +1702,12 @@ def test_an_agent_left_alive_comes_back_as_an_untracked_row(store, monkeypatch):
                                             is_agent=True)},
                 live_prs={512}, tails={"pts/3": WORKING}, tokens=True)
 
-    store._settle_agents()   # retires it — the window survives the failed kill
-    store._settle_agents()   # …and the scan books it straight back
+    store._settle_agents()   # the deadline ends it; the kill reaches nothing
+    store._settle_agents()   # …and the run is a running one again until the retry
 
     (row,) = store.running_tasks
-    assert not row.tracked and row.pr_number == 512 and row.label == ""
+    assert row.tracked and row.pr_number == 512
+    assert row.label == "Auto · Review-req · #512"
     assert store.free_auto_slots == 1
     assert store._in_flight("https://github.com/o/r/pull/512")
 
@@ -3029,6 +3034,22 @@ def _killed(monkeypatch, by_name=False):
     return seen
 
 
+def _refused(monkeypatch):
+    """A reaper that reaches nothing: both routes answer False, as a broken tmux does.
+
+    The same broken tmux whose pane would not dump is what puts a run past the stillness
+    backstop in the first place, so this is the shape the reap most often meets, not an
+    exotic one. Returns what it was ASKED to close, since nothing is."""
+    from diplomat_runtime import tmuxwatch
+
+    asked: list[str] = []
+    monkeypatch.setattr(tmuxwatch, "kill_session",
+                        lambda name: bool(asked.append(name)))
+    monkeypatch.setattr(tmuxwatch, "kill_session_for_tty",
+                        lambda tty: bool(asked.append(tty)))
+    return asked
+
+
 def _age_the_stillness(seconds):
     """Backdate every run's stillness clock, keeping the digest the last tick actually
     recorded — the screen has not changed, it has merely been that way for longer."""
@@ -3038,6 +3059,19 @@ def _age_the_stillness(seconds):
 
     agentregistry.save([dataclasses.replace(r, quiet_since=_time.time() - seconds)
                         for r in agentregistry.load()])
+
+
+def _age_the_refusal(seconds):
+    """Backdate every run's record of the last reap that reached nothing — the window
+    is still unreachable, the backstop has merely waited longer to try again."""
+    import time as _time
+
+    from diplomat_runtime import agentregistry
+
+    agentregistry.save([
+        r if r.reap_refused_at is None
+        else dataclasses.replace(r, reap_refused_at=_time.time() - seconds)
+        for r in agentregistry.load()])
 
 
 def test_a_window_still_at_twenty_minutes_of_stillness_is_closed(store, monkeypatch):
@@ -3221,6 +3255,104 @@ def test_an_untracked_agents_wedged_window_is_closed(store, monkeypatch):
     assert [e.detail for e in activity.read() if e.action == "kill-device"] == \
         ["closed untracked:337's window — its screen has not changed in 20m"], \
         "a closed window reaches the operator only through the feed"
+
+
+def test_a_run_whose_window_would_not_close_is_not_priced_as_finished(store, monkeypatch):
+    """Every reapable run is one this tick saw ALIVE — the stillness rung only
+    classifies a process already known to be up. So a kill that reaches nothing leaves
+    an agent working in a window the applet cannot get to, and retiring it anyway books
+    a completion against that agent and deletes the directory holding the prompt and
+    exit stamp that would have priced it properly.
+
+    The bay and the PR are asserted here too, because the obvious fix loses them:
+    FINISHED holds neither, and `synthesize_untracked` dedupes on PR number, so a kept
+    record that goes on saying FINISHED every tick is a live agent nothing counts — and
+    the machine puts a second agent on the PR it is already on."""
+    from diplomat_runtime import activity, agentregistry, telemetry
+    from diplomat_runtime import agentstate as A
+
+    asked = _refused(monkeypatch)
+    record = register_run(710, pid=7010, tty="pts/70", ledger_key="review:o/r#710",
+                          dispatched_at=time.time() - 4000)
+    fake_probes(monkeypatch, processes=agent_alive(7010, tty="pts/70", elapsed=4000),
+                tails={"pts/70": WORKING})
+    store._settle_agents()
+    _age_the_stillness(A.QUIET_TIMEOUT + 5)
+
+    t = store._agent_tick()
+    assert [r.run_id for r in t.reapable] == [record.run_id], \
+        "the backstop must actually have ended it, or this pins nothing"
+
+    store._settle_agents()
+
+    assert asked, "and the reap must actually have been attempted"
+    (held,) = agentregistry.load()
+    assert held.run_id == record.run_id and held.reap_refused_at is not None
+    assert telemetry.load().tasks == [], "no completion against a working agent"
+    assert [(e.action, e.detail) for e in activity.read()
+            if e.action in ("retire", "kill-device")] == [
+        ("kill-device", f"could not close {record.run_id}'s window — keeping the run "
+                        "and trying again")], \
+        "the feed says the window would not close, and claims neither half happened"
+    assert store.free_auto_slots == 1
+    assert store._in_flight("https://github.com/o/r/pull/710")
+
+
+def test_the_deadline_keeps_firing_on_a_window_that_would_not_close(store, monkeypatch):
+    """A refused kill has to leave the backstop armed, and retiring is what disarms it.
+    A retired run comes back as an UNTRACKED row — synthesized from the scan, with a
+    fresh stamp every tick — and :func:`agentstate.past_deadline` refuses an untracked
+    record by name. So the deadline would fire exactly once against the window it cannot
+    close, and then never again for the life of the applet."""
+    from diplomat_runtime import activity, agentregistry
+    from diplomat_runtime import agentstate as A
+
+    asked = _refused(monkeypatch)
+    record = register_run(711, pid=7011, tty="pts/71",
+                          dispatched_at=time.time() - (A.RUN_DEADLINE + 3600))
+    fake_probes(monkeypatch,
+                processes=agent_alive(7011, tty="pts/71", elapsed=A.RUN_DEADLINE + 3600),
+                tails={"pts/71": WORKING}, tokens=True)
+
+    store._settle_agents()
+    assert asked == [tmuxwatch.session_name(record.run_id), "pts/71"]
+
+    # Straight away it is a running run again, not a finished one asked about twice.
+    store._settle_agents()
+    assert asked.count("pts/71") == 1, "a backstop that just failed waits its period"
+
+    _age_the_refusal(A.RUN_DEADLINE)
+    store._settle_agents()
+
+    assert asked.count("pts/71") == 2, "and then comes round to the same window again"
+    (held,) = agentregistry.load()
+    assert not held.untracked, "the record the deadline needs is still the dispatched one"
+    # Said once, on the edge into the episode. A window nothing can close is retried
+    # for as long as the applet runs, and a line per attempt would bury the feed.
+    assert len([e for e in activity.read() if e.action == "kill-device"]) == 1, \
+        "the second refusal of the same window is not announced again"
+
+
+def test_a_window_that_did_close_lets_its_run_be_priced_and_dropped(store, monkeypatch):
+    """The other side of the same gate: a kill that lands is the licence to forget, so
+    the run is priced, logged and dropped."""
+    from diplomat_runtime import activity, agentregistry, telemetry
+    from diplomat_runtime import agentstate as A
+
+    killed = _killed(monkeypatch)
+    register_run(712, pid=7012, tty="pts/72", ledger_key="review:o/r#712",
+                 dispatched_at=time.time() - 4000)
+    fake_probes(monkeypatch, processes=agent_alive(7012, tty="pts/72", elapsed=4000),
+                tails={"pts/72": WORKING})
+    store._settle_agents()
+    _age_the_stillness(A.QUIET_TIMEOUT + 5)
+
+    store._settle_agents()
+
+    assert killed == ["pts/72"]
+    assert agentregistry.load() == []
+    assert [t.key for t in telemetry.load().tasks] == ["review:o/r#712"]
+    assert [e.action for e in activity.read() if e.action == "retire"] == ["retire"]
 
 
 def test_a_synthesized_run_gone_from_the_scan_is_not_reaped_either(store, monkeypatch):

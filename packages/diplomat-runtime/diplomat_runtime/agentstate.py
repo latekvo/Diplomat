@@ -366,6 +366,11 @@ class RunRecord:
     #: against when there was last some. ``""``/``None`` until its screen is first read.
     quiet_digest: str = ""
     quiet_since: float | None = None
+    #: When a backstop last ended this run and its window would NOT close. ``None``
+    #: until one does. Written by the reaper, read by both backstops
+    #: (:func:`_reap_cooling`) — a memory of an earlier tick's action, like
+    #: :attr:`quiet_since` is a memory of an earlier tick's screen.
+    reap_refused_at: float | None = None
     #: True for a run nothing dispatched — a live agent found in the process table
     #: with no record behind it. It gets a row and blocks a second dispatch, but
     #: carries no label, no ledger key and no start time.
@@ -385,7 +390,8 @@ class RunRecord:
             "node": self.node, "workKey": self.work_key,
             "ledgerKey": self.ledger_key, "pid": self.pid, "tty": self.tty,
             "claimSeenAt": self.claim_seen_at, "quietDigest": self.quiet_digest,
-            "quietSince": self.quiet_since, "untracked": self.untracked,
+            "quietSince": self.quiet_since,
+            "reapRefusedAt": self.reap_refused_at, "untracked": self.untracked,
         }
 
     @staticmethod
@@ -407,6 +413,7 @@ class RunRecord:
             claim_seen_at=obj.get("claimSeenAt"),
             quiet_digest=obj.get("quietDigest", ""),
             quiet_since=obj.get("quietSince"),
+            reap_refused_at=obj.get("reapRefusedAt"),
             untracked=_flag(obj.get("untracked")),
         )
 
@@ -668,6 +675,26 @@ def observe_quiescence(records: list[RunRecord], tails: Observation,
     return out
 
 
+def _reap_cooling(record: RunRecord, now: float, period: float) -> bool:
+    """Whether a backstop that already ended this run, and whose reaper could not close
+    its window, is still waiting out one period before ending it again.
+
+    A backstop ends a run by CLOSING its terminal, so a kill that reached nothing left
+    the agent working in a window this applet cannot get to. The run is not over, and
+    repeating that it is on every tick is how it stops being counted at all: FINISHED
+    holds no bay, blocks no second dispatch onto its PR, and is not drawn — while the
+    agent it describes is still on the machine. Waiting out a period puts the run back
+    among the running ones and schedules the next attempt, which is the whole of what a
+    backstop can do about a window that will not close.
+
+    One period of whichever clock is asking, because that is the interval the operator
+    already chose for it: a screen still for twenty minutes is looked at again twenty
+    minutes later, and a four-hour run the deadline could not end is given four more.
+    """
+    return (record.reap_refused_at is not None
+            and now - record.reap_refused_at < period)
+
+
 def went_quiet(record: RunRecord, now: float) -> float | None:
     """How long this run's screen has been perfectly still, once that is long enough
     to call it over — ``None`` otherwise.
@@ -677,8 +704,11 @@ def went_quiet(record: RunRecord, now: float) -> float | None:
     are not the same one: this clock only advances on ticks that SAW the screen, so
     it keeps maturing through an evidence outage and can be long past the timeout on
     a run that ended some other way entirely.
+
+    Silent for one timeout after a reap this backstop asked for reached nothing; see
+    :func:`_reap_cooling`.
     """
-    if record.quiet_since is None:
+    if record.quiet_since is None or _reap_cooling(record, now, QUIET_TIMEOUT):
         return None
     quiet = now - record.quiet_since
     return quiet if quiet >= QUIET_TIMEOUT else None
@@ -800,7 +830,7 @@ def past_deadline(record: RunRecord, tokens: Observation, now: float,
     returned is the age the reason line quotes, so the verdict and the number the
     operator reads cannot come apart.
 
-    Five things hold it back, each a case where the clock is measuring something other
+    Six things hold it back, each a case where the clock is measuring something other
     than a bay that will not come back:
 
     * **no deadline** — the operator switched the backstop off;
@@ -815,7 +845,9 @@ def past_deadline(record: RunRecord, tokens: Observation, now: float,
       so :func:`synthesize_untracked` rebuilds it on the very next tick with a fresh
       stamp: the bay comes back for one tick and the same agent takes it again. Its
       stamp is when the scan first SAW the agent, so the age here would not even be
-      the run's.
+      the run's;
+    * **a window this rung already failed to close** — for one deadline, and then it
+      tries again; see :func:`_reap_cooling`.
 
     Every run this reaches is one :func:`cap_load` is counting — a bay is what there is
     to hand back — but not the reverse, and the gap is deliberate on both sides. An
@@ -827,6 +859,8 @@ def past_deadline(record: RunRecord, tokens: Observation, now: float,
     if deadline is None or not deadline_applies(record):
         return None
     if not (tokens.ok and tokens.value):
+        return None
+    if _reap_cooling(record, now, deadline):
         return None
     age = now - record.dispatched_at
     return age if age >= deadline else None

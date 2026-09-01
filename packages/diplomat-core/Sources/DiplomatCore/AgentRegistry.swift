@@ -364,6 +364,7 @@ public enum AgentRegistry {
             "claimSeenAt": r.claimSeenAt.map { $0 as Any } ?? NSNull(),
             "quietDigest": r.quietDigest,
             "quietSince": r.quietSince.map { $0 as Any } ?? NSNull(),
+            "reapRefusedAt": r.reapRefusedAt.map { $0 as Any } ?? NSNull(),
             "untracked": r.untracked,
         ]
     }
@@ -388,6 +389,7 @@ public enum AgentRegistry {
             claimSeenAt: (d["claimSeenAt"] as? NSNumber)?.doubleValue,
             quietDigest: d["quietDigest"] as? String ?? "",
             quietSince: (d["quietSince"] as? NSNumber)?.doubleValue,
+            reapRefusedAt: (d["reapRefusedAt"] as? NSNumber)?.doubleValue,
             untracked: d["untracked"] as? Bool ?? false)
     }
 }

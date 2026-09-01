@@ -1091,9 +1091,27 @@ final class Store: ObservableObject {
     /// and no dispatch time, prompt or transcript to be priced from. Dropping it is the
     /// whole of what it needs, and it does need it: a record kept so the stillness
     /// backstop has a memory must not outlive the agent it remembers.
+    ///
+    /// A run whose window would not close is kept instead. Every reapable run is one
+    /// this very tick saw ALIVE — the stillness rung only classifies a process already
+    /// known to be up, and the deadline overrules the verdict that says so — so a refused
+    /// close means the agent is still working in a window nothing here can reach.
+    /// Retiring it writes a completion into the ledger against that agent and deletes the
+    /// directory holding the prompt and the exit stamp that would have priced it
+    /// properly.
+    ///
+    /// Keeping the record is also what re-arms the backstop. Retired, the run comes back
+    /// as an UNTRACKED row — which `pastDeadline` refuses by name — so the deadline
+    /// fired once against a window it could not close and then never again.
+    ///
+    /// The record does not linger: the reaper stamps the refusal, both backstops go
+    /// quiet for one of their own periods (`AgentState.reapCooling`), and the run is a
+    /// running one holding its bay again until the next attempt. When its agent finally
+    /// leaves, no backstop stamps the verdict at all and it retires and prices on the
+    /// ordinary road.
     private func retireFinished(_ t: AgentState.Tick) async {
-        reapWedgedWindows(t)
-        let gone = t.retirable
+        let refused = reapWedgedWindows(t)
+        let gone = t.retirable.filter { !refused.contains($0.runID) }
         guard !gone.isEmpty else { return }
         let priced = Store.pricingInputs(gone)
         // Forgetting deletes every trace a run leaves — record, directory, prompt,
@@ -1127,10 +1145,14 @@ final class Store: ObservableObject {
     ///
     /// Closing it is not decoration on either verdict: an agent left alive is found again
     /// by the prompt scan the moment its record is retired, and comes straight back as an
-    /// untracked row holding the same bay and the same PR. Retiring without reaping frees
-    /// nothing and is not free either: a dispatched run is priced into the ledger as
-    /// completed and its directory deleted, so an agent that is still working comes back
-    /// stripped of its label with a completion recorded against it.
+    /// untracked row holding the same bay and the same PR, stripped of its label and with
+    /// a completion recorded against it. So the window closing is what licenses the
+    /// retirement, and a close that reached nothing withholds it.
+    ///
+    /// Returns the runs whose window would NOT close, and stamps the refusal on each so
+    /// both backstops wait out a period before ending it again. `retireFinished` keeps
+    /// those rather than pricing them; see there for why, and `AgentState.reapCooling`
+    /// for what the stamp buys.
     ///
     /// A run nobody dispatched is reaped like any other: a wedged session is just as dead
     /// whether or not this applet opened it. Its window is reached the same two ways a
@@ -1138,16 +1160,38 @@ final class Store: ObservableObject {
     /// process walked out to whatever terminal is showing it. A synthesized run has no run
     /// directory, so it never has a handle and the walk is its only route; a run the mesh
     /// placed back here is in the same position.
-    private func reapWedgedWindows(_ t: AgentState.Tick) {
+    private func reapWedgedWindows(_ t: AgentState.Tick) -> Set<String> {
+        var refused: Set<String> = []
         for record in t.reapable {
             let byHandle = AgentWindows.handle(record.runID).map(AgentWindows.close) ?? false
             guard byHandle || TerminalFocus.close(tty: record.tty, pid: record.pid)
-            else { continue }
+            else {
+                refused.insert(record.runID)
+                // Once per episode: the stamp is nil only before the first refusal.
+                // A window nothing can close is retried for the life of the app, and
+                // the operator needs its held bay explained once, not once per period.
+                if record.reapRefusedAt == nil {
+                    let who = record.label.isEmpty ? record.runID : record.label
+                    AuditLog.log("auto", "kill-device",
+                                 "could not close \(who)'s window — keeping the run "
+                                 + "and trying again")
+                }
+                continue
+            }
             let who = record.label.isEmpty ? record.runID : record.label
             let reason = t.states[record.runID]?.reason ?? ""
             let why = reason.components(separatedBy: "; ").last ?? ""
             AuditLog.log("auto", "kill-device", "closed \(who)'s window — \(why)")
         }
+        if !refused.isEmpty {
+            AgentRegistry.save(AgentRegistry.load().map { r -> AgentState.RunRecord in
+                guard refused.contains(r.runID) else { return r }
+                var stamped = r
+                stamped.reapRefusedAt = t.now
+                return stamped
+            })
+        }
+        return refused
     }
 
     /// What pricing a finished run needs, read off disk while its run directory still exists.

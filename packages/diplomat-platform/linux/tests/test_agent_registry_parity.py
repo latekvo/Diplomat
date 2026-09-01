@@ -39,7 +39,7 @@ def _records() -> list[A.RunRecord]:
                     source=A.SOURCE_AUTO, placement=A.PLACEMENT_LOCAL,
                     ledger_key="review:github.com/o/r#337@beef", pid=4242,
                     tty="pts/3", quiet_digest="9f86d081884c7d65",
-                    quiet_since=1786000020.5),
+                    quiet_since=1786000020.5, reap_refused_at=1786000040.25),
         A.RunRecord(run_id="1786000001-bbbbbbbb", dispatched_at=1786000001.25,
                     pr_number=508, pr_url="https://github.com/o/r/pull/508",
                     kind="conflicts", label="Resolve · #508",

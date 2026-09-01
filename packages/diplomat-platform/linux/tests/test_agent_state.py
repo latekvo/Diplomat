@@ -480,6 +480,34 @@ CASES = [
      rec(pid=None, pr_number=None, dispatched_at=T0 - PAST_DEADLINE), ev(live_agents={}),
      A.FINISHED, "no pid recorded 18000s after dispatch; has run for 5h, "
                  "past the 4h deadline"),
+
+    # --- a backstop that could not close the window -------------------------
+    # A backstop ends a run by CLOSING its terminal, so a kill that reached nothing left
+    # the agent working in a window nothing here can get to. Saying the run is over
+    # again on the next tick is how it stops being counted at all — FINISHED holds no
+    # bay and blocks no second dispatch onto its PR — so each clock waits out one of its
+    # own periods and then tries again.
+    ("a deadline that could not close the window leaves the run running",
+     rec(dispatched_at=T0 - PAST_DEADLINE, reap_refused_at=T0 - 60),
+     ev(processes={4242: proc(elapsed=PAST_DEADLINE)}, tails={"pts/3": WORKING}),
+     A.RUNNING, "working"),
+    ("a deadline whose window would not close tries again a deadline later",
+     rec(dispatched_at=T0 - PAST_DEADLINE, reap_refused_at=T0 - A.RUN_DEADLINE),
+     ev(processes={4242: proc(elapsed=PAST_DEADLINE)}, tails={"pts/3": WORKING}),
+     A.FINISHED, "past the 4h deadline"),
+    # The digest is the screen's own, so the clock survives `observe_quiescence` and
+    # these two pin the rung through `tick` as well as through `resolve_one` — which is
+    # what puts the Swift twin's copy of the cooling under the parity table.
+    ("a stillness backstop that could not close the window leaves the run running",
+     rec(quiet_digest=A.pane_digest(WORKING), quiet_since=T0 - 2 * A.QUIET_TIMEOUT,
+         reap_refused_at=T0 - 60),
+     ev(processes={4242: proc()}, tails={"pts/3": WORKING}),
+     A.RUNNING, "working"),
+    ("a stillness backstop whose window would not close tries again a timeout later",
+     rec(quiet_digest=A.pane_digest(WORKING), quiet_since=T0 - 2 * A.QUIET_TIMEOUT,
+         reap_refused_at=T0 - A.QUIET_TIMEOUT),
+     ev(processes={4242: proc()}, tails={"pts/3": WORKING}),
+     A.FINISHED, "its screen has not changed in 40m"),
 ]
 
 
@@ -574,6 +602,50 @@ def test_the_deadline_still_spares_the_run_nobody_could_look_at():
     got = A.resolve_one(record, blind, T0, A.RUN_DEADLINE)
     assert got.state == A.UNKNOWN, got.reason
     assert not got.expired and not got.unfindable
+def test_a_window_that_would_not_close_leaves_its_run_counted():
+    """What the cooling is for, in the terms the rest of the applet reads.
+
+    A backstop's whole licence is that it closes the window as it ends the run. When
+    the kill reaches nothing the agent is still there, and repeating FINISHED every
+    tick is not a harmless duplicate verdict: FINISHED holds no bay, blocks no second
+    dispatch onto the PR, and is not drawn — so the machine quietly puts a second agent
+    on a PR that already has one, which is the error this module weighs above holding a
+    bay too long."""
+    working = ev(processes={4242: proc(elapsed=PAST_DEADLINE)}, tails={"pts/3": WORKING})
+    ended = rec(dispatched_at=T0 - PAST_DEADLINE)
+    kept = dataclasses.replace(ended, reap_refused_at=T0 - 60)
+
+    over = A.resolve_one(ended, working, T0, A.RUN_DEADLINE)
+    assert over.state == A.FINISHED and over.expired, over.reason
+    assert not A.cap_load([ended], {"r1": over})
+    assert not A.in_flight([ended], {"r1": over}, 337)
+
+    again = A.resolve_one(kept, working, T0, A.RUN_DEADLINE)
+    assert again.state == A.RUNNING, again.reason
+    assert A.cap_load([kept], {"r1": again}) == {"r1"}
+    assert A.in_flight([kept], {"r1": again}, 337)
+    assert not A.reapable([kept], {"r1": again}), "and nothing to close until it fires"
+
+
+def test_a_refused_reap_never_silences_a_rung_above_the_backstops():
+    """The stamp is the reaper's, and the reaper only ever acts on a backstop. Letting
+    it reach the evidence rungs would keep a run whose sentinel has landed — an agent
+    that really did exit — in the book and in a bay until the cooling ran out."""
+    refused = rec(dispatched_at=T0 - PAST_DEADLINE, reap_refused_at=T0 - 60)
+    live = ev(processes={4242: proc(elapsed=PAST_DEADLINE)}, tails={"pts/3": WORKING})
+    for name, evidence in [
+        ("the sentinel",
+         dataclasses.replace(live, sentinels=A.Observation.present({"r1"}))),
+        ("the PR landing",
+         dataclasses.replace(live, merged_prs=A.Observation.present({337}))),
+        ("the agent's own report",
+         dataclasses.replace(live,
+                             activity=A.Observation.present({"r1": (completion.IDLE, T0)}))),
+        ("its pid leaving", ev(tails={"pts/3": WORKING})),
+    ]:
+        got = A.resolve_one(refused, evidence, T0, A.RUN_DEADLINE)
+        assert got.state in A.ENDED, f"{name}: {got.reason!r}"
+        assert not (got.wedged or got.expired), f"{name}: {got.reason!r}"
 
 
 def test_the_reap_gate_is_the_verdict_rather_than_the_clocks():
