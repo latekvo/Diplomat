@@ -1682,8 +1682,8 @@ def test_an_agent_left_alive_comes_back_as_an_untracked_row(store, monkeypatch):
     """Why the deadline reaps rather than merely retires. Retirement drops the record;
     the process is still there, and the prompt scan that finds agents nobody booked
     finds this one on the very next tick — same bay, same PR, no label. So a `tmux` that
-    would not kill hands the bay straight back, having already priced the run as finished
-    and deleted its directory."""
+    would not kill leaves the bay held by the same agent, having already deleted the run
+    directory out from under it."""
     from diplomat_runtime import agentstate as A
     from diplomat_runtime import tmuxwatch
 

@@ -754,9 +754,14 @@ class SettingsView(QWidget):
     def _refresh_apiwatch_ui(self) -> None:
         count = self.store.api_watch_continues
         if not self.store.api_watch_enabled:
-            self._apiwatch_pill.set_state(
-                f"{count} continued" if count else "off", _GREY
-            )
+            # Two switches under one pill, so grey means neither is doing anything:
+            # the deadline alone still retires runs and closes their windows.
+            if appconfig.run_deadline() is not None:
+                self._apiwatch_pill.set_state("deadline only", _GREEN)
+            else:
+                self._apiwatch_pill.set_state(
+                    f"{count} continued" if count else "off", _GREY
+                )
             return
         st = self.store.apiwatch_status
         live = bool(st) and (time.time() - st.get("updatedAt", 0)) < 15 * 60

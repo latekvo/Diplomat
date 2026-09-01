@@ -497,7 +497,7 @@ def tokens_left() -> Observation:
     box with no Claude Code login, and an endpoint that refused alike. That is not a
     distinction lost by accident: nothing downstream makes one. The resolver reads
     UNSUPPORTED and UNAVAILABLE identically ("not the positive answer the deadline
-    needs"), and unlike its four sibling UNSUPPORTED probes this observation is not
+    needs"), and unlike its sibling UNSUPPORTED probes this observation is not
     registered with :func:`_note`, so neither status reaches the probe-health watch.
 
     The consequence is worth stating out loud, because it is silent: on a machine whose

@@ -21,8 +21,12 @@ from . import probes
 def run() -> int:
     now = time.time()
     records = agentregistry.adopt_pids(agentregistry.load())
-    evidence = probes.gather(records, now, tokens=probes.tokens_left())
     limit, deadline = _limit(), _deadline()
+    # Dialled only when a rung can consult it: the endpoint is one small per-account
+    # bucket shared with every Claude Code session on the box, and a dump advertised as
+    # safe beside a live applet cannot spend the applet's reading.
+    tokens = probes.tokens_left() if deadline is not None else None
+    evidence = probes.gather(records, now, tokens=tokens)
     t = agentstate.tick(records, evidence, now, limit, deadline)
 
     print(f"registry: {agentregistry.runs_path()}")

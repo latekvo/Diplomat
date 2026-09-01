@@ -580,6 +580,11 @@ struct SettingsView: View {
         let n = store.apiWatchContinues
         let text = n > 0 ? "\(n) continued" : ""
         if !store.apiWatchEnabled {
+            // Two switches under one pill, so grey means neither is doing anything:
+            // the deadline alone still retires runs and closes their windows.
+            if store.runDeadlineEnabled {
+                return StatusPill(text: "deadline only", tint: .green, symbol: "bolt.fill")
+            }
             return StatusPill(text: text.isEmpty ? "off" : text, tint: .secondary,
                               symbol: "bolt.slash.fill")
         }

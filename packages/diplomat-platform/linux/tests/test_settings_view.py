@@ -148,6 +148,25 @@ def test_the_run_deadline_switch_opens_off_when_it_was_turned_off(make_view):
     assert make_view()._sw_deadline.isChecked() is False
 
 
+def test_the_stalled_agents_pill_answers_for_both_of_its_switches(make_view):
+    """One pill over two switches. With the watcher off and the deadline on the card
+    still retires runs and closes their windows, so a pill reading "off" sends an
+    operator looking for the cause anywhere but here. The sibling AUTOMATIC WORK card
+    is the shape to match: it greys only when every switch under it is off."""
+    from diplomat_runtime import appconfig
+
+    appconfig.set_bool(appconfig.RUN_DEADLINE, True)
+    view = make_view()
+    view.store.api_watch_enabled = False
+
+    view._refresh_apiwatch_ui()
+    assert "deadline" in view._apiwatch_pill.text()
+
+    appconfig.set_bool(appconfig.RUN_DEADLINE, False)
+    view._refresh_apiwatch_ui()
+    assert "deadline" not in view._apiwatch_pill.text()
+
+
 def test_every_row_names_its_control_for_a_screen_reader(view):
     """The row's name is a separate label, so an unnamed control reads as a bare
     switch. Every row is checked because the naming is one line in `SettingRow`:
