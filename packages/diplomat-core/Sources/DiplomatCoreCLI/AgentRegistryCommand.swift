@@ -95,6 +95,6 @@ enum AgentRegistryCommand {
             claimSeenAt: (d["claimSeenAt"] as? NSNumber)?.doubleValue,
             quietDigest: d["quietDigest"] as? String ?? "",
             quietSince: (d["quietSince"] as? NSNumber)?.doubleValue,
-            untracked: d["untracked"] as? Bool ?? false)
+            untracked: JSONInput.flag(d["untracked"]))
     }
 }
