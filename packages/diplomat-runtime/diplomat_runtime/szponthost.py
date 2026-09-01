@@ -181,8 +181,10 @@ def _ps_dump() -> str:
     ``ps -Ao tty=,etime=,args=`` is that portable spelling: on macOS ``-e`` prints the
     environment, not every process, so the store's Linux-only ``-eo`` can't be
     reused here (a node runs on both OSes) — and ``etime``, not the ``etimes`` that
-    store asks for, because BSD ``ps`` has no such keyword and answers one by dropping
-    the column with a line on stderr and a zero exit. The tty leads because it is what
+    store asks for, because BSD ``ps`` has no such keyword: it drops the column, writes
+    ``ps: etimes: keyword not found`` to stderr and exits non-zero. Neither is consulted
+    below, so the column-less output would be read as though it were whole. The tty
+    leads because it is what
     joins a ``claude`` process to the tmux pane showing it
     (:func:`autofix.idle_pr_numbers`); the age is beside it because that same answer
     must not read a booting agent as an idle one; the argv scan is indifferent to

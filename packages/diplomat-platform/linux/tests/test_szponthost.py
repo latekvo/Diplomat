@@ -207,7 +207,9 @@ def test_the_dump_asks_ps_for_the_portable_spelling_of_every_column(monkeypatch)
 
     ``etime``, not the ``etimes`` the applet's own Linux-only probe asks for: BSD
     ``ps`` has no such keyword and answers one by writing a line to stderr, dropping
-    the column and exiting zero. Every agent's age would then read as unknown, every
+    the column and exiting non-zero — an exit this dump does not consult, so the
+    column-less output is used regardless. Every agent's age would then read as
+    unknown, every
     agent would count as working, and the node would decline every peer's job for as
     long as it ran — with nothing on screen to say why."""
     seen = {}
