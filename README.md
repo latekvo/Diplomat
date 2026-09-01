@@ -46,14 +46,17 @@ Targets `software-mansion/argent` and shells out to the authenticated `gh` CLI.
 >
 > **One answer about what the agents are doing.** Whether a PR is in flight, how
 > many bays of the device's [task cap](#autonomous-monitors) are full, which rows
-> the panel draws and which record is retired are four *projections* of a single
-> resolved tick (`AgentState` / `agentstate.py`), not four derivations that can
-> drift apart. Evidence reaches it typed - each probe answers *present*,
-> *unavailable* or *unsupported* - and the ladder never reads "I could not look"
-> as "it is gone": a run ends only on positive evidence (its sentinel, its pid
-> missing from a process table that was actually read, or its mesh claim
-> released), and anything else resolves to `unknown`, which keeps its slot and
-> says so. A run is identified by the pid the shell that runs the agent writes into
+> the panel draws, which record is retired and whose window is closed with it are
+> five *projections* of a single resolved tick (`AgentState` / `agentstate.py`), not
+> five derivations that can drift apart. Evidence reaches it typed - each probe
+> answers *present*, *unavailable* or *unsupported* - and the ladder never reads
+> "I could not look" as "it is gone": a run ends only on positive evidence (its
+> sentinel, its pid missing from a process table that was actually read, or its
+> mesh claim released), and anything else resolves to `unknown`, which keeps its
+> slot and says so. The one rung that ends a run on a CLOCK rather than on evidence
+> about that run is the [four-hour deadline](#giving-up-on-a-run) an operator can
+> switch off, and it is the last rung of the ladder rather than one in the middle. A run is identified by the pid the shell that runs the
+> agent writes into
 > `~/.diplomat/agents/<run-id>/pid` before handing over to it, and the book survives
 > a restart on both platforms. `DIPLOMAT_AGENTS=1 python -m
 > diplomat_app` prints the whole chain: every record, every probe's raw answer,
@@ -935,6 +938,32 @@ failure direction is deferring work, never doubling up on it. Its PR stays
 in-flight regardless, since that session still holds the context, so nothing else
 is dispatched onto the same PR.)
 
+<a id="giving-up-on-a-run"></a>
+**Giving up on a run.** Every rung above reads the run itself, so a run none of them
+can reach - a runner with no hooks, settings that would not stage, an agent wedged
+behind a screen nothing can dump - holds its bay until you close the window. One
+switch answers that (Settings → **STALLED AGENTS** → *Give up on a task after 4h*,
+**default on**): an automatic run this machine is executing that has gone on for four
+hours and that the ladder above still calls *working* is called done anyway, its record
+retired and its window closed with it.
+
+It is the last rung of the ladder, not the first, and that is the whole of its
+safety. Every answer above it is a better one than a clock, so each of them wins:
+a run that ended the ordinary way keeps its window, a pid missing from a table that
+was actually read ends the run for that reason instead (the reaper walks out of the
+*remembered* tty, and `pts/<n>` is recycled freely), a session already back at its
+prompt has handed its bay back and is holding a finished task worth reading, and a
+tick whose process table could not be read at all resolves `unknown` and ends
+nothing. It fires only while a spending limit both reads and has room left - agents
+parked waiting for a window to refill age exactly like wedged ones, so the day a
+limit ran out the whole board would otherwise be given up on at once, and a machine
+with no limit it can read leaves the backstop off entirely. A peer's run is not
+touched (its claim is the machine that can see the process talking), nor is an agent
+found by the scan rather than dispatched (retiring one only has the next tick find it
+again), nor one you started by hand from the panel - that never took a bay of the
+automatic cap, so there is nothing to hand back. Four hours because the longest runs
+measured here - a swarm review, an issue reproduced from scratch - are hours long.
+
 Nothing is dropped - work over the cap gets no attempt record, so
 the next 3-minute tick offers it again as soon as a bay comes back, and it waits
 visibly in the panel's [Agent tasks](#agent-tasks) list meanwhile, where it can be
@@ -1087,6 +1116,11 @@ and ⏻) swaps the panel to a settings screen:
   cap above.
 - **Auto-continue agents on API errors** - the terminal watcher toggle, plus a
   count of nudges sent.
+- **Give up on a task after 4h** (**default on**) - the last-resort backstop under
+  every rung that reads the run itself; at four hours it closes the window of an
+  automatic task the ladder still calls working and hands its bay back. See
+  [Giving up on a run](#giving-up-on-a-run). In `~/.diplomat/config.json` beside the
+  cap it hands bays back to.
 - **Tools - color & visibility** - a **color well** to retint each tool plus a switch
   to hide it; hidden tools drop out of the grid and the reverse-lookup checklist.
 - **Spawn terminal** - which terminal SPAWN AGENT opens: **Ghostty**, **iTerm** or
@@ -1397,7 +1431,7 @@ packages/
         OpenCodeAPI.swift          reading an OpenCode run's own session: whose it is, mid-turn or not, spend
         HermesStore.swift          the same, for a Hermes run's session in its SQLite store
         AgentState.swift           the one resolver: typed evidence -> a state per agent run,
-                                   and the four projections (dedup, cap, rows, retirement)
+                                   and its projections (dedup, cap, rows, retirement, reaping)
         AgentRegistry.swift        the durable run book both applets read/write (~/.diplomat/agents)
         ApiErrorMatch.swift        "is this a Claude API error?" matcher for the watcher
         AuditCategory.swift        audit action verb → activity-feed filter category (mirrors assets/audit-categories.json)

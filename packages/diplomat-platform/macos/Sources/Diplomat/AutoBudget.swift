@@ -56,6 +56,34 @@ enum AutoBudget {
         return budget
     }
 
+    /// Does the account this machine's agents draw on still have room to spend, or nil
+    /// when no ceiling on it could be read?
+    ///
+    /// A cruder question than `decide`, and deliberately not a call into it. That one
+    /// asks whether one MORE task fits, and it fails OPEN — no measurement means
+    /// affordable, because holding all automatic work back on a probe that went quiet is
+    /// worse than starting one task too many. Its caller here wants the opposite
+    /// degradation: this is the precondition on `AgentState.runDeadline`, which RETIRES
+    /// runs, so a reading nobody could take must answer "I don't know" and not "plenty".
+    ///
+    /// Which ceilings there are is the currency split `decide` makes. One this account
+    /// does not have (an uncapped OpenRouter key) or that would not read is skipped
+    /// rather than guessed; every one that did read has to be above zero, because
+    /// whichever runs out first is the one that parks the agents.
+    static func tokensLeft() -> Bool? {
+        let readings: [Double?]
+        if AppConfig.agentRunner == .claude {
+            let (session, week) = Quota.fractionsLeft()
+            readings = [session, week]
+        } else {
+            let balance = Spend.balance()
+            readings = [balance.keyLeft, balance.creditLeft]
+        }
+        let known = readings.compactMap { $0 }
+        guard !known.isEmpty else { return nil }
+        return known.allSatisfy { $0 > 0 }
+    }
+
     /// The ledger, summarized the way the Telemetry screen summarizes it.
     ///
     /// The screen's DEFAULT lookback, not its longest and not whatever range the

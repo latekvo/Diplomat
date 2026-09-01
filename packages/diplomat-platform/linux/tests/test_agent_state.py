@@ -59,12 +59,19 @@ def proc(elapsed: float = 60.0, tty: str = "pts/3", is_agent: bool = True):
 
 
 def ev(*, processes=None, sentinels=None, tails=None, claims=None,
-       merged=None, live_agents=None, sessions=None, activity=None) -> A.Evidence:
+       merged=None, live_agents=None, sessions=None, activity=None,
+       tokens=None) -> A.Evidence:
     """An evidence bundle where anything not named is PRESENT-and-empty.
 
     Empty, not unavailable: these cases are about a machine that was successfully
     looked at and had nothing on it. A case that wants "the probe failed" says so by
     passing an explicit ``Observation.unavailable``.
+
+    ``tokens`` defaults to PRESENT-and-TRUE, which is the one default here that is not
+    "nothing on it". Every case is then resolved with the run deadline armed AND its
+    precondition met, so the whole table doubles as the proof that the deadline does not
+    fire on any run under it — the failure it would otherwise take one forgotten case to
+    hide.
     """
     def obs(v, empty):
         if v is None:
@@ -80,7 +87,17 @@ def ev(*, processes=None, sentinels=None, tails=None, claims=None,
         live_agents=obs(live_agents, {}),
         sessions=obs(sessions, {}),
         activity=obs(activity, {}),
+        tokens_left=obs(tokens, True),
     )
+
+
+#: Comfortably past :data:`A.RUN_DEADLINE`, and integral so the seconds in a reason
+#: string format to the same text in both languages (see the parity test).
+PAST_DEADLINE = A.RUN_DEADLINE + 3600
+
+#: The token reading the deadline needs, for the cases that call
+#: :func:`A.past_deadline` directly rather than through the ladder.
+HAS_TOKENS = A.Observation.present(True)
 
 
 # (name, record, evidence, expected state, expected substring of the reason)
@@ -331,6 +348,9 @@ CASES = [
          dispatched_at=T0),
      ev(processes={}, tails={"pts/3": WORKING}, live_agents={337: "pts/3"}),
      A.RUNNING, "found in process table"),
+    # Long past the run deadline as well, which the scan's own record is exempt from:
+    # retired, it is rebuilt by the next tick with a fresh stamp and the same agent
+    # takes the bay straight back.
     ("an untracked agent is never aged out for having no pid",
      rec(run_id="untracked:337", pid=None, tty="pts/3", untracked=True,
          dispatched_at=T0 - 99999),
@@ -370,13 +390,96 @@ CASES = [
      rec(dispatched_at=T0 - 7200), ev(processes={4242: proc(elapsed=7200)},
                                       tails={"pts/3": WORKING}),
      A.RUNNING, "working"),
+
+    # --- the run deadline ---------------------------------------------------
+    #
+    # The outermost backstop, and the one rung that ends a run on the clock rather than
+    # on evidence about it. What these pin is the three things that hold it back, since
+    # a deadline nothing holds back retires working agents.
+    ("a run past the deadline is over whatever its screen still shows",
+     rec(dispatched_at=T0 - PAST_DEADLINE),
+     ev(processes={4242: proc(elapsed=PAST_DEADLINE)}, tails={"pts/3": WORKING}),
+     A.FINISHED, "has run for 5h, past the 4h deadline"),
+    # The boundary itself, in the table so the Swift twin is held to it too: the
+    # comparison is `>=`, and one written `>` differs on exactly this input.
+    ("a run exactly on the deadline is over",
+     rec(dispatched_at=T0 - A.RUN_DEADLINE),
+     ev(processes={4242: proc(elapsed=A.RUN_DEADLINE)}, tails={"pts/3": WORKING}),
+     A.FINISHED, "has run for 4h, past the 4h deadline"),
+    ("a run a minute short of the deadline is still working",
+     rec(dispatched_at=T0 - (A.RUN_DEADLINE - 60)),
+     ev(processes={4242: proc(elapsed=A.RUN_DEADLINE - 60)}, tails={"pts/3": WORKING}),
+     A.RUNNING, "working"),
+    # An account with nothing left parks every agent on it, and a parked agent ages
+    # exactly like a wedged one. Given up on, the whole board would retire on the day a
+    # limit ran out.
+    ("a run past the deadline is not given up on with nothing left to spend",
+     rec(dispatched_at=T0 - PAST_DEADLINE),
+     ev(processes={4242: proc(elapsed=PAST_DEADLINE)}, tails={"pts/3": WORKING},
+        tokens=False),
+     A.RUNNING, "working"),
+    ("a run past the deadline is not given up on with no limit readable",
+     rec(dispatched_at=T0 - PAST_DEADLINE),
+     ev(processes={4242: proc(elapsed=PAST_DEADLINE)}, tails={"pts/3": WORKING},
+        tokens=A.Observation.unsupported("no limit this machine can read")),
+     A.RUNNING, "working"),
+    # The reading is THIS account's, and a peer's agent spends the peer's. That run is
+    # ended by its claim being released, by the machine that can see the process.
+    ("a peer's run is not ended by this device's deadline",
+     rec(placement=A.PLACEMENT_MESH_PEER, node="brick", work_key="review:337:abc",
+         pid=None, tty="", dispatched_at=T0 - PAST_DEADLINE),
+     ev(claims={"review:337:abc"}),
+     A.RUNNING, "claim held on brick"),
+    # The deadline is the LAST rung, so every answer the ladder actually reached
+    # outranks it. Each of these is a run old enough to fire it.
+    #
+    # Ending a run because a table we could not read did not hold its pid is the
+    # failure this module exists to prevent, and age must not be the one input that
+    # gets to do it anyway.
+    ("a run past the deadline is not ended by a process table nobody could read",
+     rec(dispatched_at=T0 - PAST_DEADLINE),
+     ev(processes=A.Observation.unavailable("could not be read"),
+        tails={"pts/3": WORKING}),
+     A.UNKNOWN, "process table could not be read"),
+    # A table we DID read and that does not hold the pid says the run stopped. That is
+    # a better reason than a clock, and the difference is destructive: the reaper walks
+    # out of the REMEMBERED tty, and `pts/<n>` is recycled freely.
+    ("a departed pid still outranks the deadline",
+     rec(dispatched_at=T0 - PAST_DEADLINE),
+     ev(processes={}, tails={"pts/3": WORKING}),
+     A.FINISHED, "absent from the process table"),
+    # AWAITING_INPUT has already given its bay back (it is not in OCCUPYING), so there
+    # is nothing for the rung to reclaim — and the session is holding a finished task
+    # the operator may still want to read.
+    ("a run at its prompt past the deadline keeps its session",
+     rec(dispatched_at=T0 - PAST_DEADLINE),
+     ev(processes={4242: proc(elapsed=PAST_DEADLINE)}, tails={"pts/3": AT_PROMPT}),
+     A.AWAITING_INPUT, "at the prompt"),
+    # `cap_load` counts SOURCE_AUTO alone, so a panel click never took a bay. Ending one
+    # frees nothing and costs the operator an agent they are driving themselves.
+    ("a run the operator started by hand is not ended by the deadline",
+     rec(source=A.SOURCE_PANEL, dispatched_at=T0 - PAST_DEADLINE),
+     ev(processes={4242: proc(elapsed=PAST_DEADLINE)}, tails={"pts/3": WORKING}),
+     A.RUNNING, "working"),
+    # Both rungs above the deadline end the run too, and each names a better reason
+    # than a clock.
+    ("a merged PR still outranks the deadline",
+     rec(dispatched_at=T0 - PAST_DEADLINE),
+     ev(processes={4242: proc(elapsed=PAST_DEADLINE)}, tails={"pts/3": WORKING},
+        merged={337}),
+     A.MERGED, "PR #337 is merged"),
+    ("a sentinel still outranks the deadline",
+     rec(dispatched_at=T0 - PAST_DEADLINE),
+     ev(processes={4242: proc(elapsed=PAST_DEADLINE)}, tails={"pts/3": WORKING},
+        sentinels={"r1"}),
+     A.FINISHED, "completion sentinel present"),
 ]
 
 
 @pytest.mark.parametrize("name,record,evidence,want_state,want_reason", CASES,
                          ids=[c[0] for c in CASES])
 def test_resolve_one(name, record, evidence, want_state, want_reason):
-    got = A.resolve_one(record, evidence, T0)
+    got = A.resolve_one(record, evidence, T0, A.RUN_DEADLINE)
     assert got.state == want_state, f"{name}: reason was {got.reason!r}"
     assert want_reason in got.reason, name
 
@@ -400,11 +503,114 @@ def test_only_the_stillness_backstop_marks_a_run_wedged():
     assert any(v.state == A.FINISHED and not v.wedged for v in verdicts)
 
 
+def test_only_the_run_deadline_marks_a_run_expired():
+    """``expired`` is the other half of the window reaper's licence, so like ``wedged``
+    it has to name ONE rung rather than a property several verdicts share.
+
+    The set it must not widen to is "FINISHED, and older than the deadline". That age
+    is true of a run for the whole rest of its life, including on the ticks after a
+    rung ABOVE the deadline ended it — so re-deriving it reaps a run that stopped for
+    a reason of its own."""
+    for name, record, evidence, _state, _reason in CASES:
+        got = A.resolve_one(record, evidence, T0, A.RUN_DEADLINE)
+        by_deadline = "past the 4h deadline" in got.reason
+        assert got.expired is by_deadline, f"{name}: {got.reason!r}"
+    # …and the table really does contain both sides of that distinction: a run the
+    # deadline ended, and a run older than the deadline that something else ended.
+    verdicts = [A.resolve_one(r, e, T0, A.RUN_DEADLINE) for _n, r, e, _s, _rr in CASES]
+    assert any(v.expired for v in verdicts)
+    assert any(v.state == A.FINISHED and not v.expired for v in verdicts)
+
+
+def test_the_reap_gate_is_the_verdict_rather_than_the_clocks():
+    """Closing a window is the one destructive thing a tick does, and the run it must
+    never do it to is the long one that finished the ordinary way.
+
+    Both clocks stay true after a rung above them ends a run: :func:`past_deadline`
+    holds for the rest of a long run's life, and :func:`went_quiet` keeps maturing
+    across an evidence outage. So the gate reads which rung actually fired. A
+    five-hour review whose agent reports its turn over is sitting at its prompt with
+    the finished task on the screen — reaping it takes that away, and the audit line
+    would even quote "its CLI reported the turn over" as the reason for closing it."""
+    def reaped(**evidence_kw) -> bool:
+        record = rec(dispatched_at=T0 - PAST_DEADLINE)
+        evidence = ev(processes={4242: proc(elapsed=PAST_DEADLINE)}, **evidence_kw)
+        states = {record.run_id: A.resolve_one(record, evidence, T0, A.RUN_DEADLINE)}
+        assert states[record.run_id].state == A.FINISHED, states[record.run_id].reason
+        return bool(A.reapable([record], states))
+
+    # Five hours, and nothing on the machine can say it ever stopped. The rung's own
+    # case, and the only one of the three whose window is nobody's.
+    assert reaped(tails={"pts/3": WORKING})
+    # Its agent reported the turn over — the primary signal, five hours in.
+    assert not reaped(tails={"pts/3": AT_PROMPT},
+                      activity={"r1": (completion.IDLE, T0)})
+    # Its exit code landed.
+    assert not reaped(tails={"pts/3": WORKING}, sentinels={"r1"})
+
+
+def test_a_reaped_window_always_belongs_to_a_retired_run():
+    """``Tick.reapable`` is documented as a subset of ``retirable``: the window goes
+    with the record. A stamp landing on a verdict that is not terminal would close a
+    terminal under a row the registry keeps, leaving a run the panel still lists with
+    nowhere to look at it."""
+    for name, record, evidence, _state, _reason in CASES:
+        states = {record.run_id: A.resolve_one(record, evidence, T0, A.RUN_DEADLINE)}
+        reaped = {r.run_id for r in A.reapable([record], states)}
+        assert reaped <= {r.run_id for r in A.retirable([record], states)}, name
+
+
 def test_every_state_is_reachable_from_the_table():
     """A state no case produces is a state nothing pins — the table's own coverage
     gate, so a rung cannot be added without a scenario that reaches it."""
-    reached = {A.resolve_one(r, e, T0).state for _n, r, e, _s, _r in CASES}
+    reached = {A.resolve_one(r, e, T0, A.RUN_DEADLINE).state
+               for _n, r, e, _s, _r in CASES}
     assert reached == set(A.STATE_ORDER)
+
+
+# MARK: - The run deadline's switch
+
+
+def test_the_deadline_ends_nothing_when_the_operator_has_it_off():
+    """The whole point of the switch. Off, a run that has gone on for days is judged
+    exactly as it was before this rung existed."""
+    record = rec(dispatched_at=T0 - 10 * 24 * 3600)
+    evidence = ev(processes={4242: proc(elapsed=10 * 24 * 3600)},
+                  tails={"pts/3": WORKING})
+    assert A.resolve_one(record, evidence, T0, None).state == A.RUNNING
+    assert A.resolve_one(record, evidence, T0, A.RUN_DEADLINE).state == A.FINISHED
+
+
+def test_a_run_exactly_on_the_deadline_is_over():
+    """The boundary is inclusive, matching :func:`went_quiet` — a rung that needed a
+    strictly longer run would never fire on a clock read at the same instant."""
+    record = rec(dispatched_at=T0 - A.RUN_DEADLINE)
+    assert A.past_deadline(record, HAS_TOKENS, T0, A.RUN_DEADLINE) == A.RUN_DEADLINE
+    assert A.past_deadline(rec(dispatched_at=T0 - A.RUN_DEADLINE + 1),
+                           HAS_TOKENS, T0, A.RUN_DEADLINE) is None
+
+
+def test_a_mesh_placement_back_on_this_box_is_this_devices_run():
+    """`runs_here`, not `placement == local`: the mesh routing a job back here leaves
+    an agent on THIS machine, spending THIS account, holding one of THIS device's
+    bays — so the deadline reaches it exactly as it reaches a local spawn."""
+    here = rec(placement=A.PLACEMENT_MESH_HERE, dispatched_at=T0 - PAST_DEADLINE)
+    assert A.past_deadline(here, HAS_TOKENS, T0, A.RUN_DEADLINE) == PAST_DEADLINE
+
+
+def test_the_deadline_retires_the_record_it_ends():
+    """The consequence the whole rung exists for: the bay comes back and the row
+    leaves the panel. A verdict that stopped at the row would leave the registry
+    holding it forever."""
+    records = [rec(dispatched_at=T0 - PAST_DEADLINE)]
+    evidence = ev(processes={4242: proc(elapsed=PAST_DEADLINE)},
+                  tails={"pts/3": WORKING})
+    held = A.tick(records, evidence, T0, 2)
+    given_back = A.tick(records, evidence, T0, 2, A.RUN_DEADLINE)
+    assert held.cap_load and not held.retirable
+    assert not given_back.cap_load
+    assert [r.run_id for r in given_back.retirable] == ["r1"]
+    assert given_back.free_slots == 2
 
 
 # MARK: - Stillness, and what a screen dump really carries
@@ -665,6 +871,23 @@ def test_records_and_evidence_survive_a_json_round_trip():
     assert back.processes.value == e.processes.value
     assert back.tails.value == e.tails.value
     assert back.merged_prs.value == e.merged_prs.value
+    assert back.tokens_left.value == e.tokens_left.value
+
+
+def test_a_token_reading_that_is_not_a_bool_is_refused_rather_than_coerced():
+    """The one field a destructive rung turns on, so it is decoded strictly: a number
+    or a string where a bool belongs is a field that did not survive its trip, and
+    coercing it answers the precondition out of whatever happened to be truthy.
+
+    ``1`` is the case that matters — it is what a hand-written payload and a lenient
+    decoder both produce, and `bool(1)` is the positive answer the deadline needs."""
+    def decoded(value):
+        return A.Evidence.from_json(
+            {"tokensLeft": {"status": A.PRESENT, "value": value}}).tokens_left
+
+    assert decoded(True).value is True
+    for wrong in (1, 1.0, "true", "1", [1]):
+        assert decoded(wrong).value is None, wrong
 
 
 def test_an_unavailable_observation_keeps_its_reason_across_json():

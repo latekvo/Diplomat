@@ -19,21 +19,24 @@ import Foundation
 ///
 /// Input:
 /// ```
-/// { "now": 1000000.0, "limit": 2,
+/// { "now": 1000000.0, "limit": 2, "deadline": 14400.0,
 ///   "records": [ {"runId": …, "dispatchedAt": …, "pid": …, …} ],
 ///   "evidence": { "processes": {"status": "present", "value": {"4242": {…}}},
 ///                 "liveAgents": {"status": "present", "value": {"404": "pts/3"}}, … } }
 /// ```
-/// Output: the resolved rows in display order, the four projections, and the records as
+/// Output: the resolved rows in display order, every projection, and the records as
 /// the pipeline left them — so a claim sighting written by the wrong step is a diff.
 enum AgentStateCommand {
     static func run(_ obj: [String: Any]) {
         let now = (obj["now"] as? NSNumber)?.doubleValue ?? 0
         let limit = (obj["limit"] as? NSNumber)?.intValue ?? 2
+        // Absent means the operator's switch is off, which is the Python default too —
+        // a payload that forgot the key must not silently get a deadline of zero.
+        let deadline = (obj["deadline"] as? NSNumber)?.doubleValue
         let evidence = decodeEvidence(obj["evidence"] as? [String: Any] ?? [:])
         let records = (obj["records"] as? [[String: Any]] ?? []).map(decodeRecord)
         let t = AgentState.tick(records: records, evidence: evidence,
-                                now: now, limit: limit)
+                                now: now, limit: limit, deadline: deadline)
 
         var inFlight: [String: Bool] = [:]
         for pr in Set(t.records.compactMap(\.prNumber)) {
@@ -42,12 +45,25 @@ enum AgentStateCommand {
         let out: [String: Any] = [
             "rows": t.rows.map { r, s in
                 ["runId": r.runID, "state": s.state.rawValue, "reason": s.reason,
-                 "wedged": s.wedged]
+                 "wedged": s.wedged, "expired": s.expired]
             },
             "capLoad": t.capLoad.sorted(),
             "retirable": t.retirable.map(\.runID).sorted(),
+            // The one destructive projection, so the two sides have to agree on it by
+            // name: a window closed on one platform and left open on the other is a
+            // machine that behaves differently depending on which applet is running.
+            "reapable": t.reapable.map(\.runID).sorted(),
             "freeSlots": t.freeSlots,
             "inFlight": inFlight,
+            // Three timing constants, so the parity diff covers the NUMBERS and not
+            // only the verdicts. `quietTimeout` is already pinned by the scenarios that
+            // sit either side of it, but `runDeadline` is supplied in the payload and no
+            // case lies within `spawnGrace` of its dispatch — so a Swift value that
+            // drifted from the Python one would otherwise change nothing any case here
+            // can see, while the two applets retired runs at different ages.
+            "constants": ["runDeadline": AgentState.runDeadline,
+                          "quietTimeout": AgentState.quietTimeout,
+                          "spawnGrace": AgentState.spawnGrace],
             "records": t.records.map { r -> [String: Any] in
                 ["runId": r.runID, "claimSeenAt": r.claimSeenAt.map { $0 as Any } ?? NSNull(),
                  "untracked": r.untracked, "placement": r.placement.rawValue,
@@ -133,7 +149,8 @@ enum AgentStateCommand {
                     out[runID] = AgentState.TurnReport(verb: verb, at: at)
                 }
                 return out
-            })
+            },
+            tokensLeft: decodeObs(d["tokensLeft"]) { $0 as? Bool })
     }
 
     private static func decodeRecord(_ d: [String: Any]) -> AgentState.RunRecord {

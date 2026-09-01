@@ -5,11 +5,11 @@ the same evidence: is this PR in flight, how many bays of the device's cap are f
 what rows does the panel draw, and which record is retired. Patching one moved the
 bug into the others, and the macOS front-end answered all four differently again.
 
-Here they are one function and four projections of its result:
+Here they are one function and five projections of its result:
 
-    resolve(records, evidence, now) -> {run_id: Resolution}
+    resolve(records, evidence, now, deadline) -> {run_id: Resolution}
 
-    in_flight(...)  cap_load(...)  rows(...)  retirable(...)
+    in_flight(...)  cap_load(...)  rows(...)  retirable(...)  reapable(...)
 
 Everything in this module is **pure** — no clock, no subprocess, no filesystem. The
 impure half is each front-end's own probe layer — :mod:`diplomat_app.probes` on Linux,
@@ -35,6 +35,12 @@ The mirror rule costs a bay rather than correctness: a live process whose screen
 cannot be read is RUNNING, because working and waiting-at-the-prompt are genuinely
 indistinguishable from outside. The probe layer reports how often that happens rather
 than letting it pass silently.
+
+The one deliberate exception is :data:`RUN_DEADLINE`, which ends a run on its age
+rather than on evidence about it — the outermost backstop, for the runs every other
+rung is structurally unable to end. It fires only when a caller passes one (the
+operator's switch, Settings → STALLED AGENTS) and only on a positive reading that
+the account still has tokens to spend.
 """
 
 from __future__ import annotations
@@ -213,6 +219,29 @@ PID_ADOPTION_SLACK = 30.0
 #: a slow tool call, a long build or a human reading the window is not mistaken for a
 #: dead one.
 QUIET_TIMEOUT = 20 * 60.0
+
+#: How long a run this device executes may go on before it is called over whatever
+#: else the evidence says — the outermost backstop, offered as a switch
+#: (:func:`appconfig.run_deadline`) rather than applied unconditionally.
+#:
+#: Beneath :data:`QUIET_TIMEOUT` sits the same argument one rung further out. The
+#: stillness clock ends a wedged run by reading its screen, so it ends nothing on a run
+#: whose screen cannot be read — a pane the multiplexer will not dump, a terminal that
+#: refuses automation, a run whose tty was never adopted. Those runs hold a bay until a
+#: human closes the window, and nothing in the ladder above says otherwise.
+#:
+#: Four hours because it has to clear the longest run that is genuinely work and not a
+#: wedge: a swarm review of a large PR, an issue reproduced from scratch, an E2E sweep.
+#: Those run in hours, not in fractions of one, so a deadline in minutes would retire
+#: working agents and this one is deliberately far past anything measured here.
+#:
+#: It is the one rung that ends a run on the CLOCK rather than on evidence about that
+#: run, which is why it is switched off by an operator who would rather a stuck bay than
+#: an early verdict — and why it asks :attr:`Evidence.tokens_left` first. An account with
+#: nothing left to spend parks every agent it has: they sit there accumulating age while
+#: doing no work at all, and reading that as four hours of wedged run would retire the
+#: whole board on the day a limit ran out.
+RUN_DEADLINE = 4 * 60 * 60.0
 
 #: How long a mesh origination claim may go unseen before the peer's run reads as
 #: over.
@@ -408,6 +437,12 @@ class Evidence:
     #: screen" rather than as anything about the run.
     sessions: Observation = field(
         default_factory=lambda: Observation.unavailable("not probed"))
+    #: Does the account this device's agents draw on still have room to spend? The one
+    #: item here that is about the MACHINE rather than about any run, and the precondition
+    #: :data:`RUN_DEADLINE` turns on. UNSUPPORTED on a machine whose account publishes no
+    #: limit this applet can read, which is an ordinary machine and not a broken probe.
+    tokens_left: Observation = field(
+        default_factory=lambda: Observation.unavailable("not probed"))
 
     def to_json(self) -> dict:
         return {"activity": self.activity.to_json(),
@@ -417,7 +452,8 @@ class Evidence:
                 "claims": self.claims.to_json(),
                 "mergedPrs": self.merged_prs.to_json(),
                 "liveAgents": self.live_agents.to_json(),
-                "sessions": self.sessions.to_json()}
+                "sessions": self.sessions.to_json(),
+                "tokensLeft": self.tokens_left.to_json()}
 
     @staticmethod
     def from_json(obj: dict) -> "Evidence":
@@ -442,6 +478,12 @@ class Evidence:
                 obj.get("sessions"),
                 lambda v: {str(k): SessionState.from_json(s)
                            for k, s in (v or {}).items()}),
+            # Strictly a bool: a number or a string in a hand-written payload is a
+            # field that did not survive its trip, and coercing one would answer this
+            # rung's precondition out of whatever happened to be truthy.
+            tokens_left=Observation.from_json(
+                obj.get("tokensLeft"),
+                lambda v: v if isinstance(v, bool) else None),
         )
 
 
@@ -473,6 +515,17 @@ class Resolution:
     #: FINISHED-because-gone carrying twenty minutes of stillness. Reaping that closes
     #: whatever holds its tty now.
     wedged: bool = False
+    #: Whether the RUN DEADLINE is what ended this run — set by that rung and by
+    #: nothing else.
+    #:
+    #: The other half of the window reaper's licence, and a separate field for the
+    #: same reason :attr:`wedged` is one: a clock answers about a record whatever
+    #: ended it. :func:`past_deadline` still returns an age for a run that a rung
+    #: ABOVE the deadline ended — a sentinel, or the agent's own turn report — and
+    #: that run finished the ordinary way, alive at its prompt with the task on the
+    #: screen. Reaping it closes the window over the very thing the operator asked
+    #: for.
+    expired: bool = False
 
     @property
     def occupying(self) -> bool:
@@ -480,7 +533,7 @@ class Resolution:
 
     def to_json(self) -> dict:
         return {"runId": self.run_id, "state": self.state, "reason": self.reason,
-                "wedged": self.wedged}
+                "wedged": self.wedged, "expired": self.expired}
 
 
 # MARK: - Claim sightings (pure, but stateful across ticks)
@@ -621,13 +674,14 @@ def _reported(record: RunRecord, evidence: Evidence) -> tuple[str, float] | None
     return evidence.activity.value.get(record.run_id)
 
 
-def resolve(records: list[RunRecord], evidence: Evidence,
-            now: float) -> dict[str, Resolution]:
+def resolve(records: list[RunRecord], evidence: Evidence, now: float,
+            deadline: float | None = None) -> dict[str, Resolution]:
     """Every run's state, from one pass of evidence. Pure."""
-    return {r.run_id: resolve_one(r, evidence, now) for r in records}
+    return {r.run_id: resolve_one(r, evidence, now, deadline) for r in records}
 
 
-def resolve_one(record: RunRecord, evidence: Evidence, now: float) -> Resolution:
+def resolve_one(record: RunRecord, evidence: Evidence, now: float,
+                deadline: float | None = None) -> Resolution:
     """One run's state, by a fixed ladder.
 
     The order is the precedence, and each rung is either positive evidence or an
@@ -643,7 +697,15 @@ def resolve_one(record: RunRecord, evidence: Evidence, now: float) -> Resolution
     4. a mesh-peer run is judged by the executor's claim, because no probe on this
        machine can see a process on another one;
     5. a local run is judged by its pid, and its screen only classifies a pid that is
-       already known to be alive.
+       already known to be alive;
+    6. the deadline, when the operator has one, and LAST: it overrules only a RUNNING —
+       the answer that means "this bay is spoken for and nothing here can say when it
+       will come back". Every other answer the ladder reaches is a better one than a
+       clock, and each of them is a reason this rung must not fire: ENDED already named
+       how the run stopped, AWAITING_INPUT is a session at its prompt that gave its bay
+       back and still holds a task worth reading, and UNKNOWN is the tick where the
+       evidence could not be read at all — ending a run on that would retire it for
+       being old on the one pass that saw nothing.
     """
     def done(state: str, reason: str) -> Resolution:
         return Resolution(record.run_id, state, reason)
@@ -660,8 +722,65 @@ def resolve_one(record: RunRecord, evidence: Evidence, now: float) -> Resolution
         return done(FINISHED, _REPORTED_REASON[reported[0]])
 
     if record.placement == PLACEMENT_MESH_PEER:
-        return _resolve_peer(record, evidence, now, done)
-    return _resolve_local(record, evidence, now, done)
+        out = _resolve_peer(record, evidence, now, done)
+    else:
+        out = _resolve_local(record, evidence, now, done)
+    if out.state != RUNNING:
+        return out
+    expired = past_deadline(record, evidence.tokens_left, now, deadline)
+    if expired is None:
+        return out
+    # The one rung that stamps `expired`; see :attr:`Resolution.expired`. The answer it
+    # overruled is kept in the reason: it is what the run looked like right up to the
+    # moment a clock ended it, and the only account of that anyone gets.
+    return replace(done(FINISHED,
+                        f"{out.reason}; has run for {apiwatch.human_interval(expired)}"
+                        f", past the {apiwatch.human_interval(deadline)} deadline"),
+                   expired=True)
+
+
+def past_deadline(record: RunRecord, tokens: Observation, now: float,
+                  deadline: float | None) -> float | None:
+    """How long this run has been going, once that is long enough to call it over —
+    ``None`` when it is not, or when nothing here may call it over at all.
+
+    Asked by the resolver alone, like :func:`went_quiet`, and for the same reason: an
+    age is true of a run whatever ended it, so the window reaper reads the verdict that
+    came out of this (:attr:`Resolution.expired`) rather than asking again. The age
+    returned is the age the reason line quotes, so the verdict and the number the
+    operator reads cannot come apart.
+
+    Five things hold it back, each a case where the clock is measuring something other
+    than a bay that will not come back:
+
+    * **no deadline** — the operator switched the backstop off;
+    * **no token reading, or none left** — see :data:`RUN_DEADLINE`;
+    * **a run on somebody else's machine** — the reading above is THIS account's, and
+      the peer's own claim already ends that run;
+    * **a run the operator started by hand** — :func:`cap_load` counts only
+      ``SOURCE_AUTO``, so a panel click holds no bay of the automatic cap and there is
+      nothing here to hand back. All that ending one would buy is the loss of a working
+      agent the operator is driving themselves;
+    * **an untracked run** — its record comes from the scan rather than from a dispatch,
+      so :func:`synthesize_untracked` rebuilds it on the very next tick with a fresh
+      stamp: the bay comes back for one tick and the same agent takes it again. Its
+      stamp is when the scan first SAW the agent, so the age here would not even be
+      the run's.
+
+    Every run this reaches is one :func:`cap_load` is counting — a bay is what there is
+    to hand back — but not the reverse, and the gap is deliberate on both sides. An
+    untracked run holds a bay and is exempt above. So is a run on a tick that resolved
+    UNKNOWN, because OCCUPYING counts that and the RUNNING the caller requires does not:
+    a bay held by a run nobody could look at this pass is a bay kept.
+    """
+    if deadline is None or not record.runs_here or record.untracked:
+        return None
+    if record.source != SOURCE_AUTO:
+        return None
+    if not (tokens.ok and tokens.value):
+        return None
+    age = now - record.dispatched_at
+    return age if age >= deadline else None
 
 
 def _resolve_peer(record: RunRecord, evidence: Evidence, now: float,
@@ -949,11 +1068,11 @@ def synthesize_untracked(records: list[RunRecord], live_agents: Observation,
     return out
 
 
-# MARK: - The four projections
+# MARK: - The projections
 #
 # Each is a fold over the resolved map. Nothing below re-reads evidence or re-derives
-# a state, which is the whole point: the four answers can disagree with each other
-# only if this file is wrong, not if one of four call sites drifted.
+# a state, which is the whole point: the answers can disagree with each other only if
+# this file is wrong, not if one call site of five drifted.
 
 
 def in_flight(records: list[RunRecord], states: dict[str, Resolution],
@@ -994,11 +1113,39 @@ def retirable(records: list[RunRecord],
     """The runs whose agent has ended — what the registry drops and what the
     telemetry ledger prices.
 
-    A record is never retired by its own age: an hour-long review is an ordinary one,
-    and a clock that ends records ends them mid-run.
+    Age alone retires nothing here: an hour-long review is an ordinary one, and a clock
+    that ends records ends them mid-run. The one exception is
+    :data:`RUN_DEADLINE`, which is on unless an operator turns it off — so this is
+    the one thing said here that a default-on switch can make untrue.
     """
     return [r for r in records
             if r.run_id in states and states[r.run_id].state in ENDED]
+
+
+def reapable(records: list[RunRecord],
+             states: dict[str, Resolution]) -> list[RunRecord]:
+    """The runs whose terminal is nobody's — ended by a CLOCK rather than by evidence
+    that their agent stopped, so the agent may well still be sitting in the window.
+
+    A projection rather than a test each front-end repeats, because it is the one
+    destructive consequence a tick has: a window closed under a run this resolver still
+    calls working takes the whole task's context with it.
+
+    Which rung fired is ASKED (:attr:`Resolution.wedged`, :attr:`Resolution.expired`)
+    rather than re-derived from the clocks, because a clock answers about a record
+    whatever ended it. Both of them are still true of runs the rungs above them ended:
+    :func:`went_quiet` keeps maturing across an evidence outage, and
+    :func:`past_deadline` holds for the whole life of a long run that then reports its
+    turn over the ordinary way. Those runs are absent from here — their agent is alive
+    at its prompt holding the finished task, and the operator may still want to read
+    it. So is a merged one, for the same reason.
+
+    ``runs_here`` is not re-checked: both stamps already imply it — the stillness rung
+    only runs inside :func:`_resolve_local`, and :func:`past_deadline` refuses a peer.
+    """
+    return [r for r in records
+            if r.run_id in states
+            and (states[r.run_id].wedged or states[r.run_id].expired)]
 
 
 def free_slots(limit: int, occupied: int) -> int:
@@ -1022,6 +1169,9 @@ class Tick:
     rows: list[tuple[RunRecord, Resolution]]
     cap_load: set[str]
     retirable: list[RunRecord]
+    #: Of those, the ones a backstop ended — whose window is closed as well as
+    #: forgotten. See :func:`reapable`.
+    reapable: list[RunRecord]
     free_slots: int
     #: The instant every verdict below was resolved against.
     now: float = 0.0
@@ -1030,8 +1180,8 @@ class Tick:
         return in_flight(self.records, self.states, pr_number)
 
 
-def tick(records: list[RunRecord], evidence: Evidence, now: float,
-         limit: int) -> Tick:
+def tick(records: list[RunRecord], evidence: Evidence, now: float, limit: int,
+         deadline: float | None = None) -> Tick:
     """Fold one pass of evidence into every answer, in the one order that is correct.
 
     The order is the reason this is a function rather than a convention each caller
@@ -1047,8 +1197,9 @@ def tick(records: list[RunRecord], evidence: Evidence, now: float,
     records = adopt_ttys(records, evidence.processes, evidence.live_agents)
     records = observe_quiescence(records, evidence.tails, now)
     records = synthesize_untracked(records, evidence.live_agents, now)
-    states = resolve(records, evidence, now)
+    states = resolve(records, evidence, now, deadline)
     load = cap_load(records, states)
     return Tick(records=records, states=states, rows=rows(records, states),
                 cap_load=load, retirable=retirable(records, states),
+                reapable=reapable(records, states),
                 free_slots=free_slots(limit, len(load)), now=now)

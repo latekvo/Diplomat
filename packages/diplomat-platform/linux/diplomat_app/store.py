@@ -225,6 +225,9 @@ class Store(QObject):
         # carry the answer forward (UNAVAILABLE until the first one runs).
         self._merged_prs = agentstate.Observation.unavailable(
             "have not been probed yet")
+        # And the same for the token-budget reading, which rides the same slow refresh.
+        self._tokens_left = agentstate.Observation.unavailable(
+            "has not been probed yet")
         # Which probes have already been reported silent, so the feed gets one line
         # per episode rather than one per tick, and another when they come back.
         self._probe_warned: dict[str, bool] = {}
@@ -801,6 +804,8 @@ class Store(QObject):
 
     def _autofix_poll_once(self) -> None:
         self._poll_error_this_cycle = None
+        # Ahead of the settle below, the pass that applies the deadline it gates.
+        self.refresh_token_budget()
         # Settle the agents before anything reads them. This is the one pass that runs
         # whatever the operator is looking at: the panel's own tick is gated on the
         # panel being VISIBLE, and this is a tray applet whose panel is shut most of
@@ -2156,8 +2161,10 @@ class Store(QObject):
         """
         now = time.time()
         records = agentregistry.adopt_pids(agentregistry.load())
-        evidence = probes.gather(records, now, merged=self._merged_prs)
-        t = agentstate.tick(records, evidence, now, self.auto_task_limit)
+        evidence = probes.gather(records, now, merged=self._merged_prs,
+                                 tokens=self._tokens_left)
+        t = agentstate.tick(records, evidence, now, self.auto_task_limit,
+                            appconfig.run_deadline())
         with self._tick_lock:
             self._tick = t
         return t
@@ -2304,8 +2311,10 @@ class Store(QObject):
     def _retire_finished(self, t: agentstate.Tick) -> None:
         """Price what has ended and drop it from the book.
 
-        Only on positive evidence that the agent ended — never on a record's age. The
-        prompt comes out of the run directory, so an applet that restarted mid-agent
+        Only on positive evidence that the agent ended, or on the one clock the operator
+        switched on for the runs no evidence reaches (Settings → STALLED AGENTS).
+
+        The prompt comes out of the run directory, so an applet that restarted mid-agent
         can still attribute the run to its transcript; the in-memory list could not,
         and every such run landed in the ledger unpriced.
 
@@ -2315,7 +2324,7 @@ class Store(QObject):
         stillness backstop has a memory must not outlive the agent it remembers.
         """
         gone = t.retirable
-        self._reap_quiet_windows(t)
+        self._reap_wedged_windows(t)
         if not gone:
             return
         # Every pricing input comes out of the run directory, so all of them must be
@@ -2347,14 +2356,16 @@ class Store(QObject):
         if retired:
             self.telemetry_changed.emit()
 
-    def _reap_quiet_windows(self, t: agentstate.Tick) -> None:
-        """Close the terminal of every run the quiescence backstop ended.
+    def _reap_wedged_windows(self, t: agentstate.Tick) -> None:
+        """Close the terminal of every run a backstop ended — the quiescence clock, or
+        the operator's run deadline.
 
         Only those, and the verdict is asked rather than reconstructed
-        (:attr:`agentstate.Resolution.wedged`). A run that finished the ordinary way
-        keeps its window — its agent is alive at its prompt holding the whole task,
-        and the operator may still want to read it. One whose screen has not changed
-        in twenty minutes is nobody's.
+        (:func:`agentstate.reapable`). A run that finished the ordinary way keeps its
+        window — its agent is alive at its prompt holding the whole task, and the
+        operator may still want to read it. One whose screen has not changed in twenty
+        minutes is nobody's, and so is one that has been going for four hours with
+        nothing able to say it ever stopped.
 
         "FINISHED, and its stillness clock is past the timeout" is a WIDER set than
         that, because the clock advances only on ticks that saw the screen and so
@@ -2364,16 +2375,22 @@ class Store(QObject):
         minutes of stillness — and `pts/<n>` is recycled freely, so the tty it left
         behind may already belong to somebody else's shell by then.
 
+        Closing it is not decoration on either verdict: an agent left alive is found
+        again by the prompt scan the moment its record is retired, and comes straight
+        back as an untracked row holding the same bay and the same PR. Retiring without
+        reaping frees nothing and is not free either: a dispatched run is priced into the
+        ledger as completed and its directory deleted, so an agent that is still working
+        comes back stripped of its label with a completion recorded against it.
+
         A run nobody dispatched is reaped like any other: a wedged session is just as
         dead whether or not this applet opened it.
         """
-        for record, resolution in t.rows:
-            if not resolution.wedged or not record.runs_here:
-                continue
+        for record in t.reapable:
             if tmuxwatch.kill_session_for_tty(record.tty):
+                reason = t.states[record.run_id].reason
                 activity.log("auto", "kill-device",
                              f"closed {record.label or record.run_id}'s window — "
-                             f"{resolution.reason.split('; ')[-1]}")
+                             f"{reason.split('; ')[-1]}")
 
     def _in_flight(self, url: str) -> bool:
         """Does this PR already have an agent? Every state that is not over counts,
@@ -2400,6 +2417,29 @@ class Store(QObject):
         prs = {r.pr_number for r in agentregistry.load()
                if r.pr_number is not None and not r.untracked}
         self._merged_prs = probes.merged_prs(prs)
+
+    def refresh_token_budget(self) -> None:
+        """Ask whether the account still has room to spend — the precondition on the
+        resolver's run deadline.
+
+        On the slow poll rather than the 8-second tick: this dials an endpoint over
+        HTTPS, and the tick runs on the panel's repaint as well as on the poll. The
+        ticks in between carry the answer forward.
+
+        With the deadline switched off the endpoint is left alone: it is one small
+        per-account bucket shared by every Claude Code session on the box, and the
+        telemetry sampler already loses readings to it, so spending a round of it on a
+        value :func:`agentstate.past_deadline` cannot consult is pure contention.
+        """
+        if appconfig.run_deadline() is None:
+            # Dropped rather than carried: nothing refreshes this while the switch is
+            # off, and switching it back on reaches the deadline on the panel's 8-second
+            # tick, a poll interval before this runs again. Kept across that gap, the
+            # reading arms the backstop off a balance as old as the switch was off for.
+            self._tokens_left = agentstate.Observation.unavailable(
+                "not probed with the deadline switched off")
+            return
+        self._tokens_left = probes.tokens_left()
 
     # MARK: monitor persistence + poll-error state
 

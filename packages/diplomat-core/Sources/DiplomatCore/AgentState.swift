@@ -7,10 +7,10 @@ import Foundation
 // what rows does the panel draw, and which record is retired. Patching one moved the
 // bug into the others, and the two front-ends answered all four differently again.
 //
-// Here they are one function and four projections of its result:
+// Here they are one function and five projections of its result:
 //
-//     AgentState.resolve(records:evidence:now:) -> [runID: Resolution]
-//     AgentState.inFlight / capLoad / rows / retirable
+//     AgentState.resolve(records:evidence:now:deadline:) -> [runID: Resolution]
+//     AgentState.inFlight / capLoad / rows / retirable / reapable
 //
 // Everything here is PURE — no clock, no subprocess, no filesystem. The impure half is
 // the front-end's probe layer, whose only job is to turn the outside world into an
@@ -29,6 +29,12 @@ import Foundation
 // other gap resolves to `.unknown`, which holds its bay and says so. Reading "I could
 // not look" as "it is gone" is what produced already-complete verdicts on agents that
 // were still working.
+//
+// The one deliberate exception is `runDeadline`, which ends a run on its age rather than
+// on evidence about it — the outermost backstop, for the runs every other rung is
+// structurally unable to end. It fires only when a caller passes one (the operator's
+// switch, Settings → STALLED AGENTS) and only on a positive reading that the account
+// still has tokens to spend.
 
 /// One probe's answer: a value, or a named reason there isn't one.
 ///
@@ -165,6 +171,29 @@ public enum AgentState {
     /// a slow tool call, a long build or a human reading the window is not mistaken for a
     /// dead one.
     public static let quietTimeout: TimeInterval = 20 * 60
+
+    /// How long a run this device executes may go on before it is called over whatever
+    /// else the evidence says — the outermost backstop, offered as a switch
+    /// (`AppConfig.runDeadline`) rather than applied unconditionally.
+    ///
+    /// Beneath `quietTimeout` sits the same argument one rung further out. The stillness
+    /// clock ends a wedged run by reading its screen, so it ends nothing on a run whose
+    /// screen cannot be read — a pane the multiplexer will not dump, a terminal that
+    /// refuses automation, a run whose tty was never adopted. Those runs hold a bay until
+    /// a human closes the window, and nothing in the ladder above says otherwise.
+    ///
+    /// Four hours because it has to clear the longest run that is genuinely work and not
+    /// a wedge: a swarm review of a large PR, an issue reproduced from scratch, an E2E
+    /// sweep. Those run in hours, not in fractions of one, so a deadline in minutes would
+    /// retire working agents and this one is deliberately far past anything measured here.
+    ///
+    /// It is the one rung that ends a run on the CLOCK rather than on evidence about that
+    /// run, which is why it is switched off by an operator who would rather a stuck bay
+    /// than an early verdict — and why it asks `Evidence.tokensLeft` first. An account
+    /// with nothing left to spend parks every agent it has: they sit there accumulating
+    /// age while doing no work at all, and reading that as four hours of wedged run would
+    /// retire the whole board on the day a limit ran out.
+    public static let runDeadline: TimeInterval = 4 * 60 * 60
 
     /// How long a mesh origination claim may go unseen before the peer's run reads as
     /// over.
@@ -323,6 +352,12 @@ public enum AgentState {
         /// itself at the instant it happened. A run is absent when it has reported
         /// nothing yet.
         public var activity: Observation<[String: TurnReport]>
+        /// Does the account this device's agents draw on still have room to spend? The
+        /// one item here that is about the MACHINE rather than about any run, and the
+        /// precondition `runDeadline` turns on. `.unsupported` on a machine whose account
+        /// publishes no limit this applet can read, which is an ordinary machine and not
+        /// a broken probe.
+        public var tokensLeft: Observation<Bool>
 
         /// Defaults are `.unavailable` rather than empty, so a caller that forgets to
         /// wire a probe gets rows reading "unknown" instead of a machine that
@@ -334,7 +369,8 @@ public enum AgentState {
                     mergedPRs: Observation<Set<Int>> = .unavailable("not probed"),
                     liveAgents: Observation<[Int: String]> = .unavailable("not probed"),
                     sessions: Observation<[String: SessionState]> = .unavailable("not probed"),
-                    activity: Observation<[String: TurnReport]> = .unavailable("not probed")) {
+                    activity: Observation<[String: TurnReport]> = .unavailable("not probed"),
+                    tokensLeft: Observation<Bool> = .unavailable("not probed")) {
             self.processes = processes
             self.sentinels = sentinels
             self.tails = tails
@@ -343,6 +379,7 @@ public enum AgentState {
             self.liveAgents = liveAgents
             self.sessions = sessions
             self.activity = activity
+            self.tokensLeft = tokensLeft
         }
     }
 
@@ -370,6 +407,16 @@ public enum AgentState {
         /// finished-because-gone carrying twenty minutes of stillness. Reaping that
         /// closes whatever holds its tty now.
         public var wedged: Bool = false
+        /// Whether the RUN DEADLINE is what ended this run — set by that rung and by
+        /// nothing else.
+        ///
+        /// The other half of the window reaper's licence, and a separate field for the
+        /// same reason `wedged` is one: a clock answers about a record whatever ended
+        /// it. `pastDeadline` still returns an age for a run that a rung ABOVE the
+        /// deadline ended — a sentinel, or the agent's own turn report — and that run
+        /// finished the ordinary way, alive at its prompt with the task on the screen.
+        /// Reaping it closes the window over the very thing the operator asked for.
+        public var expired: Bool = false
 
         public var occupying: Bool { AgentState.occupying.contains(state) }
     }
@@ -540,9 +587,12 @@ public enum AgentState {
 
     /// Every run's state, from one pass of evidence. Pure.
     public static func resolve(records: [RunRecord], evidence: Evidence,
-                               now: TimeInterval) -> [String: Resolution] {
+                               now: TimeInterval,
+                               deadline: TimeInterval? = nil) -> [String: Resolution] {
         var out: [String: Resolution] = [:]
-        for r in records { out[r.runID] = resolveOne(r, evidence: evidence, now: now) }
+        for r in records {
+            out[r.runID] = resolveOne(r, evidence: evidence, now: now, deadline: deadline)
+        }
         return out
     }
 
@@ -561,9 +611,18 @@ public enum AgentState {
     /// 4. a mesh-peer run is judged by the executor's claim, because no probe on this
     ///    machine can see a process on another one;
     /// 5. a local run is judged by its pid, and its screen only classifies a pid that is
-    ///    already known to be alive.
+    ///    already known to be alive;
+    /// 6. the deadline, when the operator has one, and LAST: it overrules only a
+    ///    `.running` — the answer that means "this bay is spoken for and nothing here
+    ///    can say when it will come back". Every other answer the ladder reaches is a
+    ///    better one than a clock, and each of them is a reason this rung must not fire:
+    ///    an ended run already named how it stopped, `.awaitingInput` is a session at
+    ///    its prompt that gave its bay back and still holds a task worth reading, and
+    ///    `.unknown` is the tick where the evidence could not be read at all — ending a
+    ///    run on that would retire it for being old on the one pass that saw nothing.
     public static func resolveOne(_ record: RunRecord, evidence: Evidence,
-                                  now: TimeInterval) -> Resolution {
+                                  now: TimeInterval,
+                                  deadline: TimeInterval? = nil) -> Resolution {
         func done(_ state: RunState, _ reason: String) -> Resolution {
             Resolution(runID: record.runID, state: state, reason: reason)
         }
@@ -577,10 +636,64 @@ public enum AgentState {
         if let report = reported(record, evidence), let why = report.verb.overReason {
             return done(.finished, why)
         }
-        if record.placement == .meshPeer {
-            return resolvePeer(record, evidence: evidence, now: now, done: done)
-        }
-        return resolveLocal(record, evidence: evidence, now: now, done: done)
+        let out = record.placement == .meshPeer
+            ? resolvePeer(record, evidence: evidence, now: now, done: done)
+            : resolveLocal(record, evidence: evidence, now: now, done: done)
+        guard out.state == .running,
+              let expired = pastDeadline(record, tokens: evidence.tokensLeft, now: now,
+                                         deadline: deadline)
+        else { return out }
+        let cutoff = ApiErrorMatch.humanInterval(deadline ?? 0)
+        // The one rung that stamps `expired`; see `Resolution.expired`. The answer it
+        // overruled is kept in the reason: it is what the run looked like right up to
+        // the moment a clock ended it, and the only account of that anyone gets.
+        var ended = done(.finished,
+                         "\(out.reason); has run for "
+                         + "\(ApiErrorMatch.humanInterval(expired)), "
+                         + "past the \(cutoff) deadline")
+        ended.expired = true
+        return ended
+    }
+
+    /// How long this run has been going, once that is long enough to call it over — nil
+    /// when it is not, or when nothing here may call it over at all.
+    ///
+    /// Asked by the resolver alone, like `wentQuiet`, and for the same reason: an age is
+    /// true of a run whatever ended it, so the window reaper reads the verdict that came
+    /// out of this (`Resolution.expired`) rather than asking again. The age returned is
+    /// the age the reason line quotes, so the verdict and the number the operator reads
+    /// cannot come apart.
+    ///
+    /// Five things hold it back, each a case where the clock is measuring something
+    /// other than a bay that will not come back:
+    ///
+    /// * **no deadline** — the operator switched the backstop off;
+    /// * **no token reading, or none left** — see `runDeadline`;
+    /// * **a run on somebody else's machine** — the reading above is THIS account's, and
+    ///   the peer's own claim already ends that run;
+    /// * **a run the operator started by hand** — `capLoad` counts only `.auto`, so a
+    ///   panel click holds no bay of the automatic cap and there is nothing here to hand
+    ///   back. All that ending one would buy is the loss of a working agent the operator
+    ///   is driving themselves;
+    /// * **an untracked run** — its record comes from the scan rather than from a
+    ///   dispatch, so `synthesizeUntracked` rebuilds it on the very next tick with a
+    ///   fresh stamp: the bay comes back for one tick and the same agent takes it again.
+    ///   Its stamp is when the scan first SAW the agent, so the age here would not even
+    ///   be the run's.
+    ///
+    /// Every run this reaches is one `capLoad` is counting — a bay is what there is to
+    /// hand back — but not the reverse, and the gap is deliberate on both sides. An
+    /// untracked run holds a bay and is exempt above. So is a run on a tick that resolved
+    /// `.unknown`, because `occupying` counts that and the `.running` the caller requires
+    /// does not: a bay held by a run nobody could look at this pass is a bay kept.
+    public static func pastDeadline(_ record: RunRecord, tokens: Observation<Bool>,
+                                    now: TimeInterval,
+                                    deadline: TimeInterval?) -> TimeInterval? {
+        guard let cutoff = deadline, record.runsHere, !record.untracked,
+              record.source == AgentDispatchGate.Source.auto.rawValue,
+              tokens.value == true else { return nil }
+        let age = now - record.dispatchedAt
+        return age >= cutoff ? age : nil
     }
 
     /// A run on somebody else's machine, judged by the origination lease.
@@ -901,11 +1014,11 @@ public enum AgentState {
         return out
     }
 
-    // MARK: - The four projections
+    // MARK: - The projections
     //
     // Each is a fold over the resolved map. Nothing below re-reads evidence or
-    // re-derives a state, which is the whole point: the four answers can disagree with
-    // each other only if this file is wrong, not if one of four call sites drifted.
+    // re-derives a state, which is the whole point: the answers can disagree with each
+    // other only if this file is wrong, not if one call site of five drifted.
 
     /// Does this PR already have an agent, for the dispatch gate's dedup?
     public static func inFlight(records: [RunRecord], states: [String: Resolution],
@@ -952,13 +1065,41 @@ public enum AgentState {
     /// The runs whose agent has ended — what the registry drops and what the telemetry
     /// ledger prices.
     ///
-    /// A record is never retired by its own age: an hour-long review is an ordinary one,
-    /// and a clock that ends records ends them mid-run.
+    /// Age alone retires nothing here: an hour-long review is an ordinary one, and a
+    /// clock that ends records ends them mid-run. The one exception is
+    /// `runDeadline`, which is on unless an operator turns it off — so this is the
+    /// one thing said here that a default-on switch can make untrue.
     public static func retirable(records: [RunRecord],
                                  states: [String: Resolution]) -> [RunRecord] {
         records.filter { r in
             guard let s = states[r.runID] else { return false }
             return ended.contains(s.state)
+        }
+    }
+
+    /// The runs whose terminal is nobody's — ended by a CLOCK rather than by evidence
+    /// that their agent stopped, so the agent may well still be sitting in the window.
+    ///
+    /// A projection rather than a test each front-end repeats, because it is the one
+    /// destructive consequence a tick has: a window closed under a run this resolver
+    /// still calls working takes the whole task's context with it.
+    ///
+    /// Which rung fired is ASKED (`Resolution.wedged`, `Resolution.expired`) rather than
+    /// re-derived from the clocks, because a clock answers about a record whatever ended
+    /// it. Both of them are still true of runs the rungs above them ended: `wentQuiet`
+    /// keeps maturing across an evidence outage, and `pastDeadline` holds for the whole
+    /// life of a long run that then reports its turn over the ordinary way. Those runs
+    /// are absent from here — their agent is alive at its prompt holding the finished
+    /// task, and the operator may still want to read it. So is a merged one, for the
+    /// same reason.
+    ///
+    /// `runsHere` is not re-checked: both stamps already imply it — the stillness rung
+    /// only runs inside `resolveLocal`, and `pastDeadline` refuses a peer.
+    public static func reapable(records: [RunRecord],
+                                states: [String: Resolution]) -> [RunRecord] {
+        records.filter { r in
+            guard let s = states[r.runID] else { return false }
+            return s.wedged || s.expired
         }
     }
 
@@ -980,6 +1121,9 @@ public enum AgentState {
         public var rows: [(RunRecord, Resolution)]
         public var capLoad: Set<String>
         public var retirable: [RunRecord]
+        /// Of those, the ones a backstop ended — whose window is closed as well as
+        /// forgotten. See `reapable(records:states:)`.
+        public var reapable: [RunRecord]
         public var freeSlots: Int
         /// The instant every verdict below was resolved against.
         public var now: TimeInterval = 0
@@ -999,17 +1143,20 @@ public enum AgentState {
     /// front-ends and the parity CLI go through here, so neither can get the sequence
     /// subtly different from the other.
     public static func tick(records: [RunRecord], evidence: Evidence,
-                            now: TimeInterval, limit: Int) -> Tick {
+                            now: TimeInterval, limit: Int,
+                            deadline: TimeInterval? = nil) -> Tick {
         var recs = observeClaims(records, claims: evidence.claims, now: now)
         recs = adoptTTYs(recs, processes: evidence.processes,
                          liveAgents: evidence.liveAgents)
         recs = observeQuiescence(recs, tails: evidence.tails, now: now)
         recs = synthesizeUntracked(recs, liveAgents: evidence.liveAgents, now: now)
-        let states = resolve(records: recs, evidence: evidence, now: now)
+        let states = resolve(records: recs, evidence: evidence, now: now,
+                             deadline: deadline)
         let load = capLoad(records: recs, states: states)
         return Tick(records: recs, states: states,
                     rows: rows(records: recs, states: states),
                     capLoad: load, retirable: retirable(records: recs, states: states),
+                    reapable: reapable(records: recs, states: states),
                     freeSlots: freeSlots(limit: limit, occupied: load.count), now: now)
     }
 }

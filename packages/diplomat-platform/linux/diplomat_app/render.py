@@ -209,7 +209,7 @@ def _queue_fixture(store: Store) -> None:
     busy = "● Reading…\n⏵⏵ bypass permissions on · esc to interrupt · ← for agents"
     at_prompt = "● Done.\n❯\n⏵⏵ bypass permissions on (shift+tab to cycle)"
 
-    def _fixed_probes(records, now, merged=None):
+    def _fixed_probes(records, now, merged=None, tokens=None):
         return agentstate.Evidence(
             processes=agentstate.Observation.present({
                 4021: agentstate.ProcInfo(tty="pts/40", elapsed=23 * 60,
@@ -227,6 +227,11 @@ def _queue_fixture(store: Store) -> None:
             # dispatched, found only by the prompt scan (what an applet restart or
             # a hand-started session leaves behind).
             live_agents=agentstate.Observation.present({351: "pts/35"}),
+            # Read, and positive: the deadline's precondition is met for this whole
+            # picture, so it doubles as the proof that nothing here is old enough and
+            # occupied enough to be given up on. #377 is exactly four hours old and
+            # keeps its row — it is at its prompt, which handed its bay back already.
+            tokens_left=agentstate.Observation.present(True),
         )
 
     probes.gather = _fixed_probes

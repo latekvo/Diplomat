@@ -797,3 +797,79 @@ def test_a_hand_edited_number_is_not_read_as_a_flag():
     default is what answers, not a coincidence of JSON types."""
     appconfig.set_int(appconfig.AUTO_BUDGET_GATE, 0)
     assert appconfig.auto_budget_gate() is True
+
+
+# MARK: - Tokens left, and the run deadline it gates
+#
+# A different question from `decide`, and it degrades the other way: the deadline
+# RETIRES runs, so an unreadable limit has to answer "I don't know" where the
+# dispatch gate's fail-open answers "plenty".
+
+
+def test_tokens_left_asks_the_window_a_claude_machine_spends(monkeypatch):
+    _probe(monkeypatch, session=0.4, week=0.9)
+    assert autobudget.tokens_left() is True
+
+
+def test_an_exhausted_window_leaves_no_tokens_even_beside_a_full_one(monkeypatch):
+    """Whichever ceiling runs out first is the one that parks the agents, so every
+    reading that came back has to be above zero — not the best of them."""
+    _probe(monkeypatch, session=0.0, week=0.9)
+    assert autobudget.tokens_left() is False
+
+
+def test_a_window_that_would_not_read_is_skipped_rather_than_guessed(monkeypatch):
+    _probe(monkeypatch, session=None, week=0.5)
+    assert autobudget.tokens_left() is True
+
+
+def test_no_reading_at_all_is_an_unknown_not_a_yes(monkeypatch):
+    """THE degradation. The dispatch gate fails open here; this one must not, or a
+    box with the probe switched off gives up on every run it has at four hours."""
+    _probe(monkeypatch, session=None, week=None)
+    assert autobudget.tokens_left() is None
+
+
+def test_a_probe_that_raises_is_an_unknown_too(monkeypatch):
+    def boom():
+        raise OSError("no network")
+
+    monkeypatch.setattr("diplomat_runtime.quota.fractions_left", boom)
+    assert autobudget.tokens_left() is None
+
+
+def test_a_money_machine_is_asked_about_money_not_about_windows(monkeypatch):
+    """The same currency split `decide` makes. A Hermes box holds no Anthropic
+    window, so a full one there must not wave its runs past the deadline."""
+    _hermes(monkeypatch)
+    _probe(monkeypatch, session=0.9, week=0.9)
+    _balance(monkeypatch, key_left=0.0, credit_left=5.0)
+    assert autobudget.tokens_left() is False
+
+    _balance(monkeypatch, key_left=None, credit_left=5.0)
+    assert autobudget.tokens_left() is True
+
+    _balance(monkeypatch, key_left=None, credit_left=None)
+    assert autobudget.tokens_left() is None
+
+
+def test_the_run_deadline_knob_reaches_a_reader_through_the_same_file():
+    """On by default — the backstop exists because the primary signal is the one
+    that fails — and resolved to the duration the resolver uses, so no caller pairs
+    the switch with a number of its own."""
+    from diplomat_runtime import agentstate
+
+    assert appconfig.run_deadline() == agentstate.RUN_DEADLINE
+
+    appconfig.set_bool(appconfig.RUN_DEADLINE, False)
+    assert appconfig.run_deadline() is None
+
+    appconfig.set_bool(appconfig.RUN_DEADLINE, True)
+    assert appconfig.run_deadline() == agentstate.RUN_DEADLINE
+
+
+def test_a_hand_edited_number_does_not_switch_the_deadline_off():
+    appconfig.set_int(appconfig.RUN_DEADLINE, 0)
+    from diplomat_runtime import agentstate
+
+    assert appconfig.run_deadline() == agentstate.RUN_DEADLINE

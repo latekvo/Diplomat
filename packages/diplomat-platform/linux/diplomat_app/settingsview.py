@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 )
 
 from diplomat_runtime import (
+    agentstate,
     apiwatch,
     appconfig,
     autofix,
@@ -710,7 +711,38 @@ class SettingsView(QWidget):
                    "whichever monitor owed the work.",
         ))
         body.addWidget(self._apiwatch_row)
+
+        # Beside the nudge because they are the two answers to one question. The nudge
+        # gets a stalled agent moving again; this is what happens when nothing does.
+        cutoff = apiwatch.human_interval(agentstate.RUN_DEADLINE)
+        self._sw_deadline = SwitchToggle(_PINK)
+        self._sw_deadline.setChecked(appconfig.run_deadline() is not None)
+        self._sw_deadline.toggled.connect(self._on_run_deadline_toggled)
+        body.addWidget(self._track(SettingRow(
+            f"Give up on a task after {cutoff}", self._sw_deadline,
+            summary="Close the window and hand the bay back, even if the agent still looks busy.",
+            detail="Agents report their turn boundaries through hooks staged into each "
+                   "run, and a run whose report never comes — a runner without hooks, "
+                   "settings that would not stage, an agent wedged with its status bar "
+                   "frozen — holds a task-cap bay until you close its window. This is "
+                   "the backstop under all of them, and it reads a clock rather than "
+                   f"the run: past {cutoff} an automatic task this device is still "
+                   "showing as working is called done anyway. Its tmux "
+                   "session is killed and its row leaves Agent tasks, and killing it is "
+                   "what frees the bay — an agent left alive is found by the scan on "
+                   "the next pass and takes it straight back. Only while a spending "
+                   "limit both reads and has room left: agents parked waiting for a "
+                   "window to refill age exactly like stuck ones, and a machine with no "
+                   "limit it can read leaves the backstop off. A run already back at "
+                   "its prompt has given its bay back and is left alone, and so are a "
+                   "peer's run, an agent you started by hand, and one the scan found "
+                   "rather than this applet dispatching it.",
+        )))
         return card
+
+    def _on_run_deadline_toggled(self, on: bool) -> None:
+        appconfig.set_bool(appconfig.RUN_DEADLINE, on)
+        self.store.changed.emit()
 
     def _on_apiwatch_toggled(self, on: bool) -> None:
         self.store.api_watch_enabled = on
@@ -722,9 +754,14 @@ class SettingsView(QWidget):
     def _refresh_apiwatch_ui(self) -> None:
         count = self.store.api_watch_continues
         if not self.store.api_watch_enabled:
-            self._apiwatch_pill.set_state(
-                f"{count} continued" if count else "off", _GREY
-            )
+            # Two switches under one pill, so grey means neither is doing anything:
+            # the deadline alone still retires runs and closes their windows.
+            if appconfig.run_deadline() is not None:
+                self._apiwatch_pill.set_state("deadline only", _GREEN)
+            else:
+                self._apiwatch_pill.set_state(
+                    f"{count} continued" if count else "off", _GREY
+                )
             return
         st = self.store.apiwatch_status
         live = bool(st) and (time.time() - st.get("updatedAt", 0)) < 15 * 60

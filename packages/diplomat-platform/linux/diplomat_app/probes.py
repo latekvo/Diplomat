@@ -488,13 +488,43 @@ def merged_prs(pr_numbers: set[int]) -> Observation:
     return Observation.present(merged)
 
 
+def tokens_left() -> Observation:
+    """Whether the account this machine's agents spend still has room in it — the
+    precondition on the resolver's run deadline.
+
+    UNSUPPORTED covers every "no reading", including a ceiling that exists but would not
+    answer — :func:`autobudget.tokens_left` returns ``None`` for a probe switched off, a
+    box with no Claude Code login, and an endpoint that refused alike. That is not a
+    distinction lost by accident: nothing downstream makes one. The resolver reads
+    UNSUPPORTED and UNAVAILABLE identically ("not the positive answer the deadline
+    needs"), and unlike its sibling UNSUPPORTED probes this observation is not
+    registered with :func:`_note`, so neither status reaches the probe-health watch.
+
+    The consequence is worth stating out loud, because it is silent: on a machine whose
+    usage endpoint is rate-limiting — one small per-account bucket, shared by every
+    Claude Code session on the box — the deadline is disarmed while its switch still
+    reads ON. That is the safe direction (nothing is retired on a reading nobody took),
+    but it is not the visible one.
+    """
+    from diplomat_runtime import autobudget
+
+    answer = autobudget.tokens_left()
+    if answer is None:
+        return Observation.unsupported(
+            "are unavailable (no spending limit this machine can read)")
+    return Observation.present(answer)
+
+
 def gather(records: list[RunRecord], now: float, *,
-           merged: Observation | None = None) -> Evidence:
+           merged: Observation | None = None,
+           tokens: Observation | None = None) -> Evidence:
     """One pass of every cheap probe.
 
-    ``merged`` is passed in rather than probed here: it costs a ``gh`` call per PR and
-    belongs to the slow refresh, so the fast tick carries forward whatever the last
-    one found (UNAVAILABLE until the first).
+    ``merged`` and ``tokens`` are passed in rather than probed here: one costs a ``gh``
+    call per PR and the other an HTTPS round trip, and neither belongs on a tick that
+    also runs on the panel's repaint. Each is whatever the store last carried, and
+    UNAVAILABLE until something refreshes it — which for ``merged`` on this platform is
+    nothing at all, see #111.
     """
     from diplomat_runtime import agentregistry, agentstate, review
 
@@ -523,4 +553,5 @@ def gather(records: list[RunRecord], now: float, *,
         live_agents=scan,
         sessions=_note("agent sessions",
                        agent_sessions(records, review.repo_path(), now), now),
+        tokens_left=tokens or Observation.unavailable("has not been probed yet"),
     )

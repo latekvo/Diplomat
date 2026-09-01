@@ -537,8 +537,42 @@ struct SettingsView: View {
                        detail: SettingsView.apiWatchDetail) {
                 switchControl("Auto-continue on API errors", $store.apiWatchEnabled)
             }
+            runDeadlineRow
         }
     }
+
+    /// Beside the nudge because they are the two answers to one question. The nudge gets
+    /// a stalled agent moving again; this is what happens when nothing does.
+    private var runDeadlineRow: some View {
+        SettingRow(title: SettingsView.runDeadlineTitle,
+                   summary: "Close the window and hand the bay back, even if the agent still looks busy.",
+                   detail: SettingsView.runDeadlineDetail) {
+            switchControl(SettingsView.runDeadlineTitle, $store.runDeadlineEnabled)
+        }
+    }
+
+    /// Both strings are resolved before the ViewBuilder sees them, and the cutoff is read
+    /// off the constant the resolver uses, so the row cannot come to name a different
+    /// number from the one it sets.
+    private static let runDeadlineCutoff = ApiErrorMatch.humanInterval(AgentState.runDeadline)
+
+    private static let runDeadlineTitle = "Give up on a task after \(runDeadlineCutoff)"
+
+    private static let runDeadlineDetail = """
+        Agents report their turn boundaries through hooks staged into each run, and a run \
+        whose report never comes — a runner without hooks, settings that would not stage, \
+        an agent wedged with its status bar frozen — holds a task-cap bay until you close \
+        its window. This is the backstop under all of them, and it reads a clock rather \
+        than the run: past \(runDeadlineCutoff) an automatic task this device is still \
+        showing as working is called done anyway. Its terminal is closed \
+        and its row leaves Agent tasks, and closing it is what frees the bay — an agent \
+        left alive is found by the scan on the next pass and takes it straight back. Only \
+        while a spending limit both reads and has room left: agents parked waiting for a \
+        window to refill age exactly like stuck ones, and a machine with no limit it can \
+        read leaves the backstop off. A run already back at its prompt has given its bay \
+        back and is left alone, and so are a peer's run, an agent you started by hand, and \
+        one the scan found rather than this applet dispatching it.
+        """
 
     /// Every other card's pill answers "is this doing anything" before a row is read.
     /// This one drew nothing at all until the watcher had stepped in at least once.
@@ -546,6 +580,11 @@ struct SettingsView: View {
         let n = store.apiWatchContinues
         let text = n > 0 ? "\(n) continued" : ""
         if !store.apiWatchEnabled {
+            // Two switches under one pill, so grey means neither is doing anything:
+            // the deadline alone still retires runs and closes their windows.
+            if store.runDeadlineEnabled {
+                return StatusPill(text: "deadline only", tint: .green, symbol: "bolt.fill")
+            }
             return StatusPill(text: text.isEmpty ? "off" : text, tint: .secondary,
                               symbol: "bolt.slash.fill")
         }

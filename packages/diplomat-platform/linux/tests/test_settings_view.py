@@ -117,6 +117,56 @@ def test_the_budget_reserve_reads_as_money_and_persists(view):
     assert appconfig.auto_budget_reserve_usd() == 5.0
 
 
+def test_the_run_deadline_switch_opens_on_the_stored_value_and_writes_through(view):
+    """The knob that decides whether a four-hour run is given up on. It writes to the
+    SHARED config file rather than QSettings, beside the cap whose bays it hands back —
+    and the row is titled from the resolver's own constant, so the number the operator
+    reads is the number that fires."""
+    from diplomat_runtime import agentstate, apiwatch, appconfig
+
+    assert view._sw_deadline.isChecked() is True  # on unless it was turned off
+
+    view._sw_deadline.setChecked(False)
+    assert appconfig.run_deadline() is None
+    view._sw_deadline.setChecked(True)
+    assert appconfig.run_deadline() == agentstate.RUN_DEADLINE
+
+    cutoff = apiwatch.human_interval(agentstate.RUN_DEADLINE)
+    assert cutoff in view._sw_deadline.accessibleName()
+
+
+def test_the_run_deadline_switch_opens_off_when_it_was_turned_off(make_view):
+    """The other half of "opens on the stored value", and the half a screen built at
+    the default cannot show: `setChecked(True)` passes the test above, because ON is
+    what the config says when nothing turned it off. An operator who switched a
+    destructive default-on backstop off has to see it off when they come back — the
+    twin `test_the_slider_opens_on_the_stored_cap` builds at a non-default for exactly
+    this reason."""
+    from diplomat_runtime import appconfig
+
+    appconfig.set_bool(appconfig.RUN_DEADLINE, False)
+    assert make_view()._sw_deadline.isChecked() is False
+
+
+def test_the_stalled_agents_pill_answers_for_both_of_its_switches(make_view):
+    """One pill over two switches. With the watcher off and the deadline on the card
+    still retires runs and closes their windows, so a pill reading "off" sends an
+    operator looking for the cause anywhere but here. The sibling AUTOMATIC WORK card
+    is the shape to match: it greys only when every switch under it is off."""
+    from diplomat_runtime import appconfig
+
+    appconfig.set_bool(appconfig.RUN_DEADLINE, True)
+    view = make_view()
+    view.store.api_watch_enabled = False
+
+    view._refresh_apiwatch_ui()
+    assert "deadline" in view._apiwatch_pill.text()
+
+    appconfig.set_bool(appconfig.RUN_DEADLINE, False)
+    view._refresh_apiwatch_ui()
+    assert "deadline" not in view._apiwatch_pill.text()
+
+
 def test_every_row_names_its_control_for_a_screen_reader(view):
     """The row's name is a separate label, so an unnamed control reads as a bare
     switch. Every row is checked because the naming is one line in `SettingRow`:

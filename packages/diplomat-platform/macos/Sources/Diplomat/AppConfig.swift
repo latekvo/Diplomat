@@ -12,6 +12,10 @@ import DiplomatCore
 /// UserDefaults nor Qt (the README documents joining a mesh with "no Qt needed"), which
 /// outlives this app and can't be handed a value at spawn time.
 ///
+/// One more sits with them without needing to: how long a run may go on before the
+/// resolver calls it over, which belongs beside the cap it hands bays back to and is
+/// read by the Linux `DIPLOMAT_AGENTS` dump, a front-end-free path with no store of its own.
+///
 /// So those knobs live in the shared `~/.diplomat` tree, alongside the ban list and
 /// the mesh snapshot both front-ends already exchange there. Every reader re-reads on
 /// use, so a change lands on the next spawn instead of the next process start.
@@ -29,6 +33,9 @@ enum AppConfig {
     static let autoBudgetFloorPctKey = "autoBudgetFloorPct"
     /// The same, in dollars, for an account billed in money.
     static let autoBudgetReserveUsdKey = "autoBudgetReserveUsd"
+    /// Whether a run that has gone on past `AgentState.runDeadline` is called over
+    /// regardless of what its own evidence says. Same key on the Linux side.
+    static let runDeadlineKey = "runDeadline"
     /// Which agent CLI a spawn runs — see `AgentRunner`. Same key on the Linux side.
     static let agentRunnerKey = "agentRunner"
     /// The model the selected runner is pinned to; "" lets that runner pick. A model id,
@@ -148,6 +155,16 @@ enum AppConfig {
         var obj = read()
         obj[key] = value
         write(obj)
+    }
+
+    /// How long a run this device executes may go on before the resolver calls it over
+    /// whatever else it sees, or nil when the operator has that backstop switched off
+    /// (Settings → STALLED AGENTS).
+    ///
+    /// The knob is a switch and the duration is `AgentState.runDeadline`; resolving the
+    /// two into one answer here is what keeps every caller from pairing them differently.
+    static var runDeadline: TimeInterval? {
+        bool(runDeadlineKey, fallback: true) ? AgentState.runDeadline : nil
     }
 
     /// Whether automatic work is held back when the rate-limit windows are too low to

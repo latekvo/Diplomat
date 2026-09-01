@@ -339,7 +339,11 @@ enum TrackTest {
             let evidence = AgentProbes.gather(records: records, now: at, owner: "o", repo: "r",
                                               directory: AgentSpawner.repoPath,
                                               meshEnabled: false, meshState: nil,
-                                              merged: .present([]))
+                                              merged: .present([]),
+                                              // This self-test spawns and watches one
+                                              // real agent within seconds; the deadline
+                                              // has no bearing on it.
+                                              tokens: .present(false))
             return AgentState.resolve(records: records, evidence: evidence,
                                       now: at)[record.runID]
         }

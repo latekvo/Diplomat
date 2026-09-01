@@ -247,7 +247,8 @@ def store(monkeypatch):
 
 
 def fake_probes(monkeypatch, *, processes=None, claims=None, merged=None,
-                live_prs=None, idle_prs=(), tails=None, activity=None):
+                live_prs=None, idle_prs=(), tails=None, activity=None,
+                tokens=False):
     """Replace the whole evidence layer with a literal.
 
     This is the seam the old `monkeypatch.setattr(Store, "_live_pr_agents", …)` became.
@@ -255,6 +256,12 @@ def fake_probes(monkeypatch, *, processes=None, claims=None, merged=None,
     including which probes could not answer, and the resolver does the rest. Anything
     not named is PRESENT-and-empty — a machine that was looked at and had nothing on
     it, which is the opposite of a probe that failed.
+
+    ``tokens`` is the one default that is not "PRESENT-and-empty": PRESENT-and-FALSE,
+    which is a machine with nothing left to spend and so a machine the run deadline
+    never fires on. That keeps every test here about the rung it is written for — the
+    deadline has its own scenarios in ``test_agent_state.py`` — and a test that wants it
+    live says ``tokens=True``.
 
     ``live_prs`` are PRs with an agent this applet has no record of, as the legacy
     prompt-text scan finds them; each is given a tty and a screen, because without a
@@ -277,8 +284,11 @@ def fake_probes(monkeypatch, *, processes=None, claims=None, merged=None,
     screens = {} if not isinstance(live, dict) else {
         f"pts/{pr}": (AT_PROMPT if pr in idle_prs else WORKING) for pr in live}
     screens.update(tails or {})
+    # Bound out here: the store passes its own carried-forward reading as `tokens`, and
+    # what this stub answers with is the test's, not the store's.
+    tokens_obs = A.Observation.present(bool(tokens))
 
-    def gather(records, now, merged=None):
+    def gather(records, now, merged=None, tokens=None):
         return A.Evidence(
             processes=obs(processes, {}),
             # Real, because they read the run directories the test itself created.
@@ -289,6 +299,7 @@ def fake_probes(monkeypatch, *, processes=None, claims=None, merged=None,
             claims=obs(claims, set()),
             merged_prs=obs(merged, set()),
             live_agents=obs(live, {}),
+            tokens_left=tokens_obs,
         )
 
     monkeypatch.setattr(probes, "gather", gather)
@@ -1558,14 +1569,19 @@ def test_a_finished_agent_still_blocks_a_second_agent_on_its_own_pr(store, monke
 
 
 # MARK: - what ends a record: the agent, not the clock
+#
+# With one exception the operator asks for by name — the run deadline at the end of this
+# section, which is switched on here rather than assumed and which every other test in
+# it leaves off (`fake_probes` answers PRESENT-and-FALSE about the account's tokens, and
+# the deadline never fires without a positive reading).
 
 
 def test_an_old_record_keeps_its_name_while_its_agent_is_alive(store, monkeypatch):
     """The record is the only place a row's label, kind and age live, so dropping one
     on age alone turns a working agent into an anonymous "untracked" row — while it
     runs on, with hours of work left. Reviews here routinely outlive any TTL, so a
-    record is ended by evidence its agent is gone, never by the clock reaching a
-    number. There is no TTL any more; this is what replaced it."""
+    record is ended by evidence its agent is gone, never by a clock the operator did not
+    set. There is no TTL any more; this is what replaced it."""
     from diplomat_runtime import agentstate as A
 
     started = time.time() - 6 * 60 * 60  # six hours in
@@ -1618,6 +1634,228 @@ def test_a_record_is_never_ended_by_a_table_we_could_not_read(store, monkeypatch
     assert row.state == "unknown" and "could not be read" in row.reason
     assert store.free_auto_slots == 1  # the bay is held, not handed back
     assert store._in_flight("https://github.com/o/r/pull/512")
+
+
+def test_a_run_past_the_deadline_is_reaped_and_its_bay_comes_back(store, monkeypatch):
+    """The fallback, end to end through the store, with the agent still in `ps` where a
+    wedged one really is: an agent whose own report never arrives and whose screen still
+    says "working" is otherwise held for the life of the applet.
+
+    Switched on, four hours ends it — window closed, record dropped, row gone, bay back
+    and the PR no longer deduped. The window is the load-bearing half: a live agent is
+    found again by the prompt scan the tick after its record goes, and comes back as an
+    untracked row holding the same bay.
+    """
+    from diplomat_runtime import agentregistry
+    from diplomat_runtime import agentstate as A
+
+    killed = _killed(monkeypatch)
+    started = time.time() - (A.RUN_DEADLINE + 3600)
+    register_run(512, pid=4242, tty="pts/3", dispatched_at=started,
+                 label="Auto · Review-req · #512", kind="review")
+    alive = {4242: A.ProcInfo(tty="pts/3", elapsed=A.RUN_DEADLINE + 3600,
+                              is_agent=True)}
+
+    # Nothing left to spend: the same wedged agent is left exactly where it was.
+    fake_probes(monkeypatch, processes=alive, live_prs={512}, tails={"pts/3": WORKING},
+                tokens=False)
+    store._settle_agents()
+    (row,) = store.running_tasks
+    assert row.state == "running" and store.free_auto_slots == 1
+    assert killed == [] and store._in_flight("https://github.com/o/r/pull/512")
+
+    fake_probes(monkeypatch, processes=alive, live_prs={512}, tails={"pts/3": WORKING},
+                tokens=True)
+    store._settle_agents()
+
+    assert killed == ["pts/3"], "the window was left open for the scan to find again"
+    assert agentregistry.load() == []
+
+    # The kill takes the agent with it, so the next look at the machine finds nothing to
+    # book back — which is what makes the bay and the PR actually free.
+    fake_probes(monkeypatch, processes={}, live_prs=set(), tokens=True)
+    assert store.running_tasks == [] and store.free_auto_slots == 2
+    assert not store._in_flight("https://github.com/o/r/pull/512")
+
+
+def test_an_agent_left_alive_comes_back_as_an_untracked_row(store, monkeypatch):
+    """Why the deadline reaps rather than merely retires. Retirement drops the record;
+    the process is still there, and the prompt scan that finds agents nobody booked
+    finds this one on the very next tick — same bay, same PR, no label. So a `tmux` that
+    would not kill leaves the bay held by the same agent, having already deleted the run
+    directory out from under it."""
+    from diplomat_runtime import agentstate as A
+    from diplomat_runtime import tmuxwatch
+
+    monkeypatch.setattr(tmuxwatch, "kill_session_for_tty", lambda tty: False)
+    register_run(512, pid=4242, tty="pts/3",
+                 dispatched_at=time.time() - (A.RUN_DEADLINE + 3600),
+                 label="Auto · Review-req · #512")
+    fake_probes(monkeypatch,
+                processes={4242: A.ProcInfo(tty="pts/3",
+                                            elapsed=A.RUN_DEADLINE + 3600,
+                                            is_agent=True)},
+                live_prs={512}, tails={"pts/3": WORKING}, tokens=True)
+
+    store._settle_agents()   # retires it — the window survives the failed kill
+    store._settle_agents()   # …and the scan books it straight back
+
+    (row,) = store.running_tasks
+    assert not row.tracked and row.pr_number == 512 and row.label == ""
+    assert store.free_auto_slots == 1
+    assert store._in_flight("https://github.com/o/r/pull/512")
+
+
+def test_the_deadline_switched_off_holds_the_same_run_forever(store, monkeypatch):
+    """The switch, at the level the operator sets it: the same evidence, the same age,
+    and the record stays because they said not to give up on it."""
+    from diplomat_runtime import agentregistry
+    from diplomat_runtime import agentstate as A
+    from diplomat_runtime import appconfig
+
+    appconfig.set_bool(appconfig.RUN_DEADLINE, False)
+    register_run(512, pid=4242, tty="pts/3",
+                 dispatched_at=time.time() - (A.RUN_DEADLINE + 3600))
+    fake_probes(monkeypatch,
+                processes={4242: A.ProcInfo(tty="pts/3",
+                                            elapsed=A.RUN_DEADLINE + 3600,
+                                            is_agent=True)},
+                tokens=True)
+
+    store.refresh_auto_task_count()
+
+    assert [r.pr_number for r in agentregistry.load()] == [512]
+    assert store.free_auto_slots == 1
+
+
+def test_the_poll_takes_the_token_reading_the_deadline_needs(store, monkeypatch):
+    """The reading rides the slow poll, not the 8-second tick — it dials an endpoint,
+    and the tick runs on every repaint. Never taken, the deadline could never fire on
+    any machine."""
+    from diplomat_runtime import agentstate as A
+
+    taken = []
+    monkeypatch.setattr("diplomat_app.probes.tokens_left",
+                        lambda: taken.append(1) or A.Observation.present(True))
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    fake_probes(monkeypatch)
+    monkeypatch.setattr(type(store), "effective_me", property(lambda self: ""))
+
+    store._autofix_poll_once()
+
+    assert taken, "the poll never asked whether the account has tokens left"
+    assert store._tokens_left == A.Observation.present(True)
+
+
+def test_the_store_opens_refusing_the_deadline_until_a_poll_has_answered(store):
+    """The carried-forward reading starts UNAVAILABLE, and that is load-bearing rather
+    than tidy: the tick runs on the panel's repaint, so it resolves long before the
+    three-minute poll first answers. Seeded positive instead, an applet started beside
+    a run already older than four hours would retire it and kill its window on the very
+    first tick, having asked nothing."""
+    from diplomat_runtime import agentstate as A
+
+    assert store._tokens_left.status == A.UNAVAILABLE
+    assert A.past_deadline(A.RunRecord(run_id="r1", dispatched_at=time.time() - 5 * 3600),
+                           store._tokens_left, time.time(), A.RUN_DEADLINE) is None
+
+
+def test_the_poll_reads_the_budget_before_it_settles_the_agents(store, monkeypatch):
+    """Order, not merely presence. Settled first, every poll would judge the deadline
+    on the previous cycle's reading and the first one on no reading at all - which is
+    a whole poll of a four-hour verdict taken against a stale answer."""
+    from diplomat_runtime import agentstate as A
+
+    order: list[str] = []
+    monkeypatch.setattr("diplomat_app.probes.tokens_left",
+                        lambda: order.append("budget") or A.Observation.present(True))
+    monkeypatch.setattr(type(store), "_settle_agents",
+                        lambda self: order.append("settle"))
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    fake_probes(monkeypatch)
+    monkeypatch.setattr(type(store), "effective_me", property(lambda self: ""))
+
+    store._autofix_poll_once()
+
+    assert order[:2] == ["budget", "settle"], order
+
+
+def test_the_poll_leaves_the_endpoint_alone_with_the_deadline_switched_off(
+    store, monkeypatch
+):
+    """Nothing reads the answer with the switch off, and the endpoint behind it is one
+    small per-account bucket shared with every Claude Code session on the box — the
+    telemetry sampler already loses readings to it. A poll every three minutes for a
+    value `past_deadline` cannot consult is pure contention."""
+    from diplomat_runtime import agentstate as A
+
+    taken = []
+    monkeypatch.setattr("diplomat_app.probes.tokens_left",
+                        lambda: taken.append(1) or A.Observation.present(True))
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    monkeypatch.setattr("diplomat_runtime.appconfig.run_deadline", lambda: None)
+    fake_probes(monkeypatch)
+    monkeypatch.setattr(type(store), "effective_me", property(lambda self: ""))
+
+    store._autofix_poll_once()
+
+    assert not taken, "the endpoint was dialled for a reading nothing can read"
+
+
+def test_a_reading_taken_before_the_switch_went_off_is_not_carried_back_in(
+    store, monkeypatch
+):
+    """The other half of leaving the endpoint alone. Nothing refreshes the reading while
+    the switch is off, and switching it back on reaches the deadline on the panel's
+    8-second tick — a whole poll interval before `refresh_token_budget` runs again.
+    Carried across that gap, the reading taken while the account still had room arms the
+    backstop off a balance as old as the switch was off for."""
+    from diplomat_app import probes
+    from diplomat_runtime import agentstate as A
+    from diplomat_runtime import appconfig
+
+    monkeypatch.setattr(probes, "tokens_left", lambda: A.Observation.present(True))
+    store.refresh_token_budget()
+    assert store._tokens_left == A.Observation.present(True), "the switch was on"
+
+    appconfig.set_bool(appconfig.RUN_DEADLINE, False)
+    store.refresh_token_budget()
+    appconfig.set_bool(appconfig.RUN_DEADLINE, True)
+
+    seen: dict = {}
+
+    def spy(records, now, **kw):
+        seen.update(kw)
+        return A.Evidence()
+
+    monkeypatch.setattr(probes, "gather", spy)
+    store._agent_tick()
+
+    assert seen["tokens"].status == A.UNAVAILABLE
+    assert A.past_deadline(A.RunRecord(run_id="r1", dispatched_at=time.time() - 5 * 3600),
+                           seen["tokens"], time.time(), A.RUN_DEADLINE) is None
+
+
+def test_the_tick_hands_the_carried_reading_to_the_probe_layer(store, monkeypatch):
+    """The other end of the same wire. The poll takes the reading; this is the tick
+    putting it in the bundle the resolver judges against — dropped, the evidence is
+    UNAVAILABLE for ever and the deadline can never fire, with every test above still
+    green because they replace the probe layer wholesale."""
+    from diplomat_app import probes
+    from diplomat_runtime import agentstate as A
+
+    seen: dict = {}
+
+    def spy(records, now, **kw):
+        seen.update(kw)
+        return A.Evidence()
+
+    monkeypatch.setattr(probes, "gather", spy)
+    store._tokens_left = A.Observation.present(True)
+
+    store._agent_tick()
+
+    assert seen.get("tokens") == A.Observation.present(True)
 
 
 def test_a_long_manual_run_never_starts_spending_the_automatic_budget(
