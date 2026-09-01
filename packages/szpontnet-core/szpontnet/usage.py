@@ -3,7 +3,7 @@
 Primary source — the **OAuth usage endpoint** (the same data Claude Code's
 ``/usage`` screen shows): utilization percentages for the account's real
 rate-limit windows, the 5-hour session and the 7-day week. The probe reads the
-Claude Code OAuth access token (``~/.claude/.credentials.json``, or the macOS
+Claude Code OAuth access tokens (``~/.claude/.credentials.json``, and the macOS
 Keychain item ``Claude Code-credentials``), GETs the endpoint, and converts each
 window's utilization into a remaining fraction. The endpoint answers out of one
 small per-account bucket every Claude Code session on the machine also spends, so
@@ -166,39 +166,55 @@ def claude_dir() -> Path:
     return Path(override) if override else Path.home() / ".claude"
 
 
-def _oauth_token() -> str | None:
-    """The Claude Code OAuth access token: the credentials file where Claude Code
-    writes it (Linux, and any explicit SZPONTNET_CLAUDE_DIR sandbox), else the macOS
-    login-Keychain item. Claude Code refreshes the token as it runs, so re-reading
-    per probe always picks up the freshest one. None when absent — probe skipped."""
+def _token_in(raw: object) -> str | None:
+    """The ``claudeAiOauth.accessToken`` inside a credentials blob."""
+    if not isinstance(raw, dict):
+        return None
+    tok = (raw.get("claudeAiOauth") or {}).get("accessToken")
+    return tok if isinstance(tok, str) and tok else None
+
+
+def _oauth_tokens() -> list[str]:
+    """Every Claude Code OAuth access token to try: the credentials file it writes
+    (Linux, and any explicit SZPONTNET_CLAUDE_DIR sandbox), then the macOS
+    login-Keychain item. Re-read per probe, since Claude Code refreshes them as it
+    runs. Empty when absent — probe skipped.
+
+    Every source rather than the first that parses, because they drift and the file
+    is the one that goes stale: macOS refreshes the Keychain item and never rewrites
+    a ``.credentials.json`` an older login left behind. Stopping at the file pins the
+    node to a dead credential for as long as that file exists, and quietly — a blind
+    probe just falls back to the local-log heuristic, exactly as an unreachable
+    endpoint does.
+
+    The file stays FIRST, so SZPONTNET_CLAUDE_DIR pointed at a fixture decides the
+    answer rather than being shadowed by the real Keychain.
+    """
+    out: list[str] = []
     try:
         raw = json.loads((claude_dir() / ".credentials.json").read_text(encoding="utf-8"))
-        tok = (raw.get("claudeAiOauth") or {}).get("accessToken")
-        if isinstance(tok, str) and tok:
-            return tok
+        tok = _token_in(raw)
+        if tok:
+            out.append(tok)
     except (OSError, ValueError):
         pass
     if sys.platform == "darwin":
         try:
-            out = subprocess.run(  # noqa: S603 — fixed argv, reads the user's own item
+            proc = subprocess.run(  # noqa: S603 — fixed argv, reads the user's own item
                 ["security", "find-generic-password",
                  "-s", "Claude Code-credentials", "-w"],
                 capture_output=True, text=True, timeout=_PROBE_TIMEOUT_SECS, check=False)
-            raw = json.loads(out.stdout.strip() or "{}")
-            tok = (raw.get("claudeAiOauth") or {}).get("accessToken")
-            if isinstance(tok, str) and tok:
-                return tok
+            tok = _token_in(json.loads(proc.stdout.strip() or "{}"))
+            if tok and tok not in out:
+                out.append(tok)
         except (OSError, ValueError, subprocess.SubprocessError):
             pass
-    return None
+    return out
 
 
-def _fetch_usage_payload() -> dict | None:
-    """One GET against the OAuth usage endpoint; None on any failure (no token,
-    offline, 401 after the token expired mid-window, garbage body)."""
-    token = _oauth_token()
-    if not token:
-        return None
+def _fetch_usage_payload(token: str) -> dict | None:
+    """One GET against the OAuth usage endpoint with one token; None on any failure
+    (offline, 401 after the token expired mid-window, garbage body)."""
     req = urllib.request.Request(_OAUTH_USAGE_URL, headers={
         "Authorization": f"Bearer {token}",
         "anthropic-beta": _OAUTH_BETA,
@@ -243,16 +259,25 @@ def _wait(secs: float, stopping: threading.Event | None) -> bool:
 
 
 def _attempt(now: float) -> bool:
-    """One GET, folded into the cache. True when it came back with a reading."""
+    """One round of the probe, folded into the cache. True when it came back with a
+    reading.
+
+    Every credential until one answers: a refused token and a busy bucket are the
+    same silence here, and only this loop tells them apart. It stops at the first
+    that yields a window, so the extra request is spent only where the probe was
+    already failing.
+    """
     _probe_cache["attempt"] = now
-    payload = _fetch_usage_payload()
-    session = _window((payload or {}).get("five_hour"), _SESSION_WINDOW_SECS)
-    if session is None:
-        return False
-    _probe_cache["good"] = now
-    _probe_cache["session"] = session
-    _probe_cache["week"] = _window(payload.get("seven_day"), _WEEK_WINDOW_SECS)
-    return True
+    for token in _oauth_tokens():
+        payload = _fetch_usage_payload(token)
+        session = _window((payload or {}).get("five_hour"), _SESSION_WINDOW_SECS)
+        if session is None:
+            continue
+        _probe_cache["good"] = now
+        _probe_cache["session"] = session
+        _probe_cache["week"] = _window(payload.get("seven_day"), _WEEK_WINDOW_SECS)
+        return True
+    return False
 
 
 def windows(*, insist: bool = False, stopping: threading.Event | None = None,
@@ -279,7 +304,7 @@ def windows(*, insist: bool = False, stopping: threading.Event | None = None,
     interval = _PROBE_TTL_SECS if _probe_cache["session"] is not None else _PROBE_RETRY_SECS
     if now - _probe_cache["attempt"] >= interval or _probe_cache["attempt"] == 0.0:
         # No token is the one failure retrying cannot fix.
-        if not _attempt(now) and insist and _oauth_token() is not None:
+        if not _attempt(now) and insist and _oauth_tokens():
             for _ in range(_INSIST_ATTEMPTS):
                 if _wait(_INSIST_WAIT_SECS, stopping) or _attempt(time.monotonic()):
                     break
