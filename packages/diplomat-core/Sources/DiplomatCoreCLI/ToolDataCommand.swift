@@ -65,7 +65,7 @@ enum ToolDataCommand {
             number: d["number"] as? Int ?? 0,
             title: d["title"] as? String ?? "",
             url: d["url"] as? String ?? "",
-            isDraft: d["isDraft"] as? Bool ?? false,
+            isDraft: JSONInput.flag(d["isDraft"]),
             author: d["author"] as? String ?? "",
             createdAt: date(d["createdAt"]),
             readyForReviewAt: optionalDate(d["readyForReviewAt"]),
@@ -73,8 +73,8 @@ enum ToolDataCommand {
             reviewDecision: d["reviewDecision"] as? String,
             mergeable: d["mergeable"] as? String ?? "UNKNOWN",
             reviewThreads: (d["reviewThreads"] as? [[String: Any]] ?? []).map {
-                ReviewThread(isResolved: $0["isResolved"] as? Bool ?? false,
-                             viewerCanResolve: $0["viewerCanResolve"] as? Bool ?? true,
+                ReviewThread(isResolved: JSONInput.flag($0["isResolved"]),
+                             viewerCanResolve: JSONInput.flag($0["viewerCanResolve"], true),
                              lastCommentAuthor: $0["lastCommentAuthor"] as? String)
             })
     }
@@ -91,6 +91,6 @@ enum ToolDataCommand {
             commentCount: d["commentCount"] as? Int ?? 0,
             assignees: d["assignees"] as? [String] ?? [],
             labels: d["labels"] as? [String] ?? [],
-            memberResponded: d["memberResponded"] as? Bool ?? false)
+            memberResponded: JSONInput.flag(d["memberResponded"]))
     }
 }

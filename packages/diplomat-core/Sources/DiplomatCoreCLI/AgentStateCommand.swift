@@ -112,7 +112,7 @@ enum AgentStateCommand {
                     out[pid] = AgentState.ProcInfo(
                         tty: pd["tty"] as? String ?? "",
                         elapsed: (pd["elapsed"] as? NSNumber)?.doubleValue ?? 0,
-                        isAgent: pd["isAgent"] as? Bool ?? false)
+                        isAgent: JSONInput.flag(pd["isAgent"]))
                 }
                 return out
             },
@@ -134,7 +134,7 @@ enum AgentStateCommand {
                 var out: [String: AgentState.SessionState] = [:]
                 for (runID, s) in m {
                     guard let sd = s as? [String: Any] else { continue }
-                    out[runID] = AgentState.SessionState(busy: sd["busy"] as? Bool ?? false)
+                    out[runID] = AgentState.SessionState(busy: JSONInput.flag(sd["busy"]))
                 }
                 return out
             },
@@ -150,7 +150,7 @@ enum AgentStateCommand {
                 }
                 return out
             },
-            tokensLeft: decodeObs(d["tokensLeft"]) { $0 as? Bool })
+            tokensLeft: decodeObs(d["tokensLeft"]) { ($0 as? JSONInput.Flag)?.on })
     }
 
     private static func decodeRecord(_ d: [String: Any]) -> AgentState.RunRecord {
@@ -172,6 +172,6 @@ enum AgentStateCommand {
             claimSeenAt: (d["claimSeenAt"] as? NSNumber)?.doubleValue,
             quietDigest: d["quietDigest"] as? String ?? "",
             quietSince: (d["quietSince"] as? NSNumber)?.doubleValue,
-            untracked: d["untracked"] as? Bool ?? false)
+            untracked: JSONInput.flag(d["untracked"]))
     }
 }

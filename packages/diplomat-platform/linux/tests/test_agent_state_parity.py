@@ -93,6 +93,73 @@ def _python(records, evidence, now=T0, limit=LIMIT,
     }
 
 
+def _python_decoding(payload: dict) -> dict:
+    """The same answer, but with Python's own decoders in the path rather than the
+    objects the payload was built from.
+
+    Every other run here hands Python the records and evidence directly, which is right
+    for diffing the RESOLVER but leaves the two decoders of this wire format untested
+    against each other. They are the other half of the parity claim: two sides that read
+    one payload differently disagree before a rung has run.
+    """
+    return _python([A.RunRecord.from_json(r) for r in payload["records"]],
+                   A.Evidence.from_json(payload["evidence"]),
+                   now=payload["now"], limit=payload["limit"],
+                   deadline=payload["deadline"])
+
+
+#: Values a hand-written payload puts where a JSON boolean belongs. `1` and `1.0` are
+#: the ones that mattered: `JSONSerialization` bridges a JSON number to `NSNumber`, and
+#: `NSNumber(1) as? Bool` is `true`, so this exact fixture used to resolve `finished`
+#: and reapable on the Swift side and `running` on the Python one.
+_NOT_A_FLAG = [1, 1.0, 0, 2, "true", "", None, []]
+
+
+@pytest.mark.parametrize("value", _NOT_A_FLAG, ids=[repr(v) for v in _NOT_A_FLAG])
+def test_a_token_reading_that_is_not_a_boolean_is_read_the_same_by_both(value):
+    """The deadline's precondition, and the one flag both decoders are strict about by
+    name. A run five hours old with a positive reading is finished, reaped and priced;
+    with anything else it is a run that is still going."""
+    record = rec(run_id="r1", pid=1, tty="pts/3", dispatched_at=T0 - PAST_DEADLINE,
+                 pr_number=301)
+    evidence = ev(processes={1: proc(elapsed=PAST_DEADLINE)},
+                  tails={"pts/3": WORKING}, tokens=True)
+    payload = _payload([record], evidence)
+    payload["evidence"]["tokensLeft"]["value"] = value
+
+    swift, python = _swift(payload), _python_decoding(payload)
+    assert swift == python
+    assert python["reapable"] == [], "only a real reading may end a run on the clock"
+
+
+@pytest.mark.parametrize("value", _NOT_A_FLAG, ids=[repr(v) for v in _NOT_A_FLAG])
+def test_a_record_flag_that_is_not_a_boolean_is_read_the_same_by_both(value):
+    """`untracked` decides whether the deadline may look at a record at all, so it is
+    the same hazard one field over."""
+    record = rec(run_id="r1", pid=1, tty="pts/3", dispatched_at=T0 - PAST_DEADLINE,
+                 pr_number=301)
+    evidence = ev(processes={1: proc(elapsed=PAST_DEADLINE)},
+                  tails={"pts/3": WORKING}, tokens=True)
+    payload = _payload([record], evidence)
+    payload["records"][0]["untracked"] = value
+
+    assert _swift(payload) == _python_decoding(payload)
+
+
+def test_the_real_booleans_still_survive_both_decoders():
+    """Anti-vacuity for the two above: strictness that dropped every flag would agree
+    just as well, and say nothing."""
+    record = rec(run_id="r1", pid=1, tty="pts/3", dispatched_at=T0 - PAST_DEADLINE,
+                 pr_number=301)
+    evidence = ev(processes={1: proc(elapsed=PAST_DEADLINE)},
+                  tails={"pts/3": WORKING}, tokens=True)
+    payload = _payload([record], evidence)
+
+    swift, python = _swift(payload), _python_decoding(payload)
+    assert swift == python
+    assert python["reapable"] == ["r1"], "a genuine reading must still arm the deadline"
+
+
 @pytest.mark.parametrize("name,record,evidence,_state,_reason", CASES,
                          ids=[c[0] for c in CASES])
 def test_each_scenario_resolves_identically(name, record, evidence, _state, _reason):

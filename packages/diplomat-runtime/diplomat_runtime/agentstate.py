@@ -118,6 +118,23 @@ class Observation:
         return Observation.present(value)
 
 
+def _flag(value: Any, default: bool = False) -> bool:
+    """A JSON boolean out of a decoded payload, or ``default``.
+
+    Strict, and the same rule :meth:`Observation.from_json` applies to ``tokensLeft``:
+    a flag that arrived as a number or a string is a field that did not survive its
+    trip, and coercing one answers out of whatever happened to be truthy. Everything
+    that writes this format writes real booleans (:meth:`to_json`), so the only payload
+    this refuses is a malformed one.
+
+    It is also what keeps the two decoders of this format agreeing. ``JSONInput`` in the
+    parity CLI is strict for the same reason and by the same rule; ``bool(...)`` here
+    would read ``1`` as a flag that ``JSONInput`` refuses, and a string as one that no
+    Swift cast can produce at all.
+    """
+    return value if isinstance(value, bool) else default
+
+
 def _jsonable(value: Any) -> Any:
     if isinstance(value, (set, frozenset)):
         return sorted(value)
@@ -287,7 +304,7 @@ class ProcInfo:
     def from_json(obj: dict) -> "ProcInfo":
         return ProcInfo(tty=obj.get("tty", ""),
                         elapsed=float(obj.get("elapsed", 0.0)),
-                        is_agent=bool(obj.get("isAgent", False)))
+                        is_agent=_flag(obj.get("isAgent")))
 
 
 @dataclass(frozen=True)
@@ -313,7 +330,7 @@ class SessionState:
 
     @staticmethod
     def from_json(obj: dict) -> "SessionState":
-        return SessionState(busy=bool(obj.get("busy", False)))
+        return SessionState(busy=_flag(obj.get("busy")))
 
 
 @dataclass(frozen=True)
@@ -390,7 +407,7 @@ class RunRecord:
             claim_seen_at=obj.get("claimSeenAt"),
             quiet_digest=obj.get("quietDigest", ""),
             quiet_since=obj.get("quietSince"),
-            untracked=bool(obj.get("untracked", False)),
+            untracked=_flag(obj.get("untracked")),
         )
 
 

@@ -68,7 +68,7 @@ guard args.count >= 2,
 }
 
 let input = FileHandle.standardInput.readDataToEndOfFile()
-guard let obj = (try? JSONSerialization.jsonObject(with: input)) as? [String: Any] else {
+guard let obj = JSONInput.parse(input) else {
     die("invalid JSON on stdin", 1)
 }
 
@@ -93,7 +93,7 @@ if args[1] == "agent-registry" {
 }
 
 func str(_ key: String, _ def: String = "") -> String { obj[key] as? String ?? def }
-func flag(_ key: String, _ def: Bool) -> Bool { obj[key] as? Bool ?? def }
+func flag(_ key: String, _ def: Bool) -> Bool { JSONInput.flag(obj[key], def) }
 
 let kind = str("kind")
 let prompt: String
