@@ -10,6 +10,7 @@ prior state.
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass
 
 # MARK: - Snapshot + fingerprint
@@ -1069,7 +1070,7 @@ def live_pr_numbers(ps_output: str, owner: str, repo: str) -> set[int]:
     in-memory ``_autofix_inflight`` list (an applet restart wipes it while the
     agents run on). Only lines containing ``claude`` count: the spawning shell's
     argv holds the unexpanded ``$(cat …)``, never the prompt text."""
-    return {pr for _tty, pr in agent_lines(ps_output, owner, repo)}
+    return {a.pr_number for a in agent_lines(ps_output, owner, repo)}
 
 
 def agent_ttys(ps_output: str, owner: str, repo: str) -> set[str]:
@@ -1080,7 +1081,7 @@ def agent_ttys(ps_output: str, owner: str, repo: str) -> set[str]:
     find two agents would put a ``capture-pane`` per pane on the panel's 8-second
     tick, where this puts one per agent. A process with no controlling tty appears
     as ``?``, matches no pane, and is simply never asked about."""
-    return {tty for tty, _pr in agent_lines(ps_output, owner, repo)}
+    return {a.tty for a in agent_lines(ps_output, owner, repo)}
 
 
 def idle_pr_numbers(
@@ -1089,10 +1090,10 @@ def idle_pr_numbers(
     """Of the agents alive in ``ps``, the PR numbers whose session has finished its
     turn and is waiting at its prompt.
 
-    ``ps_output`` must be a ``tty=,args=`` dump (``live_pr_numbers`` reads the same
-    lines — the regex finds the prompt wherever on the line it sits — so one scan
-    answers both). ``pane_tails`` maps a tty to that pane's visible buffer, spelled
-    as ``ps`` spells a tty (:func:`tmuxwatch.pane_tails_for_ttys`).
+    ``ps_output`` must be a ``tty=,etime=,args=`` dump (``live_pr_numbers`` reads the
+    same lines — the regex finds the prompt wherever on the line it sits — so one scan
+    answers all three). ``pane_tails`` maps a tty to that pane's visible buffer,
+    spelled as ``ps`` spells a tty (:func:`tmuxwatch.pane_tails_for_ttys`).
 
     The tty is the join: an agent runs inside a tmux pane (``review.agent_argv``), so
     the pane on the same tty as the ``claude`` process IS that agent's screen, and
@@ -1102,37 +1103,84 @@ def idle_pr_numbers(
     a session outside tmux, a capture that failed, a pane that closed between the two
     reads. Each is missing evidence, and this answer only ever REMOVES an agent from
     the cap's count, so silence has to mean "still working".
+
+    An agent too young to have drawn its first status bar is absent for the same
+    reason, and it is the one whose absence matters most. A booting agent's screen is
+    the screen of one that has FINISHED — the interrupt hint on neither — so read as
+    idle it hands back the very bay the dispatch that started it just took, and the
+    next dispatch lands on top of it. That is :data:`agentstate.FIRST_TURN_GRACE`, the
+    same window and the same reasoning the resolver holds its own screen rung against;
+    here the age comes from the process rather than from a record, so it covers an
+    agent this machine has no book entry for at all. An age that could not be parsed
+    counts as too young, because a bay is freed on positive evidence or not at all.
     """
-    from . import apiwatch
+    from . import agentstate, apiwatch
 
     out: set[int] = set()
-    for tty, pr in agent_lines(ps_output, owner, repo):
-        tail = pane_tails.get(tty)
+    for a in agent_lines(ps_output, owner, repo):
+        if a.elapsed is None or a.elapsed <= agentstate.FIRST_TURN_GRACE:
+            continue
+        tail = pane_tails.get(a.tty)
         if tail is not None and not apiwatch.looks_busy(tail):
-            out.add(pr)
+            out.add(a.pr_number)
     return out
 
 
+#: ``ps`` ``etime``: ``[[DD-]HH:]MM:SS``. The portable spelling — BSD/macOS ``ps``
+#: has no ``etimes`` keyword, and prints an unknown one to stderr while silently
+#: dropping the column, so a dump asking for it would come back one field short.
+_ETIME_RE = re.compile(r"^(?:(?:(\d+)-)?(\d+):)?(\d+):(\d+)$")
+
+
+def elapsed_seconds(token: str) -> float | None:
+    """``ps`` ``etime`` as seconds, or ``None`` when ``token`` is not one.
+
+    ``None`` rather than a guess: the same position holds an argv word on the bare
+    ``args=`` dump :func:`agent_lines` still accepts, and every caller reads an
+    unknown age as "cannot judge this agent yet".
+    """
+    m = _ETIME_RE.match(token)
+    if m is None:
+        return None
+    days, hours, minutes, seconds = (int(g or 0) for g in m.groups())
+    return float(((days * 24 + hours) * 60 + minutes) * 60 + seconds)
+
+
+@dataclass(frozen=True)
+class AgentLine:
+    """One live agent, as a ``ps`` dump shows it."""
+
+    tty: str
+    pr_number: int
+    #: Seconds since the process started, or ``None`` if the dump carried no
+    #: readable ``etime`` (a bare ``args=`` dump, or a spelling of ``ps`` that
+    #: dropped the column).
+    elapsed: float | None
+
+
 def agent_lines(ps_output: str, owner: str, repo: str):
-    """Yield ``(tty, pr_number)`` for every live agent in a ``ps`` dump — the one
+    """Yield an :class:`AgentLine` for every live agent in a ``ps`` dump — the one
     parse the answers above are each a projection of, so they can never come to
     disagree about what counts as an agent.
 
     The tty is whatever leads the line, normalised free of ``/dev/`` (``ps`` omits it,
-    tmux does not). On a bare ``args=`` dump — which the argv scan predates the tty by
-    and must keep working on — that first token is the start of the command instead,
-    and so simply matches no pane: a garbage tty can only ever fail to find evidence,
-    never manufacture it.
+    tmux does not), and the elapsed time is the token after it. On a bare ``args=``
+    dump — which the argv scan predates both columns by and must keep working on —
+    those are the start of the command instead, so the tty matches no pane and the age
+    reads as unknown: neither can manufacture evidence, only fail to find it.
     """
-    import re
-
     from . import runner
 
     pat = re.compile(_LIVE_AGENT_RE_TMPL.format(repo=re.escape(f"{owner}/{repo}")))
     for line in ps_output.splitlines():
         if not runner.is_agent_line(line):
             continue
-        tty, _, _rest = line.strip().partition(" ")
-        tty = tty.removeprefix("/dev/")
+        # split(), not partition(" "): ``ps`` right-aligns the etime column, so the
+        # columns are separated by runs of spaces rather than by single ones.
+        fields = line.strip().split(maxsplit=2)
+        if not fields:
+            continue
+        tty = fields[0].removeprefix("/dev/")
+        elapsed = elapsed_seconds(fields[1]) if len(fields) > 1 else None
         for m in pat.finditer(line):
-            yield tty, int(m.group(1))
+            yield AgentLine(tty=tty, pr_number=int(m.group(1)), elapsed=elapsed)

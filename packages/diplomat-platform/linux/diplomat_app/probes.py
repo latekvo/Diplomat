@@ -215,12 +215,12 @@ def live_agents(dump: Observation) -> Observation:
         r"PR #(\d+) in " + re.escape(f"{cfg['owner']}/{cfg['repo']}"))
     out: dict[int, str] = {}
     # Parsed here against THIS dump's columns rather than through
-    # `autofix.agent_lines`, which reads the tty as the first token of a
-    # `tty=,args=` dump. That is still right for its own caller (the mesh node's
-    # capacity hook, which spells `ps` the portable way), and was silently wrong
-    # here the moment this probe started asking for a pid column too: every agent
-    # came back keyed to a tty that was really a pid, so no screen could ever be
-    # found for one and no untracked agent ever gave its bay back.
+    # `autofix.agent_lines`, which reads the tty as the FIRST token of a
+    # `tty=,etime=,args=` dump. That is still right for its own caller (the mesh
+    # node's capacity hook, which spells `ps` the portable way), and was silently
+    # wrong here the moment this probe started asking for a pid column too: every
+    # agent came back keyed to a tty that was really a pid, so no screen could ever
+    # be found for one and no untracked agent ever gave its bay back.
     for line in dump.value.splitlines():
         if not runner.is_agent_line(line):
             continue
