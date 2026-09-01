@@ -191,12 +191,13 @@ def _ps_dump() -> str:
 
     Returns ``""`` on any failure, which is what lets both callers degrade rather
     than raise into the executor's spawn path. A non-zero exit is one of those
-    failures rather than the stdout it managed to print: a ``ps`` that fails partway
-    prints a partial table, and this dump's callers read absence as evidence — a
-    thinner ``live`` set is fewer agents counted, so :meth:`DiplomatHost.at_job_capacity`
-    answers "there is room" and the node accepts a burst the cap exists to refuse.
-    ``probes._ps_dump`` and ``AgentProbes.run`` drop a non-zero ``ps`` for the same
-    reason. ``UnicodeDecodeError`` is caught by
+    failures rather than the stdout it managed to print. Neither caller can tell a
+    partial table from a whole one, so reading one would make the node's ground truth
+    depend on how far ``ps`` got before it failed — a different wrong answer per
+    failure, where ``""`` is the single degradation both callers are written for and
+    :meth:`DiplomatHost.at_job_capacity` documents. ``probes._ps_dump`` and
+    ``AgentProbes.run`` drop a non-zero ``ps`` for the same reason.
+    ``UnicodeDecodeError`` is caught by
     name: ``text=True`` decodes strict UTF-8, so any process on the box with a
     non-UTF-8 byte in its argv makes the output undecodable, and it is a
     ``ValueError`` — neither an ``OSError`` nor a ``SubprocessError`` — so without it
