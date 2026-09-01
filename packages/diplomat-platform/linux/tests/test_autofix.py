@@ -1746,6 +1746,39 @@ def test_the_poll_takes_the_token_reading_the_deadline_needs(store, monkeypatch)
     assert store._tokens_left == A.Observation.present(True)
 
 
+def test_the_store_opens_refusing_the_deadline_until_a_poll_has_answered(store):
+    """The carried-forward reading starts UNAVAILABLE, and that is load-bearing rather
+    than tidy: the tick runs on the panel's repaint, so it resolves long before the
+    three-minute poll first answers. Seeded positive instead, an applet started beside
+    a run already older than four hours would retire it and kill its window on the very
+    first tick, having asked nothing."""
+    from diplomat_runtime import agentstate as A
+
+    assert store._tokens_left.status == A.UNAVAILABLE
+    assert A.past_deadline(A.RunRecord(run_id="r1", dispatched_at=time.time() - 5 * 3600),
+                           store._tokens_left, time.time(), A.RUN_DEADLINE) is None
+
+
+def test_the_poll_reads_the_budget_before_it_settles_the_agents(store, monkeypatch):
+    """Order, not merely presence. Settled first, every poll would judge the deadline
+    on the previous cycle's reading and the first one on no reading at all - which is
+    a whole poll of a four-hour verdict taken against a stale answer."""
+    from diplomat_runtime import agentstate as A
+
+    order: list[str] = []
+    monkeypatch.setattr("diplomat_app.probes.tokens_left",
+                        lambda: order.append("budget") or A.Observation.present(True))
+    monkeypatch.setattr(type(store), "_settle_agents",
+                        lambda self: order.append("settle"))
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    fake_probes(monkeypatch)
+    monkeypatch.setattr(type(store), "effective_me", property(lambda self: ""))
+
+    store._autofix_poll_once()
+
+    assert order[:2] == ["budget", "settle"], order
+
+
 def test_the_poll_leaves_the_endpoint_alone_with_the_deadline_switched_off(
     store, monkeypatch
 ):

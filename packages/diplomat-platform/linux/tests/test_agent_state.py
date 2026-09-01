@@ -871,6 +871,23 @@ def test_records_and_evidence_survive_a_json_round_trip():
     assert back.processes.value == e.processes.value
     assert back.tails.value == e.tails.value
     assert back.merged_prs.value == e.merged_prs.value
+    assert back.tokens_left.value == e.tokens_left.value
+
+
+def test_a_token_reading_that_is_not_a_bool_is_refused_rather_than_coerced():
+    """The one field a destructive rung turns on, so it is decoded strictly: a number
+    or a string where a bool belongs is a field that did not survive its trip, and
+    coercing it answers the precondition out of whatever happened to be truthy.
+
+    ``1`` is the case that matters — it is what a hand-written payload and a lenient
+    decoder both produce, and `bool(1)` is the positive answer the deadline needs."""
+    def decoded(value):
+        return A.Evidence.from_json(
+            {"tokensLeft": {"status": A.PRESENT, "value": value}}).tokens_left
+
+    assert decoded(True).value is True
+    for wrong in (1, 1.0, "true", "1", [1]):
+        assert decoded(wrong).value is None, wrong
 
 
 def test_an_unavailable_observation_keeps_its_reason_across_json():

@@ -135,6 +135,19 @@ def test_the_run_deadline_switch_opens_on_the_stored_value_and_writes_through(vi
     assert cutoff in view._sw_deadline.accessibleName()
 
 
+def test_the_run_deadline_switch_opens_off_when_it_was_turned_off(make_view):
+    """The other half of "opens on the stored value", and the half a screen built at
+    the default cannot show: `setChecked(True)` passes the test above, because ON is
+    what the config says when nothing turned it off. An operator who switched a
+    destructive default-on backstop off has to see it off when they come back — the
+    twin `test_the_slider_opens_on_the_stored_cap` builds at a non-default for exactly
+    this reason."""
+    from diplomat_runtime import appconfig
+
+    appconfig.set_bool(appconfig.RUN_DEADLINE, False)
+    assert make_view()._sw_deadline.isChecked() is False
+
+
 def test_every_row_names_its_control_for_a_screen_reader(view):
     """The row's name is a separate label, so an unnamed control reads as a bare
     switch. Every row is checked because the naming is one line in `SettingRow`:
