@@ -156,6 +156,39 @@ enum SpawnScriptTest {
                   $0.isUsable || AgentSpawner.resolved($0) != $0
               })
 
+        // The exit-code sentinel, run for real against a directory that is not there.
+        // Retirement deletes a run's directory while its agent sits at its prompt, so
+        // this write lands on a gone path every time the operator finally exits — and
+        // this string is typed into their own login shell, which on a Mac is zsh.
+        print("\nexit sentinel: best-effort against a deleted run directory")
+        for shell in ["/bin/sh", "/bin/zsh", "/bin/bash"] {
+            guard FileManager.default.isExecutableFile(atPath: shell) else { continue }
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: shell)
+            p.arguments = ["-c", "false; " + AgentSpawner.sentinel("/nonexistent/gone/done")]
+            let err = Pipe()
+            p.standardError = err
+            p.standardOutput = Pipe()
+            try? p.run()
+            let noise = err.fileHandleForReading.readDataToEndOfFile()
+            p.waitUntilExit()
+            check("\(shell) says nothing and exits 0 when the directory is gone",
+                  noise.isEmpty && p.terminationStatus == 0,
+                  String(data: noise, encoding: .utf8) ?? "")
+        }
+        // The other half: guarding the write must not stop it happening. `false` stands
+        // in for an agent that exited 1, and 1 is what the ledger prices from.
+        let landing = FileManager.default.temporaryDirectory
+            .appendingPathComponent("diplomat-sentinel-\(UUID().uuidString)")
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        p.arguments = ["-c", "false; " + AgentSpawner.sentinel(landing.path)]
+        try? p.run()
+        p.waitUntilExit()
+        check("…and still records the agent's own exit code where it can",
+              (try? String(contentsOf: landing, encoding: .utf8)) == "1")
+        try? FileManager.default.removeItem(at: landing)
+
         // The one-time move of an existing install onto Ghostty. iTerm is what every
         // install reads today, whether that was a decision or a default nobody touched;
         // Terminal.app was picked over an installed iTerm, which is a decision.

@@ -317,7 +317,7 @@ enum TrackTest {
         let donePath = AgentRegistry.donePath(record.runID).path
         let inner = "printf %s $$ > \(AgentSpawner.shq(pidPath)); \(AgentSpawner.shq(stand.path))"
         let cmd = "\"$SHELL\" -i -c \(AgentSpawner.shq(inner)); "
-            + "printf %s $? > \(AgentSpawner.shq(donePath))"
+            + AgentSpawner.sentinel(donePath)
         guard let cap = try? AgentSpawner.runSpawn(command: cmd, terminal: term),
               !cap.0.isEmpty, !cap.2.isEmpty else {
             print("SKIP — live \(term.title) capture unavailable (automation not granted?)")

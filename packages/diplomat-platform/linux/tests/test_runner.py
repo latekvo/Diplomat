@@ -16,7 +16,9 @@ only ever prove we are consistent with ourselves.
 
 from __future__ import annotations
 
+import os
 import shlex
+import subprocess
 
 import pytest
 
@@ -212,9 +214,57 @@ def test_a_claude_spawn_is_left_exactly_as_it_was(monkeypatch, tmp_path):
     monkeypatch.setattr(review, "user_shell", lambda: "/bin/zsh")
     assert review.shell_command("/tmp/p.txt", done_path="/tmp/d") == (
         "cd /repo 2>/dev/null; claude \"$(cat /tmp/p.txt)\"; "
-        "printf %s $? > /tmp/d; exec \"$SHELL\" -i"
+        "{ printf %s $? > /tmp/d; } 2>/dev/null || :; exec \"$SHELL\" -i"
     )
     assert runner.OPENCODE_PERMISSION_ENV not in review.spawn_env()
+
+
+#: Every shell that could be a spawned agent's ``$SHELL`` on a box this runs on. zsh
+#: is the one that matters and the reason the guard is a redirected GROUP: it reports
+#: a redirection error on the shell's own stderr, which no redirection of the failing
+#: command reaches.
+_SHELLS = [sh for sh in ("/bin/sh", "/bin/bash", "/bin/zsh", "/bin/dash")
+           if os.access(sh, os.X_OK)]
+
+
+def _up_to_the_handoff(command: str) -> str:
+    """The spawn string without its trailing ``exec "$SHELL" -i``, which would other-
+    wise sit at an interactive prompt forever."""
+    head, sep, _ = command.rpartition('; exec "$SHELL" -i')
+    assert sep, command
+    return head
+
+
+@pytest.mark.parametrize("shell", _SHELLS)
+def test_the_exit_sentinel_write_survives_a_deleted_run_directory(shell, monkeypatch,
+                                                                  tmp_path):
+    """The sentinel lands inside the run directory, and retirement deletes that
+    directory while the agent is still sitting at its prompt — so by the time the
+    operator exits the session there is nowhere to write. Nothing reads it then; an
+    unguarded write only puts a shell diagnostic on the last screen of a window
+    somebody is closing, which is what three live agents on this box were doing."""
+    monkeypatch.setattr(review, "repo_path", lambda: str(tmp_path))
+    monkeypatch.setattr(runner, "agent_command", lambda *a, **k: "false")
+    gone = tmp_path / "run" / "deleted" / "done"
+    cmd = _up_to_the_handoff(review.shell_command("/tmp/p.txt", done_path=str(gone)))
+
+    done = subprocess.run([shell, "-c", cmd], capture_output=True, text=True)
+    assert done.stderr == ""
+    assert done.returncode == 0
+
+
+@pytest.mark.parametrize("shell", _SHELLS)
+def test_the_exit_sentinel_still_records_the_agents_own_exit_code(shell, monkeypatch,
+                                                                  tmp_path):
+    """The other half: guarding the write must not stop it happening. ``false`` stands
+    in for an agent that exited 1, and 1 is what the retirement path prices from."""
+    monkeypatch.setattr(review, "repo_path", lambda: str(tmp_path))
+    monkeypatch.setattr(runner, "agent_command", lambda *a, **k: "false")
+    path = tmp_path / "done"
+    cmd = _up_to_the_handoff(review.shell_command("/tmp/p.txt", done_path=str(path)))
+
+    subprocess.run([shell, "-c", cmd], capture_output=True, text=True)
+    assert path.read_text() == "1"
 
 
 # MARK: - Seeing the agent afterwards

@@ -308,7 +308,7 @@ enum AgentSpawner {
         return url
     }
 
-    /// `cd '<repo>' 2>/dev/null; "$SHELL" -i -c 'printf %s $$ > <pid>; <agent>'; printf %s $? > '<done>'`
+    /// `cd '<repo>' 2>/dev/null; "$SHELL" -i -c 'printf %s $$ > <pid>; <agent>'; { printf %s $? > '<done>'; } 2>/dev/null || :`
     ///
     /// `<agent>` is `AgentRunner.agentCommand` — `claude "$(cat '<promptfile>')"` or the
     /// OpenCode spelling of the same thing. Everything around it is identical for both,
@@ -343,7 +343,7 @@ enum AgentSpawner {
     /// child. `$?` after it is the agent's own exit code either way: one process where
     /// the exec happened, and the wrapper's own status where it did not.
     ///
-    /// The trailing `printf … > done` writes a sentinel the moment the agent returns, so
+    /// The trailing `sentinel` writes the agent's exit code the moment it returns, so
     /// the applet can price the run even while its window stays open. It only ever
     /// fires on EXIT, though, and finishing a turn is not exiting — which is what the
     /// hooks in `plan.settingsPath` answer.
@@ -353,7 +353,28 @@ enum AgentSpawner {
                                              settingsFile: plan.settingsPath)
         let inner = "printf %s $$ > \(shq(plan.pidPath)); \(agent)"
         return "cd \(shq(repoPath)) 2>/dev/null; \"$SHELL\" -i -c \(shq(inner)); "
-            + "printf %s $? > \(shq(plan.donePath))"
+            + sentinel(plan.donePath)
+    }
+
+    /// The exit-code sentinel write, best-effort.
+    ///
+    /// `donePath` is inside the run directory, retirement deletes that directory, and a
+    /// run is retired while its agent goes on sitting at its prompt — so by the time the
+    /// operator exits the session there is nowhere to write. Nothing reads it then (the
+    /// run is long retired); an unguarded write only puts a shell diagnostic on the last
+    /// screen of a window somebody is closing. `AgentCompletion` guards its hook writes
+    /// for the same reason.
+    ///
+    /// A REDIRECTED GROUP rather than the `2>/dev/null` ahead of the redirect that the
+    /// hooks use, because the two strings are run by different shells. A hook runs under
+    /// `sh`, where a leading `2>/dev/null` is in effect before the failing open. This one
+    /// is typed into the operator's own login shell, and zsh reports a redirection error
+    /// on the shell's OWN stderr, which no redirection of that command can reach:
+    /// measured on macOS 15.5, `zsh -c 'printf %s $? 2>/dev/null > /nope/done'` still
+    /// prints `zsh:1: no such file or directory`. Wrapping the redirect silences sh,
+    /// bash, dash and zsh alike, and `|| :` keeps the failure out of `$?`.
+    static func sentinel(_ donePath: String) -> String {
+        "{ printf %s $? > \(shq(donePath)); } 2>/dev/null || :"
     }
 
     /// Wrap the shell command in an "open a new window, settle, run this, and report
