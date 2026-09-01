@@ -1736,7 +1736,7 @@ def test_the_poll_takes_the_token_reading_the_deadline_needs(store, monkeypatch)
 
     taken = []
     monkeypatch.setattr("diplomat_app.probes.tokens_left",
-                        lambda: taken.append(1) or A.Observation.present(True))
+                        lambda runners=(): taken.append(1) or A.Observation.present(True))
     monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
     fake_probes(monkeypatch)
     monkeypatch.setattr(type(store), "effective_me", property(lambda self: ""))
@@ -1809,8 +1809,9 @@ def test_the_poll_reads_the_budget_before_it_settles_the_agents(store, monkeypat
     from diplomat_runtime import agentstate as A
 
     order: list[str] = []
-    monkeypatch.setattr("diplomat_app.probes.tokens_left",
-                        lambda: order.append("budget") or A.Observation.present(True))
+    monkeypatch.setattr(
+        "diplomat_app.probes.tokens_left",
+        lambda runners=(): order.append("budget") or A.Observation.present(True))
     monkeypatch.setattr(type(store), "_settle_agents",
                         lambda self: order.append("settle"))
     monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
@@ -1833,7 +1834,7 @@ def test_the_poll_leaves_the_endpoint_alone_with_the_deadline_switched_off(
 
     taken = []
     monkeypatch.setattr("diplomat_app.probes.tokens_left",
-                        lambda: taken.append(1) or A.Observation.present(True))
+                        lambda runners=(): taken.append(1) or A.Observation.present(True))
     monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
     monkeypatch.setattr("diplomat_runtime.appconfig.run_deadline", lambda: None)
     fake_probes(monkeypatch)
@@ -1842,6 +1843,49 @@ def test_the_poll_leaves_the_endpoint_alone_with_the_deadline_switched_off(
     store._autofix_poll_once()
 
     assert not taken, "the endpoint was dialled for a reading nothing can read"
+
+
+def test_the_budget_reading_is_taken_in_the_currencies_the_deadline_can_spend(
+        store, monkeypatch):
+    """Which account the reading is about is decided by the runs the rung could end,
+    not by what the next spawn would use. The runner a run STARTED under is the one it
+    is spending: an operator whose windows ran dry switches runner to keep working, and
+    reading the new one's funded balance arms the deadline against the very agents the
+    exhausted windows parked.
+
+    And only those runs. A panel click, a peer's run and an untracked row each draw on
+    an account this rung can do nothing about, so a ceiling any of them spends says
+    nothing about it."""
+    from diplomat_app import probes
+    from diplomat_runtime import agentregistry
+    from diplomat_runtime import agentstate as A
+
+    asked: list[set[str]] = []
+
+    def spy(runners=()):
+        asked.append(set(runners))
+        return A.Observation.present(True)
+
+    monkeypatch.setattr(probes, "tokens_left", spy)
+
+    def run_under(number, cli, **kw):
+        record = register_run(number, **kw)
+        agentregistry.runner_path(record.run_id).write_text(cli, encoding="utf-8")
+
+    run_under(801, "claude")
+    run_under(802, "hermes", source=A.SOURCE_PANEL)
+    run_under(803, "opencode", placement=A.PLACEMENT_MESH_PEER, node="brick",
+              work_key="review:803:sha")
+    # No run directory, so no runner of its own — and left in, its "" would stand in
+    # the selection and put a currency in the join that the rung cannot act on.
+    agentregistry.save(agentregistry.load() + [
+        A.RunRecord(run_id="untracked:804", dispatched_at=time.time(), pr_number=804,
+                    source=A.SOURCE_AUTO, placement=A.PLACEMENT_LOCAL, tty="pts/8",
+                    untracked=True)])
+
+    store.refresh_token_budget()
+
+    assert asked == [{"claude"}]
 
 
 def test_a_reading_taken_before_the_switch_went_off_is_not_carried_back_in(
@@ -1856,7 +1900,8 @@ def test_a_reading_taken_before_the_switch_went_off_is_not_carried_back_in(
     from diplomat_runtime import agentstate as A
     from diplomat_runtime import appconfig
 
-    monkeypatch.setattr(probes, "tokens_left", lambda: A.Observation.present(True))
+    monkeypatch.setattr(probes, "tokens_left",
+                        lambda runners=(): A.Observation.present(True))
     store.refresh_token_budget()
     assert store._tokens_left == A.Observation.present(True), "the switch was on"
 

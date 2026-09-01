@@ -66,7 +66,7 @@ def _armed_dump(monkeypatch, *, deadline=A.RUN_DEADLINE):
 
     dialled = []
     monkeypatch.setattr(probes, "tokens_left",
-                        lambda: dialled.append(1) or A.Observation.present(True))
+                        lambda runners=(): dialled.append(1) or A.Observation.present(True))
 
     def gather(records, now, *, merged=None, tokens=None):
         return A.Evidence(

@@ -266,11 +266,11 @@ def test_the_pane_probe_asks_only_about_the_ttys_of_tracked_runs(monkeypatch):
 
 
 def test_the_token_probe_answers_present_when_a_limit_reads(monkeypatch):
-    monkeypatch.setattr("diplomat_runtime.autobudget.tokens_left", lambda: True)
+    monkeypatch.setattr("diplomat_runtime.autobudget.tokens_left", lambda runners=(): True)
     obs = probes.tokens_left()
     assert obs.ok and obs.value is True
 
-    monkeypatch.setattr("diplomat_runtime.autobudget.tokens_left", lambda: False)
+    monkeypatch.setattr("diplomat_runtime.autobudget.tokens_left", lambda runners=(): False)
     obs = probes.tokens_left()
     assert obs.ok and obs.value is False
 
@@ -280,7 +280,7 @@ def test_a_machine_with_no_readable_limit_is_unsupported_not_a_silent_probe(monk
     usage probe switched off, or not logged into anything Diplomat can price, is an
     ordinary box. The resolver reads it the same way it reads UNAVAILABLE — neither is
     the positive answer the run deadline needs."""
-    monkeypatch.setattr("diplomat_runtime.autobudget.tokens_left", lambda: None)
+    monkeypatch.setattr("diplomat_runtime.autobudget.tokens_left", lambda runners=(): None)
     obs = probes.tokens_left()
     assert obs.status == A.UNSUPPORTED and not obs.ok
 
@@ -289,7 +289,8 @@ def test_the_token_reading_is_carried_into_the_bundle_not_probed_in_it(monkeypat
     """It dials an endpoint, and `gather` runs on the panel's repaint — so the reading
     rides the slow refresh and is handed in, exactly as the merged statuses are."""
     monkeypatch.setattr("diplomat_runtime.autobudget.tokens_left",
-                        lambda: pytest.fail("gather probed the endpoint itself"))
+                        lambda runners=(): pytest.fail(
+                            "gather probed the endpoint itself"))
     assert not probes.gather([], T0).tokens_left.ok
     handed = A.Observation.present(True)
     assert probes.gather([], T0, tokens=handed).tokens_left == handed

@@ -516,8 +516,12 @@ enum AgentProbes {
         return .present(merged)
     }
 
-    /// Whether the account this machine's agents spend still has room in it — the
-    /// precondition on the resolver's run deadline.
+    /// Whether the accounts this machine's in-flight agents spend still have room in
+    /// them — the precondition on the resolver's run deadline.
+    ///
+    /// `runners` is which agent CLI each of those runs was started under; see
+    /// `AutoBudget.tokensLeft` for why the reading is about them rather than about the
+    /// runner the next spawn would use.
     ///
     /// `.unsupported` covers every "no reading", including a ceiling that exists but
     /// would not answer — `AutoBudget.tokensLeft` returns nil for a probe switched off, a
@@ -532,8 +536,8 @@ enum AgentProbes {
     /// every Claude Code session on the box — the deadline is disarmed while its switch
     /// still reads ON. That is the safe direction (nothing is retired on a reading nobody
     /// took), but it is not the visible one.
-    static func tokensLeft() -> Observation<Bool> {
-        guard let answer = AutoBudget.tokensLeft() else {
+    static func tokensLeft(_ runners: Set<String> = []) -> Observation<Bool> {
+        guard let answer = AutoBudget.tokensLeft(runners) else {
             return .unsupported("are unavailable (no spending limit this machine can read)")
         }
         return .present(answer)

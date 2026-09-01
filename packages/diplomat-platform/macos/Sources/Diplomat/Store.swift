@@ -799,8 +799,12 @@ final class Store: ObservableObject {
             tokensLeft = .unavailable("not probed with the deadline switched off")
             return
         }
+        // Off the book on disk rather than off the last tick: this runs on the slow
+        // refresh, where a tick may be seconds old, and a spawn since then is a run
+        // whose currency the reading would otherwise miss.
+        let runners = AgentRegistry.runners(of: AgentRegistry.load())
         tokensLeft = await Task.detached(priority: .utility) {
-            AgentProbes.tokensLeft()
+            AgentProbes.tokensLeft(runners)
         }.value
     }
 

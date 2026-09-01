@@ -45,7 +45,7 @@ import uuid
 from pathlib import Path
 
 from . import atomicjson
-from .agentstate import Observation, RunRecord
+from .agentstate import Observation, RunRecord, deadline_applies
 
 #: Bumped only if the on-disk shape changes incompatibly. A file from the future is
 #: ignored rather than misread — an older applet must not act on records whose fields
@@ -239,6 +239,19 @@ def run_runner(run_id: str) -> str:
         return runner_path(run_id).read_text(encoding="utf-8").strip()
     except OSError:
         return ""
+
+
+def runners_of(records: list[RunRecord]) -> set[str]:
+    """Which agent CLIs the runs the run deadline could end were started under — what
+    :func:`autobudget.tokens_left` is asked in the currencies of.
+
+    Only those runs: an untracked one the rung refuses by name, a peer's spends the
+    peer's account, and a panel click holds no bay of the automatic cap, so a limit any
+    of them draws on says nothing about the rung
+    (:func:`agentstate.deadline_applies`). ``""`` for a run with no record of its own is
+    passed through rather than dropped — the reader is what decides what to make of it.
+    """
+    return {run_runner(r.run_id) for r in records if deadline_applies(r)}
 
 
 def stage_port(run_id: str) -> int | None:

@@ -56,8 +56,8 @@ enum AutoBudget {
         return budget
     }
 
-    /// Does the account this machine's agents draw on still have room to spend, or nil
-    /// when no ceiling on it could be read?
+    /// Do the accounts this machine's in-flight agents draw on still have room to
+    /// spend, or nil when no ceiling on any of them could be read?
     ///
     /// A cruder question than `decide`, and deliberately not a call into it. That one
     /// asks whether one MORE task fits, and it fails OPEN — no measurement means
@@ -66,18 +66,34 @@ enum AutoBudget {
     /// degradation: this is the precondition on `AgentState.runDeadline`, which RETIRES
     /// runs, so a reading nobody could take must answer "I don't know" and not "plenty".
     ///
-    /// Which ceilings there are is the currency split `decide` makes. One this account
-    /// does not have (an uncapped OpenRouter key) or that would not read is skipped
-    /// rather than guessed; every one that did read has to be above zero, because
-    /// whichever runs out first is the one that parks the agents.
-    static func tokensLeft() -> Bool? {
-        let readings: [Double?]
-        if AppConfig.agentRunner == .claude {
+    /// `runners` is which agent CLI each run this reading is about was STARTED under
+    /// (`AgentRegistry.runRunner`), not the one the next spawn would use. The difference
+    /// is the whole reason it is a parameter. An operator whose Anthropic windows run dry
+    /// watches their agents park, and switching runner is exactly what a person does next
+    /// — at which point the selected runner's funded balance reads "plenty" and arms the
+    /// deadline against the very runs the exhausted windows parked. Empty falls back to
+    /// the selection, for a caller with no book to hand over and for a machine with
+    /// nothing in flight; so does a run whose own record is missing, which is where the
+    /// answer came from before there was one.
+    ///
+    /// Which ceilings there are is the currency split `decide` makes — Anthropic windows
+    /// for Claude Code, money for everything else — so two runs under different money
+    /// runners ask about one balance, the one this machine is configured to spend. A
+    /// ceiling this account does not have (an uncapped OpenRouter key) or that would not
+    /// read is skipped rather than guessed; every one that did read has to be above zero,
+    /// because whichever runs out first is the one that parks the agents.
+    static func tokensLeft(_ runners: Set<String> = []) -> Bool? {
+        let chosen = AppConfig.agentRunner.rawValue
+        let asked = Set(runners.map { $0.isEmpty ? chosen : $0 })
+        let about = asked.isEmpty ? [chosen] : asked
+        var readings: [Double?] = []
+        if about.contains(AgentRunner.claude.rawValue) {
             let (session, week) = Quota.fractionsLeft()
-            readings = [session, week]
-        } else {
+            readings += [session, week]
+        }
+        if !about.subtracting([AgentRunner.claude.rawValue]).isEmpty {
             let balance = Spend.balance()
-            readings = [balance.keyLeft, balance.creditLeft]
+            readings += [balance.keyLeft, balance.creditLeft]
         }
         let known = readings.compactMap { $0 }
         guard !known.isEmpty else { return nil }

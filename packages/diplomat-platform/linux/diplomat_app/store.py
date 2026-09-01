@@ -2443,7 +2443,11 @@ class Store(QObject):
             self._tokens_left = agentstate.Observation.unavailable(
                 "not probed with the deadline switched off")
             return
-        self._tokens_left = probes.tokens_left()
+        # Off the book on disk rather than off the last tick: this runs on the poll,
+        # where a tick may be seconds old, and a spawn since then is a run whose
+        # currency the reading would otherwise miss.
+        self._tokens_left = probes.tokens_left(
+            agentregistry.runners_of(agentregistry.load()))
 
     # MARK: monitor persistence + poll-error state
 

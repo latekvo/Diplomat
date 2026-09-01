@@ -19,6 +19,7 @@ import os
 import re
 import shutil
 import subprocess
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 from diplomat_runtime import apiwatch, core, runner, tmuxwatch
@@ -488,9 +489,13 @@ def merged_prs(pr_numbers: set[int]) -> Observation:
     return Observation.present(merged)
 
 
-def tokens_left() -> Observation:
-    """Whether the account this machine's agents spend still has room in it — the
-    precondition on the resolver's run deadline.
+def tokens_left(runners: Iterable[str] = ()) -> Observation:
+    """Whether the accounts this machine's in-flight agents spend still have room in
+    them — the precondition on the resolver's run deadline.
+
+    ``runners`` is which agent CLI each of those runs was started under; see
+    :func:`autobudget.tokens_left` for why the reading is about them rather than about
+    the runner the next spawn would use.
 
     UNSUPPORTED covers every "no reading", including a ceiling that exists but would not
     answer — :func:`autobudget.tokens_left` returns ``None`` for a probe switched off, a
@@ -508,7 +513,7 @@ def tokens_left() -> Observation:
     """
     from diplomat_runtime import autobudget
 
-    answer = autobudget.tokens_left()
+    answer = autobudget.tokens_left(runners)
     if answer is None:
         return Observation.unsupported(
             "are unavailable (no spending limit this machine can read)")

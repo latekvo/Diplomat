@@ -29,6 +29,7 @@ Stdlib-only, like everything the node imports: the ledger is JSON, the probes ar
 from __future__ import annotations
 
 import time
+from collections.abc import Iterable
 
 from . import autofix
 
@@ -71,9 +72,9 @@ def decide(now: float | None = None) -> autofix.Budget:
     return budget
 
 
-def tokens_left() -> bool | None:
-    """Does the account this machine's agents draw on still have room to spend, or
-    ``None`` when no ceiling on it could be read?
+def tokens_left(runners: Iterable[str] = ()) -> bool | None:
+    """Do the accounts this machine's in-flight agents draw on still have room to
+    spend, or ``None`` when no ceiling on any of them could be read?
 
     A cruder question than :func:`decide`, and deliberately not a call into it. That
     one asks whether one MORE task fits, and it fails OPEN — no measurement means
@@ -83,22 +84,37 @@ def tokens_left() -> bool | None:
     RETIRES runs, so a reading nobody could take must answer "I don't know" and not
     "plenty".
 
-    Which ceilings there are is the currency split :func:`decide` makes. One this
-    account does not have (an uncapped OpenRouter key) or that would not read is skipped
-    rather than guessed; every one that did read has to be above zero, because whichever
-    runs out first is the one that parks the agents.
+    ``runners`` is which agent CLI each run this reading is about was STARTED under
+    (:func:`agentregistry.run_runner`), not the one the next spawn would use. The
+    difference is the whole reason it is a parameter. An operator whose Anthropic
+    windows run dry watches their agents park, and switching runner is exactly what a
+    person does next — at which point the selected runner's funded balance reads
+    "plenty" and arms the deadline against the very runs the exhausted windows parked.
+    Empty falls back to the selection, for a caller with no book to hand over and for a
+    machine with nothing in flight; so does a run whose own record is missing, which is
+    where the answer came from before there was one.
+
+    Which ceilings there are is the currency split :func:`decide` makes — Anthropic
+    windows for Claude Code, money for everything else — so two runs under different
+    money runners ask about one balance, the one this machine is configured to spend.
+    A ceiling this account does not have (an uncapped OpenRouter key) or that would not
+    read is skipped rather than guessed; every one that did read has to be above zero,
+    because whichever runs out first is the one that parks the agents.
 
     Never raises: every caller is a probe layer whose whole contract is that a failure
     to look is reported rather than thrown.
     """
     from . import quota, runner, spend
 
+    readings: list[float | None] = []
     try:
-        if runner.selected() == runner.CLAUDE:
-            readings = quota.fractions_left()
-        else:
+        chosen = runner.selected()
+        asked = {r or chosen for r in runners} or {chosen}
+        if runner.CLAUDE in asked:
+            readings.extend(quota.fractions_left())
+        if asked - {runner.CLAUDE}:
             balance = spend.balance()
-            readings = (balance.key_left, balance.credit_left)
+            readings.extend((balance.key_left, balance.credit_left))
     except Exception:  # noqa: BLE001 — a probe failure is an unknown, never a raise
         return None
     known = [r for r in readings if r is not None]

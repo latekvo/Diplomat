@@ -853,6 +853,57 @@ def test_a_money_machine_is_asked_about_money_not_about_windows(monkeypatch):
     assert autobudget.tokens_left() is None
 
 
+def test_a_run_is_asked_about_in_the_currency_it_was_started_under(monkeypatch):
+    """The switch a person makes when their windows run dry. Their Claude agents park,
+    they change runner to keep working — and nothing about the parked runs changed, so
+    the reading that gates the deadline must still be the exhausted window's."""
+    _hermes(monkeypatch)
+    _probe(monkeypatch, session=0.0, week=0.0)
+    _balance(monkeypatch, key_left=None, credit_left=42.0)
+
+    assert autobudget.tokens_left() is True, "the selection alone reads plenty"
+    assert autobudget.tokens_left(["claude"]) is False
+
+
+def test_a_dry_account_parks_every_run_on_the_machine_not_only_its_own(monkeypatch):
+    """One reading gates the rung for every run, so it has to be the conservative
+    join: whichever ceiling ran out is parking agents on this box, and the deadline
+    must not retire any of them for being old while it is."""
+    _hermes(monkeypatch)
+    _probe(monkeypatch, session=0.0, week=0.9)
+    _balance(monkeypatch, key_left=None, credit_left=42.0)
+
+    assert autobudget.tokens_left(["hermes"]) is True
+    assert autobudget.tokens_left(["claude", "hermes"]) is False
+
+
+def test_a_run_whose_own_runner_was_never_recorded_falls_back_to_the_selection(
+        monkeypatch):
+    """`run_runner` answers "" for a run that predates the record. There is nothing
+    better to say about it than what the machine is set to, which is the answer every
+    run got before it was asked per-run — so it degrades to that and no further.
+
+    Dropped instead of stood in for, its currency is simply left out of the join, and a
+    run whose account is empty reads as one with room."""
+    _hermes(monkeypatch)
+    _probe(monkeypatch, session=0.9, week=0.9)
+    _balance(monkeypatch, key_left=None, credit_left=0.0)
+
+    assert autobudget.tokens_left([""]) is False, "the selection's own dry balance"
+    assert autobudget.tokens_left(["", "claude"]) is False, "…and it is not dropped"
+    assert autobudget.tokens_left(["claude"]) is True, \
+        "…while the window nothing here spent is untouched"
+
+
+def test_a_machine_with_nothing_in_flight_still_answers_from_its_selection(monkeypatch):
+    """No runs means no run's currency, and the reading is taken anyway: the probe
+    runs on the poll whether or not the book is empty, and an empty ask that read
+    nothing at all would report "no limit this machine can read"."""
+    _probe(monkeypatch, session=0.4, week=0.9)
+    assert autobudget.tokens_left([]) is True
+    assert autobudget.tokens_left() is True
+
+
 def test_the_run_deadline_knob_reaches_a_reader_through_the_same_file():
     """On by default — the backstop exists because the primary signal is the one
     that fails — and resolved to the duration the resolver uses, so no caller pairs

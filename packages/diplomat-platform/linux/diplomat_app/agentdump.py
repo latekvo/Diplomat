@@ -25,7 +25,8 @@ def run() -> int:
     # Dialled only when a rung can consult it: the endpoint is one small per-account
     # bucket shared with every Claude Code session on the box, and a dump advertised as
     # safe beside a live applet cannot spend the applet's reading.
-    tokens = probes.tokens_left() if deadline is not None else None
+    tokens = (probes.tokens_left(agentregistry.runners_of(records))
+              if deadline is not None else None)
     evidence = probes.gather(records, now, tokens=tokens)
     t = agentstate.tick(records, evidence, now, limit, deadline)
 
