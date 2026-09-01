@@ -608,14 +608,18 @@ public enum AgentState {
     ///    every rung below this one sees a live process either way. A runner that keeps
     ///    a session instead of running hooks says the same thing further down, once its
     ///    pid is known alive;
-    /// 4. the deadline, when the operator has one: a run this device executes and that
-    ///    has gone on past `deadline` is over whatever the rungs below would have said.
-    ///    It sits under the three rungs above rather than over them because all three
-    ///    end the run too, and each of them names a better reason than a clock;
-    /// 5. a mesh-peer run is judged by the executor's claim, because no probe on this
+    /// 4. a mesh-peer run is judged by the executor's claim, because no probe on this
     ///    machine can see a process on another one;
-    /// 6. a local run is judged by its pid, and its screen only classifies a pid that is
-    ///    already known to be alive.
+    /// 5. a local run is judged by its pid, and its screen only classifies a pid that is
+    ///    already known to be alive;
+    /// 6. the deadline, when the operator has one, and LAST: it overrules only a
+    ///    `.running` — the answer that means "this bay is spoken for and nothing here
+    ///    can say when it will come back". Every other answer the ladder reaches is a
+    ///    better one than a clock, and each of them is a reason this rung must not fire:
+    ///    an ended run already named how it stopped, `.awaitingInput` is a session at
+    ///    its prompt that gave its bay back and still holds a task worth reading, and
+    ///    `.unknown` is the tick where the evidence could not be read at all — ending a
+    ///    run on that would retire it for being old on the one pass that saw nothing.
     public static func resolveOne(_ record: RunRecord, evidence: Evidence,
                                   now: TimeInterval,
                                   deadline: TimeInterval? = nil) -> Resolution {
@@ -632,20 +636,23 @@ public enum AgentState {
         if let report = reported(record, evidence), let why = report.verb.overReason {
             return done(.finished, why)
         }
-        if let expired = pastDeadline(record, tokens: evidence.tokensLeft, now: now,
-                                      deadline: deadline) {
-            let cutoff = ApiErrorMatch.humanInterval(deadline ?? 0)
-            // The one rung that stamps `expired`; see `Resolution.expired`.
-            var out = done(.finished,
-                           "has run for \(ApiErrorMatch.humanInterval(expired)), "
-                           + "past the \(cutoff) deadline")
-            out.expired = true
-            return out
-        }
-        if record.placement == .meshPeer {
-            return resolvePeer(record, evidence: evidence, now: now, done: done)
-        }
-        return resolveLocal(record, evidence: evidence, now: now, done: done)
+        let out = record.placement == .meshPeer
+            ? resolvePeer(record, evidence: evidence, now: now, done: done)
+            : resolveLocal(record, evidence: evidence, now: now, done: done)
+        guard out.state == .running,
+              let expired = pastDeadline(record, tokens: evidence.tokensLeft, now: now,
+                                         deadline: deadline)
+        else { return out }
+        let cutoff = ApiErrorMatch.humanInterval(deadline ?? 0)
+        // The one rung that stamps `expired`; see `Resolution.expired`. The answer it
+        // overruled is kept in the reason: it is what the run looked like right up to
+        // the moment a clock ended it, and the only account of that anyone gets.
+        var ended = done(.finished,
+                         "\(out.reason); has run for "
+                         + "\(ApiErrorMatch.humanInterval(expired)), "
+                         + "past the \(cutoff) deadline")
+        ended.expired = true
+        return ended
     }
 
     /// How long this run has been going, once that is long enough to call it over — nil
@@ -657,22 +664,30 @@ public enum AgentState {
     /// the age the reason line quotes, so the verdict and the number the operator reads
     /// cannot come apart.
     ///
-    /// Four things hold it back, each a case where the clock is measuring something
-    /// other than a run that will not end:
+    /// Five things hold it back, each a case where the clock is measuring something
+    /// other than a bay that will not come back:
     ///
     /// * **no deadline** — the operator switched the backstop off;
     /// * **no token reading, or none left** — see `runDeadline`;
     /// * **a run on somebody else's machine** — the reading above is THIS account's, and
     ///   the peer's own claim already ends that run;
+    /// * **a run the operator started by hand** — `capLoad` counts only `.auto`, so a
+    ///   panel click holds no bay of the automatic cap and there is nothing here to hand
+    ///   back. All that ending one would buy is the loss of a working agent the operator
+    ///   is driving themselves;
     /// * **an untracked run** — its record comes from the scan rather than from a
     ///   dispatch, so `synthesizeUntracked` rebuilds it on the very next tick with a
     ///   fresh stamp: the bay comes back for one tick and the same agent takes it again.
     ///   Its stamp is when the scan first SAW the agent, so the age here would not even
     ///   be the run's.
+    ///
+    /// Together with the `.running` the caller requires, that is exactly `capLoad`'s
+    /// membership test — the rung reaches a run when, and only when, it is holding a bay.
     public static func pastDeadline(_ record: RunRecord, tokens: Observation<Bool>,
                                     now: TimeInterval,
                                     deadline: TimeInterval?) -> TimeInterval? {
         guard let cutoff = deadline, record.runsHere, !record.untracked,
+              record.source == AgentDispatchGate.Source.auto.rawValue,
               tokens.value == true else { return nil }
         let age = now - record.dispatchedAt
         return age >= cutoff ? age : nil

@@ -694,14 +694,18 @@ def resolve_one(record: RunRecord, evidence: Evidence, now: float,
        every rung below this one sees a live process either way. A runner that keeps a
        session instead of running hooks says the same thing further down, once its pid
        is known alive;
-    4. the deadline, when the operator has one: a run this device executes and that has
-       gone on past ``deadline`` is over whatever the rungs below would have said. It
-       sits under the three rungs above rather than over them because all three end the
-       run too, and each of them names a better reason than a clock;
-    5. a mesh-peer run is judged by the executor's claim, because no probe on this
+    4. a mesh-peer run is judged by the executor's claim, because no probe on this
        machine can see a process on another one;
-    6. a local run is judged by its pid, and its screen only classifies a pid that is
-       already known to be alive.
+    5. a local run is judged by its pid, and its screen only classifies a pid that is
+       already known to be alive;
+    6. the deadline, when the operator has one, and LAST: it overrules only a RUNNING —
+       the answer that means "this bay is spoken for and nothing here can say when it
+       will come back". Every other answer the ladder reaches is a better one than a
+       clock, and each of them is a reason this rung must not fire: ENDED already named
+       how the run stopped, AWAITING_INPUT is a session at its prompt that gave its bay
+       back and still holds a task worth reading, and UNKNOWN is the tick where the
+       evidence could not be read at all — ending a run on that would retire it for
+       being old on the one pass that saw nothing.
     """
     def done(state: str, reason: str) -> Resolution:
         return Resolution(record.run_id, state, reason)
@@ -717,17 +721,22 @@ def resolve_one(record: RunRecord, evidence: Evidence, now: float,
     if reported is not None and completion.is_over(reported[0]):
         return done(FINISHED, _REPORTED_REASON[reported[0]])
 
-    expired = past_deadline(record, evidence.tokens_left, now, deadline)
-    if expired is not None:
-        # The one rung that stamps `expired`; see :attr:`Resolution.expired`.
-        return replace(done(FINISHED,
-                            f"has run for {apiwatch.human_interval(expired)}, past "
-                            f"the {apiwatch.human_interval(deadline)} deadline"),
-                       expired=True)
-
     if record.placement == PLACEMENT_MESH_PEER:
-        return _resolve_peer(record, evidence, now, done)
-    return _resolve_local(record, evidence, now, done)
+        out = _resolve_peer(record, evidence, now, done)
+    else:
+        out = _resolve_local(record, evidence, now, done)
+    if out.state != RUNNING:
+        return out
+    expired = past_deadline(record, evidence.tokens_left, now, deadline)
+    if expired is None:
+        return out
+    # The one rung that stamps `expired`; see :attr:`Resolution.expired`. The answer it
+    # overruled is kept in the reason: it is what the run looked like right up to the
+    # moment a clock ended it, and the only account of that anyone gets.
+    return replace(done(FINISHED,
+                        f"{out.reason}; has run for {apiwatch.human_interval(expired)}"
+                        f", past the {apiwatch.human_interval(deadline)} deadline"),
+                   expired=True)
 
 
 def past_deadline(record: RunRecord, tokens: Observation, now: float,
@@ -741,20 +750,29 @@ def past_deadline(record: RunRecord, tokens: Observation, now: float,
     returned is the age the reason line quotes, so the verdict and the number the
     operator reads cannot come apart.
 
-    Four things hold it back, each a case where the clock is measuring something other
-    than a run that will not end:
+    Five things hold it back, each a case where the clock is measuring something other
+    than a bay that will not come back:
 
     * **no deadline** — the operator switched the backstop off;
     * **no token reading, or none left** — see :data:`RUN_DEADLINE`;
     * **a run on somebody else's machine** — the reading above is THIS account's, and
       the peer's own claim already ends that run;
+    * **a run the operator started by hand** — :func:`cap_load` counts only
+      ``SOURCE_AUTO``, so a panel click holds no bay of the automatic cap and there is
+      nothing here to hand back. All that ending one would buy is the loss of a working
+      agent the operator is driving themselves;
     * **an untracked run** — its record comes from the scan rather than from a dispatch,
       so :func:`synthesize_untracked` rebuilds it on the very next tick with a fresh
       stamp: the bay comes back for one tick and the same agent takes it again. Its
       stamp is when the scan first SAW the agent, so the age here would not even be
       the run's.
+
+    Together with the RUNNING the caller requires, that is exactly :func:`cap_load`'s
+    membership test — the rung reaches a run when, and only when, it is holding a bay.
     """
     if deadline is None or not record.runs_here or record.untracked:
+        return None
+    if record.source != SOURCE_AUTO:
         return None
     if not (tokens.ok and tokens.value):
         return None

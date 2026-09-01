@@ -400,6 +400,12 @@ CASES = [
      rec(dispatched_at=T0 - PAST_DEADLINE),
      ev(processes={4242: proc(elapsed=PAST_DEADLINE)}, tails={"pts/3": WORKING}),
      A.FINISHED, "has run for 5h, past the 4h deadline"),
+    # The boundary itself, in the table so the Swift twin is held to it too: the
+    # comparison is `>=`, and one written `>` differs on exactly this input.
+    ("a run exactly on the deadline is over",
+     rec(dispatched_at=T0 - A.RUN_DEADLINE),
+     ev(processes={4242: proc(elapsed=A.RUN_DEADLINE)}, tails={"pts/3": WORKING}),
+     A.FINISHED, "has run for 4h, past the 4h deadline"),
     ("a run a minute short of the deadline is still working",
      rec(dispatched_at=T0 - (A.RUN_DEADLINE - 60)),
      ev(processes={4242: proc(elapsed=A.RUN_DEADLINE - 60)}, tails={"pts/3": WORKING}),
@@ -424,6 +430,37 @@ CASES = [
          pid=None, tty="", dispatched_at=T0 - PAST_DEADLINE),
      ev(claims={"review:337:abc"}),
      A.RUNNING, "claim held on brick"),
+    # The deadline is the LAST rung, so every answer the ladder actually reached
+    # outranks it. Each of these is a run old enough to fire it.
+    #
+    # Ending a run because a table we could not read did not hold its pid is the
+    # failure this module exists to prevent, and age must not be the one input that
+    # gets to do it anyway.
+    ("a run past the deadline is not ended by a process table nobody could read",
+     rec(dispatched_at=T0 - PAST_DEADLINE),
+     ev(processes=A.Observation.unavailable("could not be read"),
+        tails={"pts/3": WORKING}),
+     A.UNKNOWN, "process table could not be read"),
+    # A table we DID read and that does not hold the pid says the run stopped. That is
+    # a better reason than a clock, and the difference is destructive: the reaper walks
+    # out of the REMEMBERED tty, and `pts/<n>` is recycled freely.
+    ("a departed pid still outranks the deadline",
+     rec(dispatched_at=T0 - PAST_DEADLINE),
+     ev(processes={}, tails={"pts/3": WORKING}),
+     A.FINISHED, "absent from the process table"),
+    # AWAITING_INPUT has already given its bay back (it is not in OCCUPYING), so there
+    # is nothing for the rung to reclaim — and the session is holding a finished task
+    # the operator may still want to read.
+    ("a run at its prompt past the deadline keeps its session",
+     rec(dispatched_at=T0 - PAST_DEADLINE),
+     ev(processes={4242: proc(elapsed=PAST_DEADLINE)}, tails={"pts/3": AT_PROMPT}),
+     A.AWAITING_INPUT, "at the prompt"),
+    # `cap_load` counts SOURCE_AUTO alone, so a panel click never took a bay. Ending one
+    # frees nothing and costs the operator an agent they are driving themselves.
+    ("a run the operator started by hand is not ended by the deadline",
+     rec(source=A.SOURCE_PANEL, dispatched_at=T0 - PAST_DEADLINE),
+     ev(processes={4242: proc(elapsed=PAST_DEADLINE)}, tails={"pts/3": WORKING}),
+     A.RUNNING, "working"),
     # Both rungs above the deadline end the run too, and each names a better reason
     # than a clock.
     ("a merged PR still outranks the deadline",
@@ -510,6 +547,17 @@ def test_the_reap_gate_is_the_verdict_rather_than_the_clocks():
                       activity={"r1": (completion.IDLE, T0)})
     # Its exit code landed.
     assert not reaped(tails={"pts/3": WORKING}, sentinels={"r1"})
+
+
+def test_a_reaped_window_always_belongs_to_a_retired_run():
+    """``Tick.reapable`` is documented as a subset of ``retirable``: the window goes
+    with the record. A stamp landing on a verdict that is not terminal would close a
+    terminal under a row the registry keeps, leaving a run the panel still lists with
+    nowhere to look at it."""
+    for name, record, evidence, _state, _reason in CASES:
+        states = {record.run_id: A.resolve_one(record, evidence, T0, A.RUN_DEADLINE)}
+        reaped = {r.run_id for r in A.reapable([record], states)}
+        assert reaped <= {r.run_id for r in A.retirable([record], states)}, name
 
 
 def test_every_state_is_reachable_from_the_table():

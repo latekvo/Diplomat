@@ -75,6 +75,9 @@ def _python(records, evidence, now=T0, limit=LIMIT,
         "retirable": sorted(r.run_id for r in t.retirable),
         "reapable": sorted(r.run_id for r in t.reapable),
         "freeSlots": t.free_slots,
+        "constants": {"runDeadline": A.RUN_DEADLINE,
+                      "quietTimeout": A.QUIET_TIMEOUT,
+                      "spawnGrace": A.SPAWN_GRACE},
         "inFlight": {str(pr): t.in_flight(pr)
                      for pr in {r.pr_number for r in t.records
                                 if r.pr_number is not None}},
