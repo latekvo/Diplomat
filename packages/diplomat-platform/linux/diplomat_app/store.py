@@ -2327,9 +2327,29 @@ class Store(QObject):
         key, and no dispatch time, prompt or transcript to be priced from. Dropping it
         is the whole of what it needs, and it does need it: a record kept so the
         stillness backstop has a memory must not outlive the agent it remembers.
+
+        A run whose window would not close is kept instead. Every reapable run is one
+        this very tick saw ALIVE — the stillness rung only classifies a process already
+        known to be up, and the deadline overrules the verdict that says so — so a
+        refused kill means the agent is still working in a window nothing here can
+        reach. Retiring it writes a completion into the ledger against that agent and
+        deletes the directory holding the prompt and the exit stamp that would have
+        priced it properly.
+
+        Keeping the record is also what re-arms the backstop. Retired, the run comes
+        back as an UNTRACKED row — which :func:`agentstate.past_deadline` refuses by
+        name — so the deadline fired once against a window it could not close and then
+        never again, for the flagship case it was built for: a tmux that will not dump a
+        pane will not kill its session either.
+
+        The record does not linger: the reaper stamps the refusal, both backstops go
+        quiet for one of their own periods (:func:`agentstate._reap_cooling`), and the
+        run is a RUNNING one holding its bay again until the next attempt. When its
+        agent finally leaves, no backstop stamps the verdict at all and it retires and
+        prices on the ordinary road.
         """
-        gone = t.retirable
-        self._reap_wedged_windows(t)
+        refused = self._reap_wedged_windows(t)
+        gone = [r for r in t.retirable if r.run_id not in refused]
         if not gone:
             return
         # Every pricing input comes out of the run directory, so all of them must be
@@ -2361,7 +2381,7 @@ class Store(QObject):
         if retired:
             self.telemetry_changed.emit()
 
-    def _reap_wedged_windows(self, t: agentstate.Tick) -> None:
+    def _reap_wedged_windows(self, t: agentstate.Tick) -> set[str]:
         """Close the terminal of every run a backstop ended — the quiescence clock, or
         the operator's run deadline.
 
@@ -2382,10 +2402,14 @@ class Store(QObject):
 
         Closing it is not decoration on either verdict: an agent left alive is found
         again by the prompt scan the moment its record is retired, and comes straight
-        back as an untracked row holding the same bay and the same PR. Retiring without
-        reaping frees nothing and is not free either: a dispatched run is priced into the
-        ledger as completed and its directory deleted, so an agent that is still working
-        comes back stripped of its label with a completion recorded against it.
+        back as an untracked row holding the same bay and the same PR, stripped of its
+        label and with a completion recorded against it. So the window closing is what
+        licenses the retirement, and a kill that reached nothing withholds it.
+
+        Returns the runs whose window would NOT close, and stamps the refusal on each
+        so both backstops wait out a period before ending it again.
+        :func:`_retire_finished` keeps those rather than pricing them; see there for
+        why, and :func:`agentstate._reap_cooling` for what the stamp buys.
 
         A run nobody dispatched is reaped like any other: a wedged session is just as
         dead whether or not this applet opened it.
@@ -2398,13 +2422,22 @@ class Store(QObject):
         name — one spawned before names, and one the mesh placed here, whose terminal
         the node opened.
         """
+        refused: set[str] = set()
         for record in t.reapable:
-            if (tmuxwatch.kill_session(tmuxwatch.session_name(record.run_id))
+            if not (tmuxwatch.kill_session(tmuxwatch.session_name(record.run_id))
                     or tmuxwatch.kill_session_for_tty(record.tty)):
-                reason = t.states[record.run_id].reason
-                activity.log("auto", "kill-device",
-                             f"closed {record.label or record.run_id}'s window — "
-                             f"{reason.split('; ')[-1]}")
+                refused.add(record.run_id)
+                continue
+            reason = t.states[record.run_id].reason
+            activity.log("auto", "kill-device",
+                         f"closed {record.label or record.run_id}'s window — "
+                         f"{reason.split('; ')[-1]}")
+        if refused:
+            agentregistry.save([
+                dataclasses.replace(r, reap_refused_at=t.now)
+                if r.run_id in refused else r
+                for r in agentregistry.load()])
+        return refused
 
     def _in_flight(self, url: str) -> bool:
         """Does this PR already have an agent? Every state that is not over counts,

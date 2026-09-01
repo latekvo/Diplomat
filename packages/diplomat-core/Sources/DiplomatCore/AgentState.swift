@@ -286,6 +286,11 @@ public enum AgentState {
         /// is first read.
         public var quietDigest: String
         public var quietSince: TimeInterval?
+        /// When a backstop last ended this run and its window would NOT close. `nil`
+        /// until one does. Written by the reaper, read by both backstops
+        /// (`reapCooling`) — a memory of an earlier tick's action, the way `quietSince`
+        /// is a memory of an earlier tick's screen.
+        public var reapRefusedAt: TimeInterval?
         /// True for a run nothing dispatched — a live agent found in the process table
         /// with no record behind it. It gets a row and blocks a second dispatch, but
         /// carries no label, no ledger key and no start time.
@@ -298,6 +303,7 @@ public enum AgentState {
                     workKey: String = "", ledgerKey: String = "", pid: Int? = nil,
                     tty: String = "", claimSeenAt: TimeInterval? = nil,
                     quietDigest: String = "", quietSince: TimeInterval? = nil,
+                    reapRefusedAt: TimeInterval? = nil,
                     untracked: Bool = false) {
             self.runID = runID
             self.dispatchedAt = dispatchedAt
@@ -315,6 +321,7 @@ public enum AgentState {
             self.claimSeenAt = claimSeenAt
             self.quietDigest = quietDigest
             self.quietSince = quietSince
+            self.reapRefusedAt = reapRefusedAt
             self.untracked = untracked
         }
 
@@ -513,10 +520,35 @@ public enum AgentState {
     /// resolver, to end the run, and the reaper, to close the window it was in. Those
     /// two answers agreeing is the whole contract — a window killed under a run still
     /// counted as working is the one mistake this backstop could make.
+    ///
+    /// Silent for one timeout after a reap this backstop asked for reached nothing; see
+    /// `reapCooling`.
     public static func wentQuiet(_ record: RunRecord, now: TimeInterval) -> TimeInterval? {
-        guard let since = record.quietSince else { return nil }
+        guard let since = record.quietSince, !reapCooling(record, now, quietTimeout)
+        else { return nil }
         let quiet = now - since
         return quiet >= quietTimeout ? quiet : nil
+    }
+
+    /// Whether a backstop that already ended this run, and whose reaper could not close
+    /// its window, is still waiting out one period before ending it again.
+    ///
+    /// A backstop ends a run by CLOSING its terminal, so a kill that reached nothing
+    /// left the agent working in a window this applet cannot get to. The run is not
+    /// over, and repeating that it is on every tick is how it stops being counted at
+    /// all: `.finished` holds no bay, blocks no second dispatch onto its PR, and is not
+    /// drawn — while the agent it describes is still on the machine. Waiting out a
+    /// period puts the run back among the running ones and schedules the next attempt,
+    /// which is the whole of what a backstop can do about a window that will not close.
+    ///
+    /// One period of whichever clock is asking, because that is the interval the
+    /// operator already chose for it: a screen still for twenty minutes is looked at
+    /// again twenty minutes later, and a four-hour run the deadline could not end is
+    /// given four more.
+    static func reapCooling(_ record: RunRecord, _ now: TimeInterval,
+                            _ period: TimeInterval) -> Bool {
+        guard let refused = record.reapRefusedAt else { return false }
+        return now - refused < period
     }
 
     /// Refresh each run's record of when its screen last CHANGED, returning updated
@@ -697,7 +729,7 @@ public enum AgentState {
     /// the age the reason line quotes, so the verdict and the number the operator reads
     /// cannot come apart.
     ///
-    /// Five things hold it back, each a case where the clock is measuring something
+    /// Six things hold it back, each a case where the clock is measuring something
     /// other than a bay that will not come back:
     ///
     /// * **no deadline** — the operator switched the backstop off;
@@ -712,7 +744,9 @@ public enum AgentState {
     ///   dispatch, so `synthesizeUntracked` rebuilds it on the very next tick with a
     ///   fresh stamp: the bay comes back for one tick and the same agent takes it again.
     ///   Its stamp is when the scan first SAW the agent, so the age here would not even
-    ///   be the run's.
+    ///   be the run's;
+    /// * **a window this rung already failed to close** — for one deadline, and then it
+    ///   tries again; see `reapCooling`.
     ///
     /// Every run this reaches is one `capLoad` is counting — a bay is what there is to
     /// hand back — but not the reverse, and the gap is deliberate on both sides. An
@@ -724,7 +758,7 @@ public enum AgentState {
                                     now: TimeInterval,
                                     deadline: TimeInterval?) -> TimeInterval? {
         guard let cutoff = deadline, deadlineApplies(record),
-              tokens.value == true else { return nil }
+              tokens.value == true, !reapCooling(record, now, cutoff) else { return nil }
         let age = now - record.dispatchedAt
         return age >= cutoff ? age : nil
     }
