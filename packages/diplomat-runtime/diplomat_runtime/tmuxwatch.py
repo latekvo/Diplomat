@@ -148,9 +148,50 @@ def send_continue(pane_id: str, message: str) -> bool:
     return _run(["tmux", "send-keys", "-t", pane_id, "Enter"]) is not None
 
 
+#: What every tmux session opened for a run is named for. Matched exactly on the way
+#: out (see :func:`kill_session`), and distinctive enough that nothing an operator
+#: would type by hand collides with it — the name is the whole permission to end a
+#: session rather than detach from it. `TerminalFocus.sessionPrefix` is the macOS twin.
+SESSION_PREFIX = "diplomat-"
+
+
+def session_name(run_id: str) -> str:
+    """The tmux session a run's window is opened as.
+
+    Derived from the run id rather than recorded, so there is nothing to write at spawn
+    and nothing to lose: the reaper computes the same name from the same record. The
+    run id is ``<epoch>-<hex8>`` (:func:`agentregistry.new_run_id`), which carries none
+    of the characters a tmux session name may not (``.`` and ``:``).
+    """
+    return SESSION_PREFIX + run_id
+
+
+def kill_session(name: str) -> bool:
+    """Close the tmux session called ``name``. Returns whether it was killed.
+
+    The route a run has to its own window when it has no tty — which is every run whose
+    pid was never adopted, and the case the run deadline is the first backstop able to
+    reach. :func:`kill_session_for_tty` refuses an empty tty outright, so before this
+    such a run was retired from the book with its window left open and its agent still
+    in it.
+
+    ``=`` prefixes the target because tmux's default matching is exact, then PREFIX,
+    then fnmatch: a bare name would let one run's reap end a session whose name merely
+    starts the same. Run ids are fixed-width, so no two can collide that way today, and
+    that is not a property to leave a destructive call resting on.
+    """
+    if not name or shutil.which("tmux") is None:
+        return False
+    return _run(["tmux", "kill-session", "-t", f"={name}"]) is not None
+
+
 def kill_session_for_tty(tty: str) -> bool:
     """Close the tmux session whose pane runs on ``tty``. Returns whether it was
     killed.
+
+    The fallback route to a run's window, for the runs :func:`kill_session` cannot
+    name: one spawned before sessions were named, and one the mesh placed here, whose
+    terminal the node opened.
 
     The window is reaped only for a run a BACKSTOP ended (:func:`agentstate.reapable`),
     which is two verdicts. The quiescence one is twenty minutes of a screen that has not

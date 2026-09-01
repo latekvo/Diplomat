@@ -4,6 +4,11 @@
 
 from __future__ import annotations
 
+import os
+import shutil
+import subprocess
+import uuid
+
 import pytest
 
 from diplomat_runtime import apiwatch, tmuxwatch
@@ -555,3 +560,74 @@ def test_scan_noop_when_disabled(store, monkeypatch):
     store._apiwatch_scan_once()
     store._apiwatch_scan_once()
     assert nudged == []
+
+
+# MARK: - Closing a run's own window (tmuxwatch.kill_session)
+
+
+def _live_sessions() -> set[str]:
+    out = subprocess.run(["tmux", "list-sessions", "-F", "#{session_name}"],
+                         capture_output=True, text=True, check=False)
+    return set(out.stdout.split()) if out.returncode == 0 else set()
+
+
+def _open_session(name: str) -> None:
+    subprocess.run(["tmux", "new-session", "-d", "-s", name, "sleep 120"], check=True)
+
+
+def _close_sessions(*names: str) -> None:
+    for n in names:
+        subprocess.run(["tmux", "kill-session", "-t", f"={n}"],
+                       capture_output=True, check=False)
+
+
+@pytest.mark.skipif(shutil.which("tmux") is None, reason="no tmux on this machine")
+def test_a_runs_own_session_is_closed_by_its_name():
+    """Against the real tmux: the name the spawn opened is the name the reaper computes,
+    and killing it takes the window with it."""
+    name = tmuxwatch.session_name(f"{os.getpid()}-{uuid.uuid4().hex[:8]}")
+    _open_session(name)
+    try:
+        assert name in _live_sessions(), "the fixture session never opened"
+        assert tmuxwatch.kill_session(name) is True
+        assert name not in _live_sessions()
+    finally:
+        _close_sessions(name)
+
+
+@pytest.mark.skipif(shutil.which("tmux") is None, reason="no tmux on this machine")
+def test_a_reap_whose_own_session_is_gone_does_not_take_a_neighbours():
+    """The target SYNTAX, which is the whole of this call's safety. tmux resolves a bare
+    target exactly, then by PREFIX, then by fnmatch — so a reap of a run whose session
+    has already closed falls through to any LIVE session whose name merely starts the
+    same, and ends somebody else's agent instead. `=` is what refuses that.
+
+    Run ids are fixed-width today (`<epoch>-<hex8>`), so no two of ours can be prefixes
+    of each other, and that is not a property to leave the one destructive call in the
+    applet resting on."""
+    gone = tmuxwatch.session_name(f"{os.getpid()}-{uuid.uuid4().hex[:8]}")
+    neighbour = f"{gone}-2"
+    _open_session(neighbour)
+    try:
+        assert tmuxwatch.kill_session(gone) is False
+
+        assert neighbour in _live_sessions(), \
+            "a prefix match closed a window this run never opened"
+    finally:
+        _close_sessions(neighbour)
+
+
+@pytest.mark.skipif(shutil.which("tmux") is None, reason="no tmux on this machine")
+def test_a_session_that_is_not_there_is_not_a_kill():
+    """The reaper reads the answer: False is what sends it on to the tty walk, and a
+    True here would let a run be retired with its window still open."""
+    assert tmuxwatch.kill_session(
+        tmuxwatch.session_name(f"never-opened-{uuid.uuid4().hex[:8]}")) is False
+
+
+def test_a_run_with_no_name_is_never_killed_by_one(monkeypatch):
+    """A mesh-placed run has no session of ours; an empty name must reach no tmux at
+    all rather than becoming a target that matches whatever tmux feels like."""
+    monkeypatch.setattr(tmuxwatch, "_run",
+                        lambda argv: pytest.fail(f"tmux was run: {argv}"))
+    assert tmuxwatch.kill_session("") is False

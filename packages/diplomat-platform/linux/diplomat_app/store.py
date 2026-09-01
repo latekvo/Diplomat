@@ -1411,7 +1411,8 @@ class Store(QObject):
                          pid_path=str(agentregistry.pid_path(record.run_id)),
                          prompt_file=str(agentregistry.prompt_path(record.run_id)),
                          port=port,
-                         settings_file=agentregistry.stage_hooks(record.run_id))
+                         settings_file=agentregistry.stage_hooks(record.run_id),
+                         session=tmuxwatch.session_name(record.run_id))
         except review.SpawnError:
             agentregistry.forget({record.run_id})
             return False
@@ -2388,9 +2389,18 @@ class Store(QObject):
 
         A run nobody dispatched is reaped like any other: a wedged session is just as
         dead whether or not this applet opened it.
+
+        Its window is reached the same two ways a macOS run's is. By NAME first, keyed
+        on the run id and so needing no tty — which is what a run whose pid was never
+        adopted has, and the run deadline is the first backstop that can end one of
+        those: the stillness clock needs a pane tail to compare against, so before it
+        every reapable run had a tty. Then the tty, for a session this applet did not
+        name — one spawned before names, and one the mesh placed here, whose terminal
+        the node opened.
         """
         for record in t.reapable:
-            if tmuxwatch.kill_session_for_tty(record.tty):
+            if (tmuxwatch.kill_session(tmuxwatch.session_name(record.run_id))
+                    or tmuxwatch.kill_session_for_tty(record.tty)):
                 reason = t.states[record.run_id].reason
                 activity.log("auto", "kill-device",
                              f"closed {record.label or record.run_id}'s window — "

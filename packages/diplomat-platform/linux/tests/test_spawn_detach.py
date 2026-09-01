@@ -235,6 +235,39 @@ def test_the_agent_runs_under_an_interactive_shell_inside_its_own_tmux_session(
     ]
 
 
+def test_a_named_session_is_the_runs_handle_on_its_own_window(
+    with_tmux, monkeypatch, tmp_path
+):
+    """Without ``-s`` the session is auto-named and the only route back to the window is
+    the tty the agent happens to be on — which a run whose pid was never adopted does
+    not have. Named, the reaper computes the same name from the run id and closes the
+    window with no tty at all."""
+    import shlex
+
+    monkeypatch.setattr(review, "repo_path", lambda: str(tmp_path))
+    monkeypatch.setenv("DIPLOMAT_SHELL", "/usr/bin/zsh")
+
+    argv = review.agent_argv("/tmp/p.txt", "/tmp/done", session="diplomat-17-abc")
+
+    assert argv[:4] == ["tmux", "new-session", "-s", "diplomat-17-abc"]
+    # The command is still ONE argument after the name, or `sh -c` gets a fragment.
+    assert len(argv) == 5
+    assert shlex.split(argv[4]) == [
+        "/usr/bin/zsh", "-i", "-c", review.shell_command("/tmp/p.txt", "/tmp/done")
+    ]
+
+
+def test_a_window_nobody_has_to_find_again_is_left_unnamed(with_tmux, monkeypatch,
+                                                           tmp_path):
+    """The provider-login wizard opens a window through the same seam and is not a run:
+    nothing books it, nothing reaps it, and a name would only invite a reap to match
+    it."""
+    monkeypatch.setattr(review, "repo_path", lambda: str(tmp_path))
+    monkeypatch.setenv("DIPLOMAT_SHELL", "/usr/bin/zsh")
+
+    assert "-s" not in review.terminal_argv("echo hi")
+
+
 def test_without_tmux_the_agent_runs_under_the_bare_interactive_shell(
     monkeypatch, tmp_path
 ):
