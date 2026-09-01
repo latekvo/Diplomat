@@ -1,14 +1,20 @@
 """tmux terminal I/O for the Claude-API-error watcher — the Linux stand-in for the
 iTerm/Terminal AppleScript in ApiErrorWatcher.swift.
 
-macOS can read any terminal window's visible buffer and type into it through the
-scriptable iTerm/Terminal apps. Linux has no such universal hook for arbitrary
-emulators (gnome-terminal, konsole, …) — you can neither read what's rendered nor
-inject input. tmux is the one portable mechanism that does both: ``capture-pane``
-returns a pane's visible screen, ``send-keys`` submits a line to it. So the watcher
-drives tmux panes; an agent must be running inside tmux to be watched (the feature
-is simply inert otherwise, exactly as the macOS watcher is when neither terminal app
-is running).
+macOS can read a terminal window's visible buffer and type into it through the
+scriptable iTerm/Terminal apps. Linux has no such hook for arbitrary emulators
+(gnome-terminal, konsole, …) — you can neither read what's rendered nor inject input.
+tmux is the one portable mechanism that does both: ``capture-pane`` returns a pane's
+visible screen, ``send-keys`` submits a line to it. So the watcher drives tmux panes;
+an agent must be running inside tmux to be watched (the feature is simply inert
+otherwise, exactly as the macOS watcher is when no terminal app it can read is
+running).
+
+macOS runs the same mechanism beside its two scripts rather than instead of them
+(``TerminalFocus.paneScreens`` / ``sendLine``), because Ghostty is scriptable in every
+way but this one: it will open a window on command and close one, but it reports
+neither the text on a surface nor the tty it is on. So a Ghostty agent's screen has
+exactly one reader, and it is this one.
 
 Panes are keyed by their tmux ``pane_id`` (``%N``) — unique and never recycled for
 the life of the server, unlike a ``/dev/pts`` tty which is reused as panes close.

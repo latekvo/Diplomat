@@ -272,7 +272,7 @@ enum TrackTest {
     /// agent into it, and watch the resolver carry it from `.starting` through `.running`
     /// to `.finished` off nothing but the run's own pid file and sentinel.
     private static func liveCycle(check: (String, Bool) -> Void) async {
-        let term = AgentSpawner.resolved(.iterm)
+        let term = AgentSpawner.resolved(.ghostty)
         let now = Date().timeIntervalSince1970
         let record = AgentRegistry.createRun(
             AgentState.RunRecord(runID: AgentRegistry.newRunID(now: now), dispatchedAt: now,
@@ -379,6 +379,25 @@ enum TrackTest {
               !AgentWindows.focus(.init(terminal: term.rawValue, windowID: "99999999",
                                         sessionID: "nope")))
 
+        // The API-error watcher's other half, against the window this run is in: the
+        // nudge has to be READ BACK off the screen it was typed into, because "the
+        // terminal accepted it" and "the agent was asked to continue" are not the same
+        // claim — a Ghostty run is typed into through tmux, and a tmux `send-keys` to a
+        // pane that has gone still exits zero on some paths.
+        check("the continue nudge lands in the run's own session",
+              ApiErrorWatcher.sendContinue(tty: agentTTY))
+        var echoed = false
+        for _ in 0..<15 where !echoed {
+            echoed = ApiErrorWatcher.dumpSessions()?.contains {
+                AgentProbes.shortTTY($0.tty) == AgentProbes.shortTTY(agentTTY)
+                    && $0.tail.contains(ApiErrorWatcher.continueMessage)
+            } ?? false
+            if !echoed { try? await Task.sleep(nanoseconds: 200_000_000) }
+        }
+        check("…and the dump reads it back off that screen", echoed)
+        check("a nudge to a tty nothing is on reports that it landed nowhere",
+              !ApiErrorWatcher.sendContinue(tty: "ttys999"))
+
         // Releases the stand-in, whose shell then writes the sentinel the last check waits for.
         FileManager.default.createFile(atPath: release.path, contents: nil)
         var finished = false
@@ -460,17 +479,10 @@ enum TrackTest {
         if !emptied { closeWindow(term: term, windowID: cap.0) }
     }
 
+    /// Best-effort cleanup of a throwaway window: a window the user already closed makes
+    /// this fail, which is not a test failure. Closed the way the reap closes one, so a
+    /// window this cannot close is one the reap could not either.
     private static func closeWindow(term: SpawnTerminal, windowID: String) {
-        let app = term.appName
-        let script = """
-        tell application "\(app)"
-            repeat with w in windows
-                if (id of w as string) is "\(windowID)" then close w
-            end repeat
-        end tell
-        """
-        // Best-effort cleanup of a throwaway window: a window the user already
-        // closed makes this fail, which is not a test failure.
-        OSAScript.runSilently(script)
+        OSAScript.runSilently(AgentWindows.closeScript(term: term, windowID: windowID))
     }
 }
