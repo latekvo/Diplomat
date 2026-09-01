@@ -2427,6 +2427,13 @@ class Store(QObject):
             if not (tmuxwatch.kill_session(tmuxwatch.session_name(record.run_id))
                     or tmuxwatch.kill_session_for_tty(record.tty)):
                 refused.add(record.run_id)
+                # Once per episode: the stamp is None only before the first refusal.
+                # A window nothing can close is retried for the life of the applet, and
+                # the operator needs its held bay explained once, not once per period.
+                if record.reap_refused_at is None:
+                    activity.log("auto", "kill-device",
+                                 f"could not close {record.label or record.run_id}'s "
+                                 f"window — keeping the run and trying again")
                 continue
             reason = t.states[record.run_id].reason
             activity.log("auto", "kill-device",

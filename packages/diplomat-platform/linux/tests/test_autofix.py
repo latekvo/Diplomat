@@ -3289,8 +3289,11 @@ def test_a_run_whose_window_would_not_close_is_not_priced_as_finished(store, mon
     (held,) = agentregistry.load()
     assert held.run_id == record.run_id and held.reap_refused_at is not None
     assert telemetry.load().tasks == [], "no completion against a working agent"
-    assert [e.action for e in activity.read() if e.action in ("retire", "kill-device")] \
-        == [], "and nothing in the feed claims either half happened"
+    assert [(e.action, e.detail) for e in activity.read()
+            if e.action in ("retire", "kill-device")] == [
+        ("kill-device", f"could not close {record.run_id}'s window — keeping the run "
+                        "and trying again")], \
+        "the feed says the window would not close, and claims neither half happened"
     assert store.free_auto_slots == 1
     assert store._in_flight("https://github.com/o/r/pull/710")
 
@@ -3301,7 +3304,7 @@ def test_the_deadline_keeps_firing_on_a_window_that_would_not_close(store, monke
     fresh stamp every tick — and :func:`agentstate.past_deadline` refuses an untracked
     record by name. So the deadline would fire exactly once against the window it cannot
     close, and then never again for the life of the applet."""
-    from diplomat_runtime import agentregistry
+    from diplomat_runtime import activity, agentregistry
     from diplomat_runtime import agentstate as A
 
     asked = _refused(monkeypatch)
@@ -3324,6 +3327,10 @@ def test_the_deadline_keeps_firing_on_a_window_that_would_not_close(store, monke
     assert asked.count("pts/71") == 2, "and then comes round to the same window again"
     (held,) = agentregistry.load()
     assert not held.untracked, "the record the deadline needs is still the dispatched one"
+    # Said once, on the edge into the episode. A window nothing can close is retried
+    # for as long as the applet runs, and a line per attempt would bury the feed.
+    assert len([e for e in activity.read() if e.action == "kill-device"]) == 1, \
+        "the second refusal of the same window is not announced again"
 
 
 def test_a_window_that_did_close_lets_its_run_be_priced_and_dropped(store, monkeypatch):

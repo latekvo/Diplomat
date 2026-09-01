@@ -1165,7 +1165,19 @@ final class Store: ObservableObject {
         for record in t.reapable {
             let byHandle = AgentWindows.handle(record.runID).map(AgentWindows.close) ?? false
             guard byHandle || TerminalFocus.close(tty: record.tty, pid: record.pid)
-            else { refused.insert(record.runID); continue }
+            else {
+                refused.insert(record.runID)
+                // Once per episode: the stamp is nil only before the first refusal.
+                // A window nothing can close is retried for the life of the app, and
+                // the operator needs its held bay explained once, not once per period.
+                if record.reapRefusedAt == nil {
+                    let who = record.label.isEmpty ? record.runID : record.label
+                    AuditLog.log("auto", "kill-device",
+                                 "could not close \(who)'s window — keeping the run "
+                                 + "and trying again")
+                }
+                continue
+            }
             let who = record.label.isEmpty ? record.runID : record.label
             let reason = t.states[record.runID]?.reason ?? ""
             let why = reason.components(separatedBy: "; ").last ?? ""
