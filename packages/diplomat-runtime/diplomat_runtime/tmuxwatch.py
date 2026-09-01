@@ -147,7 +147,8 @@ def kill_session_for_tty(tty: str) -> bool:
     killed.
 
     The window is reaped only for a run the quiescence backstop ended
-    (:func:`agentstate.went_quiet`) — twenty minutes of a screen that has not moved, so
+    (:attr:`agentstate.Resolution.wedged`) — twenty minutes of a screen that has not
+    moved, so
     nothing is being read and nothing is being typed. A run that ends the ordinary way
     keeps its window: its agent is alive at its prompt with the whole task in context,
     and that is a session the operator may still want to read or type into.

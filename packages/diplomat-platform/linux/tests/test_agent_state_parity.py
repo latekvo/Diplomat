@@ -63,7 +63,8 @@ def _swift(payload: dict) -> dict:
 def _python(records, evidence, now=T0, limit=LIMIT) -> dict:
     t = A.tick(records, evidence, now, limit)
     return {
-        "rows": [{"runId": r.run_id, "state": s.state, "reason": s.reason}
+        "rows": [{"runId": r.run_id, "state": s.state, "reason": s.reason,
+                  "wedged": s.wedged}
                  for r, s in t.rows],
         "capLoad": sorted(t.cap_load),
         "retirable": sorted(r.run_id for r in t.retirable),

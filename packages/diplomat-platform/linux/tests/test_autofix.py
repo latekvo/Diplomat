@@ -2726,6 +2726,45 @@ def test_a_run_short_of_the_timeout_keeps_its_window(store, monkeypatch):
     assert killed == []
 
 
+def test_a_run_whose_agent_left_while_nobody_could_look_keeps_its_hands_off_the_tty(
+        store, monkeypatch):
+    """The stillness clock advances only on ticks that SAW the screen, so it goes on
+    maturing through an evidence outage. Let one outlast the timeout with the agent
+    exiting inside it, and the tick the probes come back on carries both halves of the
+    old gate at once: FINISHED, and twenty minutes still.
+
+    It is FINISHED because its *pid is gone*, which is a verdict about a process, not
+    about a screen — and `pts/<n>` is recycled freely, so within those seconds the tty
+    can already belong to somebody else's shell. `tmux kill-session` then takes every
+    window in that session, and the audit line claims it closed the departed run's."""
+    import time as _time
+    from diplomat_runtime import activity
+    from diplomat_runtime import agentstate as A
+
+    killed = _killed(monkeypatch)
+    now = _time.time()
+    rec = register_run(704, pid=7004, tty="pts/74", dispatched_at=now - 4000)
+    fake_probes(monkeypatch, processes=agent_alive(7004, tty="pts/74", elapsed=4000),
+                tails={"pts/74": AT_PROMPT})
+    store._settle_agents()
+    store._settle_agents()          # two ticks to have a screen to compare against
+    _age_the_stillness(A.QUIET_TIMEOUT + 5)   # …and an outage longer than the timeout
+
+    # The probes return, and the agent is not there any more.
+    fake_probes(monkeypatch, processes={}, tails={})
+    tick = store._agent_tick()
+    got = tick.states[rec.run_id]
+    assert got.state == A.FINISHED and "absent from the process table" in got.reason, \
+        f"the run must end by its pid, or this pins nothing: {got.reason!r}"
+    assert A.went_quiet(tick.records[0], tick.now) is not None, \
+        "…while still carrying a matured clock, which is the whole trap"
+
+    store._settle_agents()
+
+    assert killed == [], "a tty this run may no longer hold is not the reaper's to close"
+    assert [e.detail for e in activity.read() if e.action == "kill-device"] == []
+
+
 # MARK: - …including the window of an agent nobody dispatched
 #
 # The ordinary end state, not a rare one: a run retired by its runner's turn report
@@ -2780,6 +2819,29 @@ def test_an_untracked_agents_wedged_window_is_closed(store, monkeypatch):
     assert [e.detail for e in activity.read() if e.action == "kill-device"] == \
         ["closed untracked:337's window — its screen has not changed in 20m"], \
         "a closed window reaches the operator only through the feed"
+
+
+def test_a_synthesized_run_gone_from_the_scan_is_not_reaped_either(store, monkeypatch):
+    """The same trap through the other door. A synthesized run ends when the scan that
+    made it stops finding it — "gone from the process table" — and it can carry a
+    matured clock there for exactly the same reason. Its tty is the only handle it has
+    and it was never this applet's to begin with."""
+    from diplomat_runtime import agentstate as A
+
+    killed = _killed(monkeypatch)
+    fake_probes(monkeypatch, live_prs={337})
+    store._settle_agents()
+    store._settle_agents()
+    _age_the_stillness(A.QUIET_TIMEOUT + 5)
+
+    fake_probes(monkeypatch, live_prs=set())
+    got = store._agent_tick().states["untracked:337"]
+    assert got.state == A.FINISHED and "gone from the process table" in got.reason, \
+        f"the run must end by the scan, or this pins nothing: {got.reason!r}"
+
+    store._settle_agents()
+
+    assert killed == []
 
 
 def test_an_untracked_record_does_not_outlive_its_agent(store, monkeypatch):
