@@ -464,7 +464,7 @@ final class Store: ObservableObject {
     func setTint(_ color: Color, for kind: ToolKind) {
         colorOverrides[kind.rawValue] = color.hexRGB
     }
-    var terminal: SpawnTerminal { SpawnTerminal(rawValue: terminalChoice) ?? .iterm }
+    var terminal: SpawnTerminal { SpawnTerminal(rawValue: terminalChoice) ?? .ghostty }
     var visibleTools: [ToolKind] {
         ToolKind.allCases.filter { !hiddenTools.contains($0.rawValue) }
     }
@@ -505,8 +505,41 @@ final class Store: ObservableObject {
         std.set(true, forKey: marker)
     }
 
+    /// One-time move of the spawn terminal to Ghostty, for an install that predates it.
+    ///
+    /// The stored choice is what an operator picked out of a two-way picker, so on every
+    /// existing install it reads "iterm" — whether that was a decision or a default they
+    /// never touched. Without this, a picker that grew a third option would leave every
+    /// running install on the terminal the third option was added to replace.
+    ///
+    /// Only a choice of iTerm is moved, and only onto a box that can drive Ghostty.
+    /// Terminal.app was picked over an installed iTerm, which is a decision against a
+    /// default rather than the absence of one, and is left alone. Runs once either way: a
+    /// box with no Ghostty right now keeps its terminal and is not asked again, because a
+    /// second ask cannot be told from overriding the operator's own switch back.
+    static func migrateTerminalChoiceIfNeeded() {
+        let marker = "ghosttyTerminalDefaultMigrated"
+        let std = UserDefaults.standard
+        guard !std.bool(forKey: marker) else { return }
+        std.set(true, forKey: marker)
+        guard let moved = terminalChoiceMigration(stored: std.string(forKey: Keys.terminalChoice),
+                                                  ghosttyUsable: SpawnTerminal.ghostty.isUsable)
+        else { return }
+        std.set(moved, forKey: Keys.terminalChoice)
+    }
+
+    /// What the migration above decides, without the defaults it decides it about — so
+    /// which choices it moves is checkable without writing to the operator's own.
+    /// nil leaves the stored choice alone.
+    nonisolated static func terminalChoiceMigration(stored: String?, ghosttyUsable: Bool) -> String? {
+        guard ghosttyUsable, stored == nil || stored == SpawnTerminal.iterm.rawValue
+        else { return nil }
+        return SpawnTerminal.ghostty.rawValue
+    }
+
     init() {
         Store.migrateLegacyDefaultsIfNeeded()
+        Store.migrateTerminalChoiceIfNeeded()
         MeshBridge.migrateLegacyStateDirIfNeeded()
         let defaults = UserDefaults.standard
         usernameOverride = defaults.string(forKey: Keys.usernameOverride) ?? ""
@@ -515,8 +548,10 @@ final class Store: ObservableObject {
         hiddenTools = Set(defaults.stringArray(forKey: Keys.hiddenTools)
             ?? [ToolKind.skillPRs.rawValue, ToolKind.installerPRs.rawValue])
         colorOverrides = (defaults.dictionary(forKey: Keys.colorOverrides) as? [String: String]) ?? [:]
+        // The whole preference ladder, so a fresh install lands on the terminal a spawn
+        // would have resolved to anyway.
         terminalChoice = defaults.string(forKey: Keys.terminalChoice)
-            ?? (SpawnTerminal.iterm.isInstalled ? SpawnTerminal.iterm.rawValue : SpawnTerminal.terminal.rawValue)
+            ?? AgentSpawner.resolved(.ghostty).rawValue
         repoPathOverride = AppConfig.string(AppConfig.repoRootKey)
         agentRunner = AppConfig.agentRunner
         agentModel = AppConfig.agentModel

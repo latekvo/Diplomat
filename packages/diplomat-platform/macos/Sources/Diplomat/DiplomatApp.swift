@@ -39,7 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let defaults = UserDefaults.standard
             if !defaults.bool(forKey: "didTriggerTerminalAutomation") {
                 defaults.set(true, forKey: "didTriggerTerminalAutomation")
-                let preferred = SpawnTerminal(rawValue: Store.storedTerminalChoice ?? "") ?? .iterm
+                let preferred = SpawnTerminal(rawValue: Store.storedTerminalChoice ?? "") ?? .ghostty
                 AgentSpawner.triggerAutomationPrompt(preferred: preferred)
             }
         }
@@ -328,7 +328,7 @@ enum Dump {
                                    runner: AppConfig.agentRunner, port: 0))
         print("\n----- SHELL COMMAND -----")
         print(cmd)
-        let term = AgentSpawner.resolved(.iterm)
+        let term = AgentSpawner.resolved(.ghostty)
         guard withBackgroundScript else {
             print("\n----- APPLESCRIPT (\(term.title)) -----")
             print(AgentSpawner.appleScript(for: term, shellCommand: cmd))
@@ -462,7 +462,7 @@ enum Dump {
     /// unchanged from before this fix (see DIPLOMAT_PRINT_PROMPT) — that identity is
     /// the real regression guard; the foreground focus result below is informational only.
     /// Returns overall pass/fail so a hook/script can gate on the exit code. Drives the
-    /// terminal the panel is configured for (falls back to iTerm).
+    /// terminal the panel is configured for (falls back to the top of the ladder).
     @MainActor static func spawnFocusTest() -> Bool {
         // Deliberately NOT OSAScript.capture: this is a diagnostic, and whatever a
         // partially-failing script did print is more useful here than a flat nil.
@@ -483,26 +483,23 @@ enum Dump {
                 + (term == .iterm ? "current window" : "front window") + " as string")
         }
         func openWindow(_ term: SpawnTerminal) -> String {
-            osa(term == .iterm
-                ? "tell application \"iTerm\" to return id of (create window with default profile) as string"
-                : "tell application \"Terminal\"\n do script \"\"\n return id of front window as string\nend tell")
+            switch term {
+            case .ghostty:
+                return osa("tell application \"Ghostty\" to return id of (new window) as string")
+            case .iterm:
+                return osa("tell application \"iTerm\" to return id of (create window with default profile) as string")
+            case .terminal:
+                return osa("tell application \"Terminal\"\n do script \"\"\n return id of front window as string\nend tell")
+            }
         }
+        // Closes it the way the reap does, so a window this cannot close is one the
+        // reap could not either.
         func closeWindow(_ term: SpawnTerminal, _ wid: String) {
             guard !wid.isEmpty else { return }
-            _ = osa("""
-            tell application "\(term.appName)"
-                repeat with w in windows
-                    if (id of w as string) is "\(wid)" then
-                        try
-                            close w
-                        end try
-                    end if
-                end repeat
-            end tell
-            """)
+            _ = osa(AgentWindows.closeScript(term: term, windowID: wid))
         }
 
-        let term = AgentSpawner.resolved(SpawnTerminal(rawValue: Store.storedTerminalChoice ?? "") ?? .iterm)
+        let term = AgentSpawner.resolved(SpawnTerminal(rawValue: Store.storedTerminalChoice ?? "") ?? .ghostty)
         print("== spawn focus self-test · terminal: \(term.title) ==\n")
 
         // 1. BACKGROUND spawn — must not steal focus off Finder.
@@ -520,7 +517,14 @@ enum Dump {
         // (This machine is busy — Chrome/Slack/other agents can grab focus during the
         // input-settle delay; that's not our steal. Asserting exact return-to-Finder would
         // flap on that unrelated activity, so assert only "the terminal isn't left on top".)
-        let termProc = term == .iterm ? "iTerm2" : "Terminal"
+        // What System Events calls the app, which is not what AppleScript addresses it
+        // by: Ghostty's process is lowercase, iTerm's carries the 2.
+        let termProc: String
+        switch term {
+        case .ghostty: termProc = "ghostty"
+        case .iterm: termProc = "iTerm2"
+        case .terminal: termProc = "Terminal"
+        }
         let bgKept = afterBG != termProc
         let exactly = afterBG == before ? " (exactly restored)" : " (another app took focus after restore — not our steal)"
         print("BACKGROUND spawn (restore → Finder):")

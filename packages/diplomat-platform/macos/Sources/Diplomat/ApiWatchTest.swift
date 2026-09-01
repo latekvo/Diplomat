@@ -124,6 +124,34 @@ enum ApiWatchTest {
         check("…by the whole way out, and no further",
               reachable == ["ttys038", "ttys037", "ttys036", "ttys034"])
 
+        // Which panes the dump adds on top of what the terminals reported. The same box
+        // as above, plus a Ghostty run — a session on a client no scriptable app can be
+        // asked about, which is the only reader that agent's screen has.
+        let panes = ["ttys037": TerminalFocus.Pane(id: "%80", session: "1"),
+                     "ttys050": TerminalFocus.Pane(id: "%91", session: "diplomat-a1b2")]
+        let ghostly = processes.merging([
+            2500: TerminalFocus.Proc(ppid: 2200, tty: "ttys050"),  // the Ghostty pane
+            2600: TerminalFocus.Proc(ppid: 2599, tty: "ttys051"),  // the tmux client
+            2599: TerminalFocus.Proc(ppid: 1, tty: ""),            // Ghostty itself
+        ]) { a, _ in a }
+        let attached = ["1": "ttys036", "diplomat-a1b2": "ttys051"]
+        func captured(_ shownOn: Set<String>) -> [String] {
+            TerminalFocus.panesToCapture(panes, processes: ghostly, attachedTo: attached,
+                                         shownOn: shownOn).map(\.tty)
+        }
+        // ttys034 is the iTerm session's own tty — two ptys above the pane, because the
+        // client sits under a shell wrapper. Matching the client's tty instead would
+        // find nothing here and dump this screen a second time.
+        check("a pane an iTerm window already showed is not dumped again",
+              captured(["ttys034", "ttys099"]) == ["ttys050"])
+        check("…and with no terminal answering at all, both are",
+              captured([]) == ["ttys037", "ttys050"])
+        // What that duplicate would cost: the watcher nudges per entry, so one stalled
+        // agent would be typed into twice and audited twice.
+        check("the Ghostty pane is never the one dropped",
+              captured(["ttys034", "ttys051"]).contains("ttys050") == false
+                && captured(["ttys034"]) == ["ttys050"])
+
         print(pass ? "APIWATCH TEST OK" : "APIWATCH TEST FAILED")
         return pass
     }

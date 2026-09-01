@@ -91,9 +91,9 @@ jobs:
       # a scratch dir of its own. It returns before any spawn or fetch.
       #
       # DIPLOMAT_TRACK_TEST and DIPLOMAT_SPAWN_FOCUS_TEST are the two that stay out,
-      # and not by oversight: both drive real throwaway iTerm/Terminal windows and
-      # need a granted "control <terminal>" Automation permission, which a headless
-      # runner has no way to hold. They are run by hand from the installed .app.
+      # and not by oversight: both drive real throwaway terminal windows and need a
+      # granted "control <terminal>" Automation permission, which a headless runner
+      # has no way to hold. They are run by hand from the installed .app.
       # DIPLOMAT_SPAWN_SCRIPT_TEST covers the focus half of the second one here, by
       # reading the script those windows would have run.
       - name: Headless helper self-tests
@@ -109,6 +109,11 @@ jobs:
           DIPLOMAT_APIWATCH_TEST=1 swift run Diplomat
           DIPLOMAT_PUBLISH_TEST=1 swift run Diplomat
           DIPLOMAT_SPAWN_SCRIPT_TEST=1 swift run Diplomat
+          # Twice, for the two arms of the terminal ladder. The first takes whichever
+          # one the runner's own tmux decides; the second forces the machine without
+          # tmux, where Ghostty must be refused rather than offered — a spawn there
+          # would open windows whose agents nothing could ever read.
+          DIPLOMAT_TMUX=/nonexistent DIPLOMAT_SPAWN_SCRIPT_TEST=1 swift run Diplomat
 
   # The shared core advertises "compiles on macOS *and* Linux". This guards that
   # invariant by building + running the diplomat-core package on Linux (the SwiftUI
