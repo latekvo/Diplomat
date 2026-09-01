@@ -424,8 +424,9 @@ enum Dump {
         }
         let onAnAgent = AgentProbes.ttysRunningAnAgent(now: Date().timeIntervalSince1970)
         guard let agentTTYs = onAnAgent.value else {
-            print("== api-error scan: THE PROCESS TABLE \(onAnAgent.reason) — a scan would "
-                + "send nothing, because it cannot tell an agent's session from a shell ==")
+            print("== api-error scan: WHICH SESSIONS AN AGENT IS IN \(onAnAgent.reason) — a "
+                + "scan would send nothing, because it cannot tell an agent's session from "
+                + "a shell ==")
             return
         }
         print("== api-error scan: \(sessions.count) terminal session(s) ==\n")

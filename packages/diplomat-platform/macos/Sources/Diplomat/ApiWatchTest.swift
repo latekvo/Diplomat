@@ -93,6 +93,34 @@ enum ApiWatchTest {
               + "nudge never landed is tried again",
               sent == ["/dev/ttys011", "/dev/ttys014", "/dev/ttys014"])
 
+        // What an empty agent-tty set COSTS, which is why the probe above must never
+        // answer with one it did not mean. The step prunes backoff and idle-confirmation
+        // state to the ttys it was handed, so a scan handed none forgets every session:
+        // ttys011 is inside a 2m window here, and two scans later it is nudged again.
+        await store.apiErrorScanStep(sessions: sessions(" retry 4"), agentTTYs: [],
+                                     now: t0.addingTimeInterval(60)) { tty in
+            sent.append(tty); return true
+        }
+        await scan(" retry 5", at: t0.addingTimeInterval(80))
+        await scan(" retry 5", at: t0.addingTimeInterval(100))
+        check("a scan handed no ttys at all forgets the backoff of every session in it",
+              sent.filter { $0 == "/dev/ttys011" }.count == 2)
+
+        // The same scans with only the empty one dropped. ttys011 stays inside the
+        // backoff its t+20 nudge started, so the second nudge above is what forgetting
+        // cost and not what this sequence would have done anyway.
+        let kept = Store()
+        var keptSent: [String] = []
+        for at in [0.0, 20, 40, 80, 100] {
+            await kept.apiErrorScanStep(sessions: sessions(" retry 5"), agentTTYs: agentTTYs,
+                                        now: t0.addingTimeInterval(at)) { tty in
+                keptSent.append(tty)
+                return tty != "/dev/ttys014"
+            }
+        }
+        check("…and with nothing forgotten it is nudged once, inside that same window",
+              keptSent.filter { $0 == "/dev/ttys011" }.count == 1)
+
         // The other direction, over the tree a spawn leaves on a box whose ~/.zshrc execs
         // tmux: the window's session runs a wrapper, the wrapper runs a tmux client, and
         // the agent is in a pane the tmux SERVER owns — so the agent's own tty appears in
@@ -123,6 +151,73 @@ enum ApiWatchTest {
               reachable.contains("ttys034"))
         check("…by the whole way out, and no further",
               reachable == ["ttys038", "ttys037", "ttys036", "ttys034"])
+
+        // What the filter answers when it could not be computed. An empty set and an
+        // unavailable reading are both "type into nobody", but only the second also says
+        // "and forget nothing": `apiErrorScanStep` prunes backoff and idle-confirmation
+        // state to the ttys it is handed, and `runApiErrorScanOnce` returns before that
+        // on an unavailable reading. On a box where every agent is behind tmux, one
+        // failed `list-clients` between two 20s scans would otherwise reset an escalated
+        // 3h backoff to its 2m base.
+        print("")
+        let agentUp = Observation.present(procs)
+        var walked = 0
+        func tables() -> (panes: [String: TerminalFocus.Pane], clients: [String: String])? {
+            walked += 1
+            return (["ttys037": TerminalFocus.Pane(id: "%80", session: "1")], ["1": "ttys036"])
+        }
+        check("a tmux that would not answer is unavailable, not an empty set",
+              AgentProbes.ttysRunningAnAgent(procs: agentUp, processes: { processes },
+                                            tmux: { nil }).value == nil)
+        check("…and one that does answer walks the agent out to its window",
+              AgentProbes.ttysRunningAnAgent(procs: agentUp, processes: { processes },
+                                            tmux: tables).value == reachable)
+        check("an unreadable process table is unavailable, as it always was",
+              AgentProbes.ttysRunningAnAgent(procs: .unavailable("exited 1"),
+                                            processes: { processes },
+                                            tmux: tables).value == nil)
+        check("a box with no agent up is an empty set, and tmux is never asked",
+              AgentProbes.ttysRunningAnAgent(
+                  procs: .present([2400: AgentState.ProcInfo(tty: "ttys099", elapsed: 9,
+                                                             isAgent: false)]),
+                  processes: { processes }, tmux: tables).value == [] && walked == 1)
+
+        // And that the nil above is a state a real tmux can actually be in. The listings
+        // and the liveness probe are separate calls, so a stand-in that fails one and
+        // answers the other is the transient hiccup itself, not a machine without tmux.
+        let fake = FileManager.default.temporaryDirectory
+            .appendingPathComponent("diplomat-faketmux-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: fake, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: fake) }
+        let previousTmux = ProcessInfo.processInfo.environment["DIPLOMAT_TMUX"]
+        defer {
+            if let previousTmux { setenv("DIPLOMAT_TMUX", previousTmux, 1) }
+            else { unsetenv("DIPLOMAT_TMUX") }
+        }
+        func fakeTmux(_ body: String) -> String {
+            let path = fake.appendingPathComponent("tmux-\(UUID().uuidString)").path
+            try? ("#!/bin/sh\ncase \"$1\" in\n\(body)\nesac\n")
+                .write(toFile: path, atomically: true, encoding: .utf8)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755],
+                                                  ofItemAtPath: path)
+            setenv("DIPLOMAT_TMUX", path, 1)
+            return path
+        }
+        let u = "\u{1f}"
+        _ = fakeTmux("has-session) exit 0 ;;\nlist-panes) printf 'ttys037\(u)%%80\(u)1\\n' ;;"
+                     + "\nlist-clients) exit 1 ;;")
+        check("a live server that will not list its clients reads as unwalkable",
+              TerminalFocus.walkTables() == nil)
+        _ = fakeTmux("has-session) exit 1 ;;\n*) exit 1 ;;")
+        check("…and a machine whose server has shut down reads as nothing to hop across",
+              TerminalFocus.walkTables()?.panes.isEmpty == true)
+        _ = fakeTmux("has-session) exit 0 ;;\nlist-panes) printf 'ttys037\(u)%%80\(u)1\\n' ;;"
+                     + "\nlist-clients) printf '1\(u)ttys036\\n' ;;")
+        check("…and a server that answers both is read whole",
+              TerminalFocus.walkTables()?.clients == ["1": "ttys036"])
+        setenv("DIPLOMAT_TMUX", "/nonexistent-tmux", 1)
+        check("a machine with no tmux at all is nothing to hop across, not a failure",
+              TerminalFocus.walkTables()?.panes.isEmpty == true)
 
         // Which panes the dump adds on top of what the terminals reported. The same box
         // as above, plus a Ghostty run — a session on a client no scriptable app can be

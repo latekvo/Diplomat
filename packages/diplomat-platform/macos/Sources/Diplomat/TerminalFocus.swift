@@ -199,10 +199,14 @@ enum TerminalFocus {
     /// pane tty → the pane, for every pane the tmux server holds. Empty when tmux is
     /// not installed or no server is running, which is the same answer the walk wants:
     /// nothing to hop across.
-    static func panes() -> [String: Pane] {
+    static func panes() -> [String: Pane] { readPanes() ?? [:] }
+
+    /// The same listing, with "tmux would not answer" kept apart from "tmux has nothing"
+    /// — see `walkTables`, the one caller that has to tell them apart.
+    private static func readPanes() -> [String: Pane]? {
         guard let out = tmux(["list-panes", "-a", "-F",
                               "#{pane_tty}\(unit)#{pane_id}\(unit)#{session_name}"])
-        else { return [:] }
+        else { return nil }
         var found: [String: Pane] = [:]
         for line in out.split(separator: "\n") {
             let cols = line.components(separatedBy: unit)
@@ -215,9 +219,12 @@ enum TerminalFocus {
     /// session name → the tty of a client attached to it. Last one wins, arbitrarily:
     /// several clients on one session are several windows showing the same screen, so
     /// any of them is the right window to raise.
-    static func clients() -> [String: String] {
+    static func clients() -> [String: String] { readClients() ?? [:] }
+
+    /// The same listing, failure kept apart from emptiness — see `walkTables`.
+    private static func readClients() -> [String: String]? {
         guard let out = tmux(["list-clients", "-F", "#{client_session}\(unit)#{client_tty}"])
-        else { return [:] }
+        else { return nil }
         var found: [String: String] = [:]
         for line in out.split(separator: "\n") {
             let cols = line.components(separatedBy: unit)
@@ -225,6 +232,29 @@ enum TerminalFocus {
             found[cols[0]] = AgentProbes.shortTTY(cols[1])
         }
         return found
+    }
+
+    /// Both listings `walk` hops across, or nil when a LIVE tmux server would not answer.
+    ///
+    /// `panes()` and `clients()` answer `[:]` on any failure, which is right where the
+    /// answer is which window to raise — a walk with nothing to hop across simply stops
+    /// — and wrong where it decides whether a line of text is typed into somebody's
+    /// shell. There, one failed `list-clients` empties the agent-tty set, which reads
+    /// identically to "no agent is up" and prunes the API-error watcher's backoff and
+    /// idle-confirmation state for every session in it. Not knowing has to mean not
+    /// typing, and it must not also mean forgetting.
+    ///
+    /// The nil is narrow on purpose. Both listings fail against a machine with no tmux
+    /// and against one whose server has shut down, and neither is a failure: there is
+    /// genuinely nothing to hop across. `paneScreens` separates them the same way, for
+    /// the same reason — a server with no panes shuts itself down, so an empty answer
+    /// from a LIVE server is a failed command rather than an empty machine.
+    static func walkTables() -> (panes: [String: Pane], clients: [String: String])? {
+        guard binary != nil else { return ([:], [:]) }
+        guard let panes = readPanes(), let clients = readClients() else {
+            return serverRunning() ? nil : ([:], [:])
+        }
+        return (panes, clients)
     }
 
     /// Select `pane` in its own window and session, so the client attached to it is

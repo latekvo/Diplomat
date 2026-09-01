@@ -3036,10 +3036,12 @@ final class Store: ObservableObject {
         // which would wrongly clear every backoff and hide the breakage.
         let dump = await Task.detached(priority: .utility) { ApiErrorWatcher.dumpSessionsCached() }.value
         guard let sessions = dump else { return }
-        // The other half of "may this session be written to". An unreadable process
-        // table skips the scan for the same reason a failed dump does, and more: the
-        // answer decides whether a line of text is typed into somebody's shell, so not
-        // knowing has to mean not typing.
+        // The other half of "may this session be written to". Unreadable evidence —
+        // the process table, or the tmux listings the walk out of a pane needs — skips
+        // the scan for the same reason a failed dump does, and more: the answer decides
+        // whether a line of text is typed into somebody's shell, so not knowing has to
+        // mean not typing. Skipping also leaves the step's backoff and idle-confirmation
+        // state alone, which an empty set would have pruned.
         let ttys = await Task.detached(priority: .utility) {
             AgentProbes.ttysRunningAnAgent(now: Date().timeIntervalSince1970)
         }.value
