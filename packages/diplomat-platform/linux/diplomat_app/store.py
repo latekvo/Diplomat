@@ -167,6 +167,13 @@ class Store(QObject):
     # produces the same reading: every agent really can be sitting at its prompt.
     _MARKER_SAMPLE = 40
 
+    # How many quota probe rounds must come back empty before a blind budget gate is
+    # worth reporting. Low, because unlike ``_MARKER_SAMPLE`` there is no innocent
+    # machine that produces this reading: a probe that is switched off or logged out
+    # never rounds at all, so every round counted here is one that asked and was
+    # refused.
+    _QUOTA_SAMPLE = 20
+
     def __init__(self) -> None:
         super().__init__()
         self.prs: list[OpenPR] = []
@@ -225,6 +232,7 @@ class Store(QObject):
         # per episode rather than one per tick, and another when they come back.
         self._probe_warned: dict[str, bool] = {}
         self._marker_warned = False
+        self._quota_warned = False
         # Whether the "deferring auto work" note has been logged for the current
         # at-capacity episode (see _log_at_capacity), and for the current
         # out-of-budget one (see _log_unaffordable). Two flags, not one: a machine
@@ -2200,6 +2208,35 @@ class Store(QObject):
                 activity.log("auto", "probe-recovered", f"Agent {h.name} readable again")
                 self.refresh_activity()
         self._note_stale_busy_marker()
+        self._note_blind_budget_gate()
+
+    def _note_blind_budget_gate(self) -> None:
+        """Say out loud when the budget gate has nothing left to gate on.
+
+        What is left of the rate-limit windows comes from one probe, and
+        ``budget_decide`` SKIPS a ceiling it cannot read — with neither window readable
+        every task is affordable. So a probe that stops answering does not fail the
+        gate closed or loudly: it stops gating, while the toggle still reads on and
+        nothing else looks wrong. A stale ``.credentials.json`` did exactly that here
+        for four days, ending in a night of agents dispatched into an exhausted weekly
+        window.
+
+        Only what was measured is stated: rounds asked, none answered. Whether that is
+        a dead credential, a revoked login or an endpoint outage is the operator's to
+        find out, and the wording must not guess.
+        """
+        from diplomat_runtime import quota
+
+        rounds, readings = quota.probe_stats()
+        if (readings or rounds < self._QUOTA_SAMPLE or self._quota_warned
+                or not autobudget.enabled()):
+            return
+        self._quota_warned = True
+        activity.log("auto", "warn",
+                     f"Asked what is left of the rate-limit windows {rounds} times "
+                     f"without one answer — the automatic budget is gating on nothing, "
+                     f"and auto work will dispatch whatever the limits have left")
+        self.refresh_activity()
 
     def _note_stale_busy_marker(self) -> None:
         """Say out loud when no CLI's interrupt hint has ever once matched.
@@ -2323,11 +2360,20 @@ class Store(QObject):
         """Close the terminal of every run a backstop ended — the quiescence clock, or
         the operator's run deadline.
 
-        Only those. A run that finished the ordinary way keeps its window — its agent
-        is alive at its prompt holding the whole task, and the operator may still want
-        to read it. One whose screen has not changed in twenty minutes is nobody's, and
-        so is one that has been going for four hours with nothing able to say it ever
-        stopped.
+        Only those, and the verdict is asked rather than reconstructed
+        (:func:`agentstate.reapable`). A run that finished the ordinary way keeps its
+        window — its agent is alive at its prompt holding the whole task, and the
+        operator may still want to read it. One whose screen has not changed in twenty
+        minutes is nobody's, and so is one that has been going for four hours with
+        nothing able to say it ever stopped.
+
+        "FINISHED, and its stillness clock is past the timeout" is a WIDER set than
+        that, because the clock advances only on ticks that saw the screen and so
+        keeps maturing while nobody can look. An evidence outage that outlasts
+        `QUIET_TIMEOUT` with the agent exiting inside it produces exactly one tick
+        where a run is FINISHED-because-its-pid-is-gone while carrying twenty-plus
+        minutes of stillness — and `pts/<n>` is recycled freely, so the tty it left
+        behind may already belong to somebody else's shell by then.
 
         Closing it is not decoration on either verdict: an agent left alive is found
         again by the prompt scan the moment its record is retired, and comes straight
@@ -2499,11 +2545,13 @@ class Store(QObject):
 
     # The Linux port of Store.swift's runApiErrorScanOnce. A background scan (driven
     # by a QTimer in app.py, independent of the panel) reads every tmux pane's last
-    # visible lines and, for any showing a Claude API error that has stopped changing
-    # (a confirmed stall), submits the "continue" nudge to that exact pane — so an
-    # agent that stalled on a transient server error (e.g. overnight 529 overload)
-    # resumes on its own. The pure detection/backoff logic lives in apiwatch.py; the
-    # tmux reads/writes in tmuxwatch.py.
+    # visible lines and, for any pane an AGENT is in that shows a Claude API error which
+    # has stopped changing (a confirmed stall), submits the "continue" nudge to that
+    # exact pane — so an agent that stalled on a transient server error (e.g. overnight
+    # 529 overload) resumes on its own. Read every pane, write into few: the nudge is
+    # submitted as a line of input, so a pane running a shell would RUN it. The pure
+    # detection/backoff logic lives in apiwatch.py; the tmux reads/writes in
+    # tmuxwatch.py.
 
     def run_apiwatch_poll_async(self) -> None:
         """Kick one watcher scan on a worker thread (guarded against overlap). Safe to
@@ -2523,25 +2571,33 @@ class Store(QObject):
         self.start_background(work)
 
     def _apiwatch_scan_once(self) -> None:
-        """One scan: read every pane and nudge any confirmed-stalled erroring pane
-        that's outside its backoff window."""
+        """One scan: read the panes an agent is running in and nudge any
+        confirmed-stalled erroring one that's outside its backoff window."""
         if not self.api_watch_enabled:
             return
         # None = a tmux command failed unexpectedly — skip the whole scan rather than
         # treating it as "no panes", which would wrongly clear every backoff.
         panes = tmuxwatch.dump_panes()
         available = tmuxwatch.is_available()
-        if panes is None:
+        now = time.time()
+        # The other half of "may this pane be written to". An unreadable process table
+        # skips the scan for the same reason a failed pane dump does, and more: the
+        # answer decides whether a line of text is typed into somebody's shell, so
+        # not knowing has to mean not typing.
+        on_an_agent = probes.ttys_running_an_agent(now)
+        if panes is None or not on_an_agent.ok:
             self.apiwatch_status = {
-                "updatedAt": time.time(),
+                "updatedAt": now,
                 "watching": 0,
                 "continues": self.api_watch_continues,
                 "tmux": available,
             }
             return
-        now = time.time()
+        # tmux spells a tty `/dev/pts/13` and `ps` spells it `pts/13`.
+        watched = [p for p in panes
+                   if p.tty.removeprefix("/dev/") in on_an_agent.value]
         erroring: set[str] = set()
-        for p in panes:
+        for p in watched:
             # Out-of-quota banners return False here: a quota-limited agent can't
             # progress until its window resets, so only transient errors are nudged.
             if not apiwatch.looks_like_api_error(p.tail):
@@ -2583,7 +2639,7 @@ class Store(QObject):
         }
         self.apiwatch_status = {
             "updatedAt": now,
-            "watching": len(panes),
+            "watching": len(watched),
             "continues": self.api_watch_continues,
             "tmux": available,
         }

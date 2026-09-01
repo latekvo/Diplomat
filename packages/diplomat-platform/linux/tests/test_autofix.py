@@ -1175,12 +1175,12 @@ def test_idle_pr_numbers_reads_the_pane_on_the_agents_own_tty():
     not be read is absent from the result, so the cap keeps counting it."""
     dump = "\n".join(
         [
-            "pts/1    claude Review PR #11 in software-mansion/argent. Use the `gh` CLI.",
-            "pts/2    claude Review PR #22 in software-mansion/argent. Use the `gh` CLI.",
-            "pts/3    claude Review PR #33 in software-mansion/argent. Use the `gh` CLI.",
+            "pts/1       04:10 claude Review PR #11 in software-mansion/argent. Use `gh`.",
+            "pts/2       04:10 claude Review PR #22 in software-mansion/argent. Use `gh`.",
+            "pts/3       04:10 claude Review PR #33 in software-mansion/argent. Use `gh`.",
             # The spawning shell holds the unexpanded $(cat …), never the prompt.
-            "pts/2    /bin/zsh -i -c cd '/x'; claude \"$(cat '/tmp/p.txt')\"",
-            "?        grep PR #44 in software-mansion/argent",
+            "pts/2       04:10 /bin/zsh -i -c cd '/x'; claude \"$(cat '/tmp/p.txt')\"",
+            "?        01-02:03:04 grep PR #44 in software-mansion/argent",
         ]
     )
     working = "● Reading files…\n⏵⏵ bypass permissions on · esc to interrupt · ← for agents"
@@ -1202,15 +1202,62 @@ def test_idle_pr_numbers_reads_the_pane_on_the_agents_own_tty():
 
 
 def test_the_agent_scans_still_read_a_ps_dump_with_no_tty_column():
-    """``live_pr_numbers`` predates the tty and is called on macOS through the mesh
-    node's own ``ps``; a dump whose first token is the command rather than a tty must
-    still yield its PRs, and must not invent a tty that could match a real pane."""
+    """``live_pr_numbers`` predates both leading columns and is called on macOS
+    through the mesh node's own ``ps``; a dump whose first token is the command rather
+    than a tty must still yield its PRs, and must not invent a tty that could match a
+    real pane or an age that could pass for one."""
     dump = "claude Review PR #11 in software-mansion/argent. Use the `gh` CLI.\n"
     assert autofix.live_pr_numbers(dump, "software-mansion", "argent") == {11}
     assert autofix.agent_ttys(dump, "software-mansion", "argent") == {"claude"}
+    assert [a.elapsed for a in autofix.agent_lines(dump, "software-mansion",
+                                                   "argent")] == [None]
     # …and "claude" matches no pane, so nothing is ever read as idle off it.
     assert autofix.idle_pr_numbers(dump, {"pts/1": "at the prompt"},
                                    "software-mansion", "argent") == set()
+
+
+def test_elapsed_seconds_reads_every_shape_of_ps_etime():
+    """``[[DD-]HH:]MM:SS``, which is what BOTH ``ps`` implementations print — macOS
+    has no ``etimes`` keyword at all. Anything else is None rather than a guess,
+    because the same column position holds an argv word on a bare ``args=`` dump."""
+    assert autofix.elapsed_seconds("00:04") == 4
+    assert autofix.elapsed_seconds("04:10") == 250
+    assert autofix.elapsed_seconds("01:02:03") == 3723
+    assert autofix.elapsed_seconds("2-03:04:05") == 2 * 86400 + 3 * 3600 + 4 * 60 + 5
+    for junk in ("", "claude", "Review", "12", "1:2:3:4", "-", "aa:bb"):
+        assert autofix.elapsed_seconds(junk) is None, junk
+
+
+def test_an_agent_that_has_not_drawn_its_first_turn_is_not_idle():
+    """A booting agent shows the bare prompt of a finished one — the interrupt hint is
+    on neither screen. Read as idle it hands its bay straight back to the poll that
+    started it, and the next dispatch of that poll is seconds behind: a cap of one,
+    two agents.
+
+    The same window and the same reasoning as the resolver's own screen rung
+    (`agentstate.FIRST_TURN_GRACE`), taken here from the process's age rather than
+    from a record, so it also covers an agent this machine has no book entry for."""
+    from diplomat_runtime import agentstate
+
+    grace = agentstate.FIRST_TURN_GRACE
+    at_prompt = "● Posted the review.\n❯\n⏵⏵ bypass permissions on (shift+tab to cycle)"
+
+    def dump(etime):
+        return f"pts/1    {etime} claude Review PR #11 in software-mansion/argent.\n"
+
+    def idle(etime):
+        return autofix.idle_pr_numbers(dump(etime), {"pts/1": at_prompt},
+                                       "software-mansion", "argent")
+
+    assert grace == 45.0
+    assert idle("00:02") == set()          # two seconds up: still booting
+    assert idle("00:45") == set()          # exactly the grace is not yet past it
+    assert idle("00:46") == {11}           # past it, and the screen is believed
+    assert idle("12:00") == {11}
+    # Live and counted the whole time — the grace holds a bay, it never hides an agent.
+    for etime in ("00:02", "00:46"):
+        assert autofix.live_pr_numbers(dump(etime), "software-mansion",
+                                       "argent") == {11}
 
 
 def test_clamp_auto_task_limit_holds_the_stepper_range():
@@ -2827,6 +2874,45 @@ def test_a_run_short_of_the_timeout_keeps_its_window(store, monkeypatch):
     assert killed == []
 
 
+def test_a_run_whose_agent_left_while_nobody_could_look_keeps_its_hands_off_the_tty(
+        store, monkeypatch):
+    """The stillness clock advances only on ticks that SAW the screen, so it goes on
+    maturing through an evidence outage. Let one outlast the timeout with the agent
+    exiting inside it, and the tick the probes come back on carries both halves of the
+    old gate at once: FINISHED, and twenty minutes still.
+
+    It is FINISHED because its *pid is gone*, which is a verdict about a process, not
+    about a screen — and `pts/<n>` is recycled freely, so within those seconds the tty
+    can already belong to somebody else's shell. `tmux kill-session` then takes every
+    window in that session, and the audit line claims it closed the departed run's."""
+    import time as _time
+    from diplomat_runtime import activity
+    from diplomat_runtime import agentstate as A
+
+    killed = _killed(monkeypatch)
+    now = _time.time()
+    rec = register_run(704, pid=7004, tty="pts/74", dispatched_at=now - 4000)
+    fake_probes(monkeypatch, processes=agent_alive(7004, tty="pts/74", elapsed=4000),
+                tails={"pts/74": AT_PROMPT})
+    store._settle_agents()
+    store._settle_agents()          # two ticks to have a screen to compare against
+    _age_the_stillness(A.QUIET_TIMEOUT + 5)   # …and an outage longer than the timeout
+
+    # The probes return, and the agent is not there any more.
+    fake_probes(monkeypatch, processes={}, tails={})
+    tick = store._agent_tick()
+    got = tick.states[rec.run_id]
+    assert got.state == A.FINISHED and "absent from the process table" in got.reason, \
+        f"the run must end by its pid, or this pins nothing: {got.reason!r}"
+    assert A.went_quiet(tick.records[0], tick.now) is not None, \
+        "…while still carrying a matured clock, which is the whole trap"
+
+    store._settle_agents()
+
+    assert killed == [], "a tty this run may no longer hold is not the reaper's to close"
+    assert [e.detail for e in activity.read() if e.action == "kill-device"] == []
+
+
 # MARK: - …including the window of an agent nobody dispatched
 #
 # The ordinary end state, not a rare one: a run retired by its runner's turn report
@@ -2881,6 +2967,29 @@ def test_an_untracked_agents_wedged_window_is_closed(store, monkeypatch):
     assert [e.detail for e in activity.read() if e.action == "kill-device"] == \
         ["closed untracked:337's window — its screen has not changed in 20m"], \
         "a closed window reaches the operator only through the feed"
+
+
+def test_a_synthesized_run_gone_from_the_scan_is_not_reaped_either(store, monkeypatch):
+    """The same trap through the other door. A synthesized run ends when the scan that
+    made it stops finding it — "gone from the process table" — and it can carry a
+    matured clock there for exactly the same reason. Its tty is the only handle it has
+    and it was never this applet's to begin with."""
+    from diplomat_runtime import agentstate as A
+
+    killed = _killed(monkeypatch)
+    fake_probes(monkeypatch, live_prs={337})
+    store._settle_agents()
+    store._settle_agents()
+    _age_the_stillness(A.QUIET_TIMEOUT + 5)
+
+    fake_probes(monkeypatch, live_prs=set())
+    got = store._agent_tick().states["untracked:337"]
+    assert got.state == A.FINISHED and "gone from the process table" in got.reason, \
+        f"the run must end by the scan, or this pins nothing: {got.reason!r}"
+
+    store._settle_agents()
+
+    assert killed == []
 
 
 def test_an_untracked_record_does_not_outlive_its_agent(store, monkeypatch):

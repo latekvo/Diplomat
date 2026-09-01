@@ -174,10 +174,13 @@ ENDED = frozenset({MERGED, FINISHED})
 
 
 #: How long after dispatch a run with no observed process still reads as STARTING.
-#: The inner shell writes its pid before the agent starts, but a terminal emulator,
-#: a tmux server and the user's rc all run first. Past this the run is not called
-#: finished — it becomes UNKNOWN, because a spawn that never landed and a pid file we
-#: have not read yet look identical from here.
+#: The inner shell writes its pid before the agent starts, but a terminal emulator, a
+#: tmux server and the user's rc all run first — and the process table is one `ps` pass
+#: reused for several seconds, so it can predate the pid file naming what to look for.
+#: Past this the run is judged on the evidence there is: a known pid the table does not
+#: hold has ended, while a run that produced neither a pid nor a PR to scan for becomes
+#: UNKNOWN, because a spawn that never landed and a pid file we have not read yet look
+#: identical from here.
 SPAWN_GRACE = 20.0
 
 #: How long after dispatch a live run whose screen has not shown a turn yet reads as
@@ -499,13 +502,27 @@ class Resolution:
     run_id: str
     state: str
     reason: str
+    #: Whether the STILLNESS BACKSTOP is what ended this run — set by that rung and
+    #: by nothing else.
+    #:
+    #: A verdict, not a restatement of one: a run reaches FINISHED by many roads, and
+    #: only this one says its agent was alive with a frozen screen. The window reaper
+    #: is the consumer, and the distinction is the whole of its licence to close a
+    #: terminal, so it cannot be left to be re-derived from ``state`` plus a matured
+    #: :func:`went_quiet` — a clock keeps maturing while its pane is unreadable
+    #: (:func:`observe_quiescence` only advances on ticks that SAW the screen), so a
+    #: run whose process left the machine during an evidence outage comes back
+    #: FINISHED-because-gone carrying twenty minutes of stillness. Reaping that closes
+    #: whatever holds its tty now.
+    wedged: bool = False
 
     @property
     def occupying(self) -> bool:
         return self.state in OCCUPYING
 
     def to_json(self) -> dict:
-        return {"runId": self.run_id, "state": self.state, "reason": self.reason}
+        return {"runId": self.run_id, "state": self.state, "reason": self.reason,
+                "wedged": self.wedged}
 
 
 # MARK: - Claim sightings (pure, but stateful across ticks)
@@ -611,10 +628,11 @@ def went_quiet(record: RunRecord, now: float) -> float | None:
     """How long this run's screen has been perfectly still, once that is long enough
     to call it over — ``None`` otherwise.
 
-    A function rather than a comparison at each site because two of them ask: the
-    resolver, to end the run, and the reaper, to close the window it was in. Those two
-    answers agreeing is the whole contract — a window killed under a run still counted
-    as working is the one mistake this backstop could make.
+    Asked by the resolver alone. The reaper reads the verdict that came out of it
+    (:attr:`Resolution.wedged`) rather than asking again, because the two questions
+    are not the same one: this clock only advances on ticks that SAW the screen, so
+    it keeps maturing through an evidence outage and can be long past the timeout on
+    a run that ended some other way entirely.
     """
     if record.quiet_since is None:
         return None
@@ -781,6 +799,15 @@ def _resolve_local(record: RunRecord, evidence: Evidence, now: float,
 
     proc = table.get(record.pid)
     if proc is None:
+        # A pid the table has not caught up with, not a dead one: the pid file and the
+        # table are read at different instants, and the table is one `ps` pass reused
+        # for several seconds, so a pid written after that pass names a process it
+        # structurally cannot hold. Read as death, a run is retired seconds into its
+        # own spawn and its directory deleted under a working agent. The same record
+        # one tick earlier, with no pid at all, had exactly this grace.
+        if age <= SPAWN_GRACE:
+            return done(STARTING, f"dispatched {age:.0f}s ago, pid {record.pid} "
+                                  "not in the process table yet")
         return done(FINISHED, f"pid {record.pid} absent from the process table")
     if not proc.is_agent:
         return done(FINISHED, f"pid {record.pid} was recycled by another process")
@@ -888,8 +915,9 @@ def _classify_activity(record: RunRecord, evidence: Evidence, now: float, done,
     """
     quiet = went_quiet(record, now)
     if quiet is not None:
-        return done(FINISHED, f"{alive_reason}; its screen has not changed in "
-                              f"{apiwatch.human_interval(quiet)}")
+        # The one rung that stamps `wedged`; see :attr:`Resolution.wedged`.
+        return replace(done(FINISHED, f"{alive_reason}; its screen has not changed in "
+                                      f"{apiwatch.human_interval(quiet)}"), wedged=True)
 
     reported = _reported(record, evidence)
     if reported is not None and reported[0] == completion.BUSY:
@@ -1104,9 +1132,7 @@ class Tick:
     #: forgotten. See :func:`reapable`.
     reapable: list[RunRecord]
     free_slots: int
-    #: The instant this pass was resolved against. Carried so a consequence of the
-    #: tick — closing a wedged run's window — measures stillness against the clock
-    #: that ended the run, not one read a moment later.
+    #: The instant every verdict below was resolved against.
     now: float = 0.0
 
     def in_flight(self, pr_number: int) -> bool:

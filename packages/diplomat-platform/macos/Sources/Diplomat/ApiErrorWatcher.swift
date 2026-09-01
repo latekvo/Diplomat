@@ -2,12 +2,16 @@ import Foundation
 import AppKit
 import DiplomatCore
 
-// Watches every iTerm session + Terminal tab for a Claude CLI API-error line and, when
-// one is found, sends a short "continue" message to that exact session — so an agent
-// that stalled on a transient server error (e.g. overnight 529 overload) resumes on its
-// own. Detection (ApiErrorMatch) runs only over the last few visible lines and requires
-// the banner to open one of them, so it fires on a session that just errored, not one
-// that mentions the phrase in scrollback or quotes a banner mid-sentence.
+// Reads every iTerm session, Terminal tab and tmux pane, looking for a Claude CLI
+// API-error line, and sends a short "continue" message to the session it is found in — so
+// an agent that stalled on a transient server error (e.g. overnight 529 overload) resumes
+// on its own.
+// Detection (ApiErrorMatch) runs only over the last few visible lines and requires the
+// banner to open one of them, so it fires on a session that just errored, not one that
+// mentions the phrase in scrollback or quotes a banner mid-sentence. Which of the
+// sessions read may be WRITTEN to is a separate question, answered off the process table
+// rather than the screen (`AgentProbes.ttysRunningAnAgent`): the message is submitted as
+// a line of input, and in a plain shell that runs it as a command.
 // The tty is the unifying key across both terminals.
 enum ApiErrorWatcher {
     static let continueMessage = "Go on, there was a Claude API error, continue as normal"
@@ -19,12 +23,16 @@ enum ApiErrorWatcher {
 
     struct Session { let tty: String; let tail: String }
 
-    /// The last visible lines of every session/tab, keyed by tty. Only queries an app
-    /// that is ALREADY running — never launches iTerm/Terminal. Returns nil when any
-    /// dump script FAILED (automation permission revoked, AppleEvent timeout…) —
-    /// callers must treat that as "unknown", not "no sessions": acting on a silent
-    /// empty result used to make the watcher inert with no signal, and would wrongly
-    /// reset every backoff/liveness decision keyed on the session list.
+    /// The last visible lines of every session/tab/pane, keyed by tty. Only queries an
+    /// app that is ALREADY running — never launches iTerm/Terminal. Returns nil when any
+    /// dump FAILED (automation permission revoked, AppleEvent timeout…) — callers must
+    /// treat that as "unknown", not "no sessions": acting on a silent empty result used
+    /// to make the watcher inert with no signal, and would wrongly reset every
+    /// backoff/liveness decision keyed on the session list.
+    ///
+    /// tmux is read last and only for the panes no scriptable terminal is showing. It is
+    /// what a Ghostty run has instead of a dump script: Ghostty's dictionary exposes no
+    /// visible text at all, so `capture-pane` is the only reader its agents have.
     static func dumpSessions() -> [Session]? {
         var out: [Session] = []
         if isRunning("com.googlecode.iterm2") {
@@ -35,6 +43,9 @@ enum ApiErrorWatcher {
             guard let dump = run(terminalDumpScript) else { return nil }
             out += parse(dump)
         }
+        let shown = Set(out.map { AgentProbes.shortTTY($0.tty) })
+        guard let panes = TerminalFocus.paneScreens(shownOn: shown) else { return nil }
+        out += panes.map { Session(tty: $0.tty, tail: lastLines($0.screen, scannedTailLines)) }
         return out
     }
 
@@ -59,10 +70,13 @@ enum ApiErrorWatcher {
         return fresh
     }
 
-    /// Send the continue nudge to whichever session/tab owns `tty` (submits it as the
-    /// next line of input — iTerm `write text` / Terminal `do script … in tab`).
-    /// Returns whether a session with that tty was actually found and written to —
-    /// the caller must not count/audit a nudge that never landed.
+    /// Send the continue nudge to whichever session/tab/pane owns `tty` (submits it as
+    /// the next line of input — iTerm `write text` / Terminal `do script … in tab` /
+    /// tmux `send-keys`). Returns whether a session with that tty was actually found and
+    /// written to — the caller must not count/audit a nudge that never landed.
+    ///
+    /// tmux is tried last, matching the dump: a tty a scriptable terminal owns is typed
+    /// into through that terminal, and tmux catches the panes none of them shows.
     @discardableResult
     static func sendContinue(tty: String) -> Bool {
         let msg = escape(continueMessage)
@@ -73,6 +87,9 @@ enum ApiErrorWatcher {
         if !sent, isRunning("com.apple.Terminal"), run(terminalSendScript(tty: tty, msg: msg)) != nil {
             sent = true
         }
+        // Not `msg`: that is escaped for embedding in an AppleScript string literal, and
+        // tmux takes the argument as it is written.
+        if !sent { sent = TerminalFocus.sendLine(tty: tty, text: continueMessage) }
         return sent
     }
 

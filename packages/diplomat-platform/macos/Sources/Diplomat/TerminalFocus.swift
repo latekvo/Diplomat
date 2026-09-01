@@ -51,8 +51,9 @@ enum TerminalFocus {
     /// is closed, the agent is not in a terminal at all, or automation is not granted.
     @discardableResult
     static func focus(tty: String, pid: Int? = nil) -> Bool {
+        let panes = panes(), clients = clients()
         let walk = walk(tty: AgentProbes.shortTTY(tty), pid: pid, processes: processes(),
-                        panes: panes(), clients: clients())
+                        panes: panes, clients: clients)
         guard !walk.ttys.isEmpty else { return false }
         // Before raising the window: put the agent's pane back on screen in it. The
         // client shows whichever pane its session has selected, which after an
@@ -63,13 +64,36 @@ enum TerminalFocus {
            OSAScript.runSilently(itermScript(paths)) { return true }
         if isRunning("com.apple.Terminal"),
            OSAScript.runSilently(terminalScript(paths)) { return true }
-        return false
+        return raiseGhostty(walk, panes: panes, clients: clients)
+    }
+
+    /// The last route out, for a tty neither scriptable terminal admitted to showing.
+    ///
+    /// Ghostty answers no question about which window is on which tty, so there is
+    /// nothing here to match the way `itermScript` matches. What is left is what the
+    /// reveal above already did: the agent's pane is now on the screen of the client
+    /// attached to it, so the window showing that client is showing the agent, and
+    /// bringing Ghostty forward puts it up. Which of several Ghostty windows lands in
+    /// front is not ours to pick — but a run this applet spawned is raised exactly, by
+    /// its handle, long before anything reaches here.
+    ///
+    /// Only for a pane a client is attached to. An unattached session is on nobody's
+    /// screen, and raising an app over one would report a window that does not exist.
+    private static func raiseGhostty(_ walk: Walk, panes: [String: Pane],
+                                     clients: [String: String]) -> Bool {
+        let attached = walk.ttys.contains { tty in
+            guard let session = panes[tty]?.session else { return false }
+            return clients[session] != nil
+        }
+        guard attached, isRunning("com.mitchellh.ghostty") else { return false }
+        return OSAScript.runSilently("tell application \"Ghostty\" to activate")
     }
 
     /// Close the terminal window running `tty`, or whatever wraps it — the mirror of
     /// `focus`, and the only route to the window of a run that kept no handle.
     ///
-    /// Used for one thing: a run the quiescence backstop ended (`AgentState.wentQuiet`) —
+    /// Used for one thing: a run the quiescence backstop ended
+    /// (`AgentState.Resolution.wedged`) —
     /// twenty minutes of a screen that has not moved, so nothing is being read and nothing
     /// is being typed. What it performs is the act the operator would: a wrapped session's
     /// window belongs to the tmux CLIENT, so closing it detaches the session exactly as a
@@ -79,20 +103,40 @@ enum TerminalFocus {
     /// The panes are not revealed as `focus` reveals them: selecting a pane in a window
     /// about to close shows nobody anything.
     ///
+    /// The last resort ends a tmux session outright, which is the one thing the paragraph
+    /// above says not to do — and it is allowed only for a session THIS APPLET named
+    /// (`sessionPrefix`). Ghostty tells nobody which tty a window is on, so a Ghostty run
+    /// that kept no handle has no window to walk to and no other way to be ended; a run
+    /// this applet opened is alone in a session it made up a name for, so ending it can
+    /// reach nothing the operator shares. An agent found sitting in the operator's own
+    /// tmux session is still left exactly as it was.
+    ///
     /// False means no terminal admitted to showing any tty on the way out: the window is
     /// already gone, the agent is not in a terminal at all, or automation is not granted.
     @discardableResult
     static func close(tty: String, pid: Int? = nil) -> Bool {
+        let panes = panes()
         let walk = walk(tty: AgentProbes.shortTTY(tty), pid: pid, processes: processes(),
-                        panes: panes(), clients: clients())
+                        panes: panes, clients: clients())
         guard !walk.ttys.isEmpty else { return false }
         let paths = walk.ttys.map { "/dev/\($0)" }
         if isRunning("com.googlecode.iterm2"),
            OSAScript.runSilently(itermCloseScript(paths)) { return true }
         if isRunning("com.apple.Terminal"),
            OSAScript.runSilently(terminalCloseScript(paths)) { return true }
-        return false
+        return ownSession(on: walk.ttys, panes).map(killSession(named:)) ?? false
     }
+
+    /// The name of a tmux session this applet opened, if one of these ttys is a pane in
+    /// one. Prefix-matched, which is why the prefix is not something an operator would
+    /// type: it is the whole permission to end a session rather than detach from it.
+    private static func ownSession(on ttys: [String], _ panes: [String: Pane]) -> String? {
+        ttys.compactMap { panes[$0]?.session }.first { $0.hasPrefix(sessionPrefix) }
+    }
+
+    /// What every tmux session this applet opens is named for. `AgentSpawner` builds the
+    /// names; `ownSession` is why they are recognisable.
+    static let sessionPrefix = "diplomat-"
 
     /// The ordered ttys between a process and its window, nearest first. Pure —
     /// everything it walks over is passed in, so the shape of a wrapped session is
@@ -188,6 +232,103 @@ enum TerminalFocus {
         _ = tmux(["select-window", "-t", pane])
         _ = tmux(["select-pane", "-t", pane])
     }
+
+    /// Whether tmux can be driven at all. What `SpawnTerminal.unavailableReason` asks
+    /// before offering Ghostty, whose agents are only readable through it.
+    static var tmuxAvailable: Bool { binary != nil }
+
+    /// Every tmux pane's visible screen, keyed by the pane's own tty.
+    ///
+    /// The Swift twin of `tmuxwatch.dump_panes`, and it earns a place on a platform whose
+    /// terminals are already scriptable because Ghostty is not one of them: its dictionary
+    /// exposes no visible text and no tty, so `capture-pane` is the only way to read what
+    /// a Ghostty agent has on screen. Folding it into the same dump the iTerm and Terminal
+    /// scripts feed keeps every consumer — the API-error scan, the panel's screen tails,
+    /// the stillness backstop — asking one question keyed one way.
+    ///
+    /// The pane's tty IS the agent's under a Ghostty spawn, because tmux is the window's
+    /// command there and nothing else wraps it. Under iTerm it is not the window's, which
+    /// is what `AgentProbes.adoptWrappedTails` is for; both ttys land in the dump, and
+    /// they are different keys, so neither displaces the other.
+    ///
+    /// Empty when tmux is absent or no server is running — ordinary inert states, not
+    /// failures. nil only when a server is up and the listing still came back empty,
+    /// which the callers must read as "we could not look" rather than "nothing is there".
+    ///
+    /// `shownOn` is the ttys a scriptable terminal has already reported; see
+    /// `panesToCapture` for what it excludes and why.
+    static func paneScreens(shownOn: Set<String>) -> [(tty: String, screen: String)]? {
+        guard binary != nil else { return [] }
+        let table = panes()
+        // A server with no panes shuts itself down, so an empty listing against a live
+        // server is a failed command, not an empty machine.
+        if table.isEmpty { return serverRunning() ? nil : [] }
+        var out: [(tty: String, screen: String)] = []
+        for (tty, pane) in panesToCapture(table, processes: processes(),
+                                          attachedTo: clients(), shownOn: shownOn) {
+            // A pane that closed between the listing and the capture is skipped, not
+            // recorded empty: an empty screen reads as one with nothing on it.
+            guard let screen = tmux(["capture-pane", "-p", "-t", pane.id]) else { continue }
+            out.append((tty: tty, screen: screen))
+        }
+        return out
+    }
+
+    /// Which panes `paneScreens` captures: the ones no scriptable terminal is showing.
+    /// A pane already in the dump under its window's tty would be a second entry for one
+    /// screen, and both spellings pass the "is an agent behind this?" gate — so a stalled
+    /// agent would be nudged twice and audited twice.
+    ///
+    /// The whole walk and not the pane's own client, because the client's tty is not the
+    /// one a terminal reports being on: a shell wrapper (`kiro-cli-term` and its kind)
+    /// runs the real shell in a pty of its own, so the client sits one below the window.
+    /// Comparing those two would match nothing on exactly the machine this is for.
+    ///
+    /// A session with no client is kept: nothing is showing it, so `capture-pane` is its
+    /// only reader. Ordered by tty so a dump is stable across ticks. Pure, so the rule is
+    /// decidable without a tmux server — the way `walk` is decidable without one.
+    static func panesToCapture(_ table: [String: Pane], processes: [Int: Proc],
+                               attachedTo: [String: String],
+                               shownOn: Set<String>) -> [(tty: String, pane: Pane)] {
+        table.filter { tty, _ in
+            guard !tty.isEmpty else { return false }
+            return !walk(tty: tty, pid: nil, processes: processes, panes: table,
+                         clients: attachedTo).ttys.contains(where: shownOn.contains)
+        }
+        .map { (tty: $0.key, pane: $0.value) }
+        .sorted { $0.tty < $1.tty }
+    }
+
+    /// Type `text` into the tmux pane on `tty` and submit it. Returns whether a pane on
+    /// that tty took it, so a caller never counts a nudge that landed nowhere.
+    ///
+    /// The twin of `tmuxwatch.send_continue`. `-l` sends the text literally, so a message
+    /// containing tmux key names is not read as keys.
+    static func sendLine(tty: String, text: String) -> Bool {
+        guard let pane = panes()[AgentProbes.shortTTY(tty)] else { return false }
+        guard tmux(["send-keys", "-t", pane.id, "-l", text]) != nil else { return false }
+        return tmux(["send-keys", "-t", pane.id, "Enter"]) != nil
+    }
+
+    /// End the tmux session by name, taking the agent running in it with it.
+    ///
+    /// The Ghostty half of a reap, and the reason one is needed: closing a Ghostty window
+    /// does not end what is running in it. Measured on Ghostty 1.3.1 — the window goes,
+    /// the session stays, and the agent keeps running headless on a pane whose client is
+    /// no longer on screen, holding a bay that nothing left can retire. iTerm and Terminal
+    /// take a session's processes down with its window, so only this path needs it.
+    ///
+    /// `=` is tmux's exact-match target prefix. Without it a name is matched as a prefix
+    /// and then as a pattern, so reaping `diplomat-a1b2` could take the operator's own
+    /// session with it.
+    static func killSession(named session: String) -> Bool {
+        guard !session.isEmpty else { return false }
+        return tmux(["kill-session", "-t", "=" + session]) != nil
+    }
+
+    /// Whether a tmux server is up. Separates "no panes because nothing is running" from
+    /// "no panes because the command failed" — `tmuxwatch._server_running`.
+    private static func serverRunning() -> Bool { tmux(["has-session"]) != nil }
 
     /// Between a tmux format's fields — a unit separator cannot occur in a tty path,
     /// a pane id or a session name.

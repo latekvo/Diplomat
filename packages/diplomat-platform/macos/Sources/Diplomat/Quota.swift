@@ -62,25 +62,49 @@ enum Quota {
     private static var cache = Cache()
     private static let lock = NSLock()
 
+    /// How many probe rounds have been made, and how many came back with a reading.
+    /// `AgentDispatchGate.budgetDecide` SKIPS a ceiling with no reading and calls one
+    /// with none affordable, so a probe that stops answering does not gate less — it
+    /// stops gating, and nothing else on the machine looks wrong. Hence the ratio.
+    private static var probeRounds = 0
+    private static var probeReadings = 0
+
+    /// `(probe rounds made, rounds that came back with a reading)`.
+    static func probeStats() -> (rounds: Int, readings: Int) {
+        lock.lock(); defer { lock.unlock() }
+        return (probeRounds, probeReadings)
+    }
+
     static var probeEnabled: Bool {
         ProcessInfo.processInfo.environment["DIPLOMAT_QUOTA_PROBE"] != "0"
     }
 
     // MARK: - Credentials
 
-    /// Claude Code's OAuth access token: the credentials file first, then the login
-    /// Keychain (where Claude Code puts it on macOS). Re-read per probe because
-    /// Claude Code refreshes it as it runs.
+    /// Claude Code's OAuth access tokens to try, in order: the credentials file
+    /// first, then the login Keychain (where Claude Code puts it on macOS). Re-read
+    /// per probe because Claude Code refreshes them as it runs.
     ///
-    /// The file is tried first on both platforms — same order as the Linux twin —
-    /// so that pointing `DIPLOMAT_CLAUDE_DIR` at a fixture directory decides the
-    /// probe's answer rather than being shadowed by whatever the real login Keychain
-    /// happens to hold.
-    private static func oauthToken() -> String? {
+    /// A LIST rather than the first one found, because the two sources drift apart
+    /// and the file is the one that goes stale: Claude Code refreshes the Keychain
+    /// item and never rewrites a `.credentials.json` an older login left behind.
+    /// Asking only the file pins the probe to a dead credential for as long as that
+    /// file exists, which is not a loud failure — `AgentDispatchGate.budgetDecide`
+    /// skips a ceiling it cannot read, so the dispatch budget just stops gating. Four
+    /// days of it here, ending in a night of agents dispatched into an exhausted
+    /// weekly window.
+    ///
+    /// The file stays FIRST — same order as the Linux twin — so that pointing
+    /// `DIPLOMAT_CLAUDE_DIR` at a fixture directory decides the probe's answer rather
+    /// than being shadowed by whatever the real login Keychain happens to hold.
+    static func oauthTokens() -> [String] {
+        var out: [String] = []
         let url = UsageScan.claudeDir.appendingPathComponent(".credentials.json")
-        if let data = try? Data(contentsOf: url),
-           let token = accessToken(data) { return token }
-        return keychainToken()
+        if let data = try? Data(contentsOf: url), let token = accessToken(data) {
+            out.append(token)
+        }
+        if let token = keychainToken(), !out.contains(token) { out.append(token) }
+        return out
     }
 
     /// The `claudeAiOauth.accessToken` inside a credentials blob, whether it came
@@ -92,11 +116,33 @@ enum Quota {
         return token
     }
 
+    /// Stand in for what this machine's login Keychain holds — for a self-test whose
+    /// fixture controls the credentials directory but not the box it is running on.
+    ///
+    /// `DIPLOMAT_CLAUDE_DIR` decides the FILE half of the candidate list and nothing
+    /// else, so an assertion about the order and the dedup would be decided by the box:
+    /// a developer's Mac has a real `Claude Code-credentials` item and a CI runner has
+    /// none, and neither agrees with the fixture.
+    ///
+    /// Headless-gated like every other pin: left set in a live applet the probe would
+    /// spend its requests on a fixture token forever.
+    ///
+    /// Read WITHOUT `lock`, and so written without it: the reader is `oauthTokens`,
+    /// which runs inside `attempt` with `lock` already held, and `NSLock` does not
+    /// recurse. A self-test sets this once before it probes at all, which is the only
+    /// ordering either side needs.
+    private static var pinnedKeychain: String??
+    static func pinKeychain(_ token: String?) {
+        guard Headless.active else { return }
+        pinnedKeychain = .some(token)
+    }
+
     /// Read the item through `security` rather than the Keychain API: the API call
     /// from an unsigned or re-signed binary trips an authorization prompt for an item
     /// another app owns, and a modal appearing behind a background poll is worse than
     /// no reading at all.
     private static func keychainToken() -> String? {
+        if let pinned = pinnedKeychain { return pinned }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/security")
         p.arguments = ["find-generic-password", "-s", "Claude Code-credentials", "-w"]
@@ -112,11 +158,10 @@ enum Quota {
 
     // MARK: - The probe
 
-    /// One GET. nil on any failure — no token, offline, a 401 after the token expired
-    /// mid-window, or a body that isn't an object. Blocking: it runs on the same
-    /// background task as the sample it feeds.
-    private static func fetch() -> [String: Any]? {
-        guard let token = oauthToken() else { return nil }
+    /// One GET with one token. nil on any failure — offline, a 401 after the token
+    /// expired mid-window, or a body that isn't an object. Blocking: it runs on the
+    /// same background task as the sample it feeds.
+    private static func fetch(_ token: String) -> [String: Any]? {
         var req = URLRequest(url: usageURL, timeoutInterval: timeoutSecs)
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         req.setValue(beta, forHTTPHeaderField: "anthropic-beta")
@@ -147,16 +192,31 @@ enum Quota {
         return (left * 10_000).rounded() / 10_000
     }
 
-    /// One fetch, folded into the cache. True when it came back with a reading.
-    /// Called with `lock` held.
+    /// One round of the probe, folded into the cache. True when it came back with a
+    /// reading. Called with `lock` held.
+    ///
+    /// Every credential is tried until one answers: "the token was refused" and "the
+    /// account has no reading" are the same silence to every caller above, and only
+    /// this loop can tell them apart. It stops at the first that yields a window, so
+    /// the extra request is spent only where the probe was already failing.
     private static func attempt(_ now: TimeInterval) -> Bool {
         cache.attempt = now
-        let payload = fetch()
-        guard let session = fractionLeft(payload?["five_hour"]) else { return false }
-        cache.good = now
-        cache.session = session
-        cache.week = fractionLeft(payload?["seven_day"])
-        return true
+        let tokens = oauthTokens()
+        // Nothing to ask with: not a round, and not a refusal. The warning this feeds
+        // names what it measured — asked and not answered — and a logged-out machine
+        // did not ask.
+        if tokens.isEmpty { return false }
+        probeRounds += 1
+        for token in tokens {
+            let payload = fetch(token)
+            guard let session = fractionLeft(payload?["five_hour"]) else { continue }
+            cache.good = now
+            cache.session = session
+            cache.week = fractionLeft(payload?["seven_day"])
+            probeReadings += 1
+            return true
+        }
+        return false
     }
 
     /// `(session, week)` — the unspent fraction of the 5-hour and 7-day windows, or
@@ -177,7 +237,7 @@ enum Quota {
         let interval = cache.session != nil ? ttlSecs : retrySecs
         if cache.attempt == 0 || now - cache.attempt >= interval {
             // No token is the one failure retrying cannot fix.
-            if !attempt(now), insist, oauthToken() != nil {
+            if !attempt(now), insist, !oauthTokens().isEmpty {
                 for _ in 0..<insistAttempts {
                     // The lock is dropped across the wait: `cache.attempt` is already
                     // stamped, so a dispatch asking meanwhile reads the cache instead
@@ -197,10 +257,12 @@ enum Quota {
         return (cache.session, cache.week)
     }
 
-    /// Self-test hook: forget any cached reading.
+    /// Self-test hook: forget any cached reading, and any memory of having probed.
     static func resetCache() {
         lock.lock()
         defer { lock.unlock() }
         cache = Cache()
+        probeRounds = 0
+        probeReadings = 0
     }
 }

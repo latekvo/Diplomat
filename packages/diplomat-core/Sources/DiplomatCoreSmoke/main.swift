@@ -1732,8 +1732,11 @@ check(summary.repoTokens == 1_800_000 && summary.otherTokens == 1_000_000)
 check(summary.quota.count == 4, "a quota reading was dropped or invented")
 check(summary.quota.map(\.sessionPct) == [100, 85, 75, 100],
       "the readings moved off the instants they were measured at")
-check(summary.sessionLeftPct == 100 && summary.weekLeftPct == 97,
-      "the headline is the newest reading of each window")
+// The fixture's newest reading is a day old, and the headline carries no age: a
+// figure that stale is a claim about a window that has since moved, so the card
+// declines to make it. The chart still draws the reading where it was taken.
+check(summary.sessionLeftPct == nil && summary.weekLeftPct == nil,
+      "a day-old reading was printed as what is left right now")
 check(Telemetry.duration(0, samples: 0) == "—", "no samples must not read as instant")
 check(Telemetry.duration(90) == "1m 30s")
 check(Telemetry.duration(5400) == "1h 30m")
@@ -1763,8 +1766,7 @@ check(sessionBlindSummary.sessionLimitTokens == nil)
 check(sessionBlindSummary.perTask.count == 0)
 check(sessionBlindSummary.perTaskWeek.count == 1,
       "the week went unpriced with the 5-hour window rather than on its own readings")
-// A probe that has been down for an hour must not blank a figure it measured
-// perfectly well an hour ago, and a missing reading is not a window at zero.
+// A missing reading is not a window at zero: it stays a hole in the series.
 let blind = Telemetry.fold(lines: tLines + [
     #"{"at": 1784914400, "ev": "sample", "sessionLeft": null, "weekLeft": null, "repoTokens": 1800000, "otherTokens": 1000000}"#,
 ])
@@ -1772,8 +1774,29 @@ let blindSummary = Telemetry.summarize(blind, now: tNow, days: 14, steps: 56,
                                        binCount: 12, z: 1.96)
 check(blindSummary.quota.count == 5, "a blind sample is still a sample taken")
 check(blindSummary.quota.last?.sessionPct == nil, "a gap was filled in")
-check(blindSummary.sessionLeftPct == 100 && blindSummary.weekLeftPct == 97,
-      "a silent probe blanked the last figure it did measure")
+
+// How long a reading stays an answer to "what is left right now". Either side of
+// the bound, on a ledger whose newest sample is a probe that could not answer —
+// the shape every failure here takes, since the probe keeps sampling once blind.
+let fresh = Telemetry.quotaFreshSecs
+check(fresh > 0, "the freshness bound must come off the shared model, not nowhere")
+func headline(lastGoodAgo: Double) -> (Double?, Double?) {
+    let led = Telemetry.fold(lines: [
+        #"{"at": \#(tNow - lastGoodAgo), "ev": "sample", "sessionLeft": 0.42, "weekLeft": 0.8, "repoTokens": 0, "otherTokens": 0}"#,
+        #"{"at": \#(tNow), "ev": "sample", "sessionLeft": null, "weekLeft": null, "repoTokens": 0, "otherTokens": 0}"#,
+    ])
+    let sum = Telemetry.summarize(led, now: tNow, days: 7, steps: 8, binCount: 4, z: 1.96)
+    return (sum.sessionLeftPct, sum.weekLeftPct)
+}
+// A gap shorter than the chart draws through: the reading is minutes old and still
+// answers, so blanking it would lose a figure measured perfectly well.
+check(headline(lastGoodAgo: fresh - 60) == (42, 80),
+      "a probe that missed a few rounds blanked the figure it did measure")
+// Past it, no answer. This is the failure that hid a dead credential for six days:
+// the probe went blind, every later sample carried nulls, and the card went on
+// printing the last live reading as the current one on every lookback offered.
+check(headline(lastGoodAgo: fresh + 60) == (nil, nil),
+      "a reading the chart will not bridge was still printed as the current one")
 print("telemetry assertions passed")
 
 // ---- known-mine single-PR review prompt (auto-fix monitor) ----

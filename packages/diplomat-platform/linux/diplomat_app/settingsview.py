@@ -698,11 +698,14 @@ class SettingsView(QWidget):
         self._apiwatch_row = self._track(SettingRow(
             "Auto-continue on API errors", self._sw_apiwatch,
             summary="A 529 stops an agent dead; this types it back into motion.",
-            detail="Watches every tmux pane and types “" + apiwatch.CONTINUE_MESSAGE
-                   + "” when a Claude API error shows up. Out-of-quota stalls (“You've "
-                   "hit your weekly limit”) are left alone — nudging can't help until "
-                   "the limit resets. Run your agents inside tmux for this to reach "
-                   "them. Claude Code runs only: the banners it matches are Claude "
+            detail="Watches the tmux panes an agent is running in and types “"
+                   + apiwatch.CONTINUE_MESSAGE
+                   + "” when a Claude API error shows up. A pane with nobody's agent in "
+                   "it is left alone whatever it shows — the nudge is submitted as a "
+                   "line of input, which in a plain shell would run as a command. "
+                   "Out-of-quota stalls (“You've hit your weekly limit”) are left alone "
+                   "too — nudging can't help until the limit resets. Run your agents "
+                   "inside tmux for this to reach them. Claude Code runs only: the banners it matches are Claude "
                    "Code's. An OpenCode or Hermes agent that hits an error reads as "
                    "idle instead, frees its task-cap slot, and is dispatched again by "
                    "whichever monitor owed the work.",

@@ -78,15 +78,22 @@ jobs:
       # expressions (no `tell application`, so no Automation permission),
       # MESH_CMD_TEST is pinned to a scratch state dir and a non-checkout so it can
       # neither read a real mesh node nor start one, and ALLOCATOR_TEST shells no
-      # installer and reads no ~/.claude. QUEUE_TEST is the one that touches state at
-      # all: reaching the cap's refusal branch means a `ps` scan, a ban-list read and
-      # an `at-capacity` audit line, so it points DIPLOMAT_AUDIT_DIR at a scratch dir
-      # of its own. It returns before any spawn or fetch.
+      # installer and reads no ~/.claude. APIWATCH_TEST composes every session, tail and
+      # process it reasons over, so it reads no terminal and types into none — though it
+      # does provoke a nudge's audit line, so it redirects DIPLOMAT_AUDIT_DIR.
+      # PUBLISH_TEST composes the tick it publishes as a literal, so no probe runs and
+      # its verdict does not depend on what else is on the runner. QUOTA_TEST pins both
+      # halves of the probe's credential list — a fixture directory and a stand-in for
+      # the login Keychain — so it reads no ~/.claude, opens no Keychain item and dials
+      # nothing. QUEUE_TEST is the one
+      # that touches state at all: reaching the cap's refusal branch means a `ps` scan, a
+      # ban-list read and an `at-capacity` audit line, so it points DIPLOMAT_AUDIT_DIR at
+      # a scratch dir of its own. It returns before any spawn or fetch.
       #
       # DIPLOMAT_TRACK_TEST and DIPLOMAT_SPAWN_FOCUS_TEST are the two that stay out,
-      # and not by oversight: both drive real throwaway iTerm/Terminal windows and
-      # need a granted "control <terminal>" Automation permission, which a headless
-      # runner has no way to hold. They are run by hand from the installed .app.
+      # and not by oversight: both drive real throwaway terminal windows and need a
+      # granted "control <terminal>" Automation permission, which a headless runner
+      # has no way to hold. They are run by hand from the installed .app.
       # DIPLOMAT_SPAWN_SCRIPT_TEST covers the focus half of the second one here, by
       # reading the script those windows would have run.
       - name: Headless helper self-tests
@@ -98,7 +105,15 @@ jobs:
           DIPLOMAT_ALLOCATOR_TEST=1 swift run Diplomat
           DIPLOMAT_QUEUE_TEST=1 swift run Diplomat
           DIPLOMAT_SWEEP_TEST=1 swift run Diplomat
+          DIPLOMAT_QUOTA_TEST=1 swift run Diplomat
+          DIPLOMAT_APIWATCH_TEST=1 swift run Diplomat
+          DIPLOMAT_PUBLISH_TEST=1 swift run Diplomat
           DIPLOMAT_SPAWN_SCRIPT_TEST=1 swift run Diplomat
+          # Twice, for the two arms of the terminal ladder. The first takes whichever
+          # one the runner's own tmux decides; the second forces the machine without
+          # tmux, where Ghostty must be refused rather than offered — a spawn there
+          # would open windows whose agents nothing could ever read.
+          DIPLOMAT_TMUX=/nonexistent DIPLOMAT_SPAWN_SCRIPT_TEST=1 swift run Diplomat
 
   # The shared core advertises "compiles on macOS *and* Linux". This guards that
   # invariant by building + running the diplomat-core package on Linux (the SwiftUI

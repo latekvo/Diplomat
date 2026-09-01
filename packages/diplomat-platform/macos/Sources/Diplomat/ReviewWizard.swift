@@ -9,19 +9,72 @@ import DiplomatCore
 
 // MARK: - Terminal choice
 
-/// Which terminal SPAWN AGENT drives. iTerm is preferred; Terminal.app is the
-/// always-present fallback.
+/// Which terminal SPAWN AGENT drives. Declaration order is the preference order
+/// `resolved` falls back through: Ghostty, then iTerm, then Terminal.app, which is
+/// always present and so ends every fallback chain.
+///
+/// Ghostty is first because its spawn is the one that cannot drop a prompt. iTerm and
+/// Terminal are driven by TYPING the command into a window that already exists, which
+/// is why `inputSettleDelay` is there at all; Ghostty takes the command as part of
+/// creating the window, so there is no window-without-a-command moment to race.
 enum SpawnTerminal: String, CaseIterable, Identifiable {
-    case iterm, terminal
+    case ghostty, iterm, terminal
     var id: String { rawValue }
 
-    var title: String { self == .iterm ? "iTerm" : "Terminal" }
-    var bundleID: String { self == .iterm ? "com.googlecode.iterm2" : "com.apple.Terminal" }
+    var title: String {
+        switch self {
+        case .ghostty: return "Ghostty"
+        case .iterm: return "iTerm"
+        case .terminal: return "Terminal"
+        }
+    }
+
+    var bundleID: String {
+        switch self {
+        case .ghostty: return "com.mitchellh.ghostty"
+        case .iterm: return "com.googlecode.iterm2"
+        case .terminal: return "com.apple.Terminal"
+        }
+    }
+
     /// The name AppleScript addresses the app by.
-    var appName: String { self == .iterm ? "iTerm" : "Terminal" }
+    var appName: String {
+        switch self {
+        case .ghostty: return "Ghostty"
+        case .iterm: return "iTerm"
+        case .terminal: return "Terminal"
+        }
+    }
+
     var isInstalled: Bool {
         NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) != nil
     }
+
+    /// Why an INSTALLED terminal still cannot be driven, or nil when it can.
+    ///
+    /// Only Ghostty has one. Its AppleScript dictionary can create a window, type into
+    /// a terminal and close one, but a `terminal` exposes no visible text — there is no
+    /// equivalent of iTerm's `contents of session`. Reading an agent's screen is not a
+    /// nicety: it is the stillness backstop's only input, the API-error watcher's only
+    /// input, and the fallback that separates a working agent from one back at its
+    /// prompt. A run whose screen cannot be read resolves `.running` on every tick
+    /// (`AgentState.classifyActivity`), so it holds its bay until a human closes the
+    /// window — and a machine whose every bay is held that way dispatches nothing.
+    ///
+    /// tmux is what supplies it (`capture-pane`), exactly as it does for the whole
+    /// Linux front-end, which has no scriptable terminal at all. So a Ghostty spawn
+    /// runs its agent inside a tmux session, and without tmux Ghostty is not offered:
+    /// falling back to a terminal that can be watched beats a fleet that cannot be.
+    ///
+    /// Short enough to sit inside a segmented picker's own segment; the Settings row
+    /// carries the fix.
+    var unavailableReason: String? {
+        guard self == .ghostty, !TerminalFocus.tmuxAvailable else { return nil }
+        return "needs tmux"
+    }
+
+    /// Installed AND driveable. What every resolution and every enablement asks.
+    var isUsable: Bool { isInstalled && unavailableReason == nil }
 }
 
 // MARK: - Spawning a detached claude session in a terminal
@@ -43,13 +96,38 @@ enum AgentSpawner {
     /// editor during startup) — the agent then never launches. The WHOLE command
     /// waits, not just its trailing newline. Every spawn call site is detached, so
     /// the in-script `delay` never blocks the UI.
+    ///
+    /// iTerm and Terminal only. A Ghostty window is created WITH its command, so there
+    /// is no window sitting empty to race and nothing to wait for.
     static let inputSettleDelay = 5
 
-    /// Resolve the terminal to actually drive: the preferred one if installed,
-    /// else the first installed alternative, else Terminal.app (always present).
+    /// Seconds a BACKGROUND Ghostty spawn waits after creating its window before handing
+    /// focus back.
+    ///
+    /// Ghostty finishes raising a new window after the AppleScript that made it has moved
+    /// on, so an `activate` issued straight away is overtaken and the spawn ends up
+    /// frontmost — the exact focus theft the restore exists to prevent. Measured on 1.3.1:
+    /// at no delay Ghostty wins every time, at 0.3s the restore holds. Three times that,
+    /// and still well under the `inputSettleDelay` the other two spend.
+    ///
+    /// The foreground spawn waits for nothing: landing in the new window is what it was
+    /// asked for.
+    static let ghosttyRaiseDelay = 1.0
+
+    /// How long a Ghostty spawn waits for its tmux pane to appear before giving up on
+    /// reading the tty off it. Generous against a cold `tmux` server; a spawn that
+    /// overruns it loses only the head start, since the pid file lands a moment later
+    /// and the tty is re-derived from it on the tick after.
+    static let ghosttyPaneTimeout: TimeInterval = 5
+
+    /// Resolve the terminal to actually drive: the preferred one if it can be driven,
+    /// else the first alternative that can, else Terminal.app (always present).
+    ///
+    /// Driveable, not merely installed: a Ghostty on a machine without tmux resolves
+    /// PAST itself, rather than to a spawn whose agents could never be watched.
     static func resolved(_ preferred: SpawnTerminal) -> SpawnTerminal {
-        if preferred.isInstalled { return preferred }
-        return SpawnTerminal.allCases.first(where: { $0.isInstalled }) ?? .terminal
+        if preferred.isUsable { return preferred }
+        return SpawnTerminal.allCases.first(where: { $0.isUsable }) ?? .terminal
     }
 
     /// Proactively provoke the macOS "control <terminal>" automation prompt so the
@@ -140,9 +218,77 @@ enum AgentSpawner {
     /// terminal.
     static func runSpawn(command: String, terminal term: SpawnTerminal,
                          restoreFocusTo restoreBID: String? = nil) throws -> (String, String, String) {
+        if term == .ghostty { return try runGhosttySpawn(command: command, restoreFocusTo: restoreBID) }
         let captured = try runOsascriptCapturing(
             appleScript(for: term, shellCommand: command, restoreFocusTo: restoreBID))
         return parseCapture(captured)
+    }
+
+    /// The Ghostty spawn, which is a different shape from the other two rather than a
+    /// different script: the window is created WITH its command, and the two things the
+    /// other terminals hand back with the window id are not Ghostty's to give.
+    ///
+    /// The command is a tmux session on a staged launcher file, for two reasons that
+    /// arrive together. tmux because Ghostty cannot be asked what a terminal is showing
+    /// or which tty it is on, and `capture-pane` is the only reader an agent's screen
+    /// then has; a file because `command:` is one AppleScript string holding a shell
+    /// word-split command holding `"$SHELL" -i -c '…'` holding `$(cat …)`, and the
+    /// prompt's own quoting does not survive that many layers. Staging the shell command
+    /// verbatim in a file collapses every layer but the first.
+    ///
+    /// So the session name stands in for the session id, and the tty is read back off
+    /// tmux instead of off the window — which makes it the AGENT'S tty, one better than
+    /// what iTerm reports, since a Ghostty spawn puts nothing between the two.
+    private static func runGhosttySpawn(command: String, restoreFocusTo restoreBID: String?)
+            throws -> (String, String, String) {
+        let session = ghosttySession()
+        let launcher = try writeLauncher(command)
+        let captured = try runOsascriptCapturing(
+            appleScript(for: .ghostty,
+                        shellCommand: ghosttyCommand(session: session, launcher: launcher.path),
+                        restoreFocusTo: restoreBID))
+        return (parseCapture(captured).0, session, ghosttyPaneTTY(session: session))
+    }
+
+    /// A tmux session name for one run: prefixed so a reap can only ever match a session
+    /// this applet opened, and short enough to read in a window title.
+    static func ghosttySession() -> String {
+        TerminalFocus.sessionPrefix + UUID().uuidString.prefix(8).lowercased()
+    }
+
+    /// The window command a Ghostty spawn runs. `-s` names the session so the run can be
+    /// found again by name — for its tty on the way in, and to end it on the way out.
+    ///
+    /// `/bin/sh` rather than the operator's login shell: the staged file is the command
+    /// `shellCommand` built, which invokes `"$SHELL" -i -c` itself. Running it under the
+    /// login shell too would put an interactive zsh outside that one — and on a box whose
+    /// zshrc execs tmux, an interactive zsh inside tmux nests a second server.
+    static func ghosttyCommand(session: String, launcher: String,
+                               tmux: String = TerminalFocus.binary ?? "tmux") -> String {
+        "\(shq(tmux)) new-session -s \(shq(session)) /bin/sh \(shq(launcher))"
+    }
+
+    /// Stage the shell command as a file for a Ghostty window to run.
+    private static func writeLauncher(_ command: String) throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("diplomat-launch-\(UUID().uuidString).sh")
+        do { try command.write(to: url, atomically: true, encoding: .utf8) }
+        catch { throw SpawnError.write(error.localizedDescription) }
+        return url
+    }
+
+    /// The tty of the pane the spawn just opened, polled because tmux takes a moment to
+    /// come up inside the new window. "" when it never appears, which costs the run the
+    /// head start and nothing else — the pid file lands next, and the tty comes off that.
+    private static func ghosttyPaneTTY(session: String) -> String {
+        let deadline = Date().addingTimeInterval(ghosttyPaneTimeout)
+        repeat {
+            if let tty = TerminalFocus.panes().first(where: { $0.value.session == session })?.key {
+                return tty
+            }
+            usleep(100_000)
+        } while Date() < deadline
+        return ""
     }
 
     /// Open a terminal window on one command a *human* is meant to drive — the runner's
@@ -212,9 +358,16 @@ enum AgentSpawner {
 
     /// Wrap the shell command in an "open a new window, settle, run this, and report
     /// the window id / session id / tty" script for the given terminal. The trailing
-    /// `return …` line makes osascript print `wid|sid|tty` on stdout. Both variants
-    /// open the window FIRST, capture the handles, `delay` for `inputSettleDelay`,
-    /// and only then type the command (see the constant's doc for why).
+    /// `return …` line makes osascript print `wid|sid|tty` on stdout. The iTerm and
+    /// Terminal variants open the window FIRST, capture the handles, `delay` for
+    /// `inputSettleDelay`, and only then type the command (see the constant's doc for
+    /// why). Ghostty's takes the command as part of creating the window, so it types
+    /// nothing, waits for nothing, and reports the window id alone — `runGhosttySpawn`
+    /// supplies the other two fields, which are not Ghostty's to give.
+    ///
+    /// `cmd` is the command the WINDOW runs, which for Ghostty is the tmux line
+    /// `ghosttyCommand` builds rather than the agent's shell command: the quoting the
+    /// other two survive by being typed does not survive being embedded here.
     ///
     /// When `restoreBID` is nil (a user pressing SPAWN AGENT) the script `activate`s
     /// the terminal so the user lands in the new window. When it's a bundle id (the
@@ -240,6 +393,34 @@ enum AgentSpawner {
         let bid = (restoreBID?.isEmpty ?? true) ? nil : restoreBID
         let sameApp = bid == term.bundleID
         switch term {
+        case .ghostty:
+            guard let bid else {
+                return """
+                tell application "Ghostty"
+                    activate
+                    set _wid to (id of (new window with configuration {command:"\(esc)"})) as string
+                end tell
+                return _wid & "||"
+                """
+            }
+            // Ghostty comes forward on its own when a window is created, so the restore
+            // is the same bounce the other two need. Re-raising the operator's own
+            // window is `activate window`: Ghostty's window `index` is read-only, and
+            // it has no `select`.
+            let prevCapture = sameApp
+                ? "\n    set _prev to missing value\n    try\n        set _prev to id of front window\n    end try"
+                : ""
+            let prevRestore = sameApp
+                ? "\ntell application \"Ghostty\"\n    if _prev is not missing value then\n        try\n            activate window (first window whose id is _prev)\n        end try\n    end if\nend tell"
+                : ""
+            return """
+            tell application "Ghostty"\(prevCapture)
+                set _wid to (id of (new window with configuration {command:"\(esc)"})) as string
+                delay \(ghosttyRaiseDelay)
+            end tell
+            tell application id "\(escBundleID(bid))" to activate\(prevRestore)
+            return _wid & "||"
+            """
         case .iterm:
             guard let bid else {
                 return """

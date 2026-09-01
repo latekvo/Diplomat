@@ -21,11 +21,13 @@ import DiplomatCore
 enum AgentWindows {
     /// The three ids `focus` addresses a session by.
     struct Handle: Equatable, Codable {
-        /// Which terminal app opened it ("iterm" / "terminal").
+        /// Which terminal app opened it ("ghostty" / "iterm" / "terminal").
         var terminal: String
         /// Terminal window id (string form) — the focus target.
         var windowID: String
-        /// iTerm session id (GUID); empty for Terminal.app, which has no stable one.
+        /// What the window's own id does not identify: iTerm's session GUID, or a
+        /// Ghostty run's tmux session name, which is what reaps it. Empty for
+        /// Terminal.app, which has neither.
         var sessionID: String
     }
 
@@ -61,7 +63,7 @@ enum AgentWindows {
     /// Close a session's terminal window. Returns whether AppleScript accepted it.
     ///
     /// The mirror of `focus`, and used for exactly one thing: a run the quiescence
-    /// backstop ended (`AgentState.wentQuiet`) — twenty minutes of a screen that has
+    /// backstop ended (`AgentState.Resolution.wedged`) — twenty minutes of a screen that has
     /// not moved, so nothing is being read and nothing is being typed. A run that ends the
     /// ordinary way keeps its window: its agent is alive at its prompt with the whole
     /// task in context, and that is a session the operator may still want to read.
@@ -69,13 +71,35 @@ enum AgentWindows {
     static func close(_ handle: Handle) -> Bool {
         guard !handle.windowID.isEmpty else { return false }
         let term = SpawnTerminal(rawValue: handle.terminal) ?? .iterm
+        // Closing a Ghostty window does not end what is running in it (measured on
+        // 1.3.1): the window goes and the agent keeps running on a pane whose client is
+        // no longer on screen, holding a bay that nothing left can retire. Its tmux
+        // session is what ends the run; the window close is what clears the screen.
+        //
+        // Ending a session rather than detaching from it is the thing `TerminalFocus.close`
+        // is written not to do, and this is the case it carves out: the session is one
+        // this spawn made up a name for and put one agent in, so it is nobody's to share.
+        if term == .ghostty { _ = TerminalFocus.killSession(named: handle.sessionID) }
         return OSAScript.runSilently(closeScript(term: term, windowID: handle.windowID))
     }
 
     /// AppleScript that closes the window with the captured id. A window the operator
-    /// already closed simply matches nothing, which is not a failure.
+    /// already closed is not a failure in any of the three.
     static func closeScript(term: SpawnTerminal, windowID: String) -> String {
-        """
+        // Ghostty's `close` closes a terminal SURFACE; the window verb is `close window`,
+        // and it will not take a window found by walking `windows` (-1708). So the id is
+        // resolved into a specifier instead — which errors outright when nothing matches
+        // it, where walking simply matches nothing. Hence the `try` only this one needs.
+        if term == .ghostty {
+            return """
+            tell application "Ghostty"
+                try
+                    close window (first window whose id is "\(windowID)")
+                end try
+            end tell
+            """
+        }
+        return """
         tell application "\(term.appName)"
             repeat with w in windows
                 if (id of w as string) is "\(windowID)" then close w
@@ -96,6 +120,22 @@ enum AgentWindows {
     /// once, by id, against whatever order the app is in.
     static func focusScript(term: SpawnTerminal, windowID: String, sessionID: String) -> String {
         switch term {
+        case .ghostty:
+            // Ghostty ids are opaque strings ("tab-group-6000023ec120"), so they are
+            // quoted rather than written bare the way the other two numeric ids are.
+            //
+            // This one cannot report a window that is gone. Ghostty's scripting bridge
+            // keeps answering for a closed window — `first window whose id is …` still
+            // resolves, and `activate window` still returns success — so a Ghostty focus
+            // says yes to a window that is no longer on screen. Nothing downstream turns
+            // on it: whether the RUN is still going is its agent's pid, never its window.
+            return """
+            tell application "Ghostty"
+                set w to (first window whose id is "\(windowID)")
+                activate window w
+                activate
+            end tell
+            """
         case .iterm:
             return """
             tell application "iTerm"

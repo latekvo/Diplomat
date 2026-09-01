@@ -27,15 +27,15 @@ def refusals(monkeypatch):
     so a test costs nothing to run.
     """
     monkeypatch.delenv("SZPONTNET_OAUTH_PROBE", raising=False)
-    monkeypatch.setattr(usage, "_oauth_token", lambda: "oat-test")
+    monkeypatch.setattr(usage, "_oauth_tokens", lambda: ["oat-test"])
     monkeypatch.setattr(usage.time, "sleep", lambda _: None)
     usage._reset_probe_cache()
 
     def refuse(n: int) -> list[int]:
         log: list[int] = []
 
-        def fetch():
-            log.append(len(log))
+        def fetch(token):
+            log.append(token)
             if len(log) <= n:
                 return None
             return {"five_hour": {"utilization": 40},
@@ -84,9 +84,43 @@ def test_a_logged_out_machine_is_not_worth_insisting_to(refusals, monkeypatch):
     """No token is the one failure retrying cannot fix. Without this a machine that
     is simply logged out would sleep out the whole schedule on every refresh."""
     log = refusals(999)
-    monkeypatch.setattr(usage, "_oauth_token", lambda: None)
+    monkeypatch.setattr(usage, "_oauth_tokens", lambda: [])
+    waits: list[float] = []
+    monkeypatch.setattr(usage.time, "sleep", waits.append)
     assert usage.windows(insist=True) == (None, None)
-    assert len(log) == 1
+    assert waits == [], "the insist schedule was sat out with nothing to ask with"
+    assert log == [], "a request was sent without a credential to send it under"
+
+
+def test_a_refused_credential_is_not_the_last_word(refusals, monkeypatch):
+    """The reason a node can be pinned to a dead credential. On macOS Claude Code
+    refreshes the Keychain item and never rewrites a ``.credentials.json`` an older
+    login left behind, so the file's token can be expired while the Keychain's is
+    live — and the endpoint answers a refused token exactly as it answers a busy
+    bucket. A probe that stops at the first credential therefore routes on the local
+    heuristic forever on a machine where the real reading was one request away.
+    """
+    log = refusals(0)
+    monkeypatch.setattr(usage, "_oauth_tokens", lambda: ["stale", "live"])
+
+    def fetch(token):
+        log.append(token)
+        return None if token == "stale" else {"five_hour": {"utilization": 40},
+                                              "seven_day": {"utilization": 10}}
+
+    monkeypatch.setattr(usage, "_fetch_usage_payload", fetch)
+    session, week = usage.windows()
+    assert session is not None and session.frac_left == 0.6
+    assert log == ["stale", "live"], "the refused credential ended the round"
+
+
+def test_a_credential_that_answers_costs_the_round_nothing_extra(refusals):
+    """The whole list is tried only where the probe was already failing. The bucket
+    is shared with every Claude Code session on the box, so a round that already has
+    its reading must not spend a second request proving the point."""
+    log = refusals(0)
+    usage.windows()
+    assert log == ["oat-test"]
 
 
 def test_a_reading_inside_the_ttl_is_answered_from_the_cache(refusals):

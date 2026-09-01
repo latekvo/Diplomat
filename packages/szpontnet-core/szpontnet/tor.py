@@ -338,7 +338,14 @@ class TorTransport:
 
     async def stop(self) -> None:
         """Terminate the tor child, its stdout pump, and the forward listener.
-        Best-effort, never raises."""
+        Best-effort, never raises.
+
+        The SOCKS port goes back to 0 with them, because it is the whole of
+        :meth:`dial`'s "am I started" guard — left standing it names a port nothing
+        of ours is listening on any more, and the caller is told the connection was
+        refused (or, once the kernel has handed that number to somebody else, that a
+        stranger failed a SOCKS handshake) instead of that the transport is stopped.
+        """
         if self._pump_task is not None:
             self._pump_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -358,6 +365,7 @@ class TorTransport:
             with contextlib.suppress(Exception):
                 await self._forward_server.wait_closed()
             self._forward_server = None
+        self._socks_port = 0
 
     # MARK: - outbound: SOCKS5 CONNECT through our tor to a peer's onion
 

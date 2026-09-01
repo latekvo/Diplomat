@@ -583,8 +583,12 @@ struct SettingsView: View {
     }
 
     private static let apiWatchDetail = """
-        Watches every iTerm/Terminal session and sends "\(ApiErrorWatcher.continueMessage)" \
-        when a Claude API error shows up. Out-of-quota stalls ("You've hit your weekly \
+        Watches the terminal sessions an agent is running in — iTerm and Terminal tabs, \
+        and the tmux panes neither of them shows, which is where a Ghostty agent lives — \
+        and sends \
+        "\(ApiErrorWatcher.continueMessage)" when a Claude API error shows up. A session \
+        with nobody's agent behind it is left alone whatever it shows — the nudge is \
+        submitted as a line of input, which in a plain shell would run as a command. Out-of-quota stalls ("You've hit your weekly \
         limit") are left alone — nudging can't help until the limit resets. Claude Code \
         runs only: the banners it matches are Claude Code's. An OpenCode or Hermes agent \
         that hits an error reads as idle instead, frees its task-cap slot, and is \
@@ -647,20 +651,33 @@ struct SettingsView: View {
 
     private var terminalSection: some View {
         let resolved = AgentSpawner.resolved(store.terminal).title
+        // The brew line only when it would change something: Ghostty is on the machine
+        // and the one thing it needs is not.
+        let missingTmux = SpawnTerminal.ghostty.isInstalled && !SpawnTerminal.ghostty.isUsable
+        let summary: String = "Ghostty is used when installed, then iTerm, then Terminal. "
+            + "Ghostty runs its agents inside tmux, which is the only way their screens "
+            + "can be read" + (missingTmux ? " — install it with `brew install tmux`." : ".")
         return SettingsCard(symbol: "macwindow", title: "SPAWN TERMINAL", tint: .brown,
                             pill: StatusPill(text: resolved, tint: .secondary)) {
-            SettingRow(title: "Window SPAWN AGENT opens",
-                       summary: "iTerm is used when installed; otherwise Terminal.",
-                       stacked: true) {
+            SettingRow(title: "Window SPAWN AGENT opens", summary: summary, stacked: true) {
                 Picker("Window SPAWN AGENT opens", selection: $store.terminalChoice) {
                     ForEach(SpawnTerminal.allCases) { term in
-                        Text(term.title + (term.isInstalled ? "" : " (not installed)")).tag(term.rawValue)
+                        Text(terminalLabel(term)).tag(term.rawValue)
                     }
                 }
                 .labelsHidden()
                 .pickerStyle(.segmented)
             }
         }
+    }
+
+    /// A picker segment: the terminal's name, and why it cannot be picked when it can't.
+    /// Built outside the ViewBuilder — a concatenation this shape inside `Text(...)` is
+    /// what the macOS CI compiler gives up type-checking on.
+    private func terminalLabel(_ term: SpawnTerminal) -> String {
+        let why = term.isInstalled ? term.unavailableReason : "not installed"
+        guard let why else { return term.title }
+        return "\(term.title) (\(why))"
     }
 
     // MARK: Device allocator (MCP server + skill + rule)

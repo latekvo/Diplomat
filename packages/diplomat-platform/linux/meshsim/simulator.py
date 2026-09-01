@@ -201,6 +201,9 @@ class Simulator:
         cfg = d / "diplomat-config.json"
         cfg.write_text(json.dumps({"autoTaskLimit": 999}))
         env["DIPLOMAT_CONFIG"] = str(cfg)
+        # stop_all runs from a `finally` a killed pytest never reaches; this is
+        # what stops the node then.
+        env["SZPONTNET_EXIT_WITH_PARENT"] = "1"
         self.procs[spec.node_id] = subprocess.Popen(
             [sys.executable, "-m", "szpontnet"],
             cwd=SZPONTNET_DIR, env=env,
@@ -231,7 +234,10 @@ class Simulator:
 
     def stop_all(self) -> None:
         for node_id in list(self.procs):
-            self.kill(node_id)
+            # Per node: one that will not die must not strand the rest of the fleet
+            # (the foreign-agent loop below is already written this way).
+            with contextlib.suppress(Exception):
+                self.kill(node_id)
         for agent in self.foreign_agents:
             agent.terminate()
         for agent in self.foreign_agents:

@@ -475,7 +475,7 @@ final class Store: ObservableObject {
     func setTint(_ color: Color, for kind: ToolKind) {
         colorOverrides[kind.rawValue] = color.hexRGB
     }
-    var terminal: SpawnTerminal { SpawnTerminal(rawValue: terminalChoice) ?? .iterm }
+    var terminal: SpawnTerminal { SpawnTerminal(rawValue: terminalChoice) ?? .ghostty }
     var visibleTools: [ToolKind] {
         ToolKind.allCases.filter { !hiddenTools.contains($0.rawValue) }
     }
@@ -516,8 +516,41 @@ final class Store: ObservableObject {
         std.set(true, forKey: marker)
     }
 
+    /// One-time move of the spawn terminal to Ghostty, for an install that predates it.
+    ///
+    /// The stored choice is what an operator picked out of a two-way picker, so on every
+    /// existing install it reads "iterm" — whether that was a decision or a default they
+    /// never touched. Without this, a picker that grew a third option would leave every
+    /// running install on the terminal the third option was added to replace.
+    ///
+    /// Only a choice of iTerm is moved, and only onto a box that can drive Ghostty.
+    /// Terminal.app was picked over an installed iTerm, which is a decision against a
+    /// default rather than the absence of one, and is left alone. Runs once either way: a
+    /// box with no Ghostty right now keeps its terminal and is not asked again, because a
+    /// second ask cannot be told from overriding the operator's own switch back.
+    static func migrateTerminalChoiceIfNeeded() {
+        let marker = "ghosttyTerminalDefaultMigrated"
+        let std = UserDefaults.standard
+        guard !std.bool(forKey: marker) else { return }
+        std.set(true, forKey: marker)
+        guard let moved = terminalChoiceMigration(stored: std.string(forKey: Keys.terminalChoice),
+                                                  ghosttyUsable: SpawnTerminal.ghostty.isUsable)
+        else { return }
+        std.set(moved, forKey: Keys.terminalChoice)
+    }
+
+    /// What the migration above decides, without the defaults it decides it about — so
+    /// which choices it moves is checkable without writing to the operator's own.
+    /// nil leaves the stored choice alone.
+    nonisolated static func terminalChoiceMigration(stored: String?, ghosttyUsable: Bool) -> String? {
+        guard ghosttyUsable, stored == nil || stored == SpawnTerminal.iterm.rawValue
+        else { return nil }
+        return SpawnTerminal.ghostty.rawValue
+    }
+
     init() {
         Store.migrateLegacyDefaultsIfNeeded()
+        Store.migrateTerminalChoiceIfNeeded()
         MeshBridge.migrateLegacyStateDirIfNeeded()
         let defaults = UserDefaults.standard
         usernameOverride = defaults.string(forKey: Keys.usernameOverride) ?? ""
@@ -526,8 +559,10 @@ final class Store: ObservableObject {
         hiddenTools = Set(defaults.stringArray(forKey: Keys.hiddenTools)
             ?? [ToolKind.skillPRs.rawValue, ToolKind.installerPRs.rawValue])
         colorOverrides = (defaults.dictionary(forKey: Keys.colorOverrides) as? [String: String]) ?? [:]
+        // The whole preference ladder, so a fresh install lands on the terminal a spawn
+        // would have resolved to anyway.
         terminalChoice = defaults.string(forKey: Keys.terminalChoice)
-            ?? (SpawnTerminal.iterm.isInstalled ? SpawnTerminal.iterm.rawValue : SpawnTerminal.terminal.rawValue)
+            ?? AgentSpawner.resolved(.ghostty).rawValue
         repoPathOverride = AppConfig.string(AppConfig.repoRootKey)
         agentRunner = AppConfig.agentRunner
         agentModel = AppConfig.agentModel
@@ -1058,10 +1093,20 @@ final class Store: ObservableObject {
     /// Close the terminal of every run a backstop ended — the stillness clock, or the
     /// operator's run deadline.
     ///
-    /// Only those. A run that finished the ordinary way keeps its window — its agent is
-    /// alive at its prompt holding the whole task, and the operator may still want to
-    /// read it. One whose screen has not changed in twenty minutes is nobody's, and so is
-    /// one that has been going for four hours with nothing able to say it ever stopped.
+    /// Only those, and the verdict is asked rather than reconstructed
+    /// (`AgentState.reapable`). A run that finished the ordinary way keeps its window —
+    /// its agent is alive at its prompt holding the whole task, and the operator may
+    /// still want to read it. One whose screen has not changed in twenty minutes is
+    /// nobody's, and so is one that has been going for four hours with nothing able to
+    /// say it ever stopped.
+    ///
+    /// "`.finished`, and its stillness clock is past the timeout" is a WIDER set than
+    /// that, because the clock advances only on ticks that saw the screen and so keeps
+    /// maturing while nobody can look. An evidence outage that outlasts `quietTimeout`
+    /// with the agent exiting inside it produces exactly one tick where a run is
+    /// finished-because-its-pid-is-gone while carrying twenty-plus minutes of stillness
+    /// — and `ttys<nnn>` is recycled freely, so the walk out of that tty may reach
+    /// somebody else's terminal window by then.
     ///
     /// Closing it is not decoration on either verdict: an agent left alive is found again
     /// by the prompt scan the moment its record is retired, and comes straight back as an
@@ -1177,7 +1222,39 @@ final class Store: ObservableObject {
             }
         }
         noteStaleBusyMarker()
+        noteBlindBudgetGate()
     }
+
+    /// Say out loud when the budget gate has nothing left to gate on.
+    ///
+    /// What is left of the rate-limit windows comes from one probe, and `budgetDecide`
+    /// SKIPS a ceiling it cannot read — with neither window readable every task is
+    /// affordable. So a probe that stops answering does not fail the gate closed or
+    /// loudly: it stops gating, while the toggle still reads on and nothing else looks
+    /// wrong. A stale `.credentials.json` did exactly that here for four days, ending
+    /// in a night of agents dispatched into an exhausted weekly window.
+    ///
+    /// Only what was measured is stated: rounds asked, none answered. Whether that is a
+    /// dead credential, a revoked login or an endpoint outage is the operator's to find
+    /// out, and the wording must not guess.
+    private func noteBlindBudgetGate() {
+        let (rounds, readings) = Quota.probeStats()
+        guard readings == 0, rounds >= Store.quotaSample, !quotaWarned,
+              AutoBudget.enabled else { return }
+        quotaWarned = true
+        AuditLog.log("auto", "warn",
+                     "Asked what is left of the rate-limit windows \(rounds) times "
+                     + "without one answer — the automatic budget is gating on nothing, "
+                     + "and auto work will dispatch whatever the limits have left")
+        refreshAudit()
+    }
+
+    /// How many quota probe rounds must come back empty before a blind budget gate is
+    /// called out. Low, because unlike `markerSample` there is no innocent machine that
+    /// produces this reading: a probe that is switched off or logged out never rounds at
+    /// all, so every round counted here is one that asked and was refused. Matches the
+    /// Linux applet's threshold.
+    private static let quotaSample = 20
 
     /// Say out loud when no CLI's interrupt hint has ever once matched.
     ///
@@ -1208,12 +1285,14 @@ final class Store: ObservableObject {
     /// at its prompt. Matches the Linux applet's threshold.
     private static let markerSample = 40
 
-    /// Which probes have had their silence reported, and whether the stale-marker warning
-    /// has been given. Both latch once per episode; the probe one clears when that probe
-    /// answers again, the marker one does not — a machine that has read that many screens
-    /// without a single hint says so once and then stops.
+    /// Which probes have had their silence reported, and whether the stale-marker and
+    /// blind-budget warnings have been given. All latch once per episode; the probe one
+    /// clears when that probe answers again, the other two do not — a machine that has
+    /// read that many screens without a single hint, or asked that many times without a
+    /// single answer, says so once and then stops.
     private var probeWarned: [String: Bool] = [:]
     private var markerWarned = false
+    private var quotaWarned = false
 
     /// Which of the tracked PRs GitHub calls MERGED, carried forward by the fast ticks
     /// between the slow refreshes that probe it. `.unavailable` until the first, which
@@ -1633,6 +1712,17 @@ final class Store: ObservableObject {
     func pinAgentRows(_ rows: [AgentRow]) {
         guard Headless.active else { return }
         agentRows = rows
+    }
+
+    /// Drive `publish` over a tick a self-test composed itself.
+    ///
+    /// `pinAgentRows` above assigns the list directly, which is what a render needs and
+    /// is also why no render covers `publish`: the filter that keeps an ended run off the
+    /// panel is on a path the one artefact CI inspects never takes. This is the way in
+    /// for the check that does (`PublishTest`).
+    func publishForSelfTest(_ pass: AgentPass) {
+        guard Headless.active else { return }
+        publish(pass)
     }
 
     /// Slots of this device's cap with nothing in them, as the panel draws them.
@@ -2919,8 +3009,9 @@ final class Store: ObservableObject {
     /// map is read before and written after detached awaits).
     private var apiScanInFlight = false
 
-    /// One scan: read every terminal's last visible lines and, for any showing a Claude
-    /// API error (outside its cooldown), send the continue nudge to that exact session.
+    /// One scan: read every terminal's last visible lines and, for any session an agent
+    /// is running in that shows a Claude API error (outside its cooldown), send the
+    /// continue nudge to that exact session.
     func runApiErrorScanOnce() async {
         guard apiWatchEnabled, !apiScanInFlight else { return }
         apiScanInFlight = true
@@ -2930,9 +3021,36 @@ final class Store: ObservableObject {
         // which would wrongly clear every backoff and hide the breakage.
         let dump = await Task.detached(priority: .utility) { ApiErrorWatcher.dumpSessionsCached() }.value
         guard let sessions = dump else { return }
-        let now = Date()
+        // The other half of "may this session be written to". An unreadable process
+        // table skips the scan for the same reason a failed dump does, and more: the
+        // answer decides whether a line of text is typed into somebody's shell, so not
+        // knowing has to mean not typing.
+        let ttys = await Task.detached(priority: .utility) {
+            AgentProbes.ttysRunningAnAgent(now: Date().timeIntervalSince1970)
+        }.value
+        guard let agentTTYs = ttys.value else { return }
+        await apiErrorScanStep(sessions: sessions, agentTTYs: agentTTYs, now: Date()) { tty in
+            await Task.detached(priority: .userInitiated) {
+                ApiErrorWatcher.sendContinue(tty: tty)
+            }.value
+        }
+    }
+
+    /// The scan's whole decision — which sessions may be written to, which of those are
+    /// confirmed stalled, and which are still inside a backoff — over evidence already
+    /// read, with the writing left to `send`.
+    ///
+    /// Split out so it can be driven without a terminal: everything above is AppleEvents
+    /// and `ps`, and everything below types into somebody's session. `ApiWatchTest` is
+    /// the check that drives it.
+    func apiErrorScanStep(sessions: [ApiErrorWatcher.Session], agentTTYs: Set<String>,
+                          now: Date, send: (String) async -> Bool) async {
         var erroring = Set<String>()
         for s in sessions {
+            // A session no agent is running in is left alone whatever it shows. The
+            // nudge is submitted as a line of input, so in a plain shell it is a command
+            // — and a shell can show a matching tail for entirely innocent reasons.
+            guard agentTTYs.contains(AgentProbes.shortTTY(s.tty)) else { continue }
             // Out-of-quota banners return false here (looksLikeApiError ignores them):
             // a quota-limited agent can't progress until its window resets, so nudging
             // it is pointless — only transient failures are nudged.
@@ -2948,10 +3066,7 @@ final class Store: ObservableObject {
             guard stalled else { continue }
             // Still inside this session's current backoff window — hold off.
             if let b = apiErrorBackoff[s.tty], now < b.nextAllowed { continue }
-            let tty = s.tty
-            let sent = await Task.detached(priority: .userInitiated) {
-                ApiErrorWatcher.sendContinue(tty: tty)
-            }.value
+            let sent = await send(s.tty)
             // Only count/audit a nudge that actually landed — the send scripts now
             // report whether any session owned the tty.
             guard sent else { continue }
@@ -2962,7 +3077,7 @@ final class Store: ObservableObject {
                 ?? Store.apiWatchCooldown
             apiErrorBackoff[s.tty] = ApiBackoff(nextAllowed: now.addingTimeInterval(next), interval: next)
             AuditLog.log("auto", "nudge",
-                "Continued a stalled agent (API error) on \(tty); "
+                "Continued a stalled agent (API error) on \(s.tty); "
                 + "next retry in ≥ \(Store.humanInterval(next))")
         }
         // Keep backoff state ONLY for currently-erroring ttys: an on-screen session

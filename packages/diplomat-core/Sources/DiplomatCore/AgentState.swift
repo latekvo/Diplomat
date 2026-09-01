@@ -125,9 +125,12 @@ public enum AgentState {
 
     /// How long after dispatch a run with no observed process still reads as
     /// `.starting`. The inner shell writes its pid before the agent starts, but a
-    /// terminal emulator, a tmux server and the user's rc all run first. Past this the
-    /// run is not called finished — it becomes `.unknown`, because a spawn that never
-    /// landed and a pid file we have not read yet look identical from here.
+    /// terminal emulator, a tmux server and the user's rc all run first — and the
+    /// process table is one `ps` pass reused for several seconds, so it can predate the
+    /// pid file naming what to look for. Past this the run is judged on the evidence
+    /// there is: a known pid the table does not hold has ended, while a run that
+    /// produced neither a pid nor a PR to scan for becomes `.unknown`, because a spawn
+    /// that never landed and a pid file we have not read yet look identical from here.
     public static let spawnGrace: TimeInterval = 20
 
     /// How long after dispatch a live run whose screen has not shown a turn yet reads
@@ -391,6 +394,19 @@ public enum AgentState {
         public var runID: String
         public var state: RunState
         public var reason: String
+        /// Whether the STILLNESS BACKSTOP is what ended this run — set by that rung and
+        /// by nothing else.
+        ///
+        /// A verdict, not a restatement of one: a run reaches `.finished` by many roads,
+        /// and only this one says its agent was alive with a frozen screen. The window
+        /// reaper is the consumer, and the distinction is the whole of its licence to
+        /// close a terminal, so it cannot be left to be re-derived from `state` plus a
+        /// matured `wentQuiet` — a clock keeps maturing while its pane is unreadable
+        /// (`observeQuiescence` only advances on ticks that SAW the screen), so a run
+        /// whose process left the machine during an evidence outage comes back
+        /// finished-because-gone carrying twenty minutes of stillness. Reaping that
+        /// closes whatever holds its tty now.
+        public var wedged: Bool = false
 
         public var occupying: Bool { AgentState.occupying.contains(state) }
     }
@@ -703,6 +719,18 @@ public enum AgentState {
             return resolveWithoutPid(record, evidence: evidence, now: now, age: age, done: done)
         }
         guard let proc = table[pid] else {
+            // A pid the table has not caught up with, not a dead one: the pid file
+            // and the table are read at different instants, and the table is one `ps`
+            // pass reused for several seconds, so a pid written after that pass names a
+            // process it structurally cannot hold. Read as death, a run is retired
+            // seconds into its own spawn and its directory deleted under a working
+            // agent. The same record one tick earlier, with no pid at all, had exactly
+            // this grace.
+            if age <= spawnGrace {
+                return done(.starting,
+                            "dispatched \(secs(age)) ago, pid \(pid) "
+                            + "not in the process table yet")
+            }
             return done(.finished, "pid \(pid) absent from the process table")
         }
         if !proc.isAgent {
@@ -820,9 +848,12 @@ public enum AgentState {
                                          done: (RunState, String) -> Resolution,
                                          aliveReason: String) -> Resolution {
         if let quiet = wentQuiet(record, now: now) {
-            return done(.finished,
-                        "\(aliveReason); its screen has not changed in "
-                        + "\(ApiErrorMatch.humanInterval(quiet))")
+            // The one rung that stamps `wedged`; see `Resolution.wedged`.
+            var out = done(.finished,
+                           "\(aliveReason); its screen has not changed in "
+                           + "\(ApiErrorMatch.humanInterval(quiet))")
+            out.wedged = true
+            return out
         }
         if let report = reported(record, evidence), report.verb == .busy {
             return done(.running, "\(aliveReason); its CLI reported a turn in flight")
@@ -1057,9 +1088,7 @@ public enum AgentState {
         /// forgotten. See `reapable(records:states:evidence:now:deadline:)`.
         public var reapable: [RunRecord]
         public var freeSlots: Int
-        /// The instant this pass was resolved against. Carried so a consequence of the
-        /// tick — closing a wedged run's window — measures stillness against the clock
-        /// that ended the run, not one read a moment later.
+        /// The instant every verdict below was resolved against.
         public var now: TimeInterval = 0
 
         public func inFlight(prNumber: Int) -> Bool {

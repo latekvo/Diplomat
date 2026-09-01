@@ -44,7 +44,8 @@ enum AgentStateCommand {
         }
         let out: [String: Any] = [
             "rows": t.rows.map { r, s in
-                ["runId": r.runID, "state": s.state.rawValue, "reason": s.reason]
+                ["runId": r.runID, "state": s.state.rawValue, "reason": s.reason,
+                 "wedged": s.wedged]
             },
             "capLoad": t.capLoad.sorted(),
             "retirable": t.retirable.map(\.runID).sorted(),

@@ -380,8 +380,8 @@ The grid carries a **Review PRs** card alongside the tools. Click it and the wiz
 opens where the PR lists normally render; dial in a few choices and hit **SPAWN
 AGENT**.
 
-A **specific PR** is one agent: a fresh terminal window (iTerm if installed, else
-Terminal) running a detached review session in your **repo root** (Settings;
+A **specific PR** is one agent: a fresh terminal window (Ghostty if installed, else
+iTerm, else Terminal) running a detached review session in your **repo root** (Settings;
 default `~/dev/<repo>`) that you watch and steer yourself. The prompt is staged to
 a file and the window runs
 `<agent> [--settings <hooks>] "$(cat <promptfile>)"; printf %s $? > <done>` - where
@@ -861,13 +861,24 @@ nudge opens no window at all - it types into a session that already exists.)
   Claude Code's, and an OpenCode or Hermes agent that errors reads as a finished
   turn instead - its runner says so, so the run is retired, its bay and its PR are
   freed, and whichever monitor owed the work dispatches it again. Every ~20s it
-  reads each agent session's visible tail (macOS: any iTerm/Terminal session;
-  Linux: **tmux panes only** - there's no portable way to read or type into an
-  arbitrary Linux emulator, so the Linux spawner opens each agent in a tmux session
-  of its own and an agent started outside one is not watched). An agent stalled on
-  a transient API error (overloads, connection failures, a turn cut short
-  mid-stream, bare `429` rate-limits, status-page errors) gets a continue nudge
-  typed into that exact session, with a per-session 2m → 3h backoff so a
+  reads each agent session's visible tail (macOS: iTerm and Terminal sessions, plus
+  the tmux panes neither of them shows - which is every Ghostty agent, since Ghostty
+  can be told to open a window but never asked what is in one; Linux: **tmux panes
+  only** - there's no portable way to read or type into an arbitrary Linux emulator,
+  so the Linux spawner opens each agent in a tmux session of its own and an agent
+  started outside one is not watched). A screen with
+  nobody's agent behind it is never written to, whatever it happens to show: the
+  nudge is submitted as a line of input, so in a plain shell it would run as a
+  command. The process table decides that, since nothing on a screen can - a shell
+  can be showing a banner because it printed one. On macOS the session a terminal
+  reports is often not the one the agent is on (tmux, or a shell wrapper), so the
+  walk that a row click uses to find an agent's window decides it there - which
+  resolves to the terminal the agent's session is displayed in, so the line lands in
+  that session's active pane. The spawner gives each agent a session of its own,
+  which is what keeps those the same screen. An agent
+  stalled on a transient API error (overloads, connection failures, a turn cut
+  short mid-stream, bare `429` rate-limits, status-page errors) gets a continue
+  nudge typed into that exact session, with a per-session 2m → 3h backoff so a
   persistently broken one isn't hammered. A single erroring scan never nudges:
   the tail must come back **byte-identical on the next scan** before it counts
   as a stall, so the real floor is ~2 scans. An **out-of-quota** banner is never
@@ -913,7 +924,7 @@ either one reporting the turn over ends the run exactly as a hook does - the sam
 fact from the same kind of source. Only a run nothing answers for - a Claude spawn
 whose settings would not stage, a server that never came up - falls back to the
 CLI's own status bar (`AgentActivity`) read off whatever each platform can see of a
-terminal - iTerm/Terminal sessions on macOS, tmux panes on Linux; an agent whose
+terminal - iTerm/Terminal sessions and tmux panes on macOS, tmux panes on Linux; an agent whose
 status bar shows the CLI back at its prompt reads *awaiting input* and gives its
 slot back while keeping its row. That is the one source here that cannot end a run:
 it is an inference from someone else's UI, not a report. Behind all three sits a
@@ -1100,8 +1111,15 @@ and ⏻) swaps the panel to a settings screen:
   `~/.diplomat/config.json` beside the cap it hands bays back to.
 - **Tools - color & visibility** - a **color well** to retint each tool plus a switch
   to hide it; hidden tools drop out of the grid and the reverse-lookup checklist.
-- **Spawn terminal** - which terminal SPAWN AGENT opens: **iTerm** or **Terminal**
-  (iTerm is the default when installed, Terminal the always-present fallback).
+- **Spawn terminal** - which terminal SPAWN AGENT opens: **Ghostty**, **iTerm** or
+  **Terminal**, tried in that order, with Terminal the always-present fallback.
+  Ghostty leads because its window is created *with* the agent command in it, so
+  there is no window sitting empty for the command to be typed into and dropped -
+  the other two are driven by typing, which is what the five-second input settle is
+  for. The trade is that Ghostty can be told to open a window but never asked what
+  is in one, so its agents are run inside **tmux** and read with `capture-pane`;
+  without tmux on the box Ghostty is not offered at all, because a run whose screen
+  cannot be read holds its task-cap slot until a human closes the window.
 - **Device allocator (MCP)** - install/uninstall the bundled allocator daemon +
   MCP server (see [`packages/device-allocator/README.md`](packages/device-allocator/README.md)), with
   install status, the installed version, and whether it is still current. It
@@ -1203,7 +1221,7 @@ Accept [y/N]
 Accept and it runs `install-autostart.sh` for you (and the daemon takes over via the
 newest-wins singleton). The prompt is skipped when launched non-interactively
 (`open`, launchd) or once already installed. On first launch it also pokes the
-chosen terminal once so macOS shows the *"control iTerm/Terminal"* permission prompt
+chosen terminal once so macOS shows the *"control <terminal>"* permission prompt
 up front, instead of on your first SPAWN.
 
 ### Double-clickable applet (recommended)
@@ -1302,6 +1320,9 @@ DIPLOMAT_ALLOCATOR_TEST=1 ...                    # the launch-time allocator dec
 DIPLOMAT_AUTOFIX_POLL=1  ...                     # one real monitor poll: prints its dispatch decisions and
                                                      #   the exact prompts it would spawn, opens nothing
 DIPLOMAT_APIWATCH_SCAN=1 ...                     # dry-run the API-error watcher over live sessions, sends nothing
+DIPLOMAT_APIWATCH_TEST=1 ...                     # self-test: who a scan may type into (an agent's session,
+                                                     #   including one a terminal only shows through tmux;
+                                                     #   never a plain shell). Reads no terminal, sends nothing
 DIPLOMAT_SELF_UPDATE=1   ...                     # the unattended 06:00 update: merge if behind, rebuild,
                                                      #   relaunch only if an instance is running
 
@@ -1429,14 +1450,14 @@ packages/
         Headless.swift             the single "are we a one-shot self-test?" env-var list
         ContentView.swift          two-column panel (left: monitoring lists, right: grid + wizards/results)
         Components.swift           shared UI atoms (cards, chips, badges)
-        ReviewWizard.swift         Review-PRs wizard + AgentSpawner (staged prompt file, done sentinel, iTerm/Terminal)
+        ReviewWizard.swift         Review-PRs wizard + AgentSpawner (staged prompt file, done sentinel, Ghostty/iTerm/Terminal)
         IssueWizard.swift          the Fix-issues wizard
         ConflictWizard.swift / AuditWizard.swift   the Resolve-conflicts and Full-E2E-test wizards
         SettingsView.swift         settings (username, repo root, monitors + auto-approve + task cap + rate-limit budget, watcher, tools, terminal, allocator)
         Store.swift                ObservableObject; settings + the monitor/watcher loops; logic in ToolData
         AutofixMonitor.swift       the monitors' GitHub reads (monitor-prs / review-requests queries)
         AutofixStatus.swift        the monitor heartbeat behind the status pill
-        ApiErrorWatcher.swift      iTerm/Terminal session reader + continue-nudge sender
+        ApiErrorWatcher.swift      iTerm/Terminal/tmux screen reader + continue-nudge sender
         AgentProbes.swift          the outside world, typed: `ps`, screens, sentinels, claims -> Evidence
         AgentWindows.swift         where each run's terminal window is, so a row click can raise it
         AgentSessionProbe.swift    asks each run's own agent what it is doing, through its runner's store
@@ -1445,6 +1466,8 @@ packages/
         TrackTest.swift            E2E self-test of the run book + this platform's probes (DIPLOMAT_TRACK_TEST)
         QueueTest.swift            self-test of the deferred-task queue (DIPLOMAT_QUEUE_TEST)
         SweepTest.swift            self-test of asking each runner's own store (DIPLOMAT_SWEEP_TEST)
+        ApiWatchTest.swift         self-test of who the API-error watcher may type into (DIPLOMAT_APIWATCH_TEST)
+        PublishTest.swift          self-test of what a resolved tick hands the panel (DIPLOMAT_PUBLISH_TEST)
         BanList.swift / AuditLog.swift   ban list (the daemon's banned.json) + the unified activity feed (audit.jsonl)
         DeviceAllocator.swift      allocator daemon state reader + installer bridge
         DeviceFocus.swift          click an in-use device → focus the holding agent's terminal

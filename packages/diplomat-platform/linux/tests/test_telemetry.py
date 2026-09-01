@@ -197,6 +197,61 @@ def test_sampling_is_paced_by_the_ledger_not_by_the_caller(ledger):
     assert telemetry.sample_due(time.time() + telemetry.SAMPLE_INTERVAL_SECS + 1)
 
 
+def _quota_headline(ledger, readings, *, now):
+    """``(session, week)`` as the card would print them, from ``(age_secs, session,
+    week)`` triples."""
+    for ago, session, week in readings:
+        telemetry.append({"at": now - ago, "ev": "sample", "sessionLeft": session,
+                          "weekLeft": week, "repoTokens": 0, "otherTokens": 0})
+    telemetry._reset_cache()
+    s = telemetry.summarize(telemetry.load(), now=now, days=7, steps=8,
+                            bin_count=4, z=1.96)
+    return s.session_left_pct, s.week_left_pct
+
+
+def test_a_probe_that_missed_a_few_rounds_keeps_the_figure_it_did_measure(ledger):
+    """A gap shorter than the chart draws through must not blank the headline: the
+    reading is minutes old and still answers what is left."""
+    now = 1_785_000_000.0
+    assert _quota_headline(ledger, [
+        (telemetry.QUOTA_FRESH_SECS - 60, 0.42, 0.80),
+        (0.0, None, None),
+    ], now=now) == (42.0, 80.0)
+
+
+def test_a_reading_older_than_the_chart_bridges_stops_being_the_headline(ledger):
+    """The card's percentage says what is left RIGHT NOW and carries no age. Once the
+    probe has been silent longer than the chart will draw through, the newest reading
+    describes a window that has since moved — on a 5-hour window, one that may have
+    reset outright — so the honest answer is no answer.
+
+    This is the failure that hid a dead credential for six days: the probe went blind,
+    every sample after it carried nulls, and the card went on printing the last live
+    reading as the current one on every lookback the screen offers.
+    """
+    now = 1_785_000_000.0
+    assert _quota_headline(ledger, [
+        (telemetry.QUOTA_FRESH_SECS + 60, 0.42, 0.80),
+        (0.0, None, None),
+    ], now=now) == (None, None)
+
+
+def test_the_headline_blanks_on_the_lookback_that_still_charts_the_reading(ledger):
+    """Every range the screen offers is at least a week, so a stale reading stays
+    visible on the chart long after it stops being an answer. The two must disagree
+    that way round — a drawn line the headline declines to caption — and not the
+    other, which is what a bound written in days rather than sample intervals would
+    give."""
+    now = 1_785_000_000.0
+    telemetry.append({"at": now - 6 * 86400, "ev": "sample", "sessionLeft": 0.42,
+                      "weekLeft": 0.80, "repoTokens": 0, "otherTokens": 0})
+    telemetry._reset_cache()
+    s = telemetry.summarize(telemetry.load(), now=now, days=7, steps=8,
+                            bin_count=4, z=1.96)
+    assert [q.session_pct for q in s.quota] == [42.0], "the chart lost its reading"
+    assert (s.session_left_pct, s.week_left_pct) == (None, None)
+
+
 def test_a_completion_with_no_matching_transcript_is_still_recorded(ledger):
     """Attribution fails whenever the applet restarted mid-agent. Recording that as
     a completion with no cost keeps the run time honest and lets the screen say how
@@ -811,7 +866,8 @@ def test_the_probe_makes_no_request_when_it_is_switched_off(monkeypatch):
     """``DIPLOMAT_QUOTA_PROBE=0`` is what keeps this suite (and CI) off the network
     and out of the operator's credentials — the conftest sets it for every test, so
     a probe that ignored it would spend a real token on a real request from here."""
-    monkeypatch.setattr(quota, "_fetch", lambda: pytest.fail(
+    monkeypatch.setattr(quota, "_oauth_tokens", lambda: ["oat-test"])
+    monkeypatch.setattr(quota, "_fetch", lambda _token: pytest.fail(
         "the probe reached the endpoint with DIPLOMAT_QUOTA_PROBE=0"))
     assert quota.fractions_left() == (None, None)
 
@@ -820,7 +876,11 @@ def test_the_probe_answers_when_it_is_switched_on(monkeypatch):
     """The control for the test above: same call, only the switch flipped. Without
     it, a `fractions_left` that always returned (None, None) would pass."""
     monkeypatch.setenv("DIPLOMAT_QUOTA_PROBE", "1")
-    monkeypatch.setattr(quota, "_fetch", lambda: {
+    # The credentials too, not just the request: a runner with no ~/.claude has no
+    # token to spend, and this test is about the switch rather than about being
+    # logged in.
+    monkeypatch.setattr(quota, "_oauth_tokens", lambda: ["oat-test"])
+    monkeypatch.setattr(quota, "_fetch", lambda _token: {
         "five_hour": {"utilization": 40}, "seven_day": {"utilization": 10}})
     quota._reset_cache()
     assert quota.fractions_left() == (0.6, 0.9)
@@ -857,14 +917,14 @@ def refusals(monkeypatch):
     Yields a setter returning the attempt log, and takes the waits out of the clock so
     a test costs nothing to run."""
     monkeypatch.setenv("DIPLOMAT_QUOTA_PROBE", "1")
-    monkeypatch.setattr(quota, "_oauth_token", lambda: "oat-test")
+    monkeypatch.setattr(quota, "_oauth_tokens", lambda: ["oat-test"])
     monkeypatch.setattr(quota.time, "sleep", lambda _: None)
     quota._reset_cache()
 
     def refuse(n: int) -> list[int]:
         log: list[int] = []
 
-        def fetch():
+        def fetch(_token):
             log.append(len(log))
             if len(log) <= n:
                 return None
@@ -908,9 +968,9 @@ def test_a_logged_out_machine_is_not_worth_insisting_to(refusals, monkeypatch):
     machine that is simply logged out would sleep out the whole schedule, every
     quarter of an hour, for nothing."""
     log = refusals(999)
-    monkeypatch.setattr(quota, "_oauth_token", lambda: None)
+    monkeypatch.setattr(quota, "_oauth_tokens", lambda: [])
     assert quota.fractions_left(insist=True) == (None, None)
-    assert len(log) == 1
+    assert len(log) == 0
 
 
 def test_an_insisting_probe_reads_the_cache_before_it_spends_an_attempt(refusals):
@@ -920,3 +980,112 @@ def test_an_insisting_probe_reads_the_cache_before_it_spends_an_attempt(refusals
     assert quota.fractions_left(insist=True) == (0.6, 0.9)
     assert quota.fractions_left(insist=True) == (0.6, 0.9)
     assert len(log) == 1
+
+
+# MARK: - Which credential the probe spends
+
+
+@pytest.fixture
+def credentials(monkeypatch, tmp_path):
+    """A machine whose credentials file and login Keychain hold whatever the test
+    says, with the endpoint answering only the tokens it names as live. Yields a
+    setter returning the log of tokens actually presented."""
+    monkeypatch.setenv("DIPLOMAT_QUOTA_PROBE", "1")
+    monkeypatch.setenv("DIPLOMAT_CLAUDE_DIR", str(tmp_path))
+    monkeypatch.setattr(quota.time, "sleep", lambda _: None)
+    quota._reset_cache()
+
+    def setup(*, file_token: str | None, keychain_token: str | None,
+              live: set[str]) -> list[str]:
+        if file_token is not None:
+            (tmp_path / ".credentials.json").write_text(
+                json.dumps({"claudeAiOauth": {"accessToken": file_token}}))
+        monkeypatch.setattr(quota.sys, "platform", "darwin")
+
+        class Done:
+            stdout = (json.dumps({"claudeAiOauth": {"accessToken": keychain_token}})
+                      if keychain_token is not None else "")
+
+        monkeypatch.setattr(quota.subprocess, "run", lambda *a, **k: Done())
+        log: list[str] = []
+
+        def fetch(token):
+            log.append(token)
+            if token not in live:
+                return None
+            return {"five_hour": {"utilization": 40},
+                    "seven_day": {"utilization": 10}}
+
+        monkeypatch.setattr(quota, "_fetch", fetch)
+        return log
+
+    return setup
+
+
+def test_a_stale_credentials_file_falls_through_to_the_live_keychain(credentials):
+    """The outage this exists for. On macOS Claude Code refreshes its token in the
+    Keychain and never rewrites a `.credentials.json` an older login left behind, so
+    the file's token expires and stays that way. Stopping at the first token found
+    pinned the probe to that dead credential: 239 consecutive samples with no
+    reading, `budgetDecide` fail-open on every one, and a night of agents dispatched
+    into an exhausted weekly window."""
+    log = credentials(file_token="oat-stale", keychain_token="oat-live",
+                      live={"oat-live"})
+    assert quota.fractions_left() == (0.6, 0.9)
+    assert log == ["oat-stale", "oat-live"]
+
+
+def test_the_first_credential_that_answers_ends_the_probe(credentials):
+    """The extra request is spent only where the probe was already failing: a machine
+    whose first source is live pays for exactly one, as before."""
+    log = credentials(file_token="oat-live", keychain_token="oat-other",
+                      live={"oat-live", "oat-other"})
+    assert quota.fractions_left() == (0.6, 0.9)
+    assert log == ["oat-live"]
+
+
+def test_one_credential_in_two_places_is_presented_once(credentials):
+    """The ordinary macOS machine, where both sources hold the same live token. A
+    second identical request would spend the shared per-account bucket for an answer
+    that cannot differ."""
+    log = credentials(file_token="oat-same", keychain_token="oat-same", live=set())
+    assert quota.fractions_left() == (None, None)
+    assert log == ["oat-same"]
+
+
+def test_every_credential_refused_is_still_no_reading(credentials):
+    """Falling through must not turn a genuinely refused probe into a reading — a
+    ceiling with no reading is skipped, and inventing one would gate dispatch on a
+    number nothing measured."""
+    log = credentials(file_token="oat-stale", keychain_token="oat-also-stale",
+                      live=set())
+    assert quota.fractions_left() == (None, None)
+    assert log == ["oat-stale", "oat-also-stale"]
+
+
+def test_a_probe_round_is_counted_whether_or_not_it_answers(credentials):
+    """The ratio the blind-gate warning reads. A ceiling with no reading is skipped by
+    ``autofix.budget_decide`` and a call where none has one is affordable, so a probe
+    that stops answering does not fail the gate closed — it quietly stops gating, and
+    nothing else on the machine looks wrong. Counting is the only thing that says so."""
+    credentials(file_token="oat-stale", keychain_token=None, live=set())
+    assert quota.probe_stats() == (0, 0)
+    assert quota.fractions_left() == (None, None)
+    assert quota.probe_stats() == (1, 0)
+
+
+def test_a_round_that_answers_on_its_second_credential_still_counts_once(credentials):
+    """A round is the question asked, not the requests it took to get an answer — two
+    GETs for one reading must not read as a probe that answers half the time."""
+    credentials(file_token="oat-stale", keychain_token="oat-live", live={"oat-live"})
+    assert quota.fractions_left() == (0.6, 0.9)
+    assert quota.probe_stats() == (1, 1)
+
+
+def test_a_logged_out_machine_never_rounds(credentials):
+    """It has nothing to ask with, and a machine that cannot ask must not read as one
+    that asked and was refused — that is the reading the warning acts on, and it names
+    a cause a logged-out machine does not have."""
+    credentials(file_token=None, keychain_token=None, live=set())
+    assert quota.fractions_left() == (None, None)
+    assert quota.probe_stats() == (0, 0)

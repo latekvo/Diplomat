@@ -1092,8 +1092,9 @@ def test_quota_left_parses_utilization_and_caches(monkeypatch):
     monkeypatch.delenv("SZPONTNET_OAUTH_PROBE", raising=False)
     calls = []
     payload = {"five_hour": {"utilization": 36.0}, "seven_day": {"utilization": 27}}
+    monkeypatch.setattr(usage, "_oauth_tokens", lambda: ["oat-test"])
     monkeypatch.setattr(usage, "_fetch_usage_payload",
-                        lambda: calls.append(1) or payload)
+                        lambda _token: calls.append(1) or payload)
     usage._reset_probe_cache()
     try:
         assert usage.quota_left() == (0.64, 0.73)
@@ -1118,7 +1119,8 @@ def test_probe_reads_the_reset_instant_each_window_reports(monkeypatch):
         "seven_day": {"utilization": 27,
                       "resets_at": "2026-07-21T06:59:59.816926+00:00"},
     }
-    monkeypatch.setattr(usage, "_fetch_usage_payload", lambda: payload)
+    monkeypatch.setattr(usage, "_oauth_tokens", lambda: ["oat-test"])
+    monkeypatch.setattr(usage, "_fetch_usage_payload", lambda _token: payload)
     usage._reset_probe_cache()
     try:
         session, week = usage.windows()
@@ -1148,7 +1150,7 @@ def test_window_without_a_reset_instant_assumes_a_full_span(monkeypatch):
 def test_quota_probe_disabled_by_env(monkeypatch):
     from szpontnet import usage
 
-    def _boom():
+    def _boom(_token):
         raise AssertionError("probe must not run when disabled")
 
     monkeypatch.setenv("SZPONTNET_OAUTH_PROBE", "0")
@@ -2615,6 +2617,13 @@ def test_stale_agent_sentinel_does_not_release_a_live_claim(tmp_path, monkeypatc
         f.write("0")
     from szpontnet import node as node_mod
     monkeypatch.setattr(node_mod.spawnjob, "spawn_job", lambda *a, **k: None)
+    # …and how busy the machine running the suite is. `_spawn_local` asks the host
+    # that last, and Diplomat's answers it from the real process table — so on a box
+    # with agents up (the ordinary state of the one this is written on) the job is
+    # declined, no claim is ever taken, and this fails on a line about sentinel paths.
+    # It takes as many busy agents as the cap allows, so a quiet box hides it and a
+    # re-run clears it only by luck — neither is evidence about the sentinels.
+    monkeypatch.setattr(node_mod, "at_job_capacity", lambda running_keys: False)
     job = protocol.Job(id="j1", duty="review", prompt="p", requested_by="me",
                        requested_at=1.0, work_key=wk)
     fresh._spawn_local(job)

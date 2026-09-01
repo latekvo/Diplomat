@@ -39,7 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let defaults = UserDefaults.standard
             if !defaults.bool(forKey: "didTriggerTerminalAutomation") {
                 defaults.set(true, forKey: "didTriggerTerminalAutomation")
-                let preferred = SpawnTerminal(rawValue: Store.storedTerminalChoice ?? "") ?? .iterm
+                let preferred = SpawnTerminal(rawValue: Store.storedTerminalChoice ?? "") ?? .ghostty
                 AgentSpawner.triggerAutomationPrompt(preferred: preferred)
             }
         }
@@ -91,10 +91,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if env["DIPLOMAT_QUEUE_TEST"] == "1" {
             Task { @MainActor in let ok = await QueueTest.run(); exit(ok ? 0 : 1) }
         }
+        // Self-test of what a resolved tick hands the panel: the rows, and the bays
+        // measured beside them. The evidence is a literal, so it reads no `ps` and
+        // depends on nothing else running on the machine.
+        if env["DIPLOMAT_PUBLISH_TEST"] == "1" {
+            Task { @MainActor in let ok = await PublishTest.run(); exit(ok ? 0 : 1) }
+        }
         // Self-test of what the sweep decides about a live session — working, or back at
         // its prompt. Both probes are injected, so it opens no window and dials no port.
         if env["DIPLOMAT_SWEEP_TEST"] == "1" {
             exit(SweepTest.run() ? 0 : 1)
+        }
+        // Self-test of WHICH credential the quota probe spends. Both halves of the
+        // candidate list are fixtures, so it reads nothing off this machine and dials
+        // nothing.
+        if env["DIPLOMAT_QUOTA_TEST"] == "1" {
+            exit(QuotaTest.run() ? 0 : 1)
         }
         // Device-allocator self-test: exercise the exact paths the live panel uses —
         // resolve node, shell the installer's --check, and Codable-decode the daemon's
@@ -112,6 +124,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // which ones the watcher would nudge — WITHOUT sending anything.
         if env["DIPLOMAT_APIWATCH_SCAN"] == "1" {
             Dump.apiWatchScan(); exit(0)
+        }
+        // API-error-watcher self-test: proves a scan writes into the sessions an agent is
+        // running in and no others, and that a wrapped agent's window is still one of
+        // them. Every session and process is a literal — no terminal is read and nothing
+        // is typed. Exit code = pass/fail.
+        if env["DIPLOMAT_APIWATCH_TEST"] == "1" {
+            Task { @MainActor in let ok = await ApiWatchTest.run(); exit(ok ? 0 : 1) }
         }
         // Spawn focus self-test: prove a background (auto-fix) spawn keeps the user's
         // focus while a foreground (user SPAWN) spawn still brings the terminal forward.
@@ -309,7 +328,7 @@ enum Dump {
                                    runner: AppConfig.agentRunner, port: 0))
         print("\n----- SHELL COMMAND -----")
         print(cmd)
-        let term = AgentSpawner.resolved(.iterm)
+        let term = AgentSpawner.resolved(.ghostty)
         guard withBackgroundScript else {
             print("\n----- APPLESCRIPT (\(term.title)) -----")
             print(AgentSpawner.appleScript(for: term, shellCommand: cmd))
@@ -394,21 +413,36 @@ enum Dump {
 
     /// API-error watcher dry-run: read every terminal session's last visible lines,
     /// print which the watcher would nudge, and send NOTHING. Safe to run anytime.
+    ///
+    /// Both halves of the real decision, or the count would answer a question the
+    /// watcher does not ask: a matching tail on a session no agent is behind is a
+    /// session it leaves alone.
     static func apiWatchScan() {
         guard let sessions = ApiErrorWatcher.dumpSessions() else {
             print("== api-error scan: DUMP FAILED (automation permission? AppleEvent timeout?) ==")
             return
         }
+        let onAnAgent = AgentProbes.ttysRunningAnAgent(now: Date().timeIntervalSince1970)
+        guard let agentTTYs = onAnAgent.value else {
+            print("== api-error scan: THE PROCESS TABLE \(onAnAgent.reason) — a scan would "
+                + "send nothing, because it cannot tell an agent's session from a shell ==")
+            return
+        }
         print("== api-error scan: \(sessions.count) terminal session(s) ==\n")
+        func wouldNudge(_ s: ApiErrorWatcher.Session) -> Bool {
+            agentTTYs.contains(AgentProbes.shortTTY(s.tty))
+                && ApiErrorMatch.looksLikeApiError(s.tail)
+        }
         for s in sessions {
-            let mark = ApiErrorMatch.looksLikeApiError(s.tail) ? "⚠️ MATCH" : "  ok   "
+            let mark = wouldNudge(s) ? "⚠️ MATCH"
+                : ApiErrorMatch.looksLikeApiError(s.tail) ? "no agent"
+                : "  ok   "
             let last = s.tail.split(whereSeparator: \.isNewline).last.map(String.init) ?? ""
             print("  \(mark)  \(s.tty)   last: \(last.prefix(70))")
         }
-        let matches = sessions.filter { ApiErrorMatch.looksLikeApiError($0.tail) }
-        print("\n\(matches.count) session(s) would receive: "
-            + "\"\(ApiErrorWatcher.continueMessage)\"  (dry-run — nothing sent; "
-            + "out-of-quota stalls are ignored, never nudged)")
+        print("\n\(sessions.filter(wouldNudge).count) session(s) would receive: "
+            + "\"\(ApiErrorWatcher.continueMessage)\"  (dry-run — nothing sent; a session "
+            + "no agent is on is never written to, and out-of-quota stalls are ignored)")
     }
 
     /// Spawn focus self-test: exercise the REAL `AgentSpawner` spawn path three times
@@ -428,7 +462,7 @@ enum Dump {
     /// unchanged from before this fix (see DIPLOMAT_PRINT_PROMPT) — that identity is
     /// the real regression guard; the foreground focus result below is informational only.
     /// Returns overall pass/fail so a hook/script can gate on the exit code. Drives the
-    /// terminal the panel is configured for (falls back to iTerm).
+    /// terminal the panel is configured for (falls back to the top of the ladder).
     @MainActor static func spawnFocusTest() -> Bool {
         // Deliberately NOT OSAScript.capture: this is a diagnostic, and whatever a
         // partially-failing script did print is more useful here than a flat nil.
@@ -449,26 +483,23 @@ enum Dump {
                 + (term == .iterm ? "current window" : "front window") + " as string")
         }
         func openWindow(_ term: SpawnTerminal) -> String {
-            osa(term == .iterm
-                ? "tell application \"iTerm\" to return id of (create window with default profile) as string"
-                : "tell application \"Terminal\"\n do script \"\"\n return id of front window as string\nend tell")
+            switch term {
+            case .ghostty:
+                return osa("tell application \"Ghostty\" to return id of (new window) as string")
+            case .iterm:
+                return osa("tell application \"iTerm\" to return id of (create window with default profile) as string")
+            case .terminal:
+                return osa("tell application \"Terminal\"\n do script \"\"\n return id of front window as string\nend tell")
+            }
         }
+        // Closes it the way the reap does, so a window this cannot close is one the
+        // reap could not either.
         func closeWindow(_ term: SpawnTerminal, _ wid: String) {
             guard !wid.isEmpty else { return }
-            _ = osa("""
-            tell application "\(term.appName)"
-                repeat with w in windows
-                    if (id of w as string) is "\(wid)" then
-                        try
-                            close w
-                        end try
-                    end if
-                end repeat
-            end tell
-            """)
+            _ = osa(AgentWindows.closeScript(term: term, windowID: wid))
         }
 
-        let term = AgentSpawner.resolved(SpawnTerminal(rawValue: Store.storedTerminalChoice ?? "") ?? .iterm)
+        let term = AgentSpawner.resolved(SpawnTerminal(rawValue: Store.storedTerminalChoice ?? "") ?? .ghostty)
         print("== spawn focus self-test · terminal: \(term.title) ==\n")
 
         // 1. BACKGROUND spawn — must not steal focus off Finder.
@@ -486,7 +517,14 @@ enum Dump {
         // (This machine is busy — Chrome/Slack/other agents can grab focus during the
         // input-settle delay; that's not our steal. Asserting exact return-to-Finder would
         // flap on that unrelated activity, so assert only "the terminal isn't left on top".)
-        let termProc = term == .iterm ? "iTerm2" : "Terminal"
+        // What System Events calls the app, which is not what AppleScript addresses it
+        // by: Ghostty's process is lowercase, iTerm's carries the 2.
+        let termProc: String
+        switch term {
+        case .ghostty: termProc = "ghostty"
+        case .iterm: termProc = "iTerm2"
+        case .terminal: termProc = "Terminal"
+        }
         let bgKept = afterBG != termProc
         let exactly = afterBG == before ? " (exactly restored)" : " (another app took focus after restore — not our steal)"
         print("BACKGROUND spawn (restore → Finder):")
