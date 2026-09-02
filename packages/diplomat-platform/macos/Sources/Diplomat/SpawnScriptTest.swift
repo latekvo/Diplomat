@@ -131,6 +131,28 @@ enum SpawnScriptTest {
         check("the session name is one a reap can recognise as ours",
               AgentSpawner.ghosttySession().hasPrefix(TerminalFocus.sessionPrefix))
 
+        // The window's title, which is what ties a Ghostty window to the agent in it once
+        // the run's handle is gone: no tty is on offer, and retirement deletes that handle
+        // while the agent goes on working.
+        let staged = AgentSpawner.ghosttyLauncher(command: "run-the-agent",
+                                                  session: "diplomat-abc",
+                                                  tmux: "/opt/homebrew/bin/tmux")
+        check("the staged file titles its window after the session",
+              staged.contains("set-option set-titles on")
+                && staged.contains("set-option set-titles-string 'diplomat-abc'"))
+        // Without `-g`: this is the operator's own tmux server, and a global set would
+        // retitle every session they have open.
+        check("…for its own session and no other", !staged.contains(" -g "))
+        // Titled first, or the window wears the old name for the whole life of the agent
+        // being looked for.
+        let titledAt = staged.range(of: "set-titles on")?.lowerBound
+        let agentAt = staged.range(of: "run-the-agent")?.lowerBound
+        check("…before the agent it is staging",
+              titledAt != nil && agentAt != nil && titledAt! < agentAt!)
+        check("a handle-less raise addresses that title",
+              TerminalFocus.ghosttyRaiseScript(session: "diplomat-abc")
+                .contains("first window whose name is \"diplomat-abc\""))
+
         // Which terminal a spawn lands on. Ghostty leads because its window is created
         // WITH its command and so cannot drop one — but only where tmux can read the
         // screen, since a run nothing can watch holds its bay until a human closes it.

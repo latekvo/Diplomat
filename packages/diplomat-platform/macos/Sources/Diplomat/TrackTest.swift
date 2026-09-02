@@ -377,8 +377,33 @@ enum TrackTest {
         // Split from the focus below: no tty is an agent that has gone rather than a
         // route that failed, and the two together read as the second.
         check("the agent is still on a terminal to be walked from", !agentTTY.isEmpty)
+        // A DIFFERENT window in front first, or the two checks below prove nothing: the
+        // run's window is the one the spawn just opened, so it is frontmost already and a
+        // walk that raised nothing would leave it there. Best-effort — one Ghostty window
+        // on the machine means no decoy to offer.
+        if term == .ghostty {
+            OSAScript.runSilently("""
+                tell application "Ghostty"
+                    activate window (first window whose name is not "\(sid)")
+                    activate
+                end tell
+                """)
+        }
         check("…and from the agent's own process, with no handle at all",
               TerminalFocus.focus(tty: agentTTY, pid: agentPID))
+        // Not merely that something came forward: the walk ends at a bare `activate` for
+        // a window it cannot name, which leaves whichever was in front there — so "focus
+        // returned true" and "the agent's window is up" are two claims. The session name
+        // is the title the spawn wrote, so the front window's own name settles it.
+        if term == .ghostty {
+            var raised = false
+            for _ in 0..<15 where !raised {
+                raised = OSAScript.capture("tell application \"Ghostty\" to get name of front window")?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) == sid
+                if !raised { try? await Task.sleep(nanoseconds: 200_000_000) }
+            }
+            check("…on the window the agent is in, not whichever was already in front", raised)
+        }
         check("focus of a vanished window fails (→ the row is dismissed)",
               !AgentWindows.focus(.init(terminal: term.rawValue, windowID: "99999999",
                                         sessionID: "nope")))

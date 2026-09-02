@@ -242,7 +242,7 @@ enum AgentSpawner {
     private static func runGhosttySpawn(command: String, restoreFocusTo restoreBID: String?)
             throws -> (String, String, String) {
         let session = ghosttySession()
-        let launcher = try writeLauncher(command)
+        let launcher = try writeLauncher(ghosttyLauncher(command: command, session: session))
         let captured = try runOsascriptCapturing(
             appleScript(for: .ghostty,
                         shellCommand: ghosttyCommand(session: session, launcher: launcher.path),
@@ -257,7 +257,8 @@ enum AgentSpawner {
     }
 
     /// The window command a Ghostty spawn runs. `-s` names the session so the run can be
-    /// found again by name — for its tty on the way in, and to end it on the way out.
+    /// found again by name — for its tty on the way in, to end it on the way out, and, by
+    /// way of `ghosttyLauncher`, to raise its window at any point in between.
     ///
     /// `/bin/sh` rather than the operator's login shell: the staged file is the command
     /// `shellCommand` built, which invokes `"$SHELL" -i -c` itself. Running it under the
@@ -266,6 +267,30 @@ enum AgentSpawner {
     static func ghosttyCommand(session: String, launcher: String,
                                tmux: String = TerminalFocus.binary ?? "tmux") -> String {
         "\(shq(tmux)) new-session -s \(shq(session)) /bin/sh \(shq(launcher))"
+    }
+
+    /// What the staged file runs: the agent's command, under the two tmux options that
+    /// write the session's name into the window's title.
+    ///
+    /// That title is the only thing tying a Ghostty window to the agent inside it.
+    /// Ghostty's dictionary exposes no tty, so nothing can ask which window a process is
+    /// on, and the handle a spawn keeps is deleted along with the run directory the
+    /// moment the run retires — which happens while agents are still working. The session
+    /// name outlives it: `TerminalFocus.walk` reads the name back off the pane every time
+    /// the agent is found again, so a window carrying it can be raised exactly for as long
+    /// as the agent is alive (`TerminalFocus.ghosttyRaiseScript`).
+    ///
+    /// Set from inside the session, so the options need no target and touch no other
+    /// session on the operator's server. `set-titles-string` is pinned to the name rather
+    /// than left at its default, which interpolates the pane's own title: the agent
+    /// rewrites that as it works, and a title that moves is not one to match on.
+    static func ghosttyLauncher(command: String, session: String,
+                                tmux: String = TerminalFocus.binary ?? "tmux") -> String {
+        """
+        \(shq(tmux)) set-option set-titles on
+        \(shq(tmux)) set-option set-titles-string \(shq(session))
+        \(command)
+        """
     }
 
     /// Stage the shell command as a file for a Ghostty window to run.

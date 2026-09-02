@@ -70,12 +70,18 @@ enum TerminalFocus {
     /// The last route out, for a tty neither scriptable terminal admitted to showing.
     ///
     /// Ghostty answers no question about which window is on which tty, so there is
-    /// nothing here to match the way `itermScript` matches. What is left is what the
-    /// reveal above already did: the agent's pane is now on the screen of the client
-    /// attached to it, so the window showing that client is showing the agent, and
-    /// bringing Ghostty forward puts it up. Which of several Ghostty windows lands in
-    /// front is not ours to pick — but a run this applet spawned is raised exactly, by
-    /// its handle, long before anything reaches here.
+    /// nothing here to match the way `itermScript` matches on one. The window's TITLE
+    /// stands in: a spawn tells tmux to write the session's name there
+    /// (`AgentSpawner.ghosttyLauncher`), and that name is on the pane this walk has just
+    /// come through. So a run this applet opened is raised exactly whether or not it
+    /// still has the handle its run directory held — which retirement deletes out from
+    /// under an agent that is still working, and which is the whole reason this path is
+    /// reached for a spawn of our own at all.
+    ///
+    /// The bare activate is what remains for a session this applet did not name, and for
+    /// one opened before its window was titled. It brings Ghostty forward without picking
+    /// a window, which on a machine with several open is the wrong one more often than
+    /// not — but the alternative is reporting no window for an agent plainly sitting in one.
     ///
     /// Only for a pane a client is attached to. An unattached session is on nobody's
     /// screen, and raising an app over one would report a window that does not exist.
@@ -86,7 +92,23 @@ enum TerminalFocus {
             return clients[session] != nil
         }
         guard attached, isRunning("com.mitchellh.ghostty") else { return false }
+        if let session = ownSession(on: walk.ttys, panes),
+           OSAScript.runSilently(ghosttyRaiseScript(session: session)) { return true }
         return OSAScript.runSilently("tell application \"Ghostty\" to activate")
+    }
+
+    /// Raise the Ghostty window titled `session`, where a spawn had tmux write the name.
+    ///
+    /// The specifier errors (-1719) when no window carries the title, which is what sends
+    /// a session opened before titles on to the activate above rather than reporting a
+    /// raise that did not happen.
+    static func ghosttyRaiseScript(session: String) -> String {
+        """
+        tell application "Ghostty"
+            activate window (first window whose name is "\(session)")
+            activate
+        end tell
+        """
     }
 
     /// Close the terminal window running `tty`, or whatever wraps it — the mirror of
