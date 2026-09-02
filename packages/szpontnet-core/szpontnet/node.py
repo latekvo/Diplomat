@@ -2823,19 +2823,22 @@ class MeshNode:
         return str(agents / f"{prefix}.{digest}.{inc}.{seq}.done")
 
     def _sweep_stale_sentinels(self) -> None:
-        """At startup this node owns no agents yet, so every completion sentinel on
-        disk is an orphan from a prior incarnation (a detached agent that outlived a
-        restart, or a crash before ``_watch_agent``'s cleanup). Remove them so they
-        can never be misread — and so the epoch-stamped paths don't accumulate
-        without bound across restarts. A prior-incarnation agent still running will
-        just re-create its own epoch-stamped file, which no watcher here tracks."""
+        """At startup this node owns no agents yet, so every file in the agents dir
+        is an orphan from a prior incarnation (a detached agent that outlived a
+        restart, or a crash before ``_watch_agent``'s cleanup): the completion
+        sentinels, and whatever the host staged beside each one under its name.
+        Remove them so a sentinel can never be misread — and so the epoch-stamped
+        paths don't accumulate without bound across restarts. A prior-incarnation
+        agent still running will just re-create its own epoch-stamped files, which
+        no watcher here tracks."""
         from . import statefile
 
         agents = statefile.state_path().parent / "agents"
         with contextlib.suppress(OSError):
-            for p in agents.glob("*.done"):
-                with contextlib.suppress(OSError):
-                    p.unlink()
+            for p in agents.iterdir():
+                if p.is_file():
+                    with contextlib.suppress(OSError):
+                        p.unlink()
 
     async def _watch_agent(self, work_key: str, done_path: str | None) -> None:
         """Hold the executor's claim on ``work_key`` until its agent finishes.
@@ -2858,9 +2861,22 @@ class MeshNode:
         finally:
             self._agents.pop(work_key, None)
             if done_path:
-                with contextlib.suppress(OSError):
-                    os.unlink(done_path)
+                self._reclaim_sentinel(done_path)
             self.release(work_key)
+
+    @staticmethod
+    def _reclaim_sentinel(done_path: str) -> None:
+        """Remove the sentinel and everything staged beside it under its name: the
+        host keeps its per-job files (hook settings, an activity feed) as
+        ``<sentinel stem>.<suffix>``, so the node that named the sentinel can
+        reclaim them without knowing what they are."""
+        agents_dir, name = os.path.split(done_path)
+        stem = name[: name.rfind(".") + 1] if "." in name else name + "."
+        with contextlib.suppress(OSError):
+            for entry in os.listdir(agents_dir):
+                if entry.startswith(stem):
+                    with contextlib.suppress(OSError):
+                        os.unlink(os.path.join(agents_dir, entry))
 
     # MARK: - foreign zero-trust execution (confined compute + response-back)
     #
