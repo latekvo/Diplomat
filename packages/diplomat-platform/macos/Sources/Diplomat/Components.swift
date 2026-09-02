@@ -476,11 +476,15 @@ struct NestedSettings<Content: View>: View {
     @ViewBuilder var content: () -> Content
 
     var body: some View {
-        HStack(alignment: .top, spacing: 9) {
-            RoundedRectangle(cornerRadius: 1).fill(tint.opacity(0.4)).frame(width: 2)
-            VStack(alignment: .leading, spacing: 9) { content() }
-        }
-        .padding(.leading, 1)
+        // Overlay, not a sibling in an HStack: a Shape with only its width pinned takes
+        // any height it is offered, so one laid out beside the content stretches the
+        // whole block to fill a taller column — blank space under the last nested row.
+        VStack(alignment: .leading, spacing: 9) { content() }
+            .padding(.leading, 12)
+            .overlay(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 1).fill(tint.opacity(0.4))
+                    .frame(width: 2).padding(.leading, 1)
+            }
     }
 }
 
@@ -530,8 +534,11 @@ struct SliderSetting: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
             HStack(spacing: 8) {
+                // Held to its own height: a Slider takes any height it is offered, and
+                // stretches its card to fill a column shorter than the one beside it.
                 Slider(value: $value, in: range, step: step)
                     .controlSize(.small).tint(tint)
+                    .fixedSize(horizontal: false, vertical: true)
                     .accessibilityLabel(label)
                     .accessibilityValue(badge)
                 Text(badge).font(.system(size: 10, weight: .bold).monospacedDigit())
