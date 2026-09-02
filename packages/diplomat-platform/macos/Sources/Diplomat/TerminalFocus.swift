@@ -148,7 +148,41 @@ enum TerminalFocus {
            OSAScript.runSilently(itermCloseScript(paths)) { return true }
         if isRunning("com.apple.Terminal"),
            OSAScript.runSilently(terminalCloseScript(paths)) { return true }
-        return ownSession(on: walk.ttys, panes).map(killSession(named:)) ?? false
+        return ownSession(on: walk.ttys, panes).map(endGhostty(session:)) ?? false
+    }
+
+    /// End a Ghostty run this applet named: the session, which takes the agent with it,
+    /// and then the window, which ending the session does not. Closing a Ghostty window
+    /// leaves what runs in it running, and the reverse holds too — kill the session and
+    /// the window stays, showing a dead shell for as long as the operator leaves it there.
+    /// Both halves are the reap; only together are they the act a hand on that window
+    /// would perform.
+    ///
+    /// The window is addressable at all because the spawn titled it
+    /// (`AgentSpawner.ghosttyLauncher`), which is what a run with no handle has instead of
+    /// a window id. One opened before titles loses its session and keeps its window, which
+    /// is what every run through here used to get.
+    ///
+    /// Answers on the kill. The window is what the operator sees, but the agent is what
+    /// the backstop was ending, and a run whose agent is gone must be priced rather than
+    /// held back over a window that would not close.
+    private static func endGhostty(session: String) -> Bool {
+        let killed = killSession(named: session)
+        OSAScript.runSilently(ghosttyCloseScript(session: session))
+        return killed
+    }
+
+    /// Close the Ghostty window titled `session`. `close window` is the verb — plain
+    /// `close` closes a surface — and the specifier errors when no window carries the
+    /// title, which for a window the operator shut first is not a failed reap.
+    static func ghosttyCloseScript(session: String) -> String {
+        """
+        tell application "Ghostty"
+            try
+                close window (first window whose name is "\(session)")
+            end try
+        end tell
+        """
     }
 
     /// The name of a tmux session this applet opened, if one of these ttys is a pane in

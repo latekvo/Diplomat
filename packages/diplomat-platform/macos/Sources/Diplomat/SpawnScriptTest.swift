@@ -152,6 +152,13 @@ enum SpawnScriptTest {
         check("a handle-less raise addresses that title",
               TerminalFocus.ghosttyRaiseScript(session: "diplomat-abc")
                 .contains("first window whose name is \"diplomat-abc\""))
+        // The reap's half of the same lookup, held to what `AgentWindows.closeScript` is
+        // held to: `close` closes a surface, so the window verb is the one that shuts a
+        // window, and the specifier errors when the operator already has.
+        let byTitle = TerminalFocus.ghosttyCloseScript(session: "diplomat-abc")
+        check("…and a handle-less reap shuts that window by the same title",
+              byTitle.contains("close window (first window whose name is \"diplomat-abc\")")
+                && byTitle.contains("try"))
 
         // Which terminal a spawn lands on. Ghostty leads because its window is created
         // WITH its command and so cannot drop one — but only where tmux can read the

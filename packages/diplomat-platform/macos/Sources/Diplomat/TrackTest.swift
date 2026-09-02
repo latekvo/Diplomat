@@ -503,6 +503,18 @@ enum TrackTest {
             if !emptied { try? await Task.sleep(nanoseconds: 200_000_000) }
         }
         check("…and the window is gone, not merely reported closed", emptied)
+        // On Ghostty the reap ends the SESSION, which is what takes the agent down — and
+        // that leaves the window standing, so the check above would pass with a dead shell
+        // still on the operator's screen. The title the spawn wrote is what closes it.
+        if term == .ghostty {
+            var shut = false
+            for _ in 0..<15 where !shut {
+                shut = OSAScript.capture("tell application \"Ghostty\" to get name of every window")
+                    .map { !$0.contains(cap.1) } ?? false
+                if !shut { try? await Task.sleep(nanoseconds: 200_000_000) }
+            }
+            check("…and the window itself is shut, not just emptied of its agent", shut)
+        }
         // On `emptied` rather than on `closed`: a terminal that answered ok and left the
         // window standing has to be tidied up too.
         if !emptied { closeWindow(term: term, windowID: cap.0) }
