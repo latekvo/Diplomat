@@ -666,7 +666,10 @@ def test_a_one_window_session_ends_with_its_window():
         tty = subprocess.run(
             ["tmux", "list-panes", "-t", name, "-F", "#{pane_tty}"],
             capture_output=True, text=True, check=True).stdout.strip()
-        assert tmuxwatch.kill_window_for_tty(tty) is True
+        listing = subprocess.run(
+            ["tmux", "list-panes", "-a", "-F", "#{session_name} #{pane_tty} #{window_id}"],
+            capture_output=True, text=True).stdout
+        assert tmuxwatch.kill_window_for_tty(tty) is True, f"tty={tty!r} panes={listing!r}"
         gone = subprocess.run(["tmux", "has-session", "-t", name],
                               capture_output=True).returncode != 0
         assert gone
