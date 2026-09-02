@@ -205,7 +205,7 @@ def _quota_headline(ledger, readings, *, now):
                           "weekLeft": week, "repoTokens": 0, "otherTokens": 0})
     telemetry._reset_cache()
     s = telemetry.summarize(telemetry.load(), now=now, days=7, steps=8,
-                            bin_count=4, z=1.96)
+                            bin_count=4, z=1.96, bucket_hours=4)
     return s.session_left_pct, s.week_left_pct
 
 
@@ -247,7 +247,7 @@ def test_the_headline_blanks_on_the_lookback_that_still_charts_the_reading(ledge
                       "weekLeft": 0.80, "repoTokens": 0, "otherTokens": 0})
     telemetry._reset_cache()
     s = telemetry.summarize(telemetry.load(), now=now, days=7, steps=8,
-                            bin_count=4, z=1.96)
+                            bin_count=4, z=1.96, bucket_hours=4)
     assert [q.session_pct for q in s.quota] == [42.0], "the chart lost its reading"
     assert (s.session_left_pct, s.week_left_pct) == (None, None)
 
@@ -721,7 +721,8 @@ def _sample(at: float, repo: float, other: float = 0.0) -> telemetry.Sample:
 
 def _summarize(samples: list, *, now: float, days: float) -> telemetry.Summary:
     return telemetry.summarize(telemetry.Ledger(tasks=[], samples=samples),
-                               now=now, days=days, steps=2, bin_count=4, z=1.96)
+                               now=now, days=days, steps=2, bin_count=4, z=1.96,
+                               bucket_hours=24)
 
 
 def test_a_range_counts_the_spend_since_the_reading_before_it_opened():
@@ -751,6 +752,120 @@ def test_a_range_with_no_readings_in_it_counts_nothing():
     now = 1_785_000_000.0
     s = _summarize([_sample(now - 8 * 86400, 1000.0)], now=now, days=1.0)
     assert s.repo_tokens == 0.0 and s.other_tokens == 0.0
+
+
+# MARK: - Finished work over time
+
+
+#: A fixed instant, so the buckets never straddle a real clock tick.
+_FIN_NOW = 1_785_000_000.0
+
+
+def _task(key: str, *, done_at: float | None, started_at: float | None = None,
+          remote: bool = False) -> telemetry.Task:
+    return telemetry.Task(key=key, duty="review", started_at=started_at,
+                          done_at=done_at, remote=remote)
+
+
+def _finished(tasks: list, *, days: float = 1.0,
+              bucket_hours: float = 4.0) -> telemetry.Summary:
+    """A day of 4-hour buckets — six bars, the last opening at ``now - 4h``."""
+    return telemetry.summarize(telemetry.Ledger(tasks=list(tasks), samples=[]),
+                               now=_FIN_NOW, days=days, steps=2, bin_count=1,
+                               z=1.96, bucket_hours=bucket_hours)
+
+
+@pytest.mark.parametrize("days", [7, 14, 30, 60])
+def test_every_shipped_lookback_buckets_into_whole_bars(days):
+    """The bar width is picked per range so that the count stays in a band a reader
+    can take in, and so that it DIVIDES the range: a range that did not divide would
+    leave the oldest bar covering a shorter stretch than the ones beside it, and a bar
+    chart whose bars span different amounts of time cannot be read by height."""
+    hours = telemetry.bucket_hours(float(days))
+    series = telemetry.finished_series([], now=_FIN_NOW, days=float(days),
+                                       bucket_hours=hours)
+    assert len(series) == days * 24 / hours
+    assert 28 <= len(series) <= 42, f"{days}d draws {len(series)} bars"
+    assert series[0].at == _FIN_NOW - days * 86400, (
+        "the oldest bar reaches past the lookback the button promises, so it covers "
+        "a different span from the rest"
+    )
+
+
+def test_a_bar_is_captioned_with_the_width_it_was_built_from():
+    assert [telemetry.bucket_label(h) for h in (4, 12, 24, 48)] == \
+        ["4h", "12h", "24h", "48h"]
+    # A bucket that is not a whole number of hours must not read as "0h".
+    assert telemetry.bucket_label(0.5) == telemetry.duration(1800)
+
+
+def test_an_exit_on_a_bucket_edge_opens_the_later_bucket():
+    """Both edges of a bucket are the same instant to a float, so one of the two has
+    to own it. The later one does, which is what makes the newest bucket the one that
+    holds work finished in the last few minutes."""
+    edge = _FIN_NOW - 4 * 3600
+    s = _finished([_task("a", done_at=edge - 1), _task("b", done_at=edge)])
+    assert [p.count for p in s.finished] == [0, 0, 0, 0, 1, 1]
+
+
+def test_a_run_that_ended_at_this_instant_is_the_newest_bar():
+    """``now`` sits one past the last bucket's opening edge, so it is the one exit
+    that has to be pulled back into the bar rather than off the end of the axis."""
+    s = _finished([_task("a", done_at=_FIN_NOW)])
+    assert [p.count for p in s.finished] == [0, 0, 0, 0, 0, 1]
+
+
+def test_a_lookback_the_bucket_does_not_divide_keeps_the_newest_bar_whole():
+    """Every shipped range divides exactly, but that is not the rule the bars are laid
+    by: they run backwards from ``now``, so the NEWEST is a whole bucket and it is the
+    oldest that reaches back past the range. Laid forwards from the start instead, the
+    newest would hold whatever fraction of a bucket was left over and read as a slump
+    that is only a short bar."""
+    hours = 5.0                                  # a day is 4.8 of these
+    s = _finished([_task("a", done_at=_FIN_NOW - 60)], days=1.0, bucket_hours=hours)
+    assert len(s.finished) == 5 and s.finished[-1].count == 1
+    assert s.finished[-1].at == _FIN_NOW - hours * 3600, "the newest bar is a stub"
+    assert s.finished[0].at == _FIN_NOW - 5 * hours * 3600, (
+        "the oldest bar was cut to fit the range instead of the newest being whole"
+    )
+
+
+def test_a_run_is_placed_by_its_exit_not_by_its_start():
+    """A long run is one delivery, and it happened when it ended. Bucketed by its
+    start, this one would fall twenty days off the left of a one-day chart."""
+    s = _finished([_task("a", started_at=_FIN_NOW - 20 * 86400,
+                         done_at=_FIN_NOW - 3600)])
+    assert [p.count for p in s.finished] == [0, 0, 0, 0, 0, 1]
+
+
+def test_a_run_still_going_is_not_a_bar():
+    s = _finished([_task("a", started_at=_FIN_NOW - 3600, done_at=None)])
+    assert s.finished_count == 0 and s.peak_finished == 0
+
+
+def test_a_run_the_mesh_placed_on_a_peer_still_counts_as_delivered():
+    """The cost figures drop a peer's run — the tokens came out of that machine's
+    window, not ours. The bars are what the pool DELIVERED, and it delivered that
+    one, so the two counts differ on purpose."""
+    s = _finished([_task("a", started_at=_FIN_NOW - 7200, done_at=_FIN_NOW - 3600,
+                         remote=True)])
+    assert s.finished_count == 1
+    assert s.done_count == 0, "a peer's run leaked into the local completion count"
+
+
+def test_work_that_finished_before_the_range_opened_is_left_out():
+    s = _finished([_task("a", done_at=_FIN_NOW - 86400 - 1),
+                   _task("b", done_at=_FIN_NOW - 86400 + 1)])
+    assert s.finished_count == 1 and s.finished[0].count == 1
+
+
+def test_the_headline_counts_exactly_the_bars_under_it():
+    """The number on the card and the bars beneath it are one measurement read twice;
+    derived apart, a range boundary is enough to make them disagree in public."""
+    s = _finished([_task(f"k{i}", done_at=_FIN_NOW - 3600) for i in range(3)]
+                  + [_task("older", done_at=_FIN_NOW - 20 * 3600)])
+    assert s.finished_count == sum(p.count for p in s.finished) == 4
+    assert s.peak_finished == 3
 
 
 # MARK: - Both rate-limit windows, priced separately
@@ -796,7 +911,7 @@ def _both_windows(*, week_moves: bool = True,
 
 def _windows_summary(**kwargs) -> telemetry.Summary:
     return telemetry.summarize(_both_windows(**kwargs), now=_WINDOWS_NOW, days=14.0,
-                               steps=2, bin_count=4, z=1.96)
+                               steps=2, bin_count=4, z=1.96, bucket_hours=24)
 
 
 def test_each_window_is_measured_against_its_own_calibration():

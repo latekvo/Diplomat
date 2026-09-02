@@ -106,6 +106,8 @@ public enum CoreAssets {
         public struct Range: Decodable {
             public let days: Int
             public let title: String
+            /// How wide one bar of the finished-work chart is over this lookback.
+            public let bucketHours: Double
         }
         public struct Series: Decodable {
             public let steps: Int
@@ -140,6 +142,13 @@ public enum CoreAssets {
         public let metrics: [Metric]
 
         public func metric(_ id: String) -> Metric? { metrics.first { $0.id == id } }
+
+        /// The bar width the finished-work chart uses over a `days` lookback. The
+        /// screen only ever selects a range out of `ranges`, so the fallback is for a
+        /// hand-edited asset alone. Twin of `telemetry.bucket_hours`.
+        public func bucketHours(days: Int) -> Double {
+            ranges.first { $0.days == days }?.bucketHours ?? 24
+        }
     }
 
     // MARK: - Directory resolution

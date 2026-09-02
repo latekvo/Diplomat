@@ -320,7 +320,8 @@ def test_flipping_the_lookback_leaves_exactly_one_live_chart_per_card(store):
         QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         alive = sorted(type(w).__name__ for w in view.findChildren(QWidget)
                        if type(w).__name__.endswith("Chart"))
-        assert alive == ["PendingChart", "QuotaChart", "SpreadChart"], (
+        assert alive == ["FinishedChart", "PendingChart", "QuotaChart",
+                         "SpreadChart"], (
             f"at {days}d the cards held {alive}")
 
 
@@ -479,6 +480,121 @@ def test_a_range_that_never_owed_anything_claims_no_peak(app):
     )
 
 
+# MARK: - The finished-work bars
+
+
+def _finished_chart(counts: list[int], *, bucket_hours: float = 4.0,
+                    days: float = 1.0):
+    """The finished-work chart rendered 400x140 over those bar counts.
+
+    Rendered without ``DrawWindowBackground``, so every pixel left transparent is one
+    the chart did not paint — the widget's own background is whatever palette the host
+    Qt hands it, and reading ink off that by brightness passes on a dark desktop and
+    not on a bare CI runner.
+    """
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtGui import QImage, QRegion
+    from PySide6.QtWidgets import QWidget
+
+    from diplomat_app.telemetryview import FinishedChart
+
+    now = 1_785_000_000.0
+    width = bucket_hours * 3600
+    start = now - len(counts) * width
+    chart = FinishedChart()
+    chart.set_series(
+        tuple(telemetry.FinishedPoint(at=start + i * width, count=c)
+              for i, c in enumerate(counts)),
+        bucket_hours, days)
+    chart.resize(400, 140)
+    image = QImage(chart.size(), QImage.Format.Format_ARGB32)
+    image.fill(Qt.GlobalColor.transparent)
+    chart.render(image, QPoint(), QRegion(), QWidget.RenderFlag.DrawChildren)
+    return image
+
+
+def _bar_tops(image, bars: int) -> dict[int, int]:
+    """The topmost bar pixel in each slot, keyed by slot. Picked out by hue: the bars
+    are teal (green and blue far above red), while the gridlines are white and the
+    labels grey, neither of which leans either way."""
+    pad_l = pad_r = 4
+    w = image.width() - pad_l - pad_r
+    tops: dict[int, int] = {}
+    for i in range(bars):
+        x = int(pad_l + w * (i + 0.5) / bars)
+        for y in range(image.height()):
+            c = image.pixelColor(x, y)
+            if c.green() > c.red() + 50 and c.blue() > c.red() + 50:
+                tops[i] = y
+                break
+    return tops
+
+
+def test_a_bar_is_as_tall_as_its_share_of_the_tallest(app):
+    """The count axis is scaled to the peak, so a bucket holding half the peak's work
+    is drawn half as tall. That ratio is the chart's one readable claim — a bar drawn
+    from a count without it says nothing at all."""
+    counts = [0, 1, 2, 0, 0, 4]
+    tops = _bar_tops(_finished_chart(counts), len(counts))
+    plot_top, plot_h = 18, 140 - 18 - 16
+    for i, count in ((1, 1), (2, 2), (5, 4)):
+        expected = plot_top + plot_h * (1 - count / 4)
+        assert abs(tops[i] - expected) <= 2, (
+            f"bar {i} holds {count} of a peak 4 and was drawn from y={tops[i]}, not "
+            f"{expected:.0f}"
+        )
+    assert 0 not in tops and 3 not in tops, "a bucket nothing finished in drew a bar"
+
+
+def test_a_range_in_which_nothing_finished_claims_no_peak(app):
+    """The count axis is floored at one so an empty range can still be scaled and
+    drawn. The peak label reports the data, not that floor — "peak 1 per 4h" over a
+    day in which nothing finished is a delivery that never happened."""
+    def ink(image) -> int:
+        """Pixels painted in the strip the peak is written in — above the plot, so a
+        bar at the peak cannot be mistaken for the label. Nothing else reaches it: the
+        gridlines stop at the plot's top edge and the date labels sit below it."""
+        return sum(image.pixelColor(x, y).alpha() > 0
+                   for x in range(4, 140) for y in range(0, 16))
+
+    # Work only in the last bar, so the corner holds nothing but the label.
+    assert ink(_finished_chart([0, 0, 0, 0, 0, 3])) > 0, (
+        "nothing was drawn where the peak label belongs — the check below proves "
+        "nothing"
+    )
+    assert ink(_finished_chart([0] * 6)) == 0, (
+        "a range in which nothing finished still labelled a peak"
+    )
+
+
+def test_the_bars_re_bucket_with_the_lookback(store):
+    """The bar width belongs to the range, so flipping the lookback has to rebuild the
+    bars themselves rather than stretch the same ones over more time."""
+    from diplomat_app.telemetryview import FinishedChart
+
+    _seed()
+    view = _view(store)
+    for days, bars in ((7, 42), (14, 28), (30, 30), (60, 30)):
+        view._set_days(days)
+        chart = view.findChild(FinishedChart)
+        assert len(chart._points) == bars, f"{days}d drew {len(chart._points)} bars"
+        assert sum(p.count for p in chart._points) == 8, (
+            "the seeded tasks finished within the hour, so every lookback reaches "
+            "all of them"
+        )
+
+
+def test_the_card_names_the_slice_of_time_a_bar_counts(store):
+    """A bar chart whose bar width is not stated is a shape, not a measurement — and
+    this one's width changes under the reader as they flip the lookback."""
+    _seed()
+    view = _view(store)
+    view._set_days(14)
+    assert any("one bar per 12h" in t for t in _labels(view))
+    view._set_days(60)
+    assert any("one bar per 48h" in t for t in _labels(view))
+
+
 def test_work_running_on_a_peer_is_not_charged_to_this_machine(store):
     """A mesh placement spends the peer's quota; counting it here would make this
     machine's cost per task depend on how busy the fleet is."""
@@ -495,7 +611,7 @@ def test_work_running_on_a_peer_is_not_charged_to_this_machine(store):
     telemetry._reset_cache()
 
     summary = telemetry.summarize(telemetry.load(), now=now, days=14.0, steps=56,
-                                  bin_count=12, z=1.96)
+                                  bin_count=12, z=1.96, bucket_hours=12)
     assert summary.started_count == 2 and summary.remote_count == 1
     assert summary.per_task.count == 1, "a peer's agent was priced against our window"
     assert summary.run_samples == 1

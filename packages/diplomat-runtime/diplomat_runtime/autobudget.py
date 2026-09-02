@@ -129,16 +129,19 @@ def _summary():
     The screen's DEFAULT lookback, not its longest and not whatever range the
     operator last flipped it to: the gate is a background decision in another
     process, and the one thing that makes it auditable is that "Limit per task" as
-    the screen opens is the figure it was priced from. ``steps``/``bin_count`` are
-    floors — the series and the histogram are the screen's, and only the
-    distributions' moments and the two calibrations are read here.
+    the screen opens is the figure it was priced from.
+    ``steps``/``bin_count``/``bucket_hours`` are floors — the series, the histogram
+    and the finished-work buckets are the screen's, and only the distributions'
+    moments and the two calibrations are read here.
     """
     from . import telemetry
 
     model = telemetry.model()
+    days = float(model["defaultRangeDays"])
     return telemetry.summarize(
-        telemetry.load(), now=time.time(), days=float(model["defaultRangeDays"]),
+        telemetry.load(), now=time.time(), days=days,
         steps=2, bin_count=1, z=float(model["confidence"]["z"]),
+        bucket_hours=24 * days,
     ), int(model["minSample"])
 
 

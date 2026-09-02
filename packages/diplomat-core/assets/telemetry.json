@@ -11,12 +11,12 @@
   "quotaFreshSamples": 4,
   "maxLedgerBytes": 4194304,
 
-  "_rangesComment": "The lookback the screen offers. 14 days is the default: a week is short enough that one quiet weekend halves every average, and 30+ smooths out exactly the regression you opened the screen to find.",
+  "_rangesComment": "The lookback the screen offers. 14 days is the default: a week is short enough that one quiet weekend halves every average, and 30+ smooths out exactly the regression you opened the screen to find. bucketHours is how wide one bar of the finished-work chart is at that range, picked so every range draws 28-42 bars \u2014 the band where a bar is still thick enough to see and there are still enough of them to have a shape. Each divides its range exactly, so no bar covers a shorter stretch of time than the ones beside it and their heights compare.",
   "ranges": [
-    { "days": 7, "title": "7d" },
-    { "days": 14, "title": "14d" },
-    { "days": 30, "title": "30d" },
-    { "days": 60, "title": "60d" }
+    { "days": 7, "title": "7d", "bucketHours": 4 },
+    { "days": 14, "title": "14d", "bucketHours": 12 },
+    { "days": 30, "title": "30d", "bucketHours": 24 },
+    { "days": 60, "title": "60d", "bucketHours": 48 }
   ],
   "defaultRangeDays": 14,
 
@@ -122,6 +122,17 @@
       "linuxGlyph": "⋔",
       "sfSymbol": "arrow.triangle.merge",
       "colorHex": "#32ADE6"
+    },
+    {
+      "_comment": "The delivered half of a pair: 'Owed work' charts what the monitors found and nobody had taken, this what actually finished. Bucketed by when a task ENDED, so a run spanning two buckets is one delivery counted in the bucket it ended in \u2014 and a task the mesh placed on a peer counts, because it was delivered, even though its cost is the peer's and stays out of the per-task figures.",
+      "id": "finishedWork",
+      "title": "Finished work",
+      "blurb": "Auto-tasks that finished, counted in equal buckets across the lookback.",
+      "unit": "count",
+      "emoji": "\ud83c\udfc1",
+      "linuxGlyph": "\u25a5",
+      "sfSymbol": "chart.bar.fill",
+      "colorHex": "#00C7BE"
     },
     {
       "id": "completeTime",
