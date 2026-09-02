@@ -642,18 +642,24 @@ def test_the_tty_route_kills_the_panes_window_and_no_session(monkeypatch):
     mesh node opened has one window, and ends with it."""
     calls: list[list[str]] = []
 
+    panes = {"/dev/pts/3": "@4", "/dev/pts/9": "@7"}
+
     def fake_run(argv):
         calls.append(argv)
         if argv[:2] == ["tmux", "list-panes"]:
-            return (f"/dev/pts/3{tmuxwatch._UNIT}@4\n"
-                    f"/dev/pts/9{tmuxwatch._UNIT}@7\n")
+            return "".join(f"{tty}{tmuxwatch._UNIT}{w}\n" for tty, w in panes.items())
+        if argv[:2] == ["tmux", "kill-window"]:
+            for tty, w in list(panes.items()):
+                if w == argv[-1]:
+                    del panes[tty]
         return ""
 
     monkeypatch.setattr(tmuxwatch.shutil, "which", lambda _: "/usr/bin/tmux")
     monkeypatch.setattr(tmuxwatch, "_run", fake_run)
     assert tmuxwatch.kill_window_for_tty("pts/9") is True
-    assert calls[-1] == ["tmux", "kill-window", "-t", "@7"]
+    assert ["tmux", "kill-window", "-t", "@7"] in calls
     assert not any(c[:2] == ["tmux", "kill-session"] for c in calls)
+    assert panes == {"/dev/pts/3": "@4"}, "the other pane's window is untouched"
 
 
 @pytest.mark.skipif(shutil.which("tmux") is None, reason="needs a real tmux")

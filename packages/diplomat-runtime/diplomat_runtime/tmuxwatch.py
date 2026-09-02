@@ -212,18 +212,29 @@ def kill_window_for_tty(tty: str) -> bool:
     """
     if not tty or shutil.which("tmux") is None:
         return False
+    want = tty.removeprefix("/dev/")
+    window = _window_on(want)
+    if window is None:
+        return False
+    _run(["tmux", "kill-window", "-t", window])
+    # Judged by the outcome rather than the verb's exit status: the last window of
+    # the last session takes the tmux server with it (exit-empty), and the client
+    # that asked for it is left without a server to report success.
+    return _window_on(want) is None
+
+
+def _window_on(tty: str) -> str | None:
+    """The id of the window whose pane runs on ``tty`` (the ``ps`` spelling, no
+    ``/dev/``), or None — for a tty no pane is on, and for no server at all."""
     listing = _run(
         ["tmux", "list-panes", "-a", "-F", f"#{{pane_tty}}{_UNIT}#{{window_id}}"])
-    if listing is None:
-        return False
-    want = tty.removeprefix("/dev/")
-    for line in listing.splitlines():
+    for line in (listing or "").splitlines():
         if _UNIT not in line:
             continue
         pane_tty, window = (x.strip() for x in line.split(_UNIT, 1))
-        if pane_tty.removeprefix("/dev/") == want and window:
-            return _run(["tmux", "kill-window", "-t", window]) is not None
-    return False
+        if pane_tty.removeprefix("/dev/") == tty and window:
+            return window
+    return None
 
 
 def _run(argv: list[str]) -> str | None:
