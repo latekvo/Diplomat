@@ -476,11 +476,9 @@ struct NestedSettings<Content: View>: View {
     @ViewBuilder var content: () -> Content
 
     var body: some View {
-        // The rail is an overlay rather than a sibling in an HStack: a Shape with only
-        // its width pinned takes whatever height it is offered, and beside the content
-        // that made the whole block greedy — it swallowed every point by which the
-        // other settings column was taller and drew it as blank space under the last
-        // nested row. As an overlay its height can only be the content's.
+        // Overlay, not a sibling in an HStack: a Shape with only its width pinned takes
+        // any height it is offered, so one laid out beside the content stretches the
+        // whole block to fill a taller column — blank space under the last nested row.
         VStack(alignment: .leading, spacing: 9) { content() }
             .padding(.leading, 12)
             .overlay(alignment: .leading) {
@@ -536,9 +534,8 @@ struct SliderSetting: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
             HStack(spacing: 8) {
-                // Held to its own height: a Slider otherwise accepts whatever height
-                // it is offered, which inside a settings column is every point by
-                // which the other column is taller — drawn as blank space in the card.
+                // Held to its own height: a Slider takes any height it is offered, and
+                // stretches its card to fill a column shorter than the one beside it.
                 Slider(value: $value, in: range, step: step)
                     .controlSize(.small).tint(tint)
                     .fixedSize(horizontal: false, vertical: true)
