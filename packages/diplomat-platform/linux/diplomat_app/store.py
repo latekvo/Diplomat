@@ -291,6 +291,9 @@ class Store(QObject):
         # thread and released by the worker (see run_autofix_poll_async), so it must
         # be a plain Lock (cross-thread release), never nested with _autofix_lock.
         self._poll_lock = threading.Lock()
+        # One settle at a time: the poll and the panel's refresh both retire, price
+        # and audit what a tick found, and two at once did it twice.
+        self._settle_lock = threading.Lock()
         # PR numbers with a dispatch_agent call in flight - a click and an
         # overlapping poll can't race two spawns onto one PR. Guarded by its own
         # short mutex: _autofix_lock is the whole-poll overlap guard (held for the
@@ -817,7 +820,8 @@ class Store(QObject):
         # was never dropped, its bay never came back, its PR stayed deduped and its
         # cost never reached the ledger, on exactly the machines that leave the tray
         # alone. (Seen live: three runs, panel closed, nothing retiring.)
-        self._settle_agents()
+        with self._settle_lock:
+            self._settle_agents()
         try:
             if not self.effective_me:
                 self.fetch_me()
@@ -1466,9 +1470,15 @@ class Store(QObject):
         finishing as another starts leaves the count alone while both rows are now
         wrong, and an agent going quiet moves no count at all while the bay it hands
         back is drawn from that same measure."""
-        before = self._state_signature()
-        self._settle_agents()
-        if self._state_signature() != before:
+        if not self._settle_lock.acquire(blocking=False):
+            return  # a settle is under way; the next tick asks again
+        try:
+            before = self._state_signature()
+            self._settle_agents()
+            changed = self._state_signature() != before
+        finally:
+            self._settle_lock.release()
+        if changed:
             self.tasks_changed.emit()
 
     def _state_signature(self) -> frozenset:
@@ -2855,7 +2865,10 @@ class Store(QObject):
                 step(f"building diplomat-core at {commit}…")
                 selfupdate.build_core()
                 step("relaunching…")
-                selfupdate.relaunch()
+                exited = selfupdate.relaunch_failure(selfupdate.relaunch())
+                if exited is not None:
+                    raise selfupdate.UpdateError(
+                        f"the relaunched applet exited {exited}; this one is still the old build")
                 self.update_state = {"phase": "restarting", "commit": commit}
             except (selfupdate.UpdateError, OSError, subprocess.TimeoutExpired) as exc:
                 # TimeoutExpired (black-holed network on pull's fetch, or a hung swift

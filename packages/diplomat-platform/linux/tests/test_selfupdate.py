@@ -210,6 +210,24 @@ def test_run_scheduled_relaunches_a_running_tray(repos, monkeypatch):
     assert (marker / "relaunched").exists()
 
 
+def test_run_scheduled_reports_a_relaunched_applet_that_dies(repos, monkeypatch):
+    """A launcher that cannot start the applet (no PySide6 on its interpreter, a
+    checkout that no longer imports) exits at once; that is a failed update, not
+    a "relaunched running tray"."""
+    origin, clone, marker = repos
+    launcher = origin / "packages" / "diplomat-platform" / "linux" / "diplomat"
+    launcher.write_text("#!/usr/bin/env bash\nexit 3\n")
+    _advance_origin(origin)  # the pull brings the broken launcher over
+    from diplomat_app import singleton
+    from diplomat_app.singleton import _pidfile
+
+    monkeypatch.setattr(singleton, "_is_applet_gui", lambda pid: pid == os.getpid())
+    _pidfile().write_text(str(os.getpid()))
+
+    assert selfupdate.run_scheduled() == 1
+    assert (marker / "built").exists()  # the update itself landed
+
+
 def test_run_scheduled_survives_a_subprocess_timeout(repos, monkeypatch):
     """A black-holed network (git fetch timeout) or a hung swift build raises
     subprocess.TimeoutExpired — NOT an UpdateError — inside pull()/build_core().

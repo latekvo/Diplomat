@@ -2338,6 +2338,26 @@ if ProcessInfo.processInfo.environment["DIPLOMAT_GOLDEN_WRITE"] == "1" {
     print("golden-prompt assertions passed (\(goldenModes.count) modes)")
 }
 
+// ---- GH: a gh that never answers is given up on ----
+// The Linux twin's gh.run carries the same 60 s budget. A stub that sleeps stands in
+// for the stalled response, with the deadline shortened to a second; DIPLOMAT_GH names
+// it before anything has asked where gh lives.
+do {
+    let stub = FileManager.default.temporaryDirectory.appendingPathComponent("smoke-gh-\(getpid()).sh")
+    try "#!/bin/sh\nsleep 30\n".write(to: stub, atomically: true, encoding: .utf8)
+    chmod(stub.path, 0o755)
+    defer { try? FileManager.default.removeItem(at: stub) }
+    setenv("DIPLOMAT_GH", stub.path, 1)
+    let started = Date()
+    var outcome = "returned"
+    do { _ = try await GH.run(["api", "/"], timeout: 1) }
+    catch GHError.timeout(let s) { outcome = "timeout \(Int(s))" }
+    catch { outcome = "other: \(error)" }
+    check(outcome == "timeout 1", "a stalled gh is reported as a timeout, got: \(outcome)")
+    check(Date().timeIntervalSince(started) < 10, "the deadline is what ends the wait, not the stub")
+    unsetenv("DIPLOMAT_GH")
+}
+
 if ProcessInfo.processInfo.environment["DIPLOMAT_DUMP"] == "1" {
     section("live gh dump (cross-check vs Python)")
     let viewer = try await API.fetchViewerLogin()

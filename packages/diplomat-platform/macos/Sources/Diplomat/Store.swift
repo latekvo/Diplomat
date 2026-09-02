@@ -2728,7 +2728,8 @@ final class Store: ObservableObject {
         // and forcing it.
         var budget = AgentDispatchGate.Budget(affordable: true)
         if source == .auto, !agentOnPR, !bypassBudget, !atCapacity, AutoBudget.enabled {
-            budget = AutoBudget.decide()
+            // Off the main actor: the probe behind it dials the usage endpoint.
+            budget = await Task.detached(priority: .utility) { AutoBudget.decide() }.value
             if budget.affordable { budgetLogged = false }
         }
         switch AgentDispatchGate.decide(source: source, banned: banned,
