@@ -13,7 +13,7 @@ import DiplomatCore
 /// The checkout is located by, in order: an explicit env override, the layout
 /// inferred when running unbundled (`swift run`, where the shared assets resolve to
 /// `<repo>/packages/diplomat-core/assets`), the layout `build-app.sh` writes the
-/// bundle into (`<repo>/packages/diplomat-platform/macos/Diplomat.app` — what `szpont`
+/// bundle into (`<repo>/packages/diplomat-platform/macos/Diplomat.app` - what `szpont`
 /// opens and launchd starts), then the user's conventional checkout path for a copy
 /// of the bundle kept anywhere else. Mirrors the Linux front-end's
 /// `selfupdate.repo_root` (env `DIPLOMAT_SELF_REPO`, else the checkout its own file

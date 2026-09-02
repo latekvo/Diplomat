@@ -210,7 +210,7 @@ def relaunch(extra_env: dict[str, str] | None = None) -> subprocess.Popen:
     try:
         log_dir.mkdir(parents=True, exist_ok=True)
         with (log_dir / "diplomat.log").open("ab") as log:
-            return subprocess.Popen(  # noqa: S603 — relaunch ourselves, detached
+            return subprocess.Popen(  # noqa: S603 - relaunch ourselves, detached
                 ["bash", str(launcher)],
                 cwd=str(root),
                 start_new_session=True,

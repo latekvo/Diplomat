@@ -141,7 +141,7 @@ def update(transform: Callable[[list[RunRecord]], list[RunRecord]]) -> None:
 
     Every edit of existing records goes through here rather than :func:`load` then
     :func:`save`: between those two a spawn on another thread registers against a
-    list this caller already copied, and the save drops it — an agent that nothing
+    list this caller already copied, and the save drops it - an agent that nothing
     counts, which is a bay of the cap the machine then spends twice. Unchanged
     books are not rewritten.
     """

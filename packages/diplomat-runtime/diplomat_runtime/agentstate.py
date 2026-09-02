@@ -121,8 +121,8 @@ class Observation:
 
 def _number(value: Any, default: float | None = None) -> float | None:
     """A JSON number out of a decoded record as a float, or ``default``. The Swift
-    twin reads ``(as? NSNumber)?.doubleValue ?? default`` — a boolean bridges to 1/0
-    there, a string or null to the default — and one book is read by both."""
+    twin reads ``(as? NSNumber)?.doubleValue ?? default`` - a boolean bridges to 1/0
+    there, a string or null to the default - and one book is read by both."""
     if isinstance(value, (int, float)) and math.isfinite(value):
         return float(value)
     return default

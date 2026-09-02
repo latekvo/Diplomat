@@ -160,9 +160,8 @@ public enum AgentRegistry {
     ///
     /// Every edit of existing records goes through here rather than `load()` then
     /// `save()`: between those two a spawn registers against a list this caller
-    /// already copied, and the save drops it — an agent that nothing counts, which is
-    /// a bay of the cap the machine then spends twice. Unchanged books are not
-    /// rewritten.
+    /// already copied, and the save drops it - an agent nothing counts, a bay of the
+    /// cap spent twice. Unchanged books are not rewritten.
     @discardableResult
     public static func update(
         _ transform: ([AgentState.RunRecord]) -> [AgentState.RunRecord]) -> Bool {

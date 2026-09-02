@@ -440,7 +440,7 @@ def mesh_claims(enabled: bool = True) -> Observation:
     """The work keys currently claimed anywhere on the mesh.
 
     UNSUPPORTED without the add-on installed or with the mesh switched off,
-    UNAVAILABLE when the node is installed but not answering — a peer's run must not
+    UNAVAILABLE when the node is installed but not answering - a peer's run must not
     be retired because the local node is down, which is the difference the resolver
     reads. Switched off comes first: a machine that ran a node once keeps its last
     snapshot, and a node that was stopped on purpose is not a probe gone quiet.

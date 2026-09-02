@@ -28,7 +28,12 @@ from dataclasses import dataclass
 
 from .apiwatch import last_lines
 
-_UNIT = "\x1f"  # between pane_id and its tty in the list-panes format
+_UNIT = "\x1f"  # between the fields of a list-panes line
+# Every read goes through a client told to assume UTF-8. Without -u, a client with no
+# $TMUX and no UTF-8 in LC_ALL/LC_CTYPE/LANG - what launchd, an autostart entry and
+# CI give the applet - has every control byte in a command's output rewritten as "_",
+# the separator above included, and non-ASCII screen text with it.
+_READ = ["tmux", "-u"]
 
 
 @dataclass(frozen=True)
@@ -68,7 +73,7 @@ def dump_panes() -> list[Pane] | None:
     if shutil.which("tmux") is None:
         return []
     listing = _run(
-        ["tmux", "list-panes", "-a", "-F", f"#{{pane_id}}{_UNIT}#{{pane_tty}}"]
+        [*_READ, "list-panes", "-a", "-F", f"#{{pane_id}}{_UNIT}#{{pane_tty}}"]
     )
     if listing is None:
         # Distinguish "no server running" (inert, known-empty) from a real failure.
@@ -81,7 +86,7 @@ def dump_panes() -> list[Pane] | None:
         pane_id, tty = pane_id.strip(), tty.strip()
         if not pane_id:
             continue
-        captured = _run(["tmux", "capture-pane", "-p", "-t", pane_id])
+        captured = _run([*_READ, "capture-pane", "-p", "-t", pane_id])
         if captured is None:  # pane vanished between list + capture — skip it
             continue
         out.append(Pane(pane_id=pane_id, tty=tty, tail=last_lines(captured)))
@@ -119,7 +124,7 @@ def pane_tails_for_ttys(ttys: set[str]) -> dict[str, str] | None:
         return {}
     try:
         listing = _run(
-            ["tmux", "list-panes", "-a", "-F", f"#{{pane_id}}{_UNIT}#{{pane_tty}}"]
+            [*_READ, "list-panes", "-a", "-F", f"#{{pane_id}}{_UNIT}#{{pane_tty}}"]
         )
         if listing is None:
             return None
@@ -131,7 +136,7 @@ def pane_tails_for_ttys(ttys: set[str]) -> dict[str, str] | None:
             tty = tty.removeprefix("/dev/")
             if not pane_id or tty not in ttys:
                 continue
-            captured = _run(["tmux", "capture-pane", "-p", "-t", pane_id])
+            captured = _run([*_READ, "capture-pane", "-p", "-t", pane_id])
             if captured is not None:  # pane vanished between list + capture — skip it
                 out[tty] = last_lines(captured)
         return out
@@ -207,7 +212,7 @@ def kill_window_for_tty(tty: str) -> bool:
     last window, so nothing of those is left behind; an agent the operator ran by
     hand inside their own session loses its window and nothing else of theirs. Panes
     are matched on the tty rather than the pane id because the tty is what a run
-    records — the two sources spell it differently, so the comparison is normalised
+    records - the two sources spell it differently, so the comparison is normalised
     the way :func:`pane_tails_for_ttys` normalises it.
     """
     if not tty or shutil.which("tmux") is None:
@@ -225,9 +230,9 @@ def kill_window_for_tty(tty: str) -> bool:
 
 def _window_on(tty: str) -> str | None:
     """The id of the window whose pane runs on ``tty`` (the ``ps`` spelling, no
-    ``/dev/``), or None — for a tty no pane is on, and for no server at all."""
+    ``/dev/``), or None - for a tty no pane is on, and for no server at all."""
     listing = _run(
-        ["tmux", "list-panes", "-a", "-F", f"#{{pane_tty}}{_UNIT}#{{window_id}}"])
+        [*_READ, "list-panes", "-a", "-F", f"#{{pane_tty}}{_UNIT}#{{window_id}}"])
     for line in (listing or "").splitlines():
         if _UNIT not in line:
             continue

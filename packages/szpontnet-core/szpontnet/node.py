@@ -2827,7 +2827,7 @@ class MeshNode:
         is an orphan from a prior incarnation (a detached agent that outlived a
         restart, or a crash before ``_watch_agent``'s cleanup): the completion
         sentinels, and whatever the host staged beside each one under its name.
-        Remove them so a sentinel can never be misread — and so the epoch-stamped
+        Remove them so a sentinel can never be misread - and so the epoch-stamped
         paths don't accumulate without bound across restarts. A prior-incarnation
         agent still running will just re-create its own epoch-stamped files, which
         no watcher here tracks."""

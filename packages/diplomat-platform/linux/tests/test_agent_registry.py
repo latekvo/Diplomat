@@ -97,7 +97,7 @@ def test_a_record_with_unusable_fields_costs_those_fields_not_the_book():
 
 def test_a_run_registered_during_a_forget_survives(monkeypatch):
     """forget() used to load outside the lock and save inside it, so a spawn that
-    registered between the two was written over — the very loss add()'s lock exists
+    registered between the two was written over - the very loss add()'s lock exists
     for. The add here is fired from inside forget's read and blocks on the lock
     until the forget has written; with the old shape it completed first and was
     then overwritten by the stale copy."""

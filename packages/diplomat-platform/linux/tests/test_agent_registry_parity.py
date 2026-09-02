@@ -114,7 +114,7 @@ def test_the_fixture_leaves_no_field_at_its_default():
 
 def test_a_record_with_unusable_fields_reads_the_same_on_both_sides():
     """A hand edit or a foreign writer can leave one field in a shape neither encoder
-    emits. Both read the same record back — a default per field — rather than one
+    emits. Both read the same record back - a default per field - rather than one
     side dropping the record or raising out of its poll."""
     from diplomat_runtime import atomicjson
     atomicjson.write_atomic(R.runs_path(), {"version": R.SCHEMA_VERSION, "runs": [

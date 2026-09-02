@@ -196,7 +196,9 @@ enum ApiWatchTest {
         }
         func fakeTmux(_ body: String) -> String {
             let path = fake.appendingPathComponent("tmux-\(UUID().uuidString)").path
-            try? ("#!/bin/sh\ncase \"$1\" in\n\(body)\nesac\n")
+            // Refuses a client not told to assume UTF-8, as the real one mangles the
+            // listing's separators for it.
+            try? ("#!/bin/sh\n[ \"$1\" = -u ] || exit 99\nshift\ncase \"$1\" in\n\(body)\nesac\n")
                 .write(toFile: path, atomically: true, encoding: .utf8)
             try? FileManager.default.setAttributes([.posixPermissions: 0o755],
                                                   ofItemAtPath: path)

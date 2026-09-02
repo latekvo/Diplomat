@@ -1,6 +1,6 @@
 import Foundation
 
-/// Self-test for locating the checkout a bundle runs from — `DIPLOMAT_REPOPATHS_TEST=1`.
+/// Self-test for locating the checkout a bundle runs from - `DIPLOMAT_REPOPATHS_TEST=1`.
 ///
 /// `szpont` builds and opens `<checkout>/packages/diplomat-platform/macos/Diplomat.app`
 /// with the checkout under `~/.diplomat`, and launchd starts that same bundle: the

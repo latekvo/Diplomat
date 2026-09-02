@@ -14,7 +14,7 @@ APP="Diplomat.app"
 
 BIN="${1:-$PKG_DIR/$APP/Contents/MacOS/Diplomat}"
 if [ ! -x "$BIN" ]; then
-  echo "Diplomat binary not found at $BIN — build the app first (install/build-app.sh)." >&2
+  echo "Diplomat binary not found at $BIN - build the app first (install/build-app.sh)." >&2
   exit 1
 fi
 

@@ -422,9 +422,12 @@ enum TerminalFocus {
     /// a pane id or a session name.
     private static let unit = "\u{1f}"
 
+    /// A client told to assume UTF-8: without `-u`, one started with no `$TMUX` and no
+    /// UTF-8 in `LC_ALL`/`LC_CTYPE`/`LANG` - what launchd gives the app - has every
+    /// control byte in a command's output rewritten as `_`, `unit` included.
     private static func tmux(_ arguments: [String]) -> String? {
         guard let bin = binary else { return nil }
-        return run(bin, arguments)
+        return run(bin, ["-u"] + arguments)
     }
 
     /// Where tmux is, or nil when it is not installed — resolved the same way `node`

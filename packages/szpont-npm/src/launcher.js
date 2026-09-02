@@ -25,7 +25,7 @@ export const MIN_PYTHON = [3, 10];
 // already owns, so uninstalling is one `rm -rf ~/.diplomat` rather than a hunt.
 const STATE_DIR = '.diplomat';
 
-// The executable's path, or null — `shutil.which` in the Python twin.
+// The executable's path, or null - `shutil.which` in the Python twin.
 function which(name, env) {
   for (const dir of (env.PATH || '').split(path.delimiter).filter(Boolean)) {
     const candidate = path.join(dir, name);
@@ -251,7 +251,7 @@ export function plan(facts) {
     // source it was just cloned or pulled from; `open` then detaches it from this
     // terminal, which is where a menu-bar app belongs. `-n` starts that bundle
     // even while an instance is up, and the app's newest-wins singleton retires
-    // the old one — the swap its own updater relies on.
+    // the old one - the swap its own updater relies on.
     const launch = ['open', '-n', path.join(macos, 'Diplomat.app')];
     if (args.length) launch.push('--args', ...args);
     steps.push(step('launch', launch, { cwd: macos }));

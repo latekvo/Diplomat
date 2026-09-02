@@ -211,13 +211,12 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          # Main moves while a release runs, and a push that arrived meanwhile is
-          # queued behind this one with a tree that still states the version before
-          # this one - so the record is rebuilt on main's tip at every attempt rather
-          # than replayed onto it, and `set` rewrites whatever that tip states. The
-          # tip only ever moves up: a version above this one was put on main by hand
-          # and is for a person to settle. Branch and tag go together or not at all,
-          # so a retry never finds the tag already claimed by its own earlier attempt.
+          # Main moves while a release runs, and the push queued behind this one
+          # still states the version before it: the record is rebuilt on main's tip
+          # at every attempt rather than replayed onto it, and `set` rewrites
+          # whatever that tip states. A version above this one was put on main by
+          # hand and is for a person to settle. Branch and tag go together or not at
+          # all, so a retry never finds the tag claimed by its own earlier attempt.
           for _ in 1 2 3; do
             git fetch origin main
             git checkout -q -B main FETCH_HEAD
