@@ -2436,7 +2436,7 @@ class Store(QObject):
         refused: set[str] = set()
         for record in t.reapable:
             if not (tmuxwatch.kill_session(tmuxwatch.session_name(record.run_id))
-                    or tmuxwatch.kill_session_for_tty(record.tty)):
+                    or tmuxwatch.kill_window_for_tty(record.tty)):
                 refused.add(record.run_id)
                 # Once per episode: the stamp is None only before the first refusal.
                 # A window nothing can close is retried for the life of the applet, and

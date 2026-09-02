@@ -171,7 +171,7 @@ def kill_session(name: str) -> bool:
 
     The route a run has to its own window when it has no tty — which is every run whose
     pid was never adopted, and the case the run deadline is the first backstop able to
-    reach. :func:`kill_session_for_tty` refuses an empty tty outright, so before this
+    reach. :func:`kill_window_for_tty` refuses an empty tty outright, so before this
     such a run was retired from the book with its window left open and its agent still
     in it.
 
@@ -185,8 +185,8 @@ def kill_session(name: str) -> bool:
     return _run(["tmux", "kill-session", "-t", f"={name}"]) is not None
 
 
-def kill_session_for_tty(tty: str) -> bool:
-    """Close the tmux session whose pane runs on ``tty``. Returns whether it was
+def kill_window_for_tty(tty: str) -> bool:
+    """Close the tmux window whose pane runs on ``tty``. Returns whether it was
     killed.
 
     The fallback route to a run's window, for the runs :func:`kill_session` cannot
@@ -202,25 +202,27 @@ def kill_session_for_tty(tty: str) -> bool:
     prompt with the whole task in context, and that is a session the operator may still
     want to read or type into.
 
-    The SESSION, not the pane: each spawn opens one of its own
-    (:func:`review.terminal_argv`), so killing it takes the window with it, which is
-    what leaves nothing behind. Panes are matched on the tty rather than the pane id
-    because the tty is what a run records — the two sources spell it differently, so
-    the comparison is normalised the way :func:`pane_tails_for_ttys` normalises it.
+    The WINDOW, not the session. A session this applet or a mesh node opened holds
+    that one window (:func:`review.terminal_argv`), and tmux ends a session with its
+    last window, so nothing of those is left behind; an agent the operator ran by
+    hand inside their own session loses its window and nothing else of theirs. Panes
+    are matched on the tty rather than the pane id because the tty is what a run
+    records — the two sources spell it differently, so the comparison is normalised
+    the way :func:`pane_tails_for_ttys` normalises it.
     """
     if not tty or shutil.which("tmux") is None:
         return False
     listing = _run(
-        ["tmux", "list-panes", "-a", "-F", f"#{{pane_tty}}{_UNIT}#{{session_id}}"])
+        ["tmux", "list-panes", "-a", "-F", f"#{{pane_tty}}{_UNIT}#{{pane_id}}"])
     if listing is None:
         return False
     want = tty.removeprefix("/dev/")
     for line in listing.splitlines():
         if _UNIT not in line:
             continue
-        pane_tty, session = (x.strip() for x in line.split(_UNIT, 1))
-        if pane_tty.removeprefix("/dev/") == want and session:
-            return _run(["tmux", "kill-session", "-t", session]) is not None
+        pane_tty, pane = (x.strip() for x in line.split(_UNIT, 1))
+        if pane_tty.removeprefix("/dev/") == want and pane:
+            return _run(["tmux", "kill-window", "-t", pane]) is not None
     return False
 
 

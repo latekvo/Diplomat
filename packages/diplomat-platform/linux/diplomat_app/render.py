@@ -209,7 +209,7 @@ def _queue_fixture(store: Store) -> None:
     busy = "● Reading…\n⏵⏵ bypass permissions on · esc to interrupt · ← for agents"
     at_prompt = "● Done.\n❯\n⏵⏵ bypass permissions on (shift+tab to cycle)"
 
-    def _fixed_probes(records, now, merged=None, tokens=None):
+    def _fixed_probes(records, now, merged=None, tokens=None, mesh_enabled=True):
         return agentstate.Evidence(
             processes=agentstate.Observation.present({
                 4021: agentstate.ProcInfo(tty="pts/40", elapsed=23 * 60,

@@ -631,3 +631,44 @@ def test_a_run_with_no_name_is_never_killed_by_one(monkeypatch):
     monkeypatch.setattr(tmuxwatch, "_run",
                         lambda argv: pytest.fail(f"tmux was run: {argv}"))
     assert tmuxwatch.kill_session("") is False
+
+
+# MARK: - the reap closes a window, not the session around it
+
+
+def test_the_tty_route_kills_the_panes_window_and_no_session(monkeypatch):
+    """An agent the operator ran by hand sits in a window of THEIR session; reaping
+    it must take that window and nothing else of theirs. A session this applet or a
+    mesh node opened has one window, and ends with it."""
+    calls: list[list[str]] = []
+
+    def fake_run(argv):
+        calls.append(argv)
+        if argv[:2] == ["tmux", "list-panes"]:
+            return (f"/dev/pts/3{tmuxwatch._UNIT}%4\n"
+                    f"/dev/pts/9{tmuxwatch._UNIT}%7\n")
+        return ""
+
+    monkeypatch.setattr(tmuxwatch.shutil, "which", lambda _: "/usr/bin/tmux")
+    monkeypatch.setattr(tmuxwatch, "_run", fake_run)
+    assert tmuxwatch.kill_window_for_tty("pts/9") is True
+    assert calls[-1] == ["tmux", "kill-window", "-t", "%7"]
+    assert not any(c[:2] == ["tmux", "kill-session"] for c in calls)
+
+
+@pytest.mark.skipif(shutil.which("tmux") is None, reason="needs a real tmux")
+def test_a_one_window_session_ends_with_its_window():
+    """The mesh node opens an auto-named session around its agent; the tty route
+    is the only way that one is reaped, and killing its sole window must end it."""
+    name = f"diplomat-test-{uuid.uuid4().hex[:8]}"
+    subprocess.run(["tmux", "new-session", "-d", "-s", name, "sleep 300"], check=True)
+    try:
+        tty = subprocess.run(
+            ["tmux", "list-panes", "-t", name, "-F", "#{pane_tty}"],
+            capture_output=True, text=True, check=True).stdout.strip()
+        assert tmuxwatch.kill_window_for_tty(tty) is True
+        gone = subprocess.run(["tmux", "has-session", "-t", name],
+                              capture_output=True).returncode != 0
+        assert gone
+    finally:
+        subprocess.run(["tmux", "kill-session", "-t", name], capture_output=True)
