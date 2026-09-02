@@ -645,14 +645,14 @@ def test_the_tty_route_kills_the_panes_window_and_no_session(monkeypatch):
     def fake_run(argv):
         calls.append(argv)
         if argv[:2] == ["tmux", "list-panes"]:
-            return (f"/dev/pts/3{tmuxwatch._UNIT}%4\n"
-                    f"/dev/pts/9{tmuxwatch._UNIT}%7\n")
+            return (f"/dev/pts/3{tmuxwatch._UNIT}@4\n"
+                    f"/dev/pts/9{tmuxwatch._UNIT}@7\n")
         return ""
 
     monkeypatch.setattr(tmuxwatch.shutil, "which", lambda _: "/usr/bin/tmux")
     monkeypatch.setattr(tmuxwatch, "_run", fake_run)
     assert tmuxwatch.kill_window_for_tty("pts/9") is True
-    assert calls[-1] == ["tmux", "kill-window", "-t", "%7"]
+    assert calls[-1] == ["tmux", "kill-window", "-t", "@7"]
     assert not any(c[:2] == ["tmux", "kill-session"] for c in calls)
 
 

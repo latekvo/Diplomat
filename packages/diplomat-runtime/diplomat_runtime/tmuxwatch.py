@@ -213,16 +213,16 @@ def kill_window_for_tty(tty: str) -> bool:
     if not tty or shutil.which("tmux") is None:
         return False
     listing = _run(
-        ["tmux", "list-panes", "-a", "-F", f"#{{pane_tty}}{_UNIT}#{{pane_id}}"])
+        ["tmux", "list-panes", "-a", "-F", f"#{{pane_tty}}{_UNIT}#{{window_id}}"])
     if listing is None:
         return False
     want = tty.removeprefix("/dev/")
     for line in listing.splitlines():
         if _UNIT not in line:
             continue
-        pane_tty, pane = (x.strip() for x in line.split(_UNIT, 1))
-        if pane_tty.removeprefix("/dev/") == want and pane:
-            return _run(["tmux", "kill-window", "-t", pane]) is not None
+        pane_tty, window = (x.strip() for x in line.split(_UNIT, 1))
+        if pane_tty.removeprefix("/dev/") == want and window:
+            return _run(["tmux", "kill-window", "-t", window]) is not None
     return False
 
 
