@@ -196,25 +196,22 @@ enum ApiWatchTest {
         }
         func fakeTmux(_ body: String) -> String {
             let path = fake.appendingPathComponent("tmux-\(UUID().uuidString)").path
-            // Refuses a client not told to assume UTF-8, as the real one mangles the
-            // listing's separators for it.
-            try? ("#!/bin/sh\n[ \"$1\" = -u ] || exit 99\nshift\ncase \"$1\" in\n\(body)\nesac\n")
+            try? ("#!/bin/sh\ncase \"$1\" in\n\(body)\nesac\n")
                 .write(toFile: path, atomically: true, encoding: .utf8)
             try? FileManager.default.setAttributes([.posixPermissions: 0o755],
                                                   ofItemAtPath: path)
             setenv("DIPLOMAT_TMUX", path, 1)
             return path
         }
-        let u = "\u{1f}"
-        _ = fakeTmux("has-session) exit 0 ;;\nlist-panes) printf 'ttys037\(u)%%80\(u)1\\n' ;;"
+        _ = fakeTmux("has-session) exit 0 ;;\nlist-panes) printf 'ttys037 %%80 1\\n' ;;"
                      + "\nlist-clients) exit 1 ;;")
         check("a live server that will not list its clients reads as unwalkable",
               TerminalFocus.walkTables() == nil)
         _ = fakeTmux("has-session) exit 1 ;;\n*) exit 1 ;;")
         check("…and a machine whose server has shut down reads as nothing to hop across",
               TerminalFocus.walkTables()?.panes.isEmpty == true)
-        _ = fakeTmux("has-session) exit 0 ;;\nlist-panes) printf 'ttys037\(u)%%80\(u)1\\n' ;;"
-                     + "\nlist-clients) printf '1\(u)ttys036\\n' ;;")
+        _ = fakeTmux("has-session) exit 0 ;;\nlist-panes) printf 'ttys037 %%80 1\\n' ;;"
+                     + "\nlist-clients) printf 'ttys036 1\\n' ;;")
         check("…and a server that answers both is read whole",
               TerminalFocus.walkTables()?.clients == ["1": "ttys036"])
         setenv("DIPLOMAT_TMUX", "/nonexistent-tmux", 1)

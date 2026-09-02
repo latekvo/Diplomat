@@ -28,11 +28,10 @@ from dataclasses import dataclass
 
 from .apiwatch import last_lines
 
-_UNIT = "\x1f"  # between the fields of a list-panes line
-# Reads assume UTF-8 (-u): a client with no $TMUX and no UTF-8 in LC_ALL/LC_CTYPE/LANG
-# - what launchd, an autostart entry and CI give the applet - otherwise has every
-# control byte in a command's output rewritten as "_", the separator above included.
-_READ = ["tmux", "-u"]
+# A listing's fields are space-separated, none of them free text: a control byte
+# does not survive tmux's output. 3.4 escapes it as octal, and a client with no $TMUX
+# and no UTF-8 in LC_ALL/LC_CTYPE/LANG - what launchd, an autostart entry and CI give
+# the applet - has it sanitized to "_".
 
 
 @dataclass(frozen=True)
@@ -72,20 +71,20 @@ def dump_panes() -> list[Pane] | None:
     if shutil.which("tmux") is None:
         return []
     listing = _run(
-        [*_READ, "list-panes", "-a", "-F", f"#{{pane_id}}{_UNIT}#{{pane_tty}}"]
+        ["tmux", "list-panes", "-a", "-F", "#{pane_id} #{pane_tty}"]
     )
     if listing is None:
         # Distinguish "no server running" (inert, known-empty) from a real failure.
         return [] if not _server_running() else None
     out: list[Pane] = []
     for line in listing.splitlines():
-        if _UNIT not in line:
+        if " " not in line:
             continue
-        pane_id, tty = line.split(_UNIT, 1)
+        pane_id, tty = line.split(" ", 1)
         pane_id, tty = pane_id.strip(), tty.strip()
         if not pane_id:
             continue
-        captured = _run([*_READ, "capture-pane", "-p", "-t", pane_id])
+        captured = _run(["tmux", "capture-pane", "-p", "-t", pane_id])
         if captured is None:  # pane vanished between list + capture — skip it
             continue
         out.append(Pane(pane_id=pane_id, tty=tty, tail=last_lines(captured)))
@@ -123,19 +122,19 @@ def pane_tails_for_ttys(ttys: set[str]) -> dict[str, str] | None:
         return {}
     try:
         listing = _run(
-            [*_READ, "list-panes", "-a", "-F", f"#{{pane_id}}{_UNIT}#{{pane_tty}}"]
+            ["tmux", "list-panes", "-a", "-F", "#{pane_id} #{pane_tty}"]
         )
         if listing is None:
             return None
         out: dict[str, str] = {}
         for line in listing.splitlines():
-            if _UNIT not in line:
+            if " " not in line:
                 continue
-            pane_id, tty = (s.strip() for s in line.split(_UNIT, 1))
+            pane_id, tty = (s.strip() for s in line.split(" ", 1))
             tty = tty.removeprefix("/dev/")
             if not pane_id or tty not in ttys:
                 continue
-            captured = _run([*_READ, "capture-pane", "-p", "-t", pane_id])
+            captured = _run(["tmux", "capture-pane", "-p", "-t", pane_id])
             if captured is not None:  # pane vanished between list + capture — skip it
                 out[tty] = last_lines(captured)
         return out
@@ -227,11 +226,11 @@ def _window_on(tty: str) -> str | None:
     """The id of the window whose pane runs on ``tty`` (the ``ps`` spelling, no
     ``/dev/``), or None - for a tty no pane is on, and for no server at all."""
     listing = _run(
-        [*_READ, "list-panes", "-a", "-F", f"#{{pane_tty}}{_UNIT}#{{window_id}}"])
+        ["tmux", "list-panes", "-a", "-F", "#{pane_tty} #{window_id}"])
     for line in (listing or "").splitlines():
-        if _UNIT not in line:
+        if " " not in line:
             continue
-        pane_tty, window = (x.strip() for x in line.split(_UNIT, 1))
+        pane_tty, window = (x.strip() for x in line.split(" ", 1))
         if pane_tty.removeprefix("/dev/") == tty and window:
             return window
     return None

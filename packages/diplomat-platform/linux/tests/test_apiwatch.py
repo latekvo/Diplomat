@@ -257,9 +257,9 @@ def test_dump_panes_parses_and_captures(monkeypatch):
 
     def fake_run(argv):
         calls.append(argv)
-        if argv[:3] == ["tmux", "-u", "list-panes"]:
-            return f"%0{tmuxwatch._UNIT}/dev/pts/1\n%3{tmuxwatch._UNIT}/dev/pts/7\n"
-        if argv[:3] == ["tmux", "-u", "capture-pane"]:
+        if argv[:2] == ["tmux", "list-panes"]:
+            return "%0 /dev/pts/1\n%3 /dev/pts/7\n"
+        if argv[:2] == ["tmux", "capture-pane"]:
             pane = argv[argv.index("-t") + 1]
             return f"line one\nAPI Error: 529 on {pane}\n\n"
         return ""
@@ -282,9 +282,9 @@ def test_pane_tails_for_ttys_captures_only_the_ttys_asked_for(monkeypatch):
     captured: list[str] = []
 
     def fake_run(argv):
-        if argv[:3] == ["tmux", "-u", "list-panes"]:
-            return "\n".join(f"%{n}{tmuxwatch._UNIT}/dev/pts/{n}" for n in (1, 2, 3))
-        if argv[:3] == ["tmux", "-u", "capture-pane"]:
+        if argv[:2] == ["tmux", "list-panes"]:
+            return "\n".join(f"%{n} /dev/pts/{n}" for n in (1, 2, 3))
+        if argv[:2] == ["tmux", "capture-pane"]:
             pane = argv[argv.index("-t") + 1]
             captured.append(pane)
             return f"tail of {pane}\n"
@@ -330,7 +330,7 @@ def test_a_failed_capture_is_distinguishable_from_an_agent_with_no_pane(monkeypa
 
     # tmux answered, and this agent's tty genuinely has no pane.
     monkeypatch.setattr(tmuxwatch, "_run",
-                        lambda argv: "" if argv[:3] == ["tmux", "-u", "list-panes"] else None)
+                        lambda argv: "" if argv[:2] == ["tmux", "list-panes"] else None)
     assert tmuxwatch.pane_tails_for_ttys({"pts/1"}) == {}
 
     # tmux could not be asked.
@@ -646,8 +646,8 @@ def test_the_tty_route_kills_the_panes_window_and_no_session(monkeypatch):
 
     def fake_run(argv):
         calls.append(argv)
-        if argv[:3] == ["tmux", "-u", "list-panes"]:
-            return "".join(f"{tty}{tmuxwatch._UNIT}{w}\n" for tty, w in panes.items())
+        if argv[:2] == ["tmux", "list-panes"]:
+            return "".join(f"{tty} {w}\n" for tty, w in panes.items())
         if argv[:2] == ["tmux", "kill-window"]:
             for tty, w in list(panes.items()):
                 if w == argv[-1]:
@@ -686,8 +686,8 @@ def test_a_one_window_session_ends_with_its_window():
 @pytest.mark.skipif(shutil.which("tmux") is None, reason="no tmux on this machine")
 def test_a_client_outside_tmux_under_a_c_locale_still_reads_its_panes(monkeypatch):
     """Where launchd, an autostart entry and CI put the applet: no ``$TMUX`` and no
-    UTF-8 in the locale. tmux then rewrites every control byte in a command's output
-    as ``_``, the listing separators included, unless the client assumes UTF-8."""
+    UTF-8 in the locale, so tmux sanitizes every control byte of a command's output
+    to ``_`` (and 3.4 escapes them as octal for any client)."""
     monkeypatch.delenv("TMUX", raising=False)
     monkeypatch.setenv("LC_ALL", "C")
     name = f"diplomat-test-{uuid.uuid4().hex[:8]}"
