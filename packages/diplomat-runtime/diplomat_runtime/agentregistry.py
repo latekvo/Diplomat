@@ -42,6 +42,7 @@ from __future__ import annotations
 import os
 import threading
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 
 from . import atomicjson
@@ -132,6 +133,25 @@ def save(records: list[RunRecord]) -> None:
         atomicjson.write_atomic(
             runs_path(),
             {"version": SCHEMA_VERSION, "runs": [r.to_json() for r in records]})
+
+
+def update(transform: Callable[[list[RunRecord]], list[RunRecord]]) -> None:
+    """Replace the book with ``transform`` of what is on disk, read-modify-write
+    under the lock.
+
+    Every edit of existing records goes through here rather than :func:`load` then
+    :func:`save`: between those two a spawn on another thread registers against a
+    list this caller already copied, and the save drops it — an agent that nothing
+    counts, which is a bay of the cap the machine then spends twice. Unchanged
+    books are not rewritten.
+    """
+    with _lock:
+        before = load()
+        after = transform(before)
+        if after != before:
+            atomicjson.write_atomic(
+                runs_path(),
+                {"version": SCHEMA_VERSION, "runs": [r.to_json() for r in after]})
 
 
 def add(record: RunRecord) -> None:
@@ -415,7 +435,7 @@ def forget(run_ids: set[str]) -> None:
     """
     if not run_ids:
         return
-    save([r for r in load() if r.run_id not in run_ids])
+    update(lambda records: [r for r in records if r.run_id not in run_ids])
     for run_id in run_ids:
         _remove_dir(run_dir(run_id))
 

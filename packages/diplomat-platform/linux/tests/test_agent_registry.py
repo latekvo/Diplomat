@@ -11,6 +11,7 @@ resolver refuses to guess from.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 
@@ -77,6 +78,47 @@ def test_an_unusable_book_degrades_to_empty_rather_than_raising(body):
     R.runs_path().parent.mkdir(parents=True, exist_ok=True)
     R.runs_path().write_text(body)
     assert R.load() == []
+
+
+def test_a_record_with_unusable_fields_costs_those_fields_not_the_book():
+    """The Swift twin reads a null or non-numeric number as that field's default;
+    this side raised out of the whole load, and every poll after it."""
+    R.runs_path().parent.mkdir(parents=True, exist_ok=True)
+    R.runs_path().write_text(json.dumps({"version": R.SCHEMA_VERSION, "runs": [
+        {"runId": "r1", "dispatchedAt": None, "pid": "x", "prNumber": "7",
+         "claimSeenAt": [], "quietSince": True},
+        rec(run_id="r2").to_json()]}))
+    got = R.load()
+    assert [r.run_id for r in got] == ["r1", "r2"]
+    assert (got[0].dispatched_at, got[0].pid, got[0].pr_number, got[0].claim_seen_at,
+            got[0].quiet_since) == (0.0, None, None, None, 1.0)
+    assert got[1] == rec(run_id="r2")
+
+
+def test_a_run_registered_during_a_forget_survives(monkeypatch):
+    """forget() used to load outside the lock and save inside it, so a spawn that
+    registered between the two was written over — the very loss add()'s lock exists
+    for. The add here is fired from inside forget's read and blocks on the lock
+    until the forget has written; with the old shape it completed first and was
+    then overwritten by the stale copy."""
+    import threading
+    from diplomat_runtime import atomicjson
+    R.create_run(rec(run_id="old"), "p")
+    real = atomicjson.read_object
+    spawns: list[threading.Thread] = []
+
+    def read_then_register(path):
+        data = real(path)
+        if not spawns:
+            spawns.append(threading.Thread(target=R.add, args=(rec(run_id="new"),)))
+            spawns[0].start()
+            spawns[0].join(timeout=0.5)
+        return data
+
+    monkeypatch.setattr(atomicjson, "read_object", read_then_register)
+    R.forget({"old"})
+    spawns[0].join(timeout=5)
+    assert [r.run_id for r in R.load()] == ["new"]
 
 
 def test_two_runs_registered_concurrently_both_survive():

@@ -1641,6 +1641,14 @@ do {
     AgentRegistry.forget([run])
     check(AgentRegistry.load().isEmpty && AgentRegistry.boundSession(run) == "",
           "forgetting a run takes its sidecars with it")
+    // Every edit of the book is one locked read-modify-write; a caller that loaded,
+    // edited and saved could drop a run registered between its two calls.
+    AgentRegistry.add(AgentState.RunRecord(runID: "upd-a", dispatchedAt: now))
+    AgentRegistry.add(AgentState.RunRecord(runID: "upd-b", dispatchedAt: now))
+    check(AgentRegistry.update { $0.filter { $0.runID != "upd-a" } }
+              && AgentRegistry.load().map(\.runID) == ["upd-b"],
+          "update applies its transform to the book on disk")
+    AgentRegistry.forget(["upd-b"])
     print("run book sidecar assertions passed")
 }
 
@@ -1801,6 +1809,13 @@ let tModel = try? CoreAssets.telemetry()
 check(tModel?.bucketHours(days: 7) == 4 && tModel?.bucketHours(days: 14) == 12
       && tModel?.bucketHours(days: 30) == 24 && tModel?.bucketHours(days: 60) == 48,
       "the shipped ranges do not bucket the way the model says")
+// A value past Int's range is a corrupt or hand-edited line, and `Int(Double)` traps on
+// it. The Telemetry screen folds the ledger on every repaint, so that trap took the
+// app down at every launch until the line was found and removed.
+let poisoned = Telemetry.fold(lines: [
+    #"{"at": 1784920000, "ev": "queued", "key": "review:h/o/r#9@zz", "duty": "review", "pr": 1e300}"#])
+check(poisoned.tasks.first?.pr == Int.max, "an out-of-range pr must clamp, not trap")
+check(Telemetry.duration(1e300).hasSuffix("m"), "an absurd duration must format, not trap")
 // A ledger with no quota readings can count tokens but cannot honestly turn them
 // into a share of a window — the screen shows tokens and says so.
 let unpriced = Telemetry.fold(lines: tLines.filter { !$0.contains("\"sample\"") })

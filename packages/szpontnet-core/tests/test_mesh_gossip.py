@@ -244,7 +244,8 @@ def test_garbage_frames_never_wedge_or_drop_a_link(simnet):
         for junk in (b"{not json\n", b"[1,2,3]\n", b'{"no":"type"}\n',
                      b'{"t":123}\n', b'{"t":"zzz-from-the-future"}\n',
                      b'{"t":"node","node":"not-an-object"}\n',
-                     b'{"t":"hello","node":{"id":null}}\n'):
+                     b'{"t":"hello","node":{"id":null}}\n',
+                     b"[" * (protocol.MAX_LINE_BYTES - 1) + b"\n"):
             b.inject_to(a, junk)
         await simnet.quiet(0.2)
 

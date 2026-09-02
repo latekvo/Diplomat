@@ -87,6 +87,18 @@ def test_read_parses_newest_first(tmp_path, monkeypatch) -> None:
     assert entries[0].date is not None  # fractional/Z timestamps parse
 
 
+def test_read_skips_a_line_that_is_json_but_not_an_object(tmp_path, monkeypatch) -> None:
+    """Three writers append here; one bad line must cost that line, not the feed."""
+    f = tmp_path / "audit.jsonl"
+    f.write_text(
+        'null\n[]\n7\n'
+        '{"at":"2026-07-14T10:00:00Z","source":"panel","action":"review","detail":"a"}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(activity, "audit_path", lambda: f)
+    assert [e.detail for e in activity.read()] == ["a"]
+
+
 def test_log_appends_and_reads_back(tmp_path, monkeypatch):
     # The writer is what gives the Linux feed a data source (the panel logs here
     # whenever it dispatches an action).

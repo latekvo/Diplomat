@@ -2290,28 +2290,29 @@ class Store(QObject):
         retired while this tick resolved, and writing it back would raise the dead.
         """
         learned = {r.run_id: r for r in t.records}
-        out, changed = [], False
-        for r in agentregistry.load():
-            fresh = learned.pop(r.run_id, None)
-            if fresh is None:
-                out.append(r)
-                continue
-            merged = dataclasses.replace(
-                r,
-                pid=r.pid if r.pid is not None else fresh.pid,
-                # The fresher one wins here, unlike the pid: a synthesized run's tty
-                # follows whichever agent its PR's sighting currently names.
-                tty=fresh.tty or r.tty,
-                claim_seen_at=fresh.claim_seen_at or r.claim_seen_at,
-                quiet_digest=fresh.quiet_digest,
-                quiet_since=fresh.quiet_since,
-            )
-            changed = changed or merged != r
-            out.append(merged)
-        fresh_rows = [r for r in learned.values() if r.untracked]
-        out.extend(fresh_rows)
-        if changed or fresh_rows:
-            agentregistry.save(out)
+
+        def merge(book: list[agentstate.RunRecord]) -> list[agentstate.RunRecord]:
+            out = []
+            for r in book:
+                fresh = learned.get(r.run_id)
+                if fresh is None:
+                    out.append(r)
+                    continue
+                out.append(dataclasses.replace(
+                    r,
+                    pid=r.pid if r.pid is not None else fresh.pid,
+                    # The fresher one wins here, unlike the pid: a synthesized run's
+                    # tty follows whichever agent its PR's sighting currently names.
+                    tty=fresh.tty or r.tty,
+                    claim_seen_at=fresh.claim_seen_at or r.claim_seen_at,
+                    quiet_digest=fresh.quiet_digest,
+                    quiet_since=fresh.quiet_since,
+                ))
+            booked = {r.run_id for r in book}
+            out.extend(r for r in t.records if r.untracked and r.run_id not in booked)
+            return out
+
+        agentregistry.update(merge)
 
     def _retire_finished(self, t: agentstate.Tick) -> None:
         """Price what has ended and drop it from the book.
@@ -2440,10 +2441,10 @@ class Store(QObject):
                          f"closed {record.label or record.run_id}'s window — "
                          f"{reason.split('; ')[-1]}")
         if refused:
-            agentregistry.save([
+            agentregistry.update(lambda book: [
                 dataclasses.replace(r, reap_refused_at=t.now)
                 if r.run_id in refused else r
-                for r in agentregistry.load()])
+                for r in book])
         return refused
 
     def _in_flight(self, url: str) -> bool:

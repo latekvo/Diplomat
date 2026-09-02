@@ -112,6 +112,20 @@ def test_the_fixture_leaves_no_field_at_its_default():
     assert not missing, f"never exercised by the fixture: {sorted(missing)}"
 
 
+def test_a_record_with_unusable_fields_reads_the_same_on_both_sides():
+    """A hand edit or a foreign writer can leave one field in a shape neither encoder
+    emits. Both read the same record back — a default per field — rather than one
+    side dropping the record or raising out of its poll."""
+    from diplomat_runtime import atomicjson
+    atomicjson.write_atomic(R.runs_path(), {"version": R.SCHEMA_VERSION, "runs": [
+        {"runId": "r1", "dispatchedAt": None, "pid": "x", "prNumber": "7",
+         "claimSeenAt": [], "quietSince": True, "reapRefusedAt": "soon"}]})
+    ours = [r.to_json() for r in R.load()]
+    assert ours == _swift({"mode": "read"})
+    assert ours[0]["dispatchedAt"] == 0 and ours[0]["pid"] is None
+    assert ours[0]["prNumber"] is None and ours[0]["quietSince"] == 1
+
+
 def test_a_schema_the_other_side_does_not_know_is_ignored_by_both():
     """Both must refuse a book from the future rather than misread it — an applet
     acting on records whose fields it does not understand is worse than one that has
