@@ -2177,7 +2177,7 @@ class Store(QObject):
         now = time.time()
         records = agentregistry.adopt_pids(agentregistry.load())
         evidence = probes.gather(records, now, merged=self._merged_prs,
-                                 tokens=self._tokens_left)
+                                 tokens=self._tokens_left, mesh_enabled=self.mesh_enabled)
         t = agentstate.tick(records, evidence, now, self.auto_task_limit,
                             appconfig.run_deadline())
         with self._tick_lock:

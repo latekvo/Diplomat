@@ -541,6 +541,11 @@ def test_a_machine_that_never_ran_a_mesh_node_is_unsupported_not_broken(monkeypa
     fake.read_state = lambda: {"self": {"id": "me"}}
     assert probes.mesh_claims().status == A.UNAVAILABLE
 
+    # Unless the mesh was switched off: the snapshot outlives the node that wrote it,
+    # and a node stopped on purpose is not a probe gone quiet (the macOS twin's
+    # meshClaims(enabled:) answers the same).
+    assert probes.mesh_claims(enabled=False).status == A.UNSUPPORTED
+
 
 def test_the_agent_scan_reads_the_tty_column_of_this_dump(monkeypatch):
     """A column-order regression with no symptom of its own.
