@@ -29,10 +29,9 @@ from dataclasses import dataclass
 from .apiwatch import last_lines
 
 _UNIT = "\x1f"  # between the fields of a list-panes line
-# Every read goes through a client told to assume UTF-8. Without -u, a client with no
-# $TMUX and no UTF-8 in LC_ALL/LC_CTYPE/LANG - what launchd, an autostart entry and
-# CI give the applet - has every control byte in a command's output rewritten as "_",
-# the separator above included, and non-ASCII screen text with it.
+# Reads assume UTF-8 (-u): a client with no $TMUX and no UTF-8 in LC_ALL/LC_CTYPE/LANG
+# - what launchd, an autostart entry and CI give the applet - otherwise has every
+# control byte in a command's output rewritten as "_", the separator above included.
 _READ = ["tmux", "-u"]
 
 
@@ -221,11 +220,7 @@ def kill_window_for_tty(tty: str) -> bool:
     window = _window_on(want)
     if window is None:
         return False
-    _run(["tmux", "kill-window", "-t", window])
-    # Judged by the outcome rather than the verb's exit status: the last window of
-    # the last session takes the tmux server with it (exit-empty), and the client
-    # that asked for it is left without a server to report success.
-    return _window_on(want) is None
+    return _run(["tmux", "kill-window", "-t", window]) is not None
 
 
 def _window_on(tty: str) -> str | None:
