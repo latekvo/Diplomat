@@ -2344,7 +2344,8 @@ if ProcessInfo.processInfo.environment["DIPLOMAT_GOLDEN_WRITE"] == "1" {
 // it before anything has asked where gh lives.
 do {
     let stub = FileManager.default.temporaryDirectory.appendingPathComponent("smoke-gh-\(getpid()).sh")
-    try "#!/bin/sh\nsleep 30\n".write(to: stub, atomically: true, encoding: .utf8)
+    // exec, so the process the deadline signals is the one that sleeps.
+    try "#!/bin/sh\nexec sleep 30\n".write(to: stub, atomically: true, encoding: .utf8)
     chmod(stub.path, 0o755)
     defer { try? FileManager.default.removeItem(at: stub) }
     setenv("DIPLOMAT_GH", stub.path, 1)
