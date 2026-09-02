@@ -47,6 +47,9 @@ DAYS = 14.0
 STEPS = 56
 BINS = 12
 Z = 1.96
+#: The bar width the 14-day lookback ships with, so the two sides bucket the finished
+#: work into the same 28 bars the screen draws.
+BUCKET_HOURS = 12.0
 
 
 def _ledger_lines() -> list[str]:
@@ -277,7 +280,7 @@ def _ledger_lines() -> list[str]:
 
 def _swift(lines: list[str]) -> dict:
     payload = {"now": NOW, "days": DAYS, "steps": STEPS, "bins": BINS, "z": Z,
-               "lines": lines}
+               "bucketHours": BUCKET_HOURS, "lines": lines}
     proc = subprocess.run(
         [CORE_BIN, "telemetry"],
         input=json.dumps(payload).encode("utf-8"),
@@ -292,7 +295,7 @@ def _swift(lines: list[str]) -> dict:
 def _python(lines: list[str]) -> dict:
     ledger = telemetry.fold(lines)
     summary = telemetry.summarize(ledger, now=NOW, days=DAYS, steps=STEPS,
-                                  bin_count=BINS, z=Z)
+                                  bin_count=BINS, z=Z, bucket_hours=BUCKET_HOURS)
     return json.loads(json.dumps(telemetry.parity_payload(ledger, summary)))
 
 
@@ -373,6 +376,20 @@ def test_the_fixture_exercises_every_figure(both):
     assert p["pendingReviewsNow"] > 0 and p["pendingConflictsNow"] > 0, (
         "nothing owed at `now` — the series ends flat and its tail is untested"
     )
+    # The finished-work bars. The fixture spreads its completions over the whole
+    # fortnight, so the two sides have to agree bar by bar and not merely on a total.
+    assert len(p["finished"]) == DAYS * 24 / BUCKET_HOURS, "wrong number of bars"
+    assert p["finishedCount"] > 5 and p["peakFinished"] > 0
+    assert sum(1 for f in p["finished"] if f["count"]) > 3, (
+        "every completion landed in one bar, so a side that bucketed them all "
+        "together would pass"
+    )
+    assert p["finishedCount"] > p["doneCount"], (
+        "the bars and the local completion count came out the same, so the fixture "
+        "cannot tell an implementation that dropped a peer's delivered work from one "
+        "that kept it"
+    )
+    assert p["format"]["bucket"] == "12h"
     assert p["repoTokens"] > 0 and p["otherTokens"] > 0, "the token split is one-sided"
     assert p["repoTokens"] == 6_000_000 and p["otherTokens"] == 2_400_000, (
         "the split must run from the reading BEFORE the range to the newest one — "

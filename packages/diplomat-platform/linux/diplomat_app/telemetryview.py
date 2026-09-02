@@ -3,7 +3,7 @@
 The Linux face of the ledger (:mod:`telemetry`), and one of the panel's four
 screens: Actions · Mesh · **Telemetry** · Settings. It reads
 ``~/.diplomat/pr-monitor/telemetry.jsonl``, folds it through the shared
-arithmetic, and draws eight figures:
+arithmetic, and draws nine figures:
 
 * what share of the 5-hour rate-limit window one auto-task consumes, on average;
 * how that share is distributed against BOTH rate-limit windows, as two histograms
@@ -11,15 +11,16 @@ arithmetic, and draws eight figures:
 * what the probe measured to be left of each rate-limit window, over the lookback;
 * how many auto-reviews were owed but unstarted, over the lookback;
 * the same for auto-fixes;
+* how many tasks finished in each equal bucket of the lookback;
 * mean time from an agent starting to its exit;
 * mean time from the monitor first seeing the work to an agent taking it;
 * how much of this machine's Claude spend went on this repo rather than
   everything else.
 
 Read-only: the one control is the lookback, and flipping it recomputes from the
-same fold. The three charts are painted rather than assembled from widgets — a
-histogram and a two-series time plot are one ``paintEvent`` each, and the
-alternative is a few hundred stacked QFrames that Qt lays out on every repaint.
+same fold. The four charts are painted rather than assembled from widgets — a
+histogram, a two-series time plot and a bar series are one ``paintEvent`` each, and
+the alternative is a few hundred stacked QFrames that Qt lays out on every repaint.
 
 The macOS twin is ``TelemetryView.swift``; the numbers both draw come from the
 shared model in ``assets/telemetry.json`` and the shared math, so the two can
@@ -348,6 +349,91 @@ class PendingChart(QWidget):
         painter.end()
 
 
+class FinishedChart(QWidget):
+    """Tasks that finished, one bar per equal bucket of the lookback.
+
+    Bars rather than the area the chart above it draws: each is a count over a fixed
+    slice of time, and a line joining two of them would trace values nothing ever
+    measured. Every bar covers the same span, so their heights compare directly —
+    which is the whole reason the bucket widens with the range rather than the bar
+    count changing.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setFixedHeight(140)
+        self._points: tuple[telemetry.FinishedPoint, ...] = ()
+        self._bucket_hours = 12.0
+        self._days = 14.0
+
+    def set_series(self, points: tuple[telemetry.FinishedPoint, ...],
+                   bucket_hours: float, days: float) -> None:
+        self._points = points
+        self._bucket_hours = bucket_hours
+        self._days = days
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        pts = self._points
+        if not pts:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+
+        # The top padding is a strip for the caption rather than slack: a bar at the
+        # peak fills the plot to its ceiling, and a caption written over one is
+        # unreadable in a way the translucent band on the chart above is not.
+        pad_l, pad_r, pad_t, pad_b = 4.0, 4.0, 18.0, 16.0
+        w = self.width() - pad_l - pad_r
+        h = self.height() - pad_t - pad_b
+        peak = max(p.count for p in pts)
+        top = max(1, peak)
+        slot = w / len(pts)
+        # No gap once one would cost more width than it separates.
+        gap = min(2.0, slot / 4)
+
+        # Day gridlines, so a fortnight of throughput reads as a fortnight. The axis
+        # is the bucketed span, whose far end is `now` by construction.
+        span = len(pts) * self._bucket_hours * 3600
+        pen = QPen(QColor(255, 255, 255, 18))
+        pen.setWidthF(1.0)
+        painter.setPen(pen)
+        step = max(1, round(self._days / 7))
+        t = pts[0].at + span
+        while t > pts[0].at:
+            gx = pad_l + w * (t - pts[0].at) / span
+            painter.drawLine(int(gx), int(pad_t), int(gx), int(pad_t + h))
+            t -= step * 86400.0
+
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(_qcolor(_tint("finishedWork")))
+        for i, point in enumerate(pts):
+            bar_h = h * point.count / top
+            painter.drawRect(QRectF(pad_l + slot * i + gap / 2, pad_t + h - bar_h,
+                                    max(1.0, slot - gap), bar_h))
+
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QColor(glyphs.MUTED))
+        f = painter.font()
+        f.setPixelSize(8)
+        painter.setFont(f)
+        painter.drawText(QRectF(pad_l, pad_t + h + 2, 90, 12),
+                         int(Qt.AlignmentFlag.AlignLeft), _day_label(pts[0].at))
+        painter.drawText(QRectF(pad_l + w - 90, pad_t + h + 2, 90, 12),
+                         int(Qt.AlignmentFlag.AlignRight), "now")
+        # The tallest bar, which every other one is read against, and the slice of
+        # time it counts over — the two facts the bars themselves cannot carry. A
+        # range in which nothing finished says nothing rather than reporting the floor
+        # the axis is held at.
+        if peak:
+            painter.drawText(
+                QRectF(pad_l + 2, 3, 140, 12),
+                int(Qt.AlignmentFlag.AlignLeft),
+                f"peak {peak} per {telemetry.bucket_label(self._bucket_hours)}")
+        painter.end()
+
+
 #: How long a silence the quota chart draws through rather than breaks at. Isolated
 #: missing readings are normal, and cutting at each one turns a fortnight into specks.
 #: The same bound the headline percentage trusts a reading for, so a line that has
@@ -512,6 +598,7 @@ class TelemetryView(QWidget):
         model = core.telemetry()
         self._ranges = model["ranges"]
         self._days = float(model["defaultRangeDays"])
+        self._bucket_hours = telemetry.bucket_hours(self._days)
         self._steps = int(model["series"]["steps"])
         self._bins = int(model["series"]["bins"])
         self._z = float(model["confidence"]["z"])
@@ -555,6 +642,8 @@ class TelemetryView(QWidget):
         right.setSpacing(10)
         self.pending_host, self.pending_col = card_host()
         right.addWidget(self.pending_host)
+        self.finished_host, self.finished_col = card_host()
+        right.addWidget(self.finished_host)
         self.timing_host, self.timing_col = card_host()
         right.addWidget(self.timing_host)
         right.addStretch(1)
@@ -573,6 +662,7 @@ class TelemetryView(QWidget):
                              (self.quota_host, self.quota_col),
                              (self.tokens_host, self.tokens_col),
                              (self.pending_host, self.pending_col),
+                             (self.finished_host, self.finished_col),
                              (self.timing_host, self.timing_col)):
             host.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
 
@@ -610,6 +700,7 @@ class TelemetryView(QWidget):
 
     def _set_days(self, days: int) -> None:
         self._days = float(days)
+        self._bucket_hours = telemetry.bucket_hours(self._days)
         self._style_range_buttons()
         self.rebuild()
 
@@ -634,7 +725,7 @@ class TelemetryView(QWidget):
         now = time.time()
         summary = telemetry.summarize(
             ledger, now=now, days=self._days, steps=self._steps,
-            bin_count=self._bins, z=self._z)
+            bin_count=self._bins, z=self._z, bucket_hours=self._bucket_hours)
 
         has_data = bool(ledger.tasks) or bool(ledger.samples)
         self.empty.setVisible(not has_data)
@@ -647,6 +738,7 @@ class TelemetryView(QWidget):
         self._rebuild_quota(summary, now)
         self._rebuild_tokens(summary)
         self._rebuild_pending(summary)
+        self._rebuild_finished(summary)
         self._rebuild_timing(summary)
         self._rebuild_coverage(summary)
 
@@ -851,6 +943,27 @@ class TelemetryView(QWidget):
         found.setWordWrap(True)
         found.setStyleSheet(muted(9))
         self.pending_col.addWidget(found)
+
+    def _rebuild_finished(self, s: telemetry.Summary) -> None:
+        _clear_layout(self.finished_col)
+        self._card_head(
+            self.finished_col, "finishedWork", str(s.finished_count),
+            caption="finished in this range, one bar per "
+                    f"{telemetry.bucket_label(s.bucket_hours)}")
+
+        chart = FinishedChart()
+        self.finished_col.addWidget(chart)
+        chart.set_series(s.finished, s.bucket_hours, self._days)
+
+        note = QLabel(
+            "Counted where a run ENDED, so one that spanned two bars is a single "
+            "delivery in the bar it finished in. Work the mesh placed on a peer "
+            "counts here — it was delivered — though its cost is that peer's and "
+            "stays out of the per-task figures."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet(muted(9))
+        self.finished_col.addWidget(note)
 
     def _rebuild_timing(self, s: telemetry.Summary) -> None:
         _clear_layout(self.timing_col)

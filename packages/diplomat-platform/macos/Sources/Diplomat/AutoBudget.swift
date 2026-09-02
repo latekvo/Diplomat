@@ -105,15 +105,16 @@ enum AutoBudget {
     /// The screen's DEFAULT lookback, not its longest and not whatever range the
     /// operator last flipped it to: the gate is a background decision, and the one
     /// thing that makes it auditable is that "Limit per task" as the screen opens is
-    /// the figure it was priced from. `steps`/`binCount` are floors — the series and
-    /// the histogram are the screen's, and only the distributions' moments and the two
-    /// calibrations are read here.
+    /// the figure it was priced from. `steps`/`binCount`/`bucketHours` are floors —
+    /// the series, the histogram and the finished-work buckets are the screen's, and
+    /// only the distributions' moments and the two calibrations are read here.
     private static func summary() -> (Telemetry.Summary, Int)? {
         guard let model = try? CoreAssets.telemetry() else { return nil }
+        let days = Double(model.defaultRangeDays)
         return (Telemetry.summarize(TelemetryLog.load(),
                                     now: Date().timeIntervalSince1970,
-                                    days: Double(model.defaultRangeDays), steps: 2,
-                                    binCount: 1, z: model.confidence.z),
+                                    days: days, steps: 2, binCount: 1,
+                                    z: model.confidence.z, bucketHours: 24 * days),
                 model.minSample)
     }
 

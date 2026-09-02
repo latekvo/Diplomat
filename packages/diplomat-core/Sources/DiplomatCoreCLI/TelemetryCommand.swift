@@ -15,6 +15,7 @@ import Foundation
 /// Input:
 /// ```
 /// { "now": 1784000000.0, "days": 14, "steps": 56, "bins": 20, "z": 1.96,
+///   "bucketHours": 12,
 ///   "lines": ["{\"at\": …, \"ev\": \"queued\", …}", …] }
 /// ```
 /// Output: the folded tasks, then every figure the screen shows — including the
@@ -34,11 +35,12 @@ enum TelemetryCommand {
         let steps = (obj["steps"] as? NSNumber)?.intValue ?? 56
         let bins = (obj["bins"] as? NSNumber)?.intValue ?? 20
         let z = (obj["z"] as? NSNumber)?.doubleValue ?? 1.96
+        let bucketHours = (obj["bucketHours"] as? NSNumber)?.doubleValue ?? 12
         let lines = obj["lines"] as? [String] ?? []
 
         let ledger = Telemetry.fold(lines: lines)
         let s = Telemetry.summarize(ledger, now: now, days: days, steps: steps,
-                                    binCount: bins, z: z)
+                                    binCount: bins, z: z, bucketHours: bucketHours)
 
         let out: [String: Any] = [
             "tasks": ledger.tasks.map { t -> [String: Any] in
@@ -70,6 +72,9 @@ enum TelemetryCommand {
             "pendingReviewsNow": s.pendingReviewsNow,
             "pendingConflictsNow": s.pendingConflictsNow,
             "peakReviews": s.peakReviews, "peakConflicts": s.peakConflicts,
+            "finished": s.finished.map { ["at": r($0.at), "count": $0.count] },
+            "finishedCount": s.finishedCount, "peakFinished": s.peakFinished,
+            "bucketHours": r(s.bucketHours),
             "repoTokens": r(s.repoTokens), "otherTokens": r(s.otherTokens),
             "repoSharePct": r(s.repoSharePct),
             "queuedCount": s.queuedCount, "startedCount": s.startedCount,
@@ -88,6 +93,7 @@ enum TelemetryCommand {
                 "perTaskTokens": Telemetry.tokens(s.perTaskTokensMean),
                 "repoTokens": Telemetry.tokens(s.repoTokens),
                 "otherTokens": Telemetry.tokens(s.otherTokens),
+                "bucket": Telemetry.bucketLabel(s.bucketHours),
             ],
         ]
         guard let data = try? JSONSerialization.data(

@@ -99,7 +99,7 @@ def test_the_windows_are_priced_from_the_same_samples_the_screen_uses(monkeypatc
     model = telemetry.model()
     summary = telemetry.summarize(
         telemetry.load(), now=time.time(), days=float(model["defaultRangeDays"]),
-        steps=2, bin_count=1, z=1.96,
+        steps=2, bin_count=1, z=1.96, bucket_hours=24,
     )
     assert summary.session_limit_tokens == pytest.approx(_SESSION_LIMIT)
     assert summary.week_limit_tokens == pytest.approx(_WEEK_LIMIT)
@@ -117,7 +117,7 @@ def test_each_window_is_bounded_from_its_own_distribution(monkeypatch):
     model = telemetry.model()
     summary = telemetry.summarize(
         telemetry.load(), now=time.time(), days=float(model["defaultRangeDays"]),
-        steps=2, bin_count=1, z=1.96,
+        steps=2, bin_count=1, z=1.96, bucket_hours=24,
     )
     session, week = autobudget._costs(summary, z=autofix.budget_z(95), min_sample=5)
     assert session is not None and week is not None
@@ -142,7 +142,7 @@ def test_a_week_the_ledger_cannot_price_leaves_the_session_measured(monkeypatch)
     model = telemetry.model()
     summary = telemetry.summarize(
         telemetry.load(), now=time.time(), days=float(model["defaultRangeDays"]),
-        steps=2, bin_count=1, z=1.96,
+        steps=2, bin_count=1, z=1.96, bucket_hours=24,
     )
     session, week = autobudget._costs(summary, z=autofix.budget_z(95), min_sample=5)
     assert session is not None
@@ -164,7 +164,7 @@ def test_a_session_the_ledger_cannot_price_leaves_the_week_measured(monkeypatch)
     model = telemetry.model()
     summary = telemetry.summarize(
         telemetry.load(), now=time.time(), days=float(model["defaultRangeDays"]),
-        steps=2, bin_count=1, z=1.96,
+        steps=2, bin_count=1, z=1.96, bucket_hours=24,
     )
     assert summary.session_limit_tokens is None
     assert summary.week_limit_tokens == pytest.approx(_WEEK_LIMIT)
@@ -309,7 +309,7 @@ def test_the_confidence_knob_moves_the_bound(monkeypatch):
     model = telemetry.model()
     summary = telemetry.summarize(
         telemetry.load(), now=time.time(), days=float(model["defaultRangeDays"]),
-        steps=2, bin_count=1, z=1.96,
+        steps=2, bin_count=1, z=1.96, bucket_hours=24,
     )
     bounds = [
         autobudget._costs(summary, z=autofix.budget_z(level), min_sample=5)[0]

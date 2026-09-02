@@ -730,7 +730,7 @@ reset*, and each executed job books usage on the executor.
 
 The panel's third screen (the header button between **⬡** and **⚙︎**) answers the
 question the monitors otherwise leave open: *what is all this costing, and is it
-keeping up?* Eight figures, over a lookback you pick (**7d / 14d / 30d / 60d**,
+keeping up?* Nine figures, over a lookback you pick (**7d / 14d / 30d / 60d**,
 default 14):
 
 - **Limit per task** - the share of one 5-hour rate-limit window an auto-task
@@ -755,6 +755,14 @@ default 14):
   the fixes ride on top of the reviews, and the top edge is everything the pool
   owes. Work picked up between two points on the chart never appears as a backlog,
   which is the chart working rather than a gap in it.
+- **Finished work** over time - how many tasks *finished* in each equal bucket of the
+  lookback, as bars: 4-hour buckets over a week, 12 over a fortnight, a day over 30
+  and two over 60, so every range draws 28-42 bars and each one covers the same span
+  as its neighbours. Bucketed by when a run **ended**, so a run that spanned two bars
+  is one delivery in the bar it finished in. Work the mesh placed on a peer counts
+  here - it was delivered - even though its cost is that peer's and stays out of the
+  per-task figures above. The bars are laid backwards from *now*, so the newest is a
+  whole bucket rather than whatever fraction of one the range happens to end on.
 - **Time to start** - from the monitor first seeing a unit of work to an agent
   taking it (the reconciler's backoff, an applet that was off, a busy PR).
 - **Time to finish** - from an agent starting to its exit.
@@ -765,8 +773,9 @@ default 14):
 
 ### Where the numbers come from
 
-Five of these are time-series questions a counter cannot answer ("how many were owed
-last Tuesday?", "how close to the ceiling did we get?"), so the source is an
+Six of these are time-series questions a counter cannot answer ("how many were owed
+last Tuesday?", "how much did we finish overnight?", "how close to the ceiling did we
+get?"), so the source is an
 **append-only ledger** at
 `~/.diplomat/pr-monitor/telemetry.jsonl` - one JSON object per line, opened
 `O_APPEND` like the activity feed so this applet, its counterpart on the other OS and
@@ -1489,7 +1498,7 @@ packages/
         MeshBridge.swift           drives the local mesh node (spawn python3 -m szpontnet --daemon, NDJSON control)
         MeshView.swift             the ⬡ Mesh screen: node graph, tier/token/trust editors, duty table
         MeshSpawn.swift            the wizards' "⬡ Run on mesh" row + destination preview
-        TelemetryView.swift        the Telemetry screen: the bell curve, the rate-limit windows, the backlog series, the token split
+        TelemetryView.swift        the Telemetry screen: the bell curve, the rate-limit windows, the backlog and finished-work series, the token split
         TelemetryLog.swift         writes/reads ~/.diplomat/pr-monitor/telemetry.jsonl (append-only, rotated)
         UsageScan.swift            Claude Code transcript scanner: repo-vs-other tokens, per-task attribution
         Quota.swift                the OAuth usage probe — what is left of the 5-hour and 7-day windows

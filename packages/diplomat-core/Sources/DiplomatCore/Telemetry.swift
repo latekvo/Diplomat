@@ -404,6 +404,46 @@ public enum Telemetry {
         }
     }
 
+    // MARK: - Finished-work series
+
+    /// One bar of the finished-work chart.
+    public struct FinishedPoint: Equatable {
+        /// When the bucket opens. It runs to the next point's `at`, and the last one
+        /// to `now`.
+        public let at: Double
+        public let count: Int
+    }
+
+    /// How many tasks finished in each equal bucket of the lookback, oldest first.
+    ///
+    /// Bucketed by when a task ENDED, not when it started or was queued: a run that
+    /// spanned two buckets is one delivery, and it happened at its exit. Work the mesh
+    /// placed on a peer is counted like any other — it was delivered — even though its
+    /// cost belongs to that peer and is kept out of every per-task figure.
+    ///
+    /// The buckets are laid backwards from `now` rather than forwards from the start
+    /// of the range, so the newest bar covers a whole bucket like every other one.
+    /// Laid forwards, that bar would hold whatever fraction of a bucket the range ends
+    /// on and read as a slump that is only a short bar. Every shipped range divides
+    /// exactly (`bucketHours` in the shared model), so nothing spills off the far end
+    /// either.
+    public static func finishedSeries(_ tasks: [Task], now: Double, days: Double,
+                                      bucketHours: Double) -> [FinishedPoint] {
+        guard days > 0, bucketHours > 0 else { return [] }
+        let width = bucketHours * 3600
+        let count = Int((days * 86_400 / width).rounded(.up))
+        let start = now - Double(count) * width
+        var counts = [Int](repeating: 0, count: count)
+        for task in tasks {
+            guard let done = task.doneAt, done >= start, done <= now else { continue }
+            // A task that finished exactly at `now` lands one past the last edge.
+            counts[Swift.min(Int((done - start) / width), count - 1)] += 1
+        }
+        return counts.enumerated().map {
+            FinishedPoint(at: start + Double($0.offset) * width, count: $0.element)
+        }
+    }
+
     // MARK: - Rate-limit windows over time
 
     /// How long a quota reading stays an answer to "what is left right now" — the
@@ -510,6 +550,16 @@ public enum Telemetry {
         public let peakReviews: Int
         public let peakConflicts: Int
 
+        /// Tasks that FINISHED inside the range, bucketed for the bar chart, with the
+        /// total and the tallest bucket derived from those same bars — so the headline
+        /// count and the chart under it can never be counting two different things.
+        public let finished: [FinishedPoint]
+        public let finishedCount: Int
+        public let peakFinished: Int
+        /// How wide one of those buckets is, carried out with them so the chart's
+        /// caption names the same slice of time its bars were counted over.
+        public let bucketHours: Double
+
         public let repoTokens: Double
         public let otherTokens: Double
         /// Share of tokens spent in the repo the agents work in, in percent. 0 when
@@ -534,7 +584,8 @@ public enum Telemetry {
     /// Reduce a folded ledger to everything the screen shows. `now` is injected so
     /// the two implementations — and the tests — agree on where the range ends.
     public static func summarize(_ ledger: Ledger, now: Double, days: Double,
-                                 steps: Int, binCount: Int, z: Double) -> Summary {
+                                 steps: Int, binCount: Int, z: Double,
+                                 bucketHours: Double) -> Summary {
         let start = now - days * 86_400
         // The token counters are cumulative, so what the range spent is the rise
         // since the last reading taken BEFORE it opened. Starting from the first
@@ -595,6 +646,8 @@ public enum Telemetry {
         let usd = billed.filter { $0.model == usdModel }.compactMap(\.usd)
 
         let series = pendingSeries(ledger.tasks, now: now, days: days, steps: steps)
+        let finished = finishedSeries(ledger.tasks, now: now, days: days,
+                                      bucketHours: bucketHours)
         let quota = quotaSeries(ledger.samples, now: now, days: days)
         let fresh = quotaFreshSecs
         let (repo, other) = tokenSplit(samples)
@@ -627,6 +680,10 @@ public enum Telemetry {
             pendingConflictsNow: series.last?.conflicts ?? 0,
             peakReviews: series.map(\.reviews).max() ?? 0,
             peakConflicts: series.map(\.conflicts).max() ?? 0,
+            finished: finished,
+            finishedCount: finished.reduce(0) { $0 + $1.count },
+            peakFinished: finished.map(\.count).max() ?? 0,
+            bucketHours: bucketHours,
             repoTokens: repo,
             otherTokens: other,
             repoSharePct: total > 0 ? 100 * repo / total : 0,
@@ -653,6 +710,16 @@ public enum Telemetry {
         if total < 60 { return "\(total)s" }
         if total < 3600 { return "\(total / 60)m \(String(format: "%02d", total % 60))s" }
         return "\(total / 3600)h \(String(format: "%02d", (total % 3600) / 60))m"
+    }
+
+    /// "4h" — how wide one bar of the finished-work chart is, as both screens caption
+    /// it. A bucket that is not a whole number of hours falls through to the shared
+    /// duration spelling ("30m 00s") rather than truncating to "0h".
+    public static func bucketLabel(_ hours: Double) -> String {
+        if hours.isFinite, hours > 0, hours == hours.rounded(.down) {
+            return "\(Int(hours))h"
+        }
+        return duration(hours * 3600)
     }
 
     /// A percentage at the precision it deserves: sub-1% figures keep two decimals

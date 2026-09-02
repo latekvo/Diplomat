@@ -6,7 +6,7 @@ import DiplomatCore
 /// The macOS face of the ledger (`TelemetryLog`), and one of the panel's four
 /// screens: Actions · Mesh · **Telemetry** · Settings. It reads
 /// `~/.diplomat/pr-monitor/telemetry.jsonl`, folds it through the shared arithmetic
-/// (`DiplomatCore.Telemetry`), and draws eight figures:
+/// (`DiplomatCore.Telemetry`), and draws nine figures:
 ///
 /// * what share of the 5-hour rate-limit window one auto-task consumes, on average;
 /// * how that share is distributed against BOTH rate-limit windows, as two histograms
@@ -14,6 +14,7 @@ import DiplomatCore
 /// * what the probe measured to be left of each rate-limit window, over the lookback;
 /// * how many auto-reviews were owed but unstarted, over the lookback;
 /// * the same for auto-fixes;
+/// * how many tasks finished in each equal bucket of the lookback;
 /// * mean time from an agent starting to its exit;
 /// * mean time from the monitor first seeing the work to an agent taking it;
 /// * how much of this machine's Claude spend went on this repo rather than
@@ -48,6 +49,9 @@ struct TelemetryView: View {
     private func title(_ id: String) -> String { metric(id)?.title ?? id }
     private func blurb(_ id: String) -> String { metric(id)?.blurb ?? "" }
 
+    /// How wide one bar of the finished-work chart is at the selected lookback.
+    private var bucketHours: Double { model?.bucketHours(days: Int(days)) ?? 24 }
+
     // MARK: - Body
 
     var body: some View {
@@ -57,7 +61,7 @@ struct TelemetryView: View {
         let summary = Telemetry.summarize(
             store.telemetryLedger, now: now, days: days,
             steps: model?.series.steps ?? 56, binCount: model?.series.bins ?? 12,
-            z: model?.confidence.z ?? 1.96)
+            z: model?.confidence.z ?? 1.96, bucketHours: bucketHours)
         let hasData = !store.telemetryLedger.tasks.isEmpty
             || !store.telemetryLedger.samples.isEmpty
 
@@ -73,6 +77,7 @@ struct TelemetryView: View {
                     .frame(maxWidth: .infinity, alignment: .topLeading)
                     VStack(alignment: .leading, spacing: 10) {
                         pendingCard(summary)
+                        finishedCard(summary)
                         timingCard(summary)
                     }
                     .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -318,6 +323,25 @@ struct TelemetryView: View {
                     (tint("pendingFixes"),
                      "\(title("pendingFixes").lowercased()) (peak \(s.peakConflicts))")])
             note(found)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .cardChrome()
+    }
+
+    private func finishedCard(_ s: Telemetry.Summary) -> some View {
+        let width: String = "finished in this range, one bar per "
+            + Telemetry.bucketLabel(s.bucketHours)
+        let counts: String = "Counted where a run ENDED, so one that spanned two bars "
+            + "is a single delivery in the bar it finished in. Work the mesh placed on "
+            + "a peer counts here — it was delivered — though its cost is that peer's "
+            + "and stays out of the per-task figures."
+        return VStack(alignment: .leading, spacing: 6) {
+            cardHead("finishedWork", "\(s.finishedCount)")
+            note(width)
+            FinishedChart(points: s.finished, bucketHours: s.bucketHours, days: days,
+                          tint: tint("finishedWork"))
+                .frame(height: 140)
+            note(counts)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .cardChrome()
@@ -574,6 +598,72 @@ private struct PendingChart: View {
             if peak > 0 {
                 ctx.draw(axisText("peak \(peak) owed"),
                          at: CGPoint(x: padL + 2, y: padT + 4), anchor: .leading)
+            }
+        }
+    }
+}
+
+/// Tasks that finished, one bar per equal bucket of the lookback.
+///
+/// Bars rather than the area the chart above it draws: each is a count over a fixed
+/// slice of time, and a line joining two of them would trace values nothing ever
+/// measured. Every bar covers the same span, so their heights compare directly — which
+/// is the whole reason the bucket widens with the range rather than the bar count
+/// changing.
+private struct FinishedChart: View {
+    let points: [Telemetry.FinishedPoint]
+    let bucketHours: Double
+    let days: Double
+    let tint: Color
+
+    var body: some View {
+        Canvas { ctx, size in
+            guard let first = points.first else { return }
+            // The top padding is a strip for the caption rather than slack: a bar at
+            // the peak fills the plot to its ceiling, and a caption written over one
+            // is unreadable in a way the translucent band on the chart above is not.
+            let padL: CGFloat = 4, padR: CGFloat = 4, padT: CGFloat = 18, padB: CGFloat = 16
+            let w = size.width - padL - padR
+            let h = size.height - padT - padB
+            let peak = points.map(\.count).max() ?? 0
+            let top = max(1, peak)
+            let slot = w / CGFloat(points.count)
+            // No gap once one would cost more width than it separates.
+            let gap = min(2, slot / 4)
+
+            // Day gridlines, so a fortnight of throughput reads as a fortnight. The
+            // axis is the bucketed span, whose far end is `now` by construction.
+            let span = Double(points.count) * bucketHours * 3600
+            let step = max(1.0, (days / 7).rounded())
+            var t = first.at + span
+            while t > first.at {
+                let gx = padL + w * CGFloat((t - first.at) / span)
+                var grid = Path()
+                grid.move(to: CGPoint(x: gx, y: padT))
+                grid.addLine(to: CGPoint(x: gx, y: padT + h))
+                ctx.stroke(grid, with: .color(.white.opacity(0.07)), lineWidth: 1)
+                t -= step * 86_400
+            }
+
+            for (i, point) in points.enumerated() {
+                let barH = h * CGFloat(Double(point.count) / Double(top))
+                ctx.fill(Path(CGRect(x: padL + slot * CGFloat(i) + gap / 2,
+                                     y: padT + h - barH,
+                                     width: max(1, slot - gap), height: barH)),
+                         with: .color(tint))
+            }
+
+            ctx.draw(axisText(dayLabel(first.at)),
+                     at: CGPoint(x: padL, y: padT + h + 8), anchor: .leading)
+            ctx.draw(axisText("now"),
+                     at: CGPoint(x: padL + w, y: padT + h + 8), anchor: .trailing)
+            // The tallest bar, which every other one is read against, and the slice of
+            // time it counts over — the two facts the bars themselves cannot carry. A
+            // range in which nothing finished says nothing rather than reporting the
+            // floor the axis is held at.
+            if peak > 0 {
+                ctx.draw(axisText("peak \(peak) per \(Telemetry.bucketLabel(bucketHours))"),
+                         at: CGPoint(x: padL + 2, y: 8), anchor: .leading)
             }
         }
     }

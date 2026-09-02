@@ -92,6 +92,16 @@ QUOTA_FRESH_SECS = float(_model_get("quotaFreshSamples", 4)) * SAMPLE_INTERVAL_S
 CURVE_RESOLUTION = 4
 
 
+def bucket_hours(days: float) -> float:
+    """The bar width the finished-work chart uses over a ``days`` lookback. The screen
+    only ever selects a range out of the model's, so the fallback is for a hand-edited
+    asset alone. Twin of ``CoreAssets.TelemetryModel.bucketHours(days:)``."""
+    for spec in _model_get("ranges", []):
+        if float(spec.get("days", 0)) == days:
+            return float(spec.get("bucketHours", 24))
+    return 24.0
+
+
 # MARK: - Ledger file
 
 
@@ -751,6 +761,49 @@ def pending_series(tasks: list[Task], *, now: float, days: float,
     return points
 
 
+# MARK: - Finished work over time
+
+
+@dataclass(frozen=True)
+class FinishedPoint:
+    """One bar of the finished-work chart."""
+
+    #: When the bucket opens. It runs to the next point's ``at``, and the last one
+    #: to ``now``.
+    at: float
+    count: int
+
+
+def finished_series(tasks: list[Task], *, now: float, days: float,
+                    bucket_hours: float) -> list[FinishedPoint]:
+    """How many tasks finished in each equal bucket of the lookback, oldest first.
+
+    Bucketed by when a task ENDED, not when it started or was queued: a run that
+    spanned two buckets is one delivery, and it happened at its exit. Work the mesh
+    placed on a peer is counted like any other — it was delivered — even though its
+    cost belongs to that peer and is kept out of every per-task figure.
+
+    The buckets are laid backwards from ``now`` rather than forwards from the start
+    of the range, so the newest bar covers a whole bucket like every other one. Laid
+    forwards, that bar would hold whatever fraction of a bucket the range ends on and
+    read as a slump that is only a short bar. Every shipped range divides exactly
+    (``bucketHours`` in the shared model), so nothing spills off the far end either.
+    """
+    if days <= 0 or bucket_hours <= 0:
+        return []
+    width = bucket_hours * 3600
+    count = math.ceil(days * 86400 / width)
+    start = now - count * width
+    counts = [0] * count
+    for task in tasks:
+        if task.done_at is None or not start <= task.done_at <= now:
+            continue
+        # A task that finished exactly at `now` lands one past the last edge.
+        counts[min(int((task.done_at - start) / width), count - 1)] += 1
+    return [FinishedPoint(at=start + i * width, count=n)
+            for i, n in enumerate(counts)]
+
+
 # MARK: - Rate-limit windows over time
 
 
@@ -855,6 +908,16 @@ class Summary:
     peak_reviews: int = 0
     peak_conflicts: int = 0
 
+    #: Tasks that FINISHED inside the range, bucketed for the bar chart, with the
+    #: total and the tallest bucket derived from those same bars — so the headline
+    #: count and the chart under it can never be counting two different things.
+    finished: tuple[FinishedPoint, ...] = ()
+    finished_count: int = 0
+    peak_finished: int = 0
+    #: How wide one of those buckets is, carried out with them so the chart's
+    #: caption names the same slice of time its bars were counted over.
+    bucket_hours: float = 0.0
+
     repo_tokens: float = 0.0
     other_tokens: float = 0.0
     repo_share_pct: float = 0.0
@@ -872,7 +935,7 @@ class Summary:
 
 
 def summarize(ledger: Ledger, *, now: float, days: float, steps: int,
-              bin_count: int, z: float) -> Summary:
+              bin_count: int, z: float, bucket_hours: float) -> Summary:
     """Reduce a folded ledger to everything the screen shows. ``now`` is injected
     so the two implementations — and the tests — agree on where the range ends.
     """
@@ -927,6 +990,8 @@ def summarize(ledger: Ledger, *, now: float, days: float, steps: int,
     usd = [t.usd for t in billed if t.model == usd_model]
 
     series = pending_series(ledger.tasks, now=now, days=days, steps=steps)
+    finished = finished_series(ledger.tasks, now=now, days=days,
+                               bucket_hours=bucket_hours)
     quota = quota_series(ledger.samples, now=now, days=days)
     repo, other = token_split(samples)
     total = repo + other
@@ -959,6 +1024,10 @@ def summarize(ledger: Ledger, *, now: float, days: float, steps: int,
         pending_conflicts_now=series[-1].conflicts if series else 0,
         peak_reviews=max((p.reviews for p in series), default=0),
         peak_conflicts=max((p.conflicts for p in series), default=0),
+        finished=tuple(finished),
+        finished_count=sum(p.count for p in finished),
+        peak_finished=max((p.count for p in finished), default=0),
+        bucket_hours=bucket_hours,
         repo_tokens=repo,
         other_tokens=other,
         repo_share_pct=100 * repo / total if total > 0 else 0.0,
@@ -996,6 +1065,15 @@ def duration(secs: float, *, samples: int = 1) -> str:
     if total < 3600:
         return f"{total // 60}m {total % 60:02d}s"
     return f"{total // 3600}h {(total % 3600) // 60:02d}m"
+
+
+def bucket_label(hours: float) -> str:
+    """``4h`` — how wide one bar of the finished-work chart is, as both screens
+    caption it. A bucket that is not a whole number of hours falls through to the
+    shared duration spelling (``30m 00s``) rather than truncating to ``0h``."""
+    if math.isfinite(hours) and hours > 0 and hours == int(hours):
+        return f"{int(hours)}h"
+    return duration(hours * 3600)
 
 
 def percent(value: float) -> str:
@@ -1097,6 +1175,10 @@ def parity_payload(ledger: Ledger, summary: Summary) -> dict:
         "pendingConflictsNow": summary.pending_conflicts_now,
         "peakReviews": summary.peak_reviews,
         "peakConflicts": summary.peak_conflicts,
+        "finished": [{"at": _r(f.at), "count": f.count} for f in summary.finished],
+        "finishedCount": summary.finished_count,
+        "peakFinished": summary.peak_finished,
+        "bucketHours": _r(summary.bucket_hours),
         "repoTokens": _r(summary.repo_tokens),
         "otherTokens": _r(summary.other_tokens),
         "repoSharePct": _r(summary.repo_share_pct),
@@ -1119,5 +1201,6 @@ def parity_payload(ledger: Ledger, summary: Summary) -> dict:
             "perTaskTokens": tokens(summary.per_task_tokens_mean),
             "repoTokens": tokens(summary.repo_tokens),
             "otherTokens": tokens(summary.other_tokens),
+            "bucket": bucket_label(summary.bucket_hours),
         },
     }

@@ -1723,7 +1723,7 @@ check(ledger.tasks[0].waitSecs == 600, "a retry moved the measured wait")
 check(Telemetry.calibrate(ledger.samples, session: true) == 10_000_000,
       "the window must be priced from what was actually spent, reset intervals skipped")
 let summary = Telemetry.summarize(ledger, now: tNow, days: 14, steps: 56,
-                                  binCount: 12, z: 1.96)
+                                  binCount: 12, z: 1.96, bucketHours: 12)
 check(summary.startedCount == 2 && summary.remoteCount == 1)
 check(summary.perTask.count == 1, "a peer's agent was priced against our own window")
 check(summary.perTask.mean == 5, "500k of a 10M window is 5%")
@@ -1737,6 +1737,17 @@ check(summary.perTask.bins.last?.upper == summary.perTaskWeek.bins.last?.upper,
       "the two histograms did not share their bin edges")
 check(summary.pendingReviewsNow == 1 && summary.pendingConflictsNow == 0,
       "started work is not still owed")
+// The finished-work bars. One task finished, 21.7 hours before `now`, so it belongs
+// to the 12-hour bucket that opened a day ago and to no other.
+check(summary.finished.count == 28, "a fortnight of 12-hour buckets is 28 bars")
+check(summary.finished.filter { $0.count > 0 }.map(\.at) == [tNow - 86_400],
+      "the finished task was bucketed somewhere other than where its exit falls")
+check(summary.finishedCount == 1 && summary.peakFinished == 1)
+// The bars are laid backwards from `now`, so the newest covers a whole bucket like
+// every other one rather than whatever fraction of one the range ends on.
+check(summary.finished.last?.at == tNow - 43_200,
+      "the newest bar is not a whole bucket ending at `now`")
+check(summary.bucketHours == 12, "the bar width must come back out with the bars")
 check(summary.repoTokens == 1_800_000 && summary.otherTokens == 1_000_000)
 // The quota readings are drawn as they were taken, not resampled onto a grid: the
 // 5-hour window's sawtooth is the shape worth seeing, and interpolating it would
@@ -1754,12 +1765,48 @@ check(Telemetry.duration(90) == "1m 30s")
 check(Telemetry.duration(5400) == "1h 30m")
 check(Telemetry.percent(5) == "5.0%")
 check(Telemetry.tokens(1_800_000) == "1.8M")
+// What a bar counts, on a ledger written for the question: a run the mesh placed on
+// a peer finished all the same and is drawn here, though its cost is the peer's and
+// stays out of every per-task figure; a run still going at `now` is not drawn; and a
+// run that started before the range opened is placed by its EXIT, which is inside it.
+let fLedger = Telemetry.fold(lines: [
+    #"{"at": \#(tNow - 7200), "ev": "started", "key": "review:h/o/r#10@a", "remote": true, "attempt": 1}"#,
+    #"{"at": \#(tNow - 3600), "ev": "done", "key": "review:h/o/r#10@a", "tokens": 1000}"#,
+    #"{"at": \#(tNow - 7200), "ev": "started", "key": "review:h/o/r#11@b", "remote": false, "attempt": 1}"#,
+    #"{"at": \#(tNow - 10 * 86_400), "ev": "started", "key": "review:h/o/r#12@c", "remote": false, "attempt": 1}"#,
+    #"{"at": \#(tNow - 5400), "ev": "done", "key": "review:h/o/r#12@c", "tokens": 1000}"#,
+])
+let fSummary = Telemetry.summarize(fLedger, now: tNow, days: 1, steps: 8, binCount: 4,
+                                   z: 1.96, bucketHours: 4)
+check(fSummary.finished.count == 6, "a day of 4-hour buckets is 6 bars")
+check(fSummary.finishedCount == 2,
+      "a peer's finished run, or one that outlived the start of the range, was dropped")
+check(fSummary.finished.last?.count == 2, "both exits belong in the newest bucket")
+check(fSummary.peakFinished == 2)
+// A lookback the bucket does not divide, which no shipped range is: the bars still
+// run backwards from `now`, so the NEWEST is a whole bucket and it is the oldest that
+// reaches back past the range. Laid forwards from the start instead, the newest would
+// hold whatever fraction of a bucket was left over and read as a slump.
+let oddSummary = Telemetry.summarize(fLedger, now: tNow, days: 1, steps: 8, binCount: 4,
+                                     z: 1.96, bucketHours: 5)
+check(oddSummary.finished.count == 5, "a day of 5-hour buckets is 5 bars")
+check(oddSummary.finished.last?.at == tNow - 5 * 3600
+      && oddSummary.finished.first?.at == tNow - 25 * 3600,
+      "the bars were laid forwards from the start of the range")
+check(Telemetry.bucketLabel(4) == "4h" && Telemetry.bucketLabel(48) == "48h")
+check(Telemetry.bucketLabel(0.5) == "30m 00s", "a fractional bucket read as 0h")
+// The bar width per lookback, which is the shared model's to decide — the two screens
+// draw the same bars only because they ask this rather than each picking a width.
+let tModel = try? CoreAssets.telemetry()
+check(tModel?.bucketHours(days: 7) == 4 && tModel?.bucketHours(days: 14) == 12
+      && tModel?.bucketHours(days: 30) == 24 && tModel?.bucketHours(days: 60) == 48,
+      "the shipped ranges do not bucket the way the model says")
 // A ledger with no quota readings can count tokens but cannot honestly turn them
 // into a share of a window — the screen shows tokens and says so.
 let unpriced = Telemetry.fold(lines: tLines.filter { !$0.contains("\"sample\"") })
 check(Telemetry.calibrate(unpriced.samples, session: true) == nil)
 let unpricedSummary = Telemetry.summarize(unpriced, now: tNow, days: 14, steps: 56,
-                                          binCount: 12, z: 1.96)
+                                          binCount: 12, z: 1.96, bucketHours: 12)
 check(unpricedSummary.sessionLimitTokens == nil)
 check(unpricedSummary.perTask.count == 0, "a percentage was invented without a price")
 check(unpricedSummary.perTaskWeek.count == 0, "a weekly percentage was invented too")
@@ -1773,7 +1820,8 @@ let sessionBlind = Telemetry.fold(lines: tLines.map {
       .replacingOccurrences(of: #""sessionLeft": 0.75"#, with: #""sessionLeft": 1.0"#)
 })
 let sessionBlindSummary = Telemetry.summarize(sessionBlind, now: tNow, days: 14,
-                                              steps: 56, binCount: 12, z: 1.96)
+                                              steps: 56, binCount: 12, z: 1.96,
+                                              bucketHours: 12)
 check(sessionBlindSummary.sessionLimitTokens == nil)
 check(sessionBlindSummary.perTask.count == 0)
 check(sessionBlindSummary.perTaskWeek.count == 1,
@@ -1783,7 +1831,7 @@ let blind = Telemetry.fold(lines: tLines + [
     #"{"at": 1784914400, "ev": "sample", "sessionLeft": null, "weekLeft": null, "repoTokens": 1800000, "otherTokens": 1000000}"#,
 ])
 let blindSummary = Telemetry.summarize(blind, now: tNow, days: 14, steps: 56,
-                                       binCount: 12, z: 1.96)
+                                       binCount: 12, z: 1.96, bucketHours: 12)
 check(blindSummary.quota.count == 5, "a blind sample is still a sample taken")
 check(blindSummary.quota.last?.sessionPct == nil, "a gap was filled in")
 
@@ -1797,7 +1845,8 @@ func headline(lastGoodAgo: Double) -> (Double?, Double?) {
         #"{"at": \#(tNow - lastGoodAgo), "ev": "sample", "sessionLeft": 0.42, "weekLeft": 0.8, "repoTokens": 0, "otherTokens": 0}"#,
         #"{"at": \#(tNow), "ev": "sample", "sessionLeft": null, "weekLeft": null, "repoTokens": 0, "otherTokens": 0}"#,
     ])
-    let sum = Telemetry.summarize(led, now: tNow, days: 7, steps: 8, binCount: 4, z: 1.96)
+    let sum = Telemetry.summarize(led, now: tNow, days: 7, steps: 8, binCount: 4,
+                                  z: 1.96, bucketHours: 4)
     return (sum.sessionLeftPct, sum.weekLeftPct)
 }
 // A gap shorter than the chart draws through: the reading is minutes old and still
