@@ -8,6 +8,9 @@
 // Run: node test/plan.mjs
 
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { plan, probe } from '../src/launcher.js';
 import { SCENARIOS } from './scenarios.mjs';
 
@@ -29,8 +32,10 @@ ok('the clone names the repo and where it goes',
     'git clone https://github.com/latekvo/Diplomat.git /home/u/.diplomat/checkout');
 ok('the bundle is built by the checkout\'s own script, from its own directory',
   step(fresh, 'build').cmd[0] === `${MACOS}/install/build-app.sh` && step(fresh, 'build').cwd === MACOS);
+// -n: a bundle rebuilt under a running instance is started, and the app's
+// newest-wins singleton retires the old one, as its own updater does.
 ok('the app is opened, not run in the foreground',
-  step(fresh, 'launch').cmd.join(' ') === `open ${MACOS}/Diplomat.app`);
+  step(fresh, 'launch').cmd.join(' ') === `open -n ${MACOS}/Diplomat.app`);
 
 ok('a checkout this launcher owns is fast-forwarded first, and may fail',
   ids(plan(SCENARIOS['darwin-managed']))[0] === 'update'
@@ -89,10 +94,53 @@ ok('a directory that is not there is not a checkout', found.checkout_state === '
 ok('the applet\'s own checkout variable is what points elsewhere',
   probe([], { env: { HOME: '/tmp/nowhere-szpont', PATH: '', DIPLOMAT_SELF_REPO: '/srv/d' } }).checkout === '/srv/d'
   && probe([], { env: { HOME: '/tmp/nowhere-szpont', PATH: '', DIPLOMAT_SELF_REPO: '/srv/d' } }).managed === false);
+ok('an empty checkout variable is the unset one, as the applet reads it',
+  probe([], { env: { HOME: '/tmp/nowhere-szpont', PATH: '', DIPLOMAT_SELF_REPO: '' } }).managed === true
+  && probe([], { env: { HOME: '/tmp/nowhere-szpont', PATH: '', DIPLOMAT_SELF_REPO: '' } }).checkout
+    === '/tmp/nowhere-szpont/.diplomat/checkout');
 ok('a fork is taken from the environment',
   probe([], { env: { HOME: '/tmp/x', PATH: '', DIPLOMAT_REPO_URL: '/srv/d.git' } }).repo_url === '/srv/d.git');
 ok('tools are looked for on the PATH it is given',
   probe([], { env: { HOME: '/tmp/x', PATH: '/usr/bin:/bin' } }).git === true
   && probe([], { env: { HOME: '/tmp/x', PATH: '/nonexistent' } }).git === false);
+
+// A venv is only useful with something to install into it: Debian without
+// python3-venv leaves bin/python behind and stops before pip.
+const home = fs.mkdtempSync(path.join(os.tmpdir(), 'szpont-plan-'));
+fs.mkdirSync(path.join(home, '.diplomat', 'venv', 'bin'), { recursive: true });
+fs.writeFileSync(path.join(home, '.diplomat', 'venv', 'bin', 'python'), '');
+ok('a venv without pip is one still to be made',
+  probe([], { env: { HOME: home, PATH: '' } }).venv_python === false);
+fs.writeFileSync(path.join(home, '.diplomat', 'venv', 'bin', 'pip'), '');
+ok('a venv with pip is one to install into',
+  probe([], { env: { HOME: home, PATH: '' } }).venv_python === true);
+
+// /usr/bin/git is an xcrun shim on every Mac: without the Command Line Tools it
+// is the installer dialog, not git, and PATH alone cannot tell.
+if (fs.existsSync('/usr/bin/git')) {
+  const fake = (dir, body) => {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'xcode-select'), body);
+    fs.chmodSync(path.join(dir, 'xcode-select'), 0o755);
+    return dir;
+  };
+  const none = fake(path.join(home, 'no-tools'), '#!/bin/sh\nexit 2\n');
+  const developer = path.join(home, 'developer');
+  fs.mkdirSync(developer);
+  const some = fake(path.join(home, 'tools'), `#!/bin/sh\necho ${developer}\n`);
+  const realPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+  Object.defineProperty(process, 'platform', { value: 'darwin' });
+  try {
+    ok('on a Mac a tool in /usr/bin is only as present as the toolchain',
+      probe([], { env: { HOME: home, PATH: `${none}:/usr/bin` } }).git === false
+      && probe([], { env: { HOME: home, PATH: `${some}:/usr/bin` } }).git === true);
+    Object.defineProperty(process, 'platform', { value: 'linux' });
+    ok('on Linux /usr/bin is just a directory',
+      probe([], { env: { HOME: home, PATH: `${none}:/usr/bin` } }).git === true);
+  } finally {
+    Object.defineProperty(process, 'platform', realPlatform);
+  }
+}
+fs.rmSync(home, { recursive: true, force: true });
 
 console.log(`${passed} assertions passed`);

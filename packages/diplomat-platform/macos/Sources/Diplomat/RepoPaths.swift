@@ -10,12 +10,14 @@ import DiplomatCore
 /// mesh node (`python3 -m szpontnet`, which runs from `runtimePackage` with
 /// `szpontnetPackage` on its import path).
 ///
-/// A packaged `Diplomat.app` is decoupled from its source (it may sit in
-/// /Applications), so the checkout is located by, in order: an explicit env override,
-/// the layout inferred when running unbundled (`swift run`, where the shared assets
-/// resolve to `<repo>/packages/diplomat-core/assets`), then the user's conventional
-/// checkout path. Mirrors the Linux front-end's `selfupdate.repo_root` (env
-/// `DIPLOMAT_SELF_REPO`, else the checkout).
+/// The checkout is located by, in order: an explicit env override, the layout
+/// inferred when running unbundled (`swift run`, where the shared assets resolve to
+/// `<repo>/packages/diplomat-core/assets`), the layout `build-app.sh` writes the
+/// bundle into (`<repo>/packages/diplomat-platform/macos/Diplomat.app` — what `szpont`
+/// opens and launchd starts), then the user's conventional checkout path for a copy
+/// of the bundle kept anywhere else. Mirrors the Linux front-end's
+/// `selfupdate.repo_root` (env `DIPLOMAT_SELF_REPO`, else the checkout its own file
+/// sits in).
 enum RepoPaths {
     private static var home: URL { FileManager.default.homeDirectoryForCurrentUser }
 
@@ -38,7 +40,26 @@ enum RepoPaths {
                 .deletingLastPathComponent()            // packages
                 .deletingLastPathComponent()            // the checkout
         }
+        if let checkout = checkoutHolding(bundle: Bundle.main.bundleURL) {
+            return checkout
+        }
         return home.appendingPathComponent("dev/diplomat")
+    }
+
+    /// The checkout `bundle` was built inside, while it still sits there: `build-app.sh`
+    /// writes `<checkout>/packages/diplomat-platform/macos/Diplomat.app`, and `szpont`
+    /// keeps that checkout under `~/.diplomat`, where no convention would find it. A
+    /// bundle copied anywhere else, or a layout with no `.git`, names none.
+    static func checkoutHolding(bundle: URL) -> URL? {
+        let parents = bundle.pathComponents.dropLast().suffix(3)
+        guard Array(parents) == ["packages", "diplomat-platform", "macos"] else { return nil }
+        let checkout = bundle
+            .deletingLastPathComponent()   // macos
+            .deletingLastPathComponent()   // diplomat-platform
+            .deletingLastPathComponent()   // packages
+            .deletingLastPathComponent()   // the checkout
+        let git = checkout.appendingPathComponent(".git").path   // a file, in a worktree
+        return FileManager.default.fileExists(atPath: git) ? checkout : nil
     }
 
     /// The monorepo's package directory — every sibling this app reaches for lives

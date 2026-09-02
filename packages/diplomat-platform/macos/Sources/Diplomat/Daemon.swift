@@ -28,7 +28,7 @@ enum Daemon {
 
         ┌─ Diplomat setup ─────────────────────────────────────────
         │ Install as a background daemon? This will:
-        │   • build + copy Diplomat.app to /Applications
+        │   • build Diplomat.app inside this checkout
         │   • add a per-user LaunchAgent so the wrench boots on login
         │   • start it now (it replaces this foreground instance)
         │   • ask macOS for permission to control your terminal (SPAWN)

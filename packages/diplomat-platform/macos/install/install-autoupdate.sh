@@ -4,23 +4,17 @@
 # self-update mode (DIPLOMAT_SELF_UPDATE=1): merge upstream if behind, rebuild
 # the bundle, and relaunch only if the app is running. Re-runnable.
 #
-# Arg 1 (optional): the Diplomat binary to run. Defaults to the installed app in
-# /Applications (then ~/Applications).
+# Arg 1 (optional): the Diplomat binary to run. Defaults to the bundle beside this
+# script, where build-app.sh writes it and launchd starts it.
 set -euo pipefail
+PKG_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 LABEL="com.ignacy.diplomat.autoupdate"
 APP="Diplomat.app"
 
-BIN="${1:-}"
-if [ -z "$BIN" ]; then
-  for d in /Applications "$HOME/Applications"; do
-    if [ -x "$d/$APP/Contents/MacOS/Diplomat" ]; then
-      BIN="$d/$APP/Contents/MacOS/Diplomat"; break
-    fi
-  done
-fi
-if [ -z "$BIN" ] || [ ! -x "$BIN" ]; then
-  echo "Diplomat binary not found — install the app first (install/install-autostart.sh)." >&2
+BIN="${1:-$PKG_DIR/$APP/Contents/MacOS/Diplomat}"
+if [ ! -x "$BIN" ]; then
+  echo "Diplomat binary not found at $BIN — build the app first (install/build-app.sh)." >&2
   exit 1
 fi
 
