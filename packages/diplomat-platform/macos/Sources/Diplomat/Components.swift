@@ -476,11 +476,17 @@ struct NestedSettings<Content: View>: View {
     @ViewBuilder var content: () -> Content
 
     var body: some View {
-        HStack(alignment: .top, spacing: 9) {
-            RoundedRectangle(cornerRadius: 1).fill(tint.opacity(0.4)).frame(width: 2)
-            VStack(alignment: .leading, spacing: 9) { content() }
-        }
-        .padding(.leading, 1)
+        // The rail is an overlay rather than a sibling in an HStack: a Shape with only
+        // its width pinned takes whatever height it is offered, and beside the content
+        // that made the whole block greedy — it swallowed every point by which the
+        // other settings column was taller and drew it as blank space under the last
+        // nested row. As an overlay its height can only be the content's.
+        VStack(alignment: .leading, spacing: 9) { content() }
+            .padding(.leading, 12)
+            .overlay(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 1).fill(tint.opacity(0.4))
+                    .frame(width: 2).padding(.leading, 1)
+            }
     }
 }
 
@@ -530,8 +536,12 @@ struct SliderSetting: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
             HStack(spacing: 8) {
+                // Held to its own height: a Slider otherwise accepts whatever height
+                // it is offered, which inside a settings column is every point by
+                // which the other column is taller — drawn as blank space in the card.
                 Slider(value: $value, in: range, step: step)
                     .controlSize(.small).tint(tint)
+                    .fixedSize(horizontal: false, vertical: true)
                     .accessibilityLabel(label)
                     .accessibilityValue(badge)
                 Text(badge).font(.system(size: 10, weight: .bold).monospacedDigit())
