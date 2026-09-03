@@ -1366,30 +1366,33 @@ check(AgentTaskQueue.reorder(["a", "b"], moving: "z", onto: "a") == ["a", "b"]
 // PARITY: diplomat-platform/linux/tests/test_autofix.py asserts the same arrangements —
 // the band is the one rule that outranks the operator's, so the two front-ends must
 // not disagree about where a conflict fix waits.
-check(AgentTaskQueue.band("conflicts:1") == 2 && AgentTaskQueue.band("review:2") == 1
-      && AgentTaskQueue.band("issues:3") == 1
+check(AgentTaskQueue.band("conflicts:1") == 3 && AgentTaskQueue.band("review:2") == 1
+      && AgentTaskQueue.band("issues:3") == 2
       && AgentTaskQueue.band("review-req:4") == 0 && AgentTaskQueue.band("a") == 0,
-      "a conflict fix bands last, both sweeps the operator asks for behind the "
-      + "monitors' own finds, and everything else — including a verbless key — first")
+      "a conflict fix bands last, a requested review ahead of a requested issue fix and "
+      + "both behind the monitors' own finds, everything else — including a verbless "
+      + "key — first")
 check(AgentTaskQueue.order(offered: ["conflicts:1", "review:2", "review-req:3",
                                      "review-reply:4", "issues:5"], saved: [])
       == ["review-req:3", "review-reply:4", "review:2", "issues:5", "conflicts:1"],
       "what GitHub is owed runs before the sweeps the operator asked for, which run "
       + "before the conflict fix another agent may make unnecessary")
 check(AgentTaskQueue.order(offered: ["review:1", "issues:2"], saved: ["issues:2"])
-      == ["issues:2", "review:1"],
-      "the two sweeps share one band, so the arrangement alone decides between them")
+      == ["review:1", "issues:2"],
+      "a requested review is its own band ahead of issues, so it drains first however "
+      + "the two were arranged")
 check(AgentTaskQueue.reorder(["review-req:1", "review:2", "conflicts:3"],
                              moving: "review:2", onto: "review-req:1")
       == ["review-req:1", "review:2", "conflicts:3"]
       && AgentTaskQueue.reorder(["review-req:1", "review:2", "conflicts:3"],
                                 moving: "review:2", onto: "conflicts:3")
       == ["review-req:1", "review:2", "conflicts:3"],
-      "the requested band is a band like the others — a drag out of it is refused "
-      + "whichever side it heads for")
+      "the requested-review band is a band like the others — a drag out of it is "
+      + "refused whichever side it heads for")
 check(AgentTaskQueue.reorder(["review:1", "issues:2"], moving: "issues:2", onto: "review:1")
-      == ["issues:2", "review:1"],
-      "…and inside it a fix and a review are draggable past each other")
+      == ["review:1", "issues:2"],
+      "…and a review and an issue fix are separate bands, so a drag between them is "
+      + "refused")
 check(AgentTaskQueue.order(offered: ["conflicts:1", "review-req:2"], saved: [])
       == ["review-req:2", "conflicts:1"],
       "a conflict fix waits behind a review however the monitors found them")

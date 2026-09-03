@@ -2173,27 +2173,29 @@ def test_a_conflict_fix_sorts_last_whatever_the_arrangement_says():
 
 
 def test_requested_work_waits_behind_the_monitors_and_ahead_of_a_conflict_fix():
-    """Three bands, in the order the operator would have chosen by hand: what GitHub
-    is already owed, then the sweep they asked for when they had time for it, then the
-    conflict fix another agent's run may make unnecessary. Sweeping fifty drafts
-    otherwise buries every review request behind them for a day.
+    """Four bands, in the order the operator would have chosen by hand: what GitHub is
+    already owed, then the review they asked for, then the issue fix they asked for,
+    then the conflict fix another agent's run may make unnecessary. Sweeping fifty
+    drafts otherwise buries every review request behind them for a day.
 
-    Both kinds of ask share the middle band. A Fix-issues sweep is the same promise as
-    a whose-PRs one — work the operator started when they had time for it — so a fix
-    banded with the conflict fixes would sit behind every one of them for a day."""
+    A requested review outranks a requested issue fix: someone else's PR is waiting on
+    the read, where a Fix-issues sweep is our own backlog with nothing blocked on it —
+    so a sweep of fifty issues never buries a review the operator also asked for."""
     order = autofix.queue_order
     offered = ["conflicts:1", "review:2", "review-req:3", "review-reply:4", "issues:5"]
     assert order(offered, []) == ["review-req:3", "review-reply:4",
                                   "review:2", "issues:5", "conflicts:1"]
-    # And the arrangement cannot lift one out of its band, in either direction.
+    # The arrangement cannot lift one out of its band: a saved list that drags the issue
+    # fix ahead still drains the review before it.
     assert order(offered, ["issues:5", "conflicts:1", "review-req:3"]) == [
-        "review-req:3", "review-reply:4", "issues:5", "review:2", "conflicts:1"
+        "review-req:3", "review-reply:4", "review:2", "issues:5", "conflicts:1"
     ]
     assert (autofix.queue_band("review:2"), autofix.queue_band("issues:5"),
-            autofix.queue_band("conflicts:1")) == (1, 1, 2)
-    # Within the requested band the arrangement still decides.
+            autofix.queue_band("conflicts:1")) == (1, 2, 3)
+    # Review is its own band ahead of issues, so it drains first however the two were
+    # arranged.
     assert (order(["review:1", "issues:2"], ["issues:2"])
-            == ["issues:2", "review:1"])
+            == ["review:1", "issues:2"])
 
 
 def test_queue_reorder_can_reach_every_position():
@@ -2216,11 +2218,14 @@ def test_queue_reorder_can_reach_every_position():
     # Within the conflict band a drag works like any other.
     assert (ro(["conflicts:1", "conflicts:2"], "conflicts:1", "conflicts:2")
             == ["conflicts:2", "conflicts:1"])
-    # The requested-review band is a band like the other two: a drag out of it is
+    # The requested-review band is a band like the other three: a drag out of it is
     # refused whichever side it is heading for.
     three = ["review-req:1", "review:2", "conflicts:3"]
     assert ro(three, "review:2", "review-req:1") == three
     assert ro(three, "review:2", "conflicts:3") == three
+    # A requested review and a requested issue fix are separate bands, so a drag
+    # between them is refused like any other cross-band drag.
+    assert ro(["review:1", "issues:2"], "issues:2", "review:1") == ["review:1", "issues:2"]
 
 
 def test_work_over_the_cap_waits_in_the_queue(store, monkeypatch):
