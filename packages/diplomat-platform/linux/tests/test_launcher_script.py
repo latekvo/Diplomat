@@ -20,6 +20,11 @@ def stub_python(path: Path, marker: Path, tag: str) -> None:
     path.chmod(0o755)
 
 
+def stamped(home: Path) -> None:
+    """What szpont's deps step leaves once it has installed into the venv."""
+    (home / ".diplomat" / "venv" / ".szpont-requirements").write_text("", encoding="utf-8")
+
+
 def launched(home: Path) -> str:
     marker = home / "marker"
     subprocess.run(  # noqa: S603 - fixed argv, no shell
@@ -31,8 +36,17 @@ def launched(home: Path) -> str:
 
 def test_the_venv_szpont_made_is_preferred_over_the_paths_python3(tmp_path):
     stub_python(tmp_path / ".diplomat" / "venv" / "bin" / "python3", tmp_path / "marker", "venv")
+    stamped(tmp_path)
     stub_python(tmp_path / "bin" / "python3", tmp_path / "marker", "path")
     assert launched(tmp_path) == "venv -m diplomat_app --dump\n"
+
+
+def test_a_venv_szpont_never_finished_is_passed_over(tmp_path):
+    """Debian without python3-venv leaves bin/python3 behind and stops before pip,
+    so nothing was ever installed into it - least of all PySide6."""
+    stub_python(tmp_path / ".diplomat" / "venv" / "bin" / "python3", tmp_path / "marker", "venv")
+    stub_python(tmp_path / "bin" / "python3", tmp_path / "marker", "path")
+    assert launched(tmp_path) == "path -m diplomat_app --dump\n"
 
 
 def test_without_that_venv_the_applet_runs_on_the_paths_python3(tmp_path):

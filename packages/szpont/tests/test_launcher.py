@@ -310,6 +310,11 @@ def test_on_a_mac_a_tool_in_usr_bin_is_only_as_present_as_the_toolchain(tmp_path
     monkeypatch.setattr(sys, "platform", "darwin")
     without = {"HOME": str(tmp_path), "PATH": f"{xcode_select(tmp_path, None)}:/usr/bin"}
     assert launcher.probe(env=without)["git"] is False
+    doubled = dict(without, PATH=f"{xcode_select(tmp_path / 'd', None)}://usr/bin")
+    assert launcher.probe(env=doubled)["git"] is False, "spelled //usr/bin, still the shim"
+    (tmp_path / "usrbin").symlink_to("/usr/bin")
+    linked = dict(without, PATH=f"{xcode_select(tmp_path / 'l', None)}:{tmp_path / 'usrbin'}")
+    assert launcher.probe(env=linked)["git"] is False, "reached through a symlink, still the shim"
 
     (tmp_path / "developer").mkdir()
     with_tools = {"HOME": str(tmp_path),

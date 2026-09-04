@@ -47,7 +47,9 @@ function which(name, env) {
 function tool(name, env, platform) {
   const found = which(name, env);
   if (!found) return false;
-  if (platform === 'darwin' && found === `/usr/bin/${name}`) return toolchainPresent(env);
+  // realpath: reached through a directory symlinked onto /usr/bin, the file found
+  // is still the shim.
+  if (platform === 'darwin' && fs.realpathSync(found) === `/usr/bin/${name}`) return toolchainPresent(env);
   return true;
 }
 

@@ -134,6 +134,10 @@ if (fs.existsSync('/usr/bin/git')) {
     ok('on a Mac a tool in /usr/bin is only as present as the toolchain',
       probe([], { env: { HOME: home, PATH: `${none}:/usr/bin` } }).git === false
       && probe([], { env: { HOME: home, PATH: `${some}:/usr/bin` } }).git === true);
+    fs.symlinkSync('/usr/bin', path.join(home, 'usrbin'));
+    ok('…spelled //usr/bin or reached through a symlink, it is still the shim',
+      probe([], { env: { HOME: home, PATH: `${none}://usr/bin` } }).git === false
+      && probe([], { env: { HOME: home, PATH: `${none}:${path.join(home, 'usrbin')}` } }).git === false);
     Object.defineProperty(process, 'platform', { value: 'linux' });
     ok('on Linux /usr/bin is just a directory',
       probe([], { env: { HOME: home, PATH: `${none}:/usr/bin` } }).git === true);

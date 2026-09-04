@@ -66,7 +66,9 @@ def _tool(name: str, env: Mapping[str, str], platform: str) -> bool:
     found = _which(name, env)
     if found is None:
         return False
-    if platform == "darwin" and found == f"/usr/bin/{name}":
+    # realpath: spelled `//usr/bin`, or reached through a directory symlinked onto
+    # it, the file found is still the shim.
+    if platform == "darwin" and os.path.realpath(found) == f"/usr/bin/{name}":
         return _toolchain_present(env)
     return True
 
