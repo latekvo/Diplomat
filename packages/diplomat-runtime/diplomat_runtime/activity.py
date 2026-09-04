@@ -189,14 +189,10 @@ def read(limit: int = 200) -> list[AuditEntry]:
             obj = json.loads(line)
             if not isinstance(obj, dict):
                 continue
-            entries.append(
-                AuditEntry(
-                    at=obj.get("at", ""),
-                    source=obj.get("source", ""),
-                    action=obj.get("action", ""),
-                    detail=obj.get("detail", ""),
-                )
-            )
+            fields = [obj.get(k, "") for k in ("at", "source", "action", "detail")]
+            if not all(isinstance(f, str) for f in fields):
+                continue  # the macOS twin's Codable decode drops such a line whole
+            entries.append(AuditEntry(*fields))
         except (ValueError, TypeError):
             continue
     entries.reverse()
