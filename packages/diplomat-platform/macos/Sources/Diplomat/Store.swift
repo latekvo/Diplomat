@@ -1050,33 +1050,32 @@ final class Store: ObservableObject {
     /// tick. Only a synthesized one: a tracked record missing from the book was retired
     /// while this tick resolved, and writing it back would raise the dead.
     private static func persistRunChanges(_ learned: [AgentState.RunRecord]) {
-        var fresh = Dictionary(learned.map { ($0.runID, $0) },
+        let fresh = Dictionary(learned.map { ($0.runID, $0) },
                                uniquingKeysWith: { _, last in last })
-        var out: [AgentState.RunRecord] = []
-        var changed = false
-        for r in AgentRegistry.load() {
-            guard let f = fresh.removeValue(forKey: r.runID) else { out.append(r); continue }
-            var merged = r
-            if merged.pid == nil { merged.pid = f.pid }
-            // The fresher one wins here, unlike the pid: a synthesized run's tty follows
-            // whichever agent its PR's sighting currently names.
-            if !f.tty.isEmpty { merged.tty = f.tty }
-            if let seen = f.claimSeenAt { merged.claimSeenAt = seen }
-            // Taken wholesale, unlike the three above: this pair is the only thing a
-            // tick learns by comparing itself to the LAST one, so it is the only one
-            // worthless unless written down. Unpersisted, every tick re-reads a screen
-            // it has no memory of, the stillness clock restarts at zero, and the
-            // twenty-minute backstop can never elapse however long an agent sits wedged.
-            merged.quietDigest = f.quietDigest
-            merged.quietSince = f.quietSince
-            changed = changed || merged != r
-            out.append(merged)
+        AgentRegistry.update { book in
+            var out = book.map { r -> AgentState.RunRecord in
+                guard let f = fresh[r.runID] else { return r }
+                var merged = r
+                if merged.pid == nil { merged.pid = f.pid }
+                // The fresher one wins here, unlike the pid: a synthesized run's tty
+                // follows whichever agent its PR's sighting currently names.
+                if !f.tty.isEmpty { merged.tty = f.tty }
+                if let seen = f.claimSeenAt { merged.claimSeenAt = seen }
+                // Taken wholesale, unlike the three above: this pair is the only thing a
+                // tick learns by comparing itself to the LAST one, so it is the only one
+                // worthless unless written down. Unpersisted, every tick re-reads a
+                // screen it has no memory of, the stillness clock restarts at zero, and
+                // the twenty-minute backstop can never elapse however long an agent sits
+                // wedged.
+                merged.quietDigest = f.quietDigest
+                merged.quietSince = f.quietSince
+                return merged
+            }
+            // The rows with no line on disk to merge into, in `learned`'s order.
+            let booked = Set(book.map(\.runID))
+            out.append(contentsOf: learned.filter { $0.untracked && !booked.contains($0.runID) })
+            return out
         }
-        // What the drain above left in `fresh`: the rows with no line on disk to merge
-        // into. Taken from `learned` rather than from the dictionary, for a stable order.
-        let added = learned.filter { $0.untracked && fresh[$0.runID] != nil }
-        out.append(contentsOf: added)
-        if changed || !added.isEmpty { AgentRegistry.save(out) }
     }
 
     /// Price what has ended and drop it from the book.
@@ -1184,12 +1183,14 @@ final class Store: ObservableObject {
             AuditLog.log("auto", "kill-device", "closed \(who)'s window — \(why)")
         }
         if !refused.isEmpty {
-            AgentRegistry.save(AgentRegistry.load().map { r -> AgentState.RunRecord in
-                guard refused.contains(r.runID) else { return r }
-                var stamped = r
-                stamped.reapRefusedAt = t.now
-                return stamped
-            })
+            AgentRegistry.update { book in
+                book.map { r -> AgentState.RunRecord in
+                    guard refused.contains(r.runID) else { return r }
+                    var stamped = r
+                    stamped.reapRefusedAt = t.now
+                    return stamped
+                }
+            }
         }
         return refused
     }
@@ -2727,7 +2728,8 @@ final class Store: ObservableObject {
         // and forcing it.
         var budget = AgentDispatchGate.Budget(affordable: true)
         if source == .auto, !agentOnPR, !bypassBudget, !atCapacity, AutoBudget.enabled {
-            budget = AutoBudget.decide()
+            // Off the main actor: the probe behind it dials the usage endpoint.
+            budget = await Task.detached(priority: .utility) { AutoBudget.decide() }.value
             if budget.affordable { budgetLogged = false }
         }
         switch AgentDispatchGate.decide(source: source, banned: banned,

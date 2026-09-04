@@ -14,16 +14,14 @@ APP="Diplomat.app"
 # code.) build-app.sh rm -rf's and rebuilds, so this is idempotent.
 "$HERE/build-app.sh"
 
-# Install to /Applications (fall back to ~/Applications if not writable).
-if [ -w /Applications ]; then
-  DEST_DIR="/Applications"
-else
-  DEST_DIR="$HOME/Applications"; mkdir -p "$DEST_DIR"
-fi
-rm -rf "$DEST_DIR/$APP"
-cp -R "$APP" "$DEST_DIR/"
-BIN="$DEST_DIR/$APP/Contents/MacOS/Diplomat"
-echo "Installed app → $DEST_DIR/$APP"
+# launchd starts the bundle where build-app.sh writes it, so the login instance is
+# the one Settings ▸ UPDATE and the 06:00 self-update rebuild and relaunch - as on
+# Linux, whose autostart entry runs the checkout's launcher. A copy would keep
+# starting the build it was made from.
+BIN="$PKG_DIR/$APP/Contents/MacOS/Diplomat"
+# Earlier installs copied the bundle here; a click on that copy would start stale
+# code, whose newest-wins singleton then retires the login instance.
+rm -rf "/Applications/$APP" "$HOME/Applications/$APP"
 
 # Write the LaunchAgent.
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"

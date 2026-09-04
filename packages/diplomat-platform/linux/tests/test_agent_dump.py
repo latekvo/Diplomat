@@ -68,7 +68,7 @@ def _armed_dump(monkeypatch, *, deadline=A.RUN_DEADLINE):
     monkeypatch.setattr(probes, "tokens_left",
                         lambda runners=(): dialled.append(1) or A.Observation.present(True))
 
-    def gather(records, now, *, merged=None, tokens=None):
+    def gather(records, now, *, merged=None, tokens=None, mesh_enabled=True):
         return A.Evidence(
             processes=A.Observation.present(
                 {4242: A.ProcInfo(tty="pts/3", elapsed=A.RUN_DEADLINE + 3600,

@@ -539,7 +539,7 @@ def fold(lines: list[str]) -> Ledger:
             task.duty = duty
         pr = _number(obj.get("pr"))
         if pr is not None and pr > 0:
-            task.pr = int(pr)
+            task.pr = _clamped_int(pr)
         if ev == "queued":
             if task.queued_at is None:
                 task.queued_at = at
@@ -1050,7 +1050,18 @@ def _round_half_away(value: float) -> int:
     """Swift's ``Double.rounded()`` — halves go away from zero. Python's built-in
     ``round`` is banker's rounding (``round(0.5) == 0``), so using it here would
     put the two platforms one second apart on every exact half and fail parity."""
-    return int(math.floor(value + 0.5)) if value >= 0 else int(math.ceil(value - 0.5))
+    return _clamped_int(math.floor(value + 0.5) if value >= 0 else math.ceil(value - 0.5))
+
+
+def _clamped_int(value: float) -> int:
+    """Swift's ``clampedInt`` (Models.swift): ``Int(Double)`` traps past Int's range,
+    so the twin clamps there, and a ledger line carrying ``1e300`` has to read the
+    same on both sides."""
+    if value >= 9.0e18:
+        return 2**63 - 1
+    if value <= -9.0e18:
+        return -2**63
+    return int(value)
 
 
 def duration(secs: float, *, samples: int = 1) -> str:

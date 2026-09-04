@@ -1644,6 +1644,14 @@ do {
     AgentRegistry.forget([run])
     check(AgentRegistry.load().isEmpty && AgentRegistry.boundSession(run) == "",
           "forgetting a run takes its sidecars with it")
+    // Every edit of the book is one locked read-modify-write; a caller that loaded,
+    // edited and saved could drop a run registered between its two calls.
+    AgentRegistry.add(AgentState.RunRecord(runID: "upd-a", dispatchedAt: now))
+    AgentRegistry.add(AgentState.RunRecord(runID: "upd-b", dispatchedAt: now))
+    check(AgentRegistry.update { $0.filter { $0.runID != "upd-a" } }
+              && AgentRegistry.load().map(\.runID) == ["upd-b"],
+          "update applies its transform to the book on disk")
+    AgentRegistry.forget(["upd-b"])
     print("run book sidecar assertions passed")
 }
 
@@ -1804,6 +1812,13 @@ let tModel = try? CoreAssets.telemetry()
 check(tModel?.bucketHours(days: 7) == 4 && tModel?.bucketHours(days: 14) == 12
       && tModel?.bucketHours(days: 30) == 24 && tModel?.bucketHours(days: 60) == 48,
       "the shipped ranges do not bucket the way the model says")
+// A value past Int's range is a corrupt or hand-edited line, and `Int(Double)` traps on
+// it. The Telemetry screen folds the ledger on every repaint, so that trap took the
+// app down at every launch until the line was found and removed.
+let poisoned = Telemetry.fold(lines: [
+    #"{"at": 1784920000, "ev": "queued", "key": "review:h/o/r#9@zz", "duty": "review", "pr": 1e300}"#])
+check(poisoned.tasks.first?.pr == Int.max, "an out-of-range pr must clamp, not trap")
+check(Telemetry.duration(1e300).hasSuffix("m"), "an absurd duration must format, not trap")
 // A ledger with no quota readings can count tokens but cannot honestly turn them
 // into a share of a window — the screen shows tokens and says so.
 let unpriced = Telemetry.fold(lines: tLines.filter { !$0.contains("\"sample\"") })
@@ -2324,6 +2339,27 @@ if ProcessInfo.processInfo.environment["DIPLOMAT_GOLDEN_WRITE"] == "1" {
         check(prompt == golden, "prompt \(name) drifted from its golden file")
     }
     print("golden-prompt assertions passed (\(goldenModes.count) modes)")
+}
+
+// ---- GH: a gh that never answers is given up on ----
+// The Linux twin's gh.run carries the same 60 s budget. A stub that sleeps stands in
+// for the stalled response, with the deadline shortened to a second; DIPLOMAT_GH names
+// it before anything has asked where gh lives.
+do {
+    let stub = FileManager.default.temporaryDirectory.appendingPathComponent("smoke-gh-\(getpid()).sh")
+    // exec, so the process the deadline signals is the one that sleeps.
+    try "#!/bin/sh\nexec sleep 30\n".write(to: stub, atomically: true, encoding: .utf8)
+    chmod(stub.path, 0o755)
+    defer { try? FileManager.default.removeItem(at: stub) }
+    setenv("DIPLOMAT_GH", stub.path, 1)
+    let started = Date()
+    var outcome = "returned"
+    do { _ = try await GH.run(["api", "/"], timeout: 1) }
+    catch GHError.timeout(let s) { outcome = "timeout \(Int(s))" }
+    catch { outcome = "other: \(error)" }
+    check(outcome == "timeout 1", "a stalled gh is reported as a timeout, got: \(outcome)")
+    check(Date().timeIntervalSince(started) < 10, "the deadline is what ends the wait, not the stub")
+    unsetenv("DIPLOMAT_GH")
 }
 
 if ProcessInfo.processInfo.environment["DIPLOMAT_DUMP"] == "1" {

@@ -291,6 +291,9 @@ class Store(QObject):
         # thread and released by the worker (see run_autofix_poll_async), so it must
         # be a plain Lock (cross-thread release), never nested with _autofix_lock.
         self._poll_lock = threading.Lock()
+        # One settle at a time: the poll and the panel's refresh both retire, price
+        # and audit what a tick found, and two at once did it twice.
+        self._settle_lock = threading.Lock()
         # PR numbers with a dispatch_agent call in flight - a click and an
         # overlapping poll can't race two spawns onto one PR. Guarded by its own
         # short mutex: _autofix_lock is the whole-poll overlap guard (held for the
@@ -817,7 +820,8 @@ class Store(QObject):
         # was never dropped, its bay never came back, its PR stayed deduped and its
         # cost never reached the ledger, on exactly the machines that leave the tray
         # alone. (Seen live: three runs, panel closed, nothing retiring.)
-        self._settle_agents()
+        with self._settle_lock:
+            self._settle_agents()
         try:
             if not self.effective_me:
                 self.fetch_me()
@@ -1466,9 +1470,15 @@ class Store(QObject):
         finishing as another starts leaves the count alone while both rows are now
         wrong, and an agent going quiet moves no count at all while the bay it hands
         back is drawn from that same measure."""
-        before = self._state_signature()
-        self._settle_agents()
-        if self._state_signature() != before:
+        if not self._settle_lock.acquire(blocking=False):
+            return  # a settle is under way; the next tick asks again
+        try:
+            before = self._state_signature()
+            self._settle_agents()
+            changed = self._state_signature() != before
+        finally:
+            self._settle_lock.release()
+        if changed:
             self.tasks_changed.emit()
 
     def _state_signature(self) -> frozenset:
@@ -2167,7 +2177,7 @@ class Store(QObject):
         now = time.time()
         records = agentregistry.adopt_pids(agentregistry.load())
         evidence = probes.gather(records, now, merged=self._merged_prs,
-                                 tokens=self._tokens_left)
+                                 tokens=self._tokens_left, mesh_enabled=self.mesh_enabled)
         t = agentstate.tick(records, evidence, now, self.auto_task_limit,
                             appconfig.run_deadline())
         with self._tick_lock:
@@ -2290,28 +2300,29 @@ class Store(QObject):
         retired while this tick resolved, and writing it back would raise the dead.
         """
         learned = {r.run_id: r for r in t.records}
-        out, changed = [], False
-        for r in agentregistry.load():
-            fresh = learned.pop(r.run_id, None)
-            if fresh is None:
-                out.append(r)
-                continue
-            merged = dataclasses.replace(
-                r,
-                pid=r.pid if r.pid is not None else fresh.pid,
-                # The fresher one wins here, unlike the pid: a synthesized run's tty
-                # follows whichever agent its PR's sighting currently names.
-                tty=fresh.tty or r.tty,
-                claim_seen_at=fresh.claim_seen_at or r.claim_seen_at,
-                quiet_digest=fresh.quiet_digest,
-                quiet_since=fresh.quiet_since,
-            )
-            changed = changed or merged != r
-            out.append(merged)
-        fresh_rows = [r for r in learned.values() if r.untracked]
-        out.extend(fresh_rows)
-        if changed or fresh_rows:
-            agentregistry.save(out)
+
+        def merge(book: list[agentstate.RunRecord]) -> list[agentstate.RunRecord]:
+            out = []
+            for r in book:
+                fresh = learned.get(r.run_id)
+                if fresh is None:
+                    out.append(r)
+                    continue
+                out.append(dataclasses.replace(
+                    r,
+                    pid=r.pid if r.pid is not None else fresh.pid,
+                    # The fresher one wins here, unlike the pid: a synthesized run's
+                    # tty follows whichever agent its PR's sighting currently names.
+                    tty=fresh.tty or r.tty,
+                    claim_seen_at=fresh.claim_seen_at or r.claim_seen_at,
+                    quiet_digest=fresh.quiet_digest,
+                    quiet_since=fresh.quiet_since,
+                ))
+            booked = {r.run_id for r in book}
+            out.extend(r for r in t.records if r.untracked and r.run_id not in booked)
+            return out
+
+        agentregistry.update(merge)
 
     def _retire_finished(self, t: agentstate.Tick) -> None:
         """Price what has ended and drop it from the book.
@@ -2425,7 +2436,7 @@ class Store(QObject):
         refused: set[str] = set()
         for record in t.reapable:
             if not (tmuxwatch.kill_session(tmuxwatch.session_name(record.run_id))
-                    or tmuxwatch.kill_session_for_tty(record.tty)):
+                    or tmuxwatch.kill_window_for_tty(record.tty)):
                 refused.add(record.run_id)
                 # Once per episode: the stamp is None only before the first refusal.
                 # A window nothing can close is retried for the life of the applet, and
@@ -2440,10 +2451,10 @@ class Store(QObject):
                          f"closed {record.label or record.run_id}'s window — "
                          f"{reason.split('; ')[-1]}")
         if refused:
-            agentregistry.save([
+            agentregistry.update(lambda book: [
                 dataclasses.replace(r, reap_refused_at=t.now)
                 if r.run_id in refused else r
-                for r in agentregistry.load()])
+                for r in book])
         return refused
 
     def _in_flight(self, url: str) -> bool:
@@ -2854,7 +2865,10 @@ class Store(QObject):
                 step(f"building diplomat-core at {commit}…")
                 selfupdate.build_core()
                 step("relaunching…")
-                selfupdate.relaunch()
+                exited = selfupdate.relaunch_failure(selfupdate.relaunch())
+                if exited is not None:
+                    raise selfupdate.UpdateError(
+                        f"the relaunched applet exited {exited}; this one is still the old build")
                 self.update_state = {"phase": "restarting", "commit": commit}
             except (selfupdate.UpdateError, OSError, subprocess.TimeoutExpired) as exc:
                 # TimeoutExpired (black-holed network on pull's fetch, or a hung swift

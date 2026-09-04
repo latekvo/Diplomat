@@ -595,8 +595,9 @@ edge agreed on. It shouts `DEVICE IS NOT DISCOVERABLE` if every beacon send fail
 
 The mesh node itself is stdlib-only Python that runs on any OS — both the macOS app
 and the Linux applet drive that same node (a Swift node is future work), so enabling
-the mesh on macOS needs the source checkout on disk (`DIPLOMAT_SELF_REPO` if it
-isn't at the default `~/dev/diplomat`):
+the mesh on macOS needs the source checkout on disk (the app finds the checkout its
+bundle was built in, `szpont`'s `~/.diplomat/checkout` included; `DIPLOMAT_SELF_REPO`
+names any other, else `~/dev/diplomat`):
 
 ```bash
 cd packages/diplomat-runtime
@@ -1231,7 +1232,7 @@ as a login daemon:
 ```
 ┌─ Diplomat setup ─────────────────────────────────────────
 │ Install as a background daemon? This will:
-│   • build + copy Diplomat.app to /Applications
+│   • build Diplomat.app inside this checkout
 │   • add a per-user LaunchAgent so the wrench boots on login
 │   • start it now (it replaces this foreground instance)
 │   • ask macOS for permission to control your terminal (SPAWN)
@@ -1268,8 +1269,10 @@ System Settings → General → Login Items — or just use the autostart script
 
 Installs a per-user LaunchAgent at `~/Library/LaunchAgents/com.ignacy.diplomat.plist`
 (`RunAtLoad`), so the wrench reappears on every login. The ⏻ Quit button still works
-within a session (no `KeepAlive`) — it just returns next login. The app goes to
-`/Applications`, or `~/Applications` when that isn't writable.
+within a session (no `KeepAlive`) — it just returns next login. launchd starts the
+bundle where `build-app.sh` writes it, `packages/diplomat-platform/macos/Diplomat.app`,
+so the instance that greets you at login is the one **Update** rebuilds; nothing is
+copied to `/Applications`.
 
 It also installs a **second** agent, `com.ignacy.diplomat.autoupdate`, which fires
 daily at **06:00** and runs the app binary headless (`DIPLOMAT_SELF_UPDATE=1`):
@@ -1505,7 +1508,7 @@ packages/
         Spend.swift                the OpenRouter balance probe — dollars left on the key cap and the credits
         AutoBudget.swift           ledger + probe + knobs -> may another automatic task start here?
         SelfUpdate.swift           fetch/merge upstream, rebuild, relaunch (Update button + the 06:00 run)
-        RepoPaths.swift            locate this app's own checkout (DIPLOMAT_SELF_REPO → … → ~/dev/diplomat),
+        RepoPaths.swift            locate this app's own checkout (DIPLOMAT_SELF_REPO → the checkout the bundle sits in → ~/dev/diplomat),
                                    the sibling packages it reaches for, and the agents' repo root
         AppConfig.swift            the cross-process settings file (~/.diplomat/config.json) the mesh node shares
       install/                 ← build-app + the autostart / auto-update (un)installers (launchd)

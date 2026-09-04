@@ -490,7 +490,7 @@ def terminal_argv(command: str, session: str | None = None) -> list[str]:
     window. Without one the session is auto-named and the only route back to the
     window is the tty its agent happens to be on — and a run whose pid was never
     adopted has no tty, so a backstop that ended it retired it and closed nothing
-    (:func:`tmuxwatch.kill_session_for_tty` refuses an empty tty outright). The macOS
+    (:func:`tmuxwatch.kill_window_for_tty` refuses an empty tty outright). The macOS
     spawner records an equivalent handle keyed on the run id, and tries it FIRST.
     Left unnamed for a window nobody has to find again: the provider-login wizard.
     """

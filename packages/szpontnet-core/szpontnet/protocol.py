@@ -554,8 +554,8 @@ def encode(msg: dict) -> bytes:
 
 
 def decode(line: bytes) -> dict | None:
-    """Parse one line; None for garbage (oversized, non-JSON, non-object, or
-    missing the type tag) — callers drop and move on. Non-finite numbers are
+    """Parse one line; None for garbage (oversized, non-JSON, nested past the
+    parser's stack, non-object, or missing the type tag) - callers drop and move on. Non-finite numbers are
     tolerated at parse (``1e999``/``Infinity`` decode to ∞) and dropped one layer up
     by each payload's ``from_dict`` finite guard (see ``_finite``), so a poisoned
     field drops its record while a coercible one (``overrides.rev``) still normalizes
@@ -564,7 +564,10 @@ def decode(line: bytes) -> dict | None:
         return None
     try:
         msg = json.loads(line.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+        # RecursionError: `[[[[…` a few thousand deep fits well inside MAX_LINE_BYTES
+        # (and a beacon datagram) and overflows json's decoder. Every wire read
+        # funnels through here, and one call site closes nothing on the way out.
         return None
     if not isinstance(msg, dict) or not isinstance(msg.get("t"), str):
         return None

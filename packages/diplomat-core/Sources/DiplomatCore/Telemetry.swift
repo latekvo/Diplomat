@@ -163,7 +163,7 @@ public enum Telemetry {
                                           remote: false, tokens: nil, runner: "",
                                           usd: nil, model: "")
             if let duty = obj["duty"] as? String, !duty.isEmpty { task.duty = duty }
-            if let pr = number(obj["pr"]), pr > 0 { task.pr = Int(pr) }
+            if let pr = number(obj["pr"]), pr > 0 { task.pr = clampedInt(pr) }
             let known: Bool
             switch ev {
             case "queued":
@@ -706,7 +706,7 @@ public enum Telemetry {
     /// whether 90 minutes reads "1h 30m" or "90m".
     public static func duration(_ secs: Double, samples: Int = 1) -> String {
         guard samples > 0, secs.isFinite, secs > 0 else { return "—" }
-        let total = Int(secs.rounded())
+        let total = clampedInt(secs.rounded())
         if total < 60 { return "\(total)s" }
         if total < 3600 { return "\(total / 60)m \(String(format: "%02d", total % 60))s" }
         return "\(total / 3600)h \(String(format: "%02d", (total % 3600) / 60))m"
@@ -745,6 +745,6 @@ public enum Telemetry {
         guard value.isFinite, value > 0 else { return "0" }
         if value >= 1_000_000 { return String(format: "%.1fM", value / 1_000_000) }
         if value >= 1_000 { return String(format: "%.0fk", value / 1_000) }
-        return String(Int(value.rounded()))
+        return String(clampedInt(value.rounded()))
     }
 }

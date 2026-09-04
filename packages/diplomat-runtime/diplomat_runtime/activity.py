@@ -187,6 +187,8 @@ def read(limit: int = 200) -> list[AuditEntry]:
             continue
         try:
             obj = json.loads(line)
+            if not isinstance(obj, dict):
+                continue
             entries.append(
                 AuditEntry(
                     at=obj.get("at", ""),

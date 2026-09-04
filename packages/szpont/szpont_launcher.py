@@ -51,8 +51,37 @@ MIN_PYTHON = (3, 10)
 STATE_DIR = ".diplomat"
 
 
-def _which(name: str, env: Mapping[str, str]) -> bool:
-    return shutil.which(name, path=env.get("PATH")) is not None
+def _which(name: str, env: Mapping[str, str]) -> str | None:
+    return shutil.which(name, path=env.get("PATH"))
+
+
+def _tool(name: str, env: Mapping[str, str], platform: str) -> bool:
+    """Whether ``name`` is on PATH and would run.
+
+    Every Mac has a ``/usr/bin/git`` and a ``/usr/bin/swift``: ``xcrun`` shims that
+    run the Command Line Tools when those are installed and pop the graphical
+    installer when they are not. Found there, a tool is only as present as the
+    toolchain, which ``xcode-select -p`` reports without going through a shim.
+    """
+    found = _which(name, env)
+    if found is None:
+        return False
+    if platform == "darwin" and found == f"/usr/bin/{name}":
+        return _toolchain_present(env)
+    return True
+
+
+def _toolchain_present(env: Mapping[str, str]) -> bool:
+    xcode_select = _which("xcode-select", env)
+    if xcode_select is None:
+        return False
+    try:
+        proc = subprocess.run(  # noqa: S603 - fixed argv, no shell
+            [xcode_select, "-p"], capture_output=True, text=True, timeout=30
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return proc.returncode == 0 and os.path.isdir(proc.stdout.strip())
 
 
 def _python3_version(env: Mapping[str, str]) -> str | None:
@@ -98,7 +127,7 @@ def probe(app_args: Sequence[str] = (), *, update: bool = True,
     # DIPLOMAT_SELF_REPO is what the applet itself calls the checkout it lives in
     # (selfupdate.repo_root), so pointing the launcher at a working copy and
     # pointing the running applet at one are the same act.
-    explicit = env.get("DIPLOMAT_SELF_REPO")
+    explicit = env.get("DIPLOMAT_SELF_REPO") or None
     checkout = Path(explicit) if explicit else home / STATE_DIR / "checkout"
     if not checkout.exists():
         state = "absent"
@@ -123,13 +152,16 @@ def probe(app_args: Sequence[str] = (), *, update: bool = True,
         "managed": explicit is None,
         "repo_url": env.get("DIPLOMAT_REPO_URL") or DEFAULT_REPO_URL,
         "update": bool(update),
-        "git": _which("git", env),
-        "swift": _which("swift", env),
+        "git": _tool("git", env, platform),
+        "swift": _tool("swift", env, platform),
         # Linux-only questions, and asked only there - see _python3_version.
         "python3": _python3_version(env) if platform == "linux" else None,
         "core_bin": _core_bin_present(home, env) if platform == "linux" else None,
         "venv": str(venv),
-        "venv_python": (venv / "bin" / "python").exists(),
+        # Both, because a venv is only useful with something to install into it:
+        # Debian without python3-venv leaves bin/python behind and stops before
+        # pip, and running `venv` again over that directory is what completes it.
+        "venv_python": (venv / "bin" / "python").exists() and (venv / "bin" / "pip").exists(),
         "venv_current": digest is not None and _read(stamp) == digest,
         "args": list(app_args),
     }
@@ -199,8 +231,10 @@ def plan(facts: Mapping) -> dict:
                            cwd=macos, needs="swift"))
         # build-app.sh rebuilds unconditionally, so the bundle always matches the
         # source it was just cloned or pulled from; `open` then detaches it from
-        # this terminal, which is where a menu-bar app belongs.
-        launch = ["open", os.path.join(macos, "Diplomat.app")]
+        # this terminal, which is where a menu-bar app belongs. `-n` starts that
+        # bundle even while an instance is up, and the app's newest-wins singleton
+        # retires the old one - the swap its own updater relies on.
+        launch = ["open", "-n", os.path.join(macos, "Diplomat.app")]
         if args:
             launch += ["--args", *args]
         steps.append(_step("launch", launch, cwd=macos))

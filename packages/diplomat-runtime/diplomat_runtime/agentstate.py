@@ -45,6 +45,7 @@ the account still has tokens to spend.
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -116,6 +117,22 @@ class Observation:
         if value is None:
             return Observation.unavailable("value did not decode")
         return Observation.present(value)
+
+
+def _number(value: Any, default: float | None = None) -> float | None:
+    """A JSON number out of a decoded record as a float, or ``default``. The Swift
+    twin reads ``(as? NSNumber)?.doubleValue ?? default`` - a boolean bridges to 1/0
+    there, a string or null to the default - and one book is read by both."""
+    if isinstance(value, (int, float)) and math.isfinite(value):
+        return float(value)
+    return default
+
+
+def _integer(value: Any) -> int | None:
+    """The same for an integer field (``pid``, ``prNumber``); truncated like
+    ``NSNumber.intValue``."""
+    n = _number(value)
+    return None if n is None else int(n)
 
 
 def _flag(value: Any, default: bool = False) -> bool:
@@ -398,8 +415,8 @@ class RunRecord:
     def from_json(obj: dict) -> "RunRecord":
         return RunRecord(
             run_id=obj.get("runId", ""),
-            dispatched_at=float(obj.get("dispatchedAt", 0.0)),
-            pr_number=obj.get("prNumber"),
+            dispatched_at=_number(obj.get("dispatchedAt"), 0.0),
+            pr_number=_integer(obj.get("prNumber")),
             pr_url=obj.get("prUrl", ""),
             kind=obj.get("kind", ""),
             label=obj.get("label", ""),
@@ -408,12 +425,12 @@ class RunRecord:
             node=obj.get("node", ""),
             work_key=obj.get("workKey", ""),
             ledger_key=obj.get("ledgerKey", ""),
-            pid=obj.get("pid"),
+            pid=_integer(obj.get("pid")),
             tty=obj.get("tty", ""),
-            claim_seen_at=obj.get("claimSeenAt"),
+            claim_seen_at=_number(obj.get("claimSeenAt")),
             quiet_digest=obj.get("quietDigest", ""),
-            quiet_since=obj.get("quietSince"),
-            reap_refused_at=obj.get("reapRefusedAt"),
+            quiet_since=_number(obj.get("quietSince")),
+            reap_refused_at=_number(obj.get("reapRefusedAt")),
             untracked=_flag(obj.get("untracked")),
         )
 

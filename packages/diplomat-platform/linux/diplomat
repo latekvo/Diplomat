@@ -4,4 +4,12 @@
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export PYTHONPATH="${DIR}${PYTHONPATH:+:$PYTHONPATH}"
+# The venv `szpont` makes is where PySide6 is; the autostart entry, the systemd
+# timer and the self-update relaunch all start this script without szpont's PATH
+# in front of it. It is refreshed only by szpont itself: a checkout run by hand
+# beside a stale one runs on it too, until that venv is removed.
+VENV_PYTHON="$HOME/.diplomat/venv/bin/python3"
+if [ -x "$VENV_PYTHON" ]; then
+  exec "$VENV_PYTHON" -m diplomat_app "$@"
+fi
 exec python3 -m diplomat_app "$@"

@@ -436,13 +436,17 @@ def _staged_prompt(run_id: str) -> str | None:
 _BACKENDS = {runner.OPENCODE: _OpenCodeBackend, runner.HERMES: _HermesBackend}
 
 
-def mesh_claims() -> Observation:
+def mesh_claims(enabled: bool = True) -> Observation:
     """The work keys currently claimed anywhere on the mesh.
 
-    UNSUPPORTED without the add-on installed, UNAVAILABLE when the node is installed
-    but not answering — a peer's run must not be retired because the local node is
-    down, which is the difference the resolver reads.
+    UNSUPPORTED without the add-on installed or with the mesh switched off,
+    UNAVAILABLE when the node is installed but not answering - a peer's run must not
+    be retired because the local node is down, which is the difference the resolver
+    reads. Switched off comes first: a machine that ran a node once keeps its last
+    snapshot, and a node that was stopped on purpose is not a probe gone quiet.
     """
+    if not enabled:
+        return Observation.unsupported("are unavailable (the mesh is switched off)")
     try:
         from szpontnet import statefile
     except ImportError:
@@ -522,7 +526,8 @@ def tokens_left(runners: Iterable[str] = ()) -> Observation:
 
 def gather(records: list[RunRecord], now: float, *,
            merged: Observation | None = None,
-           tokens: Observation | None = None) -> Evidence:
+           tokens: Observation | None = None,
+           mesh_enabled: bool = True) -> Evidence:
     """One pass of every cheap probe.
 
     ``merged`` and ``tokens`` are passed in rather than probed here: one costs a ``gh``
@@ -553,7 +558,7 @@ def gather(records: list[RunRecord], now: float, *,
         processes=table,
         sentinels=_note("sentinels", agentregistry.sentinels(records), now),
         tails=_note("screens", pane_tails(looked_up, now), now),
-        claims=_note("mesh claims", mesh_claims(), now),
+        claims=_note("mesh claims", mesh_claims(mesh_enabled), now),
         merged_prs=merged or Observation.unavailable("have not been probed yet"),
         live_agents=scan,
         sessions=_note("agent sessions",

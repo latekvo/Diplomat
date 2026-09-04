@@ -140,7 +140,9 @@ def test_macos_builds_the_bundle_then_opens_it():
     macos = "/home/u/.diplomat/checkout/packages/diplomat-platform/macos"
     assert step(plan, "build")["cmd"] == [f"{macos}/install/build-app.sh"]
     assert step(plan, "build")["cwd"] == macos
-    assert step(plan, "launch")["cmd"] == ["open", f"{macos}/Diplomat.app"]
+    # -n: a bundle rebuilt under a running instance is started, and the app's
+    # newest-wins singleton retires the old one, as its own updater does.
+    assert step(plan, "launch")["cmd"] == ["open", "-n", f"{macos}/Diplomat.app"]
 
 
 def test_macos_hands_the_applet_its_arguments_behind_open():
@@ -195,8 +197,9 @@ def test_a_missing_venv_is_created_before_it_is_installed_into():
 
 
 def test_the_applet_starts_on_the_venvs_interpreter():
-    """The checkout's own `diplomat` script resolves `python3` off PATH, so the
-    venv going in front of it is the whole of "run it with Qt available"."""
+    """The venv goes in front of PATH so everything the launch runs resolves to
+    it; the checkout's own `diplomat` script finds that venv by itself too, for
+    the starts (autostart, timer, relaunch) that come without this PATH."""
     plan = launcher.plan(facts(args=["--dump"]))
     launch = step(plan, "launch")
     linux = "/home/u/.diplomat/checkout/packages/diplomat-platform/linux"
@@ -275,16 +278,68 @@ def test_probe_tells_a_checkout_from_any_other_directory(tmp_path):
     assert found["checkout_state"] == "foreign"
 
 
+def test_probe_treats_an_empty_checkout_variable_as_unset(tmp_path):
+    """What the applet's `selfupdate.repo_root` and the npm twin make of it; a
+    launcher that read "" as a name would never fast-forward the default."""
+    found = launcher.probe(env={"HOME": str(tmp_path), "PATH": "", "DIPLOMAT_SELF_REPO": ""})
+    assert found["checkout"] == str(tmp_path / ".diplomat" / "checkout")
+    assert found["managed"] is True
+
+
 def test_probe_finds_the_tools_on_the_path_it_is_given(tmp_path):
     found = launcher.probe(env={"HOME": str(tmp_path), "PATH": bin_dir(tmp_path, "git")})
     assert found["git"] is True
     assert found["swift"] is False
 
 
+def xcode_select(tmp_path: Path, prints: str | None) -> str:
+    """A `xcode-select -p` that names a directory, or exits 2 as the real one does
+    with no developer directory selected."""
+    d = tmp_path / "xcode"
+    d.mkdir(parents=True)
+    body = f"#!/bin/sh\necho {prints}\n" if prints else "#!/bin/sh\nexit 2\n"
+    (d / "xcode-select").write_text(body, encoding="utf-8")
+    (d / "xcode-select").chmod(0o755)
+    return str(d)
+
+
+@pytest.mark.skipif(not os.path.exists("/usr/bin/git"), reason="needs a /usr/bin/git to find")
+def test_on_a_mac_a_tool_in_usr_bin_is_only_as_present_as_the_toolchain(tmp_path, monkeypatch):
+    """/usr/bin/git is an xcrun shim on every Mac: without the Command Line Tools
+    it is the installer dialog, not git, and PATH alone cannot tell."""
+    monkeypatch.setattr(sys, "platform", "darwin")
+    without = {"HOME": str(tmp_path), "PATH": f"{xcode_select(tmp_path, None)}:/usr/bin"}
+    assert launcher.probe(env=without)["git"] is False
+
+    (tmp_path / "developer").mkdir()
+    with_tools = {"HOME": str(tmp_path),
+                  "PATH": f"{xcode_select(tmp_path / 'w', str(tmp_path / 'developer'))}:/usr/bin"}
+    assert launcher.probe(env=with_tools)["git"] is True
+
+
+@pytest.mark.skipif(not os.path.exists("/usr/bin/git"), reason="needs a /usr/bin/git to find")
+def test_on_linux_usr_bin_is_just_a_directory(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")
+    env = {"HOME": str(tmp_path), "PATH": f"{xcode_select(tmp_path, None)}:/usr/bin"}
+    assert launcher.probe(env=env)["git"] is True
+
+
 def test_probe_takes_a_fork_from_the_environment(tmp_path):
     found = launcher.probe(env={"HOME": str(tmp_path), "PATH": "",
                                 "DIPLOMAT_REPO_URL": "/srv/diplomat.git"})
     assert found["repo_url"] == "/srv/diplomat.git"
+
+
+def test_a_venv_without_pip_is_one_still_to_be_made(tmp_path):
+    """Debian without python3-venv leaves bin/python behind and stops before pip;
+    the deps step needs pip, so the venv step has to run again over it."""
+    venv = tmp_path / ".diplomat" / "venv" / "bin"
+    venv.mkdir(parents=True)
+    (venv / "python").write_text("", encoding="utf-8")
+    env = {"HOME": str(tmp_path), "PATH": ""}
+    assert launcher.probe(env=env)["venv_python"] is False
+    (venv / "pip").write_text("", encoding="utf-8")
+    assert launcher.probe(env=env)["venv_python"] is True
 
 
 def test_a_venv_is_current_only_against_the_requirements_it_was_built_from(tmp_path):

@@ -261,13 +261,13 @@ enum TerminalFocus {
     /// — see `walkTables`, the one caller that has to tell them apart.
     private static func readPanes() -> [String: Pane]? {
         guard let out = tmux(["list-panes", "-a", "-F",
-                              "#{pane_tty}\(unit)#{pane_id}\(unit)#{session_name}"])
+                              "#{pane_tty} #{pane_id} #{session_name}"])
         else { return nil }
         var found: [String: Pane] = [:]
         for line in out.split(separator: "\n") {
-            let cols = line.components(separatedBy: unit)
+            let cols = line.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: false)
             guard cols.count == 3, !cols[1].isEmpty else { continue }
-            found[AgentProbes.shortTTY(cols[0])] = Pane(id: cols[1], session: cols[2])
+            found[AgentProbes.shortTTY(String(cols[0]))] = Pane(id: String(cols[1]), session: String(cols[2]))
         }
         return found
     }
@@ -279,13 +279,13 @@ enum TerminalFocus {
 
     /// The same listing, failure kept apart from emptiness — see `walkTables`.
     private static func readClients() -> [String: String]? {
-        guard let out = tmux(["list-clients", "-F", "#{client_session}\(unit)#{client_tty}"])
+        guard let out = tmux(["list-clients", "-F", "#{client_tty} #{client_session}"])
         else { return nil }
         var found: [String: String] = [:]
         for line in out.split(separator: "\n") {
-            let cols = line.components(separatedBy: unit)
-            guard cols.count == 2, !cols[0].isEmpty else { continue }
-            found[cols[0]] = AgentProbes.shortTTY(cols[1])
+            let cols = line.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: false)
+            guard cols.count == 2, !cols[1].isEmpty else { continue }
+            found[String(cols[1])] = AgentProbes.shortTTY(String(cols[0]))
         }
         return found
     }
@@ -418,10 +418,10 @@ enum TerminalFocus {
     /// "no panes because the command failed" — `tmuxwatch._server_running`.
     private static func serverRunning() -> Bool { tmux(["has-session"]) != nil }
 
-    /// Between a tmux format's fields — a unit separator cannot occur in a tty path,
-    /// a pane id or a session name.
-    private static let unit = "\u{1f}"
-
+    /// A listing's fields are space-separated, the session name (the one that may hold
+    /// a space) last: a control byte does not survive tmux's output. 3.4 escapes it as
+    /// octal, and a client with no `$TMUX` and no UTF-8 locale, which is what launchd
+    /// gives the app, has it sanitized to `_`.
     private static func tmux(_ arguments: [String]) -> String? {
         guard let bin = binary else { return nil }
         return run(bin, arguments)

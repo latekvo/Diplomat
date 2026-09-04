@@ -5,6 +5,7 @@ import Foundation
 public enum GHError: LocalizedError {
     case ghNotFound
     case process(code: Int32, stderr: String)
+    case timeout(seconds: TimeInterval)
     case graphql(messages: [String])
 
     public var errorDescription: String? {
@@ -14,6 +15,8 @@ public enum GHError: LocalizedError {
         case .process(let code, let stderr):
             let s = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
             return "gh exited \(code): \(s.isEmpty ? "(no stderr)" : s)"
+        case .timeout(let seconds):
+            return "gh timed out after \(Int(seconds))s"
         case .graphql(let messages):
             return "GraphQL: \(messages.joined(separator: "; "))"
         }
@@ -36,6 +39,10 @@ public enum GH {
         pathLock.lock()
         defer { pathLock.unlock() }
         if let p = cachedPath { return p }
+        if let env = ProcessInfo.processInfo.environment["DIPLOMAT_GH"], !env.isEmpty {
+            cachedPath = env
+            return env
+        }
         let candidates = ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"]
         for c in candidates where FileManager.default.isExecutableFile(atPath: c) {
             cachedPath = c
@@ -67,7 +74,12 @@ public enum GH {
 
     /// Run `gh` with the given argv. stdout/stderr are redirected to temp files so
     /// large payloads can't deadlock a pipe buffer (and no cross-thread captures).
-    public static func run(_ args: [String]) async throws -> Data {
+    /// How long one `gh` call may take - the Linux twin's `gh.run` budget. Every
+    /// monitor waits on this call, so a response that never comes would otherwise
+    /// hold both of them until the app restarts.
+    public static let timeout: TimeInterval = 60
+
+    public static func run(_ args: [String], timeout: TimeInterval = timeout) async throws -> Data {
         let path = try ghPath()
         let tmp = FileManager.default.temporaryDirectory
         let outURL = tmp.appendingPathComponent("diplomat-\(UUID().uuidString).out")
@@ -96,7 +108,24 @@ public enum GH {
             proc.standardOutput = outHandle
             proc.standardError = errHandle
 
+            // The deadline only asks the process to stop; the termination handler is
+            // the one place the continuation is resumed, so a request that ends on its
+            // own right then is still resumed exactly once.
+            let timedOut = Flag()
+            let deadline = DispatchWorkItem {
+                guard proc.isRunning else { return }
+                timedOut.set()
+                proc.terminate()
+                DispatchQueue.global().asyncAfter(deadline: .now() + 5) {
+                    if proc.isRunning { kill(proc.processIdentifier, SIGKILL) }
+                }
+            }
             proc.terminationHandler = { p in
+                deadline.cancel()
+                if timedOut.isSet {
+                    cont.resume(throwing: GHError.timeout(seconds: timeout))
+                    return
+                }
                 let outData = (try? Data(contentsOf: outURL)) ?? Data()
                 let errData = (try? Data(contentsOf: errURL)) ?? Data()
                 if p.terminationStatus != 0 {
@@ -107,8 +136,16 @@ public enum GH {
                     cont.resume(returning: outData)
                 }
             }
-            do { try proc.run() } catch { cont.resume(throwing: error) }
+            do { try proc.run() } catch { cont.resume(throwing: error); return }
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: deadline)
         }
+    }
+
+    private final class Flag: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = false
+        func set() { lock.lock(); value = true; lock.unlock() }
+        var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
     }
 
     /// Run a shared `assets/graphql` query. When `withRepo` is true the repo

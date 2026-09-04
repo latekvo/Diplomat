@@ -288,7 +288,7 @@ def fake_probes(monkeypatch, *, processes=None, claims=None, merged=None,
     # what this stub answers with is the test's, not the store's.
     tokens_obs = A.Observation.present(bool(tokens))
 
-    def gather(records, now, merged=None, tokens=None):
+    def gather(records, now, merged=None, tokens=None, mesh_enabled=True):
         return A.Evidence(
             processes=obs(processes, {}),
             # Real, because they read the run directories the test itself created.
@@ -1692,7 +1692,7 @@ def test_an_agent_left_alive_keeps_its_own_row_rather_than_a_nameless_one(
     from diplomat_runtime import tmuxwatch
 
     monkeypatch.setattr(tmuxwatch, "kill_session", lambda name: False)
-    monkeypatch.setattr(tmuxwatch, "kill_session_for_tty", lambda tty: False)
+    monkeypatch.setattr(tmuxwatch, "kill_window_for_tty", lambda tty: False)
     register_run(512, pid=4242, tty="pts/3",
                  dispatched_at=time.time() - (A.RUN_DEADLINE + 3600),
                  label="Auto · Review-req · #512")
@@ -3034,7 +3034,7 @@ def _killed(monkeypatch, by_name=False):
     seen: list[str] = []
     monkeypatch.setattr(tmuxwatch, "kill_session",
                         lambda name: bool(by_name and (seen.append(name) or True)))
-    monkeypatch.setattr(tmuxwatch, "kill_session_for_tty",
+    monkeypatch.setattr(tmuxwatch, "kill_window_for_tty",
                         lambda tty: seen.append(tty) or True)
     return seen
 
@@ -3050,7 +3050,7 @@ def _refused(monkeypatch):
     asked: list[str] = []
     monkeypatch.setattr(tmuxwatch, "kill_session",
                         lambda name: bool(asked.append(name)))
-    monkeypatch.setattr(tmuxwatch, "kill_session_for_tty",
+    monkeypatch.setattr(tmuxwatch, "kill_window_for_tty",
                         lambda tty: bool(asked.append(tty)))
     return asked
 

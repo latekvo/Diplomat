@@ -96,6 +96,15 @@ jobs:
       # has no way to hold. They are run by hand from the installed .app.
       # DIPLOMAT_SPAWN_SCRIPT_TEST covers the focus half of the second one here, by
       # reading the script those windows would have run.
+      # A self-test flag the delegate dispatches but Headless.active does not list
+      # runs the newest-wins singleton first, and kills the live wrench on any box
+      # that has one up.
+      - name: Every self-test flag is a headless one
+        working-directory: packages/diplomat-platform/macos/Sources/Diplomat
+        run: |
+          missing="$(comm -23 <(grep -oE 'DIPLOMAT_[A-Z_]+_TEST' DiplomatApp.swift | sort -u) \
+                             <(grep -oE 'DIPLOMAT_[A-Z_]+_TEST' Headless.swift | sort -u))"
+          test -z "$missing" || { echo "::error::not in Headless.active: $missing"; exit 1; }
       - name: Headless helper self-tests
         working-directory: packages/diplomat-platform/macos
         run: |
@@ -103,6 +112,7 @@ jobs:
           SZPONTNET_DIR="$RUNNER_TEMP/mesh" DIPLOMAT_SELF_REPO=/nonexistent \
             DIPLOMAT_MESH_CMD_TEST=1 swift run Diplomat
           DIPLOMAT_ALLOCATOR_TEST=1 swift run Diplomat
+          DIPLOMAT_REPOPATHS_TEST=1 swift run Diplomat
           DIPLOMAT_QUEUE_TEST=1 swift run Diplomat
           DIPLOMAT_SWEEP_TEST=1 swift run Diplomat
           DIPLOMAT_QUOTA_TEST=1 swift run Diplomat
