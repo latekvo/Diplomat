@@ -21,7 +21,8 @@ APP="Diplomat.app"
 BIN="$PKG_DIR/$APP/Contents/MacOS/Diplomat"
 # Earlier installs copied the bundle here; a click on that copy would start stale
 # code, whose newest-wins singleton then retires the login instance.
-rm -rf "/Applications/$APP" "$HOME/Applications/$APP"
+rm -rf "/Applications/$APP" "$HOME/Applications/$APP" \
+  || echo "Could not remove an old copy of $APP; delete it by hand, a click on it starts stale code." >&2
 
 # Write the LaunchAgent.
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
@@ -49,7 +50,8 @@ echo "Wrote $PLIST"
 launchctl bootout "gui/$(id -u)/com.ignacy.argent-utils" 2>/dev/null || true
 rm -f "$HOME/Library/LaunchAgents/com.ignacy.argent-utils.plist"
 pkill -x ArgentUtils 2>/dev/null || true
-rm -rf "/Applications/ArgentUtils.app" "$HOME/Applications/ArgentUtils.app"
+rm -rf "/Applications/ArgentUtils.app" "$HOME/Applications/ArgentUtils.app" \
+  || echo "Could not remove an old ArgentUtils.app copy; delete it by hand." >&2
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 pkill -x Diplomat 2>/dev/null || true
 sleep 1

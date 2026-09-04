@@ -685,9 +685,9 @@ def test_a_one_window_session_ends_with_its_window():
 
 @pytest.mark.skipif(shutil.which("tmux") is None, reason="no tmux on this machine")
 def test_a_client_outside_tmux_under_a_c_locale_still_reads_its_panes(monkeypatch):
-    """Where launchd, an autostart entry and CI put the applet: no ``$TMUX`` and no
+    """Where launchd and an autostart entry put the applet: no ``$TMUX`` and no
     UTF-8 in the locale, so tmux sanitizes every control byte of a command's output
-    to ``_`` (and 3.4 escapes them as octal for any client)."""
+    to ``_`` (and 3.4, CI's, escapes them as octal for any client)."""
     monkeypatch.delenv("TMUX", raising=False)
     monkeypatch.setenv("LC_ALL", "C")
     name = f"diplomat-test-{uuid.uuid4().hex[:8]}"

@@ -29,9 +29,9 @@ from dataclasses import dataclass
 from .apiwatch import last_lines
 
 # A listing's fields are space-separated, none of them free text: a control byte
-# does not survive tmux's output. 3.4 escapes it as octal, and a client with no $TMUX
-# and no UTF-8 in LC_ALL/LC_CTYPE/LANG - what launchd, an autostart entry and CI give
-# the applet - has it sanitized to "_".
+# does not survive tmux's output. 3.4 (CI's) escapes it as octal for every client,
+# and a client with no $TMUX and no UTF-8 in LC_ALL/LC_CTYPE/LANG - what launchd and
+# an autostart entry give the applet - has it sanitized to "_".
 
 
 @dataclass(frozen=True)
@@ -208,7 +208,8 @@ def kill_window_for_tty(tty: str) -> bool:
     The WINDOW, not the session. A session this applet or a mesh node opened holds
     that one window (:func:`review.terminal_argv`), and tmux ends a session with its
     last window, so nothing of those is left behind; an agent the operator ran by
-    hand inside their own session loses its window and nothing else of theirs. Panes
+    hand inside their own session loses that window, every pane in it, and nothing
+    else of theirs. Panes
     are matched on the tty rather than the pane id because the tty is what a run
     records - the two sources spell it differently, so the comparison is normalised
     the way :func:`pane_tails_for_ttys` normalises it.

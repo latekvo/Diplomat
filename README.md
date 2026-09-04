@@ -1233,6 +1233,7 @@ as a login daemon:
 ┌─ Diplomat setup ─────────────────────────────────────────
 │ Install as a background daemon? This will:
 │   • build Diplomat.app inside this checkout
+│   • remove any Diplomat.app an earlier install copied to /Applications
 │   • add a per-user LaunchAgent so the wrench boots on login
 │   • start it now (it replaces this foreground instance)
 │   • ask macOS for permission to control your terminal (SPAWN)
@@ -1257,8 +1258,9 @@ repo root.
 open ./Diplomat.app
 ```
 
-Drag `Diplomat.app` into `/Applications` and add it under
-System Settings → General → Login Items — or just use the autostart script below.
+To have it back at every login, use the autostart script below: it starts the bundle
+in place. Do not copy it to `/Applications` — the next install removes such copies,
+and **Update** rebuilds only the bundle in the checkout.
 
 ### Autostart on login
 
