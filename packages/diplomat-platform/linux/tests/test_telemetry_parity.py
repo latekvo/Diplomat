@@ -503,3 +503,29 @@ def test_a_mean_past_ints_range_rounds_the_same_on_both_sides():
     swift, python = _swift(lines), _python(lines)
     assert swift["perTaskTokensMean"] == 1e13
     assert python == swift
+
+
+def test_a_deviation_past_a_doubles_range_is_inf_on_both_sides():
+    """A share or a price can be finite while its squared deviation is not. Swift's
+    product overflows to ``inf``, which the payload prints as 0; a ``**`` on this
+    side would raise instead, and the Linux screen would fail to repaint while the
+    macOS one draws. One task of 1e300 tokens against a 2M window, or of $1e200
+    beside a $5 run of the same model, is a deviation in that range."""
+    lines = _ledger_lines() + [
+        json.dumps({"at": NOW - 2 * DAY, "ev": "started", "key": "review:h/o/r#93@uu",
+                    "remote": False, "attempt": 1}),
+        json.dumps({"at": NOW - 2 * DAY + 600, "ev": "done",
+                    "key": "review:h/o/r#93@uu",
+                    "tokens": 1e300, "runner": "claude"}),
+        json.dumps({"at": NOW - 2 * DAY, "ev": "started", "key": "review:h/o/r#94@vv",
+                    "remote": False, "attempt": 1}),
+        json.dumps({"at": NOW - 2 * DAY + 600, "ev": "done",
+                    "key": "review:h/o/r#94@vv",
+                    "tokens": 1000.0, "runner": "hermes", "usd": 1e200,
+                    "model": "anthropic/claude-opus-5"}),
+    ]
+    base, swift = _swift(_ledger_lines()), _swift(lines)
+    assert swift["perTask"]["count"] == base["perTask"]["count"] + 1
+    assert swift["perTaskUsd"]["count"] == base["perTaskUsd"]["count"] + 1
+    assert swift["perTask"]["sd"] == swift["perTaskUsd"]["sd"] == 0
+    assert _python(lines) == swift

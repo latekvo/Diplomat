@@ -13,6 +13,7 @@ ledger nobody wrote to looks the same as a screen drawn from a quiet fortnight.
 from __future__ import annotations
 
 import json
+import math
 import os
 import shlex
 import time
@@ -1004,6 +1005,21 @@ def test_a_count_whose_share_overflows_is_a_cost_but_not_a_share():
     assert s.per_task.mean == pytest.approx(5.0)
     assert s.per_task.bins[-1].upper == pytest.approx(6.0)
     assert s.per_task_tokens_mean > 1e300, "the count itself was dropped as a cost"
+
+
+def test_a_share_too_large_to_square_is_a_spread_of_inf_not_a_raise():
+    """A share can be finite while its squared deviation is not. A ``**`` would
+    raise OverflowError there on every repaint; the Swift twin's product overflows
+    to ``inf`` and draws. The mean and the bins are what they were, the spread is
+    ``inf``, and the curve is flat."""
+    s = _windows_summary(tokens=(80_000.0, 100_000.0, 120_000.0, 1e300))
+    d = s.per_task
+    assert d.count == 4
+    assert d.mean == pytest.approx(1.25e295)
+    assert (d.sd, d.stderr, d.ci_low, d.ci_high) == \
+        (math.inf, math.inf, -math.inf, math.inf)
+    assert [b.count for b in d.bins] == [3, 0, 0, 1]
+    assert d.curve == (0.0,) * (4 * telemetry.CURVE_RESOLUTION + 1)
 
 
 # MARK: - The quota probe

@@ -690,7 +690,9 @@ def distribution(values: list[float], *, bin_count: int, z: float,
     n = float(len(values))
     mean = sum(values) / n
     if len(values) > 1:
-        variance = sum((v - mean) ** 2 for v in values) / (n - 1)
+        # A product, not `** 2`: past a double's range `**` raises OverflowError
+        # where the Swift twin's product is `inf`.
+        variance = sum((v - mean) * (v - mean) for v in values) / (n - 1)
     else:
         variance = 0.0
     sd = math.sqrt(variance)
