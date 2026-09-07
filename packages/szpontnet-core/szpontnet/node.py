@@ -2831,8 +2831,8 @@ class MeshNode:
         sentinels, and whatever the host staged beside each one under its name.
         Remove them so a sentinel can never be misread - and so the epoch-stamped
         paths don't accumulate without bound across restarts. A prior-incarnation
-        agent still running re-creates only its sentinel and activity feed (its hooks
-        write those), which no watcher here tracks."""
+        agent still running re-creates only its sentinel and activity feed, which no
+        watcher here tracks."""
         from . import statefile
 
         agents = statefile.state_path().parent / "agents"

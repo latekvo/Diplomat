@@ -570,7 +570,8 @@ def decode(line: bytes) -> dict | None:
         # raises it bare for an integer literal past sys.get_int_max_str_digits().
         # RecursionError: `[[[[…` a few thousand deep fits well inside MAX_LINE_BYTES
         # (and a beacon datagram) and overflows json's decoder. Every wire read
-        # funnels through here, and one call site closes nothing on the way out.
+        # funnels through here, and on the link pump either escaping ends the link
+        # and drops the peer.
         return None
     if not isinstance(msg, dict) or not isinstance(msg.get("t"), str):
         return None
