@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import base64
 import json
-import sys
 import time
 from dataclasses import dataclass
 
@@ -210,8 +209,8 @@ def case_b_tolerance(rep: Reporter, ctx: Context) -> None:
         for junk in (b"{not json\n", b"[1,2,3]\n", b'{"no":"type"}\n',
                      b'{"t":"zzz-unknown"}\n', b'{"t":123}\n',
                      b"[" * (MAX_LINE_BYTES - 1) + b"\n",
-                     b'{"t":"heartbeat","n":'
-                     + b"9" * (sys.get_int_max_str_digits() + 1) + b"}\n"):
+                     # one past CPython's default integer digit limit
+                     b'{"t":"heartbeat","n":' + b"9" * 4301 + b"}\n"):
             peer._send_raw(conn, junk)
         # Then a VALID gossip carrying unknown extra fields (must be ignored, msg
         # adopted). The unknown NodeInfo field is added BEFORE signing so the advert

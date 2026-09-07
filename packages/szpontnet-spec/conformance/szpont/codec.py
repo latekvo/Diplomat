@@ -332,7 +332,8 @@ def decode(line: bytes) -> dict | None:
         msg = json.loads(line.decode("utf-8"))
     except (ValueError, RecursionError):
         # ValueError: UnicodeDecodeError and JSONDecodeError are subclasses, and json
-        # raises it bare for an integer literal past sys.get_int_max_str_digits().
+        # raises it bare for an integer literal past the interpreter's digit limit
+        # (4300 by default).
         return None
     if not isinstance(msg, dict) or not isinstance(msg.get("t"), str):
         return None

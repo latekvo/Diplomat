@@ -59,11 +59,17 @@ def _decode_dropset(rep: Reporter) -> None:
         "invalid UTF-8": b"\xff\xfe\n",
         "over 512 KiB": b'{"t":"x","p":"' + b"a" * (512 * 1024) + b'"}\n',
         "nested past the parser's stack": b"[" * (MAX_LINE_BYTES - 1) + b"\n",
-        "integer past the parser's digit limit":
-            b'{"t":"x","n":' + b"9" * (sys.get_int_max_str_digits() + 1) + b"}\n",
     }
     for label, raw in cases.items():
         rep.check(f"drops: {label}", codec.decode(raw) is None, "MUST", "03-transport#framing")
+    limit = getattr(sys, "get_int_max_str_digits", lambda: 0)()
+    if limit:
+        rep.check("drops: integer past the parser's digit limit",
+                  codec.decode(b'{"t":"x","n":' + b"9" * (limit + 1) + b"}\n") is None,
+                  "MUST", "03-transport#framing")
+    else:
+        rep.skip("drops: integer past the parser's digit limit", "03-transport#framing",
+                 "this interpreter parses an integer literal of any length")
     rep.check("accepts a valid object", codec.decode(b'{"t":"heartbeat"}\n') is not None,
               "MUST", "03-transport#framing")
     rep.check("NodeInfo without id is invalid",

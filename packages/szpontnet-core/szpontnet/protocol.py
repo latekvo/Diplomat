@@ -567,7 +567,8 @@ def decode(line: bytes) -> dict | None:
         msg = json.loads(line.decode("utf-8"))
     except (ValueError, RecursionError):
         # ValueError: UnicodeDecodeError and JSONDecodeError are subclasses, and json
-        # raises it bare for an integer literal past sys.get_int_max_str_digits().
+        # raises it bare for an integer literal past the interpreter's digit limit
+        # (4300 by default).
         # RecursionError: `[[[[…` a few thousand deep fits well inside MAX_LINE_BYTES
         # (and a beacon datagram) and overflows json's decoder. Every wire read
         # funnels through here, and on the link pump either escaping ends the link
