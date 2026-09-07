@@ -259,6 +259,11 @@ enum TerminalFocus {
 
     /// The same listing, with "tmux would not answer" kept apart from "tmux has nothing"
     /// — see `walkTables`, the one caller that has to tell them apart.
+    ///
+    /// Space-separated, the session name (the one field that may hold a space) last, and
+    /// split that many times: no control byte survives tmux's output. 3.4 prints one as
+    /// octal, and a client with no `$TMUX` and no UTF-8 locale, which is what launchd
+    /// gives the app, gets `_`.
     private static func readPanes() -> [String: Pane]? {
         guard let out = tmux(["list-panes", "-a", "-F",
                               "#{pane_tty} #{pane_id} #{session_name}"])
@@ -277,7 +282,8 @@ enum TerminalFocus {
     /// any of them is the right window to raise.
     static func clients() -> [String: String] { readClients() ?? [:] }
 
-    /// The same listing, failure kept apart from emptiness — see `walkTables`.
+    /// The same listing, failure kept apart from emptiness — see `walkTables`. Split as
+    /// `readPanes` is: on spaces, the session name last.
     private static func readClients() -> [String: String]? {
         guard let out = tmux(["list-clients", "-F", "#{client_tty} #{client_session}"])
         else { return nil }
@@ -418,10 +424,6 @@ enum TerminalFocus {
     /// "no panes because the command failed" — `tmuxwatch._server_running`.
     private static func serverRunning() -> Bool { tmux(["has-session"]) != nil }
 
-    /// A listing's fields are space-separated, the session name (the one that may hold
-    /// a space) last: a control byte does not survive tmux's output. 3.4 escapes it as
-    /// octal, and a client with no `$TMUX` and no UTF-8 locale, which is what launchd
-    /// gives the app, has it sanitized to `_`.
     private static func tmux(_ arguments: [String]) -> String? {
         guard let bin = binary else { return nil }
         return run(bin, arguments)
