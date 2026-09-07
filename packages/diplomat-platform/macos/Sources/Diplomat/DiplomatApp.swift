@@ -166,8 +166,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             exit(AllocatorSetupTest.run() ? 0 : 1)
         }
         // Checkout-location self-test: proves the bundle szpont builds and launchd starts
-        // names the checkout around it, and a copy kept elsewhere names none. Lays the
-        // shapes out in a scratch directory; reads nothing else. Exit code = pass/fail.
+        // names the checkout around it, a copy kept elsewhere names none, and the order
+        // the four readings of `RepoPaths.root` are taken in. Lays the shapes out in a
+        // scratch directory; reads nothing else. Exit code = pass/fail.
         if env["DIPLOMAT_REPOPATHS_TEST"] == "1" {
             exit(RepoPathsTest.run() ? 0 : 1)
         }

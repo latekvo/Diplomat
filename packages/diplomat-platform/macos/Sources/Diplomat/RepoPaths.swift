@@ -26,21 +26,28 @@ enum RepoPaths {
     /// this monorepo — the SzpontNet library, the device-allocator package — hangs off
     /// here, so a moved or renamed checkout relocates all of them together.
     static var root: URL {
-        if let env = ProcessInfo.processInfo.environment["DIPLOMAT_SELF_REPO"], !env.isEmpty {
+        locate(env: ProcessInfo.processInfo.environment["DIPLOMAT_SELF_REPO"],
+               assets: try? CoreAssets.assetsDir(),
+               bundle: Bundle.main.bundleURL, home: home)
+    }
+
+    /// `root`, from the four readings it is made of.
+    static func locate(env: String?, assets: URL?, bundle: URL, home: URL) -> URL {
+        if let env, !env.isEmpty {
             return URL(fileURLWithPath: env)
         }
         // Running unbundled (`swift run Diplomat`): CoreAssets resolves assets/ to
         // <repo>/packages/diplomat-core/assets, so the repo root is three levels up.
         // Skip this when the assets came from inside the .app bundle
         // (…/Contents/Resources/assets), which isn't a checkout.
-        if let assets = try? CoreAssets.assetsDir(),
+        if let assets,
            assets.lastPathComponent == "assets",
            !assets.path.contains(".app/Contents/") {
             return assets.deletingLastPathComponent()   // packages/diplomat-core
                 .deletingLastPathComponent()            // packages
                 .deletingLastPathComponent()            // the checkout
         }
-        if let checkout = checkoutHolding(bundle: Bundle.main.bundleURL) {
+        if let checkout = checkoutHolding(bundle: bundle) {
             return checkout
         }
         return home.appendingPathComponent("dev/diplomat")
