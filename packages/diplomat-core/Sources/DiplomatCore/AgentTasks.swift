@@ -34,6 +34,7 @@ import Foundation
 public enum AgentTaskStatus: Int, Comparable, CaseIterable {
     case merged = 0
     case done
+    case failed
     case awaitingInput
     case running
     case starting
@@ -57,6 +58,7 @@ public enum AgentTaskStatus: Int, Comparable, CaseIterable {
         switch state {
         case .merged:        return .merged
         case .finished:      return .done
+        case .failed:        return .failed
         case .awaitingInput: return .awaitingInput
         case .running:       return .running
         case .starting:      return .starting
@@ -69,6 +71,8 @@ public enum AgentTaskStatus: Int, Comparable, CaseIterable {
         switch self {
         case .merged:        return "merged"
         case .done:          return "done"
+        // Not "done": the work is still owed, and the next poll offers it again.
+        case .failed:        return "never started"
         case .awaitingInput: return "awaiting input"
         case .running:       return "running"
         case .starting:      return "starting"

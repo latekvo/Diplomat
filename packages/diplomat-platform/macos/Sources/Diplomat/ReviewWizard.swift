@@ -142,6 +142,7 @@ enum AgentSpawner {
     enum SpawnError: LocalizedError {
         case write(String)
         case osascript(code: Int32, stderr: String)
+        case neverStarted(terminal: String, waited: TimeInterval)
 
         var errorDescription: String? {
             switch self {
@@ -149,6 +150,9 @@ enum AgentSpawner {
             case .osascript(let code, let stderr):
                 let s = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
                 return "osascript exited \(code): \(s.isEmpty ? "(no stderr)" : s)"
+            case .neverStarted(let terminal, let waited):
+                return "\(terminal) opened a window but never ran the command "
+                    + "(no pid file after \(Int(waited))s)"
             }
         }
     }
@@ -203,12 +207,43 @@ enum AgentSpawner {
     static func spawn(_ plan: SpawnPlan, terminal preferred: SpawnTerminal,
                       restoreFocusTo restoreBID: String? = nil) throws -> SpawnResult {
         let term = resolved(preferred)
+        // Stamped before the window is asked for, so this deadline and the tick's
+        // `spawnGrace` measure the same window from the same instant — neither can
+        // retire a run the other is still waiting on.
+        let deadline = Date() + AgentState.spawnGrace
         let (wid, sid, tty) = try runSpawn(command: shellCommand(plan), terminal: term,
                                            restoreFocusTo: restoreBID)
-        return SpawnResult(terminal: term,
-                           window: AgentWindows.Handle(terminal: term.rawValue,
-                                                       windowID: wid, sessionID: sid),
+        let window = AgentWindows.Handle(terminal: term.rawValue,
+                                         windowID: wid, sessionID: sid)
+        guard started(plan.pidPath, by: deadline) else {
+            // The window exists and is empty — a Ghostty surface that failed to
+            // initialise still gets one, and it would otherwise sit there for good.
+            _ = AgentWindows.close(window)
+            throw SpawnError.neverStarted(terminal: term.title,
+                                          waited: AgentState.spawnGrace)
+        }
+        return SpawnResult(terminal: term, window: window,
                            tty: AgentProbes.shortTTY(tty))
+    }
+
+    /// Whether the spawned command ever ran, waiting until `deadline` for it to say so.
+    ///
+    /// The pid file is the run's own report that it started: `shellCommand` writes it
+    /// as the inner shell's first act, before the agent. So this asks the RUN whether
+    /// it is there, not the terminal — nothing here reads a window, a surface or an
+    /// error view, and a terminal that changes how it fails changes nothing about this.
+    /// It is also the same answer under every terminal and every runner, since all
+    /// three spawn scripts carry the same `shellCommand`.
+    ///
+    /// The margin is what makes that safe: `DIPLOMAT_TRACK_TEST` times the file against
+    /// a real window and refuses anything past a quarter of the grace, so overrunning it
+    /// means the command was never run rather than run slowly.
+    static func started(_ pidPath: String, by deadline: Date) -> Bool {
+        while !FileManager.default.fileExists(atPath: pidPath) {
+            guard Date() < deadline else { return false }
+            usleep(100_000)
+        }
+        return true
     }
 
     /// Open a new terminal window running `command`, returning the captured

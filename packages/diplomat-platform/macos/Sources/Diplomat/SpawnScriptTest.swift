@@ -1,4 +1,5 @@
 import Foundation
+import DiplomatCore
 
 /// Self-test for everything about a spawn that can be decided without one —
 /// `DIPLOMAT_SPAWN_SCRIPT_TEST=1`.
@@ -217,6 +218,44 @@ enum SpawnScriptTest {
         check("…and still records the agent's own exit code where it can",
               (try? String(contentsOf: landing, encoding: .utf8)) == "1")
         try? FileManager.default.removeItem(at: landing)
+
+        // The wait that decides whether a spawn started at all. It reads the pid file
+        // the run writes for itself, so no terminal's way of failing can answer it.
+        print("\nstart wait: the pid file, and only the pid file")
+        let pidDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("diplomat-startwait-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: pidDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: pidDir) }
+        let absent = pidDir.appendingPathComponent("never").path
+
+        var t0 = Date()
+        check("a file that never lands is refused", !AgentSpawner.started(absent, by: t0 + 0.4))
+        let waited = Date().timeIntervalSince(t0)
+        // Both halves: giving up early would refuse a slow but working spawn, and
+        // overrunning would leave the tick to retire the run out from under this.
+        check("…after waiting out the deadline and not past it",
+              waited >= 0.4 && waited < 2, "waited \(waited)s")
+
+        let landed = pidDir.appendingPathComponent("pid")
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) {
+            try? "4242".write(to: landed, atomically: true, encoding: .utf8)
+        }
+        t0 = Date()
+        check("a file that lands mid-wait is accepted",
+              AgentSpawner.started(landed.path, by: t0 + 30))
+        // The ordinary spawn is this case, so a wait that ran to its deadline anyway
+        // would put twenty seconds between every click and its window.
+        check("…and returns when it lands, not when the deadline does",
+              Date().timeIntervalSince(t0) < 2, "\(Date().timeIntervalSince(t0))s")
+
+        // What the operator is told: the terminal, which is the one thing they can
+        // change, and the seconds, because failing instantly is a different fault from
+        // failing after twenty.
+        let why = AgentSpawner.SpawnError
+            .neverStarted(terminal: "Ghostty", waited: AgentState.spawnGrace)
+            .errorDescription ?? ""
+        check("the refusal names the terminal and how long it waited",
+              why.contains("Ghostty") && why.contains("\(Int(AgentState.spawnGrace))s"), why)
 
         // The one-time move of an existing install onto Ghostty. iTerm is what every
         // install reads today, whether that was a decision or a default nobody touched;

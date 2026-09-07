@@ -31,6 +31,13 @@ claim was seen and has since been released. Every other gap resolves to
 is gone" is what produced years of already-complete verdicts on agents that were
 still working.
 
+:data:`FAILED` is not a gap either, and it is the one verdict that rests on a file
+rather than on a reading of a machine: the pid file a local spawn stages is written by
+the run's own first command, so its absence past :data:`SPAWN_GRACE` says the command
+never ran. It is separate from FINISHED because the two are opposite answers to "what
+did this run do", and only the caller can tell them apart — work whose agent ran and
+work whose agent never existed owe the operator different things.
+
 The mirror rule costs a bay rather than correctness: a live process whose screen
 cannot be read is RUNNING, because working and waiting-at-the-prompt are genuinely
 indistinguishable from outside. The probe layer reports how often that happens rather
@@ -150,6 +157,7 @@ def _jsonable(value: Any) -> Any:
 
 MERGED = "merged"  # the PR landed — terminal, and outranks whatever the process does
 FINISHED = "finished"  # positive evidence the agent ended
+FAILED = "failed"  # positive evidence the agent never ran at all
 AWAITING_INPUT = "awaiting_input"  # alive, and its screen shows it back at the prompt
 RUNNING = "running"  # alive, and either working or unreadable
 STARTING = "starting"  # dispatched so recently that nothing could have observed it yet
@@ -157,9 +165,9 @@ UNKNOWN = "unknown"  # the evidence this run turns on was unavailable
 
 #: Rank for the panel, matching ``AgentTaskStatus`` in the Swift core: an outcome,
 #: then a local exit, then the sessions that want a human, then the ones that don't,
-#: then the ones nothing is known about. The two :data:`ENDED` states head the rank
-#: and no front-end draws a row in one, so the list itself starts at AWAITING_INPUT.
-STATE_ORDER = [MERGED, FINISHED, AWAITING_INPUT, RUNNING, STARTING, UNKNOWN]
+#: then the ones nothing is known about. The :data:`ENDED` states head the rank and no
+#: front-end draws a row in one, so the list itself starts at AWAITING_INPUT.
+STATE_ORDER = [MERGED, FINISHED, FAILED, AWAITING_INPUT, RUNNING, STARTING, UNKNOWN]
 
 #: States in which a run still holds a bay of the device's automatic-task cap.
 #:
@@ -177,14 +185,18 @@ OCCUPYING = frozenset({RUNNING, STARTING, UNKNOWN})
 #: back.
 BLOCKING = OCCUPYING | {AWAITING_INPUT}
 
-#: The states a run is over in, both of them positive evidence.
+#: The states a run is over in, every one of them positive evidence.
 #:
 #: The pass that resolves a run into one of these retires it (:func:`retirable`), so
 #: both front-ends leave it out of the list they draw: a row for it would be on screen
 #: for one redraw and gone the next, and which redraw caught it would depend on when
 #: the poll landed. What the run leaves behind is its activity line and its ledger
 #: entry.
-ENDED = frozenset({MERGED, FINISHED})
+#:
+#: FAILED is here rather than beside UNKNOWN because it is an ANSWER: the run reported
+#: nothing because there was no run. Held open instead, it would spend a bay and refuse
+#: its PR a fresh agent on the strength of an agent that never existed.
+ENDED = frozenset({MERGED, FINISHED, FAILED})
 
 
 # MARK: - Timing constants
@@ -195,9 +207,14 @@ ENDED = frozenset({MERGED, FINISHED})
 #: tmux server and the user's rc all run first — and the process table is one `ps` pass
 #: reused for several seconds, so it can predate the pid file naming what to look for.
 #: Past this the run is judged on the evidence there is: a known pid the table does not
-#: hold has ended, while a run that produced neither a pid nor a PR to scan for becomes
-#: UNKNOWN, because a spawn that never landed and a pid file we have not read yet look
-#: identical from here.
+#: hold has ended, and a LOCAL run with no pid file at all never ran (:data:`FAILED`) —
+#: this applet staged that path itself, so nothing but the command writes it. A
+#: mesh-here run is the one the file cannot answer for, its pid having been written into
+#: a run directory this applet never created; that one falls back to the prompt scan.
+#:
+#: The same window bounds ``AgentSpawner.spawn``'s own wait for the file, measured from
+#: the same dispatch instant, so the spawn and the tick can never disagree about which
+#: side of it a run is on.
 SPAWN_GRACE = 20.0
 
 #: How long after dispatch a live run whose screen has not shown a turn yet reads as
@@ -945,23 +962,30 @@ def _resolve_without_pid(record: RunRecord, evidence: Evidence, now: float,
                          age: float, done) -> Resolution:
     """A run this applet booked but has no pid for.
 
-    Two things produce one. A spawn whose shell has not written its pid file yet — the
-    ordinary first seconds of a run. And a placement the mesh routed back to this
-    machine, where the NODE opened the terminal, so the pid file it wrote belongs to a
-    run directory this applet never created and never will.
+    Three things produce one. A spawn whose shell has not written its pid file yet —
+    the ordinary first seconds of a run. A spawn whose terminal opened a window and
+    never ran the command in it, so the file is not late but absent. And a placement
+    the mesh routed back to this machine, where the NODE opened the terminal, so the
+    pid file it wrote belongs to a run directory this applet never created and never
+    will.
 
-    The second is why this rung is not simply "unknown until a pid appears". A
-    mesh-here run has no pid ever, so that answer would hold its bay and refuse its PR
-    a fresh agent for the rest of the applet's life — the exact wedge this module
-    exists to remove, arriving by a different road. Seen in production the first time
-    the monitors ran: two conflict fixes the mesh placed back here, both reading
-    "unknown", both bays held, nothing able to retire either.
+    Which of the three is asked of ``placement``, and that is the whole of it: for a
+    LOCAL run this applet staged the pid path, so past the grace the missing file is
+    :data:`FAILED` — a run reporting for itself, not an inference from what its window
+    looks like. Only a mesh-here run reaches the scan below.
 
-    So the fallback is the pre-registry evidence: the agent's own prompt in the process
-    table. It cannot tell two runs on one PR apart, which is exactly why it is the
-    fallback and not the identity — but "an agent for this PR is up" and "no agent for
-    this PR is up" are both positive answers, and the second is what finally ends the
-    run.
+    That fallback matters because a mesh-here run has no pid ever, and "unknown until
+    a pid appears" would hold its bay and refuse its PR a fresh agent for the rest of
+    the applet's life — the exact wedge this module exists to remove, arriving by a
+    different road. Seen in production the first time the monitors ran: two conflict
+    fixes the mesh placed back here, both reading "unknown", both bays held, nothing
+    able to retire either.
+
+    So for that one the evidence is the pre-registry kind: the agent's own prompt in
+    the process table. It cannot tell two runs on one PR apart, which is exactly why it
+    is the fallback and not the identity — but "an agent for this PR is up" and "no
+    agent for this PR is up" are both positive answers, and the second is what finally
+    ends the run.
     """
     if not evidence.live_agents.ok:
         return done(UNKNOWN,
@@ -971,10 +995,19 @@ def _resolve_without_pid(record: RunRecord, evidence: Evidence, now: float,
                                   f"an agent is up on PR #{record.pr_number}")
     if age <= SPAWN_GRACE:
         return done(STARTING, f"dispatched {age:.0f}s ago, no pid yet")
+    if record.placement == PLACEMENT_LOCAL:
+        # This applet opened the terminal and named the pid path itself, and the inner
+        # shell writes it before the agent (``AgentSpawner.shellCommand``). So an
+        # absent file past the grace is the run's OWN report that its command never
+        # ran — not an inference from what the terminal looks like, which is why it
+        # survives a terminal that changes how it fails.
+        return done(FAILED, "its terminal never ran the command "
+                            f"(no pid file {age:.0f}s after dispatch)")
     if record.pr_number is None:
-        # Nothing to look for: a run with neither a pid nor a PR cannot be found by
-        # either mechanism, so its absence is not evidence of anything. The one rung
-        # that stamps `unfindable`; see :attr:`Resolution.unfindable`.
+        # Nothing to look for: a mesh-here run has no pid file to be missing, and with
+        # no PR either it cannot be found by the scan, so its absence is not evidence
+        # of anything. The one rung that stamps `unfindable`; see
+        # :attr:`Resolution.unfindable`.
         return replace(done(UNKNOWN, f"no pid recorded {age:.0f}s after dispatch"),
                        unfindable=True)
     return done(FINISHED, f"no agent for PR #{record.pr_number} in the process table")

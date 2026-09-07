@@ -3360,6 +3360,38 @@ def test_a_window_that_did_close_lets_its_run_be_priced_and_dropped(store, monke
     assert [e.action for e in activity.read() if e.action == "retire"] == ["retire"]
 
 
+def test_a_spawn_that_never_ran_is_dropped_without_being_priced(store, monkeypatch):
+    """A local run whose terminal never ran the command is an ending like any other —
+    its record goes, or it holds a bay and refuses its PR a fresh agent for the life of
+    the applet.
+
+    What must NOT happen is it being closed like a completed one. No agent existed, so
+    there is no transcript to price and no turn to count: a completion booked here is a
+    finished run in the telemetry the operator reads, and the feed's `retire` line is
+    how a spawn that failed comes to look like work that got done. Both are what made
+    108 dispatches over one weekend read as 108 finished reviews.
+    """
+    from diplomat_runtime import activity, agentregistry, telemetry
+    from diplomat_runtime import agentstate as A
+
+    killed = _killed(monkeypatch)
+    register_run(713, pid=None, label="Auto · Review · #713",
+                 ledger_key="review:o/r#713",
+                 dispatched_at=time.time() - (A.SPAWN_GRACE + 5))
+    fake_probes(monkeypatch)
+
+    store._settle_agents()
+
+    assert agentregistry.load() == [], "the bay is given back"
+    assert telemetry.load().tasks == [], "and nothing is priced as having run"
+    assert [(e.action, e.detail) for e in activity.read()
+            if e.action in ("retire", "spawn-failed")] == [
+        ("spawn-failed", "Auto · Review · #713 — its terminal never ran the command "
+                         f"(no pid file {A.SPAWN_GRACE + 5:.0f}s after dispatch)")], \
+        "the feed calls it a failure, not a retirement"
+    assert killed == [], "there is no agent to close a window over"
+
+
 def test_a_synthesized_run_gone_from_the_scan_is_not_reaped_either(store, monkeypatch):
     """The same trap through the other door. A synthesized run ends when the scan that
     made it stops finding it — "gone from the process table" — and it can carry a

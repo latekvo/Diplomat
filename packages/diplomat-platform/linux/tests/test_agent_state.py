@@ -254,16 +254,48 @@ CASES = [
          dispatched_at=T0 - 600),
      ev(live_agents={337: "pts/5"}, tails={"pts/5": AT_PROMPT}),
      A.AWAITING_INPUT, "an agent is up on PR #337; at the prompt"),
-    ("a pid-less run whose PR has no agent in a scan that WORKED has finished",
-     rec(pid=None, dispatched_at=T0 - 600), ev(live_agents={}),
+    ("a pid-less mesh-here run whose PR has no agent in a scan that WORKED has finished",
+     rec(placement=A.PLACEMENT_MESH_HERE, pid=None, dispatched_at=T0 - 600),
+     ev(live_agents={}),
      A.FINISHED, "no agent for PR #337 in the process table"),
     ("a pid-less run is not ended by a scan that failed",
      rec(pid=None, dispatched_at=T0 - 600),
      ev(live_agents=A.Observation.unavailable("ps could not be read")),
      A.UNKNOWN, "ps could not be read"),
-    ("a pid-less run with no PR either cannot be looked for at all",
-     rec(pid=None, pr_number=None, dispatched_at=T0 - 600), ev(live_agents={}),
+    ("a pid-less mesh-here run with no PR either cannot be looked for at all",
+     rec(placement=A.PLACEMENT_MESH_HERE, pid=None, pr_number=None,
+         dispatched_at=T0 - 600),
+     ev(live_agents={}),
      A.UNKNOWN, "no pid recorded"),
+
+    # --- a spawn whose terminal never ran the command -----------------------
+    #
+    # The pid file is staged by THIS applet and written by the run's own first command,
+    # so for a local run its absence past the grace is not a gap in the evidence — it is
+    # the evidence. Read as FINISHED (which is what "no agent for this PR" would say),
+    # a terminal that opens an empty window retires the run as a completed one and the
+    # work goes back to sleep on a retry backoff nothing ever spent. Seen in production:
+    # a Ghostty that would not initialise a surface while the display slept took 108
+    # dispatches over one weekend and started none of them.
+    ("a local run whose pid file never appeared never ran",
+     rec(pid=None, dispatched_at=T0 - 600), ev(live_agents={}),
+     A.FAILED, "its terminal never ran the command (no pid file 600s after dispatch)"),
+    # Same verdict with nothing to scan for: the file answers on its own, so a Fix-issues
+    # ask holds its bay for the grace rather than until the 4h deadline.
+    ("a local run with no PR is judged by its pid file all the same",
+     rec(pid=None, pr_number=None, dispatched_at=T0 - 600), ev(live_agents={}),
+     A.FAILED, "its terminal never ran the command (no pid file 600s after dispatch)"),
+    # The rescue above this rung still wins: a run whose agent IS up must never be
+    # called failed, or the poll that hears it dispatches a second agent beside it.
+    ("a local run with no pid file but a live agent on its PR is running",
+     rec(pid=None, dispatched_at=T0 - 600, tty="pts/5"),
+     ev(live_agents={337: "pts/5"}, tails={"pts/5": WORKING}),
+     A.RUNNING, "an agent is up on PR #337; working"),
+    # Inside the grace it is STARTING, not failed — the pid file lands ~0.5s after
+    # dispatch here, and this window is what the spawn's own wait is measured against.
+    ("a local run with no pid file is not failed inside the spawn grace",
+     rec(pid=None, dispatched_at=T0 - 5), ev(live_agents={}),
+     A.STARTING, "dispatched 5s ago, no pid yet"),
 
     # --- missing evidence never means finished ------------------------------
     ("an unreadable process table leaves a local run unknown",
@@ -477,7 +509,9 @@ CASES = [
     # neither a pid nor a PR number gave it nothing to look for either way — so this
     # verdict is the same on every future tick and the bay never comes back on its own.
     ("a run nothing could ever find is ended by the deadline",
-     rec(pid=None, pr_number=None, dispatched_at=T0 - PAST_DEADLINE), ev(live_agents={}),
+     rec(placement=A.PLACEMENT_MESH_HERE, pid=None, pr_number=None,
+         dispatched_at=T0 - PAST_DEADLINE),
+     ev(live_agents={}),
      A.FINISHED, "no pid recorded 18000s after dispatch; has run for 5h, "
                  "past the 4h deadline"),
 
@@ -934,30 +968,40 @@ def test_rows_draw_every_run_and_read_finished_first():
     records = [
         rec(run_id="running", pid=1, dispatched_at=T0 - 10),
         rec(run_id="clicked", pid=2, source=A.SOURCE_PANEL, dispatched_at=T0 - 20),
-        rec(run_id="over", pid=None, dispatched_at=T0 - 600, pr_number=None),
+        rec(run_id="over", placement=A.PLACEMENT_MESH_HERE, pid=None,
+            dispatched_at=T0 - 600, pr_number=None),
+        rec(run_id="never-ran", pid=None, dispatched_at=T0 - 600, pr_number=None),
         rec(run_id="landed", pid=3, pr_number=500, dispatched_at=T0 - 30),
     ]
     _r, states = _resolved(records, ev(processes={1: proc(), 2: proc(), 3: proc()},
                                        merged={500}))
     assert [r.run_id for r, _s in A.rows(records, states)] == [
-        "landed",   # merged
-        "clicked",  # running, oldest
-        "running",  # running
-        "over",     # unknown, last
+        "landed",     # merged
+        "never-ran",  # failed — an ending, so it reads with the outcomes
+        "clicked",    # running, oldest
+        "running",    # running
+        "over",       # unknown, last
     ]
 
 
 def test_only_positive_evidence_retires_a_record():
     records = [
-        rec(run_id="gone", pid=None, pr_number=None,
+        # Mesh-here: the node wrote its pid somewhere this applet cannot read, and with
+        # no PR the scan has nothing to look for either — the one shape that is genuinely
+        # unknown rather than absent.
+        rec(run_id="gone", placement=A.PLACEMENT_MESH_HERE, pid=None, pr_number=None,
             dispatched_at=T0 - 600),                                  # unknown
         rec(run_id="exited", pid=7),                                  # finished
         rec(run_id="landed", pid=1, pr_number=500),                   # merged
+        rec(run_id="never-ran", pid=None, pr_number=None,
+            dispatched_at=T0 - 600),                                  # failed
         rec(run_id="alive", pid=1),                                   # running
     ]
     _r, states = _resolved(records, ev(processes={1: proc()}, merged={500}))
+    # "never-ran" is here because a spawn that started nothing is positive evidence too:
+    # holding its bay open would refuse the work a fresh agent for the applet's life.
     assert sorted(r.run_id for r in A.retirable(records, states)) == \
-        ["exited", "landed"]
+        ["exited", "landed", "never-ran"]
 
 
 def test_a_runner_that_reported_its_turn_over_is_retired_like_any_other():

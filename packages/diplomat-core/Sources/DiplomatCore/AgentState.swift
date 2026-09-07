@@ -78,6 +78,8 @@ public enum AgentState {
         case merged
         /// Positive evidence the agent ended.
         case finished
+        /// Positive evidence the agent never ran at all.
+        case failed
         /// Alive, and its screen shows it back at the prompt.
         case awaitingInput = "awaiting_input"
         /// Alive, and either working or unreadable.
@@ -90,10 +92,10 @@ public enum AgentState {
 
     /// Rank for the panel, matching `AgentTaskStatus`: an outcome, then a local exit,
     /// then the sessions that want a human, then the ones that don't, then the ones
-    /// nothing is known about. The two `ended` states head the rank and no front-end
-    /// draws a row in one, so the list itself starts at `.awaitingInput`.
+    /// nothing is known about. The `ended` states head the rank and no front-end draws
+    /// a row in one, so the list itself starts at `.awaitingInput`.
     public static let stateOrder: [RunState] = [
-        .merged, .finished, .awaitingInput, .running, .starting, .unknown,
+        .merged, .finished, .failed, .awaitingInput, .running, .starting, .unknown,
     ]
 
     /// States in which a run still holds a bay of the device's automatic-task cap.
@@ -112,14 +114,19 @@ public enum AgentState {
     /// back.
     public static let blocking: Set<RunState> = occupying.union([.awaitingInput])
 
-    /// The states a run is over in, both of them positive evidence.
+    /// The states a run is over in, every one of them positive evidence.
     ///
     /// The pass that resolves a run into one of these retires it (`retirable`), so both
     /// front-ends leave it out of the list they draw: a row for it would be on screen
     /// for one redraw and gone the next, and which redraw caught it would depend on
     /// when the poll landed. What the run leaves behind is its activity line and its
     /// ledger entry.
-    public static let ended: Set<RunState> = [.merged, .finished]
+    ///
+    /// `.failed` is here rather than beside `.unknown` because it is an ANSWER: the run
+    /// reported nothing because there was no run. Held open instead, it would spend a
+    /// bay and refuse its PR a fresh agent on the strength of an agent that never
+    /// existed.
+    public static let ended: Set<RunState> = [.merged, .finished, .failed]
 
     // MARK: - Timing constants
 
@@ -128,9 +135,15 @@ public enum AgentState {
     /// terminal emulator, a tmux server and the user's rc all run first — and the
     /// process table is one `ps` pass reused for several seconds, so it can predate the
     /// pid file naming what to look for. Past this the run is judged on the evidence
-    /// there is: a known pid the table does not hold has ended, while a run that
-    /// produced neither a pid nor a PR to scan for becomes `.unknown`, because a spawn
-    /// that never landed and a pid file we have not read yet look identical from here.
+    /// there is: a known pid the table does not hold has ended, and a LOCAL run with no
+    /// pid file at all never ran (`.failed`) — this applet staged that path itself, so
+    /// nothing but the command writes it. A mesh-here run is the one the file cannot
+    /// answer for, its pid having been written into a run directory this applet never
+    /// created; that one falls back to the prompt scan.
+    ///
+    /// The same window bounds `AgentSpawner.spawn`'s own wait for the file, measured
+    /// from the same dispatch instant, so the spawn and the tick can never disagree
+    /// about which side of it a run is on.
     public static let spawnGrace: TimeInterval = 20
 
     /// How long after dispatch a live run whose screen has not shown a turn yet reads
@@ -849,20 +862,27 @@ public enum AgentState {
 
     /// A run this applet booked but has no pid for.
     ///
-    /// Two things produce one. A spawn whose shell has not written its pid file yet —
-    /// the ordinary first seconds of a run. And a placement the mesh routed back to
-    /// this machine, where the NODE opened the terminal, so the pid file it wrote
-    /// belongs to a run directory this applet never created and never will.
+    /// Three things produce one. A spawn whose shell has not written its pid file yet —
+    /// the ordinary first seconds of a run. A spawn whose terminal opened a window and
+    /// never ran the command in it, so the file is not late but absent. And a placement
+    /// the mesh routed back to this machine, where the NODE opened the terminal, so the
+    /// pid file it wrote belongs to a run directory this applet never created and never
+    /// will.
     ///
-    /// The second is why this rung is not simply "unknown until a pid appears". A
-    /// mesh-here run has no pid ever, so that answer would hold its bay and refuse its
-    /// PR a fresh agent for the rest of the applet's life — the exact wedge this
-    /// module exists to remove, arriving by a different road. Seen in production the
-    /// first time the monitors ran: two conflict fixes the mesh placed back here, both
-    /// reading "unknown", both bays held, nothing able to retire either.
+    /// Which of the three is asked of `placement`, and that is the whole of it: for a
+    /// LOCAL run this applet staged the pid path, so past the grace the missing file is
+    /// `.failed` — a run reporting for itself, not an inference from what its window
+    /// looks like. Only a mesh-here run reaches the scan below.
     ///
-    /// So the fallback is the pre-registry evidence: the agent's own prompt in the
-    /// process table. It cannot tell two runs on one PR apart, which is exactly why it
+    /// That fallback matters because a mesh-here run has no pid ever, and "unknown
+    /// until a pid appears" would hold its bay and refuse its PR a fresh agent for the
+    /// rest of the applet's life — the exact wedge this module exists to remove,
+    /// arriving by a different road. Seen in production the first time the monitors
+    /// ran: two conflict fixes the mesh placed back here, both reading "unknown", both
+    /// bays held, nothing able to retire either.
+    ///
+    /// So for that one the evidence is the pre-registry kind: the agent's own prompt in
+    /// the process table. It cannot tell two runs on one PR apart, which is exactly why it
     /// is the fallback and not the identity — but "an agent for this PR is up" and "no
     /// agent for this PR is up" are both positive answers, and the second is what
     /// finally ends the run.
@@ -881,10 +901,20 @@ public enum AgentState {
         if age <= spawnGrace {
             return done(.starting, "dispatched \(secs(age)) ago, no pid yet")
         }
+        if record.placement == .local {
+            // This applet opened the terminal and named the pid path itself, and the
+            // inner shell writes it before the agent (`AgentSpawner.shellCommand`). So
+            // an absent file past the grace is the run's OWN report that its command
+            // never ran — not an inference from what the terminal looks like, which is
+            // why it survives a terminal that changes how it fails.
+            return done(.failed, "its terminal never ran the command "
+                                 + "(no pid file \(secs(age)) after dispatch)")
+        }
         guard let pr = record.prNumber else {
-            // Nothing to look for: a run with neither a pid nor a PR cannot be found by
-            // either mechanism, so its absence is not evidence of anything. The one rung
-            // that stamps `unfindable`; see `Resolution.unfindable`.
+            // Nothing to look for: a mesh-here run has no pid file to be missing, and
+            // with no PR either it cannot be found by the scan, so its absence is not
+            // evidence of anything. The one rung that stamps `unfindable`; see
+            // `Resolution.unfindable`.
             var nowhere = done(.unknown, "no pid recorded \(secs(age)) after dispatch")
             nowhere.unfindable = true
             return nowhere

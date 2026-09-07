@@ -1387,6 +1387,12 @@ class Store(QObject):
         is the only evidence that distinguishes a finished agent from a working one —
         both are the same live process at the same pid.
 
+        A launch that returns is not a run that started: the terminal is a detached
+        process, and one that opens a window and never runs the command in it looks
+        exactly like one that did. Answering that is left to the tick, where a local
+        record with no pid file past :data:`agentstate.SPAWN_GRACE` resolves FAILED,
+        rather than waited for here — this is the GUI thread on a panel click.
+
         Which runner is spawned is written down here rather than re-read later: the
         setting is what the NEXT spawn will use, so a run started under one runner and
         asked about after the operator switched would be interrogated through the
@@ -2357,11 +2363,17 @@ class Store(QObject):
         # here, and `record_completion` dates that one from its transcript; now() is
         # only ever the instant this poll looked.
         now = time.time()
+        failed = {r.run_id for r in gone
+                  if (v := t.states.get(r.run_id)) is not None
+                  and v.state == agentstate.FAILED}
+        # A run whose command never ran has nothing to price - no agent, no transcript,
+        # no tokens - and a completion against its key would count it among the finished
+        # ones. Its ledger entry stays open, which is what it is: still owed.
         retired = [
             (r, agentregistry.finished_at(r.run_id), _run_prompt(r.run_id),
              agentregistry.bound_session(r.run_id),
              agentregistry.run_runner(r.run_id))
-            for r in gone if r.ledger_key
+            for r in gone if r.ledger_key and r.run_id not in failed
         ]
         # Logged with the evidence that ended it, because forgetting deletes every trace
         # a run leaves: the record, the directory and the prompt all go, and a retirement
@@ -2369,7 +2381,8 @@ class Store(QObject):
         # This is the one line that says which rung decided.
         for r in gone:
             verdict = t.states.get(r.run_id)
-            activity.log(r.source, "retire",
+            action = "spawn-failed" if r.run_id in failed else "retire"
+            activity.log(r.source, action,
                          f"{r.label or r.run_id} — "
                          f"{verdict.reason if verdict else 'no verdict'}")
         self.refresh_activity()
