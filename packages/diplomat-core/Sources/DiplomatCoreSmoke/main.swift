@@ -2375,8 +2375,9 @@ do {
 
 // ---- GH: a login shell that never answers is given up on ----
 // Where no candidate path holds gh (the Linux CI container), the lookup asks the login
-// shell. SHELL names a stub that ignores the terminate and sleeps, so it is the kill
-// five seconds after the lookup's five-second budget that ends the wait.
+// shell. SHELL names a stub that ignores the terminate and sleeps in a child, so only
+// the lookup's own five-second deadline can end the wait: the stub outlives it, and on
+// corelibs its child holds the exit past even the kill.
 if GH.candidatePaths.contains(where: { FileManager.default.isExecutableFile(atPath: $0) }) {
     print("gh at a candidate path: the login-shell lookup is not reached here, its bound is untested")
 } else {
@@ -2392,10 +2393,11 @@ if GH.candidatePaths.contains(where: { FileManager.default.isExecutableFile(atPa
     do { _ = try await GH.run(["--version"]) }
     catch GHError.ghNotFound { outcome = "not found" }
     catch { outcome = "other: \(error)" }
-    let elapsed = Int(Date().timeIntervalSince(started))
+    let elapsed = Date().timeIntervalSince(started)
     check(outcome == "not found", "a stalled login shell reads as no gh, got: \(outcome)")
-    check(elapsed < 20, "the lookup's own deadline ends the wait, not the stub (\(elapsed)s)")
-    print("stalled login shell given up on after \(elapsed)s")
+    check(elapsed >= 4.5 && elapsed < 9,
+          "the lookup's own deadline ends the wait, not the stub's death (\(Int(elapsed))s)")
+    print("stalled login shell given up on after \(Int(elapsed))s")
 }
 
 if ProcessInfo.processInfo.environment["DIPLOMAT_DUMP"] == "1" {

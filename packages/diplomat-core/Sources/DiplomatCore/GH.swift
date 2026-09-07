@@ -63,7 +63,10 @@ public enum GH {
     /// Last resort: ask a login shell where gh lives (covers exotic installs).
     /// stdout is a file rather than a pipe: a job the profile leaves in the
     /// background keeps a pipe open after the shell exits, and reading it to the
-    /// end would wait for that job.
+    /// end would wait for that job. The wait is on the deadline rather than
+    /// `waitUntilExit`: corelibs sees a process exit only once every descendant
+    /// holding its end of the launch socketpair has, so that job would hold the
+    /// wait past the kill.
     private static func loginShellWhichGH() -> String? {
         let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/sh"
         let outURL = FileManager.default.temporaryDirectory
@@ -79,11 +82,13 @@ public enum GH {
         proc.arguments = ["-lc", "command -v gh"]
         proc.standardOutput = outHandle
         proc.standardError = FileHandle.nullDevice
-        do { try proc.run() } catch { return nil }
-        DispatchQueue.global().asyncAfter(deadline: .now() + lookupTimeout) {
-            if proc.isRunning { stop(proc) }
+        let exited = DispatchSemaphore(value: 0)
+        proc.terminationHandler = { _ in exited.signal() }
+        do { try proc.run() } catch { proc.terminationHandler = nil; return nil }
+        if exited.wait(timeout: .now() + lookupTimeout) == .timedOut {
+            stop(proc)
+            return nil
         }
-        proc.waitUntilExit()
         let path = (try? Data(contentsOf: outURL))
             .flatMap { String(data: $0, encoding: .utf8) }?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -154,7 +159,12 @@ public enum GH {
                     cont.resume(returning: outData)
                 }
             }
-            do { try proc.run() } catch { cont.resume(throwing: error); return }
+            // Darwin keeps the handler of a process that never ran until it is cleared.
+            do { try proc.run() } catch {
+                proc.terminationHandler = nil
+                cont.resume(throwing: error)
+                return
+            }
             DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
                 guard proc.isRunning else { return }
                 timedOut.set()
