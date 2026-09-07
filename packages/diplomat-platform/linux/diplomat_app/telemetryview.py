@@ -32,8 +32,15 @@ from __future__ import annotations
 import time
 from datetime import datetime
 
-from PySide6.QtCore import QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtGui import (
+    QBrush,
+    QColor,
+    QLinearGradient,
+    QPainter,
+    QPainterPath,
+    QPen,
+)
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -458,16 +465,21 @@ class QuotaChart(QWidget):
         super().__init__()
         self.setFixedHeight(120)
         self._points: tuple[telemetry.QuotaPoint, ...] = ()
+        self._spans: tuple[telemetry.TaskSpan, ...] = ()
         self._days = 14.0
         self._now = 0.0
 
     def set_series(self, points: tuple[telemetry.QuotaPoint, ...], days: float,
-                   now: float) -> None:
+                   now: float,
+                   spans: tuple[telemetry.TaskSpan, ...] = ()) -> None:
         """``days`` and ``now`` are the axis, not the readings: it spans the whole
         lookback rather than the span of what was sampled, so it lines up with the
         owed-work chart beside it and a probe that stopped answering three days ago
-        leaves visible empty axis instead of a line that appears to reach now."""
+        leaves visible empty axis instead of a line that appears to reach now.
+
+        ``spans`` are the task lifespans overlaid as start/finish markers."""
         self._points = points
+        self._spans = spans
         self._days = days
         self._now = now
         self.update()
@@ -552,6 +564,43 @@ class QuotaChart(QWidget):
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.setPen(pen)
             painter.drawPath(line)
+
+        # Task lifespans over the curves: a green dot where each began, a red one
+        # where it finished, joined by a dashed line that runs green→red. They sit on
+        # a flat lane near the floor, not on the curve — a marker rides through a
+        # probe-offline gap the line breaks at, and must claim no quota level there. A
+        # None `done` (still running, or placed on a peer) is a start dot alone.
+        # Hard-coded green/red, like the half-way rule above: a marker's colour is its
+        # meaning, not a metric's tint.
+        started_color = QColor(51, 199, 89)
+        finished_color = QColor(255, 69, 59)
+        lane_y = pad_t + h - 3.0
+        dot_r = 1.6
+
+        def clamp_x(x: float) -> float:
+            return min(pad_l + w, max(pad_l, x))
+
+        def draw_dot(cx: float, color: QColor) -> None:
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(color)
+            painter.drawEllipse(
+                QRectF(cx - dot_r, lane_y - dot_r, dot_r * 2, dot_r * 2))
+
+        for life in self._spans:
+            sx = clamp_x(x_of(life.started))
+            if life.done is not None:
+                dx = clamp_x(x_of(life.done))
+                if dx - sx > 1.0:
+                    grad = QLinearGradient(sx, lane_y, dx, lane_y)
+                    grad.setColorAt(0.0, started_color)
+                    grad.setColorAt(1.0, finished_color)
+                    pen = QPen(QBrush(grad), 0.6)
+                    pen.setDashPattern([3.0, 3.0])
+                    painter.setBrush(Qt.BrushStyle.NoBrush)
+                    painter.setPen(pen)
+                    painter.drawLine(QPointF(sx, lane_y), QPointF(dx, lane_y))
+                draw_dot(dx, finished_color)
+            draw_dot(sx, started_color)
 
         painter.setPen(QColor(glyphs.MUTED))
         f = painter.font()
@@ -865,7 +914,7 @@ class TelemetryView(QWidget):
         if len(s.quota) > 1:
             chart = QuotaChart()
             self.quota_col.addWidget(chart)
-            chart.set_series(s.quota, self._days, now)
+            chart.set_series(s.quota, self._days, now, s.task_spans)
 
         week = s.week_left_pct
         self.quota_col.addLayout(_legend([

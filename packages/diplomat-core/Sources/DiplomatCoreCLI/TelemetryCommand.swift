@@ -67,6 +67,8 @@ enum TelemetryCommand {
                                     "weekPct": opt($0.weekPct)] },
             "sessionLeftPct": opt(s.sessionLeftPct),
             "weekLeftPct": opt(s.weekLeftPct),
+            "taskSpans": s.taskSpans.map { ["started": r($0.started),
+                                            "done": opt($0.done)] },
             "pending": s.pending.map { ["at": r($0.at), "reviews": $0.reviews,
                                         "conflicts": $0.conflicts] },
             "pendingReviewsNow": s.pendingReviewsNow,

@@ -700,3 +700,61 @@ def test_a_lone_reading_is_painted_and_not_a_zero_width_nothing(app):
     assert series_ink(_quota_chart([None] * 17)) == 0, (
         "ink appeared with no reading at all — the check above proves nothing"
     )
+
+
+def _quota_chart_with_spans(spans):
+    """The quota chart rendered 400x120 over a fortnight with two flat readings (so it
+    draws at all) and `spans` as its task-lifespan overlay."""
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtGui import QImage, QRegion
+    from PySide6.QtWidgets import QWidget
+
+    from diplomat_app.telemetryview import QuotaChart
+
+    now = 1_785_000_000.0
+    step = telemetry.SAMPLE_INTERVAL_SECS
+    chart = QuotaChart()
+    chart.set_series(
+        (telemetry.QuotaPoint(at=now - 2 * step, session_pct=80.0, week_pct=80.0),
+         telemetry.QuotaPoint(at=now - step, session_pct=80.0, week_pct=80.0)),
+        14.0, now, tuple(spans),
+    )
+    chart.resize(400, 120)
+    image = QImage(chart.size(), QImage.Format.Format_ARGB32)
+    image.fill(Qt.GlobalColor.transparent)
+    chart.render(image, QPoint(), QRegion(), QWidget.RenderFlag.DrawChildren)
+    return image
+
+
+def _lane_has(image, pred) -> bool:
+    """Whether any pixel on the marker lane (``pad_t + h - 3`` ≈ y 101 here) matches.
+    The lane sits below the half-way rule and above the date labels; only a marker
+    puts saturated green or red there, over the muted orange the fill leaves."""
+    return any(pred(image.pixelColor(x, y))
+               for x in range(4, 396) for y in range(96, 108))
+
+
+def test_task_markers_paint_a_green_start_and_a_red_finish(app):
+    """A finished task is a green start dot and a red finish dot on the overlay lane;
+    an unfinished one (``done`` None) is the green dot alone — no finish, no line."""
+    now = 1_785_000_000.0
+    day = 86_400.0
+
+    def green(c):
+        return c.alpha() > 0 and c.green() > 150 and c.red() < 120
+
+    def red(c):
+        return (c.alpha() > 0 and c.red() > 180
+                and c.green() < 110 and c.blue() < 110)
+
+    finished = _quota_chart_with_spans(
+        [telemetry.TaskSpan(started=now - 6 * day, done=now - 4 * day)])
+    assert _lane_has(finished, green), "a finished task drew no green start dot"
+    assert _lane_has(finished, red), "a finished task drew no red finish dot"
+
+    unfinished = _quota_chart_with_spans(
+        [telemetry.TaskSpan(started=now - 6 * day, done=None)])
+    assert _lane_has(unfinished, green), "an unfinished task drew no green start dot"
+    assert not _lane_has(unfinished, red), (
+        "an unfinished task painted a finish dot — done=None must be a lone start"
+    )
