@@ -56,7 +56,7 @@ def test_a_check_that_could_not_run_is_a_first_run_until_setup_settles():
 
 
 def test_an_installer_too_old_to_report_drift_is_left_alone():
-    """The .app can outrun its checkout (it may sit in /Applications while the source
+    """The .app can outrun its checkout (a copy kept elsewhere while the source
     moves), so a new front-end can meet an ``install.js`` that predates drift
     detection and reports no ``outdated`` at all.
 

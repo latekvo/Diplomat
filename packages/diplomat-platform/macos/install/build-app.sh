@@ -44,4 +44,4 @@ PLIST
 
 echo "Built $PKG_DIR/$APP"
 echo "Launch:  open $PKG_DIR/$APP"
-echo "Keep it: ./install/install-autostart.sh starts this bundle at login (do not copy it to /Applications)."
+echo "Keep it: ./install/install-autostart.sh starts this bundle at login (and deletes any copy in /Applications or ~/Applications)."
