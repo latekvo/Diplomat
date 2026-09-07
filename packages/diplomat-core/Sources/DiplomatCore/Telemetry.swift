@@ -481,6 +481,28 @@ public enum Telemetry {
         }
     }
 
+    // MARK: - Task lifespans, drawn over the quota chart
+
+    /// One task's life, for the rate-limit chart's overlay markers. `done` is nil for
+    /// a task still running, or one the mesh placed on a peer that this node never saw
+    /// finish.
+    public struct TaskSpan: Equatable {
+        public let started: Double
+        public let done: Double?
+    }
+
+    /// Every task that STARTED inside the range, in fold order. Belonging by start
+    /// matches `startedCount` and keeps a marker to the stretch the axis covers — a
+    /// task begun before the range would hang its start dot off the left edge.
+    public static func taskSpanSeries(_ tasks: [Task], now: Double,
+                                      days: Double) -> [TaskSpan] {
+        let start = now - days * 86_400
+        return tasks.compactMap { t in
+            guard let s = t.startedAt, s >= start, s <= now else { return nil }
+            return TaskSpan(started: s, done: t.doneAt)
+        }
+    }
+
     // MARK: - Token split
 
     /// Cumulative-counter deltas across the samples given, split monitored-repo vs
@@ -542,6 +564,10 @@ public enum Telemetry {
         public let quota: [QuotaPoint]
         public let sessionLeftPct: Double?
         public let weekLeftPct: Double?
+
+        /// Task lifespans that began in the range, drawn as start/finish markers over
+        /// the quota curves.
+        public let taskSpans: [TaskSpan]
 
         public let pending: [PendingPoint]
         /// Owed right now, and the worst it got over the range.
@@ -675,6 +701,7 @@ public enum Telemetry {
                 $0.sessionPct != nil && now - $0.at <= fresh })?.sessionPct,
             weekLeftPct: quota.last(where: {
                 $0.weekPct != nil && now - $0.at <= fresh })?.weekPct,
+            taskSpans: taskSpanSeries(ledger.tasks, now: now, days: days),
             pending: series,
             pendingReviewsNow: series.last?.reviews ?? 0,
             pendingConflictsNow: series.last?.conflicts ?? 0,

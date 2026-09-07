@@ -838,6 +838,32 @@ def quota_series(samples: list[Sample], *, now: float,
     ]
 
 
+# MARK: - Task lifespans, drawn over the quota chart
+
+
+@dataclass(frozen=True)
+class TaskSpan:
+    """One task's life, for the rate-limit chart's overlay markers. ``done`` is None
+    for a task still running, or one the mesh placed on a peer that this node never
+    saw finish."""
+
+    started: float
+    done: float | None
+
+
+def task_span_series(tasks: list[Task], *, now: float,
+                     days: float) -> list[TaskSpan]:
+    """Every task that STARTED inside the range, in fold order. Belonging by start
+    matches ``started_count`` and keeps a marker to the stretch the axis covers — a
+    task begun before the range would hang its start dot off the left edge."""
+    start = now - days * 86400
+    return [
+        TaskSpan(started=t.started_at, done=t.done_at)
+        for t in tasks
+        if t.started_at is not None and start <= t.started_at <= now
+    ]
+
+
 # MARK: - Token split
 
 
@@ -901,6 +927,10 @@ class Summary:
     quota: tuple[QuotaPoint, ...] = ()
     session_left_pct: float | None = None
     week_left_pct: float | None = None
+
+    #: Task lifespans that began in the range, drawn as start/finish markers over the
+    #: quota curves.
+    task_spans: tuple[TaskSpan, ...] = ()
 
     pending: tuple[PendingPoint, ...] = ()
     pending_reviews_now: int = 0
@@ -1019,6 +1049,7 @@ def summarize(ledger: Ledger, *, now: float, days: float, steps: int,
         week_left_pct=next((q.week_pct for q in reversed(quota)
                             if q.week_pct is not None
                             and now - q.at <= QUOTA_FRESH_SECS), None),
+        task_spans=tuple(task_span_series(ledger.tasks, now=now, days=days)),
         pending=tuple(series),
         pending_reviews_now=series[-1].reviews if series else 0,
         pending_conflicts_now=series[-1].conflicts if series else 0,
@@ -1169,6 +1200,8 @@ def parity_payload(ledger: Ledger, summary: Summary) -> dict:
                   for q in summary.quota],
         "sessionLeftPct": _opt(summary.session_left_pct),
         "weekLeftPct": _opt(summary.week_left_pct),
+        "taskSpans": [{"started": _r(sp.started), "done": _opt(sp.done)}
+                      for sp in summary.task_spans],
         "pending": [{"at": _r(p.at), "reviews": p.reviews, "conflicts": p.conflicts}
                     for p in summary.pending],
         "pendingReviewsNow": summary.pending_reviews_now,
