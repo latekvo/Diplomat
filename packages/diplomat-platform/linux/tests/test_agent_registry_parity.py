@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 
 import pytest
 
@@ -124,6 +125,36 @@ def test_a_record_with_unusable_fields_reads_the_same_on_both_sides():
     assert ours == _swift({"mode": "read"})
     assert ours[0]["dispatchedAt"] == 0 and ours[0]["pid"] is None
     assert ours[0]["prNumber"] is None and ours[0]["quietSince"] == 1
+
+
+@pytest.mark.parametrize("wide", ["1e300", "99999999999999999999"])
+def test_a_number_the_two_parsers_disagree_on_is_unusable_on_both(wide):
+    """The parsers diverge before either decoder runs: ``NSNumber.intValue``
+    saturates on ``1e300`` and wraps on a 20-digit literal, where Python reads a
+    301-digit int and ``10**20`` out of the same bytes. So an integer field is
+    usable only inside Int64 - and a finite double stays what it is."""
+    R.runs_path().parent.mkdir(parents=True, exist_ok=True)
+    R.runs_path().write_text(
+        f'{{"version": {R.SCHEMA_VERSION}, "runs": [{{"runId": "r1", '
+        f'"claimSeenAt": 1e300, "pid": {wide}, "prNumber": {wide}}}]}}')
+    ours = [r.to_json() for r in R.load()]
+    assert ours == _swift({"mode": "read"})
+    assert ours[0]["pid"] is None and ours[0]["prNumber"] is None
+    assert ours[0]["claimSeenAt"] == 1e300
+
+
+def test_an_infinity_reaches_no_record_on_either_side():
+    """Darwin's ``JSONSerialization`` parses ``-1e999`` to ``-inf`` - bare, a quiet
+    clock past every timeout, and an uncatchable exception at the next save - while
+    corelibs refuses the document, so on Linux the Swift side has no book at all.
+    Text, because ``json.dumps`` cannot spell ``-1e999``."""
+    R.runs_path().parent.mkdir(parents=True, exist_ok=True)
+    R.runs_path().write_text(
+        f'{{"version": {R.SCHEMA_VERSION}, "runs": [{{"runId": "r1", '
+        f'"dispatchedAt": -1e999, "quietSince": -1e999}}]}}')
+    ours = [r.to_json() for r in R.load()]
+    assert ours[0]["dispatchedAt"] == 0 and ours[0]["quietSince"] is None
+    assert _swift({"mode": "read"}) == (ours if sys.platform == "darwin" else [])
 
 
 def test_a_schema_the_other_side_does_not_know_is_ignored_by_both():

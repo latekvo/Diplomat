@@ -120,19 +120,25 @@ class Observation:
 
 
 def _number(value: Any, default: float | None = None) -> float | None:
-    """A JSON number out of a decoded record as a float, or ``default``. The Swift
-    twin reads ``(as? NSNumber)?.doubleValue ?? default`` - a boolean bridges to 1/0
-    there, a string or null to the default - and one book is read by both."""
-    if isinstance(value, (int, float)) and math.isfinite(value):
-        return float(value)
-    return default
+    """A JSON number out of a decoded record as a float, or ``default``: usable
+    only if finite, an int too wide for a double included. One book is read by
+    both front-ends; the Swift twin ``AgentRegistry.number`` keeps the same rule,
+    where a boolean bridges to 1/0 and a string or null to the default."""
+    if not isinstance(value, (int, float)):
+        return default
+    try:
+        v = float(value)
+    except OverflowError:
+        return default
+    return v if math.isfinite(v) else default
 
 
 def _integer(value: Any) -> int | None:
-    """The same for an integer field (``pid``, ``prNumber``); truncated like
-    ``NSNumber.intValue``."""
+    """The same for an integer field (``pid``, ``prNumber``): usable only inside
+    ``|v| < 9e18``, the bound ``clampedInt`` draws in Models.swift, and truncated
+    like ``Int(Double)``. Swift twin: ``AgentRegistry.integer``."""
     n = _number(value)
-    return None if n is None else int(n)
+    return int(n) if n is not None and abs(n) < 9.0e18 else None
 
 
 def _flag(value: Any, default: bool = False) -> bool:

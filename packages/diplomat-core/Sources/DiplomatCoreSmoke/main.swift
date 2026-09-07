@@ -1665,6 +1665,46 @@ do {
     print("run book sidecar assertions passed")
 }
 
+section("numbers in a hand-edited run book")
+// PARITY: `tests/test_agent_registry_parity.py` reads these books on both sides. The
+// two parsers already disagree on these literals before either decoder runs, so both
+// default them by one rule (`AgentRegistry.number`): finite, and inside Int64 for an
+// integer field.
+do {
+    let book = FileManager.default.temporaryDirectory
+        .appendingPathComponent("diplomat-smoke-agents-\(UUID().uuidString)", isDirectory: true)
+    setenv("DIPLOMAT_AGENTS_DIR", book.path, 1)
+    defer { try? FileManager.default.removeItem(at: book) }
+    try? FileManager.default.createDirectory(at: book, withIntermediateDirectories: true)
+    let wide = """
+    {"version": \(AgentRegistry.schemaVersion), "runs": [
+      {"runId": "r1", "dispatchedAt": 1, "claimSeenAt": 1e300, "pid": 1e300,
+       "prNumber": 99999999999999999999},
+      {"runId": "r2", "dispatchedAt": 1, "pid": 99999999999999999999, "prNumber": 1e300}]}
+    """
+    try? wide.write(to: AgentRegistry.runsPath(), atomically: true, encoding: .utf8)
+    let runs = AgentRegistry.load()
+    check(runs.map(\.runID) == ["r1", "r2"], "the records survive their unusable numbers")
+    check(runs[0].claimSeenAt == 1e300, "a finite double stays what it is")
+    check(runs.allSatisfy { $0.pid == nil && $0.prNumber == nil },
+          "past Int64 is no pid and no PR number, whichever way it is spelled")
+
+    let infinite = """
+    {"version": \(AgentRegistry.schemaVersion), "runs": [
+      {"runId": "r1", "dispatchedAt": -1e999, "quietSince": -1e999}]}
+    """
+    try? infinite.write(to: AgentRegistry.runsPath(), atomically: true, encoding: .utf8)
+    let inf = AgentRegistry.load()
+    // Darwin's parser makes `-inf` of `-1e999`; corelibs refuses the whole document.
+    #if canImport(Darwin)
+    check(inf.count == 1 && inf[0].dispatchedAt == 0 && inf[0].quietSince == nil,
+          "-1e999 is the default, not -inf")
+    #else
+    check(inf.isEmpty, "a document holding -1e999 is no book")
+    #endif
+    print("hand-edited number assertions passed")
+}
+
 section("autofix mesh coordination")
 // PARITY fixtures: diplomat-platform/linux/tests/test_autofix.py asserts these exact strings — two
 // nodes only dedupe origination when their derivations agree byte-for-byte

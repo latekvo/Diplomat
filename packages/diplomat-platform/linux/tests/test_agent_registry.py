@@ -95,6 +95,25 @@ def test_a_record_with_unusable_fields_costs_those_fields_not_the_book():
     assert got[1] == rec(run_id="r2")
 
 
+@pytest.mark.parametrize("wide, as_double", [
+    ("1e300", 1e300), ("99999999999999999999", 1e20), ("1" + "0" * 400, None)])
+def test_a_number_past_int64_is_no_pid_and_past_a_double_is_nothing(wide, as_double):
+    """The Swift twin reads ``-1e999`` as ``-inf`` on Darwin, and its ``intValue``
+    saturates or wraps past Int64, so both sides keep one rule: a number is usable
+    if finite, and an integer field if it also sits inside Int64. Without it
+    ``int(1e300)`` is a 301-digit pid the next save writes back, and a 400-digit
+    int is an ``OverflowError`` out of the whole load, every poll. Text, because
+    ``json.dumps`` cannot spell ``-1e999``."""
+    R.runs_path().parent.mkdir(parents=True, exist_ok=True)
+    R.runs_path().write_text(
+        f'{{"version": {R.SCHEMA_VERSION}, "runs": [{{"runId": "r1", '
+        f'"dispatchedAt": -1e999, "quietSince": {wide}, "reapRefusedAt": -1e999, '
+        f'"pid": {wide}, "prNumber": {wide}}}]}}')
+    got = R.load()
+    assert (got[0].dispatched_at, got[0].reap_refused_at, got[0].pid, got[0].pr_number,
+            got[0].quiet_since) == (0.0, None, None, None, as_double)
+
+
 def test_a_run_registered_during_a_forget_survives(monkeypatch):
     """forget() used to load outside the lock and save inside it, so a spawn that
     registered between the two was written over - the very loss add()'s lock exists

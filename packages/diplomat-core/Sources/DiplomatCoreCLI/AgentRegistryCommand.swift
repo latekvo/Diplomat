@@ -80,8 +80,8 @@ enum AgentRegistryCommand {
     private static func decode(_ d: [String: Any]) -> AgentState.RunRecord {
         AgentState.RunRecord(
             runID: d["runId"] as? String ?? "",
-            dispatchedAt: (d["dispatchedAt"] as? NSNumber)?.doubleValue ?? 0,
-            prNumber: (d["prNumber"] as? NSNumber)?.intValue,
+            dispatchedAt: AgentRegistry.number(d["dispatchedAt"]) ?? 0,
+            prNumber: AgentRegistry.integer(d["prNumber"]),
             prURL: d["prUrl"] as? String ?? "",
             kind: d["kind"] as? String ?? "",
             label: d["label"] as? String ?? "",
@@ -91,12 +91,12 @@ enum AgentRegistryCommand {
             node: d["node"] as? String ?? "",
             workKey: d["workKey"] as? String ?? "",
             ledgerKey: d["ledgerKey"] as? String ?? "",
-            pid: (d["pid"] as? NSNumber)?.intValue,
+            pid: AgentRegistry.integer(d["pid"]),
             tty: d["tty"] as? String ?? "",
-            claimSeenAt: (d["claimSeenAt"] as? NSNumber)?.doubleValue,
+            claimSeenAt: AgentRegistry.number(d["claimSeenAt"]),
             quietDigest: d["quietDigest"] as? String ?? "",
-            quietSince: (d["quietSince"] as? NSNumber)?.doubleValue,
-            reapRefusedAt: (d["reapRefusedAt"] as? NSNumber)?.doubleValue,
+            quietSince: AgentRegistry.number(d["quietSince"]),
+            reapRefusedAt: AgentRegistry.number(d["reapRefusedAt"]),
             untracked: JSONInput.flag(d["untracked"]))
     }
 }

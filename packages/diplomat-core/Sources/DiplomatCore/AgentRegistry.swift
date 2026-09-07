@@ -388,8 +388,8 @@ public enum AgentRegistry {
         guard let runID = d["runId"] as? String else { return nil }
         return AgentState.RunRecord(
             runID: runID,
-            dispatchedAt: (d["dispatchedAt"] as? NSNumber)?.doubleValue ?? 0,
-            prNumber: (d["prNumber"] as? NSNumber)?.intValue,
+            dispatchedAt: number(d["dispatchedAt"]) ?? 0,
+            prNumber: integer(d["prNumber"]),
             prURL: d["prUrl"] as? String ?? "",
             kind: d["kind"] as? String ?? "",
             label: d["label"] as? String ?? "",
@@ -399,12 +399,30 @@ public enum AgentRegistry {
             node: d["node"] as? String ?? "",
             workKey: d["workKey"] as? String ?? "",
             ledgerKey: d["ledgerKey"] as? String ?? "",
-            pid: (d["pid"] as? NSNumber)?.intValue,
+            pid: integer(d["pid"]),
             tty: d["tty"] as? String ?? "",
-            claimSeenAt: (d["claimSeenAt"] as? NSNumber)?.doubleValue,
+            claimSeenAt: number(d["claimSeenAt"]),
             quietDigest: d["quietDigest"] as? String ?? "",
-            quietSince: (d["quietSince"] as? NSNumber)?.doubleValue,
-            reapRefusedAt: (d["reapRefusedAt"] as? NSNumber)?.doubleValue,
+            quietSince: number(d["quietSince"]),
+            reapRefusedAt: number(d["reapRefusedAt"]),
             untracked: d["untracked"] as? Bool ?? false)
+    }
+
+    // Python twin: `agentstate._number` / `_integer`. One rule, because the parsers
+    // disagree first: Darwin's `JSONSerialization` reads `-1e999` as `-inf`, which the
+    // next `write` dies on (an uncatchable exception), and `NSNumber.intValue`
+    // saturates on `1e300` and wraps on a 20-digit literal.
+
+    /// A JSON number as a `Double`; nil unless finite.
+    public static func number(_ raw: Any?) -> Double? {
+        guard let v = (raw as? NSNumber)?.doubleValue, v.isFinite else { return nil }
+        return v
+    }
+
+    /// The same for an integer field (`pid`, `prNumber`): nil unless it also sits
+    /// inside `clampedInt`'s bound, truncated like `Int(Double)`.
+    public static func integer(_ raw: Any?) -> Int? {
+        guard let v = number(raw), abs(v) < 9.0e18 else { return nil }
+        return Int(v)
     }
 }
