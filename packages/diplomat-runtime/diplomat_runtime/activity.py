@@ -189,7 +189,7 @@ def read(limit: int = 200) -> list[AuditEntry]:
             obj = json.loads(line)
             if not isinstance(obj, dict):
                 continue
-            fields = [obj.get(k, "") for k in ("at", "source", "action", "detail")]
+            fields = [obj.get(k) for k in ("at", "source", "action", "detail")]
             if not all(isinstance(f, str) for f in fields):
                 continue  # the macOS twin's Codable decode drops such a line whole
             entries.append(AuditEntry(*fields))

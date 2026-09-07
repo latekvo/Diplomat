@@ -99,13 +99,15 @@ def test_read_skips_a_line_that_is_json_but_not_an_object(tmp_path, monkeypatch)
     assert [e.detail for e in activity.read()] == ["a"]
 
 
-def test_read_skips_an_object_whose_fields_are_not_strings(tmp_path, monkeypatch) -> None:
-    """A wrong-typed field would raise later, where the panel asks the entry for its
-    date; the macOS twin's decode drops such a line whole, and so does this."""
+def test_read_skips_an_object_whose_fields_are_not_all_strings(tmp_path, monkeypatch) -> None:
+    """The macOS twin's Codable decode drops a line with a missing or wrong-typed
+    field whole, and so does this; a wrong-typed one would otherwise raise where the
+    panel asks the entry for its date."""
     f = tmp_path / "audit.jsonl"
     f.write_text(
         '{"at":1234,"source":"panel","action":"review","detail":"stamped with a number"}\n'
         '{"at":"2026-07-14T10:00:00Z","source":"panel","action":"review","detail":["list"]}\n'
+        '{"at":"2026-07-14T10:00:00Z","source":"panel","action":"review"}\n'
         '{"at":"2026-07-14T10:00:00Z","source":"panel","action":"review","detail":"a"}\n',
         encoding="utf-8",
     )
