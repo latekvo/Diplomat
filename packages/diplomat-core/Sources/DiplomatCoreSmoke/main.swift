@@ -2341,7 +2341,7 @@ if ProcessInfo.processInfo.environment["DIPLOMAT_GOLDEN_WRITE"] == "1" {
 // ---- GH: a gh that never answers is given up on ----
 // The Linux twin's gh.run carries the same 60 s budget. A stub that sleeps stands in
 // for the stalled response, with the deadline shortened to a second; DIPLOMAT_GH names
-// it before anything has asked where gh lives.
+// it.
 do {
     let stub = FileManager.default.temporaryDirectory.appendingPathComponent("smoke-gh-\(getpid()).sh")
     // exec, so the process the deadline signals is the one that sleeps.
@@ -2357,6 +2357,45 @@ do {
     check(outcome == "timeout 1", "a stalled gh is reported as a timeout, got: \(outcome)")
     check(Date().timeIntervalSince(started) < 10, "the deadline is what ends the wait, not the stub")
     unsetenv("DIPLOMAT_GH")
+}
+
+// ---- GH: the override is read per call ----
+// With the stub deleted and DIPLOMAT_GH unset, the next call reaches the gh the box has
+// (the Linux CI container has none), never the stub's path; the live dump below goes
+// through the same lookup.
+do {
+    var found = ""
+    do { found = String(decoding: try await GH.run(["--version"]), as: UTF8.self) }
+    catch GHError.ghNotFound { found = "none installed" }
+    catch { found = "other: \(error)" }
+    check(found.hasPrefix("gh version") || found == "none installed",
+          "the lookup after the override is gone reaches the real gh, got: \(found)")
+    print("gh after the stub: \(found.split(separator: "\n").first ?? "")")
+}
+
+// ---- GH: a login shell that never answers is given up on ----
+// Where no candidate path holds gh (the Linux CI container), the lookup asks the login
+// shell. SHELL names a stub that ignores the terminate and sleeps, so it is the kill
+// five seconds after the lookup's five-second budget that ends the wait.
+if GH.candidatePaths.contains(where: { FileManager.default.isExecutableFile(atPath: $0) }) {
+    print("gh at a candidate path: the login-shell lookup is not reached here, its bound is untested")
+} else {
+    let stub = FileManager.default.temporaryDirectory.appendingPathComponent("smoke-shell-\(getpid()).sh")
+    try "#!/bin/sh\ntrap '' TERM\nsleep 30\n".write(to: stub, atomically: true, encoding: .utf8)
+    chmod(stub.path, 0o755)
+    defer { try? FileManager.default.removeItem(at: stub) }
+    let shell = ProcessInfo.processInfo.environment["SHELL"]
+    setenv("SHELL", stub.path, 1)
+    defer { if let shell { setenv("SHELL", shell, 1) } else { unsetenv("SHELL") } }
+    let started = Date()
+    var outcome = "returned"
+    do { _ = try await GH.run(["--version"]) }
+    catch GHError.ghNotFound { outcome = "not found" }
+    catch { outcome = "other: \(error)" }
+    let elapsed = Int(Date().timeIntervalSince(started))
+    check(outcome == "not found", "a stalled login shell reads as no gh, got: \(outcome)")
+    check(elapsed < 20, "the lookup's own deadline ends the wait, not the stub (\(elapsed)s)")
+    print("stalled login shell given up on after \(elapsed)s")
 }
 
 if ProcessInfo.processInfo.environment["DIPLOMAT_DUMP"] == "1" {

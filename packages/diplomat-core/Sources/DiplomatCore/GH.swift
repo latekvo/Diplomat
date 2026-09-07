@@ -35,16 +35,16 @@ public enum GH {
     private static let pathLock = NSLock()
     private static var cachedPath: String?
 
+    /// Where gh is looked for before the login shell is asked.
+    public static let candidatePaths = ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"]
+
     private static func ghPath() throws -> String {
+        // Read per call, never cached: an override taken back is gone.
+        if let env = ProcessInfo.processInfo.environment["DIPLOMAT_GH"], !env.isEmpty { return env }
         pathLock.lock()
         defer { pathLock.unlock() }
         if let p = cachedPath { return p }
-        if let env = ProcessInfo.processInfo.environment["DIPLOMAT_GH"], !env.isEmpty {
-            cachedPath = env
-            return env
-        }
-        let candidates = ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"]
-        for c in candidates where FileManager.default.isExecutableFile(atPath: c) {
+        for c in candidatePaths where FileManager.default.isExecutableFile(atPath: c) {
             cachedPath = c
             return c
         }
@@ -55,30 +55,55 @@ public enum GH {
         throw GHError.ghNotFound
     }
 
+    /// How long the login shell may take to say where gh lives. It sources the
+    /// user's profile, which is free to hang, under `pathLock`, so every `run`
+    /// would wait behind it; `timeout` bounds the gh call, not this.
+    private static let lookupTimeout: TimeInterval = 5
+
     /// Last resort: ask a login shell where gh lives (covers exotic installs).
+    /// stdout is a file rather than a pipe: a job the profile leaves in the
+    /// background keeps a pipe open after the shell exits, and reading it to the
+    /// end would wait for that job.
     private static func loginShellWhichGH() -> String? {
         let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/sh"
+        let outURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("diplomat-\(UUID().uuidString).which")
+        guard FileManager.default.createFile(atPath: outURL.path, contents: nil),
+              let outHandle = try? FileHandle(forWritingTo: outURL) else { return nil }
+        defer {
+            try? outHandle.close()
+            try? FileManager.default.removeItem(at: outURL)
+        }
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: shell)
         proc.arguments = ["-lc", "command -v gh"]
-        let out = Pipe()
-        proc.standardOutput = out
-        proc.standardError = Pipe()
+        proc.standardOutput = outHandle
+        proc.standardError = FileHandle.nullDevice
         do { try proc.run() } catch { return nil }
-        let data = out.fileHandleForReading.readDataToEndOfFile()
+        DispatchQueue.global().asyncAfter(deadline: .now() + lookupTimeout) {
+            if proc.isRunning { stop(proc) }
+        }
         proc.waitUntilExit()
-        let path = String(data: data, encoding: .utf8)?
+        let path = (try? Data(contentsOf: outURL))
+            .flatMap { String(data: $0, encoding: .utf8) }?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return FileManager.default.isExecutableFile(atPath: path) ? path : nil
     }
 
-    /// Run `gh` with the given argv. stdout/stderr are redirected to temp files so
-    /// large payloads can't deadlock a pipe buffer (and no cross-thread captures).
+    private static func stop(_ proc: Process) {
+        proc.terminate()
+        DispatchQueue.global().asyncAfter(deadline: .now() + 5) {
+            if proc.isRunning { kill(proc.processIdentifier, SIGKILL) }
+        }
+    }
+
     /// How long one `gh` call may take - the Linux twin's `gh.run` budget. Every
     /// monitor waits on this call, so a response that never comes would otherwise
     /// hold both of them until the app restarts.
     public static let timeout: TimeInterval = 60
 
+    /// Run `gh` with the given argv. stdout/stderr are redirected to temp files so
+    /// large payloads can't deadlock a pipe buffer (and no cross-thread captures).
     public static func run(_ args: [String], timeout: TimeInterval = timeout) async throws -> Data {
         let path = try ghPath()
         let tmp = FileManager.default.temporaryDirectory
@@ -110,18 +135,11 @@ public enum GH {
 
             // The deadline only asks the process to stop; the termination handler is
             // the one place the continuation is resumed, so a request that ends on its
-            // own right then is still resumed exactly once.
+            // own right then is still resumed exactly once. The handler must not hold
+            // the deadline: the deadline holds the process, the process its handler,
+            // and a launch that fails leaves nothing to break that ring.
             let timedOut = Flag()
-            let deadline = DispatchWorkItem {
-                guard proc.isRunning else { return }
-                timedOut.set()
-                proc.terminate()
-                DispatchQueue.global().asyncAfter(deadline: .now() + 5) {
-                    if proc.isRunning { kill(proc.processIdentifier, SIGKILL) }
-                }
-            }
             proc.terminationHandler = { p in
-                deadline.cancel()
                 if timedOut.isSet {
                     cont.resume(throwing: GHError.timeout(seconds: timeout))
                     return
@@ -137,7 +155,11 @@ public enum GH {
                 }
             }
             do { try proc.run() } catch { cont.resume(throwing: error); return }
-            DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: deadline)
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
+                guard proc.isRunning else { return }
+                timedOut.set()
+                stop(proc)
+            }
         }
     }
 
