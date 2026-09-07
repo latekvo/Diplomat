@@ -1615,6 +1615,28 @@ def test_a_record_ends_when_its_process_is_gone_from_a_table_we_read(store, monk
     assert store.running_tasks == [] and store.free_auto_slots == 2
 
 
+def test_the_polls_settle_tells_the_panel_what_it_retired(store, monkeypatch):
+    """The poll's settle retires too, and the panel draws what it is told about.
+    Kept quiet, a retirement stays on screen until the panel's next refresh finds the
+    lock free and the run gone - a refresh interval, for a bay the poll emptied."""
+    from diplomat_runtime import agentregistry
+    from diplomat_runtime import agentstate as A
+
+    register_run(512, pid=4242, tty="pts/3", dispatched_at=time.time() - 600,
+                 label="Auto · #512")
+    fake_probes(monkeypatch, processes={})
+    monkeypatch.setattr("diplomat_app.probes.merged_prs",
+                        lambda prs: A.Observation.present(set()))
+    monkeypatch.setattr(type(store), "effective_me", property(lambda self: ""))
+    told: list[str] = []
+    store.tasks_changed.connect(lambda: told.append("tasks"))
+
+    store._autofix_poll_once()
+
+    assert agentregistry.load() == []
+    assert told == ["tasks"]
+
+
 def test_a_record_is_never_ended_by_a_table_we_could_not_read(store, monkeypatch):
     """The distinction the whole resolver is built on, at the store level: an
     unreadable process table is not an empty one. The run holds its bay, keeps its

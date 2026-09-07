@@ -821,7 +821,7 @@ class Store(QObject):
         # cost never reached the ledger, on exactly the machines that leave the tray
         # alone. (Seen live: three runs, panel closed, nothing retiring.)
         with self._settle_lock:
-            self._settle_agents()
+            self._settle_and_signal()
         try:
             if not self.effective_me:
                 self.fetch_me()
@@ -1473,12 +1473,18 @@ class Store(QObject):
         if not self._settle_lock.acquire(blocking=False):
             return  # a settle is under way; the next tick asks again
         try:
-            before = self._state_signature()
-            self._settle_agents()
-            changed = self._state_signature() != before
+            self._settle_and_signal()
         finally:
             self._settle_lock.release()
-        if changed:
+
+    def _settle_and_signal(self) -> None:
+        """Settle, and tell the panel if the agent picture moved (`_state_signature`).
+
+        The poll's settle says so too: what it retires stays drawn until the panel is
+        told, and the panel's own refresh is up to a tick away."""
+        before = self._state_signature()
+        self._settle_agents()
+        if self._state_signature() != before:
             self.tasks_changed.emit()
 
     def _state_signature(self) -> frozenset:

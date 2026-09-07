@@ -33,17 +33,14 @@ def test_a_display_refresh_skips_a_settle_already_under_way(monkeypatch):
 
 def test_the_poll_waits_for_the_settle_it_would_have_raced(monkeypatch):
     store = Store()
+    # `me` set, so nothing is fetched; no effective login, so the poll ends at its settle.
+    store.me = "alice"
+    monkeypatch.setattr(type(store), "effective_me", property(lambda self: ""))
     order: list[str] = []
-    store._settle_lock.acquire()
     monkeypatch.setattr(store, "_settle_agents", lambda: order.append("settled"))
 
-    def poll_settle():
-        with store._settle_lock:
-            store._settle_agents()
-
-    # What _autofix_poll_once does around its settle, run on a worker while the
-    # panel-side lock is held: it waits rather than settling alongside.
-    t = threading.Thread(target=poll_settle)
+    store._settle_lock.acquire()  # a panel-side settle, under way
+    t = threading.Thread(target=store._autofix_poll_once)
     t.start()
     time.sleep(0.2)
     order.append("released")
