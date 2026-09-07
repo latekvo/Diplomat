@@ -113,6 +113,34 @@ def test_the_workers_do_not_pile_up():
     assert len(store._workers) <= 2
 
 
+def test_a_second_interrupt_during_the_wait_does_not_restart_it(monkeypatch):
+    """Ctrl-C reaches ``quit`` through a signal handler, and CPython runs one on the
+    main thread even while ``Thread.join`` has it blocked (measured: the handler fires
+    0.5s into a 3s join), so a second press lands *inside* the wait. Re-entering would
+    give that call a budget of its own, so pressing Ctrl-C again would slow the
+    exit."""
+    from diplomat_app.app import DiplomatApp, SingleInstance
+
+    app = DiplomatApp.__new__(DiplomatApp)
+    budgets = []
+
+    class _Store:
+        def wait_for_background(self, timeout=5.0):
+            budgets.append(timeout)
+            if len(budgets) == 1:
+                app.quit()  # the second Ctrl-C, delivered mid-join
+            return []
+
+    app.store = _Store()
+    app.tray = type("_Tray", (), {"hide": lambda self: None})()
+    app.app = type("_Qt", (), {"quit": lambda self: None})()
+    monkeypatch.setattr(SingleInstance, "release", staticmethod(lambda: None))
+
+    app.quit()
+
+    assert budgets == [5.0]
+
+
 # ---- and the abort it exists to prevent ------------------------------------
 
 
