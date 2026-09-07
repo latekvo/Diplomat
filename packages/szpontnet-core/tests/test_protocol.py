@@ -1,5 +1,7 @@
 """The wire codec on its own: what one line is allowed to do to the node reading it."""
 
+import sys
+
 from szpontnet import protocol
 
 
@@ -12,3 +14,12 @@ def test_a_line_nested_past_the_parser_is_dropped_not_fatal():
     interpreter the node runs on."""
     deep = b"[" * (protocol.MAX_LINE_BYTES - 1) + b"\n"
     assert protocol.decode(deep) is None
+
+
+def test_an_integer_past_the_parsers_digit_limit_is_dropped_not_fatal():
+    """One integer literal longer than ``sys.get_int_max_str_digits()`` makes
+    json.loads raise a bare ValueError - neither a decode error nor a RecursionError
+    - from a line a few KiB long. Uncaught, it escapes every read loop like the deep
+    line above."""
+    digits = b"9" * (sys.get_int_max_str_digits() + 1)
+    assert protocol.decode(b'{"t":"heartbeat","n":' + digits + b"}\n") is None

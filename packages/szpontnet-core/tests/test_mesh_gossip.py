@@ -11,6 +11,7 @@ protocol is to be in the middle of it.
 from __future__ import annotations
 
 import asyncio
+import sys
 from dataclasses import replace
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -245,7 +246,9 @@ def test_garbage_frames_never_wedge_or_drop_a_link(simnet):
                      b'{"t":123}\n', b'{"t":"zzz-from-the-future"}\n',
                      b'{"t":"node","node":"not-an-object"}\n',
                      b'{"t":"hello","node":{"id":null}}\n',
-                     b"[" * (protocol.MAX_LINE_BYTES - 1) + b"\n"):
+                     b"[" * (protocol.MAX_LINE_BYTES - 1) + b"\n",
+                     b'{"t":"heartbeat","n":'
+                     + b"9" * (sys.get_int_max_str_digits() + 1) + b"}\n"):
             b.inject_to(a, junk)
         await simnet.quiet(0.2)
 

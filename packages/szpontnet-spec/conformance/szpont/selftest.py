@@ -9,9 +9,11 @@ any candidate verdict.
 
 from __future__ import annotations
 
+import sys
+
 from . import assign, codec
 from .codec import NodeInfo
-from .model import NEUTRAL_SURPLUS, SURPLUS_RANK_BUCKET, load_model
+from .model import MAX_LINE_BYTES, NEUTRAL_SURPLUS, SURPLUS_RANK_BUCKET, load_model
 from .report import Reporter
 
 
@@ -56,6 +58,9 @@ def _decode_dropset(rep: Reporter) -> None:
         "object without string t": b'{"x":1}\n',
         "invalid UTF-8": b"\xff\xfe\n",
         "over 512 KiB": b'{"t":"x","p":"' + b"a" * (512 * 1024) + b'"}\n',
+        "nested past the parser's stack": b"[" * (MAX_LINE_BYTES - 1) + b"\n",
+        "integer past the parser's digit limit":
+            b'{"t":"x","n":' + b"9" * (sys.get_int_max_str_digits() + 1) + b"}\n",
     }
     for label, raw in cases.items():
         rep.check(f"drops: {label}", codec.decode(raw) is None, "MUST", "03-transport#framing")
