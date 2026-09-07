@@ -1641,14 +1641,27 @@ do {
     AgentRegistry.forget([run])
     check(AgentRegistry.load().isEmpty && AgentRegistry.boundSession(run) == "",
           "forgetting a run takes its sidecars with it")
-    // Every edit of the book is one locked read-modify-write; a caller that loaded,
-    // edited and saved could drop a run registered between its two calls.
+    // Every edit of the book is one locked read-modify-write. The spawn below is
+    // fired from inside the transform, as test_agent_registry.py's is from inside
+    // forget's read: with the read outside the lock it lands between that read and
+    // the write, and the write covers it.
     AgentRegistry.add(AgentState.RunRecord(runID: "upd-a", dispatchedAt: now))
     AgentRegistry.add(AgentState.RunRecord(runID: "upd-b", dispatchedAt: now))
-    check(AgentRegistry.update { $0.filter { $0.runID != "upd-a" } }
-              && AgentRegistry.load().map(\.runID) == ["upd-b"],
-          "update applies its transform to the book on disk")
-    AgentRegistry.forget(["upd-b"])
+    func bookAfterUpdate() -> [String] {
+        let spawn = DispatchGroup()
+        AgentRegistry.update { book in
+            DispatchQueue.global().async(group: spawn) {
+                AgentRegistry.add(AgentState.RunRecord(runID: "upd-c", dispatchedAt: now))
+            }
+            _ = spawn.wait(timeout: .now() + 0.5)
+            return book.filter { $0.runID != "upd-a" }
+        }
+        spawn.wait()
+        return AgentRegistry.load().map(\.runID)
+    }
+    check(bookAfterUpdate() == ["upd-b", "upd-c"],
+          "a run registered during an update is in the book it leaves")
+    AgentRegistry.forget(["upd-b", "upd-c"])
     print("run book sidecar assertions passed")
 }
 
