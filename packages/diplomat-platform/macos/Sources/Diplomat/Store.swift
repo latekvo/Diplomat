@@ -1003,19 +1003,33 @@ final class Store: ObservableObject {
         }.value
     }
 
+    /// The settle under way: what the next one waits behind, and the display refresh yields to.
+    private var settleInFlight: Task<AgentPass, Never>?
+
     /// One tick, and the consequences of it: publish the rows, write back what was learned,
     /// retire what has ended, and report a probe that has gone quiet.
     ///
     /// Called from the process poll and from the display refresh — the two ticks that are
     /// meant to move the world on — and from nowhere that merely draws.
+    ///
+    /// One at a time: the tick is a suspension point the main actor is reentrant across, so
+    /// a second settle would otherwise tick a book the first has not retired from yet and
+    /// retire the same run again. It waits, then takes a tick of its own — the spawn or
+    /// forget it follows may postdate the one under way.
     @discardableResult
     func settleAgents() async -> AgentPass {
-        let pass = await agentTick()
-        Store.persistRunChanges(pass.tick.records)
-        publish(pass)
-        await retireFinished(pass.tick)
-        noteSilentProbes()
-        return pass
+        while let running = settleInFlight { _ = await running.value }
+        let settle = Task {
+            let pass = await agentTick()
+            Store.persistRunChanges(pass.tick.records)
+            publish(pass)
+            await retireFinished(pass.tick)
+            noteSilentProbes()
+            settleInFlight = nil
+            return pass
+        }
+        settleInFlight = settle
+        return await settle.value
     }
 
     /// The rows and the cap load this pass produced.
@@ -1760,7 +1774,12 @@ final class Store: ObservableObject {
     /// The panel calls it on its own tick, including the ticks where nothing is registered:
     /// an agent can be alive with no record behind it (one this applet never spawned), and
     /// that is exactly when a wrongly-drawn free bay would be most misleading.
-    func refreshAutoTaskCount() async { await settleAgents() }
+    ///
+    /// A settle already under way is left to finish; the next tick asks again.
+    func refreshAutoTaskCount() async {
+        guard settleInFlight == nil else { return }
+        await settleAgents()
+    }
 
     /// Pin the measurement, for headless self-tests only. The real one reads `ps` on
     /// whatever machine is running the test, so an assertion about free slots would

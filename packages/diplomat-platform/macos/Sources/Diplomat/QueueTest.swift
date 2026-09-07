@@ -10,7 +10,9 @@ import DiplomatCore
 /// dropped, that one unit offered twice in a cycle is one task, that the operator's
 /// arrangement survives the poll that rebuilds the list, that work GitHub stops
 /// owing falls out of it, and that a switched-off monitor's work — or, with the
-/// queue's own switch off, anyone's — is held rather than either run or dropped.
+/// queue's own switch off, anyone's — is held rather than either run or dropped. And,
+/// being the harness with a real book on a pinned machine, that two settles of that
+/// book never overlap.
 ///
 /// It reaches the at-capacity branch honestly — a real `dispatchAgent` call against
 /// a real cap — so it never spawns an agent, needs no `gh` auth and no terminal
@@ -612,6 +614,31 @@ enum QueueTest {
         store.queuedTasks = []
         store.issues = []
         store.prs = []
+
+        // 16. Settles do not overlap: the tick is a suspension point, and a settle
+        //     arriving across it would retire the same finished run again. The display
+        //     refresh yields to one under way; every other caller waits for it.
+        emptyBook()
+        let over = AgentRegistry.createRun(
+            AgentState.RunRecord(
+                runID: AgentRegistry.newRunID(now: Date().timeIntervalSince1970),
+                dispatchedAt: Date().timeIntervalSince1970 - 600, prNumber: 21,
+                prURL: "https://github.com/software-mansion/argent/pull/21",
+                kind: "review", label: "Auto · Review · #21",
+                source: AgentDispatchGate.Source.auto.rawValue, pid: 4242),
+            prompt: "")
+        let settle = Task { await store.settleAgents() }
+        await Task.yield()      // let it reach its tick before the refresh asks
+        await store.refreshAutoTaskCount()
+        check("a display refresh yields to the settle under way",
+              AgentRegistry.load().map(\.runID) == [over.runID])
+        async let second = store.settleAgents()
+        _ = await (settle.value, second)
+        let retired = AuditLog.read().filter {
+            $0.action == "retire" && $0.detail.hasPrefix("Auto · Review · #21")
+        }
+        check("a settle arriving while one is under way waits, so a finished run is retired once",
+              retired.count == 1 && AgentRegistry.load().isEmpty)
 
         // 13. The redirect above is the only thing between a run of this test and the
         //    operator's real activity log, so prove it caught the writes.
