@@ -138,6 +138,14 @@ if (fs.existsSync('/usr/bin/git')) {
     ok('…spelled //usr/bin or reached through a symlink, it is still the shim',
       probe([], { env: { HOME: home, PATH: `${none}://usr/bin` } }).git === false
       && probe([], { env: { HOME: home, PATH: `${none}:${path.join(home, 'usrbin')}` } }).git === false);
+    fs.mkdirSync(path.join(home, 'linkbin'));
+    fs.symlinkSync('/usr/bin/git', path.join(home, 'linkbin', 'git'));
+    ok('…and a symlink to the shim is the shim',
+      probe([], { env: { HOME: home, PATH: `${none}:${path.join(home, 'linkbin')}` } }).git === false);
+    fs.mkdirSync(path.join(home, 'danglebin'));
+    fs.symlinkSync(path.join(home, 'gone'), path.join(home, 'danglebin', 'git'));
+    ok('a dangling symlink on PATH is not the tool: skipped where it is found, never resolved',
+      probe([], { env: { HOME: home, PATH: path.join(home, 'danglebin') } }).git === false);
     Object.defineProperty(process, 'platform', { value: 'linux' });
     ok('on Linux /usr/bin is just a directory',
       probe([], { env: { HOME: home, PATH: `${none}:/usr/bin` } }).git === true);

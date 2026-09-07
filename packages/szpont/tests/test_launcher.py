@@ -292,6 +292,14 @@ def test_probe_finds_the_tools_on_the_path_it_is_given(tmp_path):
     assert found["swift"] is False
 
 
+def test_a_dangling_symlink_on_the_path_is_not_the_tool(tmp_path, monkeypatch):
+    """Skipped where it is found, so the shim check never has to resolve it."""
+    monkeypatch.setattr(sys, "platform", "darwin")
+    (tmp_path / "bin").mkdir()
+    (tmp_path / "bin" / "git").symlink_to(tmp_path / "gone")
+    assert launcher.probe(env={"HOME": str(tmp_path), "PATH": str(tmp_path / "bin")})["git"] is False
+
+
 def xcode_select(tmp_path: Path, prints: str | None) -> str:
     """A `xcode-select -p` that names a directory, or exits 2 as the real one does
     with no developer directory selected."""
@@ -315,6 +323,10 @@ def test_on_a_mac_a_tool_in_usr_bin_is_only_as_present_as_the_toolchain(tmp_path
     (tmp_path / "usrbin").symlink_to("/usr/bin")
     linked = dict(without, PATH=f"{xcode_select(tmp_path / 'l', None)}:{tmp_path / 'usrbin'}")
     assert launcher.probe(env=linked)["git"] is False, "reached through a symlink, still the shim"
+    (tmp_path / "linkbin").mkdir()
+    (tmp_path / "linkbin" / "git").symlink_to("/usr/bin/git")
+    aliased = dict(without, PATH=f"{xcode_select(tmp_path / 'a', None)}:{tmp_path / 'linkbin'}")
+    assert launcher.probe(env=aliased)["git"] is False, "a symlink to the shim, still the shim"
 
     (tmp_path / "developer").mkdir()
     with_tools = {"HOME": str(tmp_path),

@@ -66,8 +66,8 @@ def _tool(name: str, env: Mapping[str, str], platform: str) -> bool:
     found = _which(name, env)
     if found is None:
         return False
-    # realpath: spelled `//usr/bin`, or reached through a directory symlinked onto
-    # it, the file found is still the shim.
+    # realpath: spelled `//usr/bin`, a symlink to it, or a directory symlinked onto
+    # it - what runs is still the shim.
     if platform == "darwin" and os.path.realpath(found) == f"/usr/bin/{name}":
         return _toolchain_present(env)
     return True
@@ -360,7 +360,7 @@ def run(steps: Sequence[Mapping], *, checkout: str, venv: str) -> int:
             try:
                 Path(venv, ".szpont-requirements").write_text(digest or "", encoding="utf-8")
             except OSError:
-                pass  # a re-install next time is the whole cost of not recording it
+                pass  # re-installed next time; linux/diplomat passes the venv over until then
     return 0
 
 

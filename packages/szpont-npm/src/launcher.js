@@ -47,7 +47,7 @@ function which(name, env) {
 function tool(name, env, platform) {
   const found = which(name, env);
   if (!found) return false;
-  // realpath: reached through a directory symlinked onto /usr/bin, the file found
+  // realpath: a symlink to it, or a directory symlinked onto /usr/bin - what runs
   // is still the shim.
   if (platform === 'darwin' && fs.realpathSync(found) === `/usr/bin/${name}`) return toolchainPresent(env);
   return true;
@@ -318,7 +318,7 @@ export function run(steps, { checkout, venv }) {
       try {
         fs.writeFileSync(path.join(venv, '.szpont-requirements'), digest || '');
       } catch {
-        // a re-install next time is the whole cost of not recording it
+        // re-installed next time; linux/diplomat passes the venv over until then
       }
     }
   }
