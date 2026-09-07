@@ -807,6 +807,9 @@ def test_a_bar_is_captioned_with_the_width_it_was_built_from():
         ["4h", "12h", "24h", "48h"]
     # A bucket that is not a whole number of hours must not read as "0h".
     assert telemetry.bucket_label(0.5) == telemetry.duration(1800)
+    # Past Int's range the Swift twin clamps rather than traps; this side prints the
+    # same figure.
+    assert telemetry.bucket_label(1e19) == f"{2**63 - 1}h"
 
 
 def test_an_absurd_duration_is_int_max_worth_of_seconds():
@@ -891,10 +894,11 @@ def test_the_headline_counts_exactly_the_bars_under_it():
 _WINDOWS_NOW = 1_785_000_000.0
 
 
-def _both_windows(*, week_moves: bool = True,
-                  session_moves: bool = True) -> telemetry.Ledger:
-    """A ledger that prices each window from its own readings, plus three finished
-    local tasks to lay against them.
+def _both_windows(*, week_moves: bool = True, session_moves: bool = True,
+                  tokens: tuple[float, ...] = (80_000.0, 100_000.0, 120_000.0),
+                  ) -> telemetry.Ledger:
+    """A ledger that prices each window from its own readings, plus a finished local
+    task per entry of ``tokens`` to lay against them.
 
     200k tokens buy 10% of the 5-hour window and 2% of the week, so the two come out
     worth 2M and 10M tokens and a 100k task is exactly 5% of one and 1% of the other
@@ -914,7 +918,7 @@ def _both_windows(*, week_moves: bool = True,
                     "weekLeft": 0.98 if week_moves else 1.0,
                     "repoTokens": 200_000.0, "otherTokens": 0.0}),
     ]
-    for i, tok in enumerate((80_000.0, 100_000.0, 120_000.0)):
+    for i, tok in enumerate(tokens):
         key = f"review:h/o/r#{i}@sha{i}"
         lines += [
             json.dumps({"at": _WINDOWS_NOW - 3600, "ev": "started", "key": key,
@@ -988,6 +992,18 @@ def test_a_span_widens_a_histogram_past_its_own_largest_value():
     assert d.bins[-1].upper == 8.0
     assert [b.count for b in d.bins] == [1, 1, 0, 0]
     assert d.max == 2.0, "the span was reported as an observation"
+
+
+def test_a_count_whose_share_overflows_is_a_cost_but_not_a_share():
+    """``100 * tokens / limit`` overflows a double for a corrupt line, and ``inf``
+    as an observation bins as NaN - a raise here, a trap in the Swift twin - on
+    every repaint. The count is still what the task cost; as a share of a window it
+    is nothing, and it must not widen the axis either."""
+    s = _windows_summary(tokens=(80_000.0, 100_000.0, 120_000.0, 1e308))
+    assert s.per_task.count == s.per_task_week.count == 3
+    assert s.per_task.mean == pytest.approx(5.0)
+    assert s.per_task.bins[-1].upper == pytest.approx(6.0)
+    assert s.per_task_tokens_mean > 1e300, "the count itself was dropped as a cost"
 
 
 # MARK: - The quota probe

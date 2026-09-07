@@ -1856,6 +1856,7 @@ check(oddSummary.finished.last?.at == tNow - 5 * 3600
       "the bars were laid forwards from the start of the range")
 check(Telemetry.bucketLabel(4) == "4h" && Telemetry.bucketLabel(48) == "48h")
 check(Telemetry.bucketLabel(0.5) == "30m 00s", "a fractional bucket read as 0h")
+check(Telemetry.bucketLabel(1e19) == "\(Int.max)h", "a width past Int's range must clamp, not trap")
 // The bar width per lookback, which is the shared model's to decide — the two screens
 // draw the same bars only because they ask this rather than each picking a width.
 let tModel = try? CoreAssets.telemetry()
@@ -1869,6 +1870,19 @@ let poisoned = Telemetry.fold(lines: [
     #"{"at": 1784920000, "ev": "queued", "key": "review:h/o/r#9@zz", "duty": "review", "pr": 1e300}"#])
 check(poisoned.tasks.first?.pr == Int.max, "an out-of-range pr must clamp, not trap")
 check(Telemetry.duration(1e300).hasSuffix("m"), "an absurd duration must format, not trap")
+// A count whose share of the window overflows a Double. As `inf` it would bin as NaN,
+// which `Int(Double)` traps on - the same repaint-time trap. The share is dropped;
+// the count is still what the task cost.
+let overflowed = Telemetry.fold(lines: tLines + [
+    #"{"at": 1784930000, "ev": "started", "key": "review:h/o/r#5@ee", "remote": false, "attempt": 1}"#,
+    #"{"at": 1784931000, "ev": "done", "key": "review:h/o/r#5@ee", "tokens": 1e308}"#,
+])
+let overflowedSummary = Telemetry.summarize(overflowed, now: tNow, days: 14, steps: 56,
+                                            binCount: 12, z: 1.96, bucketHours: 12)
+check(overflowedSummary.perTask.count == 1 && overflowedSummary.perTaskWeek.count == 1,
+      "an overflowed share must be dropped, not binned")
+check(overflowedSummary.perTask.mean == 5, "the overflowed share moved the mean")
+check(overflowedSummary.perTaskTokensMean > 1e300, "the count itself was dropped as a cost")
 // A ledger with no quota readings can count tokens but cannot honestly turn them
 // into a share of a window — the screen shows tokens and says so.
 let unpriced = Telemetry.fold(lines: tLines.filter { !$0.contains("\"sample\"") })

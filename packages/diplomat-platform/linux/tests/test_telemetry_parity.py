@@ -263,6 +263,18 @@ def _ledger_lines() -> list[str]:
             {"at": base + 60 * i + 400 + 37 * i, "ev": "done", "key": key,
              "tokens": 60_000.0 + 23_000.0 * (i % 7)},
         ]
+    # A count whose share of the window overflows a double. Local and on the
+    # Anthropic runner, so it reaches the share arithmetic on both sides, where `inf`
+    # would bin as NaN - a trap in Swift, a raise here. Both keep it as what the task
+    # cost and leave it out of every share.
+    events += [
+        {"at": NOW - 3 * DAY, "ev": "queued", "key": "review:h/o/r#95@ww",
+         "duty": "review", "pr": 95},
+        {"at": NOW - 3 * DAY + 100, "ev": "started", "key": "review:h/o/r#95@ww",
+         "remote": False, "attempt": 1},
+        {"at": NOW - 3 * DAY + 1500, "ev": "done", "key": "review:h/o/r#95@ww",
+         "tokens": 1e308, "runner": "claude"},
+    ]
 
     lines = [json.dumps(e, sort_keys=True) for e in events]
     # Junk both sides must skip identically: not JSON, JSON that isn't an object,
@@ -417,7 +429,9 @@ def test_a_foreign_runners_task_is_priced_but_never_charged_to_the_window(both):
                     if t["tokens"] and not t["remote"] and t["startedAt"] is not None
                     and t["startedAt"] >= NOW - DAYS * DAY]
     foreign = [t for t in local_priced if t["runner"] in ("opencode", "hermes")]
-    counted = [t for t in local_priced if t not in foreign]
+    # #95's share overflowed: priced like any other, out of the distribution.
+    counted = [t for t in local_priced
+               if t not in foreign and t["key"] != "review:h/o/r#95@ww"]
     assert sorted(t["tokens"] for t in foreign
                   if t["runner"] == "opencode") == [8_000_000, 9_000_000]
     assert p["perTask"]["count"] == len(counted), (
@@ -473,3 +487,19 @@ def test_the_junk_lines_produced_no_tasks(both):
     assert "review:h/o/r#99@zz" not in keys, "an unknown event verb created a task"
     assert "review:h/o/r#98@yy" not in keys, "an event with no `at` created a task"
     assert "" not in keys
+
+
+def test_a_mean_past_ints_range_rounds_the_same_on_both_sides():
+    """This side rounds every float in the payload through an integer, and past
+    Int's range that integer must not clamp the way the formatters do: Swift rounds
+    the double in place, so a clamp here prints 9.2e12 against its 1e13. One task
+    of 1e13 tokens is a mean in that range."""
+    key = "review:h/o/r#1@aa"
+    lines = [
+        json.dumps({"at": NOW - DAY, "ev": "started", "key": key, "remote": False,
+                    "attempt": 1}),
+        json.dumps({"at": NOW - DAY + 600, "ev": "done", "key": key, "tokens": 1e13}),
+    ]
+    swift, python = _swift(lines), _python(lines)
+    assert swift["perTaskTokensMean"] == 1e13
+    assert python == swift

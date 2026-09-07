@@ -632,10 +632,12 @@ def _shares(task_tokens: list[float], limit: float | None) -> list[float]:
     """Each task as a percentage of one rate-limit window, or nothing at all while
     that window has no price. Empty rather than zeroed: a share of a window nobody
     has measured is a made-up number, and the screen says so instead of drawing it.
+    A count whose share overflows a double is left out too: as ``inf`` it would bin
+    as NaN, which ``math.floor`` raises on and the Swift twin traps on.
     """
     if limit is None or limit <= 0:
         return []
-    return [100 * tok / limit for tok in task_tokens]
+    return [s for s in (100 * tok / limit for tok in task_tokens) if math.isfinite(s)]
 
 
 # MARK: - Distribution (the bell curve)
@@ -1050,7 +1052,7 @@ def _round_half_away(value: float) -> int:
     """Swift's ``Double.rounded()`` — halves go away from zero. Python's built-in
     ``round`` is banker's rounding (``round(0.5) == 0``), so using it here would
     put the two platforms one second apart on every exact half and fail parity."""
-    return _clamped_int(math.floor(value + 0.5) if value >= 0 else math.ceil(value - 0.5))
+    return math.floor(value + 0.5) if value >= 0 else math.ceil(value - 0.5)
 
 
 def _clamped_int(value: float) -> int:
@@ -1070,7 +1072,7 @@ def duration(secs: float, *, samples: int = 1) -> str:
     about whether 90 minutes reads ``1h 30m`` or ``90m``."""
     if samples <= 0 or not math.isfinite(secs) or secs <= 0:
         return "—"
-    total = _round_half_away(secs)
+    total = _clamped_int(_round_half_away(secs))
     if total < 60:
         return f"{total}s"
     if total < 3600:
@@ -1083,7 +1085,7 @@ def bucket_label(hours: float) -> str:
     caption it. A bucket that is not a whole number of hours falls through to the
     shared duration spelling (``30m 00s``) rather than truncating to ``0h``."""
     if math.isfinite(hours) and hours > 0 and hours == int(hours):
-        return f"{int(hours)}h"
+        return f"{_clamped_int(hours)}h"
     return duration(hours * 3600)
 
 
@@ -1128,7 +1130,11 @@ def _r(value: float) -> float:
     if not math.isfinite(value):
         return 0.0
     scale = 10.0 ** 6
-    return _round_half_away(value * scale) / scale
+    scaled = value * scale
+    # A double too large to scale is integral already; there is nothing to round.
+    if not math.isfinite(scaled):
+        return value
+    return _round_half_away(scaled) / scale
 
 
 def _opt(value: float | None):

@@ -118,7 +118,10 @@ enum TelemetryCommand {
     private static func r(_ v: Double) -> Double {
         guard v.isFinite else { return 0 }
         let scale = pow(10.0, places)
-        return (v * scale).rounded() / scale
+        let scaled = v * scale
+        // A double too large to scale is integral already; there is nothing to round.
+        guard scaled.isFinite else { return v }
+        return scaled.rounded() / scale
     }
 
     /// JSON has no optional; `null` is what both sides compare against.
