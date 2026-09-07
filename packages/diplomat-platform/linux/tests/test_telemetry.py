@@ -129,6 +129,16 @@ def test_a_partial_tail_line_costs_only_itself(ledger):
     assert [t.key for t in telemetry.load().tasks] == ["review:h/o/r#1@aa"]
 
 
+def test_a_number_too_wide_for_a_float_costs_its_field_not_the_fold():
+    """``float(10**400)`` is an ``OverflowError``, not a ``ValueError``, and the
+    screen folds the ledger on every repaint - so a raise here is every repaint."""
+    wide = "1" + "0" * 400
+    got = telemetry.fold([
+        f'{{"at": 1, "ev": "queued", "key": "review:h/o/r#9@zz", "pr": {wide}}}',
+        f'{{"at": {wide}, "ev": "queued", "key": "review:h/o/r#8@yy"}}'])
+    assert [(t.key, t.pr) for t in got.tasks] == [("review:h/o/r#9@zz", 0)]
+
+
 # MARK: - What a poll records
 
 
@@ -797,6 +807,12 @@ def test_a_bar_is_captioned_with_the_width_it_was_built_from():
         ["4h", "12h", "24h", "48h"]
     # A bucket that is not a whole number of hours must not read as "0h".
     assert telemetry.bucket_label(0.5) == telemetry.duration(1800)
+
+
+def test_an_absurd_duration_is_int_max_worth_of_seconds():
+    """``1e300`` seconds is a corrupt line, and ``Int(Double)`` traps on it in the
+    Swift twin, so both clamp to Int.max and format that - one string on both."""
+    assert telemetry.duration(1e300) == "2562047788015215h 30m"
 
 
 def test_an_exit_on_a_bucket_edge_opens_the_later_bucket():
