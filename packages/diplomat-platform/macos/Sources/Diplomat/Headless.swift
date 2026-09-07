@@ -39,6 +39,13 @@ enum Headless {
             || env["DIPLOMAT_RELAUNCH_TEST"] != nil
     }
 
+    /// `env` without every entry that puts an instance in one of those modes - what a
+    /// relaunch hands the GUI it starts. `isActive` is a disjunction over single
+    /// entries, so it is false for the result.
+    static func stripped(_ env: [String: String]) -> [String: String] {
+        env.filter { !isActive(in: [$0.key: $0.value]) }
+    }
+
     /// Specifically the DIPLOMAT_RENDER snapshot mode. Renders seed a real
     /// Store with preview values, and they share the live app's defaults domain —
     /// so NOTHING may be persisted in this mode, or a render would silently

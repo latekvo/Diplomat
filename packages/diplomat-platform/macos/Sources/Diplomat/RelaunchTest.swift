@@ -8,7 +8,10 @@ import AppKit
 /// never came up. The verdict is the launched instance instead, so two bundles are laid
 /// out in a scratch directory - one whose executable exits, one that stays up - and the
 /// relaunch is asked about each. Bundles are matched by path, so the live app is
-/// neither counted nor touched.
+/// neither counted nor touched. The staying one writes down the environment it got:
+/// `open` passes its own on, so it must carry no headless marker - the
+/// `DIPLOMAT_SELF_UPDATE=1` the 06:00 job runs under, set on this process for the
+/// relaunch's duration, and this test's own - while everything else reaches it.
 ///
 /// The 06:00 job outlives that verdict only if the instance it launched spares it, so
 /// the singleton's victims are checked too: they must leave out a headless instance (an
@@ -68,13 +71,33 @@ enum RelaunchTest {
               refused?.contains("the running app is still the old build") == true,
               "got \(refused ?? "nil")")
 
+        let dump = scratch.appendingPathComponent("stays.env").path
         let stays = bundle("Stays", executable: SingleInstance.execName,
-                           script: "#!/bin/sh\nexec sleep 60\n")
+                           script: "#!/bin/sh\nenv > '\(dump).tmp' && mv '\(dump).tmp' '\(dump)'\nexec sleep 60\n")
         defer { for app in SelfUpdate.instances(of: stays) { kill(app.processIdentifier, SIGKILL) } }
+        setenv("DIPLOMAT_SELF_UPDATE", "1", 1)
+        setenv("RELAUNCH_TEST_CANARY", "\(getpid())", 1)
         let accepted = relaunch(stays)
+        unsetenv("DIPLOMAT_SELF_UPDATE")
+        unsetenv("RELAUNCH_TEST_CANARY")
         check("a bundle that stays up is a relaunch", accepted == nil, accepted ?? "")
         let staying = SelfUpdate.instances(of: stays).map(\.processIdentifier)
         check("one instance of it is up", staying.count == 1, "pids \(staying)")
+
+        print("relaunch: the environment the instance gets")
+        let dumpBy = Date().addingTimeInterval(5)
+        while Date() < dumpBy, !fm.fileExists(atPath: dump) { usleep(50_000) }
+        var handed: [String: String] = [:]
+        for line in ((try? String(contentsOfFile: dump, encoding: .utf8)) ?? "").split(separator: "\n") {
+            guard let eq = line.firstIndex(of: "=") else { continue }
+            handed[String(line[..<eq])] = String(line[line.index(after: eq)...])
+        }
+        check("the rest of this process's environment reaches it",
+              handed["RELAUNCH_TEST_CANARY"] == "\(getpid())", "got \(handed["RELAUNCH_TEST_CANARY"] ?? "nil")")
+        check("no headless marker does: not the updater's, not this test's",
+              !handed.isEmpty && !Headless.isActive(in: handed)
+                  && handed["DIPLOMAT_SELF_UPDATE"] == nil && handed["DIPLOMAT_RELAUNCH_TEST"] == nil,
+              "got \(handed.filter { $0.key.hasPrefix("DIPLOMAT_") })")
 
         print("singleton: whom a fresh instance would terminate")
         let child = Process()

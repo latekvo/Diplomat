@@ -177,6 +177,11 @@ enum SelfUpdate {
     /// still around afterwards reports "restarting…" and waits to be replaced. Mirrors
     /// `selfupdate.relaunch` and `relaunch_failure`.
     ///
+    /// `open` passes its environment to the instance, so it gets this one with every
+    /// headless marker removed: relaunched by the 06:00 updater with its
+    /// `DIPLOMAT_SELF_UPDATE=1` intact, the instance would be a second updater that
+    /// finds the checkout current and exits, not the GUI.
+    ///
     /// The default `app` is beside the macOS package, where `build-app.sh` writes it.
     static func relaunch(_ app: URL = RepoPaths.macosPackage.appendingPathComponent("Diplomat.app"),
                          window: TimeInterval = 3) throws {
@@ -188,6 +193,7 @@ enum SelfUpdate {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
         p.arguments = ["-n", app.path]
+        p.environment = Headless.stripped(ProcessInfo.processInfo.environment)
         do { try p.run() } catch {
             throw UpdateError(message: "could not relaunch the app: \(error.localizedDescription)")
         }

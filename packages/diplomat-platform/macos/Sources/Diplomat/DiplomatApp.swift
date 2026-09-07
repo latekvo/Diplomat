@@ -172,8 +172,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if env["DIPLOMAT_REPOPATHS_TEST"] == "1" {
             exit(RepoPathsTest.run() ? 0 : 1)
         }
-        // Relaunch self-test: proves the relaunch that ends a self-update is judged on
-        // the instance `open` started, and that the singleton spares a headless one.
+        // Relaunch self-test: proves the relaunch that ends a self-update starts a GUI,
+        // is judged on the instance `open` started, and that the singleton spares a
+        // headless one.
         // Opens throwaway bundles it lays out itself and an idle copy of this binary
         // under DIPLOMAT_RELAUNCH_TEST=hold, which exits on its own should the test die
         // before ending it. Exit code = pass/fail.
