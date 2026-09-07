@@ -109,7 +109,13 @@ jobs:
         run: |
           names() { grep -oE '(env|environment)\[ *"DIPLOMAT_[A-Z0-9_]+" *\]' | grep -oE 'DIPLOMAT_[A-Z0-9_]+' | sort -u || true; }
           dispatched="$(names < DiplomatApp.swift)"
-          headless="$(sed -n '/static let active/,/}()/p' Headless.swift | names)"
+          block="$(sed -n '/static func isActive(in/,/^    }/p' Headless.swift)"
+          # The slice ends at isActive's own brace. Reshaped so that brace no longer
+          # matches, sed runs on to the next one and takes in the declarations
+          # between, so a name nothing dispatches reads as one Headless knows about.
+          ! tail -n +2 <<<"$block" | grep -q 'static ' \
+            || { echo "::error::the isActive block ran past its own function"; exit 1; }
+          headless="$(names <<<"$block")"
           for name in DIPLOMAT_RENDER DIPLOMAT_QUEUE_TEST; do   # a valued mode and a flag
             grep -qx "$name" <<<"$dispatched" && grep -qx "$name" <<<"$headless" \
               || { echo "::error::the grep no longer sees $name in both lists"; exit 1; }

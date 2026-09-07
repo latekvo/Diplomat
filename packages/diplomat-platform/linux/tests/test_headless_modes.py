@@ -46,13 +46,19 @@ def _dispatched() -> set[str]:
     return set(_ENV_READ.findall(_source("DiplomatApp.swift")))
 
 
-def _headless() -> set[str]:
-    """The modes `Headless.active` answers yes for. Scoped to that one property:
-    `isRender` reads the environment again for its own reasons, and counting it would
-    make the comparison pass on a name only IT still spells."""
+def _headless_block() -> str:
+    """`Headless.isActive`'s body — the disjunction `active` is computed from, and the
+    scope of the list below. `isRender` reads the environment again for its own
+    reasons, and counting it would make the comparison pass on a name only IT
+    still spells."""
     text = _source("Headless.swift")
-    start = text.index("static let active")
-    return set(_ENV_READ.findall(text[start:text.index("}()", start)]))
+    start = text.index("static func isActive(in")
+    return text[start:text.index("\n    }", start)]
+
+
+def _headless() -> set[str]:
+    """The modes `Headless.isActive` answers yes for."""
+    return set(_ENV_READ.findall(_headless_block()))
 
 
 def test_the_grep_finds_both_lists():
@@ -66,6 +72,14 @@ def test_the_grep_finds_both_lists():
     # either spelling is a failure here rather than a quieter comparison later.
     assert {"DIPLOMAT_RENDER", "DIPLOMAT_QUEUE_TEST"} <= dispatched
     assert {"DIPLOMAT_RENDER", "DIPLOMAT_QUEUE_TEST"} <= headless
+
+
+def test_the_headless_list_is_scoped_to_the_disjunction():
+    """The slice ends at `isActive`'s own brace. Reshaped so that brace no longer
+    matches, it runs on to the next one and takes in the declarations between — and a
+    name nothing dispatches reads as one Headless knows about."""
+    rest = _headless_block().split("\n", 1)[1]
+    assert "static " not in rest, rest
 
 
 def test_every_dispatched_mode_is_headless():
