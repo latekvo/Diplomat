@@ -224,20 +224,19 @@ def relaunch(extra_env: dict[str, str] | None = None) -> subprocess.Popen:
 
 
 def relaunch_failure(child: subprocess.Popen, window: float = 3.0) -> int | None:
-    """The exit code of a relaunched launcher that died inside ``window``, else None.
+    """The exit code of a relaunched launcher that ended inside ``window``, else None.
 
-    A launcher that cannot start the applet (a venv without PySide6, a checkout
-    that no longer imports) exits within a second; watched for that long, its
-    failure is reported instead of "restarting…" outliving the button and
-    "relaunched" being logged over a tray that was never swapped. One still
-    running is the applet coming up, and one that exited 0 is left as a success:
-    the launcher may hand off rather than stay.
+    The launcher execs the applet, so the child's exit is the applet's: any exit
+    inside the window, 0 included, is an applet that ended without taking over
+    the tray (a venv without PySide6, a checkout that no longer imports), and it
+    is reported instead of "restarting…" outliving the button and "relaunched"
+    being logged over the old build. One still running is the applet coming up.
     """
     deadline = time.monotonic() + window
     while time.monotonic() < deadline:
         code = child.poll()
         if code is not None:
-            return code or None
+            return code
         time.sleep(0.05)
     return None
 

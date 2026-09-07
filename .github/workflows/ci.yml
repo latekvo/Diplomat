@@ -88,7 +88,9 @@ jobs:
       # nothing. QUEUE_TEST is the one
       # that touches state at all: reaching the cap's refusal branch means a `ps` scan, a
       # ban-list read and an `at-capacity` audit line, so it points DIPLOMAT_AUDIT_DIR at
-      # a scratch dir of its own. It returns before any spawn or fetch.
+      # a scratch dir of its own. It returns before any spawn or fetch. RELAUNCH_TEST
+      # opens throwaway bundles it lays out itself plus an idle copy of the binary, and
+      # ends every one of them; it terminates nothing else.
       #
       # DIPLOMAT_TRACK_TEST and DIPLOMAT_SPAWN_FOCUS_TEST are the two that stay out,
       # and not by oversight: both drive real throwaway terminal windows and need a
@@ -125,6 +127,7 @@ jobs:
             DIPLOMAT_MESH_CMD_TEST=1 swift run Diplomat
           DIPLOMAT_ALLOCATOR_TEST=1 swift run Diplomat
           DIPLOMAT_REPOPATHS_TEST=1 swift run Diplomat
+          DIPLOMAT_RELAUNCH_TEST=1 swift run Diplomat
           DIPLOMAT_QUEUE_TEST=1 swift run Diplomat
           DIPLOMAT_SWEEP_TEST=1 swift run Diplomat
           DIPLOMAT_QUOTA_TEST=1 swift run Diplomat

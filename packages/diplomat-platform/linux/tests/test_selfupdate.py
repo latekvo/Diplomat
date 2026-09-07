@@ -12,6 +12,7 @@ build ran, and the relaunch fired.
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -54,8 +55,10 @@ def _make_origin(tmp_path: Path) -> Path:
     (linux_pkg / "install" / "build-core.sh").write_text(
         "#!/usr/bin/env bash\ntouch \"$MARKER_DIR/built\"\n"
     )
+    # Stays up, as a launcher that exits inside the relaunch's watch window is a
+    # failed relaunch; the pid it records is what the fixture ends.
     (linux_pkg / "diplomat").write_text(
-        "#!/usr/bin/env bash\ntouch \"$MARKER_DIR/relaunched\"\n"
+        "#!/usr/bin/env bash\necho $$ > \"$MARKER_DIR/relaunched\"\nexec sleep 10\n"
     )
     (origin / "VERSION").write_text("1\n")
     _git(origin, "init", "-q", "-b", "main")
@@ -85,7 +88,11 @@ def repos(tmp_path, monkeypatch):
     # Keep the E2E hermetic: SettingsView also fires the allocator check on
     # open; point it at nothing so no real Node installer runs.
     monkeypatch.setenv("DIPLOMAT_DEVICE_ALLOCATOR_DIR", str(tmp_path / "no-allocator"))
-    return origin, clone, marker
+    yield origin, clone, marker
+    try:
+        os.kill(int((marker / "relaunched").read_text()), signal.SIGKILL)
+    except (OSError, ValueError):
+        pass
 
 
 def test_check_reports_up_to_date_then_behind(repos):
@@ -226,6 +233,38 @@ def test_run_scheduled_reports_a_relaunched_applet_that_dies(repos, monkeypatch)
 
     assert selfupdate.run_scheduled() == 1
     assert (marker / "built").exists()  # the update itself landed
+
+
+def test_run_scheduled_reports_a_relaunched_applet_that_exits_cleanly(repos, monkeypatch, tmp_path):
+    """The launcher execs the applet, so its exit is the applet's: one that exited 0
+    inside the window ended without taking over the tray, exactly as one that
+    crashed did. A clean exit is a failed swap, not a hand-off."""
+    origin, clone, marker = repos
+    launcher = origin / "packages" / "diplomat-platform" / "linux" / "diplomat"
+    launcher.write_text("#!/usr/bin/env bash\nexit 0\n")
+    _advance_origin(origin)
+    from diplomat_app import singleton
+    from diplomat_app.singleton import _pidfile
+
+    monkeypatch.setattr(singleton, "_is_applet_gui", lambda pid: pid == os.getpid())
+    _pidfile().write_text(str(os.getpid()))
+
+    assert selfupdate.run_scheduled() == 1
+    log = (tmp_path / "state" / "diplomat" / "autoupdate.log").read_text()
+    assert "the relaunched applet exited 0" in log
+
+
+def test_relaunch_failure_is_any_exit_inside_the_window():
+    """Every exit code inside the window is reported, 0 included; only a child still
+    running at the end of it is the applet coming up."""
+    ended = subprocess.Popen(["true"])
+    assert selfupdate.relaunch_failure(ended) == 0
+    running = subprocess.Popen(["sleep", "30"])
+    try:
+        assert selfupdate.relaunch_failure(running, window=0.3) is None
+    finally:
+        running.kill()
+        running.wait()
 
 
 def test_run_scheduled_survives_a_subprocess_timeout(repos, monkeypatch):
