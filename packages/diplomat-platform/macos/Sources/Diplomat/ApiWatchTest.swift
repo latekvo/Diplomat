@@ -194,26 +194,39 @@ enum ApiWatchTest {
             if let previousTmux { setenv("DIPLOMAT_TMUX", previousTmux, 1) }
             else { unsetenv("DIPLOMAT_TMUX") }
         }
+        // One pane on session 1 and one client on it. `row` expands `-F` as tmux would,
+        // so a reader naming its fields in the wrong order reads them wrong here too.
         func fakeTmux(_ body: String) -> String {
             let path = fake.appendingPathComponent("tmux-\(UUID().uuidString)").path
-            try? ("#!/bin/sh\ncase \"$1\" in\n\(body)\nesac\n")
-                .write(toFile: path, atomically: true, encoding: .utf8)
+            let script = """
+                #!/bin/sh
+                cmd="$1"; fmt=
+                while [ $# -gt 0 ]; do [ "$1" = -F ] && fmt="$2"; shift; done
+                row() { printf '%s\\n' "$fmt" | /usr/bin/sed -e 's/#{pane_tty}/ttys037/g' \
+                    -e 's/#{pane_id}/%80/g' -e 's/#{session_name}/1/g' \
+                    -e 's/#{client_tty}/ttys036/g' -e 's/#{client_session}/1/g'; }
+                case "$cmd" in
+                \(body)
+                esac
+
+                """
+            try? script.write(toFile: path, atomically: true, encoding: .utf8)
             try? FileManager.default.setAttributes([.posixPermissions: 0o755],
                                                   ofItemAtPath: path)
             setenv("DIPLOMAT_TMUX", path, 1)
             return path
         }
-        _ = fakeTmux("has-session) exit 0 ;;\nlist-panes) printf 'ttys037 %%80 1\\n' ;;"
-                     + "\nlist-clients) exit 1 ;;")
+        _ = fakeTmux("has-session) exit 0 ;;\nlist-panes) row ;;\nlist-clients) exit 1 ;;")
         check("a live server that will not list its clients reads as unwalkable",
               TerminalFocus.walkTables() == nil)
         _ = fakeTmux("has-session) exit 1 ;;\n*) exit 1 ;;")
         check("…and a machine whose server has shut down reads as nothing to hop across",
               TerminalFocus.walkTables()?.panes.isEmpty == true)
-        _ = fakeTmux("has-session) exit 0 ;;\nlist-panes) printf 'ttys037 %%80 1\\n' ;;"
-                     + "\nlist-clients) printf 'ttys036 1\\n' ;;")
-        check("…and a server that answers both is read whole",
-              TerminalFocus.walkTables()?.clients == ["1": "ttys036"])
+        _ = fakeTmux("has-session) exit 0 ;;\nlist-panes) row ;;\nlist-clients) row ;;")
+        let tables = TerminalFocus.walkTables()
+        check("…and a server that answers both is read whole, each field from where it was asked for",
+              tables?.panes == ["ttys037": TerminalFocus.Pane(id: "%80", session: "1")]
+                && tables?.clients == ["1": "ttys036"])
         setenv("DIPLOMAT_TMUX", "/nonexistent-tmux", 1)
         check("a machine with no tmux at all is nothing to hop across, not a failure",
               TerminalFocus.walkTables()?.panes.isEmpty == true)

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import uuid
@@ -252,13 +253,22 @@ def test_human_interval():
 # MARK: - tmuxwatch parsing (dump_panes over a stubbed tmux)
 
 
+def _listing(argv, rows):
+    """What tmux prints for a ``-F`` listing: each row's fields in the order the
+    format names them, so a reader naming them in the wrong order fails here too."""
+    fmt = argv[argv.index("-F") + 1]
+    return "".join(re.sub(r"#\{(\w+)\}", lambda m: row[m.group(1)], fmt) + "\n"
+                   for row in rows)
+
+
 def test_dump_panes_parses_and_captures(monkeypatch):
     calls: list[list[str]] = []
 
     def fake_run(argv):
         calls.append(argv)
         if argv[:2] == ["tmux", "list-panes"]:
-            return "%0 /dev/pts/1\n%3 /dev/pts/7\n"
+            return _listing(argv, [{"pane_id": "%0", "pane_tty": "/dev/pts/1"},
+                                   {"pane_id": "%3", "pane_tty": "/dev/pts/7"}])
         if argv[:2] == ["tmux", "capture-pane"]:
             pane = argv[argv.index("-t") + 1]
             return f"line one\nAPI Error: 529 on {pane}\n\n"
@@ -283,7 +293,8 @@ def test_pane_tails_for_ttys_captures_only_the_ttys_asked_for(monkeypatch):
 
     def fake_run(argv):
         if argv[:2] == ["tmux", "list-panes"]:
-            return "\n".join(f"%{n} /dev/pts/{n}" for n in (1, 2, 3))
+            return _listing(argv, [{"pane_id": f"%{n}", "pane_tty": f"/dev/pts/{n}"}
+                                   for n in (1, 2, 3)])
         if argv[:2] == ["tmux", "capture-pane"]:
             pane = argv[argv.index("-t") + 1]
             captured.append(pane)
@@ -647,7 +658,8 @@ def test_the_tty_route_kills_the_panes_window_and_no_session(monkeypatch):
     def fake_run(argv):
         calls.append(argv)
         if argv[:2] == ["tmux", "list-panes"]:
-            return "".join(f"{tty} {w}\n" for tty, w in panes.items())
+            return _listing(argv, [{"pane_tty": tty, "window_id": w}
+                                   for tty, w in panes.items()])
         if argv[:2] == ["tmux", "kill-window"]:
             for tty, w in list(panes.items()):
                 if w == argv[-1]:
