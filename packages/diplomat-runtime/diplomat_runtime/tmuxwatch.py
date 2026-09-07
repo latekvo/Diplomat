@@ -209,10 +209,9 @@ def kill_window_for_tty(tty: str) -> bool:
     that one window (:func:`review.terminal_argv`), and tmux ends a session with its
     last window, so nothing of those is left behind; an agent the operator ran by
     hand inside their own session loses that window, every pane in it, and nothing
-    else of theirs. Panes
-    are matched on the tty rather than the pane id because the tty is what a run
-    records - the two sources spell it differently, so the comparison is normalised
-    the way :func:`pane_tails_for_ttys` normalises it.
+    else of theirs. Panes are matched on the tty rather than the pane id because the
+    tty is what a run records - the two sources spell it differently, so the
+    comparison is normalised the way :func:`pane_tails_for_ttys` normalises it.
     """
     if not tty or shutil.which("tmux") is None:
         return False
