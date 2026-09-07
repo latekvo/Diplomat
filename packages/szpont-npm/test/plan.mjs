@@ -12,7 +12,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { plan, probe } from '../src/launcher.js';
-import { SCENARIOS } from './scenarios.mjs';
+import { SCENARIOS, machines, onPlatform } from './scenarios.mjs';
 
 let passed = 0;
 const ok = (name, cond) => { assert.ok(cond, name); console.log('  PASS', name); passed++; };
@@ -86,73 +86,73 @@ ok('an unsupported platform plans nothing at all',
   plan(SCENARIOS['unsupported-platform']).steps.length === 0
   && plan(SCENARIOS['unsupported-platform']).blocked.reason.includes('win32'));
 
-console.log('probe: what this machine says about itself');
-const found = probe([], { env: { HOME: '/tmp/nowhere-szpont', PATH: '' } });
-ok('the checkout defaults into the state directory Diplomat already owns',
-  found.checkout === '/tmp/nowhere-szpont/.diplomat/checkout' && found.managed === true);
-ok('a directory that is not there is not a checkout', found.checkout_state === 'absent');
-ok('the applet\'s own checkout variable is what points elsewhere',
-  probe([], { env: { HOME: '/tmp/nowhere-szpont', PATH: '', DIPLOMAT_SELF_REPO: '/srv/d' } }).checkout === '/srv/d'
-  && probe([], { env: { HOME: '/tmp/nowhere-szpont', PATH: '', DIPLOMAT_SELF_REPO: '/srv/d' } }).managed === false);
-ok('an empty checkout variable is the unset one, as the applet reads it',
-  probe([], { env: { HOME: '/tmp/nowhere-szpont', PATH: '', DIPLOMAT_SELF_REPO: '' } }).managed === true
-  && probe([], { env: { HOME: '/tmp/nowhere-szpont', PATH: '', DIPLOMAT_SELF_REPO: '' } }).checkout
-    === '/tmp/nowhere-szpont/.diplomat/checkout');
-ok('a fork is taken from the environment',
-  probe([], { env: { HOME: '/tmp/x', PATH: '', DIPLOMAT_REPO_URL: '/srv/d.git' } }).repo_url === '/srv/d.git');
-ok('tools are looked for on the PATH it is given',
-  probe([], { env: { HOME: '/tmp/x', PATH: '/usr/bin:/bin' } }).git === true
-  && probe([], { env: { HOME: '/tmp/x', PATH: '/nonexistent' } }).git === false);
+console.log('probe: what each machine says about itself');
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'szpont-plan-'));
+const m = machines(root);
+const startedIn = process.cwd();
+process.chdir(root);
+try {
+  const read = (name) => probe([], { env: m[name] });
+  const home = m.bare.HOME;
+  ok('the checkout defaults into the state directory Diplomat already owns',
+    read('bare').checkout === `${home}/.diplomat/checkout` && read('bare').managed === true);
+  ok('a directory that is not there is not a checkout', read('bare').checkout_state === 'absent');
+  ok('the applet\'s own checkout variable is what points elsewhere',
+    read('own-checkout').checkout === `${root}/src` && read('own-checkout').managed === false
+    && read('own-checkout').checkout_state === 'checkout');
+  ok('the checkout is reported as it was spelled',
+    read('own-checkout-with-a-trailing-slash').checkout === `${root}/src/`
+    && read('own-checkout-with-a-trailing-slash').checkout_state === 'checkout');
+  ok('an empty checkout variable is the unset one, as the applet reads it',
+    read('empty-checkout-variable').managed === true
+    && read('empty-checkout-variable').checkout === `${home}/.diplomat/checkout`);
+  ok('a directory that is not a checkout is foreign', read('foreign-directory').checkout_state === 'foreign');
+  ok('a fork is taken from the environment', read('fork').repo_url === '/srv/diplomat.git');
 
-// A venv is only useful with something to install into it: Debian without
-// python3-venv leaves bin/python behind and stops before pip.
-const home = fs.mkdtempSync(path.join(os.tmpdir(), 'szpont-plan-'));
-fs.mkdirSync(path.join(home, '.diplomat', 'venv', 'bin'), { recursive: true });
-fs.writeFileSync(path.join(home, '.diplomat', 'venv', 'bin', 'python'), '');
-ok('a venv without pip is one still to be made',
-  probe([], { env: { HOME: home, PATH: '' } }).venv_python === false);
-fs.writeFileSync(path.join(home, '.diplomat', 'venv', 'bin', 'pip'), '');
-ok('a venv with pip is one to install into',
-  probe([], { env: { HOME: home, PATH: '' } }).venv_python === true);
+  ok('tools are looked for on the PATH it is given',
+    read('tools-on-path').git === true && read('tools-on-path').swift === true && read('bare').git === false);
+  ok('anything executable that is not a directory is a tool, as shutil.which reads it',
+    read('odd-tools-on-path').git === true);
+  ok('an empty PATH entry is the working directory, as sh reads it',
+    read('tool-in-the-working-directory').git === true);
+  ok('a dangling symlink on PATH is not the tool: skipped where it is found, never resolved',
+    read('dangling-tool').git === false);
 
-// /usr/bin/git is an xcrun shim on every Mac: without the Command Line Tools it
-// is the installer dialog, not git, and PATH alone cannot tell.
-if (fs.existsSync('/usr/bin/git')) {
-  const fake = (dir, body) => {
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, 'xcode-select'), body);
-    fs.chmodSync(path.join(dir, 'xcode-select'), 0o755);
-    return dir;
-  };
-  const none = fake(path.join(home, 'no-tools'), '#!/bin/sh\nexit 2\n');
-  const developer = path.join(home, 'developer');
-  fs.mkdirSync(developer);
-  const some = fake(path.join(home, 'tools'), `#!/bin/sh\necho ${developer}\n`);
-  const realPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
-  Object.defineProperty(process, 'platform', { value: 'darwin' });
-  try {
-    ok('on a Mac a tool in /usr/bin is only as present as the toolchain',
-      probe([], { env: { HOME: home, PATH: `${none}:/usr/bin` } }).git === false
-      && probe([], { env: { HOME: home, PATH: `${some}:/usr/bin` } }).git === true);
-    fs.symlinkSync('/usr/bin', path.join(home, 'usrbin'));
-    ok('…spelled //usr/bin or reached through a symlink, it is still the shim',
-      probe([], { env: { HOME: home, PATH: `${none}://usr/bin` } }).git === false
-      && probe([], { env: { HOME: home, PATH: `${none}:${path.join(home, 'usrbin')}` } }).git === false);
-    fs.mkdirSync(path.join(home, 'linkbin'));
-    fs.symlinkSync('/usr/bin/git', path.join(home, 'linkbin', 'git'));
-    ok('…and a symlink to the shim is the shim',
-      probe([], { env: { HOME: home, PATH: `${none}:${path.join(home, 'linkbin')}` } }).git === false);
-    fs.mkdirSync(path.join(home, 'danglebin'));
-    fs.symlinkSync(path.join(home, 'gone'), path.join(home, 'danglebin', 'git'));
-    ok('a dangling symlink on PATH is not the tool: skipped where it is found, never resolved',
-      probe([], { env: { HOME: home, PATH: path.join(home, 'danglebin') } }).git === false);
-    Object.defineProperty(process, 'platform', { value: 'linux' });
-    ok('on Linux /usr/bin is just a directory',
-      probe([], { env: { HOME: home, PATH: `${none}:/usr/bin` } }).git === true);
-  } finally {
-    Object.defineProperty(process, 'platform', realPlatform);
+  // A venv is only useful with something to install into it: Debian without
+  // python3-venv leaves bin/python behind and stops before pip.
+  ok('a venv without pip is one still to be made', read('venv-without-pip').venv_python === false);
+  ok('a venv with pip is one to install into', read('venv-with-pip').venv_python === true);
+  ok('a venv is current only against the requirements it was built from',
+    read('venv-current').venv_current === true && read('venv-stale').venv_current === false);
+
+  onPlatform('linux', () => {
+    ok('the prompt binary is looked for where the applet looks: the override, PATH, XDG, then ~/.local',
+      read('core-bin-override').core_bin === true && read('core-bin-on-path').core_bin === true
+      && read('core-bin-in-xdg').core_bin === true && read('core-bin-in-home').core_bin === true
+      && read('bare').core_bin === false);
+  });
+  onPlatform('darwin', () => {
+    ok('a Mac is not asked the Linux questions',
+      read('core-bin-override').core_bin === null && read('bare').python3 === null);
+  });
+
+  // /usr/bin/git is an xcrun shim on every Mac: without the Command Line Tools it
+  // is the installer dialog, not git, and PATH alone cannot tell.
+  if (m['usr-bin-without-toolchain']) {
+    onPlatform('darwin', () => {
+      ok('on a Mac a tool in /usr/bin is only as present as the toolchain',
+        read('usr-bin-without-toolchain').git === false && read('usr-bin-with-toolchain').git === true);
+      ok('…spelled //usr/bin or reached through a symlink, it is still the shim',
+        read('usr-bin-doubled').git === false && read('usr-bin-symlinked').git === false);
+      ok('…and a symlink to the shim is the shim', read('usr-bin-linked-tool').git === false);
+    });
+    onPlatform('linux', () => {
+      ok('on Linux /usr/bin is just a directory', read('usr-bin-without-toolchain').git === true);
+    });
   }
+} finally {
+  process.chdir(startedIn);
+  fs.rmSync(root, { recursive: true, force: true });
 }
-fs.rmSync(home, { recursive: true, force: true });
 
 console.log(`${passed} assertions passed`);

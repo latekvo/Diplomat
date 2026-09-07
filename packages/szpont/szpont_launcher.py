@@ -16,8 +16,8 @@ same ones `README.md` tells a human to type. Nothing here builds anything itself
 
 ``packages/szpont-npm`` is these same steps in JavaScript, for ``npx szpont``. The
 two agree by construction on :func:`plan`, a pure function from what was probed to
-what will be run, and ``parity-with-python.mjs`` compares their answers fact for
-fact.
+what will be run, and ``parity-with-python.mjs`` compares what they probe off one
+machine and what they plan from one set of facts, key for key.
 
 ``szpont_launcher`` rather than ``szpont``: the import name is left free for the
 conformance tester, which is run as ``python -m szpont`` from its own directory
@@ -130,23 +130,26 @@ def probe(app_args: Sequence[str] = (), *, update: bool = True,
     # (selfupdate.repo_root), so pointing the launcher at a working copy and
     # pointing the running applet at one are the same act.
     explicit = env.get("DIPLOMAT_SELF_REPO") or None
-    checkout = Path(explicit) if explicit else home / STATE_DIR / "checkout"
-    if not checkout.exists():
+    # Reported as spelled, the way the npm twin reports it; Path would drop a
+    # trailing slash.
+    checkout = explicit or str(home / STATE_DIR / "checkout")
+    root = Path(checkout)
+    if not root.exists():
         state = "absent"
-    elif (checkout / "packages" / "diplomat-platform").is_dir():
+    elif (root / "packages" / "diplomat-platform").is_dir():
         state = "checkout"
     else:
         state = "foreign"
 
     venv = home / STATE_DIR / "venv"
-    requirements = checkout / "packages" / "diplomat-platform" / "linux" / "requirements.txt"
+    requirements = root / "packages" / "diplomat-platform" / "linux" / "requirements.txt"
     stamp = venv / ".szpont-requirements"
     digest = _requirements_digest(requirements)
 
     return {
         "platform": platform,
         "path": env.get("PATH", ""),
-        "checkout": str(checkout),
+        "checkout": checkout,
         "checkout_state": state,
         # Only a checkout this launcher created is one it may move: a working copy
         # someone named themselves is theirs, and a launcher that fast-forwarded it

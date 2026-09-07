@@ -271,6 +271,16 @@ def test_probe_follows_the_applets_own_checkout_variable(tmp_path):
     assert found["checkout_state"] == "checkout"
 
 
+def test_probe_reports_the_checkout_as_it_was_spelled(tmp_path):
+    """The npm twin reports the string it was given, so this one does too: a
+    trailing slash from tab completion is the same checkout under both names."""
+    (tmp_path / "src" / "packages" / "diplomat-platform").mkdir(parents=True)
+    found = launcher.probe(env={"HOME": str(tmp_path), "PATH": "",
+                                "DIPLOMAT_SELF_REPO": f"{tmp_path / 'src'}/"})
+    assert found["checkout"] == f"{tmp_path / 'src'}/"
+    assert found["checkout_state"] == "checkout"
+
+
 def test_probe_tells_a_checkout_from_any_other_directory(tmp_path):
     (tmp_path / "elsewhere").mkdir()
     found = launcher.probe(env={"HOME": str(tmp_path), "PATH": "",

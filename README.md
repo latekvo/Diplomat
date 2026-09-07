@@ -128,7 +128,8 @@ entirely and [run it from the checkout](#run) as before.
 The two packages are the same launcher published under one name to two indexes
 ([`packages/szpont`](packages/szpont/README.md),
 [`packages/szpont-npm`](packages/szpont-npm/README.md)); a parity test holds them to
-the same plan on every machine shape either can meet. Neither installs anything but
+the same reading of every machine and the same plan on every shape either can meet.
+Neither installs anything but
 the launcher - one file of standard library on each side.
 
 ## The library
@@ -1544,8 +1545,9 @@ packages/
 
   szpont-npm/                  ← what `szpont` means on npm (see its README): the same launcher, in
                                  JavaScript, for `npx szpont`
-    test/scenarios.mjs         ← the machine shapes both launchers are held to; parity-with-python.mjs
-                                 runs every one of them through both and demands the same plan
+    test/scenarios.mjs         ← the machines both launchers are held to, as a directory tree to probe and
+                                 as fact sets to plan from; parity-with-python.mjs runs every one through
+                                 both and demands the same facts and the same plan
 
 .github/workflows/ci.yml       ← swift-macos · swift-core-linux · python-linux · szpontnet · szpont ·
                                  szpont-npm · node-device-allocator

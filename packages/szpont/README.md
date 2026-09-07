@@ -49,8 +49,8 @@ may have work in it. `DIPLOMAT_REPO_URL` clones from a fork.
 `npx szpont` runs the same launcher, and that is all either name installs: one
 file of standard library on each side, no dependency on either index. What keeps
 them one command is `packages/szpont-npm/test/parity-with-python.mjs` - every
-machine shape in `test/scenarios.mjs` goes through both planners, and the two
-answers have to be identical.
+machine in `test/scenarios.mjs` is probed by both and every fact set planned by
+both, and the two answers have to be identical.
 
 The protocol Diplomat's machines find each other over is
 **[SzpontNet](https://github.com/latekvo/Diplomat/tree/main/packages/szpontnet-core)**,

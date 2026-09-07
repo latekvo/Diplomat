@@ -49,8 +49,8 @@ may have work in it. `DIPLOMAT_REPO_URL` clones from a fork.
 [`pip install szpont`](https://github.com/latekvo/Diplomat/tree/main/packages/szpont)
 installs the same launcher and nothing else. The two implementations are separate
 files in separate languages, so what keeps them one command is
-`test/parity-with-python.mjs`: every machine shape in `test/scenarios.mjs` goes
-through both planners, and the two answers have to be identical.
+`test/parity-with-python.mjs`: every machine in `test/scenarios.mjs` is probed by
+both and every fact set planned by both, and the two answers have to be identical.
 
 ## Its own tests
 

@@ -1,10 +1,11 @@
 // The npm twin of `packages/szpont/szpont_launcher.py`, line for line where it
 // matters: `probe()` reads the machine, `plan()` turns those facts into the steps
 // that will run, and `run()` runs them. Splitting it that way is what lets
-// `test/parity-with-python.mjs` hand both implementations one set of synthetic
-// facts and demand the same plan back — the two are published under the same name
-// to the two indexes, and a `szpont` that meant different things depending on
-// which one you installed from would be the whole failure mode.
+// `test/parity-with-python.mjs` hand both implementations one machine on disk and
+// demand the same facts back, then one set of facts and demand the same plan —
+// the two are published under the same name to the two indexes, and a `szpont`
+// that meant different things depending on which one you installed from would be
+// the whole failure mode.
 //
 // Why a bootstrapper at all, rather than a package holding Diplomat: see the
 // Python module's header. Short version — Diplomat is built out of the checkout it
@@ -25,13 +26,16 @@ export const MIN_PYTHON = [3, 10];
 // already owns, so uninstalling is one `rm -rf ~/.diplomat` rather than a hunt.
 const STATE_DIR = '.diplomat';
 
-// The executable's path, or null - `shutil.which` in the Python twin.
+// The executable's path, or null - `shutil.which` in the Python twin: anything
+// executable that is not a directory, and an empty PATH entry is the working
+// directory, as `sh` reads it.
 function which(name, env) {
-  for (const dir of (env.PATH || '').split(path.delimiter).filter(Boolean)) {
+  if (!env.PATH) return null;
+  for (const dir of env.PATH.split(path.delimiter)) {
     const candidate = path.join(dir, name);
     try {
       fs.accessSync(candidate, fs.constants.X_OK);
-      if (fs.statSync(candidate).isFile()) return candidate;
+      if (!fs.statSync(candidate).isDirectory()) return candidate;
     } catch {
       // not here
     }
@@ -114,7 +118,7 @@ export function probe(appArgs = [], { update = true, env = process.env } = {}) {
   // DIPLOMAT_SELF_REPO is what the applet itself calls the checkout it lives in
   // (selfupdate.repo_root), so pointing the launcher at a working copy and
   // pointing the running applet at one are the same act.
-  const explicit = env.DIPLOMAT_SELF_REPO || null;
+  const explicit = env.DIPLOMAT_SELF_REPO;
   const checkout = explicit || path.join(home, STATE_DIR, 'checkout');
 
   let state;
