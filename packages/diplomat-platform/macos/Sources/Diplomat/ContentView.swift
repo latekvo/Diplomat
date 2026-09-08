@@ -1114,6 +1114,9 @@ private struct AgentTaskStatusLabel: View {
         switch status {
         case .merged:        return "arrow.triangle.merge"
         case .done:          return "checkmark.circle.fill"
+        // The same glyph the activity feed gives `spawn-failed`, which is the line
+        // this row leaves behind.
+        case .failed:        return "exclamationmark.triangle.fill"
         case .awaitingInput: return "ellipsis.circle.fill"
         case .running:       return "circle.fill"
         // The wizard's SPAWN AGENT glyph: what this row is, is a spawn under way.
@@ -1130,6 +1133,7 @@ private struct AgentTaskStatusLabel: View {
         switch status {
         case .merged:        return .purple
         case .done:          return .green
+        case .failed:        return .red
         case .awaitingInput: return .orange
         // A task on its way to running, in running's colour: the click's answer is
         // the row leaving the grey of the queue, before a word of it is read.

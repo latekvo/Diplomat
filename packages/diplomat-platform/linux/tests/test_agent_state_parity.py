@@ -200,9 +200,15 @@ def _mixed():
         rec(run_id="mesh-here", placement=A.PLACEMENT_MESH_HERE, pid=5, tty="pts/7",
             work_key="review:308:sha", dispatched_at=T0 - 1000, pr_number=308),
         rec(run_id="just-spawned", pid=None, dispatched_at=T0 - 3, pr_number=309),
-        # No pid AND no PR: neither mechanism can look for it, so its absence is not
-        # evidence — the fixture's one `unknown`.
-        rec(run_id="lost", pid=None, tty="", dispatched_at=T0 - 5000, pr_number=None),
+        # Mesh-here, so no pid file was ever owed, and no PR for the scan to look
+        # for: nothing can be asked about it — the fixture's one `unknown`.
+        rec(run_id="lost", placement=A.PLACEMENT_MESH_HERE, pid=None, tty="",
+            dispatched_at=T0 - 5000, pr_number=None),
+        # Local and pid-less long past the grace: the spawn's own report that its
+        # terminal never ran the command. Carries a PR the scan cannot find, so the
+        # two sides also have to agree on which of the two rungs answers first.
+        rec(run_id="never-ran", pid=None, tty="", dispatched_at=T0 - 5000,
+            pr_number=310),
         # A pid-less run the mesh placed back here, found by the prompt scan.
         rec(run_id="mesh-no-pid", pid=None, tty="", placement=A.PLACEMENT_MESH_HERE,
             dispatched_at=T0 - 5000, pr_number=311),

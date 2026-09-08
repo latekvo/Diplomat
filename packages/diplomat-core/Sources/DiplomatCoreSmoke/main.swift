@@ -1281,10 +1281,11 @@ section("the agent-task list and the queue behind the cap")
 //
 // The status precedence, which is the list's reading order from `.awaitingInput` down.
 check(AgentTaskStatus.allCases
-      == [.merged, .done, .awaitingInput, .running, .starting, .unknown, .free, .queued],
-      "an outcome, then a local exit, then what wants a human, then what doesn't, "
-      + "then what is spawning, then what nothing is known about, then this device's "
-      + "empty slots, then what hasn't started")
+      == [.merged, .done, .failed, .awaitingInput, .running, .starting, .unknown,
+          .free, .queued],
+      "an outcome, then a local exit, then a spawn that never ran, then what wants a "
+      + "human, then what doesn't, then what is spawning, then what nothing is known "
+      + "about, then this device's empty slots, then what hasn't started")
 // Which of those statuses a row can actually wear is decided one enum over, on the
 // states: both front-ends drop the runs that have ENDED (`Store.publish`,
 // `Store.running_tasks`), so `.merged` and `.done` head the order and no drawn row
@@ -1307,7 +1308,7 @@ check(AgentTaskStatus.running < AgentTaskStatus.starting
 // with no case here would draw as whatever `of` fell through to, and one ordered
 // differently would sort the panel against the order `AgentState.rows` sorted it in.
 check(AgentState.RunState.allCases.map(AgentTaskStatus.of)
-      == [.merged, .done, .awaitingInput, .running, .starting, .unknown],
+      == [.merged, .done, .failed, .awaitingInput, .running, .starting, .unknown],
       "every state a run resolves to has a row status")
 check(AgentState.stateOrder.map(AgentTaskStatus.of)
       == AgentTaskStatus.allCases.filter { $0 != .free && $0 != .queued },
@@ -1315,7 +1316,9 @@ check(AgentState.stateOrder.map(AgentTaskStatus.of)
       + "resolves to")
 check(AgentTaskStatus.queued.title == "queued" && AgentTaskStatus.awaitingInput.title == "awaiting input"
       && AgentTaskStatus.free.title == "free slot" && AgentTaskStatus.starting.title == "starting"
-      && AgentTaskStatus.unknown.title == "unknown",
+      && AgentTaskStatus.unknown.title == "unknown"
+      // Not "done", which is the whole point of the state: the work is still owed.
+      && AgentTaskStatus.failed.title == "never started",
       "the words the rows show")
 
 // The empty bays the panel draws for the rest of the device's cap.

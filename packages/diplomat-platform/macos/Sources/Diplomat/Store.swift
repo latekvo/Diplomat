@@ -1113,13 +1113,17 @@ final class Store: ObservableObject {
         let refused = reapWedgedWindows(t)
         let gone = t.retirable.filter { !refused.contains($0.runID) }
         guard !gone.isEmpty else { return }
-        let priced = Store.pricingInputs(gone)
+        // A run whose command never ran has nothing to price — no agent, no transcript,
+        // no tokens — and a `done` against its key would count it among the completed
+        // ones. Its ledger entry stays open, which is what it is: still owed.
+        let priced = Store.pricingInputs(gone.filter { t.states[$0.runID]?.state != .failed })
         // Forgetting deletes every trace a run leaves — record, directory, prompt,
         // handle — so a retirement that was wrong is otherwise just a row that stopped
         // being there. This line is the only thing that says which rung decided.
         for r in gone {
-            AuditLog.log(r.source, "retire",
-                         "\(r.label.isEmpty ? r.runID : r.label) — \(t.states[r.runID]?.reason ?? "no verdict")")
+            let verdict = t.states[r.runID]
+            AuditLog.log(r.source, verdict?.state == .failed ? "spawn-failed" : "retire",
+                         "\(r.label.isEmpty ? r.runID : r.label) — \(verdict?.reason ?? "no verdict")")
         }
         AgentRegistry.forget(Set(gone.map(\.runID)))
         await settleLedger(priced)
