@@ -617,7 +617,9 @@ enum QueueTest {
 
         // 16. Settles do not overlap: the tick is a suspension point, and a settle
         //     arriving across it would retire the same finished run again. The display
-        //     refresh yields to one under way; every other caller waits for it.
+        //     refresh yields to one under way; every other caller waits for it. The
+        //     first settle is held at its tick, so what the refresh meets is under way
+        //     by construction: a yield to the scheduler does not order two tasks.
         emptyBook()
         let over = AgentRegistry.createRun(
             AgentState.RunRecord(
@@ -627,12 +629,20 @@ enum QueueTest {
                 kind: "review", label: "Auto · Review · #21",
                 source: AgentDispatchGate.Source.auto.rawValue, pid: 4242),
             prompt: "")
+        let reached = Latch(), released = Latch()
+        Store.settleGate = { reached.open(); await released.wait() }
         let settle = Task { await store.settleAgents() }
-        await Task.yield()      // let it reach its tick before the refresh asks
-        await store.refreshAutoTaskCount()
+        await reached.wait()
+        // Through a task with a deadline: a refresh that waits behind the settle instead
+        // of yielding to it is a failure here, not a hang.
+        let refreshed = Latch()
+        Task { await store.refreshAutoTaskCount(); refreshed.open() }
+        let yielded = await refreshed.opened(within: 2)
         check("a display refresh yields to the settle under way",
-              AgentRegistry.load().map(\.runID) == [over.runID])
+              yielded && AgentRegistry.load().map(\.runID) == [over.runID])
         async let second = store.settleAgents()
+        Store.settleGate = nil
+        released.open()
         _ = await (settle.value, second)
         let retired = AuditLog.read().filter {
             $0.action == "retire" && $0.detail.hasPrefix("Auto · Review · #21")
@@ -648,5 +658,34 @@ enum QueueTest {
 
         print(pass ? "\nQUEUE TEST OK" : "\nQUEUE TEST FAILED")
         return pass
+    }
+}
+
+/// A one-shot signal on the main actor: `wait` returns once `open` has been called, at
+/// once if it already was.
+@MainActor
+private final class Latch {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func open() {
+        isOpen = true
+        let woken = waiters
+        waiters = []
+        for w in woken { w.resume() }
+    }
+
+    func wait() async {
+        if isOpen { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    /// Whether it opened inside `seconds`, polled while the main actor keeps turning.
+    func opened(within seconds: Double) async -> Bool {
+        let deadline = Date().addingTimeInterval(seconds)
+        while !isOpen, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        return isOpen
     }
 }
