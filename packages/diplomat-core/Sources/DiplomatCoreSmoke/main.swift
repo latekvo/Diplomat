@@ -2445,8 +2445,9 @@ do {
 // shell. SHELL names a stub that ignores the terminate and sleeps in a child, so only
 // the lookup's own five-second deadline can end the wait: the stub outlives it, and on
 // corelibs its child holds the exit past even the kill.
-if GH.candidatePaths.contains(where: { FileManager.default.isExecutableFile(atPath: $0) }) {
-    print("gh at a candidate path: the login-shell lookup is not reached here, its bound is untested")
+let ghAtCandidatePath = GH.candidatePaths.contains(where: { FileManager.default.isExecutableFile(atPath: $0) })
+if ghAtCandidatePath {
+    print("gh at a candidate path: the login-shell lookup is not reached here, its bound and its cache are untested")
 } else {
     let stub = FileManager.default.temporaryDirectory.appendingPathComponent("smoke-shell-\(getpid()).sh")
     try "#!/bin/sh\ntrap '' TERM\nsleep 30\n".write(to: stub, atomically: true, encoding: .utf8)
@@ -2465,6 +2466,40 @@ if GH.candidatePaths.contains(where: { FileManager.default.isExecutableFile(atPa
     check(elapsed >= 4.5 && elapsed < 9,
           "the lookup's own deadline ends the wait, not the stub's death (\(Int(elapsed))s)")
     print("stalled login shell given up on after \(Int(elapsed))s")
+}
+
+// ---- GH: a cached gh that no longer launches is looked for again ----
+// The path the login shell answers is kept for the process, so the gh at it moving
+// or being uninstalled would otherwise fail every call until the app restarts. The
+// shell stub answers whichever of two stub ghs exists.
+if !ghAtCandidatePath {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("smoke-ghcache-\(getpid())")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let first = dir.appendingPathComponent("first"), second = dir.appendingPathComponent("second")
+    func install(_ url: URL) throws {
+        try "#!/bin/sh\necho \(url.lastPathComponent)\n".write(to: url, atomically: true, encoding: .utf8)
+        chmod(url.path, 0o755)
+    }
+    let stub = dir.appendingPathComponent("shell.sh")
+    try "#!/bin/sh\nfor p in \(first.path) \(second.path); do [ -x \"$p\" ] && { echo \"$p\"; exit 0; }; done\nexit 1\n"
+        .write(to: stub, atomically: true, encoding: .utf8)
+    chmod(stub.path, 0o755)
+    let shell = ProcessInfo.processInfo.environment["SHELL"]
+    setenv("SHELL", stub.path, 1)
+    defer { if let shell { setenv("SHELL", shell, 1) } else { unsetenv("SHELL") } }
+    func answer() async -> String {
+        do { return String(decoding: try await GH.run(["--version"]), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) }
+        catch GHError.ghNotFound { return "not found" }
+        catch { return "launch failed" }
+    }
+    try install(first)
+    check(await answer() == "first", "the gh the login shell names is run")
+    try FileManager.default.removeItem(at: first)
+    check(await answer() == "launch failed", "the gh that was cached is gone")
+    try install(second)
+    check(await answer() == "second", "a gh that stopped launching is forgotten and the next call finds its replacement")
+    print("a vanished gh is looked for again")
 }
 
 if ProcessInfo.processInfo.environment["DIPLOMAT_DUMP"] == "1" {

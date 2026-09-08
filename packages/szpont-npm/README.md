@@ -26,7 +26,7 @@ is already in the repository:
 | get it | `git clone` into `~/.diplomat/checkout`, or fast-forward it | same |
 | build it | `install/build-app.sh` → `Diplomat.app` | `install/build-core.sh` when the prompt binary is missing |
 | set it up | - | a venv at `~/.diplomat/venv` with `requirements.txt` in it |
-| start it | `open Diplomat.app` | the package's own `./diplomat`, on the venv's interpreter |
+| start it | `open -n Diplomat.app` | the package's own `./diplomat`, on the venv's interpreter |
 
 Nothing is rebuilt that does not need to be: a venv is left alone until
 `requirements.txt` changes, and the Swift prompt binary is only built when the

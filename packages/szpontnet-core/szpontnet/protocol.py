@@ -569,10 +569,10 @@ def decode(line: bytes) -> dict | None:
         # ValueError: UnicodeDecodeError and JSONDecodeError are subclasses, and json
         # raises it bare for an integer literal past the interpreter's digit limit
         # (4300 by default).
-        # RecursionError: `[[[[…` a few thousand deep fits well inside MAX_LINE_BYTES
-        # (and a beacon datagram) and overflows json's decoder. Every wire read
-        # funnels through here, and on the link pump either escaping ends the link
-        # and drops the peer.
+        # RecursionError: `[[[[…` nested past what json's decoder can recurse (a
+        # thousand levels up to 3.11, ten thousand on 3.12, the C stack on 3.14) fits
+        # well inside MAX_LINE_BYTES and overflows it. Every wire read funnels through
+        # here, and on the link pump either escaping ends the link and drops the peer.
         return None
     if not isinstance(msg, dict) or not isinstance(msg.get("t"), str):
         return None

@@ -31,9 +31,16 @@ public enum GHError: LocalizedError {
 public enum GH {
     // Lock-protected cache (the old bare `var` was read/written from concurrent
     // async `run()` calls — a data race). Caches only on SUCCESS, so gh installed
-    // after launch is picked up by the next call instead of requiring a restart.
+    // after launch is picked up by the next call instead of requiring a restart;
+    // one that no longer launches is forgotten the same way.
     private static let pathLock = NSLock()
     private static var cachedPath: String?
+
+    private static func forget(_ path: String) {
+        pathLock.lock()
+        defer { pathLock.unlock() }
+        if cachedPath == path { cachedPath = nil }
+    }
 
     /// Where gh is looked for before the login shell is asked.
     public static let candidatePaths = ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"]
@@ -162,6 +169,7 @@ public enum GH {
             // Darwin keeps the handler of a process that never ran until it is cleared.
             do { try proc.run() } catch {
                 proc.terminationHandler = nil
+                forget(path)
                 cont.resume(throwing: error)
                 return
             }

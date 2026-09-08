@@ -2,8 +2,9 @@
 
 Four things start the applet through this script - ``szpont``'s launch step, the
 XDG autostart entry, the systemd auto-update timer and the self-update relaunch -
-and only the first puts the venv holding PySide6 in front of PATH. The script has
-to find that venv on its own, or three of the four start an applet without Qt.
+and only the first puts the venv holding PySide6 in front of PATH (the relaunch
+inherits whichever PATH the applet it replaces had). The script has to find that
+venv on its own, or the other starts bring up an applet without Qt.
 """
 
 from __future__ import annotations

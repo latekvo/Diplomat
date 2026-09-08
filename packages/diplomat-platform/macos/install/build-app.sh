@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build a double-clickable, menu-bar-only Diplomat.app (LSUIElement, no Dock icon).
-# Usage: ./install/build-app.sh     then: open Diplomat.app
+# Usage: ./install/build-app.sh     then: open -n Diplomat.app
 #        (install/install-autostart.sh to have it back at every login, in place)
 #
 # Everything is built and written inside this package, never at the repo root:

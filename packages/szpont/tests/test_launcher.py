@@ -199,7 +199,8 @@ def test_a_missing_venv_is_created_before_it_is_installed_into():
 def test_the_applet_starts_on_the_venvs_interpreter():
     """The venv goes in front of PATH so everything the launch runs resolves to
     it; the checkout's own `diplomat` script finds that venv by itself too, for
-    the starts (autostart, timer, relaunch) that come without this PATH."""
+    the starts (autostart, the update timer and its relaunch) that come without
+    this PATH."""
     plan = launcher.plan(facts(args=["--dump"]))
     launch = step(plan, "launch")
     linux = "/home/u/.diplomat/checkout/packages/diplomat-platform/linux"
