@@ -704,7 +704,9 @@ def test_a_lone_reading_is_painted_and_not_a_zero_width_nothing(app):
 
 def _quota_chart_with_spans(spans):
     """The quota chart rendered 400x120 over a fortnight with two flat readings (so it
-    draws at all) and `spans` as its task-lifespan overlay."""
+    draws at all) and `spans` as its task-lifespan overlay. Each span carries its own
+    weekly-quota heights, so the readings only make the chart draw — they do not place
+    the dots."""
     from PySide6.QtCore import QPoint, Qt
     from PySide6.QtGui import QImage, QRegion
     from PySide6.QtWidgets import QWidget
@@ -726,17 +728,17 @@ def _quota_chart_with_spans(spans):
     return image
 
 
-def _lane_has(image, pred) -> bool:
-    """Whether any pixel on the marker lane (``pad_t + h - 3`` ≈ y 101 here) matches.
-    The lane sits below the half-way rule and above the date labels; only a marker
-    puts saturated green or red there, over the muted orange the fill leaves."""
+def _band_has(image, pred, y0, y1) -> bool:
+    """Whether any pixel in the horizontal band ``[y0, y1)`` matches ``pred``."""
     return any(pred(image.pixelColor(x, y))
-               for x in range(4, 396) for y in range(96, 108))
+               for x in range(4, 396) for y in range(y0, y1))
 
 
-def test_task_markers_paint_a_green_start_and_a_red_finish(app):
-    """A finished task is a green start dot and a red finish dot on the overlay lane;
-    an unfinished one (``done`` None) is the green dot alone — no finish, no line."""
+def test_task_markers_sit_on_the_weekly_line(app):
+    """Each marker sits at its instant's weekly-quota height, not on a floor lane: a
+    dot given 90% paints near the top, one given 40% low, and the lane the overlay
+    would fall back to stays clear. A finished task is a green start and a red finish;
+    an unfinished one (``done`` None) is the green start alone — no finish, no line."""
     now = 1_785_000_000.0
     day = 86_400.0
 
@@ -747,14 +749,23 @@ def test_task_markers_paint_a_green_start_and_a_red_finish(app):
         return (c.alpha() > 0 and c.red() > 180
                 and c.green() < 110 and c.blue() < 110)
 
-    finished = _quota_chart_with_spans(
-        [telemetry.TaskSpan(started=now - 6 * day, done=now - 4 * day)])
-    assert _lane_has(finished, green), "a finished task drew no green start dot"
-    assert _lane_has(finished, red), "a finished task drew no red finish dot"
+    # 400x120 → pad_t 8, h 96, so y_of(pct) = 8 + 96 * (1 - pct/100): 90% → y≈18,
+    # 40% → y≈66. The floor lane the overlay drops to without a reading is ≈ y 101.
+    top, low, floor = (13, 23), (61, 71), (96, 108)
 
-    unfinished = _quota_chart_with_spans(
-        [telemetry.TaskSpan(started=now - 6 * day, done=None)])
-    assert _lane_has(unfinished, green), "an unfinished task drew no green start dot"
-    assert not _lane_has(unfinished, red), (
+    finished = _quota_chart_with_spans([
+        telemetry.TaskSpan(started=now - 8 * day, done=now - 4 * day,
+                           started_pct=90.0, done_pct=40.0)])
+    assert _band_has(finished, green, *top), "start dot not on the line at 90%"
+    assert _band_has(finished, red, *low), "finish dot not on the line at 40%"
+    assert not _band_has(finished, green, *floor), (
+        "a marker painted the floor lane — a placed dot must ride the weekly line"
+    )
+
+    unfinished = _quota_chart_with_spans([
+        telemetry.TaskSpan(started=now - 8 * day, done=None,
+                           started_pct=90.0, done_pct=None)])
+    assert _band_has(unfinished, green, *top), "unfinished start dot not on the line"
+    assert not _band_has(unfinished, red, *low), (
         "an unfinished task painted a finish dot — done=None must be a lone start"
     )

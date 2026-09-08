@@ -485,21 +485,47 @@ public enum Telemetry {
 
     /// One task's life, for the rate-limit chart's overlay markers. `done` is nil for
     /// a task still running, or one the mesh placed on a peer that this node never saw
-    /// finish.
+    /// finish. `startedPct`/`donePct` are the weekly-quota level at each instant, read
+    /// off the same readings the purple line is drawn from so a marker sits on that
+    /// line — nil only when no reading carries a week value.
     public struct TaskSpan: Equatable {
         public let started: Double
         public let done: Double?
+        public let startedPct: Double?
+        public let donePct: Double?
+    }
+
+    /// The 7-day-left percentage at `time`, interpolated along the readings the weekly
+    /// line is drawn from: clamped to the first and last, linear between. Nil when no
+    /// reading carries a week value. Across a probe silence the line itself breaks at,
+    /// this ties the readings either side — the one place a marker's height is a guess
+    /// rather than a sample.
+    static func weekPctAt(_ time: Double, _ quota: [QuotaPoint]) -> Double? {
+        let ws = quota.compactMap { p in p.weekPct.map { (p.at, $0) } }
+        guard var prev = ws.first else { return nil }
+        for cur in ws.dropFirst() {
+            if time <= cur.0 {
+                let dt = cur.0 - prev.0
+                if dt <= 0 || time <= prev.0 { return prev.1 }
+                return prev.1 + (cur.1 - prev.1) * (time - prev.0) / dt
+            }
+            prev = cur
+        }
+        return prev.1
     }
 
     /// Every task that STARTED inside the range, in fold order. Belonging by start
     /// matches `startedCount` and keeps a marker to the stretch the axis covers — a
     /// task begun before the range would hang its start dot off the left edge.
     public static func taskSpanSeries(_ tasks: [Task], now: Double,
-                                      days: Double) -> [TaskSpan] {
+                                      days: Double,
+                                      quota: [QuotaPoint]) -> [TaskSpan] {
         let start = now - days * 86_400
         return tasks.compactMap { t in
             guard let s = t.startedAt, s >= start, s <= now else { return nil }
-            return TaskSpan(started: s, done: t.doneAt)
+            return TaskSpan(started: s, done: t.doneAt,
+                            startedPct: weekPctAt(s, quota),
+                            donePct: t.doneAt.flatMap { weekPctAt($0, quota) })
         }
     }
 
@@ -701,7 +727,7 @@ public enum Telemetry {
                 $0.sessionPct != nil && now - $0.at <= fresh })?.sessionPct,
             weekLeftPct: quota.last(where: {
                 $0.weekPct != nil && now - $0.at <= fresh })?.weekPct,
-            taskSpans: taskSpanSeries(ledger.tasks, now: now, days: days),
+            taskSpans: taskSpanSeries(ledger.tasks, now: now, days: days, quota: quota),
             pending: series,
             pendingReviewsNow: series.last?.reviews ?? 0,
             pendingConflictsNow: series.last?.conflicts ?? 0,

@@ -565,11 +565,11 @@ class QuotaChart(QWidget):
             painter.setPen(pen)
             painter.drawPath(line)
 
-        # Task lifespans over the curves: a green dot where each began, a red one
-        # where it finished, joined by a dashed line that runs green→red. They sit on
-        # a flat lane near the floor, not on the curve — a marker rides through a
-        # probe-offline gap the line breaks at, and must claim no quota level there. A
-        # None `done` (still running, or placed on a peer) is a start dot alone.
+        # Task lifespans on the weekly line: a green dot where each began, a red one
+        # where it finished, joined by a thin dashed green→red tie. Each dot sits at
+        # its instant's weekly-quota level (started_pct/done_pct), so it rides the
+        # line; a None pct — no week reading to place it against — drops to a lane near
+        # the floor. A None `done` (still running, or on a peer) is a lone start dot.
         # Hard-coded green/red, like the half-way rule above: a marker's colour is its
         # meaning, not a metric's tint.
         started_color = QColor(51, 199, 89)
@@ -580,27 +580,29 @@ class QuotaChart(QWidget):
         def clamp_x(x: float) -> float:
             return min(pad_l + w, max(pad_l, x))
 
-        def draw_dot(cx: float, color: QColor) -> None:
+        def draw_dot(cx: float, cy: float, color: QColor) -> None:
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(color)
             painter.drawEllipse(
-                QRectF(cx - dot_r, lane_y - dot_r, dot_r * 2, dot_r * 2))
+                QRectF(cx - dot_r, cy - dot_r, dot_r * 2, dot_r * 2))
 
         for life in self._spans:
             sx = clamp_x(x_of(life.started))
+            sy = lane_y if life.started_pct is None else y_of(life.started_pct)
             if life.done is not None:
                 dx = clamp_x(x_of(life.done))
+                dy = lane_y if life.done_pct is None else y_of(life.done_pct)
                 if dx - sx > 1.0:
-                    grad = QLinearGradient(sx, lane_y, dx, lane_y)
+                    grad = QLinearGradient(sx, sy, dx, dy)
                     grad.setColorAt(0.0, started_color)
                     grad.setColorAt(1.0, finished_color)
                     pen = QPen(QBrush(grad), 0.6)
                     pen.setDashPattern([3.0, 3.0])
                     painter.setBrush(Qt.BrushStyle.NoBrush)
                     painter.setPen(pen)
-                    painter.drawLine(QPointF(sx, lane_y), QPointF(dx, lane_y))
-                draw_dot(dx, finished_color)
-            draw_dot(sx, started_color)
+                    painter.drawLine(QPointF(sx, sy), QPointF(dx, dy))
+                draw_dot(dx, dy, finished_color)
+            draw_dot(sx, sy, started_color)
 
         painter.setPen(QColor(glyphs.MUTED))
         f = painter.font()

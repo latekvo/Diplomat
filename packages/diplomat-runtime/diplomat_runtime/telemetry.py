@@ -845,20 +845,49 @@ def quota_series(samples: list[Sample], *, now: float,
 class TaskSpan:
     """One task's life, for the rate-limit chart's overlay markers. ``done`` is None
     for a task still running, or one the mesh placed on a peer that this node never
-    saw finish."""
+    saw finish. ``started_pct``/``done_pct`` are the weekly-quota level at each
+    instant, read off the same readings the purple line is drawn from so a marker
+    sits on that line — None only when no reading carries a week value."""
 
     started: float
     done: float | None
+    started_pct: float | None
+    done_pct: float | None
 
 
-def task_span_series(tasks: list[Task], *, now: float,
-                     days: float) -> list[TaskSpan]:
+def week_pct_at(time: float, quota: list[QuotaPoint]) -> float | None:
+    """The 7-day-left percentage at ``time``, interpolated along the readings the
+    weekly line is drawn from: clamped to the first and last, linear between. None
+    when no reading carries a week value. Across a probe silence the line itself
+    breaks at, this ties the readings either side — the one place a marker's height
+    is a guess rather than a sample."""
+    ws = [(q.at, q.week_pct) for q in quota if q.week_pct is not None]
+    if not ws:
+        return None
+    prev_at, prev_pct = ws[0]
+    for cur_at, cur_pct in ws[1:]:
+        if time <= cur_at:
+            dt = cur_at - prev_at
+            if dt <= 0 or time <= prev_at:
+                return prev_pct
+            return prev_pct + (cur_pct - prev_pct) * (time - prev_at) / dt
+        prev_at, prev_pct = cur_at, cur_pct
+    return prev_pct
+
+
+def task_span_series(tasks: list[Task], *, now: float, days: float,
+                     quota: list[QuotaPoint]) -> list[TaskSpan]:
     """Every task that STARTED inside the range, in fold order. Belonging by start
     matches ``started_count`` and keeps a marker to the stretch the axis covers — a
     task begun before the range would hang its start dot off the left edge."""
     start = now - days * 86400
     return [
-        TaskSpan(started=t.started_at, done=t.done_at)
+        TaskSpan(
+            started=t.started_at,
+            done=t.done_at,
+            started_pct=week_pct_at(t.started_at, quota),
+            done_pct=None if t.done_at is None else week_pct_at(t.done_at, quota),
+        )
         for t in tasks
         if t.started_at is not None and start <= t.started_at <= now
     ]
@@ -1049,7 +1078,8 @@ def summarize(ledger: Ledger, *, now: float, days: float, steps: int,
         week_left_pct=next((q.week_pct for q in reversed(quota)
                             if q.week_pct is not None
                             and now - q.at <= QUOTA_FRESH_SECS), None),
-        task_spans=tuple(task_span_series(ledger.tasks, now=now, days=days)),
+        task_spans=tuple(task_span_series(ledger.tasks, now=now, days=days,
+                                          quota=quota)),
         pending=tuple(series),
         pending_reviews_now=series[-1].reviews if series else 0,
         pending_conflicts_now=series[-1].conflicts if series else 0,
@@ -1200,7 +1230,9 @@ def parity_payload(ledger: Ledger, summary: Summary) -> dict:
                   for q in summary.quota],
         "sessionLeftPct": _opt(summary.session_left_pct),
         "weekLeftPct": _opt(summary.week_left_pct),
-        "taskSpans": [{"started": _r(sp.started), "done": _opt(sp.done)}
+        "taskSpans": [{"started": _r(sp.started), "done": _opt(sp.done),
+                       "startedPct": _opt(sp.started_pct),
+                       "donePct": _opt(sp.done_pct)}
                       for sp in summary.task_spans],
         "pending": [{"at": _r(p.at), "reviews": p.reviews, "conflicts": p.conflicts}
                     for p in summary.pending],

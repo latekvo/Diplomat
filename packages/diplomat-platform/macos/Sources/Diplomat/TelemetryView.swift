@@ -768,39 +768,41 @@ private struct QuotaChart: View {
                 ctx.stroke(line, with: .color(weekTint), lineWidth: 1.8)
             }
 
-            // Task lifespans over the curves: a green dot where each began, a red one
-            // where it finished, joined by a dashed line that runs green→red. They sit
-            // on a flat lane near the floor, not on the curve — a marker rides through
-            // a probe-offline gap the line breaks at, and must claim no quota level
-            // there. A nil `done` (still running, or placed on a peer) is a start dot
-            // alone. Hard-coded green/red, like the half-way rule above: a marker's
-            // colour is its meaning, not a metric's tint.
+            // Task lifespans on the weekly line: a green dot where each began, a red
+            // one where it finished, joined by a thin dashed green→red tie. Each dot
+            // sits at its instant's weekly-quota level (startedPct/donePct), so it
+            // rides the line; a nil pct — no week reading to place it against — drops
+            // to a lane near the floor. A nil `done` (still running, or on a peer) is a
+            // lone start dot. Hard-coded green/red, like the half-way rule above: a
+            // marker's colour is its meaning, not a metric's tint.
             let started = Color(red: 0.20, green: 0.78, blue: 0.35)
             let finished = Color(red: 1.0, green: 0.27, blue: 0.23)
             let laneY = padT + h - 3
             let dotR: CGFloat = 1.6
             func clampX(_ x: CGFloat) -> CGFloat { Swift.min(padL + w, Swift.max(padL, x)) }
-            func dot(_ x: CGFloat) -> Path {
-                Path(ellipseIn: CGRect(x: x - dotR, y: laneY - dotR,
+            func dot(_ x: CGFloat, _ y: CGFloat) -> Path {
+                Path(ellipseIn: CGRect(x: x - dotR, y: y - dotR,
                                        width: dotR * 2, height: dotR * 2))
             }
             for life in spans {
                 let sx = clampX(xOf(life.started))
+                let sy = life.startedPct.map(yOf) ?? laneY
                 if let done = life.done {
                     let dx = clampX(xOf(done))
+                    let dy = life.donePct.map(yOf) ?? laneY
                     if dx - sx > 1 {
                         var link = Path()
-                        link.move(to: CGPoint(x: sx, y: laneY))
-                        link.addLine(to: CGPoint(x: dx, y: laneY))
+                        link.move(to: CGPoint(x: sx, y: sy))
+                        link.addLine(to: CGPoint(x: dx, y: dy))
                         ctx.stroke(link, with: .linearGradient(
                             Gradient(colors: [started, finished]),
-                            startPoint: CGPoint(x: sx, y: laneY),
-                            endPoint: CGPoint(x: dx, y: laneY)),
+                            startPoint: CGPoint(x: sx, y: sy),
+                            endPoint: CGPoint(x: dx, y: dy)),
                                    style: StrokeStyle(lineWidth: 0.6, dash: [2, 2]))
                     }
-                    ctx.fill(dot(dx), with: .color(finished))
+                    ctx.fill(dot(dx, dy), with: .color(finished))
                 }
-                ctx.fill(dot(sx), with: .color(started))
+                ctx.fill(dot(sx, sy), with: .color(started))
             }
 
             ctx.draw(axisText("100%"), at: CGPoint(x: padL, y: padT + 4), anchor: .leading)
