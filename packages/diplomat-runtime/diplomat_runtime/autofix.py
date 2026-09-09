@@ -1,5 +1,5 @@
 """Pure PR auto-fix logic — the Python twin of DiplomatCore's Autofix.swift,
-ReviewReconcile.swift and the VerdictPolicy in Review.swift.
+ReviewReconcile.swift and the VerdictPolicy / AuthorAllowlist in Review.swift.
 
 Kept deterministic and side-effect-free so it's testable in isolation: the
 GitHub reads live in :mod:`autofixmonitor`, and the spawn/track/persistence in
@@ -239,6 +239,43 @@ class VerdictPolicy:
         return not self.withhold_reasons(files, author_association)
 
 
+# MARK: - Auto-review author allowlist (mirrors AuthorAllowlist in Review.swift)
+#
+# Which PR authors the review-requests monitor may act on at all. The ban list
+# answers "never this person"; this answers "only these people", and the two are read
+# in that order - a listed author who is also banned is still not reviewed. It is
+# stored as the raw line the operator typed rather than a parsed list, so what they
+# edit is what is kept and :func:`parse_author_allowlist` is the one reader.
+#
+# EMPTY MEANS EVERYONE. The list narrows; an applet never told otherwise auto-reviews
+# exactly what it always did.
+
+
+def parse_author_allowlist(text: str) -> list[str]:
+    """The logins in one operator-typed line: comma- or whitespace-separated, a
+    leading ``@`` optional. A login repeated in another case is kept once - GitHub
+    logins are case-insensitive, so two spellings are one person."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for field in re.split(r"[,\s]+", text or ""):
+        login = field.lstrip("@")
+        if not login or login.lower() in seen:
+            continue
+        seen.add(login.lower())
+        out.append(login)
+    return out
+
+
+def author_allowed(login: str, allowed: list[str]) -> bool:
+    """Whether this author's PR may be auto-reviewed. A non-empty list is closed, so
+    an author GitHub could not name - a deleted account reaches the monitor as ``""`` -
+    falls outside it."""
+    if not allowed:
+        return True
+    low = (login or "").lower()
+    return any(a.lower() == low for a in allowed)
+
+
 # MARK: - Mesh coordination for the auto-monitors (mirrors AutofixMesh in Autofix.swift)
 #
 # Two machines running this monitor poll the same GitHub state as the same user, so
@@ -377,6 +414,7 @@ VERDICT_BANNED = "banned"  # prompt-injection ban on the author - whoever asks
 VERDICT_STAND_DOWN = "stand_down"  # mesh: another node originates (auto only)
 VERDICT_AT_CAPACITY = "at_capacity"  # this device already runs its cap (auto only)
 VERDICT_UNAFFORDABLE = "unaffordable"  # not enough rate limit left (auto only)
+VERDICT_NOT_ALLOWED = "not_allowed"  # author outside the auto-review allowlist
 
 
 def dispatch_decide(
@@ -386,10 +424,18 @@ def dispatch_decide(
     mesh_stands_down: bool,
     at_capacity: bool,
     unaffordable: bool = False,
+    outside_allowlist: bool = False,
 ) -> str:
-    """The one decision both interfaces obey, in fixed precedence: ban, then
-    in-flight, then (auto only) this device's concurrency cap, then (auto only)
-    its rate-limit budget, then (auto only) mesh.
+    """The one decision both interfaces obey, in fixed precedence: ban, then the
+    auto-review allowlist, then in-flight, then (auto only) this device's
+    concurrency cap, then (auto only) its rate-limit budget, then (auto only) mesh.
+
+    The two author verdicts lead together because they are the same kind of fact -
+    a standing statement about a person, true before this poll and after it - while
+    everything below them is about this machine at this moment. ``outside_allowlist``
+    is the caller's business to compute: it is a statement about the review monitor's
+    work alone, so a sweep, a wizard press and the two reconcilers over my own PRs
+    all pass ``False``.
 
     Capacity outranks mesh so a saturated device never *originates*: the claim
     that routing takes has gossip side effects, and a node holding the claim for
@@ -406,6 +452,8 @@ def dispatch_decide(
     slot to spend a budget on, so the probe is never worth taking."""
     if banned:
         return VERDICT_BANNED
+    if outside_allowlist:
+        return VERDICT_NOT_ALLOWED
     if agent_on_pr:
         return VERDICT_IN_FLIGHT
     if source == SOURCE_AUTO and at_capacity:

@@ -53,14 +53,16 @@ def _fixture(store: Store) -> None:
 
 def _settings_fixture(store: Store, *, explain: bool) -> None:
     """Open Settings on the states its quiet rows never reach: an outstanding
-    review count (so the owed-reviews pill draws) and auto-approvals on (so the
-    nested verdict policy is unfolded). ``explain`` turns on the header switch,
+    review count (so the owed-reviews pill draws), a set author allowlist (so the
+    row draws its count rather than the blank placeholder) and auto-approvals on (so
+    the nested verdict policy is unfolded). ``explain`` turns on the header switch,
     the only state that draws the long-form paragraph under each row.
 
     Mirrors ``Render.seedSettings`` on macOS. Writes through the real properties,
     so it persists to whatever QSettings this process has — which in a render is
     the scratch HOME the caller points it at, as it is for every other fixture."""
     store.review_requests_enabled = True
+    store.review_allowlist_raw = "latekvo, @t0tl"
     store.auto_approve_enabled = True
     store.review_requests_handled = 7
     store.unaddressed_reviews = 2

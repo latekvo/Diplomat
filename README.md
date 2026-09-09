@@ -343,7 +343,7 @@ the one that picks it up.
 The queue is a view of what the monitors would re-offer, not a second copy of
 their state: it is rebuilt from live GitHub evidence on every 3-minute poll, so a
 task drops out the moment the work is taken by an agent, resolved, or its author
-banned. Every poll also re-checks the rows it is about to run against the fetches it
+banned or outside the auto-review list. Every poll also re-checks the rows it is about to run against the fetches it
 has just made - a conflict fix on a PR GitHub no longer calls conflicting, or a
 reply on threads that have been answered, leaves the list instead of opening an
 agent on work somebody already did. **A PR that has merged or closed retires every
@@ -865,7 +865,12 @@ nudge opens no window at all - it types into a session that already exists.)
   retried on the same 5m→3h backoff until the review actually lands. Force-push
   dedup: a push re-stamps the review request, which would double-spawn - a new
   request within 1h of a dispatch is treated as churn and suppressed. Banned
-  authors are never auto-reviewed.
+  authors are never auto-reviewed, and Settings carries an **author allowlist**
+  (*Only these authors*) that narrows the monitor further: blank means anyone who
+  requests me, a list means only those logins and everyone else is left to me. It
+  speaks for this monitor alone - conflicts, my own review threads, a sweep and a
+  wizard press are untouched by it, so the Review wizard still reviews anyone. The
+  ban wins where both apply.
 - **Claude API-error watcher** - Claude Code runs only; the banners it matches are
   Claude Code's, and an OpenCode or Hermes agent that errors reads as a finished
   turn instead - its runner says so, so the run is retired, its bay and its PR are
@@ -1100,9 +1105,11 @@ and ⏻) swaps the panel to a settings screen:
   unaddressed reviews - retrying", and any poll failure. (The combined *fixed N*
   counter lives on the panel's status pill, not here.) A monitor switched off keeps
   polling and keeps listing what it finds under [Agent tasks](#agent-tasks); what
-  stops is the automatic start. Nested under the **review-requests** toggle -
-  and visible only while it's on - the **auto-approve** master toggle and its
-  three withhold-the-verdict suppressors (SKILL / installer / community).
+  stops is the automatic start. Nested under the **review-requests** toggle: the
+  **author allowlist** (*Only these authors*, blank = anyone), which stays editable
+  while the toggle is off because it is what decides which requests get listed, and -
+  visible only while it's on - the **auto-approve** master toggle and its three
+  withhold-the-verdict suppressors (SKILL / installer / community).
 - **Run at most N automatic tasks at a time** - this machine's hard cap on
   concurrent automatic agents (**default 2**, range 1-16), across both monitors,
   the work a sweep queues, and any work a mesh peer routes here. The agent a

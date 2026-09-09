@@ -518,6 +518,28 @@ class Store(QObject):
         self._settings.setValue("reviewRequestsEnabled", bool(value))
 
     @property
+    def review_allowlist_raw(self) -> str:
+        """The logins the auto-review monitor is limited to, as the operator typed
+        them. Blank ⇒ every author, which is what an applet that was never told
+        otherwise does. Stored raw because this is a text field: parsing on the way in
+        would rewrite the line under the cursor. :attr:`review_allowlist` is the
+        parsed reader.
+
+        In QSettings rather than :mod:`appconfig` because it gates ORIGINATION - the
+        review monitor deciding to dispatch - and a mesh node never originates: a job
+        it runs was already allowed by the peer that found it."""
+        return str(self._settings.value("reviewAllowlistRaw", "", str) or "")
+
+    @review_allowlist_raw.setter
+    def review_allowlist_raw(self, value: str) -> None:
+        self._settings.setValue("reviewAllowlistRaw", str(value))
+
+    @property
+    def review_allowlist(self) -> list[str]:
+        """:attr:`review_allowlist_raw` as logins. Empty ⇒ no limit."""
+        return autofix.parse_author_allowlist(self.review_allowlist_raw)
+
+    @property
     def auto_task_limit(self) -> int:
         """How many automatic agents this machine runs at once — 2 by default.
 
@@ -995,7 +1017,16 @@ class Store(QObject):
         banned = bans.read()
         key = "reviewReqAttempts"
         attempts = self._load_attempts(key)
-        owed = [r for r in reqs if r.owe_review]
+        # An author outside the allowlist is dropped here rather than carried down as a
+        # decision the way a ban is, because there is nothing further to say about them:
+        # the ledger, the backoff ladder and the "owed" count all describe work this
+        # machine intends to do, and it does not intend to do this. The dispatch gate
+        # still answers for the same author, for the row a queue was already holding.
+        allowlist = self.review_allowlist
+        owed = [
+            r for r in reqs
+            if r.owe_review and autofix.author_allowed(r.author, allowlist)
+        ]
         # Before dispatching, so the ledger has a queue instant to measure the
         # time-to-start against. A banned author's request is owed by GitHub's
         # reckoning but will never be dispatched, so it is left out — counting it
@@ -1145,6 +1176,15 @@ class Store(QObject):
             banned = bool(job.author_login) and bans.is_banned(
                 job.author_login, bans.read()
             )
+            # The allowlist speaks for the review monitor's work and nothing else, so
+            # the counter - which is what makes a job that monitor's - is the whole
+            # test. A sweep, a wizard press and both reconcilers over my own PRs carry
+            # no counter or another one, and are never held here. Reached when a find
+            # the queue was holding drains, or is run by hand, after the list stopped
+            # covering its author.
+            outside_allowlist = job.counter == "review_requests" and not (
+                autofix.author_allowed(job.author_login or "", self.review_allowlist)
+            )
             agent_on_pr = bool(job.pr_url) and self._in_flight(job.pr_url)
             # Measured only for an auto job that would otherwise run: the count
             # costs a `ps` scan, a panel click is never capped, and an in-flight
@@ -1180,7 +1220,7 @@ class Store(QObject):
                     self._budget_logged = False
             verdict = autofix.dispatch_decide(
                 source, banned, agent_on_pr, False, at_capacity,
-                not budget.affordable,
+                not budget.affordable, outside_allowlist,
             )
             if verdict == autofix.VERDICT_AT_CAPACITY:
                 # A paused monitor is not a saturated device: it queues silently,
@@ -1203,6 +1243,15 @@ class Store(QObject):
                           if job.requested else "un-ban to review")
                 activity.log(
                     source, "ban-skip", f"{job.label} - author is banned ({remedy})"
+                )
+                self.refresh_activity()
+                return verdict
+            if verdict == autofix.VERDICT_NOT_ALLOWED:
+                who = job.author_login or "the author"
+                activity.log(
+                    source, "allowlist-skip",
+                    f"{job.label} - {who} is not on the auto-review list "
+                    f"(add them, or review it from the wizard)",
                 )
                 self.refresh_activity()
                 return verdict
@@ -1846,7 +1895,10 @@ class Store(QObject):
         and a row nothing will ever start is a row that lies about what this machine is
         going to do. Every other verdict leaves the ask alone — an in-flight PR, a
         window with no budget left and a terminal that failed to open are all reasons
-        to try again next poll, which is exactly what staying in the list means."""
+        to try again next poll, which is exactly what staying in the list means.
+        ``not_allowed`` is not among them because an ask can never draw it: the
+        allowlist answers for the review monitor's own finds, and an ask is not one
+        (``AgentJob.counter``)."""
         if not entry.job.requested:
             return
         if verdict not in ("spawned", autofix.VERDICT_STAND_DOWN, autofix.VERDICT_BANNED):
@@ -2132,6 +2184,9 @@ class Store(QObject):
             remedy = ("the ask is dropped, sweep again to re-queue it"
                       if entry.job.requested else "un-ban to review")
             self.error = f"{label}: the PR's author is banned ({remedy})."
+        elif verdict == autofix.VERDICT_NOT_ALLOWED:
+            self.error = (f"{label}: the PR's author is not on the auto-review list "
+                          "(add them, or review it from the wizard).")
         if verdict != "spawned":
             self.changed.emit()
         self.refresh_activity()

@@ -294,7 +294,7 @@ struct SettingsView: View {
             conflictsRow
             pollErrorRow
             reviewRequestsRow
-            if store.reviewRequestsEnabled { reviewPolicyBlock }
+            reviewPolicyBlock
         }
     }
 
@@ -384,10 +384,28 @@ struct SettingsView: View {
         }
     }
 
-    /// What an auto-review is allowed to submit. Nested under the switch that creates
-    /// them, because none of it means anything while no auto-review runs.
+    /// Who an auto-review may run for, and what it is allowed to submit.
+    ///
+    /// Only the verdict rows follow the switch above, because nothing they govern
+    /// happens until a review runs. The author list outlives it: a switched-off
+    /// monitor still polls and still lists what it finds, and the list is what decides
+    /// which requests those are — hidden while it is off, it would be filtering rows
+    /// the operator has no way to reach.
     private var reviewPolicyBlock: some View {
         NestedSettings(tint: .orange) {
+            SettingRow(title: "Only these authors",
+                       summary: allowlistSummary,
+                       detail: SettingsView.reviewAllowlistDetail,
+                       stacked: true) {
+                reviewAllowlistField
+            }
+            if store.reviewRequestsEnabled { reviewVerdictRows }
+        }
+    }
+
+    @ViewBuilder
+    private var reviewVerdictRows: some View {
+        Group {
             SettingRow(title: "May approve / request changes",
                        summary: "Off ⇒ inline comments only; the verdict stays with you.",
                        detail: "On ⇒ a clean review may submit a verdict, except on the "
@@ -403,6 +421,43 @@ struct SettingsView: View {
                 switchControl("Soft-approve clean PRs", $store.softApproveEnabled)
             }
         }
+    }
+
+    /// Resolved before the ViewBuilder sees it, for the reason `autoTaskLimitSummary`
+    /// is: a ternary over string concatenation inside a builder call is what tips this
+    /// file past the type-checker's time limit on a CI runner while still compiling here.
+    private var allowlistSummary: String {
+        let n = store.reviewAllowlist.count
+        guard n > 0 else { return "Blank = anyone who requests my review." }
+        let noun: String = n == 1 ? "author" : "authors"
+        return "\(n) \(noun) — everyone else is left for me."
+    }
+
+    private static let reviewAllowlistDetail = """
+        Commas or spaces between logins; a leading @ is fine. Unlike the switch \
+        above, an excluded request is dropped rather than queued — no agent and no \
+        row — and the Review wizard still reviews anyone. The ban list wins over this.
+        """
+
+    /// Free text rather than a chip per login: the list is edited far more rarely than
+    /// it is read, and what is typed is what is stored (`reviewAllowlistRaw`), so a
+    /// half-finished handle is never reformatted mid-keystroke.
+    private var reviewAllowlistField: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "person.2.fill").font(.caption).foregroundStyle(.secondary)
+            TextField("anyone", text: $store.reviewAllowlistRaw)
+                .textFieldStyle(.plain)
+                .font(.callout)
+            if !store.reviewAllowlistRaw.isEmpty {
+                Button { store.reviewAllowlistRaw = "" } label: {
+                    Image(systemName: "xmark.circle.fill")
+                }
+                .buttonStyle(.borderless).foregroundStyle(.secondary)
+                .help("Clear — auto-review whoever requests me")
+            }
+        }
+        .padding(7)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.12)))
     }
 
     /// The three configurable suppressors for the auto-review's "final pass + verdict".

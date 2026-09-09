@@ -435,32 +435,79 @@ class SettingsView(QWidget):
                    "“execute now” only.",
         )))
 
-        # What an auto-review may submit. Nested under the switch that creates them,
-        # because none of it means anything while no auto-review runs.
-        self._approve_nest, approve = nested_settings(_ORANGE)
+        # Who an auto-review may run for, and what it may submit. Only the verdict
+        # rows follow the switch above, because nothing they govern happens until a
+        # review runs. The author list outlives it: a switched-off monitor still polls
+        # and still lists what it finds, and the list is what decides which requests
+        # those are — hidden while it is off, it would be filtering rows the operator
+        # has no way to reach.
+        approve_nest, approve = nested_settings(_ORANGE)
+        approve.addWidget(self._allowlist_row())
+
+        self._verdict_rows = QWidget()
+        verdict_rows = QVBoxLayout(self._verdict_rows)
+        verdict_rows.setContentsMargins(0, 0, 0, 0)
+        verdict_rows.setSpacing(9)
+
         self._sw_auto_approve = SwitchToggle(_ORANGE)
         self._sw_auto_approve.setChecked(self.store.auto_approve_enabled)
         self._sw_auto_approve.toggled.connect(self._on_auto_approve_toggled)
-        approve.addWidget(self._track(SettingRow(
+        verdict_rows.addWidget(self._track(SettingRow(
             "May approve / request changes", self._sw_auto_approve,
             summary="Off ⇒ inline comments only; the verdict stays with you.",
             detail="On ⇒ a clean review may submit a verdict, except on the classes "
                    "withheld below.",
         )))
-        approve.addWidget(self._verdict_block())
+        verdict_rows.addWidget(self._verdict_block())
 
         self._sw_soft_approve = SwitchToggle(_ORANGE)
         self._sw_soft_approve.setChecked(self.store.soft_approve_enabled)
         self._sw_soft_approve.toggled.connect(self._on_soft_approve_toggled)
-        approve.addWidget(self._track(SettingRow(
+        verdict_rows.addWidget(self._track(SettingRow(
             "Soft-approve clean PRs", self._sw_soft_approve,
             summary="One “ran the sweep, all clean” comment — never an APPROVE.",
             detail="Off ⇒ a review that finds nothing says nothing. Independent of "
                    "the verdict switch above: a soft approval is a comment, not a "
                    "GitHub approval.",
         )))
-        body.addWidget(self._approve_nest)
+        approve.addWidget(self._verdict_rows)
+        body.addWidget(approve_nest)
         return card
+
+    def _allowlist_row(self) -> QWidget:
+        """Which authors the review monitor may act on at all.
+
+        Free text rather than a chip per login: the list is edited far more rarely
+        than it is read, and what is typed is what is stored
+        (``Store.review_allowlist_raw``), so a half-finished handle is never
+        reformatted mid-keystroke."""
+        field = QLineEdit(self.store.review_allowlist_raw)
+        field.setPlaceholderText("anyone")
+        field.setClearButtonEnabled(True)
+
+        self._allowlist_setting_row = self._track(SettingRow(
+            "Only these authors", field, stacked=True,
+            detail="Commas or spaces between logins; a leading @ is fine. Unlike "
+                   "the switch above, an excluded request is dropped rather than "
+                   "queued — no agent and no row — and the Review wizard still "
+                   "reviews anyone. The ban list wins over this.",
+        ))
+
+        def refresh() -> None:
+            n = len(self.store.review_allowlist)
+            self._allowlist_setting_row.set_summary(
+                "Blank = anyone who requests my review." if not n else
+                f"{n} author{'' if n == 1 else 's'} — everyone else is left for me."
+            )
+
+        def on_text(text: str) -> None:
+            self.store.review_allowlist_raw = text
+            refresh()
+            self.store.changed.emit()
+
+        field.textChanged.connect(on_text)
+        refresh()
+        return self._allowlist_setting_row
 
     def _verdict_block(self) -> QWidget:
         """The three suppressors for an auto-review's final verdict, as chips: a PR
@@ -683,7 +730,7 @@ class SettingsView(QWidget):
         else:
             self._reviewed_pill.set_state("")
 
-        self._approve_nest.setVisible(review_on)
+        self._verdict_rows.setVisible(review_on)
         self._verdict_container.setVisible(review_on and self.store.auto_approve_enabled)
 
     # MARK: Claude API-error watcher

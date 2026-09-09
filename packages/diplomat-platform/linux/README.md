@@ -79,7 +79,7 @@ slot**, then the **queue** that has no bay yet.
   unnecessary by the work ahead of it — and the poll re-offers it for as long as
   GitHub still calls the PR conflicting, so waiting costs it nothing.
 
-Four things hold work. The cap holds what there is no slot for, and releases it as
+Five things hold work. The cap holds what there is no slot for, and releases it as
 slots free. The [rate-limit budget](../../../README.md#the-rate-limit-budget) holds
 everything when the account is too low to afford another agent, and releases it when a
 window refills. A **monitor you switched off** holds its own work indefinitely: it
@@ -87,14 +87,18 @@ keeps polling and keeps listing what it finds (reading *queued · monitor off*),
 nothing starts by itself — only *execute now* does. So the toggles decide who starts
 the work, not whether you get to see it, and turning both off does not stop the
 3-minute GitHub poll. **Auto-execute queue** holds every kind at once, the reviews you
-asked for included — which is the one thing no monitor toggle speaks for.
+asked for included — which is the one thing no monitor toggle speaks for. The
+**author allowlist** holds every review request from outside it, whoever asks and
+whatever else is free; it is the only one of the five that drops the work rather than
+listing it, because nothing about it changes on the next poll.
 
 The queue is a view of what the monitors would re-offer, not a second copy of their
 state: it is rebuilt from live GitHub evidence on every poll, so a task drops out the
-moment the work is taken by an agent, resolved, or its author banned. Every poll also
-re-checks the rows it is about to run against the fetch it has just made — a conflict
-fix on a PR GitHub no longer calls conflicting, or a reply on threads that have been
-answered, leaves the list instead of opening an agent on work somebody already did. The key
+moment the work is taken by an agent, resolved, or its author banned or outside the
+auto-review list. Every poll also re-checks the rows it is about to run against the
+fetch it has just made — a conflict fix on a PR GitHub no longer calls conflicting, or
+a reply on threads that have been answered, leaves the list instead of opening an agent
+on work somebody already did. The key
 order is remembered (in `QSettings`), so your arrangement survives the rebuild and a
 restart. *Execute now* keeps the task automatic in every other
 respect: same label, same auto-handled counter, same retry record, and once
@@ -185,12 +189,14 @@ rate-limit budget's three knobs are the exceptions (see their bullets):
   spawn.
 - **Auto-queue fixes for my PRs / Auto-queue reviews that request me** — the two
   monitor toggles with live
-  status, and under the review-requests one the **auto-approve** master toggle
+  status, and under the review-requests one the **author allowlist** (*Only these
+  authors*, blank = anyone), the **auto-approve** master toggle
   plus its three withhold-the-verdict suppressors (SKILL / installer / community),
   and the **soft-approve** toggle (default ON — a clean comments-only review leaves
   a friendly thank-you note, never an APPROVE action). A monitor switched off keeps
   polling and keeps listing what it finds under [Agent tasks](#agent-tasks); what
-  stops is the automatic start.
+  stops is the automatic start — which is why the allowlist stays editable while it
+  is off, alone in that nest, since it is what decides which requests get listed.
 - **Run at most N automatic tasks at a time** — this machine's hard cap on
   concurrent automatic agents (default **2**, range 1–16), spanning both monitors
   above, the reviews a PR sweep queues, and any work a mesh peer routes here. The

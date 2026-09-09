@@ -126,6 +126,21 @@ final class Store: ObservableObject {
         }
     }
 
+    /// The logins the auto-review monitor is limited to, as the operator typed them.
+    /// Blank ⇒ every author, which is what an applet that was never told otherwise
+    /// does. Stored raw because this is a text field: parsing on the way in would
+    /// rewrite the line under the cursor. `reviewAllowlist` is the parsed reader.
+    ///
+    /// Persisted here rather than in `AppConfig` because it gates ORIGINATION — the
+    /// review monitor deciding to dispatch — and a mesh node never originates: a job
+    /// it runs was already allowed by the peer that found it.
+    @Published var reviewAllowlistRaw: String {
+        didSet { persist(reviewAllowlistRaw, forKey: Keys.reviewAllowlistRaw) }
+    }
+
+    /// `reviewAllowlistRaw` as logins. Empty ⇒ no limit.
+    var reviewAllowlist: [String] { AuthorAllowlist.parse(reviewAllowlistRaw) }
+
     /// Whether a free bay starts the next queued task by itself. On by default.
     ///
     /// Off, nothing automatic starts on this machine: the monitors keep finding work
@@ -227,6 +242,9 @@ final class Store: ObservableObject {
     /// How many reviews I currently owe (someone requested my review and the request is
     /// newer than my last review) but have no agent on them right now — the "unaddressed"
     /// reviews the reconciler keeps retrying until they land. Refreshed each review poll.
+    ///
+    /// Counted over what the monitor will act on, so an author outside the auto-review
+    /// list is owed by GitHub's reckoning and not by this one.
     @Published var unaddressedReviews: Int = 0
 
     /// Authors banned for prompt injection (read from the daemon's banned.json). They
@@ -430,6 +448,7 @@ final class Store: ObservableObject {
         static let autofixConflicts = "autofixConflictsHandled"
         static let autofixReviews = "autofixReviewsHandled"
         static let reviewRequestsEnabled = "reviewRequestsEnabled"
+        static let reviewAllowlistRaw = "reviewAllowlistRaw"
         static let reviewReqAttempts = "reviewReqAttempts"
         static let myReviewAttempts = "myReviewAttempts"
         static let reviewRequestsHandled = "reviewRequestsHandled"
@@ -576,6 +595,7 @@ final class Store: ObservableObject {
         // so defaulting on can't falsely claim "active" when no monitor is running.
         prAutofixEnabled = defaults.object(forKey: Keys.prAutofixEnabled) as? Bool ?? true
         reviewRequestsEnabled = defaults.object(forKey: Keys.reviewRequestsEnabled) as? Bool ?? true
+        reviewAllowlistRaw = defaults.string(forKey: Keys.reviewAllowlistRaw) ?? ""
         queueAutoRun = defaults.object(forKey: Keys.queueAutoRun) as? Bool ?? true
         // Auto-approvals OFF by default — an auto-review never submits a verdict on my
         // behalf until I explicitly opt in.
@@ -1666,7 +1686,15 @@ final class Store: ObservableObject {
         let banned = BanList.read()
         let now = Date()
         var attempts = loadReviewReqAttempts()   // prNumber -> our attempt record
-        let owed = reqs.filter { $0.oweReview }
+        // An author outside the allowlist is dropped here rather than carried down as a
+        // decision the way a ban is, because there is nothing further to say about them:
+        // the ledger, the backoff ladder and the "owed" count all describe work this
+        // machine intends to do, and it does not intend to do this. The dispatch gate
+        // still answers for the same author, for the row a queue was already holding.
+        let allowlist = reviewAllowlist
+        let owed = reqs.filter {
+            $0.oweReview && AuthorAllowlist.allows($0.author, in: allowlist)
+        }
         // Before dispatching, so the ledger has a queue instant to measure the
         // time-to-start against. A banned author's request is owed by GitHub's
         // reckoning but will never be dispatched, so it is left out — counting it
@@ -2270,7 +2298,10 @@ final class Store: ObservableObject {
         guard entry.job.requested else { return }
         switch outcome {
         case .spawned, .standDown, .banned: forgetRequested(entry.id)
-        case .inFlight, .atCapacity, .unaffordable, .failed: break
+        // `.notAllowed` is listed only because the switch is exhaustive: an ask can
+        // never draw it, since the allowlist answers for the review monitor's own
+        // finds and an ask is not one (`AgentJob.counter`).
+        case .inFlight, .atCapacity, .unaffordable, .failed, .notAllowed: break
         }
     }
 
@@ -2458,6 +2489,9 @@ final class Store: ObservableObject {
             error = "\(entry.job.label): an agent is already on this PR."
         case .banned:
             error = "\(entry.job.label): the PR's author is banned (un-ban to review)."
+        case .notAllowed:
+            error = "\(entry.job.label): the PR's author is not on the auto-review list "
+                  + "(add them, or review it from the wizard)."
         case .atCapacity, .unaffordable:
             break   // unreachable: the run bypasses both holds the operator overrode
         }
@@ -2640,6 +2674,7 @@ final class Store: ObservableObject {
         case spawned(terminal: String)
         case inFlight
         case banned
+        case notAllowed
         case standDown
         case atCapacity
         case unaffordable
@@ -2650,15 +2685,16 @@ final class Store: ObservableObject {
         /// start the retry backoff, mirroring the Python reference which treats
         /// `("spawned", VERDICT_STAND_DOWN)` as handled. `.failed` deliberately does
         /// NOT count (a transient spawn error retries next poll); nor do `.inFlight`
-        /// / `.banned` / `.atCapacity` / `.unaffordable`. Using `.didSpawn` here
-        /// instead would re-dispatch peer-owned work to the mesh on every poll, the
-        /// backoff never engaging — and counting either deferral as handled would drop
-        /// held work into a 5m–3h cooldown instead of offering it again the moment an
-        /// agent finishes or the window refills.
+        /// / `.banned` / `.notAllowed` / `.atCapacity` / `.unaffordable`. Using
+        /// `.didSpawn` here instead would re-dispatch peer-owned work to the mesh on
+        /// every poll, the backoff never engaging — and counting either deferral as
+        /// handled would drop held work into a 5m–3h cooldown instead of offering it
+        /// again the moment an agent finishes or the window refills.
         var wasHandled: Bool {
             switch self {
             case .spawned, .standDown: return true
-            case .inFlight, .banned, .atCapacity, .unaffordable, .failed: return false
+            case .inFlight, .banned, .notAllowed, .atCapacity, .unaffordable, .failed:
+                return false
             }
         }
     }
@@ -2703,6 +2739,13 @@ final class Store: ObservableObject {
         }
         defer { if let n = job.prNumber { resolvingPRs.remove(n) } }
         let banned = job.authorLogin.map { BanList.isBanned($0, in: BanList.read()) } ?? false
+        // The allowlist speaks for the review monitor's work and nothing else, so the
+        // counter — which is what makes a job that monitor's — is the whole test. A
+        // sweep, a wizard press and both reconcilers over my own PRs carry no counter or
+        // another one, and are never held here. Reached when a find the queue was
+        // holding drains, or is run by hand, after the list stopped covering its author.
+        let outsideAllowlist = job.counter == .reviewRequests
+            && !AuthorAllowlist.allows(job.authorLogin ?? "", in: reviewAllowlist)
         var agentOnPR = false
         if let n = job.prNumber { agentOnPR = await inFlight(n) }
         // Measured only for an auto job that would otherwise run: the count costs a
@@ -2737,7 +2780,8 @@ final class Store: ObservableObject {
         switch AgentDispatchGate.decide(source: source, banned: banned,
                                         agentOnPR: agentOnPR, meshStandsDown: false,
                                         atCapacity: atCapacity,
-                                        unaffordable: !budget.affordable) {
+                                        unaffordable: !budget.affordable,
+                                        outsideAllowlist: outsideAllowlist) {
         case .atCapacity:
             // A paused monitor is not a saturated device: it queues silently, because
             // the operator switched it off on purpose and the row says the rest.
@@ -2753,6 +2797,15 @@ final class Store: ObservableObject {
                          "\(job.label) — author is banned (un-ban to review)")
             refreshAudit()
             return .banned
+        case .notAllowed:
+            // A deleted account reaches the monitor as "", which `??` would print as
+            // an empty name; the Python twin's `or` already reads it as absent.
+            let who = job.authorLogin.flatMap { $0.isEmpty ? nil : $0 } ?? "the author"
+            AuditLog.log(source.rawValue, "allowlist-skip",
+                         "\(job.label) — \(who) is not on the "
+                         + "auto-review list (add them, or review it from the wizard)")
+            refreshAudit()
+            return .notAllowed
         case .inFlight:
             // A monitor tick hitting a busy PR is routine (stays silent); a click
             // deserves an answer for why nothing opened.
@@ -2995,9 +3048,11 @@ final class Store: ObservableObject {
             self.error = "Resolve #\(number) failed to spawn — see the activity log."
         case .inFlight:
             self.error = "Resolve #\(number): an agent is already on this PR."
-        case .spawned, .banned, .standDown, .atCapacity, .unaffordable:
-            // The last three are answers only a monitor gets — none of the mesh gate,
-            // the automatic-task cap and the spending budget applies to a click.
+        case .spawned, .banned, .standDown, .atCapacity, .unaffordable, .notAllowed:
+            // `.standDown`, `.atCapacity` and `.unaffordable` are answers only a monitor
+            // gets — none of the mesh gate, the automatic-task cap and the spending
+            // budget applies to a click — and `.notAllowed` speaks for the review
+            // monitor's finds, never a conflict.
             break
         }
     }

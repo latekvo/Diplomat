@@ -630,10 +630,11 @@ enum Render {
     }
 
     /// Seed the review-requests settings so the owed-reviews pill renders and the
-    /// nested verdict policy is open (DIPLOMAT_RENDER=settings).
+    /// nested author allowlist + verdict policy are open (DIPLOMAT_RENDER=settings).
     @MainActor
     private static func seedSettings(_ store: Store, explain: Bool) {
         store.reviewRequestsEnabled = true
+        store.reviewAllowlistRaw = "latekvo, @t0tl"   // a set list, so the row shows its count
         store.reviewRequestsHandled = 7
         store.unaddressedReviews = 2
         store.autoApproveEnabled = true   // show the master toggle ON + its nested suppressors

@@ -1113,6 +1113,19 @@ check(AgentDispatchGate.decide(source: .auto, banned: false, agentOnPR: false,
                                meshStandsDown: true, atCapacity: false,
                                unaffordable: true) == .unaffordable,
       "the budget outranks mesh, for the reason capacity does")
+// The auto-review allowlist: an author verdict like the ban, so it holds whoever
+// asks, and it ranks below the ban because a ban's remedy is the only one that would
+// work on an author carrying both.
+for src in [AgentDispatchGate.Source.panel, .auto] {
+    check(AgentDispatchGate.decide(source: src, banned: false, agentOnPR: true,
+                                   meshStandsDown: true, atCapacity: true,
+                                   outsideAllowlist: true) == .notAllowed,
+          "an unlisted author outranks everything but the ban for \(src.rawValue)")
+    check(AgentDispatchGate.decide(source: src, banned: true, agentOnPR: false,
+                                   meshStandsDown: false, atCapacity: false,
+                                   outsideAllowlist: true) == .banned,
+          "the ban outranks the allowlist for \(src.rawValue)")
+}
 check(AgentDispatchGate.stealsFocus(.panel) && !AgentDispatchGate.stealsFocus(.auto),
       "panel comes forward, auto never steals focus")
 check(AgentDispatchGate.label(source: .auto, core: "Review · #7", attemptNumber: 2)
@@ -2013,6 +2026,30 @@ check(!skillOff.allowsVerdict(files: installerFiles, authorAssociation: "MEMBER"
 let allOff = VerdictPolicy(withholdOnSkill: false, withholdOnInstaller: false, withholdOnCommunity: false)
 check(allOff.allowsVerdict(files: skillFiles + installerFiles, authorAssociation: "NONE"), "all off ⇒ always verdict")
 print("verdict policy assertions passed")
+
+// ---- The auto-review author allowlist ----
+section("author allowlist")
+// PARITY: the Python twin (autofix.parse_author_allowlist / author_allowed) asserts
+// these exact shapes.
+check(AuthorAllowlist.parse("").isEmpty, "blank ⇒ no list")
+check(AuthorAllowlist.parse("   ").isEmpty, "whitespace ⇒ no list")
+check(AuthorAllowlist.parse("alice, @bob  carol") == ["alice", "bob", "carol"],
+      "commas, whitespace and a leading @ are all the operator's to use")
+check(AuthorAllowlist.parse("@@dave") == ["dave"], "every leading @ comes off")
+// One person, two spellings: GitHub logins are case-insensitive, so a list that kept
+// both would misreport its own length to the settings row that counts it.
+check(AuthorAllowlist.parse("Bob, bob, BOB") == ["Bob"], "first spelling wins, once")
+check(AuthorAllowlist.parse("zoe alice") == ["zoe", "alice"], "the operator's order, unsorted")
+// Empty ⇒ everyone: an applet never told otherwise reviews what it always did.
+check(AuthorAllowlist.allows("anyone", in: []), "no list ⇒ no limit")
+check(AuthorAllowlist.allows("", in: []), "no list ⇒ even an unnamed author")
+check(AuthorAllowlist.allows("Bob", in: ["bob"]), "membership is case-insensitive")
+check(AuthorAllowlist.allows("bob", in: ["BOB"]), "…in both directions")
+check(!AuthorAllowlist.allows("carol", in: ["bob"]), "a list is a limit")
+// A non-empty list is closed, so a deleted account (which reaches the monitor as "")
+// is outside it rather than waved through.
+check(!AuthorAllowlist.allows("", in: ["bob"]), "an author GitHub cannot name is outside a list")
+print("author allowlist assertions passed")
 
 // ---- Review reconciler (retry unaddressed reviews) ----
 section("review reconcile")

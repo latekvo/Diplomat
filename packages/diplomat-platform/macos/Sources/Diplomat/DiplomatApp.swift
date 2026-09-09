@@ -670,6 +670,9 @@ enum Dump {
             }
             let owedCount = reqs.filter { $0.oweReview }.count
             print("→ \(owedCount) review(s) owed; the reconciler (re)dispatches each until it lands.")
+            print("  (owed by the request alone — the ban list and the auto-review "
+                + "allowlist also filter what the monitor acts on, and neither is "
+                + "consulted here.)")
             print("  (the VERDICT column reflects the policy only — an actual verdict also "
                 + "requires the auto-approvals master toggle, which is OFF by default.)")
             let sampleReq = reqs.first
