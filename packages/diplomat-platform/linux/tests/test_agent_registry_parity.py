@@ -138,12 +138,18 @@ def test_a_record_with_unusable_fields_reads_the_same_on_both_sides():
     assert ours[2]["placement"] == "local"
 
 
-@pytest.mark.parametrize("wide", ["1e300", "99999999999999999999"])
+#: Integers no field may hold. The parsers diverge on the first two before either
+#: decoder runs: ``NSNumber.intValue`` saturates on ``1e300`` and wraps on a 20-digit
+#: literal, where Python reads a 301-digit int and ``10**20`` out of the same bytes.
+#: ``1e19`` both parse faithfully, and it sits between Int64.max and the next power
+#: of ten: the one value that tells the bound apart from a looser one.
+WIDE = ["1e300", "99999999999999999999", "1e19"]
+
+
+@pytest.mark.parametrize("wide", WIDE)
 def test_a_number_the_two_parsers_disagree_on_is_unusable_on_both(wide):
-    """The parsers diverge before either decoder runs: ``NSNumber.intValue``
-    saturates on ``1e300`` and wraps on a 20-digit literal, where Python reads a
-    301-digit int and ``10**20`` out of the same bytes. So an integer field is
-    usable only inside Int64 - and a finite double stays what it is."""
+    """An integer field is usable only inside Int64 - and a finite double stays
+    what it is."""
     R.runs_path().parent.mkdir(parents=True, exist_ok=True)
     R.runs_path().write_text(
         f'{{"version": {R.SCHEMA_VERSION}, "runs": [{{"runId": "r1", '
@@ -152,6 +158,20 @@ def test_a_number_the_two_parsers_disagree_on_is_unusable_on_both(wide):
     assert ours == _swift({"mode": "read"})
     assert ours[0]["pid"] is None and ours[0]["prNumber"] is None
     assert ours[0]["claimSeenAt"] == 1e300
+
+
+@pytest.mark.parametrize("wide", WIDE)
+def test_the_write_mode_holds_the_same_bound_as_the_book(wide):
+    """``mode: write`` decodes its payload by a hand of its own, and nothing the Linux
+    applet hands it carries a number it did not normalize first - so the bound above
+    is pinned here on a payload built raw."""
+    raw = json.loads(f'{{"runId": "r1", "claimSeenAt": 1e300, "quietSince": 1e300, '
+                     f'"pid": {wide}, "prNumber": {wide}}}')
+    _swift({"mode": "write", "runs": [raw]})
+    ours = [r.to_json() for r in R.load()]
+    assert ours == [A.RunRecord.from_json(raw).to_json()]
+    assert ours[0]["pid"] is None and ours[0]["prNumber"] is None
+    assert ours[0]["claimSeenAt"] == ours[0]["quietSince"] == 1e300
 
 
 def test_an_infinity_reaches_no_record_on_either_side():
