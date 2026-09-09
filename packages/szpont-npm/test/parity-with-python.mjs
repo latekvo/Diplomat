@@ -30,15 +30,21 @@ process.chdir(root);
 // One interpreter run for the whole table: starting python once per question
 // would be most of this test's runtime.
 const script = `
-import json, sys
+import json, os, sys
 import szpont_launcher
 given = json.load(sys.stdin)
-facts = {}
-for platform in given["platforms"]:
-    sys.platform = platform
-    facts[platform] = {k: szpont_launcher.probe(env=v) for k, v in given["machines"].items()}
+def read(machines):
+    facts = {}
+    for platform in given["platforms"]:
+        sys.platform = platform
+        facts[platform] = {k: szpont_launcher.probe(env=v) for k, v in machines.items()}
+    return facts
+facts = read(given["machines"])
+os.environ.pop("PATH", None)
+unpathed = read({k: v for k, v in given["machines"].items() if "PATH" not in v})
 print(json.dumps({
     "facts": facts,
+    "unpathed": unpathed,
     "plans": {k: szpont_launcher.plan(v) for k, v in given["scenarios"].items()},
 }))
 `;
@@ -56,10 +62,16 @@ assert.equal(py.status, 0,
 
 const fromPython = JSON.parse(py.stdout);
 const machineNames = Object.keys(MACHINES);
+// A machine with no PATH of its own is read on the process's, and on the system
+// default when the process has none either: those are probed a second time from
+// a process whose PATH is gone, on both sides.
+const unpathed = machineNames.filter((name) => !('PATH' in MACHINES[name]));
 const scenarioNames = Object.keys(SCENARIOS);
 for (const platform of PLATFORMS) {
   assert.deepEqual(Object.keys(fromPython.facts[platform]).sort(), [...machineNames].sort(),
     `the twin skipped a machine on ${platform}`);
+  assert.deepEqual(Object.keys(fromPython.unpathed[platform]).sort(), [...unpathed].sort(),
+    `the twin skipped an unpathed machine on ${platform}`);
 }
 assert.deepEqual(Object.keys(fromPython.plans).sort(), [...scenarioNames].sort(), 'the twin skipped a scenario');
 
@@ -75,6 +87,21 @@ try {
     });
   }
   console.log(`${machineNames.length} machines agree on ${PLATFORMS.length} platforms`);
+  const ownPath = process.env.PATH;
+  delete process.env.PATH;
+  try {
+    for (const platform of PLATFORMS) {
+      onPlatform(platform, () => {
+        for (const name of unpathed) {
+          assert.deepEqual(probe([], { env: MACHINES[name] }), fromPython.unpathed[platform][name],
+            `facts differ for ${name} on ${platform} from a process without a PATH`);
+          console.log('  PASS', `${name} on ${platform}, from a process without a PATH`);
+        }
+      });
+    }
+  } finally {
+    if (ownPath !== undefined) process.env.PATH = ownPath;
+  }
 } finally {
   process.chdir(startedIn);
   fs.rmSync(root, { recursive: true, force: true });

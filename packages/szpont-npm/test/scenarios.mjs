@@ -133,6 +133,7 @@ export function machines(root) {
 
   const found = {
     bare: { HOME: home, PATH: '' },
+    'path-unset': { HOME: home },
     'tools-on-path': { HOME: home, PATH: bin },
     'odd-tools-on-path': { HOME: home, PATH: `${dirbin}${path.delimiter}${fifobin}` },
     'directory-as-tool': { HOME: home, PATH: dirbin },

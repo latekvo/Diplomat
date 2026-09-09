@@ -111,6 +111,8 @@ try {
 
   ok('tools are looked for on the PATH it is given',
     read('tools-on-path').git === true && read('tools-on-path').swift === true && read('bare').git === false);
+  ok('a machine without a PATH is read on the process\'s own, as shutil.which reads it',
+    read('path-unset').git === probe([], { env: { HOME: home, PATH: process.env.PATH } }).git);
   ok('anything executable that is not a directory is a tool, as shutil.which reads it',
     read('odd-tools-on-path').git === true && read('directory-as-tool').git === false);
   ok('an empty PATH entry is the working directory, as sh reads it',
