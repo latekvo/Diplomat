@@ -482,7 +482,7 @@ def _number(raw: object) -> float | None:
         parse = float.fromhex if "0x" in raw.lower() else float
         try:
             value = parse(raw)
-        except ValueError:
+        except (ValueError, OverflowError):  # fromhex raises on 0x1p99999
             return None
     elif isinstance(raw, (int, float)):
         try:

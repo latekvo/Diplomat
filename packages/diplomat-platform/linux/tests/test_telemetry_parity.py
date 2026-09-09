@@ -293,11 +293,13 @@ def _ledger_lines() -> list[str]:
     lines.append(json.dumps({"at": NOW, "ev": "queued", "key": "review:h/o/r#96@xx",
                              "duty": "review", "pr": 1e300}))
     # Numbers spelled as strings, as a hand edit leaves them. Both sides read one by
-    # the rule of Swift's `Double(String)`: hex is a number, and surrounding
-    # whitespace or a `_` separator is not. Older than the lookback, so the only
-    # figure they reach is the task list itself.
+    # the rule of Swift's `Double(String)`: hex is a number, surrounding whitespace
+    # or a `_` separator is not, and hex past a double's range is the infinity both
+    # refuse. Older than the lookback, so the only figure they reach is the task
+    # list itself.
     for n, when, pr, tokens in ((52, NOW - 41 * DAY, " 12 ", "1_000"),
-                                (53, NOW - 42 * DAY, "0x10", "0x1p10")):
+                                (53, NOW - 42 * DAY, "0x10", "0x1p10"),
+                                (54, NOW - 43 * DAY, "0x1p99999", "-0x1p99999")):
         key = f"review:h/o/r#{n}@s{n}"
         lines += [
             json.dumps({"at": when, "ev": "queued", "key": key, "duty": "review",
@@ -505,15 +507,18 @@ def test_the_junk_lines_produced_no_tasks(both):
 
 
 def test_a_numeric_string_is_read_by_one_rule_on_both_sides(both):
-    """Anti-vacuity for the two string-spelled tasks in the fixture: the whole-payload
+    """Anti-vacuity for the string-spelled tasks in the fixture: the whole-payload
     match above holds just as well if both sides refuse every string, or read every
-    one. Hex is a number on both; whitespace and a ``_`` separator are refused."""
+    one. Hex is a number on both; whitespace, a ``_`` separator and a hex exponent
+    past the double's range are refused."""
     _swift, p = both
     by_key = {t["key"]: t for t in p["tasks"]}
     assert (by_key["review:h/o/r#52@s52"]["pr"],
             by_key["review:h/o/r#52@s52"]["tokens"]) == (0, None)
     assert (by_key["review:h/o/r#53@s53"]["pr"],
             by_key["review:h/o/r#53@s53"]["tokens"]) == (16, 1024)
+    assert (by_key["review:h/o/r#54@s54"]["pr"],
+            by_key["review:h/o/r#54@s54"]["tokens"]) == (0, None)
 
 
 def test_a_mean_past_ints_range_rounds_the_same_on_both_sides():
