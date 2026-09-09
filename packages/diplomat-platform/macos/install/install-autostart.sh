@@ -14,16 +14,15 @@ APP="Diplomat.app"
 # code.) build-app.sh rm -rf's and rebuilds, so this is idempotent.
 "$HERE/build-app.sh"
 
-# Install to /Applications (fall back to ~/Applications if not writable).
-if [ -w /Applications ]; then
-  DEST_DIR="/Applications"
-else
-  DEST_DIR="$HOME/Applications"; mkdir -p "$DEST_DIR"
-fi
-rm -rf "$DEST_DIR/$APP"
-cp -R "$APP" "$DEST_DIR/"
-BIN="$DEST_DIR/$APP/Contents/MacOS/Diplomat"
-echo "Installed app → $DEST_DIR/$APP"
+# launchd starts the bundle where build-app.sh writes it, so the login instance is
+# the one Settings ▸ UPDATE and the 06:00 self-update rebuild and relaunch - as on
+# Linux, whose autostart entry runs the checkout's launcher. A copy would keep
+# starting the build it was made from.
+BIN="$PKG_DIR/$APP/Contents/MacOS/Diplomat"
+# Earlier installs copied the bundle here; a click on that copy would start stale
+# code, whose newest-wins singleton then retires the login instance.
+rm -rf "/Applications/$APP" "$HOME/Applications/$APP" \
+  || echo "Could not remove an old copy of $APP; delete it by hand, a click on it starts stale code." >&2
 
 # Write the LaunchAgent.
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
@@ -51,7 +50,8 @@ echo "Wrote $PLIST"
 launchctl bootout "gui/$(id -u)/com.ignacy.argent-utils" 2>/dev/null || true
 rm -f "$HOME/Library/LaunchAgents/com.ignacy.argent-utils.plist"
 pkill -x ArgentUtils 2>/dev/null || true
-rm -rf "/Applications/ArgentUtils.app" "$HOME/Applications/ArgentUtils.app"
+rm -rf "/Applications/ArgentUtils.app" "$HOME/Applications/ArgentUtils.app" \
+  || echo "Could not remove an old ArgentUtils.app copy; delete it by hand." >&2
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 pkill -x Diplomat 2>/dev/null || true
 sleep 1

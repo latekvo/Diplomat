@@ -8,12 +8,18 @@ import Foundation
 /// (and potentially agent dispatch) during a one-shot check.
 enum Headless {
     /// Any one-shot self-test mode (dump, lookup, render, prompt print, track
-    /// test, device dump, poll/scan dry-runs).
-    static let active: Bool = {
-        let env = ProcessInfo.processInfo.environment
+    /// test, device dump, poll/scan dry-runs) this process runs in.
+    static let active: Bool = isActive(in: ProcessInfo.processInfo.environment)
+
+    /// Whether `env` puts an instance in one of those modes: this process's own, or
+    /// another instance's when the singleton picks whom to terminate and the 06:00
+    /// updater asks whether the app is up. The value rules are the launch ladder's
+    /// (`AppDelegate.applicationDidFinishLaunching`): a value it would not dispatch is a
+    /// GUI launch, and no mode here.
+    static func isActive(in env: [String: String]) -> Bool {
         return env["DIPLOMAT_DUMP"] == "1"
             || env["DIPLOMAT_SELF_UPDATE"] == "1"
-            || env["DIPLOMAT_LOOKUP"] != nil
+            || Int(env["DIPLOMAT_LOOKUP"] ?? "") != nil
             || env["DIPLOMAT_PRINT_PROMPT"] != nil
             || env["DIPLOMAT_SETTINGS_DUMP"] == "1"
             || env["DIPLOMAT_RENDER"] != nil
@@ -31,7 +37,16 @@ enum Headless {
             || env["DIPLOMAT_OSA_TEST"] == "1"
             || env["DIPLOMAT_MESH_CMD_TEST"] == "1"
             || env["DIPLOMAT_ALLOCATOR_TEST"] == "1"
-    }()
+            || env["DIPLOMAT_REPOPATHS_TEST"] == "1"
+            || ["1", "hold"].contains(env["DIPLOMAT_RELAUNCH_TEST"] ?? "")
+    }
+
+    /// `env` without every entry that puts an instance in one of those modes - what a
+    /// relaunch hands the GUI it starts. `isActive` is a disjunction over single
+    /// entries, so it is false for the result.
+    static func stripped(_ env: [String: String]) -> [String: String] {
+        env.filter { !isActive(in: [$0.key: $0.value]) }
+    }
 
     /// Specifically the DIPLOMAT_RENDER snapshot mode. Renders seed a real
     /// Store with preview values, and they share the live app's defaults domain —

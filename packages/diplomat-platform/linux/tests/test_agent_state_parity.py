@@ -151,6 +151,25 @@ def test_a_record_flag_that_is_not_a_boolean_is_read_the_same_by_both(value):
     assert _swift(payload) == _python_decoding(payload)
 
 
+@pytest.mark.parametrize("wide", ["1e300", "99999999999999999999", "1e19"])
+def test_a_wide_integer_in_a_record_is_read_the_same_by_both(wide):
+    """The CLI decodes its records by a hand of its own, and every other payload here
+    carries records Python normalized first. A pid or PR number outside Int64 is
+    absent on both sides - the run has no pid, and the PR is not in flight - while
+    a finite double stays what it is."""
+    raw = json.loads(f'{{"runId": "r1", "dispatchedAt": {T0 - 60}, "tty": "pts/3", '
+                     f'"pid": {wide}, "prNumber": {wide}, "quietSince": 1e300}}')
+    # No screen: a read one restarts the stillness clock, and the clock is what
+    # shows a finite double staying what it is.
+    payload = _payload([], ev(processes={4242: proc()}, tokens=True))
+    payload["records"] = [raw]
+
+    swift, python = _swift(payload), _python_decoding(payload)
+    assert swift == python
+    assert python["inFlight"] == {}
+    assert python["records"][0]["quietSince"] == 1e300
+
+
 def test_the_real_booleans_still_survive_both_decoders():
     """Anti-vacuity for the two above: strictness that dropped every flag would agree
     just as well, and say nothing."""

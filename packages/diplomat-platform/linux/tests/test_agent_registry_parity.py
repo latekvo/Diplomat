@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 
 import pytest
 
@@ -110,6 +111,81 @@ def test_the_fixture_leaves_no_field_at_its_default():
                 populated.add(key)
     missing = set(_records()[0].to_json()) - populated
     assert not missing, f"never exercised by the fixture: {sorted(missing)}"
+
+
+def test_a_record_with_unusable_fields_reads_the_same_on_both_sides():
+    """A hand edit or a foreign writer can leave one field in a shape neither encoder
+    emits. Both read the same record back - a default per field - rather than one
+    side dropping the record or raising out of its poll. The run id is the one field
+    with no default, being the record's identity: a record whose id is not a string
+    is dropped by both."""
+    from diplomat_runtime import atomicjson
+    atomicjson.write_atomic(R.runs_path(), {"version": R.SCHEMA_VERSION, "runs": [
+        {"runId": "r1", "dispatchedAt": None, "pid": "x", "prNumber": "7",
+         "claimSeenAt": [], "quietSince": True, "reapRefusedAt": "soon"},
+        {"runId": "r2", "tty": 5, "workKey": ["x"], "label": None, "placement": 1,
+         "source": False, "kind": {}, "quietDigest": 0},
+        {"runId": "r3", "placement": "elsewhere"},
+        {"runId": 7, "tty": "pts/7"}]})
+    ours = [r.to_json() for r in R.load()]
+    assert ours == _swift({"mode": "read"})
+    assert [r["runId"] for r in ours] == ["r1", "r2", "r3"]
+    assert ours[0]["dispatchedAt"] == 0 and ours[0]["pid"] is None
+    assert ours[0]["prNumber"] is None and ours[0]["quietSince"] == 1
+    assert (ours[1]["tty"], ours[1]["workKey"], ours[1]["label"], ours[1]["kind"],
+            ours[1]["quietDigest"]) == ("", "", "", "", "")
+    assert (ours[1]["placement"], ours[1]["source"]) == ("local", "auto")
+    assert ours[2]["placement"] == "local"
+
+
+#: Integers no field may hold. The parsers diverge on the first two before either
+#: decoder runs: ``NSNumber.intValue`` saturates on ``1e300`` and wraps on a 20-digit
+#: literal, where Python reads a 301-digit int and ``10**20`` out of the same bytes.
+#: ``1e19`` both parse faithfully, and it sits between Int64.max and the next power
+#: of ten: the one value that tells the bound apart from a looser one.
+WIDE = ["1e300", "99999999999999999999", "1e19"]
+
+
+@pytest.mark.parametrize("wide", WIDE)
+def test_a_number_the_two_parsers_disagree_on_is_unusable_on_both(wide):
+    """An integer field is usable only inside Int64 - and a finite double stays
+    what it is."""
+    R.runs_path().parent.mkdir(parents=True, exist_ok=True)
+    R.runs_path().write_text(
+        f'{{"version": {R.SCHEMA_VERSION}, "runs": [{{"runId": "r1", '
+        f'"claimSeenAt": 1e300, "pid": {wide}, "prNumber": {wide}}}]}}')
+    ours = [r.to_json() for r in R.load()]
+    assert ours == _swift({"mode": "read"})
+    assert ours[0]["pid"] is None and ours[0]["prNumber"] is None
+    assert ours[0]["claimSeenAt"] == 1e300
+
+
+@pytest.mark.parametrize("wide", WIDE)
+def test_the_write_mode_holds_the_same_bound_as_the_book(wide):
+    """``mode: write`` decodes its payload by a hand of its own, and nothing the Linux
+    applet hands it carries a number it did not normalize first - so the bound above
+    is pinned here on a payload built raw."""
+    raw = json.loads(f'{{"runId": "r1", "claimSeenAt": 1e300, "quietSince": 1e300, '
+                     f'"pid": {wide}, "prNumber": {wide}}}')
+    _swift({"mode": "write", "runs": [raw]})
+    ours = [r.to_json() for r in R.load()]
+    assert ours == [A.RunRecord.from_json(raw).to_json()]
+    assert ours[0]["pid"] is None and ours[0]["prNumber"] is None
+    assert ours[0]["claimSeenAt"] == ours[0]["quietSince"] == 1e300
+
+
+def test_an_infinity_reaches_no_record_on_either_side():
+    """Darwin's ``JSONSerialization`` parses ``-1e999`` to ``-inf`` - bare, a quiet
+    clock past every timeout, and an uncatchable exception at the next save - while
+    corelibs refuses the document, so on Linux the Swift side has no book at all.
+    Text, because ``json.dumps`` cannot spell ``-1e999``."""
+    R.runs_path().parent.mkdir(parents=True, exist_ok=True)
+    R.runs_path().write_text(
+        f'{{"version": {R.SCHEMA_VERSION}, "runs": [{{"runId": "r1", '
+        f'"dispatchedAt": -1e999, "quietSince": -1e999}}]}}')
+    ours = [r.to_json() for r in R.load()]
+    assert ours[0]["dispatchedAt"] == 0 and ours[0]["quietSince"] is None
+    assert _swift({"mode": "read"}) == (ours if sys.platform == "darwin" else [])
 
 
 def test_a_schema_the_other_side_does_not_know_is_ignored_by_both():

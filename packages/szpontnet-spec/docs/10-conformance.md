@@ -152,7 +152,9 @@ assignment.
 - `encode`→`decode` of every message type yields an equal object (modulo the
   defaulted `v`).
 - `decode` returns "drop" for: empty input; non-JSON; a JSON array (non-object); an
-  object with no string `t`; invalid UTF-8; a line longer than 512 KiB.
+  object with no string `t`; invalid UTF-8; a line longer than 512 KiB; a line within
+  the limit the parser refuses (nested past its stack, an integer literal past its
+  digit limit).
 - A NodeInfo with no `id` is invalid; one with a non-numeric `tier` is invalid; one
   with only `id` fills all other fields with defaults.
 

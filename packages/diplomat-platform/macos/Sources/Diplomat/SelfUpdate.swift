@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 /// Self-update for the macOS app: fast-forward the checkout, rebuild the `.app`
@@ -167,24 +168,85 @@ enum SelfUpdate {
         }
     }
 
-    /// Launch the freshly-built bundle detached; its newest-wins singleton terminates
-    /// this instance once it's up, so the caller only reports "restarting…" and waits to
-    /// be replaced. Mirrors `selfupdate.relaunch`.
-    static func relaunch() throws {
-        // Beside the macOS package, which is where `build-app.sh` writes it.
-        let app = RepoPaths.macosPackage.appendingPathComponent("Diplomat.app")
+    /// Launch the freshly-built bundle detached and see it come up. `open` exits 0 once
+    /// LaunchServices has taken the request, whatever becomes of the process, so the
+    /// verdict is the instance itself: one running `app` that was not there before must
+    /// appear (a launch takes seconds on a loaded machine) and still be running `window`
+    /// later, else the swap did not happen. The failure says what is up instead: the
+    /// instances from before the launch, still the old build, or nothing, since a new
+    /// instance ends the old ones before anything past its launch can fail.
+    /// Its newest-wins singleton terminates this instance once it is up, so a caller
+    /// still around afterwards reports "restarting…" and waits to be replaced. Mirrors
+    /// `selfupdate.relaunch` and `relaunch_failure`.
+    ///
+    /// `open` passes its environment to the instance, so it gets this one with every
+    /// headless marker removed: relaunched by the 06:00 updater with its
+    /// `DIPLOMAT_SELF_UPDATE=1` intact, the instance would be a second updater that
+    /// finds the checkout current and exits, not the GUI.
+    ///
+    /// The default `app` is beside the macOS package, where `build-app.sh` writes it.
+    static func relaunch(_ app: URL = RepoPaths.macosPackage.appendingPathComponent("Diplomat.app"),
+                         window: TimeInterval = 3) throws {
+        let name = app.lastPathComponent
         guard FileManager.default.fileExists(atPath: app.path) else {
-            throw UpdateError(message: "Diplomat.app not found at \(app.path) after rebuild")
+            throw UpdateError(message: "\(name) not found at \(app.path) after rebuild")
         }
+        let before = Set(instances(of: app).map(\.processIdentifier))
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
         p.arguments = ["-n", app.path]
+        p.environment = Headless.stripped(ProcessInfo.processInfo.environment)
         do { try p.run() } catch {
             throw UpdateError(message: "could not relaunch the app: \(error.localizedDescription)")
         }
         p.waitUntilExit()
         if p.terminationStatus != 0 {
-            throw UpdateError(message: "open Diplomat.app exited \(p.terminationStatus)")
+            throw UpdateError(message: "open \(name) exited \(p.terminationStatus)")
+        }
+        func newInstance() -> pid_t? {
+            instances(of: app).map(\.processIdentifier).first { !before.contains($0) }
+        }
+        /// What is up once the relaunch has failed: the instances from before it that are
+        /// GUI ones by `SingleInstance`'s rule. The 06:00 updater runs from the bundle it
+        /// relaunches and is not the old build standing; the GUI behind the Update button is.
+        func standing() -> String {
+            let old = instances(of: app).filter {
+                before.contains($0.processIdentifier)
+                    && !Headless.isActive(in: SingleInstance.environment(of: $0.processIdentifier))
+            }
+            return old.isEmpty ? "no instance of \(name) is running"
+                               : "the running app is still the old build"
+        }
+        let appearBy = Date().addingTimeInterval(10)
+        var launched = newInstance()
+        while launched == nil, Date() < appearBy {
+            usleep(50_000)
+            launched = newInstance()
+        }
+        guard let launched else {
+            throw UpdateError(message: "no new instance of \(name) came up within 10s; \(standing())")
+        }
+        let settled = Date().addingTimeInterval(window)
+        while Date() < settled {
+            usleep(50_000)
+            guard instances(of: app).contains(where: { $0.processIdentifier == launched }) else {
+                throw UpdateError(message: "the relaunched \(name) exited within \(Int(window))s; "
+                    + standing())
+            }
+        }
+    }
+
+    /// The live instances of the bundle at `app`: LaunchServices asked directly, by the
+    /// identifier in the bundle's Info.plist and then by path (a copy kept elsewhere
+    /// shares the identifier). Not `NSWorkspace.runningApplications`, which is refreshed
+    /// only as the main run loop turns while this is polled off it. Both paths are
+    /// resolved because LaunchServices reports one in its own form (`/private/tmp/x`
+    /// comes back as `/tmp/x`).
+    static func instances(of app: URL) -> [NSRunningApplication] {
+        guard let id = Bundle(url: app)?.bundleIdentifier else { return [] }
+        let path = app.resolvingSymlinksInPath().path
+        return NSRunningApplication.runningApplications(withBundleIdentifier: id).filter {
+            $0.bundleURL?.resolvingSymlinksInPath().path == path
         }
     }
 

@@ -52,6 +52,33 @@ from . import (
 )
 
 
+def app_settings() -> QSettings:
+    """This front-end's own preference store, the Linux analogue of UserDefaults.
+
+    Built on the process-wide default format rather than with the two-arg
+    ``QSettings(org, app)``, which is hardwired to NativeFormat - on macOS that ignores
+    ``QSettings.setPath``, so the test suite could not redirect it and would read and
+    write the real user settings.
+    """
+    return QSettings(QSettings.defaultFormat(), QSettings.Scope.UserScope,
+                     "diplomat", "diplomat")
+
+
+def mesh_switch(settings: QSettings) -> bool:
+    """Opt-in: whether this machine joins the LAN P2P mesh. Off by default so
+    Diplomat never opens a UDP/TCP node on the network unasked; the app auto-starts
+    a node only once the user enables it in Settings.
+
+    A machine with no SzpontNet installed is not on the mesh whatever its preference
+    says, and this is where that becomes true rather than at each of the dozen call
+    sites: every mesh-shaped path in the applet already asks this question, so
+    answering it honestly is what makes the add-on optional. The stored preference
+    is left alone — install the library and the machine rejoins the mesh it was
+    already opted into.
+    """
+    return szpont.AVAILABLE and settings.value("meshEnabled", False, bool)
+
+
 def _count(n: int, noun: str) -> str:
     """``3 files`` / ``1 file`` — the pluralisation two row builders share."""
     return f"{n} {noun}" if n == 1 else f"{n} {noun}s"
@@ -158,9 +185,6 @@ class Store(QObject):
     # Emitted when a telemetry sample lands, so an open Telemetry screen refreshes
     # instead of waiting for the user to flip a range.
     telemetry_changed = Signal()
-
-    _ORG = "diplomat"
-    _APP = "diplomat"
 
     # How many agent screens must be read without once showing the CLI's interrupt
     # hint before that is worth reporting. High, because a quiet machine legitimately
@@ -291,6 +315,9 @@ class Store(QObject):
         # thread and released by the worker (see run_autofix_poll_async), so it must
         # be a plain Lock (cross-thread release), never nested with _autofix_lock.
         self._poll_lock = threading.Lock()
+        # One settle at a time: the poll and the panel's refresh both retire, price
+        # and audit what a tick found, and two at once did it twice.
+        self._settle_lock = threading.Lock()
         # PR numbers with a dispatch_agent call in flight - a click and an
         # overlapping poll can't race two spawns onto one PR. Guarded by its own
         # short mutex: _autofix_lock is the whole-poll overlap guard (held for the
@@ -315,13 +342,7 @@ class Store(QObject):
         self._workers: list[threading.Thread] = []
         self._workers_lock = threading.Lock()
 
-        # Honor the process-wide default format (NativeFormat unless overridden):
-        # the two-arg QSettings(org, app) constructor is hardwired to NativeFormat,
-        # which on macOS ignores QSettings.setPath — so the test suite couldn't
-        # redirect it and would read/write the real user settings.
-        self._settings = QSettings(
-            QSettings.defaultFormat(), QSettings.Scope.UserScope, self._ORG, self._APP
-        )
+        self._settings = app_settings()
 
         # Re-point a hidden default selection.
         if self.selected in self.hidden_tools:
@@ -469,24 +490,12 @@ class Store(QObject):
 
     @property
     def mesh_enabled(self) -> bool:
-        """Opt-in: whether this machine joins the LAN P2P mesh. Off by default so
-        Diplomat never opens a UDP/TCP node on the network unasked; the app
-        auto-starts a node only once the user enables it in Settings.
-
+        """:func:`mesh_switch`, which the ``DIPLOMAT_AGENTS`` dump reads Store-free.
         ``_mesh_enabled_override`` lets the headless render force it on without
-        writing (and persisting) to the real user QSettings.
-
-        A machine with no SzpontNet installed is not on the mesh whatever its
-        preference says, and this is where that becomes true rather than at each
-        of the dozen call sites: every mesh-shaped path in the applet already
-        asks this question, so answering it honestly is what makes the add-on
-        optional. The stored preference is left alone — install the library and
-        the machine rejoins the mesh it was already opted into."""
-        if not szpont.AVAILABLE:
-            return False
+        writing (and persisting) to the real user QSettings."""
         if self._mesh_enabled_override is not None:
-            return self._mesh_enabled_override
-        return self._settings.value("meshEnabled", False, bool)
+            return szpont.AVAILABLE and self._mesh_enabled_override
+        return mesh_switch(self._settings)
 
     @mesh_enabled.setter
     def mesh_enabled(self, value: bool) -> None:
@@ -817,7 +826,8 @@ class Store(QObject):
         # was never dropped, its bay never came back, its PR stayed deduped and its
         # cost never reached the ledger, on exactly the machines that leave the tray
         # alone. (Seen live: three runs, panel closed, nothing retiring.)
-        self._settle_agents()
+        with self._settle_lock:
+            self._settle_and_signal()
         try:
             if not self.effective_me:
                 self.fetch_me()
@@ -1472,6 +1482,18 @@ class Store(QObject):
         finishing as another starts leaves the count alone while both rows are now
         wrong, and an agent going quiet moves no count at all while the bay it hands
         back is drawn from that same measure."""
+        if not self._settle_lock.acquire(blocking=False):
+            return  # a settle is under way; the next tick asks again
+        try:
+            self._settle_and_signal()
+        finally:
+            self._settle_lock.release()
+
+    def _settle_and_signal(self) -> None:
+        """Settle, and tell the panel if the agent picture moved (`_state_signature`).
+
+        The poll's settle says so too: what it retires stays drawn until the panel is
+        told, and the panel's own refresh is up to a tick away."""
         before = self._state_signature()
         self._settle_agents()
         if self._state_signature() != before:
@@ -2173,7 +2195,7 @@ class Store(QObject):
         now = time.time()
         records = agentregistry.adopt_pids(agentregistry.load())
         evidence = probes.gather(records, now, merged=self._merged_prs,
-                                 tokens=self._tokens_left)
+                                 tokens=self._tokens_left, mesh_enabled=self.mesh_enabled)
         t = agentstate.tick(records, evidence, now, self.auto_task_limit,
                             appconfig.run_deadline())
         with self._tick_lock:
@@ -2296,28 +2318,29 @@ class Store(QObject):
         retired while this tick resolved, and writing it back would raise the dead.
         """
         learned = {r.run_id: r for r in t.records}
-        out, changed = [], False
-        for r in agentregistry.load():
-            fresh = learned.pop(r.run_id, None)
-            if fresh is None:
-                out.append(r)
-                continue
-            merged = dataclasses.replace(
-                r,
-                pid=r.pid if r.pid is not None else fresh.pid,
-                # The fresher one wins here, unlike the pid: a synthesized run's tty
-                # follows whichever agent its PR's sighting currently names.
-                tty=fresh.tty or r.tty,
-                claim_seen_at=fresh.claim_seen_at or r.claim_seen_at,
-                quiet_digest=fresh.quiet_digest,
-                quiet_since=fresh.quiet_since,
-            )
-            changed = changed or merged != r
-            out.append(merged)
-        fresh_rows = [r for r in learned.values() if r.untracked]
-        out.extend(fresh_rows)
-        if changed or fresh_rows:
-            agentregistry.save(out)
+
+        def merge(book: list[agentstate.RunRecord]) -> list[agentstate.RunRecord]:
+            out = []
+            for r in book:
+                fresh = learned.get(r.run_id)
+                if fresh is None:
+                    out.append(r)
+                    continue
+                out.append(dataclasses.replace(
+                    r,
+                    pid=r.pid if r.pid is not None else fresh.pid,
+                    # The fresher one wins here, unlike the pid: a synthesized run's
+                    # tty follows whichever agent its PR's sighting currently names.
+                    tty=fresh.tty or r.tty,
+                    claim_seen_at=fresh.claim_seen_at or r.claim_seen_at,
+                    quiet_digest=fresh.quiet_digest,
+                    quiet_since=fresh.quiet_since,
+                ))
+            booked = {r.run_id for r in book}
+            out.extend(r for r in t.records if r.untracked and r.run_id not in booked)
+            return out
+
+        agentregistry.update(merge)
 
     def _retire_finished(self, t: agentstate.Tick) -> None:
         """Price what has ended and drop it from the book.
@@ -2438,7 +2461,7 @@ class Store(QObject):
         refused: set[str] = set()
         for record in t.reapable:
             if not (tmuxwatch.kill_session(tmuxwatch.session_name(record.run_id))
-                    or tmuxwatch.kill_session_for_tty(record.tty)):
+                    or tmuxwatch.kill_window_for_tty(record.tty)):
                 refused.add(record.run_id)
                 # Once per episode: the stamp is None only before the first refusal.
                 # A window nothing can close is retried for the life of the applet, and
@@ -2453,10 +2476,10 @@ class Store(QObject):
                          f"closed {record.label or record.run_id}'s window — "
                          f"{reason.split('; ')[-1]}")
         if refused:
-            agentregistry.save([
+            agentregistry.update(lambda book: [
                 dataclasses.replace(r, reap_refused_at=t.now)
                 if r.run_id in refused else r
-                for r in agentregistry.load()])
+                for r in book])
         return refused
 
     def _in_flight(self, url: str) -> bool:
@@ -2867,7 +2890,10 @@ class Store(QObject):
                 step(f"building diplomat-core at {commit}…")
                 selfupdate.build_core()
                 step("relaunching…")
-                selfupdate.relaunch()
+                exited = selfupdate.relaunch_failure(selfupdate.relaunch())
+                if exited is not None:
+                    raise selfupdate.UpdateError(
+                        f"the relaunched applet exited {exited}; this one is still the old build")
                 self.update_state = {"phase": "restarting", "commit": commit}
             except (selfupdate.UpdateError, OSError, subprocess.TimeoutExpired) as exc:
                 # TimeoutExpired (black-holed network on pull's fetch, or a hung swift

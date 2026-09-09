@@ -31,9 +31,10 @@ public enum AgentRegistry {
     /// fields it does not understand, and the process scan still covers what is running.
     public static let schemaVersion = 1
 
-    /// Serialises the read-modify-write in `add`: a spawn registering against a list a
-    /// concurrent sweep already copied would be dropped, leaving an agent nothing
-    /// counts — a bay of the cap the machine can then spend twice.
+    /// Serialises every read-modify-write of the book, the read included: a spawn
+    /// registering against a list a concurrent sweep already copied would be dropped,
+    /// leaving an agent nothing counts — a bay of the cap the machine can then spend
+    /// twice.
     private static let lock = NSLock()
 
     // MARK: - Paths
@@ -153,6 +154,23 @@ public enum AgentRegistry {
         lock.lock()
         defer { lock.unlock() }
         return write(records)
+    }
+
+    /// Replace the book with `transform` of what is on disk, read-modify-write under
+    /// the lock.
+    ///
+    /// Every edit of existing records goes through here rather than `load()` then
+    /// `save()`: between those two a spawn registers against a list this caller
+    /// already copied, and the save drops it - an agent nothing counts, a bay of the
+    /// cap spent twice. Unchanged books are not rewritten.
+    @discardableResult
+    public static func update(
+        _ transform: ([AgentState.RunRecord]) -> [AgentState.RunRecord]) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let before = loadUnlocked()
+        let after = transform(before)
+        return after == before ? true : write(after)
     }
 
     /// Append one run, read-modify-write under the lock.
@@ -324,9 +342,7 @@ public enum AgentRegistry {
     /// ended — never on a timer.
     public static func forget(_ runIDs: Set<String>) {
         guard !runIDs.isEmpty else { return }
-        lock.lock()
-        write(loadUnlocked().filter { !runIDs.contains($0.runID) })
-        lock.unlock()
+        update { $0.filter { !runIDs.contains($0.runID) } }
         for id in runIDs { try? FileManager.default.removeItem(at: runDir(id)) }
     }
 
@@ -373,8 +389,8 @@ public enum AgentRegistry {
         guard let runID = d["runId"] as? String else { return nil }
         return AgentState.RunRecord(
             runID: runID,
-            dispatchedAt: (d["dispatchedAt"] as? NSNumber)?.doubleValue ?? 0,
-            prNumber: (d["prNumber"] as? NSNumber)?.intValue,
+            dispatchedAt: number(d["dispatchedAt"]) ?? 0,
+            prNumber: integer(d["prNumber"]),
             prURL: d["prUrl"] as? String ?? "",
             kind: d["kind"] as? String ?? "",
             label: d["label"] as? String ?? "",
@@ -384,12 +400,30 @@ public enum AgentRegistry {
             node: d["node"] as? String ?? "",
             workKey: d["workKey"] as? String ?? "",
             ledgerKey: d["ledgerKey"] as? String ?? "",
-            pid: (d["pid"] as? NSNumber)?.intValue,
+            pid: integer(d["pid"]),
             tty: d["tty"] as? String ?? "",
-            claimSeenAt: (d["claimSeenAt"] as? NSNumber)?.doubleValue,
+            claimSeenAt: number(d["claimSeenAt"]),
             quietDigest: d["quietDigest"] as? String ?? "",
-            quietSince: (d["quietSince"] as? NSNumber)?.doubleValue,
-            reapRefusedAt: (d["reapRefusedAt"] as? NSNumber)?.doubleValue,
+            quietSince: number(d["quietSince"]),
+            reapRefusedAt: number(d["reapRefusedAt"]),
             untracked: d["untracked"] as? Bool ?? false)
+    }
+
+    // Python twin: `agentstate._number` / `_integer`. One rule, because the parsers
+    // disagree first: Darwin's `JSONSerialization` reads `-1e999` as `-inf`, which the
+    // next `write` dies on (an uncatchable exception), and `NSNumber.intValue`
+    // saturates on `1e300` and wraps on a 20-digit literal.
+
+    /// A JSON number as a `Double`; nil unless finite.
+    public static func number(_ raw: Any?) -> Double? {
+        guard let v = (raw as? NSNumber)?.doubleValue, v.isFinite else { return nil }
+        return v
+    }
+
+    /// The same for an integer field (`pid`, `prNumber`): nil unless it also sits
+    /// inside `clampedInt`'s bound, truncated like `Int(Double)`.
+    public static func integer(_ raw: Any?) -> Int? {
+        guard let v = number(raw), abs(v) < 9.0e18 else { return nil }
+        return Int(v)
     }
 }

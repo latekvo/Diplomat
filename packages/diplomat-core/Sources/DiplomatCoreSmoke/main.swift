@@ -1647,7 +1647,106 @@ do {
     AgentRegistry.forget([run])
     check(AgentRegistry.load().isEmpty && AgentRegistry.boundSession(run) == "",
           "forgetting a run takes its sidecars with it")
+    // Every edit of the book is one locked read-modify-write. The spawn below is
+    // fired from inside the transform, as test_agent_registry.py's is from inside
+    // forget's read: with the read outside the lock it lands between that read and
+    // the write, and the write covers it.
+    AgentRegistry.add(AgentState.RunRecord(runID: "upd-a", dispatchedAt: now))
+    AgentRegistry.add(AgentState.RunRecord(runID: "upd-b", dispatchedAt: now))
+    func bookAfterUpdate() -> [String] {
+        let spawn = DispatchGroup()
+        AgentRegistry.update { book in
+            DispatchQueue.global().async(group: spawn) {
+                AgentRegistry.add(AgentState.RunRecord(runID: "upd-c", dispatchedAt: now))
+            }
+            _ = spawn.wait(timeout: .now() + 0.5)
+            return book.filter { $0.runID != "upd-a" }
+        }
+        spawn.wait()
+        return AgentRegistry.load().map(\.runID)
+    }
+    check(bookAfterUpdate() == ["upd-b", "upd-c"],
+          "a run registered during an update is in the book it leaves")
+    AgentRegistry.forget(["upd-b", "upd-c"])
     print("run book sidecar assertions passed")
+}
+
+section("the run book under contention")
+// Every edit is a read-modify-write under one lock, and the lock covers the read: a
+// read outside it is a copy that misses what a concurrent writer booked, and the
+// write that follows drops it. Eight threads each book a run and forget their previous
+// one, forty times, racing; what survives is exactly each thread's last run.
+do {
+    let book = FileManager.default.temporaryDirectory
+        .appendingPathComponent("diplomat-smoke-agents-\(UUID().uuidString)", isDirectory: true)
+    setenv("DIPLOMAT_AGENTS_DIR", book.path, 1)
+    defer { try? FileManager.default.removeItem(at: book) }
+    let now = Date().timeIntervalSince1970
+    let threads = 8, rounds = 40
+    let started = Date()
+    func race() {
+        let done = DispatchGroup()
+        for t in 0..<threads {
+            DispatchQueue.global().async(group: done) {
+                var previous: String?
+                for k in 0..<rounds {
+                    let id = "t\(t)-\(k)"
+                    AgentRegistry.update { $0 + [AgentState.RunRecord(runID: id, dispatchedAt: now)] }
+                    if let previous { AgentRegistry.forget([previous]) }
+                    previous = id
+                }
+            }
+        }
+        done.wait()
+    }
+    race()
+    let survivors = Set(AgentRegistry.load().map(\.runID))
+    let expected = Set((0..<threads).map { "t\($0)-\(rounds - 1)" })
+    check(survivors == expected,
+          "\(threads * rounds) racing updates and forgets lose nothing: "
+          + "\(expected.subtracting(survivors).count) missing, \(survivors.subtracting(expected).count) resurrected")
+    print("run book contention assertions passed (\(threads * rounds) updates in "
+          + "\(String(format: "%.2f", Date().timeIntervalSince(started)))s)")
+}
+
+section("numbers in a hand-edited run book")
+// PARITY: `tests/test_agent_registry_parity.py` reads these books on both sides. The
+// two parsers already disagree on these literals before either decoder runs, so both
+// default them by one rule (`AgentRegistry.number`): finite, and inside Int64 for an
+// integer field.
+do {
+    let book = FileManager.default.temporaryDirectory
+        .appendingPathComponent("diplomat-smoke-agents-\(UUID().uuidString)", isDirectory: true)
+    setenv("DIPLOMAT_AGENTS_DIR", book.path, 1)
+    defer { try? FileManager.default.removeItem(at: book) }
+    try? FileManager.default.createDirectory(at: book, withIntermediateDirectories: true)
+    let wide = """
+    {"version": \(AgentRegistry.schemaVersion), "runs": [
+      {"runId": "r1", "dispatchedAt": 1, "claimSeenAt": 1e300, "pid": 1e300,
+       "prNumber": 99999999999999999999},
+      {"runId": "r2", "dispatchedAt": 1, "pid": 99999999999999999999, "prNumber": 1e300}]}
+    """
+    try? wide.write(to: AgentRegistry.runsPath(), atomically: true, encoding: .utf8)
+    let runs = AgentRegistry.load()
+    check(runs.map(\.runID) == ["r1", "r2"], "the records survive their unusable numbers")
+    check(runs[0].claimSeenAt == 1e300, "a finite double stays what it is")
+    check(runs.allSatisfy { $0.pid == nil && $0.prNumber == nil },
+          "past Int64 is no pid and no PR number, whichever way it is spelled")
+
+    let infinite = """
+    {"version": \(AgentRegistry.schemaVersion), "runs": [
+      {"runId": "r1", "dispatchedAt": -1e999, "quietSince": -1e999}]}
+    """
+    try? infinite.write(to: AgentRegistry.runsPath(), atomically: true, encoding: .utf8)
+    let inf = AgentRegistry.load()
+    // Darwin's parser makes `-inf` of `-1e999`; corelibs refuses the whole document.
+    #if canImport(Darwin)
+    check(inf.count == 1 && inf[0].dispatchedAt == 0 && inf[0].quietSince == nil,
+          "-1e999 is the default, not -inf")
+    #else
+    check(inf.isEmpty, "a document holding -1e999 is no book")
+    #endif
+    print("hand-edited number assertions passed")
 }
 
 section("autofix mesh coordination")
@@ -1801,12 +1900,33 @@ check(oddSummary.finished.last?.at == tNow - 5 * 3600
       "the bars were laid forwards from the start of the range")
 check(Telemetry.bucketLabel(4) == "4h" && Telemetry.bucketLabel(48) == "48h")
 check(Telemetry.bucketLabel(0.5) == "30m 00s", "a fractional bucket read as 0h")
+check(Telemetry.bucketLabel(1e19) == "\(Int.max)h", "a width past Int's range must clamp, not trap")
 // The bar width per lookback, which is the shared model's to decide — the two screens
 // draw the same bars only because they ask this rather than each picking a width.
 let tModel = try? CoreAssets.telemetry()
 check(tModel?.bucketHours(days: 7) == 4 && tModel?.bucketHours(days: 14) == 12
       && tModel?.bucketHours(days: 30) == 24 && tModel?.bucketHours(days: 60) == 48,
       "the shipped ranges do not bucket the way the model says")
+// A value past Int's range is a corrupt or hand-edited line, and `Int(Double)` traps on
+// it. The Telemetry screen folds the ledger on every repaint, so that trap took the
+// app down at every launch until the line was found and removed.
+let poisoned = Telemetry.fold(lines: [
+    #"{"at": 1784920000, "ev": "queued", "key": "review:h/o/r#9@zz", "duty": "review", "pr": 1e300}"#])
+check(poisoned.tasks.first?.pr == Int.max, "an out-of-range pr must clamp, not trap")
+check(Telemetry.duration(1e300).hasSuffix("m"), "an absurd duration must format, not trap")
+// A count whose share of the window overflows a Double. As `inf` it would bin as NaN,
+// which `Int(Double)` traps on - the same repaint-time trap. The share is dropped;
+// the count is still what the task cost.
+let overflowed = Telemetry.fold(lines: tLines + [
+    #"{"at": 1784930000, "ev": "started", "key": "review:h/o/r#5@ee", "remote": false, "attempt": 1}"#,
+    #"{"at": 1784931000, "ev": "done", "key": "review:h/o/r#5@ee", "tokens": 1e308}"#,
+])
+let overflowedSummary = Telemetry.summarize(overflowed, now: tNow, days: 14, steps: 56,
+                                            binCount: 12, z: 1.96, bucketHours: 12)
+check(overflowedSummary.perTask.count == 1 && overflowedSummary.perTaskWeek.count == 1,
+      "an overflowed share must be dropped, not binned")
+check(overflowedSummary.perTask.mean == 5, "the overflowed share moved the mean")
+check(overflowedSummary.perTaskTokensMean > 1e300, "the count itself was dropped as a cost")
 // A ledger with no quota readings can count tokens but cannot honestly turn them
 // into a share of a window — the screen shows tokens and says so.
 let unpriced = Telemetry.fold(lines: tLines.filter { !$0.contains("\"sample\"") })
@@ -2327,6 +2447,182 @@ if ProcessInfo.processInfo.environment["DIPLOMAT_GOLDEN_WRITE"] == "1" {
         check(prompt == golden, "prompt \(name) drifted from its golden file")
     }
     print("golden-prompt assertions passed (\(goldenModes.count) modes)")
+}
+
+// ---- GH: a gh that never answers is given up on ----
+// The Linux twin's gh.run carries the same 60 s budget. A stub that sleeps stands in
+// for the stalled response, with the deadline shortened to a second; DIPLOMAT_GH names
+// it.
+do {
+    let stub = FileManager.default.temporaryDirectory.appendingPathComponent("smoke-gh-\(getpid()).sh")
+    // exec, so the process the deadline signals is the one that sleeps.
+    try "#!/bin/sh\nexec sleep 30\n".write(to: stub, atomically: true, encoding: .utf8)
+    chmod(stub.path, 0o755)
+    defer { try? FileManager.default.removeItem(at: stub) }
+    setenv("DIPLOMAT_GH", stub.path, 1)
+    let started = Date()
+    var outcome = "returned"
+    do { _ = try await GH.run(["api", "/"], timeout: 1) }
+    catch GHError.timeout(let s) { outcome = "timeout \(Int(s))" }
+    catch { outcome = "other: \(error)" }
+    check(outcome == "timeout 1", "a stalled gh is reported as a timeout, got: \(outcome)")
+    check(Date().timeIntervalSince(started) < 10, "the deadline is what ends the wait, not the stub")
+    unsetenv("DIPLOMAT_GH")
+}
+
+// ---- GH: the login shell's answer is read without waiting on what it left behind ----
+// A profile that starts a job in the background leaves stdout held after the shell
+// exits; the lookup reads a file rather than draining a pipe, so the answer is back
+// when the shell is. Darwin only: corelibs learns of the exit from a socket that job
+// inherits too, so there the lookup waits for the job either way.
+#if canImport(Darwin)
+do {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("smoke-ghshell-\(getpid())")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let gh = dir.appendingPathComponent("gh")
+    try "#!/bin/sh\necho stub\n".write(to: gh, atomically: true, encoding: .utf8)
+    chmod(gh.path, 0o755)
+    let stub = dir.appendingPathComponent("shell.sh")
+    try "#!/bin/sh\nsleep 8 &\necho \(gh.path)\n".write(to: stub, atomically: true, encoding: .utf8)
+    chmod(stub.path, 0o755)
+    let shell = ProcessInfo.processInfo.environment["SHELL"]
+    setenv("SHELL", stub.path, 1)
+    defer { if let shell { setenv("SHELL", shell, 1) } else { unsetenv("SHELL") } }
+    let started = Date()
+    var found = "nil"
+    do { found = try GH.loginShellWhichGH() ?? "nil" } catch { found = "\(error)" }
+    let elapsed = Date().timeIntervalSince(started)
+    check(found == gh.path, "the gh the login shell names is the answer, got: \(found)")
+    check(elapsed < 4, "read once the shell exits, not once the job it backgrounded does (\(elapsed)s)")
+    print("login shell answered in \(String(format: "%.2f", elapsed))s beside a job it left running")
+}
+#else
+print("corelibs: a job the login shell backgrounds holds its exit socket, so the read's shape is not observable here")
+#endif
+
+// ---- GH: a login shell that never answers is given up on, then killed ----
+// SHELL names a stub that ignores the terminate and sleeps on under its own pid, so
+// only the lookup's five-second deadline can end the wait, and only the kill armed
+// five seconds behind the terminate can remove the stub.
+let stalledShell = FileManager.default.temporaryDirectory.appendingPathComponent("smoke-shell-\(getpid()).sh")
+let stalledPidFile = FileManager.default.temporaryDirectory.appendingPathComponent("smoke-shell-\(getpid()).pid")
+try "#!/bin/sh\ntrap '' TERM\necho $$ > \(stalledPidFile.path)\nexec sleep 30\n"
+    .write(to: stalledShell, atomically: true, encoding: .utf8)
+chmod(stalledShell.path, 0o755)
+defer {
+    try? FileManager.default.removeItem(at: stalledShell)
+    try? FileManager.default.removeItem(at: stalledPidFile)
+}
+func alive(_ pid: Int32) -> Bool { kill(pid, 0) == 0 }
+let stalledPid: Int32
+let stalledAt: Date
+do {
+    let shell = ProcessInfo.processInfo.environment["SHELL"]
+    setenv("SHELL", stalledShell.path, 1)
+    defer { if let shell { setenv("SHELL", shell, 1) } else { unsetenv("SHELL") } }
+    let started = Date()
+    var outcome = "returned", advice = ""
+    do { _ = try GH.loginShellWhichGH() }
+    catch GHError.loginShellStalled(let shell, let seconds) {
+        outcome = "stalled \(shell == stalledShell.path ? "by this shell" : shell) after \(Int(seconds))s"
+        advice = GHError.loginShellStalled(shell: shell, seconds: seconds).errorDescription ?? ""
+    }
+    catch { outcome = "other: \(error)" }
+    let elapsed = Date().timeIntervalSince(started)
+    check(outcome == "stalled by this shell after 5s",
+          "a login shell that never answers is reported as stalled, got: \(outcome)")
+    check(advice.contains(stalledShell.path) && advice.contains("DIPLOMAT_GH"),
+          "what the operator reads names the shell and the way out, got: \(advice)")
+    check(elapsed >= 4.5 && elapsed < 9,
+          "the lookup's own deadline ends the wait, not the stub's death (\(Int(elapsed))s)")
+    stalledPid = Int32((try? String(contentsOf: stalledPidFile, encoding: .utf8))?
+        .trimmingCharacters(in: .whitespacesAndNewlines) ?? "") ?? 0
+    check(stalledPid > 0, "the stub recorded its pid")
+    check(alive(stalledPid), "the stub ignores the terminate the deadline sends")
+    stalledAt = started
+    print("stalled login shell given up on after \(Int(elapsed))s")
+}
+
+// ---- GH: where the login shell is the only source, its stall is what a call reports ----
+// Where no candidate path holds gh (the Linux CI container), a call reaches the
+// lookup, and a stall must not read as gh being absent. Nothing is cached yet: the
+// override is read before the cache, and the lookups above were called directly.
+let ghAtCandidatePath = GH.candidatePaths.contains(where: { FileManager.default.isExecutableFile(atPath: $0) })
+if ghAtCandidatePath {
+    print("gh at a candidate path: a call never reaches the login shell here, so what it makes of the lookup is untested")
+} else {
+    let shell = ProcessInfo.processInfo.environment["SHELL"]
+    setenv("SHELL", stalledShell.path, 1)
+    defer { if let shell { setenv("SHELL", shell, 1) } else { unsetenv("SHELL") } }
+    var outcome = "returned"
+    do { _ = try await GH.run(["--version"]) }
+    catch GHError.loginShellStalled(let shell, _) { outcome = shell == stalledShell.path ? "stalled" : "stalled by \(shell)" }
+    catch GHError.ghNotFound { outcome = "not found" }
+    catch { outcome = "other: \(error)" }
+    check(outcome == "stalled", "a stalled login shell is reported as the stall, not as no gh, got: \(outcome)")
+    print("a call through a stalled login shell reports the stall")
+}
+
+// ---- GH: a cached gh that no longer launches is looked for again ----
+// The path the login shell answers is kept for the process, so the gh at it moving
+// or being uninstalled would otherwise fail every call until the app restarts. The
+// shell stub answers whichever of two stub ghs exists.
+if !ghAtCandidatePath {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("smoke-ghcache-\(getpid())")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let first = dir.appendingPathComponent("first"), second = dir.appendingPathComponent("second")
+    func install(_ url: URL) throws {
+        try "#!/bin/sh\necho \(url.lastPathComponent)\n".write(to: url, atomically: true, encoding: .utf8)
+        chmod(url.path, 0o755)
+    }
+    let stub = dir.appendingPathComponent("shell.sh")
+    try "#!/bin/sh\nfor p in \(first.path) \(second.path); do [ -x \"$p\" ] && { echo \"$p\"; exit 0; }; done\nexit 1\n"
+        .write(to: stub, atomically: true, encoding: .utf8)
+    chmod(stub.path, 0o755)
+    let shell = ProcessInfo.processInfo.environment["SHELL"]
+    setenv("SHELL", stub.path, 1)
+    defer { if let shell { setenv("SHELL", shell, 1) } else { unsetenv("SHELL") } }
+    func answer() async -> String {
+        do { return String(decoding: try await GH.run(["--version"]), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) }
+        catch GHError.ghNotFound { return "not found" }
+        catch { return "launch failed" }
+    }
+    try install(first)
+    check(await answer() == "first", "the gh the login shell names is run")
+    try FileManager.default.removeItem(at: first)
+    check(await answer() == "launch failed", "the gh that was cached is gone")
+    try install(second)
+    check(await answer() == "second", "a gh that stopped launching is forgotten and the next call finds its replacement")
+    try FileManager.default.removeItem(at: second)
+    check(await answer() == "launch failed", "and one that vanishes with no replacement is forgotten too")
+    check(await answer() == "not found", "so the next call asks the login shell again")
+    print("a vanished gh is looked for again")
+}
+
+// ---- GH: the stalled login shell is killed ----
+// The kill is armed five seconds behind the terminate the stub ignored: wait it out.
+do {
+    let deadline = stalledAt.addingTimeInterval(13)
+    while alive(stalledPid) && Date() < deadline { usleep(100_000) }
+    check(!alive(stalledPid),
+          "the stalled login shell is killed once the terminate it ignored has had five seconds")
+    print("stalled login shell killed \(Int(Date().timeIntervalSince(stalledAt)))s after it was asked")
+}
+
+// ---- GH: the override is read per call ----
+// With the stub deleted and DIPLOMAT_GH unset, the next call reaches the gh the box has
+// (the Linux CI container has none), never the stub's path; the live dump below goes
+// through the same lookup.
+do {
+    var found = ""
+    do { found = String(decoding: try await GH.run(["--version"]), as: UTF8.self) }
+    catch GHError.ghNotFound { found = "none installed" }
+    catch { found = "other: \(error)" }
+    check(found.hasPrefix("gh version") || found == "none installed",
+          "the lookup after the override is gone reaches the real gh, got: \(found)")
+    print("gh after the stub: \(found.split(separator: "\n").first ?? "")")
 }
 
 if ProcessInfo.processInfo.environment["DIPLOMAT_DUMP"] == "1" {

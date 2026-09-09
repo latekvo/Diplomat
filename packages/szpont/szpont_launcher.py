@@ -16,8 +16,8 @@ same ones `README.md` tells a human to type. Nothing here builds anything itself
 
 ``packages/szpont-npm`` is these same steps in JavaScript, for ``npx szpont``. The
 two agree by construction on :func:`plan`, a pure function from what was probed to
-what will be run, and ``parity-with-python.mjs`` compares their answers fact for
-fact.
+what will be run, and ``parity-with-python.mjs`` compares what they probe off one
+machine and what they plan from one set of facts, key for key.
 
 ``szpont_launcher`` rather than ``szpont``: the import name is left free for the
 conformance tester, which is run as ``python -m szpont`` from its own directory
@@ -51,8 +51,39 @@ MIN_PYTHON = (3, 10)
 STATE_DIR = ".diplomat"
 
 
-def _which(name: str, env: Mapping[str, str]) -> bool:
-    return shutil.which(name, path=env.get("PATH")) is not None
+def _which(name: str, env: Mapping[str, str]) -> str | None:
+    return shutil.which(name, path=env.get("PATH"))
+
+
+def _tool(name: str, env: Mapping[str, str], platform: str) -> bool:
+    """Whether ``name`` is on PATH and would run.
+
+    Every Mac has a ``/usr/bin/git`` and a ``/usr/bin/swift``: ``xcrun`` shims that
+    run the Command Line Tools when those are installed and pop the graphical
+    installer when they are not. Found there, a tool is only as present as the
+    toolchain, which ``xcode-select -p`` reports without going through a shim.
+    """
+    found = _which(name, env)
+    if found is None:
+        return False
+    # realpath: spelled `//usr/bin`, a symlink to it, or a directory symlinked onto
+    # it - what runs is still the shim.
+    if platform == "darwin" and os.path.realpath(found) == f"/usr/bin/{name}":
+        return _toolchain_present(env)
+    return True
+
+
+def _toolchain_present(env: Mapping[str, str]) -> bool:
+    xcode_select = _which("xcode-select", env)
+    if xcode_select is None:
+        return False
+    try:
+        proc = subprocess.run(  # noqa: S603 - fixed argv, no shell
+            [xcode_select, "-p"], capture_output=True, text=True, timeout=30
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return proc.returncode == 0 and os.path.isdir(proc.stdout.strip())
 
 
 def _python3_version(env: Mapping[str, str]) -> str | None:
@@ -98,24 +129,27 @@ def probe(app_args: Sequence[str] = (), *, update: bool = True,
     # DIPLOMAT_SELF_REPO is what the applet itself calls the checkout it lives in
     # (selfupdate.repo_root), so pointing the launcher at a working copy and
     # pointing the running applet at one are the same act.
-    explicit = env.get("DIPLOMAT_SELF_REPO")
-    checkout = Path(explicit) if explicit else home / STATE_DIR / "checkout"
-    if not checkout.exists():
+    explicit = env.get("DIPLOMAT_SELF_REPO") or None
+    # Reported as spelled, the way the npm twin reports it; Path would drop a
+    # trailing slash.
+    checkout = explicit or str(home / STATE_DIR / "checkout")
+    root = Path(checkout)
+    if not root.exists():
         state = "absent"
-    elif (checkout / "packages" / "diplomat-platform").is_dir():
+    elif (root / "packages" / "diplomat-platform").is_dir():
         state = "checkout"
     else:
         state = "foreign"
 
     venv = home / STATE_DIR / "venv"
-    requirements = checkout / "packages" / "diplomat-platform" / "linux" / "requirements.txt"
+    requirements = root / "packages" / "diplomat-platform" / "linux" / "requirements.txt"
     stamp = venv / ".szpont-requirements"
     digest = _requirements_digest(requirements)
 
     return {
         "platform": platform,
         "path": env.get("PATH", ""),
-        "checkout": str(checkout),
+        "checkout": checkout,
         "checkout_state": state,
         # Only a checkout this launcher created is one it may move: a working copy
         # someone named themselves is theirs, and a launcher that fast-forwarded it
@@ -123,13 +157,16 @@ def probe(app_args: Sequence[str] = (), *, update: bool = True,
         "managed": explicit is None,
         "repo_url": env.get("DIPLOMAT_REPO_URL") or DEFAULT_REPO_URL,
         "update": bool(update),
-        "git": _which("git", env),
-        "swift": _which("swift", env),
+        "git": _tool("git", env, platform),
+        "swift": _tool("swift", env, platform),
         # Linux-only questions, and asked only there - see _python3_version.
         "python3": _python3_version(env) if platform == "linux" else None,
         "core_bin": _core_bin_present(home, env) if platform == "linux" else None,
         "venv": str(venv),
-        "venv_python": (venv / "bin" / "python").exists(),
+        # Both, because a venv is only useful with something to install into it:
+        # Debian without python3-venv leaves bin/python behind and stops before
+        # pip, and running `venv` again over that directory is what completes it.
+        "venv_python": (venv / "bin" / "python").exists() and (venv / "bin" / "pip").exists(),
         "venv_current": digest is not None and _read(stamp) == digest,
         "args": list(app_args),
     }
@@ -199,8 +236,10 @@ def plan(facts: Mapping) -> dict:
                            cwd=macos, needs="swift"))
         # build-app.sh rebuilds unconditionally, so the bundle always matches the
         # source it was just cloned or pulled from; `open` then detaches it from
-        # this terminal, which is where a menu-bar app belongs.
-        launch = ["open", os.path.join(macos, "Diplomat.app")]
+        # this terminal, which is where a menu-bar app belongs. `-n` starts that
+        # bundle even while an instance is up, and the app's newest-wins singleton
+        # retires the old one - the swap its own updater relies on.
+        launch = ["open", "-n", os.path.join(macos, "Diplomat.app")]
         if args:
             launch += ["--args", *args]
         steps.append(_step("launch", launch, cwd=macos))
@@ -324,7 +363,7 @@ def run(steps: Sequence[Mapping], *, checkout: str, venv: str) -> int:
             try:
                 Path(venv, ".szpont-requirements").write_text(digest or "", encoding="utf-8")
             except OSError:
-                pass  # a re-install next time is the whole cost of not recording it
+                pass  # re-installed next time; linux/diplomat passes the venv over until then
     return 0
 
 

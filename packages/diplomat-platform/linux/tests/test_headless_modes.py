@@ -15,6 +15,10 @@ applet every time it was run locally. Nothing was red.
 So: the two sets are the same set. Deliberately a grep and not a build — the drift is
 exactly the shape a grep can see, and this job has the whole checkout but no Swift
 toolchain.
+
+The Linux applet has the same two lists: the ladder in `__main__.main`, and
+`singleton.HEADLESS_SUFFIXES`, which its newest-wins singleton spares and its relaunch
+strips. A mode missing from the list is a dump a tray starting beside it SIGTERMs.
 """
 
 from __future__ import annotations
@@ -46,13 +50,19 @@ def _dispatched() -> set[str]:
     return set(_ENV_READ.findall(_source("DiplomatApp.swift")))
 
 
-def _headless() -> set[str]:
-    """The modes `Headless.active` answers yes for. Scoped to that one property:
-    `isRender` reads the environment again for its own reasons, and counting it would
-    make the comparison pass on a name only IT still spells."""
+def _headless_block() -> str:
+    """`Headless.isActive`'s body — the disjunction `active` is computed from, and the
+    scope of the list below. `isRender` reads the environment again for its own
+    reasons, and counting it would make the comparison pass on a name only IT
+    still spells."""
     text = _source("Headless.swift")
-    start = text.index("static let active")
-    return set(_ENV_READ.findall(text[start:text.index("}()", start)]))
+    start = text.index("static func isActive(in")
+    return text[start:text.index("\n    }", start)]
+
+
+def _headless() -> set[str]:
+    """The modes `Headless.isActive` answers yes for."""
+    return set(_ENV_READ.findall(_headless_block()))
 
 
 def test_the_grep_finds_both_lists():
@@ -66,6 +76,14 @@ def test_the_grep_finds_both_lists():
     # either spelling is a failure here rather than a quieter comparison later.
     assert {"DIPLOMAT_RENDER", "DIPLOMAT_QUEUE_TEST"} <= dispatched
     assert {"DIPLOMAT_RENDER", "DIPLOMAT_QUEUE_TEST"} <= headless
+
+
+def test_the_headless_list_is_scoped_to_the_disjunction():
+    """The slice ends at `isActive`'s own brace. Reshaped so that brace no longer
+    matches, it runs on to the next one and takes in the declarations between — and a
+    name nothing dispatches reads as one Headless knows about."""
+    rest = _headless_block().split("\n", 1)[1]
+    assert "static " not in rest, rest
 
 
 def test_every_dispatched_mode_is_headless():
@@ -86,4 +104,53 @@ def test_every_headless_mode_is_dispatched():
     assert not orphans, (
         "Headless.active names these modes but DiplomatApp dispatches none of them: "
         + ", ".join(orphans)
+    )
+
+
+# MARK: - The Linux applet's two lists
+
+_LINUX_APP = os.path.join(_PACKAGES, "diplomat-platform", "linux", "diplomat_app")
+
+# A mode is read bare, `env.get("DIPLOMAT_X")`. The one parameter a mode takes,
+# `DIPLOMAT_RENDER_OUT`, is read with a default, which is what keeps it out.
+_LINUX_MODE_READ = re.compile(r'env\.get\(\s*"(DIPLOMAT_[A-Z0-9_]+)"\s*\)')
+
+
+def _linux_dispatched() -> set[str]:
+    """The modes `__main__.main` dispatches before it launches the GUI."""
+    with open(os.path.join(_LINUX_APP, "__main__.py"), encoding="utf-8") as f:
+        return set(_LINUX_MODE_READ.findall(f.read()))
+
+
+def _linux_headless() -> set[str]:
+    """The markers the singleton spares a process for, under the prefix the ladder
+    reads."""
+    from diplomat_app import singleton
+
+    return {"DIPLOMAT_" + suffix for suffix in singleton.HEADLESS_SUFFIXES}
+
+
+def test_the_linux_grep_finds_the_ladder():
+    dispatched = _linux_dispatched()
+    assert len(dispatched) >= 6, dispatched
+    assert {"DIPLOMAT_RENDER", "DIPLOMAT_SELF_UPDATE"} <= dispatched
+
+
+def test_every_linux_dispatched_mode_is_a_headless_marker():
+    """The direction that costs the operator a running one-shot: a tray starting
+    beside it finds an applet process with no marker and terminates it."""
+    missing = sorted(_linux_dispatched() - _linux_headless())
+    assert not missing, (
+        "these modes are dispatched in __main__.main but not in "
+        "singleton.HEADLESS_SUFFIXES, so a tray starting while one runs SIGTERMs it: "
+        + ", ".join(missing)
+    )
+
+
+def test_every_linux_headless_marker_is_dispatched():
+    """The other direction, for the reason the macOS one gives."""
+    orphans = sorted(_linux_headless() - _linux_dispatched())
+    assert not orphans, (
+        "singleton.HEADLESS_SUFFIXES names these modes but __main__.main dispatches "
+        "none of them: " + ", ".join(orphans)
     )

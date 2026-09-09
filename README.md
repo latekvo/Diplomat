@@ -128,7 +128,8 @@ entirely and [run it from the checkout](#run) as before.
 The two packages are the same launcher published under one name to two indexes
 ([`packages/szpont`](packages/szpont/README.md),
 [`packages/szpont-npm`](packages/szpont-npm/README.md)); a parity test holds them to
-the same plan on every machine shape either can meet. Neither installs anything but
+the same reading of every machine and the same plan on every shape either can meet.
+Neither installs anything but
 the launcher - one file of standard library on each side.
 
 ## The library
@@ -539,7 +540,7 @@ and reports; nothing is changed. Two escalation toggles widen the blast radius:
 
 > Diplomat Mesh is the reference implementation of **SzpontNet**, a small leaderless
 > LAN protocol for self-discovery, resource advertisement, and work hand-off. The
-> full, independently-implementable specification (currently **v0.5.0**, wire `v: 1`)
+> full, independently-implementable specification (currently **v0.9.0**, wire `v: 1`)
 > is in [`szpontnet-spec/docs/`](packages/szpontnet-spec/docs/README.md), and
 > [`szpontnet-spec/conformance/`](packages/szpontnet-spec/conformance/README.md) is the black-box
 > conformance suite that makes "independently implementable" checkable: it launches
@@ -595,8 +596,9 @@ edge agreed on. It shouts `DEVICE IS NOT DISCOVERABLE` if every beacon send fail
 
 The mesh node itself is stdlib-only Python that runs on any OS — both the macOS app
 and the Linux applet drive that same node (a Swift node is future work), so enabling
-the mesh on macOS needs the source checkout on disk (`DIPLOMAT_SELF_REPO` if it
-isn't at the default `~/dev/diplomat`):
+the mesh on macOS needs the source checkout on disk (the app finds the checkout its
+bundle was built in, `szpont`'s `~/.diplomat/checkout` included; `DIPLOMAT_SELF_REPO`
+names any other, else `~/dev/diplomat`):
 
 ```bash
 cd packages/diplomat-runtime
@@ -1231,7 +1233,8 @@ as a login daemon:
 ```
 ┌─ Diplomat setup ─────────────────────────────────────────
 │ Install as a background daemon? This will:
-│   • build + copy Diplomat.app to /Applications
+│   • build Diplomat.app inside this checkout
+│   • delete any Diplomat.app in /Applications or ~/Applications
 │   • add a per-user LaunchAgent so the wrench boots on login
 │   • start it now (it replaces this foreground instance)
 │   • ask macOS for permission to control your terminal (SPAWN)
@@ -1256,8 +1259,9 @@ repo root.
 open ./Diplomat.app
 ```
 
-Drag `Diplomat.app` into `/Applications` and add it under
-System Settings → General → Login Items — or just use the autostart script below.
+To have it back at every login, use the autostart script below: it starts the bundle
+in place. Do not copy it to `/Applications` or `~/Applications` - the next install
+deletes a copy there, and **Update** rebuilds only the bundle in the checkout.
 
 ### Autostart on login
 
@@ -1268,8 +1272,10 @@ System Settings → General → Login Items — or just use the autostart script
 
 Installs a per-user LaunchAgent at `~/Library/LaunchAgents/com.ignacy.diplomat.plist`
 (`RunAtLoad`), so the wrench reappears on every login. The ⏻ Quit button still works
-within a session (no `KeepAlive`) — it just returns next login. The app goes to
-`/Applications`, or `~/Applications` when that isn't writable.
+within a session (no `KeepAlive`) — it just returns next login. launchd starts the
+bundle where `build-app.sh` writes it, `packages/diplomat-platform/macos/Diplomat.app`,
+so the instance that greets you at login is the one **Update** rebuilds; nothing is
+copied to `/Applications`.
 
 It also installs a **second** agent, `com.ignacy.diplomat.autoupdate`, which fires
 daily at **06:00** and runs the app binary headless (`DIPLOMAT_SELF_UPDATE=1`):
@@ -1505,10 +1511,11 @@ packages/
         Spend.swift                the OpenRouter balance probe — dollars left on the key cap and the credits
         AutoBudget.swift           ledger + probe + knobs -> may another automatic task start here?
         SelfUpdate.swift           fetch/merge upstream, rebuild, relaunch (Update button + the 06:00 run)
-        RepoPaths.swift            locate this app's own checkout (DIPLOMAT_SELF_REPO → … → ~/dev/diplomat),
+        RepoPaths.swift            locate this app's own checkout (DIPLOMAT_SELF_REPO → the checkout the bundle sits in → ~/dev/diplomat),
                                    the sibling packages it reaches for, and the agents' repo root
         AppConfig.swift            the cross-process settings file (~/.diplomat/config.json) the mesh node shares
       install/                 ← build-app + the autostart / auto-update (un)installers (launchd)
+      tests/                   ← installers.sh: what those two installers write, run against stubs
     linux/                     ← Linux Qt6/PySide6 tray applet (see its README)
       diplomat_app/            ← what is this front-end's own: screens, wizards, the Store driving
                                  them, its self-update and single-instance guards, and probes.py —
@@ -1528,7 +1535,7 @@ packages/
                                  integration ones (Tor transport, the startup lock, control-edit flush)
 
   szpontnet-spec/              ← the protocol, kept apart from any implementation of it
-    docs/                      ← the normative SzpontNet spec (15 chapters, v0.5.0, wire v: 1)
+    docs/                      ← the normative SzpontNet spec (15 chapters, v0.9.0, wire v: 1)
     conformance/               ← black-box conformance tester: runs a candidate node as an opaque
                                  subprocess, joins over real multicast + TCP, exits non-zero on any MUST failure
 
@@ -1538,8 +1545,9 @@ packages/
 
   szpont-npm/                  ← what `szpont` means on npm (see its README): the same launcher, in
                                  JavaScript, for `npx szpont`
-    test/scenarios.mjs         ← the machine shapes both launchers are held to; parity-with-python.mjs
-                                 runs every one of them through both and demands the same plan
+    test/scenarios.mjs         ← the machines both launchers are held to, as a directory tree to probe and
+                                 as fact sets to plan from; parity-with-python.mjs runs every one through
+                                 both and demands the same facts and the same plan
 
 .github/workflows/ci.yml       ← swift-macos · swift-core-linux · python-linux · szpontnet · szpont ·
                                  szpont-npm · node-device-allocator

@@ -12,6 +12,7 @@ build ran, and the relaunch fired.
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -54,8 +55,10 @@ def _make_origin(tmp_path: Path) -> Path:
     (linux_pkg / "install" / "build-core.sh").write_text(
         "#!/usr/bin/env bash\ntouch \"$MARKER_DIR/built\"\n"
     )
+    # Stays up, as a launcher that exits inside the relaunch's watch window is a
+    # failed relaunch; the pid it records is what the fixture ends.
     (linux_pkg / "diplomat").write_text(
-        "#!/usr/bin/env bash\ntouch \"$MARKER_DIR/relaunched\"\n"
+        "#!/usr/bin/env bash\necho $$ > \"$MARKER_DIR/relaunched\"\nexec sleep 10\n"
     )
     (origin / "VERSION").write_text("1\n")
     _git(origin, "init", "-q", "-b", "main")
@@ -85,7 +88,11 @@ def repos(tmp_path, monkeypatch):
     # Keep the E2E hermetic: SettingsView also fires the allocator check on
     # open; point it at nothing so no real Node installer runs.
     monkeypatch.setenv("DIPLOMAT_DEVICE_ALLOCATOR_DIR", str(tmp_path / "no-allocator"))
-    return origin, clone, marker
+    yield origin, clone, marker
+    try:
+        os.kill(int((marker / "relaunched").read_text()), signal.SIGKILL)
+    except (OSError, ValueError):
+        pass
 
 
 def test_check_reports_up_to_date_then_behind(repos):
@@ -210,6 +217,91 @@ def test_run_scheduled_relaunches_a_running_tray(repos, monkeypatch):
     assert (marker / "relaunched").exists()
 
 
+def test_run_scheduled_reports_a_relaunched_applet_that_dies(repos, monkeypatch):
+    """A launcher that cannot start the applet (no PySide6 on its interpreter, a
+    checkout that no longer imports) exits at once; that is a failed update, not
+    a "relaunched running tray"."""
+    origin, clone, marker = repos
+    launcher = origin / "packages" / "diplomat-platform" / "linux" / "diplomat"
+    launcher.write_text("#!/usr/bin/env bash\nexit 3\n")
+    _advance_origin(origin)  # the pull brings the broken launcher over
+    from diplomat_app import singleton
+    from diplomat_app.singleton import _pidfile
+
+    monkeypatch.setattr(singleton, "_is_applet_gui", lambda pid: pid == os.getpid())
+    _pidfile().write_text(str(os.getpid()))
+
+    assert selfupdate.run_scheduled() == 1
+    assert (marker / "built").exists()  # the update itself landed
+
+
+def test_run_scheduled_reports_a_relaunched_applet_that_exits_cleanly(repos, monkeypatch, tmp_path):
+    """The launcher execs the applet, so its exit is the applet's: one that exited 0
+    inside the window ended without taking over the tray, exactly as one that
+    crashed did. A clean exit is a failed swap, not a hand-off."""
+    origin, clone, marker = repos
+    launcher = origin / "packages" / "diplomat-platform" / "linux" / "diplomat"
+    launcher.write_text("#!/usr/bin/env bash\nexit 0\n")
+    _advance_origin(origin)
+    from diplomat_app import singleton
+    from diplomat_app.singleton import _pidfile
+
+    monkeypatch.setattr(singleton, "_is_applet_gui", lambda pid: pid == os.getpid())
+    _pidfile().write_text(str(os.getpid()))
+
+    assert selfupdate.run_scheduled() == 1
+    log = (tmp_path / "state" / "diplomat" / "autoupdate.log").read_text()
+    assert "the relaunched applet exited 0" in log
+
+
+def test_run_scheduled_names_no_tray_when_the_relaunched_applet_ended_it(
+    repos, monkeypatch, tmp_path
+):
+    """The relaunched applet's newest-wins ends the old tray before it builds anything,
+    so one that dies during construction has already taken the tray it then failed to
+    replace. The log says what is true at that moment rather than naming a dead pid
+    as the running build."""
+    origin, clone, marker = repos
+    # A tray that is not this process's child, so it is reaped when ended rather than
+    # left a zombie that still answers a signal-0 probe.
+    tray = int(subprocess.run(
+        ["bash", "-c", "sleep 30 </dev/null >/dev/null 2>&1 & echo $!"],
+        capture_output=True, text=True, check=True).stdout)
+    (marker / "tray").write_text(str(tray))
+    launcher = origin / "packages" / "diplomat-platform" / "linux" / "diplomat"
+    launcher.write_text('#!/usr/bin/env bash\nkill -TERM "$(cat "$MARKER_DIR/tray")"\n'
+                        'sleep 0.5\nexit 3\n')
+    _advance_origin(origin)
+    from diplomat_app import singleton
+    from diplomat_app.singleton import _pidfile
+
+    monkeypatch.setattr(singleton, "_is_applet_gui", lambda pid: pid == tray)
+    _pidfile().write_text(str(tray))
+    try:
+        assert selfupdate.run_scheduled() == 1
+    finally:
+        try:
+            os.kill(tray, signal.SIGKILL)
+        except OSError:
+            pass
+    log = (tmp_path / "state" / "diplomat" / "autoupdate.log").read_text()
+    assert "the relaunched applet exited 3; no applet is running" in log
+    assert f"pid {tray} is still the old build" not in log
+
+
+def test_relaunch_failure_is_any_exit_inside_the_window():
+    """Every exit code inside the window is reported, 0 included; only a child still
+    running at the end of it is the applet coming up."""
+    ended = subprocess.Popen(["true"])
+    assert selfupdate.relaunch_failure(ended) == 0
+    running = subprocess.Popen(["sleep", "30"])
+    try:
+        assert selfupdate.relaunch_failure(running, window=0.3) is None
+    finally:
+        running.kill()
+        running.wait()
+
+
 def test_run_scheduled_survives_a_subprocess_timeout(repos, monkeypatch):
     """A black-holed network (git fetch timeout) or a hung swift build raises
     subprocess.TimeoutExpired — NOT an UpdateError — inside pull()/build_core().
@@ -256,12 +348,15 @@ def test_relaunch_does_not_inherit_headless_markers(tmp_path, monkeypatch):
     """relaunch() must launch a GUI tray. The 6AM job runs with DIPLOMAT_SELF_UPDATE=1 in
     its env, and a copied env would make the relaunched child re-enter __main__.main's
     headless updater (find itself up-to-date, exit) instead of the GUI — so newest-wins
-    never swaps the applet onto the new code. Every headless-mode marker must be stripped
-    from the child env, while the display env is still handed through."""
+    never swaps the applet onto the new code. Every marker the singleton spares a
+    process for must be stripped from the child env, under the legacy prefix too, or
+    the next newest-wins spares the tray it started; the display env is still handed
+    through."""
+    from diplomat_app import singleton
 
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))   # isolate the relaunch log write
-    monkeypatch.setenv("DIPLOMAT_SELF_UPDATE", "1")
-    monkeypatch.setenv("DIPLOMAT_DUMP", "1")
+    for marker in singleton.headless_markers():
+        monkeypatch.setenv(marker, "1")
     captured = {}
 
     def fake_popen(*a, **k):
@@ -276,17 +371,13 @@ def test_relaunch_does_not_inherit_headless_markers(tmp_path, monkeypatch):
         raised = True
     assert raised and "env" in captured
     env = captured["env"]
-    for marker in ("DIPLOMAT_SELF_UPDATE", "DIPLOMAT_DUMP", "DIPLOMAT_LOOKUP",
-                   "DIPLOMAT_PRINT_PROMPT", "DIPLOMAT_RENDER"):
-        assert marker not in env
+    assert "DIPLOMAT_AGENTS" in singleton.headless_markers()
+    assert not set(env) & singleton.headless_markers()
     assert env.get("DISPLAY") == ":0"   # the display env is still handed through
 
 
-def test_update_button_pulls_builds_and_relaunches(repos):
-    """The real Settings UPDATE section, driven by a real button click."""
-    origin, clone, marker = repos
-    _advance_origin(origin)
-
+def _settings_view():
+    """The real Settings screen over a real Store, with the Qt loop to drive it."""
     from PySide6.QtWidgets import QApplication
 
     from diplomat_app.settingsview import SettingsView
@@ -294,39 +385,54 @@ def test_update_button_pulls_builds_and_relaunches(repos):
 
     qapp = QApplication.instance() or QApplication([])
     store = Store()
-    view = SettingsView(store)
+    return qapp, store, SettingsView(store)
 
-    def pump_until(ready, what: str, seconds: float = 30.0) -> None:
-        """Pump the Qt loop until ``ready()``.
 
-        The worker thread assigns ``store.update_state`` and only then emits
-        ``update_changed``, which reaches the view queued: a phase readable off
-        the store is not one the view has drawn. So a widget is waited for, never
-        read once the phase has landed — and since the slot runs to completion
-        inside one ``processEvents``, reaching one of its widgets is reaching all
-        of them. That lag is a turn of the loop, hence the short deadline on the
-        widget waits; the ones on a phase cover a real ``git fetch``.
-        """
-        deadline = time.monotonic() + seconds
-        while time.monotonic() < deadline:
-            qapp.processEvents()
-            if ready():
-                return
-            time.sleep(0.02)
-        raise AssertionError(f"timed out waiting for {what}, at {store.update_state}")
+def _pump_until(qapp, store, ready, what: str, seconds: float = 30.0) -> None:
+    """Pump the Qt loop until ``ready()``.
 
+    The worker thread assigns ``store.update_state`` and only then emits
+    ``update_changed``, which reaches the view queued: a phase readable off
+    the store is not one the view has drawn. So a widget is waited for, never
+    read once the phase has landed — and since the slot runs to completion
+    inside one ``processEvents``, reaching one of its widgets is reaching all
+    of them. That lag is a turn of the loop, hence the short deadline on the
+    widget waits; the ones on a phase cover a real ``git fetch``.
+    """
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        qapp.processEvents()
+        if ready():
+            return
+        time.sleep(0.02)
+    raise AssertionError(f"timed out waiting for {what}, at {store.update_state}")
+
+
+def _click_update(qapp, store, view) -> str:
+    """Wait for the check the view kicks on open to land on "update available", click
+    Update, and return the phase the update ended in."""
     def phase() -> str | None:
         return (store.update_state or {}).get("phase")
 
-    # The view kicks a check on open; it must land on "update available".
-    pump_until(lambda: phase() == "idle", "the update check to land")
+    _pump_until(qapp, store, lambda: phase() == "idle", "the update check to land")
     assert store.update_state["behind"] == 1
-    pump_until(lambda: view._update_btn.isEnabled(), "the Update button to enable", 5.0)
+    _pump_until(qapp, store, lambda: view._update_btn.isEnabled(),
+                "the Update button to enable", 5.0)
     assert view._update_pill.text() == "1 behind"
 
     view._update_btn.click()
-    pump_until(lambda: phase() in ("restarting", "error"), "the update to finish")
-    assert phase() == "restarting", store.update_state
+    _pump_until(qapp, store, lambda: phase() in ("restarting", "error"),
+                "the update to finish")
+    return phase()
+
+
+def test_update_button_pulls_builds_and_relaunches(repos):
+    """The real Settings UPDATE section, driven by a real button click."""
+    origin, clone, marker = repos
+    _advance_origin(origin)
+    qapp, store, view = _settings_view()
+
+    assert _click_update(qapp, store, view) == "restarting", store.update_state
 
     assert _git(clone, "rev-parse", "HEAD") == _git(origin, "rev-parse", "HEAD")
     assert (marker / "built").exists()
@@ -335,9 +441,28 @@ def test_update_button_pulls_builds_and_relaunches(repos):
     while not (marker / "relaunched").exists() and time.monotonic() < deadline:
         time.sleep(0.05)
     assert (marker / "relaunched").exists()
-    pump_until(lambda: view._update_pill.text() == "restarting…",
-               "the view to show the handover", 5.0)
+    _pump_until(qapp, store, lambda: view._update_pill.text() == "restarting…",
+                "the view to show the handover", 5.0)
     assert "handing over" in view._update_row.summary()
+
+    view.deleteLater()
+
+
+def test_update_button_reports_a_relaunched_applet_that_dies(repos):
+    """The button watches its relaunch the way the 6AM job does: a launcher that
+    exits inside the window is a failed update and is shown as one, rather than
+    "restarting…" outliving a handover that never comes."""
+    origin, clone, marker = repos
+    launcher = origin / "packages" / "diplomat-platform" / "linux" / "diplomat"
+    launcher.write_text("#!/usr/bin/env bash\nexit 3\n")
+    _advance_origin(origin)
+    qapp, store, view = _settings_view()
+
+    assert _click_update(qapp, store, view) == "error", store.update_state
+    assert store.update_state["error"] == \
+        "the relaunched applet exited 3; this one is still the old build"
+    _pump_until(qapp, store, lambda: "exited 3" in view._update_row.summary(),
+                "the view to show the failure", 5.0)
 
     view.deleteLater()
 

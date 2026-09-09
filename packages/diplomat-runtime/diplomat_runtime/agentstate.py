@@ -52,6 +52,7 @@ the account still has tokens to spend.
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -123,6 +124,41 @@ class Observation:
         if value is None:
             return Observation.unavailable("value did not decode")
         return Observation.present(value)
+
+
+def _number(value: Any, default: float | None = None) -> float | None:
+    """A JSON number out of a decoded record as a float, or ``default``: usable
+    only if finite, an int too wide for a double included. One book is read by
+    both front-ends; the Swift twin ``AgentRegistry.number`` keeps the same rule,
+    where a boolean bridges to 1/0 and a string or null to the default."""
+    if not isinstance(value, (int, float)):
+        return default
+    try:
+        v = float(value)
+    except OverflowError:
+        return default
+    return v if math.isfinite(v) else default
+
+
+def _integer(value: Any) -> int | None:
+    """The same for an integer field (``pid``, ``prNumber``): usable only inside
+    ``|v| < 9e18``, the bound ``clampedInt`` draws in Models.swift, and truncated
+    like ``Int(Double)``. Swift twin: ``AgentRegistry.integer``."""
+    n = _number(value)
+    return int(n) if n is not None and abs(n) < 9.0e18 else None
+
+
+def _string(value: Any, default: str = "") -> str:
+    """A JSON string out of a decoded record, or ``default``. Swift twin: the
+    ``as? String ?? default`` of ``AgentRegistry.decode``."""
+    return value if isinstance(value, str) else default
+
+
+def _placement(value: Any) -> str:
+    """One of the three placements, or local. Swift twin: ``Placement(rawValue:)
+    ?? .local``."""
+    return (value if value in (PLACEMENT_LOCAL, PLACEMENT_MESH_HERE, PLACEMENT_MESH_PEER)
+            else PLACEMENT_LOCAL)
 
 
 def _flag(value: Any, default: bool = False) -> bool:
@@ -414,23 +450,23 @@ class RunRecord:
     @staticmethod
     def from_json(obj: dict) -> "RunRecord":
         return RunRecord(
-            run_id=obj.get("runId", ""),
-            dispatched_at=float(obj.get("dispatchedAt", 0.0)),
-            pr_number=obj.get("prNumber"),
-            pr_url=obj.get("prUrl", ""),
-            kind=obj.get("kind", ""),
-            label=obj.get("label", ""),
-            source=obj.get("source", SOURCE_AUTO),
-            placement=obj.get("placement", PLACEMENT_LOCAL),
-            node=obj.get("node", ""),
-            work_key=obj.get("workKey", ""),
-            ledger_key=obj.get("ledgerKey", ""),
-            pid=obj.get("pid"),
-            tty=obj.get("tty", ""),
-            claim_seen_at=obj.get("claimSeenAt"),
-            quiet_digest=obj.get("quietDigest", ""),
-            quiet_since=obj.get("quietSince"),
-            reap_refused_at=obj.get("reapRefusedAt"),
+            run_id=_string(obj.get("runId")),
+            dispatched_at=_number(obj.get("dispatchedAt"), 0.0),
+            pr_number=_integer(obj.get("prNumber")),
+            pr_url=_string(obj.get("prUrl")),
+            kind=_string(obj.get("kind")),
+            label=_string(obj.get("label")),
+            source=_string(obj.get("source"), SOURCE_AUTO),
+            placement=_placement(obj.get("placement")),
+            node=_string(obj.get("node")),
+            work_key=_string(obj.get("workKey")),
+            ledger_key=_string(obj.get("ledgerKey")),
+            pid=_integer(obj.get("pid")),
+            tty=_string(obj.get("tty")),
+            claim_seen_at=_number(obj.get("claimSeenAt")),
+            quiet_digest=_string(obj.get("quietDigest")),
+            quiet_since=_number(obj.get("quietSince")),
+            reap_refused_at=_number(obj.get("reapRefusedAt")),
             untracked=_flag(obj.get("untracked")),
         )
 

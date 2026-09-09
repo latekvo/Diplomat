@@ -470,12 +470,26 @@ def _number(raw: object) -> float | None:
     bridges to ``NSNumber`` and the same cast accepts it. Nothing either writer
     emits puts a boolean in a numeric field; what matters is that a hand-edited
     file makes both platforms answer the same way.
+
+    A string is read by the rule of the twin's ``Double(String)``, for the same
+    reason: strtod's grammar with the whole string consumed. So hex is a number
+    (``0x10``, ``-0x1p3``), while surrounding whitespace, a ``_`` separator and a
+    non-ASCII digit - each of which ``float()`` would take - are not.
     """
-    if raw is None:
-        return None
-    try:
-        value = float(raw)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
+    if isinstance(raw, str):
+        if raw != raw.strip() or "_" in raw or not raw.isascii():
+            return None
+        parse = float.fromhex if "0x" in raw.lower() else float
+        try:
+            value = parse(raw)
+        except (ValueError, OverflowError):  # fromhex raises on 0x1p99999
+            return None
+    elif isinstance(raw, (int, float)):
+        try:
+            value = float(raw)
+        except OverflowError:
+            return None
+    else:
         return None
     return value if math.isfinite(value) else None
 
@@ -539,7 +553,7 @@ def fold(lines: list[str]) -> Ledger:
             task.duty = duty
         pr = _number(obj.get("pr"))
         if pr is not None and pr > 0:
-            task.pr = int(pr)
+            task.pr = _clamped_int(pr)
         if ev == "queued":
             if task.queued_at is None:
                 task.queued_at = at
@@ -632,10 +646,12 @@ def _shares(task_tokens: list[float], limit: float | None) -> list[float]:
     """Each task as a percentage of one rate-limit window, or nothing at all while
     that window has no price. Empty rather than zeroed: a share of a window nobody
     has measured is a made-up number, and the screen says so instead of drawing it.
+    A count whose share overflows a double is left out too: as ``inf`` it would bin
+    as NaN, which ``math.floor`` raises on and the Swift twin traps on.
     """
     if limit is None or limit <= 0:
         return []
-    return [100 * tok / limit for tok in task_tokens]
+    return [s for s in (100 * tok / limit for tok in task_tokens) if math.isfinite(s)]
 
 
 # MARK: - Distribution (the bell curve)
@@ -688,7 +704,9 @@ def distribution(values: list[float], *, bin_count: int, z: float,
     n = float(len(values))
     mean = sum(values) / n
     if len(values) > 1:
-        variance = sum((v - mean) ** 2 for v in values) / (n - 1)
+        # A product, not `** 2`: past a double's range `**` raises OverflowError
+        # where the Swift twin's product is `inf`.
+        variance = sum((v - mean) * (v - mean) for v in values) / (n - 1)
     else:
         variance = 0.0
     sd = math.sqrt(variance)
@@ -1111,7 +1129,18 @@ def _round_half_away(value: float) -> int:
     """Swift's ``Double.rounded()`` — halves go away from zero. Python's built-in
     ``round`` is banker's rounding (``round(0.5) == 0``), so using it here would
     put the two platforms one second apart on every exact half and fail parity."""
-    return int(math.floor(value + 0.5)) if value >= 0 else int(math.ceil(value - 0.5))
+    return math.floor(value + 0.5) if value >= 0 else math.ceil(value - 0.5)
+
+
+def _clamped_int(value: float) -> int:
+    """Swift's ``clampedInt`` (Models.swift): ``Int(Double)`` traps past Int's range,
+    so the twin clamps there, and a ledger line carrying ``1e300`` has to read the
+    same on both sides."""
+    if value >= 9.0e18:
+        return 2**63 - 1
+    if value <= -9.0e18:
+        return -2**63
+    return int(value)
 
 
 def duration(secs: float, *, samples: int = 1) -> str:
@@ -1120,7 +1149,7 @@ def duration(secs: float, *, samples: int = 1) -> str:
     about whether 90 minutes reads ``1h 30m`` or ``90m``."""
     if samples <= 0 or not math.isfinite(secs) or secs <= 0:
         return "—"
-    total = _round_half_away(secs)
+    total = _clamped_int(_round_half_away(secs))
     if total < 60:
         return f"{total}s"
     if total < 3600:
@@ -1133,7 +1162,7 @@ def bucket_label(hours: float) -> str:
     caption it. A bucket that is not a whole number of hours falls through to the
     shared duration spelling (``30m 00s``) rather than truncating to ``0h``."""
     if math.isfinite(hours) and hours > 0 and hours == int(hours):
-        return f"{int(hours)}h"
+        return f"{_clamped_int(hours)}h"
     return duration(hours * 3600)
 
 
@@ -1178,7 +1207,11 @@ def _r(value: float) -> float:
     if not math.isfinite(value):
         return 0.0
     scale = 10.0 ** 6
-    return _round_half_away(value * scale) / scale
+    scaled = value * scale
+    # A double too large to scale is integral already; there is nothing to round.
+    if not math.isfinite(scaled):
+        return value
+    return _round_half_away(scaled) / scale
 
 
 def _opt(value: float | None):

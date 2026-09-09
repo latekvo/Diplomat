@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import uuid
@@ -252,13 +253,22 @@ def test_human_interval():
 # MARK: - tmuxwatch parsing (dump_panes over a stubbed tmux)
 
 
+def _listing(argv, rows):
+    """What tmux prints for a ``-F`` listing: each row's fields in the order the
+    format names them, so a reader naming them in the wrong order fails here too."""
+    fmt = argv[argv.index("-F") + 1]
+    return "".join(re.sub(r"#\{(\w+)\}", lambda m: row[m.group(1)], fmt) + "\n"
+                   for row in rows)
+
+
 def test_dump_panes_parses_and_captures(monkeypatch):
     calls: list[list[str]] = []
 
     def fake_run(argv):
         calls.append(argv)
         if argv[:2] == ["tmux", "list-panes"]:
-            return f"%0{tmuxwatch._UNIT}/dev/pts/1\n%3{tmuxwatch._UNIT}/dev/pts/7\n"
+            return _listing(argv, [{"pane_id": "%0", "pane_tty": "/dev/pts/1"},
+                                   {"pane_id": "%3", "pane_tty": "/dev/pts/7"}])
         if argv[:2] == ["tmux", "capture-pane"]:
             pane = argv[argv.index("-t") + 1]
             return f"line one\nAPI Error: 529 on {pane}\n\n"
@@ -283,7 +293,8 @@ def test_pane_tails_for_ttys_captures_only_the_ttys_asked_for(monkeypatch):
 
     def fake_run(argv):
         if argv[:2] == ["tmux", "list-panes"]:
-            return "\n".join(f"%{n}{tmuxwatch._UNIT}/dev/pts/{n}" for n in (1, 2, 3))
+            return _listing(argv, [{"pane_id": f"%{n}", "pane_tty": f"/dev/pts/{n}"}
+                                   for n in (1, 2, 3)])
         if argv[:2] == ["tmux", "capture-pane"]:
             pane = argv[argv.index("-t") + 1]
             captured.append(pane)
@@ -631,3 +642,94 @@ def test_a_run_with_no_name_is_never_killed_by_one(monkeypatch):
     monkeypatch.setattr(tmuxwatch, "_run",
                         lambda argv: pytest.fail(f"tmux was run: {argv}"))
     assert tmuxwatch.kill_session("") is False
+
+
+# MARK: - the reap closes a window, not the session around it
+
+
+def test_the_tty_route_kills_the_panes_window_and_no_session(monkeypatch):
+    """An agent the operator ran by hand sits in a window of THEIR session; reaping
+    it must take that window and nothing else of theirs. A session this applet or a
+    mesh node opened has one window, and ends with it."""
+    calls: list[list[str]] = []
+
+    panes = {"/dev/pts/3": "@4", "/dev/pts/9": "@7"}
+
+    def fake_run(argv):
+        calls.append(argv)
+        if argv[:2] == ["tmux", "list-panes"]:
+            return _listing(argv, [{"pane_tty": tty, "window_id": w}
+                                   for tty, w in panes.items()])
+        if argv[:2] == ["tmux", "kill-window"]:
+            for tty, w in list(panes.items()):
+                if w == argv[-1]:
+                    del panes[tty]
+        return ""
+
+    monkeypatch.setattr(tmuxwatch.shutil, "which", lambda _: "/usr/bin/tmux")
+    monkeypatch.setattr(tmuxwatch, "_run", fake_run)
+    assert tmuxwatch.kill_window_for_tty("pts/9") is True
+    assert ["tmux", "kill-window", "-t", "@7"] in calls
+    assert not any(c[:2] == ["tmux", "kill-session"] for c in calls)
+    assert panes == {"/dev/pts/3": "@4"}, "the other pane's window is untouched"
+
+
+@pytest.mark.skipif(shutil.which("tmux") is None, reason="needs a real tmux")
+def test_a_one_window_session_ends_with_its_window():
+    """The mesh node opens an auto-named session around its agent; the tty route
+    is the only way that one is reaped, and killing its sole window must end it."""
+    name = f"diplomat-test-{uuid.uuid4().hex[:8]}"
+    subprocess.run(["tmux", "new-session", "-d", "-s", name, "sleep 300"], check=True)
+    try:
+        tty = subprocess.run(
+            ["tmux", "list-panes", "-t", name, "-F", "#{pane_tty}"],
+            capture_output=True, text=True, check=True).stdout.strip()
+        listing = subprocess.run(
+            ["tmux", "list-panes", "-a", "-F", "#{session_name} #{pane_tty} #{window_id}"],
+            capture_output=True, text=True).stdout
+        assert tmuxwatch.kill_window_for_tty(tty) is True, f"tty={tty!r} panes={listing!r}"
+        gone = subprocess.run(["tmux", "has-session", "-t", name],
+                              capture_output=True).returncode != 0
+        assert gone
+    finally:
+        subprocess.run(["tmux", "kill-session", "-t", name], capture_output=True)
+
+
+@pytest.mark.skipif(shutil.which("tmux") is None, reason="no tmux on this machine")
+def test_a_client_outside_tmux_under_a_c_locale_still_reads_its_panes(monkeypatch):
+    """Where launchd and an autostart entry put the applet: no ``$TMUX`` and no
+    UTF-8 in the locale, so tmux sanitizes every control byte of a command's output
+    to ``_`` (and 3.4, CI's, escapes them as octal for any client)."""
+    monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.setenv("LC_ALL", "C")
+    name = f"diplomat-test-{uuid.uuid4().hex[:8]}"
+    subprocess.run(["tmux", "new-session", "-d", "-s", name, "sleep 300"], check=True)
+    try:
+        tty = subprocess.run(
+            ["tmux", "list-panes", "-t", name, "-F", "#{pane_tty}"],
+            capture_output=True, text=True, check=True).stdout.strip()
+        short = tty.removeprefix("/dev/")
+        tails = tmuxwatch.pane_tails_for_ttys({short})
+        assert tails is not None and short in tails
+        assert tmuxwatch.kill_window_for_tty(tty) is True
+    finally:
+        subprocess.run(["tmux", "kill-session", "-t", f"={name}"], capture_output=True)
+
+
+@pytest.mark.skipif(shutil.which("tmux") is None, reason="no tmux on this machine")
+def test_the_watcher_dumps_its_panes_from_outside_tmux_under_a_c_locale(monkeypatch):
+    """The same client, on the listing :func:`dump_panes` keys every pane by. A
+    separator tmux sanitizes is a line with none, and a watcher that then sees no
+    panes at all nudges nothing."""
+    monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.setenv("LC_ALL", "C")
+    name = f"diplomat-test-{uuid.uuid4().hex[:8]}"
+    subprocess.run(["tmux", "new-session", "-d", "-s", name, "sleep 300"], check=True)
+    try:
+        pane_id, tty = subprocess.run(
+            ["tmux", "list-panes", "-t", name, "-F", "#{pane_id} #{pane_tty}"],
+            capture_output=True, text=True, check=True).stdout.split()
+        panes = tmuxwatch.dump_panes()
+        assert panes and (pane_id, tty) in {(p.pane_id, p.tty) for p in panes}
+    finally:
+        subprocess.run(["tmux", "kill-session", "-t", f"={name}"], capture_output=True)

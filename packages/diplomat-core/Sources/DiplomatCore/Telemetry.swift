@@ -163,7 +163,7 @@ public enum Telemetry {
                                           remote: false, tokens: nil, runner: "",
                                           usd: nil, model: "")
             if let duty = obj["duty"] as? String, !duty.isEmpty { task.duty = duty }
-            if let pr = number(obj["pr"]), pr > 0 { task.pr = Int(pr) }
+            if let pr = number(obj["pr"]), pr > 0 { task.pr = clampedInt(pr) }
             let known: Bool
             switch ev {
             case "queued":
@@ -279,9 +279,11 @@ public enum Telemetry {
     /// Each task as a percentage of one rate-limit window, or nothing at all while
     /// that window has no price. Empty rather than zeroed: a share of a window nobody
     /// has measured is a made-up number, and the screen says so instead of drawing it.
+    /// A count whose share overflows a Double is left out too: as `inf` it would bin
+    /// as NaN, which `Int(Double)` traps on.
     static func shares(_ taskTokens: [Double], limit: Double?) -> [Double] {
         guard let limit, limit > 0 else { return [] }
-        return taskTokens.map { 100 * $0 / limit }
+        return taskTokens.map { 100 * $0 / limit }.filter(\.isFinite)
     }
 
     // MARK: - Distribution (the bell curve)
@@ -759,7 +761,7 @@ public enum Telemetry {
     /// whether 90 minutes reads "1h 30m" or "90m".
     public static func duration(_ secs: Double, samples: Int = 1) -> String {
         guard samples > 0, secs.isFinite, secs > 0 else { return "—" }
-        let total = Int(secs.rounded())
+        let total = clampedInt(secs.rounded())
         if total < 60 { return "\(total)s" }
         if total < 3600 { return "\(total / 60)m \(String(format: "%02d", total % 60))s" }
         return "\(total / 3600)h \(String(format: "%02d", (total % 3600) / 60))m"
@@ -770,7 +772,7 @@ public enum Telemetry {
     /// duration spelling ("30m 00s") rather than truncating to "0h".
     public static func bucketLabel(_ hours: Double) -> String {
         if hours.isFinite, hours > 0, hours == hours.rounded(.down) {
-            return "\(Int(hours))h"
+            return "\(clampedInt(hours))h"
         }
         return duration(hours * 3600)
     }
@@ -798,6 +800,6 @@ public enum Telemetry {
         guard value.isFinite, value > 0 else { return "0" }
         if value >= 1_000_000 { return String(format: "%.1fM", value / 1_000_000) }
         if value >= 1_000 { return String(format: "%.0fk", value / 1_000) }
-        return String(Int(value.rounded()))
+        return String(clampedInt(value.rounded()))
     }
 }

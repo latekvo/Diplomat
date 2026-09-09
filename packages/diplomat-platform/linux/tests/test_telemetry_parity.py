@@ -263,6 +263,18 @@ def _ledger_lines() -> list[str]:
             {"at": base + 60 * i + 400 + 37 * i, "ev": "done", "key": key,
              "tokens": 60_000.0 + 23_000.0 * (i % 7)},
         ]
+    # A count whose share of the window overflows a double. Local and on the
+    # Anthropic runner, so it reaches the share arithmetic on both sides, where `inf`
+    # would bin as NaN - a trap in Swift, a raise here. Both keep it as what the task
+    # cost and leave it out of every share.
+    events += [
+        {"at": NOW - 3 * DAY, "ev": "queued", "key": "review:h/o/r#95@ww",
+         "duty": "review", "pr": 95},
+        {"at": NOW - 3 * DAY + 100, "ev": "started", "key": "review:h/o/r#95@ww",
+         "remote": False, "attempt": 1},
+        {"at": NOW - 3 * DAY + 1500, "ev": "done", "key": "review:h/o/r#95@ww",
+         "tokens": 1e308, "runner": "claude"},
+    ]
 
     lines = [json.dumps(e, sort_keys=True) for e in events]
     # Junk both sides must skip identically: not JSON, JSON that isn't an object,
@@ -275,6 +287,28 @@ def _ledger_lines() -> list[str]:
         json.dumps({"at": NOW, "ev": "queued", "duty": "review", "pr": 97}),
         "",
     ]
+    # A pr past Int's range: `Int(Double)` traps on the Swift side, and the screen
+    # folds the ledger on every repaint, so this one line took the app down at every
+    # launch. Both clamp it now, to the same value.
+    lines.append(json.dumps({"at": NOW, "ev": "queued", "key": "review:h/o/r#96@xx",
+                             "duty": "review", "pr": 1e300}))
+    # Numbers spelled as strings, as a hand edit leaves them. Both sides read one by
+    # the rule of Swift's `Double(String)`: hex is a number, surrounding whitespace
+    # or a `_` separator is not, and hex past a double's range is the infinity both
+    # refuse. Older than the lookback, so the only figure they reach is the task
+    # list itself.
+    for n, when, pr, tokens in ((52, NOW - 41 * DAY, " 12 ", "1_000"),
+                                (53, NOW - 42 * DAY, "0x10", "0x1p10"),
+                                (54, NOW - 43 * DAY, "0x1p99999", "-0x1p99999")):
+        key = f"review:h/o/r#{n}@s{n}"
+        lines += [
+            json.dumps({"at": when, "ev": "queued", "key": key, "duty": "review",
+                        "pr": pr}),
+            json.dumps({"at": when + 60, "ev": "started", "key": key, "remote": False,
+                        "attempt": 1}),
+            json.dumps({"at": when + 900, "ev": "done", "key": key, "tokens": tokens,
+                        "runner": "claude"}),
+        ]
     return lines
 
 
@@ -444,7 +478,9 @@ def test_a_foreign_runners_task_is_priced_but_never_charged_to_the_window(both):
                     if t["tokens"] and not t["remote"] and t["startedAt"] is not None
                     and t["startedAt"] >= NOW - DAYS * DAY]
     foreign = [t for t in local_priced if t["runner"] in ("opencode", "hermes")]
-    counted = [t for t in local_priced if t not in foreign]
+    # #95's share overflowed: priced like any other, out of the distribution.
+    counted = [t for t in local_priced
+               if t not in foreign and t["key"] != "review:h/o/r#95@ww"]
     assert sorted(t["tokens"] for t in foreign
                   if t["runner"] == "opencode") == [8_000_000, 9_000_000]
     assert p["perTask"]["count"] == len(counted), (
@@ -500,3 +536,60 @@ def test_the_junk_lines_produced_no_tasks(both):
     assert "review:h/o/r#99@zz" not in keys, "an unknown event verb created a task"
     assert "review:h/o/r#98@yy" not in keys, "an event with no `at` created a task"
     assert "" not in keys
+
+
+def test_a_numeric_string_is_read_by_one_rule_on_both_sides(both):
+    """Anti-vacuity for the string-spelled tasks in the fixture: the whole-payload
+    match above holds just as well if both sides refuse every string, or read every
+    one. Hex is a number on both; whitespace, a ``_`` separator and a hex exponent
+    past the double's range are refused."""
+    _swift, p = both
+    by_key = {t["key"]: t for t in p["tasks"]}
+    assert (by_key["review:h/o/r#52@s52"]["pr"],
+            by_key["review:h/o/r#52@s52"]["tokens"]) == (0, None)
+    assert (by_key["review:h/o/r#53@s53"]["pr"],
+            by_key["review:h/o/r#53@s53"]["tokens"]) == (16, 1024)
+    assert (by_key["review:h/o/r#54@s54"]["pr"],
+            by_key["review:h/o/r#54@s54"]["tokens"]) == (0, None)
+
+
+def test_a_mean_past_ints_range_rounds_the_same_on_both_sides():
+    """This side rounds every float in the payload through an integer, and past
+    Int's range that integer must not clamp the way the formatters do: Swift rounds
+    the double in place, so a clamp here prints 9.2e12 against its 1e13. One task
+    of 1e13 tokens is a mean in that range."""
+    key = "review:h/o/r#1@aa"
+    lines = [
+        json.dumps({"at": NOW - DAY, "ev": "started", "key": key, "remote": False,
+                    "attempt": 1}),
+        json.dumps({"at": NOW - DAY + 600, "ev": "done", "key": key, "tokens": 1e13}),
+    ]
+    swift, python = _swift(lines), _python(lines)
+    assert swift["perTaskTokensMean"] == 1e13
+    assert python == swift
+
+
+def test_a_deviation_past_a_doubles_range_is_inf_on_both_sides():
+    """A share or a price can be finite while its squared deviation is not. Swift's
+    product overflows to ``inf``, which the payload prints as 0; a ``**`` on this
+    side would raise instead, and the Linux screen would fail to repaint while the
+    macOS one draws. One task of 1e300 tokens against a 2M window, or of $1e200
+    beside a $5 run of the same model, is a deviation in that range."""
+    lines = _ledger_lines() + [
+        json.dumps({"at": NOW - 2 * DAY, "ev": "started", "key": "review:h/o/r#93@uu",
+                    "remote": False, "attempt": 1}),
+        json.dumps({"at": NOW - 2 * DAY + 600, "ev": "done",
+                    "key": "review:h/o/r#93@uu",
+                    "tokens": 1e300, "runner": "claude"}),
+        json.dumps({"at": NOW - 2 * DAY, "ev": "started", "key": "review:h/o/r#94@vv",
+                    "remote": False, "attempt": 1}),
+        json.dumps({"at": NOW - 2 * DAY + 600, "ev": "done",
+                    "key": "review:h/o/r#94@vv",
+                    "tokens": 1000.0, "runner": "hermes", "usd": 1e200,
+                    "model": "anthropic/claude-opus-5"}),
+    ]
+    base, swift = _swift(_ledger_lines()), _swift(lines)
+    assert swift["perTask"]["count"] == base["perTask"]["count"] + 1
+    assert swift["perTaskUsd"]["count"] == base["perTaskUsd"]["count"] + 1
+    assert swift["perTask"]["sd"] == swift["perTaskUsd"]["sd"] == 0
+    assert _python(lines) == swift

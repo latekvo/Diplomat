@@ -88,7 +88,9 @@ jobs:
       # nothing. QUEUE_TEST is the one
       # that touches state at all: reaching the cap's refusal branch means a `ps` scan, a
       # ban-list read and an `at-capacity` audit line, so it points DIPLOMAT_AUDIT_DIR at
-      # a scratch dir of its own. It returns before any spawn or fetch.
+      # a scratch dir of its own. It returns before any spawn or fetch. RELAUNCH_TEST
+      # opens throwaway bundles it lays out itself plus an idle copy of the binary, and
+      # ends every one of them; it terminates nothing else.
       #
       # DIPLOMAT_TRACK_TEST and DIPLOMAT_SPAWN_FOCUS_TEST are the two that stay out,
       # and not by oversight: both drive real throwaway terminal windows and need a
@@ -96,6 +98,33 @@ jobs:
       # has no way to hold. They are run by hand from the installed .app.
       # DIPLOMAT_SPAWN_SCRIPT_TEST covers the focus half of the second one here, by
       # reading the script those windows would have run.
+      # A mode the delegate dispatches but Headless.active does not list runs the
+      # newest-wins singleton first, and kills the live wrench on any box that has
+      # one up; one listed but dispatched nowhere excuses whatever its name is next
+      # attached to. A mode is an `env[...]` read of a DIPLOMAT_ name - either
+      # spelling of the read, and only a read, so a name in a comment counts for
+      # nothing. The Linux job's test_headless_modes.py compares the same two lists.
+      - name: Every dispatched mode is a headless one, and the reverse
+        working-directory: packages/diplomat-platform/macos/Sources/Diplomat
+        run: |
+          names() { grep -oE '(env|environment)\[ *"DIPLOMAT_[A-Z0-9_]+" *\]' | grep -oE 'DIPLOMAT_[A-Z0-9_]+' | sort -u || true; }
+          dispatched="$(names < DiplomatApp.swift)"
+          block="$(sed -n '/static func isActive(in/,/^    }/p' Headless.swift)"
+          # The slice ends at isActive's own brace. Reshaped so that brace no longer
+          # matches, sed runs on to the next one and takes in the declarations
+          # between, so a name nothing dispatches reads as one Headless knows about.
+          ! tail -n +2 <<<"$block" | grep -q 'static ' \
+            || { echo "::error::the isActive block ran past its own function"; exit 1; }
+          headless="$(names <<<"$block")"
+          for name in DIPLOMAT_RENDER DIPLOMAT_QUEUE_TEST; do   # a valued mode and a flag
+            grep -qx "$name" <<<"$dispatched" && grep -qx "$name" <<<"$headless" \
+              || { echo "::error::the grep no longer sees $name in both lists"; exit 1; }
+          done
+          missing="$(comm -23 <(echo "$dispatched") <(echo "$headless"))"
+          orphans="$(comm -13 <(echo "$dispatched") <(echo "$headless"))"
+          test -z "$missing" || echo "::error::dispatched but not in Headless.active: $missing"
+          test -z "$orphans" || echo "::error::in Headless.active but dispatched nowhere: $orphans"
+          test -z "$missing$orphans"
       - name: Headless helper self-tests
         working-directory: packages/diplomat-platform/macos
         run: |
@@ -103,6 +132,8 @@ jobs:
           SZPONTNET_DIR="$RUNNER_TEMP/mesh" DIPLOMAT_SELF_REPO=/nonexistent \
             DIPLOMAT_MESH_CMD_TEST=1 swift run Diplomat
           DIPLOMAT_ALLOCATOR_TEST=1 swift run Diplomat
+          DIPLOMAT_REPOPATHS_TEST=1 swift run Diplomat
+          DIPLOMAT_RELAUNCH_TEST=1 swift run Diplomat
           DIPLOMAT_QUEUE_TEST=1 swift run Diplomat
           DIPLOMAT_SWEEP_TEST=1 swift run Diplomat
           DIPLOMAT_QUOTA_TEST=1 swift run Diplomat
@@ -114,6 +145,11 @@ jobs:
           # tmux, where Ghostty must be refused rather than offered — a spawn there
           # would open windows whose agents nothing could ever read.
           DIPLOMAT_TMUX=/nonexistent DIPLOMAT_SPAWN_SCRIPT_TEST=1 swift run Diplomat
+      # What the two installers write, against stubs and a scratch HOME - the Linux
+      # job's test_install_autoupdate.py, for launchd.
+      - name: Installer self-test
+        working-directory: packages/diplomat-platform/macos
+        run: bash tests/installers.sh
 
   # The shared core advertises "compiles on macOS *and* Linux". This guards that
   # invariant by building + running the diplomat-core package on Linux (the SwiftUI

@@ -1003,19 +1003,39 @@ final class Store: ObservableObject {
         }.value
     }
 
+    /// The settle under way: what the next one waits behind, and the display refresh yields to.
+    private var settleInFlight: Task<AgentPass, Never>?
+
+    /// Where a headless self-test holds a settle between its tick and the write-back, so
+    /// one is caught under way by construction rather than by winning a race against the
+    /// scheduler, and a run registered across the tick is on disk when the write-back runs.
+    static var settleGate: (@MainActor () async -> Void)?
+
     /// One tick, and the consequences of it: publish the rows, write back what was learned,
     /// retire what has ended, and report a probe that has gone quiet.
     ///
     /// Called from the process poll and from the display refresh — the two ticks that are
     /// meant to move the world on — and from nowhere that merely draws.
+    ///
+    /// One at a time: the tick is a suspension point the main actor is reentrant across, so
+    /// a second settle would otherwise tick a book the first has not retired from yet and
+    /// retire the same run again. It waits, then takes a tick of its own — the spawn or
+    /// forget it follows may postdate the one under way.
     @discardableResult
     func settleAgents() async -> AgentPass {
-        let pass = await agentTick()
-        Store.persistRunChanges(pass.tick.records)
-        publish(pass)
-        await retireFinished(pass.tick)
-        noteSilentProbes()
-        return pass
+        while let running = settleInFlight { _ = await running.value }
+        let settle = Task {
+            let pass = await agentTick()
+            if Headless.active, let gate = Store.settleGate { await gate() }
+            Store.persistRunChanges(pass.tick.records)
+            publish(pass)
+            await retireFinished(pass.tick)
+            noteSilentProbes()
+            settleInFlight = nil
+            return pass
+        }
+        settleInFlight = settle
+        return await settle.value
     }
 
     /// The rows and the cap load this pass produced.
@@ -1050,33 +1070,32 @@ final class Store: ObservableObject {
     /// tick. Only a synthesized one: a tracked record missing from the book was retired
     /// while this tick resolved, and writing it back would raise the dead.
     private static func persistRunChanges(_ learned: [AgentState.RunRecord]) {
-        var fresh = Dictionary(learned.map { ($0.runID, $0) },
+        let fresh = Dictionary(learned.map { ($0.runID, $0) },
                                uniquingKeysWith: { _, last in last })
-        var out: [AgentState.RunRecord] = []
-        var changed = false
-        for r in AgentRegistry.load() {
-            guard let f = fresh.removeValue(forKey: r.runID) else { out.append(r); continue }
-            var merged = r
-            if merged.pid == nil { merged.pid = f.pid }
-            // The fresher one wins here, unlike the pid: a synthesized run's tty follows
-            // whichever agent its PR's sighting currently names.
-            if !f.tty.isEmpty { merged.tty = f.tty }
-            if let seen = f.claimSeenAt { merged.claimSeenAt = seen }
-            // Taken wholesale, unlike the three above: this pair is the only thing a
-            // tick learns by comparing itself to the LAST one, so it is the only one
-            // worthless unless written down. Unpersisted, every tick re-reads a screen
-            // it has no memory of, the stillness clock restarts at zero, and the
-            // twenty-minute backstop can never elapse however long an agent sits wedged.
-            merged.quietDigest = f.quietDigest
-            merged.quietSince = f.quietSince
-            changed = changed || merged != r
-            out.append(merged)
+        AgentRegistry.update { book in
+            var out = book.map { r -> AgentState.RunRecord in
+                guard let f = fresh[r.runID] else { return r }
+                var merged = r
+                if merged.pid == nil { merged.pid = f.pid }
+                // The fresher one wins here, unlike the pid: a synthesized run's tty
+                // follows whichever agent its PR's sighting currently names.
+                if !f.tty.isEmpty { merged.tty = f.tty }
+                if let seen = f.claimSeenAt { merged.claimSeenAt = seen }
+                // Taken wholesale, unlike the three above: this pair is the only thing a
+                // tick learns by comparing itself to the LAST one, so it is the only one
+                // worthless unless written down. Unpersisted, every tick re-reads a
+                // screen it has no memory of, the stillness clock restarts at zero, and
+                // the twenty-minute backstop can never elapse however long an agent sits
+                // wedged.
+                merged.quietDigest = f.quietDigest
+                merged.quietSince = f.quietSince
+                return merged
+            }
+            // The rows with no line on disk to merge into, in `learned`'s order.
+            let booked = Set(book.map(\.runID))
+            out.append(contentsOf: learned.filter { $0.untracked && !booked.contains($0.runID) })
+            return out
         }
-        // What the drain above left in `fresh`: the rows with no line on disk to merge
-        // into. Taken from `learned` rather than from the dictionary, for a stable order.
-        let added = learned.filter { $0.untracked && fresh[$0.runID] != nil }
-        out.append(contentsOf: added)
-        if changed || !added.isEmpty { AgentRegistry.save(out) }
     }
 
     /// Price what has ended and drop it from the book.
@@ -1188,12 +1207,14 @@ final class Store: ObservableObject {
             AuditLog.log("auto", "kill-device", "closed \(who)'s window — \(why)")
         }
         if !refused.isEmpty {
-            AgentRegistry.save(AgentRegistry.load().map { r -> AgentState.RunRecord in
-                guard refused.contains(r.runID) else { return r }
-                var stamped = r
-                stamped.reapRefusedAt = t.now
-                return stamped
-            })
+            AgentRegistry.update { book in
+                book.map { r -> AgentState.RunRecord in
+                    guard refused.contains(r.runID) else { return r }
+                    var stamped = r
+                    stamped.reapRefusedAt = t.now
+                    return stamped
+                }
+            }
         }
         return refused
     }
@@ -1763,7 +1784,12 @@ final class Store: ObservableObject {
     /// The panel calls it on its own tick, including the ticks where nothing is registered:
     /// an agent can be alive with no record behind it (one this applet never spawned), and
     /// that is exactly when a wrongly-drawn free bay would be most misleading.
-    func refreshAutoTaskCount() async { await settleAgents() }
+    ///
+    /// A settle already under way is left to finish; the next tick asks again.
+    func refreshAutoTaskCount() async {
+        guard settleInFlight == nil else { return }
+        await settleAgents()
+    }
 
     /// Pin the measurement, for headless self-tests only. The real one reads `ps` on
     /// whatever machine is running the test, so an assertion about free slots would
@@ -2731,7 +2757,8 @@ final class Store: ObservableObject {
         // and forcing it.
         var budget = AgentDispatchGate.Budget(affordable: true)
         if source == .auto, !agentOnPR, !bypassBudget, !atCapacity, AutoBudget.enabled {
-            budget = AutoBudget.decide()
+            // Off the main actor: the probe behind it dials the usage endpoint.
+            budget = await Task.detached(priority: .utility) { AutoBudget.decide() }.value
             if budget.affordable { budgetLogged = false }
         }
         switch AgentDispatchGate.decide(source: source, banned: banned,

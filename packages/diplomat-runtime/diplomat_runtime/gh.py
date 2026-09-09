@@ -21,6 +21,8 @@ class GHError(RuntimeError):
 
 
 _CANDIDATES = ["/usr/bin/gh", "/usr/local/bin/gh", "/opt/homebrew/bin/gh"]
+# Set only on success, so a gh installed after launch is picked up by the next call
+# instead of requiring a restart; one that no longer launches is forgotten the same way.
 _cached_path: str | None = None
 
 
@@ -39,6 +41,12 @@ def gh_path() -> str:
     raise GHError("`gh` CLI not found. Install GitHub CLI and run `gh auth login`.")
 
 
+def _forget(path: str) -> None:
+    global _cached_path
+    if _cached_path == path:
+        _cached_path = None
+
+
 def run(args: list[str], timeout: float = 60.0) -> bytes:
     """Run gh with the given argv, returning stdout bytes (raises on failure)."""
     path = gh_path()
@@ -50,6 +58,7 @@ def run(args: list[str], timeout: float = 60.0) -> bytes:
             check=False,
         )
     except FileNotFoundError as exc:
+        _forget(path)
         raise GHError(f"could not execute gh: {exc}") from exc
     except subprocess.TimeoutExpired as exc:
         raise GHError(f"gh timed out after {timeout:.0f}s") from exc

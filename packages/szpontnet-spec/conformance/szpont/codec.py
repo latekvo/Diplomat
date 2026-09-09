@@ -323,13 +323,17 @@ def encode(msg: dict) -> bytes:
 
 def decode(line: bytes) -> dict | None:
     """Parse one line; ``None`` (drop) for: empty, over-length, invalid UTF-8,
-    non-JSON, a non-object, or an object without a string ``t``. This is the
-    exact drop-set the conformance vector V2 enumerates."""
+    non-JSON, a line within the limit the parser refuses (nested past its stack, an
+    integer literal past its digit limit), a non-object, or an object without a
+    string ``t``. This is the exact drop-set the conformance vector V2 enumerates."""
     if not line or len(line) > MAX_LINE_BYTES:
         return None
     try:
         msg = json.loads(line.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
+    except (ValueError, RecursionError):
+        # ValueError: UnicodeDecodeError and JSONDecodeError are subclasses, and json
+        # raises it bare for an integer literal past the interpreter's digit limit
+        # (4300 by default).
         return None
     if not isinstance(msg, dict) or not isinstance(msg.get("t"), str):
         return None

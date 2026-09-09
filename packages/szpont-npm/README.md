@@ -26,7 +26,7 @@ is already in the repository:
 | get it | `git clone` into `~/.diplomat/checkout`, or fast-forward it | same |
 | build it | `install/build-app.sh` → `Diplomat.app` | `install/build-core.sh` when the prompt binary is missing |
 | set it up | - | a venv at `~/.diplomat/venv` with `requirements.txt` in it |
-| start it | `open Diplomat.app` | the package's own `./diplomat`, on the venv's interpreter |
+| start it | `open -n Diplomat.app` | the package's own `./diplomat`, on the venv's interpreter |
 
 Nothing is rebuilt that does not need to be: a venv is left alone until
 `requirements.txt` changes, and the Swift prompt binary is only built when the
@@ -49,8 +49,8 @@ may have work in it. `DIPLOMAT_REPO_URL` clones from a fork.
 [`pip install szpont`](https://github.com/latekvo/Diplomat/tree/main/packages/szpont)
 installs the same launcher and nothing else. The two implementations are separate
 files in separate languages, so what keeps them one command is
-`test/parity-with-python.mjs`: every machine shape in `test/scenarios.mjs` goes
-through both planners, and the two answers have to be identical.
+`test/parity-with-python.mjs`: every machine in `test/scenarios.mjs` is probed by
+both and every fact set planned by both, and the two answers have to be identical.
 
 ## Its own tests
 

@@ -165,6 +165,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if env["DIPLOMAT_ALLOCATOR_TEST"] == "1" {
             exit(AllocatorSetupTest.run() ? 0 : 1)
         }
+        // Checkout-location self-test: proves the bundle szpont builds and launchd starts
+        // names the checkout around it, a copy kept elsewhere names none, and the order
+        // the four readings of `RepoPaths.root` are taken in. Lays the shapes out in a
+        // scratch directory; reads nothing else. Exit code = pass/fail.
+        if env["DIPLOMAT_REPOPATHS_TEST"] == "1" {
+            exit(RepoPathsTest.run() ? 0 : 1)
+        }
+        // Relaunch self-test: proves the relaunch that ends a self-update starts a GUI,
+        // is judged on the instance `open` started, and that the singleton spares a
+        // headless one.
+        // Opens throwaway bundles it lays out itself and an idle copy of this binary
+        // under DIPLOMAT_RELAUNCH_TEST=hold, which exits on its own should the test die
+        // before ending it. Exit code = pass/fail.
+        if env["DIPLOMAT_RELAUNCH_TEST"] == "1" {
+            Task.detached { exit(RelaunchTest.run() ? 0 : 1) }
+        } else if env["DIPLOMAT_RELAUNCH_TEST"] == "hold" {
+            Task.detached { sleep(60); exit(0) }
+        }
     }
 }
 
@@ -190,34 +208,61 @@ enum SingleInstance {
     static let bundleID = "com.ignacy.diplomat"
     static let execName = "Diplomat"
 
-    /// Whether another live instance exists — the 6AM updater relaunches only if so,
-    /// never spawning a menu-bar app onto a session that isn't showing one.
-    static func isRunning() -> Bool {
+    /// Every other live GUI instance of the app. A headless one-shot (the 06:00 updater
+    /// waiting to see the app it relaunched come up, a self-test) runs the same binary
+    /// but exits on its own and puts no wrench in the menu bar, so it is neither
+    /// terminated nor counted as the app being up; its environment tells it apart, and
+    /// one whose environment cannot be read counts as GUI.
+    static func otherInstances() -> [NSRunningApplication] {
         let myPid = ProcessInfo.processInfo.processIdentifier
-        return NSWorkspace.shared.runningApplications.contains { app in
-            app.processIdentifier != myPid
-                && (app.bundleIdentifier == bundleID
-                    || app.executableURL?.lastPathComponent == execName)
+        return NSWorkspace.shared.runningApplications.filter { app in
+            guard app.processIdentifier != myPid,
+                  app.bundleIdentifier == bundleID
+                      || app.executableURL?.lastPathComponent == execName
+            else { return false }
+            return !Headless.isActive(in: environment(of: app.processIdentifier))
         }
     }
 
+    /// Whether another live GUI instance exists — the 6AM updater relaunches only if so,
+    /// never spawning a menu-bar app onto a session that isn't showing one.
+    static func isRunning() -> Bool { !otherInstances().isEmpty }
+
     static func terminateOthers() {
-        func others() -> [NSRunningApplication] {
-            let myPid = ProcessInfo.processInfo.processIdentifier
-            return NSWorkspace.shared.runningApplications.filter { app in
-                guard app.processIdentifier != myPid else { return false }
-                return app.bundleIdentifier == bundleID
-                    || app.executableURL?.lastPathComponent == execName
-            }
-        }
-        let initial = others()
+        let initial = otherInstances()
         guard !initial.isEmpty else { return }
         log("found \(initial.count) old instance(s), terminating")
         for app in initial { app.terminate() }      // ask nicely first
         usleep(400_000)                              // 0.4s grace
-        let survivors = others()                     // re-query: terminated apps drop out
+        let survivors = otherInstances()             // re-query: terminated apps drop out
         for app in survivors { app.forceTerminate() }
         if !survivors.isEmpty { log("force-killed \(survivors.count) survivor(s)") }
+    }
+
+    /// A live process's environment; empty when the kernel withholds it (a platform
+    /// binary's). KERN_PROCARGS2 lays out argc, the executable path, NUL padding, then
+    /// the argv and environment strings, each NUL-terminated.
+    static func environment(of pid: pid_t) -> [String: String] {
+        var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
+        var size = 0
+        guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > MemoryLayout<Int32>.size else { return [:] }
+        var buf = [UInt8](repeating: 0, count: size)
+        guard sysctl(&mib, 3, &buf, &size, nil, 0) == 0 else { return [:] }
+        let argc = Int(buf.withUnsafeBytes { $0.load(as: Int32.self) })
+        var at = MemoryLayout<Int32>.size
+        func next() -> String? {
+            guard at < size, let end = buf[at..<size].firstIndex(of: 0) else { return nil }
+            defer { at = end + 1 }
+            return String(decoding: buf[at..<end], as: UTF8.self)
+        }
+        guard next() != nil else { return [:] }
+        while at < size, buf[at] == 0 { at += 1 }
+        for _ in 0..<argc { guard next() != nil else { return [:] } }
+        var env: [String: String] = [:]
+        while let entry = next(), let eq = entry.firstIndex(of: "=") {
+            env[String(entry[..<eq])] = String(entry[entry.index(after: eq)...])
+        }
+        return env
     }
 
     private static func log(_ msg: String) {

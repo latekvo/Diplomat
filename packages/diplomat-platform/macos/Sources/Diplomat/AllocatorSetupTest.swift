@@ -90,7 +90,7 @@ enum AllocatorSetupTest {
         }
 
         // An installer that predates drift detection: the .app can outrun its
-        // checkout (it may sit in /Applications while the source moves). Reading
+        // checkout (a copy kept elsewhere while the source moves). Reading
         // "current" as a positive flag would make that machine reinstall on every
         // launch forever; deriving it from `installed && !outdated` makes the old
         // installer's silence mean "installed, nothing known to be wrong".

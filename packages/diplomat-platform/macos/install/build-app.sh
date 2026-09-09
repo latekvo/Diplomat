@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build a double-clickable, menu-bar-only Diplomat.app (LSUIElement, no Dock icon).
-# Usage: ./install/build-app.sh     then: open Diplomat.app
-#        (drag into /Applications and add to Login Items to keep it around)
+# Usage: ./install/build-app.sh     then: open -n Diplomat.app
+#        (install/install-autostart.sh to have it back at every login, in place)
 #
 # Everything is built and written inside this package, never at the repo root:
 # the bundle is a build artifact of the macOS front-end and belongs beside it.
@@ -44,4 +44,4 @@ PLIST
 
 echo "Built $PKG_DIR/$APP"
 echo "Launch:  open $PKG_DIR/$APP"
-echo "Keep it: drag into /Applications, then System Settings → General → Login Items → add it."
+echo "Keep it: ./install/install-autostart.sh starts this bundle at login (and deletes any copy in /Applications or ~/Applications)."
