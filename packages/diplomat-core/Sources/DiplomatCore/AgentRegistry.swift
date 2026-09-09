@@ -31,9 +31,10 @@ public enum AgentRegistry {
     /// fields it does not understand, and the process scan still covers what is running.
     public static let schemaVersion = 1
 
-    /// Serialises the read-modify-write in `add`: a spawn registering against a list a
-    /// concurrent sweep already copied would be dropped, leaving an agent nothing
-    /// counts — a bay of the cap the machine can then spend twice.
+    /// Serialises every read-modify-write of the book, the read included: a spawn
+    /// registering against a list a concurrent sweep already copied would be dropped,
+    /// leaving an agent nothing counts — a bay of the cap the machine can then spend
+    /// twice.
     private static let lock = NSLock()
 
     // MARK: - Paths

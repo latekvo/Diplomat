@@ -1665,6 +1665,44 @@ do {
     print("run book sidecar assertions passed")
 }
 
+section("the run book under contention")
+// Every edit is a read-modify-write under one lock, and the lock covers the read: a
+// read outside it is a copy that misses what a concurrent writer booked, and the
+// write that follows drops it. Eight threads each book a run and forget their previous
+// one, forty times, racing; what survives is exactly each thread's last run.
+do {
+    let book = FileManager.default.temporaryDirectory
+        .appendingPathComponent("diplomat-smoke-agents-\(UUID().uuidString)", isDirectory: true)
+    setenv("DIPLOMAT_AGENTS_DIR", book.path, 1)
+    defer { try? FileManager.default.removeItem(at: book) }
+    let now = Date().timeIntervalSince1970
+    let threads = 8, rounds = 40
+    let started = Date()
+    func race() {
+        let done = DispatchGroup()
+        for t in 0..<threads {
+            DispatchQueue.global().async(group: done) {
+                var previous: String?
+                for k in 0..<rounds {
+                    let id = "t\(t)-\(k)"
+                    AgentRegistry.update { $0 + [AgentState.RunRecord(runID: id, dispatchedAt: now)] }
+                    if let previous { AgentRegistry.forget([previous]) }
+                    previous = id
+                }
+            }
+        }
+        done.wait()
+    }
+    race()
+    let survivors = Set(AgentRegistry.load().map(\.runID))
+    let expected = Set((0..<threads).map { "t\($0)-\(rounds - 1)" })
+    check(survivors == expected,
+          "\(threads * rounds) racing updates and forgets lose nothing: "
+          + "\(expected.subtracting(survivors).count) missing, \(survivors.subtracting(expected).count) resurrected")
+    print("run book contention assertions passed (\(threads * rounds) updates in "
+          + "\(String(format: "%.2f", Date().timeIntervalSince(started)))s)")
+}
+
 section("numbers in a hand-edited run book")
 // PARITY: `tests/test_agent_registry_parity.py` reads these books on both sides. The
 // two parsers already disagree on these literals before either decoder runs, so both
