@@ -618,7 +618,7 @@ enum QueueTest {
         // 16. Settles do not overlap: the tick is a suspension point, and a settle
         //     arriving across it would retire the same finished run again. The display
         //     refresh yields to one under way; every other caller waits for it. The
-        //     first settle is held at its tick, so what the refresh meets is under way
+        //     first settle is held past its tick, so what the refresh meets is under way
         //     by construction: a yield to the scheduler does not order two tasks.
         emptyBook()
         let over = AgentRegistry.createRun(
@@ -649,6 +649,23 @@ enum QueueTest {
         }
         check("a settle arriving while one is under way waits, so a finished run is retired once",
               retired.count == 1 && AgentRegistry.load().isEmpty)
+
+        // 17. The write-back merges into the book on disk rather than replacing it with
+        //     the tick's copy. A spawn that registered while the tick resolved is in the
+        //     book and not in the copy, so the copy written back is an agent nothing
+        //     counts: a bay of the cap the machine can spend twice.
+        bookAgent(21)
+        let ticked = Latch(), written = Latch()
+        Store.settleGate = { ticked.open(); await written.wait() }
+        let across = Task { await store.settleAgents() }
+        await ticked.wait()
+        bookAgent(22)
+        Store.settleGate = nil
+        written.open()
+        await across.value
+        check("a run registered while the tick resolved is in the book after the write-back",
+              AgentRegistry.load().compactMap(\.prNumber) == [21, 22])
+        emptyBook()
 
         // 13. The redirect above is the only thing between a run of this test and the
         //    operator's real activity log, so prove it caught the writes.

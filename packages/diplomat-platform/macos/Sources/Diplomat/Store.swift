@@ -1006,8 +1006,9 @@ final class Store: ObservableObject {
     /// The settle under way: what the next one waits behind, and the display refresh yields to.
     private var settleInFlight: Task<AgentPass, Never>?
 
-    /// Where a headless self-test holds a settle at its tick, so one is caught under way
-    /// by construction rather than by winning a race against the scheduler.
+    /// Where a headless self-test holds a settle between its tick and the write-back, so
+    /// one is caught under way by construction rather than by winning a race against the
+    /// scheduler, and a run registered across the tick is on disk when the write-back runs.
     static var settleGate: (@MainActor () async -> Void)?
 
     /// One tick, and the consequences of it: publish the rows, write back what was learned,
@@ -1024,8 +1025,8 @@ final class Store: ObservableObject {
     func settleAgents() async -> AgentPass {
         while let running = settleInFlight { _ = await running.value }
         let settle = Task {
-            if Headless.active, let gate = Store.settleGate { await gate() }
             let pass = await agentTick()
+            if Headless.active, let gate = Store.settleGate { await gate() }
             Store.persistRunChanges(pass.tick.records)
             publish(pass)
             await retireFinished(pass.tick)
