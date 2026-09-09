@@ -135,6 +135,7 @@ export function machines(root) {
     bare: { HOME: home, PATH: '' },
     'tools-on-path': { HOME: home, PATH: bin },
     'odd-tools-on-path': { HOME: home, PATH: `${dirbin}${path.delimiter}${fifobin}` },
+    'directory-as-tool': { HOME: home, PATH: dirbin },
     'tool-in-the-working-directory': { HOME: home, PATH: path.delimiter },
     'dangling-tool': { HOME: home, PATH: danglebin },
     'own-checkout': { HOME: home, PATH: '', DIPLOMAT_SELF_REPO: checkout },
