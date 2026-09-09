@@ -3536,6 +3536,77 @@ def test_a_spawn_during_a_tick_is_not_dropped_by_the_write_back(store, monkeypat
     assert slow.run_id in {r.run_id for r in agentregistry.load()}
 
 
+def _register_inside_the_next_read(monkeypatch, number):
+    """Fire a registration of PR ``number`` from inside the registry's next read, the
+    way `test_a_run_registered_during_a_forget_survives` pins `forget()`: a read under
+    the lock makes the spawn wait for the write and land after it, while a read
+    outside it lets the spawn land first and the stale copy write over it. Returns the
+    spawn's thread, to be joined once the write is done."""
+    import threading
+
+    from diplomat_runtime import atomicjson
+
+    real = atomicjson.read_object
+    spawns: list[threading.Thread] = []
+
+    def read_then_register(path):
+        data = real(path)
+        if not spawns:
+            spawns.append(threading.Thread(
+                target=register_run, args=(number,), kwargs={"pid": 2, "tty": "pts/2"}))
+            spawns[0].start()
+            spawns[0].join(timeout=0.5)
+        return data
+
+    monkeypatch.setattr(atomicjson, "read_object", read_then_register)
+    return spawns
+
+
+def test_a_run_registered_during_the_write_back_survives(store, monkeypatch):
+    """The write-back is one read-modify-write under the registry's lock. Read, merge
+    and save as three steps, a spawn registering between the read and the save is
+    dropped by the save - an agent nothing counts."""
+    from diplomat_runtime import agentregistry
+
+    register_run(101, pid=1, tty="pts/1", dispatched_at=time.time())
+    fake_probes(monkeypatch, processes=agent_alive(1, tty="pts/1"),
+                tails={"pts/1": WORKING})
+    t = store._agent_tick()
+    spawns = _register_inside_the_next_read(monkeypatch, 202)
+
+    store._persist_run_changes(t)
+
+    spawns[0].join(timeout=5)
+    by_pr = {r.pr_number: r for r in agentregistry.load()}
+    assert sorted(by_pr) == [101, 202]
+    assert by_pr[101].quiet_digest, "and the write-back wrote what the tick learned"
+
+
+def test_a_run_registered_during_the_reap_refused_stamp_survives(store, monkeypatch):
+    """The refusal stamp is the reaper's own edit of the book, and goes the same road
+    as the write-back."""
+    from diplomat_runtime import agentregistry
+    from diplomat_runtime import agentstate as A
+
+    _refused(monkeypatch)
+    record = register_run(710, pid=7010, tty="pts/70", dispatched_at=time.time() - 4000)
+    fake_probes(monkeypatch, processes=agent_alive(7010, tty="pts/70", elapsed=4000),
+                tails={"pts/70": WORKING})
+    store._settle_agents()
+    _age_the_stillness(A.QUIET_TIMEOUT + 5)
+    t = store._agent_tick()
+    assert [r.run_id for r in t.reapable] == [record.run_id], \
+        "the backstop must actually have ended it, or this pins nothing"
+    spawns = _register_inside_the_next_read(monkeypatch, 202)
+
+    assert store._reap_wedged_windows(t) == {record.run_id}
+
+    spawns[0].join(timeout=5)
+    by_pr = {r.pr_number: r for r in agentregistry.load()}
+    assert sorted(by_pr) == [202, 710]
+    assert by_pr[710].reap_refused_at == t.now
+
+
 def test_the_poll_settles_the_agents_even_with_the_panel_shut(store, monkeypatch):
     """Diplomat is a TRAY applet: its panel is shut most of the time, and the panel's
     own tick is gated on being visible. If retirement rides only on that tick, a
