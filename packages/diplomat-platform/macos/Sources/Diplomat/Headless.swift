@@ -15,7 +15,7 @@ enum Headless {
     /// another instance's when the singleton picks whom to terminate and the 06:00
     /// updater asks whether the app is up. The value rules are the launch ladder's
     /// (`AppDelegate.applicationDidFinishLaunching`): a value it would not dispatch is a
-    /// GUI launch, so it is no mode here either.
+    /// GUI launch, and no mode here.
     static func isActive(in env: [String: String]) -> Bool {
         return env["DIPLOMAT_DUMP"] == "1"
             || env["DIPLOMAT_SELF_UPDATE"] == "1"

@@ -173,8 +173,8 @@ enum SelfUpdate {
     /// verdict is the instance itself: one running `app` that was not there before must
     /// appear (a launch takes seconds on a loaded machine) and still be running `window`
     /// later, else the swap did not happen. The failure says what is up instead: the
-    /// instances from before the launch, still the old build, or nothing - a new instance
-    /// ends the old ones before anything past its launch can end it.
+    /// instances from before the launch, still the old build, or nothing, since a new
+    /// instance ends the old ones before anything past its launch can fail.
     /// Its newest-wins singleton terminates this instance once it is up, so a caller
     /// still around afterwards reports "restarting…" and waits to be replaced. Mirrors
     /// `selfupdate.relaunch` and `relaunch_failure`.
@@ -206,10 +206,9 @@ enum SelfUpdate {
         func newInstance() -> pid_t? {
             instances(of: app).map(\.processIdentifier).first { !before.contains($0) }
         }
-        /// What is up once the relaunch has failed. An instance counts by `SingleInstance`'s
-        /// rule, no headless marker: the 06:00 updater is an instance of the bundle it
-        /// relaunches and is not the old build standing, while the GUI behind the Update
-        /// button is.
+        /// What is up once the relaunch has failed: the instances from before it that are
+        /// GUI ones by `SingleInstance`'s rule. The 06:00 updater runs from the bundle it
+        /// relaunches and is not the old build standing; the GUI behind the Update button is.
         func standing() -> String {
             let old = instances(of: app).filter {
                 before.contains($0.processIdentifier)
