@@ -141,6 +141,19 @@ def _integer(value: Any) -> int | None:
     return int(n) if n is not None and abs(n) < 9.0e18 else None
 
 
+def _string(value: Any, default: str = "") -> str:
+    """A JSON string out of a decoded record, or ``default``. Swift twin: the
+    ``as? String ?? default`` of ``AgentRegistry.decode``."""
+    return value if isinstance(value, str) else default
+
+
+def _placement(value: Any) -> str:
+    """One of the three placements, or local. Swift twin: ``Placement(rawValue:)
+    ?? .local``."""
+    return (value if value in (PLACEMENT_LOCAL, PLACEMENT_MESH_HERE, PLACEMENT_MESH_PEER)
+            else PLACEMENT_LOCAL)
+
+
 def _flag(value: Any, default: bool = False) -> bool:
     """A JSON boolean out of a decoded payload, or ``default``.
 
@@ -420,21 +433,21 @@ class RunRecord:
     @staticmethod
     def from_json(obj: dict) -> "RunRecord":
         return RunRecord(
-            run_id=obj.get("runId", ""),
+            run_id=_string(obj.get("runId")),
             dispatched_at=_number(obj.get("dispatchedAt"), 0.0),
             pr_number=_integer(obj.get("prNumber")),
-            pr_url=obj.get("prUrl", ""),
-            kind=obj.get("kind", ""),
-            label=obj.get("label", ""),
-            source=obj.get("source", SOURCE_AUTO),
-            placement=obj.get("placement", PLACEMENT_LOCAL),
-            node=obj.get("node", ""),
-            work_key=obj.get("workKey", ""),
-            ledger_key=obj.get("ledgerKey", ""),
+            pr_url=_string(obj.get("prUrl")),
+            kind=_string(obj.get("kind")),
+            label=_string(obj.get("label")),
+            source=_string(obj.get("source"), SOURCE_AUTO),
+            placement=_placement(obj.get("placement")),
+            node=_string(obj.get("node")),
+            work_key=_string(obj.get("workKey")),
+            ledger_key=_string(obj.get("ledgerKey")),
             pid=_integer(obj.get("pid")),
-            tty=obj.get("tty", ""),
+            tty=_string(obj.get("tty")),
             claim_seen_at=_number(obj.get("claimSeenAt")),
-            quiet_digest=obj.get("quietDigest", ""),
+            quiet_digest=_string(obj.get("quietDigest")),
             quiet_since=_number(obj.get("quietSince")),
             reap_refused_at=_number(obj.get("reapRefusedAt")),
             untracked=_flag(obj.get("untracked")),

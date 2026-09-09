@@ -124,7 +124,10 @@ def load() -> list[RunRecord]:
     raw = data.get("runs")
     if not isinstance(raw, list):
         return []
-    return [RunRecord.from_json(r) for r in raw if isinstance(r, dict) and r.get("runId")]
+    # A record without a usable id is nothing the book can name: dropped, as the
+    # Swift twin drops it, rather than given a default every other field has.
+    decoded = (RunRecord.from_json(r) for r in raw if isinstance(r, dict))
+    return [r for r in decoded if r.run_id]
 
 
 def save(records: list[RunRecord]) -> None:

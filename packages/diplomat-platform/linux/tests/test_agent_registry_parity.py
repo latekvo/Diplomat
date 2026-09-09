@@ -116,15 +116,26 @@ def test_the_fixture_leaves_no_field_at_its_default():
 def test_a_record_with_unusable_fields_reads_the_same_on_both_sides():
     """A hand edit or a foreign writer can leave one field in a shape neither encoder
     emits. Both read the same record back - a default per field - rather than one
-    side dropping the record or raising out of its poll."""
+    side dropping the record or raising out of its poll. The run id is the one field
+    with no default, being the record's identity: a record whose id is not a string
+    is dropped by both."""
     from diplomat_runtime import atomicjson
     atomicjson.write_atomic(R.runs_path(), {"version": R.SCHEMA_VERSION, "runs": [
         {"runId": "r1", "dispatchedAt": None, "pid": "x", "prNumber": "7",
-         "claimSeenAt": [], "quietSince": True, "reapRefusedAt": "soon"}]})
+         "claimSeenAt": [], "quietSince": True, "reapRefusedAt": "soon"},
+        {"runId": "r2", "tty": 5, "workKey": ["x"], "label": None, "placement": 1,
+         "source": False, "kind": {}, "quietDigest": 0},
+        {"runId": "r3", "placement": "elsewhere"},
+        {"runId": 7, "tty": "pts/7"}]})
     ours = [r.to_json() for r in R.load()]
     assert ours == _swift({"mode": "read"})
+    assert [r["runId"] for r in ours] == ["r1", "r2", "r3"]
     assert ours[0]["dispatchedAt"] == 0 and ours[0]["pid"] is None
     assert ours[0]["prNumber"] is None and ours[0]["quietSince"] == 1
+    assert (ours[1]["tty"], ours[1]["workKey"], ours[1]["label"], ours[1]["kind"],
+            ours[1]["quietDigest"]) == ("", "", "", "", "")
+    assert (ours[1]["placement"], ours[1]["source"]) == ("local", "auto")
+    assert ours[2]["placement"] == "local"
 
 
 @pytest.mark.parametrize("wide", ["1e300", "99999999999999999999"])
