@@ -294,17 +294,17 @@ def _result_codec(rep: Reporter) -> None:
               "13-foreign-execution#correlation-and-authenticity")
     # A valid signature verifies over the canonical bytes; a tampered `result` (or a
     # wrong key) does NOT — the originator drops the latter (keyed executor MUST sign,
-    # bad/absent sig dropped). Uses cryptography when available; skips the crypto
-    # asserts cleanly (as a MUST-satisfied no-op) on a host without it, exactly as the
-    # probe degrades to keyless.
+    # bad/absent sig dropped). Uses cryptography when available; a host without it
+    # skips the three verify/tamper checks, as the probe degrades to keyless.
     try:
         import base64
         from cryptography.hazmat.primitives import serialization
         from cryptography.hazmat.primitives.asymmetric.ed25519 import (
             Ed25519PrivateKey, Ed25519PublicKey)
     except Exception:  # pragma: no cover - only where cryptography is absent
-        rep.check("signature verify/tamper checks (cryptography unavailable — skipped)",
-                  True, "MUST", "13-foreign-execution#correlation-and-authenticity")
+        rep.skip("signature verify/tamper checks",
+                 "13-foreign-execution#correlation-and-authenticity",
+                 "cryptography is not installed")
         return
 
     def raw_pub(pk) -> bytes:
