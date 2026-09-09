@@ -2426,46 +2426,98 @@ do {
     unsetenv("DIPLOMAT_GH")
 }
 
-// ---- GH: the override is read per call ----
-// With the stub deleted and DIPLOMAT_GH unset, the next call reaches the gh the box has
-// (the Linux CI container has none), never the stub's path; the live dump below goes
-// through the same lookup.
+// ---- GH: the login shell's answer is read without waiting on what it left behind ----
+// A profile that starts a job in the background leaves stdout held after the shell
+// exits; the lookup reads a file rather than draining a pipe, so the answer is back
+// when the shell is. Darwin only: corelibs learns of the exit from a socket that job
+// inherits too, so there the lookup waits for the job either way.
+#if canImport(Darwin)
 do {
-    var found = ""
-    do { found = String(decoding: try await GH.run(["--version"]), as: UTF8.self) }
-    catch GHError.ghNotFound { found = "none installed" }
-    catch { found = "other: \(error)" }
-    check(found.hasPrefix("gh version") || found == "none installed",
-          "the lookup after the override is gone reaches the real gh, got: \(found)")
-    print("gh after the stub: \(found.split(separator: "\n").first ?? "")")
-}
-
-// ---- GH: a login shell that never answers is given up on ----
-// Where no candidate path holds gh (the Linux CI container), the lookup asks the login
-// shell. SHELL names a stub that ignores the terminate and sleeps in a child, so only
-// the lookup's own five-second deadline can end the wait: the stub outlives it, and on
-// corelibs its child holds the exit past even the kill.
-let ghAtCandidatePath = GH.candidatePaths.contains(where: { FileManager.default.isExecutableFile(atPath: $0) })
-if ghAtCandidatePath {
-    print("gh at a candidate path: the login-shell lookup is not reached here, its bound and its cache are untested")
-} else {
-    let stub = FileManager.default.temporaryDirectory.appendingPathComponent("smoke-shell-\(getpid()).sh")
-    try "#!/bin/sh\ntrap '' TERM\nsleep 30\n".write(to: stub, atomically: true, encoding: .utf8)
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("smoke-ghshell-\(getpid())")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let gh = dir.appendingPathComponent("gh")
+    try "#!/bin/sh\necho stub\n".write(to: gh, atomically: true, encoding: .utf8)
+    chmod(gh.path, 0o755)
+    let stub = dir.appendingPathComponent("shell.sh")
+    try "#!/bin/sh\nsleep 8 &\necho \(gh.path)\n".write(to: stub, atomically: true, encoding: .utf8)
     chmod(stub.path, 0o755)
-    defer { try? FileManager.default.removeItem(at: stub) }
     let shell = ProcessInfo.processInfo.environment["SHELL"]
     setenv("SHELL", stub.path, 1)
     defer { if let shell { setenv("SHELL", shell, 1) } else { unsetenv("SHELL") } }
     let started = Date()
-    var outcome = "returned"
-    do { _ = try await GH.run(["--version"]) }
-    catch GHError.ghNotFound { outcome = "not found" }
+    var found = "nil"
+    do { found = try GH.loginShellWhichGH() ?? "nil" } catch { found = "\(error)" }
+    let elapsed = Date().timeIntervalSince(started)
+    check(found == gh.path, "the gh the login shell names is the answer, got: \(found)")
+    check(elapsed < 4, "read once the shell exits, not once the job it backgrounded does (\(elapsed)s)")
+    print("login shell answered in \(String(format: "%.2f", elapsed))s beside a job it left running")
+}
+#else
+print("corelibs: a job the login shell backgrounds holds its exit socket, so the read's shape is not observable here")
+#endif
+
+// ---- GH: a login shell that never answers is given up on, then killed ----
+// SHELL names a stub that ignores the terminate and sleeps on under its own pid, so
+// only the lookup's five-second deadline can end the wait, and only the kill armed
+// five seconds behind the terminate can remove the stub.
+let stalledShell = FileManager.default.temporaryDirectory.appendingPathComponent("smoke-shell-\(getpid()).sh")
+let stalledPidFile = FileManager.default.temporaryDirectory.appendingPathComponent("smoke-shell-\(getpid()).pid")
+try "#!/bin/sh\ntrap '' TERM\necho $$ > \(stalledPidFile.path)\nexec sleep 30\n"
+    .write(to: stalledShell, atomically: true, encoding: .utf8)
+chmod(stalledShell.path, 0o755)
+defer {
+    try? FileManager.default.removeItem(at: stalledShell)
+    try? FileManager.default.removeItem(at: stalledPidFile)
+}
+func alive(_ pid: Int32) -> Bool { kill(pid, 0) == 0 }
+let stalledPid: Int32
+let stalledAt: Date
+do {
+    let shell = ProcessInfo.processInfo.environment["SHELL"]
+    setenv("SHELL", stalledShell.path, 1)
+    defer { if let shell { setenv("SHELL", shell, 1) } else { unsetenv("SHELL") } }
+    let started = Date()
+    var outcome = "returned", advice = ""
+    do { _ = try GH.loginShellWhichGH() }
+    catch GHError.loginShellStalled(let shell, let seconds) {
+        outcome = "stalled \(shell == stalledShell.path ? "by this shell" : shell) after \(Int(seconds))s"
+        advice = GHError.loginShellStalled(shell: shell, seconds: seconds).errorDescription ?? ""
+    }
     catch { outcome = "other: \(error)" }
     let elapsed = Date().timeIntervalSince(started)
-    check(outcome == "not found", "a stalled login shell reads as no gh, got: \(outcome)")
+    check(outcome == "stalled by this shell after 5s",
+          "a login shell that never answers is reported as stalled, got: \(outcome)")
+    check(advice.contains(stalledShell.path) && advice.contains("DIPLOMAT_GH"),
+          "what the operator reads names the shell and the way out, got: \(advice)")
     check(elapsed >= 4.5 && elapsed < 9,
           "the lookup's own deadline ends the wait, not the stub's death (\(Int(elapsed))s)")
+    stalledPid = Int32((try? String(contentsOf: stalledPidFile, encoding: .utf8))?
+        .trimmingCharacters(in: .whitespacesAndNewlines) ?? "") ?? 0
+    check(stalledPid > 0, "the stub recorded its pid")
+    check(alive(stalledPid), "the stub ignores the terminate the deadline sends")
+    stalledAt = started
     print("stalled login shell given up on after \(Int(elapsed))s")
+}
+
+// ---- GH: where the login shell is the only source, its stall is what a call reports ----
+// Where no candidate path holds gh (the Linux CI container), a call reaches the
+// lookup, and a stall must not read as gh being absent. Nothing is cached yet: the
+// override is read before the cache, and the lookups above were called directly.
+let ghAtCandidatePath = GH.candidatePaths.contains(where: { FileManager.default.isExecutableFile(atPath: $0) })
+if ghAtCandidatePath {
+    print("gh at a candidate path: a call never reaches the login shell here, so what it makes of the lookup is untested")
+} else {
+    let shell = ProcessInfo.processInfo.environment["SHELL"]
+    setenv("SHELL", stalledShell.path, 1)
+    defer { if let shell { setenv("SHELL", shell, 1) } else { unsetenv("SHELL") } }
+    var outcome = "returned"
+    do { _ = try await GH.run(["--version"]) }
+    catch GHError.loginShellStalled(let shell, _) { outcome = shell == stalledShell.path ? "stalled" : "stalled by \(shell)" }
+    catch GHError.ghNotFound { outcome = "not found" }
+    catch { outcome = "other: \(error)" }
+    check(outcome == "stalled", "a stalled login shell is reported as the stall, not as no gh, got: \(outcome)")
+    print("a call through a stalled login shell reports the stall")
 }
 
 // ---- GH: a cached gh that no longer launches is looked for again ----
@@ -2499,7 +2551,34 @@ if !ghAtCandidatePath {
     check(await answer() == "launch failed", "the gh that was cached is gone")
     try install(second)
     check(await answer() == "second", "a gh that stopped launching is forgotten and the next call finds its replacement")
+    try FileManager.default.removeItem(at: second)
+    check(await answer() == "launch failed", "and one that vanishes with no replacement is forgotten too")
+    check(await answer() == "not found", "so the next call asks the login shell again")
     print("a vanished gh is looked for again")
+}
+
+// ---- GH: the stalled login shell is killed ----
+// The kill is armed five seconds behind the terminate the stub ignored: wait it out.
+do {
+    let deadline = stalledAt.addingTimeInterval(13)
+    while alive(stalledPid) && Date() < deadline { usleep(100_000) }
+    check(!alive(stalledPid),
+          "the stalled login shell is killed once the terminate it ignored has had five seconds")
+    print("stalled login shell killed \(Int(Date().timeIntervalSince(stalledAt)))s after it was asked")
+}
+
+// ---- GH: the override is read per call ----
+// With the stub deleted and DIPLOMAT_GH unset, the next call reaches the gh the box has
+// (the Linux CI container has none), never the stub's path; the live dump below goes
+// through the same lookup.
+do {
+    var found = ""
+    do { found = String(decoding: try await GH.run(["--version"]), as: UTF8.self) }
+    catch GHError.ghNotFound { found = "none installed" }
+    catch { found = "other: \(error)" }
+    check(found.hasPrefix("gh version") || found == "none installed",
+          "the lookup after the override is gone reaches the real gh, got: \(found)")
+    print("gh after the stub: \(found.split(separator: "\n").first ?? "")")
 }
 
 if ProcessInfo.processInfo.environment["DIPLOMAT_DUMP"] == "1" {

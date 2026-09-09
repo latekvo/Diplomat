@@ -4,6 +4,7 @@ import Foundation
 /// the real failure up to the UI instead of trying to be clever.
 public enum GHError: LocalizedError {
     case ghNotFound
+    case loginShellStalled(shell: String, seconds: TimeInterval)
     case process(code: Int32, stderr: String)
     case timeout(seconds: TimeInterval)
     case graphql(messages: [String])
@@ -12,6 +13,10 @@ public enum GHError: LocalizedError {
         switch self {
         case .ghNotFound:
             return "`gh` CLI not found. Install GitHub CLI and run `gh auth login`."
+        case .loginShellStalled(let shell, let seconds):
+            return "`gh` is not at \(GH.candidatePaths.joined(separator: ", ")), and "
+                + "`\(shell) -lc 'command -v gh'` did not answer within \(Int(seconds))s. "
+                + "Set `DIPLOMAT_GH` to where `gh` is."
         case .process(let code, let stderr):
             let s = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
             return "gh exited \(code): \(s.isEmpty ? "(no stderr)" : s)"
@@ -55,7 +60,7 @@ public enum GH {
             cachedPath = c
             return c
         }
-        if let found = loginShellWhichGH() {
+        if let found = try loginShellWhichGH() {
             cachedPath = found
             return found
         }
@@ -67,14 +72,17 @@ public enum GH {
     /// would wait behind it; `timeout` bounds the gh call, not this.
     private static let lookupTimeout: TimeInterval = 5
 
-    /// Last resort: ask a login shell where gh lives (covers exotic installs).
+    /// Last resort: ask a login shell where gh lives (covers exotic installs). The
+    /// path it names; nil when it names none; `GHError.loginShellStalled` when it
+    /// has not exited by `lookupTimeout`.
+    ///
     /// stdout is a file rather than a pipe: a job the profile leaves in the
     /// background keeps a pipe open after the shell exits, and reading it to the
     /// end would wait for that job. The wait is on the deadline rather than
     /// `waitUntilExit`: corelibs sees a process exit only once every descendant
     /// holding its end of the launch socketpair has, so that job would hold the
     /// wait past the kill.
-    private static func loginShellWhichGH() -> String? {
+    public static func loginShellWhichGH() throws -> String? {
         let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/sh"
         let outURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("diplomat-\(UUID().uuidString).which")
@@ -94,7 +102,7 @@ public enum GH {
         do { try proc.run() } catch { proc.terminationHandler = nil; return nil }
         if exited.wait(timeout: .now() + lookupTimeout) == .timedOut {
             stop(proc)
-            return nil
+            throw GHError.loginShellStalled(shell: shell, seconds: lookupTimeout)
         }
         let path = (try? Data(contentsOf: outURL))
             .flatMap { String(data: $0, encoding: .utf8) }?
