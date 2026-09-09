@@ -62,9 +62,9 @@ assert.equal(py.status, 0,
 
 const fromPython = JSON.parse(py.stdout);
 const machineNames = Object.keys(MACHINES);
-// A machine with no PATH of its own is read on the process's, and on the system
-// default when the process has none either: those are probed a second time from
-// a process whose PATH is gone, on both sides.
+// A machine without a PATH is read on the process's own, then on the system
+// default: those machines are probed again from a process whose PATH is gone,
+// on both sides.
 const unpathed = machineNames.filter((name) => !('PATH' in MACHINES[name]));
 const scenarioNames = Object.keys(SCENARIOS);
 for (const platform of PLATFORMS) {

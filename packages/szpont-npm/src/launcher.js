@@ -26,14 +26,12 @@ export const MIN_PYTHON = [3, 10];
 // already owns, so uninstalling is one `rm -rf ~/.diplomat` rather than a hunt.
 const STATE_DIR = '.diplomat';
 
-// Where `shutil.which` looks when neither the machine nor the process has a
-// PATH: `getconf PATH`, which is /usr/bin:/bin:/usr/sbin:/sbin on macOS and
-// /bin:/usr/bin under glibc and musl. Bound once: the libc's answer does not
-// move with the platform probe() is told it is on.
+// `getconf PATH`, where shutil.which looks when neither the machine nor the
+// process has a PATH (glibc and musl agree on the Linux value). Bound once: the
+// libc's answer does not move with the platform probe() is told it is on.
 const DEFAULT_PATH = process.platform === 'darwin' ? '/usr/bin:/bin:/usr/sbin:/sbin' : '/bin:/usr/bin';
 
-// The executable's path, or null - `shutil.which` in the Python twin: the PATH
-// it is given, else the process's own, else the system default; anything
+// The executable's path, or null - `shutil.which` in the Python twin: anything
 // executable that is not a directory, and an empty PATH entry is the working
 // directory, as `sh` reads it.
 function which(name, env) {
