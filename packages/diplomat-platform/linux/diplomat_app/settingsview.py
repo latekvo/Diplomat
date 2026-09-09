@@ -435,34 +435,43 @@ class SettingsView(QWidget):
                    "“execute now” only.",
         )))
 
-        # Who an auto-review may run for, and what it may submit. Nested under the
-        # switch that creates them, because none of it means anything while no
-        # auto-review runs.
-        self._approve_nest, approve = nested_settings(_ORANGE)
+        # Who an auto-review may run for, and what it may submit. Only the verdict
+        # rows follow the switch above, because nothing they govern happens until a
+        # review runs. The author list outlives it: a switched-off monitor still polls
+        # and still lists what it finds, and the list is what decides which requests
+        # those are — hidden while it is off, it would be filtering rows the operator
+        # has no way to reach.
+        approve_nest, approve = nested_settings(_ORANGE)
         approve.addWidget(self._allowlist_row())
+
+        self._verdict_rows = QWidget()
+        verdict_rows = QVBoxLayout(self._verdict_rows)
+        verdict_rows.setContentsMargins(0, 0, 0, 0)
+        verdict_rows.setSpacing(9)
 
         self._sw_auto_approve = SwitchToggle(_ORANGE)
         self._sw_auto_approve.setChecked(self.store.auto_approve_enabled)
         self._sw_auto_approve.toggled.connect(self._on_auto_approve_toggled)
-        approve.addWidget(self._track(SettingRow(
+        verdict_rows.addWidget(self._track(SettingRow(
             "May approve / request changes", self._sw_auto_approve,
             summary="Off ⇒ inline comments only; the verdict stays with you.",
             detail="On ⇒ a clean review may submit a verdict, except on the classes "
                    "withheld below.",
         )))
-        approve.addWidget(self._verdict_block())
+        verdict_rows.addWidget(self._verdict_block())
 
         self._sw_soft_approve = SwitchToggle(_ORANGE)
         self._sw_soft_approve.setChecked(self.store.soft_approve_enabled)
         self._sw_soft_approve.toggled.connect(self._on_soft_approve_toggled)
-        approve.addWidget(self._track(SettingRow(
+        verdict_rows.addWidget(self._track(SettingRow(
             "Soft-approve clean PRs", self._sw_soft_approve,
             summary="One “ran the sweep, all clean” comment — never an APPROVE.",
             detail="Off ⇒ a review that finds nothing says nothing. Independent of "
                    "the verdict switch above: a soft approval is a comment, not a "
                    "GitHub approval.",
         )))
-        body.addWidget(self._approve_nest)
+        approve.addWidget(self._verdict_rows)
+        body.addWidget(approve_nest)
         return card
 
     def _allowlist_row(self) -> QWidget:
@@ -721,7 +730,7 @@ class SettingsView(QWidget):
         else:
             self._reviewed_pill.set_state("")
 
-        self._approve_nest.setVisible(review_on)
+        self._verdict_rows.setVisible(review_on)
         self._verdict_container.setVisible(review_on and self.store.auto_approve_enabled)
 
     # MARK: Claude API-error watcher

@@ -91,6 +91,8 @@ enum QueueTest {
         // fails assertions about work that monitor owns.
         store.prAutofixEnabled = true       // headless-guarded: persists nothing, polls nothing
         store.reviewRequestsEnabled = true
+        store.reviewAllowlistRaw = ""       // every review-req offered below carries no author
+
         // The budget's own knobs come from the shared config file, so an operator who
         // raised their floor would otherwise change what this suite asserts. Left ON
         // deliberately: with the probe off above, every dispatch below runs through the
@@ -106,11 +108,12 @@ enum QueueTest {
         bookAgent(1)
 
         func job(_ number: Int, action: String = "review-req", label: String? = nil,
-                 counter: Store.AutoCounter = .reviewRequests) -> Store.AgentJob {
+                 author: String? = nil,
+                 counter: Store.AutoCounter? = .reviewRequests) -> Store.AgentJob {
             Store.AgentJob(kind: "review", auditAction: action,
                            label: label ?? "Review-req · #\(number)", prompt: "",
                            prURL: "https://github.com/software-mansion/argent/pull/\(number)",
-                           prNumber: number, authorLogin: nil, duty: "review", workKey: "",
+                           prNumber: number, authorLogin: author, duty: "review", workKey: "",
                            counter: counter,
                            attemptStamp: Store.AttemptStamp.unresolvedReview)
         }
@@ -612,6 +615,54 @@ enum QueueTest {
         store.queuedTasks = []
         store.issues = []
         store.prs = []
+
+        // 16. The auto-review allowlist, from the line the operator types to the verdict
+        //    the gate returns — the setting is blank for every other section here, and
+        //    that state is what those sections rest on.
+        //
+        //    Every offer below is over the cap, so `.atCapacity` is what "the list did
+        //    not hold this" looks like: the two verdicts are what tell the author test
+        //    apart from the bay test, and the allowlist outranking capacity is what
+        //    makes them distinguishable at all.
+        emptyBook()
+        bookAgent(1)
+        store.autoTaskLimit = 1
+        store.queuedTasks = []
+        check("a blank list holds nobody — an unknown author is refused for the bay",
+              await offer(job(51, author: "bob")) == .atCapacity)
+        // Blank is everyone, and blank is what an applet that has never seen this row
+        // reads — the default lives in the defaults load, not in the property, so it
+        // takes a Store built with the key absent to pin it.
+        let storedRaw = UserDefaults.standard.string(forKey: "reviewAllowlistRaw")
+        UserDefaults.standard.removeObject(forKey: "reviewAllowlistRaw")
+        check("an applet that has never seen the setting reviews everyone",
+              Store().reviewAllowlist.isEmpty)
+        if let storedRaw { UserDefaults.standard.set(storedRaw, forKey: "reviewAllowlistRaw") }
+
+        store.reviewAllowlistRaw = "alice, @carol"
+        check("with a list set, an author outside it is held for the list instead",
+              await offer(job(52, author: "bob")) == .notAllowed)
+        check("…and one on it is still only ever held for the bay",
+              await offer(job(53, author: "ALICE")) == .atCapacity)
+        check("…including through the @ the operator may have typed",
+              await offer(job(54, author: "carol")) == .atCapacity)
+        // The counter is the whole test. The list speaks for the review monitor's finds
+        // and nothing else, so the same author's conflict fix runs — and so does a
+        // sweep, which an `source == .auto` test would wrongly have caught.
+        check("a conflict fix by an unlisted author is not the list's to hold",
+              await offer(job(55, action: "conflicts", label: "Resolve · #55",
+                              author: "bob", counter: .conflicts)) == .atCapacity)
+        check("…nor is work no monitor owns",
+              await offer(job(56, action: "sweep", label: "Review · #56",
+                              author: "bob", counter: nil)) == .atCapacity)
+        // A held find is dropped, not queued: nothing re-offers it while the list
+        // stands, so a row would promise an "execute now" the gate refuses again.
+        store.commitQueue()
+        check("the held find left no row behind it",
+              !store.queuedTasks.contains { $0.id == "review-req:52" })
+        store.reviewAllowlistRaw = ""
+        store.queuedTasks = []
+        emptyBook()
 
         // 13. The redirect above is the only thing between a run of this test and the
         //    operator's real activity log, so prove it caught the writes.

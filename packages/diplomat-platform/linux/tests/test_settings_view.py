@@ -194,13 +194,19 @@ def test_typing_an_author_allowlist_writes_through_and_counts(view):
     assert row.summary() == "Blank = anyone who requests my review."
 
 
-def test_the_author_allowlist_is_hidden_while_no_auto_review_runs(make_view):
-    """It sits in the nest under the switch that creates auto-reviews, because a list
-    of who they may run for says nothing while none do."""
+def test_the_author_allowlist_stays_editable_while_the_monitor_is_off(make_view):
+    """A switched-off monitor still polls and still lists what it finds, and the list
+    is what decides which requests those are — so it is the one row in that nest whose
+    effect does not end with the switch. Hidden with the rest, it would go on filtering
+    rows the operator has no way to reach. The verdict rows do end with it: nothing
+    they govern happens until a review runs."""
     view = make_view(review_requests_enabled=False)
-    assert not view._allowlist_setting_row.isVisibleTo(view)
+    assert view._allowlist_setting_row.isVisibleTo(view)
+    assert not view._verdict_rows.isVisibleTo(view)
+
     view._sw_review_req.setChecked(True)
     assert view._allowlist_setting_row.isVisibleTo(view)
+    assert view._verdict_rows.isVisibleTo(view)
 
 
 def test_every_row_names_its_control_for_a_screen_reader(view):

@@ -1342,9 +1342,9 @@ class SettingRow(QWidget):
 
 
 def nested_settings(tint: str) -> tuple[QWidget, QVBoxLayout]:
-    """Settings that exist only while the switch above them is on, indented behind
-    a tinted rail — so the dependency is drawn rather than left to be inferred from
-    an indent, which is all that distinguished the nested verdict policy before."""
+    """Settings that belong to the switch above them, indented behind a tinted rail
+    — so the dependency is drawn rather than left to be inferred from an indent,
+    which is all that distinguished the nested verdict policy before."""
     host = QWidget()
     row = QHBoxLayout(host)
     row.setContentsMargins(1, 0, 0, 0)

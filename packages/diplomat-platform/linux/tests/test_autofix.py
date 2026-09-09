@@ -513,9 +513,9 @@ def test_allowlist_keeps_an_unlisted_author_out_of_the_poll(store, monkeypatch):
 
 
 def test_an_excluded_request_is_dropped_where_a_held_one_would_queue(store, monkeypatch):
-    """The distinction the settings row draws between this list and the switch above
-    it. With nothing allowed to start by itself, a find is HELD — it becomes a row
-    waiting for a bay. An excluded author's is not held, it is gone: a queue of people
+    """Held versus gone, which is what separates this list from every other hold.
+    With nothing allowed to start by itself, a find is HELD — it becomes a row waiting
+    for a bay. An excluded author's is not held, it is gone: a queue of people
     deliberately excluded is a list that only ever grows."""
     store.pr_autofix_enabled = False
     store.review_requests_enabled = True
@@ -1102,6 +1102,19 @@ def test_dispatch_gate_matrix_parity():
         autofix.dispatch_decide(autofix.SOURCE_AUTO, False, False, True, False, True)
         == autofix.VERDICT_UNAFFORDABLE
     )
+    # The auto-review allowlist: not a trigger asymmetry - a click is refused for an
+    # unlisted author exactly as a poll is - and second only to the ban, so that every
+    # other reason to hold reads as "would have run, but". Both are pinned for both
+    # sources in the Swift smoke.
+    for src in (autofix.SOURCE_PANEL, autofix.SOURCE_AUTO):
+        assert (
+            autofix.dispatch_decide(src, False, True, True, True, True, True)
+            == autofix.VERDICT_NOT_ALLOWED
+        )
+        assert (
+            autofix.dispatch_decide(src, True, False, False, False, False, True)
+            == autofix.VERDICT_BANNED
+        )  # the ban wins where both apply
     assert (
         autofix.dispatch_label(autofix.SOURCE_AUTO, "Review · #7", 2)
         == "Auto · Review · #7 · retry 2"

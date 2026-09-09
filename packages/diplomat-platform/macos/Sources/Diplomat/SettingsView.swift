@@ -294,7 +294,7 @@ struct SettingsView: View {
             conflictsRow
             pollErrorRow
             reviewRequestsRow
-            if store.reviewRequestsEnabled { reviewPolicyBlock }
+            reviewPolicyBlock
         }
     }
 
@@ -384,9 +384,13 @@ struct SettingsView: View {
         }
     }
 
-    /// Who an auto-review may run for, and what it is allowed to submit. Nested under
-    /// the switch that creates them, because none of it means anything while no
-    /// auto-review runs.
+    /// Who an auto-review may run for, and what it is allowed to submit.
+    ///
+    /// Only the verdict rows follow the switch above, because nothing they govern
+    /// happens until a review runs. The author list outlives it: a switched-off
+    /// monitor still polls and still lists what it finds, and the list is what decides
+    /// which requests those are — hidden while it is off, it would be filtering rows
+    /// the operator has no way to reach.
     private var reviewPolicyBlock: some View {
         NestedSettings(tint: .orange) {
             SettingRow(title: "Only these authors",
@@ -395,6 +399,13 @@ struct SettingsView: View {
                        stacked: true) {
                 reviewAllowlistField
             }
+            if store.reviewRequestsEnabled { reviewVerdictRows }
+        }
+    }
+
+    @ViewBuilder
+    private var reviewVerdictRows: some View {
+        Group {
             SettingRow(title: "May approve / request changes",
                        summary: "Off ⇒ inline comments only; the verdict stays with you.",
                        detail: "On ⇒ a clean review may submit a verdict, except on the "

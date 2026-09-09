@@ -1895,7 +1895,10 @@ class Store(QObject):
         and a row nothing will ever start is a row that lies about what this machine is
         going to do. Every other verdict leaves the ask alone — an in-flight PR, a
         window with no budget left and a terminal that failed to open are all reasons
-        to try again next poll, which is exactly what staying in the list means."""
+        to try again next poll, which is exactly what staying in the list means.
+        ``not_allowed`` is not among them because an ask can never draw it: the
+        allowlist answers for the review monitor's own finds, and an ask is not one
+        (``AgentJob.counter``)."""
         if not entry.job.requested:
             return
         if verdict not in ("spawned", autofix.VERDICT_STAND_DOWN, autofix.VERDICT_BANNED):
@@ -2182,7 +2185,8 @@ class Store(QObject):
                       if entry.job.requested else "un-ban to review")
             self.error = f"{label}: the PR's author is banned ({remedy})."
         elif verdict == autofix.VERDICT_NOT_ALLOWED:
-            self.error = f"{label}: the PR's author is not on the auto-review list."
+            self.error = (f"{label}: the PR's author is not on the auto-review list "
+                          "(add them, or review it from the wizard).")
         if verdict != "spawned":
             self.changed.emit()
         self.refresh_activity()

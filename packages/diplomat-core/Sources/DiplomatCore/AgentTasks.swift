@@ -212,10 +212,10 @@ public enum AgentTaskQueue {
     /// order the monitors found them.
     ///
     /// Keys that are no longer offered fall out — the work was taken by an agent,
-    /// resolved, or its author banned — because a queue that outlived its evidence
-    /// would hand "execute now" a task GitHub no longer owes. (Not a mesh claim: the
-    /// cap outranks the mesh gate, so a device with anything queued is by definition
-    /// one that never asked a peer. Peer-owned work leaves the queue when the drain
+    /// resolved, or its author banned or outside the auto-review list — because a
+    /// queue that outlived its evidence would hand "execute now" a task GitHub no
+    /// longer owes. (Not a mesh claim: the cap outranks the mesh gate, so a device
+    /// with anything queued is by definition one that never asked a peer. Peer-owned work leaves the queue when the drain
     /// reaches it and the mesh answers.)
     ///
     /// Requested reviews, then requested issue fixes, then conflict fixes fall to the

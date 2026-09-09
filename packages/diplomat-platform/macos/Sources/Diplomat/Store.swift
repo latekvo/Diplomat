@@ -242,6 +242,9 @@ final class Store: ObservableObject {
     /// How many reviews I currently owe (someone requested my review and the request is
     /// newer than my last review) but have no agent on them right now — the "unaddressed"
     /// reviews the reconciler keeps retrying until they land. Refreshed each review poll.
+    ///
+    /// Counted over what the monitor will act on, so an author outside the auto-review
+    /// list is owed by GitHub's reckoning and not by this one.
     @Published var unaddressedReviews: Int = 0
 
     /// Authors banned for prompt injection (read from the daemon's banned.json). They
@@ -2487,7 +2490,8 @@ final class Store: ObservableObject {
         case .banned:
             error = "\(entry.job.label): the PR's author is banned (un-ban to review)."
         case .notAllowed:
-            error = "\(entry.job.label): the PR's author is not on the auto-review list."
+            error = "\(entry.job.label): the PR's author is not on the auto-review list "
+                  + "(add them, or review it from the wizard)."
         case .atCapacity, .unaffordable:
             break   // unreachable: the run bypasses both holds the operator overrode
         }
@@ -2794,8 +2798,11 @@ final class Store: ObservableObject {
             refreshAudit()
             return .banned
         case .notAllowed:
+            // A deleted account reaches the monitor as "", which `??` would print as
+            // an empty name; the Python twin's `or` already reads it as absent.
+            let who = job.authorLogin.flatMap { $0.isEmpty ? nil : $0 } ?? "the author"
             AuditLog.log(source.rawValue, "allowlist-skip",
-                         "\(job.label) — \(job.authorLogin ?? "the author") is not on the "
+                         "\(job.label) — \(who) is not on the "
                          + "auto-review list (add them, or review it from the wizard)")
             refreshAudit()
             return .notAllowed
@@ -3042,9 +3049,10 @@ final class Store: ObservableObject {
         case .inFlight:
             self.error = "Resolve #\(number): an agent is already on this PR."
         case .spawned, .banned, .standDown, .atCapacity, .unaffordable, .notAllowed:
-            // The middle three are answers only a monitor gets — none of the mesh gate,
-            // the automatic-task cap and the spending budget applies to a click — and
-            // the allowlist speaks for the review monitor's finds, never a conflict.
+            // `.standDown`, `.atCapacity` and `.unaffordable` are answers only a monitor
+            // gets — none of the mesh gate, the automatic-task cap and the spending
+            // budget applies to a click — and `.notAllowed` speaks for the review
+            // monitor's finds, never a conflict.
             break
         }
     }
