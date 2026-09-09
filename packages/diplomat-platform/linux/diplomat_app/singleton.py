@@ -30,14 +30,22 @@ from .procscan import alive as _alive
 _APPLET_MODULES = frozenset({"diplomat_app", "argent_utils"})
 
 # Env-var suffixes that mark a ``python -m <module>`` process as a headless
-# one-shot (self-update / dump / lookup / prompt / render) rather than the GUI
-# tray — see ``__main__.py``. We never terminate these: they exit on their own
-# and are not a wrench in the tray. Matched under both the current and the
-# legacy env prefix.
-_HEADLESS_SUFFIXES = frozenset(
-    {"SELF_UPDATE", "DUMP", "LOOKUP", "PRINT_PROMPT", "RENDER"}
+# one-shot rather than the GUI tray: the modes ``__main__.py`` dispatches, which
+# ``test_headless_modes.py`` holds this list to. We never terminate these: they
+# exit on their own and are not a wrench in the tray. Matched under both the
+# current and the legacy env prefix.
+HEADLESS_SUFFIXES = frozenset(
+    {"SELF_UPDATE", "AGENTS", "DUMP", "LOOKUP", "PRINT_PROMPT", "RENDER"}
 )
-_ENV_PREFIXES = ("DIPLOMAT_", "ARGENT_UTILS_")
+ENV_PREFIXES = ("DIPLOMAT_", "ARGENT_UTILS_")
+
+
+def headless_markers() -> frozenset[str]:
+    """Every environment variable that marks a process as a headless one-shot -
+    what a relaunch strips, so the tray it starts is one the next newest-wins can
+    end."""
+    return frozenset(prefix + suffix
+                     for prefix in ENV_PREFIXES for suffix in HEADLESS_SUFFIXES)
 
 
 def _pidfile() -> Path:
@@ -64,8 +72,8 @@ def _environ_is_headless(raw: bytes) -> bool:
         if not sep or not val:
             continue
         k = key.decode("utf-8", "replace")
-        for prefix in _ENV_PREFIXES:
-            if k.startswith(prefix) and k[len(prefix):] in _HEADLESS_SUFFIXES:
+        for prefix in ENV_PREFIXES:
+            if k.startswith(prefix) and k[len(prefix):] in HEADLESS_SUFFIXES:
                 return True
     return False
 

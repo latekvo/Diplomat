@@ -313,12 +313,15 @@ def test_relaunch_does_not_inherit_headless_markers(tmp_path, monkeypatch):
     """relaunch() must launch a GUI tray. The 6AM job runs with DIPLOMAT_SELF_UPDATE=1 in
     its env, and a copied env would make the relaunched child re-enter __main__.main's
     headless updater (find itself up-to-date, exit) instead of the GUI — so newest-wins
-    never swaps the applet onto the new code. Every headless-mode marker must be stripped
-    from the child env, while the display env is still handed through."""
+    never swaps the applet onto the new code. Every marker the singleton spares a
+    process for must be stripped from the child env, under the legacy prefix too, or
+    the next newest-wins spares the tray it started; the display env is still handed
+    through."""
+    from diplomat_app import singleton
 
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))   # isolate the relaunch log write
-    monkeypatch.setenv("DIPLOMAT_SELF_UPDATE", "1")
-    monkeypatch.setenv("DIPLOMAT_DUMP", "1")
+    for marker in singleton.headless_markers():
+        monkeypatch.setenv(marker, "1")
     captured = {}
 
     def fake_popen(*a, **k):
@@ -333,9 +336,8 @@ def test_relaunch_does_not_inherit_headless_markers(tmp_path, monkeypatch):
         raised = True
     assert raised and "env" in captured
     env = captured["env"]
-    for marker in ("DIPLOMAT_SELF_UPDATE", "DIPLOMAT_DUMP", "DIPLOMAT_LOOKUP",
-                   "DIPLOMAT_PRINT_PROMPT", "DIPLOMAT_RENDER"):
-        assert marker not in env
+    assert "DIPLOMAT_AGENTS" in singleton.headless_markers()
+    assert not set(env) & singleton.headless_markers()
     assert env.get("DISPLAY") == ":0"   # the display env is still handed through
 
 

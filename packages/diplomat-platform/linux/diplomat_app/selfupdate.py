@@ -19,6 +19,8 @@ import subprocess
 import time
 from pathlib import Path
 
+from .singleton import SingleInstance, headless_markers
+
 
 class UpdateError(RuntimeError):
     """A self-update step failed; str(exc) is the user-facing reason."""
@@ -197,14 +199,12 @@ def relaunch(extra_env: dict[str, str] | None = None) -> subprocess.Popen:
     launcher = linux_package(root) / "diplomat"
     log_dir = _state_dir()
     env = dict(os.environ)
-    # Strip every headless-mode marker: the 6AM job runs with DIPLOMAT_SELF_UPDATE=1 in
-    # its env, and a copied env would make the relaunched child re-enter __main__.main's
-    # headless updater (find itself up-to-date, log "up to date", exit) instead of
-    # launching the GUI tray — so newest-wins never fires and the applet is never swapped
-    # onto the new code. Clearing them guarantees relaunch() always starts a real GUI.
-    for _marker in ("DIPLOMAT_SELF_UPDATE", "DIPLOMAT_DUMP", "DIPLOMAT_LOOKUP",
-                    "DIPLOMAT_PRINT_PROMPT", "DIPLOMAT_RENDER"):
-        env.pop(_marker, None)
+    # The 6AM job runs with DIPLOMAT_SELF_UPDATE=1 in its env, and a copied env would
+    # make the relaunched child re-enter __main__.main's headless updater (find itself
+    # up-to-date, log "up to date", exit) instead of launching the GUI tray — so
+    # newest-wins never fires and the applet is never swapped onto the new code.
+    for marker in headless_markers():
+        env.pop(marker, None)
     if extra_env:
         env.update(extra_env)
     try:
@@ -323,8 +323,6 @@ def run_scheduled() -> int:
         # traceback aborts the headless job instead of logging a build failure.
         _sched_log(f"build failed: {exc}")
         return 1
-
-    from .singleton import SingleInstance
 
     pid = SingleInstance.running_pid()
     if pid:
