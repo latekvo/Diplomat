@@ -254,6 +254,41 @@ def test_run_scheduled_reports_a_relaunched_applet_that_exits_cleanly(repos, mon
     assert "the relaunched applet exited 0" in log
 
 
+def test_run_scheduled_names_no_tray_when_the_relaunched_applet_ended_it(
+    repos, monkeypatch, tmp_path
+):
+    """The relaunched applet's newest-wins ends the old tray before it builds anything,
+    so one that dies during construction has already taken the tray it then failed to
+    replace. The log says what is true at that moment rather than naming a dead pid
+    as the running build."""
+    origin, clone, marker = repos
+    # A tray that is not this process's child, so it is reaped when ended rather than
+    # left a zombie that still answers a signal-0 probe.
+    tray = int(subprocess.run(
+        ["bash", "-c", "sleep 30 </dev/null >/dev/null 2>&1 & echo $!"],
+        capture_output=True, text=True, check=True).stdout)
+    (marker / "tray").write_text(str(tray))
+    launcher = origin / "packages" / "diplomat-platform" / "linux" / "diplomat"
+    launcher.write_text('#!/usr/bin/env bash\nkill -TERM "$(cat "$MARKER_DIR/tray")"\n'
+                        'sleep 0.5\nexit 3\n')
+    _advance_origin(origin)
+    from diplomat_app import singleton
+    from diplomat_app.singleton import _pidfile
+
+    monkeypatch.setattr(singleton, "_is_applet_gui", lambda pid: pid == tray)
+    _pidfile().write_text(str(tray))
+    try:
+        assert selfupdate.run_scheduled() == 1
+    finally:
+        try:
+            os.kill(tray, signal.SIGKILL)
+        except OSError:
+            pass
+    log = (tmp_path / "state" / "diplomat" / "autoupdate.log").read_text()
+    assert "the relaunched applet exited 3; no applet is running" in log
+    assert f"pid {tray} is still the old build" not in log
+
+
 def test_relaunch_failure_is_any_exit_inside_the_window():
     """Every exit code inside the window is reported, 0 included; only a child still
     running at the end of it is the applet coming up."""

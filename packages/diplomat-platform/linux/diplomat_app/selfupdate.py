@@ -337,8 +337,13 @@ def run_scheduled() -> int:
             return 1
         exited = relaunch_failure(child)
         if exited is not None:
+            # Asked again rather than assumed: the applet's newest-wins ends the old
+            # tray before it builds anything, so one that died during construction
+            # has already taken the tray it then failed to replace.
+            still = SingleInstance.running_pid()
             _sched_log(f"update built but the relaunched applet exited {exited}; "
-                       f"pid {pid} is still the old build")
+                       + (f"pid {still} is still the old build" if still
+                          else "no applet is running"))
             return 1
         _sched_log(f"relaunched running tray (was pid {pid}) onto {commit}")
     else:
