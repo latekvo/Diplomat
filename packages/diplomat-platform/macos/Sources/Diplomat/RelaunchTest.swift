@@ -19,7 +19,8 @@ import AppKit
 /// The 06:00 job outlives that verdict only if the instance it launched spares it, so
 /// the singleton's victims are checked too: they must leave out a headless instance (an
 /// idle copy of this binary under `DIPLOMAT_RELAUNCH_TEST=hold`) and keep one carrying
-/// no headless marker (the staying bundle, named like the app).
+/// no headless marker (the staying bundle, named like the app) - a marker being a value
+/// the launch ladder dispatches, not any value under the name.
 ///
 ///     DIPLOMAT_RELAUNCH_TEST=1 swift run Diplomat
 ///
@@ -128,6 +129,12 @@ enum RelaunchTest {
         check("an instance carrying no headless marker is a victim",
               !staying.isEmpty && staying.allSatisfy { victims.contains($0) },
               "victims \(victims), staying \(staying)")
+        check("a value the launch ladder does not dispatch is no marker",
+              !Headless.isActive(in: ["DIPLOMAT_LOOKUP": "#337"])
+                  && !Headless.isActive(in: ["DIPLOMAT_RELAUNCH_TEST": "0"]))
+        check("one it does dispatch is",
+              Headless.isActive(in: ["DIPLOMAT_LOOKUP": "337"])
+                  && Headless.isActive(in: ["DIPLOMAT_RELAUNCH_TEST": "hold"]))
 
         print("relaunch: an instance up before the launch is not the new one")
         let exec = stays.appendingPathComponent("Contents/MacOS/\(SingleInstance.execName)")

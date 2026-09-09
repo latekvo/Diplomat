@@ -13,11 +13,13 @@ enum Headless {
 
     /// Whether `env` puts an instance in one of those modes: this process's own, or
     /// another instance's when the singleton picks whom to terminate and the 06:00
-    /// updater asks whether the app is up.
+    /// updater asks whether the app is up. The value rules are the launch ladder's
+    /// (`AppDelegate.applicationDidFinishLaunching`): a value it would not dispatch is a
+    /// GUI launch, so it is no mode here either.
     static func isActive(in env: [String: String]) -> Bool {
         return env["DIPLOMAT_DUMP"] == "1"
             || env["DIPLOMAT_SELF_UPDATE"] == "1"
-            || env["DIPLOMAT_LOOKUP"] != nil
+            || Int(env["DIPLOMAT_LOOKUP"] ?? "") != nil
             || env["DIPLOMAT_PRINT_PROMPT"] != nil
             || env["DIPLOMAT_SETTINGS_DUMP"] == "1"
             || env["DIPLOMAT_RENDER"] != nil
@@ -36,7 +38,7 @@ enum Headless {
             || env["DIPLOMAT_MESH_CMD_TEST"] == "1"
             || env["DIPLOMAT_ALLOCATOR_TEST"] == "1"
             || env["DIPLOMAT_REPOPATHS_TEST"] == "1"
-            || env["DIPLOMAT_RELAUNCH_TEST"] != nil
+            || ["1", "hold"].contains(env["DIPLOMAT_RELAUNCH_TEST"] ?? "")
     }
 
     /// `env` without every entry that puts an instance in one of those modes - what a
