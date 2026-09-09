@@ -470,12 +470,26 @@ def _number(raw: object) -> float | None:
     bridges to ``NSNumber`` and the same cast accepts it. Nothing either writer
     emits puts a boolean in a numeric field; what matters is that a hand-edited
     file makes both platforms answer the same way.
+
+    A string is read by the rule of the twin's ``Double(String)``, for the same
+    reason: strtod's grammar with the whole string consumed. So hex is a number
+    (``0x10``, ``-0x1p3``), while surrounding whitespace, a ``_`` separator and a
+    non-ASCII digit - each of which ``float()`` would take - are not.
     """
-    if raw is None:
-        return None
-    try:
-        value = float(raw)  # type: ignore[arg-type]
-    except (TypeError, ValueError, OverflowError):
+    if isinstance(raw, str):
+        if raw != raw.strip() or "_" in raw or not raw.isascii():
+            return None
+        parse = float.fromhex if "0x" in raw.lower() else float
+        try:
+            value = parse(raw)
+        except ValueError:
+            return None
+    elif isinstance(raw, (int, float)):
+        try:
+            value = float(raw)
+        except OverflowError:
+            return None
+    else:
         return None
     return value if math.isfinite(value) else None
 
