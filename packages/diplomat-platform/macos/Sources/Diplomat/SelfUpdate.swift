@@ -172,7 +172,9 @@ enum SelfUpdate {
     /// LaunchServices has taken the request, whatever becomes of the process, so the
     /// verdict is the instance itself: one running `app` that was not there before must
     /// appear (a launch takes seconds on a loaded machine) and still be running `window`
-    /// later, else the swap did not happen and the running app is still the old build.
+    /// later, else the swap did not happen. The failure says what is up instead: the
+    /// instances from before the launch, still the old build, or nothing - a new instance
+    /// ends the old ones before anything past its launch can end it.
     /// Its newest-wins singleton terminates this instance once it is up, so a caller
     /// still around afterwards reports "restarting…" and waits to be replaced. Mirrors
     /// `selfupdate.relaunch` and `relaunch_failure`.
@@ -204,6 +206,18 @@ enum SelfUpdate {
         func newInstance() -> pid_t? {
             instances(of: app).map(\.processIdentifier).first { !before.contains($0) }
         }
+        /// What is up once the relaunch has failed. An instance counts by `SingleInstance`'s
+        /// rule, no headless marker: the 06:00 updater is an instance of the bundle it
+        /// relaunches and is not the old build standing, while the GUI behind the Update
+        /// button is.
+        func standing() -> String {
+            let old = instances(of: app).filter {
+                before.contains($0.processIdentifier)
+                    && !Headless.isActive(in: SingleInstance.environment(of: $0.processIdentifier))
+            }
+            return old.isEmpty ? "no instance of \(name) is running"
+                               : "the running app is still the old build"
+        }
         let appearBy = Date().addingTimeInterval(10)
         var launched = newInstance()
         while launched == nil, Date() < appearBy {
@@ -211,15 +225,14 @@ enum SelfUpdate {
             launched = newInstance()
         }
         guard let launched else {
-            throw UpdateError(message: "no new instance of \(name) came up within 10s; "
-                + "the running app is still the old build")
+            throw UpdateError(message: "no new instance of \(name) came up within 10s; \(standing())")
         }
         let settled = Date().addingTimeInterval(window)
         while Date() < settled {
             usleep(50_000)
             guard instances(of: app).contains(where: { $0.processIdentifier == launched }) else {
                 throw UpdateError(message: "the relaunched \(name) exited within \(Int(window))s; "
-                    + "the running app is still the old build")
+                    + standing())
             }
         }
     }

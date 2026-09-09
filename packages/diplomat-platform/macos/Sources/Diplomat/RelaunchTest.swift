@@ -7,8 +7,11 @@ import AppKit
 /// button would show "restarting…" and the 06:00 job log "relaunched" over an app that
 /// never came up. The verdict is the launched instance instead, so two bundles are laid
 /// out in a scratch directory - one whose executable exits, one that stays up - and the
-/// relaunch is asked about each. Bundles are matched by path, so the live app is
-/// neither counted nor touched. The staying one writes down the environment it got:
+/// relaunch is asked about each, and about the staying one again with its instance up
+/// and an executable that ends: the old instance must not pass for the new one, and the
+/// failure must name it as what runs, where the first failure names nothing. Bundles
+/// are matched by path, so the live app is neither counted nor touched. The staying
+/// one writes down the environment it got:
 /// `open` passes its own on, so it must carry no headless marker - the
 /// `DIPLOMAT_SELF_UPDATE=1` the 06:00 job runs under, set on this process for the
 /// relaunch's duration, and this test's own - while everything else reaches it.
@@ -67,8 +70,8 @@ enum RelaunchTest {
         let exits = bundle("Exits", executable: "Exits", script: "#!/bin/sh\nexit 7\n")
         let refused = relaunch(exits)
         check("a bundle whose executable exits at launch is a failed relaunch", refused != nil)
-        check("the failure says the old build is what runs",
-              refused?.contains("the running app is still the old build") == true,
+        check("the failure says nothing is running",
+              refused?.contains("no instance of Exits.app is running") == true,
               "got \(refused ?? "nil")")
 
         let dump = scratch.appendingPathComponent("stays.env").path
@@ -125,6 +128,20 @@ enum RelaunchTest {
         check("an instance carrying no headless marker is a victim",
               !staying.isEmpty && staying.allSatisfy { victims.contains($0) },
               "victims \(victims), staying \(staying)")
+
+        print("relaunch: an instance up before the launch is not the new one")
+        let exec = stays.appendingPathComponent("Contents/MacOS/\(SingleInstance.execName)")
+        fm.createFile(atPath: exec.path, contents: Data("#!/bin/sh\nsleep 0.5\nexit 0\n".utf8),
+                      attributes: [.posixPermissions: 0o755])
+        let ended = relaunch(stays)
+        check("a new instance that ends is a failed relaunch, the old one notwithstanding",
+              ended != nil)
+        check("the failure says the old build is what runs",
+              ended?.contains("the running app is still the old build") == true,
+              "got \(ended ?? "nil")")
+        check("the old instance is what is up",
+              SelfUpdate.instances(of: stays).map(\.processIdentifier) == staying,
+              "up \(SelfUpdate.instances(of: stays).map(\.processIdentifier)), staying \(staying)")
 
         if failures.isEmpty { print("relaunch: all passed") }
         else { print("relaunch: FAILED \(failures.count): \(failures.joined(separator: "; "))") }
