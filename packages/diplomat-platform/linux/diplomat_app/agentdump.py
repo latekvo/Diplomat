@@ -27,7 +27,7 @@ def run() -> int:
     # safe beside a live applet cannot spend the applet's reading.
     tokens = (probes.tokens_left(agentregistry.runners_of(records))
               if deadline is not None else None)
-    evidence = probes.gather(records, now, tokens=tokens)
+    evidence = probes.gather(records, now, tokens=tokens, mesh_enabled=_mesh_enabled())
     t = agentstate.tick(records, evidence, now, limit, deadline)
 
     print(f"registry: {agentregistry.runs_path()}")
@@ -100,3 +100,11 @@ def _deadline() -> float | None:
     same Store-free way the cap is."""
     from diplomat_runtime import appconfig
     return appconfig.run_deadline()
+
+
+def _mesh_enabled() -> bool:
+    """The mesh switch, read from the same persisted setting the Store reads and
+    without building one: a snapshot left by a stopped node reads as the mesh being
+    off, as it does on the applet's own tick."""
+    from .store import app_settings, mesh_switch
+    return mesh_switch(app_settings())

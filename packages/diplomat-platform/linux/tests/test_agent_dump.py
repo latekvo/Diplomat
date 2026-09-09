@@ -113,3 +113,34 @@ def test_the_dump_leaves_the_usage_endpoint_alone_with_the_deadline_switched_off
 
     assert not dialled, "the endpoint was dialled for a reading no rung can consult"
     assert "windows reaped   []" in out
+
+
+def test_the_dump_reads_the_mesh_switch_the_applet_reads(monkeypatch, capsys, tmp_path):
+    """A machine that ran a node once keeps its snapshot, and with the mesh switched
+    off the applet's own tick reads that as the mesh being off. The dump reads the
+    same persisted switch, Store-free, so it explains the same verdict."""
+    import json
+    import subprocess
+
+    from diplomat_app import probes, szpont
+    from diplomat_app.store import app_settings
+
+    assert szpont.AVAILABLE, "the checkout's own SzpontNet is on the path"
+    gone = subprocess.Popen(["true"])
+    gone.wait()
+    mesh = tmp_path / "mesh"
+    mesh.mkdir()
+    (mesh / "state.json").write_text(json.dumps({"pid": gone.pid, "claims": {}}))
+    monkeypatch.setenv("SZPONTNET_DIR", str(mesh))
+    # An empty machine, so the dump reads no real process and captures no pane.
+    monkeypatch.setattr(probes, "_ps_dump", lambda now: A.Observation.present(""))
+
+    def claims_line() -> str:
+        agentdump.run()
+        (line,) = [l for l in capsys.readouterr().out.splitlines()
+                   if l.strip().startswith("mesh claims")]
+        return line
+
+    assert "UNSUPPORTED" in claims_line() and "(the mesh is switched off)" in claims_line()
+    app_settings().setValue("meshEnabled", True)
+    assert "UNAVAILABLE" in claims_line() and "(the mesh node is not running)" in claims_line()

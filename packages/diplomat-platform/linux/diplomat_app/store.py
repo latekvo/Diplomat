@@ -52,6 +52,33 @@ from . import (
 )
 
 
+def app_settings() -> QSettings:
+    """This front-end's own preference store, the Linux analogue of UserDefaults.
+
+    Built on the process-wide default format rather than with the two-arg
+    ``QSettings(org, app)``, which is hardwired to NativeFormat - on macOS that ignores
+    ``QSettings.setPath``, so the test suite could not redirect it and would read and
+    write the real user settings.
+    """
+    return QSettings(QSettings.defaultFormat(), QSettings.Scope.UserScope,
+                     "diplomat", "diplomat")
+
+
+def mesh_switch(settings: QSettings) -> bool:
+    """Opt-in: whether this machine joins the LAN P2P mesh. Off by default so
+    Diplomat never opens a UDP/TCP node on the network unasked; the app auto-starts
+    a node only once the user enables it in Settings.
+
+    A machine with no SzpontNet installed is not on the mesh whatever its preference
+    says, and this is where that becomes true rather than at each of the dozen call
+    sites: every mesh-shaped path in the applet already asks this question, so
+    answering it honestly is what makes the add-on optional. The stored preference
+    is left alone — install the library and the machine rejoins the mesh it was
+    already opted into.
+    """
+    return szpont.AVAILABLE and settings.value("meshEnabled", False, bool)
+
+
 def _count(n: int, noun: str) -> str:
     """``3 files`` / ``1 file`` — the pluralisation two row builders share."""
     return f"{n} {noun}" if n == 1 else f"{n} {noun}s"
@@ -158,9 +185,6 @@ class Store(QObject):
     # Emitted when a telemetry sample lands, so an open Telemetry screen refreshes
     # instead of waiting for the user to flip a range.
     telemetry_changed = Signal()
-
-    _ORG = "diplomat"
-    _APP = "diplomat"
 
     # How many agent screens must be read without once showing the CLI's interrupt
     # hint before that is worth reporting. High, because a quiet machine legitimately
@@ -318,13 +342,7 @@ class Store(QObject):
         self._workers: list[threading.Thread] = []
         self._workers_lock = threading.Lock()
 
-        # Honor the process-wide default format (NativeFormat unless overridden):
-        # the two-arg QSettings(org, app) constructor is hardwired to NativeFormat,
-        # which on macOS ignores QSettings.setPath — so the test suite couldn't
-        # redirect it and would read/write the real user settings.
-        self._settings = QSettings(
-            QSettings.defaultFormat(), QSettings.Scope.UserScope, self._ORG, self._APP
-        )
+        self._settings = app_settings()
 
         # Re-point a hidden default selection.
         if self.selected in self.hidden_tools:
@@ -472,24 +490,12 @@ class Store(QObject):
 
     @property
     def mesh_enabled(self) -> bool:
-        """Opt-in: whether this machine joins the LAN P2P mesh. Off by default so
-        Diplomat never opens a UDP/TCP node on the network unasked; the app
-        auto-starts a node only once the user enables it in Settings.
-
+        """:func:`mesh_switch`, which the ``DIPLOMAT_AGENTS`` dump reads Store-free.
         ``_mesh_enabled_override`` lets the headless render force it on without
-        writing (and persisting) to the real user QSettings.
-
-        A machine with no SzpontNet installed is not on the mesh whatever its
-        preference says, and this is where that becomes true rather than at each
-        of the dozen call sites: every mesh-shaped path in the applet already
-        asks this question, so answering it honestly is what makes the add-on
-        optional. The stored preference is left alone — install the library and
-        the machine rejoins the mesh it was already opted into."""
-        if not szpont.AVAILABLE:
-            return False
+        writing (and persisting) to the real user QSettings."""
         if self._mesh_enabled_override is not None:
-            return self._mesh_enabled_override
-        return self._settings.value("meshEnabled", False, bool)
+            return szpont.AVAILABLE and self._mesh_enabled_override
+        return mesh_switch(self._settings)
 
     @mesh_enabled.setter
     def mesh_enabled(self, value: bool) -> None:
