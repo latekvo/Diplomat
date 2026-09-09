@@ -714,3 +714,22 @@ def test_a_client_outside_tmux_under_a_c_locale_still_reads_its_panes(monkeypatc
         assert tmuxwatch.kill_window_for_tty(tty) is True
     finally:
         subprocess.run(["tmux", "kill-session", "-t", f"={name}"], capture_output=True)
+
+
+@pytest.mark.skipif(shutil.which("tmux") is None, reason="no tmux on this machine")
+def test_the_watcher_dumps_its_panes_from_outside_tmux_under_a_c_locale(monkeypatch):
+    """The same client, on the listing :func:`dump_panes` keys every pane by. A
+    separator tmux sanitizes is a line with none, and a watcher that then sees no
+    panes at all nudges nothing."""
+    monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.setenv("LC_ALL", "C")
+    name = f"diplomat-test-{uuid.uuid4().hex[:8]}"
+    subprocess.run(["tmux", "new-session", "-d", "-s", name, "sleep 300"], check=True)
+    try:
+        pane_id, tty = subprocess.run(
+            ["tmux", "list-panes", "-t", name, "-F", "#{pane_id} #{pane_tty}"],
+            capture_output=True, text=True, check=True).stdout.split()
+        panes = tmuxwatch.dump_panes()
+        assert panes and (pane_id, tty) in {(p.pane_id, p.tty) for p in panes}
+    finally:
+        subprocess.run(["tmux", "kill-session", "-t", f"={name}"], capture_output=True)
