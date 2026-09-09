@@ -339,11 +339,8 @@ def test_relaunch_does_not_inherit_headless_markers(tmp_path, monkeypatch):
     assert env.get("DISPLAY") == ":0"   # the display env is still handed through
 
 
-def test_update_button_pulls_builds_and_relaunches(repos):
-    """The real Settings UPDATE section, driven by a real button click."""
-    origin, clone, marker = repos
-    _advance_origin(origin)
-
+def _settings_view():
+    """The real Settings screen over a real Store, with the Qt loop to drive it."""
     from PySide6.QtWidgets import QApplication
 
     from diplomat_app.settingsview import SettingsView
@@ -351,39 +348,54 @@ def test_update_button_pulls_builds_and_relaunches(repos):
 
     qapp = QApplication.instance() or QApplication([])
     store = Store()
-    view = SettingsView(store)
+    return qapp, store, SettingsView(store)
 
-    def pump_until(ready, what: str, seconds: float = 30.0) -> None:
-        """Pump the Qt loop until ``ready()``.
 
-        The worker thread assigns ``store.update_state`` and only then emits
-        ``update_changed``, which reaches the view queued: a phase readable off
-        the store is not one the view has drawn. So a widget is waited for, never
-        read once the phase has landed — and since the slot runs to completion
-        inside one ``processEvents``, reaching one of its widgets is reaching all
-        of them. That lag is a turn of the loop, hence the short deadline on the
-        widget waits; the ones on a phase cover a real ``git fetch``.
-        """
-        deadline = time.monotonic() + seconds
-        while time.monotonic() < deadline:
-            qapp.processEvents()
-            if ready():
-                return
-            time.sleep(0.02)
-        raise AssertionError(f"timed out waiting for {what}, at {store.update_state}")
+def _pump_until(qapp, store, ready, what: str, seconds: float = 30.0) -> None:
+    """Pump the Qt loop until ``ready()``.
 
+    The worker thread assigns ``store.update_state`` and only then emits
+    ``update_changed``, which reaches the view queued: a phase readable off
+    the store is not one the view has drawn. So a widget is waited for, never
+    read once the phase has landed — and since the slot runs to completion
+    inside one ``processEvents``, reaching one of its widgets is reaching all
+    of them. That lag is a turn of the loop, hence the short deadline on the
+    widget waits; the ones on a phase cover a real ``git fetch``.
+    """
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        qapp.processEvents()
+        if ready():
+            return
+        time.sleep(0.02)
+    raise AssertionError(f"timed out waiting for {what}, at {store.update_state}")
+
+
+def _click_update(qapp, store, view) -> str:
+    """Wait for the check the view kicks on open to land on "update available", click
+    Update, and return the phase the update ended in."""
     def phase() -> str | None:
         return (store.update_state or {}).get("phase")
 
-    # The view kicks a check on open; it must land on "update available".
-    pump_until(lambda: phase() == "idle", "the update check to land")
+    _pump_until(qapp, store, lambda: phase() == "idle", "the update check to land")
     assert store.update_state["behind"] == 1
-    pump_until(lambda: view._update_btn.isEnabled(), "the Update button to enable", 5.0)
+    _pump_until(qapp, store, lambda: view._update_btn.isEnabled(),
+                "the Update button to enable", 5.0)
     assert view._update_pill.text() == "1 behind"
 
     view._update_btn.click()
-    pump_until(lambda: phase() in ("restarting", "error"), "the update to finish")
-    assert phase() == "restarting", store.update_state
+    _pump_until(qapp, store, lambda: phase() in ("restarting", "error"),
+                "the update to finish")
+    return phase()
+
+
+def test_update_button_pulls_builds_and_relaunches(repos):
+    """The real Settings UPDATE section, driven by a real button click."""
+    origin, clone, marker = repos
+    _advance_origin(origin)
+    qapp, store, view = _settings_view()
+
+    assert _click_update(qapp, store, view) == "restarting", store.update_state
 
     assert _git(clone, "rev-parse", "HEAD") == _git(origin, "rev-parse", "HEAD")
     assert (marker / "built").exists()
@@ -392,9 +404,28 @@ def test_update_button_pulls_builds_and_relaunches(repos):
     while not (marker / "relaunched").exists() and time.monotonic() < deadline:
         time.sleep(0.05)
     assert (marker / "relaunched").exists()
-    pump_until(lambda: view._update_pill.text() == "restarting…",
-               "the view to show the handover", 5.0)
+    _pump_until(qapp, store, lambda: view._update_pill.text() == "restarting…",
+                "the view to show the handover", 5.0)
     assert "handing over" in view._update_row.summary()
+
+    view.deleteLater()
+
+
+def test_update_button_reports_a_relaunched_applet_that_dies(repos):
+    """The button watches its relaunch the way the 6AM job does: a launcher that
+    exits inside the window is a failed update and is shown as one, rather than
+    "restarting…" outliving a handover that never comes."""
+    origin, clone, marker = repos
+    launcher = origin / "packages" / "diplomat-platform" / "linux" / "diplomat"
+    launcher.write_text("#!/usr/bin/env bash\nexit 3\n")
+    _advance_origin(origin)
+    qapp, store, view = _settings_view()
+
+    assert _click_update(qapp, store, view) == "error", store.update_state
+    assert store.update_state["error"] == \
+        "the relaunched applet exited 3; this one is still the old build"
+    _pump_until(qapp, store, lambda: "exited 3" in view._update_row.summary(),
+                "the view to show the failure", 5.0)
 
     view.deleteLater()
 
