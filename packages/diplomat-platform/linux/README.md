@@ -185,12 +185,14 @@ rate-limit budget's three knobs are the exceptions (see their bullets):
   spawn.
 - **Auto-queue fixes for my PRs / Auto-queue reviews that request me** — the two
   monitor toggles with live
-  status, and under the review-requests one the **auto-approve** master toggle
+  status, and under the review-requests one the **author allowlist** (*Only these
+  authors*, blank = anyone), the **auto-approve** master toggle
   plus its three withhold-the-verdict suppressors (SKILL / installer / community),
   and the **soft-approve** toggle (default ON — a clean comments-only review leaves
   a friendly thank-you note, never an APPROVE action). A monitor switched off keeps
   polling and keeps listing what it finds under [Agent tasks](#agent-tasks); what
-  stops is the automatic start.
+  stops is the automatic start. The allowlist is the one hold that does not list
+  what it holds: an excluded author's request is dropped, never queued.
 - **Run at most N automatic tasks at a time** — this machine's hard cap on
   concurrent automatic agents (default **2**, range 1–16), spanning both monitors
   above, the reviews a PR sweep queues, and any work a mesh peer routes here. The

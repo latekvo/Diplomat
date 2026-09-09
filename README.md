@@ -865,7 +865,12 @@ nudge opens no window at all - it types into a session that already exists.)
   retried on the same 5m→3h backoff until the review actually lands. Force-push
   dedup: a push re-stamps the review request, which would double-spawn - a new
   request within 1h of a dispatch is treated as churn and suppressed. Banned
-  authors are never auto-reviewed.
+  authors are never auto-reviewed, and Settings carries an **author allowlist**
+  (*Only these authors*) that narrows the monitor further: blank means anyone who
+  requests me, a list means only those logins and everyone else is left to me. It
+  speaks for this monitor alone - conflicts, my own review threads, a sweep and a
+  wizard press are untouched by it, so the Review wizard still reviews anyone. The
+  ban wins where both apply.
 - **Claude API-error watcher** - Claude Code runs only; the banners it matches are
   Claude Code's, and an OpenCode or Hermes agent that errors reads as a finished
   turn instead - its runner says so, so the run is retired, its bay and its PR are

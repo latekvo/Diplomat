@@ -167,6 +167,42 @@ def test_the_stalled_agents_pill_answers_for_both_of_its_switches(make_view):
     assert "deadline" not in view._apiwatch_pill.text()
 
 
+def test_the_author_allowlist_opens_on_its_stored_line(make_view):
+    view = make_view(review_allowlist_raw="carol")
+    assert view._allowlist_setting_row._control.text() == "carol"
+
+
+def test_typing_an_author_allowlist_writes_through_and_counts(view):
+    """A text field that stops writing through is silent in the worst way here: the
+    line sits where it was typed and the monitor goes on reviewing everyone. The
+    summary is pinned with it because it is the only place the PARSED list is shown —
+    the operator's one chance to see that a typo cost them a name."""
+    row = view._allowlist_setting_row
+    assert row._control.text() == ""
+    assert row.summary() == "Blank = anyone who requests my review."
+
+    row._control.setText("@Alice, bob")
+    assert view.store.review_allowlist_raw == "@Alice, bob"
+    assert view.store.review_allowlist == ["Alice", "bob"]
+    assert row.summary().startswith("2 authors")
+
+    row._control.setText("alice")
+    assert row.summary().startswith("1 author —")
+
+    row._control.setText("")
+    assert view.store.review_allowlist == []
+    assert row.summary() == "Blank = anyone who requests my review."
+
+
+def test_the_author_allowlist_is_hidden_while_no_auto_review_runs(make_view):
+    """It sits in the nest under the switch that creates auto-reviews, because a list
+    of who they may run for says nothing while none do."""
+    view = make_view(review_requests_enabled=False)
+    assert not view._allowlist_setting_row.isVisibleTo(view)
+    view._sw_review_req.setChecked(True)
+    assert view._allowlist_setting_row.isVisibleTo(view)
+
+
 def test_every_row_names_its_control_for_a_screen_reader(view):
     """The row's name is a separate label, so an unnamed control reads as a bare
     switch. Every row is checked because the naming is one line in `SettingRow`:

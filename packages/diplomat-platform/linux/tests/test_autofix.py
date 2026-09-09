@@ -116,9 +116,9 @@ def test_decide_changed_stamp_cooldown():
 
 
 def _req(requested_at=None, my_last_review_at=None, author_association="MEMBER",
-         files=None, number=7, my_last_comment_at=None):
+         files=None, number=7, my_last_comment_at=None, author="bob"):
     return ReviewRequest(
-        number=number, title="t", url=f"https://x/pr/{number}", author="bob",
+        number=number, title="t", url=f"https://x/pr/{number}", author=author,
         author_association=author_association, files=files or [],
         requested_at=requested_at, my_last_review_at=my_last_review_at,
         my_last_comment_at=my_last_comment_at,
@@ -211,6 +211,34 @@ def test_verdict_withhold_reasons():
     # A disabled suppressor doesn't fire even on a matching PR.
     lax = VerdictPolicy(withhold_skill=False, withhold_installer=False, withhold_community=False)
     assert lax.allows_verdict(["a.skill.md"], "NONE") is True
+
+
+# MARK: - AuthorAllowlist
+
+
+def test_parse_author_allowlist_shapes():
+    assert autofix.parse_author_allowlist("") == []
+    assert autofix.parse_author_allowlist("   ") == []
+    # Commas, whitespace and a leading @ are all the operator's to use.
+    assert autofix.parse_author_allowlist("alice, @bob  carol") == ["alice", "bob", "carol"]
+    assert autofix.parse_author_allowlist("@@dave") == ["dave"]
+    # One person, two spellings: GitHub logins are case-insensitive, so a list that
+    # kept both would misreport its own length to the settings row that counts it.
+    assert autofix.parse_author_allowlist("Bob, bob, BOB") == ["Bob"]
+    # Order is the operator's, not sorted.
+    assert autofix.parse_author_allowlist("zoe alice") == ["zoe", "alice"]
+
+
+def test_author_allowed_is_a_narrowing_not_a_requirement():
+    # Empty ⇒ everyone: an applet never told otherwise reviews what it always did.
+    assert autofix.author_allowed("anyone", []) is True
+    assert autofix.author_allowed("", []) is True
+    assert autofix.author_allowed("Bob", ["bob"]) is True
+    assert autofix.author_allowed("bob", ["BOB"]) is True
+    assert autofix.author_allowed("carol", ["bob"]) is False
+    # A non-empty list is closed, so a deleted account (which reaches the monitor as
+    # "") is outside it rather than waved through.
+    assert autofix.author_allowed("", ["bob"]) is False
 
 
 # MARK: - Store orchestration
@@ -453,6 +481,65 @@ def test_unaddressed_count_and_ban_skip(store, monkeypatch):
     # Dispatched + finished → no longer in-flight → counts as still unaddressed until
     # the reviewer resolves it (the reconciler will retry on the next poll).
     assert store.unaddressed_reviews == 1
+
+
+def test_allowlist_keeps_an_unlisted_author_out_of_the_poll(store, monkeypatch):
+    """An author outside the list is not owed work here, so nothing downstream of the
+    filter counts them: no dispatch, no attempt record to burn a backoff slot on, and
+    no "owed" figure claiming a review is pending that nothing means to pick up."""
+    store.pr_autofix_enabled = False
+    store.review_requests_enabled = True
+    calls = _spawn_recorder(monkeypatch, finish=True)
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    reqs = [_req(number=7, requested_at="2026-01-02", author="bob"),
+            _req(number=8, requested_at="2026-01-02", author="alice")]
+    monkeypatch.setattr(
+        "diplomat_app.autofixmonitor.fetch_review_requests", lambda *a, **k: reqs
+    )
+    store.review_allowlist_raw = "@Alice"
+    store._poll_review_requests("o", "r")
+    assert len(calls) == 1                      # alice only
+    assert calls[0]["prompt"].endswith(":8")    # her PR, not bob's #7
+    assert store.review_requests_handled == 1
+    assert store.unaddressed_reviews == 1       # alice's, retried; never bob's
+    assert store._load_attempts("reviewReqAttempts").keys() == {"8"}
+
+    # Clearing the list restores the default, and bob is owed again on the next poll.
+    calls.clear()
+    store.review_allowlist_raw = ""
+    store._poll_review_requests("o", "r")
+    assert len(calls) == 1                      # bob; alice is inside her backoff
+    assert store.unaddressed_reviews == 2
+
+
+def test_an_excluded_request_is_dropped_where_a_held_one_would_queue(store, monkeypatch):
+    """The distinction the settings row draws between this list and the switch above
+    it. With nothing allowed to start by itself, a find is HELD — it becomes a row
+    waiting for a bay. An excluded author's is not held, it is gone: a queue of people
+    deliberately excluded is a list that only ever grows."""
+    store.pr_autofix_enabled = False
+    store.review_requests_enabled = True
+    store.queue_auto_run = False           # every find is held, none starts
+    calls = _spawn_recorder(monkeypatch, finish=True)
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    reqs = [_req(number=7, requested_at="2026-01-02", author="bob"),
+            _req(number=8, requested_at="2026-01-02", author="alice")]
+    monkeypatch.setattr(
+        "diplomat_app.autofixmonitor.fetch_review_requests", lambda *a, **k: reqs
+    )
+
+    store.review_allowlist_raw = "alice"
+    store._poll_review_requests("o", "r")
+    store.commit_queue()
+    assert calls == []
+    assert [t.id for t in store.queued_tasks] == ["review-req:8"]   # never bob's
+
+    # With no list, the same poll holds both — which is what makes the line above a
+    # statement about the allowlist rather than about the hold.
+    store.review_allowlist_raw = ""
+    store._poll_review_requests("o", "r")
+    store.commit_queue()
+    assert {t.id for t in store.queued_tasks} == {"review-req:7", "review-req:8"}
 
 
 def test_poll_error_surfaced_and_recovers(store, monkeypatch):
@@ -1075,6 +1162,57 @@ def test_banned_author_blocks_both_interfaces(store, monkeypatch):
     for src in (autofix.SOURCE_PANEL, autofix.SOURCE_AUTO):
         assert store.dispatch_agent(_job(author="evil"), src) == autofix.VERDICT_BANNED
     assert calls == []
+
+
+def test_allowlist_holds_a_review_monitor_find_whoever_asks(store, monkeypatch):
+    """A review-monitor find whose author left the allowlist is refused on both
+    interfaces — the poll drops it before it is queued, so this is the row a queue
+    was already holding, draining or run by hand."""
+    calls = _spawn_recorder(monkeypatch)
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    store.review_allowlist_raw = "alice"
+    job = _job(author="bob", counter="review_requests")
+    for src in (autofix.SOURCE_PANEL, autofix.SOURCE_AUTO):
+        assert store.dispatch_agent(job, src) == autofix.VERDICT_NOT_ALLOWED
+    assert calls == []
+    # The same find by a listed author runs.
+    assert store.dispatch_agent(
+        _job(number=10, author="Alice", counter="review_requests"),
+        autofix.SOURCE_AUTO,
+    ) == "spawned"
+    assert len(calls) == 1
+
+
+def test_allowlist_speaks_only_for_the_review_monitors_finds(store, monkeypatch):
+    """Everything else keeps running while a list is set: the two reconcilers over my
+    own PRs carry another counter, and a sweep or a wizard press carries none."""
+    calls = _spawn_recorder(monkeypatch, finish=True)
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    store.review_allowlist_raw = "alice"
+    for n, counter in ((21, "my_reviews"), (22, "conflicts"), (23, None)):
+        assert store.dispatch_agent(
+            _job(number=n, author="bob", counter=counter), autofix.SOURCE_AUTO
+        ) == "spawned"
+    assert len(calls) == 3
+
+
+def test_a_ban_outranks_the_allowlist(store, monkeypatch):
+    """Both are standing statements about a person and the ban is the stronger one, so
+    an author who is BOTH banned and unlisted reads as banned. The remedy the activity
+    line names has to be the one that would actually work: adding bob to the list would
+    change nothing while the ban stands."""
+    _spawn_recorder(monkeypatch)
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: ["bob"])
+    monkeypatch.setattr("diplomat_app.bans.is_banned", lambda login, b: login in b)
+    store.review_allowlist_raw = "alice"
+    assert store.dispatch_agent(
+        _job(author="bob", counter="review_requests"), autofix.SOURCE_AUTO
+    ) == autofix.VERDICT_BANNED
+    # And a listed author who is banned is still banned, not waved through by the list.
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: ["alice"])
+    assert store.dispatch_agent(
+        _job(number=31, author="alice", counter="review_requests"), autofix.SOURCE_AUTO
+    ) == autofix.VERDICT_BANNED
 
 
 def test_mesh_routes_only_auto_source(store, monkeypatch):

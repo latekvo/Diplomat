@@ -435,9 +435,12 @@ class SettingsView(QWidget):
                    "“execute now” only.",
         )))
 
-        # What an auto-review may submit. Nested under the switch that creates them,
-        # because none of it means anything while no auto-review runs.
+        # Who an auto-review may run for, and what it may submit. Nested under the
+        # switch that creates them, because none of it means anything while no
+        # auto-review runs.
         self._approve_nest, approve = nested_settings(_ORANGE)
+        approve.addWidget(self._allowlist_row())
+
         self._sw_auto_approve = SwitchToggle(_ORANGE)
         self._sw_auto_approve.setChecked(self.store.auto_approve_enabled)
         self._sw_auto_approve.toggled.connect(self._on_auto_approve_toggled)
@@ -461,6 +464,41 @@ class SettingsView(QWidget):
         )))
         body.addWidget(self._approve_nest)
         return card
+
+    def _allowlist_row(self) -> QWidget:
+        """Which authors the review monitor may act on at all.
+
+        Free text rather than a chip per login: the list is edited far more rarely
+        than it is read, and what is typed is what is stored
+        (``Store.review_allowlist_raw``), so a half-finished handle is never
+        reformatted mid-keystroke."""
+        field = QLineEdit(self.store.review_allowlist_raw)
+        field.setPlaceholderText("anyone")
+        field.setClearButtonEnabled(True)
+
+        self._allowlist_setting_row = self._track(SettingRow(
+            "Only these authors", field, stacked=True,
+            detail="Commas or spaces between logins; a leading @ is fine. Unlike "
+                   "the switch above, an excluded request is dropped rather than "
+                   "queued — no agent and no row — and the Review wizard still "
+                   "reviews anyone. The ban list wins over this.",
+        ))
+
+        def refresh() -> None:
+            n = len(self.store.review_allowlist)
+            self._allowlist_setting_row.set_summary(
+                "Blank = anyone who requests my review." if not n else
+                f"{n} author{'' if n == 1 else 's'} — everyone else is left for me."
+            )
+
+        def on_text(text: str) -> None:
+            self.store.review_allowlist_raw = text
+            refresh()
+            self.store.changed.emit()
+
+        field.textChanged.connect(on_text)
+        refresh()
+        return self._allowlist_setting_row
 
     def _verdict_block(self) -> QWidget:
         """The three suppressors for an auto-review's final verdict, as chips: a PR

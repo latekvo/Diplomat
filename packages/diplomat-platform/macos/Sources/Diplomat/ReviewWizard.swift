@@ -1081,7 +1081,8 @@ struct ReviewWizardView: View {
 ///
 /// A wizard SPAWN is a `.panel` dispatch, and none of the mesh gate, the
 /// automatic-task cap and the rate-limit budget applies to a human's click, so
-/// `.standDown`, `.atCapacity` and `.unaffordable` are answers only a monitor gets.
+/// `.standDown`, `.atCapacity` and `.unaffordable` are answers only a monitor gets —
+/// as is `.notAllowed`, which speaks for the review monitor's own finds.
 /// They are spelled out rather than folded into a `default`, so adding an outcome
 /// keeps failing this switch until someone decides what the wizard should say about it.
 func statusText(for outcome: Store.DispatchOutcome, terminal: String) -> String {
@@ -1089,6 +1090,7 @@ func statusText(for outcome: Store.DispatchOutcome, terminal: String) -> String 
     case .spawned: return "Launched \(terminal) · \(Fmt.clock(Date()))"
     case .inFlight: return "An agent is already on this PR — see its session above."
     case .banned: return "Author is banned for prompt injection — un-ban to review."
+    case .notAllowed: return "Author is outside the auto-review list."
     case .standDown: return "Another mesh node originates this work."
     case .atCapacity: return "This machine is at its cap of concurrent automatic tasks."
     case .unaffordable: return "Too little rate limit left for automatic work."
