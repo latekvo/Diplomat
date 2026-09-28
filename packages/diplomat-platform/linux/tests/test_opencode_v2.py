@@ -701,10 +701,10 @@ def test_a_2x_tui_is_found_by_the_prompt_its_session_opened_on(service, repo_o_r
 #: terminal, the tmux client and server and the pane's shells all carry the spawn
 #: command, TUI invocation included, and none of them is on the TUI's tty.
 WRAPPERS = (
-    "script -q /dev/null tmux -L x new-session -s y zsh -i -c "
-    f"'cd /tmp; zsh -i -c \"sleep 1; opencode --session {SID}\"; exec sh'",
-    "tmux -L x new-session -s y zsh -i -c "
-    f"'cd /tmp; zsh -i -c \"sleep 1; opencode --session {SID}\"; exec sh'",
+    ("script -q /dev/null tmux -L x new-session -s y zsh -i -c "
+     f"'cd /tmp; zsh -i -c \"sleep 1; opencode --session {SID}\"; exec sh'"),
+    ("tmux -L x new-session -s y zsh -i -c "
+     f"'cd /tmp; zsh -i -c \"sleep 1; opencode --session {SID}\"; exec sh'"),
     f"zsh -i -c cd /tmp; zsh -i -c \"sleep 1; opencode --session {SID}\"; exec sh",
     f"zsh -i -c sleep 1; opencode --session {SID}",
     f"xterm -e bash -c 'cd /tmp; opencode --session {SID}'",
@@ -915,7 +915,7 @@ def test_the_scan_names_the_session_of_a_prs_first_2x_tui(service, repo_o_r):
     _opening(service, SID, PROMPT)
     _opening(service, OTHER, PROMPT)
     sessions: dict[int, str] = {}
-    probes.live_agents(_ps(f"claude 'Review PR #7 in o/r'", f"opencode --session {SID}",
+    probes.live_agents(_ps("claude 'Review PR #7 in o/r'", f"opencode --session {SID}",
                            f"opencode --session {OTHER}"), sessions)
     assert sessions == {7: SID}
 
