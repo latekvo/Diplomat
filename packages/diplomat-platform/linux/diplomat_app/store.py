@@ -2431,8 +2431,7 @@ class Store(QObject):
         # idle session ignores it. The reaper has already stopped the ones it closed.
         reaped = {r.run_id for r in t.reapable}
         for r in gone:
-            session_id = (agentregistry.service_session(r.run_id)
-                          if r.run_id not in reaped else "")
+            session_id = probes.service_session(r) if r.run_id not in reaped else ""
             if session_id:
                 opencodeapi.interrupt(session_id)
         # Every pricing input comes out of the run directory, so all of them must be
@@ -2464,6 +2463,7 @@ class Store(QObject):
                          f"{verdict.reason if verdict else 'no verdict'}")
         self.refresh_activity()
         agentregistry.forget({r.run_id for r in gone})
+        probes.forget_adopted({r.run_id for r in gone})
         for r, exited_at, prompt, session_id, agent_runner in retired:
             telemetry.record_completion(r.ledger_key, prompt, r.dispatched_at,
                                         exited_at, now, session_id=session_id,
@@ -2516,7 +2516,7 @@ class Store(QObject):
         for record in t.reapable:
             # A 2.x OpenCode turn runs in the per-user service, not the window, and
             # outlives it (:func:`opencodeapi.interrupt`) — so it is stopped first.
-            session_id = agentregistry.service_session(record.run_id)
+            session_id = probes.service_session(record)
             if session_id:
                 opencodeapi.interrupt(session_id)
             if not (tmuxwatch.kill_session(tmuxwatch.session_name(record.run_id))

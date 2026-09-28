@@ -847,6 +847,76 @@ def test_a_pass_without_the_active_map_asks_nothing_more(service):
     assert [p for _m, p, _a in service.seen] == ["/api/session/active"]
 
 
+# MARK: - A 2.x agent nobody booked
+
+
+def _untracked(pr: int = 7) -> RunRecord:
+    """A row synthesized from the process table: no run directory, no runner."""
+    return RunRecord(run_id=f"untracked:{pr}", dispatched_at=T0, pr_number=pr,
+                     tty="pts/0", untracked=True)
+
+
+def _gather(monkeypatch, records: list[RunRecord], *argvs: str):
+    from diplomat_runtime import tmuxwatch
+
+    monkeypatch.setattr(probes, "_ps_dump", lambda now: _ps(*argvs))
+    monkeypatch.setattr(tmuxwatch, "pane_tails_for_ttys", lambda ttys: {})
+    return probes.gather(records, T0)
+
+
+def test_an_untracked_2x_agent_is_asked_of_the_service(service, repo_o_r, monkeypatch):
+    """Its screen is the fallback, not the answer: a turn the service is running reads
+    as running, and an ended one ends the row, exactly as for a run spawned here."""
+    _opening(service, SID, PROMPT)
+    _busy(service)
+    evidence = _gather(monkeypatch, [_untracked()], f"opencode --session {SID}")
+    assert evidence.sessions.value == {"untracked:7": SessionState(busy=True)}
+    probes._sessions_cache = None
+    service.routes[("GET", f"/api/session/{SID}")] = _session(idle=9.0)
+    service.routes[("GET", "/api/session/active")] = (200, {"data": {}})
+    evidence = _gather(monkeypatch, [_untracked()], f"opencode --session {SID}")
+    assert evidence.sessions.value == {"untracked:7": SessionState(busy=False)}
+
+
+def test_the_scan_names_the_session_of_a_prs_first_2x_tui(service, repo_o_r):
+    _opening(service, SID, PROMPT)
+    _opening(service, OTHER, PROMPT)
+    sessions: dict[int, str] = {}
+    probes.live_agents(_ps(f"claude 'Review PR #7 in o/r'", f"opencode --session {SID}",
+                           f"opencode --session {OTHER}"), sessions)
+    assert sessions == {7: SID}
+
+
+def test_only_an_untracked_run_is_given_the_session_on_its_pr(service, repo_o_r,
+                                                              monkeypatch):
+    local = RunRecord(run_id="r1", dispatched_at=T0, pr_number=7, pid=4242)
+    _opening(service, SID, PROMPT)
+    _gather(monkeypatch, [local, _untracked(), _untracked(8)], f"opencode --session {SID}")
+    assert [probes.service_session(r) for r in (local, _untracked(), _untracked(8))] == [
+        "", SID, ""]
+
+
+def test_an_untracked_2x_agent_whose_window_closed_is_interrupted(service, repo_o_r,
+                                                                  monkeypatch):
+    """Found once, its session is kept past the sighting — the TUI going is what
+    retires the row, and the turn goes on in the service without it."""
+    _opening(service, SID, PROMPT)
+    _gather(monkeypatch, [_untracked()], f"opencode --session {SID}")
+    _gather(monkeypatch, [_untracked()])
+    assert _retire(monkeypatch, [_untracked()]) == [("interrupt", SID)]
+    assert probes.service_session(_untracked()) == ""
+
+
+def test_an_untracked_2x_agent_is_interrupted_when_its_window_is_reaped(
+        service, repo_o_r, monkeypatch):
+    from diplomat_runtime import tmuxwatch
+
+    _opening(service, SID, PROMPT)
+    _gather(monkeypatch, [_untracked()], f"opencode --session {SID}")
+    assert _reap(monkeypatch, [_untracked()]) == [
+        ("interrupt", SID), ("kill", tmuxwatch.session_name("untracked:7"))]
+
+
 # MARK: - Where the CLI and its state are
 
 
