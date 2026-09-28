@@ -164,8 +164,9 @@ enum SweepTest {
         //    only `--session <id>`, so the process-table scan reads the PR off the
         //    session's opening prompt, and the run is then asked of — and stopped
         //    through — that session. The terminal, tmux and the shells the spawn nests
-        //    carry the TUI's words too, at lower pids and on no tty or the tmux client's
-        //    (lines as a real spawn in tmux left them in `ps`, on 2.0.18).
+        //    carry the whole spawn command too, at lower pids and on no tty, the tmux
+        //    client's, or the pane's own (lines as a real spawn in tmux left them in
+        //    `ps`, on 2.0.18).
         let wrapper = "tmux -L d new-session -s d zsh -i -c 'cd /r; zsh -i -c \"x || exit; "
             + "opencode --session ses_mesh\"; exec sh'"
         let dump = Observation.present("""
@@ -190,6 +191,14 @@ enum SweepTest {
         check("…only a TUI's own line names a session: no wrapper is asked about or attached",
               asked == ["ses_mesh", "ses_later", "ses_other"]
                 && scanned.attached.value == ["ses_mesh", "ses_later", "ses_other"])
+        // The row holds the first line's tty, so an idle TUI's session paired with a
+        // working agent's line would free that agent's bay.
+        let claudeFirst = AgentProbes.scan(.present("""
+          780 ttys029    00:50 claude Review PR #9 in o/r
+          801 ttys031    00:40 opencode --session ses_mesh
+        """), owner: "o", repo: "r") { openings[$0] }
+        check("…and a PR first seen on another agent's line is given no session",
+              claudeFirst.agents.value == [9: "ttys029"] && claudeFirst.sessions.isEmpty)
 
         func booked(_ pr: Int, _ placement: AgentState.Placement, port: Int? = nil,
                     prompt: String? = nil) -> AgentState.RunRecord {
@@ -208,8 +217,10 @@ enum SweepTest {
         let meshTwin = booked(9, .meshHere)
         // Same PR, another task: the scan's sighting on PR 9 is not its session.
         let meshOther = booked(9, .meshHere, prompt: "Resolve the conflicts on PR #9 in o/r")
-        let meshOld = booked(9, .meshHere, port: 4096)
-        let local = booked(9, .local)
+        // Staged with `ses_other`'s opening, which no run holds: only the port and the
+        // placement keep these two unbound.
+        let meshOld = booked(9, .meshHere, port: 4096, prompt: "Review PR #9 in x/y")
+        let local = booked(9, .local, prompt: "Review PR #9 in x/y")
         let untracked = AgentState.RunRecord(runID: "untracked:9", dispatchedAt: dispatched,
                                              prNumber: 9, untracked: true)
         let unseen = AgentState.RunRecord(runID: "untracked:12", dispatchedAt: dispatched,

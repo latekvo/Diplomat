@@ -276,9 +276,11 @@ enum AgentProbes {
         scan(dump, owner: owner, repo: repo).agents
     }
 
-    /// `liveAgents`, and beside it PR number → the 2.x session an agent on that PR is
-    /// attached to, and every session a 2.x TUI in the table is attached to, in `ps`
-    /// order.
+    /// `liveAgents`, and beside it PR number → the session of the 2.x TUI whose line is
+    /// that PR's sighting, and every session a 2.x TUI in the table is attached to, in
+    /// `ps` order. A PR first seen on any other agent's line gets no session: the row's
+    /// state is read from its session, so the session has to be the agent on the row's
+    /// tty.
     ///
     /// A 2.x agent's command line carries no prompt — only `--session <id>`, the prompt
     /// having gone to the service before the TUI started — so for such a line the text
@@ -318,8 +320,9 @@ enum AgentProbes {
                                                              in: searched)) {
                 guard let r = Range(m.range(at: 1), in: searched),
                       let pr = Int(searched[r]) else { continue }
-                if out[pr] == nil { out[pr] = cols.tty }
-                if let session, sessions[pr] == nil { sessions[pr] = session }
+                guard out[pr] == nil else { continue }
+                out[pr] = cols.tty
+                if let session { sessions[pr] = session }
             }
         }
         return (.present(out), sessions, .present(attached))

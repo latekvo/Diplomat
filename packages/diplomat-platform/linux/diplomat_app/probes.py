@@ -209,9 +209,10 @@ def live_agents(dump: Observation, sessions: dict[int, str] | None = None) -> Ob
     An OpenCode 2.x TUI carries no prompt in its argv, only ``--session <id>``; its
     prompt is read from the service instead (:func:`opencodeapi.scan_text`), and
     remembered (:func:`opencodeapi.opening_prompt`). ``sessions``, when given, is
-    filled with PR number -> the session of such a TUI, first sighting of a PR winning
-    as for the tty — the handle a run found this way is asked and stopped through
-    (:func:`adopt`).
+    filled with PR number -> the session of the TUI whose line is that PR's sighting,
+    and names none for a PR first seen on any other agent's line: the row's state is
+    read from its session, so the session has to be the agent on the row's tty. It is
+    the handle a run found this way is asked and stopped through (:func:`adopt`).
 
     The tty rides along because it is the only handle such an agent has: without it
     nothing can read its screen, so it would count as working until its window closed
@@ -242,10 +243,12 @@ def live_agents(dump: Observation, sessions: dict[int, str] | None = None) -> Ob
         _pid, tty, _elapsed, args = parts
         session_id = opencodeapi.session_arg(args)
         for m in pattern.finditer(opencodeapi.scan_text(args)):
-            out.setdefault(int(m.group(1)),
-                           "" if tty == "?" else tty.removeprefix("/dev/"))
+            pr = int(m.group(1))
+            if pr in out:
+                continue
+            out[pr] = "" if tty == "?" else tty.removeprefix("/dev/")
             if session_id and sessions is not None:
-                sessions.setdefault(int(m.group(1)), session_id)
+                sessions[pr] = session_id
     return Observation.present(out)
 
 
