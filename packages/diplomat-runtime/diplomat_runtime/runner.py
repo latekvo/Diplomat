@@ -118,7 +118,7 @@ def model() -> str:
 
 
 def new_opencode_session() -> str:
-    """A session id for one 2.x spawn: the prefix, then 32 hex digits of a uuid4."""
+    """A fresh session id for one 2.x spawn."""
     return OPENCODE_SESSION_PREFIX + uuid.uuid4().hex
 
 
@@ -144,10 +144,8 @@ def opencode_model(pin: str) -> dict:
 
 
 def opencode_session_body(session_id: str, directory: str, pin: str) -> str:
-    """The ``session.create`` body for a 2.x run: its fresh id, the checkout it works
-    in, the allow-all ruleset (:data:`OPENCODE_ALLOW_ALL`), and a model only when one
-    is pinned. Unpinned, the service picks for itself — its configured ``model``, else
-    the first one available."""
+    """The ``session.create`` body for a 2.x run. Unpinned, the service picks the
+    model itself — its configured ``model``, else the first one available."""
     body: dict = {"id": session_id, "location": {"directory": directory},
                   "permissions": OPENCODE_ALLOW_ALL}
     if pin:

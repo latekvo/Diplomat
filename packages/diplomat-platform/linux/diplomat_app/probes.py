@@ -206,13 +206,11 @@ def live_agents(dump: Observation, sessions: dict[int, str] | None = None) -> Ob
     It cannot tell two runs on one PR apart and it matches any session that merely
     mentions the number, which is why it decides nothing that a pid can decide.
 
-    An OpenCode 2.x TUI carries no prompt in its argv, only ``--session <id>``; its
-    prompt is read from the service instead (:func:`opencodeapi.scan_text`), and
-    remembered (:func:`opencodeapi.opening_prompt`). ``sessions``, when given, is
-    filled with PR number -> the session of the TUI whose line is that PR's sighting,
-    and names none for a PR first seen on any other agent's line: the row's state is
-    read from its session, so the session has to be the agent on the row's tty. It is
-    the handle a run found this way is asked and stopped through (:func:`adopt`).
+    An OpenCode 2.x TUI carries only ``--session <id>`` in its argv, so its prompt is
+    read from the service (:func:`opencodeapi.scan_text`). ``sessions``, when given, is
+    filled with PR number -> the session of the 2.x TUI that is that PR's sighting, and
+    none for a PR first seen on another agent's line: the row's state is read from that
+    session (:func:`adopt`), so it has to be the agent on the row's tty.
 
     The tty rides along because it is the only handle such an agent has: without it
     nothing can read its screen, so it would count as working until its window closed
@@ -408,9 +406,7 @@ class _OpenCodeBackend:
     """A run's own OpenCode 1.x server, on the port its spawn reserved — or, for a
     2.x run, the per-user service its session was created in."""
 
-    #: This probe pass's map of running 2.x sessions, asked at most once per pass
-    #: (:func:`opencodeapi.active_sessions`), so a hung service costs a pass one
-    #: timeout rather than one per run.
+    #: This probe pass's :func:`opencodeapi.active_sessions`, asked at most once per pass.
     _active: object = _UNASKED
 
     @classmethod

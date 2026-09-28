@@ -32,12 +32,9 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture(autouse=True)
 def no_host_opencode(tmp_path, monkeypatch):
-    """An unpinned OpenCode run is named differently by 1.x and 2.x. The applet hands
-    the core its own answer (``DIPLOMAT_OPENCODE_MAJOR``), and the core asks the CLI
-    itself only without one; either way, unfenced, it is the developer's own install
-    that answers, so these would assert whichever version they have. A shell that names
-    nothing and a ``PATH`` without the CLI answer 1.x everywhere; a test about 2.x
-    installs its own."""
+    """An unpinned OpenCode run is named differently by 1.x and 2.x, and unfenced it is
+    the developer's own install that answers. A shell that names nothing and a ``PATH``
+    without the CLI answer 1.x everywhere; a test about 2.x installs its own."""
     shell = tmp_path / "noshell"
     shell.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
     shell.chmod(0o755)

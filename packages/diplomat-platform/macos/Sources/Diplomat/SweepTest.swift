@@ -132,20 +132,15 @@ enum SweepTest {
         //    stub only an rc puts on the path is what proves it: the applet's own
         //    environment is a Dock icon's, and an install of exactly that shape is what
         //    the Settings hint tells the operator will still work.
-        //
-        //    Which export it is asked for is the binary's major, so each stub answers
-        //    only its own major's spelling and exits 1 on the other's.
         if let stub = opencodeFixture() {
             let priorPath = ProcessInfo.processInfo.environment["PATH"]
             let priorShell = ProcessInfo.processInfo.environment["SHELL"]
             setenv("SHELL", stub.shell, 1)
-            // What a desktop launcher hands the app, plus an install the rc puts behind the
-            // user's own: the agent runs what the shell finds, so that is what is asked.
+            // What a desktop launcher hands the app, plus a broken decoy the shell never runs.
             setenv("PATH", "\(stub.decoyDir):/usr/bin:/bin", 1)
             check("the opencode the user's shell runs prices its run, not one on the app's PATH",
                   UsageScan.opencodeTaskTokens(sessionID: "ses_ours") == 248)
-            // The same path, upgraded in place: the major is remembered per file, so a
-            // rewritten binary is asked again.
+            // Upgraded in place: the major is cached per file, so a rewrite is asked again.
             check("a 2.x stub could be written",
                   write(stub.exporter, opencodeStub(version: "opencode v2.0.18",
                                                     export: "session export",
@@ -161,12 +156,10 @@ enum SweepTest {
         }
 
         // 6. An OpenCode 2.x run with no pid to name it: its agent's command line carries
-        //    only `--session <id>`, so the process-table scan reads the PR off the
-        //    session's opening prompt, and the run is then asked of — and stopped
-        //    through — that session. The terminal, tmux and the shells the spawn nests
-        //    carry the whole spawn command too, at lower pids and on no tty, the tmux
-        //    client's, or the pane's own (lines as a real spawn in tmux left them in
-        //    `ps`, on 2.0.18).
+        //    only `--session <id>`, so the scan reads the PR off the session's opening
+        //    prompt, and the run is asked of, and stopped through, that session. The
+        //    terminal, tmux and nested shells carry the whole spawn command too (lines as
+        //    a real tmux spawn left them in `ps`, on 2.0.18).
         let wrapper = "tmux -L d new-session -s d zsh -i -c 'cd /r; zsh -i -c \"x || exit; "
             + "opencode --session ses_mesh\"; exec sh'"
         let dump = Observation.present("""
@@ -241,9 +234,7 @@ enum SweepTest {
               OpenCodeProbe.serviceSession(of: untracked) == "ses_mesh"
                 && AgentSessionProbe.serves(untracked)
                 && !AgentSessionProbe.serves(unseen))
-        // Which sessions a tick's ending interrupts. `meshHere` (ses_mesh) was reaped and
-        // retired both; `untracked` (ses_mesh too) retired alongside it; `closed` retired
-        // with no TUI left on its session; `merged` retired with its TUI still up.
+        // `meshHere` and `untracked` share ses_mesh; `closed` has no TUI left, `merged` has.
         let closed = booked(13, .local)
         AgentRegistry.bindSession(closed.runID, "ses_closed")
         let merged = booked(14, .local)
@@ -263,9 +254,7 @@ enum SweepTest {
               OpenCodeProbe.serviceSession(of: untracked) == nil
                 && !AgentSessionProbe.serves(untracked))
 
-        // A session the service gave no opening prompt for is not asked again for
-        // `missMemory` — each ask of a hung service is a timeout, on every tick — and one
-        // it answered is never asked again.
+        // Misses are remembered because each ask of a hung service is a timeout, every tick.
         var fetched = 0
         let missing = "ses_miss_\(UUID().uuidString.prefix(8))"
         let at: TimeInterval = 1_000
@@ -284,7 +273,6 @@ enum SweepTest {
         check("…is asked again after it, and a hit is kept for good",
               after == "Review PR #9 in o/r" && later == after && fetched == 2)
 
-        // One pass asks the service for the active map once, however many runs it holds.
         var gets: [String] = []
         let servicePass = OpenCodeProbe.ServicePass(
             find: { OpenCodeAPI.serviceEndpoint(Data(#"{"url": "http://127.0.0.1:1"}"#.utf8)) },
@@ -298,7 +286,6 @@ enum SweepTest {
         check("a pass fetches the active map once for every run it asks about",
               gets.filter { $0 == OpenCodeAPI.serviceActivePath }.count == 1
                 && gets.count == 3 && busy?.busy == true && idle?.busy == false)
-        // A service that does not answer the active map is asked nothing else that pass.
         gets = []
         let hungPass = OpenCodeProbe.ServicePass(
             find: { OpenCodeAPI.serviceEndpoint(Data(#"{"url": "http://127.0.0.1:1"}"#.utf8)) },
@@ -316,8 +303,7 @@ enum SweepTest {
     }
 
     /// A throwaway 1.x `opencode`, the shell whose rc puts it first, and a directory
-    /// holding a broken `opencode` for the app's own `PATH`. Returns that shell, the stub
-    /// so a check can swap in another major, and the decoy's directory.
+    /// holding a broken decoy for the app's own `PATH`.
     ///
     /// The exported numbers are the ones the Linux suite and `DiplomatCoreSmoke` assert
     /// against too — 3 + 84 + 40 + 7 + 8 + 106, never the 59384 cache reads beside them.

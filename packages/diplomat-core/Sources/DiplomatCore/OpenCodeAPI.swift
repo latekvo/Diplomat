@@ -190,8 +190,8 @@ public enum OpenCodeAPI {
     }
 
     /// What a whole session spent, from the messages the CLI's export returns
-    /// (`exportArguments`). Both majors carry a message's `tokens` in one shape — under
-    /// `info` in 1.x, at the message's top level in 2.x — so one sum reads either.
+    /// (`exportArguments`). `tokens` has one shape in both majors - under `info` in 1.x,
+    /// top-level in 2.x - so one sum reads either.
     ///
     /// Every message, because OpenCode reports a turn's price per message: reading only
     /// the last would price a two-hour review at whatever its closing sentence cost.
@@ -213,22 +213,19 @@ public enum OpenCodeAPI {
         }
     }
 
-    /// The CLI arguments that print a finished session with every message it holds:
-    /// `export <id>` on 1.x, `session export <id>` on 2.x, which has no top-level
-    /// `export` — and 1.x has no `session export`, so the major decides, never a guess.
+    /// The CLI arguments that print a finished session with every message. Neither
+    /// major accepts the other's spelling.
     public static func exportArguments(sessionID: String, service: Bool) -> [String] {
         service ? ["session", "export", sessionID] : ["export", sessionID]
     }
 
     // MARK: - OpenCode 2.x: the shared service
 
-    /// Whether `opencode --version` printed a 2.x-or-later version, which is what decides
-    /// every fork between the two shapes above.
+    /// Whether `opencode --version` printed a 2.x-or-later version: 2.x prints
+    /// `opencode v2.0.18`, 1.x a bare `1.4.3`.
     ///
-    /// The first `major.minor.patch` in the output is the version — 2.x prints
-    /// `opencode v2.0.18`, 1.x a bare `1.4.3`. Output this cannot read a version out of is
-    /// 1.x: that is the shape every spawn had before 2.0, so a failed probe costs a 2.x
-    /// install its runs rather than moving a 1.x one off the only command it accepts.
+    /// Unreadable output is 1.x, so a failed probe costs a 2.x install its runs rather
+    /// than moving a 1.x one off the only command it accepts.
     public static func isServiceVersion(_ output: String) -> Bool {
         guard let pattern = try? NSRegularExpression(pattern: "[0-9]+\\.[0-9]+\\.[0-9]+"),
               let hit = pattern.firstMatch(in: output,
@@ -238,21 +235,18 @@ public enum OpenCodeAPI {
         return major >= 2
     }
 
-    /// A fresh id for the session a 2.x spawn creates: `ses_diplomat_` and 32 hex digits.
+    /// A fresh id for the session a 2.x spawn creates.
     ///
-    /// The id is the caller's to choose — the service's only rule is the `ses` prefix — and
-    /// choosing it is what lets the run be bound to its session before the agent starts.
-    /// It must be fresh per spawn: creating a session under an id that already exists
-    /// answers with the existing one, and the run would attach to another run's work.
+    /// The service only requires the `ses` prefix, and choosing the id is what binds the
+    /// run before the agent starts. It must be fresh: creating an existing id answers with
+    /// that session, and the run would attach to another run's work.
     public static func newSessionID() -> String {
         "ses_diplomat_" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
     }
 
-    /// A model pin as the service's session body names one: `provider/model` split at the
-    /// FIRST `/`, so an OpenRouter id keeps its own path, and a `#variant` after the last
-    /// `#` of the rest — how OpenCode 2.x reads a `provider/model#variant` reference. A
-    /// pin with no `/` is all provider and no model: the service creates the session
-    /// anyway, and it is the turn that then fails, in the run's own window. nil for no pin.
+    /// A `provider/model#variant` pin as the service's session body names one. Split at
+    /// the FIRST `/` so an OpenRouter id keeps its path. A pin with no `/` still creates
+    /// the session; its turn then fails in the run's own window.
     public static func modelRef(_ pin: String) -> [String: String]? {
         let pin = pin.trimmingCharacters(in: .whitespaces)
         guard !pin.isEmpty else { return nil }
@@ -268,20 +262,16 @@ public enum OpenCodeAPI {
         return ref
     }
 
-    /// The permission ruleset a spawned 2.x session is created with: everything allowed.
-    ///
-    /// The 2.x counterpart of the grant `AgentRunner.permissionValue` carries to a 1.x run,
-    /// passed at creation because the service is where 2.x keeps permissions — an
-    /// environment variable on the TUI reaches a client that decides nothing. An agent that
-    /// stops to ask in a window nobody is watching never finishes.
+    /// The permission ruleset a spawned 2.x session is created with: everything allowed,
+    /// as `AgentRunner.permissionValue` grants a 1.x run. It goes to the service because
+    /// that is where 2.x keeps permissions - an environment variable on the TUI reaches a
+    /// client that decides nothing.
     public static let allowAll: [[String: String]] = [
         ["action": "*", "resource": "*", "effect": "allow"],
     ]
 
-    /// The body `opencode api session.create` is handed for a spawn: its id, the directory
-    /// the agent works in, the allow-all ruleset, and a model only when one is pinned —
-    /// unpinned, the service starts on the one its config names, which is the model the
-    /// tag then says (`AgentModel`).
+    /// The body `opencode api session.create` is handed for a spawn. Unpinned, the service
+    /// starts on its config's model, which is the one the tag names (`AgentModel`).
     public static func sessionBody(id: String, directory: String,
                                    model: String) -> [String: Any] {
         var body: [String: Any] = ["id": id, "location": ["directory": directory],
@@ -290,12 +280,10 @@ public enum OpenCodeAPI {
         return body
     }
 
-    /// The body `opencode api session.prompt` is handed: the staged prompt, verbatim.
+    /// The body `opencode api session.prompt` is handed.
     public static func promptBody(_ text: String) -> [String: Any] { ["text": text] }
 
-    /// Where the service says where it is: `$XDG_STATE_HOME/opencode/service.json`, else
-    /// `~/.local/state/opencode/service.json` — the file a 2.x client writes when it
-    /// starts the service, and reads to find it.
+    /// The file a 2.x client writes when it starts the service, and reads to find it.
     public static func serviceFile(environment: [String: String], home: URL) -> URL {
         let root = environment["XDG_STATE_HOME"].flatMap { $0.isEmpty ? nil : $0 }
             .map { URL(fileURLWithPath: $0) }
@@ -314,8 +302,8 @@ public enum OpenCodeAPI {
 
     /// The endpoint in a service file's contents, or nil for one that names no URL.
     ///
-    /// The password is HTTP Basic under the fixed user `opencode`. Without it every `/api`
-    /// route answers 401, which the probe reads the way it reads any other failure.
+    /// The password is HTTP Basic under the fixed user `opencode`; without it every `/api`
+    /// route answers 401.
     public static func serviceEndpoint(_ data: Data) -> ServiceEndpoint? {
         guard let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               var base = obj["url"] as? String, !base.isEmpty else { return nil }
@@ -344,28 +332,24 @@ public enum OpenCodeAPI {
     }
 
     /// The text of a session's opening message, from `serviceOpeningPath`'s whole decoded
-    /// answer — `{"data": [{"type": "user", "text": …}]}` on 2.0.18 — or nil for anything
-    /// else, an empty list included: that is a session created and not yet prompted.
+    /// answer, or nil for anything else - an empty list is a session not yet prompted.
     public static func openingText(_ response: Any?) -> String? {
         guard let first = ((response as? [String: Any])?["data"] as? [[String: Any]])?.first,
               first["type"] as? String == "user" else { return nil }
         return first["text"] as? String
     }
 
-    /// The session a 2.x TUI attaches to, or nil for any other command line. A TUI's is
-    /// exactly `opencode --session <id>` — the first word may be a path, and `opencode.exe`
-    /// is the native binary npm's `opencode` links to — with nothing before or after it.
+    /// The session a 2.x TUI attaches to, or nil for any other command line. `opencode.exe`
+    /// is the native binary npm's `opencode` links to.
     ///
-    /// Anchored because every process wrapping the TUI carries the same words further
-    /// along its own command line: the terminal, the tmux client and server, and the
-    /// shells the spawn nests. The outer ones have lower pids and no tty or the tmux
-    /// client's, and the scan keeps the first sighting of a PR, so matching them would
-    /// hand the run a tty with no agent's screen behind it.
+    /// Anchored because the terminal, tmux and the spawn's shells wrapping the TUI carry
+    /// the same words later in their command lines. They have lower pids and no agent's
+    /// tty, and the scan keeps a PR's first sighting, so matching them would hand the run
+    /// a tty with no agent's screen behind it.
     ///
-    /// A 2.x agent's argv carries this and no prompt: the prompt went to the service
-    /// through `opencode api` before the TUI started (`AgentRunner.serviceCommand`). So
-    /// this is what the process-table scan finds such an agent by, and the prompt it
-    /// matches is asked of the service (`openingText`).
+    /// A 2.x agent's argv carries no prompt (`AgentRunner.serviceCommand` sent it to the
+    /// service), so the scan finds the agent by this and asks the service for its prompt
+    /// (`openingText`).
     public static func attachedSession(_ commandLine: String) -> String? {
         guard let pattern = try? NSRegularExpression(
                   pattern: "^(?:\\S*/)?opencode(?:\\.exe)?\\s+--session\\s+(ses[0-9A-Za-z_-]+)$"),
@@ -381,19 +365,15 @@ public enum OpenCodeAPI {
         charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
 
     /// Whether a 2.x session's turn is still in flight, from `GET /api/session/<id>` and
-    /// `GET /api/session/active` — each passed as the whole decoded response.
+    /// `GET /api/session/active`, each the whole decoded response.
     ///
-    /// `nil` — "ask the screen instead" — unless both are the `{"data": {…}}` the service
-    /// answers with: a service that is down, a 401, a 404 for an unknown id, and the HTML
-    /// its web app answers for anything else all land here, and none of them is "idle".
+    /// nil ("ask the screen") unless both are the service's `{"data": {…}}`: a down
+    /// service, a 401, a 404 and its web app's HTML all land here, and none is "idle".
     ///
-    /// Busy while the session is in the active map, which holds it continuously from the
-    /// start of a turn to its end with no gap between steps (measured on 2.0.18, polled at
-    /// 50 ms across a three-tool-call turn). Out of it, idle once `time.idle` is stamped,
-    /// which the service does when a turn ends. Busy otherwise: a session created but
-    /// whose first turn has not ended — the moment between `session.create` and the
-    /// prompt starting a turn included — has not finished anything, and calling it idle
-    /// would retire an agent seconds after it launched.
+    /// The active map holds a session from a turn's start to its end with no gap between
+    /// steps (2.0.18, polled at 50 ms). Out of it, idle only once `time.idle` is stamped:
+    /// a session whose first turn has not ended, including before the prompt starts one,
+    /// has finished nothing, and calling it idle would retire an agent seconds after launch.
     public static func serviceState(session: Any?, active: Any?,
                                     sessionID: String) -> AgentState.SessionState? {
         guard let info = (session as? [String: Any])?["data"] as? [String: Any],

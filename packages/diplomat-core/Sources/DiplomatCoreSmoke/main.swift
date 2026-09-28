@@ -490,11 +490,9 @@ check(!AgentRunner.hermes.agentCommand(promptFile: "/tmp/p.txt", port: 47_910).c
       "Hermes serves no port either; it answers from its own store")
 check(!AgentRunner.opencode.agentCommand(promptFile: "/tmp/p.txt", port: 0).contains("--port"),
       "a run with no port must spawn exactly as it did before, not with --port 0")
-// OpenCode 2.x: create the staged session on the shared service, prompt it, attach a TUI.
-// Pinned byte for byte, because the pid file is only the agent's own for exactly this
-// shape (`;` before the TUI, `|| exit` after the prompt). The Linux spawn builds the same
-// command, though not byte for byte: its quoting leaves a path with nothing to escape bare. The pin, port and grant all travel in the staged session,
-// so none of them may leak in here.
+// OpenCode 2.x: create the staged session, prompt it, attach a TUI. Pinned byte for byte:
+// the pid file is only the agent's own for exactly this shape (`;` before the TUI,
+// `|| exit` after the prompt). Linux differs only in quoting: it leaves a plain path bare.
 let serviceCommand = AgentRunner.opencode.agentCommand(
     promptFile: "/tmp/p.txt", model: "openai/gpt-5-mini", port: 47_910,
     serviceSession: "ses_diplomat_0123456789abcdef0123456789abcdef")
@@ -579,8 +577,8 @@ func writeOpenCode(_ name: String, _ json: String) throws {
 func writeOpenCodeState(_ json: String) throws {
     try json.write(to: openCodeState.appendingPathComponent("model.json"), atomically: true, encoding: .utf8)
 }
-// Which OpenCode major is installed is the fixture's to say, never the developer's
-// machine's: a 2.x install there would otherwise change what every 1.x check below reads.
+// The fixture names the OpenCode major, or a 2.x install on this machine would change
+// every 1.x check below.
 func detectModel(service: Bool = false) -> String {
     AgentModel.detect(configFile: configFile, claudeHome: claudeHome, hermesConfig: hermesConfig,
                       openCodeConfig: openCodeConfig, openCodeState: openCodeState,
@@ -652,13 +650,11 @@ try writeOpenCodeState("""
 """)
 check(detectModel() == "Opus 5",
       "the head of the recent list is the model OpenCode's picker restores")
-// 2.x sessions are created by a service that never reads the picker's recents, so the
-// head of that list is a model an unpinned 2.x run does NOT start on.
+// The 2.x service never reads the picker's recents.
 check(detectModel(service: true) == "",
       "an unpinned 2.x run with no config model names no model, never the picker's last")
-// The Linux runtime has already resolved the binary and says which major it found; the
-// CLI takes that answer rather than asking a shell of its own. Anything but exactly `1` or
-// `2` is no answer, and the binary is asked — here through a shell that finds none, so 1.x.
+// DIPLOMAT_OPENCODE_MAJOR is the Linux runtime's answer. Anything but exactly `1` or `2`
+// asks the binary, here through a shell that finds none, so 1.x.
 do {
     let emptyShell = modelFixture.appendingPathComponent("noshell")
     FileManager.default.createFile(atPath: emptyShell.path,
@@ -698,7 +694,6 @@ check(detectModel() == "GLM 5.2", "an entry that names no model is walked past, 
 // started with no `-m` is on that one whatever was used last.
 try writeOpenCode("config.json", "{\"model\": \"openai/gpt-5.2\"}")
 check(detectModel() == "GPT 5.2", "the config's model is what OpenCode resolves before its recent list")
-// …on both majors, so the binary is not run to ask which one this is.
 var majorAsked = 0
 check(AgentModel.detect(configFile: configFile, claudeHome: claudeHome, hermesConfig: hermesConfig,
                         openCodeConfig: openCodeConfig, openCodeState: openCodeState,
@@ -721,7 +716,7 @@ check(detectModel() == "Kimi K3",
 // settings — so it is what the run is on, and what the tag says.
 try writeConfig("{\"agentRunner\": \"opencode\", \"agentModel\": \"google/gemini-3.1-pro-preview\"}")
 check(detectModel() == "Gemini 3.1 Pro Preview", "`-m` beats everything OpenCode would have picked")
-// A 2.x pin may carry a `#variant`, which qualifies the model rather than naming another.
+// A 2.x pin may carry a `#variant`.
 try writeConfig("{\"agentRunner\": \"opencode\", \"agentModel\": \"openai/gpt-5.2#high\"}")
 check(detectModel(service: true) == "GPT 5.2", "a pinned variant is still the model it qualifies")
 try FileManager.default.removeItem(at: openCodeConfig)
@@ -879,8 +874,7 @@ check(OpenCodeAPI.sessionTokens([
 print("opencode session assertions passed")
 
 section("opencode 2.x service")
-// Which major is installed decides every OpenCode seam, and anything unreadable is 1.x —
-// the shape every spawn had before 2.0. Real `--version` outputs, 2.0.18 then 1.x.
+// Anything unreadable is 1.x. Real `--version` outputs, 2.0.18 then 1.x.
 check(OpenCodeAPI.isServiceVersion("opencode v2.0.18\n"))
 check(OpenCodeAPI.isServiceVersion("opencode v10.1.0"), "a major is a number, not a digit")
 check(!OpenCodeAPI.isServiceVersion("1.18.33\n"))
@@ -891,8 +885,7 @@ for garbage in ["", "opencode", "v2.0", "command not found: opencode", "é2"] {
 check(OpenCodeAPI.exportArguments(sessionID: "ses_a", service: true) == ["session", "export", "ses_a"])
 check(OpenCodeAPI.exportArguments(sessionID: "ses_a", service: false) == ["export", "ses_a"],
       "1.x has no `session export`, 2.x no top-level `export`")
-// The session id is minted by the spawn and must be fresh, or `session.create` answers
-// with somebody else's existing session.
+// A reused id makes `session.create` answer with somebody else's existing session.
 let minted = OpenCodeAPI.newSessionID()
 check(minted.hasPrefix("ses_diplomat_") && minted.count == 45
         && minted.dropFirst(13).allSatisfy { "0123456789abcdef".contains($0) },
@@ -1013,8 +1006,8 @@ for bad in serviceGarbage {
                                    sessionID: "ses_a") == nil,
           "an active answer of \(String(describing: bad)) is unavailable, not idle")
 }
-// Finding a 2.x agent that has no pid file: its command line names only its session, and
-// the prompt the scan matches on is that session's opening message.
+// A 2.x agent with no pid file: its command line names only its session, so the scan
+// matches on that session's opening message.
 check(OpenCodeAPI.serviceOpeningPath(sessionID: "ses_a")
         == "/api/session/ses_a/message?limit=1&order=asc",
       "the opening message alone, oldest first")
@@ -1031,8 +1024,8 @@ check(OpenCodeAPI.attachedSession("opencode --session ses_diplomat_0123abcd")
         == "ses_diplomat_0123abcd")
 check(OpenCodeAPI.attachedSession("/home/u/.npm/bin/opencode --session ses_x") == "ses_x")
 check(OpenCodeAPI.attachedSession("/opt/oc/opencode.exe --session\tses_Ab-9_z") == "ses_Ab-9_z")
-// Every process wrapping a 2.x TUI carries its words too; these are the ones a real
-// spawn in tmux put in `ps` (2.0.18), and none of them is the TUI.
+// Every wrapper of a 2.x TUI carries its words too; the tmux lines are what a real spawn
+// put in `ps` (2.0.18), and none is the TUI.
 let wrapped = "ses_diplomat_49b172f752bd4c2f86a4ec0c5f050dc1"
 for line in [
     "script -q /dev/null tmux -L x new-session -s y zsh -i -c 'cd /tmp; zsh -i -c \"sleep 9; opencode --session \(wrapped)\"; exec sh'",
@@ -1117,8 +1110,7 @@ do {
               "an install only ~/.zprofile puts on PATH resolves: \(zsh)")
     }
 
-    // The process-wide resolution, through a shell whose rc reads which directory to put
-    // first from a file, so a check can move the install under it.
+    // The process-wide resolution, through a shell whose PATH head a check can move.
     let pick = fx.appendingPathComponent("pick")
     func install(_ dir: String) {
         executable("\(dir)/opencode", stub)
@@ -1144,7 +1136,6 @@ do {
     check(OpenCodeCLI.binary(now: t0.addingTimeInterval(62)) == "\(fx.path)/c/opencode",
           "a binary that moved is re-resolved inside the minute")
 
-    // The major is remembered per file: asked once, and again once the file changes.
     let counter = fx.appendingPathComponent("asked")
     func versioned(_ version: String) {
         executable("v/opencode", "#!/bin/sh\necho x >> '\(counter.path)'\necho '\(version)'\n")
@@ -2030,8 +2021,6 @@ do {
     AgentRegistry.stageRunner(run, AgentRunner.opencode.rawValue)
     check(AgentRegistry.runRunner(run) == "opencode", "and reads back the one it staged")
 
-    // An OpenCode 2.x run is one bound to a session with no port; a 1.x run is only ever
-    // bound through a port, and another runner's session is never OpenCode's.
     check(AgentRegistry.serviceSession(run) == nil, "an unbound OpenCode run is on no session")
     AgentRegistry.bindSession(run, "ses_diplomat_ab")
     check(AgentRegistry.serviceSession(run) == "ses_diplomat_ab", "bound with no port is 2.x")

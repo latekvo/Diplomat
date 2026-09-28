@@ -301,9 +301,9 @@ def bound_session(run_id: str) -> str:
     this whole module exists for — and because the search is the expensive half:
     matching a session to a run reads its opening message, while asking a bound one
     what it is doing reads a single message. An OpenCode 2.x run Diplomat spawns never
-    searches: its id is minted and written here before it is spawned. One the mesh
-    placed here is matched by its opening prompt among the 2.x TUIs in the process
-    table (:func:`probes._OpenCodeBackend.bind`).
+    searches: its id is written here before the spawn. One the mesh placed here is
+    matched by opening prompt against the 2.x TUIs in the process table
+    (:func:`probes._OpenCodeBackend.bind`).
 
     Every runner spells an id its own way — ``ses_00d61ec0…`` under OpenCode,
     ``20260812_002140_b0e4d4`` under Hermes — so what is checked is the shape any id
@@ -330,11 +330,9 @@ def service_session(run_id: str) -> str:
     """The session an OpenCode 2.x run holds in the per-user service, or "" for any
     other run.
 
-    A 2.x run is an OpenCode run with a bound session and no port: its session is
-    minted and bound at spawn, or matched from the process table for one the mesh
-    placed here, and there is no server of its own to stage a port for.
-    A 1.x run binds only through its port (:func:`probes._OpenCodeBackend.bind`), so
-    one that has a session always has the port file too.
+    A 2.x run is an OpenCode run with a bound session and no port: a 1.x run binds
+    only through its port (:func:`probes._OpenCodeBackend.bind`), so one with a
+    session always has the port file too.
     """
     from .runner import OPENCODE
 

@@ -10,9 +10,8 @@ import DiplomatCore
 ///
 /// Two runners answer, from different places — OpenCode over loopback, from the port a 1.x
 /// spawn reserved or the shared 2.x service (`OpenCodeProbe`), Hermes out of the SQLite
-/// store it keeps every session in
-/// (`HermesProbe`) — and both come back as the same typed answer, so nothing downstream
-/// learns which runner it is looking at.
+/// store it keeps every session in (`HermesProbe`) — and both come back as the same typed
+/// answer, so nothing downstream learns which runner it is looking at.
 enum AgentSessionProbe {
     /// Does this runner serve a session of its own to ask?
     ///
@@ -20,10 +19,9 @@ enum AgentSessionProbe {
     /// whose runner was never recorded.
     static func serves(_ runner: String) -> Bool { backends[runner] != nil }
 
-    /// Does this run have a session of its own to ask? Its runner serves one, or the
-    /// process-table scan found it attached to a 2.x session (`OpenCodeProbe.adopt`) —
-    /// which is how a run synthesized from the scan, whose runner was never recorded,
-    /// gets one.
+    /// Does this run have a session of its own to ask? Its runner serves one, or it holds
+    /// a 2.x session — the only way a run synthesized from the scan, whose runner was
+    /// never recorded, gets one (`OpenCodeProbe.adopt`).
     static func serves(_ r: AgentState.RunRecord) -> Bool {
         serves(runner(r))
     }
@@ -42,9 +40,8 @@ enum AgentSessionProbe {
     ///
     /// Which session is a run's is found once and written into the run's directory: the
     /// search reads a session's opening message, while asking a bound one what it is doing
-    /// reads a single message. An OpenCode 2.x run's is written there by its spawn, or
-    /// found by the process-table scan (`OpenCodeProbe.adopt`), so it is never searched
-    /// for.
+    /// reads a single message. An OpenCode 2.x run's is never searched for: its spawn or
+    /// `OpenCodeProbe.adopt` binds it.
     ///
     /// The directory is resolved because both stores record the agent's own working
     /// directory, which is physical, while the configured repo root is whatever the
@@ -80,8 +77,7 @@ enum AgentSessionProbe {
     }
 
     /// Where one runner's answers come from: which of its sessions is a run's, and what
-    /// that session currently says. The pass is the one view of the 2.x service every run
-    /// in a `states` call shares.
+    /// that session currently says, through the 2.x service view one `states` call shares.
     private struct Backend {
         let bind: (AgentState.RunRecord, String, Set<String>) -> String
         let state: (AgentState.RunRecord, String, OpenCodeProbe.ServicePass)

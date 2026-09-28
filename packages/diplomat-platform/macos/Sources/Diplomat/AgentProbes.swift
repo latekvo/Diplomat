@@ -276,21 +276,17 @@ enum AgentProbes {
         scan(dump, owner: owner, repo: repo).agents
     }
 
-    /// `liveAgents`, and beside it PR number → the session of the 2.x TUI whose line is
-    /// that PR's sighting, and every session a 2.x TUI in the table is attached to, in
-    /// `ps` order. A PR first seen on any other agent's line gets no session: the row's
-    /// state is read from its session, so the session has to be the agent on the row's
-    /// tty.
+    /// `liveAgents`, plus PR number → the session of the 2.x TUI whose line is that PR's
+    /// sighting, and every session a 2.x TUI in the table is attached to, in `ps` order. A
+    /// PR first seen on any other agent's line gets no session: the row's state is read
+    /// from its session, so that session has to be the agent on the row's tty.
     ///
-    /// A 2.x agent's command line carries no prompt — only `--session <id>`, the prompt
-    /// having gone to the service before the TUI started — so for such a line the text
-    /// searched is the session's opening prompt, asked of the service once per session
-    /// (`OpenCodeProbe.openingPrompt`). A session the service cannot answer for is not
-    /// seen, like a line that names no PR. The session is what a pid-less run found this
-    /// way is then probed and stopped through (`OpenCodeProbe.adopt`), and whether a TUI
-    /// is still attached to it is what retiring its run asks (`OpenCodeProbe.interrupts`).
+    /// A 2.x agent's command line carries only `--session <id>`, the prompt having gone to
+    /// the service before the TUI started, so the text searched is the session's opening
+    /// prompt (`OpenCodeProbe.openingPrompt`). A session the service cannot answer for is
+    /// not seen, like a line that names no PR.
     ///
-    /// `openingPrompt` is the sweep self-test's; the default asks the service.
+    /// `openingPrompt` is the sweep self-test's seam.
     static func scan(_ dump: Observation<String>, owner: String, repo: String,
                      openingPrompt: (String) -> String? = {
                          OpenCodeProbe.openingPrompt(sessionID: $0)
@@ -590,8 +586,7 @@ enum AgentProbes {
     /// first).
     ///
     /// Beside the evidence, the 2.x sessions a TUI in this pass's process table is
-    /// attached to — which retiring a run asks, and the resolver does not
-    /// (`OpenCodeProbe.interrupts`).
+    /// attached to, for retiring runs (`OpenCodeProbe.interrupts`).
     static func gather(records: [AgentState.RunRecord], now: TimeInterval,
                        owner: String, repo: String, directory: String,
                        meshEnabled: Bool, meshState: MeshSnapshot?,

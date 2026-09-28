@@ -320,8 +320,7 @@ enum Dump {
         // The paths a real spawn takes from the run's own directory, stood in for by a
         // throwaway id: what the dump is for is the shape of the command, and a run
         // registered here would be one the applet then had to retire.
-        // An OpenCode 2.x spawn's command names a session id, minted here but never
-        // staged or created.
+        // A 2.x command's session id is minted but never staged or created.
         let run = AgentRegistry.newRunID(now: Date().timeIntervalSince1970)
         let runner = AppConfig.agentRunner
         let service = runner == .opencode && OpenCodeCLI.installedIsService()

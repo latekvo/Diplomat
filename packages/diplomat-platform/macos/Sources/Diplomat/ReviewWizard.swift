@@ -177,9 +177,8 @@ enum AgentSpawner {
         /// be reserved for.
         let port: Int
         /// The session an OpenCode 2.x run creates on the shared service, staged beside
-        /// the prompt (`OpenCodeCLI.stageSession`); nil for every other run. It is what
-        /// makes the agent command the 2.x one, and what a spawn that never started
-        /// interrupts on its way out.
+        /// the prompt (`OpenCodeCLI.stageSession`); nil for every other run. It selects
+        /// the 2.x agent command.
         var serviceSession: String? = nil
         /// Where Claude Code finds the hooks it reports its own turn boundaries
         /// through (`AgentCompletion`), or nil for a run spawned without them. That

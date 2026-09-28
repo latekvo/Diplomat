@@ -30,9 +30,7 @@ enum OpenCodeProbe {
     /// pathological one.
     ///
     /// A run with no port serves nothing to ask, so it never matches here — a 1.x run the
-    /// spawn could not reserve one for, or a 2.x run, whose session its spawn bound before
-    /// the agent started or, for one the mesh placed here, the process-table scan finds
-    /// (`adopt`).
+    /// spawn could not reserve one for, or a 2.x run, bound at spawn or by `adopt`.
     static func bind(_ r: AgentState.RunRecord, directory: String,
                      taken: Set<String>) -> String {
         guard let port = AgentRegistry.port(r.runID),
@@ -164,9 +162,8 @@ enum OpenCodeProbe {
 
     // MARK: - OpenCode 2.x: the shared service
 
-    /// One probe pass's view of the service, shared by every run the pass asks about: the
-    /// discovery file is read once and the active map fetched at most once, rather than
-    /// once per run — and a pass whose active map failed asks the service nothing more.
+    /// One probe pass's view of the service: the discovery file is read and the active map
+    /// fetched at most once per pass, not once per run.
     final class ServicePass {
         private let find: () -> OpenCodeAPI.ServiceEndpoint?
         private let get: (OpenCodeAPI.ServiceEndpoint, String) -> Any?
@@ -175,8 +172,7 @@ enum OpenCodeProbe {
         private var activeFetched = false
         private var active: Any?
 
-        /// `find` reads the discovery file and `get` is one GET against the service — the
-        /// real ones unless a self-test hands in its own.
+        /// `find` and `get` are the self-test's seams.
         init(find: @escaping () -> OpenCodeAPI.ServiceEndpoint? = { OpenCodeProbe.service() },
              get: @escaping (OpenCodeAPI.ServiceEndpoint, String) -> Any? = {
                  OpenCodeProbe.call($0, $1)
@@ -185,7 +181,6 @@ enum OpenCodeProbe {
             self.get = get
         }
 
-        /// One GET against the service, nil when there is no service to ask.
         func fetch(_ path: String) -> Any? {
             if !endpointRead { endpoint = find(); endpointRead = true }
             return endpoint.flatMap { get($0, path) }
@@ -200,12 +195,10 @@ enum OpenCodeProbe {
         }
     }
 
-    /// Whether a 2.x session's turn is still in flight, per the shared service.
+    /// Whether a 2.x session's turn is still in flight (`OpenCodeAPI.serviceState`).
     ///
-    /// Two requests, one decision (`OpenCodeAPI.serviceState`). The active map comes
-    /// first, once per pass (`ServicePass`), and without it no session is asked for: the
-    /// answer is already "read the screen", so a hung service costs a pass one timeout
-    /// rather than two per run.
+    /// Without the pass's active map no session is asked for: the answer is already "read
+    /// the screen", so a hung service costs a pass one timeout rather than two per run.
     static func serviceState(sessionID: String, pass: ServicePass) -> AgentState.SessionState? {
         guard let active = pass.activeMap(),
               let path = OpenCodeAPI.servicePath(sessionID: sessionID),
@@ -219,8 +212,7 @@ enum OpenCodeProbe {
     ///
     /// Closing a 2.x run's window ends its TUI and nothing else: the turn runs in the
     /// shared service, and one whose TUI was killed mid-turn went on to finish its tool
-    /// call twenty seconds later (measured on 2.0.18). So wherever the applet ends a 2.x
-    /// run, and wherever it retires one whose TUI is gone, this is what ends its agent
+    /// call twenty seconds later (measured on 2.0.18). So this is what ends a 2.x agent
     /// (`interrupts`).
     @discardableResult
     static func interrupt(sessionID: String) -> Bool {
@@ -230,11 +222,10 @@ enum OpenCodeProbe {
         return call(service, path, method: "POST") != nil
     }
 
-    // Opening prompts already read, by session, and when each session last had none. A
-    // session's opening message never changes, so a hit is kept for the life of the
-    // process. A miss is kept for `missMemory`: a Diplomat spawn prompts its session
-    // before the TUI the scan finds it by exists, so a miss is ordinarily a service that
-    // did not answer — and asking that again on every tick costs a timeout per TUI.
+    // An opening message never changes, so a hit is kept for the process's life. A miss is
+    // kept for `missMemory`: a Diplomat spawn prompts its session before its TUI exists,
+    // so a miss is ordinarily a service that did not answer, and re-asking every tick
+    // costs a timeout per TUI.
     private static let openingLock = NSLock()
     private static var openings: [String: String] = [:]
     private static var misses: [String: TimeInterval] = [:]
@@ -245,11 +236,9 @@ enum OpenCodeProbe {
     /// The prompt a 2.x session was opened with, or nil when the service cannot say.
     ///
     /// What the process-table scan matches a 2.x agent by, whose own command line names
-    /// only its session (`OpenCodeAPI.attachedSession`). One request per session the
-    /// scan has not seen before, and none per tick after that — nor within `missMemory`
-    /// of one that went unanswered.
+    /// only its session (`OpenCodeAPI.attachedSession`).
     ///
-    /// `now` and `fetch` are the sweep self-test's; the default fetch asks the service.
+    /// `now` and `fetch` are the sweep self-test's seams.
     static func openingPrompt(sessionID: String,
                               now: TimeInterval = Date().timeIntervalSince1970,
                               fetch: (String) -> String? = fetchOpening) -> String? {
@@ -278,30 +267,24 @@ enum OpenCodeProbe {
         return OpenCodeAPI.openingText(call(service, path))
     }
 
-    // Sessions found for runs that have no run directory to bind one into — a run
-    // synthesized from the process table — by run id, kept until the run is retired
-    // (`forgetAdopted`) so it can still be stopped once its TUI, and so its sighting, is
-    // gone.
+    // Sessions of runs synthesized from the process table, which have no run directory to
+    // bind one into, by run id. Kept until the run is retired (`forgetAdopted`) so it can
+    // still be stopped once its TUI, and so its sighting, is gone.
     private static let adoptedLock = NSLock()
     private static var adopted: [String: String] = [:]
 
-    /// Give pid-less runs a 2.x session the process-table scan found.
-    ///
-    /// Such a run — one the mesh placed back here, whose terminal the node opened, or one
-    /// this applet never booked at all — is known to the scan only by its PR, and a 2.x
-    /// agent only by its session (`AgentProbes.scan`). Bound, it is asked of the service,
-    /// priced from it and interrupted like any run this applet spawned
-    /// (`serviceSession(of:)`).
+    /// Give pid-less runs — mesh-placed, or never booked by this applet — the 2.x session
+    /// the process-table scan found, so they are asked of the service, priced and
+    /// interrupted like a spawned run (`serviceSession(of:)`). A spawned run binds its
+    /// session at spawn.
     ///
     /// A synthesized run has no run directory: it is given the session the scan found on
-    /// its PR, remembered here. A booked one is bound in its run directory to the first
-    /// `attached` session no run holds whose opening prompt is exactly the one staged for
-    /// it — the exact match `bind` makes for a 1.x run — and only while it is an OpenCode
-    /// run with no port and no session yet: a port is a 1.x run's own server, and a bound
-    /// session is already its own. A run this applet spawned needs none of it: it binds
-    /// its session at spawn.
+    /// its PR, remembered here. A mesh-placed one is bound in its run directory to the
+    /// first `attached` session no run holds whose opening prompt is exactly its staged
+    /// one — `bind`'s exact match — and only while it has no port (a 1.x run) and no
+    /// session yet.
     ///
-    /// `openingPrompt` is the sweep self-test's; the default asks the service.
+    /// `openingPrompt` is the sweep self-test's seam.
     static func adopt(_ records: [AgentState.RunRecord], sessions: [Int: String],
                       attached: [String],
                       openingPrompt: (String) -> String? = {
@@ -338,8 +321,7 @@ enum OpenCodeProbe {
         adoptedLock.unlock()
     }
 
-    /// The 2.x session a run works in — bound in its run directory, or adopted from the
-    /// scan for a run that has none — or nil for every other run.
+    /// The 2.x session a run works in, bound or adopted; nil for any other run.
     static func serviceSession(of record: AgentState.RunRecord) -> String? {
         if let bound = AgentRegistry.serviceSession(record.runID) { return bound }
         adoptedLock.lock()
@@ -347,16 +329,13 @@ enum OpenCodeProbe {
         return adopted[record.runID]
     }
 
-    /// The 2.x sessions to interrupt as one tick's ended runs are closed and retired, each
-    /// named once.
+    /// The 2.x sessions to interrupt as one tick's ended runs are closed and retired.
     ///
-    /// A run a backstop reaped, always: its window is being closed, and the turn outlives
-    /// it. Any other retired run only when no 2.x TUI attached to its session is in the
-    /// process table (`attached`, per `OpenCodeAPI.attachedSession`) — its window was
-    /// closed by hand, or its TUI quit or crashed, and the turn would run on with nothing
-    /// showing it. One whose TUI is still up, retired because its PR merged say, is left
-    /// working, as a 1.x or Claude Code agent is in its window. A process table that
-    /// could not be read shows no TUI.
+    /// A reaped run always: its window is being closed, and the turn outlives it. Any
+    /// other retired run only when no TUI attached to its session is in the process table
+    /// — its window was closed by hand or its TUI died, and the turn would run on unseen.
+    /// One whose TUI is still up (retired because its PR merged, say) is left working, as
+    /// a 1.x or Claude Code agent is. An unreadable process table shows no TUI.
     static func interrupts(reaped: [AgentState.RunRecord], retired: [AgentState.RunRecord],
                            attached: Observation<[String]>) -> [String] {
         let closed = Set(reaped.map(\.runID))
@@ -370,18 +349,16 @@ enum OpenCodeProbe {
         return out
     }
 
-    /// Where the service is, per the file it writes for its clients under the user's
-    /// shell's state root (`OpenCodeCLI.serviceFile`).
+    /// Where the service is, per its discovery file (`OpenCodeCLI.serviceFile`).
     private static func service() -> OpenCodeAPI.ServiceEndpoint? {
         (try? Data(contentsOf: OpenCodeCLI.serviceFile())).flatMap(OpenCodeAPI.serviceEndpoint)
     }
 
     /// One request against the service, decoded — nil for anything but a 200 of JSON.
     ///
-    /// The status is read here where it is not for a 1.x run's own port: every `/api`
-    /// route answers a 401 without the password and a 404 for a session it does not know,
-    /// each with a JSON body of its own, and the service's web app answers any other path
-    /// with a 200 of HTML.
+    /// Unlike a 1.x port, the status matters: every `/api` route answers a 401 without the
+    /// password and a 404 for an unknown session, each with a JSON body, and the web app
+    /// answers any other path with a 200 of HTML.
     private static func call(_ service: OpenCodeAPI.ServiceEndpoint, _ path: String,
                              method: String = "GET") -> Any? {
         guard let url = URL(string: service.base + path) else { return nil }
@@ -393,7 +370,6 @@ enum OpenCodeProbe {
         return send(request, requireOK: true)
     }
 
-    /// Send one request and decode its JSON body, under the probe's time and size budget.
     private static func send(_ request: URLRequest, requireOK: Bool) -> Any? {
         var payload: Any?
         let done = DispatchSemaphore(value: 0)

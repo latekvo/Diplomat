@@ -15,9 +15,8 @@ import Foundation
 /// staged into a file and handed over as `$(cat …)`, the completion sentinel, the pid
 /// the run is identified by — is identical, deliberately: those are what
 /// `AgentRegistry` and `AgentState` recognise a run by, and a second spawn shape would
-/// be a second set of them to keep true. OpenCode 2.x reads its prompt out of a JSON
-/// file staged beside that one rather than out of the file itself, and nothing else
-/// about the spawn changes for it.
+/// be a second set of them to keep true. OpenCode 2.x reads its prompt from a JSON file
+/// staged beside that one.
 ///
 /// Credentials are the one thing this type refuses to hold. Each foreign runner has its
 /// own provider store and its own login wizard, and that is where a key belongs — not
@@ -59,9 +58,8 @@ public enum AgentRunner: String, CaseIterable, Sendable {
     /// into a fresh window via AppleScript, and the Linux twin's `tmux new-session`
     /// runs its command with the tmux *server's* environment.
     ///
-    /// 1.x only. A 2.x TUI is a client of a shared service that holds every permission,
-    /// so this variable on it decides nothing; a 2.x session is created with the same
-    /// grant instead (`OpenCodeAPI.allowAll`).
+    /// On 2.x the shared service holds permissions, so this variable decides nothing; the
+    /// session is created with the same grant instead (`OpenCodeAPI.allowAll`).
     public static let permissionEnv = "OPENCODE_PERMISSION"
     public static let permissionValue = #"{"edit":"allow","bash":"allow","webfetch":"allow","external_directory":"allow","doom_loop":"allow"}"#
 
@@ -89,11 +87,9 @@ public enum AgentRunner: String, CaseIterable, Sendable {
     /// is a supported spawn, not a broken one: the run works exactly as before and is
     /// tracked by its screen.
     ///
-    /// `serviceSession` makes an OpenCode run a 2.x one: the id of the session
-    /// `OpenCodeCLI.stageSession` staged beside `promptFile`, which the command creates
-    /// on the shared service, prompts, and attaches the TUI to. It replaces `model` (the
-    /// pin is in the staged session) and `port` (2.x serves no per-run port), and is
-    /// ignored by the other two runners.
+    /// `serviceSession` makes an OpenCode run a 2.x one: the id `OpenCodeCLI.stageSession`
+    /// returned for `promptFile`. It replaces `model` (pinned in the staged session) and
+    /// `port` (2.x has no per-run port); the other runners ignore it.
     ///
     /// `settingsFile` is where Claude Code finds the hooks that make it report its own
     /// turn boundaries (`AgentCompletion`). `--settings` MERGES with the user's own
@@ -146,20 +142,16 @@ public enum AgentRunner: String, CaseIterable, Sendable {
     ///
     ///     opencode api session.create -d "$(cat '<p>.session.json')" && opencode api session.prompt --param sessionID=<id> -d "$(cat '<p>.prompt.json')" || exit; opencode --session <id>
     ///
-    /// Three commands because 2.x offers no one that does it: its `--prompt` places the
-    /// text in the composer without submitting it (anomalyco/opencode#51135, reproduced
-    /// on 2.0.18), and it takes no `--port`, `-m` or permission grant — those belong to
-    /// the service, and reach it through the staged session instead. The TUI is a window
-    /// onto the session the user can watch and type into, the same affordance the other
-    /// runners have; the turn itself runs in the service.
+    /// Three commands because 2.x has no single one: `--prompt` fills the composer without
+    /// submitting (anomalyco/opencode#51135, reproduced on 2.0.18), and `--port`, `-m` and
+    /// the permission grant belong to the service, so they travel in the staged session.
+    /// The turn runs in the service; the TUI is only a window onto it.
     ///
-    /// The shape is what keeps the pid file the agent's own. The TUI is the last command
-    /// after a `;`, which bash 5.3 and zsh 5.9 both exec over the inner shell (measured);
-    /// bash 5.3 does NOT do so for the last command of an `&&` chain. And `|| exit` ends
-    /// the inner shell with the failing command's status when the session could not be
-    /// created or prompted, so the exit sentinel records it and no TUI opens onto a
-    /// session that does not exist. Every command still starts with the word `opencode`,
-    /// so an alias of it still expands.
+    /// The TUI comes last after a `;` because bash 5.3 and zsh 5.9 exec that over the inner
+    /// shell, keeping the pid file the agent's own; bash 5.3 does NOT for the last command
+    /// of an `&&` chain (both measured). `|| exit` hands a failed create or prompt's status
+    /// to the exit sentinel and opens no TUI onto a missing session. Every command starts
+    /// with `opencode`, so an alias of it still expands.
     static func serviceCommand(promptFile: String, sessionID: String) -> String {
         let session = "\"$(cat \(shq(promptFile + ".session.json")))\""
         let prompt = "\"$(cat \(shq(promptFile + ".prompt.json")))\""
@@ -194,8 +186,8 @@ public enum AgentRunner: String, CaseIterable, Sendable {
     /// The listing command runs after, so the window the user is left looking at states
     /// what is now connected rather than making them trust that it worked.
     ///
-    /// OpenCode's is `auth`, which is the command's name on 2.x and an alias of
-    /// `providers` on 1.x (1.4.3 and 1.18.33 alike), so one spelling serves both majors.
+    /// OpenCode's `auth` is 2.x's name and a 1.x alias of `providers` (1.4.3, 1.18.33), so
+    /// one spelling serves both majors.
     public var setupCommand: String {
         self == .hermes ? "hermes setup; hermes status"
                         : "opencode auth login; opencode auth list"

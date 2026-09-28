@@ -361,8 +361,6 @@ def stage_opencode_session(prompt_file: str) -> str | None:
 
     Staged beside the prompt, at its mode: the prompt is copied into one of them
     verbatim, and a mesh dispatch stages its prompt in ``/tmp`` (:func:`write_prompt`).
-    The session's directory is the checkout the agent is ``cd``'d into, symlinks
-    resolved.
 
     A caller with a run directory binds the id there before spawning
     (:func:`agentregistry.bind_session`); the mesh node has none, and runs it unbound.
@@ -403,8 +401,8 @@ def shell_command(prompt_file: str, done_path: str | None = None,
     ``<agent>`` is :func:`runner.agent_command` — ``claude "$(cat '<file>')"``, another
     runner's spelling of the same thing, or OpenCode 2.x's ``opencode api`` chain
     ending in its TUI. Everything around it is shared by all of them, because
-    everything around it is what a run is *identified* by; the one variation is the
-    inner shell a 2.x agent gets even without a pid file (``opencode_session`` below).
+    everything around it is what a run is *identified* by — save the inner shell a 2.x
+    agent gets even without a pid file (``opencode_session`` below).
 
     Run (via :func:`user_shell`, interactively) so the user's rc is sourced: that is
     what resolves a `claude` alias, and equally what puts a per-user install of either

@@ -961,10 +961,9 @@ public enum AgentState {
     /// answer ENDS the run exactly as the CLI's own does: a runner that keeps a session
     /// and one that runs a hook are two spellings of "ask the agent". Read as merely
     /// idle, every OpenCode and Hermes run stayed in the book until somebody closed its
-    /// window by hand. An untracked run's session is the one that cannot end it: the scan
-    /// rebuilds such a run from the same sighting on the next tick, so only the agent
-    /// leaving the process table (`resolveUntracked`) or its screen going still
-    /// (`wentQuiet`) ends one, and an idle session reads as at the prompt.
+    /// window by hand. An untracked run's idle session cannot end it - the next scan would
+    /// rebuild the run from the same sighting - so it reads as at the prompt, and only
+    /// `resolveUntracked` or `wentQuiet` ends one.
     ///
     /// The screen is the last fallback, and it is an inference — it reads whether the
     /// CLI's interrupt hint was on the status bar when we looked, which is a string from

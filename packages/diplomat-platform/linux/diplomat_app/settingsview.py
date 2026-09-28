@@ -280,8 +280,8 @@ class SettingsView(QWidget):
         self._runner_pill.set_state(label, _PURPLE)
         self._runner_nest.setVisible(foreign)
         self._model_field.setPlaceholderText(f"model — blank lets {label} choose")
-        # OpenCode's is the binary its spawns will actually run — resolved through the
-        # user's shell, which may name a different install than this app's PATH does.
+        # OpenCode's is resolved through the user's shell, as its spawns are, which may
+        # name a different install than this app's PATH does.
         found = (usagescan.opencode_binary() if chosen == runner.OPENCODE
                  else shutil.which(chosen))
         if found:

@@ -298,10 +298,9 @@ public enum AgentRegistry {
     /// Kept on disk rather than in memory so the search survives the applet restart this
     /// whole module exists for — and because the search is the expensive half: matching a
     /// session to a run reads its opening message, while asking a bound one what it is
-    /// doing reads a single message. An OpenCode 2.x run needs no search of the store: a
-    /// spawn on this machine mints the session's id and binds it here before the agent
-    /// starts, and one the mesh placed here is bound to the session its TUI's command line
-    /// names, once the process table shows it.
+    /// doing reads a single message. An OpenCode 2.x run needs no search: a local spawn
+    /// binds the id it minted before the agent starts, and a mesh-placed one binds the
+    /// session its TUI's command line names.
     ///
     /// Every runner spells an id its own way — `ses_00d61ec0…` under OpenCode,
     /// `20260812_002140_b0e4d4` under Hermes — so what is checked is the shape any id has
@@ -320,10 +319,8 @@ public enum AgentRegistry {
 
     /// The session an OpenCode 2.x run works in, or nil for every other run.
     ///
-    /// A 2.x run is an OpenCode run bound to a session and holding NO port. The two
-    /// majors cannot be confused by that test: a 2.x spawn binds the session it minted and
-    /// reserves no port, while a 1.x run is only ever bound through the port its own
-    /// server answers on — so a 1.x run that could not get one is never bound at all.
+    /// A 2.x run is an OpenCode run bound to a session and holding NO port: a 1.x run is
+    /// only ever bound through its own server's port, so a portless one is never bound.
     public static func serviceSession(_ runID: String) -> String? {
         guard runRunner(runID) == AgentRunner.opencode.rawValue, port(runID) == nil
         else { return nil }

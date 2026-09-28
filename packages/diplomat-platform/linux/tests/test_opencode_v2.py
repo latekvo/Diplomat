@@ -3,8 +3,8 @@ service instead of a server of the run's own.
 
 Every seam 1.x runs through is gone in 2.x — no ``--port``, no ``-m``, a ``--prompt``
 that does not submit, an ``OPENCODE_PERMISSION`` the TUI ignores, no ``opencode
-export`` — so each group below pins one of them to the version the CLI reports, and
-the 1.x half of each stays what it was.
+export`` — so each group below pins one of them, for both majors, to the version the
+CLI reports.
 
 The service cases run against ``_Service``, a stand-in that checks the password and
 answers canned JSON on a real socket, found the way the probe finds the real one —

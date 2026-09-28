@@ -240,12 +240,10 @@ enum UsageScan {
     /// Tokens spent by one OpenCode session, or nil if it cannot be read.
     ///
     /// An OpenCode run leaves nothing in `~/.claude`, so `taskTokens` cannot see it. Its
-    /// own transcript is reachable through the CLI's export — `opencode export <id>` on
-    /// 1.x, `opencode session export <id>` on 2.x (`OpenCodeAPI.exportArguments`) — which
-    /// is asked for rather than read off disk: the store behind it is an internal SQLite
-    /// schema, while the command is part of the CLI's published surface and already knows
-    /// where the store lives. The binary is found the way the spawn finds it
-    /// (`OpenCodeCLI.binary`), and which export it takes is asked of that binary.
+    /// own transcript is reachable through the CLI's export (`OpenCodeAPI.exportArguments`),
+    /// which is asked for rather than read off disk: the store behind it is an internal
+    /// SQLite schema, while the command is part of the CLI's published surface and already
+    /// knows where the store lives.
     ///
     /// Read at retirement, not on the poll — a turn's price is per-message, so a run's
     /// is a sum over every message it produced, and the live probe (`OpenCodeAPI`)

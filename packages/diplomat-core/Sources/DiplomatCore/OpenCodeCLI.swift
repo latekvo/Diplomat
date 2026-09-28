@@ -3,19 +3,15 @@ import Foundation
 /// The installed `opencode` executable: where it is, which major it is, and what a 2.x
 /// spawn stages for it — the impure half of `OpenCodeAPI`.
 ///
-/// In the core because the macOS applet runs all of it in-process, and the `diplomat-core`
-/// CLI reaches one piece of it — the major, for `AgentModel` — on Linux, where spawning,
-/// pricing and probing are the Python runtime's own twin of this file. There the runtime
-/// passes the major it already found (`majorOverride`), so the CLI resolves nothing
-/// itself unless it is run without one.
+/// On Linux only the major is used from here (`AgentModel`, via the `diplomat-core` CLI);
+/// the Python runtime twins the rest and passes the major it found (`majorOverride`).
 public enum OpenCodeCLI {
     /// How long `opencode --version` may take: 0.03 s on 2.0.18 and under a second on
     /// 1.x, so this only ever bounds a wedged binary.
     public static let versionTimeout: TimeInterval = 5
 
-    /// How long the user's shell may take to say where the CLI is. It sources their
-    /// rc files, which can be slow — a version manager, a prompt framework — so it gets
-    /// its own budget rather than sharing the command's.
+    /// How long the user's shell may take to say where the CLI is; its rc files (a version
+    /// manager, a prompt framework) can be slow.
     public static let resolveTimeout: TimeInterval = 10
 
     /// How long a resolution is trusted. An upgrade from 1.x to 2.x ordinarily MOVES the
@@ -35,11 +31,8 @@ public enum OpenCodeCLI {
         public let stateHome: String?
     }
 
-    // Guards the resolution against concurrent callers — the retirements `Store` prices
-    // from a detached task, a spawn resolving its major beside them, the probe's sweep.
-    // Cached only when a binary was found, so an `opencode` installed after launch is
-    // picked up by the next caller — the same rule, and the same shape, as `GH.ghPath` —
-    // and trusted for `resolveTTL` and only while the file it names is still there.
+    // Callers race: `Store`'s detached pricing, a spawn resolving its major, the probe's
+    // sweep. Only a found binary is cached (as `GH.ghPath`), so a later install is seen.
     private static let resolveLock = NSLock()
     private static var cached: (resolution: Resolution, at: Date)?
 
@@ -49,32 +42,23 @@ public enum OpenCodeCLI {
 
     /// The `opencode` executable, found the way the spawn finds it.
     ///
-    /// A spawn types its command into a terminal window, and that window's shell is the
-    /// user's own — which is what puts a per-user install on `PATH`, and what Settings
-    /// promises when it says an rc-only install still runs. An app launched from the
-    /// Dock inherits none of that, so asking this process's environment alone would
-    /// find nothing for exactly the installs the spawn supports.
+    /// A spawn runs in the user's own shell, which is what puts a per-user install on
+    /// `PATH` (and what Settings promises for an rc-only install); an app launched from the
+    /// Dock inherits none of that. So the shell first (`resolverArguments`), this `PATH`
+    /// only when it names nothing. The order matters beyond reach: an rc can put another
+    /// install first (a 1.x in `~/.opencode/bin` beside a 2.x on the system `PATH`), and
+    /// `installedIsService` must describe the binary the agent will run. The path is run
+    /// directly, not through the shell, since an rc may print a banner onto stdout.
     ///
-    /// So the shell first (`resolverArguments`), and this `PATH` only when the shell names
-    /// nothing. The order matters beyond reach: an rc can put a different install ahead of
-    /// the one this process sees (a 1.x under `~/.opencode/bin` beside a 2.x on the system
-    /// `PATH`), and `installedIsService` must describe the binary the spawned agent will
-    /// run, or a run is spawned the wrong way for the CLI that executes it. What comes
-    /// back is a path, run directly rather than through the shell, because the rc that
-    /// put it on `PATH` is equally free to print a banner and the CLI's stdout has to
-    /// stay parseable.
-    ///
-    /// Re-asked once `resolveTTL` has passed or the file it named is gone, so an upgrade
-    /// that moves the binary reaches the next spawn without a restart. `now` is the
+    /// Re-asked once `resolveTTL` has passed or the file it named is gone. `now` is the
     /// smoke test's clock.
     public static func binary(now: Date = Date()) -> String? {
         current(now: now).path
     }
 
-    /// Where OpenCode's service writes `service.json` for the user's shell: the service is
-    /// started by an agent that shell ran, so it is THAT shell's `$XDG_STATE_HOME` which
-    /// decides, not this process's. Falls back to this process's own environment when the
-    /// shell did not say.
+    /// Where OpenCode's service writes `service.json`: an agent the user's shell ran starts
+    /// the service, so that shell's `$XDG_STATE_HOME` decides, and this process's only when
+    /// the shell did not say.
     public static func serviceFile(now: Date = Date()) -> URL {
         var environment = ProcessInfo.processInfo.environment
         if let state = current(now: now).stateHome { environment["XDG_STATE_HOME"] = state }
@@ -115,8 +99,8 @@ public enum OpenCodeCLI {
     /// alone, which only a login zsh reads, and nvm lives in `~/.bashrc`, which a login
     /// bash skips and only an interactive one reads.
     ///
-    /// The probe prints the path, then the shell's `$XDG_STATE_HOME` on a marked line of
-    /// its own — after a newline, so it is a line of its own whatever came before.
+    /// The probe prints the path, then `$XDG_STATE_HOME` on a marked line after a newline,
+    /// so it stands alone whatever the rc printed.
     public static func resolverArguments(shell: String) -> [String] {
         let probe = "command -v opencode; printf '\\n\(stateMarker)%s\\n' \"$XDG_STATE_HOME\""
         return ["-l", "-c", "\(AgentRunner.shq(shell)) -i -c \(AgentRunner.shq(probe))"]
@@ -140,8 +124,7 @@ public enum OpenCodeCLI {
 
     /// Whether the installed OpenCode is 2.x, per `OpenCodeAPI.isServiceVersion`.
     ///
-    /// Anything that stops the question being answered — no binary, a timeout, a non-zero
-    /// exit — is 1.x, the shape every spawn had before 2.0.
+    /// Anything that stops it answering (no binary, a timeout, a non-zero exit) reads as 1.x.
     public static func installedIsService() -> Bool {
         guard let binary = binary() else { return false }
         return isService(binary: binary)
@@ -149,10 +132,8 @@ public enum OpenCodeCLI {
 
     /// `installedIsService` for a binary already resolved.
     ///
-    /// Remembered per binary as the file stands — its path, inode, size and modification
-    /// time, through any symlink — so a steady state costs a `stat` and an upgrade in
-    /// place, which changes at least one of them, is asked again. A binary that could not
-    /// answer is not remembered.
+    /// Remembered per path, inode, size and mtime (through any symlink), so a steady state
+    /// costs a `stat` and an in-place upgrade is asked again. A failed answer is not kept.
     public static func isService(binary: String) -> Bool {
         let key = VersionKey(binary)
         if let key {
@@ -191,8 +172,7 @@ public enum OpenCodeCLI {
 
     /// The major `DIPLOMAT_OPENCODE_MAJOR` names — `true` for exactly `2`, `false` for
     /// exactly `1`, nil for anything else, which leaves the question to `installedIsService`.
-    /// The Linux runtime sets it on the `diplomat-core` a prompt build runs while OpenCode
-    /// is the selected runner, having already resolved the binary itself, so such a build
+    /// The Linux runtime sets it, having resolved the binary itself, so a prompt build
     /// costs no shell and no `--version`.
     public static func majorOverride(_ environment: [String: String]) -> Bool? {
         switch environment["DIPLOMAT_OPENCODE_MAJOR"] {
@@ -205,12 +185,9 @@ public enum OpenCodeCLI {
     /// Stage what a 2.x spawn hands `opencode api`, and return the session id it minted —
     /// nil when either file could not be written, which is a run that cannot start.
     ///
-    /// Two files beside the prompt, named for it — `<prompt>.session.json` and
-    /// `<prompt>.prompt.json` — owner-only like the prompt itself, because they carry it.
-    /// Files rather than inline arguments because the command is typed into a terminal
-    /// through AppleScript on macOS, and a multi-line prompt quoted through that and two
-    /// shells is exactly what staging the prompt file already avoids
-    /// (`AgentRunner.agentCommand`).
+    /// `<prompt>.session.json` and `<prompt>.prompt.json`, owner-only since they carry the
+    /// prompt. Files, not arguments, for the reason the prompt itself is staged: the command
+    /// is typed through AppleScript and two shells (`AgentRunner.agentCommand`).
     ///
     /// `directory` is where the agent is `cd`'d into; the session records its physical
     /// path, the one the agent's own tools will report.
@@ -247,8 +224,7 @@ public enum OpenCodeCLI {
         return String(cString: resolved)
     }
 
-    /// `name` on this process's own `PATH` — free, and right whenever the caller was
-    /// launched from a shell that already had it.
+    /// `name` on this process's own `PATH`.
     private static func onPath(_ name: String) -> String? {
         let path = ProcessInfo.processInfo.environment["PATH"] ?? ""
         for dir in path.split(separator: ":") where !dir.isEmpty {
@@ -261,10 +237,8 @@ public enum OpenCodeCLI {
     /// Run a command and return its stdout — nil if it could not be started, overran
     /// `timeout`, or exited non-zero.
     ///
-    /// stdout goes to a temp file rather than a pipe, the way `GH.run` does it. A pipe
-    /// holds 64K and then blocks the child until someone drains it — and the drain is
-    /// an unbounded read, so the deadline below could only be reached once the thing it
-    /// exists to bound had already finished.
+    /// stdout goes to a temp file, as in `GH.run`: a full 64K pipe blocks the child, and
+    /// draining it is an unbounded read the deadline could not interrupt.
     public static func run(_ executable: String, _ arguments: [String],
                            within timeout: TimeInterval,
                            environment: [String: String]? = nil) -> Data? {

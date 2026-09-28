@@ -48,9 +48,8 @@ public enum AgentModel {
     /// lookup over a fixture instead of over the developer's own machine.
     ///
     /// `openCodeIsService` says whether the installed OpenCode is 2.x. It is a closure
-    /// because answering it can run the binary, and only the one case that depends on
-    /// the answer asks it (`openCodeModel`). `detected()` answers it from
-    /// `DIPLOMAT_OPENCODE_MAJOR` when the caller set one (`OpenCodeCLI.majorOverride`).
+    /// because answering it can run the binary, so only the one case in `openCodeModel`
+    /// that depends on it asks.
     public static func detect(configFile: URL, claudeHome: URL, hermesConfig: URL,
                               openCodeConfig: URL, openCodeState: URL,
                               openCodeIsService: () -> Bool) -> String {
@@ -310,12 +309,10 @@ public enum AgentModel {
     /// `<state>/model.json` — which is both the model the next TUI restores and the one
     /// the last turn actually ran on.
     ///
-    /// 2.x stops at the config. Its sessions are created by a shared service that never
-    /// reads the TUI's recent list, and with no `model` in config it starts on the first
-    /// model it has — which this cannot name without the provider list below, so a 2.x
-    /// run with no config model names none rather than the model the picker last used.
-    /// The binary is asked which major it is only when the recent list would otherwise
-    /// answer, the one case the answer changes.
+    /// 2.x stops at the config: its sessions come from a shared service that never reads
+    /// the recent list, and with no config `model` it starts on the first model it has,
+    /// which naming would take the provider list below. So the major is asked only when
+    /// the recent list would otherwise answer.
     ///
     /// Narrower than OpenCode's own answer in two places, each costing the tag its model
     /// rather than handing it a wrong one. A `model` set by a config file *inside the

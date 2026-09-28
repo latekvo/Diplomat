@@ -463,20 +463,18 @@ def opencode_install() -> OpenCodeInstall | None:
     one for a PATH set only in an rc (nvm's ``~/.bashrc``). The macOS front-end asks
     the identical question, so the two platforms cannot resolve different binaries.
 
-    The shell first, and this process's ``PATH`` only when the shell names nothing.
-    This process's environment is whatever launched the applet — a desktop entry, a
+    The shell first, and this process's ``PATH`` only when the shell names nothing:
+    this process's environment is whatever launched the applet — a desktop entry, a
     Dock icon — and an rc can put a different install ahead of anything on it (a 1.x
-    under ``~/.opencode/bin`` beside a 2.x on the system ``PATH``), while every
-    version check here must describe the binary the spawned agent will run.
+    under ``~/.opencode/bin`` beside a 2.x on the system ``PATH``).
 
-    The state directory comes from the same shell for the same reason: the service is
-    started by the agent's shell, under THAT shell's ``$XDG_STATE_HOME``. Empty there
-    is ``~/.local/state``; a shell that did not answer at all leaves this process's.
+    The state directory comes from the same shell because the service is started by
+    the agent's shell, under THAT shell's ``$XDG_STATE_HOME``. Empty there is
+    ``~/.local/state``; a shell that did not answer at all leaves this process's.
 
     What comes back is a path, exec'd directly rather than through the shell, because
     the rc that put it on ``PATH`` is equally free to print a banner and the export's
-    stdout has to stay parseable JSON. Trusted for :data:`_RESOLVE_TTL`, and only while
-    the path still exists.
+    stdout has to stay parseable JSON.
     """
     global _install
 
@@ -517,15 +515,11 @@ def opencode_state_home() -> str:
 def opencode_major() -> int:
     """The major version of the ``opencode`` a spawn would run: 2 for 2.x, 1 otherwise.
 
-    2.x is one per-user service every client talks to, rather than 1.x's server per
-    TUI; the two take different spawns, are asked what they are doing in different
-    places and export a finished session under different commands, so every one of
-    those seams asks this first. Asked with ``--version``, and every failure — no CLI,
-    a timeout, output with no version in it — answers 1, the behaviour every install
-    had before 2.x existed.
-
-    Remembered per binary identity (:data:`_majors`), so an upgrade in place is asked
-    again and anything else costs a stat.
+    The two take different spawns, are asked what they are doing in different places
+    and export a finished session under different commands, so each of those seams
+    asks this first. Asked with ``--version`` (cached in :data:`_majors`), and every
+    failure — no CLI, a timeout, output with no version in it — answers 1, the
+    behaviour every install had before 2.x existed.
     """
     binary = opencode_binary()
     return _major(binary) if binary else 1

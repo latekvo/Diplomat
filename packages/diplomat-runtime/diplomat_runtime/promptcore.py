@@ -53,8 +53,7 @@ def opencode_major_env() -> dict[str, str]:
     Every prompt build is a fresh ``diplomat-core`` process, so an answer it found for
     itself would be a shell resolve and a ``--version`` per build — on the Qt thread
     for a wizard spawn, under the poll lock for an automatic one. This process keeps
-    the answer (:func:`usagescan.opencode_major`), and hands it over. Only OpenCode's
-    attribution asks, so no other runner pays for the question.
+    the answer (:func:`usagescan.opencode_major`), and hands it over.
     """
     from . import runner, usagescan
 

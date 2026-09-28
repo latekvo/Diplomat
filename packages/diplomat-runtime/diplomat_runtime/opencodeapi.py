@@ -8,11 +8,9 @@ about asking it:
 * **1.x** — a TUI given ``--port`` serves its own session on that port while it works,
   unauthenticated. The run is matched to its session by its prompt. Most of this
   module, and every section below but the last.
-* **2.x** — there is no server per TUI. Every client talks to one per-user service
+* **2.x** — no server per TUI: every client talks to one per-user service
   (``opencode serve --service``), found through :func:`service_file` and
-  authenticated with the password in it. The session is minted and bound at spawn
-  (:func:`review.stage_opencode_session`); only a run spawned elsewhere is matched.
-  See "OpenCode 2.x" below.
+  password-authenticated. See "OpenCode 2.x" below.
 
 A 1.x server keeps a status per session — ``busy``, ``retry`` or idle — the same one
 its own TUI draws from, and it stamps each message it finishes. Neither is an
@@ -69,17 +67,16 @@ OpenCode 2.x
 One service per user, so a run's session is asked for by id: ``GET
 /api/session/{id}`` for the session and ``GET /api/session/active`` for the map of
 sessions running a turn (:func:`service_state`). A run Diplomat spawned carries the
-id it minted, so there is no search and nothing to confirm — and a session the
-service no longer knows is a 404, which reads as unreachable. Every
-request carries the service's password, and every failure reads as unreachable,
-exactly as a 1.x port that will not answer does.
+id it minted (:func:`review.stage_opencode_session`), so there is no search. Every
+request carries the service's password, and every failure — a 404 for a session the
+service does not know among them — reads as unreachable, as a 1.x port that will not
+answer does.
 
-A 2.x run Diplomat did not spawn itself — one the mesh placed here — has no id bound
-at spawn. Its TUI's argv is ``opencode --session <id>`` (:func:`session_arg`), so its
-session is found from the process table and matched to the run by the prompt it was
-opened on (:func:`opening_prompt`), the one exact key, as a 1.x run's is. An agent
-no run was booked for at all is drawn from the same scan, and takes the session of
-the TUI it was seen by.
+A 2.x run the mesh placed here has no id bound at spawn. Its TUI's argv is
+``opencode --session <id>`` (:func:`session_arg`), so its session is found from the
+process table and matched by the prompt it was opened on (:func:`opening_prompt`),
+the one exact key, as a 1.x run's is. An agent no run was booked for at all takes the
+session of the TUI it was seen by.
 
 The service outlives the window: a 2.x run's turn goes on after its TUI is gone, so
 whatever closes a run's window calls :func:`interrupt`, and so does retiring a run —
@@ -170,9 +167,9 @@ def _get(port: int, path: str):
 
 def _fetch(request: urllib.request.Request):
     """One request, its JSON answer decoded — ``None`` on anything at all, for the
-    reasons :func:`_get` gives. Anything but a 200 is one of those too: an error status
-    raises out of ``urlopen``, and the 2.x service answers ``text/html`` 200 for a path
-    it does not route outside ``/api``, which fails the decode."""
+    reasons :func:`_get` gives, and on any status but 200. The 2.x service answers
+    ``text/html`` 200 for a path it does not route outside ``/api``, which fails the
+    decode."""
     try:
         with urllib.request.urlopen(request, timeout=TIMEOUT) as resp:  # noqa: S310 - loopback
             if resp.status != 200:
@@ -263,9 +260,9 @@ def service_file() -> str:
     """Where OpenCode 2.x says which service is running and how to reach it:
     ``opencode/service.json`` under the state directory the agent's shell gives it
     (:func:`usagescan.opencode_state_home`) — the service is started by that shell, so
-    its ``$XDG_STATE_HOME`` is the one that counts, not this process's. Written mode
-    0600 by the service itself, as ``{"id", "version", "url", "pid", "password"}`` —
-    the password may be absent."""
+    its ``$XDG_STATE_HOME`` counts, not this process's. Written mode 0600 by the
+    service, as ``{"id", "version", "url", "pid", "password"}``; the password may be
+    absent."""
     from . import usagescan
 
     return os.path.join(usagescan.opencode_state_home(), "opencode", "service.json")
@@ -325,10 +322,9 @@ def active_sessions() -> dict | None:
 
 def service_state(session_id: str, active: dict | None) -> SessionState | None:
     """What a 2.x run's session is doing, asked of the service; ``None`` — "ask the
-    screen instead" — when either question goes unanswered, a session the service
-    does not know (404) among them. ``active`` is this pass's :func:`active_sessions`,
-    and ``None`` there asks nothing more. See :func:`service_state_of` for the
-    reading."""
+    screen instead" — when either question goes unanswered, a 404 among them.
+    ``active`` is this pass's :func:`active_sessions`, and ``None`` there asks nothing
+    more. The reading is :func:`service_state_of`."""
     if active is None:
         return None
     info = _service_call(_session_route(session_id))
@@ -345,20 +341,18 @@ def interrupt(session_id: str) -> None:
     turn goes on in the service after it is gone — measured on 2.0.18, a SIGTERM to the
     TUI mid-turn left its tool call to finish 20 s later. So whatever closes a run's
     window sends this too, and so does retiring a run whose session no TUI in the
-    process table is attached to any more, or the agent keeps working headless after
-    Diplomat has let its bay go. A run retired with its TUI still open — its PR merged
-    mid-turn — is left working, as a 1.x or Claude Code agent is. An idle session
-    answers ``{"interrupted": false}`` and is left as it was; a running one ends its
-    turn with outcome ``interrupted``. Best-effort and never raises, and answers
-    nothing: no caller could act on it.
+    process table is attached to, or the agent keeps working headless after Diplomat
+    has let its bay go. A run retired with its TUI still open — its PR merged mid-turn
+    — is left working, as a 1.x or Claude Code agent is. Harmless on an idle session.
+    Best-effort; never raises.
     """
     _service_call(_session_route(session_id) + "/interrupt", "POST")
 
 
 #: A 2.x TUI's argv: its binary — ``opencode`` or ``opencode.exe``, by any path — then
-#: ``--session <id>`` and nothing else. Whole-argv: the terminal, the tmux client and
-#: server and the pane's shells all carry the whole spawn command, this included, at
-#: lower pids and on no tty, the tmux client's, or the pane's own.
+#: ``--session <id>`` and nothing else. Whole-argv, because the terminal, tmux and the
+#: pane's shells all carry the whole spawn command, this included, and none of them is
+#: the TUI.
 SESSION_ARG = re.compile(r"(?:\S*/)?opencode(?:\.exe)?\s+--session\s+(ses[0-9A-Za-z_-]+)")
 
 #: Opening prompts already read, by session id. A prompt never changes once written,
@@ -388,9 +382,8 @@ def opening_prompt(session_id: str) -> str | None:
     answering).
 
     ``GET /api/session/{id}/message?limit=1&order=asc`` answers
-    ``{"data": [{"type": "user", "text": …}]}`` (2.0.18). One request per session
-    ever for a session that has one (:data:`_opening_prompts`), and one per
-    :data:`MISS_TTL` while it has not (:data:`_prompt_misses`).
+    ``{"data": [{"type": "user", "text": …}]}`` (2.0.18). Cached both ways
+    (:data:`_opening_prompts`, :data:`MISS_TTL`).
     """
     if session_id in _opening_prompts:
         return _opening_prompts[session_id]
@@ -412,11 +405,10 @@ def scan_text(argv: str) -> str:
     """What a ``ps`` prompt scan should read for one process: its argv, and for a 2.x
     TUI the prompt its session was opened on.
 
-    Every other agent carries its prompt in its argv, which is the whole of what the
-    scan for ``PR #<n> in <owner>/<repo>`` rests on. A 2.x TUI carries only
-    ``--session <id>`` — its prompt was submitted through the service — so without
-    this a 2.x agent the applet holds no pid for (one the mesh placed here, one it has
-    no record of) reads as no agent at all, and is retired mid-turn.
+    Every other agent carries its prompt in its argv. A 2.x TUI carries only
+    ``--session <id>``, so without this a 2.x agent the applet holds no pid for (one
+    the mesh placed here, one it has no record of) reads as no agent at all, and is
+    retired mid-turn.
     """
     session_id = session_arg(argv)
     if session_id is None:

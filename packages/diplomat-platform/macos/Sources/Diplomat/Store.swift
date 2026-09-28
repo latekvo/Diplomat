@@ -857,10 +857,9 @@ final class Store: ObservableObject {
     /// after the operator switched would be interrogated through the wrong store. An
     /// OpenCode 1.x run also gets a port reserved for its own server. A port that cannot
     /// be had is not a failure to spawn — the run goes ahead without one and is read off
-    /// its screen, exactly as a Claude Code run is. An OpenCode 2.x run gets no port —
-    /// 2.x serves every session from one shared service — and is bound instead to the
-    /// session its spawn stages and creates there; a session that cannot be staged IS a
-    /// failure to spawn, because the command reads its prompt from nowhere else.
+    /// its screen, exactly as a Claude Code run is. An OpenCode 2.x run is instead bound to
+    /// the session its spawn stages on the shared service; a session that cannot be staged
+    /// IS a failure to spawn, because the command reads its prompt from nowhere else.
     ///
     /// `kind` drives the row's tint; `auditAction` (defaulting to `kind`) is the verb
     /// written to the activity feed. They're decoupled so a review-reply agent can log a
@@ -1153,9 +1152,8 @@ final class Store: ObservableObject {
     /// ordinary road.
     ///
     /// An OpenCode 2.x run whose window a backstop closed, or whose TUI is gone, is
-    /// interrupted before it is priced (`OpenCodeProbe.interrupts`). Its turn runs in the
-    /// shared service, not in its TUI, so a run retired because its window was closed by
-    /// hand may still be working, spending tokens after the ledger has closed its entry.
+    /// interrupted (`OpenCodeProbe.interrupts`): its turn outlives the TUI, and would go on
+    /// spending tokens after the ledger has closed its entry.
     private func retireFinished(_ pass: AgentPass) async {
         let t = pass.tick
         let refused = reapWedgedWindows(t)
@@ -1230,8 +1228,7 @@ final class Store: ObservableObject {
     /// placed back here is in the same position.
     ///
     /// An OpenCode 2.x run this reaps is interrupted too, whatever its window does
-    /// (`retireFinished`): its turn runs in the shared service rather than in the window,
-    /// and outlives the TUI the close ends.
+    /// (`retireFinished`).
     private func reapWedgedWindows(_ t: AgentState.Tick) -> Set<String> {
         var refused: Set<String> = []
         for record in t.reapable {
