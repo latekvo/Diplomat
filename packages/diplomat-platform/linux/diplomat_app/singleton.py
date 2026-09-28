@@ -30,12 +30,12 @@ from .procscan import alive as _alive
 _APPLET_MODULES = frozenset({"diplomat_app", "argent_utils"})
 
 # Env-var suffixes that mark a ``python -m <module>`` process as a headless
-# one-shot (self-update / dump / lookup / prompt / render) rather than the GUI
-# tray — see ``__main__.py``. We never terminate these: they exit on their own
-# and are not a wrench in the tray. Matched under both the current and the
+# one-shot (self-update / watchdog / dump / lookup / prompt / render) rather than
+# the GUI tray — see ``__main__.py``. We never terminate these: they exit on their
+# own and are not a wrench in the tray. Matched under both the current and the
 # legacy env prefix.
 _HEADLESS_SUFFIXES = frozenset(
-    {"SELF_UPDATE", "DUMP", "LOOKUP", "PRINT_PROMPT", "RENDER"}
+    {"SELF_UPDATE", "WATCHDOG", "DUMP", "LOOKUP", "PRINT_PROMPT", "RENDER"}
 )
 _ENV_PREFIXES = ("DIPLOMAT_", "ARGENT_UTILS_")
 
@@ -142,6 +142,13 @@ class SingleInstance:
         # kills). This stays pidfile-only — it verifies the ONE recorded pid, it does
         # not /proc-scan — so the headless updater never detects itself as a tray.
         return pid if pid and _alive(pid) and _is_applet_gui(pid) else 0
+
+    @staticmethod
+    def any_running() -> bool:
+        """Whether any GUI tray is up. Unlike :meth:`running_pid` it also sees one
+        that is still reaping its predecessor and has not claimed the pidfile yet,
+        so a check made during a hand-over never finds nobody."""
+        return bool(SingleInstance.running_pid() or _other_instances())
 
     @staticmethod
     def release() -> None:

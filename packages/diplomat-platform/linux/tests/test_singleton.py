@@ -60,6 +60,7 @@ def test_cmdline_rejects_non_applet(tokens):
     "raw",
     [
         b"PATH=/usr/bin\0DIPLOMAT_SELF_UPDATE=1\0",
+        b"DIPLOMAT_WATCHDOG=1\0",
         b"DIPLOMAT_DUMP=1\0",
         b"ARGENT_UTILS_SELF_UPDATE=1\0",  # legacy prefix
         b"DIPLOMAT_PRINT_PROMPT=mine\0",

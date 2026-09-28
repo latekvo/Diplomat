@@ -88,7 +88,9 @@ jobs:
       # nothing. QUEUE_TEST is the one
       # that touches state at all: reaching the cap's refusal branch means a `ps` scan, a
       # ban-list read and an `at-capacity` audit line, so it points DIPLOMAT_AUDIT_DIR at
-      # a scratch dir of its own. It returns before any spawn or fetch.
+      # a scratch dir of its own. It returns before any spawn or fetch. WATCHDOG_TEST
+      # runs the unattended jobs over fixture steps, and opens only throwaway bundles it
+      # lays out itself plus an idle copy of the binary, ending every one of them.
       #
       # DIPLOMAT_TRACK_TEST and DIPLOMAT_SPAWN_FOCUS_TEST are the two that stay out,
       # and not by oversight: both drive real throwaway terminal windows and need a
@@ -103,6 +105,7 @@ jobs:
           SZPONTNET_DIR="$RUNNER_TEMP/mesh" DIPLOMAT_SELF_REPO=/nonexistent \
             DIPLOMAT_MESH_CMD_TEST=1 swift run Diplomat
           DIPLOMAT_ALLOCATOR_TEST=1 swift run Diplomat
+          DIPLOMAT_WATCHDOG_TEST=1 swift run Diplomat
           DIPLOMAT_QUEUE_TEST=1 swift run Diplomat
           DIPLOMAT_SWEEP_TEST=1 swift run Diplomat
           DIPLOMAT_QUOTA_TEST=1 swift run Diplomat

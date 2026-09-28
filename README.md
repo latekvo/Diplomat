@@ -1269,25 +1269,35 @@ System Settings → General → Login Items — or just use the autostart script
 ### Autostart on login
 
 ```bash
-./install/install-autostart.sh     # rebuilds, installs the app + both LaunchAgents, starts it now
-./install/uninstall-autostart.sh   # removes both LaunchAgents and stops the app
+./install/install-autostart.sh     # rebuilds, installs the app + all three LaunchAgents, starts it now
+./install/uninstall-autostart.sh   # removes all three LaunchAgents and stops the app
 ```
 
 Installs a per-user LaunchAgent at `~/Library/LaunchAgents/com.ignacy.diplomat.plist`
-(`RunAtLoad`), so the wrench reappears on every login. The ⏻ Quit button still works
-within a session (no `KeepAlive`) — it just returns next login. The app goes to
+(`RunAtLoad`), so the wrench reappears on every login. The app goes to
 `/Applications`, or `~/Applications` when that isn't writable.
 
 It also installs a **second** agent, `com.ignacy.diplomat.autoupdate`, which fires
 daily at **06:00** and runs the app binary headless (`DIPLOMAT_SELF_UPDATE=1`):
-merge upstream if behind, rebuild the bundle, and relaunch only if an instance is
-running. It's the unattended twin of the Settings **Update** button, and it logs to
-`~/Library/Logs/diplomat-autoupdate.err.log`. Manage it on its own with:
+merge upstream if behind, rebuild the bundle, and relaunch a running instance onto
+it. It's the unattended twin of the Settings **Update** button, and it logs to
+`~/Library/Logs/diplomat-autoupdate.log`. Manage it on its own with:
 
 ```bash
 ./install/install-autoupdate.sh    # (also called by install-autostart.sh)
 ./install/uninstall-autoupdate.sh
 ```
+
+A **third**, `com.ignacy.diplomat.watchdog`, runs the binary headless every 5 minutes
+(`DIPLOMAT_WATCHDOG=1`, `StartInterval`) and launches the app if no instance is up -
+after a crash, a force-quit, a kill or a failed update. The 06:00 run does the same.
+Neither brings back an app you quit yourself (the ⏻ button, `osascript … quit`,
+Activity Monitor's Quit): that leaves `~/.diplomat/operator-quit`, which the next
+launch clears. A hand-over to a newer instance leaves no mark, and the watchdog only
+acts when there is no instance at all, so it never contends with the newest-wins
+singleton or an update's relaunch. It launches the bundle the updater builds, and logs
+what it launched to the same file. Manage it with `./install/install-watchdog.sh` /
+`./install/uninstall-watchdog.sh`.
 
 ### Headless self-test
 
@@ -1352,7 +1362,12 @@ DIPLOMAT_APIWATCH_TEST=1 ...                     # self-test: who a scan may typ
                                                      #   including one a terminal only shows through tmux;
                                                      #   never a plain shell). Reads no terminal, sends nothing
 DIPLOMAT_SELF_UPDATE=1   ...                     # the unattended 06:00 update: merge if behind, rebuild,
-                                                     #   relaunch only if an instance is running
+                                                     #   relaunch a running instance, launch a dead one
+DIPLOMAT_WATCHDOG=1      ...                     # the 5-minute check: launch the app if no instance is up
+                                                     #   and the operator did not quit it
+DIPLOMAT_WATCHDOG_TEST=1 ...                     # self-test: who brings a dead app back and who leaves it
+                                                     #   closed, over fixture job steps; opens only throwaway
+                                                     #   bundles; exit code = verdict
 
 # The shared core itself is independently buildable & testable (also on Linux):
 swift run DiplomatCoreSmoke                    # loads assets/, runs filter + prompt + golden-file assertions
