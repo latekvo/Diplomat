@@ -198,6 +198,8 @@ def test_run_scheduled_launches_nothing_without_a_recorded_display(repos):
     time.sleep(0.5)
     assert not (marker / "relaunched").exists()
     assert _log()[-1].endswith("tray not running: no tray has recorded a display to launch onto")
+    assert selfupdate.run_watchdog() == 0
+    assert not any(ln.startswith("watchdog:") for ln in _log())  # not every 5 minutes
 
 
 # ---- bringing a dead tray back ---------------------------------------------
@@ -363,6 +365,12 @@ def test_a_quit_leaves_the_mark_and_the_next_launch_clears_it(monkeypatch):
     monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-3")
     assert app_module.run_app() == 0
     assert not selfupdate.operator_quit()
+    assert selfupdate._recorded_display_env().get("WAYLAND_DISPLAY") == "wayland-3"
+
+    # A start with no display to show on keeps the one a revival can use.
+    monkeypatch.delenv("WAYLAND_DISPLAY")
+    monkeypatch.delenv("DISPLAY", raising=False)
+    assert app_module.run_app() == 0
     assert selfupdate._recorded_display_env().get("WAYLAND_DISPLAY") == "wayland-3"
 
 

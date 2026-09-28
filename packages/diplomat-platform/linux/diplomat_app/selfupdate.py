@@ -304,7 +304,10 @@ def _display_env_file() -> Path:
 
 def record_display_env() -> None:
     """Keep this tray's display env for a revival: once the tray is dead there is
-    no process left to lift it off, and a service env usually has none."""
+    no process left to lift it off, and a service env usually has none. A start with
+    no display (from SSH, say) keeps the last one that had one."""
+    if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        return
     try:
         _state_dir().mkdir(parents=True, exist_ok=True)
         _display_env_file().write_text(json.dumps(
@@ -339,7 +342,8 @@ def revive(quietly: bool, tag: str = "") -> int:
         return 0
     env = _recorded_display_env()
     if not (env.get("DISPLAY") or env.get("WAYLAND_DISPLAY")):
-        _sched_log(f"{tag}tray not running: no tray has recorded a display to launch onto")
+        if not quietly:
+            _sched_log(f"{tag}tray not running: no tray has recorded a display to launch onto")
         return 0
     try:
         relaunch(env)

@@ -141,9 +141,14 @@ enum WatchdogTest {
         check("a clear removes it", !OperatorQuit.isMarked)
         OperatorQuit.clear()
         check("a second clear is harmless", !OperatorQuit.isMarked)
-        check("the Quit button is deliberate", OperatorQuit.isDeliberate(senderIsDiplomat: nil))
-        check("a quit sent by another app is deliberate", OperatorQuit.isDeliberate(senderIsDiplomat: false))
-        check("a quit sent by a newer Diplomat is a hand-over", !OperatorQuit.isDeliberate(senderIsDiplomat: true))
+        check("the Quit button is deliberate",
+              OperatorQuit.isDeliberate(senderIsDiplomat: nil, endsSession: false))
+        check("a quit sent by another app is deliberate",
+              OperatorQuit.isDeliberate(senderIsDiplomat: false, endsSession: false))
+        check("a quit sent by a newer Diplomat is a hand-over",
+              !OperatorQuit.isDeliberate(senderIsDiplomat: true, endsSession: false))
+        check("a logout's quit is not, cancelled or not",
+              !OperatorQuit.isDeliberate(senderIsDiplomat: false, endsSession: true))
 
         print("the environment a launched GUI gets")
         func bundle(_ name: String, executable: String, script: String) -> URL {
@@ -226,8 +231,10 @@ enum WatchdogTest {
         let up = staying().map(\.processIdentifier)
         check("an instance carrying no headless marker is the app",
               !up.isEmpty && up.allSatisfy { counted.contains($0) }, "counted \(counted), staying \(up)")
-        check("a quit sent from this binary reads as Diplomat's", SingleInstance.isDiplomat(idle))
-        check("a quit sent from anything else does not", !SingleInstance.isDiplomat(getppid()))
+        check("a quit sent from this binary reads as Diplomat's",
+              SingleInstance.executableName(idle) == SingleInstance.execName)
+        check("a quit sent from anything else does not",
+              SingleInstance.executableName(getppid()).map { $0 != SingleInstance.execName } == true)
 
         if failures.isEmpty { print("watchdog: all passed") }
         else { print("watchdog: FAILED \(failures.count): \(failures.joined(separator: "; "))") }

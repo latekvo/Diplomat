@@ -21,8 +21,11 @@ enum OperatorQuit {
 
     /// `senderIsDiplomat` is nil for a quit this process asked for itself (the Quit
     /// button), else whether the quit Apple event came from a Diplomat process: the
-    /// singleton's `terminate()` from a newer instance. Anything else is the operator:
-    /// `osascript`, Activity Monitor's Quit, and a logout, whose mark the login agent's
-    /// launch at the next login clears.
-    static func isDeliberate(senderIsDiplomat: Bool?) -> Bool { senderIsDiplomat != true }
+    /// singleton's `terminate()` from a newer instance. `endsSession` is a logout,
+    /// restart or shutdown, which asks every app to quit before it can still be
+    /// cancelled; marked, a cancelled one would leave the app dead for the rest of the
+    /// session. Anything else (`osascript`, Activity Monitor's Quit) is the operator.
+    static func isDeliberate(senderIsDiplomat: Bool?, endsSession: Bool) -> Bool {
+        senderIsDiplomat != true && !endsSession
+    }
 }

@@ -188,12 +188,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// A quit the operator asked for leaves the marker that keeps the unattended jobs
     /// from bringing the app back; one sent by another Diplomat (the singleton handing
-    /// over) does not. Only here is the quit Apple event, and its sender, readable.
+    /// over) or by a logout does not. Only here is the quit Apple event, and its
+    /// sender, readable.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if !Headless.active {
             let event = NSAppleEventManager.shared().currentAppleEvent
             let from = event?.attributeDescriptor(forKeyword: keySenderPIDAttr)?.int32Value
-            if OperatorQuit.isDeliberate(senderIsDiplomat: from.map(SingleInstance.isDiplomat)) {
+            let fromName = from.flatMap(SingleInstance.executableName)
+            let endsSession = event?.attributeDescriptor(forKeyword: kAEQuitReason) != nil
+                || event?.paramDescriptor(forKeyword: kAEQuitReason) != nil
+                || fromName == "loginwindow"
+            if OperatorQuit.isDeliberate(senderIsDiplomat: from.map { _ in fromName == SingleInstance.execName },
+                                         endsSession: endsSession) {
                 OperatorQuit.mark()
             }
         }
@@ -242,12 +248,12 @@ enum SingleInstance {
     /// Whether another live GUI instance exists.
     static func isRunning() -> Bool { !otherInstances().isEmpty }
 
-    /// Whether `pid` runs this app's binary, headless or not. By executable path, since
-    /// a process that never started AppKit has no bundle identifier to ask for.
-    static func isDiplomat(_ pid: pid_t) -> Bool {
+    /// The file name of the binary `pid` runs, or nil once it has exited. By path,
+    /// since a process that never started AppKit has no bundle identifier to ask for.
+    static func executableName(_ pid: pid_t) -> String? {
         var buf = [CChar](repeating: 0, count: Int(MAXPATHLEN) * 4)
-        guard proc_pidpath(pid, &buf, UInt32(buf.count)) > 0 else { return false }
-        return URL(fileURLWithPath: String(cString: buf)).lastPathComponent == execName
+        guard proc_pidpath(pid, &buf, UInt32(buf.count)) > 0 else { return nil }
+        return URL(fileURLWithPath: String(cString: buf)).lastPathComponent
     }
 
     static func terminateOthers() {
