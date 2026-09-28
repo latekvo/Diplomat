@@ -471,9 +471,9 @@ def merged_prs(pr_numbers: set[int]) -> Observation:
     outranks anything a process is doing.
 
     One ``gh`` call per PR, so this belongs on the slow refresh, not the 8-second
-    tick. A PR whose probe fails is simply absent from the answer; the whole probe is
-    UNAVAILABLE only when there was nothing to ask about, so a partial answer is
-    still positive evidence about the PRs it covers.
+    tick. The reading is always PRESENT: a PR whose probe fails is simply absent from
+    the answer, so a partial answer is still positive evidence about the PRs it
+    covers, and an empty ask is a real "none of them".
     """
     if not pr_numbers:
         return Observation.present(set())
