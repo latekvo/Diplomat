@@ -298,8 +298,10 @@ public enum AgentRegistry {
     /// Kept on disk rather than in memory so the search survives the applet restart this
     /// whole module exists for — and because the search is the expensive half: matching a
     /// session to a run reads its opening message, while asking a bound one what it is
-    /// doing reads a single message. An OpenCode 2.x run needs no search: its spawn mints
-    /// the session's id and binds it here before the agent starts.
+    /// doing reads a single message. An OpenCode 2.x run needs no search of the store: a
+    /// spawn on this machine mints the session's id and binds it here before the agent
+    /// starts, and one the mesh placed here is bound to the session its TUI's command line
+    /// names, once the process table shows it.
     ///
     /// Every runner spells an id its own way — `ses_00d61ec0…` under OpenCode,
     /// `20260812_002140_b0e4d4` under Hermes — so what is checked is the shape any id has

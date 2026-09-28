@@ -1029,11 +1029,21 @@ for bad in [nil, "<html>", ["data": [["type": "assistant", "text": "x"]]],
 }
 check(OpenCodeAPI.attachedSession("opencode --session ses_diplomat_0123abcd")
         == "ses_diplomat_0123abcd")
-check(OpenCodeAPI.attachedSession("/bin/zsh -i -c 'x || exit; opencode --session ses_a'")
-        == "ses_a", "a wrapper shell's closing quote is not part of the id")
-check(OpenCodeAPI.attachedSession("opencode --session\tses_Ab-9_z x") == "ses_Ab-9_z")
-for line in ["opencode --prompt \"$(cat '/p')\"", "opencode --port 1", "opencode --session x_1",
-             "claude --resume ses_a"] {
+check(OpenCodeAPI.attachedSession("/home/u/.npm/bin/opencode --session ses_x") == "ses_x")
+check(OpenCodeAPI.attachedSession("/opt/oc/opencode.exe --session\tses_Ab-9_z") == "ses_Ab-9_z")
+// Every process wrapping a 2.x TUI carries its words too; these are the ones a real
+// spawn in tmux put in `ps` (2.0.18), and none of them is the TUI.
+let wrapped = "ses_diplomat_49b172f752bd4c2f86a4ec0c5f050dc1"
+for line in [
+    "script -q /dev/null tmux -L x new-session -s y zsh -i -c 'cd /tmp; zsh -i -c \"sleep 9; opencode --session \(wrapped)\"; exec sh'",
+    "tmux -L x new-session -s y zsh -i -c 'cd /tmp; zsh -i -c \"sleep 9; opencode --session \(wrapped)\"; exec sh'",
+    "zsh -i -c cd /tmp; zsh -i -c \"sleep 9; opencode --session \(wrapped)\"; exec sh",
+    "zsh -i -c sleep 9; opencode --session \(wrapped)",
+    "xterm -e bash -c 'cd /tmp; opencode --session \(wrapped)'",
+    "opencode --session \(wrapped) --prompt x", "notopencode --session \(wrapped)",
+    "opencode --prompt \"$(cat '/p')\"", "opencode --port 1", "opencode --session x_1",
+    "opencode --session ses", "opencode --session ses_a'", "claude --resume ses_a",
+] {
     check(OpenCodeAPI.attachedSession(line) == nil, "“\(line)” attaches to no 2.x session")
 }
 

@@ -998,6 +998,8 @@ final class Store: ObservableObject {
         /// Window handles for the runs that have one, read in the same pass so a repaint
         /// never touches the disk.
         var windows: [String: AgentWindows.Handle]
+        /// The 2.x sessions a TUI in the same pass's process table is attached to.
+        var attached: Observation<[String]>
     }
 
     /// Resolve every registered run against one pass of evidence. READ-ONLY.
@@ -1029,17 +1031,17 @@ final class Store: ObservableObject {
         return await Task.detached(priority: .userInitiated) {
             let now = Date().timeIntervalSince1970
             let records = AgentRegistry.adoptPids(AgentRegistry.load())
-            let evidence = AgentProbes.gather(records: records, now: now, owner: owner,
+            let gathered = AgentProbes.gather(records: records, now: now, owner: owner,
                                               repo: repo, directory: directory,
                                               meshEnabled: mesh, meshState: snapshot,
                                               merged: merged, tokens: tokens)
-            let tick = AgentState.tick(records: records, evidence: evidence, now: now,
-                                       limit: limit, deadline: deadline)
+            let tick = AgentState.tick(records: records, evidence: gathered.evidence,
+                                       now: now, limit: limit, deadline: deadline)
             var windows: [String: AgentWindows.Handle] = [:]
             for r in tick.records where !r.untracked {
                 windows[r.runID] = AgentWindows.handle(r.runID)
             }
-            return AgentPass(tick: tick, windows: windows)
+            return AgentPass(tick: tick, windows: windows, attached: gathered.attached)
         }.value
     }
 
@@ -1053,7 +1055,7 @@ final class Store: ObservableObject {
         let pass = await agentTick()
         Store.persistRunChanges(pass.tick.records)
         publish(pass)
-        await retireFinished(pass.tick)
+        await retireFinished(pass)
         noteSilentProbes()
         return pass
     }
@@ -1150,18 +1152,19 @@ final class Store: ObservableObject {
     /// leaves, no backstop stamps the verdict at all and it retires and prices on the
     /// ordinary road.
     ///
-    /// An OpenCode 2.x run is interrupted before it is priced. Its turn runs in the shared
-    /// service, not in its TUI, so a run retired because its TUI is gone — its window
-    /// closed by hand — may still be working, spending tokens after the ledger has closed
-    /// its entry (`OpenCodeProbe.interrupt`).
-    private func retireFinished(_ t: AgentState.Tick) async {
+    /// An OpenCode 2.x run whose window a backstop closed, or whose TUI is gone, is
+    /// interrupted before it is priced (`OpenCodeProbe.interrupts`). Its turn runs in the
+    /// shared service, not in its TUI, so a run retired because its window was closed by
+    /// hand may still be working, spending tokens after the ledger has closed its entry.
+    private func retireFinished(_ pass: AgentPass) async {
+        let t = pass.tick
         let refused = reapWedgedWindows(t)
         let gone = t.retirable.filter { !refused.contains($0.runID) }
-        guard !gone.isEmpty else { return }
-        for r in gone {
-            if let session = OpenCodeProbe.serviceSession(of: r) {
-                OpenCodeProbe.interrupt(sessionID: session)
-            }
+        let stops = OpenCodeProbe.interrupts(reaped: t.reapable, retired: gone,
+                                             attached: pass.attached)
+        guard !gone.isEmpty else {
+            await Store.interrupt(stops)
+            return
         }
         // A run whose command never ran has nothing to price — no agent, no transcript,
         // no tokens — and a `done` against its key would count it among the completed
@@ -1177,7 +1180,17 @@ final class Store: ObservableObject {
         }
         AgentRegistry.forget(Set(gone.map(\.runID)))
         OpenCodeProbe.forgetAdopted(Set(gone.map(\.runID)))
+        await Store.interrupt(stops)
         await settleLedger(priced)
+    }
+
+    /// Stop these 2.x sessions' turns, off the main actor: each request can wait out a
+    /// timeout on a service that has stopped answering.
+    private static func interrupt(_ sessions: [String]) async {
+        guard !sessions.isEmpty else { return }
+        await Task.detached(priority: .utility) {
+            for session in sessions { OpenCodeProbe.interrupt(sessionID: session) }
+        }.value
     }
 
     /// Close the terminal of every run a backstop ended — the stillness clock, or the
@@ -1216,15 +1229,12 @@ final class Store: ObservableObject {
     /// directory, so it never has a handle and the walk is its only route; a run the mesh
     /// placed back here is in the same position.
     ///
-    /// An OpenCode 2.x run is interrupted first, whatever the window then does: its turn
-    /// runs in the shared service rather than in the window, and outlives the TUI the
-    /// close ends (`OpenCodeProbe.interrupt`).
+    /// An OpenCode 2.x run this reaps is interrupted too, whatever its window does
+    /// (`retireFinished`): its turn runs in the shared service rather than in the window,
+    /// and outlives the TUI the close ends.
     private func reapWedgedWindows(_ t: AgentState.Tick) -> Set<String> {
         var refused: Set<String> = []
         for record in t.reapable {
-            if let session = OpenCodeProbe.serviceSession(of: record) {
-                OpenCodeProbe.interrupt(sessionID: session)
-            }
             let byHandle = AgentWindows.handle(record.runID).map(AgentWindows.close) ?? false
             guard byHandle || TerminalFocus.close(tty: record.tty, pid: record.pid)
             else {
