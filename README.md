@@ -1032,16 +1032,21 @@ and ⏻) swaps the panel to a settings screen:
   eagerly at launch so it's the default everywhere.
 - <a id="agent-runner"></a>**Agent runner** - which agent CLI a spawn runs:
   **Claude Code** (the default, and what every existing install keeps), **OpenCode**
-  or **Hermes**. Only the agent word and its flags change; the prompt, the staged
-  file, the completion sentinel, the pid a run is identified by and every monitor
-  above it are the same whichever it is, which is the point of having one setting
+  or **Hermes**. Only the agent command changes - the agent word and its flags, or
+  for OpenCode 2.x a short chain of `opencode api` calls ahead of its TUI (below);
+  the prompt, the staged file, the completion sentinel, the pid a run is identified
+  by and every monitor above it are the same whichever it is, which is the point of having one setting
   rather than a second pipeline. All three are windowed, so a run can be watched and
   typed into. Like the repo root the setting lives in the shared
   `~/.diplomat/config.json`, so a running mesh node picks it up on its next spawn -
   and which runner a given run *started* under is written into its run directory, so
   switching mid-flight can't interrogate a live agent through the wrong store.
-  - **OpenCode 1.x and 2.x** are both supported, and are told apart at every spawn by
-    `opencode --version` (major 2 or later is 2.x; no answer is 1.x). They share
+  - **OpenCode 1.x and 2.x** are both supported, and are told apart by `opencode
+    --version` (major 2 or later is 2.x; no answer is 1.x), asked of the `opencode`
+    a spawned agent would run: the one the user's login shell, running an
+    interactive one, finds on its `PATH` - so an install only `~/.zprofile` or only
+    an rc names still counts. That path is re-resolved once it is gone or a minute
+    old, and the version re-asked whenever the binary changes on disk. They share
     almost nothing below the setting. A 1.x run is its own server: the TUI is started
     as `opencode --port <n> [-m <model>] --prompt "…"`, with the permission grant in
     `OPENCODE_PERMISSION`. 2.x has one per-user background service that every client
@@ -1080,15 +1085,16 @@ and ⏻) swaps the panel to a settings screen:
     turn and stamps each as it completes, so the stamp alone calls a turn over in the
     gaps between steps, while the status alone calls a session idle in the moment
     before its first turn starts. An OpenCode 2.x run is asked of the per-user
-    service, found through `$XDG_STATE_HOME/opencode/service.json` (else
-    `~/.local/state/opencode/service.json`) and authenticated with the password in
+    service, found through `opencode/service.json` under the `$XDG_STATE_HOME` that
+    same shell reports (else `~/.local/state`) and authenticated with the password in
     it: its session is busy while the service lists it as running - 2.x keeps a
     session listed from the start of a turn to its end, with no gaps between steps -
     and idle once it is not listed *and* carries the `time.idle` stamp a finished
     turn leaves, which a session created but not yet running has not got. Closing a
     2.x run's window does not stop its turn, which runs on in the service, so
-    whenever Diplomat closes one (a backstop reaping a wedged run) it interrupts the
-    turn first. Hermes serves no such port, and needs none: it
+    Diplomat interrupts the turn whenever it closes one (a backstop reaping a wedged
+    run) and whenever it retires one whose TUI has gone (a window closed by hand, a
+    TUI that quit or crashed); an idle session ignores the interrupt. Hermes serves no such port, and needs none: it
     writes every session and message to `~/.hermes/state.db` as it goes, which
     Diplomat opens read-only. A turn is over there when the agent stamps its own
     message `finish_reason` (`tool_calls` is mid-turn, `stop` is the end) *and*
@@ -1100,8 +1106,11 @@ and ⏻) swaps the panel to a settings screen:
     the session's opening message - the only exact key, since neither keeps a store
     per run: Hermes' is the machine's, OpenCode's is the checkout's and every worktree
     of it, and a busy one holds hundreds of sessions that are not this run's. A 2.x
-    session needs no match: Diplomat chose its id and bound it to the run before the
-    spawn. And either way the answer *ends* the run, exactly as a Claude Code hook's
+    session Diplomat spawned needs no match: it chose the id and bound it to the run
+    before the spawn. One the mesh placed here has no id bound and no prompt in its
+    TUI's argv (`opencode --session <id>`), so its session is taken from the process
+    table and matched by the opening prompt the service holds for it - which is also
+    how the `ps` scans behind the mesh's dedup and pid-less runs see a 2.x agent. And either way the answer *ends* the run, exactly as a Claude Code hook's
     does: it is the same fact from the same kind of source, the agent's own word
     rather than a screen read for signs of one. A run that cannot be reached - the
     port was taken, the server or service has not come up, the store is not there -

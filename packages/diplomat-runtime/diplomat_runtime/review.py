@@ -400,9 +400,11 @@ def shell_command(prompt_file: str, done_path: str | None = None,
                   opencode_session: str | None = None) -> str:
     """``cd '<repo>' 2>/dev/null; <agent>; [{ printf %s $? > done; } 2>/dev/null || :;] exec "$SHELL" -i``
 
-    ``<agent>`` is :func:`runner.agent_command` — ``claude "$(cat '<file>')"`` or
-    another runner's spelling of the same thing. Everything around it is identical for
-    all of them, because everything around it is what a run is *identified* by.
+    ``<agent>`` is :func:`runner.agent_command` — ``claude "$(cat '<file>')"``, another
+    runner's spelling of the same thing, or OpenCode 2.x's ``opencode api`` chain
+    ending in its TUI. Everything around it is shared by all of them, because
+    everything around it is what a run is *identified* by; the one variation is the
+    inner shell a 2.x agent gets even without a pid file (``opencode_session`` below).
 
     Run (via :func:`user_shell`, interactively) so the user's rc is sourced: that is
     what resolves a `claude` alias, and equally what puts a per-user install of either

@@ -224,3 +224,15 @@ def test_the_explain_switch_writes_through_and_reveals(view):
     view._explain.setChecked(False)
     assert view.store.settings_explain is False
     assert not any(d.isVisibleTo(view) for d in _details(view))
+
+
+def test_the_runner_row_names_the_opencode_a_spawn_would_run(make_view, monkeypatch):
+    """Resolved through the user's shell, as the spawn resolves it: an install only an
+    rc or profile puts on PATH is not on this app's, and is still what runs."""
+    from diplomat_app import settingsview
+    from diplomat_runtime import runner, usagescan
+
+    monkeypatch.setattr(usagescan, "opencode_binary", lambda: "/rc-only/opencode")
+    monkeypatch.setattr(settingsview.shutil, "which", lambda name: None)
+    view = make_view(agent_runner=runner.OPENCODE)
+    assert view._runner_row._summary.text() == "Spawns run `opencode` (/rc-only/opencode)."

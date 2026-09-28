@@ -37,6 +37,7 @@ from diplomat_runtime import (
     core,
     review,
     runner,
+    usagescan,
 )
 from . import (
     deviceallocator,
@@ -279,7 +280,10 @@ class SettingsView(QWidget):
         self._runner_pill.set_state(label, _PURPLE)
         self._runner_nest.setVisible(foreign)
         self._model_field.setPlaceholderText(f"model — blank lets {label} choose")
-        found = shutil.which(chosen)
+        # OpenCode's is the binary its spawns will actually run — resolved through the
+        # user's shell, which may name a different install than this app's PATH does.
+        found = (usagescan.opencode_binary() if chosen == runner.OPENCODE
+                 else shutil.which(chosen))
         if found:
             where = f"Spawns run `{chosen}` ({found})."
         else:
