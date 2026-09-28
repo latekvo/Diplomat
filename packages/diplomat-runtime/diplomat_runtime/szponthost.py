@@ -193,8 +193,10 @@ def _ps_dump() -> str:
     leads because it is what
     joins a ``claude`` process to the tmux pane showing it
     (:func:`autofix.idle_pr_numbers`); the age is beside it because that same answer
-    must not read a booting agent as an idle one; the argv scan is indifferent to
-    both, finding its prompt wherever on the line it falls.
+    must not read a booting agent as an idle one. The argv scan splits both off
+    (:func:`autofix.agent_lines`): a 2.x TUI's line carries no prompt, only
+    ``--session <id>``, which :func:`opencodeapi.session_arg` matches against the
+    whole argv.
 
     Returns ``""`` on any failure, which is what lets both callers degrade rather
     than raise into the executor's spawn path. A non-zero exit is one of those

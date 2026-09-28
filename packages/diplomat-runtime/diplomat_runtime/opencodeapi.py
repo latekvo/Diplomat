@@ -357,8 +357,8 @@ def interrupt(session_id: str) -> None:
 
 #: A 2.x TUI's argv: its binary — ``opencode`` or ``opencode.exe``, by any path — then
 #: ``--session <id>`` and nothing else. Whole-argv: the terminal, the tmux client and
-#: server and the pane's shells all carry the spawn command with this inside it, and
-#: none of them is the TUI or on its tty.
+#: server and the pane's shells all carry the whole spawn command, this included, at
+#: lower pids and on no tty, the tmux client's, or the pane's own.
 SESSION_ARG = re.compile(r"(?:\S*/)?opencode(?:\.exe)?\s+--session\s+(ses[0-9A-Za-z_-]+)")
 
 #: Opening prompts already read, by session id. A prompt never changes once written,
