@@ -191,8 +191,9 @@ public enum OpenCodeCLI {
 
     /// The major `DIPLOMAT_OPENCODE_MAJOR` names — `true` for exactly `2`, `false` for
     /// exactly `1`, nil for anything else, which leaves the question to `installedIsService`.
-    /// The Linux runtime sets it on every `diplomat-core` it runs, having already resolved
-    /// the binary itself, so a prompt build there costs no shell and no `--version`.
+    /// The Linux runtime sets it on the `diplomat-core` a prompt build runs while OpenCode
+    /// is the selected runner, having already resolved the binary itself, so such a build
+    /// costs no shell and no `--version`.
     public static func majorOverride(_ environment: [String: String]) -> Bool? {
         switch environment["DIPLOMAT_OPENCODE_MAJOR"] {
         case "2": return true

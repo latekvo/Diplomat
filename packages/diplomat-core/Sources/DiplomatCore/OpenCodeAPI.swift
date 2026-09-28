@@ -352,17 +352,23 @@ public enum OpenCodeAPI {
         return first["text"] as? String
     }
 
-    /// The session a 2.x TUI's command line attaches to — `--session` and then a
-    /// `ses`-prefixed id — or nil for any other command line. The id stops at the first
-    /// character no id has, so the shells wrapping the TUI, whose command lines still
-    /// carry the quote that closed it, name the same session rather than a garbled one.
+    /// The session a 2.x TUI attaches to, or nil for any other command line. A TUI's is
+    /// exactly `opencode --session <id>` — the first word may be a path, and `opencode.exe`
+    /// is the native binary npm's `opencode` links to — with nothing before or after it.
+    ///
+    /// Anchored because every process wrapping the TUI carries the same words further
+    /// along its own command line: the terminal, the tmux client and server, and the
+    /// shells the spawn nests. The outer ones have lower pids and no tty or the tmux
+    /// client's, and the scan keeps the first sighting of a PR, so matching them would
+    /// hand the run a tty with no agent's screen behind it.
     ///
     /// A 2.x agent's argv carries this and no prompt: the prompt went to the service
     /// through `opencode api` before the TUI started (`AgentRunner.serviceCommand`). So
     /// this is what the process-table scan finds such an agent by, and the prompt it
     /// matches is asked of the service (`openingText`).
     public static func attachedSession(_ commandLine: String) -> String? {
-        guard let pattern = try? NSRegularExpression(pattern: "--session\\s+(ses[0-9A-Za-z_-]*)"),
+        guard let pattern = try? NSRegularExpression(
+                  pattern: "^(?:\\S*/)?opencode(?:\\.exe)?\\s+--session\\s+(ses[0-9A-Za-z_-]+)$"),
               let hit = pattern.firstMatch(in: commandLine,
                                            range: NSRange(commandLine.startIndex...,
                                                           in: commandLine)),

@@ -163,10 +163,18 @@ enum SweepTest {
         // 6. An OpenCode 2.x run with no pid to name it: its agent's command line carries
         //    only `--session <id>`, so the process-table scan reads the PR off the
         //    session's opening prompt, and the run is then asked of — and stopped
-        //    through — that session.
+        //    through — that session. The terminal, tmux and the shells the spawn nests
+        //    carry the TUI's words too, at lower pids and on no tty or the tmux client's
+        //    (lines as a real spawn in tmux left them in `ps`, on 2.0.18).
+        let wrapper = "tmux -L d new-session -s d zsh -i -c 'cd /r; zsh -i -c \"x || exit; "
+            + "opencode --session ses_mesh\"; exec sh'"
         let dump = Observation.present("""
+          790 ??         00:41 script -q /dev/null \(wrapper)
+          791 ttys030    00:41 \(wrapper)
+          792 ??         00:41 \(wrapper)
+          793 ttys031    00:41 zsh -i -c x || exit; opencode --session ses_mesh
           801 ttys031    00:40 opencode --session ses_mesh
-          802 ttys032    00:40 opencode --session ses_later
+          802 ttys032    00:40 /Users/u/.npm/bin/opencode --session ses_later
           803 ttys033    00:40 opencode --session ses_other
           804 ttys034    00:40 opencode Review PR #11 in o/r
         """)
@@ -179,44 +187,91 @@ enum SweepTest {
         check("a 2.x agent is found by its session's opening prompt, on its own tty",
               scanned.agents.value == [9: "ttys031", 11: "ttys034"]
                 && scanned.sessions == [9: "ses_mesh"])
-        check("…a session the service cannot answer for is not seen, and a 1.x line asks nothing",
-              asked == ["ses_mesh", "ses_later", "ses_other"])
+        check("…only a TUI's own line names a session: no wrapper is asked about or attached",
+              asked == ["ses_mesh", "ses_later", "ses_other"]
+                && scanned.attached.value == ["ses_mesh", "ses_later", "ses_other"])
 
-        func booked(_ pr: Int, _ placement: AgentState.Placement, port: Int? = nil)
-            -> AgentState.RunRecord {
+        func booked(_ pr: Int, _ placement: AgentState.Placement, port: Int? = nil,
+                    prompt: String? = nil) -> AgentState.RunRecord {
             dispatched += 1
             let record = AgentRegistry.createRun(
                 AgentState.RunRecord(runID: AgentRegistry.newRunID(now: dispatched),
                                      dispatchedAt: dispatched, prNumber: pr,
                                      placement: placement),
-                prompt: "Review PR #\(pr) in o/r")
+                prompt: prompt ?? "Review PR #\(pr) in o/r")
             AgentRegistry.stageRunner(record.runID, AgentRunner.opencode.rawValue)
             if let port { _ = AgentRegistry.stagePort(record.runID, port) }
             return record
         }
         let meshHere = booked(9, .meshHere)
+        // Same PR, same prompt, booked later: the session is already held.
+        let meshTwin = booked(9, .meshHere)
+        // Same PR, another task: the scan's sighting on PR 9 is not its session.
+        let meshOther = booked(9, .meshHere, prompt: "Resolve the conflicts on PR #9 in o/r")
         let meshOld = booked(9, .meshHere, port: 4096)
         let local = booked(9, .local)
         let untracked = AgentState.RunRecord(runID: "untracked:9", dispatchedAt: dispatched,
                                              prNumber: 9, untracked: true)
         let unseen = AgentState.RunRecord(runID: "untracked:12", dispatchedAt: dispatched,
                                           prNumber: 12, untracked: true)
-        OpenCodeProbe.adopt([meshHere, meshOld, local, untracked, unseen],
-                            sessions: scanned.sessions)
-        check("a run the mesh placed here is bound to the session the scan found",
+        OpenCodeProbe.adopt([meshHere, meshTwin, meshOther, meshOld, local, untracked, unseen],
+                            sessions: scanned.sessions,
+                            attached: scanned.attached.value ?? []) { openings[$0] }
+        check("a run the mesh placed here is bound to the session opened with its prompt",
               AgentRegistry.boundSession(meshHere.runID) == "ses_mesh"
                 && OpenCodeProbe.serviceSession(of: meshHere) == "ses_mesh")
-        check("…but not a 1.x one, nor one this applet spawned",
+        check("…and no other run is bound to it, whatever PR it is on",
+              AgentRegistry.boundSession(meshTwin.runID).isEmpty
+                && AgentRegistry.boundSession(meshOther.runID).isEmpty)
+        check("…nor is a 1.x one, nor one this applet spawned",
               AgentRegistry.boundSession(meshOld.runID).isEmpty
                 && AgentRegistry.boundSession(local.runID).isEmpty)
         check("a synthesized run is given the session in memory, and asked of the service",
               OpenCodeProbe.serviceSession(of: untracked) == "ses_mesh"
                 && AgentSessionProbe.serves(untracked)
                 && !AgentSessionProbe.serves(unseen))
+        // Which sessions a tick's ending interrupts. `meshHere` (ses_mesh) was reaped and
+        // retired both; `untracked` (ses_mesh too) retired alongside it; `closed` retired
+        // with no TUI left on its session; `merged` retired with its TUI still up.
+        let closed = booked(13, .local)
+        AgentRegistry.bindSession(closed.runID, "ses_closed")
+        let merged = booked(14, .local)
+        AgentRegistry.bindSession(merged.runID, "ses_merged")
+        let retired = [meshHere, untracked, closed, merged]
+        check("a reaped run is interrupted once, a retired one only when no TUI is attached",
+              OpenCodeProbe.interrupts(reaped: [meshHere], retired: retired,
+                                       attached: .present(["ses_mesh", "ses_merged"]))
+                  == ["ses_mesh", "ses_closed"])
+        check("…and a process table that could not be read shows no TUI",
+              OpenCodeProbe.interrupts(reaped: [], retired: retired,
+                                       attached: .unavailable("could not be read"))
+                  == ["ses_mesh", "ses_closed", "ses_merged"])
+
         OpenCodeProbe.forgetAdopted([untracked.runID])
         check("…until it is retired: the next agent on its PR is not that session's",
               OpenCodeProbe.serviceSession(of: untracked) == nil
                 && !AgentSessionProbe.serves(untracked))
+
+        // A session the service gave no opening prompt for is not asked again for
+        // `missMemory` — each ask of a hung service is a timeout, on every tick — and one
+        // it answered is never asked again.
+        var fetched = 0
+        let missing = "ses_miss_\(UUID().uuidString.prefix(8))"
+        let at: TimeInterval = 1_000
+        func opening(after seconds: TimeInterval, answer: String?) -> String? {
+            OpenCodeProbe.openingPrompt(sessionID: missing, now: at + seconds) { _ in
+                fetched += 1
+                return answer
+            }
+        }
+        let first = opening(after: 0, answer: nil)
+        let within = opening(after: OpenCodeProbe.missMemory - 1, answer: "Review PR #9 in o/r")
+        check("a missed opening prompt is not asked again within \(Int(OpenCodeProbe.missMemory)) s",
+              first == nil && within == nil && fetched == 1)
+        let after = opening(after: OpenCodeProbe.missMemory, answer: "Review PR #9 in o/r")
+        let later = opening(after: 86_400, answer: nil)
+        check("…is asked again after it, and a hit is kept for good",
+              after == "Review PR #9 in o/r" && later == after && fetched == 2)
 
         // One pass asks the service for the active map once, however many runs it holds.
         var gets: [String] = []
@@ -232,6 +287,18 @@ enum SweepTest {
         check("a pass fetches the active map once for every run it asks about",
               gets.filter { $0 == OpenCodeAPI.serviceActivePath }.count == 1
                 && gets.count == 3 && busy?.busy == true && idle?.busy == false)
+        // A service that does not answer the active map is asked nothing else that pass.
+        gets = []
+        let hungPass = OpenCodeProbe.ServicePass(
+            find: { OpenCodeAPI.serviceEndpoint(Data(#"{"url": "http://127.0.0.1:1"}"#.utf8)) },
+            get: { _, path in
+                gets.append(path)
+                return path == OpenCodeAPI.serviceActivePath ? nil : ["data": ["time": ["idle": 5]]]
+            })
+        let unasked = [OpenCodeProbe.serviceState(sessionID: "ses_a", pass: hungPass),
+                       OpenCodeProbe.serviceState(sessionID: "ses_b", pass: hungPass)]
+        check("…and a pass whose active map failed asks for no session",
+              unasked.allSatisfy { $0 == nil } && gets == [OpenCodeAPI.serviceActivePath])
 
         print(pass ? "\nSWEEP TEST OK" : "\nSWEEP TEST FAILED")
         return pass
