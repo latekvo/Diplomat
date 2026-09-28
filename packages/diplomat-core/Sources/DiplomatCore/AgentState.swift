@@ -961,7 +961,10 @@ public enum AgentState {
     /// answer ENDS the run exactly as the CLI's own does: a runner that keeps a session
     /// and one that runs a hook are two spellings of "ask the agent". Read as merely
     /// idle, every OpenCode and Hermes run stayed in the book until somebody closed its
-    /// window by hand.
+    /// window by hand. An untracked run's session is the one that cannot end it: the scan
+    /// rebuilds such a run from the same sighting on the next tick, so only the agent
+    /// leaving the process table ends one (`resolveUntracked`), and an idle session reads
+    /// as at the prompt.
     ///
     /// The screen is the last fallback, and it is an inference — it reads whether the
     /// CLI's interrupt hint was on the status bar when we looked, which is a string from
@@ -994,6 +997,7 @@ public enum AgentState {
         }
         if let known = evidence.sessions.value, let session = known[record.runID] {
             if session.busy { return done(.running, "\(aliveReason); its session is mid-turn") }
+            if record.untracked { return done(.awaitingInput, "\(aliveReason); at the prompt") }
             return done(.finished, "\(aliveReason); its runner reported the turn over")
         }
         guard let tails = evidence.tails.value else {

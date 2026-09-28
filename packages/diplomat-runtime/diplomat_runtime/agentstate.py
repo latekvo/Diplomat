@@ -1051,7 +1051,10 @@ def _classify_activity(record: RunRecord, evidence: Evidence, now: float, done,
     answer ENDS the run exactly as the CLI's own does: a runner that keeps a session
     and one that runs a hook are two spellings of "ask the agent". Read as merely idle,
     every OpenCode and Hermes run stayed in the book until somebody closed its window
-    by hand.
+    by hand. An untracked run's session is the one that cannot end it: the scan
+    rebuilds such a run from the same sighting on the next tick, so only the agent
+    leaving the process table ends one (:func:`_resolve_untracked`), and an idle
+    session reads as at the prompt.
 
     The screen is the last fallback, and it is an inference — it reads whether the
     CLI's interrupt hint was on the status bar when we looked, which is a string from
@@ -1083,6 +1086,8 @@ def _classify_activity(record: RunRecord, evidence: Evidence, now: float, done,
         if session is not None:
             if session.busy:
                 return done(RUNNING, f"{alive_reason}; its session is mid-turn")
+            if record.untracked:
+                return done(AWAITING_INPUT, f"{alive_reason}; at the prompt")
             return done(FINISHED, f"{alive_reason}; its runner reported the turn over")
     if not evidence.tails.ok:
         return done(RUNNING,

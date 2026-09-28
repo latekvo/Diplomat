@@ -1115,7 +1115,9 @@ and ⏻) swaps the panel to a settings screen:
     table and matched by the opening prompt the service holds for it - which is also
     how the `ps` scans behind the mesh's dedup and pid-less runs see a 2.x agent. And either way the answer *ends* the run, exactly as a Claude Code hook's
     does: it is the same fact from the same kind of source, the agent's own word
-    rather than a screen read for signs of one. A run that cannot be reached - the
+    rather than a screen read for signs of one. The exception is a 2.x agent with no
+    run of its own - one the scan found on a PR, not dispatched - which only leaving
+    the process table ends: idle, it reads as awaiting input. A run that cannot be reached - the
     port was taken, the server or service has not come up, the store is not there -
     falls back to the status bar exactly as a Claude Code run does.
   - **How a run is priced.** OpenCode reports a turn's cost per message, so a
