@@ -45,7 +45,7 @@ import uuid
 from pathlib import Path
 
 from . import atomicjson
-from .agentstate import Observation, RunRecord, deadline_applies
+from .agentstate import Observation, RunRecord, _whole, deadline_applies
 
 #: Bumped only if the on-disk shape changes incompatibly. A file from the future is
 #: ignored rather than misread — an older applet must not act on records whose fields
@@ -118,12 +118,13 @@ def load() -> list[RunRecord]:
     degrade to "this applet has forgotten", which the ``ps`` fallback still covers,
     rather than taking the applet down on startup."""
     data = atomicjson.read_object(runs_path()) or {}
-    if data.get("version") != SCHEMA_VERSION:
+    if _whole(data.get("version")) != SCHEMA_VERSION:
         return []
     raw = data.get("runs")
     if not isinstance(raw, list):
         return []
-    return [RunRecord.from_json(r) for r in raw if isinstance(r, dict) and r.get("runId")]
+    return [RunRecord.from_json(r) for r in raw
+            if isinstance(r, dict) and isinstance(r.get("runId"), str) and r["runId"]]
 
 
 def save(records: list[RunRecord]) -> None:

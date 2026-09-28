@@ -79,6 +79,15 @@ def test_an_unusable_book_degrades_to_empty_rather_than_raising(body):
     assert R.load() == []
 
 
+def test_a_non_finite_number_in_the_book_is_no_number_rather_than_a_raise():
+    """`json` reads `Infinity`, and `int()` of it raises - from the startup read."""
+    R.runs_path().parent.mkdir(parents=True, exist_ok=True)
+    R.runs_path().write_text(
+        '{"version": 1, "runs": [{"runId": "r", "pid": Infinity, "dispatchedAt": NaN}]}')
+    [record] = R.load()
+    assert (record.pid, record.dispatched_at) == (None, 0.0)
+
+
 def test_two_runs_registered_concurrently_both_survive():
     """A spawn registering against a list a concurrent sweep already copied used to be
     dropped, leaving an agent nothing counted — a bay the machine then spent twice."""

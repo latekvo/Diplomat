@@ -138,13 +138,18 @@ public enum AgentRegistry {
     /// Every persisted record. Empty on anything unreadable — a corrupt book must
     /// degrade to "this applet has forgotten", which the process scan still covers,
     /// rather than taking the applet down on startup.
+    ///
+    /// Parsed through `JSONInput`, because `agentregistry.load` is strict about types: a
+    /// hand-edited `"untracked": 1` must not be an untracked run to one front-end and a
+    /// tracked one to the other.
     public static func load() -> [AgentState.RunRecord] {
         guard let data = try? Data(contentsOf: runsPath()),
-              let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let obj = JSONInput.parse(data),
               (obj["version"] as? NSNumber)?.intValue == schemaVersion,
-              let raw = obj["runs"] as? [[String: Any]]
+              let raw = obj["runs"] as? [Any]
         else { return [] }
-        return raw.compactMap(decode).filter { !$0.runID.isEmpty }
+        return raw.compactMap { ($0 as? [String: Any]).flatMap(decode) }
+            .filter { !$0.runID.isEmpty }
     }
 
     /// Replace the book with `records`.
@@ -390,6 +395,6 @@ public enum AgentRegistry {
             quietDigest: d["quietDigest"] as? String ?? "",
             quietSince: (d["quietSince"] as? NSNumber)?.doubleValue,
             reapRefusedAt: (d["reapRefusedAt"] as? NSNumber)?.doubleValue,
-            untracked: d["untracked"] as? Bool ?? false)
+            untracked: JSONInput.flag(d["untracked"]))
     }
 }

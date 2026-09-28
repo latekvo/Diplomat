@@ -151,6 +151,20 @@ def test_a_record_flag_that_is_not_a_boolean_is_read_the_same_by_both(value):
     assert _swift(payload) == _python_decoding(payload)
 
 
+@pytest.mark.parametrize("key", ["pid", "dispatchedAt", "prNumber"])
+def test_a_record_number_that_is_a_boolean_is_read_the_same_by_both(key):
+    """The other direction: `true` is not pid 1, nor a run dispatched in 1970. Both
+    decoders see a `Flag`/`bool` there and read the field's default."""
+    record = rec(run_id="r1", pid=1, tty="pts/3", dispatched_at=T0 - PAST_DEADLINE,
+                 pr_number=1)
+    evidence = ev(processes={1: proc(elapsed=PAST_DEADLINE)},
+                  tails={"pts/3": WORKING}, tokens=True)
+    payload = _payload([record], evidence)
+    payload["records"][0][key] = True
+
+    assert _swift(payload) == _python_decoding(payload)
+
+
 def test_the_real_booleans_still_survive_both_decoders():
     """Anti-vacuity for the two above: strictness that dropped every flag would agree
     just as well, and say nothing."""

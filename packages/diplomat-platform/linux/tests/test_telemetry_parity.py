@@ -500,3 +500,24 @@ def test_the_junk_lines_produced_no_tasks(both):
     assert "review:h/o/r#99@zz" not in keys, "an unknown event verb created a task"
     assert "review:h/o/r#98@yy" not in keys, "an event with no `at` created a task"
     assert "" not in keys
+
+
+def test_a_hand_edited_flag_or_number_folds_the_same_on_both_sides():
+    """A value of the wrong JSON type, both ways round. `"remote": 1` is the one that
+    matters: `JSONSerialization` hands a JSON number to `as? Bool` as an `NSNumber`,
+    which reads as `true`, so a fold on it alone takes a local task for a peer's and
+    leaves it out of every figure Python counts it in."""
+    key, peer = "review:h/o/r#61@aa", "review:h/o/r#62@bb"
+    lines = [json.dumps(e) for e in [
+        {"at": NOW - 7200, "ev": "started", "key": key, "remote": 1, "attempt": 1},
+        {"at": NOW - 7000, "ev": "done", "key": key, "tokens": True, "pr": True},
+        {"at": NOW - 7200, "ev": "started", "key": peer, "remote": True, "attempt": 1},
+        {"at": True, "ev": "queued", "key": "review:h/o/r#63@cc"},
+    ]]
+    swift, python = _swift(lines), _python(lines)
+    assert python == swift
+    tasks = {t["key"]: t for t in python["tasks"]}
+    assert tasks[key]["remote"] is False
+    assert tasks[key]["tokens"] is None and tasks[key]["pr"] == 0
+    assert tasks[peer]["remote"] is True, "a real flag must still read as one"
+    assert set(tasks) == {key, peer}, "`\"at\": true` is no timestamp"

@@ -466,12 +466,12 @@ def _number(raw: object) -> float | None:
     float. Non-finite values are rejected: one ``Infinity`` anywhere downstream
     turns every mean into ``nan``.
 
-    A JSON ``true`` reads as 1.0, matching the Swift twin — there, a boolean
-    bridges to ``NSNumber`` and the same cast accepts it. Nothing either writer
-    emits puts a boolean in a numeric field; what matters is that a hand-edited
-    file makes both platforms answer the same way.
+    A JSON boolean is not a number, matching the Swift twin — there, ``JSONInput``
+    hands a boolean over as a ``Flag`` that no numeric cast takes. Nothing either
+    writer emits puts a boolean in a numeric field; what matters is that a
+    hand-edited file makes both platforms answer the same way.
     """
-    if raw is None:
+    if raw is None or isinstance(raw, bool):
         return None
     try:
         value = float(raw)  # type: ignore[arg-type]
