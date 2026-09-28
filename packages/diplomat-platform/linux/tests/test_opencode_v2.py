@@ -608,13 +608,15 @@ def test_closing_a_1x_or_claude_runs_window_interrupts_nothing(monkeypatch):
     assert [kind for kind, _ in events] == ["kill", "kill"]
 
 
-def _retire(monkeypatch, records: list[RunRecord], reaped: tuple[str, ...] = ()
-            ) -> list[tuple[str, str]]:
-    """Retire each run the way the tick does once its agent is gone, recording in order
-    what was interrupted and what was priced."""
+def _retire(monkeypatch, records: list[RunRecord], reaped: tuple[str, ...] = (),
+            table: probes.Observation | None = None) -> list[tuple[str, str]]:
+    """Retire each run the way the tick does, recording in order what was interrupted
+    and what was priced. ``table`` is the process table — by default one without any
+    agent in it."""
     from diplomat_app.store import Store
     from diplomat_runtime import telemetry, tmuxwatch
 
+    monkeypatch.setattr(probes, "_ps_dump", lambda now: table or _ps())
     events: list[tuple[str, str]] = []
     monkeypatch.setattr(opencodeapi, "interrupt",
                         lambda sid: events.append(("interrupt", sid)))
@@ -845,6 +847,26 @@ def test_a_pass_without_the_active_map_asks_nothing_more(service):
     obs = probes.agent_sessions([_v2_run("r1"), _v2_run("r2", OTHER)], "/repo", T0)
     assert obs.value == {}
     assert [p for _m, p, _a in service.seen] == ["/api/session/active"]
+
+
+def test_a_2x_run_retired_with_its_tui_open_keeps_its_turn(monkeypatch):
+    """Its PR merged mid-turn, say: a 1.x or Claude Code agent keeps working in its
+    window then, and so does this one."""
+    record = dataclasses.replace(_v2_run(), ledger_key="k1")
+    assert _retire(monkeypatch, [record], table=_ps(
+        *WRAPPERS, f"/opt/npm/bin/opencode --session {SID}")) == [("price", "k1")]
+
+
+@pytest.mark.parametrize("table", [
+    _ps(*WRAPPERS, f"opencode --session {OTHER}"),
+    probes.Observation.unavailable("exited 1"),
+])
+def test_a_2x_run_retired_with_no_tui_seen_on_its_session_is_interrupted(monkeypatch,
+                                                                        table):
+    """Only the TUI itself counts, and a table that cannot be read shows none."""
+    record = dataclasses.replace(_v2_run(), ledger_key="k1")
+    assert _retire(monkeypatch, [record], table=table) == [("interrupt", SID),
+                                                            ("price", "k1")]
 
 
 # MARK: - A 2.x agent nobody booked

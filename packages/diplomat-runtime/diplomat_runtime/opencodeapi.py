@@ -75,12 +75,15 @@ request carries the service's password, and every failure reads as unreachable,
 exactly as a 1.x port that will not answer does.
 
 A 2.x run Diplomat did not spawn itself — one the mesh placed here — has no id bound
-at spawn. Its TUI's argv is ``opencode --session <id>``, so its session is found from
-the process table and matched to the run by the prompt it was opened on
-(:func:`opening_prompt`), the one exact key, as a 1.x run's is.
+at spawn. Its TUI's argv is ``opencode --session <id>`` (:func:`session_arg`), so its
+session is found from the process table and matched to the run by the prompt it was
+opened on (:func:`opening_prompt`), the one exact key, as a 1.x run's is. An agent
+no run was booked for at all is drawn from the same scan, and takes the session of
+the TUI it was seen by.
 
 The service outlives the window: a 2.x run's turn goes on after its TUI is gone, so
-whatever closes a run's window or retires a run also calls :func:`interrupt`.
+whatever closes a run's window calls :func:`interrupt`, and so does retiring a run —
+booked or not — once no TUI attached to its session is left in the process table.
 
 Stdlib-only, like the rest of the spawn path, and nothing here raises: a probe that
 cannot answer says so and the tick continues.
@@ -341,10 +344,13 @@ def interrupt(session_id: str) -> None:
     Closing a 2.x run's window does not do this: the TUI is only a client, and the
     turn goes on in the service after it is gone — measured on 2.0.18, a SIGTERM to the
     TUI mid-turn left its tool call to finish 20 s later. So whatever closes a run's
-    window or retires a run sends this too, or the agent keeps working headless after
-    Diplomat has let its bay go. An idle session answers ``{"interrupted": false}`` and
-    is left as it was; a running one ends its turn with outcome ``interrupted``.
-    Best-effort and never raises, and answers nothing: no caller could act on it.
+    window sends this too, and so does retiring a run whose session no TUI in the
+    process table is attached to any more, or the agent keeps working headless after
+    Diplomat has let its bay go. A run retired with its TUI still open — its PR merged
+    mid-turn — is left working, as a 1.x or Claude Code agent is. An idle session
+    answers ``{"interrupted": false}`` and is left as it was; a running one ends its
+    turn with outcome ``interrupted``. Best-effort and never raises, and answers
+    nothing: no caller could act on it.
     """
     _service_call(_session_route(session_id) + "/interrupt", "POST")
 

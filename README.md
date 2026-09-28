@@ -1093,8 +1093,11 @@ and ⏻) swaps the panel to a settings screen:
     turn leaves, which a session created but not yet running has not got. Closing a
     2.x run's window does not stop its turn, which runs on in the service, so
     Diplomat interrupts the turn whenever it closes one (a backstop reaping a wedged
-    run) and whenever it retires one whose TUI has gone (a window closed by hand, a
-    TUI that quit or crashed); an idle session ignores the interrupt. Hermes serves no such port, and needs none: it
+    run) and whenever it retires one - booked or found in the process table - with no
+    2.x TUI attached to its session left in the process table (a window closed by
+    hand, a TUI that quit or crashed); one retired with its TUI still open, its PR
+    merged mid-turn, keeps working as a 1.x or Claude Code agent would. An idle
+    session ignores the interrupt. Hermes serves no such port, and needs none: it
     writes every session and message to `~/.hermes/state.db` as it goes, which
     Diplomat opens read-only. A turn is over there when the agent stamps its own
     message `finish_reason` (`tool_calls` is mid-turn, `stop` is the end) *and*

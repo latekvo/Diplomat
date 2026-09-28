@@ -439,7 +439,7 @@ class _OpenCodeBackend:
             prompt = _staged_prompt(record.run_id)
             if prompt is None:
                 return ""
-            for session_id in _live_service_sessions():
+            for session_id in live_service_sessions():
                 if (session_id not in taken
                         and opencodeapi.opening_prompt(session_id) == prompt):
                     return session_id
@@ -505,7 +505,7 @@ class _HermesBackend:
         return hermesstore.state_of(session_id)
 
 
-def _live_service_sessions() -> list[str]:
+def live_service_sessions() -> list[str]:
     """The sessions the 2.x TUIs in the process table are attached to, in table order;
     none when the table cannot be read."""
     from diplomat_runtime import opencodeapi
