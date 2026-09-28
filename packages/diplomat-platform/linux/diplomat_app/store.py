@@ -1307,7 +1307,9 @@ class Store(QObject):
                 activity.log(source, "spawn-failed", f"{job.label} failed to spawn")
                 self.refresh_activity()
                 return "failed"
-            activity.log(source, job.audit_action, row_label)
+            token = routed != "spawned" and bool(review.token_export())
+            activity.log(source, job.audit_action,
+                         row_label + (review.TOKEN_AUDIT_NOTE if token else ""))
             # The telemetry ledger tracks the MONITORS, so only an auto dispatch is
             # recorded — a wizard click is the operator's own doing and has no queue
             # instant to be late against. A mesh placement on a PEER spends that

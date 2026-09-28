@@ -19,6 +19,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass, replace
 from enum import Enum
@@ -440,16 +441,56 @@ def shell_command(prompt_file: str, done_path: str | None = None,
     sentinel above cannot: the sentinel fires on EXIT, and finishing a turn is not
     exiting, so between them one covers the run that ends and the other the run that
     goes back to its prompt.
+
+    When the operator configured an agent token, everything after the ``cd`` runs
+    behind :func:`token_export`, whose export the agent inherits.
     """
     repo = shlex.quote(repo_path())
     agent_cmd = runner.agent_command(prompt_file, port, settings_file)
     done = (f"{{ printf %s $? > {shlex.quote(done_path)}; }} 2>/dev/null || :; "
             if done_path else "")
     if pid_path is None:
-        return f'cd {repo} 2>/dev/null; {agent_cmd}; {done}exec "$SHELL" -i'
-    inner = f'printf %s $$ > {shlex.quote(pid_path)}; {agent_cmd}'
-    agent = f"{shlex.quote(user_shell())} -i -c {shlex.quote(inner)}"
-    return f"cd {repo} 2>/dev/null; {agent}; {done}exec \"$SHELL\" -i"
+        body = f"{agent_cmd}; {done}"
+    else:
+        inner = f'printf %s $$ > {shlex.quote(pid_path)}; {agent_cmd}'
+        body = f"{shlex.quote(user_shell())} -i -c {shlex.quote(inner)}; {done}"
+    token = token_export()
+    if token:
+        body = f"{token} && {{ {body}}}; "
+    return f'cd {repo} 2>/dev/null; {body}exec "$SHELL" -i'
+
+
+#: Appended to the audit line of a run spawned behind :func:`token_export`. Same text
+#: on the macOS side (``AgentSpawner.tokenAuditNote``).
+TOKEN_AUDIT_NOTE = " · agent GH token"
+
+
+def token_export(platform: str = sys.platform) -> str:
+    """The shell test that exports the operator's agent token as ``GH_TOKEN``, or ""
+    when none is configured and the agent runs on whatever ``gh auth login`` stored.
+
+    ``gh`` ranks ``GH_TOKEN`` above its keyring login, so a fine-grained token scoped
+    to ``contents`` + ``pull-requests`` replaces the broad ``repo, workflow, gist`` one
+    for the agent and everything it runs. Only the token's NAME is configured - a
+    Keychain item on macOS, a file on Linux - and the spawned shell reads it itself,
+    so the secret never enters argv, the AppleScript, a staged launcher or the
+    config file the mesh copies around.
+
+    :func:`shell_command` runs the whole spawn behind this test, so a token that
+    cannot be read starts nothing rather than falling back to the broad login: no pid
+    file and no exit sentinel, so a local run resolves ``FAILED`` and is never taken
+    for one that finished. The emptiness check is part of that - ``gh`` reads an empty
+    ``GH_TOKEN`` as unset.
+    """
+    if platform == "darwin":
+        item = appconfig.get(appconfig.AGENT_TOKEN_KEYCHAIN_ITEM).strip()
+        read = f"security find-generic-password -s {shlex.quote(item)} -w" if item else ""
+    else:
+        path = appconfig.get(appconfig.AGENT_TOKEN_FILE).strip()
+        read = f"cat -- {shlex.quote(os.path.expanduser(path))}" if path else ""
+    if not read:
+        return ""
+    return f'GH_TOKEN=$({read}) && [ -n "$GH_TOKEN" ] && export GH_TOKEN'
 
 
 def agent_argv(prompt_file: str, done_path: str | None = None,

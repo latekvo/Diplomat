@@ -825,6 +825,22 @@ def test_panel_spawn_never_routes_to_the_mesh(store, monkeypatch):
     assert len(local) == 1
 
 
+def test_the_audit_says_which_runs_got_the_agent_token(store, monkeypatch):
+    """The operator's only record of whether a run held the narrow token or the broad
+    ``gh auth login`` one."""
+    from diplomat_runtime import activity
+
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    _spawn_recorder(monkeypatch)
+    monkeypatch.setattr(review, "token_export", lambda: "")
+    assert store.dispatch_agent(_job(number=1), autofix.SOURCE_PANEL) == "spawned"
+    monkeypatch.setattr(review, "token_export", lambda: "GH_TOKEN=$(cat -- /t)")
+    assert store.dispatch_agent(_job(number=2), autofix.SOURCE_PANEL) == "spawned"
+
+    lines = [e.detail for e in activity.read() if e.action == "review"]
+    assert sorted(lines) == ["Review · #1", "Review · #2 · agent GH token"]
+
+
 # MARK: - a mesh placement that lands back here is an agent on THIS machine
 
 

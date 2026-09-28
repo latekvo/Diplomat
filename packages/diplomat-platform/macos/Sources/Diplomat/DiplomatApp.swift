@@ -325,7 +325,8 @@ enum Dump {
             AgentSpawner.SpawnPlan(promptFile: file,
                                    donePath: AgentRegistry.donePath(run).path,
                                    pidPath: AgentRegistry.pidPath(run).path,
-                                   runner: AppConfig.agentRunner, port: 0))
+                                   runner: AppConfig.agentRunner, port: 0,
+                                   tokenItem: AppConfig.agentTokenKeychainItem))
         print("\n----- SHELL COMMAND -----")
         print(cmd)
         let term = AgentSpawner.resolved(.ghostty)
