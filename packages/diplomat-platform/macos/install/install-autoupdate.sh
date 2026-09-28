@@ -2,7 +2,8 @@
 # Install a launchd agent that self-updates Diplomat daily at 06:00 — the macOS
 # analogue of the Linux systemd user timer. It launches the app binary in headless
 # self-update mode (DIPLOMAT_SELF_UPDATE=1): merge upstream if behind, rebuild
-# the bundle, and relaunch only if the app is running. Re-runnable.
+# the bundle, relaunch the app if it is running, and launch it if it is not, unless
+# the operator quit it. Re-runnable.
 #
 # Arg 1 (optional): the Diplomat binary to run. Defaults to the installed app in
 # /Applications (then ~/Applications).
