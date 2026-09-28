@@ -361,9 +361,8 @@ def stage_opencode_session(prompt_file: str) -> str | None:
 
     Staged beside the prompt, at its mode: the prompt is copied into one of them
     verbatim, and a mesh dispatch stages its prompt in ``/tmp`` (:func:`write_prompt`).
-    The directory is the one the agent is ``cd``'d into, resolved, because the service
-    records the session against the path it is given and a symlink between the two
-    would put the run in a project nothing else of the checkout's is in.
+    The session's directory is the checkout the agent is ``cd``'d into, symlinks
+    resolved.
 
     A caller with a run directory binds the id there before spawning
     (:func:`agentregistry.bind_session`); the mesh node has none, and runs it unbound.

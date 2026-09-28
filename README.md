@@ -804,8 +804,9 @@ Two gatherers fill in what GitHub doesn't know:
   rather than reading gigabytes of history it could never attribute anyway.
   `DIPLOMAT_CLAUDE_DIR` moves where it reads from. A [foreign runner](#agent-runner)
   writes no such transcript, so each is priced from its own store instead - OpenCode
-  summed over every message of `opencode export <session>` (it reports a turn's cost
-  per message), Hermes read off the running totals on its session row - both counting
+  summed over every message of its session export (`opencode export <session>` on
+  1.x, `opencode session export <session>` on 2.x; it reports a turn's cost per
+  message), Hermes read off the running totals on its session row - both counting
   the same three fields, so one ledger holds every runner in one unit. Hermes' row
   also carries what the provider **charged**, and the model it charged for, which is
   the unit the [spending budget](#the-spending-budget) holds that machine to.
@@ -932,8 +933,9 @@ dispatched subagents or backgrounded a shell hands control back while they are
 still running, so the hook writes *busy* instead whenever the payload it is given
 still lists background tasks.
 
-A runner with no hooks is asked rather than read: an OpenCode agent serves its own
-session over loopback while it works and a Hermes agent writes its to SQLite, and
+A runner with no hooks is asked rather than read: an OpenCode agent's session is
+served over loopback while it works (by the run's own server on 1.x, by the per-user
+service on 2.x) and a Hermes agent writes its to SQLite, and
 either one reporting the turn over ends the run exactly as a hook does - the same
 fact from the same kind of source. Only a run nothing answers for - a Claude spawn
 whose settings would not stage, a server that never came up - falls back to the
@@ -1038,11 +1040,28 @@ and ⏻) swaps the panel to a settings screen:
   `~/.diplomat/config.json`, so a running mesh node picks it up on its next spawn -
   and which runner a given run *started* under is written into its run directory, so
   switching mid-flight can't interrogate a live agent through the wrong store.
+  - **OpenCode 1.x and 2.x** are both supported, and are told apart at every spawn by
+    `opencode --version` (major 2 or later is 2.x; no answer is 1.x). They share
+    almost nothing below the setting. A 1.x run is its own server: the TUI is started
+    as `opencode --port <n> [-m <model>] --prompt "…"`, with the permission grant in
+    `OPENCODE_PERMISSION`. 2.x has one per-user background service that every client
+    talks to, a TUI with no `--port` or `-m`, and a `--prompt` that fills the composer
+    without submitting it (upstream anomalyco/opencode#51135) - so a 2.x run is
+    started through the service instead: Diplomat mints a fresh `ses_diplomat_<hex>`
+    session id, stages its create and prompt bodies beside the prompt file (the
+    checkout, an allow-all permission ruleset, and the pinned model if any), and runs
+    `opencode api session.create … && opencode api session.prompt … || exit; opencode
+    --session <id>` - the turn is already running when the TUI attaches to it, and the
+    TUI is the process the run's pid file names.
   - **Model** (OpenCode, Hermes) - a model id such as
     `openrouter/moonshotai/kimi-k2` or `ollama-cloud/glm-5.2`. Blank leaves the
-    choice to that runner's own picker rather than overriding it with a guess.
+    choice to that runner rather than overriding it with a guess: its own picker, or
+    for an OpenCode 2.x run the service's configured `model` (else its first available
+    one). A 2.x pin is split the way 2.x itself splits one - the provider before the
+    first `/`, the model after it, and a `#variant` suffix from the last `#` on.
   - **Connect a provider…** (OpenCode, Hermes) - opens that runner's own login wizard
-    in a terminal (`opencode providers login`, `hermes setup`). Diplomat deliberately
+    in a terminal (`opencode auth login`, which 1.x also accepts as an alias of
+    `providers login`; `hermes setup`). Diplomat deliberately
     has no API-key field: each runner already knows its whole provider catalog, which
     entries take OAuth rather than a key, and where each one's credentials belong -
     and each writes them to the store its agent reads from anyway. **No provider
@@ -1051,7 +1070,7 @@ and ⏻) swaps the panel to a settings screen:
   - **How a run is watched.** Both foreign runners are *asked* whether their turn is
     over rather than having it read off their status bar - positive evidence, instead
     of whether someone else's `esc interrupt` hint happened to be drawn when the poll
-    looked. They answer from different places. An OpenCode agent is spawned with
+    looked. They answer from different places. An OpenCode 1.x agent is spawned with
     `--port <n>` on a port Diplomat reserved for it, so it serves its own session on
     loopback while it works; the port is unauthenticated (OpenCode's server takes a
     password but its own TUI sends none), so it is reachable by other users of the
@@ -1060,26 +1079,36 @@ and ⏻) swaps the panel to a settings screen:
     a completion stamp. It takes both: OpenCode writes one message per *step* of a
     turn and stamps each as it completes, so the stamp alone calls a turn over in the
     gaps between steps, while the status alone calls a session idle in the moment
-    before its first turn starts. Hermes serves no such port, and needs none: it
+    before its first turn starts. An OpenCode 2.x run is asked of the per-user
+    service, found through `$XDG_STATE_HOME/opencode/service.json` (else
+    `~/.local/state/opencode/service.json`) and authenticated with the password in
+    it: its session is busy while the service lists it as running - 2.x keeps a
+    session listed from the start of a turn to its end, with no gaps between steps -
+    and idle once it is not listed *and* carries the `time.idle` stamp a finished
+    turn leaves, which a session created but not yet running has not got. Closing a
+    2.x run's window does not stop its turn, which runs on in the service, so
+    whenever Diplomat closes one (a backstop reaping a wedged run) it interrupts the
+    turn first. Hermes serves no such port, and needs none: it
     writes every session and message to `~/.hermes/state.db` as it goes, which
     Diplomat opens read-only. A turn is over there when the agent stamps its own
     message `finish_reason` (`tool_calls` is mid-turn, `stop` is the end) *and*
     nothing is still coming back to it - `delegate_task(background=true)` runs its
     subagents on an executor of their own and hands the turn straight back, reporting
     later as a fresh user turn, so a fan-out whose result is still undelivered holds
-    the run open exactly as an unfinished message does. Either way
-    the session is matched to the run by the staged prompt, which both runners store
-    verbatim as the session's opening message - the only exact key, since neither
-    keeps a store per run: Hermes' is the machine's, OpenCode's is the checkout's and
-    every worktree of it, and a busy one holds hundreds of sessions that are not this
-    run's. And either way the answer *ends* the run, exactly as a Claude Code hook's
+    the run open exactly as an unfinished message does. A Hermes or OpenCode 1.x
+    session is matched to the run by the staged prompt, which both store verbatim as
+    the session's opening message - the only exact key, since neither keeps a store
+    per run: Hermes' is the machine's, OpenCode's is the checkout's and every worktree
+    of it, and a busy one holds hundreds of sessions that are not this run's. A 2.x
+    session needs no match: Diplomat chose its id and bound it to the run before the
+    spawn. And either way the answer *ends* the run, exactly as a Claude Code hook's
     does: it is the same fact from the same kind of source, the agent's own word
     rather than a screen read for signs of one. A run that cannot be reached - the
-    port was taken, the server has not come up, the store is not there - falls back
-    to the status bar exactly as a Claude Code run does.
+    port was taken, the server or service has not come up, the store is not there -
+    falls back to the status bar exactly as a Claude Code run does.
   - **How a run is priced.** OpenCode reports a turn's cost per message, so a
-    finished run is summed from `opencode export <session>` when it ends, not from the
-    poll. Hermes keeps running totals on the session row, so it is simply read. Both
+    finished run is summed from its session export when it ends, not from the poll -
+    `opencode export <session>` on 1.x, `opencode session export <session>` on 2.x. Hermes keeps running totals on the session row, so it is simply read. Both
     count input + output + cache *writes*, the same three the Claude Code transcript
     scan sums, so one ledger holds every runner in one unit. What those tokens are
     *not* is a share of a rate-limit window: that window is the Anthropic account's,
@@ -1489,7 +1518,7 @@ packages/
         AgentProbes.swift          the outside world, typed: `ps`, screens, sentinels, claims -> Evidence
         AgentWindows.swift         where each run's terminal window is, so a row click can raise it
         AgentSessionProbe.swift    asks each run's own agent what it is doing, through its runner's store
-        OpenCodeProbe.swift        dials an OpenCode run's own server: free port, session list, messages
+        OpenCodeProbe.swift        dials an OpenCode run's own 1.x server (free port, session list, messages) or the 2.x service
         HermesProbe.swift          reads a Hermes run's session out of ~/.hermes/state.db, read-only
         TrackTest.swift            E2E self-test of the run book + this platform's probes (DIPLOMAT_TRACK_TEST)
         QueueTest.swift            self-test of the deferred-task queue (DIPLOMAT_QUEUE_TEST)
