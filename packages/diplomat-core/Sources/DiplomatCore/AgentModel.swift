@@ -13,7 +13,7 @@ import Foundation
 ///   runner picks for itself, out of settings each one writes down and this reads back:
 ///   Hermes' `~/.hermes/config.yaml` names the model a session passed no `-m` starts
 ///   on, and OpenCode resolves one the way `openCodeModel` mirrors — the `model` its
-///   config names, else the head of its picker's recent list.
+///   config names, else (1.x only) the head of its picker's recent list.
 /// * **Claude Code** takes no model from Diplomat at all: it is started through the
 ///   user's own `claude` alias, and picks its model from its own settings, a `--model`
 ///   in that alias, or an in-session `/model`. The only source that accounts for all
@@ -37,13 +37,19 @@ public enum AgentModel {
     /// machine says which one that is.
     public static func detected() -> String {
         detect(configFile: configURL(), claudeHome: claudeHomeURL(), hermesConfig: hermesConfigURL(),
-               openCodeConfig: openCodeConfigURL(), openCodeState: openCodeStateURL())
+               openCodeConfig: openCodeConfigURL(), openCodeState: openCodeStateURL(),
+               openCodeIsService: OpenCodeCLI.installedIsService)
     }
 
     /// `detected()` against explicit locations, so the smoke test can drive the whole
     /// lookup over a fixture instead of over the developer's own machine.
+    ///
+    /// `openCodeIsService` says whether the installed OpenCode is 2.x. It is a closure
+    /// because answering it runs the binary, and only the one case that depends on the
+    /// answer asks it (`openCodeModel`).
     public static func detect(configFile: URL, claudeHome: URL, hermesConfig: URL,
-                              openCodeConfig: URL, openCodeState: URL) -> String {
+                              openCodeConfig: URL, openCodeState: URL,
+                              openCodeIsService: () -> Bool) -> String {
         let cfg = readJSONObject(configFile)
         // Same two keys as `AppConfig` (macOS) and the runtime's `appconfig.py` write.
         let runner = AgentRunner.from(cfg["agentRunner"] as? String ?? "")
@@ -54,7 +60,8 @@ public enum AgentModel {
         guard pinned.isEmpty else { return displayName(pinned) }
         return displayName(foreignRunnerModel(runner, hermesConfig: hermesConfig,
                                               openCodeConfig: openCodeConfig,
-                                              openCodeState: openCodeState))
+                                              openCodeState: openCodeState,
+                                              openCodeIsService: openCodeIsService))
     }
 
     /// The tag block with `{model}` filled in: `, Opus 5` when a model is known and
@@ -85,9 +92,11 @@ public enum AgentModel {
         var s = raw.trimmingCharacters(in: .whitespaces)
         // `openrouter/moonshotai/kimi-k3` — the provider path is routing, not a name.
         if let slash = s.lastIndex(of: "/") { s = String(s[s.index(after: slash)...]) }
-        // OpenRouter variant suffixes (`:free`, `:thinking`) and Claude Code's
-        // context-window suffix (`opus[1m]`) qualify one model rather than naming another.
+        // OpenRouter variant suffixes (`:free`, `:thinking`), OpenCode 2.x's `#variant`
+        // and Claude Code's context-window suffix (`opus[1m]`) qualify one model rather
+        // than naming another.
         if let colon = s.firstIndex(of: ":") { s = String(s[s.startIndex..<colon]) }
+        if let hash = s.firstIndex(of: "#") { s = String(s[s.startIndex..<hash]) }
         if let bracket = s.firstIndex(of: "["), s.hasSuffix("]") { s = String(s[s.startIndex..<bracket]) }
         s = s.trimmingCharacters(in: .whitespaces)
         guard !s.isEmpty else { return "" }
@@ -224,9 +233,11 @@ public enum AgentModel {
     /// What an unpinned OpenCode / Hermes spawn starts on, read from the settings each
     /// runner picks its own model out of.
     private static func foreignRunnerModel(_ runner: AgentRunner, hermesConfig: URL,
-                                           openCodeConfig: URL, openCodeState: URL) -> String {
+                                           openCodeConfig: URL, openCodeState: URL,
+                                           openCodeIsService: () -> Bool) -> String {
         if runner == .opencode {
-            return openCodeModel(configDir: openCodeConfig, stateDir: openCodeState)
+            return openCodeModel(configDir: openCodeConfig, stateDir: openCodeState,
+                                 isService: openCodeIsService)
         }
         guard runner == .hermes,
               let text = try? String(contentsOf: hermesConfig, encoding: .utf8)
@@ -289,11 +300,18 @@ public enum AgentModel {
     /// OpenCode's global config files, in the order it merges them — later wins.
     private static let openCodeConfigFiles = ["config.json", "opencode.json", "opencode.jsonc"]
 
-    /// What an OpenCode spawn carrying no `-m` starts on, resolved the way OpenCode's
+    /// What an OpenCode spawn carrying no pin starts on, resolved the way OpenCode's
     /// own `Provider.defaultModel` does (read out of the 1.4.3 binary): the `model` its
     /// config names, else the head of the recent list its model picker persists to
     /// `<state>/model.json` — which is both the model the next TUI restores and the one
     /// the last turn actually ran on.
+    ///
+    /// 2.x stops at the config. Its sessions are created by a shared service that never
+    /// reads the TUI's recent list, and with no `model` in config it starts on the first
+    /// model it has — which this cannot name without the provider list below, so a 2.x
+    /// run with no config model names none rather than the model the picker last used.
+    /// The binary is asked which major it is only when the recent list would otherwise
+    /// answer, the one case the answer changes.
     ///
     /// Narrower than OpenCode's own answer in two places, each costing the tag its model
     /// rather than handing it a wrong one. A `model` set by a config file *inside the
@@ -301,15 +319,18 @@ public enum AgentModel {
     /// (`RepoPaths.agentRepo`, `review.repo_path`), and deriving it here would be a third
     /// copy of that lookup. And OpenCode walks past a recent entry whose provider it can
     /// no longer reach, which takes a provider list this does not build.
-    private static func openCodeModel(configDir: URL, stateDir: URL) -> String {
+    private static func openCodeModel(configDir: URL, stateDir: URL,
+                                      isService: () -> Bool) -> String {
         for name in openCodeConfigFiles.reversed() {
             if let text = try? String(contentsOf: configDir.appendingPathComponent(name),
                                       encoding: .utf8),
                let model = configuredModel(inOpenCodeConfig: text) { return model }
         }
         guard let text = try? String(contentsOf: stateDir.appendingPathComponent("model.json"),
-                                     encoding: .utf8) else { return "" }
-        return recentModel(inOpenCodeState: text) ?? ""
+                                     encoding: .utf8),
+              let recent = recentModel(inOpenCodeState: text),
+              !isService() else { return "" }
+        return recent
     }
 
     /// The `model` one OpenCode config file names, or nil when it names none.
