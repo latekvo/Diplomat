@@ -1,10 +1,11 @@
 import Foundation
 import DiplomatCore
 
-/// Dialling an OpenCode run's own server: the impure half of `OpenCodeAPI`.
+/// Dialling an OpenCode run's server — a 1.x run's own, or the 2.x shared service: the
+/// impure half of `OpenCodeAPI`.
 ///
-/// The decisions — which session is this run's, and what its last message says — live in
-/// `DiplomatCore.OpenCodeAPI`, shared with the Linux front-end and pinned by the core
+/// The decisions — which session is this run's, and what its server says of it — live
+/// in `DiplomatCore.OpenCodeAPI`, shared with the Linux front-end and pinned by the core
 /// smoke. What is here is only the two things a pure library cannot do: take a port, and
 /// fetch a URL. They are split because DiplomatCore is built for Linux too, where
 /// URLSession is a module this package does not take.
@@ -14,6 +15,9 @@ import DiplomatCore
 /// server still starting, a window already closed and a port taken by something that is
 /// not OpenCode are all "this run cannot be reached" — whose only useful consequence is
 /// to read the screen instead.
+///
+/// Which server a run is asked through is told by what its spawn staged: a 1.x run has a
+/// port, a 2.x run a bound session and none (`AgentRegistry.serviceSession`).
 enum OpenCodeProbe {
     /// Which session on this run's server is this run's, by its opening prompt.
     ///
@@ -25,8 +29,9 @@ enum OpenCodeProbe {
     /// sessions a second apart in the same directory is the ordinary case, not the
     /// pathological one.
     ///
-    /// A run with no port serves nothing to ask, so it never matches — that is an
-    /// OpenCode run the spawn could not reserve one for.
+    /// A run with no port serves nothing to ask, so it never matches — that is a 1.x run
+    /// the spawn could not reserve one for. A 2.x run never gets here: its spawn bound
+    /// its session before the agent started.
     static func bind(_ r: AgentState.RunRecord, directory: String,
                      taken: Set<String>) -> String {
         guard let port = AgentRegistry.port(r.runID),
@@ -47,10 +52,11 @@ enum OpenCodeProbe {
 
     /// Whether that session's turn is still in flight.
     ///
-    /// Both halves of the answer — see `OpenCodeAPI.stateOf` for which blind spot each
-    /// of them covers.
+    /// A bound run with no port is a 2.x run, asked of the shared service
+    /// (`serviceState`). A 1.x run is asked both halves of the answer — see
+    /// `OpenCodeAPI.stateOf` for which blind spot each of them covers.
     static func state(_ r: AgentState.RunRecord, sessionID: String) -> AgentState.SessionState? {
-        guard let port = AgentRegistry.port(r.runID) else { return nil }
+        guard let port = AgentRegistry.port(r.runID) else { return serviceState(sessionID: sessionID) }
         let running = statuses(port: port).map {
             OpenCodeAPI.isRunning($0, sessionID: sessionID)
         }
@@ -148,13 +154,73 @@ enum OpenCodeProbe {
     /// bind answers something, and answering something is not answering this.
     private static func get<T>(port: Int, path: String) -> T? {
         guard let url = URL(string: "http://\(OpenCodeAPI.host):\(port)\(path)") else { return nil }
-        var payload: T?
+        return send(URLRequest(url: url, timeoutInterval: OpenCodeAPI.timeout),
+                    requireOK: false) as? T
+    }
+
+    // MARK: - OpenCode 2.x: the shared service
+
+    /// Whether a 2.x session's turn is still in flight, per the shared service.
+    ///
+    /// Two requests, one decision (`OpenCodeAPI.serviceState`). The active map is only
+    /// asked for once the session has answered, so a service that is down costs one
+    /// timeout rather than two.
+    static func serviceState(sessionID: String) -> AgentState.SessionState? {
+        guard let service = service(),
+              let path = OpenCodeAPI.servicePath(sessionID: sessionID),
+              let session = call(service, path) else { return nil }
+        return OpenCodeAPI.serviceState(session: session,
+                                        active: call(service, OpenCodeAPI.serviceActivePath),
+                                        sessionID: sessionID)
+    }
+
+    /// Stop a 2.x session's turn, best-effort. Returns whether the service took it.
+    ///
+    /// Closing a 2.x run's window ends its TUI and nothing else: the turn runs in the
+    /// shared service, and one whose TUI was killed mid-turn went on to finish its tool
+    /// call twenty seconds later (measured on 2.0.18). So wherever the applet ends a 2.x
+    /// run, this is what ends its agent.
+    @discardableResult
+    static func interrupt(sessionID: String) -> Bool {
+        guard let service = service(),
+              let path = OpenCodeAPI.servicePath(sessionID: sessionID, suffix: "/interrupt")
+        else { return false }
+        return call(service, path, method: "POST") != nil
+    }
+
+    /// Where the service is, per the file it writes for its clients.
+    private static func service() -> OpenCodeAPI.ServiceEndpoint? {
+        let file = OpenCodeAPI.serviceFile(environment: ProcessInfo.processInfo.environment,
+                                           home: FileManager.default.homeDirectoryForCurrentUser)
+        return (try? Data(contentsOf: file)).flatMap(OpenCodeAPI.serviceEndpoint)
+    }
+
+    /// One request against the service, decoded — nil for anything but a 200 of JSON.
+    ///
+    /// The status is read here where it is not for a 1.x run's own port: every `/api`
+    /// route answers a 401 without the password and a 404 for a session it does not know,
+    /// each with a JSON body of its own, and the service's web app answers any other path
+    /// with a 200 of HTML.
+    private static func call(_ service: OpenCodeAPI.ServiceEndpoint, _ path: String,
+                             method: String = "GET") -> Any? {
+        guard let url = URL(string: service.base + path) else { return nil }
+        var request = URLRequest(url: url, timeoutInterval: OpenCodeAPI.timeout)
+        request.httpMethod = method
+        if let auth = service.authorization {
+            request.setValue(auth, forHTTPHeaderField: "Authorization")
+        }
+        return send(request, requireOK: true)
+    }
+
+    /// Send one request and decode its JSON body, under the probe's time and size budget.
+    private static func send(_ request: URLRequest, requireOK: Bool) -> Any? {
+        var payload: Any?
         let done = DispatchSemaphore(value: 0)
-        URLSession.shared.dataTask(with: URLRequest(url: url,
-                                                    timeoutInterval: OpenCodeAPI.timeout)) { data, _, _ in
+        URLSession.shared.dataTask(with: request) { data, response, _ in
             defer { done.signal() }
+            if requireOK, (response as? HTTPURLResponse)?.statusCode != 200 { return }
             guard let data, data.count <= OpenCodeAPI.maxBytes else { return }
-            payload = (try? JSONSerialization.jsonObject(with: data)) as? T
+            payload = try? JSONSerialization.jsonObject(with: data)
         }.resume()
         // The request carries its own timeout; the wait is bounded a little wider so a
         // sweep can never park here forever if the task never calls back.

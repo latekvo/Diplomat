@@ -132,13 +132,24 @@ enum SweepTest {
         //    stub only an rc puts on the path is what proves it: the applet's own
         //    environment is a Dock icon's, and an install of exactly that shape is what
         //    the Settings hint tells the operator will still work.
-        if let rcShell = opencodeFixture() {
+        //
+        //    Which export it is asked for is the binary's major, so each stub answers
+        //    only its own major's spelling and exits 1 on the other's.
+        if let stub = opencodeFixture() {
             let priorPath = ProcessInfo.processInfo.environment["PATH"]
             let priorShell = ProcessInfo.processInfo.environment["SHELL"]
-            setenv("SHELL", rcShell, 1)
+            setenv("SHELL", stub.shell, 1)
             setenv("PATH", "/usr/bin:/bin", 1)   // what a desktop launcher hands the app
             check("an rc-only opencode still prices its run",
                   UsageScan.opencodeTaskTokens(sessionID: "ses_ours") == 248)
+            // The same path, upgraded in place: the major is asked of the binary on every
+            // pricing, never remembered from the one before.
+            check("a 2.x stub could be written",
+                  write(stub.exporter, opencodeStub(version: "opencode v2.0.18",
+                                                    export: "session export",
+                                                    json: serviceExported)))
+            check("a 2.x opencode prices its run through `session export`",
+                  UsageScan.opencodeTaskTokens(sessionID: "ses_ours") == 127)
             // Put the process back: this is the only check that touches the environment,
             // and one left behind would reach whatever is written after it.
             if let priorPath { setenv("PATH", priorPath, 1) } else { unsetenv("PATH") }
@@ -151,12 +162,12 @@ enum SweepTest {
         return pass
     }
 
-    /// A throwaway `opencode`, and the shell whose rc is the only thing that finds it.
-    /// Returns that shell.
+    /// A throwaway 1.x `opencode`, and the shell whose rc is the only thing that finds it.
+    /// Returns that shell, and the stub so a check can swap in another major.
     ///
     /// The exported numbers are the ones the Linux suite and `DiplomatCoreSmoke` assert
     /// against too — 3 + 84 + 40 + 7 + 8 + 106, never the 59384 cache reads beside them.
-    private static func opencodeFixture() -> String? {
+    private static func opencodeFixture() -> (shell: String, exporter: URL)? {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("diplomat-export-test-\(UUID().uuidString)")
         let bin = dir.appendingPathComponent("opt")
@@ -179,17 +190,46 @@ enum SweepTest {
         // The rc greets, because one that does is ordinary and its greeting lands on the
         // same stdout as the answer.
         let files = [
-            (exporter, "#!/bin/sh\ncat <<'JSON'\n\(exported)\nJSON\n"),
+            (exporter, opencodeStub(version: "1.4.3", export: "export", json: exported)),
             (shell, "#!/bin/sh\necho 'welcome back!'\nexport PATH=\(bin.path):$PATH\n"
                     + "exec /bin/sh \"$@\"\n"),
         ]
-        for (url, body) in files {
-            guard FileManager.default.createFile(atPath: url.path,
-                                                 contents: Data(body.utf8),
-                                                 attributes: [.posixPermissions: 0o755])
-            else { return nil }
-        }
-        return shell.path
+        for (url, body) in files where !write(url, body) { return nil }
+        return (shell.path, exporter)
+    }
+
+    /// 2.x's export: the same numbers' first message, its tokens at the message's top
+    /// level rather than under `info` — 3 + 84 + 40.
+    private static let serviceExported = """
+    {"info": {"id": "ses_ours"}, "messages": [
+      {"type": "user", "text": "Review PR #7 in o/r"},
+      {"type": "assistant",
+       "tokens": {"input": 3, "output": 84, "reasoning": 9, "cache": {"read": 29000, "write": 40}}},
+      {"type": "idle", "outcome": "succeeded"}
+    ]}
+    """
+
+    /// An `opencode` that prints `version` for `--version` and `json` for `<export> ses_ours`
+    /// — `export` on 1.x, `session export` on 2.x — and exits 1 on anything else.
+    private static func opencodeStub(version: String, export: String, json: String) -> String {
+        """
+        #!/bin/sh
+        if [ "$1" = --version ]; then echo '\(version)'; exit 0; fi
+        if [ "$*" = '\(export) ses_ours' ]; then
+        cat <<'JSON'
+        \(json)
+        JSON
+        exit 0
+        fi
+        exit 1
+
+        """
+    }
+
+    /// An executable file with this body, replacing whatever was there.
+    private static func write(_ url: URL, _ body: String) -> Bool {
+        FileManager.default.createFile(atPath: url.path, contents: Data(body.utf8),
+                                       attributes: [.posixPermissions: 0o755])
     }
 
     /// A throwaway Hermes store: three sessions a second apart in one directory, told

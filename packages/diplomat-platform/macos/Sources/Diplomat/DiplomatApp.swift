@@ -320,12 +320,17 @@ enum Dump {
         // The paths a real spawn takes from the run's own directory, stood in for by a
         // throwaway id: what the dump is for is the shape of the command, and a run
         // registered here would be one the applet then had to retire.
+        // An OpenCode 2.x spawn's command names a session id, minted here but never
+        // staged or created.
         let run = AgentRegistry.newRunID(now: Date().timeIntervalSince1970)
+        let runner = AppConfig.agentRunner
+        let service = runner == .opencode && OpenCodeCLI.installedIsService()
         let cmd = AgentSpawner.shellCommand(
             AgentSpawner.SpawnPlan(promptFile: file,
                                    donePath: AgentRegistry.donePath(run).path,
                                    pidPath: AgentRegistry.pidPath(run).path,
-                                   runner: AppConfig.agentRunner, port: 0))
+                                   runner: runner, port: 0,
+                                   serviceSession: service ? OpenCodeAPI.newSessionID() : nil))
         print("\n----- SHELL COMMAND -----")
         print(cmd)
         let term = AgentSpawner.resolved(.ghostty)

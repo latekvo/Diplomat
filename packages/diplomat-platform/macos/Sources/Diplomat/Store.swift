@@ -855,9 +855,12 @@ final class Store: ObservableObject {
     /// Which runner is spawned is written down here rather than re-read later: the setting
     /// is what the NEXT spawn will use, so a run started under one runner and asked about
     /// after the operator switched would be interrogated through the wrong store. An
-    /// OpenCode run also gets a port reserved for its own server. A port that cannot be had
-    /// is not a failure to spawn — the run goes ahead without one and is read off its
-    /// screen, exactly as a Claude Code run is.
+    /// OpenCode 1.x run also gets a port reserved for its own server. A port that cannot
+    /// be had is not a failure to spawn — the run goes ahead without one and is read off
+    /// its screen, exactly as a Claude Code run is. An OpenCode 2.x run gets no port —
+    /// 2.x serves every session from one shared service — and is bound instead to the
+    /// session its spawn stages and creates there; a session that cannot be staged IS a
+    /// failure to spawn, because the command reads its prompt from nowhere else.
     ///
     /// `kind` drives the row's tint; `auditAction` (defaulting to `kind`) is the verb
     /// written to the activity feed. They're decoupled so a review-reply agent can log a
@@ -877,16 +880,32 @@ final class Store: ObservableObject {
             prompt: prompt)
         let runner = AppConfig.agentRunner
         AgentRegistry.stageRunner(record.runID, runner.rawValue)
+        // Off this actor: it runs the binary, which takes most of a second on 1.x.
+        let service = runner == .opencode
+            ? await Task.detached(priority: .userInitiated) {
+                OpenCodeCLI.installedIsService()
+            }.value
+            : false
         var port = 0
-        if runner == .opencode, let free = OpenCodeProbe.freePort(),
-           AgentRegistry.stagePort(record.runID, free) {
+        var session: String?
+        if service {
+            guard let minted = OpenCodeCLI.stageSession(
+                promptFile: AgentRegistry.promptPath(record.runID),
+                directory: AgentSpawner.repoPath, model: AppConfig.agentModel) else {
+                AgentRegistry.forget([record.runID])
+                throw AgentSpawner.SpawnError.write("could not stage the OpenCode session")
+            }
+            AgentRegistry.bindSession(record.runID, minted)
+            session = minted
+        } else if runner == .opencode, let free = OpenCodeProbe.freePort(),
+                  AgentRegistry.stagePort(record.runID, free) {
             port = free
         }
         let plan = AgentSpawner.SpawnPlan(
             promptFile: AgentRegistry.promptPath(record.runID),
             donePath: AgentRegistry.donePath(record.runID).path,
             pidPath: AgentRegistry.pidPath(record.runID).path,
-            runner: runner, port: port,
+            runner: runner, port: port, serviceSession: session,
             settingsPath: AgentRegistry.stageHooks(record.runID))
         do {
             // Detached: the spawn's `osascript` blocks for `inputSettleDelay` seconds,
@@ -1184,9 +1203,16 @@ final class Store: ObservableObject {
     /// process walked out to whatever terminal is showing it. A synthesized run has no run
     /// directory, so it never has a handle and the walk is its only route; a run the mesh
     /// placed back here is in the same position.
+    ///
+    /// An OpenCode 2.x run is interrupted first, whatever the window then does: its turn
+    /// runs in the shared service rather than in the window, and outlives the TUI the
+    /// close ends (`OpenCodeProbe.interrupt`).
     private func reapWedgedWindows(_ t: AgentState.Tick) -> Set<String> {
         var refused: Set<String> = []
         for record in t.reapable {
+            if let session = AgentRegistry.serviceSession(record.runID) {
+                OpenCodeProbe.interrupt(sessionID: session)
+            }
             let byHandle = AgentWindows.handle(record.runID).map(AgentWindows.close) ?? false
             guard byHandle || TerminalFocus.close(tty: record.tty, pid: record.pid)
             else {
