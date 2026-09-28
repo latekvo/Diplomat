@@ -94,6 +94,7 @@ import json
 import os
 import re
 import socket
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -355,9 +356,17 @@ def interrupt(session_id: str) -> None:
 SESSION_ARG = re.compile(r"(?:\S*/)?opencode(?:\.exe)?\s+--session\s+(ses[0-9A-Za-z_-]+)")
 
 #: Opening prompts already read, by session id. A prompt never changes once written,
-#: so a hit is kept for the life of the process; a miss is not — the list is empty
-#: until ``session.prompt`` lands, a moment after the TUI's argv appears.
+#: so a hit is kept for the life of the process.
 _opening_prompts: dict[str, str] = {}
+
+#: How long a session that gave no opening prompt goes unasked. Diplomat's own spawns
+#: prompt the session before the TUI's argv exists, so a miss is a session opened
+#: before it was prompted, or a service that is not answering — which, asked again on
+#: every scan, would charge each scan :data:`TIMEOUT` per TUI.
+MISS_TTL = 30.0
+
+#: When each session last gave no opening prompt (:func:`time.monotonic`), by id.
+_prompt_misses: dict[str, float] = {}
 
 
 def session_arg(argv: str) -> str | None:
@@ -374,15 +383,20 @@ def opening_prompt(session_id: str) -> str | None:
 
     ``GET /api/session/{id}/message?limit=1&order=asc`` answers
     ``{"data": [{"type": "user", "text": …}]}`` (2.0.18). One request per session
-    ever, for a session that has one; see :data:`_opening_prompts`.
+    ever for a session that has one (:data:`_opening_prompts`), and one per
+    :data:`MISS_TTL` while it has not (:data:`_prompt_misses`).
     """
     if session_id in _opening_prompts:
         return _opening_prompts[session_id]
+    missed = _prompt_misses.get(session_id)
+    if missed is not None and time.monotonic() - missed < MISS_TTL:
+        return None
     page = _service_call(_session_route(session_id) + "/message?limit=1&order=asc")
     rows = page.get("data") if isinstance(page, dict) else None
     first = rows[0] if isinstance(rows, list) and rows else None
     if not (isinstance(first, dict) and first.get("type") == "user"
             and isinstance(first.get("text"), str)):
+        _prompt_misses[session_id] = time.monotonic()
         return None
     _opening_prompts[session_id] = first["text"]
     return first["text"]

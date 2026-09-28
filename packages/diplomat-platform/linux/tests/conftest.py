@@ -262,8 +262,10 @@ def isolated_opencode_state(tmp_path, monkeypatch):
                         lambda: real_probe() if os.environ.get("DIPLOMAT_SHELL")
                         else (None, None))
     opencodeapi._opening_prompts.clear()
+    opencodeapi._prompt_misses.clear()
     yield
     opencodeapi._opening_prompts.clear()
+    opencodeapi._prompt_misses.clear()
 
 
 @pytest.fixture(autouse=True)

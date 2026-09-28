@@ -206,8 +206,8 @@ def live_agents(dump: Observation) -> Observation:
     mentions the number, which is why it decides nothing that a pid can decide.
 
     An OpenCode 2.x TUI carries no prompt in its argv, only ``--session <id>``; its
-    prompt is read from the service instead (:func:`opencodeapi.scan_text`), once per
-    session.
+    prompt is read from the service instead (:func:`opencodeapi.scan_text`), and
+    remembered (:func:`opencodeapi.opening_prompt`).
 
     The tty rides along because it is the only handle such an agent has: without it
     nothing can read its screen, so it would count as working until its window closed

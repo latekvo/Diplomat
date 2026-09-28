@@ -748,14 +748,32 @@ def test_an_opening_prompt_is_asked_once_per_session(service, repo_o_r):
     assert len(service.seen) == 1
 
 
-def test_a_session_not_yet_prompted_is_asked_again(service, repo_o_r):
-    """Its message list is empty until ``session.prompt`` lands, a moment after the
-    TUI's argv appears; remembering that would hide the run for good."""
+def test_a_session_not_yet_prompted_is_asked_again_after_a_while(service, repo_o_r,
+                                                                  monkeypatch):
+    """Its message list is empty until ``session.prompt`` lands; remembering that for
+    good would hide the run for good."""
+    now = [T0]
+    monkeypatch.setattr(opencodeapi.time, "monotonic", lambda: now[0])
     _opening(service, SID, None)
     dump = _ps(f"opencode --session {SID}")
     assert probes.live_agents(dump).value == {}
     _opening(service, SID, PROMPT)
+    now[0] += opencodeapi.MISS_TTL - 1
+    assert probes.live_agents(dump).value == {}
+    now[0] += 1
     assert probes.live_agents(dump).value == {7: "pts/0"}
+
+
+def test_a_service_that_hangs_is_not_asked_on_every_scan(repo_o_r, monkeypatch):
+    """Each ask costs :data:`opencodeapi.TIMEOUT`, per TUI, and the panel scans twice
+    per rebuild on the Qt thread."""
+    asked = []
+    monkeypatch.setattr(opencodeapi, "_service_call",
+                        lambda path, method="GET": asked.append(path))
+    dump = _ps(f"opencode --session {SID}", f"opencode --session {OTHER}")
+    for _ in range(3):
+        assert probes.live_agents(dump).value == {}
+    assert len(asked) == 2
 
 
 def test_a_service_that_will_not_answer_matches_nothing(repo_o_r):
