@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -387,10 +388,20 @@ def _file_tokens(path: Path, roots: list[Path]) -> float:
 # MARK: - The other runner's transcript
 
 
-#: How long ``opencode export`` may take. It reads one session out of a local store,
-#: so this is generous — but it runs on the poll that retires a run, and a wedged CLI
-#: must cost that run its price rather than the poll.
+#: How long the session export may take (``opencode export`` on 1.x, ``opencode
+#: session export`` on 2.x). It reads one session out of a local store, so this is
+#: generous — but it runs on the poll that retires a run, and a wedged CLI must cost
+#: that run its price rather than the poll.
 _EXPORT_TIMEOUT = 20.0
+
+#: How long ``opencode --version`` may take. Measured at 0.03 s on 2.0.18 and 0.5-0.8 s
+#: on 1.4.3 and 1.18.33, so this only bites a CLI that is wedged, and a wedged one is
+#: answered as 1.x — the spelling every install had before 2.x existed.
+_VERSION_TIMEOUT = 5.0
+
+#: The first dotted triple in the version output: ``opencode v2.0.18`` on 2.x, a bare
+#: ``1.18.33`` on 1.x.
+_VERSION = re.compile(r"(\d+)\.\d+\.\d+")
 
 #: How long the user's shell may take to say where the CLI is. It sources their rc,
 #: which can be slow — a version manager, a prompt framework — so it gets its own
@@ -432,6 +443,37 @@ def _opencode_binary() -> str | None:
     return _opencode_path
 
 
+def opencode_is_v2() -> bool:
+    """Whether the ``opencode`` a spawn would run is 2.x — one per-user service every
+    client talks to, rather than 1.x's server per TUI.
+
+    The two take different spawns, are asked what they are doing in different places
+    and export a finished session under different commands, so every one of those
+    seams asks this first. Found by :func:`_opencode_binary`, the way the spawn finds
+    it, and asked with ``--version``: major 2 or later is 2.x. Every failure — no CLI,
+    a timeout, output with no version in it — answers False, which is the 1.x
+    behaviour every install had before 2.x existed.
+
+    Not remembered: an upgrade lands at the same path, and a spawn is rare enough to
+    pay the fraction of a second each time.
+    """
+    binary = _opencode_binary()
+    return bool(binary) and _is_v2(binary)
+
+
+def _is_v2(binary: str) -> bool:
+    try:
+        out = subprocess.run(  # noqa: S603 - resolved absolute path, no shell
+            [binary, "--version"],
+            capture_output=True, text=True, timeout=_VERSION_TIMEOUT)
+    except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
+        return False
+    if out.returncode != 0:
+        return False
+    found = _VERSION.search(out.stdout)
+    return found is not None and int(found.group(1)) >= 2
+
+
 def _shell_path_to(name: str) -> str | None:
     """Where the user's interactive shell says ``name`` is, if it names a real file.
 
@@ -459,14 +501,17 @@ def opencode_task_tokens(session_id: str) -> float | None:
 
     An OpenCode run leaves nothing in ``~/.claude``, so :func:`task_run` cannot see
     it and every such run used to land in the ledger unpriced. Its own transcript is
-    reachable through ``opencode export``, which is asked for rather than read off
-    disk: the store behind it is an internal SQLite schema, while the command is part
-    of the CLI's published surface and already knows where the store lives.
+    reachable through the CLI's session export — ``opencode export <id>`` on 1.x,
+    ``opencode session export <id>`` on 2.x, which has no top-level ``export`` (and
+    1.x no ``session export``) — asked for rather than read off disk: the store behind
+    it is an internal SQLite schema, while the command is part of the CLI's published
+    surface and already knows where the store lives. Both print ``{"info": …,
+    "messages": [...]}`` with each message's tokens in the one shape the sum reads.
 
     Read at retirement, not on the poll — a turn's price is per-message, so a run's is
     a sum over every message it produced, and the live probe
-    (:mod:`diplomat_runtime.opencodeapi`) deliberately fetches one. By then the run's own
-    server is gone, which is why this goes through the CLI rather than the port.
+    (:mod:`diplomat_runtime.opencodeapi`) deliberately fetches one. By then a 1.x run's
+    own server is gone, which is why this goes through the CLI rather than the port.
 
     How a session's messages add up is :func:`opencodeapi.session_tokens`, shared with
     the Swift front-end so the two cannot price the same run differently.
@@ -480,7 +525,8 @@ def opencode_task_tokens(session_id: str) -> float | None:
         return None
     try:
         out = subprocess.run(  # noqa: S603 - resolved absolute path, no shell
-            [binary, "export", session_id],
+            [binary, *(("session", "export") if _is_v2(binary) else ("export",)),
+             session_id],
             capture_output=True, text=True, timeout=_EXPORT_TIMEOUT)
     except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
         return None

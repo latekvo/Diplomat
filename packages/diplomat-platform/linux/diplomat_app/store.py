@@ -33,6 +33,7 @@ from diplomat_runtime import (
     autobudget,
     autofix,
     core,
+    opencodeapi,
     promptcore,
     review,
     runner,
@@ -1445,9 +1446,12 @@ class Store(QObject):
         Which runner is spawned is written down here rather than re-read later: the
         setting is what the NEXT spawn will use, so a run started under one runner and
         asked about after the operator switched would be interrogated through the
-        wrong store. An OpenCode run also gets a port reserved for its own server. A
-        port that cannot be had is not a failure to spawn — the run goes ahead without
-        one and is read off its screen, exactly as a Claude Code run is.
+        wrong store. An OpenCode 1.x run also gets a port reserved for its own server.
+        A port that cannot be had is not a failure to spawn — the run goes ahead without
+        one and is read off its screen, exactly as a Claude Code run is. An OpenCode 2.x
+        run has no server of its own and gets no port: its session is minted and staged
+        instead (:func:`review.stage_opencode_session`) and bound to the run before the
+        spawn, so the probe asks the per-user service about it from the first tick.
         """
         now = time.time()
         record = agentregistry.create_run(
@@ -1458,16 +1462,24 @@ class Store(QObject):
                 ledger_key=ledger_key),
             prompt)
         chosen = agentregistry.stage_runner(record.run_id)
-        port = (agentregistry.stage_port(record.run_id)
-                if chosen == runner.OPENCODE else None)
+        port = None
+        staged = {}
         try:
+            if chosen == runner.OPENCODE:
+                session_id = review.stage_opencode_session(
+                    str(agentregistry.prompt_path(record.run_id)))
+                if session_id:
+                    agentregistry.bind_session(record.run_id, session_id)
+                    staged = {"opencode_session": session_id}
+                else:
+                    port = agentregistry.stage_port(record.run_id)
             review.spawn(prompt, self.terminal,
                          done_path=str(agentregistry.done_path(record.run_id)),
                          pid_path=str(agentregistry.pid_path(record.run_id)),
                          prompt_file=str(agentregistry.prompt_path(record.run_id)),
                          port=port,
                          settings_file=agentregistry.stage_hooks(record.run_id),
-                         session=tmuxwatch.session_name(record.run_id))
+                         session=tmuxwatch.session_name(record.run_id), **staged)
         except review.SpawnError:
             agentregistry.forget({record.run_id})
             return False
@@ -2492,6 +2504,11 @@ class Store(QObject):
         """
         refused: set[str] = set()
         for record in t.reapable:
+            # A 2.x OpenCode turn runs in the per-user service, not the window, and
+            # outlives it (:func:`opencodeapi.interrupt`) — so it is stopped first.
+            session_id = agentregistry.service_session(record.run_id)
+            if session_id:
+                opencodeapi.interrupt(session_id)
             if not (tmuxwatch.kill_session(tmuxwatch.session_name(record.run_id))
                     or tmuxwatch.kill_session_for_tty(record.tty)):
                 refused.add(record.run_id)

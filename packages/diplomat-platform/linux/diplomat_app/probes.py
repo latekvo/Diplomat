@@ -284,13 +284,14 @@ def agent_sessions(records: list[RunRecord], directory: str,
     marks finished, rather than whether someone else's status bar happened to have its
     interrupt hint drawn when we looked.
 
-    Two runners answer, from different places — OpenCode over the loopback port its
-    spawn reserved (:mod:`opencodeapi`), Hermes out of the SQLite store it keeps every
-    session in (:mod:`hermesstore`) — and both come back as the same typed answer, so
-    nothing downstream learns which runner it is looking at.
+    Two runners answer, from different places — OpenCode over loopback, on the port a
+    1.x spawn reserved or through the per-user 2.x service (:mod:`opencodeapi`), Hermes
+    out of the SQLite store it keeps every session in (:mod:`hermesstore`) — and both
+    come back as the same typed answer, so nothing downstream learns which runner it is
+    looking at.
 
     A run missing from the answer is a run this cannot reach: every Claude Code run,
-    an OpenCode run spawned without a port, one whose server has not come up yet, one
+    a 1.x OpenCode run spawned without a port, one whose server has not come up yet, one
     whose session has not been written to yet. The resolver reads its screen instead,
     so absence here costs the older evidence and never a verdict.
 
@@ -346,7 +347,8 @@ def agent_sessions(records: list[RunRecord], directory: str,
 
 
 class _OpenCodeBackend:
-    """A run's own OpenCode server, on the port its spawn reserved."""
+    """A run's own OpenCode 1.x server, on the port its spawn reserved — or, for a
+    2.x run, the per-user service its session was created in."""
 
     @staticmethod
     def bind(record: RunRecord, directory: str, taken: set[str]) -> str:
@@ -382,9 +384,12 @@ class _OpenCodeBackend:
     @staticmethod
     def state(record: RunRecord, session_id: str):
         """Both halves of the answer — see :func:`opencodeapi.state_of` for which
-        blind spot each of them covers."""
+        blind spot each of them covers, and :func:`opencodeapi.service_state_of` for
+        how a 2.x session reads."""
         from diplomat_runtime import agentregistry, opencodeapi
 
+        if agentregistry.service_session(record.run_id):
+            return opencodeapi.service_state(session_id)
         port = agentregistry.port(record.run_id)
         if port is None:
             return None

@@ -16,8 +16,8 @@ also how the tests get an isolated one):
     <run-id>/pid         the agent's pid, written by the shell that runs it
     <run-id>/done        its exit code, written when it returns
     <run-id>/runner      which agent CLI was spawned into it
-    <run-id>/port        the loopback port its OpenCode server answers on
-    <run-id>/session     which of that runner's sessions turned out to be this run's
+    <run-id>/port        the loopback port its OpenCode 1.x server answers on
+    <run-id>/session     which of that runner's sessions is this run's
     <run-id>/hooks.json  the settings that make the agent report its own turns
     <run-id>/activity    one line per turn boundary, written by those hooks
 
@@ -255,7 +255,7 @@ def runners_of(records: list[RunRecord]) -> set[str]:
 
 
 def stage_port(run_id: str) -> int | None:
-    """Reserve the port this run's OpenCode server will answer on, and record it.
+    """Reserve the port this run's OpenCode 1.x server will answer on, and record it.
 
     The applet picks it rather than the agent, because the applet is the one that
     puts it on the agent's command line — a port only discoverable once the server
@@ -280,9 +280,9 @@ def stage_port(run_id: str) -> int | None:
 
 
 def port(run_id: str) -> int | None:
-    """The port this run's OpenCode server answers on, or ``None`` for a run that
-    has none — every Claude Code run, and any OpenCode run whose port could not be
-    reserved."""
+    """The port this run's OpenCode 1.x server answers on, or ``None`` for a run
+    that has none — every Claude Code run, every OpenCode 2.x run, and any 1.x run
+    whose port could not be reserved."""
     try:
         raw = port_path(run_id).read_text(encoding="utf-8").strip()
     except OSError:
@@ -300,7 +300,8 @@ def bound_session(run_id: str) -> str:
     Kept on disk rather than in memory so the search survives the applet restart
     this whole module exists for — and because the search is the expensive half:
     matching a session to a run reads its opening message, while asking a bound one
-    what it is doing reads a single message.
+    what it is doing reads a single message. An OpenCode 2.x run never searches: its
+    id is minted and written here before it is spawned.
 
     Every runner spells an id its own way — ``ses_00d61ec0…`` under OpenCode,
     ``20260812_002140_b0e4d4`` under Hermes — so what is checked is the shape any id
@@ -321,6 +322,22 @@ def bind_session(run_id: str, session_id: str) -> None:
         session_path(run_id).write_text(session_id, encoding="utf-8")
     except OSError:
         pass
+
+
+def service_session(run_id: str) -> str:
+    """The session an OpenCode 2.x run holds in the per-user service, or "" for any
+    other run.
+
+    A 2.x run is an OpenCode run with a bound session and no port: its session is
+    minted and bound at spawn, and there is no server of its own to stage a port for.
+    A 1.x run binds only through its port (:func:`probes._OpenCodeBackend.bind`), so
+    one that has a session always has the port file too.
+    """
+    from .runner import OPENCODE
+
+    if run_runner(run_id) != OPENCODE or port_path(run_id).exists():
+        return ""
+    return bound_session(run_id)
 
 
 # MARK: - What the agent says it is doing

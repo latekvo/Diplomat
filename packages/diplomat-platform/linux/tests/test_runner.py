@@ -148,7 +148,7 @@ def test_each_runner_hands_the_user_to_its_own_provider_wizard(hermes):
     user to OpenCode's wizard would connect a provider the agent never reads."""
     assert runner.setup_command() == "hermes setup; hermes status"
     appconfig.set_value(appconfig.AGENT_RUNNER, runner.OPENCODE)
-    assert runner.setup_command() == "opencode providers login; opencode providers list"
+    assert runner.setup_command() == "opencode auth login; opencode auth list"
 
 
 def test_a_prompt_path_with_a_space_survives_the_hand_off(opencode):

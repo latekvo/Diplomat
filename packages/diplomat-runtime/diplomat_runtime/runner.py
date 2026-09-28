@@ -17,9 +17,10 @@ and :mod:`probes` identify a run by, and a second spawn shape would be a second
 set of them to keep true.
 
 What each of the two foreign runners is *doing* is asked of the runner rather than
-read off its screen, and each answers from a different place: OpenCode over a
-loopback port of its own (:mod:`opencodeapi`), Hermes out of the SQLite store it
-keeps every session in (:mod:`hermesstore`). Both come back as the same typed
+read off its screen, and each answers from a different place: OpenCode over HTTP on
+loopback — a port of the run's own on 1.x, the per-user service on 2.x
+(:mod:`opencodeapi`) — and Hermes out of the SQLite store it keeps every session in
+(:mod:`hermesstore`). Both come back as the same typed
 answer, so :mod:`agentstate` never learns which runner it is looking at.
 
 Credentials are the one thing this module refuses to hold. Each runner has its own
@@ -38,7 +39,9 @@ import closes the cycle.
 
 from __future__ import annotations
 
+import json
 import shlex
+import uuid
 
 #: The runners, by the name of the CLI each one runs. The value is also what ``ps``
 #: shows, which is what :func:`is_agent_line` matches on.
@@ -69,6 +72,17 @@ OPENCODE_PERMISSION_VALUE = (
     '{"edit":"allow","bash":"allow","webfetch":"allow",'
     '"external_directory":"allow","doom_loop":"allow"}'
 )
+
+#: The same grant on OpenCode 2.x, where it cannot travel in the command: 2.x keeps
+#: config and permissions in its per-user service, not in the TUI, so the variable
+#: above set on a 2.x TUI changes nothing (measured on 2.0.18). A session carries its
+#: own ruleset instead, given when it is created (:func:`opencode_session_body`).
+OPENCODE_ALLOW_ALL = [{"action": "*", "resource": "*", "effect": "allow"}]
+
+#: What every session id Diplomat mints for a 2.x run starts with. OpenCode takes a
+#: caller-chosen id so long as it starts ``ses``, and creating one that already exists
+#: returns the existing session rather than failing — so each spawn mints a fresh one.
+OPENCODE_SESSION_PREFIX = "ses_diplomat_"
 
 
 def selected() -> str:
@@ -101,8 +115,52 @@ def model() -> str:
     return appconfig.get(appconfig.AGENT_MODEL).strip()
 
 
+def new_opencode_session() -> str:
+    """A session id for one 2.x spawn: the prefix, then 32 hex digits of a uuid4."""
+    return OPENCODE_SESSION_PREFIX + uuid.uuid4().hex
+
+
+def opencode_staged(prompt_file: str) -> tuple[str, str]:
+    """Where a 2.x spawn's two request bodies are staged: beside the prompt, named for
+    it — the session to create, then the prompt to submit into it."""
+    return prompt_file + ".session.json", prompt_file + ".prompt.json"
+
+
+def opencode_model(pin: str) -> dict:
+    """A pinned model id as 2.x's session API spells it.
+
+    Split the way the 2.x TUI splits its own ids: the provider is everything before
+    the FIRST slash, so ``openrouter/moonshotai/kimi-k3`` is provider ``openrouter``
+    and model ``moonshotai/kimi-k3``, and a ``#`` in the rest names a variant, from
+    its LAST one on.
+    """
+    provider, _slash, rest = pin.partition("/")
+    model_id, hash_, variant = rest.rpartition("#")
+    if hash_:
+        return {"providerID": provider, "id": model_id, "variant": variant}
+    return {"providerID": provider, "id": rest}
+
+
+def opencode_session_body(session_id: str, directory: str, pin: str) -> str:
+    """The ``session.create`` body for a 2.x run: its fresh id, the checkout it works
+    in, the allow-all ruleset (:data:`OPENCODE_ALLOW_ALL`), and a model only when one
+    is pinned. Unpinned, the service picks for itself — its configured ``model``, else
+    the first one available."""
+    body: dict = {"id": session_id, "location": {"directory": directory},
+                  "permissions": OPENCODE_ALLOW_ALL}
+    if pin:
+        body["model"] = opencode_model(pin)
+    return json.dumps(body)
+
+
+def opencode_prompt_body(prompt: str) -> str:
+    """The ``session.prompt`` body for a 2.x run: the staged prompt, verbatim."""
+    return json.dumps({"text": prompt})
+
+
 def agent_command(prompt_file: str, port: int | None = None,
-                  settings_file: str | None = None) -> str:
+                  settings_file: str | None = None,
+                  opencode_session: str | None = None) -> str:
     """The one command that runs the agent: ``<cli> <prompt-bearing args>``.
 
     This is the *whole* of what a runner changes about a spawn, and it is a shell
@@ -110,14 +168,14 @@ def agent_command(prompt_file: str, port: int | None = None,
     ``"$(cat <file>)"`` — see :func:`review.shell_command` for why a staged file
     beats threading a multi-line prompt through nested quoting.
 
-    It must stay a *simple command* with the agent word first. Under Claude Code
-    that word has to be alias-expandable (the alias is what carries
-    ``--dangerously-skip-permissions``); for every runner it has to be the shell's
-    last command, which is the one an eliding shell execs over itself so that the pid
-    already written to the run's ``pid`` file is the agent's own
-    (:func:`review.shell_command` for what that rests on). A leading variable
-    assignment keeps both properties — measured under zsh 5.9 and bash 5.3, the
-    ``VAR=x agent`` form records the same pid the bare one does.
+    It must END in a *simple command* with the agent word first — for every runner
+    but OpenCode 2.x it is nothing else. Under Claude Code that word has to be
+    alias-expandable (the alias is what carries ``--dangerously-skip-permissions``);
+    for every runner it has to be the shell's last command, which is the one an
+    eliding shell execs over itself so that the pid already written to the run's
+    ``pid`` file is the agent's own (:func:`review.shell_command` for what that rests
+    on). A leading variable assignment keeps both properties — measured under zsh 5.9
+    and bash 5.3, the ``VAR=x agent`` form records the same pid the bare one does.
 
     ``port`` puts an OpenCode run's own server on a port the applet already knows,
     which is what lets :mod:`opencodeapi` ask the agent what it is doing instead of
@@ -125,6 +183,13 @@ def agent_command(prompt_file: str, port: int | None = None,
     such server — Hermes answers the same question from its own session store.
     Omitting it is a supported spawn, not a broken one: the run works exactly as
     before and is tracked by its screen.
+
+    ``opencode_session`` makes it an OpenCode 2.x spawn and replaces ``port``, the pin
+    and ``--prompt`` alike: 2.x has no server per TUI to put on a port, takes no
+    ``-m``, and its ``--prompt`` fills the composer without submitting it (upstream
+    anomalyco/opencode#51135, reproduced on 2.0.18). So the run is started through
+    the per-user service instead — see :func:`_opencode_v2_command`. The caller mints
+    the id and stages the bodies first (:func:`review.stage_opencode_session`).
 
     ``settings_file`` is where Claude Code finds the hooks that make it report its own
     turn boundaries (:mod:`completion`) — the one mechanism that answers "is this run
@@ -139,6 +204,8 @@ def agent_command(prompt_file: str, port: int | None = None,
     if chosen == CLAUDE:
         hooks = f" --settings {shlex.quote(settings_file)}" if settings_file else ""
         return f'claude{hooks} "$(cat {pf})"'
+    if chosen == OPENCODE and opencode_session:
+        return _opencode_v2_command(prompt_file, opencode_session)
     pinned = model()
     flag = f" -m {shlex.quote(pinned)}" if pinned else ""
     if chosen == HERMES:
@@ -149,10 +216,11 @@ def agent_command(prompt_file: str, port: int | None = None,
         # `hermesstore.is_ours` tells this run's session from a sibling's in the same
         # checkout.
         return f'hermes chat --tui --yolo{flag} -q "$(cat {pf})"'
-    # OpenCode's default hostname is loopback, so this exposes the run to other users
-    # of this machine and to nothing else. It cannot also be password-protected: the
-    # server takes one, but OpenCode's own TUI sends none, so a run started with
-    # `OPENCODE_SERVER_PASSWORD` set exits on `Unauthorized` before doing any work.
+    # OpenCode 1.x from here on. Its default hostname is loopback, so this exposes the
+    # run to other users of this machine and to nothing else. It cannot also be
+    # password-protected: the server takes one, but OpenCode's own TUI sends none, so
+    # a run started with `OPENCODE_SERVER_PASSWORD` set exits on `Unauthorized` before
+    # doing any work.
     listen = f" --port {int(port)}" if port else ""
     grant = f"{OPENCODE_PERMISSION_ENV}={shlex.quote(OPENCODE_PERMISSION_VALUE)}"
     # `--prompt` starts the TUI with the prompt already submitted, which is what
@@ -162,6 +230,31 @@ def agent_command(prompt_file: str, port: int | None = None,
     # message, which is how `opencodeapi.is_ours` tells this run's session from a
     # sibling's in the same checkout.
     return f'{grant} opencode{listen}{flag} --prompt "$(cat {pf})"'
+
+
+def _opencode_v2_command(prompt_file: str, session_id: str) -> str:
+    """``opencode api session.create … && opencode api session.prompt … || exit;
+    opencode --session <id>``.
+
+    The service creates the session and starts its turn; the TUI then attaches to it,
+    showing the turn in flight and taking typing like any other. Every simple command
+    starts with the word ``opencode``, so a user alias for it still expands. The bodies
+    travel as ``-d "$(cat …)"`` because ``opencode api`` takes its JSON inline — no
+    ``@file``, no stdin.
+
+    Shaped by which command an eliding shell execs over itself
+    (:func:`review.shell_command`), measured under bash 5.3 and zsh 5.9: zsh execs the
+    last command of an ``&&`` chain and bash 5.3 does not, but both exec the last
+    command after a ``;``. So the TUI stands alone after one, and the pid file names
+    OpenCode itself under either. ``|| exit`` ends the shell with the failing ``api``
+    call's status instead, so the exit sentinel records it rather than a TUI opening on
+    a session that does not exist.
+    """
+    session_body, prompt_body = (shlex.quote(p) for p in opencode_staged(prompt_file))
+    sid = shlex.quote(session_id)
+    return (f'opencode api session.create -d "$(cat {session_body})"'
+            f' && opencode api session.prompt --param sessionID={sid}'
+            f' -d "$(cat {prompt_body})" || exit; opencode --session {sid}')
 
 
 def setup_command() -> str:
@@ -176,10 +269,13 @@ def setup_command() -> str:
 
     The listing command runs after, so the window the user is left looking at states
     what is now connected rather than making them trust that it worked.
+
+    OpenCode's is ``auth``, which 2.x names it and 1.x accepts as an alias of
+    ``providers`` (checked on 1.4.3 and 1.18.33), so one command serves both.
     """
     if selected() == HERMES:
         return "hermes setup; hermes status"
-    return "opencode providers login; opencode providers list"
+    return "opencode auth login; opencode auth list"
 
 
 def is_agent_line(line: str) -> bool:
