@@ -438,7 +438,8 @@ class OpenCodeInstall:
 _install: OpenCodeInstall | None = None
 
 #: ``--version`` answers, keyed on the binary's identity on disk — path, inode, size
-#: and mtime — so an upgrade in place is a new key and a steady state costs a stat.
+#: and mtime — so an upgrade in place is a new key and a steady state costs a stat. A
+#: binary that could not answer — a non-zero exit, a timeout — is not remembered.
 _majors: dict[tuple, int] = {}
 
 
@@ -549,7 +550,9 @@ def _major(binary: str) -> int:
             capture_output=True, text=True, timeout=_VERSION_TIMEOUT)
     except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
         return 1
-    found = _VERSION.search(out.stdout) if out.returncode == 0 else None
+    if out.returncode != 0:
+        return 1
+    found = _VERSION.search(out.stdout)
     major = 2 if found is not None and int(found.group(1)) >= 2 else 1
     _majors[key] = major
     return major

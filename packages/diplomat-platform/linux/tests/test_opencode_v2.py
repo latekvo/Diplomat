@@ -108,6 +108,17 @@ def test_a_version_query_that_fails_is_1x(tmp_path, monkeypatch):
     assert usagescan.opencode_is_v2() is False
 
 
+def test_a_version_query_that_failed_is_asked_again(tmp_path, monkeypatch):
+    """Remembered, one failure would read a 2.x install as 1.x until it next changed on
+    disk — every spawn the 1.x way, which 2.x rejects."""
+    flag = shlex.quote(str(tmp_path / "answered-once"))
+    fake_opencode(tmp_path, monkeypatch,
+                  f'if [ -e {flag} ]; then echo "opencode v2.0.18"; exit 0; fi\n'
+                  f'touch {flag}; exit 1\n')
+    assert usagescan.opencode_is_v2() is False
+    assert usagescan.opencode_is_v2() is True
+
+
 def test_a_version_query_that_hangs_is_1x(tmp_path, monkeypatch):
     fake_opencode(tmp_path, monkeypatch, 'sleep 5; echo "opencode v2.0.18"\n')
     monkeypatch.setattr(usagescan, "_VERSION_TIMEOUT", 0.2)
