@@ -38,15 +38,19 @@ public enum AgentModel {
     public static func detected() -> String {
         detect(configFile: configURL(), claudeHome: claudeHomeURL(), hermesConfig: hermesConfigURL(),
                openCodeConfig: openCodeConfigURL(), openCodeState: openCodeStateURL(),
-               openCodeIsService: OpenCodeCLI.installedIsService)
+               openCodeIsService: {
+                   OpenCodeCLI.majorOverride(ProcessInfo.processInfo.environment)
+                       ?? OpenCodeCLI.installedIsService()
+               })
     }
 
     /// `detected()` against explicit locations, so the smoke test can drive the whole
     /// lookup over a fixture instead of over the developer's own machine.
     ///
     /// `openCodeIsService` says whether the installed OpenCode is 2.x. It is a closure
-    /// because answering it runs the binary, and only the one case that depends on the
-    /// answer asks it (`openCodeModel`).
+    /// because answering it can run the binary, and only the one case that depends on
+    /// the answer asks it (`openCodeModel`). `detected()` answers it from
+    /// `DIPLOMAT_OPENCODE_MAJOR` when the caller set one (`OpenCodeCLI.majorOverride`).
     public static func detect(configFile: URL, claudeHome: URL, hermesConfig: URL,
                               openCodeConfig: URL, openCodeState: URL,
                               openCodeIsService: () -> Bool) -> String {

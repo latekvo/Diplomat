@@ -491,9 +491,9 @@ check(!AgentRunner.hermes.agentCommand(promptFile: "/tmp/p.txt", port: 47_910).c
 check(!AgentRunner.opencode.agentCommand(promptFile: "/tmp/p.txt", port: 0).contains("--port"),
       "a run with no port must spawn exactly as it did before, not with --port 0")
 // OpenCode 2.x: create the staged session on the shared service, prompt it, attach a TUI.
-// Pinned byte for byte, like the 1.x string, because the Linux spawn builds the same one —
-// and the pid file is only the agent's own for exactly this shape (`;` before the TUI,
-// `|| exit` after the prompt). The pin, port and grant all travel in the staged session,
+// Pinned byte for byte, because the pid file is only the agent's own for exactly this
+// shape (`;` before the TUI, `|| exit` after the prompt). The Linux spawn builds the same
+// command, though not byte for byte: its quoting leaves a path with nothing to escape bare. The pin, port and grant all travel in the staged session,
 // so none of them may leak in here.
 let serviceCommand = AgentRunner.opencode.agentCommand(
     promptFile: "/tmp/p.txt", model: "openai/gpt-5-mini", port: 47_910,
@@ -656,6 +656,38 @@ check(detectModel() == "Opus 5",
 // head of that list is a model an unpinned 2.x run does NOT start on.
 check(detectModel(service: true) == "",
       "an unpinned 2.x run with no config model names no model, never the picker's last")
+// The Linux runtime has already resolved the binary and says which major it found; the
+// CLI takes that answer rather than asking a shell of its own. Anything but exactly `1` or
+// `2` is no answer, and the binary is asked — here through a shell that finds none, so 1.x.
+do {
+    let emptyShell = modelFixture.appendingPathComponent("noshell")
+    FileManager.default.createFile(atPath: emptyShell.path,
+                                   contents: Data("#!/bin/sh\nexit 0\n".utf8),
+                                   attributes: [.posixPermissions: 0o755])
+    let overrides = ["DIPLOMAT_CONFIG": configFile.path, "DIPLOMAT_CLAUDE_DIR": claudeHome.path,
+                     "DIPLOMAT_HERMES_CONFIG": hermesConfig.path,
+                     "DIPLOMAT_OPENCODE_CONFIG_DIR": openCodeConfig.path,
+                     "DIPLOMAT_OPENCODE_STATE_DIR": openCodeState.path,
+                     "SHELL": emptyShell.path, "PATH": "/usr/bin:/bin"]
+    let prior = overrides.keys.map { ($0, ProcessInfo.processInfo.environment[$0]) }
+    for (key, value) in overrides { setenv(key, value, 1) }
+    defer {
+        for (key, value) in prior {
+            if let value { setenv(key, value, 1) } else { unsetenv(key) }
+        }
+        unsetenv("DIPLOMAT_OPENCODE_MAJOR")
+    }
+    func detectedWith(_ major: String?) -> String {
+        if let major { setenv("DIPLOMAT_OPENCODE_MAJOR", major, 1) } else { unsetenv("DIPLOMAT_OPENCODE_MAJOR") }
+        return AgentModel.detected()
+    }
+    check(detectedWith("2") == "", "DIPLOMAT_OPENCODE_MAJOR=2 is a 2.x install")
+    check(detectedWith("1") == "Opus 5", "DIPLOMAT_OPENCODE_MAJOR=1 is a 1.x install")
+    for other in [nil, "", "2.0", " 2"] {
+        check(detectedWith(other) == "Opus 5",
+              "DIPLOMAT_OPENCODE_MAJOR=\(other ?? "(unset)") asks the binary, and there is none")
+    }
+}
 // A head written without its model must fall through to the entry behind it rather than
 // blanking a tag that entry can still fill.
 try writeOpenCodeState("""
@@ -980,6 +1012,144 @@ for bad in serviceGarbage {
     check(OpenCodeAPI.serviceState(session: info(["idle": 2.0]), active: bad,
                                    sessionID: "ses_a") == nil,
           "an active answer of \(String(describing: bad)) is unavailable, not idle")
+}
+// Finding a 2.x agent that has no pid file: its command line names only its session, and
+// the prompt the scan matches on is that session's opening message.
+check(OpenCodeAPI.serviceOpeningPath(sessionID: "ses_a")
+        == "/api/session/ses_a/message?limit=1&order=asc",
+      "the opening message alone, oldest first")
+check(OpenCodeAPI.serviceOpeningPath(sessionID: "") == nil)
+check(OpenCodeAPI.openingText(["data": [["type": "user", "text": "Review PR #7 in o/r"]]])
+        == "Review PR #7 in o/r")
+check(OpenCodeAPI.openingText(["data": [[String: Any]]()]) == nil,
+      "a session created and not yet prompted has no opening text")
+for bad in [nil, "<html>", ["data": [["type": "assistant", "text": "x"]]],
+            ["data": [["type": "user"]]], ["data": "x"]] as [Any?] {
+    check(OpenCodeAPI.openingText(bad) == nil, "\(String(describing: bad)) opens with no prompt")
+}
+check(OpenCodeAPI.attachedSession("opencode --session ses_diplomat_0123abcd")
+        == "ses_diplomat_0123abcd")
+check(OpenCodeAPI.attachedSession("/bin/zsh -i -c 'x || exit; opencode --session ses_a'")
+        == "ses_a", "a wrapper shell's closing quote is not part of the id")
+check(OpenCodeAPI.attachedSession("opencode --session\tses_Ab-9_z x") == "ses_Ab-9_z")
+for line in ["opencode --prompt \"$(cat '/p')\"", "opencode --port 1", "opencode --session x_1",
+             "claude --resume ses_a"] {
+    check(OpenCodeAPI.attachedSession(line) == nil, "“\(line)” attaches to no 2.x session")
+}
+
+// Which major `diplomat-core` assumes when its caller already knows.
+check(OpenCodeCLI.majorOverride(["DIPLOMAT_OPENCODE_MAJOR": "2"]) == true)
+check(OpenCodeCLI.majorOverride(["DIPLOMAT_OPENCODE_MAJOR": "1"]) == false)
+for other in ["", "3", " 2", "2.0", "v2", "01"] {
+    check(OpenCodeCLI.majorOverride(["DIPLOMAT_OPENCODE_MAJOR": other]) == nil,
+          "“\(other)” is no major, so the binary is asked")
+}
+check(OpenCodeCLI.majorOverride([:]) == nil)
+
+extension OpenCodeCLI.Resolution { var fields: [String?] { [path, stateHome] } }
+// The resolver: one login shell, an interactive one inside it, and a probe that prints
+// the path and then the shell's state root on a marked line.
+check(OpenCodeCLI.resolverArguments(shell: "/bin/zsh")
+        == ["-l", "-c", "'/bin/zsh' -i -c 'command -v opencode; printf '\\''\\n@@XDG_STATE_HOME=%s\\n'\\'' \"$XDG_STATE_HOME\"'"],
+      "the resolver's shape: \(OpenCodeCLI.resolverArguments(shell: "/bin/zsh"))")
+let executables: Set<String> = ["/opt/a/opencode", "/opt/b/opencode"]
+let found = OpenCodeCLI.parseResolution(
+    "welcome back!\n/opt/a/opencode\n\n@@XDG_STATE_HOME=/x/state\n/opt/b/opencode\n") {
+    executables.contains($0)
+}
+check(found.fields == ["/opt/a/opencode", "/x/state"],
+      "the path is the last executable line above the marker, whatever an rc prints: \(found)")
+check(OpenCodeCLI.parseResolution("/opt/b/opencode\n/opt/a/opencode  \n@@XDG_STATE_HOME=\n") {
+        executables.contains($0)
+      }.fields == ["/opt/a/opencode", ""],
+      "an unset XDG_STATE_HOME is \"\", which is the default root")
+check(OpenCodeCLI.parseResolution("opencode: aliased to oc\n@@XDG_STATE_HOME=/s\n") {
+        executables.contains($0)
+      }.fields == [nil, "/s"],
+      "an alias names no executable")
+check(OpenCodeCLI.parseResolution("/opt/a/opencode\n") { executables.contains($0) }.fields
+        == ["/opt/a/opencode", nil],
+      "a shell that never printed the marker said nothing about its state root")
+check(OpenCodeCLI.parseResolution("@@XDG_STATE_HOME=/rc\n/opt/a/opencode\n@@XDG_STATE_HOME=/s\n") {
+        executables.contains($0)
+      }.fields == ["/opt/a/opencode", "/s"],
+      "the probe's own marker is the last one")
+
+// …against real shells, over a throwaway HOME.
+do {
+    let fx = FileManager.default.temporaryDirectory
+        .appendingPathComponent("diplomat-smoke-resolve-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: fx) }
+    func executable(_ path: String, _ body: String) {
+        let url = fx.appendingPathComponent(path)
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                 withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: url.path, contents: Data(body.utf8),
+                                       attributes: [.posixPermissions: 0o755])
+    }
+    let stub = "#!/bin/sh\necho 'opencode v2.0.18'\n"
+    executable("nvm/opencode", stub)
+    // nvm's shape: `~/.bashrc` alone, which a login bash skips and an interactive one reads.
+    executable(".bashrc", "echo 'welcome back!'\nexport PATH=\(fx.path)/nvm:$PATH\n"
+                          + "export XDG_STATE_HOME=\(fx.path)/state\n")
+    let bash = OpenCodeCLI.resolve(shell: "/bin/bash",
+                                   environment: ["HOME": fx.path, "PATH": "/usr/bin:/bin"])
+    check(bash.fields == ["\(fx.path)/nvm/opencode", "\(fx.path)/state"],
+          "an install only ~/.bashrc puts on PATH resolves, with that rc's state root: \(bash)")
+    // Homebrew's shape on Apple silicon: `~/.zprofile` alone, which only a login zsh reads.
+    if FileManager.default.isExecutableFile(atPath: "/bin/zsh") {
+        executable("brew/opencode", stub)
+        executable("zdot/.zprofile", "export PATH=\(fx.path)/brew:$PATH\n")
+        let zsh = OpenCodeCLI.resolve(shell: "/bin/zsh",
+                                      environment: ["HOME": fx.path, "ZDOTDIR": "\(fx.path)/zdot",
+                                                    "PATH": "/usr/bin:/bin"])
+        check(zsh.fields == ["\(fx.path)/brew/opencode", ""],
+              "an install only ~/.zprofile puts on PATH resolves: \(zsh)")
+    }
+
+    // The process-wide resolution, through a shell whose rc reads which directory to put
+    // first from a file, so a check can move the install under it.
+    let pick = fx.appendingPathComponent("pick")
+    func install(_ dir: String) {
+        executable("\(dir)/opencode", stub)
+        try? "\(fx.path)/\(dir)".write(to: pick, atomically: true, encoding: .utf8)
+    }
+    executable("rcshell", "#!/bin/sh\nexport PATH=\"$(cat '\(pick.path)'):$PATH\"\n"
+                          + "export XDG_STATE_HOME=\(fx.path)/shellstate\nexec /bin/sh \"$@\"\n")
+    let priorShell = ProcessInfo.processInfo.environment["SHELL"]
+    setenv("SHELL", fx.appendingPathComponent("rcshell").path, 1)
+    defer { if let priorShell { setenv("SHELL", priorShell, 1) } else { unsetenv("SHELL") } }
+    let t0 = Date().addingTimeInterval(100_000)
+    install("a")
+    check(OpenCodeCLI.binary(now: t0) == "\(fx.path)/a/opencode", "the shell's install is found")
+    check(OpenCodeCLI.serviceFile(now: t0).path == "\(fx.path)/shellstate/opencode/service.json",
+          "the service file is under the shell's state root, not this process's")
+    install("b")
+    check(OpenCodeCLI.binary(now: t0.addingTimeInterval(59)) == "\(fx.path)/a/opencode",
+          "a resolution is trusted for a minute")
+    check(OpenCodeCLI.binary(now: t0.addingTimeInterval(61)) == "\(fx.path)/b/opencode",
+          "…and re-asked after it, so an install the rc now puts first is found")
+    try? FileManager.default.removeItem(at: fx.appendingPathComponent("b"))
+    install("c")
+    check(OpenCodeCLI.binary(now: t0.addingTimeInterval(62)) == "\(fx.path)/c/opencode",
+          "a binary that moved is re-resolved inside the minute")
+
+    // The major is remembered per file: asked once, and again once the file changes.
+    let counter = fx.appendingPathComponent("asked")
+    func versioned(_ version: String) {
+        executable("v/opencode", "#!/bin/sh\necho x >> '\(counter.path)'\necho '\(version)'\n")
+    }
+    func asked() -> Int {
+        ((try? String(contentsOf: counter, encoding: .utf8)) ?? "").split(separator: "\n").count
+    }
+    let versionedPath = fx.appendingPathComponent("v/opencode").path
+    versioned("opencode v2.0.18")
+    check(OpenCodeCLI.isService(binary: versionedPath) && OpenCodeCLI.isService(binary: versionedPath)
+            && asked() == 1,
+          "a binary that has not changed is not run again")
+    versioned("1.4.3")
+    check(!OpenCodeCLI.isService(binary: versionedPath) && asked() == 2,
+          "a binary rewritten in place is asked again")
 }
 print("opencode 2.x service assertions passed")
 

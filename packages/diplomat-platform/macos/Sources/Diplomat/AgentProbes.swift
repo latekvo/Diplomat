@@ -255,7 +255,8 @@ enum AgentProbes {
                                            clients: listings.clients))
     }
 
-    /// PR number → the tty of an agent visible in `ps` by its prompt text.
+    /// PR number → the tty of an agent visible in `ps` by its prompt: the text on its
+    /// command line, or for a 2.x agent its session's opening message (`scan`).
     ///
     /// The pre-registry identity mechanism, kept for the two questions a pid cannot answer:
     /// agents this applet has no record of at all (`AgentState.synthesizeUntracked`), and
@@ -272,24 +273,46 @@ enum AgentProbes {
     /// all this scan can honestly produce.
     static func liveAgents(_ dump: Observation<String>, owner: String,
                            repo: String) -> Observation<[Int: String]> {
-        guard let text = dump.value else { return .unavailable(dump.reason) }
+        scan(dump, owner: owner, repo: repo).agents
+    }
+
+    /// `liveAgents`, and beside it PR number → the 2.x session an agent on that PR is
+    /// attached to.
+    ///
+    /// A 2.x agent's command line carries no prompt — only `--session <id>`, the prompt
+    /// having gone to the service before the TUI started — so for such a line the text
+    /// searched is the session's opening prompt, asked of the service once per session
+    /// (`OpenCodeProbe.openingPrompt`). A session the service cannot answer for is not
+    /// seen, like a line that names no PR. The session is what a pid-less run found this
+    /// way is then probed and stopped through (`OpenCodeProbe.adopt`).
+    ///
+    /// `openingPrompt` is the sweep self-test's; the default asks the service.
+    static func scan(_ dump: Observation<String>, owner: String, repo: String,
+                     openingPrompt: (String) -> String? = {
+                         OpenCodeProbe.openingPrompt(sessionID: $0)
+                     }) -> (agents: Observation<[Int: String]>, sessions: [Int: String]) {
+        guard let text = dump.value else { return (.unavailable(dump.reason), [:]) }
         guard let re = try? NSRegularExpression(
             pattern: "PR #(\\d+) in \(NSRegularExpression.escapedPattern(for: "\(owner)/\(repo)"))")
-        else { return .unavailable("the prompt pattern would not compile") }
+        else { return (.unavailable("the prompt pattern would not compile"), [:]) }
         var out: [Int: String] = [:]
+        var sessions: [Int: String] = [:]
         for line in text.split(separator: "\n") {
             let s = String(line)
             // Only a real agent process carries the phrase: the spawning shell's argv
             // holds the unexpanded `$(cat …)`, not the prompt text.
             guard AgentRunner.isAgentLine(s), let cols = columns(s) else { continue }
-            for m in re.matches(in: cols.args, range: NSRange(cols.args.startIndex...,
-                                                              in: cols.args)) {
-                guard let r = Range(m.range(at: 1), in: cols.args),
-                      let pr = Int(cols.args[r]) else { continue }
+            let session = OpenCodeAPI.attachedSession(cols.args)
+            let searched = session.map { openingPrompt($0) ?? "" } ?? cols.args
+            for m in re.matches(in: searched, range: NSRange(searched.startIndex...,
+                                                             in: searched)) {
+                guard let r = Range(m.range(at: 1), in: searched),
+                      let pr = Int(searched[r]) else { continue }
                 if out[pr] == nil { out[pr] = cols.tty }
+                if let session, sessions[pr] == nil { sessions[pr] = session }
             }
         }
-        return .present(out)
+        return (.present(out), sessions)
     }
 
     /// One `ps` line as its four columns. The command is whatever is left, so a path with
@@ -458,7 +481,7 @@ enum AgentProbes {
     /// window pays a full per-run timeout each for the same unresponsive port.
     static func agentSessions(_ records: [AgentState.RunRecord], directory: String,
                               now: TimeInterval) -> Observation<[String: AgentState.SessionState]> {
-        let asking = records.filter { AgentSessionProbe.serves(AgentRegistry.runRunner($0.runID)) }
+        let asking = records.filter { AgentSessionProbe.serves($0) }
         guard !asking.isEmpty else {
             return .unsupported("are unavailable (no run serves a session of its own)")
         }
@@ -559,7 +582,9 @@ enum AgentProbes {
                        tokens: Observation<Bool>) -> AgentState.Evidence {
         let dump = psDump(now: now)
         let table = note("processes", processTable(dump))
-        let scan = note("agent scan", liveAgents(dump, owner: owner, repo: repo))
+        let scanned = scan(dump, owner: owner, repo: repo)
+        let scan = note("agent scan", scanned.agents)
+        OpenCodeProbe.adopt(records, sessions: scanned.sessions)
         // Whose screens are worth counting is decided from the process table, not from the
         // records as they arrived: a run's tty lives on its agent process, and a run
         // spawned since the last tick has not adopted one yet.

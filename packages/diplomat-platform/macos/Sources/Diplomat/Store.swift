@@ -1149,10 +1149,20 @@ final class Store: ObservableObject {
     /// running one holding its bay again until the next attempt. When its agent finally
     /// leaves, no backstop stamps the verdict at all and it retires and prices on the
     /// ordinary road.
+    ///
+    /// An OpenCode 2.x run is interrupted before it is priced. Its turn runs in the shared
+    /// service, not in its TUI, so a run retired because its TUI is gone — its window
+    /// closed by hand — may still be working, spending tokens after the ledger has closed
+    /// its entry (`OpenCodeProbe.interrupt`).
     private func retireFinished(_ t: AgentState.Tick) async {
         let refused = reapWedgedWindows(t)
         let gone = t.retirable.filter { !refused.contains($0.runID) }
         guard !gone.isEmpty else { return }
+        for r in gone {
+            if let session = OpenCodeProbe.serviceSession(of: r) {
+                OpenCodeProbe.interrupt(sessionID: session)
+            }
+        }
         // A run whose command never ran has nothing to price — no agent, no transcript,
         // no tokens — and a `done` against its key would count it among the completed
         // ones. Its ledger entry stays open, which is what it is: still owed.
@@ -1166,6 +1176,7 @@ final class Store: ObservableObject {
                          "\(r.label.isEmpty ? r.runID : r.label) — \(verdict?.reason ?? "no verdict")")
         }
         AgentRegistry.forget(Set(gone.map(\.runID)))
+        OpenCodeProbe.forgetAdopted(Set(gone.map(\.runID)))
         await settleLedger(priced)
     }
 
@@ -1211,7 +1222,7 @@ final class Store: ObservableObject {
     private func reapWedgedWindows(_ t: AgentState.Tick) -> Set<String> {
         var refused: Set<String> = []
         for record in t.reapable {
-            if let session = AgentRegistry.serviceSession(record.runID) {
+            if let session = OpenCodeProbe.serviceSession(of: record) {
                 OpenCodeProbe.interrupt(sessionID: session)
             }
             let byHandle = AgentWindows.handle(record.runID).map(AgentWindows.close) ?? false

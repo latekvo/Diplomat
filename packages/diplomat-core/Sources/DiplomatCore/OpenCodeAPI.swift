@@ -338,6 +338,38 @@ public enum OpenCodeAPI {
     /// Every session with a turn in flight, across the whole service.
     public static let serviceActivePath = "/api/session/active"
 
+    /// The service's path for a session's opening message: the oldest one, alone.
+    public static func serviceOpeningPath(sessionID: String) -> String? {
+        servicePath(sessionID: sessionID, suffix: "/message?limit=1&order=asc")
+    }
+
+    /// The text of a session's opening message, from `serviceOpeningPath`'s whole decoded
+    /// answer — `{"data": [{"type": "user", "text": …}]}` on 2.0.18 — or nil for anything
+    /// else, an empty list included: that is a session created and not yet prompted.
+    public static func openingText(_ response: Any?) -> String? {
+        guard let first = ((response as? [String: Any])?["data"] as? [[String: Any]])?.first,
+              first["type"] as? String == "user" else { return nil }
+        return first["text"] as? String
+    }
+
+    /// The session a 2.x TUI's command line attaches to — `--session` and then a
+    /// `ses`-prefixed id — or nil for any other command line. The id stops at the first
+    /// character no id has, so the shells wrapping the TUI, whose command lines still
+    /// carry the quote that closed it, name the same session rather than a garbled one.
+    ///
+    /// A 2.x agent's argv carries this and no prompt: the prompt went to the service
+    /// through `opencode api` before the TUI started (`AgentRunner.serviceCommand`). So
+    /// this is what the process-table scan finds such an agent by, and the prompt it
+    /// matches is asked of the service (`openingText`).
+    public static func attachedSession(_ commandLine: String) -> String? {
+        guard let pattern = try? NSRegularExpression(pattern: "--session\\s+(ses[0-9A-Za-z_-]*)"),
+              let hit = pattern.firstMatch(in: commandLine,
+                                           range: NSRange(commandLine.startIndex...,
+                                                          in: commandLine)),
+              let range = Range(hit.range(at: 1), in: commandLine) else { return nil }
+        return String(commandLine[range])
+    }
+
     /// RFC 3986's unreserved set: a session id is one path segment.
     private static let unescapedInID = CharacterSet(
         charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")

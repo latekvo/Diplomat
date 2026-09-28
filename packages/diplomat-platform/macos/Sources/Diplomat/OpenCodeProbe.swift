@@ -55,8 +55,11 @@ enum OpenCodeProbe {
     /// A bound run with no port is a 2.x run, asked of the shared service
     /// (`serviceState`). A 1.x run is asked both halves of the answer — see
     /// `OpenCodeAPI.stateOf` for which blind spot each of them covers.
-    static func state(_ r: AgentState.RunRecord, sessionID: String) -> AgentState.SessionState? {
-        guard let port = AgentRegistry.port(r.runID) else { return serviceState(sessionID: sessionID) }
+    static func state(_ r: AgentState.RunRecord, sessionID: String,
+                      pass: ServicePass) -> AgentState.SessionState? {
+        guard let port = AgentRegistry.port(r.runID) else {
+            return serviceState(sessionID: sessionID, pass: pass)
+        }
         let running = statuses(port: port).map {
             OpenCodeAPI.isRunning($0, sessionID: sessionID)
         }
@@ -160,26 +163,61 @@ enum OpenCodeProbe {
 
     // MARK: - OpenCode 2.x: the shared service
 
+    /// One probe pass's view of the service, shared by every run the pass asks about: the
+    /// discovery file is read once and the active map fetched at most once, rather than
+    /// once per run.
+    final class ServicePass {
+        private let find: () -> OpenCodeAPI.ServiceEndpoint?
+        private let get: (OpenCodeAPI.ServiceEndpoint, String) -> Any?
+        private var endpointRead = false
+        private var endpoint: OpenCodeAPI.ServiceEndpoint?
+        private var activeFetched = false
+        private var active: Any?
+
+        /// `find` reads the discovery file and `get` is one GET against the service — the
+        /// real ones unless a self-test hands in its own.
+        init(find: @escaping () -> OpenCodeAPI.ServiceEndpoint? = { OpenCodeProbe.service() },
+             get: @escaping (OpenCodeAPI.ServiceEndpoint, String) -> Any? = {
+                 OpenCodeProbe.call($0, $1)
+             }) {
+            self.find = find
+            self.get = get
+        }
+
+        /// One GET against the service, nil when there is no service to ask.
+        func fetch(_ path: String) -> Any? {
+            if !endpointRead { endpoint = find(); endpointRead = true }
+            return endpoint.flatMap { get($0, path) }
+        }
+
+        func activeMap() -> Any? {
+            if !activeFetched {
+                active = fetch(OpenCodeAPI.serviceActivePath)
+                activeFetched = true
+            }
+            return active
+        }
+    }
+
     /// Whether a 2.x session's turn is still in flight, per the shared service.
     ///
     /// Two requests, one decision (`OpenCodeAPI.serviceState`). The active map is only
-    /// asked for once the session has answered, so a service that is down costs one
-    /// timeout rather than two.
-    static func serviceState(sessionID: String) -> AgentState.SessionState? {
-        guard let service = service(),
-              let path = OpenCodeAPI.servicePath(sessionID: sessionID),
-              let session = call(service, path) else { return nil }
-        return OpenCodeAPI.serviceState(session: session,
-                                        active: call(service, OpenCodeAPI.serviceActivePath),
+    /// asked for once the session has answered, and once per pass (`ServicePass`).
+    static func serviceState(sessionID: String, pass: ServicePass) -> AgentState.SessionState? {
+        guard let path = OpenCodeAPI.servicePath(sessionID: sessionID),
+              let session = pass.fetch(path) else { return nil }
+        return OpenCodeAPI.serviceState(session: session, active: pass.activeMap(),
                                         sessionID: sessionID)
     }
 
-    /// Stop a 2.x session's turn, best-effort. Returns whether the service took it.
+    /// Stop a 2.x session's turn, best-effort. Returns whether the service answered the
+    /// request — which it does for a session with no turn to stop too (2.0.18 answers
+    /// `{"interrupted": false}`), so `true` is "delivered", not "something was running".
     ///
     /// Closing a 2.x run's window ends its TUI and nothing else: the turn runs in the
     /// shared service, and one whose TUI was killed mid-turn went on to finish its tool
     /// call twenty seconds later (measured on 2.0.18). So wherever the applet ends a 2.x
-    /// run, this is what ends its agent.
+    /// run, and wherever it retires one whose TUI is gone, this is what ends its agent.
     @discardableResult
     static func interrupt(sessionID: String) -> Bool {
         guard let service = service(),
@@ -188,11 +226,87 @@ enum OpenCodeProbe {
         return call(service, path, method: "POST") != nil
     }
 
-    /// Where the service is, per the file it writes for its clients.
+    // Opening prompts already read, by session. A session's opening message never changes,
+    // so a hit is kept for the life of the process; a miss never is — before
+    // `session.prompt` lands, the list is empty.
+    private static let openingLock = NSLock()
+    private static var openings: [String: String] = [:]
+
+    /// The prompt a 2.x session was opened with, or nil when the service cannot say yet.
+    ///
+    /// What the process-table scan matches a 2.x agent by, whose own command line names
+    /// only its session (`OpenCodeAPI.attachedSession`). One request per session the
+    /// scan has not seen before, and none per tick after that.
+    static func openingPrompt(sessionID: String) -> String? {
+        openingLock.lock()
+        let known = openings[sessionID]
+        openingLock.unlock()
+        if let known { return known }
+        guard let service = service(),
+              let path = OpenCodeAPI.serviceOpeningPath(sessionID: sessionID),
+              let text = OpenCodeAPI.openingText(call(service, path)) else { return nil }
+        openingLock.lock()
+        openings[sessionID] = text
+        openingLock.unlock()
+        return text
+    }
+
+    // Sessions found for runs that have no run directory to bind one into — a run
+    // synthesized from the process table — by run id, kept until the run is retired
+    // (`forgetAdopted`) so it can still be stopped once its TUI, and so its sighting, is
+    // gone.
+    private static let adoptedLock = NSLock()
+    private static var adopted: [String: String] = [:]
+
+    /// Give pid-less runs the 2.x session the process-table scan found on their PR.
+    ///
+    /// Such a run — one the mesh placed back here, whose terminal the node opened, or one
+    /// this applet never booked at all — is known to the scan only by its PR, and a 2.x
+    /// agent only by its session (`AgentProbes.scan`). Bound, it is asked of the service,
+    /// priced from it and interrupted like any run this applet spawned
+    /// (`serviceSession(of:)`). A booked run is bound in its run directory, which is where
+    /// every other reader looks; a synthesized one has none and is remembered here.
+    ///
+    /// Only those two kinds, and a booked one only while it is an OpenCode run with no
+    /// port and no session yet: a port is a 1.x run's own server, and a bound session is
+    /// already its own. A run this applet spawned needs none of it — it binds its session
+    /// at spawn.
+    static func adopt(_ records: [AgentState.RunRecord], sessions: [Int: String]) {
+        for r in records where r.untracked || r.placement == .meshHere {
+            guard let pr = r.prNumber, let session = sessions[pr] else { continue }
+            if r.untracked {
+                adoptedLock.lock()
+                adopted[r.runID] = session
+                adoptedLock.unlock()
+            } else if AgentRegistry.runRunner(r.runID) == AgentRunner.opencode.rawValue,
+                      AgentRegistry.port(r.runID) == nil,
+                      AgentRegistry.boundSession(r.runID).isEmpty {
+                AgentRegistry.bindSession(r.runID, session)
+            }
+        }
+    }
+
+    /// Drop what `adopt` remembered for runs that have been retired: a synthesized run's id
+    /// is its PR's, and the next agent seen on that PR is not the one that session was.
+    static func forgetAdopted(_ runIDs: Set<String>) {
+        adoptedLock.lock()
+        for id in runIDs { adopted[id] = nil }
+        adoptedLock.unlock()
+    }
+
+    /// The 2.x session a run works in — bound in its run directory, or adopted from the
+    /// scan for a run that has none — or nil for every other run.
+    static func serviceSession(of record: AgentState.RunRecord) -> String? {
+        if let bound = AgentRegistry.serviceSession(record.runID) { return bound }
+        adoptedLock.lock()
+        defer { adoptedLock.unlock() }
+        return adopted[record.runID]
+    }
+
+    /// Where the service is, per the file it writes for its clients under the user's
+    /// shell's state root (`OpenCodeCLI.serviceFile`).
     private static func service() -> OpenCodeAPI.ServiceEndpoint? {
-        let file = OpenCodeAPI.serviceFile(environment: ProcessInfo.processInfo.environment,
-                                           home: FileManager.default.homeDirectoryForCurrentUser)
-        return (try? Data(contentsOf: file)).flatMap(OpenCodeAPI.serviceEndpoint)
+        (try? Data(contentsOf: OpenCodeCLI.serviceFile())).flatMap(OpenCodeAPI.serviceEndpoint)
     }
 
     /// One request against the service, decoded — nil for anything but a 200 of JSON.
