@@ -70,7 +70,7 @@ def _python(records, evidence, now=T0, limit=LIMIT,
     return {
         "rows": [{"runId": r.run_id, "state": s.state, "reason": s.reason,
                   "wedged": s.wedged, "expired": s.expired,
-                  "unfindable": s.unfindable}
+                  "unfindable": s.unfindable, "lapsed": s.lapsed}
                  for r, s in t.rows],
         "capLoad": sorted(t.cap_load),
         "retirable": sorted(r.run_id for r in t.retirable),
@@ -89,9 +89,13 @@ def _python(records, evidence, now=T0, limit=LIMIT,
         # either implementation of `pane_digest` fails here. reapRefusedAt is merely
         # carried, and is here because a decode that dropped it would silence nothing
         # and show nothing: the applet that lost it would simply never wait before
-        # retrying a window it cannot close, and would go on retiring the run.
+        # retrying a window it cannot close, and would go on retiring the run. pid, tty
+        # and dispatchedAt are what a released record inherits from the run it replaces,
+        # and the pid is its identity from then on.
         "records": [{"runId": r.run_id, "claimSeenAt": r.claim_seen_at,
-                     "untracked": r.untracked, "placement": r.placement,
+                     "untracked": r.untracked, "released": r.released,
+                     "pid": r.pid, "tty": r.tty, "dispatchedAt": r.dispatched_at,
+                     "placement": r.placement,
                      "quietDigest": r.quiet_digest, "quietSince": r.quiet_since,
                      "reapRefusedAt": r.reap_refused_at}
                     for r in t.records],
@@ -217,18 +221,43 @@ def _mixed():
         # agree on the age it quotes as well as on the verdict.
         rec(run_id="over-deadline", pid=6, tty="pts/10",
             dispatched_at=T0 - PAST_DEADLINE, pr_number=312),
+        # Its CLI reported the turn over with its agent still up and seen by the scan,
+        # so this tick also releases that agent.
+        rec(run_id="reported", pid=7, tty="pts/11", dispatched_at=T0 - 1100,
+            pr_number=313),
+        # Untracked, working, and first seen past the deadline: RUNNING without a bay.
+        rec(run_id="untracked:314", pid=None, tty="pts/12", untracked=True,
+            dispatched_at=T0 - PAST_DEADLINE, pr_number=314),
+        # Released on an earlier tick, and somebody typed into it since. The scan names a
+        # second session on its PR, which a pid-held record does not follow.
+        rec(run_id="untracked:315", pid=8, tty="pts/13", untracked=True, released=True,
+            dispatched_at=T0 - 1200, pr_number=315),
+        # Reported its turn over on a PR "working" still holds: nothing is released.
+        rec(run_id="reported-beside", pid=9, tty="pts/15", dispatched_at=T0 - 1300,
+            pr_number=301),
+        # A peer's run whose PR landed seconds after dispatch, while this box's scan
+        # sees a session on it: nothing is released.
+        rec(run_id="peer-landed", placement=A.PLACEMENT_MESH_PEER, node="brick",
+            work_key="review:316:sha", pid=None, tty="", dispatched_at=T0 - 10,
+            pr_number=316, claim_seen_at=T0 - 1),
     ]
     evidence = ev(
         processes={1: proc(elapsed=300), 2: proc(elapsed=400, tty="pts/4"),
                    3: proc(elapsed=500, tty="pts/5"), 4: proc(elapsed=700, tty="pts/6"),
                    5: proc(elapsed=1000, tty="pts/7"),
-                   6: proc(elapsed=PAST_DEADLINE, tty="pts/10")},
+                   6: proc(elapsed=PAST_DEADLINE, tty="pts/10"),
+                   7: proc(elapsed=1100, tty="pts/11"),
+                   8: proc(elapsed=1200, tty="pts/13"),
+                   9: proc(elapsed=1300, tty="pts/15")},
         tails={"pts/3": WORKING, "pts/4": AT_PROMPT, "pts/5": WORKING,
                "pts/6": WORKING, "pts/7": AT_PROMPT, "pts/9": WORKING,
-               "pts/10": WORKING},
-        claims={"review:306:sha"},
-        merged={305},
-        live_agents={404: "pts/8", 311: "pts/9"},
+               "pts/10": WORKING, "pts/11": AT_PROMPT, "pts/12": WORKING,
+               "pts/13": WORKING, "pts/15": AT_PROMPT, "pts/16": WORKING},
+        claims={"review:306:sha", "review:316:sha"},
+        merged={305, 316},
+        live_agents={404: "pts/8", 311: "pts/9", 313: "pts/11", 314: "pts/12",
+                     315: "pts/14", 301: "pts/15", 316: "pts/16"},
+        activity={"reported": ("idle", T0 - 5), "reported-beside": ("idle", T0 - 5)},
     )
     return records, evidence
 
@@ -264,6 +293,27 @@ def test_the_fixture_exercises_every_projection(mixed_results):
         "the untracked synthesis never ran"
     assert any(r["claimSeenAt"] is not None for r in python["records"]), \
         "no claim sighting was taken — observe_claims is untested"
+    assert any(r["runId"] == "untracked:313" and r["released"] and r["pid"] == 7
+               for r in python["records"]), "no ended run released its agent"
+    assert any(r["lapsed"] for r in python["rows"]), "no untracked bay lapsed"
+    assert python["inFlight"]["315"] is False and "untracked:315" not in python["capLoad"], \
+        "a released agent mid-turn must hold neither its PR nor a bay"
+
+
+def test_the_tick_after_a_release_agrees_too():
+    """The release only pays off on the NEXT tick, when the run is gone from the book
+    and the scan still sees its agent. Fed the book both stores would leave, the two
+    sides must agree that nothing is re-booked and no bay is taken."""
+    records, evidence = _mixed()
+    t = A.tick(records, evidence, T0, LIMIT, A.RUN_DEADLINE)
+    gone = {r.run_id for r in t.retirable}
+    book = [r for r in t.records if r.run_id not in gone]
+    later = T0 + 8
+    swift, again = _swift(_payload(book, evidence, now=later)), \
+        _python(book, evidence, now=later)
+    assert swift == again
+    assert [r["runId"] for r in again["records"]].count("untracked:313") == 1
+    assert "untracked:313" not in again["capLoad"] and again["inFlight"]["313"] is False
 
 
 def test_the_deadline_being_off_agrees_too():

@@ -2529,12 +2529,9 @@ class Store(QObject):
         On the slow refresh, not the 8-second tick: it costs a ``gh`` call per PR. The
         answer is carried forward by the fast ticks in between.
 
-        Only the runs this applet dispatched. "Merged" ends a run so it can be priced
-        and its bay handed back, and a synthesized one has nothing to price and is
-        manifestly still in the process table — asked about, a landed PR whose agent is
-        still sitting in its window would retire that record and have the next tick
-        synthesize it straight back, one ``gh`` call and one audit line per tick. What
-        ends one of those is the scan that made it.
+        Only the runs this applet dispatched: the resolver ends no untracked run on a
+        merge, since a landed PR does not make its agent leave. What ends one of those
+        is the scan that made it.
         """
         prs = {r.pr_number for r in agentregistry.load()
                if r.pr_number is not None and not r.untracked}
