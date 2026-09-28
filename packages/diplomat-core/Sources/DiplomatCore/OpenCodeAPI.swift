@@ -6,10 +6,10 @@ import Foundation
 /// was spawned against:
 ///
 /// * **1.x** — a TUI given `--port` serves its own session over HTTP on loopback while it
-///   works. Everything below up to `sessionTokens` is that server.
+///   works: `sessionPath`, `candidates`, `isOurs`, `isRunning` and `stateOf`.
 /// * **2.x** — no TUI serves anything. Every client talks to ONE per-user background
 ///   service, which the spawn creates the run's session on before the TUI attaches to it
-///   (`AgentRunner.agentCommand`). The `service…` members at the end are that service.
+///   (`AgentRunner.agentCommand`): everything from `isServiceVersion` on.
 ///
 /// Either way the server answers the question the applet has always had to guess at:
 /// **is this run working, or back at its prompt?** — from the state its own TUI draws
@@ -250,9 +250,9 @@ public enum OpenCodeAPI {
 
     /// A model pin as the service's session body names one: `provider/model` split at the
     /// FIRST `/`, so an OpenRouter id keeps its own path, and a `#variant` after the last
-    /// `#` of the rest — the split OpenCode 2.x's TUI makes of the same string. A pin with
-    /// no `/` is all provider and no model, which the service accepts and the turn then
-    /// fails on in plain view, as a mistyped `-m` does on 1.x. nil for no pin at all.
+    /// `#` of the rest — how OpenCode 2.x reads a `provider/model#variant` reference. A
+    /// pin with no `/` is all provider and no model: the service creates the session
+    /// anyway, and it is the turn that then fails, in the run's own window. nil for no pin.
     public static func modelRef(_ pin: String) -> [String: String]? {
         let pin = pin.trimmingCharacters(in: .whitespaces)
         guard !pin.isEmpty else { return nil }

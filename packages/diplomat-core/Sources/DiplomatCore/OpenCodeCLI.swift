@@ -99,8 +99,8 @@ public enum OpenCodeCLI {
 
     /// `path` with every symlink resolved, or `path` itself when it cannot be.
     ///
-    /// `realpath(3)` rather than `URL.resolvingSymlinksInPath`, which strips a leading
-    /// `/private` on macOS — the reverse of what the kernel reports for `/tmp`.
+    /// `realpath(3)` rather than `URL.resolvingSymlinksInPath`, which on macOS answers
+    /// `/tmp` for what the kernel, and so the agent's own `pwd`, calls `/private/tmp`.
     static func physicalPath(_ path: String) -> String {
         guard let resolved = realpath(path, nil) else { return path }
         defer { free(resolved) }

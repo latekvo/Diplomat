@@ -880,12 +880,13 @@ final class Store: ObservableObject {
             prompt: prompt)
         let runner = AppConfig.agentRunner
         AgentRegistry.stageRunner(record.runID, runner.rawValue)
-        // Off this actor: it runs the binary, which takes most of a second on 1.x.
-        let service = runner == .opencode
-            ? await Task.detached(priority: .userInitiated) {
+        var service = false
+        if runner == .opencode {
+            // Off this actor: it runs the binary, which takes most of a second on 1.x.
+            service = await Task.detached(priority: .userInitiated) {
                 OpenCodeCLI.installedIsService()
             }.value
-            : false
+        }
         var port = 0
         var session: String?
         if service {
