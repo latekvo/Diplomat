@@ -1239,5 +1239,6 @@ def agent_lines(ps_output: str, owner: str, repo: str):
             continue
         tty = fields[0].removeprefix("/dev/")
         elapsed = elapsed_seconds(fields[1]) if len(fields) > 1 else None
-        for m in pat.finditer(opencodeapi.scan_text(line)):
+        argv = fields[2] if elapsed is not None and len(fields) > 2 else line.strip()
+        for m in pat.finditer(opencodeapi.scan_text(argv)):
             yield AgentLine(tty=tty, pr_number=int(m.group(1)), elapsed=elapsed)

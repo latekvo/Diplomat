@@ -684,6 +684,54 @@ def test_a_2x_tui_is_found_by_the_prompt_its_session_opened_on(service, repo_o_r
     assert probes.live_agents(dump).value == {7: "pts/0"}
 
 
+#: What the process table holds around one 2.x TUI (2.0.18, one tmux pane): the
+#: terminal, the tmux client and server and the pane's shells all carry the spawn
+#: command, TUI invocation included, and none of them is on the TUI's tty.
+WRAPPERS = (
+    "script -q /dev/null tmux -L x new-session -s y zsh -i -c "
+    f"'cd /tmp; zsh -i -c \"sleep 1; opencode --session {SID}\"; exec sh'",
+    "tmux -L x new-session -s y zsh -i -c "
+    f"'cd /tmp; zsh -i -c \"sleep 1; opencode --session {SID}\"; exec sh'",
+    f"zsh -i -c cd /tmp; zsh -i -c \"sleep 1; opencode --session {SID}\"; exec sh",
+    f"zsh -i -c sleep 1; opencode --session {SID}",
+    f"xterm -e bash -c 'cd /tmp; opencode --session {SID}'",
+)
+
+
+@pytest.mark.parametrize("argv, session", [
+    ("opencode --session ses_x", "ses_x"),
+    ("/home/u/.npm/bin/opencode --session ses_x", "ses_x"),
+    ("C:/npm/opencode.exe --session ses_A-9_z", "ses_A-9_z"),
+    *[(w, None) for w in WRAPPERS],
+    ("opencode --session ses_x --prompt hi", None),
+    ("opencode-dev --session ses_x", None),
+    ("opencode --session ses", None),
+    ("opencode --session ses_x'", None),
+])
+def test_only_a_2x_tuis_own_argv_names_its_session(argv, session):
+    assert opencodeapi.session_arg(argv) == session
+
+
+def test_the_shells_around_a_2x_tui_are_not_its_sighting(service, repo_o_r):
+    """Each wrapper is older than the TUI, so it comes first in the table; taken for
+    the agent, the PR gets a tty no pane is on and reads as working forever."""
+    _opening(service, SID, PROMPT)
+    dump = probes.Observation.present(
+        "".join(f"{100 + i} ? 9 {w}\n" for i, w in enumerate(WRAPPERS))
+        + f"200 pts/5 8 opencode --session {SID}\n")
+    assert probes.live_agents(dump).value == {7: "pts/5"}
+
+
+def test_the_mesh_node_takes_a_2x_tuis_tty_not_its_wrappers(service):
+    from diplomat_runtime import autofix
+
+    _opening(service, SID, PROMPT)
+    dump = ("".join(f"?? 00:09 {w}\n" for w in WRAPPERS)
+            + f"ttys005 00:08 /opt/npm/bin/opencode --session {SID}\n")
+    assert autofix.agent_ttys(dump, "o", "r") == {"ttys005"}
+    assert autofix.agent_ttys(f"opencode --session {SID}\n", "o", "r") == {"opencode"}
+
+
 def test_the_mesh_dedup_sees_a_2x_tui_too(service):
     from diplomat_runtime import autofix
 

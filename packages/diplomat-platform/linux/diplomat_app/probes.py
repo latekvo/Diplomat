@@ -472,7 +472,8 @@ def _live_service_sessions() -> list[str]:
         return []
     found = []
     for line in dump.value.splitlines():
-        session_id = runner.is_agent_line(line) and opencodeapi.session_arg(line)
+        parts = line.split(maxsplit=3)
+        session_id = len(parts) == 4 and opencodeapi.session_arg(parts[3])
         if session_id and session_id not in found:
             found.append(session_id)
     return found

@@ -348,8 +348,11 @@ def interrupt(session_id: str) -> None:
     _service_call(_session_route(session_id) + "/interrupt", "POST")
 
 
-#: A 2.x TUI's argv names its session and nothing else: ``opencode --session <id>``.
-SESSION_ARG = re.compile(r"--session\s+(ses[^\s'\"]*)")
+#: A 2.x TUI's argv: its binary — ``opencode`` or ``opencode.exe``, by any path — then
+#: ``--session <id>`` and nothing else. Whole-argv: the terminal, the tmux client and
+#: server and the pane's shells all carry the spawn command with this inside it, and
+#: none of them is the TUI or on its tty.
+SESSION_ARG = re.compile(r"(?:\S*/)?opencode(?:\.exe)?\s+--session\s+(ses[0-9A-Za-z_-]+)")
 
 #: Opening prompts already read, by session id. A prompt never changes once written,
 #: so a hit is kept for the life of the process; a miss is not — the list is empty
@@ -358,8 +361,9 @@ _opening_prompts: dict[str, str] = {}
 
 
 def session_arg(argv: str) -> str | None:
-    """The session a 2.x TUI's argv attaches to, or ``None`` for any other line."""
-    found = SESSION_ARG.search(argv)
+    """The session a 2.x TUI's argv attaches to, or ``None`` for any other argv
+    (:data:`SESSION_ARG`)."""
+    found = SESSION_ARG.fullmatch(argv.strip())
     return found.group(1) if found else None
 
 
