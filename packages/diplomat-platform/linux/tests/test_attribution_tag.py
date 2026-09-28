@@ -30,6 +30,20 @@ pytestmark = pytest.mark.skipif(
     reason="DIPLOMAT_CORE_BIN not set (build it with packages/diplomat-platform/linux/install/build-core.sh)",
 )
 
+@pytest.fixture(autouse=True)
+def no_host_opencode(tmp_path, monkeypatch):
+    """An unpinned OpenCode run is named differently by 1.x and 2.x, and the core asks
+    the ``opencode`` the user's shell would run which one it is. Unfenced, that is the
+    developer's own install, so these would assert whichever version they have. A
+    shell that names nothing and a ``PATH`` without the CLI answer 1.x everywhere; a
+    test about 2.x installs its own."""
+    shell = tmp_path / "noshell"
+    shell.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    shell.chmod(0o755)
+    monkeypatch.setenv("SHELL", str(shell))
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+
+
 #: What the tag renders as with no model behind it — the prefix every Diplomat comment
 #: has always opened with, and the one the golden prompts still hold.
 PLAIN = "`\\[[Diplomat](https://github.com/latekvo/Diplomat)\\]: `"
@@ -133,6 +147,24 @@ def test_an_unpinned_opencode_is_named_by_its_config_over_its_picker():
     opencode_state('{"recent": [{"providerID": "anthropic", "modelID": "claude-opus-5"}]}')
     opencode_config("opencode.jsonc", '{\n  // pinned\n  "model": "openai/gpt-5.2",\n}\n')
     assert tag_prefix("GPT 5.2") in review_prompt()
+
+
+def test_an_unpinned_opencode_2x_is_not_named_by_a_picker_its_service_ignores(tmp_path,
+                                                                           monkeypatch):
+    """2.x starts a session on the config ``model``, else the first model it has; the
+    TUI picker's recents are never consulted. Naming the run after them would put a
+    model that never ran on a public comment."""
+    exe = tmp_path / "bin" / "opencode"
+    exe.parent.mkdir()
+    exe.write_text('#!/bin/sh\n[ "$1" = --version ] && echo "opencode v2.0.18"\n',
+                   encoding="utf-8")
+    exe.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{exe.parent}:/usr/bin:/bin")
+    appconfig.set_value(appconfig.AGENT_RUNNER, runner.OPENCODE)
+    opencode_state('{"recent": [{"providerID": "ollama-cloud", "modelID": "glm-5.2"}]}')
+    prompt = review_prompt()
+    assert PLAIN in prompt
+    assert "GLM 5.2" not in prompt
 
 
 def test_a_model_whose_name_is_not_in_its_id_is_named_from_the_asset():

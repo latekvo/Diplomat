@@ -276,6 +276,9 @@ def _stub_opencode(tmp_path, monkeypatch, body: str) -> None:
     exe.write_text(body, encoding="utf-8")
     exe.chmod(0o755)
     monkeypatch.setenv("PATH", str(exe.parent) + os.pathsep + os.environ["PATH"])
+    # The resolver asks the user's shell first, and a developer's rc names their own
+    # install; a shell that sources nothing answers from the PATH above.
+    monkeypatch.setenv("DIPLOMAT_SHELL", "/bin/sh")
 
 
 EXPORTED = {"info": {"id": "ses_ours"}, "messages": [

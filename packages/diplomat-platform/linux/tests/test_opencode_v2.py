@@ -48,6 +48,9 @@ def fake_opencode(tmp_path: Path, monkeypatch, body: str) -> Path:
     exe.write_text("#!/bin/sh\n" + body, encoding="utf-8")
     exe.chmod(0o755)
     monkeypatch.setenv("PATH", str(exe.parent) + os.pathsep + "/usr/bin:/bin")
+    # The resolver asks the user's shell first, and a developer's rc names their own
+    # install; a shell that sources nothing answers from the PATH above.
+    monkeypatch.setenv("DIPLOMAT_SHELL", "/bin/sh")
     return exe
 
 
@@ -106,6 +109,25 @@ def test_no_opencode_at_all_is_1x(tmp_path, monkeypatch):
     shell.chmod(0o755)
     monkeypatch.setenv("DIPLOMAT_SHELL", str(shell))
     assert usagescan.opencode_is_v2() is False
+
+
+def test_the_install_the_users_shell_runs_decides_not_the_applets_path(tmp_path,
+                                                                     monkeypatch):
+    """The applet's own PATH holds a 1.x; the user's rc puts a 2.x ahead of it. The
+    agent runs in that shell, so it runs the 2.x — and a 1.x spawn string handed to a
+    2.x CLI never submits its prompt."""
+    fake_opencode(tmp_path, monkeypatch, V1)
+    rc_install = tmp_path / "rc-bin" / "opencode"
+    rc_install.parent.mkdir()
+    rc_install.write_text("#!/bin/sh\n" + V2, encoding="utf-8")
+    rc_install.chmod(0o755)
+    shell = tmp_path / "rcshell"
+    shell.write_text("#!/bin/sh\n"
+                     f"export PATH={shlex.quote(str(rc_install.parent))}:$PATH\n"
+                     'exec /bin/sh "$@"\n', encoding="utf-8")
+    shell.chmod(0o755)
+    monkeypatch.setenv("DIPLOMAT_SHELL", str(shell))
+    assert usagescan.opencode_is_v2() is True
 
 
 def test_an_upgrade_is_seen_by_the_next_spawn(tmp_path, monkeypatch):

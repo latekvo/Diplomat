@@ -33,14 +33,18 @@ public enum OpenCodeCLI {
     /// Dock inherits none of that, so asking this process's environment alone would
     /// find nothing for exactly the installs the spawn supports.
     ///
-    /// So this `PATH` first, and only on a miss the shell. What comes back is a path,
-    /// run directly rather than through the shell, because the rc that put it on `PATH`
-    /// is equally free to print a banner and the CLI's stdout has to stay parseable.
+    /// So the shell first, and this `PATH` only when the shell names nothing. The order
+    /// matters beyond reach: an rc can put a different install ahead of the one this
+    /// process sees (a 1.x under `~/.opencode/bin` beside a 2.x on the system `PATH`),
+    /// and `installedIsService` must describe the binary the spawned agent will run, or
+    /// a run is spawned the wrong way for the CLI that executes it. What comes back is a
+    /// path, run directly rather than through the shell, because the rc that put it on
+    /// `PATH` is equally free to print a banner and the CLI's stdout has to stay parseable.
     public static func binary() -> String? {
         binaryLock.lock()
         defer { binaryLock.unlock() }
         if let cached = cachedPath { return cached }
-        cachedPath = onPath("opencode") ?? shellPath(to: "opencode")
+        cachedPath = shellPath(to: "opencode") ?? onPath("opencode")
         return cachedPath
     }
 

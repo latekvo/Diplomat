@@ -430,16 +430,20 @@ def _opencode_binary() -> str | None:
     ordinarily has none of that, so pricing a finished run off it alone would price
     ``None`` for exactly the installs the spawn was written to support.
 
-    So this ``PATH`` first, and only on a miss the shell. What comes back is a path,
-    exec'd directly rather than run through the shell, because the rc that put it on
-    ``PATH`` is equally free to print a banner and the export's stdout has to stay
-    parseable JSON.
+    So the shell first, and this ``PATH`` only when the shell names nothing. The order
+    matters beyond reach: an rc can put a different install ahead of the one this
+    process sees (a 1.x under ``~/.opencode/bin`` beside a 2.x on the system ``PATH``),
+    and :func:`opencode_is_v2` must describe the binary the spawned agent will run, or
+    a run is spawned the wrong way for the CLI that executes it. What comes back is a
+    path, exec'd directly rather than run through the shell, because the rc that put
+    it on ``PATH`` is equally free to print a banner and the export's stdout has to
+    stay parseable JSON.
     """
     global _opencode_path
 
     if _opencode_path:
         return _opencode_path
-    _opencode_path = shutil.which("opencode") or _shell_path_to("opencode")
+    _opencode_path = _shell_path_to("opencode") or shutil.which("opencode")
     return _opencode_path
 
 

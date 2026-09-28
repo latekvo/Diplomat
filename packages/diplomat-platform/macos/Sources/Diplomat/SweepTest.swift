@@ -139,8 +139,10 @@ enum SweepTest {
             let priorPath = ProcessInfo.processInfo.environment["PATH"]
             let priorShell = ProcessInfo.processInfo.environment["SHELL"]
             setenv("SHELL", stub.shell, 1)
-            setenv("PATH", "/usr/bin:/bin", 1)   // what a desktop launcher hands the app
-            check("an rc-only opencode still prices its run",
+            // What a desktop launcher hands the app, plus an install the rc puts behind the
+            // user's own: the agent runs what the shell finds, so that is what is asked.
+            setenv("PATH", "\(stub.decoyDir):/usr/bin:/bin", 1)
+            check("the opencode the user's shell runs prices its run, not one on the app's PATH",
                   UsageScan.opencodeTaskTokens(sessionID: "ses_ours") == 248)
             // The same path, upgraded in place: the major is asked of the binary on every
             // pricing, never remembered from the one before.
@@ -162,12 +164,13 @@ enum SweepTest {
         return pass
     }
 
-    /// A throwaway 1.x `opencode`, and the shell whose rc is the only thing that finds it.
-    /// Returns that shell, and the stub so a check can swap in another major.
+    /// A throwaway 1.x `opencode`, the shell whose rc puts it first, and a directory
+    /// holding a broken `opencode` for the app's own `PATH`. Returns that shell, the stub
+    /// so a check can swap in another major, and the decoy's directory.
     ///
     /// The exported numbers are the ones the Linux suite and `DiplomatCoreSmoke` assert
     /// against too — 3 + 84 + 40 + 7 + 8 + 106, never the 59384 cache reads beside them.
-    private static func opencodeFixture() -> (shell: String, exporter: URL)? {
+    private static func opencodeFixture() -> (shell: String, exporter: URL, decoyDir: String)? {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("diplomat-export-test-\(UUID().uuidString)")
         let bin = dir.appendingPathComponent("opt")
@@ -187,15 +190,20 @@ enum SweepTest {
         """
         let exporter = bin.appendingPathComponent("opencode")
         let shell = dir.appendingPathComponent("rcshell")
+        let decoyDir = dir.appendingPathComponent("system")
+        guard (try? FileManager.default.createDirectory(at: decoyDir,
+                                                        withIntermediateDirectories: true)) != nil
+        else { return nil }
         // The rc greets, because one that does is ordinary and its greeting lands on the
         // same stdout as the answer.
         let files = [
             (exporter, opencodeStub(version: "1.4.3", export: "export", json: exported)),
+            (decoyDir.appendingPathComponent("opencode"), "#!/bin/sh\nexit 1\n"),
             (shell, "#!/bin/sh\necho 'welcome back!'\nexport PATH=\(bin.path):$PATH\n"
                     + "exec /bin/sh \"$@\"\n"),
         ]
         for (url, body) in files where !write(url, body) { return nil }
-        return (shell.path, exporter)
+        return (shell.path, exporter, decoyDir.path)
     }
 
     /// 2.x's export: the same numbers' first message, its tokens at the message's top
