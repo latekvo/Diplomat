@@ -263,10 +263,8 @@ def _service() -> tuple[str, dict[str, str]] | None:
     """The service's base URL and the headers that authenticate to it, or ``None``
     when there is no readable discovery file naming a URL.
 
-    Every ``/api`` route answers 401 without the password, as HTTP Basic under the
-    user name ``opencode``. Unlike 1.x's server, whose TUI sent no password and so
-    could not be given one, this one is the per-user service's own, and reading it
-    back out of a 0600 file is exactly how its own CLI clients authenticate.
+    Every ``/api`` route answers 401 without the password, sent as HTTP Basic under
+    the user name ``opencode``.
     """
     try:
         with open(service_file(), encoding="utf-8") as fh:
