@@ -2,7 +2,21 @@ import SwiftUI
 import AppKit
 import DiplomatCore
 
+/// The process entry point. `Headless.unrunnable` is checked here, before
+/// `DiplomatApp` exists, because the app builds its Store as a state object and
+/// the Store reads the real state and starts its polls as it is built.
 @main
+enum Launch {
+    static func main() {
+        let unrunnable = Headless.unrunnable(in: ProcessInfo.processInfo.environment)
+        guard unrunnable.isEmpty else {
+            FileHandle.standardError.write(Data(Headless.refusal(unrunnable).utf8))
+            exit(64)   // EX_USAGE
+        }
+        DiplomatApp.main()
+    }
+}
+
 struct DiplomatApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @StateObject private var store = Store()

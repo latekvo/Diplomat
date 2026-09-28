@@ -64,6 +64,7 @@ def test_cmdline_rejects_non_applet(tokens):
         b"ARGENT_UTILS_SELF_UPDATE=1\0",  # legacy prefix
         b"DIPLOMAT_PRINT_PROMPT=mine\0",
         b"DIPLOMAT_RENDER=panel\0",
+        b"DIPLOMAT_AGENTS=1\0",
     ],
 )
 def test_environ_headless_detected(raw):

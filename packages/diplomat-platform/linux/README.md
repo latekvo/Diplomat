@@ -285,6 +285,11 @@ DIPLOMAT_RENDER=panel DIPLOMAT_RENDER_OUT=/tmp/p.png \
 DIPLOMAT_REFRESH_SECS=30 ./diplomat            # faster auto-refresh, for tuning
 ```
 
+The modes are `diplomat_app/headless.py`'s `MODES`. A variable that asks for one this
+build does not run - a `DIPLOMAT_*` name ending `_TEST`, `_DUMP`, `_SCAN` or `_POLL`
+that is not listed (every macOS self-test), or a flag set to anything but `1` - stops
+the launcher with exit 64 before it can start the tray.
+
 Also overridable: `DIPLOMAT_REPO` (the agents' working dir — outranks Settings ▸
 *Repo root*, whose own default is `~/dev/<repo>`), `DIPLOMAT_CONFIG` (where the
 shared `config.json` lives),
@@ -387,6 +392,7 @@ diplomat_app/
   conflictwizardview.py  Resolve-conflicts wizard
   auditwizardview.py     Full-E2E-test wizard
   selftest.py     headless dump / lookup / prompt self-tests
+  headless.py     the headless modes, and the refusal of one this build does not run
   singleton.py    newest-wins pidfile
   render.py       headless PNG snapshots (UI checks)
   app.py          QSystemTrayIcon + lifecycle
