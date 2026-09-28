@@ -638,9 +638,7 @@ final class Store: ObservableObject {
             // afterwards; publishes the status either way, so it stands in for the
             // plain `refreshAllocatorInstall()` this used to do here.
             Task { await ensureAllocatorInstalled() }
-            // Auto-start a node on launch if the user has previously opted into the mesh
-            // (mirrors the Linux applet's ensure-running-on-start).
-            if meshEnabled { ensureMeshRunning() }
+            Task { await settleMeshOnLaunch() }
         }
     }
 
@@ -3352,6 +3350,36 @@ final class Store: ObservableObject {
             if let err { self.meshError = err }
             await self.meshTick()
         }
+    }
+
+    /// Start a node on launch if the user has opted into the mesh; with it off, stop one
+    /// an earlier instance left running. Twin of the Linux applet's launch.
+    func settleMeshOnLaunch() async {
+        if meshEnabled { ensureMeshRunning() } else { await stopStrayMeshNode() }
+    }
+
+    /// Stop a node left running on this app's mesh state dir while the mesh is off, and
+    /// say so in the audit feed. The node outlives the app by design, so one started by
+    /// an earlier instance (a previous run, a stray debug build) otherwise runs on
+    /// unattended while the setting reads off. Twin of the Linux
+    /// `store.stop_stray_node_async`.
+    @discardableResult
+    func stopStrayMeshNode(exitWait: TimeInterval = 10) async -> MeshBridge.StrayNode {
+        let outcome = await Task.detached(priority: .utility) {
+            MeshBridge.stopStrayNode(exitWait: exitWait)
+        }.value
+        switch outcome {
+        case .none:
+            break
+        case .stopped(let pid, let port):
+            AuditLog.log("panel", "mesh-stop",
+                         "Mesh is off: stopped the node left running here (pid \(pid), :\(port))")
+        case .stopFailed(let pid, let port, let reason):
+            AuditLog.log("panel", "warn",
+                         "Mesh is off, but the node left running here (pid \(pid), :\(port)) "
+                         + "did not stop: \(reason)")
+        }
+        return outcome
     }
 
     /// Ask the local node to stop and drop the topology (used when the user disables the

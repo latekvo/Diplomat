@@ -128,6 +128,49 @@ def tool_by_id(tool_id: str) -> Tool | None:
     return next((t for t in tools() if t.id == tool_id), None)
 
 
+def stop_stray_node(exit_wait: float = 10.0) -> tuple[str, int, int, str]:
+    """Stop the node ``state.json`` names, once it proves over its control port that it
+    is that node: the pid and node id it reports live must be the file's. Nothing is
+    signalled by pid, so a pid the OS has since handed to another process, or a port a
+    node on another state dir has since bound, is left alone. ``stopped`` means the pid
+    is gone, not just that the node accepted the command. Blocking; needs SzpontNet.
+
+    Returns ``(outcome, pid, port, reason)``, ``outcome`` one of ``none`` (nothing
+    here answers as that node), ``stopped`` and ``stop-failed``. Twin of
+    ``MeshBridge.stopStrayNode``."""
+    from szpontnet import ctl, protocol, statefile
+
+    none = ("none", 0, 0, "")
+    file = statefile.read_state()
+    if file is None:
+        return none
+    pid, port, me = file.get("pid"), file.get("tcpPort"), file.get("self")
+    node_id = me.get("id") if isinstance(me, dict) else None
+    if not isinstance(port, int) or port <= 0 or not node_id:
+        return none
+    try:
+        # Refused without dialling when the file's pid is dead.
+        live = ctl.request(protocol.status_request(), timeout=5.0).get("state")
+    except ctl.CtlError:
+        return none
+    if not isinstance(live, dict) or live.get("pid") != pid:
+        return none
+    live_me = live.get("self")
+    if not isinstance(live_me, dict) or live_me.get("id") != node_id:
+        return none
+    try:
+        ctl.stop()
+    except ctl.CtlError as exc:
+        return ("stop-failed", pid, port, str(exc))
+    deadline = time.monotonic() + exit_wait
+    while statefile.node_running(file):
+        if time.monotonic() >= deadline:
+            return ("stop-failed", pid, port,
+                    f"still running {int(exit_wait)}s after it was asked to stop")
+        time.sleep(0.1)
+    return ("stopped", pid, port, "")
+
+
 # MARK: - Store
 
 
@@ -2999,9 +3042,8 @@ class Store(QObject):
     def ensure_mesh_running_async(self) -> None:
         """Start a background mesh node iff the user enabled the mesh and none is
         already alive. No-ops when disabled — which includes having no SzpontNet
-        installed — so it's safe to call blindly on app start, as the launcher
-        does. Never runs in a headless render/test (guarded by mesh_enabled,
-        which those paths leave off / stub)."""
+        installed — so it's safe to call blindly. Never runs in a headless
+        render/test (guarded by mesh_enabled, which those paths leave off / stub)."""
         if not self.mesh_enabled:
             self.refresh_mesh_state()
             return
@@ -3063,6 +3105,37 @@ class Store(QObject):
             self.refresh_mesh_state()
 
         self.start_background(work)
+
+    def settle_mesh_on_launch(self) -> None:
+        """Start a node on launch if the user has opted into the mesh; with it off, stop
+        one an earlier instance left running. Twin of ``settleMeshOnLaunch`` in
+        Store.swift."""
+        if self.mesh_enabled:
+            self.ensure_mesh_running_async()
+        else:
+            self.stop_stray_node_async()
+
+    def stop_stray_node_async(self, exit_wait: float = 10.0) -> threading.Thread | None:
+        """Stop a node left running on this machine's mesh state dir while the mesh is
+        off, and say so in the activity feed. The node outlives the applet by design, so
+        one started by an earlier instance otherwise runs on unattended while the setting
+        reads off. Twin of ``stopStrayMeshNode`` in Store.swift."""
+        if not szpont.AVAILABLE:
+            return None
+
+        def work() -> None:
+            outcome, pid, port, reason = stop_stray_node(exit_wait)
+            if outcome == "stopped":
+                activity.log("panel", "mesh-stop",
+                             f"Mesh is off: stopped the node left running here "
+                             f"(pid {pid}, :{port})")
+            elif outcome == "stop-failed":
+                activity.log("panel", "warn",
+                             f"Mesh is off, but the node left running here "
+                             f"(pid {pid}, :{port}) did not stop: {reason}")
+            self.refresh_mesh_state()
+
+        return self.start_background(work)
 
     def _mesh_command(self, run, what: str) -> None:
         """Run one mesh control round-trip on a daemon thread, then settle the view:
