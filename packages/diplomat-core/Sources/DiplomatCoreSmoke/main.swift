@@ -490,6 +490,37 @@ check(!AgentRunner.hermes.agentCommand(promptFile: "/tmp/p.txt", port: 47_910).c
       "Hermes serves no port either; it answers from its own store")
 check(!AgentRunner.opencode.agentCommand(promptFile: "/tmp/p.txt", port: 0).contains("--port"),
       "a run with no port must spawn exactly as it did before, not with --port 0")
+// OpenCode 2.x: create the staged session on the shared service, prompt it, attach a TUI.
+// Pinned byte for byte, like the 1.x string, because the Linux spawn builds the same one —
+// and the pid file is only the agent's own for exactly this shape (`;` before the TUI,
+// `|| exit` after the prompt). The pin, port and grant all travel in the staged session,
+// so none of them may leak in here.
+let serviceCommand = AgentRunner.opencode.agentCommand(
+    promptFile: "/tmp/p.txt", model: "openai/gpt-5-mini", port: 47_910,
+    serviceSession: "ses_diplomat_0123456789abcdef0123456789abcdef")
+check(serviceCommand
+        == "opencode api session.create -d \"$(cat '/tmp/p.txt.session.json')\" "
+         + "&& opencode api session.prompt --param sessionID=ses_diplomat_0123456789abcdef0123456789abcdef "
+         + "-d \"$(cat '/tmp/p.txt.prompt.json')\" "
+         + "|| exit; opencode --session ses_diplomat_0123456789abcdef0123456789abcdef",
+      "the 2.x command: \(serviceCommand)")
+for flag in ["--port", " -m ", AgentRunner.permissionEnv, "--prompt"] {
+    check(!serviceCommand.contains(flag), "2.x takes no \(flag); it belongs to the service")
+}
+check(AgentRunner.opencode.agentCommand(promptFile: "/tmp/it's.txt", serviceSession: "ses_x")
+        .contains("\"$(cat '/tmp/it'\\''s.txt.session.json')\""),
+      "the staged files are quoted the way the prompt file is")
+check(AgentRunner.opencode.agentCommand(promptFile: "/tmp/p.txt", serviceSession: "")
+        == AgentRunner.opencode.agentCommand(promptFile: "/tmp/p.txt"),
+      "no service session is a 1.x spawn, unchanged")
+check(AgentRunner.claude.agentCommand(promptFile: "/tmp/p.txt", serviceSession: "ses_x")
+        == "claude \"$(cat '/tmp/p.txt')\"",
+      "only OpenCode has a service to create a session on")
+check(AgentRunner.hermes.agentCommand(promptFile: "/tmp/p.txt", serviceSession: "ses_x")
+        == "hermes chat --tui --yolo -q \"$(cat '/tmp/p.txt')\"")
+// `auth` is 2.x's name for the provider wizard and an alias of 1.x's `providers`.
+check(AgentRunner.opencode.setupCommand == "opencode auth login; opencode auth list",
+      "one provider-wizard spelling serves both OpenCode majors")
 print("agent runner assertions passed")
 
 section("agent model")
@@ -548,9 +579,12 @@ func writeOpenCode(_ name: String, _ json: String) throws {
 func writeOpenCodeState(_ json: String) throws {
     try json.write(to: openCodeState.appendingPathComponent("model.json"), atomically: true, encoding: .utf8)
 }
-func detectModel() -> String {
+// Which OpenCode major is installed is the fixture's to say, never the developer's
+// machine's: a 2.x install there would otherwise change what every 1.x check below reads.
+func detectModel(service: Bool = false) -> String {
     AgentModel.detect(configFile: configFile, claudeHome: claudeHome, hermesConfig: hermesConfig,
-                      openCodeConfig: openCodeConfig, openCodeState: openCodeState)
+                      openCodeConfig: openCodeConfig, openCodeState: openCodeState,
+                      openCodeIsService: { service })
 }
 func writeTranscript(_ name: String, _ body: String, ageSecs: Double) throws {
     let url = sessions.appendingPathComponent(name)
@@ -618,6 +652,10 @@ try writeOpenCodeState("""
 """)
 check(detectModel() == "Opus 5",
       "the head of the recent list is the model OpenCode's picker restores")
+// 2.x sessions are created by a service that never reads the picker's recents, so the
+// head of that list is a model an unpinned 2.x run does NOT start on.
+check(detectModel(service: true) == "",
+      "an unpinned 2.x run with no config model names no model, never the picker's last")
 // A head written without its model must fall through to the entry behind it rather than
 // blanking a tag that entry can still fill.
 try writeOpenCodeState("""
@@ -628,6 +666,13 @@ check(detectModel() == "GLM 5.2", "an entry that names no model is walked past, 
 // started with no `-m` is on that one whatever was used last.
 try writeOpenCode("config.json", "{\"model\": \"openai/gpt-5.2\"}")
 check(detectModel() == "GPT 5.2", "the config's model is what OpenCode resolves before its recent list")
+// …on both majors, so the binary is not run to ask which one this is.
+var majorAsked = 0
+check(AgentModel.detect(configFile: configFile, claudeHome: claudeHome, hermesConfig: hermesConfig,
+                        openCodeConfig: openCodeConfig, openCodeState: openCodeState,
+                        openCodeIsService: { majorAsked += 1; return true }) == "GPT 5.2"
+        && majorAsked == 0,
+      "a config model names a 2.x run too, without asking the binary which major it is")
 // …and the three global files merge in OpenCode's own order, later winning.
 try writeOpenCode("opencode.json", "{\"model\": \"qwen/qwen-3.8-max\"}")
 check(detectModel() == "Qwen 3.8 Max", "opencode.json is merged over config.json")
@@ -644,6 +689,9 @@ check(detectModel() == "Kimi K3",
 // settings — so it is what the run is on, and what the tag says.
 try writeConfig("{\"agentRunner\": \"opencode\", \"agentModel\": \"google/gemini-3.1-pro-preview\"}")
 check(detectModel() == "Gemini 3.1 Pro Preview", "`-m` beats everything OpenCode would have picked")
+// A 2.x pin may carry a `#variant`, which qualifies the model rather than naming another.
+try writeConfig("{\"agentRunner\": \"opencode\", \"agentModel\": \"openai/gpt-5.2#high\"}")
+check(detectModel(service: true) == "GPT 5.2", "a pinned variant is still the model it qualifies")
 try FileManager.default.removeItem(at: openCodeConfig)
 try FileManager.default.createDirectory(at: openCodeConfig, withIntermediateDirectories: true)
 try writeOpenCodeState("{}")
@@ -789,7 +837,151 @@ let exported: [[String: Any]] = [
 ]
 check(OpenCodeAPI.sessionTokens(exported) == 248)
 check(OpenCodeAPI.sessionTokens([]) == 0)
+// 2.x's `session export` carries each message's tokens at its top level, not under `info`.
+check(OpenCodeAPI.sessionTokens([
+    ["type": "user", "text": "hi"],
+    ["type": "assistant", "tokens": ["input": 3.0, "output": 84.0, "reasoning": 9.0,
+                                     "cache": ["read": 29_000.0, "write": 40.0]]],
+    ["type": "idle", "outcome": "succeeded"],
+]) == 127, "a 2.x export is summed by the same rule")
 print("opencode session assertions passed")
+
+section("opencode 2.x service")
+// Which major is installed decides every OpenCode seam, and anything unreadable is 1.x —
+// the shape every spawn had before 2.0. Real `--version` outputs, 2.0.18 then 1.x.
+check(OpenCodeAPI.isServiceVersion("opencode v2.0.18\n"))
+check(OpenCodeAPI.isServiceVersion("opencode v10.1.0"), "a major is a number, not a digit")
+check(!OpenCodeAPI.isServiceVersion("1.18.33\n"))
+check(!OpenCodeAPI.isServiceVersion("1.4.3"))
+for garbage in ["", "opencode", "v2.0", "command not found: opencode", "é2"] {
+    check(!OpenCodeAPI.isServiceVersion(garbage), "“\(garbage)” names no version, so it is 1.x")
+}
+check(OpenCodeAPI.exportArguments(sessionID: "ses_a", service: true) == ["session", "export", "ses_a"])
+check(OpenCodeAPI.exportArguments(sessionID: "ses_a", service: false) == ["export", "ses_a"],
+      "1.x has no `session export`, 2.x no top-level `export`")
+// The session id is minted by the spawn and must be fresh, or `session.create` answers
+// with somebody else's existing session.
+let minted = OpenCodeAPI.newSessionID()
+check(minted.hasPrefix("ses_diplomat_") && minted.count == 45
+        && minted.dropFirst(13).allSatisfy { "0123456789abcdef".contains($0) },
+      "ses_diplomat_ and 32 lowercase hex digits, not \(minted)")
+check(minted != OpenCodeAPI.newSessionID())
+// A pin splits at the FIRST `/`, and a `#variant` off the LAST `#` of the rest.
+check(OpenCodeAPI.modelRef("") == nil && OpenCodeAPI.modelRef("  ") == nil,
+      "no pin is no model object: the service picks its configured one")
+check(OpenCodeAPI.modelRef("openai/gpt-5-mini") == ["providerID": "openai", "id": "gpt-5-mini"])
+check(OpenCodeAPI.modelRef("openrouter/moonshotai/kimi-k3")
+        == ["providerID": "openrouter", "id": "moonshotai/kimi-k3"],
+      "an OpenRouter id keeps its own path")
+check(OpenCodeAPI.modelRef("openai/gpt-5#high")
+        == ["providerID": "openai", "id": "gpt-5", "variant": "high"])
+check(OpenCodeAPI.modelRef("openrouter/a/b#x#y")
+        == ["providerID": "openrouter", "id": "a/b#x", "variant": "y"])
+check(OpenCodeAPI.modelRef("gpt-5") == ["providerID": "gpt-5", "id": ""],
+      "a pin with no provider is all provider, which the service then fails in plain view")
+let unpinned = OpenCodeAPI.sessionBody(id: "ses_x", directory: "/repo", model: "")
+check(unpinned["model"] == nil, "an unpinned session sends no model")
+check(unpinned["id"] as? String == "ses_x"
+        && (unpinned["location"] as? [String: String]) == ["directory": "/repo"]
+        && (unpinned["permissions"] as? [[String: String]])
+            == [["action": "*", "resource": "*", "effect": "allow"]],
+      "every spawned session is created with the allow-all ruleset")
+check((OpenCodeAPI.sessionBody(id: "ses_x", directory: "/repo", model: "openai/gpt-5#high")["model"]
+        as? [String: String]) == ["providerID": "openai", "id": "gpt-5", "variant": "high"])
+// What the spawn stages, read back as `opencode api` will read it.
+do {
+    let dir = FileManager.default.temporaryDirectory
+        .appendingPathComponent("diplomat-smoke-stage-\(UUID().uuidString)", isDirectory: true)
+    let repo = dir.appendingPathComponent("repo", isDirectory: true)
+    let link = dir.appendingPathComponent("link")
+    try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
+    try FileManager.default.createSymbolicLink(at: link, withDestinationURL: repo)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let promptFile = dir.appendingPathComponent("prompt.txt")
+    let text = "Review PR #7 in o/r\n  it's \"quoted\" — and $(not run)\n"
+    try text.write(to: promptFile, atomically: true, encoding: .utf8)
+    guard let sid = OpenCodeCLI.stageSession(promptFile: promptFile, directory: link.path,
+                                             model: "openrouter/a/b#max") else {
+        check(false, "a writable run directory stages a session")
+        exit(1)
+    }
+    check(sid.hasPrefix("ses_diplomat_"))
+    func staged(_ suffix: String) -> [String: Any] {
+        let data = (try? Data(contentsOf: URL(fileURLWithPath: promptFile.path + suffix))) ?? Data()
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+    }
+    let session = staged(".session.json")
+    let physical = URL(fileURLWithPath: repo.path).resolvingSymlinksInPath().path
+    check(session["id"] as? String == sid, "the staged session is the one the id names")
+    check(((session["location"] as? [String: Any])?["directory"] as? String)
+            .map { $0.hasSuffix(physical) && !$0.hasSuffix("/link") } == true,
+          "the directory is the checkout's physical path, not the link the agent was cd'd through")
+    check((session["model"] as? [String: String])
+            == ["providerID": "openrouter", "id": "a/b", "variant": "max"])
+    check(staged(".prompt.json")["text"] as? String == text, "the prompt is staged verbatim")
+    for suffix in [".session.json", ".prompt.json"] {
+        let mode = (try? FileManager.default.attributesOfItem(atPath: promptFile.path + suffix))?[
+            .posixPermissions] as? NSNumber
+        check(mode?.intValue == 0o600, "\(suffix) carries the prompt, so it is owner-only")
+    }
+    check(OpenCodeCLI.stageSession(promptFile: dir.appendingPathComponent("absent.txt"),
+                                   directory: repo.path, model: "") == nil,
+          "a prompt that cannot be read stages nothing to spawn on")
+}
+// Finding the service: the file every 2.x client writes, under XDG_STATE_HOME when set.
+let home = URL(fileURLWithPath: "/Users/me")
+check(OpenCodeAPI.serviceFile(environment: ["XDG_STATE_HOME": "/x/state"], home: home).path
+        == "/x/state/opencode/service.json")
+check(OpenCodeAPI.serviceFile(environment: ["XDG_STATE_HOME": ""], home: home).path
+        == "/Users/me/.local/state/opencode/service.json",
+      "an empty XDG variable is unset, as the spec has it")
+let endpoint = OpenCodeAPI.serviceEndpoint(Data(
+    #"{"id":"u","version":"2.0.18","url":"http://127.0.0.1:49374/","pid":1,"password":"pw"}"#.utf8))
+check(endpoint?.base == "http://127.0.0.1:49374"
+        && endpoint?.authorization == "Basic b3BlbmNvZGU6cHc=",
+      "HTTP Basic as opencode:<password>, against the URL with no trailing slash")
+check(OpenCodeAPI.serviceEndpoint(Data(#"{"url":"http://127.0.0.1:1"}"#.utf8))?.authorization == nil,
+      "a service that wrote no password is asked with none")
+for bad in ["", "{}", #"{"url":""}"#, #"{"url":7}"#, "[]", "<html>"] {
+    check(OpenCodeAPI.serviceEndpoint(Data(bad.utf8)) == nil, "“\(bad)” names no service")
+}
+check(OpenCodeAPI.servicePath(sessionID: "ses_a") == "/api/session/ses_a")
+check(OpenCodeAPI.servicePath(sessionID: "ses_a", suffix: "/interrupt") == "/api/session/ses_a/interrupt")
+check(OpenCodeAPI.servicePath(sessionID: "a/b?c") == "/api/session/a%2Fb%3Fc",
+      "an id is one path segment, whatever a hand-edited session file says")
+check(OpenCodeAPI.servicePath(sessionID: "") == nil)
+// Busy/idle for a 2.x session: in the active map is busy, out of it with `time.idle`
+// stamped is idle, and out of it unstamped is a first turn not yet ended — busy.
+func info(_ time: [String: Any]) -> [String: Any] { ["data": ["id": "ses_a", "time": time]] }
+let nobody: [String: Any] = ["data": [String: Any]()]
+let runningA: [String: Any] = ["data": ["ses_a": ["type": "running"]]]
+check(OpenCodeAPI.serviceState(session: info(["created": 1.0]), active: runningA,
+                               sessionID: "ses_a")?.busy == true)
+check(OpenCodeAPI.serviceState(session: info(["created": 1.0, "idle": 2.0]), active: nobody,
+                               sessionID: "ses_a")?.busy == false)
+check(OpenCodeAPI.serviceState(session: info(["created": 1.0]), active: nobody,
+                               sessionID: "ses_a")?.busy == true,
+      "a session whose first turn has not ended is not idle")
+check(OpenCodeAPI.serviceState(session: info(["created": 1.0, "idle": 2.0]), active: runningA,
+                               sessionID: "ses_a")?.busy == true,
+      "an earlier turn's idle stamp does not end the one now running")
+check(OpenCodeAPI.serviceState(session: info(["created": 1.0, "idle": 2.0]),
+                               active: ["data": ["ses_b": ["type": "running"]]],
+                               sessionID: "ses_a")?.busy == false,
+      "another session's turn says nothing about this one")
+check(OpenCodeAPI.serviceState(session: info(["idle": "soon"]), active: nobody,
+                               sessionID: "ses_a")?.busy == true,
+      "a stamp that is not a time is not a stamp")
+let serviceGarbage: [Any?] = [nil, [String: Any](), ["data": "x"], "<html>", [["data": [:]]],
+                         ["_tag": "SessionNotFoundError"]]
+for bad in serviceGarbage {
+    check(OpenCodeAPI.serviceState(session: bad, active: nobody, sessionID: "ses_a") == nil,
+          "a session answer of \(String(describing: bad)) is unavailable, not idle")
+    check(OpenCodeAPI.serviceState(session: info(["idle": 2.0]), active: bad,
+                                   sessionID: "ses_a") == nil,
+          "an active answer of \(String(describing: bad)) is unavailable, not idle")
+}
+print("opencode 2.x service assertions passed")
 
 section("hermes sessions")
 // The same two questions, answered from Hermes' own SQLite store instead of a port —
@@ -1657,6 +1849,17 @@ do {
     check(AgentRegistry.runRunner(run) == "", "an unstaged runner is unknown, not Claude Code")
     AgentRegistry.stageRunner(run, AgentRunner.opencode.rawValue)
     check(AgentRegistry.runRunner(run) == "opencode", "and reads back the one it staged")
+
+    // An OpenCode 2.x run is one bound to a session with no port; a 1.x run is only ever
+    // bound through a port, and another runner's session is never OpenCode's.
+    check(AgentRegistry.serviceSession(run) == nil, "an unbound OpenCode run is on no session")
+    AgentRegistry.bindSession(run, "ses_diplomat_ab")
+    check(AgentRegistry.serviceSession(run) == "ses_diplomat_ab", "bound with no port is 2.x")
+    AgentRegistry.stagePort(run, 47_910)
+    check(AgentRegistry.serviceSession(run) == nil, "a port makes it a 1.x run")
+    try? FileManager.default.removeItem(at: AgentRegistry.portPath(run))
+    AgentRegistry.stageRunner(run, AgentRunner.hermes.rawValue)
+    check(AgentRegistry.serviceSession(run) == nil, "a Hermes session is not OpenCode's")
     AgentRegistry.forget([run])
     check(AgentRegistry.load().isEmpty && AgentRegistry.boundSession(run) == "",
           "forgetting a run takes its sidecars with it")

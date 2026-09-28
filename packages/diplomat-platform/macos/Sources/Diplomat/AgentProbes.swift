@@ -445,7 +445,7 @@ enum AgentProbes {
     /// interrupt hint drawn when we looked.
     ///
     /// A run missing from the answer is a run this cannot reach: every Claude Code run, an
-    /// OpenCode run spawned without a port, one whose server has not come up yet, one
+    /// OpenCode 1.x run spawned without a port, one whose server has not come up yet, one
     /// whose session has not been written to yet. The resolver reads its screen instead,
     /// so absence here costs the older evidence and never a verdict.
     ///

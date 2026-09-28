@@ -172,10 +172,15 @@ enum AgentSpawner {
         /// will use, so a run started under one runner and asked about after the
         /// operator switched would be interrogated through the wrong store.
         let runner: AgentRunner
-        /// Where this run's OpenCode server answers, or 0 for a run that has none —
-        /// every Claude Code and Hermes run, and any OpenCode run no port could be
-        /// reserved for.
+        /// Where this run's OpenCode 1.x server answers, or 0 for a run that has none —
+        /// every Claude Code, Hermes and OpenCode 2.x run, and any 1.x run no port could
+        /// be reserved for.
         let port: Int
+        /// The session an OpenCode 2.x run creates on the shared service, staged beside
+        /// the prompt (`OpenCodeCLI.stageSession`); nil for every other run. It is what
+        /// makes the agent command the 2.x one, and what a spawn that never started
+        /// interrupts on its way out.
+        var serviceSession: String? = nil
         /// Where Claude Code finds the hooks it reports its own turn boundaries
         /// through (`AgentCompletion`), or nil for a run spawned without them. That
         /// report is the only evidence that separates a finished agent from a working
@@ -219,6 +224,9 @@ enum AgentSpawner {
             // The window exists and is empty — a Ghostty surface that failed to
             // initialise still gets one, and it would otherwise sit there for good.
             _ = AgentWindows.close(window)
+            // A 2.x turn runs in the shared service, not the window, so one the command
+            // started after the deadline would outlive the close.
+            if let session = plan.serviceSession { OpenCodeProbe.interrupt(sessionID: session) }
             throw SpawnError.neverStarted(terminal: term.title,
                                           waited: AgentState.spawnGrace)
         }
@@ -372,7 +380,10 @@ enum AgentSpawner {
     ///
     /// `<agent>` is `AgentRunner.agentCommand` — `claude "$(cat '<promptfile>')"` or the
     /// OpenCode spelling of the same thing. Everything around it is identical for both,
-    /// because everything around it is what a run is *identified* by.
+    /// because everything around it is what a run is *identified* by. OpenCode 2.x's is
+    /// a list — create the session, prompt it, then the TUI — and the TUI is still the
+    /// last command, after a `;` that zsh and bash 5.3 both exec it over
+    /// (`AgentRunner.serviceCommand`).
     ///
     /// The agent runs one shell deeper, and what that shell records is its own `$$`.
     /// `AgentState` identifies the run by it, in place of matching
@@ -410,6 +421,7 @@ enum AgentSpawner {
     static func shellCommand(_ plan: SpawnPlan) -> String {
         let agent = plan.runner.agentCommand(promptFile: plan.promptFile.path,
                                              model: AppConfig.agentModel, port: plan.port,
+                                             serviceSession: plan.serviceSession,
                                              settingsFile: plan.settingsPath)
         let inner = "printf %s $$ > \(shq(plan.pidPath)); \(agent)"
         return "cd \(shq(repoPath)) 2>/dev/null; \"$SHELL\" -i -c \(shq(inner)); "
