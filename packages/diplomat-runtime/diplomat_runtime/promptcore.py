@@ -41,12 +41,35 @@ def core_bin() -> str:
     )
 
 
+#: Tells ``diplomat-core`` which OpenCode major is installed (``1`` or ``2``), so the
+#: model attribution it builds into a prompt need not resolve and ask the CLI itself.
+OPENCODE_MAJOR_ENV = "DIPLOMAT_OPENCODE_MAJOR"
+
+
+def opencode_major_env() -> dict[str, str]:
+    """``{DIPLOMAT_OPENCODE_MAJOR: "1" | "2"}`` while OpenCode is the selected runner,
+    else nothing.
+
+    Every prompt build is a fresh ``diplomat-core`` process, so an answer it found for
+    itself would be a shell resolve and a ``--version`` per build — on the Qt thread
+    for a wizard spawn, under the poll lock for an automatic one. This process keeps
+    the answer (:func:`usagescan.opencode_major`), and hands it over. Only OpenCode's
+    attribution asks, so no other runner pays for the question.
+    """
+    from . import runner, usagescan
+
+    if runner.selected() != runner.OPENCODE:
+        return {}
+    return {OPENCODE_MAJOR_ENV: str(usagescan.opencode_major())}
+
+
 def build_prompt(config: dict) -> str:
     """Assemble a prompt by shelling out to diplomat-core. ``config`` is the JSON
     payload whose ``kind`` is ``review`` | ``conflicts`` | ``audit``."""
     binary = core_bin()
     env = dict(os.environ)
     env.setdefault("DIPLOMAT_CORE", str(core.assets_dir()))
+    env.update(opencode_major_env())
     try:
         proc = subprocess.run(  # noqa: S603 — argv is a literal list, not a shell string
             [binary, "build-prompt"],

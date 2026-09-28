@@ -403,101 +403,186 @@ _VERSION_TIMEOUT = 5.0
 #: ``1.18.33`` on 1.x.
 _VERSION = re.compile(r"(\d+)\.\d+\.\d+")
 
-#: How long the user's shell may take to say where the CLI is. It sources their rc,
-#: which can be slow — a version manager, a prompt framework — so it gets its own
+#: How long the user's shell may take to say where the CLI is. It sources their profile
+#: and rc, which can be slow — a version manager, a prompt framework — so it gets its own
 #: budget rather than the export's, and the two together bound the pricing path.
 _RESOLVE_TIMEOUT = 10.0
 
-#: Where ``opencode`` turned out to be, once found. Only a hit is remembered: a miss
-#: is a CLI that may still be installed while the applet runs.
-_opencode_path: str | None = None
+#: How long a resolved install is trusted before the shell is asked again. The usual
+#: 1.x → 2.x upgrade MOVES the binary (``~/.opencode/bin`` or Homebrew to npm's
+#: ``@opencode/cli``), so a path remembered for good would keep answering for a CLI
+#: that has since been replaced — and every spawn after it would take the wrong
+#: version's command. A path that no longer exists is asked again at once.
+_RESOLVE_TTL = 60.0
+
+#: What the user's shell is asked, in one pass: where ``opencode`` is, and where its
+#: state lives. The second line is marked so an rc that prints can never be mistaken
+#: for it. Mirrored byte for byte by ``OpenCodeCLI`` in ``diplomat-core``.
+_SHELL_PROBE = ("command -v opencode; "
+                "printf '\\n@@XDG_STATE_HOME=%s\\n' \"$XDG_STATE_HOME\"")
+_STATE_MARKER = "@@XDG_STATE_HOME="
+
+
+@dataclass(frozen=True)
+class OpenCodeInstall:
+    """The ``opencode`` a spawned agent would run, and the state directory its shell
+    gives it — where a 2.x service writes ``opencode/service.json``."""
+
+    binary: str
+    state_home: str
+    resolved_at: float
+
+
+#: The last resolution that found a binary. A miss is never remembered: a CLI
+#: installed while the applet runs is found by the next caller.
+_install: OpenCodeInstall | None = None
+
+#: ``--version`` answers, keyed on the binary's identity on disk — path, inode, size
+#: and mtime — so an upgrade in place is a new key and a steady state costs a stat.
+_majors: dict[tuple, int] = {}
 
 
 def _reset_cache() -> None:
-    """Forget where the CLI was. For tests, which stand a different one up per case."""
-    global _opencode_path
+    """Forget where the CLI was and what it said it was. For tests, which stand a
+    different one up per case."""
+    global _install
 
-    _opencode_path = None
+    _install = None
+    _majors.clear()
 
 
-def _opencode_binary() -> str | None:
-    """The ``opencode`` executable, found the way the spawn finds it.
+def opencode_install() -> OpenCodeInstall | None:
+    """The ``opencode`` executable, found the way the spawn finds it, with the state
+    directory the agent's shell gives it.
 
-    An agent is spawned through the user's *interactive* login shell precisely so that
-    a per-user install is on ``PATH`` (:func:`review.shell_command`), and the Settings
-    screen promises as much: an rc-only install still runs. This process's own
-    environment is whatever launched the applet — a desktop entry, a Dock icon — and
-    ordinarily has none of that, so pricing a finished run off it alone would price
-    ``None`` for exactly the installs the spawn was written to support.
+    An agent runs in a terminal whose shell is the user's LOGIN shell, and inside it
+    Diplomat's own interactive one (:func:`review.shell_command`). So that is what is
+    asked: ``<shell> -l -c '<shell> -i -c "<probe>"'`` — the login pass for a PATH set
+    only in a profile (Homebrew's ``~/.zprofile`` on Apple silicon), the interactive
+    one for a PATH set only in an rc (nvm's ``~/.bashrc``). The macOS front-end asks
+    the identical question, so the two platforms cannot resolve different binaries.
 
-    So the shell first, and this ``PATH`` only when the shell names nothing. The order
-    matters beyond reach: an rc can put a different install ahead of the one this
-    process sees (a 1.x under ``~/.opencode/bin`` beside a 2.x on the system ``PATH``),
-    and :func:`opencode_is_v2` must describe the binary the spawned agent will run, or
-    a run is spawned the wrong way for the CLI that executes it. What comes back is a
-    path, exec'd directly rather than run through the shell, because the rc that put
-    it on ``PATH`` is equally free to print a banner and the export's stdout has to
-    stay parseable JSON.
+    The shell first, and this process's ``PATH`` only when the shell names nothing.
+    This process's environment is whatever launched the applet — a desktop entry, a
+    Dock icon — and an rc can put a different install ahead of anything on it (a 1.x
+    under ``~/.opencode/bin`` beside a 2.x on the system ``PATH``), while every
+    version check here must describe the binary the spawned agent will run.
+
+    The state directory comes from the same shell for the same reason: the service is
+    started by the agent's shell, under THAT shell's ``$XDG_STATE_HOME``. Empty there
+    is ``~/.local/state``; a shell that did not answer at all leaves this process's.
+
+    What comes back is a path, exec'd directly rather than through the shell, because
+    the rc that put it on ``PATH`` is equally free to print a banner and the export's
+    stdout has to stay parseable JSON. Trusted for :data:`_RESOLVE_TTL`, and only while
+    the path still exists.
     """
-    global _opencode_path
+    global _install
 
-    if _opencode_path:
-        return _opencode_path
-    _opencode_path = _shell_path_to("opencode") or shutil.which("opencode")
-    return _opencode_path
+    now = time.time()
+    cached = _install
+    if (cached is not None and now - cached.resolved_at < _RESOLVE_TTL
+            and os.path.exists(cached.binary)):
+        return cached
+    binary, state_home = _shell_probe()
+    binary = binary or shutil.which("opencode")
+    if state_home is None:
+        state_home = os.environ.get("XDG_STATE_HOME", "")
+    if not binary:
+        return None
+    _install = OpenCodeInstall(
+        binary=binary,
+        state_home=state_home or os.path.join(os.path.expanduser("~"), ".local", "state"),
+        resolved_at=now)
+    return _install
+
+
+def opencode_binary() -> str | None:
+    """Where the ``opencode`` a spawn would run is (:func:`opencode_install`)."""
+    install = opencode_install()
+    return install.binary if install else None
+
+
+def opencode_state_home() -> str:
+    """The state directory an OpenCode agent's shell gives it — where a 2.x service
+    keeps ``opencode/service.json``. This process's own when no ``opencode`` resolves."""
+    install = opencode_install()
+    if install is not None:
+        return install.state_home
+    return (os.environ.get("XDG_STATE_HOME")
+            or os.path.join(os.path.expanduser("~"), ".local", "state"))
+
+
+def opencode_major() -> int:
+    """The major version of the ``opencode`` a spawn would run: 2 for 2.x, 1 otherwise.
+
+    2.x is one per-user service every client talks to, rather than 1.x's server per
+    TUI; the two take different spawns, are asked what they are doing in different
+    places and export a finished session under different commands, so every one of
+    those seams asks this first. Asked with ``--version``, and every failure — no CLI,
+    a timeout, output with no version in it — answers 1, the behaviour every install
+    had before 2.x existed.
+
+    Remembered per binary identity (:data:`_majors`), so an upgrade in place is asked
+    again and anything else costs a stat.
+    """
+    binary = opencode_binary()
+    return _major(binary) if binary else 1
 
 
 def opencode_is_v2() -> bool:
-    """Whether the ``opencode`` a spawn would run is 2.x — one per-user service every
-    client talks to, rather than 1.x's server per TUI.
-
-    The two take different spawns, are asked what they are doing in different places
-    and export a finished session under different commands, so every one of those
-    seams asks this first. Found by :func:`_opencode_binary`, the way the spawn finds
-    it, and asked with ``--version``: major 2 or later is 2.x. Every failure — no CLI,
-    a timeout, output with no version in it — answers False, which is the 1.x
-    behaviour every install had before 2.x existed.
-
-    Not remembered: an upgrade lands at the same path, and a spawn is rare enough to
-    pay the fraction of a second each time.
-    """
-    binary = _opencode_binary()
-    return bool(binary) and _is_v2(binary)
+    """Whether the ``opencode`` a spawn would run is 2.x (:func:`opencode_major`)."""
+    return opencode_major() >= 2
 
 
-def _is_v2(binary: str) -> bool:
+def _major(binary: str) -> int:
+    try:
+        st = os.stat(binary)
+    except OSError:
+        return 1
+    key = (binary, st.st_ino, st.st_size, st.st_mtime_ns)
+    if key in _majors:
+        return _majors[key]
     try:
         out = subprocess.run(  # noqa: S603 - resolved absolute path, no shell
             [binary, "--version"],
             capture_output=True, text=True, timeout=_VERSION_TIMEOUT)
     except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
-        return False
-    if out.returncode != 0:
-        return False
-    found = _VERSION.search(out.stdout)
-    return found is not None and int(found.group(1)) >= 2
+        return 1
+    found = _VERSION.search(out.stdout) if out.returncode == 0 else None
+    major = 2 if found is not None and int(found.group(1)) >= 2 else 1
+    _majors[key] = major
+    return major
 
 
-def _shell_path_to(name: str) -> str | None:
-    """Where the user's interactive shell says ``name`` is, if it names a real file.
+def _shell_probe() -> tuple[str | None, str | None]:
+    """``(where opencode is, the shell's $XDG_STATE_HOME)`` as the user's shell
+    answers :data:`_SHELL_PROBE` — each ``None`` when it did not say.
 
-    The last qualifying line, because an rc is free to print above the answer. An
-    alias or a shell function fails the test — ``command -v`` describes those rather
-    than locating them — and reads the same as not installed.
+    The path is the last executable one before the marker, because an rc is free to
+    print above the answer; an alias or a shell function fails the test — ``command
+    -v`` describes those rather than locating them — and reads the same as not
+    installed. stdin is ``/dev/null``: an interactive shell that inherited a terminal
+    would try to drive it.
     """
     from . import review
 
+    shell = review.user_shell()
+    inner = f"{shlex.quote(shell)} -i -c {shlex.quote(_SHELL_PROBE)}"
     try:
         out = subprocess.run(  # noqa: S603 - the user's own shell, quoted argument
-            [review.user_shell(), "-i", "-c", f"command -v {shlex.quote(name)}"],
+            [shell, "-l", "-c", inner], stdin=subprocess.DEVNULL,
             capture_output=True, text=True, timeout=_RESOLVE_TIMEOUT)
     except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
-        return None
-    for line in reversed(out.stdout.splitlines()):
+        return None, None
+    lines = out.stdout.splitlines()
+    marks = [i for i, line in enumerate(lines) if line.startswith(_STATE_MARKER)]
+    state_home = lines[marks[-1]][len(_STATE_MARKER):].strip() if marks else None
+    for line in reversed(lines[:marks[-1]] if marks else lines):
         path = line.strip()
         if os.path.isfile(path) and os.access(path, os.X_OK):
-            return path
-    return None
+            return path, state_home
+    return None, state_home
 
 
 def opencode_task_tokens(session_id: str) -> float | None:
@@ -524,12 +609,12 @@ def opencode_task_tokens(session_id: str) -> float | None:
 
     if not session_id:
         return None
-    binary = _opencode_binary()
+    binary = opencode_binary()
     if not binary:
         return None
     try:
         out = subprocess.run(  # noqa: S603 - resolved absolute path, no shell
-            [binary, *(("session", "export") if _is_v2(binary) else ("export",)),
+            [binary, *(("session", "export") if _major(binary) >= 2 else ("export",)),
              session_id],
             capture_output=True, text=True, timeout=_EXPORT_TIMEOUT)
     except (OSError, subprocess.SubprocessError, UnicodeDecodeError):

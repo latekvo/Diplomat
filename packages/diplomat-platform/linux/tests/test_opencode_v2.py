@@ -6,15 +6,16 @@ that does not submit, an ``OPENCODE_PERMISSION`` the TUI ignores, no ``opencode
 export`` — so each group below pins one of them to the version the CLI reports, and
 the 1.x half of each stays what it was.
 
-The service cases run against a real authenticated server on a real socket, found the
-way the probe finds the real one — through ``service.json`` in ``$XDG_STATE_HOME``,
-which conftest points at this test's tmp dir so nothing here can reach the operator's
-own service.
+The service cases run against ``_Service``, a stand-in that checks the password and
+answers canned JSON on a real socket, found the way the probe finds the real one —
+through ``service.json`` in ``$XDG_STATE_HOME``, which conftest points at this test's
+tmp dir so nothing here can reach the operator's own service.
 """
 
 from __future__ import annotations
 
 import base64
+import dataclasses
 import json
 import os
 import shlex
@@ -41,6 +42,17 @@ PASSWORD = "s3cret-service-password"
 _real_spawn_macos = szponthost._spawn_macos
 
 
+def quiet_shell(directory: Path, prelude: str = "") -> str:
+    """A user shell that runs ``prelude`` and sources nothing else, whether asked to log
+    in or be interactive: ``/bin/sh -l`` would read the developer's ``~/.profile``."""
+    shell = directory / "quiet-shell"
+    shell.write_text("#!/bin/sh\n" + prelude +
+                     'while [ "$#" -gt 0 ]; do case "$1" in -l|-i) shift ;; *) break ;; esac; done\n'
+                     'exec /bin/sh "$@"\n', encoding="utf-8")
+    shell.chmod(0o755)
+    return str(shell)
+
+
 def fake_opencode(tmp_path: Path, monkeypatch, body: str) -> Path:
     """An ``opencode`` on PATH, a shell script answering whatever argv it is given."""
     exe = tmp_path / "bin" / "opencode"
@@ -48,9 +60,9 @@ def fake_opencode(tmp_path: Path, monkeypatch, body: str) -> Path:
     exe.write_text("#!/bin/sh\n" + body, encoding="utf-8")
     exe.chmod(0o755)
     monkeypatch.setenv("PATH", str(exe.parent) + os.pathsep + "/usr/bin:/bin")
-    # The resolver asks the user's shell first, and a developer's rc names their own
-    # install; a shell that sources nothing answers from the PATH above.
-    monkeypatch.setenv("DIPLOMAT_SHELL", "/bin/sh")
+    # The resolver asks the user's shell, whose profile and rc name the developer's own
+    # install; one that sources nothing answers from the PATH above.
+    monkeypatch.setenv("DIPLOMAT_SHELL", quiet_shell(tmp_path))
     return exe
 
 
@@ -121,12 +133,8 @@ def test_the_install_the_users_shell_runs_decides_not_the_applets_path(tmp_path,
     rc_install.parent.mkdir()
     rc_install.write_text("#!/bin/sh\n" + V2, encoding="utf-8")
     rc_install.chmod(0o755)
-    shell = tmp_path / "rcshell"
-    shell.write_text("#!/bin/sh\n"
-                     f"export PATH={shlex.quote(str(rc_install.parent))}:$PATH\n"
-                     'exec /bin/sh "$@"\n', encoding="utf-8")
-    shell.chmod(0o755)
-    monkeypatch.setenv("DIPLOMAT_SHELL", str(shell))
+    monkeypatch.setenv("DIPLOMAT_SHELL", quiet_shell(
+        tmp_path, f"export PATH={shlex.quote(str(rc_install.parent))}:$PATH\n"))
     assert usagescan.opencode_is_v2() is True
 
 
@@ -143,8 +151,9 @@ def test_an_upgrade_is_seen_by_the_next_spawn(tmp_path, monkeypatch):
 
 
 def test_the_2x_agent_command_is_spelled_out(opencode):
-    """Spelled out rather than built from parts: the Swift front-end builds the same
-    string, and a mesh job can be handed from one platform to the other."""
+    """Spelled out rather than built from parts, so a change to the command is a change
+    to this string. The Swift front-end builds the same command, but quotes every path
+    where this one leaves a path of safe characters bare; a shell reads both alike."""
     assert runner.agent_command("/tmp/p.txt", opencode_session=SID) == (
         "opencode api session.create -d \"$(cat /tmp/p.txt.session.json)\""
         f" && opencode api session.prompt --param sessionID={SID}"
@@ -408,16 +417,21 @@ def _session(**time) -> tuple[int, dict]:
     return 200, {"data": {"id": SID, "time": {"created": 1.0, "updated": 2.0, **time}}}
 
 
+def _ask(session_id: str) -> SessionState | None:
+    """A session's state, asked the way one probe pass asks it."""
+    return opencodeapi.service_state(session_id, opencodeapi.active_sessions())
+
+
 def test_a_session_in_the_active_map_is_busy(service):
     service.routes[("GET", f"/api/session/{SID}")] = _session(idle=5.0)
     service.routes[("GET", "/api/session/active")] = (200, {"data": {SID: {"type": "running"}}})
-    assert opencodeapi.service_state(SID) == SessionState(busy=True)
+    assert _ask(SID) == SessionState(busy=True)
 
 
 def test_a_session_whose_turn_ended_is_idle(service):
     service.routes[("GET", f"/api/session/{SID}")] = _session(idle=5.0)
     service.routes[("GET", "/api/session/active")] = (200, {"data": {"ses_other": {}}})
-    assert opencodeapi.service_state(SID) == SessionState(busy=False)
+    assert _ask(SID) == SessionState(busy=False)
 
 
 def test_a_session_whose_first_turn_has_not_ended_is_busy(service):
@@ -425,31 +439,31 @@ def test_a_session_whose_first_turn_has_not_ended_is_busy(service):
     ``session.create`` and the turn starting. Idle would retire the run at launch."""
     service.routes[("GET", f"/api/session/{SID}")] = _session()
     service.routes[("GET", "/api/session/active")] = (200, {"data": {}})
-    assert opencodeapi.service_state(SID) == SessionState(busy=True)
+    assert _ask(SID) == SessionState(busy=True)
 
 
 def test_a_session_the_service_does_not_know_is_unreachable(service):
     service.routes[("GET", "/api/session/active")] = (200, {"data": {}})
-    assert opencodeapi.service_state(SID) is None
+    assert _ask(SID) is None
 
 
 def test_an_active_map_the_service_will_not_give_is_unreachable(service):
     service.routes[("GET", f"/api/session/{SID}")] = _session(idle=5.0)
     service.routes[("GET", "/api/session/active")] = (500, {"_tag": "Boom"})
-    assert opencodeapi.service_state(SID) is None
+    assert _ask(SID) is None
 
 
 @pytest.mark.parametrize("body", [{"data": []}, {"nope": 1}, [1, 2]])
 def test_a_malformed_answer_is_unreachable(service, body):
     service.routes[("GET", f"/api/session/{SID}")] = (200, body)
     service.routes[("GET", "/api/session/active")] = (200, {"data": {}})
-    assert opencodeapi.service_state(SID) is None
+    assert _ask(SID) is None
 
 
 def test_every_request_carries_the_services_password(service):
     service.routes[("GET", f"/api/session/{SID}")] = _session(idle=5.0)
     service.routes[("GET", "/api/session/active")] = (200, {"data": {}})
-    opencodeapi.service_state(SID)
+    _ask(SID)
     want = "Basic " + base64.b64encode(f"opencode:{PASSWORD}".encode()).decode()
     assert [auth for _m, _p, auth in service.seen] == [want, want]
 
@@ -458,17 +472,17 @@ def test_without_the_password_the_service_answers_nothing(service):
     service.routes[("GET", f"/api/session/{SID}")] = _session(idle=5.0)
     service.routes[("GET", "/api/session/active")] = (200, {"data": {}})
     _service_json(service.url, password=None)
-    assert opencodeapi.service_state(SID) is None
+    assert _ask(SID) is None
     assert service.seen and service.seen[0][2] is None
 
 
 def test_no_service_file_is_unreachable():
-    assert opencodeapi.service_state(SID) is None
+    assert _ask(SID) is None
 
 
 def test_a_service_that_is_gone_is_unreachable():
     _service_json(f"http://127.0.0.1:{opencodeapi.free_port()}")
-    assert opencodeapi.service_state(SID) is None
+    assert _ask(SID) is None
 
 
 def test_the_service_file_is_found_under_xdg_state_home(monkeypatch, tmp_path):
@@ -476,6 +490,7 @@ def test_the_service_file_is_found_under_xdg_state_home(monkeypatch, tmp_path):
     assert opencodeapi.service_file() == str(tmp_path / "s" / "opencode" / "service.json")
     monkeypatch.delenv("XDG_STATE_HOME")
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    usagescan._reset_cache()
     assert opencodeapi.service_file() == str(
         tmp_path / "home" / ".local" / "state" / "opencode" / "service.json")
 
@@ -546,15 +561,16 @@ def test_a_1x_run_is_priced_from_export(tmp_path, monkeypatch):
 
 def test_an_interrupt_is_posted_with_the_password(service):
     service.routes[("POST", f"/api/session/{SID}/interrupt")] = (200, {"interrupted": True})
-    assert opencodeapi.interrupt(SID) is True
+    opencodeapi.interrupt(SID)
     want = "Basic " + base64.b64encode(f"opencode:{PASSWORD}".encode()).decode()
     assert service.seen == [("POST", f"/api/session/{SID}/interrupt", want)]
 
 
 def test_an_interrupt_nobody_takes_never_raises(service):
-    assert opencodeapi.interrupt("ses_unknown") is False
+    opencodeapi.interrupt("ses_unknown")
     (Path(os.environ["XDG_STATE_HOME"]) / "opencode" / "service.json").unlink()
-    assert opencodeapi.interrupt(SID) is False
+    opencodeapi.interrupt(SID)
+    assert [path for _m, path, _a in service.seen] == ["/api/session/ses_unknown/interrupt"]
 
 
 def _reap(monkeypatch, records: list[RunRecord]) -> list[tuple[str, str]]:
@@ -565,7 +581,7 @@ def _reap(monkeypatch, records: list[RunRecord]) -> list[tuple[str, str]]:
 
     events: list[tuple[str, str]] = []
     monkeypatch.setattr(opencodeapi, "interrupt",
-                        lambda sid: events.append(("interrupt", sid)) or True)
+                        lambda sid: events.append(("interrupt", sid)))
     monkeypatch.setattr(tmuxwatch, "kill_session",
                         lambda name: events.append(("kill", name)) or True)
     tick = types.SimpleNamespace(
@@ -590,3 +606,324 @@ def test_closing_a_1x_or_claude_runs_window_interrupts_nothing(monkeypatch):
     agentregistry.runner_path("r2").write_text(runner.CLAUDE, encoding="utf-8")
     events = _reap(monkeypatch, [one_x, claude])
     assert [kind for kind, _ in events] == ["kill", "kill"]
+
+
+def _retire(monkeypatch, records: list[RunRecord], reaped: tuple[str, ...] = ()
+            ) -> list[tuple[str, str]]:
+    """Retire each run the way the tick does once its agent is gone, recording in order
+    what was interrupted and what was priced."""
+    from diplomat_app.store import Store
+    from diplomat_runtime import telemetry, tmuxwatch
+
+    events: list[tuple[str, str]] = []
+    monkeypatch.setattr(opencodeapi, "interrupt",
+                        lambda sid: events.append(("interrupt", sid)))
+    monkeypatch.setattr(tmuxwatch, "kill_session", lambda name: True)
+    monkeypatch.setattr(telemetry, "record_completion",
+                        lambda key, *a, **kw: events.append(("price", key)))
+    tick = types.SimpleNamespace(
+        reapable=[r for r in records if r.run_id in reaped],
+        retirable=records, now=T0,
+        states={r.run_id: types.SimpleNamespace(state="finished", reason="pid absent")
+                for r in records})
+    Store._retire_finished(Store(), tick)
+    return events
+
+
+def test_retiring_a_2x_run_interrupts_its_turn_before_pricing_it(monkeypatch):
+    """Its TUI gone — the window closed by hand, the TUI quit or crashed — the turn
+    goes on in the service; a 1.x agent died with its window."""
+    record = dataclasses.replace(_v2_run(), ledger_key="k1")
+    assert _retire(monkeypatch, [record]) == [("interrupt", SID), ("price", "k1")]
+
+
+def test_retiring_a_1x_or_claude_run_interrupts_nothing(monkeypatch):
+    one_x = _v2_run("r1", "ses_1x")
+    agentregistry.port_path("r1").write_text("47910")
+    claude = RunRecord(run_id="r2", dispatched_at=T0, pid=4243)
+    agentregistry.create_run(claude, PROMPT)
+    agentregistry.runner_path("r2").write_text(runner.CLAUDE, encoding="utf-8")
+    assert [e for e in _retire(monkeypatch, [one_x, claude]) if e[0] == "interrupt"] == []
+
+
+def test_a_run_the_reaper_closed_is_interrupted_once(monkeypatch):
+    events = _retire(monkeypatch, [_v2_run()], reaped=("r1",))
+    assert events.count(("interrupt", SID)) == 1
+
+
+# MARK: - A 2.x run with no pid, found by its session
+
+
+OTHER = "ses_diplomat_ffffffffffffffffffffffffffffffff"
+
+
+def _opening(service, session_id: str, text: str | None) -> None:
+    rows = [] if text is None else [{"type": "user", "id": "m1", "text": text}]
+    service.routes[("GET", f"/api/session/{session_id}/message?limit=1&order=asc")] = (
+        200, {"data": rows})
+
+
+def _ps(*argvs: str) -> probes.Observation:
+    """A ``pid tty etimes args`` dump, as :func:`probes._ps_dump` reads it."""
+    return probes.Observation.present("".join(
+        f"{900 + i} pts/{i} 30 {argv}\n" for i, argv in enumerate(argvs)))
+
+
+@pytest.fixture
+def repo_o_r(monkeypatch):
+    from diplomat_runtime import core
+
+    monkeypatch.setattr(core, "config", lambda: {"owner": "o", "repo": "r"})
+
+
+def test_a_2x_tui_is_found_by_the_prompt_its_session_opened_on(service, repo_o_r):
+    """Its argv is ``opencode --session <id>`` and nothing else; a scan of argvs alone
+    reads a mesh-placed 2.x agent as no agent and retires it mid-turn."""
+    _opening(service, SID, PROMPT)
+    dump = _ps(f"opencode --session {SID}")
+    assert probes.live_agents(dump).value == {7: "pts/0"}
+
+
+def test_the_mesh_dedup_sees_a_2x_tui_too(service):
+    from diplomat_runtime import autofix
+
+    _opening(service, SID, PROMPT)
+    assert autofix.live_pr_numbers(f"pts/3 00:30 opencode --session {SID}\n",
+                                   "o", "r") == {7}
+
+
+def test_an_opening_prompt_is_asked_once_per_session(service, repo_o_r):
+    _opening(service, SID, PROMPT)
+    dump = _ps(f"opencode --session {SID}")
+    for _ in range(3):
+        assert probes.live_agents(dump).value == {7: "pts/0"}
+    assert len(service.seen) == 1
+
+
+def test_a_session_not_yet_prompted_is_asked_again(service, repo_o_r):
+    """Its message list is empty until ``session.prompt`` lands, a moment after the
+    TUI's argv appears; remembering that would hide the run for good."""
+    _opening(service, SID, None)
+    dump = _ps(f"opencode --session {SID}")
+    assert probes.live_agents(dump).value == {}
+    _opening(service, SID, PROMPT)
+    assert probes.live_agents(dump).value == {7: "pts/0"}
+
+
+def test_a_service_that_will_not_answer_matches_nothing(repo_o_r):
+    _service_json(f"http://127.0.0.1:{opencodeapi.free_port()}")
+    assert probes.live_agents(_ps(f"opencode --session {SID}")).value == {}
+
+
+def _mesh_here_run(run_id: str = "m1") -> RunRecord:
+    """A run the mesh placed back on this machine: the node opened its window, so there
+    is no pid and no session bound at spawn."""
+    from diplomat_runtime import agentstate
+
+    record = RunRecord(run_id=run_id, dispatched_at=T0, pr_number=7,
+                       placement=agentstate.PLACEMENT_MESH_HERE)
+    agentregistry.create_run(record, PROMPT)
+    agentregistry.runner_path(run_id).write_text(runner.OPENCODE, encoding="utf-8")
+    return record
+
+
+def _busy(service, session_id: str = SID) -> None:
+    service.routes[("GET", f"/api/session/{session_id}")] = _session()
+    service.routes[("GET", "/api/session/active")] = (200, {"data": {session_id: {}}})
+
+
+def test_a_mesh_placed_2x_run_is_bound_by_its_opening_prompt_and_asked(service,
+                                                                     monkeypatch):
+    _opening(service, OTHER, "Review PR #8 in o/r")
+    _opening(service, SID, PROMPT)
+    _busy(service)
+    monkeypatch.setattr(probes, "_ps_dump", lambda now: _ps(
+        f"opencode --session {OTHER}", f"opencode --session {SID}"))
+    obs = probes.agent_sessions([_mesh_here_run()], "/repo", T0)
+    assert obs.value == {"m1": SessionState(busy=True)}
+    assert agentregistry.service_session("m1") == SID
+
+
+def test_a_session_another_run_holds_is_not_bound_again(service, monkeypatch):
+    _opening(service, SID, PROMPT)
+    _busy(service)
+    monkeypatch.setattr(probes, "_ps_dump", lambda now: _ps(f"opencode --session {SID}"))
+    probes.agent_sessions([_v2_run("r1"), _mesh_here_run()], "/repo", T0)
+    assert agentregistry.bound_session("m1") == ""
+
+
+def test_a_bound_mesh_placed_run_is_interrupted_when_retired(service, monkeypatch):
+    _opening(service, SID, PROMPT)
+    _busy(service)
+    monkeypatch.setattr(probes, "_ps_dump", lambda now: _ps(f"opencode --session {SID}"))
+    record = _mesh_here_run()
+    probes.agent_sessions([record], "/repo", T0)
+    assert ("interrupt", SID) in _retire(monkeypatch, [record])
+
+
+def test_one_probe_pass_asks_for_the_active_map_once(service):
+    for sid in (SID, OTHER):
+        service.routes[("GET", f"/api/session/{sid}")] = _session()
+    service.routes[("GET", "/api/session/active")] = (200, {"data": {SID: {}}})
+    obs = probes.agent_sessions([_v2_run("r1"), _v2_run("r2", OTHER)], "/repo", T0)
+    assert obs.value == {"r1": SessionState(busy=True), "r2": SessionState(busy=True)}
+    assert [p for _m, p, _a in service.seen].count("/api/session/active") == 1
+
+
+def test_a_pass_without_the_active_map_asks_nothing_more(service):
+    """The map is half of every answer, so a service that will not give it has
+    answered for every run already — asking each session as well is one more timeout
+    per run against a service that may be hung."""
+    service.routes[("GET", "/api/session/active")] = (500, {"_tag": "Boom"})
+    service.routes[("GET", f"/api/session/{SID}")] = _session()
+    obs = probes.agent_sessions([_v2_run("r1"), _v2_run("r2", OTHER)], "/repo", T0)
+    assert obs.value == {}
+    assert [p for _m, p, _a in service.seen] == ["/api/session/active"]
+
+
+# MARK: - Where the CLI and its state are
+
+
+def test_a_binary_that_is_gone_is_resolved_again(tmp_path, monkeypatch):
+    """The usual 1.x to 2.x upgrade moves the binary; a path remembered past that
+    spawns the 1.x way at a 2.x CLI, which rejects ``--port`` every time."""
+    old = fake_opencode(tmp_path, monkeypatch, V1)
+    assert usagescan.opencode_is_v2() is False
+    old.unlink()
+    new = tmp_path / "npm-bin" / "opencode"
+    new.parent.mkdir()
+    new.write_text("#!/bin/sh\n" + V2, encoding="utf-8")
+    new.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{new.parent}:/usr/bin:/bin")
+    assert usagescan.opencode_binary() == str(new)
+    assert usagescan.opencode_is_v2() is True
+
+
+def test_a_resolution_is_trusted_for_a_minute(tmp_path, monkeypatch):
+    """An install put ahead of the old one moves nothing that exists, so only age
+    retires the answer."""
+    fake_opencode(tmp_path, monkeypatch, V1)
+    now = [T0]
+    monkeypatch.setattr(usagescan.time, "time", lambda: now[0])
+    first = usagescan.opencode_binary()
+    ahead = tmp_path / "ahead" / "opencode"
+    ahead.parent.mkdir()
+    ahead.write_text("#!/bin/sh\n" + V2, encoding="utf-8")
+    ahead.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{ahead.parent}:{os.environ['PATH']}")
+    now[0] += 59
+    assert usagescan.opencode_binary() == first
+    now[0] += 2
+    assert usagescan.opencode_binary() == str(ahead)
+
+
+def test_the_version_is_asked_once_per_binary_on_disk(tmp_path, monkeypatch):
+    """Every spawn, probe and prompt build asks which major this is, on the Qt thread
+    among others; the answer changes only when the file does."""
+    log = tmp_path / "asked"
+    tally = f"echo x >> {shlex.quote(str(log))}\n"
+    exe = fake_opencode(tmp_path, monkeypatch, tally + V1)
+    for _ in range(3):
+        assert usagescan.opencode_major() == 1
+    assert log.read_text().count("x") == 1
+    exe.write_text("#!/bin/sh\n" + tally + V2, encoding="utf-8")
+    assert usagescan.opencode_major() == 2
+    assert log.read_text().count("x") == 2
+
+
+def test_the_shell_is_asked_as_a_login_shell_running_an_interactive_one(monkeypatch):
+    """What a terminal window runs: the login shell, and Diplomat's interactive one
+    inside it (:func:`review.shell_command`)."""
+    seen = {}
+
+    def run(argv, **kw):
+        seen.update(argv=argv, stdin=kw.get("stdin"))
+        return types.SimpleNamespace(returncode=0, stdout="")
+
+    monkeypatch.setenv("DIPLOMAT_SHELL", "/bin/zsh")
+    monkeypatch.setattr(usagescan.subprocess, "run", run)
+    usagescan.opencode_binary()
+    probe = "command -v opencode; printf '\\n@@XDG_STATE_HOME=%s\\n' \"$XDG_STATE_HOME\""
+    assert seen == {"argv": ["/bin/zsh", "-l", "-c", "/bin/zsh -i -c " + shlex.quote(probe)],
+                    "stdin": usagescan.subprocess.DEVNULL}
+
+
+@pytest.mark.parametrize("shell, profile", [
+    ("/bin/zsh", ".zprofile"),
+    ("/bin/bash", ".bash_profile"),
+])
+def test_an_install_only_a_login_profile_names_is_found(tmp_path, monkeypatch,
+                                                        shell, profile):
+    """Homebrew's installer puts its PATH in ``~/.zprofile``, which only a login shell
+    reads; the applet's own PATH, from a Dock icon or desktop entry, has none of it."""
+    if not os.access(shell, os.X_OK):
+        pytest.skip(f"no {shell}")
+    exe = tmp_path / "brew" / "opencode"
+    exe.parent.mkdir()
+    exe.write_text("#!/bin/sh\n" + V2, encoding="utf-8")
+    exe.chmod(0o755)
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / profile).write_text(f"export PATH={shlex.quote(str(exe.parent))}:$PATH\n",
+                                encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("ZDOTDIR", str(home))
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setenv("DIPLOMAT_SHELL", shell)
+    assert usagescan.opencode_binary() == str(exe)
+
+
+def test_the_service_is_found_under_the_state_home_the_shell_gives(tmp_path,
+                                                                  monkeypatch):
+    """The service is started from the agent's shell, so its ``service.json`` is under
+    that shell's ``$XDG_STATE_HOME`` — which an rc may set and the applet's environment
+    never saw."""
+    fake_opencode(tmp_path, monkeypatch, V2)
+    monkeypatch.setenv("DIPLOMAT_SHELL", quiet_shell(
+        tmp_path, f"export XDG_STATE_HOME={tmp_path}/rc-state\n"))
+    assert opencodeapi.service_file() == f"{tmp_path}/rc-state/opencode/service.json"
+
+
+def test_a_shell_with_no_state_home_means_the_default(tmp_path, monkeypatch):
+    fake_opencode(tmp_path, monkeypatch, V2)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("DIPLOMAT_SHELL", quiet_shell(tmp_path, "unset XDG_STATE_HOME\n"))
+    assert opencodeapi.service_file() == str(
+        tmp_path / "home" / ".local" / "state" / "opencode" / "service.json")
+
+
+def test_an_rc_that_prints_paths_does_not_name_the_binary(tmp_path, monkeypatch):
+    """The answer is the last executable path before the marker, so a banner — even
+    one naming an executable — ahead of it is not mistaken for the CLI."""
+    exe = fake_opencode(tmp_path, monkeypatch, V2)
+    monkeypatch.setenv("DIPLOMAT_SHELL", quiet_shell(tmp_path, "echo /bin/ls\necho hi\n"))
+    assert usagescan.opencode_binary() == str(exe)
+
+
+# MARK: - What the rest of the applet is told
+
+
+def test_a_prompt_build_is_told_which_opencode_is_installed(tmp_path, monkeypatch,
+                                                            opencode):
+    from diplomat_runtime import promptcore
+
+    core_bin = tmp_path / "core"
+    core_bin.write_text('#!/bin/sh\necho "major=${DIPLOMAT_OPENCODE_MAJOR-unset}"\n',
+                        encoding="utf-8")
+    core_bin.chmod(0o755)
+    monkeypatch.setenv("DIPLOMAT_CORE_BIN", str(core_bin))
+    exe = fake_opencode(tmp_path, monkeypatch, V2)
+    assert promptcore.build_prompt({"kind": "review"}).strip() == "major=2"
+    exe.write_text("#!/bin/sh\n" + V1, encoding="utf-8")
+    assert promptcore.build_prompt({"kind": "review"}).strip() == "major=1"
+    appconfig.set_value(appconfig.AGENT_RUNNER, runner.CLAUDE)
+    assert promptcore.build_prompt({"kind": "review"}).strip() == "major=unset"
+
+
+def test_the_prompt_dump_shows_the_2x_command(capsys, opencode, as_v2):
+    from diplomat_app import selftest
+
+    selftest._print_prompt_dump("h", "a prompt")
+    command = capsys.readouterr().out.split("----- SHELL COMMAND -----", 1)[1]
+    assert "opencode api session.create" in command
+    assert "opencode --session ses_" in command

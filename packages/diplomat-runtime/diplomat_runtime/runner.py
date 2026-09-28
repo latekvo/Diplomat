@@ -9,12 +9,14 @@ same whichever it is:
   configured in OpenCode itself (Anthropic, OpenRouter, a local Ollama, …);
 * ``hermes`` — Hermes Agent, likewise.
 
-Only the *agent word and its flags* differ. Everything the spawn is built out of
-— the interactive shell, the ``$(cat …)`` prompt hand-off, the pid file written
-before the agent starts, the completion sentinel — is
-identical, and deliberately so: those mechanisms are what :mod:`agentregistry`
-and :mod:`probes` identify a run by, and a second spawn shape would be a second
-set of them to keep true.
+What differs is the agent command: for most runners the agent word and its flags,
+handed the prompt as ``$(cat …)``; for OpenCode 2.x a short chain of ``opencode api``
+calls that creates and prompts the session through its per-user service, ahead of
+the TUI that attaches to it (:func:`_opencode_v2_command`). Everything around that
+command — the interactive shell, the pid file written before the agent starts, the
+completion sentinel — is shared, and deliberately so: those mechanisms are what
+:mod:`agentregistry` and :mod:`probes` identify a run by, and a second spawn shape
+would be a second set of them to keep true.
 
 What each of the two foreign runners is *doing* is asked of the runner rather than
 read off its screen, and each answers from a different place: OpenCode over HTTP on

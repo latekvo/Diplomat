@@ -2425,6 +2425,16 @@ class Store(QObject):
         gone = [r for r in t.retirable if r.run_id not in refused]
         if not gone:
             return
+        # A 2.x OpenCode turn runs in the per-user service and outlives its TUI, so a
+        # run retired because its window closed or its TUI died would go on working
+        # headless. Stopped before pricing, so the export it is priced from is final; an
+        # idle session ignores it. The reaper has already stopped the ones it closed.
+        reaped = {r.run_id for r in t.reapable}
+        for r in gone:
+            session_id = (agentregistry.service_session(r.run_id)
+                          if r.run_id not in reaped else "")
+            if session_id:
+                opencodeapi.interrupt(session_id)
         # Every pricing input comes out of the run directory, so all of them must be
         # read before `forget` deletes it. A run the mesh placed leaves no sentinel
         # here, and `record_completion` dates that one from its transcript; now() is

@@ -1222,8 +1222,11 @@ def agent_lines(ps_output: str, owner: str, repo: str):
     dump — which the argv scan predates both columns by and must keep working on —
     those are the start of the command instead, so the tty matches no pane and the age
     reads as unknown: neither can manufacture evidence, only fail to find it.
+
+    An OpenCode 2.x TUI's argv holds ``--session <id>`` rather than its prompt, so the
+    prompt is read from the service for it (:func:`opencodeapi.scan_text`).
     """
-    from . import runner
+    from . import opencodeapi, runner
 
     pat = re.compile(_LIVE_AGENT_RE_TMPL.format(repo=re.escape(f"{owner}/{repo}")))
     for line in ps_output.splitlines():
@@ -1236,5 +1239,5 @@ def agent_lines(ps_output: str, owner: str, repo: str):
             continue
         tty = fields[0].removeprefix("/dev/")
         elapsed = elapsed_seconds(fields[1]) if len(fields) > 1 else None
-        for m in pat.finditer(line):
+        for m in pat.finditer(opencodeapi.scan_text(line)):
             yield AgentLine(tty=tty, pr_number=int(m.group(1)), elapsed=elapsed)

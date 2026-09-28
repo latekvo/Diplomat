@@ -19,6 +19,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from collections.abc import Iterable
 from dataclasses import dataclass
 
@@ -204,11 +205,17 @@ def live_agents(dump: Observation) -> Observation:
     It cannot tell two runs on one PR apart and it matches any session that merely
     mentions the number, which is why it decides nothing that a pid can decide.
 
+    An OpenCode 2.x TUI carries no prompt in its argv, only ``--session <id>``; its
+    prompt is read from the service instead (:func:`opencodeapi.scan_text`), once per
+    session.
+
     The tty rides along because it is the only handle such an agent has: without it
     nothing can read its screen, so it would count as working until its window closed
     however long ago it finished. First sighting of a PR wins — a set of PR numbers is
     all this scan can honestly produce.
     """
+    from diplomat_runtime import opencodeapi
+
     if not dump.ok:
         return Observation.unavailable(dump.reason)
     cfg = core.config()
@@ -229,7 +236,7 @@ def live_agents(dump: Observation) -> Observation:
         if len(parts) < 4:
             continue
         _pid, tty, _elapsed, args = parts
-        for m in pattern.finditer(args):
+        for m in pattern.finditer(opencodeapi.scan_text(args)):
             out.setdefault(int(m.group(1)),
                            "" if tty == "?" else tty.removeprefix("/dev/"))
     return Observation.present(out)
@@ -323,6 +330,7 @@ def agent_sessions(records: list[RunRecord], directory: str,
             and now - _sessions_cache[0] < _CACHE_SECS):
         return _sessions_cache[2]
     directory = os.path.realpath(directory)
+    _OpenCodeBackend.begin_pass()
     taken = {agentregistry.bound_session(r.run_id) for r, _ in asking}
     taken.discard("")
     out = {}
@@ -346,9 +354,22 @@ def agent_sessions(records: list[RunRecord], directory: str,
     return obs
 
 
+#: Not asked yet this pass — distinct from ``None``, which is an answer.
+_UNASKED = object()
+
+
 class _OpenCodeBackend:
     """A run's own OpenCode 1.x server, on the port its spawn reserved — or, for a
     2.x run, the per-user service its session was created in."""
+
+    #: This probe pass's map of running 2.x sessions, asked at most once per pass
+    #: (:func:`opencodeapi.active_sessions`), so a hung service costs a pass one
+    #: timeout rather than one per run.
+    _active: object = _UNASKED
+
+    @classmethod
+    def begin_pass(cls) -> None:
+        cls._active = _UNASKED
 
     @staticmethod
     def bind(record: RunRecord, directory: str, taken: set[str]) -> str:
@@ -361,11 +382,24 @@ class _OpenCodeBackend:
         exact, and exact is worth the fetch: the applet runs several agents in one
         checkout at a time, so two sessions a second apart in the same directory is
         the ordinary case, not the pathological one.
+
+        A run with no port and no session is a 2.x run Diplomat did not spawn itself —
+        one the mesh placed here — or a 1.x one whose port could not be had. The first
+        is found through the process table instead: every 2.x TUI's argv names its
+        session, and the one whose opening prompt is this run's staged prompt is this
+        run's. Bound, it is probed, priced and interrupted as one spawned here is.
         """
         from diplomat_runtime import agentregistry, opencodeapi
 
         port = agentregistry.port(record.run_id)
         if port is None:
+            prompt = _staged_prompt(record.run_id)
+            if prompt is None:
+                return ""
+            for session_id in _live_service_sessions():
+                if (session_id not in taken
+                        and opencodeapi.opening_prompt(session_id) == prompt):
+                    return session_id
             return ""
         listing = opencodeapi.sessions(port, directory)
         if listing is None:
@@ -389,7 +423,9 @@ class _OpenCodeBackend:
         from diplomat_runtime import agentregistry, opencodeapi
 
         if agentregistry.service_session(record.run_id):
-            return opencodeapi.service_state(session_id)
+            if _OpenCodeBackend._active is _UNASKED:
+                _OpenCodeBackend._active = opencodeapi.active_sessions()
+            return opencodeapi.service_state(session_id, _OpenCodeBackend._active)
         port = agentregistry.port(record.run_id)
         if port is None:
             return None
@@ -424,6 +460,22 @@ class _HermesBackend:
         from diplomat_runtime import hermesstore
 
         return hermesstore.state_of(session_id)
+
+
+def _live_service_sessions() -> list[str]:
+    """The sessions the 2.x TUIs in the process table are attached to, in table order.
+    """
+    from diplomat_runtime import opencodeapi
+
+    dump = _ps_dump(time.time())
+    if not dump.ok:
+        return []
+    found = []
+    for line in dump.value.splitlines():
+        session_id = runner.is_agent_line(line) and opencodeapi.session_arg(line)
+        if session_id and session_id not in found:
+            found.append(session_id)
+    return found
 
 
 def _staged_prompt(run_id: str) -> str | None:
