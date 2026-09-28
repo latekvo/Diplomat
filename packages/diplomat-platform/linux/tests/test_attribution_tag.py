@@ -32,11 +32,12 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture(autouse=True)
 def no_host_opencode(tmp_path, monkeypatch):
-    """An unpinned OpenCode run is named differently by 1.x and 2.x, and the core asks
-    the ``opencode`` the user's shell would run which one it is. Unfenced, that is the
-    developer's own install, so these would assert whichever version they have. A
-    shell that names nothing and a ``PATH`` without the CLI answer 1.x everywhere; a
-    test about 2.x installs its own."""
+    """An unpinned OpenCode run is named differently by 1.x and 2.x. The applet hands
+    the core its own answer (``DIPLOMAT_OPENCODE_MAJOR``), and the core asks the CLI
+    itself only without one; either way, unfenced, it is the developer's own install
+    that answers, so these would assert whichever version they have. A shell that names
+    nothing and a ``PATH`` without the CLI answer 1.x everywhere; a test about 2.x
+    installs its own."""
     shell = tmp_path / "noshell"
     shell.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
     shell.chmod(0o755)
@@ -160,6 +161,33 @@ def test_an_unpinned_opencode_2x_is_not_named_by_a_picker_its_service_ignores(tm
                    encoding="utf-8")
     exe.chmod(0o755)
     monkeypatch.setenv("PATH", f"{exe.parent}:/usr/bin:/bin")
+    appconfig.set_value(appconfig.AGENT_RUNNER, runner.OPENCODE)
+    opencode_state('{"recent": [{"providerID": "ollama-cloud", "modelID": "glm-5.2"}]}')
+    prompt = review_prompt()
+    assert PLAIN in prompt
+    assert "GLM 5.2" not in prompt
+
+
+def test_the_core_names_the_model_by_the_major_the_applet_found(tmp_path, monkeypatch):
+    """The applet resolves ``opencode`` through the user's shell, the core would find a
+    different one on its own ``PATH``. The spawn runs what the shell finds, so the tag
+    must follow the applet's answer, not a second lookup of the core's."""
+    rc_bin = tmp_path / "rc-bin"
+    rc_bin.mkdir()
+    (rc_bin / "opencode").write_text(
+        '#!/bin/sh\n[ "$1" = --version ] && echo "opencode v2.0.18"\n', encoding="utf-8")
+    (rc_bin / "opencode").chmod(0o755)
+    path_bin = tmp_path / "path-bin"
+    path_bin.mkdir()
+    (path_bin / "opencode").write_text(
+        '#!/bin/sh\n[ "$1" = --version ] && echo "1.18.33"\n', encoding="utf-8")
+    (path_bin / "opencode").chmod(0o755)
+    rcshell = tmp_path / "rcshell"
+    rcshell.write_text(f"#!/bin/sh\nexport PATH={rc_bin}:$PATH\nexec /bin/sh \"$@\"\n",
+                       encoding="utf-8")
+    rcshell.chmod(0o755)
+    monkeypatch.setenv("DIPLOMAT_SHELL", str(rcshell))
+    monkeypatch.setenv("PATH", f"{path_bin}:/usr/bin:/bin")
     appconfig.set_value(appconfig.AGENT_RUNNER, runner.OPENCODE)
     opencode_state('{"recent": [{"providerID": "ollama-cloud", "modelID": "glm-5.2"}]}')
     prompt = review_prompt()
