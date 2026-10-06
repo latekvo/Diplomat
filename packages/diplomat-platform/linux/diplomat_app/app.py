@@ -81,6 +81,9 @@ def apiwatch_poll_secs() -> float:
 
 
 class DiplomatApp:
+    #: Set by :meth:`quit`, which a second Ctrl-C can otherwise re-enter.
+    _quitting = False
+
     def __init__(self) -> None:
         self.app = QApplication.instance() or QApplication(sys.argv)
         self.app.setQuitOnLastWindowClosed(False)
@@ -228,6 +231,12 @@ class DiplomatApp:
             self.quit()
 
     def quit(self) -> None:
+        # Ctrl-C runs its handler on this thread even while the join below has it
+        # blocked, so a second press lands inside the wait. Re-entering would give
+        # that call a fresh budget: pressing Ctrl-C again would slow the exit.
+        if self._quitting:
+            return
+        self._quitting = True
         SingleInstance.release()
         self.tray.hide()
         # Before the widgets a worker is about to signal go away. The tray is already

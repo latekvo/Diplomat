@@ -406,6 +406,38 @@ def test_the_fixture_exercises_every_figure(both):
         "the chart lost the stale readings the headline declines to quote — they "
         "are still measurements, drawn where they were taken"
     )
+    # The task-lifespan markers the rate-limit chart overlays. The fixture must carry
+    # both a finished span (a green→red dashed line) and an unfinished one — the mesh-
+    # placed task started here and never seen to finish, a lone start dot — or a side
+    # that dropped either kind would still match.
+    assert p["taskSpans"], "no task-lifespan markers — the overlay has nothing to draw"
+    assert any(sp["done"] is not None for sp in p["taskSpans"]), (
+        "no finished span — the start→finish dashed line goes untested"
+    )
+    assert any(sp["done"] is None for sp in p["taskSpans"]), (
+        "no unfinished span — the mesh-placed task that started here and never "
+        "finished is missing, so a lone start dot goes untested"
+    )
+    assert all(sp["started"] >= NOW - DAYS * DAY for sp in p["taskSpans"]), (
+        "a marker began before the range, which would hang its start dot off the "
+        "left edge of an axis that spans only the lookback"
+    )
+    # The overlay sits ON the weekly line, so every marker carries the week-quota
+    # level at its instant. The fixture has week readings, so no start goes unplaced.
+    assert all(sp["startedPct"] is not None for sp in p["taskSpans"]), (
+        "a start dot has no weekly-quota height, so it would drop to the floor lane "
+        "even though the fixture carries week readings to place it on the line"
+    )
+    assert any(sp["done"] is not None and sp["donePct"] is not None
+               for sp in p["taskSpans"]), "no finish dot got a height on the line"
+    assert any(sp["done"] is None and sp["donePct"] is None
+               for sp in p["taskSpans"]), (
+        "an unfinished span carries a finish height — done=None must leave donePct None"
+    )
+    assert any(80.0 < sp["startedPct"] < 100.0 for sp in p["taskSpans"]), (
+        "no marker landed BETWEEN two week readings, so interpolation (as opposed to "
+        "clamping to a reading) goes untested"
+    )
     assert p["peakReviews"] > 0 and p["peakConflicts"] > 0
     assert p["pendingReviewsNow"] > 0 and p["pendingConflictsNow"] > 0, (
         "nothing owed at `now` — the series ends flat and its tail is untested"

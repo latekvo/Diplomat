@@ -324,6 +324,19 @@ enum TrackTest {
             return
         }
         let (wid, sid, tty) = cap
+        // The gate every real spawn passes before it is called one, against a real
+        // window. The margin is the point: this is the same inner shell a dispatch
+        // runs, so a grace that had crept down onto the real settling time would start
+        // refusing runs that were merely slow.
+        let waitStarted = Date()
+        let landed = AgentSpawner.started(AgentRegistry.pidPath(record.runID).path,
+                                          by: waitStarted + AgentState.spawnGrace)
+        let settle = Date().timeIntervalSince(waitStarted)
+        check("the pid file lands inside the grace a spawn waits out", landed)
+        print("live: pid file after \(String(format: "%.2f", settle))s "
+              + "(grace \(Int(AgentState.spawnGrace))s)")
+        check("…with the margin that separates a slow spawn from a dead one",
+              settle < AgentState.spawnGrace / 4)
         AgentWindows.stage(record.runID, .init(terminal: term.rawValue, windowID: wid,
                                                sessionID: sid))
         var seeded = record

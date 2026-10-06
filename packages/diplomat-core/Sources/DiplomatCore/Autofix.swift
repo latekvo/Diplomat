@@ -139,6 +139,9 @@ public enum AgentDispatchGate {
         /// The author is on the prompt-injection ban list — never agent-review
         /// them, whoever asks. (Un-ban first if that is really wanted.)
         case banned
+        /// The auto-review allowlist is set and this author is outside it — the
+        /// operator narrowed the review monitor to a set of logins, whoever asks.
+        case notAllowed
         /// Mesh: another live node originates this work (auto only).
         case standDown
         /// This device already runs its cap of concurrent automatic agents
@@ -149,9 +152,16 @@ public enum AgentDispatchGate {
         case unaffordable
     }
 
-    /// The one decision both interfaces obey, in fixed precedence: ban, then
-    /// in-flight, then (auto only) this device's concurrency cap, then (auto only)
-    /// its spending budget, then (auto only) mesh.
+    /// The one decision both interfaces obey, in fixed precedence: ban, then the
+    /// auto-review allowlist, then in-flight, then (auto only) this device's
+    /// concurrency cap, then (auto only) its spending budget, then (auto only) mesh.
+    ///
+    /// The two author verdicts lead together because they are the same kind of fact —
+    /// a standing statement about a person, true before this poll and after it — while
+    /// everything below them is about this machine at this moment. `outsideAllowlist`
+    /// is the caller's business to compute: it is a statement about the review
+    /// monitor's work alone, so a sweep, a wizard press and the two reconcilers over
+    /// my own PRs all pass `false`.
     ///
     /// Capacity outranks mesh so a saturated device never *originates*: the claim
     /// that routing takes has gossip side effects, and a node holding the claim for
@@ -168,8 +178,10 @@ public enum AgentDispatchGate {
     /// no slot to spend a budget on, so the probe is never worth taking.
     public static func decide(source: Source, banned: Bool, agentOnPR: Bool,
                               meshStandsDown: Bool, atCapacity: Bool,
-                              unaffordable: Bool = false) -> Verdict {
+                              unaffordable: Bool = false,
+                              outsideAllowlist: Bool = false) -> Verdict {
         if banned { return .banned }
+        if outsideAllowlist { return .notAllowed }
         if agentOnPR { return .inFlight }
         if source == .auto, atCapacity { return .atCapacity }
         if source == .auto, unaffordable { return .unaffordable }

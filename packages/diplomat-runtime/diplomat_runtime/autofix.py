@@ -1,5 +1,5 @@
 """Pure PR auto-fix logic — the Python twin of DiplomatCore's Autofix.swift,
-ReviewReconcile.swift and the VerdictPolicy in Review.swift.
+ReviewReconcile.swift and the VerdictPolicy / AuthorAllowlist in Review.swift.
 
 Kept deterministic and side-effect-free so it's testable in isolation: the
 GitHub reads live in :mod:`autofixmonitor`, and the spawn/track/persistence in
@@ -239,6 +239,43 @@ class VerdictPolicy:
         return not self.withhold_reasons(files, author_association)
 
 
+# MARK: - Auto-review author allowlist (mirrors AuthorAllowlist in Review.swift)
+#
+# Which PR authors the review-requests monitor may act on at all. The ban list
+# answers "never this person"; this answers "only these people", and the two are read
+# in that order - a listed author who is also banned is still not reviewed. It is
+# stored as the raw line the operator typed rather than a parsed list, so what they
+# edit is what is kept and :func:`parse_author_allowlist` is the one reader.
+#
+# EMPTY MEANS EVERYONE. The list narrows; an applet never told otherwise auto-reviews
+# exactly what it always did.
+
+
+def parse_author_allowlist(text: str) -> list[str]:
+    """The logins in one operator-typed line: comma- or whitespace-separated, a
+    leading ``@`` optional. A login repeated in another case is kept once - GitHub
+    logins are case-insensitive, so two spellings are one person."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for field in re.split(r"[,\s]+", text or ""):
+        login = field.lstrip("@")
+        if not login or login.lower() in seen:
+            continue
+        seen.add(login.lower())
+        out.append(login)
+    return out
+
+
+def author_allowed(login: str, allowed: list[str]) -> bool:
+    """Whether this author's PR may be auto-reviewed. A non-empty list is closed, so
+    an author GitHub could not name - a deleted account reaches the monitor as ``""`` -
+    falls outside it."""
+    if not allowed:
+        return True
+    low = (login or "").lower()
+    return any(a.lower() == low for a in allowed)
+
+
 # MARK: - Mesh coordination for the auto-monitors (mirrors AutofixMesh in Autofix.swift)
 #
 # Two machines running this monitor poll the same GitHub state as the same user, so
@@ -377,6 +414,7 @@ VERDICT_BANNED = "banned"  # prompt-injection ban on the author - whoever asks
 VERDICT_STAND_DOWN = "stand_down"  # mesh: another node originates (auto only)
 VERDICT_AT_CAPACITY = "at_capacity"  # this device already runs its cap (auto only)
 VERDICT_UNAFFORDABLE = "unaffordable"  # not enough rate limit left (auto only)
+VERDICT_NOT_ALLOWED = "not_allowed"  # author outside the auto-review allowlist
 
 
 def dispatch_decide(
@@ -386,10 +424,18 @@ def dispatch_decide(
     mesh_stands_down: bool,
     at_capacity: bool,
     unaffordable: bool = False,
+    outside_allowlist: bool = False,
 ) -> str:
-    """The one decision both interfaces obey, in fixed precedence: ban, then
-    in-flight, then (auto only) this device's concurrency cap, then (auto only)
-    its rate-limit budget, then (auto only) mesh.
+    """The one decision both interfaces obey, in fixed precedence: ban, then the
+    auto-review allowlist, then in-flight, then (auto only) this device's
+    concurrency cap, then (auto only) its rate-limit budget, then (auto only) mesh.
+
+    The two author verdicts lead together because they are the same kind of fact -
+    a standing statement about a person, true before this poll and after it - while
+    everything below them is about this machine at this moment. ``outside_allowlist``
+    is the caller's business to compute: it is a statement about the review monitor's
+    work alone, so a sweep, a wizard press and the two reconcilers over my own PRs
+    all pass ``False``.
 
     Capacity outranks mesh so a saturated device never *originates*: the claim
     that routing takes has gossip side effects, and a node holding the claim for
@@ -406,6 +452,8 @@ def dispatch_decide(
     slot to spend a budget on, so the probe is never worth taking."""
     if banned:
         return VERDICT_BANNED
+    if outside_allowlist:
+        return VERDICT_NOT_ALLOWED
     if agent_on_pr:
         return VERDICT_IN_FLIGHT
     if source == SOURCE_AUTO and at_capacity:
@@ -746,25 +794,31 @@ QUEUE_REVIEW_ACTION = "review"
 QUEUE_ISSUES_ACTION = "issues"
 QUEUE_REQUESTED_ACTIONS = frozenset({QUEUE_REVIEW_ACTION, QUEUE_ISSUES_ACTION})
 
-# The bands whose work waits behind the rest, nearest-first — everything the operator
-# asked for, then a conflict fix, which waits behind everything. Matched off the queue
-# key rather than the job, because the operator's saved arrangement is a list of keys
-# and has to be banded the same way after a restart, with no job to consult
+# The bands whose work waits behind the rest, nearest-first — a requested review, then
+# a requested issue fix, then a conflict fix, which waits behind everything. Matched off
+# the queue key rather than the job, because the operator's saved arrangement is a list
+# of keys and has to be banded the same way after a restart, with no job to consult
 # (`queue_order`).
-QUEUE_LAST_BANDS = (QUEUE_REQUESTED_ACTIONS, frozenset({"conflicts"}))
+QUEUE_LAST_BANDS = (
+    frozenset({QUEUE_REVIEW_ACTION}),
+    frozenset({QUEUE_ISSUES_ACTION}),
+    frozenset({"conflicts"}),
+)
 
 
 def queue_band(key: str) -> int:
-    """Which band of the queue a task waits in: 0 for the monitors' own finds, 1 for
-    work the operator asked for, 2 for a conflict fix. Bands outrank the operator's
-    arrangement; within one, the arrangement decides.
+    """Which band of the queue a task waits in: 0 for the monitors' own finds, 1 for a
+    review the operator asked for, 2 for an issue fix they asked for, 3 for a conflict
+    fix. Bands outrank the operator's arrangement; within one, the arrangement decides.
 
     A monitor's find is first because it is answering something GitHub is already owed
     — a review requested of me, a thread on my PR waiting on a reply — and that debt is
-    visible to other people. A requested review or issue fix is a sweep the operator
-    started when they had the time for it; it is worth the whole cap eventually, but
-    not ahead of the work the repository is waiting on. Sweeping fifty drafts otherwise
-    buries every review request behind them for a day.
+    visible to other people. A requested review is next: someone else's PR is waiting
+    on my read of it, close kin to the debt above but one the operator chose the moment
+    for. A requested issue fix is my own backlog, nothing blocked on it, so it bands
+    behind the review — a sweep of fifty issues never buries a review the operator also
+    asked for. Neither runs ahead of a monitor's find; a Review-PRs sweep of fifty
+    drafts otherwise buries every review request behind it for a day.
 
     Resolving a conflict stays last: it is the one unit of work that another agent's
     run routinely makes unnecessary — a review-reply agent works the same branch and
@@ -837,11 +891,11 @@ def queue_order(offered: list[str], saved: list[str]) -> list[str]:
     one that never asked a peer. Peer-owned work leaves the queue when the drain
     reaches it and the mesh answers.)
 
-    Requested reviews and then conflict fixes fall to the back whatever order they
-    were found in (:func:`queue_band`). The monitors find their work mid-cycle — the
-    conflict reconciler runs before the review-request fetch even begins — so without
-    the bands a poll's own sequence would decide, and a sweep of fifty drafts offered
-    first would hold up every review GitHub is waiting on."""
+    Requested reviews, then requested issue fixes, then conflict fixes fall to the
+    back whatever order they were found in (:func:`queue_band`). The monitors find
+    their work mid-cycle — the conflict reconciler runs before the review-request fetch
+    even begins — so without the bands a poll's own sequence would decide, and a sweep
+    of fifty drafts offered first would hold up every review GitHub is waiting on."""
     live = set(offered)
     out: list[str] = []
     seen: set[str] = set()

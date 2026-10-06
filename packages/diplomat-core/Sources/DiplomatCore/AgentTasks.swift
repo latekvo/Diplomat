@@ -34,6 +34,7 @@ import Foundation
 public enum AgentTaskStatus: Int, Comparable, CaseIterable {
     case merged = 0
     case done
+    case failed
     case awaitingInput
     case running
     case starting
@@ -57,6 +58,7 @@ public enum AgentTaskStatus: Int, Comparable, CaseIterable {
         switch state {
         case .merged:        return .merged
         case .finished:      return .done
+        case .failed:        return .failed
         case .awaitingInput: return .awaitingInput
         case .running:       return .running
         case .starting:      return .starting
@@ -69,6 +71,8 @@ public enum AgentTaskStatus: Int, Comparable, CaseIterable {
         switch self {
         case .merged:        return "merged"
         case .done:          return "done"
+        // Not "done": the work is still owed, and the next poll offers it again.
+        case .failed:        return "never started"
         case .awaitingInput: return "awaiting input"
         case .running:       return "running"
         case .starting:      return "starting"
@@ -118,23 +122,27 @@ public enum AgentTaskQueue {
     public static let issuesAction = "issues"
     public static let requestedActions: Set<String> = [reviewAction, issuesAction]
 
-    /// The bands whose work waits behind the rest, nearest-first — everything the
-    /// operator asked for, then a conflict fix, which waits behind everything.
+    /// The bands whose work waits behind the rest, nearest-first — a requested review,
+    /// then a requested issue fix, then a conflict fix, which waits behind everything.
     /// Matched off the queue key rather than the job, because the operator's saved
     /// arrangement is a list of keys and has to be banded the same way after a
     /// restart, with no job to consult (`order`).
-    public static let lastBands: [Set<String>] = [requestedActions, ["conflicts"]]
+    public static let lastBands: [Set<String>] = [[reviewAction], [issuesAction], ["conflicts"]]
 
-    /// Which band of the queue a task waits in: 0 for the monitors' own finds, 1 for
-    /// work the operator asked for, 2 for a conflict fix. Bands outrank the
-    /// operator's arrangement; within one, the arrangement decides.
+    /// Which band of the queue a task waits in: 0 for the monitors' own finds, 1 for a
+    /// review the operator asked for, 2 for an issue fix they asked for, 3 for a
+    /// conflict fix. Bands outrank the operator's arrangement; within one, the
+    /// arrangement decides.
     ///
     /// A monitor's find is first because it is answering something GitHub is already
     /// owed — a review requested of me, a thread on my PR waiting on a reply — and
-    /// that debt is visible to other people. A requested review is a sweep the
-    /// operator started when they had the time for it; it is worth the whole cap
-    /// eventually, but not ahead of the work the repository is waiting on. Sweeping
-    /// fifty drafts otherwise buries every review request behind them for a day.
+    /// that debt is visible to other people. A requested review is next: someone
+    /// else's PR is waiting on my read of it, close kin to the debt above but one the
+    /// operator chose the moment for. A requested issue fix is my own backlog, nothing
+    /// blocked on it, so it bands behind the review — a sweep of fifty issues never
+    /// buries a review the operator also asked for. Neither runs ahead of a monitor's
+    /// find; a Review-PRs sweep of fifty drafts otherwise buries every review request
+    /// behind it for a day.
     ///
     /// Resolving a conflict stays last: it is the one unit of work that another
     /// agent's run routinely makes unnecessary — a review-reply agent works the same
@@ -204,17 +212,17 @@ public enum AgentTaskQueue {
     /// order the monitors found them.
     ///
     /// Keys that are no longer offered fall out — the work was taken by an agent,
-    /// resolved, or its author banned — because a queue that outlived its evidence
-    /// would hand "execute now" a task GitHub no longer owes. (Not a mesh claim: the
-    /// cap outranks the mesh gate, so a device with anything queued is by definition
-    /// one that never asked a peer. Peer-owned work leaves the queue when the drain
+    /// resolved, or its author banned or outside the auto-review list — because a
+    /// queue that outlived its evidence would hand "execute now" a task GitHub no
+    /// longer owes. (Not a mesh claim: the cap outranks the mesh gate, so a device
+    /// with anything queued is by definition one that never asked a peer. Peer-owned work leaves the queue when the drain
     /// reaches it and the mesh answers.)
     ///
-    /// Requested reviews and then conflict fixes fall to the back whatever order they
-    /// were found in (`band`). The monitors find their work mid-cycle — the conflict
-    /// reconciler runs before the review-request fetch even begins — so without the
-    /// bands a poll's own sequence would decide, and a sweep of fifty drafts offered
-    /// first would hold up every review GitHub is waiting on.
+    /// Requested reviews, then requested issue fixes, then conflict fixes fall to the
+    /// back whatever order they were found in (`band`). The monitors find their work
+    /// mid-cycle — the conflict reconciler runs before the review-request fetch even
+    /// begins — so without the bands a poll's own sequence would decide, and a sweep of
+    /// fifty drafts offered first would hold up every review GitHub is waiting on.
     public static func order(offered: [String], saved: [String]) -> [String] {
         let live = Set(offered)
         var out: [String] = []

@@ -1113,6 +1113,19 @@ check(AgentDispatchGate.decide(source: .auto, banned: false, agentOnPR: false,
                                meshStandsDown: true, atCapacity: false,
                                unaffordable: true) == .unaffordable,
       "the budget outranks mesh, for the reason capacity does")
+// The auto-review allowlist: an author verdict like the ban, so it holds whoever
+// asks, and it ranks below the ban because a ban's remedy is the only one that would
+// work on an author carrying both.
+for src in [AgentDispatchGate.Source.panel, .auto] {
+    check(AgentDispatchGate.decide(source: src, banned: false, agentOnPR: true,
+                                   meshStandsDown: true, atCapacity: true,
+                                   outsideAllowlist: true) == .notAllowed,
+          "an unlisted author outranks everything but the ban for \(src.rawValue)")
+    check(AgentDispatchGate.decide(source: src, banned: true, agentOnPR: false,
+                                   meshStandsDown: false, atCapacity: false,
+                                   outsideAllowlist: true) == .banned,
+          "the ban outranks the allowlist for \(src.rawValue)")
+}
 check(AgentDispatchGate.stealsFocus(.panel) && !AgentDispatchGate.stealsFocus(.auto),
       "panel comes forward, auto never steals focus")
 check(AgentDispatchGate.label(source: .auto, core: "Review · #7", attemptNumber: 2)
@@ -1281,10 +1294,11 @@ section("the agent-task list and the queue behind the cap")
 //
 // The status precedence, which is the list's reading order from `.awaitingInput` down.
 check(AgentTaskStatus.allCases
-      == [.merged, .done, .awaitingInput, .running, .starting, .unknown, .free, .queued],
-      "an outcome, then a local exit, then what wants a human, then what doesn't, "
-      + "then what is spawning, then what nothing is known about, then this device's "
-      + "empty slots, then what hasn't started")
+      == [.merged, .done, .failed, .awaitingInput, .running, .starting, .unknown,
+          .free, .queued],
+      "an outcome, then a local exit, then a spawn that never ran, then what wants a "
+      + "human, then what doesn't, then what is spawning, then what nothing is known "
+      + "about, then this device's empty slots, then what hasn't started")
 // Which of those statuses a row can actually wear is decided one enum over, on the
 // states: both front-ends drop the runs that have ENDED (`Store.publish`,
 // `Store.running_tasks`), so `.merged` and `.done` head the order and no drawn row
@@ -1307,7 +1321,7 @@ check(AgentTaskStatus.running < AgentTaskStatus.starting
 // with no case here would draw as whatever `of` fell through to, and one ordered
 // differently would sort the panel against the order `AgentState.rows` sorted it in.
 check(AgentState.RunState.allCases.map(AgentTaskStatus.of)
-      == [.merged, .done, .awaitingInput, .running, .starting, .unknown],
+      == [.merged, .done, .failed, .awaitingInput, .running, .starting, .unknown],
       "every state a run resolves to has a row status")
 check(AgentState.stateOrder.map(AgentTaskStatus.of)
       == AgentTaskStatus.allCases.filter { $0 != .free && $0 != .queued },
@@ -1315,7 +1329,9 @@ check(AgentState.stateOrder.map(AgentTaskStatus.of)
       + "resolves to")
 check(AgentTaskStatus.queued.title == "queued" && AgentTaskStatus.awaitingInput.title == "awaiting input"
       && AgentTaskStatus.free.title == "free slot" && AgentTaskStatus.starting.title == "starting"
-      && AgentTaskStatus.unknown.title == "unknown",
+      && AgentTaskStatus.unknown.title == "unknown"
+      // Not "done", which is the whole point of the state: the work is still owed.
+      && AgentTaskStatus.failed.title == "never started",
       "the words the rows show")
 
 // The empty bays the panel draws for the rest of the device's cap.
@@ -1366,30 +1382,33 @@ check(AgentTaskQueue.reorder(["a", "b"], moving: "z", onto: "a") == ["a", "b"]
 // PARITY: diplomat-platform/linux/tests/test_autofix.py asserts the same arrangements —
 // the band is the one rule that outranks the operator's, so the two front-ends must
 // not disagree about where a conflict fix waits.
-check(AgentTaskQueue.band("conflicts:1") == 2 && AgentTaskQueue.band("review:2") == 1
-      && AgentTaskQueue.band("issues:3") == 1
+check(AgentTaskQueue.band("conflicts:1") == 3 && AgentTaskQueue.band("review:2") == 1
+      && AgentTaskQueue.band("issues:3") == 2
       && AgentTaskQueue.band("review-req:4") == 0 && AgentTaskQueue.band("a") == 0,
-      "a conflict fix bands last, both sweeps the operator asks for behind the "
-      + "monitors' own finds, and everything else — including a verbless key — first")
+      "a conflict fix bands last, a requested review ahead of a requested issue fix and "
+      + "both behind the monitors' own finds, everything else — including a verbless "
+      + "key — first")
 check(AgentTaskQueue.order(offered: ["conflicts:1", "review:2", "review-req:3",
                                      "review-reply:4", "issues:5"], saved: [])
       == ["review-req:3", "review-reply:4", "review:2", "issues:5", "conflicts:1"],
       "what GitHub is owed runs before the sweeps the operator asked for, which run "
       + "before the conflict fix another agent may make unnecessary")
 check(AgentTaskQueue.order(offered: ["review:1", "issues:2"], saved: ["issues:2"])
-      == ["issues:2", "review:1"],
-      "the two sweeps share one band, so the arrangement alone decides between them")
+      == ["review:1", "issues:2"],
+      "a requested review is its own band ahead of issues, so it drains first however "
+      + "the two were arranged")
 check(AgentTaskQueue.reorder(["review-req:1", "review:2", "conflicts:3"],
                              moving: "review:2", onto: "review-req:1")
       == ["review-req:1", "review:2", "conflicts:3"]
       && AgentTaskQueue.reorder(["review-req:1", "review:2", "conflicts:3"],
                                 moving: "review:2", onto: "conflicts:3")
       == ["review-req:1", "review:2", "conflicts:3"],
-      "the requested band is a band like the others — a drag out of it is refused "
-      + "whichever side it heads for")
+      "the requested-review band is a band like the others — a drag out of it is "
+      + "refused whichever side it heads for")
 check(AgentTaskQueue.reorder(["review:1", "issues:2"], moving: "issues:2", onto: "review:1")
-      == ["issues:2", "review:1"],
-      "…and inside it a fix and a review are draggable past each other")
+      == ["review:1", "issues:2"],
+      "…and a review and an issue fix are separate bands, so a drag between them is "
+      + "refused")
 check(AgentTaskQueue.order(offered: ["conflicts:1", "review-req:2"], saved: [])
       == ["review-req:2", "conflicts:1"],
       "a conflict fix waits behind a review however the monitors found them")
@@ -2127,6 +2146,30 @@ check(!skillOff.allowsVerdict(files: installerFiles, authorAssociation: "MEMBER"
 let allOff = VerdictPolicy(withholdOnSkill: false, withholdOnInstaller: false, withholdOnCommunity: false)
 check(allOff.allowsVerdict(files: skillFiles + installerFiles, authorAssociation: "NONE"), "all off ⇒ always verdict")
 print("verdict policy assertions passed")
+
+// ---- The auto-review author allowlist ----
+section("author allowlist")
+// PARITY: the Python twin (autofix.parse_author_allowlist / author_allowed) asserts
+// these exact shapes.
+check(AuthorAllowlist.parse("").isEmpty, "blank ⇒ no list")
+check(AuthorAllowlist.parse("   ").isEmpty, "whitespace ⇒ no list")
+check(AuthorAllowlist.parse("alice, @bob  carol") == ["alice", "bob", "carol"],
+      "commas, whitespace and a leading @ are all the operator's to use")
+check(AuthorAllowlist.parse("@@dave") == ["dave"], "every leading @ comes off")
+// One person, two spellings: GitHub logins are case-insensitive, so a list that kept
+// both would misreport its own length to the settings row that counts it.
+check(AuthorAllowlist.parse("Bob, bob, BOB") == ["Bob"], "first spelling wins, once")
+check(AuthorAllowlist.parse("zoe alice") == ["zoe", "alice"], "the operator's order, unsorted")
+// Empty ⇒ everyone: an applet never told otherwise reviews what it always did.
+check(AuthorAllowlist.allows("anyone", in: []), "no list ⇒ no limit")
+check(AuthorAllowlist.allows("", in: []), "no list ⇒ even an unnamed author")
+check(AuthorAllowlist.allows("Bob", in: ["bob"]), "membership is case-insensitive")
+check(AuthorAllowlist.allows("bob", in: ["BOB"]), "…in both directions")
+check(!AuthorAllowlist.allows("carol", in: ["bob"]), "a list is a limit")
+// A non-empty list is closed, so a deleted account (which reaches the monitor as "")
+// is outside it rather than waved through.
+check(!AuthorAllowlist.allows("", in: ["bob"]), "an author GitHub cannot name is outside a list")
+print("author allowlist assertions passed")
 
 // ---- Review reconciler (retry unaddressed reviews) ----
 section("review reconcile")

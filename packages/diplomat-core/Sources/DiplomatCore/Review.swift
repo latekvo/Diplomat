@@ -471,3 +471,39 @@ public struct VerdictPolicy: Equatable {
         withholdReasons(files: files, authorAssociation: authorAssociation).isEmpty
     }
 }
+
+/// Which PR authors the review-requests monitor may act on at all.
+///
+/// The ban list answers "never this person"; this answers "only these people", and
+/// the two are read in that order — a listed author who is also banned is still not
+/// reviewed. It is stored as the raw line the operator typed rather than a parsed
+/// list, so what they edit is what is kept and `parse` is the one reader.
+///
+/// **Empty means everyone.** The list narrows; an applet never told otherwise
+/// auto-reviews exactly what it always did.
+///
+/// Python twin: `parse_author_allowlist` / `author_allowed` in `autofix.py`.
+public enum AuthorAllowlist {
+    /// The logins in one operator-typed line: comma- or whitespace-separated, a
+    /// leading `@` optional. A login repeated in another case is kept once — GitHub
+    /// logins are case-insensitive, so two spellings are one person.
+    public static func parse(_ text: String) -> [String] {
+        var seen = Set<String>()
+        var out: [String] = []
+        for field in text.split(whereSeparator: { $0 == "," || $0.isWhitespace }) {
+            let login = field.drop(while: { $0 == "@" })
+            guard !login.isEmpty, seen.insert(login.lowercased()).inserted else { continue }
+            out.append(String(login))
+        }
+        return out
+    }
+
+    /// Whether this author's PR may be auto-reviewed. A non-empty list is closed, so
+    /// an author GitHub could not name — a deleted account reaches the monitor as
+    /// `""` — falls outside it.
+    public static func allows(_ login: String, in list: [String]) -> Bool {
+        guard !list.isEmpty else { return true }
+        let l = login.lowercased()
+        return list.contains { $0.lowercased() == l }
+    }
+}

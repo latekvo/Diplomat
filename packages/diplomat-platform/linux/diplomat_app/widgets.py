@@ -793,14 +793,17 @@ def dispatch_status_text(verdict: str, terminal_title: str) -> str:
     if verdict == autofix.VERDICT_STAND_DOWN:
         return "Another mesh node originates this work."
     # A wizard SPAWN is a panel dispatch, so none of the mesh gate, the task cap and
-    # the rate-limit budget applies to it. Spelled out anyway, and matching the Swift
-    # twin word for word, because the fallback below reads every unknown verdict as a
-    # spawn failure — the one answer that would send someone looking at a terminal
-    # that was never asked to open.
+    # the rate-limit budget applies to it, and the allowlist speaks for the review
+    # monitor's own finds. Spelled out anyway, and matching the Swift twin word for
+    # word, because the fallback below reads every unknown verdict as a spawn failure —
+    # the one answer that would send someone looking at a terminal that was never asked
+    # to open.
     if verdict == autofix.VERDICT_AT_CAPACITY:
         return "This machine is at its cap of concurrent automatic tasks."
     if verdict == autofix.VERDICT_UNAFFORDABLE:
         return "Too little rate limit left for automatic work."
+    if verdict == autofix.VERDICT_NOT_ALLOWED:
+        return "Author is outside the auto-review list."
     return "Spawn failed - see the activity feed."
 
 
@@ -1339,9 +1342,9 @@ class SettingRow(QWidget):
 
 
 def nested_settings(tint: str) -> tuple[QWidget, QVBoxLayout]:
-    """Settings that exist only while the switch above them is on, indented behind
-    a tinted rail — so the dependency is drawn rather than left to be inferred from
-    an indent, which is all that distinguished the nested verdict policy before."""
+    """Settings that belong to the switch above them, indented behind a tinted rail
+    — so the dependency is drawn rather than left to be inferred from an indent,
+    which is all that distinguished the nested verdict policy before."""
     host = QWidget()
     row = QHBoxLayout(host)
     row.setContentsMargins(1, 0, 0, 0)
