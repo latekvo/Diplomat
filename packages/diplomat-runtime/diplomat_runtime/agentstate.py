@@ -1196,12 +1196,13 @@ def synthesize_untracked(records: list[RunRecord], live_agents: Observation,
 
     What produces one is a live agent whose run the book does not hold: one a peer's
     node started on this box, a session the operator opened by hand, a run whose row
-    the operator dismissed, and every agent when the book could not be read. Not a run
-    this applet ended, whose agent goes to a released record (:func:`release_ended`),
-    nor a window a backstop failed to close, whose run is kept. They are found the old
-    way — the prompt's ``PR #<n> in <owner>/<repo>`` in the process table — which is
-    why they are a *fallback* and not the identity mechanism: that scan cannot tell two
-    runs on one PR apart, so at most one record per PR is made.
+    the operator dismissed, every agent when the book could not be read, and one whose
+    run ended beside another record on its PR. Not a run this applet ended alone on its
+    PR, whose agent goes to a released record (:func:`release_ended`), nor a window a
+    backstop failed to close, whose run is kept. They are found the old way — the
+    prompt's ``PR #<n> in <owner>/<repo>`` in the process table — which is why they are
+    a *fallback* and not the identity mechanism: that scan cannot tell two runs on one
+    PR apart, so at most one record per PR is made.
 
     One is made once and then kept in the book like any other run, because the
     stillness backstop measures a screen against the last one seen and a record

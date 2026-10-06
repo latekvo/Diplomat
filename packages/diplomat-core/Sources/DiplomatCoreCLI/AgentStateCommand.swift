@@ -67,7 +67,7 @@ enum AgentStateCommand {
                           "spawnGrace": AgentState.spawnGrace],
             "records": t.records.map { r -> [String: Any] in
                 ["runId": r.runID, "claimSeenAt": r.claimSeenAt.map { $0 as Any } ?? NSNull(),
-                 "untracked": r.untracked, "released": r.released,
+                 "untracked": r.untracked, "released": r.released, "source": r.source,
                  "pid": r.pid.map { $0 as Any } ?? NSNull(), "tty": r.tty,
                  "dispatchedAt": r.dispatchedAt,
                  "placement": r.placement.rawValue,

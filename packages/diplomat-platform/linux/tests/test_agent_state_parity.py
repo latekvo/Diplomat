@@ -89,11 +89,12 @@ def _python(records, evidence, now=T0, limit=LIMIT,
         # either implementation of `pane_digest` fails here. reapRefusedAt is merely
         # carried, and is here because a decode that dropped it would silence nothing
         # and show nothing: the applet that lost it would simply never wait before
-        # retrying a window it cannot close, and would go on retiring the run. pid, tty
-        # and dispatchedAt are what a released record inherits from the run it replaces,
-        # and the pid is its identity from then on.
+        # retrying a window it cannot close, and would go on retiring the run. pid, tty,
+        # dispatchedAt and source are what a released record inherits from the run it
+        # replaces, and the pid is its identity from then on.
         "records": [{"runId": r.run_id, "claimSeenAt": r.claim_seen_at,
                      "untracked": r.untracked, "released": r.released,
+                     "source": r.source,
                      "pid": r.pid, "tty": r.tty, "dispatchedAt": r.dispatched_at,
                      "placement": r.placement,
                      "quietDigest": r.quiet_digest, "quietSince": r.quiet_since,
@@ -240,6 +241,17 @@ def _mixed():
         rec(run_id="peer-landed", placement=A.PLACEMENT_MESH_PEER, node="brick",
             work_key="review:316:sha", pid=None, tty="", dispatched_at=T0 - 10,
             pr_number=316, claim_seen_at=T0 - 1),
+        # Reported over after twenty still minutes: its agent is released and closed on
+        # this tick.
+        rec(run_id="reported-still", pid=10, tty="pts/17", dispatched_at=T0 - 1400,
+            pr_number=317, quiet_digest=A.pane_digest(AT_PROMPT),
+            quiet_since=T0 - A.QUIET_TIMEOUT),
+        # The same, clicked, and its window refused a close a minute ago: the released
+        # agent keeps the click's source and waits out the refusal.
+        rec(run_id="reported-refused", pid=11, tty="pts/18", source=A.SOURCE_PANEL,
+            dispatched_at=T0 - 1500, pr_number=318,
+            quiet_digest=A.pane_digest(AT_PROMPT), quiet_since=T0 - A.QUIET_TIMEOUT,
+            reap_refused_at=T0 - 60),
     ]
     evidence = ev(
         processes={1: proc(elapsed=300), 2: proc(elapsed=400, tty="pts/4"),
@@ -248,16 +260,22 @@ def _mixed():
                    6: proc(elapsed=PAST_DEADLINE, tty="pts/10"),
                    7: proc(elapsed=1100, tty="pts/11"),
                    8: proc(elapsed=1200, tty="pts/13"),
-                   9: proc(elapsed=1300, tty="pts/15")},
+                   9: proc(elapsed=1300, tty="pts/15"),
+                   10: proc(elapsed=1400, tty="pts/17"),
+                   11: proc(elapsed=1500, tty="pts/18")},
         tails={"pts/3": WORKING, "pts/4": AT_PROMPT, "pts/5": WORKING,
                "pts/6": WORKING, "pts/7": AT_PROMPT, "pts/9": WORKING,
                "pts/10": WORKING, "pts/11": AT_PROMPT, "pts/12": WORKING,
-               "pts/13": WORKING, "pts/15": AT_PROMPT, "pts/16": WORKING},
+               "pts/13": WORKING, "pts/15": AT_PROMPT, "pts/16": WORKING,
+               "pts/17": AT_PROMPT, "pts/18": AT_PROMPT},
         claims={"review:306:sha", "review:316:sha"},
         merged={305, 316},
         live_agents={404: "pts/8", 311: "pts/9", 313: "pts/11", 314: "pts/12",
-                     315: "pts/14", 301: "pts/15", 316: "pts/16"},
-        activity={"reported": ("idle", T0 - 5), "reported-beside": ("idle", T0 - 5)},
+                     315: "pts/14", 301: "pts/15", 316: "pts/16", 317: "pts/17",
+                     318: "pts/18"},
+        activity={"reported": ("idle", T0 - 5), "reported-beside": ("idle", T0 - 5),
+                  "reported-still": ("idle", T0 - 5),
+                  "reported-refused": ("idle", T0 - 5)},
     )
     return records, evidence
 
@@ -298,6 +316,11 @@ def test_the_fixture_exercises_every_projection(mixed_results):
     assert any(r["lapsed"] for r in python["rows"]), "no untracked bay lapsed"
     assert python["inFlight"]["315"] is False and "untracked:315" not in python["capLoad"], \
         "a released agent mid-turn must hold neither its PR nor a bay"
+    assert "untracked:317" in python["reapable"], "no released agent was closed at once"
+    refused = next(r for r in python["records"] if r["runId"] == "untracked:318")
+    assert (refused["source"], refused["reapRefusedAt"]) == (A.SOURCE_PANEL, T0 - 60)
+    assert "untracked:318" not in python["reapable"], \
+        "a released agent must wait out its run's refused close"
 
 
 def test_the_tick_after_a_release_agrees_too():
