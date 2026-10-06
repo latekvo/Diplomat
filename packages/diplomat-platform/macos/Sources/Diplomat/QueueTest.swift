@@ -632,8 +632,11 @@ enum QueueTest {
                 kind: "review", label: "Auto · Review · #21",
                 source: AgentDispatchGate.Source.auto.rawValue, pid: 4242),
             prompt: "")
-        let reached = Latch(), released = Latch()
-        Store.settleGate = { reached.open(); await released.wait() }
+        let reached = Latch(), released = Latch(), raced = Latch()
+        Store.settleGate = {
+            if reached.isOpen { raced.open() } else { reached.open() }
+            await released.wait()
+        }
         let settle = Task { await store.settleAgents() }
         await reached.wait()
         // Through a task with a deadline: a refresh that waits behind the settle instead
@@ -643,10 +646,14 @@ enum QueueTest {
         let yielded = await refreshed.opened(within: 2)
         check("a display refresh yields to the settle under way",
               yielded && AgentRegistry.load().map(\.runID) == [over.runID])
-        async let second = store.settleAgents()
+        // The gate is still up, so a second settle that ticked past the first would
+        // reach it.
+        let second = Task { await store.settleAgents() }
+        let overlapped = await raced.opened(within: 2)
+        check("a settle arriving while one is under way does not tick until it ends", !overlapped)
         Store.settleGate = nil
         released.open()
-        _ = await (settle.value, second)
+        _ = await (settle.value, second.value)
         let retired = AuditLog.read().filter {
             $0.action == "retire" && $0.detail.hasPrefix("Auto · Review · #21")
         }
@@ -731,7 +738,7 @@ enum QueueTest {
 /// once if it already was.
 @MainActor
 private final class Latch {
-    private var isOpen = false
+    private(set) var isOpen = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
 
     func open() {
