@@ -266,7 +266,10 @@ enum SpawnScriptTest {
         check("the item is read by `security`, and an empty answer refused",
               AgentSpawner.tokenExport(keychainItem: "diplomat-agent-gh")
                 == "GH_TOKEN=$(security find-generic-password -s 'diplomat-agent-gh' -w) "
-                + "&& [ -n \"$GH_TOKEN\" ] && export GH_TOKEN")
+                + "&& [ -n \"$GH_TOKEN\" ] && export GH_TOKEN GIT_CONFIG_COUNT=2 "
+                + "GIT_CONFIG_KEY_0=credential.https://github.com.helper GIT_CONFIG_VALUE_0= "
+                + "GIT_CONFIG_KEY_1=credential.https://github.com.helper "
+                + "GIT_CONFIG_VALUE_1='!gh auth git-credential'")
         let tokenDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("diplomat-token-\(UUID().uuidString)")
         let stubs = tokenDir.appendingPathComponent("bin")
@@ -282,9 +285,22 @@ enum SpawnScriptTest {
             try? FileManager.default.setAttributes([.posixPermissions: 0o755],
                                                    ofItemAtPath: url.path)
         }
-        stub("claude", "printf %s \"$GH_TOKEN\" > '\(seen.path)'")
+        let gitSeen = tokenDir.appendingPathComponent("git")
+        // The password git would push to github.com with stays in a variable: unless the
+        // helper reset works, it is whatever `osxkeychain` holds for the operator.
+        stub("claude", """
+            printf %s "$GH_TOKEN" > '\(seen.path)'
+            pw=$(printf 'protocol=https\\nhost=github.com\\n\\n' \\
+                | GIT_TERMINAL_PROMPT=0 git credential fill 2>/dev/null | sed -n 's/^password=//p')
+            [ -n "$pw" ] && [ "$pw" = "$GH_TOKEN" ] && : > '\(gitSeen.path)'
+            """)
+        // What `gh auth git-credential` answers for github.com once `GH_TOKEN` is set.
+        stub("gh", """
+            [ "$1 $2 $3" = "auth git-credential get" ] || exit 1
+            printf 'username=x-access-token\\npassword=%s\\n' "$GH_TOKEN"
+            """)
         func runGated(item: String) -> (status: Int32, pid: Bool, done: Bool, seen: String?) {
-            for f in ["pid", "done", "seen"] {
+            for f in ["pid", "done", "seen", "git"] {
                 try? FileManager.default.removeItem(at: tokenDir.appendingPathComponent(f))
             }
             let plan = AgentSpawner.SpawnPlan(
@@ -322,6 +338,8 @@ enum SpawnScriptTest {
         check("an item it holds reaches the agent as GH_TOKEN, over an inherited one",
               found.seen == dummy && found.pid && found.done,
               "seen \(found.seen ?? "nil")")
+        check("…and is what git hands github.com over HTTPS",
+              FileManager.default.fileExists(atPath: gitSeen.path))
         stub("security", "printf ''")
         check("an empty item starts nothing", runGated(item: "diplomat-agent-gh").seen == nil)
         let plain = AgentSpawner.shellCommand(AgentSpawner.SpawnPlan(

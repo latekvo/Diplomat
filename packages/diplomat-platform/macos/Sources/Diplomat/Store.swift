@@ -2841,7 +2841,9 @@ final class Store: ObservableObject {
                 trackMeshRun(job, node: node, attemptNumber: attemptNumber)
                 return .standDown
             case .spawned(let node, let onThisMachine):
-                AuditLog.log(source.rawValue, job.auditAction, rowLabel)
+                let token = onThisMachine && !AppConfig.agentTokenKeychainItem.isEmpty
+                AuditLog.log(source.rawValue, job.auditAction,
+                             rowLabel + (token ? AgentSpawner.tokenAuditNote : ""))
                 // Booked wherever the mesh put it, before the next job of this poll asks
                 // how many agents are running — left unbooked, every dispatch of a burst
                 // measured the same empty machine and the cap held back nothing at all.

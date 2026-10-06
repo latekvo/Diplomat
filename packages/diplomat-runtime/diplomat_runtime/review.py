@@ -465,32 +465,80 @@ def shell_command(prompt_file: str, done_path: str | None = None,
 TOKEN_AUDIT_NOTE = " · agent GH token"
 
 
+#: Points git's credential helper for github.com at ``gh``, which hands out
+#: ``GH_TOKEN``. The empty first value drops every helper configured before it (macOS
+#: git ships ``osxkeychain``, which holds the broad login), and env config outranks
+#: every config file.
+GIT_TOKEN_HELPER = (
+    "GIT_CONFIG_COUNT=2 "
+    "GIT_CONFIG_KEY_0=credential.https://github.com.helper GIT_CONFIG_VALUE_0= "
+    "GIT_CONFIG_KEY_1=credential.https://github.com.helper "
+    "GIT_CONFIG_VALUE_1='!gh auth git-credential'"
+)
+
+
+def _token_source(platform: str) -> tuple[str, str]:
+    """``(keychain item, file path)`` of the configured agent token, at most one set:
+    the item on macOS, the file on Linux."""
+    if platform == "darwin":
+        return appconfig.get(appconfig.AGENT_TOKEN_KEYCHAIN_ITEM).strip(), ""
+    path = appconfig.get(appconfig.AGENT_TOKEN_FILE).strip()
+    return "", os.path.expanduser(path) if path else ""
+
+
 def token_export(platform: str = sys.platform) -> str:
     """The shell test that exports the operator's agent token as ``GH_TOKEN``, or ""
     when none is configured and the agent runs on whatever ``gh auth login`` stored.
 
-    ``gh`` ranks ``GH_TOKEN`` above its keyring login, so a fine-grained token scoped
-    to ``contents`` + ``pull-requests`` replaces the broad ``repo, workflow, gist`` one
-    for the agent and everything it runs. Only the token's NAME is configured - a
-    Keychain item on macOS, a file on Linux - and the spawned shell reads it itself,
-    so the secret never enters argv, the AppleScript, a staged launcher or the
-    config file the mesh copies around.
+    ``gh`` ranks ``GH_TOKEN`` above its keyring login, and :data:`GIT_TOKEN_HELPER`
+    makes git over HTTPS use it too, so a fine-grained token scoped to ``contents`` +
+    ``pull-requests`` replaces the broad ``repo, workflow, gist`` one for the agent
+    and everything it runs. Only the token's NAME is configured - a Keychain item on
+    macOS, a file on Linux - and the spawned shell reads it itself, so the secret never
+    enters argv, the AppleScript, a staged launcher or the config file the mesh copies
+    around.
 
     :func:`shell_command` runs the whole spawn behind this test, so a token that
     cannot be read starts nothing rather than falling back to the broad login: no pid
-    file and no exit sentinel, so a local run resolves ``FAILED`` and is never taken
-    for one that finished. The emptiness check is part of that - ``gh`` reads an empty
-    ``GH_TOKEN`` as unset.
+    file and no exit sentinel. The emptiness check is part of that - ``gh`` reads an
+    empty ``GH_TOKEN`` as unset. :func:`check_token` turns the same failure into a
+    spawn error before a window opens.
     """
-    if platform == "darwin":
-        item = appconfig.get(appconfig.AGENT_TOKEN_KEYCHAIN_ITEM).strip()
-        read = f"security find-generic-password -s {shlex.quote(item)} -w" if item else ""
+    item, path = _token_source(platform)
+    if item:
+        read = f"security find-generic-password -s {shlex.quote(item)} -w"
+    elif path:
+        read = f"cat -- {shlex.quote(path)}"
     else:
-        path = appconfig.get(appconfig.AGENT_TOKEN_FILE).strip()
-        read = f"cat -- {shlex.quote(os.path.expanduser(path))}" if path else ""
-    if not read:
         return ""
-    return f'GH_TOKEN=$({read}) && [ -n "$GH_TOKEN" ] && export GH_TOKEN'
+    return (f'GH_TOKEN=$({read}) && [ -n "$GH_TOKEN" ] '
+            f"&& export GH_TOKEN {GIT_TOKEN_HELPER}")
+
+
+def check_token(platform: str = sys.platform) -> None:
+    """Raise :class:`SpawnError` when an agent token is configured but cannot be read.
+
+    The gate in :func:`token_export` starts nothing then, but only after the spawn has
+    been reported as started: a mesh executor would hold the work's claim for its
+    whole backstop on an agent that never ran. Reads the Keychain item's attributes,
+    never its secret."""
+    item, path = _token_source(platform)
+    if item:
+        try:
+            ok = subprocess.run(["security", "find-generic-password", "-s", item],
+                                capture_output=True, timeout=10).returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            ok = False
+        if not ok:
+            raise SpawnError(f"no agent token in Keychain item '{item}'")
+    elif path:
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                ok = bool(f.read().rstrip("\n"))
+        except OSError:
+            ok = False
+        if not ok:
+            raise SpawnError(f"no agent token in {path}")
 
 
 def agent_argv(prompt_file: str, done_path: str | None = None,
@@ -592,6 +640,7 @@ def spawn(prompt: str, preferred: SpawnTerminal | None, done_path: str | None = 
     the caller has already written the prompt somewhere it wants to keep it (the run
     directory in :mod:`.agentregistry`). ``session`` names the run's tmux session, so a
     backstop can close its window without a tty — see :func:`terminal_argv`."""
+    check_token()
     term = resolved(preferred)
     file = prompt_file or write_prompt(prompt)
     argv = [term.exec_name, *term.prefix,

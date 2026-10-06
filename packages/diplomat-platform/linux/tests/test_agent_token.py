@@ -11,12 +11,14 @@ from __future__ import annotations
 
 import os
 import shlex
+import shutil
 import subprocess
 import time
+import uuid
 
 import pytest
 
-from diplomat_runtime import appconfig, review, runner
+from diplomat_runtime import appconfig, review, runner, szponthost
 
 DUMMY = "github_pat_DUMMY0123456789abcdefNOTREAL"
 
@@ -37,6 +39,31 @@ def token_file(tmp_path):
 
 
 _token_export = review.token_export
+_check_token = review.check_token
+#: The real spawners, taken before conftest's ``no_host_agent_spawn`` swaps them out;
+#: every test that calls one stubs ``popen_detached`` itself.
+_real_spawn = review.spawn
+_real_spawn_macos = szponthost._spawn_macos
+
+#: The git half of the gate, spelled out: the macOS twin pins the same string.
+_GIT = ("GIT_CONFIG_COUNT=2 "
+        "GIT_CONFIG_KEY_0=credential.https://github.com.helper GIT_CONFIG_VALUE_0= "
+        "GIT_CONFIG_KEY_1=credential.https://github.com.helper "
+        "GIT_CONFIG_VALUE_1='!gh auth git-credential'")
+
+#: The stand-in agent: the token it sees, and whether the password git would send
+#: github.com over HTTPS is that token. The password itself stays in a variable -
+#: without the helper reset it is whatever credential helper the box has (on macOS,
+#: ``osxkeychain`` and the operator's broad login).
+_AGENT = ("printenv GH_TOKEN > out; "
+          "pw=$(printf 'protocol=https\\nhost=github.com\\n\\n' "
+          "| GIT_TERMINAL_PROMPT=0 git credential fill 2>/dev/null "
+          "| sed -n 's/^password=//p'); "
+          '[ -n "$pw" ] && [ "$pw" = "$GH_TOKEN" ] && : > git-ok')
+
+#: What ``gh auth git-credential`` answers for github.com once ``GH_TOKEN`` is set.
+_GH_STUB = ('#!/bin/sh\n[ "$1 $2 $3" = "auth git-credential get" ] || exit 1\n'
+            "printf 'username=x-access-token\\npassword=%s\\n' \"$GH_TOKEN\"\n")
 
 
 def _on_linux(monkeypatch):
@@ -61,9 +88,15 @@ def _spawn(tmp_path, monkeypatch, shell, agent="printenv GH_TOKEN > out", pid=Tr
 
 
 def _clean_env(tmp_path) -> dict:
-    """No rc of the operator's: an interactive inner shell sources it."""
+    """No rc of the operator's: an interactive inner shell sources it. A stand-in
+    ``gh`` first on PATH."""
     env = {k: v for k, v in os.environ.items() if k not in ("GH_TOKEN", "ZDOTDIR")}
-    return {**env, "HOME": str(tmp_path), "ZDOTDIR": str(tmp_path), "ENV": ""}
+    stubs = tmp_path / "bin"
+    stubs.mkdir(exist_ok=True)
+    (stubs / "gh").write_text(_GH_STUB)
+    (stubs / "gh").chmod(0o755)
+    return {**env, "HOME": str(tmp_path), "ZDOTDIR": str(tmp_path), "ENV": "",
+            "PATH": f"{stubs}:{env.get('PATH', '/usr/bin:/bin')}"}
 
 
 # MARK: - The command
@@ -83,7 +116,7 @@ def test_linux_reads_the_configured_file():
     appconfig.set_value(appconfig.AGENT_TOKEN_FILE, "/secrets/agent token")
     assert review.token_export("linux") == (
         "GH_TOKEN=$(cat -- '/secrets/agent token') && [ -n \"$GH_TOKEN\" ] "
-        "&& export GH_TOKEN"
+        f"&& export GH_TOKEN {_GIT}"
     )
 
 
@@ -93,7 +126,7 @@ def test_macos_reads_the_configured_keychain_item():
     appconfig.set_value(appconfig.AGENT_TOKEN_KEYCHAIN_ITEM, "diplomat-agent-gh")
     assert review.token_export("darwin") == (
         "GH_TOKEN=$(security find-generic-password -s diplomat-agent-gh -w) "
-        "&& [ -n \"$GH_TOKEN\" ] && export GH_TOKEN"
+        f"&& [ -n \"$GH_TOKEN\" ] && export GH_TOKEN {_GIT}"
     )
 
 
@@ -139,11 +172,12 @@ def test_the_secret_is_in_no_argv_the_terminal_is_given(tmp_path, monkeypatch,
 @pytest.mark.parametrize("pid", [True, False], ids=["local", "mesh"])
 @pytest.mark.parametrize("shell", _SHELLS)
 def test_the_agent_gets_the_token(shell, pid, tmp_path, monkeypatch, token_file):
-    _, cmd = _spawn(tmp_path, monkeypatch, shell, pid=pid)
+    _, cmd = _spawn(tmp_path, monkeypatch, shell, agent=_AGENT, pid=pid)
     env = {**_clean_env(tmp_path), "GH_TOKEN": "broad-from-the-launcher"}
     subprocess.run([shell, "-c", cmd], cwd=tmp_path, env=env, capture_output=True,
                    timeout=30)
     assert (tmp_path / "out").read_text().strip() == DUMMY
+    assert (tmp_path / "git-ok").exists()
     assert (tmp_path / "pid").exists() == pid
     assert (tmp_path / "done").read_text() == "0"
 
@@ -189,4 +223,56 @@ def test_the_secret_is_absent_from_the_process_table(tmp_path, monkeypatch, toke
     finally:
         os.killpg(proc.pid, 9)
         proc.wait()
+
+
+# MARK: - A token that cannot be read fails the spawn itself
+
+
+@pytest.mark.parametrize("contents", [None, "", "\n"], ids=["missing", "empty", "blank"])
+def test_an_unreadable_token_file_fails_the_spawn_before_a_window(contents, token_file,
+                                                                  monkeypatch):
+    """Before the terminal, so the caller hears the spawn failed: the local tracker
+    logs ``spawn-failed``, and a mesh executor declines instead of holding the
+    work's claim on an agent that never ran."""
+    if contents is None:
+        token_file.unlink()
+    else:
+        token_file.write_text(contents)
+    monkeypatch.setattr(review, "check_token", lambda: _check_token("linux"))
+    launched = []
+    monkeypatch.setattr(review, "popen_detached", lambda *a, **k: launched.append(a))
+    with pytest.raises(review.SpawnError, match=str(token_file)):
+        _real_spawn("p", None, done_path="/tmp/d")
+    assert launched == []
+
+
+def test_a_readable_token_file_spawns(token_file, monkeypatch):
+    monkeypatch.setattr(review, "check_token", lambda: _check_token("linux"))
+    launched = []
+    monkeypatch.setattr(review, "popen_detached", lambda *a, **k: launched.append(a))
+    _real_spawn("p", None, done_path="/tmp/d")
+    assert len(launched) == 1
+
+
+def test_no_configured_token_is_never_checked():
+    _check_token("linux")
+    _check_token("darwin")
+
+
+def test_a_missing_keychain_item_fails_the_mesh_spawn(monkeypatch):
+    """The real ``security``, asked for an item nobody has: the mesh's macOS spawner
+    raises ``NoRunner`` - the executor answers "failed" and takes no claim - and never
+    reaches ``osascript``."""
+    if not shutil.which("security"):
+        pytest.skip("no macOS security(1)")
+    from szpontnet import host as szpont_host
+
+    appconfig.set_value(appconfig.AGENT_TOKEN_KEYCHAIN_ITEM,
+                        f"diplomat-selftest-{uuid.uuid4()}")
+    monkeypatch.setattr(review, "check_token", lambda: _check_token("darwin"))
+    launched = []
+    monkeypatch.setattr(review, "popen_detached", lambda *a, **k: launched.append(a))
+    with pytest.raises(szpont_host.NoRunner, match="Keychain item"):
+        _real_spawn_macos("p", "/tmp/d")
+    assert launched == []
 

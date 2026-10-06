@@ -162,17 +162,19 @@ repository's secrets. Review, fix and conflict runs need only `contents` and
 
 Every spawn on the machine then reads it - panel and automatic runs on both
 platforms, and runs a mesh node starts here - inside the spawned shell, and exports
-it as `GH_TOKEN`, which `gh` ranks above its own login. The token itself is never in
-an AppleScript, an argv `ps` can show, a prompt file or the activity feed; the feed
-marks each run started on it with `· agent GH token`. A token that cannot be read
-(missing item, empty file) starts nothing rather than falling back to the broad
-login: the spawn fails, and the work stays owed. Remove the key to go back.
+it as `GH_TOKEN`, which `gh` ranks above its own login. The agent's `git` over HTTPS
+to github.com gets it too, from `gh auth git-credential`, instead of any credential
+helper you configured (macOS git ships `osxkeychain`, which holds your broad login).
+The token itself is never in an AppleScript, an argv `ps` can show, a prompt file or
+the activity feed; the feed marks each run started on it with `· agent GH token`. A
+token that cannot be read (missing item, empty file) starts nothing rather than
+falling back to the broad login: the spawn fails, and the work stays owed. Remove the
+key to go back.
 
-What it does not cover: `git` over SSH still pushes with your SSH keys (HTTPS remotes
-go through `gh auth setup-git`'s credential helper, which honours `GH_TOKEN`), and a
-`GH_TOKEN` your shell rc exports replaces this one, because the agent's shell sources
-your rc after Diplomat sets it. To check it took, run `gh auth status` inside a
-spawned agent's window: it names `GH_TOKEN` as the source.
+What it does not cover: `git` over SSH still pushes with your SSH keys, and a
+`GH_TOKEN` or `GIT_CONFIG_COUNT` your shell rc exports replaces this one, because the
+agent's shell sources your rc after Diplomat sets it. To check it took, run
+`gh auth status` inside a spawned agent's window: it names `GH_TOKEN` as the source.
 
 ## The library
 

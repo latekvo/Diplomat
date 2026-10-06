@@ -438,11 +438,12 @@ enum AgentSpawner {
     /// The shell test that exports the operator's agent token as `GH_TOKEN`, or nil for
     /// a run left on whatever `gh auth login` stored. Twin of `review.token_export`.
     ///
-    /// `gh` ranks `GH_TOKEN` above its keyring login, so a fine-grained token scoped to
-    /// `contents` + `pull-requests` replaces the broad `repo, workflow, gist` one for the
-    /// agent and everything it runs. Only the Keychain item's NAME is configured, and the
-    /// spawned shell reads it itself, so the secret never enters the AppleScript, the
-    /// staged Ghostty launcher, any argv `ps` shows, or the config file the mesh copies.
+    /// `gh` ranks `GH_TOKEN` above its keyring login, and `gitTokenHelper` makes git over
+    /// HTTPS use it too, so a fine-grained token scoped to `contents` + `pull-requests`
+    /// replaces the broad `repo, workflow, gist` one for the agent and everything it
+    /// runs. Only the Keychain item's NAME is configured, and the spawned shell reads it
+    /// itself, so the secret never enters the AppleScript, the staged Ghostty launcher,
+    /// any argv `ps` shows, or the config file the mesh copies.
     ///
     /// `shellCommand` runs the whole spawn behind this test, so a token that cannot be
     /// read starts nothing rather than falling back to the broad login: the pid file
@@ -451,8 +452,17 @@ enum AgentSpawner {
     static func tokenExport(keychainItem: String) -> String? {
         guard !keychainItem.isEmpty else { return nil }
         return "GH_TOKEN=$(security find-generic-password -s \(shq(keychainItem)) -w) "
-            + "&& [ -n \"$GH_TOKEN\" ] && export GH_TOKEN"
+            + "&& [ -n \"$GH_TOKEN\" ] && export GH_TOKEN \(gitTokenHelper)"
     }
+
+    /// Points git's credential helper for github.com at `gh`, which hands out
+    /// `GH_TOKEN`. The empty first value drops every helper configured before it (macOS
+    /// git ships `osxkeychain`, which holds the broad login), and env config outranks
+    /// every config file. Twin of `review.GIT_TOKEN_HELPER`.
+    static let gitTokenHelper = "GIT_CONFIG_COUNT=2 "
+        + "GIT_CONFIG_KEY_0=credential.https://github.com.helper GIT_CONFIG_VALUE_0= "
+        + "GIT_CONFIG_KEY_1=credential.https://github.com.helper "
+        + "GIT_CONFIG_VALUE_1='!gh auth git-credential'"
 
     /// The exit-code sentinel write, best-effort.
     ///
