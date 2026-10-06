@@ -25,7 +25,7 @@ from diplomat_app.store import Store
 
 STAND_IN = r'''
 import json, os, socket, sys
-node_id, stubborn = sys.argv[1], sys.argv[2:] == ["stubborn"]
+node_id, mode = sys.argv[1], (sys.argv[2:] or [""])[0]
 srv = socket.socket()
 srv.bind(("127.0.0.1", 0))
 srv.listen()
@@ -40,8 +40,9 @@ while True:
         f.readline()
         t = json.loads(f.readline() or b"{}").get("t")
         f.write(json.dumps({"t": "state", "state": me} if t == "status"
+                           else {"t": "error", "reason": "refused"} if mode == "refuse"
                            else {"t": "ok"}).encode() + b"\n")
-    if t == "stop" and not stubborn:
+    if t == "stop" and not mode:
         sys.exit(0)
 '''
 
@@ -71,11 +72,11 @@ def mesh(tmp_path, monkeypatch):
     script.write_text(STAND_IN)
     started: list[subprocess.Popen] = []
 
-    def launch(node_id: str, directory=ours, stubborn: bool = False) -> Node:
+    def launch(node_id: str, directory=ours, mode: str = "") -> Node:
         state = directory / "state.json"
         state.unlink(missing_ok=True)
         p = subprocess.Popen(
-            [sys.executable, str(script), node_id] + (["stubborn"] if stubborn else []),
+            [sys.executable, str(script), node_id] + ([mode] if mode else []),
             env={**os.environ, "SZPONTNET_DIR": str(directory)})
         started.append(p)
         # Reaped the moment it exits, as a detached node is by init: an unreaped child
@@ -201,7 +202,7 @@ def test_the_same_node_named_by_pid_port_and_id_is_stopped(mesh, tmp_path):
 
 
 def test_a_node_that_outlives_its_stop_is_not_reported_stopped(mesh):
-    node = mesh.launch("n-c", stubborn=True)
+    node = mesh.launch("n-c", mode="stubborn")
     store = Store()
     store.stop_stray_node_async(exit_wait=1)
     _settled(store)
@@ -210,3 +211,14 @@ def test_a_node_that_outlives_its_stop_is_not_reported_stopped(mesh):
                           f"Mesh is off, but the node left running here "
                           f"(pid {node.pid}, :{node.port}) did not stop: "
                           f"still running 1s after it was asked to stop")]
+
+
+def test_a_node_that_refuses_its_stop_is_not_reported_stopped(mesh):
+    node = mesh.launch("n-c", mode="refuse")
+    store = Store()
+    store.stop_stray_node_async()
+    _settled(store)
+    assert node.running()
+    assert mesh.feed == [("panel", "warn",
+                          f"Mesh is off, but the node left running here "
+                          f"(pid {node.pid}, :{node.port}) did not stop: refused")]

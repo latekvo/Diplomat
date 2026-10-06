@@ -21,10 +21,10 @@ import Foundation
 enum MeshStrayTest {
     /// A node as far as `stopStrayNode` can tell: writes `state.json` into its
     /// `SZPONTNET_DIR` and answers `status` with its own pid and id. `stubborn`
-    /// acknowledges `stop` and keeps running.
+    /// acknowledges `stop` and keeps running; `refuse` answers it with an error.
     private static let standIn = """
         import json, os, socket, sys
-        node_id, stubborn = sys.argv[1], sys.argv[2:] == ["stubborn"]
+        node_id, mode = sys.argv[1], (sys.argv[2:] or [""])[0]
         srv = socket.socket()
         srv.bind(("127.0.0.1", 0))
         srv.listen()
@@ -39,8 +39,9 @@ enum MeshStrayTest {
                 f.readline()
                 t = json.loads(f.readline() or b"{}").get("t")
                 f.write(json.dumps({"t": "state", "state": me} if t == "status"
+                                   else {"t": "error", "reason": "refused"} if mode == "refuse"
                                    else {"t": "ok"}).encode() + b"\\n")
-            if t == "stop" and not stubborn:
+            if t == "stop" and not mode:
                 sys.exit(0)
         """
 
@@ -88,10 +89,10 @@ enum MeshStrayTest {
             return false
         }
 
-        func launch(_ id: String, in dir: URL, stubborn: Bool = false) -> Node? {
+        func launch(_ id: String, in dir: URL, mode: String = "") -> Node? {
             let p = Process()
             p.executableURL = URL(fileURLWithPath: python)
-            p.arguments = [script.path, id] + (stubborn ? ["stubborn"] : [])
+            p.arguments = [script.path, id] + (mode.isEmpty ? [] : [mode])
             var env = ProcessInfo.processInfo.environment
             env["SZPONTNET_DIR"] = dir.path
             p.environment = env
@@ -219,7 +220,7 @@ enum MeshStrayTest {
               await store.stopStrayMeshNode() == .stopped(pid: b.pid, port: b.port)
                 && !b.process.isRunning)
 
-        guard let c = launch("n-c", in: ours, stubborn: true) else {
+        guard let c = launch("n-c", in: ours, mode: "stubborn") else {
             print("  FAIL  the stubborn stand-in never wrote its state.json")
             return false
         }
@@ -232,9 +233,22 @@ enum MeshStrayTest {
         let warnLines = auditLines().filter { $0.contains("\"warn\"") }
         check("and the audit feed says it did not stop",
               warnLines.count == 1 && warnLines[0].contains("pid \(c.pid)"), "\(warnLines)")
-        check("nothing else was written to the feed",
-              auditLines().count == 3, "\(auditLines().count) lines")
         c.process.terminate()
+
+        guard let d = launch("n-d", in: ours, mode: "refuse") else {
+            print("  FAIL  the refusing stand-in never wrote its state.json")
+            return false
+        }
+        let refused = await store.stopStrayMeshNode()
+        check("a node that refuses its stop is not reported stopped",
+              refused == .stopFailed(pid: d.pid, port: d.port, reason: "refused")
+                && d.process.isRunning, "got \(refused)")
+        check("and the audit feed gives its reason",
+              auditLines().last?.contains("(pid \(d.pid), :\(d.port)) did not stop: refused") == true,
+              auditLines().last ?? "")
+        check("nothing else was written to the feed",
+              auditLines().count == 4, "\(auditLines().count) lines")
+        d.process.terminate()
 
         // A real node, spawned the way the app spawns one: the stand-ins above only speak
         // the two commands, so this is what pins the reply of a real one. Loopback-only
