@@ -258,7 +258,7 @@ def test_dump_panes_parses_and_captures(monkeypatch):
     def fake_run(argv):
         calls.append(argv)
         if argv[:2] == ["tmux", "list-panes"]:
-            return f"%0{tmuxwatch._UNIT}/dev/pts/1\n%3{tmuxwatch._UNIT}/dev/pts/7\n"
+            return "%0 /dev/pts/1\n%3 /dev/pts/7\n"
         if argv[:2] == ["tmux", "capture-pane"]:
             pane = argv[argv.index("-t") + 1]
             return f"line one\nAPI Error: 529 on {pane}\n\n"
@@ -283,7 +283,7 @@ def test_pane_tails_for_ttys_captures_only_the_ttys_asked_for(monkeypatch):
 
     def fake_run(argv):
         if argv[:2] == ["tmux", "list-panes"]:
-            return "\n".join(f"%{n}{tmuxwatch._UNIT}/dev/pts/{n}" for n in (1, 2, 3))
+            return "\n".join(f"%{n} /dev/pts/{n}" for n in (1, 2, 3))
         if argv[:2] == ["tmux", "capture-pane"]:
             pane = argv[argv.index("-t") + 1]
             captured.append(pane)
@@ -631,3 +631,26 @@ def test_a_run_with_no_name_is_never_killed_by_one(monkeypatch):
     monkeypatch.setattr(tmuxwatch, "_run",
                         lambda argv: pytest.fail(f"tmux was run: {argv}"))
     assert tmuxwatch.kill_session("") is False
+
+
+@pytest.mark.skipif(shutil.which("tmux") is None, reason="no tmux on this machine")
+def test_a_client_outside_tmux_under_a_c_locale_still_reads_its_panes(monkeypatch):
+    """Where launchd, an autostart entry and CI put the applet: no ``$TMUX`` and no
+    UTF-8 in the locale, so tmux sanitizes every control byte of a command's output
+    to ``_`` (and 3.4 escapes them as octal for any client)."""
+    monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.setenv("LC_ALL", "C")
+    name = f"diplomat-test-{uuid.uuid4().hex[:8]}"
+    _open_session(name)
+    try:
+        tty = subprocess.run(
+            ["tmux", "list-panes", "-t", f"={name}", "-F", "#{pane_tty}"],
+            capture_output=True, text=True, check=True).stdout.strip()
+        short = tty.removeprefix("/dev/")
+        assert tty in {p.tty for p in tmuxwatch.dump_panes() or []}
+        tails = tmuxwatch.pane_tails_for_ttys({short})
+        assert tails is not None and short in tails
+        assert tmuxwatch.kill_session_for_tty(tty) is True
+        assert name not in _live_sessions()
+    finally:
+        _close_sessions(name)

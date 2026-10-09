@@ -79,8 +79,9 @@ jobs:
       # MESH_CMD_TEST is pinned to a scratch state dir and a non-checkout so it can
       # neither read a real mesh node nor start one, and ALLOCATOR_TEST shells no
       # installer and reads no ~/.claude. APIWATCH_TEST composes every session, tail and
-      # process it reasons over, so it reads no terminal and types into none — though it
-      # does provoke a nudge's audit line, so it redirects DIPLOMAT_AUDIT_DIR.
+      # process it reasons over, bar a tmux server on a private socket where tmux is
+      # installed (not on this runner), so it reads no terminal and types into none —
+      # though it does provoke a nudge's audit line, so it redirects DIPLOMAT_AUDIT_DIR.
       # PUBLISH_TEST composes the tick it publishes as a literal, so no probe runs and
       # its verdict does not depend on what else is on the runner. QUOTA_TEST pins both
       # halves of the probe's credential list — a fixture directory and a stand-in for

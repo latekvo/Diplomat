@@ -45,7 +45,9 @@ slot**, then the **queue** that has no bay yet.
 
   An agent found only by the `ps` scan — no in-flight record behind it, which is
   what an applet restart leaves — still gets a row, marked *untracked* and drawn by
-  its PR number, because it still holds a bay for as long as it runs.
+  its PR number, because it holds a bay while it works, up to the run deadline when
+  one is set. The agent a finished task leaves at its prompt is drawn the same way,
+  holding no bay.
 - **Starting** is a task between the queue and its agent: the click (or the drain)
   has taken it, and the spawn has not answered yet. Seconds, and a row for all of
   them, so *execute now* never reads as the click deleting the task. It holds a bay

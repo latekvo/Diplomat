@@ -435,8 +435,9 @@ enum Dump {
     /// watcher does not ask: a matching tail on a session no agent is behind is a
     /// session it leaves alone.
     static func apiWatchScan() {
-        guard let sessions = ApiErrorWatcher.dumpSessions() else {
-            print("== api-error scan: DUMP FAILED (automation permission? AppleEvent timeout?) ==")
+        let dump = ApiErrorWatcher.dumpSessions()
+        guard let sessions = dump.value else {
+            print("== api-error scan: DUMP FAILED (\(dump.reason)) ==")
             return
         }
         let onAnAgent = AgentProbes.ttysRunningAnAgent(now: Date().timeIntervalSince1970)
