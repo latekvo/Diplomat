@@ -287,9 +287,8 @@ def _ledger_lines() -> list[str]:
         json.dumps({"at": NOW, "ev": "queued", "duty": "review", "pr": 97}),
         "",
     ]
-    # A pr past Int's range: `Int(Double)` traps on the Swift side, and the screen
-    # folds the ledger on every repaint, so this one line took the app down at every
-    # launch. Both clamp it now, to the same value.
+    # A pr past Int's range, where Swift's `Int(Double)` traps: both sides clamp it,
+    # to the same value.
     lines.append(json.dumps({"at": NOW, "ev": "queued", "key": "review:h/o/r#96@xx",
                              "duty": "review", "pr": 1e300}))
     # Numbers spelled as strings, as a hand edit leaves them. Both sides read one by

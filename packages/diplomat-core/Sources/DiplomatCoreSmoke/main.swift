@@ -1921,8 +1921,8 @@ check(tModel?.bucketHours(days: 7) == 4 && tModel?.bucketHours(days: 14) == 12
       && tModel?.bucketHours(days: 30) == 24 && tModel?.bucketHours(days: 60) == 48,
       "the shipped ranges do not bucket the way the model says")
 // A value past Int's range is a corrupt or hand-edited line, and `Int(Double)` traps on
-// it. The Telemetry screen folds the ledger on every repaint, so that trap took the
-// app down at every launch until the line was found and removed.
+// it. The Telemetry screen folds the ledger on every repaint, so a trap there would
+// take the app down at every launch.
 let poisoned = Telemetry.fold(lines: [
     #"{"at": 1784920000, "ev": "queued", "key": "review:h/o/r#9@zz", "duty": "review", "pr": 1e300}"#])
 check(poisoned.tasks.first?.pr == Int.max, "an out-of-range pr must clamp, not trap")
