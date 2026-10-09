@@ -89,7 +89,9 @@ jobs:
       # nothing. QUEUE_TEST is the one
       # that touches state at all: reaching the cap's refusal branch means a `ps` scan, a
       # ban-list read and an `at-capacity` audit line, so it points DIPLOMAT_AUDIT_DIR at
-      # a scratch dir of its own. It returns before any spawn or fetch.
+      # a scratch dir of its own. It returns before any spawn or fetch. MESH_STRAY_TEST
+      # starts stand-in nodes and loopback-only real nodes, all on scratch state dirs
+      # it sets itself, and stops them.
       #
       # DIPLOMAT_TRACK_TEST and DIPLOMAT_SPAWN_FOCUS_TEST are the two that stay out,
       # and not by oversight: both drive real throwaway terminal windows and need a
@@ -103,6 +105,7 @@ jobs:
           DIPLOMAT_OSA_TEST=1 swift run Diplomat
           SZPONTNET_DIR="$RUNNER_TEMP/mesh" DIPLOMAT_SELF_REPO=/nonexistent \
             DIPLOMAT_MESH_CMD_TEST=1 swift run Diplomat
+          DIPLOMAT_MESH_STRAY_TEST=1 swift run Diplomat
           DIPLOMAT_ALLOCATOR_TEST=1 swift run Diplomat
           DIPLOMAT_QUEUE_TEST=1 swift run Diplomat
           DIPLOMAT_SWEEP_TEST=1 swift run Diplomat

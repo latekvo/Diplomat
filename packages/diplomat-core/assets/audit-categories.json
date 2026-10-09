@@ -33,7 +33,8 @@
     "mesh-takeover": "mesh",
     "mesh-dispatch": "mesh",
     "mesh-dispatch-failed": "mesh",
-    "mesh-spawn": "mesh"
+    "mesh-spawn": "mesh",
+    "mesh-stop": "mesh"
   },
   "fallback": "system"
 }

@@ -1205,7 +1205,11 @@ and ⏻) swaps the panel to a settings screen:
   ever refreshed.
 - **Mesh (LAN P2P)** - opt into [Diplomat Mesh](#diplomat-mesh-experimental--lan-p2p-duty-coordination):
   a toggle that starts/stops the local node (off by default), with live node/peer
-  status. The mesh itself is managed from the **⬡ Mesh screen**.
+  status. The node outlives the app, so a launch with the toggle off stops one an
+  earlier instance left on this machine's state dir (a `mesh-stop` line in the
+  activity feed); it has to answer its control port with the pid and id
+  `state.json` names, so nothing else is touched. The mesh itself is managed from
+  the **⬡ Mesh screen**.
 - **Update** - pull the checkout, rebuild, and relaunch in place. Shows how many
   commits the checkout is behind *and* ahead of upstream, with a ↻ re-check
   button; the button fetches and **merges** (fast-forward when strictly behind, a
@@ -1393,6 +1397,9 @@ DIPLOMAT_DEVICE_DUMP=1   ...                     # device-allocator paths + daem
 DIPLOMAT_ALLOCATOR_TEST=1 ...                    # the launch-time allocator decision: reinstall a stale copy,
                                                      #   leave an uninstalled one alone. Shells no installer;
                                                      #   exit code = verdict
+DIPLOMAT_MESH_STRAY_TEST=1 ...                   # a launch with the mesh off stops the node state.json names,
+                                                     #   and not a reused pid, another dir's node or identity.
+                                                     #   Scratch state dirs; exit code = verdict
 DIPLOMAT_AUTOFIX_POLL=1  ...                     # one real monitor poll: prints its dispatch decisions and
                                                      #   the exact prompts it would spawn, opens nothing
 DIPLOMAT_APIWATCH_SCAN=1 ...                     # dry-run the API-error watcher over live sessions, sends nothing

@@ -2344,6 +2344,7 @@ check(AuditCategory.of(action: "mesh-takeover") == .mesh, "duty takeovers are Me
 check(AuditCategory.of(action: "mesh-dispatch") == .mesh)
 check(AuditCategory.of(action: "mesh-dispatch-failed") == .mesh)
 check(AuditCategory.of(action: "mesh-spawn") == .mesh)
+check(AuditCategory.of(action: "mesh-stop") == .mesh, "stopping a node left running is a Mesh row")
 // Device / health / anything unmapped falls through to System so no row is uncategorized.
 check(AuditCategory.of(action: "kill-device") == .system)
 check(AuditCategory.of(action: "repair-done") == .system)

@@ -176,6 +176,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if env["DIPLOMAT_MESH_CMD_TEST"] == "1" {
             Task { @MainActor in exit(await MeshCommandTest.run() ? 0 : 1) }
         }
+        // Stopping a node left running while the mesh is off, on scratch state dirs;
+        // needs python3. Exit code = pass/fail.
+        if env["DIPLOMAT_MESH_STRAY_TEST"] == "1" {
+            Task { @MainActor in exit(await MeshStrayTest.run() ? 0 : 1) }
+        }
         // Allocator-setup self-test: proves a launch reinstalls a stale allocator and
         // leaves a deliberately-uninstalled one alone. Pure decision logic — shells no
         // installer, reads no ~/.claude. Exit code = pass/fail.
