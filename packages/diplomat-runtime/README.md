@@ -57,7 +57,8 @@ diplomat_runtime/
                   format as AgentRegistry.swift, field for field: each side reads back
                   every record the other wrote (the two encoders order and escape keys
                   their own way, so it is the fields that match, not the bytes)
-  opencodeapi.py  reading an OpenCode run's own session: whose it is, mid-turn or not, spend
+  opencodeapi.py  reading an OpenCode run's own session (1.x server or 2.x service):
+                  whose it is, mid-turn or not, spend, and interrupting a 2.x turn
   hermesstore.py  the same, for a Hermes run's session in its SQLite store
   apiwatch.py     "is this a Claude API error?" matcher + nudge bookkeeping
   tmuxwatch.py    tmux capture-pane / send-keys — the Linux stand-in for AppleScript

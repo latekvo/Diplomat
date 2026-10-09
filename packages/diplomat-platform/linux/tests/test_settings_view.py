@@ -224,3 +224,29 @@ def test_the_explain_switch_writes_through_and_reveals(view):
     view._explain.setChecked(False)
     assert view.store.settings_explain is False
     assert not any(d.isVisibleTo(view) for d in _details(view))
+
+
+def test_the_runner_row_names_the_opencode_a_spawn_would_run(make_view, monkeypatch):
+    """Resolved through the user's shell, as the spawn resolves it: an install only an
+    rc or profile puts on PATH is not on this app's, and is still what runs."""
+    from diplomat_app import settingsview
+    from diplomat_runtime import runner, usagescan
+
+    monkeypatch.setattr(usagescan, "opencode_binary", lambda: "/rc-only/opencode")
+    monkeypatch.setattr(settingsview.shutil, "which", lambda name: None)
+    view = make_view(agent_runner=runner.OPENCODE)
+    assert view._runner_row._summary.text() == "Spawns run `opencode` (/rc-only/opencode)."
+
+
+def test_a_missing_opencode_is_not_promised_to_an_rc(make_view, monkeypatch):
+    """The lookup already asked the login and interactive shell, so a miss is not one
+    an rc-only install could still fill."""
+    from diplomat_app import settingsview
+    from diplomat_runtime import runner, usagescan
+
+    monkeypatch.setattr(usagescan, "opencode_binary", lambda: None)
+    monkeypatch.setattr(settingsview.shutil, "which", lambda name: None)
+    view = make_view(agent_runner=runner.OPENCODE)
+    assert view._runner_row._summary.text() == (
+        "Neither your login shell nor this app's PATH has an `opencode` executable — "
+        "check it if spawned runs finish instantly without doing anything.")

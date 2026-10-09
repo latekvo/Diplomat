@@ -355,6 +355,37 @@ def write_prompt(prompt: str) -> str:
     return path
 
 
+def stage_opencode_session(prompt_file: str) -> str | None:
+    """Mint an OpenCode 2.x run's session and stage the two bodies that start it
+    (:func:`runner.agent_command`). The id, or ``None`` when the selected runner is not
+    OpenCode 2.x — every other spawn stages nothing here.
+
+    Staged beside the prompt, at its mode: the prompt is copied into one of them
+    verbatim, and a mesh dispatch stages its prompt in ``/tmp`` (:func:`write_prompt`).
+
+    A caller with a run directory binds the id there before spawning
+    (:func:`agentregistry.bind_session`); the mesh node has none, and runs it unbound.
+    """
+    from . import usagescan
+
+    if runner.selected() != runner.OPENCODE or not usagescan.opencode_is_v2():
+        return None
+    session_id = runner.new_opencode_session()
+    try:
+        with open(prompt_file, encoding="utf-8") as fh:
+            prompt = fh.read()
+        bodies = (runner.opencode_session_body(
+                      session_id, os.path.realpath(repo_path()), runner.model()),
+                  runner.opencode_prompt_body(prompt))
+        for path, body in zip(runner.opencode_staged(prompt_file), bodies):
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(body)
+    except OSError as exc:
+        raise SpawnError(f"Couldn't stage the OpenCode session: {exc}") from exc
+    return session_id
+
+
 def user_shell() -> str:
     """The user's interactive login shell — so the spawned command sees the aliases
     and env exported from their rc (e.g. a `claude` alias in ~/.zshrc). Override with
@@ -364,12 +395,15 @@ def user_shell() -> str:
 
 def shell_command(prompt_file: str, done_path: str | None = None,
                   pid_path: str | None = None, port: int | None = None,
-                  settings_file: str | None = None) -> str:
+                  settings_file: str | None = None,
+                  opencode_session: str | None = None) -> str:
     """``cd '<repo>' 2>/dev/null; <agent>; [{ printf %s $? > done; } 2>/dev/null || :;] exec "$SHELL" -i``
 
-    ``<agent>`` is :func:`runner.agent_command` — ``claude "$(cat '<file>')"`` or the
-    OpenCode spelling of the same thing. Everything around it is identical for both,
-    because everything around it is what a run is *identified* by.
+    ``<agent>`` is :func:`runner.agent_command` — ``claude "$(cat '<file>')"``, another
+    runner's spelling of the same thing, or OpenCode 2.x's ``opencode api`` chain
+    ending in its TUI. Everything around it is shared by all of them, because
+    everything around it is what a run is *identified* by — save the inner shell a 2.x
+    agent gets even without a pid file (``opencode_session`` below).
 
     Run (via :func:`user_shell`, interactively) so the user's rc is sourced: that is
     what resolves a `claude` alias, and equally what puts a per-user install of either
@@ -432,9 +466,16 @@ def shell_command(prompt_file: str, done_path: str | None = None,
     it is the agent's own exit code either way — one process where the exec happened,
     and the wrapper's own status where it did not, which is the agent's.
 
-    ``port`` is where an OpenCode run's own server answers, so :mod:`opencodeapi` can
-    ask the agent whether it is working rather than inferring it from the pane. The
-    Claude runner ignores it.
+    ``port`` is where an OpenCode 1.x run's own server answers, so :mod:`opencodeapi`
+    can ask the agent whether it is working rather than inferring it from the pane.
+    The Claude runner ignores it.
+
+    ``opencode_session`` is an OpenCode 2.x run's session, staged by
+    :func:`stage_opencode_session`; the agent string is then a list ending in
+    ``|| exit; opencode --session <id>``. That ``exit`` has to end a shell of the
+    agent's own, so without ``pid_path`` the agent still runs one shell deeper —
+    ``"$SHELL" -i -c '<agent>'`` — or a session that could not be created would close
+    the window before the sentinel is written.
 
     ``settings_file`` carries the hooks a Claude Code run reports its turn boundaries
     through (:mod:`completion`). That is what finally answers the question the
@@ -446,13 +487,14 @@ def shell_command(prompt_file: str, done_path: str | None = None,
     behind :func:`token_export`, whose export the agent inherits.
     """
     repo = shlex.quote(repo_path())
-    agent_cmd = runner.agent_command(prompt_file, port, settings_file)
+    agent_cmd = runner.agent_command(prompt_file, port, settings_file, opencode_session)
     done = (f"{{ printf %s $? > {shlex.quote(done_path)}; }} 2>/dev/null || :; "
             if done_path else "")
-    if pid_path is None:
+    if pid_path is None and not opencode_session:
         body = f"{agent_cmd}; {done}"
     else:
-        inner = f'printf %s $$ > {shlex.quote(pid_path)}; {agent_cmd}'
+        inner = (agent_cmd if pid_path is None
+                 else f'printf %s $$ > {shlex.quote(pid_path)}; {agent_cmd}')
         body = f"{shlex.quote(user_shell())} -i -c {shlex.quote(inner)}; {done}"
     token = token_export()
     if token:
@@ -545,7 +587,8 @@ def check_token(platform: str = sys.platform) -> None:
 def agent_argv(prompt_file: str, done_path: str | None = None,
                pid_path: str | None = None, port: int | None = None,
                settings_file: str | None = None,
-               session: str | None = None) -> list[str]:
+               session: str | None = None,
+               opencode_session: str | None = None) -> list[str]:
     """What the terminal is asked to run: the agent under the user's INTERACTIVE
     shell (``-i``, so their rc is sourced and a `claude` alias resolves — a plain
     `bash -c` gets neither), inside a tmux session of its own wherever tmux exists.
@@ -564,7 +607,8 @@ def agent_argv(prompt_file: str, done_path: str | None = None,
     watcher to feed, so the bare interactive shell stands.
     """
     return terminal_argv(
-        shell_command(prompt_file, done_path, pid_path, port, settings_file),
+        shell_command(prompt_file, done_path, pid_path, port, settings_file,
+                      opencode_session),
         session=session)
 
 
@@ -630,14 +674,15 @@ def spawn_env() -> dict:
 def spawn(prompt: str, preferred: SpawnTerminal | None, done_path: str | None = None,
           pid_path: str | None = None, prompt_file: str | None = None,
           port: int | None = None, settings_file: str | None = None,
-          session: str | None = None) -> str:
+          session: str | None = None, opencode_session: str | None = None) -> str:
     """Stage the prompt, open a new terminal window, run the agent. Returns the
     prompt file path. Fully detached from the applet.
 
     ``done_path`` receives the agent's exit code on completion, ``pid_path`` receives
-    its own pid the moment it starts, ``port`` is where an OpenCode run's server will
-    answer, and ``settings_file`` holds the hooks the run reports its own turns
-    through — see :func:`shell_command`. ``prompt_file`` skips the staging when
+    its own pid the moment it starts, ``port`` is where an OpenCode 1.x run's server
+    will answer, ``opencode_session`` is an OpenCode 2.x run's staged session, and
+    ``settings_file`` holds the hooks the run reports its own turns through — see
+    :func:`shell_command`. ``prompt_file`` skips the staging when
     the caller has already written the prompt somewhere it wants to keep it (the run
     directory in :mod:`.agentregistry`). ``session`` names the run's tmux session, so a
     backstop can close its window without a tty — see :func:`terminal_argv`."""
@@ -645,7 +690,8 @@ def spawn(prompt: str, preferred: SpawnTerminal | None, done_path: str | None = 
     term = resolved(preferred)
     file = prompt_file or write_prompt(prompt)
     argv = [term.exec_name, *term.prefix,
-            *agent_argv(file, done_path, pid_path, port, settings_file, session)]
+            *agent_argv(file, done_path, pid_path, port, settings_file, session,
+                        opencode_session)]
     try:
         popen_detached(argv, env=spawn_env())
     except OSError as exc:

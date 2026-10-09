@@ -369,7 +369,7 @@ enum TrackTest {
                                               // This self-test spawns and watches one
                                               // real agent within seconds; the deadline
                                               // has no bearing on it.
-                                              tokens: .present(false))
+                                              tokens: .present(false)).evidence
             return AgentState.resolve(records: records, evidence: evidence,
                                       now: at)[record.runID]
         }

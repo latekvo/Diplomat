@@ -238,9 +238,34 @@ def isolated_opencode_state(tmp_path, monkeypatch):
     model the developer last used in OpenCode — green on their machine and red on the
     next one, or the reverse. Both point at directories that do not exist, which is the
     "nothing to read" case the reader already degrades to; a test that wants one writes
-    it there."""
+    it there.
+
+    ``XDG_STATE_HOME`` for the same reason, and a sharper one: it is where OpenCode 2.x
+    keeps ``service.json``, the URL and password of the operator's own per-user
+    service. A test reaching :mod:`opencodeapi`'s 2.x half unfenced would ask their live
+    service about sessions — and an interrupt would stop a real turn.
+
+    The user's shell is fenced too, because it is where both ``opencode`` and that
+    state directory are resolved from (:func:`usagescan.opencode_install`): run for
+    real, it sources the developer's own profile and rc and names their install and
+    their service. It is asked only in a test that picks a shell itself with
+    ``DIPLOMAT_SHELL``; anywhere else it names nothing, and the resolver falls back to
+    this process's ``PATH`` and the ``XDG_STATE_HOME`` above."""
+    from diplomat_runtime import opencodeapi, usagescan
+
     monkeypatch.setenv("DIPLOMAT_OPENCODE_CONFIG_DIR", str(tmp_path / "opencode" / "config"))
     monkeypatch.setenv("DIPLOMAT_OPENCODE_STATE_DIR", str(tmp_path / "opencode" / "state"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
+    monkeypatch.delenv("DIPLOMAT_SHELL", raising=False)
+    real_probe = usagescan._shell_probe
+    monkeypatch.setattr(usagescan, "_shell_probe",
+                        lambda: real_probe() if os.environ.get("DIPLOMAT_SHELL")
+                        else (None, None))
+    opencodeapi._opening_prompts.clear()
+    opencodeapi._prompt_misses.clear()
+    yield
+    opencodeapi._opening_prompts.clear()
+    opencodeapi._prompt_misses.clear()
 
 
 @pytest.fixture(autouse=True)

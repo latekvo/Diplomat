@@ -20,6 +20,7 @@ import time
 import pytest
 
 from diplomat_runtime import quota, telemetry, usagescan
+from test_opencode_v2 import quiet_shell
 
 
 @pytest.fixture
@@ -291,6 +292,9 @@ def _stub_opencode(tmp_path, monkeypatch, body: str) -> None:
     exe.write_text(body, encoding="utf-8")
     exe.chmod(0o755)
     monkeypatch.setenv("PATH", str(exe.parent) + os.pathsep + os.environ["PATH"])
+    # The resolver asks the user's shell, whose profile and rc name the developer's own
+    # install; one that sources nothing answers from the PATH above.
+    monkeypatch.setenv("DIPLOMAT_SHELL", quiet_shell(tmp_path))
 
 
 EXPORTED = {"info": {"id": "ses_ours"}, "messages": [
@@ -338,13 +342,9 @@ def test_an_rc_only_opencode_still_prices_its_run(tmp_path, monkeypatch):
     exe.write_text("#!/bin/sh\ncat <<'JSON'\n" + json.dumps(EXPORTED) + "\nJSON\n",
                    encoding="utf-8")
     exe.chmod(0o755)
-    shell = tmp_path / "rcshell"
-    shell.write_text("#!/bin/sh\n"
-                     "echo 'welcome back!'\n"
-                     f"export PATH={shlex.quote(str(exe.parent))}:$PATH\n"
-                     'exec /bin/sh "$@"\n', encoding="utf-8")
-    shell.chmod(0o755)
-    monkeypatch.setenv("DIPLOMAT_SHELL", str(shell))
+    monkeypatch.setenv("DIPLOMAT_SHELL", quiet_shell(
+        tmp_path, "echo 'welcome back!'\n"
+                  f"export PATH={shlex.quote(str(exe.parent))}:$PATH\n"))
     # What a desktop launcher hands the applet: the system directories and nothing
     # the user's rc would have added.
     monkeypatch.setenv("PATH", os.pathsep.join(["/usr/bin", "/bin"]))

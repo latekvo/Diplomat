@@ -65,14 +65,21 @@ class DiplomatHost(szpont_host.Host):
         the Linux spawner builds); Linux uses the applet's own spawner, which
         auto-detects an installed terminal emulator.
         """
-        from . import review
+        from . import review, runner
 
         settings = _stage_hooks(done_path)
         if platform.system() == "Darwin":
             return _spawn_macos(prompt, done_path, settings)
         try:
+            # OpenCode 2.x starts from bodies staged beside the prompt, so the prompt
+            # is written here first. No run directory, so the session goes unbound.
+            staged = {}
+            if runner.selected() == runner.OPENCODE:
+                prompt_file = review.write_prompt(prompt)
+                staged = {"prompt_file": prompt_file,
+                          "opencode_session": review.stage_opencode_session(prompt_file)}
             return review.spawn(prompt, None, done_path=done_path,
-                                settings_file=settings)
+                                settings_file=settings, **staged)
         except review.SpawnError as exc:
             raise szpont_host.NoRunner(str(exc)) from exc
 
@@ -186,8 +193,10 @@ def _ps_dump() -> str:
     leads because it is what
     joins a ``claude`` process to the tmux pane showing it
     (:func:`autofix.idle_pr_numbers`); the age is beside it because that same answer
-    must not read a booting agent as an idle one; the argv scan is indifferent to
-    both, finding its prompt wherever on the line it falls.
+    must not read a booting agent as an idle one. The argv scan splits both off
+    (:func:`autofix.agent_lines`): a 2.x TUI's line carries no prompt, only
+    ``--session <id>``, which :func:`opencodeapi.session_arg` matches against the
+    whole argv.
 
     Returns ``""`` on any failure, which is what lets both callers degrade rather
     than raise into the executor's spawn path. A non-zero exit is one of those
@@ -251,8 +260,9 @@ def _spawn_macos(prompt: str, done_path: str | None,
     except review.SpawnError as exc:
         raise szpont_host.NoRunner(str(exc)) from exc
     prompt_file = review.write_prompt(prompt)
-    shell_cmd = review.shell_command(prompt_file, done_path,
-                                     settings_file=settings_file)
+    shell_cmd = review.shell_command(
+        prompt_file, done_path, settings_file=settings_file,
+        opencode_session=review.stage_opencode_session(prompt_file))
     script = f'tell application "Terminal" to do script {_applescript_quote(shell_cmd)}'
     try:
         review.popen_detached(["osascript", "-e", script])

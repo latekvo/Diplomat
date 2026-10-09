@@ -96,7 +96,14 @@ final class Store: ObservableObject {
         didSet {
             guard !Headless.active else { return }
             AppConfig.set(AppConfig.agentRunnerKey, agentRunner.rawValue)
+            Store.warmOpenCode(agentRunner)
         }
+    }
+    /// Find the OpenCode major off the main actor, where a prompt build then reads it
+    /// (`OpenCodeCLI.knownIsService`) instead of running a shell and the binary.
+    private static func warmOpenCode(_ runner: AgentRunner) {
+        guard runner == .opencode else { return }
+        Task.detached(priority: .utility) { _ = OpenCodeCLI.installedIsService() }
     }
     /// The model the selected runner is pinned to; empty leaves the choice to that
     /// runner's own picker. A model id, never a credential — those live in the
@@ -584,6 +591,7 @@ final class Store: ObservableObject {
             ?? AgentSpawner.resolved(.ghostty).rawValue
         repoPathOverride = AppConfig.string(AppConfig.repoRootKey)
         agentRunner = AppConfig.agentRunner
+        if !Headless.active { Store.warmOpenCode(AppConfig.agentRunner) }
         agentModel = AppConfig.agentModel
         autoTaskLimit = AppConfig.autoTaskLimit
         autoBudgetGate = AppConfig.autoBudgetGate
@@ -850,9 +858,11 @@ final class Store: ObservableObject {
     /// Which runner is spawned is written down here rather than re-read later: the setting
     /// is what the NEXT spawn will use, so a run started under one runner and asked about
     /// after the operator switched would be interrogated through the wrong store. An
-    /// OpenCode run also gets a port reserved for its own server. A port that cannot be had
-    /// is not a failure to spawn — the run goes ahead without one and is read off its
-    /// screen, exactly as a Claude Code run is.
+    /// OpenCode 1.x run also gets a port reserved for its own server. A port that cannot
+    /// be had is not a failure to spawn — the run goes ahead without one and is read off
+    /// its screen, exactly as a Claude Code run is. An OpenCode 2.x run is instead bound to
+    /// the session its spawn stages on the shared service; a session that cannot be staged
+    /// IS a failure to spawn, because the command reads its prompt from nowhere else.
     ///
     /// `kind` drives the row's tint; `auditAction` (defaulting to `kind`) is the verb
     /// written to the activity feed. They're decoupled so a review-reply agent can log a
@@ -872,16 +882,33 @@ final class Store: ObservableObject {
             prompt: prompt)
         let runner = AppConfig.agentRunner
         AgentRegistry.stageRunner(record.runID, runner.rawValue)
+        var service = false
+        if runner == .opencode {
+            // Off this actor: it runs the binary, which takes most of a second on 1.x.
+            service = await Task.detached(priority: .userInitiated) {
+                OpenCodeCLI.installedIsService()
+            }.value
+        }
         var port = 0
-        if runner == .opencode, let free = OpenCodeProbe.freePort(),
-           AgentRegistry.stagePort(record.runID, free) {
+        var session: String?
+        if service {
+            guard let minted = OpenCodeCLI.stageSession(
+                promptFile: AgentRegistry.promptPath(record.runID),
+                directory: AgentSpawner.repoPath, model: AppConfig.agentModel) else {
+                AgentRegistry.forget([record.runID])
+                throw AgentSpawner.SpawnError.write("could not stage the OpenCode session")
+            }
+            AgentRegistry.bindSession(record.runID, minted)
+            session = minted
+        } else if runner == .opencode, let free = OpenCodeProbe.freePort(),
+                  AgentRegistry.stagePort(record.runID, free) {
             port = free
         }
         let plan = AgentSpawner.SpawnPlan(
             promptFile: AgentRegistry.promptPath(record.runID),
             donePath: AgentRegistry.donePath(record.runID).path,
             pidPath: AgentRegistry.pidPath(record.runID).path,
-            runner: runner, port: port,
+            runner: runner, port: port, serviceSession: session,
             settingsPath: AgentRegistry.stageHooks(record.runID),
             tokenItem: AppConfig.agentTokenKeychainItem)
         do {
@@ -975,6 +1002,8 @@ final class Store: ObservableObject {
         /// Window handles for the runs that have one, read in the same pass so a repaint
         /// never touches the disk.
         var windows: [String: AgentWindows.Handle]
+        /// The 2.x sessions a TUI in the same pass's process table is attached to.
+        var attached: Observation<[String]>
     }
 
     /// Resolve every registered run against one pass of evidence. READ-ONLY.
@@ -1006,17 +1035,17 @@ final class Store: ObservableObject {
         return await Task.detached(priority: .userInitiated) {
             let now = Date().timeIntervalSince1970
             let records = AgentRegistry.adoptPids(AgentRegistry.load())
-            let evidence = AgentProbes.gather(records: records, now: now, owner: owner,
+            let gathered = AgentProbes.gather(records: records, now: now, owner: owner,
                                               repo: repo, directory: directory,
                                               meshEnabled: mesh, meshState: snapshot,
                                               merged: merged, tokens: tokens)
-            let tick = AgentState.tick(records: records, evidence: evidence, now: now,
-                                       limit: limit, deadline: deadline)
+            let tick = AgentState.tick(records: records, evidence: gathered.evidence,
+                                       now: now, limit: limit, deadline: deadline)
             var windows: [String: AgentWindows.Handle] = [:]
             for r in tick.records where !r.untracked {
                 windows[r.runID] = AgentWindows.handle(r.runID)
             }
-            return AgentPass(tick: tick, windows: windows)
+            return AgentPass(tick: tick, windows: windows, attached: gathered.attached)
         }.value
     }
 
@@ -1030,7 +1059,7 @@ final class Store: ObservableObject {
         let pass = await agentTick()
         Store.persistRunChanges(pass.tick.records)
         publish(pass)
-        await retireFinished(pass.tick)
+        await retireFinished(pass)
         noteSilentProbes()
         return pass
     }
@@ -1126,10 +1155,20 @@ final class Store: ObservableObject {
     /// running one holding its bay again until the next attempt. When its agent finally
     /// leaves, no backstop stamps the verdict at all and it retires and prices on the
     /// ordinary road.
-    private func retireFinished(_ t: AgentState.Tick) async {
+    ///
+    /// An OpenCode 2.x run whose window a backstop closed, or whose TUI is gone, is
+    /// interrupted (`OpenCodeProbe.interrupts`): its turn outlives the TUI, and would go on
+    /// spending tokens after the ledger has closed its entry.
+    private func retireFinished(_ pass: AgentPass) async {
+        let t = pass.tick
         let refused = reapWedgedWindows(t)
         let gone = t.retirable.filter { !refused.contains($0.runID) }
-        guard !gone.isEmpty else { return }
+        let stops = OpenCodeProbe.interrupts(reaped: t.reapable, retired: gone,
+                                             attached: pass.attached)
+        guard !gone.isEmpty else {
+            await Store.interrupt(stops)
+            return
+        }
         // A run whose command never ran has nothing to price — no agent, no transcript,
         // no tokens — and a `done` against its key would count it among the completed
         // ones. Its ledger entry stays open, which is what it is: still owed.
@@ -1143,7 +1182,18 @@ final class Store: ObservableObject {
                          "\(r.label.isEmpty ? r.runID : r.label) — \(verdict?.reason ?? "no verdict")")
         }
         AgentRegistry.forget(Set(gone.map(\.runID)))
+        OpenCodeProbe.forgetAdopted(Set(gone.map(\.runID)))
+        await Store.interrupt(stops)
         await settleLedger(priced)
+    }
+
+    /// Stop these 2.x sessions' turns, off the main actor: each request can wait out a
+    /// timeout on a service that has stopped answering.
+    private static func interrupt(_ sessions: [String]) async {
+        guard !sessions.isEmpty else { return }
+        await Task.detached(priority: .utility) {
+            for session in sessions { OpenCodeProbe.interrupt(sessionID: session) }
+        }.value
     }
 
     /// Close the terminal of every run a backstop ended — the stillness clock, or the
@@ -1181,6 +1231,9 @@ final class Store: ObservableObject {
     /// process walked out to whatever terminal is showing it. A synthesized run has no run
     /// directory, so it never has a handle and the walk is its only route; a run the mesh
     /// placed back here is in the same position.
+    ///
+    /// An OpenCode 2.x run this reaps is interrupted too, whatever its window does
+    /// (`retireFinished`).
     private func reapWedgedWindows(_ t: AgentState.Tick) -> Set<String> {
         var refused: Set<String> = []
         for record in t.reapable {

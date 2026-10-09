@@ -37,6 +37,7 @@ from diplomat_runtime import (
     core,
     review,
     runner,
+    usagescan,
 )
 from . import (
     deviceallocator,
@@ -279,9 +280,16 @@ class SettingsView(QWidget):
         self._runner_pill.set_state(label, _PURPLE)
         self._runner_nest.setVisible(foreign)
         self._model_field.setPlaceholderText(f"model — blank lets {label} choose")
-        found = shutil.which(chosen)
+        # OpenCode's is resolved through the user's shell, as its spawns are, which may
+        # name a different install than this app's PATH does.
+        found = (usagescan.opencode_binary() if chosen == runner.OPENCODE
+                 else shutil.which(chosen))
         if found:
             where = f"Spawns run `{chosen}` ({found})."
+        elif chosen == runner.OPENCODE:
+            where = (f"Neither your login shell nor this app's PATH has an `{chosen}` "
+                     f"executable — check it if spawned runs finish instantly without "
+                     f"doing anything.")
         else:
             where = (f"`{chosen}` is not on this app's PATH. Agents run under your "
                      f"login shell, so an rc-only install still works — but check it "

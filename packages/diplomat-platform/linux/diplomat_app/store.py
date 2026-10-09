@@ -33,6 +33,7 @@ from diplomat_runtime import (
     autobudget,
     autofix,
     core,
+    opencodeapi,
     promptcore,
     review,
     runner,
@@ -1491,9 +1492,12 @@ class Store(QObject):
         Which runner is spawned is written down here rather than re-read later: the
         setting is what the NEXT spawn will use, so a run started under one runner and
         asked about after the operator switched would be interrogated through the
-        wrong store. An OpenCode run also gets a port reserved for its own server. A
-        port that cannot be had is not a failure to spawn — the run goes ahead without
-        one and is read off its screen, exactly as a Claude Code run is.
+        wrong store. An OpenCode 1.x run also gets a port reserved for its own server.
+        A port that cannot be had is not a failure to spawn — the run goes ahead without
+        one and is read off its screen, exactly as a Claude Code run is. An OpenCode 2.x
+        run has no server of its own and gets no port: its session is minted and staged
+        instead (:func:`review.stage_opencode_session`) and bound to the run before the
+        spawn, so the probe asks the per-user service about it from the first tick.
         """
         now = time.time()
         record = agentregistry.create_run(
@@ -1504,16 +1508,24 @@ class Store(QObject):
                 ledger_key=ledger_key),
             prompt)
         chosen = agentregistry.stage_runner(record.run_id)
-        port = (agentregistry.stage_port(record.run_id)
-                if chosen == runner.OPENCODE else None)
+        port = None
+        staged = {}
         try:
+            if chosen == runner.OPENCODE:
+                session_id = review.stage_opencode_session(
+                    str(agentregistry.prompt_path(record.run_id)))
+                if session_id:
+                    agentregistry.bind_session(record.run_id, session_id)
+                    staged = {"opencode_session": session_id}
+                else:
+                    port = agentregistry.stage_port(record.run_id)
             review.spawn(prompt, self.terminal,
                          done_path=str(agentregistry.done_path(record.run_id)),
                          pid_path=str(agentregistry.pid_path(record.run_id)),
                          prompt_file=str(agentregistry.prompt_path(record.run_id)),
                          port=port,
                          settings_file=agentregistry.stage_hooks(record.run_id),
-                         session=tmuxwatch.session_name(record.run_id))
+                         session=tmuxwatch.session_name(record.run_id), **staged)
         except review.SpawnError:
             agentregistry.forget({record.run_id})
             raise
@@ -2458,6 +2470,15 @@ class Store(QObject):
         gone = [r for r in t.retirable if r.run_id not in refused]
         if not gone:
             return
+        # A 2.x OpenCode turn outlives its TUI (:func:`opencodeapi.interrupt`). Stopped
+        # before pricing, so the export is final, and only with no TUI attached to it;
+        # the reaper has already stopped the ones it closed.
+        reaped = {r.run_id for r in t.reapable}
+        sessions = [probes.service_session(r) for r in gone if r.run_id not in reaped]
+        attached = set(probes.live_service_sessions()) if any(sessions) else set()
+        for session_id in sessions:
+            if session_id and session_id not in attached:
+                opencodeapi.interrupt(session_id)
         # Every pricing input comes out of the run directory, so all of them must be
         # read before `forget` deletes it. A run the mesh placed leaves no sentinel
         # here, and `record_completion` dates that one from its transcript; now() is
@@ -2487,6 +2508,7 @@ class Store(QObject):
                          f"{verdict.reason if verdict else 'no verdict'}")
         self.refresh_activity()
         agentregistry.forget({r.run_id for r in gone})
+        probes.forget_adopted({r.run_id for r in gone})
         for r, exited_at, prompt, session_id, agent_runner in retired:
             telemetry.record_completion(r.ledger_key, prompt, r.dispatched_at,
                                         exited_at, now, session_id=session_id,
@@ -2537,6 +2559,10 @@ class Store(QObject):
         """
         refused: set[str] = set()
         for record in t.reapable:
+            # A 2.x OpenCode turn outlives its window (:func:`opencodeapi.interrupt`).
+            session_id = probes.service_session(record)
+            if session_id:
+                opencodeapi.interrupt(session_id)
             if not (tmuxwatch.kill_session(tmuxwatch.session_name(record.run_id))
                     or tmuxwatch.kill_session_for_tty(record.tty)):
                 refused.add(record.run_id)
