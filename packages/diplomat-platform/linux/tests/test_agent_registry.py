@@ -265,11 +265,26 @@ def test_a_merged_probe_that_fails_for_one_pr_still_answers_for_the_rest(monkeyp
     def state(args, **_):
         if args[2] == "7":
             raise RuntimeError("gh timed out")
-        return "MERGED\n"
+        return b'{"state":"MERGED"}\n'
 
     monkeypatch.setattr(gh, "run", state)
     obs = probes.merged_prs({7, 8})
     assert obs.status == A.PRESENT and obs.value == {8}
+
+
+def test_the_merged_probe_asks_the_configured_repo_not_the_working_directory(monkeypatch):
+    """The same number names a different PR in whatever checkout the app runs from."""
+    from diplomat_runtime import gh
+    asked = []
+    def state(args, **_):
+        asked.append(args)
+        return b'{"state":"CLOSED"}\n'
+
+    monkeypatch.setattr(gh, "run", state)
+    monkeypatch.setattr(probes.core, "config",
+                        lambda: {"owner": "software-mansion", "repo": "argent"})
+    assert probes.merged_prs({166}).value == set()
+    assert asked[0][asked[0].index("--repo") + 1] == "software-mansion/argent"
 
 
 def test_the_pane_probe_asks_only_about_the_ttys_of_tracked_runs(monkeypatch):

@@ -15,6 +15,7 @@ bays, never an agent declared finished.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -478,13 +479,16 @@ def merged_prs(pr_numbers: set[int]) -> Observation:
     if not pr_numbers:
         return Observation.present(set())
     from diplomat_runtime import gh
+    cfg = core.config()
+    repo = f"{cfg['owner']}/{cfg['repo']}"
     merged = set()
     for n in sorted(pr_numbers):
         try:
-            out = gh.run(["pr", "view", str(n), "--json", "state", "-q", ".state"])
+            out = gh.run(["pr", "view", str(n), "--repo", repo, "--json", "state"])
+            state = json.loads(out).get("state")
         except Exception:  # noqa: BLE001 - a probe never raises into the tick
             continue
-        if (out or "").strip() == "MERGED":
+        if state == "MERGED":
             merged.add(n)
     return Observation.present(merged)
 
