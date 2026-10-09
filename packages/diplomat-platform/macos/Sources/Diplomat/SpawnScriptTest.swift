@@ -257,6 +257,124 @@ enum SpawnScriptTest {
         check("the refusal names the terminal and how long it waited",
               why.contains("Ghostty") && why.contains("\(Int(AgentState.spawnGrace))s"), why)
 
+        // The agent's GitHub token: read by the spawned shell from a Keychain item named
+        // in config, so only the NAME is ever in the AppleScript or argv, and a token
+        // that cannot be read starts nothing rather than leaving the broad login in place.
+        print("\nagent token: read in the shell, and nothing runs without it")
+        check("no configured item leaves the spawn without a gate",
+              AgentSpawner.tokenExport(keychainItem: "") == nil)
+        check("the item is read by `security`, and an empty answer refused",
+              AgentSpawner.tokenExport(keychainItem: "diplomat-agent-gh")
+                == "GH_TOKEN=$(security find-generic-password -s 'diplomat-agent-gh' -w) "
+                + "&& [ -n \"$GH_TOKEN\" ] && export GH_TOKEN GIT_CONFIG_COUNT=2 "
+                + "GIT_CONFIG_KEY_0=credential.https://github.com.helper GIT_CONFIG_VALUE_0= "
+                + "GIT_CONFIG_KEY_1=credential.https://github.com.helper "
+                + "GIT_CONFIG_VALUE_1='!gh auth git-credential'")
+        let tokenDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("diplomat-token-\(UUID().uuidString)")
+        let stubs = tokenDir.appendingPathComponent("bin")
+        try? FileManager.default.createDirectory(at: stubs, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tokenDir) }
+        let dummy = "github_pat_DUMMY_NOT_REAL"
+        let seen = tokenDir.appendingPathComponent("seen")
+        // Stand-ins, first on PATH: `claude` so no agent can start, `security` so no real
+        // Keychain item is needed for the case that finds one.
+        func stub(_ name: String, _ body: String) {
+            let url = stubs.appendingPathComponent(name)
+            try? "#!/bin/sh\n\(body)\n".write(to: url, atomically: true, encoding: .utf8)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755],
+                                                   ofItemAtPath: url.path)
+        }
+        let gitSeen = tokenDir.appendingPathComponent("git")
+        // The password git would push to github.com with stays in a variable: unless the
+        // helper reset works, it is whatever `osxkeychain` holds for the operator.
+        stub("claude", """
+            printf %s "$GH_TOKEN" > '\(seen.path)'
+            pw=$(printf 'protocol=https\\nhost=github.com\\n\\n' \\
+                | GIT_TERMINAL_PROMPT=0 git credential fill 2>/dev/null | sed -n 's/^password=//p')
+            [ -n "$pw" ] && [ "$pw" = "$GH_TOKEN" ] && : > '\(gitSeen.path)'
+            """)
+        // What `gh auth git-credential` answers for github.com once `GH_TOKEN` is set.
+        stub("gh", """
+            [ "$1 $2 $3" = "auth git-credential get" ] || exit 1
+            printf 'username=x-access-token\\npassword=%s\\n' "$GH_TOKEN"
+            """)
+        func runGated(item: String) -> (status: Int32, pid: Bool, done: Bool, seen: String?) {
+            for f in ["pid", "done", "seen", "git"] {
+                try? FileManager.default.removeItem(at: tokenDir.appendingPathComponent(f))
+            }
+            let plan = AgentSpawner.SpawnPlan(
+                promptFile: tokenDir.appendingPathComponent("prompt.txt"),
+                donePath: tokenDir.appendingPathComponent("done").path,
+                pidPath: tokenDir.appendingPathComponent("pid").path,
+                runner: .claude, port: 0, tokenItem: item)
+            let cmd = AgentSpawner.shellCommand(plan)
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/bin/sh")
+            p.arguments = ["-c", cmd]
+            // `/bin/sh` as the inner `$SHELL`, with no rc, so nothing of this machine's
+            // own shell setup runs.
+            p.environment = ["PATH": "\(stubs.path):/usr/bin:/bin", "SHELL": "/bin/sh",
+                             "HOME": tokenDir.path, "ENV": "", "GH_TOKEN": "broad"]
+            p.standardOutput = Pipe()
+            p.standardError = Pipe()
+            try? p.run()
+            p.waitUntilExit()
+            let at = { (f: String) in
+                FileManager.default.fileExists(atPath: tokenDir.appendingPathComponent(f).path)
+            }
+            return (p.terminationStatus, at("pid"), at("done"),
+                    try? String(contentsOf: seen, encoding: .utf8))
+        }
+        // The real `security`, asked for an item nobody has.
+        let missing = runGated(item: "diplomat-selftest-\(UUID().uuidString)")
+        check("an item the Keychain does not hold starts nothing",
+              missing.status != 0 && !missing.pid && missing.seen == nil,
+              "status \(missing.status), pid \(missing.pid)")
+        // No exit sentinel either: that would read as a run that finished.
+        check("…and writes no exit sentinel", !missing.done)
+        stub("security", "printf '%s\\n' '\(dummy)'")
+        let found = runGated(item: "diplomat-agent-gh")
+        check("an item it holds reaches the agent as GH_TOKEN, over an inherited one",
+              found.seen == dummy && found.pid && found.done,
+              "seen \(found.seen ?? "nil")")
+        check("…and is what git hands github.com over HTTPS",
+              FileManager.default.fileExists(atPath: gitSeen.path))
+        stub("security", "printf ''")
+        check("an empty item starts nothing", runGated(item: "diplomat-agent-gh").seen == nil)
+        // What `spawn` asks before any window: the same answers, from this process.
+        check("an item the Keychain does not hold is unreadable",
+              !AgentSpawner.tokenReadable(keychainItem: "diplomat-selftest-\(UUID().uuidString)"))
+        let path = ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin"
+        setenv("PATH", "\(stubs.path):\(path)", 1)
+        stub("security", "printf '%s\\n' '\(dummy)'")
+        check("an item holding a token is readable",
+              AgentSpawner.tokenReadable(keychainItem: "diplomat-agent-gh"))
+        // What the real `security` prints for an item stored with an empty secret.
+        stub("security", "printf '\\n'")
+        check("an item holding an empty secret is unreadable",
+              !AgentSpawner.tokenReadable(keychainItem: "diplomat-agent-gh"))
+        setenv("PATH", path, 1)
+        check("…and refusing it names the item",
+              AgentSpawner.SpawnError.noToken(item: "diplomat-agent-gh").errorDescription
+                == "no agent token in Keychain item 'diplomat-agent-gh'")
+        let plain = AgentSpawner.shellCommand(AgentSpawner.SpawnPlan(
+            promptFile: URL(fileURLWithPath: "/tmp/p.txt"), donePath: "/tmp/d",
+            pidPath: "/tmp/pid", runner: .claude, port: 0))
+        check("a spawn with no item is the command it always was",
+              !plain.contains("GH_TOKEN") && plain.contains("2>/dev/null; \"$SHELL\" -i -c "))
+        let named = AgentSpawner.appleScript(
+            for: .iterm, shellCommand: AgentSpawner.shellCommand(AgentSpawner.SpawnPlan(
+                promptFile: URL(fileURLWithPath: "/tmp/p.txt"), donePath: "/tmp/d",
+                pidPath: "/tmp/pid", runner: .claude, port: 0, tokenItem: "diplomat-agent-gh")))
+        check("the AppleScript names the item it reads",
+              named.contains("diplomat-agent-gh"))
+        let whyToken = AgentSpawner.SpawnError.neverStarted(
+            terminal: "Ghostty", waited: AgentState.spawnGrace, tokenItem: "diplomat-agent-gh")
+            .errorDescription ?? ""
+        check("a spawn that never started names the item it may have failed on",
+              whyToken.contains("Keychain item 'diplomat-agent-gh'"), whyToken)
+
         // The one-time move of an existing install onto Ghostty. iTerm is what every
         // install reads today, whether that was a decision or a default nobody touched;
         // Terminal.app was picked over an installed iTerm, which is a decision.

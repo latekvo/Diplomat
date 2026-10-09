@@ -884,7 +884,8 @@ final class Store: ObservableObject {
             donePath: AgentRegistry.donePath(record.runID).path,
             pidPath: AgentRegistry.pidPath(record.runID).path,
             runner: runner, port: port,
-            settingsPath: AgentRegistry.stageHooks(record.runID))
+            settingsPath: AgentRegistry.stageHooks(record.runID),
+            tokenItem: AppConfig.agentTokenKeychainItem)
         do {
             // Detached: the spawn's `osascript` blocks for `inputSettleDelay` seconds,
             // and this actor draws the panel.
@@ -898,7 +899,8 @@ final class Store: ObservableObject {
             var seeded = record
             seeded.tty = result.tty
             Store.persistRunChanges([seeded])
-            AuditLog.log(source, auditAction ?? kind, label)
+            AuditLog.log(source, auditAction ?? kind,
+                         label + (plan.tokenItem.isEmpty ? "" : AgentSpawner.tokenAuditNote))
             return result.terminal
         } catch {
             // Nothing is running, so the record would be a bay held for an agent that
@@ -2837,7 +2839,9 @@ final class Store: ObservableObject {
                 trackMeshRun(job, node: node, attemptNumber: attemptNumber)
                 return .standDown
             case .spawned(let node, let onThisMachine):
-                AuditLog.log(source.rawValue, job.auditAction, rowLabel)
+                let token = onThisMachine && !AppConfig.agentTokenKeychainItem.isEmpty
+                AuditLog.log(source.rawValue, job.auditAction,
+                             rowLabel + (token ? AgentSpawner.tokenAuditNote : ""))
                 // Booked wherever the mesh put it, before the next job of this poll asks
                 // how many agents are running — left unbooked, every dispatch of a burst
                 // measured the same empty machine and the cap held back nothing at all.

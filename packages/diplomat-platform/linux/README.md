@@ -129,7 +129,10 @@ here there are no session rows to sort, so the list starts at that order's *star
 
 - Python 3.10+
 - PySide6 (`pip install -r requirements.txt`)
-- GitHub CLI `gh`, authenticated (`gh auth login`)
+- GitHub CLI `gh`, authenticated (`gh auth login`). Agents can run on a narrower
+  token than that login instead - see
+  [A narrow GitHub token for agents](../../../README.md#a-narrow-github-token-for-agents)
+  (on Linux it is read from the file `agentTokenFile` names)
 - The `diplomat-core` binary for prompt assembly — build it with
   `./install/build-core.sh` (needs a Swift toolchain once), or point
   `DIPLOMAT_CORE_BIN` at a prebuilt one

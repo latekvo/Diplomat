@@ -825,6 +825,56 @@ def test_panel_spawn_never_routes_to_the_mesh(store, monkeypatch):
     assert len(local) == 1
 
 
+def test_the_audit_says_which_runs_got_the_agent_token(store, monkeypatch):
+    """The operator's only record of whether a run held the narrow token or the broad
+    ``gh auth login`` one."""
+    from diplomat_runtime import activity
+
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    _spawn_recorder(monkeypatch)
+    monkeypatch.setattr(review, "token_export", lambda: "")
+    assert store.dispatch_agent(_job(number=1), autofix.SOURCE_PANEL) == "spawned"
+    monkeypatch.setattr(review, "token_export", lambda: "GH_TOKEN=$(cat -- /t)")
+    assert store.dispatch_agent(_job(number=2), autofix.SOURCE_PANEL) == "spawned"
+
+    lines = [e.detail for e in activity.read() if e.action == "review"]
+    assert sorted(lines) == ["Review · #1", "Review · #2 · agent GH token"]
+
+
+def test_a_spawn_that_fails_says_why_in_the_audit(store, monkeypatch):
+    """The panel's only account of a refused spawn, such as an agent token that
+    cannot be read - and the run it booked is forgotten again."""
+    from diplomat_runtime import activity, agentregistry
+
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+
+    def refuse(*a, **k):
+        raise review.SpawnError("no agent token in /secrets/t")
+
+    monkeypatch.setattr(review, "spawn", refuse)
+    assert store.dispatch_agent(_job(number=1), autofix.SOURCE_PANEL) == "failed"
+
+    lines = [e.detail for e in activity.read() if e.action == "spawn-failed"]
+    assert lines == ["Review · #1 failed to spawn: no agent token in /secrets/t"]
+    assert agentregistry.load() == []
+
+
+@pytest.mark.parametrize("here", [True, False], ids=["here", "peer"])
+def test_a_mesh_run_is_marked_only_when_this_machine_runs_it(store, monkeypatch, here):
+    """A placement back here is spawned by this machine's mesh node, on this
+    machine's config and so on the token; a peer's spawn is on the peer's."""
+    from diplomat_runtime import activity
+
+    _mesh_store(monkeypatch, store, dispatch=_spawned_here() if here else _spawned())
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    _spawn_recorder(monkeypatch)
+    monkeypatch.setattr(review, "token_export", lambda: "GH_TOKEN=$(cat -- /t)")
+    assert store.dispatch_agent(_job(number=1, mesh=True), autofix.SOURCE_AUTO) == "spawned"
+
+    lines = [e.detail for e in activity.read() if e.action == "review"]
+    assert lines == ["Review · #1" + (" · agent GH token" if here else "")]
+
+
 # MARK: - a mesh placement that lands back here is an agent on THIS machine
 
 

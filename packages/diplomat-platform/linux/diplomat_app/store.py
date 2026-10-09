@@ -1292,7 +1292,6 @@ class Store(QObject):
                                      job.ledger_key, job.prompt, node=node,
                                      work_key=job.work_key, here=ran_here,
                                      label=row_label, kind=job.kind)
-                ok = True
             else:
                 # Registered whether or not it is PR-scoped. A sweep or an audit has
                 # nothing to dedup against, but it is still an agent this applet opened
@@ -1300,14 +1299,18 @@ class Store(QObject):
                 # and a directory nothing ever cleans up. What it costs depends on how
                 # it was dispatched, not on having a PR: the cap counts automatic runs
                 # and pricing follows the ledger key.
-                ok = self._spawn_tracked(job.prompt, job.pr_url, job.pr_number,
-                                         source, job.ledger_key,
-                                         label=row_label, kind=job.kind)
-            if not ok:
-                activity.log(source, "spawn-failed", f"{job.label} failed to spawn")
-                self.refresh_activity()
-                return "failed"
-            activity.log(source, job.audit_action, row_label)
+                try:
+                    self._spawn_tracked(job.prompt, job.pr_url, job.pr_number,
+                                        source, job.ledger_key,
+                                        label=row_label, kind=job.kind)
+                except review.SpawnError as exc:
+                    activity.log(source, "spawn-failed",
+                                 f"{job.label} failed to spawn: {exc}")
+                    self.refresh_activity()
+                    return "failed"
+            token = (routed != "spawned" or ran_here) and bool(review.token_export())
+            activity.log(source, job.audit_action,
+                         row_label + (review.TOKEN_AUDIT_NOTE if token else ""))
             # The telemetry ledger tracks the MONITORS, so only an auto dispatch is
             # recorded — a wizard click is the operator's own doing and has no queue
             # instant to be late against. A mesh placement on a PEER spends that
@@ -1420,9 +1423,9 @@ class Store(QObject):
 
     def _spawn_tracked(self, prompt: str, url: str | None, number: int | None,
                        source: str, ledger_key: str = "", label: str = "",
-                       kind: str = "") -> bool:
-        """Register a run, then spawn its agent into it. Returns whether the terminal
-        launched.
+                       kind: str = "") -> None:
+        """Register a run, then spawn its agent into it. Raises
+        :class:`review.SpawnError`, with the run forgotten, when no terminal launched.
 
         The record is written BEFORE the spawn, not after. A terminal takes seconds to
         open and the poll that dispatched it can ask about the same PR again inside
@@ -1470,8 +1473,7 @@ class Store(QObject):
                          session=tmuxwatch.session_name(record.run_id))
         except review.SpawnError:
             agentregistry.forget({record.run_id})
-            return False
-        return True
+            raise
 
     def _track_mesh_run(self, url: str | None, number: int | None, source: str,
                         ledger_key: str, prompt: str, node: str, work_key: str,

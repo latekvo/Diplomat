@@ -142,7 +142,8 @@ enum AgentSpawner {
     enum SpawnError: LocalizedError {
         case write(String)
         case osascript(code: Int32, stderr: String)
-        case neverStarted(terminal: String, waited: TimeInterval)
+        case neverStarted(terminal: String, waited: TimeInterval, tokenItem: String = "")
+        case noToken(item: String)
 
         var errorDescription: String? {
             switch self {
@@ -150,9 +151,15 @@ enum AgentSpawner {
             case .osascript(let code, let stderr):
                 let s = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
                 return "osascript exited \(code): \(s.isEmpty ? "(no stderr)" : s)"
-            case .neverStarted(let terminal, let waited):
+            case .neverStarted(let terminal, let waited, let tokenItem):
+                // The token gate stops the command before its pid file, and the window
+                // that showed why is closed with the failed spawn.
+                let token = tokenItem.isEmpty ? ""
+                    : ", or no agent token could be read from Keychain item '\(tokenItem)'"
                 return "\(terminal) opened a window but never ran the command "
-                    + "(no pid file after \(Int(waited))s)"
+                    + "(no pid file after \(Int(waited))s\(token))"
+            case .noToken(let item):
+                return "no agent token in Keychain item '\(item)'"
             }
         }
     }
@@ -181,6 +188,10 @@ enum AgentSpawner {
         /// report is the only evidence that separates a finished agent from a working
         /// one — both are the same live process at the same pid.
         var settingsPath: String? = nil
+        /// The Keychain item this run's `GH_TOKEN` is read from, or "" for a run left on
+        /// the `gh auth login` token. Resolved by the caller, like `runner`, so the
+        /// audit line and the command agree on which one the run got.
+        var tokenItem: String = ""
     }
 
     /// What a spawn produced: the handle the applet keeps so it can raise the window
@@ -206,6 +217,9 @@ enum AgentSpawner {
     @discardableResult
     static func spawn(_ plan: SpawnPlan, terminal preferred: SpawnTerminal,
                       restoreFocusTo restoreBID: String? = nil) throws -> SpawnResult {
+        if !plan.tokenItem.isEmpty, !tokenReadable(keychainItem: plan.tokenItem) {
+            throw SpawnError.noToken(item: plan.tokenItem)
+        }
         let term = resolved(preferred)
         // Stamped before the window is asked for, so this deadline and the tick's
         // `spawnGrace` measure the same window from the same instant — neither can
@@ -220,7 +234,8 @@ enum AgentSpawner {
             // initialise still gets one, and it would otherwise sit there for good.
             _ = AgentWindows.close(window)
             throw SpawnError.neverStarted(terminal: term.title,
-                                          waited: AgentState.spawnGrace)
+                                          waited: AgentState.spawnGrace,
+                                          tokenItem: plan.tokenItem)
         }
         return SpawnResult(terminal: term, window: window,
                            tty: AgentProbes.shortTTY(tty))
@@ -407,14 +422,74 @@ enum AgentSpawner {
     /// the applet can price the run even while its window stays open. It only ever
     /// fires on EXIT, though, and finishing a turn is not exiting — which is what the
     /// hooks in `plan.settingsPath` answer.
+    ///
+    /// With a `plan.tokenItem`, everything after the `cd` runs behind `tokenExport`,
+    /// whose export the agent inherits.
     static func shellCommand(_ plan: SpawnPlan) -> String {
         let agent = plan.runner.agentCommand(promptFile: plan.promptFile.path,
                                              model: AppConfig.agentModel, port: plan.port,
                                              settingsFile: plan.settingsPath)
         let inner = "printf %s $$ > \(shq(plan.pidPath)); \(agent)"
-        return "cd \(shq(repoPath)) 2>/dev/null; \"$SHELL\" -i -c \(shq(inner)); "
-            + sentinel(plan.donePath)
+        var body = "\"$SHELL\" -i -c \(shq(inner)); " + sentinel(plan.donePath)
+        if let token = tokenExport(keychainItem: plan.tokenItem) {
+            body = "\(token) && { \(body); }"
+        }
+        return "cd \(shq(repoPath)) 2>/dev/null; " + body
     }
+
+    /// Appended to the audit line of a run spawned behind `tokenExport`. Same text on
+    /// the Linux side (`review.TOKEN_AUDIT_NOTE`).
+    static let tokenAuditNote = " · agent GH token"
+
+    /// The shell test that exports the operator's agent token as `GH_TOKEN`, or nil for
+    /// a run left on whatever `gh auth login` stored. Twin of `review.token_export`.
+    ///
+    /// `gh` ranks `GH_TOKEN` above its keyring login, and `gitTokenHelper` makes git over
+    /// HTTPS use it too, so a fine-grained token scoped to `contents` + `pull-requests`
+    /// replaces the broad `repo, workflow, gist` one for the agent and everything it
+    /// runs. Only the Keychain item's NAME is configured, and the spawned shell reads it
+    /// itself, so the secret never enters the AppleScript, the staged Ghostty launcher,
+    /// any argv `ps` shows, or the config file the mesh copies.
+    ///
+    /// `shellCommand` runs the whole spawn behind this test, so a token that cannot be
+    /// read starts nothing rather than falling back to the broad login. The emptiness
+    /// check is part of that - `gh` reads an empty `GH_TOKEN` as unset. `spawn` asks
+    /// `tokenReadable` first, so the same failure opens no window.
+    static func tokenExport(keychainItem: String) -> String? {
+        guard !keychainItem.isEmpty else { return nil }
+        return "GH_TOKEN=$(security find-generic-password -s \(shq(keychainItem)) -w) "
+            + "&& [ -n \"$GH_TOKEN\" ] && export GH_TOKEN \(gitTokenHelper)"
+    }
+
+    /// Whether `keychainItem` holds a non-empty secret, read as `tokenExport`'s gate reads
+    /// it. Twin of `review.check_token`.
+    static func tokenReadable(keychainItem: String) -> Bool {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        proc.arguments = ["security", "find-generic-password", "-s", keychainItem, "-w"]
+        let out = Pipe()
+        proc.standardOutput = out
+        proc.standardError = FileHandle.nullDevice
+        proc.standardInput = FileHandle.nullDevice
+        guard (try? proc.run()) != nil else { return false }
+        let deadline = Date() + 10
+        while proc.isRunning, Date() < deadline { usleep(50_000) }
+        guard !proc.isRunning else {
+            proc.terminate()
+            return false
+        }
+        let secret = out.fileHandleForReading.readDataToEndOfFile()
+        return proc.terminationStatus == 0 && secret.contains { $0 != UInt8(ascii: "\n") }
+    }
+
+    /// Points git's credential helper for github.com at `gh`, which hands out
+    /// `GH_TOKEN`. The empty first value drops every helper configured before it (macOS
+    /// git ships `osxkeychain`, which holds the broad login), and env config outranks
+    /// every config file. Twin of `review.GIT_TOKEN_HELPER`.
+    static let gitTokenHelper = "GIT_CONFIG_COUNT=2 "
+        + "GIT_CONFIG_KEY_0=credential.https://github.com.helper GIT_CONFIG_VALUE_0= "
+        + "GIT_CONFIG_KEY_1=credential.https://github.com.helper "
+        + "GIT_CONFIG_VALUE_1='!gh auth git-credential'"
 
     /// The exit-code sentinel write, best-effort.
     ///

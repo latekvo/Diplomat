@@ -131,6 +131,51 @@ The two packages are the same launcher published under one name to two indexes
 the same plan on every machine shape either can meet. Neither installs anything but
 the launcher - one file of standard library on each side.
 
+### A narrow GitHub token for agents
+
+By default a spawned agent uses whatever `gh auth login` stored, which is usually
+`repo, workflow, gist`: push access to every repository you can push to, and
+`workflow` lets a commit add a GitHub Actions workflow that runs with the
+repository's secrets. Review, fix and conflict runs need only `contents` and
+`pull-requests`. To give agents just that (phase 1 of
+[#139](https://github.com/latekvo/Diplomat/issues/139)):
+
+1. **Mint** a fine-grained personal access token at
+   <https://github.com/settings/personal-access-tokens/new>: *Only select
+   repositories* (the ones Diplomat works on), **Contents: Read and write**,
+   **Pull requests: Read and write**, nothing else. An organization may have to
+   approve it before it works on the org's repositories.
+2. **Store** it where only you can read it. On macOS, in the login Keychain
+   (`-w` last makes `security` prompt for it, so it stays out of your shell history):
+   ```bash
+   security add-generic-password -a "$USER" -s diplomat-agent-gh -w
+   ```
+   On Linux, in a file only you can read:
+   ```bash
+   (umask 077; read -rs t; printf '%s\n' "$t" > ~/.diplomat/agent-token)
+   ```
+3. **Name** it in `~/.diplomat/config.json` - the name, never the token, since that
+   file is world-readable and copied around by the mesh. `"agentTokenKeychainItem":
+   "diplomat-agent-gh"` on macOS (`plutil -replace agentTokenKeychainItem -string
+   diplomat-agent-gh ~/.diplomat/config.json`), `"agentTokenFile":
+   "~/.diplomat/agent-token"` on Linux.
+
+Every spawn on the machine then reads it - panel and automatic runs on both
+platforms, and runs a mesh node starts here - inside the spawned shell, and exports
+it as `GH_TOKEN`, which `gh` ranks above its own login. The agent's `git` over HTTPS
+to github.com gets it too, from `gh auth git-credential`, instead of any credential
+helper you configured (macOS git ships `osxkeychain`, which holds your broad login).
+The token itself is never in an AppleScript, an argv `ps` can show, a prompt file or
+the activity feed; the feed marks each run started on it with `· agent GH token`. A
+token that cannot be read (missing item, empty file) starts nothing rather than
+falling back to the broad login: the spawn fails, and the work stays owed. Remove the
+key to go back.
+
+What it does not cover: `git` over SSH still pushes with your SSH keys, and a
+`GH_TOKEN` or `GIT_CONFIG_COUNT` your shell rc exports replaces this one, because the
+agent's shell sources your rc after Diplomat sets it. To check it took, run
+`gh auth status` inside a spawned agent's window: it names `GH_TOKEN` as the source.
+
 ## The library
 
 | Tool | What it lists |
