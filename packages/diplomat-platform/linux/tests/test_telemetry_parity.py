@@ -500,3 +500,46 @@ def test_the_junk_lines_produced_no_tasks(both):
     assert "review:h/o/r#99@zz" not in keys, "an unknown event verb created a task"
     assert "review:h/o/r#98@yy" not in keys, "an event with no `at` created a task"
     assert "" not in keys
+
+
+def test_a_hand_edited_flag_or_number_folds_the_same_on_both_sides():
+    """A value of the wrong JSON type, both ways round. `"remote": 1` is the one that
+    matters: `JSONSerialization` hands a JSON number to `as? Bool` as an `NSNumber`,
+    which reads as `true`, so a fold on it alone takes a local task for a peer's and
+    leaves it out of every figure Python counts it in."""
+    key, peer = "review:h/o/r#61@aa", "review:h/o/r#62@bb"
+    lines = [json.dumps(e) for e in [
+        {"at": NOW - 7200, "ev": "started", "key": key, "remote": 1, "attempt": 1},
+        {"at": NOW - 7000, "ev": "done", "key": key, "tokens": True, "pr": True},
+        {"at": NOW - 7200, "ev": "started", "key": peer, "remote": True, "attempt": 1},
+        {"at": True, "ev": "queued", "key": "review:h/o/r#63@cc"},
+    ]]
+    swift, python = _swift(lines), _python(lines)
+    assert python == swift
+    tasks = {t["key"]: t for t in python["tasks"]}
+    assert tasks[key]["remote"] is False
+    assert tasks[key]["tokens"] is None and tasks[key]["pr"] == 0
+    assert tasks[peer]["remote"] is True, "a real flag must still read as one"
+    assert set(tasks) == {key, peer}, "`\"at\": true` is no timestamp"
+
+
+def test_a_line_one_parser_refuses_is_skipped_by_both():
+    """`json` takes each of these lines and `JSONSerialization` none of them."""
+    lines = [
+        '{"at": %d, "ev": "started", "key": "review:h/o/r#71@aa", "tokens": Infinity}' % NOW,
+        '{"at": %d, "ev": "started", "key": "review:h/o/r#72@bb", "pr": 1%s}'
+        % (NOW, "0" * 400),
+        '{"at": %d, "ev": "started", "key": "review:h/o/r#73@cc\\ud800"}' % NOW,
+        '{"at": %d, "ev": "started", "key": "review:h/o/r#75@ee"}' % NOW,
+    ]
+    swift, python = _swift(lines), _python(lines)
+    assert python == swift
+    assert [t["key"] for t in python["tasks"]] == ["review:h/o/r#75@ee"]
+
+
+def test_a_duplicated_key_keeps_its_first_value_on_both_sides():
+    lines = ['{"at": %d, "ev": "started", "key": "review:h/o/r#76@ff", '
+             '"remote": true, "remote": 1}' % NOW]
+    swift, python = _swift(lines), _python(lines)
+    assert python == swift
+    assert [t["remote"] for t in python["tasks"]] == [True]

@@ -315,8 +315,7 @@ def _spawned(monkeypatch) -> list[dict]:
 def _spawn_tracked() -> str:
     from diplomat_app.store import Store
 
-    assert Store._spawn_tracked(Store(), PROMPT, "https://github.com/o/r/pull/7", 7,
-                                "click")
+    Store._spawn_tracked(Store(), PROMPT, "https://github.com/o/r/pull/7", 7, "click")
     return agentregistry.load()[0].run_id
 
 
@@ -934,6 +933,36 @@ def test_only_an_untracked_run_is_given_the_session_on_its_pr(service, repo_o_r,
     _gather(monkeypatch, [local, _untracked(), _untracked(8)], f"opencode --session {SID}")
     assert [probes.service_session(r) for r in (local, _untracked(), _untracked(8))] == [
         "", SID, ""]
+
+
+def test_a_held_tuis_session_is_its_prs_only_when_no_other_agent_is_up(service,
+                                                                      repo_o_r):
+    _opening(service, SID, PROMPT)
+    _opening(service, OTHER, PROMPT)
+    dump = _ps(f"opencode --session {SID}", f"opencode --session {OTHER}")
+    held_one: dict[int, str] = {}
+    held_all: dict[int, str] = {}
+    by_pid: dict[int, str] = {}
+    one = probes.live_agents(dump, held_one, held_pids={900}, by_pid=by_pid)
+    probes.live_agents(dump, held_all, held_pids={900, 901})
+    assert (one.value, held_one, held_all) == ({7: "pts/1"}, {7: OTHER}, {7: SID})
+    assert by_pid == {900: SID, 901: OTHER}
+
+
+def test_a_released_run_is_given_the_session_at_its_pid(service, repo_o_r, monkeypatch):
+    """A released run is held by its pid, so its PR's sighting is any other agent up on
+    the PR. Given that one's session, it is asked of, and on retiring interrupts, a
+    turn that is not its own."""
+    _opening(service, SID, PROMPT)
+    _opening(service, OTHER, PROMPT)
+    released_tui = RunRecord(run_id="untracked:7:900", dispatched_at=T0, pr_number=7,
+                             pid=900, tty="pts/0", untracked=True, released=True)
+    released_claude = RunRecord(run_id="untracked:7:902", dispatched_at=T0, pr_number=7,
+                                pid=902, tty="pts/2", untracked=True, released=True)
+    _gather(monkeypatch, [released_tui, released_claude], f"opencode --session {SID}",
+            f"opencode --session {OTHER}", "claude 'Review PR #7 in o/r'")
+    assert [probes.service_session(r) for r in (released_tui, released_claude)] == [
+        SID, ""]
 
 
 def test_an_untracked_2x_agent_whose_window_closed_is_interrupted(service, repo_o_r,

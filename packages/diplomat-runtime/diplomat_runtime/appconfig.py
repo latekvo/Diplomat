@@ -4,7 +4,8 @@ Nearly every setting belongs to one front-end and lives in that front-end's own
 store (``QSettings`` here, ``UserDefaults`` on macOS). A few can't: the repo root
 every spawn ``cd``s into, the cap on how many automatic agents may run here at
 once, the four knobs of the spending budget those agents are started against,
-and which agent CLI a spawn runs (with the model it is pinned to). Each is
+which agent CLI a spawn runs (with the model it is pinned to), and where that
+agent's GitHub token is read from. Each is
 consumed by whichever process picks the work up, and one of those is a **mesh
 node** — a separate process that is stdlib-only by design (the root README
 advertises joining a mesh with "no Qt needed") and that outlives the applet, so it
@@ -50,6 +51,11 @@ AGENT_RUNNER = "agentRunner"
 #: The model the selected runner is pinned to; "" lets that runner pick. A model id,
 #: never a credential: those stay in the runner's own provider store.
 AGENT_MODEL = "agentModel"
+#: Where a spawned agent's ``GH_TOKEN`` is read from, by name only: the macOS Keychain
+#: service of a generic password, and on Linux a file path. The token itself never
+#: enters this file — see :func:`review.token_export`.
+AGENT_TOKEN_KEYCHAIN_ITEM = "agentTokenKeychainItem"
+AGENT_TOKEN_FILE = "agentTokenFile"
 
 
 def path() -> Path:

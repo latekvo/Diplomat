@@ -280,6 +280,15 @@ def isolated_app_config(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def isolated_state_dir(tmp_path, monkeypatch):
+    """Redirect ``~/.local/state/diplomat`` to a per-test temp dir: quitting the applet
+    writes the operator-quit mark there, which would keep the operator's real tray from
+    being brought back after a crash."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    yield
+
+
+@pytest.fixture(autouse=True)
 def isolated_agent_registry(tmp_path, monkeypatch):
     """Redirect the run registry (``~/.diplomat/agents``) to a per-test temp dir.
 

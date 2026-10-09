@@ -52,6 +52,7 @@ the account still has tokens to spend.
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -134,12 +135,40 @@ def _flag(value: Any, default: bool = False) -> bool:
     that writes this format writes real booleans (:meth:`to_json`), so the only payload
     this refuses is a malformed one.
 
-    It is also what keeps the two decoders of this format agreeing. ``JSONInput`` in the
-    parity CLI is strict for the same reason and by the same rule; ``bool(...)`` here
+    It is also what keeps the Swift and Python decoders of this format agreeing.
+    ``JSONInput``, which the parity CLI and ``AgentRegistry.load`` both parse through,
+    is strict for the same reason and by the same rule; ``bool(...)`` here
     would read ``1`` as a flag that ``JSONInput`` refuses, and a string as one that no
     Swift cast can produce at all.
     """
     return value if isinstance(value, bool) else default
+
+
+def _number(value: Any) -> float | None:
+    """A JSON number, or ``None``: the Swift twin's ``as? NSNumber`` over a
+    ``JSONInput`` payload, where a boolean is a ``Flag`` no numeric cast takes. So,
+    like :func:`_flag` in the other direction, ``true`` is not ``1``; nor is ``"5"``
+    a number. Non-finite values are refused too, as ``int()`` would raise on them, and
+    so is an integer past float range, which ``float()`` raises on."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        number = float(value)
+    except OverflowError:
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _whole(value: Any) -> int | None:
+    """:func:`_number` truncated toward zero, as ``NSNumber.intValue`` does."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    number = _number(value)
+    return None if number is None else int(number)
+
+
+def _text(value: Any, default: str = "") -> str:
+    return value if isinstance(value, str) else default
 
 
 def _jsonable(value: Any) -> Any:
@@ -182,7 +211,7 @@ OCCUPYING = frozenset({RUNNING, STARTING, UNKNOWN})
 #: :data:`ENDED`. Wider than :data:`OCCUPYING` by AWAITING_INPUT, and the difference
 #: is the point: that session still holds the PR's context and is waiting to be typed
 #: at, so it must not get a second agent beside it even though it has given its bay
-#: back.
+#: back. A released agent blocks in none of them (:func:`in_flight`): its run ended.
 BLOCKING = OCCUPYING | {AWAITING_INPUT}
 
 #: The states a run is over in, every one of them positive evidence.
@@ -392,6 +421,10 @@ class RunRecord:
     #: with no record behind it. It gets a row and blocks a second dispatch, but
     #: carries no label, no ledger key and no start time.
     untracked: bool = False
+    #: The live agent of a run that ended (:func:`release_ended`), booked so the scan
+    #: does not re-book it as untracked. It holds no bay and blocks no dispatch; it is
+    #: kept for the stillness backstop and until its agent leaves.
+    released: bool = False
 
     @property
     def runs_here(self) -> bool:
@@ -409,29 +442,37 @@ class RunRecord:
             "claimSeenAt": self.claim_seen_at, "quietDigest": self.quiet_digest,
             "quietSince": self.quiet_since,
             "reapRefusedAt": self.reap_refused_at, "untracked": self.untracked,
+            "released": self.released,
         }
 
     @staticmethod
     def from_json(obj: dict) -> "RunRecord":
+        """Every field type-checked the way the Swift twin's casts check it, so a
+        hand-edited book reads as the same runs on both front-ends: a value of the
+        wrong JSON type is the field's default, never a coercion of it."""
+        placement = obj.get("placement")
         return RunRecord(
-            run_id=obj.get("runId", ""),
-            dispatched_at=float(obj.get("dispatchedAt", 0.0)),
-            pr_number=obj.get("prNumber"),
-            pr_url=obj.get("prUrl", ""),
-            kind=obj.get("kind", ""),
-            label=obj.get("label", ""),
-            source=obj.get("source", SOURCE_AUTO),
-            placement=obj.get("placement", PLACEMENT_LOCAL),
-            node=obj.get("node", ""),
-            work_key=obj.get("workKey", ""),
-            ledger_key=obj.get("ledgerKey", ""),
-            pid=obj.get("pid"),
-            tty=obj.get("tty", ""),
-            claim_seen_at=obj.get("claimSeenAt"),
-            quiet_digest=obj.get("quietDigest", ""),
-            quiet_since=obj.get("quietSince"),
-            reap_refused_at=obj.get("reapRefusedAt"),
+            run_id=_text(obj.get("runId")),
+            dispatched_at=_number(obj.get("dispatchedAt")) or 0.0,
+            pr_number=_whole(obj.get("prNumber")),
+            pr_url=_text(obj.get("prUrl")),
+            kind=_text(obj.get("kind")),
+            label=_text(obj.get("label")),
+            source=_text(obj.get("source"), SOURCE_AUTO),
+            placement=placement if placement in (
+                PLACEMENT_LOCAL, PLACEMENT_MESH_HERE, PLACEMENT_MESH_PEER)
+            else PLACEMENT_LOCAL,
+            node=_text(obj.get("node")),
+            work_key=_text(obj.get("workKey")),
+            ledger_key=_text(obj.get("ledgerKey")),
+            pid=_whole(obj.get("pid")),
+            tty=_text(obj.get("tty")),
+            claim_seen_at=_number(obj.get("claimSeenAt")),
+            quiet_digest=_text(obj.get("quietDigest")),
+            quiet_since=_number(obj.get("quietSince")),
+            reap_refused_at=_number(obj.get("reapRefusedAt")),
             untracked=_flag(obj.get("untracked")),
+            released=_flag(obj.get("released")),
         )
 
 
@@ -582,15 +623,20 @@ class Resolution:
     #: the strength of having SEEN the agent sitting in it, and this is the one ending
     #: where nothing ever did.
     unfindable: bool = False
+    #: Whether the deadline took this run's bay without ending it: an untracked run
+    #: still RUNNING a deadline after the scan first saw it (:func:`lapsed_for`). Ending
+    #: it would free nothing, since the next scan re-books the same agent, and a screen
+    #: that stays unreadable keeps it RUNNING on every pass.
+    lapsed: bool = False
 
     @property
     def occupying(self) -> bool:
-        return self.state in OCCUPYING
+        return self.state in OCCUPYING and not self.lapsed
 
     def to_json(self) -> dict:
         return {"runId": self.run_id, "state": self.state, "reason": self.reason,
                 "wedged": self.wedged, "expired": self.expired,
-                "unfindable": self.unfindable}
+                "unfindable": self.unfindable, "lapsed": self.lapsed}
 
 
 # MARK: - Claim sightings (pure, but stateful across ticks)
@@ -787,12 +833,17 @@ def resolve_one(record: RunRecord, evidence: Evidence, now: float,
        where the evidence could not be read at all — ending a run on that would retire
        it for being old on the one pass that saw nothing. Its one exception is the
        UNKNOWN that is about the record rather than a probe
-       (:attr:`Resolution.unfindable`), which no later pass can improve on.
+       (:attr:`Resolution.unfindable`), which no later pass can improve on. An
+       untracked run is not ended here but lapsed (:attr:`Resolution.lapsed`).
+
+    The first rung skips an untracked run: a landed PR does not make its agent leave,
+    so the next scan would only re-book it.
     """
     def done(state: str, reason: str) -> Resolution:
         return Resolution(record.run_id, state, reason)
 
-    if evidence.merged_prs.ok and record.pr_number is not None:
+    if (evidence.merged_prs.ok and record.pr_number is not None
+            and not record.untracked):
         if record.pr_number in evidence.merged_prs.value:
             return done(MERGED, f"PR #{record.pr_number} is merged")
 
@@ -809,6 +860,13 @@ def resolve_one(record: RunRecord, evidence: Evidence, now: float,
         out = _resolve_local(record, evidence, now, done)
     if out.state != RUNNING and not out.unfindable:
         return out
+    seen = lapsed_for(record, now, deadline)
+    if seen is not None:
+        return replace(out, reason=f"{out.reason}; first seen "
+                                   f"{apiwatch.human_interval(seen)} ago, so the "
+                                   f"{apiwatch.human_interval(deadline)} deadline "
+                                   "releases its bay",
+                       lapsed=True)
     expired = past_deadline(record, evidence.tokens_left, now, deadline)
     if expired is None:
         return out
@@ -862,22 +920,38 @@ def past_deadline(record: RunRecord, tokens: Observation, now: float,
       so :func:`synthesize_untracked` rebuilds it on the very next tick with a fresh
       stamp: the bay comes back for one tick and the same agent takes it again. Its
       stamp is when the scan first SAW the agent, so the age here would not even be
-      the run's;
+      the run's. :func:`lapsed_for` hands its bay back instead;
     * **a window this rung already failed to close** — for one deadline, and then it
       tries again; see :func:`_reap_cooling`.
 
     Every run this reaches is one :func:`cap_load` is counting — a bay is what there is
     to hand back — but not the reverse, and the gap is deliberate on both sides. An
-    untracked run holds a bay and is exempt above. So is a run on a tick whose evidence
-    could not be read, which the caller keeps out by asking this about a RUNNING verdict
-    or an unfindable one and no other: a bay held by a run nobody could look at this
-    pass is a bay kept.
+    untracked run is exempt above. So is a run on a tick whose evidence could not be
+    read, which the caller keeps out by asking this about a RUNNING verdict or an
+    unfindable one and no other: a bay held by a run nobody could look at this pass is a
+    bay kept.
     """
     if deadline is None or not deadline_applies(record):
         return None
     if not (tokens.ok and tokens.value):
         return None
     if _reap_cooling(record, now, deadline):
+        return None
+    age = now - record.dispatched_at
+    return age if age >= deadline else None
+
+
+def lapsed_for(record: RunRecord, now: float, deadline: float | None) -> float | None:
+    """How long the scan has seen this untracked run, once that reaches the deadline;
+    ``None`` otherwise.
+
+    A run nobody could look at THIS pass keeps its bay; this bounds the one nobody can
+    look at on ANY pass, which would otherwise hold it for as long as its agent lives.
+    Its stamp is a real first sighting, since the record persists. Nothing is ended or
+    closed, so neither tokens nor window are asked about. A released run holds no bay,
+    and its stamp is its run's dispatch.
+    """
+    if deadline is None or not record.untracked or record.released:
         return None
     age = now - record.dispatched_at
     return age if age >= deadline else None
@@ -955,7 +1029,13 @@ def _resolve_local(record: RunRecord, evidence: Evidence, now: float,
                     f"pid {record.pid} is {proc.elapsed:.0f}s old but the run is "
                     f"{age:.0f}s old")
     return _classify_activity(record, evidence, now, done,
-                              f"pid {record.pid} alive")
+                              _released(record, f"pid {record.pid} alive"))
+
+
+def _released(record: RunRecord, alive_reason: str) -> str:
+    """The alive reason, marked for a released run so its row says why it holds
+    nothing."""
+    return f"released; {alive_reason}" if record.released else alive_reason
 
 
 def _resolve_without_pid(record: RunRecord, evidence: Evidence, now: float,
@@ -1031,7 +1111,7 @@ def _resolve_untracked(record: RunRecord, evidence: Evidence, now: float,
                     f"the agent scan {evidence.live_agents.reason or 'failed'}")
     if record.pr_number in evidence.live_agents.value:
         return _classify_activity(record, evidence, now, done,
-                                  "found in process table")
+                                  _released(record, "found in process table"))
     return done(FINISHED, "gone from the process table")
 
 
@@ -1129,10 +1209,12 @@ def adopt_ttys(records: list[RunRecord], processes: Observation,
     scan, which is looser but is the same evidence that says it is alive at all.
 
     A tty is adopted once and then left alone: it is a property of the process, and a
-    process does not change ttys.
+    process does not change ttys. The scan names one tty per PR, so one another record
+    already holds is that record's agent and is not taken off it.
     """
     table = processes.value if processes.ok else {}
     scan = live_agents.value if live_agents.ok else {}
+    held = {r.tty for r in records if r.tty}
     out = []
     for r in records:
         if r.tty:
@@ -1140,6 +1222,8 @@ def adopt_ttys(records: list[RunRecord], processes: Observation,
             continue
         proc = table.get(r.pid) if r.pid is not None else None
         found = proc.tty if proc is not None else scan.get(r.pr_number, "")
+        if proc is None and found in held:
+            found = ""
         out.append(replace(r, tty=found) if found else r)
     return out
 
@@ -1154,11 +1238,15 @@ def synthesize_untracked(records: list[RunRecord], live_agents: Observation,
     untracked agent would read as running and hold a bay until its window closed,
     which is the state the cap exists to prevent.
 
-    Three things produce one: an applet upgraded while agents ran, an agent a peer's
-    node started on this box, and a session the operator opened by hand. They are
-    found the old way — the prompt's ``PR #<n> in <owner>/<repo>`` in the process
-    table — which is why they are a *fallback* and not the identity mechanism: that
-    scan cannot tell two runs on one PR apart, so at most one record per PR is made.
+    What produces one is a live agent whose run the book does not hold: one a peer's
+    node started on this box, a session the operator opened by hand, a run whose row
+    the operator dismissed, every agent when the book could not be read, and one whose
+    run had no pid and ended beside another record on its PR. Not another run this
+    applet ended, whose agent goes to a released record (:func:`release_ended`), nor a
+    window a backstop failed to close, whose run is kept. They are found the old way —
+    the prompt's ``PR #<n> in <owner>/<repo>`` in the process table — which is why they
+    are a *fallback* and not the identity mechanism: that scan cannot tell two runs on
+    one PR apart, so at most one record per PR is made.
 
     One is made once and then kept in the book like any other run, because the
     stillness backstop measures a screen against the last one seen and a record
@@ -1172,14 +1260,16 @@ def synthesize_untracked(records: list[RunRecord], live_agents: Observation,
     if not live_agents.ok:
         return records
     live = live_agents.value
+    held = {r.tty for r in records if r.tty}
     out = []
     for r in records:
         # A kept record follows its PR's current sighting: the scan reports one agent
         # per PR, so an operator's second session becomes that sighting the moment the
         # first exits. Its memory of the old screen goes with it, or the new window
-        # inherits the old one's stillness.
-        tty = live.get(r.pr_number) if r.untracked else None
-        if tty and tty != r.tty:
+        # inherits the old one's stillness. A released run with a pid is held to that
+        # process instead, whose tty never changes, and no record takes another's tty.
+        tty = live.get(r.pr_number) if r.untracked and r.pid is None else None
+        if tty and tty != r.tty and tty not in held:
             r = replace(r, tty=tty, quiet_digest="", quiet_since=None)
         out.append(r)
     known = {r.pr_number for r in out if r.pr_number is not None}
@@ -1188,6 +1278,56 @@ def synthesize_untracked(records: list[RunRecord], live_agents: Observation,
                              pr_number=pr, source=SOURCE_AUTO,
                              placement=PLACEMENT_LOCAL,
                              tty=live[pr], untracked=True))
+    return out
+
+
+def release_ended(records: list[RunRecord], states: dict[str, Resolution],
+                  evidence: Evidence, now: float,
+                  deadline: float | None = None) -> list[tuple[RunRecord, Resolution]]:
+    """Released records, each with its resolution, for the runs this pass ended whose
+    agent is still up.
+
+    A run whose turn report or merged PR ended it leaves its agent at the prompt, and
+    the caller forgets the record. Uncovered, the PR is re-booked by the next tick's
+    scan as a fresh untracked run, holding the PR and, while its screen is unreadable,
+    a bay. A relaunch does this to every finished window still open. The released
+    record carries the run's pid (still the identity), tty and stillness clock, and
+    nothing that made it a dispatch.
+
+    Only where the scan would re-book once the PR's other records are gone: a run on
+    this machine, on a PR the scan sees. One with no pid is held to the scan's
+    sighting, which cannot tell two agents apart, so it is released only alone on its
+    PR. Beside a record already named ``untracked:<pr>``, its run id carries its pid.
+    Not a run a backstop ended, whose window is being closed. And only while the
+    released record resolves to a live agent, or to one the stillness backstop ends at
+    once, so that its window is closed.
+    """
+    live = evidence.live_agents.value if evidence.live_agents.ok else {}
+    count: dict[int, int] = {}
+    for r in records:
+        if r.pr_number is not None:
+            count[r.pr_number] = count.get(r.pr_number, 0) + 1
+    taken = {r.run_id for r in records}
+    out = []
+    for r in records:
+        v = states.get(r.run_id)
+        if (v is None or v.state not in ENDED or v.wedged or v.expired
+                or not r.runs_here or r.pr_number not in live
+                or (r.pid is None and count[r.pr_number] != 1)):
+            continue
+        run_id = f"untracked:{r.pr_number}"
+        if run_id in taken:
+            run_id = f"{run_id}:{r.pid}"
+        heir = RunRecord(run_id=run_id,
+                         dispatched_at=r.dispatched_at, pr_number=r.pr_number,
+                         pr_url=r.pr_url, source=r.source, placement=r.placement,
+                         pid=r.pid, tty=r.tty, quiet_digest=r.quiet_digest,
+                         quiet_since=r.quiet_since, reap_refused_at=r.reap_refused_at,
+                         untracked=True, released=True)
+        verdict = resolve_one(heir, evidence, now, deadline)
+        if verdict.state not in ENDED or verdict.wedged:
+            taken.add(run_id)
+            out.append((heir, verdict))
     return out
 
 
@@ -1200,8 +1340,10 @@ def synthesize_untracked(records: list[RunRecord], live_agents: Observation,
 
 def in_flight(records: list[RunRecord], states: dict[str, Resolution],
               pr_number: int) -> bool:
-    """Does this PR already have an agent, for the dispatch gate's dedup?"""
-    return any(r.pr_number == pr_number and states[r.run_id].state in BLOCKING
+    """Does this PR already have an agent, for the dispatch gate's dedup? A released
+    one does not count: its work on the PR is done."""
+    return any(r.pr_number == pr_number and not r.released
+               and states[r.run_id].state in BLOCKING
                for r in records if r.run_id in states)
 
 
@@ -1210,10 +1352,10 @@ def cap_load(records: list[RunRecord], states: dict[str, Resolution]) -> set[str
 
     Counted by where a run EXECUTES and who triggered it: a peer's agent spends the
     peer's budget, and a panel click is the operator's own act and spends none of the
-    automatic one.
+    automatic one. A released agent spends none: its task ended.
     """
     return {r.run_id for r in records
-            if r.runs_here and r.source == SOURCE_AUTO
+            if r.runs_here and r.source == SOURCE_AUTO and not r.released
             and r.run_id in states and states[r.run_id].occupying}
 
 
@@ -1293,7 +1435,7 @@ class Tick:
     re-deriving any of it."""
 
     #: The records as the pipeline left them — claim sightings refreshed, untracked
-    #: agents synthesized. The caller persists these.
+    #: agents synthesized, ended runs' live agents released. The caller persists these.
     records: list[RunRecord]
     states: dict[str, Resolution]
     rows: list[tuple[RunRecord, Resolution]]
@@ -1320,6 +1462,8 @@ def tick(records: list[RunRecord], evidence: Evidence, now: float, limit: int,
     a run with no tty yet has no screen to compare; and untracked agents are
     synthesized AFTER, so a live agent that already has a record is not drawn twice — and so it keeps the tty
     the scan found it on rather than having one adopted for a pid it does not have.
+    Released records are made LAST, from the verdicts, so the caller persists each
+    before it forgets the run that ended.
     Both front-ends and the parity CLI go through here, so neither can get the
     sequence subtly different from the other.
     """
@@ -1328,6 +1472,9 @@ def tick(records: list[RunRecord], evidence: Evidence, now: float, limit: int,
     records = observe_quiescence(records, evidence.tails, now)
     records = synthesize_untracked(records, evidence.live_agents, now)
     states = resolve(records, evidence, now, deadline)
+    for heir, verdict in release_ended(records, states, evidence, now, deadline):
+        records = records + [heir]
+        states[heir.run_id] = verdict
     load = cap_load(records, states)
     return Tick(records=records, states=states, rows=rows(records, states),
                 cap_load=load, retirable=retirable(records, states),

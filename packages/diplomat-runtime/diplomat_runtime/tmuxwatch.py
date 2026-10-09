@@ -28,7 +28,9 @@ from dataclasses import dataclass
 
 from .apiwatch import last_lines
 
-_UNIT = "\x1f"  # between pane_id and its tty in the list-panes format
+# Listings are space-separated: no control byte survives tmux's output. 3.4 prints one
+# as octal, and a client with no $TMUX and no UTF-8 locale (launchd, an autostart
+# entry, CI) gets "_".
 
 
 @dataclass(frozen=True)
@@ -68,16 +70,16 @@ def dump_panes() -> list[Pane] | None:
     if shutil.which("tmux") is None:
         return []
     listing = _run(
-        ["tmux", "list-panes", "-a", "-F", f"#{{pane_id}}{_UNIT}#{{pane_tty}}"]
+        ["tmux", "list-panes", "-a", "-F", "#{pane_id} #{pane_tty}"]
     )
     if listing is None:
         # Distinguish "no server running" (inert, known-empty) from a real failure.
         return [] if not _server_running() else None
     out: list[Pane] = []
     for line in listing.splitlines():
-        if _UNIT not in line:
+        if " " not in line:
             continue
-        pane_id, tty = line.split(_UNIT, 1)
+        pane_id, tty = line.split(" ", 1)
         pane_id, tty = pane_id.strip(), tty.strip()
         if not pane_id:
             continue
@@ -119,15 +121,15 @@ def pane_tails_for_ttys(ttys: set[str]) -> dict[str, str] | None:
         return {}
     try:
         listing = _run(
-            ["tmux", "list-panes", "-a", "-F", f"#{{pane_id}}{_UNIT}#{{pane_tty}}"]
+            ["tmux", "list-panes", "-a", "-F", "#{pane_id} #{pane_tty}"]
         )
         if listing is None:
             return None
         out: dict[str, str] = {}
         for line in listing.splitlines():
-            if _UNIT not in line:
+            if " " not in line:
                 continue
-            pane_id, tty = (s.strip() for s in line.split(_UNIT, 1))
+            pane_id, tty = (s.strip() for s in line.split(" ", 1))
             tty = tty.removeprefix("/dev/")
             if not pane_id or tty not in ttys:
                 continue
@@ -211,14 +213,14 @@ def kill_session_for_tty(tty: str) -> bool:
     if not tty or shutil.which("tmux") is None:
         return False
     listing = _run(
-        ["tmux", "list-panes", "-a", "-F", f"#{{pane_tty}}{_UNIT}#{{session_id}}"])
+        ["tmux", "list-panes", "-a", "-F", "#{pane_tty} #{session_id}"])
     if listing is None:
         return False
     want = tty.removeprefix("/dev/")
     for line in listing.splitlines():
-        if _UNIT not in line:
+        if " " not in line:
             continue
-        pane_tty, session = (x.strip() for x in line.split(_UNIT, 1))
+        pane_tty, session = (x.strip() for x in line.split(" ", 1))
         if pane_tty.removeprefix("/dev/") == want and session:
             return _run(["tmux", "kill-session", "-t", session]) is not None
     return False

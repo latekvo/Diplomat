@@ -131,6 +131,51 @@ The two packages are the same launcher published under one name to two indexes
 the same plan on every machine shape either can meet. Neither installs anything but
 the launcher - one file of standard library on each side.
 
+### A narrow GitHub token for agents
+
+By default a spawned agent uses whatever `gh auth login` stored, which is usually
+`repo, workflow, gist`: push access to every repository you can push to, and
+`workflow` lets a commit add a GitHub Actions workflow that runs with the
+repository's secrets. Review, fix and conflict runs need only `contents` and
+`pull-requests`. To give agents just that (phase 1 of
+[#139](https://github.com/latekvo/Diplomat/issues/139)):
+
+1. **Mint** a fine-grained personal access token at
+   <https://github.com/settings/personal-access-tokens/new>: *Only select
+   repositories* (the ones Diplomat works on), **Contents: Read and write**,
+   **Pull requests: Read and write**, nothing else. An organization may have to
+   approve it before it works on the org's repositories.
+2. **Store** it where only you can read it. On macOS, in the login Keychain
+   (`-w` last makes `security` prompt for it, so it stays out of your shell history):
+   ```bash
+   security add-generic-password -a "$USER" -s diplomat-agent-gh -w
+   ```
+   On Linux, in a file only you can read:
+   ```bash
+   (umask 077; read -rs t; printf '%s\n' "$t" > ~/.diplomat/agent-token)
+   ```
+3. **Name** it in `~/.diplomat/config.json` - the name, never the token, since that
+   file is world-readable and copied around by the mesh. `"agentTokenKeychainItem":
+   "diplomat-agent-gh"` on macOS (`plutil -replace agentTokenKeychainItem -string
+   diplomat-agent-gh ~/.diplomat/config.json`), `"agentTokenFile":
+   "~/.diplomat/agent-token"` on Linux.
+
+Every spawn on the machine then reads it - panel and automatic runs on both
+platforms, and runs a mesh node starts here - inside the spawned shell, and exports
+it as `GH_TOKEN`, which `gh` ranks above its own login. The agent's `git` over HTTPS
+to github.com gets it too, from `gh auth git-credential`, instead of any credential
+helper you configured (macOS git ships `osxkeychain`, which holds your broad login).
+The token itself is never in an AppleScript, an argv `ps` can show, a prompt file or
+the activity feed; the feed marks each run started on it with `· agent GH token`. A
+token that cannot be read (missing item, empty file) starts nothing rather than
+falling back to the broad login: the spawn fails, and the work stays owed. Remove the
+key to go back.
+
+What it does not cover: `git` over SSH still pushes with your SSH keys, and a
+`GH_TOKEN` or `GIT_CONFIG_COUNT` your shell rc exports replaces this one, because the
+agent's shell sources your rc after Diplomat sets it. To check it took, run
+`gh auth status` inside a spawned agent's window: it names `GH_TOKEN` as the source.
+
 ## The library
 
 | Tool | What it lists |
@@ -1203,7 +1248,11 @@ and ⏻) swaps the panel to a settings screen:
   ever refreshed.
 - **Mesh (LAN P2P)** - opt into [Diplomat Mesh](#diplomat-mesh-experimental--lan-p2p-duty-coordination):
   a toggle that starts/stops the local node (off by default), with live node/peer
-  status. The mesh itself is managed from the **⬡ Mesh screen**.
+  status. The node outlives the app, so a launch with the toggle off stops one an
+  earlier instance left on this machine's state dir (a `mesh-stop` line in the
+  activity feed); it has to answer its control port with the pid and id
+  `state.json` names, so nothing else is touched. The mesh itself is managed from
+  the **⬡ Mesh screen**.
 - **Update** - pull the checkout, rebuild, and relaunch in place. Shows how many
   commits the checkout is behind *and* ahead of upstream, with a ↻ re-check
   button; the button fetches and **merges** (fast-forward when strictly behind, a
@@ -1312,25 +1361,35 @@ System Settings → General → Login Items — or just use the autostart script
 ### Autostart on login
 
 ```bash
-./install/install-autostart.sh     # rebuilds, installs the app + both LaunchAgents, starts it now
-./install/uninstall-autostart.sh   # removes both LaunchAgents and stops the app
+./install/install-autostart.sh     # rebuilds, installs the app + all three LaunchAgents, starts it now
+./install/uninstall-autostart.sh   # removes all three LaunchAgents and stops the app
 ```
 
 Installs a per-user LaunchAgent at `~/Library/LaunchAgents/com.ignacy.diplomat.plist`
-(`RunAtLoad`), so the wrench reappears on every login. The ⏻ Quit button still works
-within a session (no `KeepAlive`) — it just returns next login. The app goes to
+(`RunAtLoad`), so the wrench reappears on every login. The app goes to
 `/Applications`, or `~/Applications` when that isn't writable.
 
 It also installs a **second** agent, `com.ignacy.diplomat.autoupdate`, which fires
 daily at **06:00** and runs the app binary headless (`DIPLOMAT_SELF_UPDATE=1`):
-merge upstream if behind, rebuild the bundle, and relaunch only if an instance is
-running. It's the unattended twin of the Settings **Update** button, and it logs to
-`~/Library/Logs/diplomat-autoupdate.err.log`. Manage it on its own with:
+merge upstream if behind, rebuild the bundle, and relaunch a running instance onto
+it. It's the unattended twin of the Settings **Update** button, and it logs to
+`~/Library/Logs/diplomat-autoupdate.log`. Manage it on its own with:
 
 ```bash
 ./install/install-autoupdate.sh    # (also called by install-autostart.sh)
 ./install/uninstall-autoupdate.sh
 ```
+
+A **third**, `com.ignacy.diplomat.watchdog`, runs the binary headless every 5 minutes
+(`DIPLOMAT_WATCHDOG=1`, `StartInterval`) and launches the app if no instance is up -
+after a crash, a force-quit, a kill or a failed update. The 06:00 run does the same.
+Neither brings back an app you quit yourself (the ⏻ button, `osascript … quit`,
+Activity Monitor's Quit): that leaves `~/.diplomat/operator-quit`, which the next
+launch clears. A hand-over to a newer instance leaves no mark, and the watchdog only
+acts when there is no instance at all, so it never contends with the newest-wins
+singleton or an update's relaunch. It launches the bundle the updater builds, and logs
+what it launched to the same file. Manage it with `./install/install-watchdog.sh` /
+`./install/uninstall-watchdog.sh`.
 
 ### Headless self-test
 
@@ -1338,7 +1397,10 @@ Every mode runs the real pipeline once, prints, and exits - none of them start
 the monitors or touch a terminal (except `TRACK_TEST` and `SPAWN_FOCUS_TEST`, whose
 point is exactly that; and `RENDER=live`, which opens a window and stays up until
 you stop it). `packages/diplomat-platform/macos/Sources/Diplomat/Headless.swift` is the one list that
-decides what counts as headless:
+decides what counts as headless. A variable that asks for a mode the build does not
+run - a `DIPLOMAT_*` name ending `_TEST`, `_DUMP`, `_SCAN` or `_POLL` that is not on
+the list, a Linux-only mode, or a flag set to anything but `1` - stops the binary with
+exit 64 before it can start as the live app:
 
 ```bash
 DIPLOMAT_DUMP=1 swift run Diplomat            # real fetch+filter pipeline, prints all 6 tools, exits
@@ -1388,6 +1450,9 @@ DIPLOMAT_DEVICE_DUMP=1   ...                     # device-allocator paths + daem
 DIPLOMAT_ALLOCATOR_TEST=1 ...                    # the launch-time allocator decision: reinstall a stale copy,
                                                      #   leave an uninstalled one alone. Shells no installer;
                                                      #   exit code = verdict
+DIPLOMAT_MESH_STRAY_TEST=1 ...                   # a launch with the mesh off stops the node state.json names,
+                                                     #   and not a reused pid, another dir's node or identity.
+                                                     #   Scratch state dirs; exit code = verdict
 DIPLOMAT_AUTOFIX_POLL=1  ...                     # one real monitor poll: prints its dispatch decisions and
                                                      #   the exact prompts it would spawn, opens nothing
 DIPLOMAT_APIWATCH_SCAN=1 ...                     # dry-run the API-error watcher over live sessions, sends nothing
@@ -1395,7 +1460,12 @@ DIPLOMAT_APIWATCH_TEST=1 ...                     # self-test: who a scan may typ
                                                      #   including one a terminal only shows through tmux;
                                                      #   never a plain shell). Reads no terminal, sends nothing
 DIPLOMAT_SELF_UPDATE=1   ...                     # the unattended 06:00 update: merge if behind, rebuild,
-                                                     #   relaunch only if an instance is running
+                                                     #   relaunch a running instance, launch a dead one
+DIPLOMAT_WATCHDOG=1      ...                     # the 5-minute check: launch the app if no instance is up
+                                                     #   and the operator did not quit it
+DIPLOMAT_WATCHDOG_TEST=1 ...                     # self-test: who brings a dead app back and who leaves it
+                                                     #   closed, over fixture job steps; opens only throwaway
+                                                     #   bundles; exit code = verdict
 
 # The shared core itself is independently buildable & testable (also on Linux):
 swift run DiplomatCoreSmoke                    # loads assets/, runs filter + prompt + golden-file assertions
@@ -1517,7 +1587,7 @@ packages/
   diplomat-platform/           ← the platform wrappers: one UI each over that same core
     macos/                     ← macOS SwiftUI menu-bar app — thin UI over the core
       Sources/Diplomat/
-        DiplomatApp.swift          @main app + MenuBarExtra + the headless self-test entry points
+        DiplomatApp.swift          @main entry + app + MenuBarExtra + the headless self-test entry points
         Headless.swift             the single "are we a one-shot self-test?" env-var list
         ContentView.swift          two-column panel (left: monitoring lists, right: grid + wizards/results)
         Components.swift           shared UI atoms (cards, chips, badges)

@@ -192,6 +192,36 @@ enum SweepTest {
         """), owner: "o", repo: "r") { openings[$0] }
         check("…and a PR first seen on another agent's line is given no session",
               claudeFirst.agents.value == [9: "ttys029"] && claudeFirst.sessions.isEmpty)
+        // A released run is held by its pid, so the PR's sighting, and with it the PR's
+        // session, is another agent's whenever one is up.
+        let twoTUIs = Observation.present("""
+          780 ttys029    00:50 claude Review PR #9 in o/r
+          801 ttys031    00:40 opencode --session ses_mesh
+          805 ttys035    00:30 opencode --session ses_again
+        """)
+        let again = openings.merging(["ses_again": "Review PR #9 in o/r"]) { own, _ in own }
+        let heldOne = AgentProbes.scan(twoTUIs, owner: "o", repo: "r",
+                                       heldPIDs: [780, 801]) { again[$0] }
+        let heldAll = AgentProbes.scan(.present("""
+          801 ttys031    00:40 opencode --session ses_mesh
+          805 ttys035    00:30 opencode --session ses_again
+        """), owner: "o", repo: "r", heldPIDs: [801, 805]) { again[$0] }
+        check("…a held agent's line is its PR's sighting only when no other is up on it",
+              heldOne.agents.value == [9: "ttys035"] && heldOne.sessions == [9: "ses_again"]
+                && heldAll.agents.value == [9: "ttys031"] && heldAll.sessions == [9: "ses_mesh"]
+                && heldOne.byPID == [801: "ses_mesh", 805: "ses_again"])
+        let releasedTUI = AgentState.RunRecord(runID: "untracked:9:801",
+                                               dispatchedAt: dispatched, prNumber: 9,
+                                               pid: 801, untracked: true, released: true)
+        let releasedClaude = AgentState.RunRecord(runID: "untracked:9:780",
+                                                  dispatchedAt: dispatched, prNumber: 9,
+                                                  pid: 780, untracked: true, released: true)
+        OpenCodeProbe.adopt([releasedTUI, releasedClaude], sessions: heldOne.sessions,
+                            byPID: heldOne.byPID, attached: []) { again[$0] }
+        check("a released run is given the session at its pid, never its PR's sighting's",
+              OpenCodeProbe.serviceSession(of: releasedTUI) == "ses_mesh"
+                && OpenCodeProbe.serviceSession(of: releasedClaude) == nil)
+        OpenCodeProbe.forgetAdopted([releasedTUI.runID, releasedClaude.runID])
 
         func booked(_ pr: Int, _ placement: AgentState.Placement, port: Int? = nil,
                     prompt: String? = nil) -> AgentState.RunRecord {
@@ -219,7 +249,7 @@ enum SweepTest {
         let unseen = AgentState.RunRecord(runID: "untracked:12", dispatchedAt: dispatched,
                                           prNumber: 12, untracked: true)
         OpenCodeProbe.adopt([meshHere, meshTwin, meshOther, meshOld, local, untracked, unseen],
-                            sessions: scanned.sessions,
+                            sessions: scanned.sessions, byPID: scanned.byPID,
                             attached: scanned.attached.value ?? []) { openings[$0] }
         check("a run the mesh placed here is bound to the session opened with its prompt",
               AgentRegistry.boundSession(meshHere.runID) == "ses_mesh"

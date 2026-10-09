@@ -54,6 +54,20 @@ def rec(**kw) -> A.RunRecord:
     return A.RunRecord(**base)
 
 
+def released(**kw) -> A.RunRecord:
+    """The record :func:`A.release_ended` leaves for :func:`rec`'s run once it ended
+    with its agent still up: the run's pid, tty and stamp, nothing that made it a
+    dispatch."""
+    base = dict(run_id="untracked:337", label="", kind="", untracked=True,
+                released=True)
+    base.update(kw)
+    return rec(**base)
+
+
+#: The screens probe as the operator's Mac reported it for sixteen days (#147/#148).
+BLIND = A.Observation.unavailable("are unreadable (the terminals would not answer)")
+
+
 def proc(elapsed: float = 60.0, tty: str = "pts/3", is_agent: bool = True):
     return A.ProcInfo(tty=tty, elapsed=elapsed, is_agent=is_agent)
 
@@ -380,9 +394,9 @@ CASES = [
          dispatched_at=T0),
      ev(processes={}, tails={"pts/3": WORKING}, live_agents={337: "pts/3"}),
      A.RUNNING, "found in process table"),
-    # Long past the run deadline as well, which the scan's own record is exempt from:
+    # Long past the run deadline as well, which never ends the scan's own record:
     # retired, it is rebuilt by the next tick with a fresh stamp and the same agent
-    # takes the bay straight back.
+    # takes the bay straight back. The deadline releases its bay instead.
     ("an untracked agent is never aged out for having no pid",
      rec(run_id="untracked:337", pid=None, tty="pts/3", untracked=True,
          dispatched_at=T0 - 99999),
@@ -424,6 +438,82 @@ CASES = [
      ev(processes={}, tails={"pts/3": WORKING},
         live_agents=A.Observation.unavailable("ps failed")),
      A.UNKNOWN, "the agent scan ps failed"),
+    # A landed PR does not make the agent leave, and the scan re-books whatever an
+    # ending drops: ended here, it would be retired and re-made on every tick.
+    ("an untracked agent is not ended by its PR landing",
+     rec(run_id="untracked:337", pid=None, tty="pts/3", untracked=True,
+         dispatched_at=T0),
+     ev(processes={}, tails={"pts/3": AT_PROMPT}, live_agents={337: "pts/3"},
+        merged={337}),
+     A.AWAITING_INPUT, "found in process table; at the prompt"),
+    # untracked:844 and untracked:1065 on the operator's Mac: screens unreadable for
+    # sixteen days, RUNNING on every pass, and nothing able to end a run nobody
+    # dispatched. The deadline bounds the bay rather than the run.
+    ("an untracked agent nobody can look at gives its bay back past the deadline",
+     rec(run_id="untracked:337", pid=None, tty="pts/3", untracked=True,
+         dispatched_at=T0 - PAST_DEADLINE),
+     ev(processes={}, tails=BLIND, live_agents={337: "pts/3"}),
+     A.RUNNING, "screen are unreadable (the terminals would not answer); first seen "
+                "5h ago, so the 4h deadline releases its bay"),
+    ("an untracked agent nobody can look at keeps its bay short of the deadline",
+     rec(run_id="untracked:337", pid=None, tty="pts/3", untracked=True,
+         dispatched_at=T0 - (A.RUN_DEADLINE - 60)),
+     ev(processes={}, tails=BLIND, live_agents={337: "pts/3"}),
+     A.RUNNING, "found in process table; screen are unreadable"),
+    ("an untracked agent exactly on the deadline gives its bay back",
+     rec(run_id="untracked:337", pid=None, tty="pts/3", untracked=True,
+         dispatched_at=T0 - A.RUN_DEADLINE),
+     ev(processes={}, tails=BLIND, live_agents={337: "pts/3"}),
+     A.RUNNING, "first seen 4h ago, so the 4h deadline releases its bay"),
+    # The scan failing is the pass nobody could look at, and that bay is kept.
+    ("an untracked agent the scan could not look for keeps its bay past the deadline",
+     rec(run_id="untracked:337", pid=None, tty="pts/3", untracked=True,
+         dispatched_at=T0 - PAST_DEADLINE),
+     ev(processes={}, tails=BLIND, live_agents=A.Observation.unavailable("ps failed")),
+     A.UNKNOWN, "the agent scan ps failed"),
+
+    # --- the agent an ended run left behind ---------------------------------
+    #
+    # #844's run, at the first tick after a relaunch: its turn report was on disk, its
+    # agent at the prompt, the screens unreadable. What the tick hands on from here is
+    # pinned through `tick` by the parity run and by the tests further down.
+    ("its CLI reporting the turn over ends a run nobody can look at",
+     rec(), ev(processes={4242: proc()}, tails=BLIND, live_agents={337: "pts/3"},
+               activity={"r1": (completion.IDLE, T0 - 5)}),
+     A.FINISHED, "its CLI reported the turn over"),
+    ("a released agent at its prompt says what it is",
+     released(), ev(processes={4242: proc()}, tails={"pts/3": AT_PROMPT},
+                    live_agents={337: "pts/3"}),
+     A.AWAITING_INPUT, "released; pid 4242 alive; at the prompt"),
+    ("a released agent nobody can look at is running",
+     released(), ev(processes={4242: proc()}, tails=BLIND, live_agents={337: "pts/3"}),
+     A.RUNNING, "released; pid 4242 alive; screen are unreadable"),
+    # Its stamp is the run's dispatch, not a sighting, and it holds no bay to release.
+    ("a released agent is not lapsed by its run's own age",
+     released(dispatched_at=T0 - PAST_DEADLINE),
+     ev(processes={4242: proc(elapsed=PAST_DEADLINE)}, tails=BLIND,
+        live_agents={337: "pts/3"}),
+     A.RUNNING, "released; pid 4242 alive; screen are unreadable (the terminals "
+                "would not answer)"),
+    ("a released agent is not ended by its PR landing",
+     released(), ev(processes={4242: proc()}, tails={"pts/3": AT_PROMPT},
+                    live_agents={337: "pts/3"}, merged={337}),
+     A.AWAITING_INPUT, "released; pid 4242 alive; at the prompt"),
+    # A backstop is closing the window, so the scan's sighting is released to nobody.
+    ("a run past the deadline hands nothing on to the scan",
+     rec(dispatched_at=T0 - PAST_DEADLINE),
+     ev(processes={4242: proc(elapsed=PAST_DEADLINE)}, tails={"pts/3": WORKING},
+        live_agents={337: "pts/3"}),
+     A.FINISHED, "has run for 5h, past the 4h deadline"),
+    ("a run its stillness ended hands nothing on to the scan",
+     rec(quiet_digest=A.pane_digest(WORKING), quiet_since=T0 - A.QUIET_TIMEOUT),
+     ev(processes={4242: proc()}, tails={"pts/3": WORKING}, live_agents={337: "pts/3"}),
+     A.FINISHED, "its screen has not changed in 20m"),
+    # The pid is the identity: the scan may still see the PR on another session.
+    ("a released agent whose pid left is over",
+     released(), ev(processes={}, tails={"pts/9": AT_PROMPT},
+                    live_agents={337: "pts/9"}),
+     A.FINISHED, "pid 4242 absent from the process table"),
 
     # --- the terminal's own furniture is on the screen too -------------------
     ("a screen still but for the terminal's clock is still still",
@@ -743,6 +833,289 @@ def test_every_state_is_reachable_from_the_table():
     assert reached == set(A.STATE_ORDER)
 
 
+# MARK: - The agent an ended run leaves behind (#148)
+#
+# Every value in these fixtures is from the operator's Mac, frozen 2026-09-28: its audit
+# feed, its runs.json and its `ps`.
+
+#: 2026-09-11T13:58:46Z, "Auto · Review · #844 — its CLI reported the turn over", the
+#: app's first tick after a relaunch.
+RETIRE_AT = 1789135126.0
+#: One tick later: the `dispatchedAt` runs.json carries for `untracked:844`.
+NEXT_TICK = 1789135135.893142
+#: pid 958, `claude … --settings ~/.diplomat/agents/1788961177-8abb0820/hooks.json
+#: Review PR #844 …`, STARTED Wed Sep 9 15:39:38 CEST.
+AGENT_958_START = 1788961178.0
+RUN_844 = "1788961177-8abb0820"
+#: When the book below was frozen.
+FROZEN_AT = 1790587500.0
+#: runs.json as frozen, verbatim.
+FROZEN_RUNS = [
+    {"claimSeenAt": None, "dispatchedAt": 1789135135.893142, "kind": "", "label": "",
+     "ledgerKey": "", "node": "", "pid": None, "placement": "local", "prNumber": 844,
+     "prUrl": "", "quietDigest": "", "quietSince": None, "reapRefusedAt": None,
+     "runId": "untracked:844", "source": "auto", "tty": "ttys021", "untracked": True,
+     "workKey": ""},
+    {"claimSeenAt": None, "dispatchedAt": 1789157191.1891789, "kind": "", "label": "",
+     "ledgerKey": "", "node": "", "pid": None, "placement": "local", "prNumber": 1065,
+     "prUrl": "", "quietDigest": "", "quietSince": None, "reapRefusedAt": None,
+     "runId": "untracked:1065", "source": "auto", "tty": "ttys019", "untracked": True,
+     "workKey": ""},
+]
+
+
+def _run_844() -> A.RunRecord:
+    return A.RunRecord(run_id=RUN_844, dispatched_at=1788961177.0, pr_number=844,
+                       kind="review", label="Auto · Review · #844",
+                       source=A.SOURCE_AUTO, placement=A.PLACEMENT_LOCAL,
+                       ledger_key="review:844", pid=958, tty="ttys021")
+
+
+def _mac(now: float, *, tails=BLIND, activity=None) -> A.Evidence:
+    return ev(processes={958: proc(elapsed=now - AGENT_958_START, tty="ttys021")},
+              tails=tails, claims=A.Observation.unsupported(),
+              live_agents={844: "ttys021"}, activity=activity or {})
+
+
+def _settle(t: A.Tick) -> list[A.RunRecord]:
+    """The book after both stores act on a tick: its records persisted, and every one
+    it retired forgotten."""
+    gone = {r.run_id for r in t.retirable}
+    return [r for r in t.records if r.run_id not in gone]
+
+
+def test_a_run_that_ended_alive_is_not_rebooked_as_a_bay_holder():
+    """#148 as it happened. Retired on its turn report, #844's agent sat on at its
+    prompt, and nine seconds later the scan had booked it again as `untracked:844`:
+    RUNNING with no screen to read, one of a cap of one, for sixteen days."""
+    reported = {RUN_844: (completion.IDLE, RETIRE_AT - 30)}
+    t1 = A.tick([_run_844()], _mac(RETIRE_AT, activity=reported), RETIRE_AT, 1,
+                A.RUN_DEADLINE)
+    t2 = A.tick(_settle(t1), _mac(NEXT_TICK), NEXT_TICK, 1, A.RUN_DEADLINE)
+
+    assert t2.cap_load == set()
+    assert t2.free_slots == 1
+    assert t2.in_flight(844) is False
+    assert [r.run_id for r in t1.retirable] == [RUN_844]
+    (heir,) = t2.records
+    assert (heir.run_id, heir.pid, heir.tty, heir.dispatched_at) == \
+        ("untracked:844", 958, "ttys021", 1788961177.0)
+    assert heir.released and heir.untracked
+    assert (heir.label, heir.kind, heir.ledger_key) == ("", "", "")
+    assert t2.states["untracked:844"].reason == \
+        "released; pid 958 alive; screen are unreadable (the terminals would not answer)"
+
+
+def test_a_released_agent_at_its_prompt_leaves_its_pr_free():
+    """The same path with screens readable: the re-booked record read AWAITING_INPUT
+    and held no bay, but held #977 against a fresh agent for the 22 minutes until the
+    stillness backstop closed its window."""
+    at_prompt = {"ttys021": AT_PROMPT}
+    reported = {RUN_844: (completion.IDLE, RETIRE_AT - 30)}
+    t1 = A.tick([_run_844()], _mac(RETIRE_AT, tails=at_prompt, activity=reported),
+                RETIRE_AT, 1, A.RUN_DEADLINE)
+    t2 = A.tick(_settle(t1), _mac(NEXT_TICK, tails=at_prompt), NEXT_TICK, 1,
+                A.RUN_DEADLINE)
+    assert t2.in_flight(844) is False
+    assert t2.states["untracked:844"].state == A.AWAITING_INPUT
+
+
+def test_a_released_agents_window_is_still_closed_when_its_screen_goes_still():
+    """Released is not forgotten: the backstop that closes a finished agent's window
+    after twenty still minutes still reaches it, and the clock carries over from the
+    run, so a run that ends already still is closed on the pass that ends it."""
+    still = dict(quiet_digest=A.pane_digest(AT_PROMPT),
+                 quiet_since=T0 - A.QUIET_TIMEOUT)
+    seen = dict(processes={4242: proc()}, tails={"pts/3": AT_PROMPT},
+                live_agents={337: "pts/3"})
+    later = A.tick([released(**still)], ev(**seen), T0, 1)
+    assert [r.run_id for r in later.reapable] == ["untracked:337"]
+
+    at_once = A.tick([rec(**still)],
+                     ev(**seen, activity={"r1": (completion.IDLE, T0 - 5)}), T0, 1)
+    assert sorted(r.run_id for r in at_once.retirable) == ["r1", "untracked:337"]
+    assert [r.run_id for r in at_once.reapable] == ["untracked:337"]
+
+
+def test_a_released_agent_leaves_the_book_with_its_agent():
+    t = A.tick([released()], ev(processes={}, live_agents={}), T0, 1)
+    assert [r.run_id for r in t.retirable] == ["untracked:337"]
+    assert t.reapable == []
+
+
+def test_a_released_agent_is_held_to_its_own_tty():
+    """Its pid names the process, and a process does not change ttys. Following the
+    scan instead would move it onto whatever session the scan names first, carrying
+    none of that screen's stillness."""
+    (same,) = A.synthesize_untracked([released(quiet_digest="d", quiet_since=T0)],
+                                     A.Observation.present({337: "pts/9"}), T0 + 8)
+    assert (same.tty, same.quiet_since) == ("pts/3", T0)
+
+
+def test_nothing_is_released_for_an_agent_that_is_not_the_runs_own():
+    """The run's pid left; the scan's #337 is the operator's own session. That one is
+    booked the ordinary way on the next tick, bay and all."""
+    theirs = ev(processes={}, tails={"pts/9": WORKING}, live_agents={337: "pts/9"})
+    t = A.tick([rec()], theirs, T0, 1)
+    assert [r.run_id for r in t.retirable] == ["r1"]
+    assert not any(r.released for r in t.records)
+    assert A.tick(_settle(t), theirs, T0 + 8, 1).cap_load == {"untracked:337"}
+
+
+@pytest.mark.parametrize("backstop,record,screen", [
+    ("the run deadline", rec(dispatched_at=T0 - PAST_DEADLINE), WORKING),
+    ("the stillness clock", rec(quiet_digest=A.pane_digest(WORKING),
+                                quiet_since=T0 - A.QUIET_TIMEOUT), WORKING),
+])
+def test_nothing_is_released_for_a_run_a_backstop_ended(backstop, record, screen):
+    """Its window is being closed, and a close that fails keeps the run itself."""
+    elapsed = T0 - record.dispatched_at
+    t = A.tick([record], ev(processes={4242: proc(elapsed=elapsed)},
+                            tails={"pts/3": screen}, live_agents={337: "pts/3"}),
+               T0, 1, A.RUN_DEADLINE)
+    assert [r.run_id for r in t.reapable] == ["r1"], backstop
+    assert not any(r.released for r in t.records), backstop
+
+
+def test_nothing_is_released_where_the_scan_would_rebook_nothing():
+    """A run with no PR (an issue fix), or whose PR the scan does not see, leaves no
+    PR uncovered, so the ordinary ending stands: its window is the operator's."""
+    for record, scan in [(rec(pr_number=None), {}), (rec(), {})]:
+        t = A.tick([record], ev(processes={4242: proc()}, tails={"pts/3": AT_PROMPT},
+                                live_agents=scan,
+                                activity={"r1": (completion.IDLE, T0 - 5)}), T0, 1)
+        assert [r.run_id for r in t.records] == ["r1"], record.pr_number
+
+
+def test_nothing_is_released_for_a_peers_run():
+    """A peer's agent is not on this machine, whatever this machine's scan sees on the
+    same PR, and that local session is booked the ordinary way. Seconds after dispatch,
+    where a record judged by a claim still reads as starting."""
+    peer = rec(placement=A.PLACEMENT_MESH_PEER, node="brick", work_key="w", pid=None,
+               tty="", dispatched_at=T0 - 10, claim_seen_at=T0 - 1)
+    t = A.tick([peer], ev(claims={"w"}, merged={337}, tails={"pts/3": WORKING},
+                          live_agents={337: "pts/3"}), T0, 1)
+    assert t.states["r1"].state == A.MERGED
+    assert [r.run_id for r in t.records] == ["r1"]
+
+
+def test_runs_that_end_beside_another_on_their_pr_are_released_too():
+    """The scan re-books each agent once the PR's other records are gone."""
+    idle = (completion.IDLE, T0 - 5)
+    t = A.tick([rec(), rec(run_id="r2", pid=5, tty="pts/4"),
+                rec(run_id="r3", pid=6, tty="pts/5")],
+               ev(processes={4242: proc(), 5: proc(tty="pts/4"), 6: proc(tty="pts/5")},
+                  tails={"pts/3": AT_PROMPT, "pts/4": AT_PROMPT, "pts/5": WORKING},
+                  live_agents={337: "pts/3"}, activity={"r1": idle, "r2": idle}),
+               T0, 1)
+    assert [(r.run_id, r.pid) for r in t.records if r.released] == \
+        [("untracked:337", 4242), ("untracked:337:5", 5)]
+    assert t.in_flight(337)
+
+
+def test_a_second_run_on_a_released_agents_pr_is_released_beside_it():
+    """The PR a release frees takes a second run, which ends with its agent up beside
+    the first. Forgotten instead, that agent is re-booked as #148's bay holder the
+    moment the first window closes."""
+    def seen(processes):
+        return ev(processes=processes, tails=BLIND,
+                  live_agents={337: "pts/3" if 4242 in processes else "pts/4"},
+                  activity={"r2": (completion.IDLE, T0 - 5)})
+    second = rec(run_id="r2", pid=5, tty="pts/4")
+    t = A.tick([released(), second],
+               seen({4242: proc(), 5: proc(tty="pts/4")}), T0, 1, A.RUN_DEADLINE)
+    assert sorted(r.run_id for r in _settle(t)) == ["untracked:337", "untracked:337:5"]
+    for dt in (8, 16):
+        t = A.tick(_settle(t), seen({5: proc(elapsed=60 + dt, tty="pts/4")}),
+                   T0 + dt, 1, A.RUN_DEADLINE)
+    assert [(r.run_id, r.released) for r in t.records] == [("untracked:337:5", True)]
+    assert t.cap_load == set()
+    assert t.in_flight(337) is False
+
+
+def test_a_mesh_placed_run_on_a_released_agents_pr_does_not_take_its_tty():
+    """The scan names the released agent's tty for the PR while it lives. Adopted, the
+    new run is judged by that idle screen: wedged twenty minutes in while it works, and
+    its window closed by a tty that is not its own."""
+    placed = rec(run_id="r2", pid=None, tty="", dispatched_at=T0,
+                 placement=A.PLACEMENT_MESH_HERE)
+    busy = {"r2": (completion.BUSY, T0 + 3)}
+    t = A.tick([released(), placed],
+               ev(processes={4242: proc()}, tails={"pts/3": AT_PROMPT, "pts/4": WORKING},
+                  live_agents={337: "pts/3"}, activity=busy), T0 + 8, 1)
+    assert [(r.run_id, r.tty) for r in t.records] == \
+        [("untracked:337", "pts/3"), ("r2", "")]
+    assert t.in_flight(337)
+
+    t = A.tick(_settle(t), ev(processes={}, tails={"pts/4": WORKING},
+                              live_agents={337: "pts/4"}, activity=busy), T0 + 16, 1)
+    assert [(r.run_id, r.tty) for r in _settle(t)] == [("r2", "pts/4")]
+
+
+def test_a_pid_less_record_does_not_follow_the_scan_onto_anothers_tty():
+    (same, other) = A.synthesize_untracked(
+        [released(pid=None), rec(run_id="r2", pid=None, tty="pts/4")],
+        A.Observation.present({337: "pts/4"}), T0 + 8)
+    assert (same.tty, other.tty) == ("pts/3", "pts/4")
+
+
+def test_a_run_with_no_pid_is_released_only_alone_on_its_pr():
+    """Held to the scan's sighting alone, it could not be told from the other agent
+    on its PR."""
+    t = A.tick([rec(pid=None, tty=""), rec(run_id="r2", pid=5, tty="pts/4")],
+               ev(processes={5: proc(tty="pts/4")}, tails={"pts/4": WORKING},
+                  live_agents={337: "pts/4"},
+                  activity={"r1": (completion.IDLE, T0 - 5)}), T0, 1)
+    assert not any(r.released for r in t.records)
+
+
+def test_the_frozen_untracked_records_give_their_bays_back():
+    """The book the operator's Mac still held on 2026-09-28, resolved against what its
+    probes reported: two agents idle at their prompts for weeks, both RUNNING because
+    no screen could be read. They keep their PRs, since a live agent is on each, and
+    nothing is ended or closed."""
+    book = [A.RunRecord.from_json(r) for r in FROZEN_RUNS]
+    t = A.tick(book, ev(processes={958: proc(elapsed=FROZEN_AT - AGENT_958_START,
+                                             tty="ttys021")},
+                        tails=BLIND, claims=A.Observation.unsupported(),
+                        live_agents={844: "ttys021", 1065: "ttys019"}),
+               FROZEN_AT, 1, A.RUN_DEADLINE)
+    assert t.cap_load == set()
+    assert t.free_slots == 1
+    assert t.in_flight(844) and t.in_flight(1065)
+    assert t.retirable == [] and t.reapable == []
+    assert all(t.states[r.run_id].state == A.RUNNING and t.states[r.run_id].lapsed
+               for r in book)
+
+
+@pytest.mark.parametrize("age,deadline,holds", [
+    (A.RUN_DEADLINE - 1, A.RUN_DEADLINE, True),
+    (A.RUN_DEADLINE, A.RUN_DEADLINE, False),
+    (10 * 24 * 3600, None, True),   # the operator's switch is off
+])
+def test_an_untracked_bay_is_held_until_the_deadline(age, deadline, holds):
+    record = rec(run_id="untracked:337", pid=None, untracked=True,
+                 dispatched_at=T0 - age)
+    t = A.tick([record], ev(tails=BLIND, live_agents={337: "pts/3"}), T0, 1, deadline)
+    assert (t.cap_load == {"untracked:337"}) is holds
+
+
+def test_only_an_untracked_run_past_the_deadline_is_marked_lapsed():
+    """``lapsed`` takes a run out of the cap load while it still reads RUNNING, so like
+    the other stamps it has to name ONE rung."""
+    verdicts = []
+    for name, record, evidence, _state, _reason in CASES:
+        got = A.resolve_one(record, evidence, T0, A.RUN_DEADLINE)
+        verdicts.append((record, got))
+        assert got.lapsed is ("deadline releases its bay" in got.reason), name
+        if got.lapsed:
+            assert record.untracked and not record.released, name
+            assert got.state == A.RUNNING and not got.occupying, name
+    assert any(v.lapsed for _r, v in verdicts)
+    assert any(r.untracked and v.state == A.RUNNING and not v.lapsed
+               for r, v in verdicts)
+
+
 # MARK: - The run deadline's switch
 
 
@@ -1051,6 +1424,7 @@ def test_free_slots_never_goes_negative(limit, occupied, want):
 def test_records_and_evidence_survive_a_json_round_trip():
     r = rec(claim_seen_at=T0 - 5, work_key="w", node="brick")
     assert A.RunRecord.from_json(r.to_json()) == r
+    assert A.RunRecord.from_json(released().to_json()).released
     e = ev(processes={4242: proc()}, tails={"pts/3": WORKING}, merged={1, 2})
     back = A.Evidence.from_json(e.to_json())
     assert back.processes.value == e.processes.value

@@ -15,6 +15,7 @@ bays, never an agent declared finished.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -194,7 +195,9 @@ def ttys_running_an_agent(now: float) -> Observation:
         {p.tty for p in table.value.values() if p.is_agent and p.tty})
 
 
-def live_agents(dump: Observation, sessions: dict[int, str] | None = None) -> Observation:
+def live_agents(dump: Observation, sessions: dict[int, str] | None = None,
+                held_pids: frozenset[int] | set[int] = frozenset(),
+                by_pid: dict[int, str] | None = None) -> Observation:
     """PR number -> the tty of an agent visible in ``ps`` by its prompt text.
 
     The pre-registry identity mechanism, kept for the two questions a pid cannot
@@ -210,12 +213,16 @@ def live_agents(dump: Observation, sessions: dict[int, str] | None = None) -> Ob
     read from the service (:func:`opencodeapi.scan_text`). ``sessions``, when given, is
     filled with PR number -> the session of the 2.x TUI that is that PR's sighting, and
     none for a PR first seen on another agent's line: the row's state is read from that
-    session (:func:`adopt`), so it has to be the agent on the row's tty.
+    session (:func:`adopt`), so it has to be the agent on the row's tty. ``by_pid``,
+    when given, is filled with pid -> the session of the 2.x TUI at that pid.
 
     The tty rides along because it is the only handle such an agent has: without it
     nothing can read its screen, so it would count as working until its window closed
     however long ago it finished. First sighting of a PR wins — a set of PR numbers is
-    all this scan can honestly produce.
+    all this scan can honestly produce — save that an agent in ``held_pids`` is named
+    only when no other is up on its PR. Its record reads its tty off the process; the
+    run that needs this scan's is one with no pid, and named its neighbour's it has no
+    screen at all.
     """
     from diplomat_runtime import opencodeapi
 
@@ -225,6 +232,9 @@ def live_agents(dump: Observation, sessions: dict[int, str] | None = None) -> Ob
     pattern = re.compile(
         r"PR #(\d+) in " + re.escape(f"{cfg['owner']}/{cfg['repo']}"))
     out: dict[int, str] = {}
+    held: dict[int, str] = {}
+    own_sessions: dict[int, str] = {}
+    held_sessions: dict[int, str] = {}
     # Parsed here against THIS dump's columns rather than through
     # `autofix.agent_lines`, which reads the tty as the FIRST token of a
     # `tty=,etime=,args=` dump. That is still right for its own caller (the mesh
@@ -238,33 +248,46 @@ def live_agents(dump: Observation, sessions: dict[int, str] | None = None) -> Ob
         parts = line.split(maxsplit=3)
         if len(parts) < 4:
             continue
-        _pid, tty, _elapsed, args = parts
+        pid, tty, _elapsed, args = parts
+        is_held = pid.isdigit() and int(pid) in held_pids
+        into, into_sessions = (held, held_sessions) if is_held else (out, own_sessions)
         session_id = opencodeapi.session_arg(args)
+        if session_id and by_pid is not None and pid.isdigit():
+            by_pid[int(pid)] = session_id
         for m in pattern.finditer(opencodeapi.scan_text(args)):
             pr = int(m.group(1))
-            if pr in out:
+            if pr in into:
                 continue
-            out[pr] = "" if tty == "?" else tty.removeprefix("/dev/")
-            if session_id and sessions is not None:
-                sessions[pr] = session_id
-    return Observation.present(out)
+            into[pr] = "" if tty == "?" else tty.removeprefix("/dev/")
+            if session_id:
+                into_sessions[pr] = session_id
+    if sessions is not None:
+        sessions.update({pr: sid for pr, sid in held_sessions.items() if pr not in out})
+        sessions.update(own_sessions)
+    return Observation.present(held | out)
 
 
-#: 2.x sessions found for runs with no run directory to bind one into — runs
-#: synthesized from the process table — by run id. Kept until the run is retired
-#: (:func:`forget_adopted`), so it can still be stopped once its TUI, and with it its
-#: sighting, is gone.
+#: 2.x sessions found for runs with no run directory to bind one into — untracked
+#: runs — by run id. Kept until the run is retired (:func:`forget_adopted`), so it can
+#: still be stopped once its TUI, and with it its sighting, is gone.
 _adopted: dict[str, str] = {}
 
 
-def adopt(records: list[RunRecord], sessions: dict[int, str]) -> None:
+def adopt(records: list[RunRecord], sessions: dict[int, str],
+          by_pid: dict[int, str]) -> None:
     """Give each untracked run the 2.x session the scan (:func:`live_agents`) found on
     its PR, so it is asked of the service and interrupted like a run this applet
-    spawned (:func:`service_session`). A run the mesh placed here is bound in its run
-    directory instead (:meth:`_OpenCodeBackend.bind`)."""
+    spawned (:func:`service_session`). A released run keeps its agent's pid and is
+    given the session at that pid instead: the PR's sighting prefers any other agent.
+    A run the mesh placed here is bound in its run directory instead
+    (:meth:`_OpenCodeBackend.bind`)."""
     for r in records:
-        if r.untracked and r.pr_number in sessions:
-            _adopted[r.run_id] = sessions[r.pr_number]
+        if not r.untracked:
+            continue
+        session = (sessions.get(r.pr_number) if r.pid is None
+                   else by_pid.get(r.pid))
+        if session:
+            _adopted[r.run_id] = session
 
 
 def forget_adopted(run_ids: set[str]) -> None:
@@ -571,20 +594,23 @@ def merged_prs(pr_numbers: set[int]) -> Observation:
     outranks anything a process is doing.
 
     One ``gh`` call per PR, so this belongs on the slow refresh, not the 8-second
-    tick. A PR whose probe fails is simply absent from the answer; the whole probe is
-    UNAVAILABLE only when there was nothing to ask about, so a partial answer is
-    still positive evidence about the PRs it covers.
+    tick. The reading is always PRESENT: a PR whose probe fails is simply absent from
+    the answer, so a partial answer is still positive evidence about the PRs it
+    covers, and an empty ask is a real "none of them".
     """
     if not pr_numbers:
         return Observation.present(set())
     from diplomat_runtime import gh
+    cfg = core.config()
+    repo = f"{cfg['owner']}/{cfg['repo']}"
     merged = set()
     for n in sorted(pr_numbers):
         try:
-            out = gh.run(["pr", "view", str(n), "--json", "state", "-q", ".state"])
+            out = gh.run(["pr", "view", str(n), "--repo", repo, "--json", "state"])
+            state = json.loads(out).get("state")
         except Exception:  # noqa: BLE001 - a probe never raises into the tick
             continue
-        if (out or "").strip() == "MERGED":
+        if state == "MERGED":
             merged.add(n)
     return Observation.present(merged)
 
@@ -641,8 +667,13 @@ def gather(records: list[RunRecord], now: float, *,
     # would capture nothing for exactly the run that just started, and it would then
     # read as working for a whole tick longer than it was.
     scan_sessions: dict[int, str] = {}
-    scan = _note("agent scan", live_agents(dump, scan_sessions), now)
-    adopt(records, scan_sessions)
+    by_pid: dict[int, str] = {}
+    scan = _note("agent scan",
+                 live_agents(dump, scan_sessions,
+                             held_pids={r.pid for r in records if r.pid is not None},
+                             by_pid=by_pid),
+                 now)
+    adopt(records, scan_sessions, by_pid)
     looked_up = agentstate.adopt_ttys(records, table, scan)
     # Synthesized here as well as in `tick`, which adds them only AFTER this bundle is
     # built — so the tick that FIRST sees one would resolve it against a screen nobody

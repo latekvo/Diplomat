@@ -54,8 +54,10 @@ def _make_origin(tmp_path: Path) -> Path:
     (linux_pkg / "install" / "build-core.sh").write_text(
         "#!/usr/bin/env bash\ntouch \"$MARKER_DIR/built\"\n"
     )
+    # Writes down the environment it was started with, for the revival tests.
     (linux_pkg / "diplomat").write_text(
-        "#!/usr/bin/env bash\ntouch \"$MARKER_DIR/relaunched\"\n"
+        "#!/usr/bin/env bash\n"
+        "env > \"$MARKER_DIR/env.tmp\" && mv \"$MARKER_DIR/env.tmp\" \"$MARKER_DIR/relaunched\"\n"
     )
     (origin / "VERSION").write_text("1\n")
     _git(origin, "init", "-q", "-b", "main")
@@ -79,9 +81,13 @@ def repos(tmp_path, monkeypatch):
     monkeypatch.setenv("DIPLOMAT_SELF_REPO", str(clone))
     monkeypatch.setenv("MARKER_DIR", str(marker))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    # Isolate the singleton pidfile so running_pid() can't see a real tray.
+    # Isolate the singleton pidfile so running_pid() can't see a real tray, and the
+    # /proc scan, which would.
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
     (tmp_path / "run").mkdir()
+    from diplomat_app import singleton
+
+    monkeypatch.setattr(singleton, "_other_instances", lambda: set())
     # Keep the E2E hermetic: SettingsView also fires the allocator check on
     # open; point it at nothing so no real Node installer runs.
     monkeypatch.setenv("DIPLOMAT_DEVICE_ALLOCATOR_DIR", str(tmp_path / "no-allocator"))
@@ -181,13 +187,191 @@ def test_run_scheduled_noop_when_current(repos):
     assert not (marker / "built").exists()  # already current → no rebuild
 
 
-def test_run_scheduled_updates_in_place_when_tray_not_running(repos):
+def test_run_scheduled_launches_nothing_without_a_recorded_display(repos):
+    """No tray has ever said which display it ran on, so there is no session to
+    put one on: the update lands in place and nothing is launched."""
     origin, clone, marker = repos
     _advance_origin(origin)
     assert selfupdate.run_scheduled() == 0
     assert _git(clone, "rev-parse", "HEAD") == _git(origin, "rev-parse", "HEAD")
     assert (marker / "built").exists()
-    assert not (marker / "relaunched").exists()  # no GUI spawned on a dead session
+    time.sleep(0.5)
+    assert not (marker / "relaunched").exists()
+    assert _log()[-1].endswith("tray not running: no tray has recorded a display to launch onto")
+    assert selfupdate.run_watchdog() == 0
+    assert not any(ln.startswith("watchdog:") for ln in _log())  # not every 5 minutes
+
+
+# ---- bringing a dead tray back ---------------------------------------------
+
+
+def _log() -> list[str]:
+    """The lines the unattended jobs wrote, timestamps cut off."""
+    path = selfupdate._state_dir() / "autoupdate.log"
+    if not path.exists():
+        return []
+    return [ln.split(" ", 1)[1] for ln in path.read_text().splitlines()]
+
+
+def _launched_env(marker: Path) -> dict[str, str]:
+    """The environment the stub launcher was started with; fails if it never ran."""
+    deadline = time.monotonic() + 10  # the launch is detached
+    while not (marker / "relaunched").exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert (marker / "relaunched").exists(), "no tray was launched"
+    return dict(ln.split("=", 1) for ln in (marker / "relaunched").read_text().splitlines()
+                if "=" in ln)
+
+
+@pytest.fixture()
+def recorded_display(repos, monkeypatch):
+    """A tray ran here once, on DISPLAY :7, and died."""
+    monkeypatch.setenv("DISPLAY", ":7")
+    selfupdate.record_display_env()
+    monkeypatch.delenv("DISPLAY")
+    return repos
+
+
+def _running_tray(monkeypatch) -> None:
+    from diplomat_app import singleton
+
+    monkeypatch.setattr(singleton, "_is_applet_gui", lambda pid: pid == os.getpid())
+    singleton._pidfile().write_text(str(os.getpid()))
+
+
+def test_run_scheduled_launches_a_dead_tray_when_current(recorded_display):
+    """The 48-hour outage: the checkout was current, the tray dead, and the job
+    logged "up to date" and left."""
+    _origin, _clone, marker = recorded_display
+    assert selfupdate.run_scheduled() == 0
+    env = _launched_env(marker)
+    assert env.get("DISPLAY") == ":7"  # onto the display the dead tray recorded
+    assert "DIPLOMAT_SELF_UPDATE" not in env  # a GUI, not another updater
+    assert _log()[-2:] == [f"up to date at {_git(_clone, 'rev-parse', '--short', 'HEAD')}",
+                           "tray not running: launched it"]
+
+
+def test_run_scheduled_launches_a_dead_tray_after_updating_in_place(recorded_display):
+    origin, clone, marker = recorded_display
+    _advance_origin(origin)
+    assert selfupdate.run_scheduled() == 0
+    assert (marker / "built").exists()
+    assert _launched_env(marker).get("DISPLAY") == ":7"
+    assert _log()[-1] == "tray not running: launched it"
+
+
+@pytest.mark.parametrize("failing", ["offline", "merge refused", "build failed"])
+def test_run_scheduled_launches_a_dead_tray_whatever_the_update_did(
+        recorded_display, monkeypatch, failing):
+    _origin, _clone, marker = recorded_display
+    monkeypatch.setattr(selfupdate, "check", lambda: {
+        "error": "could not resolve host" if failing == "offline" else None,
+        "behind": 1, "ahead": 0, "commit": "abc", "upstream": "origin/main"})
+
+    def pull():
+        if failing == "merge refused":
+            raise selfupdate.UpdateError("checkout has local changes")
+        return "def"
+
+    def build_core():
+        raise selfupdate.UpdateError("build-core.sh: exit 1")
+
+    monkeypatch.setattr(selfupdate, "pull", pull)
+    monkeypatch.setattr(selfupdate, "build_core", build_core)
+    code = selfupdate.run_scheduled()
+    assert code == (1 if failing == "build failed" else 0)
+    _launched_env(marker)
+    assert _log()[-1] == "tray not running: launched it"
+
+
+def test_an_operator_quit_keeps_the_tray_closed(recorded_display):
+    _origin, _clone, marker = recorded_display
+    selfupdate.mark_operator_quit()
+    assert selfupdate.run_scheduled() == 0
+    assert selfupdate.run_watchdog() == 0
+    time.sleep(0.5)
+    assert not (marker / "relaunched").exists()
+    # The daily run says why; the watchdog, every five minutes, stays quiet.
+    assert _log()[-1] == "tray not running: quit by the operator, left closed"
+    assert not any(ln.startswith("watchdog:") for ln in _log())
+
+
+def test_the_watchdog_launches_a_dead_tray(recorded_display, monkeypatch):
+    _origin, _clone, marker = recorded_display
+    monkeypatch.setenv("DIPLOMAT_WATCHDOG", "1")  # as the systemd unit runs it
+    assert selfupdate.run_watchdog() == 0
+    env = _launched_env(marker)
+    assert env.get("DISPLAY") == ":7"
+    assert "DIPLOMAT_WATCHDOG" not in env  # a GUI, not another watchdog
+    assert _log() == ["watchdog: tray not running: launched it"]
+
+
+def test_the_watchdog_leaves_a_running_tray_alone(recorded_display, monkeypatch):
+    _origin, _clone, marker = recorded_display
+    _running_tray(monkeypatch)
+    assert selfupdate.run_watchdog() == 0
+    time.sleep(0.5)
+    assert not (marker / "relaunched").exists()
+    assert _log() == []
+
+
+def test_a_tray_mid_handover_is_a_running_tray(recorded_display, monkeypatch):
+    """A newer tray reaps its predecessor before it claims the pidfile, so for up to
+    the reap's grace the pidfile names a dead pid. A check landing then must still
+    see the newer tray, or it launches a third that ends the newer one."""
+    _origin, _clone, marker = recorded_display
+    from diplomat_app import singleton
+
+    singleton._pidfile().write_text("999999")  # the predecessor, already gone
+    monkeypatch.setattr(singleton, "_other_instances", lambda: {424242})
+    assert singleton.SingleInstance.running_pid() == 0
+    assert selfupdate.run_watchdog() == 0
+    assert selfupdate.run_scheduled() == 0
+    time.sleep(0.5)
+    assert not (marker / "relaunched").exists()
+
+
+def test_a_launch_that_fails_is_logged_and_fails_the_run(recorded_display, monkeypatch):
+    monkeypatch.setattr(selfupdate, "relaunch", lambda *a, **k: (_ for _ in ()).throw(
+        selfupdate.UpdateError("could not relaunch the applet: [Errno 2] bash")))
+    assert selfupdate.run_watchdog() == 1
+    assert _log() == ["watchdog: tray not running: launch failed: "
+                      "could not relaunch the applet: [Errno 2] bash"]
+
+
+def test_a_quit_leaves_the_mark_and_the_next_launch_clears_it(monkeypatch):
+    """Quitting from the tray marks; starting the tray clears the mark and records
+    the display a revival will launch onto."""
+    from diplomat_app import app as app_module
+    from diplomat_app.app import DiplomatApp, SingleInstance
+
+    app = DiplomatApp.__new__(DiplomatApp)
+    app.store = type("_Store", (), {"wait_for_background": lambda self, timeout=5.0: []})()
+    app.tray = type("_Tray", (), {"hide": lambda self: None})()
+    app.app = type("_Qt", (), {"quit": lambda self: None})()
+    monkeypatch.setattr(SingleInstance, "release", staticmethod(lambda: None))
+    assert not selfupdate.operator_quit()
+    app.quit()
+    assert selfupdate.operator_quit()
+
+    class _Launched:
+        def exec(self):
+            return 0
+
+    monkeypatch.setattr(SingleInstance, "acquire_newest_wins", staticmethod(lambda: None))
+    monkeypatch.setattr(app_module, "DiplomatApp", _Launched)
+    monkeypatch.setattr(app_module.QSystemTrayIcon, "isSystemTrayAvailable",
+                        staticmethod(lambda: True))
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-3")
+    assert app_module.run_app() == 0
+    assert not selfupdate.operator_quit()
+    assert selfupdate._recorded_display_env().get("WAYLAND_DISPLAY") == "wayland-3"
+
+    # A start with no display to show on keeps the one a revival can use.
+    monkeypatch.delenv("WAYLAND_DISPLAY")
+    monkeypatch.delenv("DISPLAY", raising=False)
+    assert app_module.run_app() == 0
+    assert selfupdate._recorded_display_env().get("WAYLAND_DISPLAY") == "wayland-3"
 
 
 def test_run_scheduled_relaunches_a_running_tray(repos, monkeypatch):
@@ -261,6 +445,7 @@ def test_relaunch_does_not_inherit_headless_markers(tmp_path, monkeypatch):
 
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))   # isolate the relaunch log write
     monkeypatch.setenv("DIPLOMAT_SELF_UPDATE", "1")
+    monkeypatch.setenv("DIPLOMAT_WATCHDOG", "1")
     monkeypatch.setenv("DIPLOMAT_DUMP", "1")
     captured = {}
 
@@ -276,8 +461,8 @@ def test_relaunch_does_not_inherit_headless_markers(tmp_path, monkeypatch):
         raised = True
     assert raised and "env" in captured
     env = captured["env"]
-    for marker in ("DIPLOMAT_SELF_UPDATE", "DIPLOMAT_DUMP", "DIPLOMAT_LOOKUP",
-                   "DIPLOMAT_PRINT_PROMPT", "DIPLOMAT_RENDER"):
+    for marker in ("DIPLOMAT_SELF_UPDATE", "DIPLOMAT_WATCHDOG", "DIPLOMAT_DUMP",
+                   "DIPLOMAT_LOOKUP", "DIPLOMAT_PRINT_PROMPT", "DIPLOMAT_RENDER"):
         assert marker not in env
     assert env.get("DISPLAY") == ":0"   # the display env is still handed through
 

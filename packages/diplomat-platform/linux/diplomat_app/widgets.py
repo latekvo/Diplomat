@@ -624,9 +624,11 @@ class RunningTaskRow(QFrame):
         "automatic-task cap while it works."
     )
     _UNTRACKED_HELP = (
-        "A Claude agent running on this machine, found by scanning processes — this "
-        "applet has no record of starting it (a restart loses the record, not the "
-        "agent). It counts against the automatic-task cap while it works."
+        "A Claude agent running on this machine that no task holds, found by scanning "
+        "processes: this applet has no record of starting it (a restart loses the "
+        "record, not the agent), or its task has already ended. The first kind counts "
+        "against the automatic-task cap while it works, up to the run deadline when "
+        "one is set."
     )
     _AWAITING_HELP = (
         "This agent has finished its turn and is waiting at its prompt — an agent is "

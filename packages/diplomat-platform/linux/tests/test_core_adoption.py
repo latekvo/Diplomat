@@ -45,6 +45,8 @@ _DECL = re.compile(
 #: type through here is also how the drift this test exists to catch would get in.
 REACHED_INDIRECTLY = {
     "PRRef": "ReviewConfig.prRef — the wizards read .number / .repoMismatch off it",
+    "JSONInput": "Store reads the run book through AgentRegistry.load, TelemetryLog the "
+                 "ledger through Telemetry.fold",
 }
 
 

@@ -122,6 +122,21 @@ def test_rotation_keeps_what_the_longest_lookback_can_still_reach(ledger, monkey
     assert {"review:new", "review:newer"} <= keys, "rotation dropped reachable events"
 
 
+def test_rotation_drops_a_line_neither_reader_can_parse(ledger, monkeypatch):
+    """A 400-digit `at` is past float range: `float()` of it raises, from an append."""
+    recent = json.dumps({"at": time.time() - 3600, "ev": "queued",
+                         "key": "review:new", "duty": "review", "pr": 2})
+    with open(ledger, "w", encoding="utf-8") as fh:
+        fh.write('{"at": 1%s, "ev": "queued", "key": "review:huge"}\n' % ("0" * 400))
+        fh.write(recent + "\n")
+    monkeypatch.setattr(telemetry, "MAX_LEDGER_BYTES", 100)
+
+    telemetry.record_queued("review:newer", "review", 3)
+
+    telemetry._reset_cache()
+    assert {t.key for t in telemetry.load().tasks} == {"review:new", "review:newer"}
+
+
 def test_a_partial_tail_line_costs_only_itself(ledger):
     telemetry.record_queued("review:h/o/r#1@aa", "review", 1)
     with open(ledger, "a", encoding="utf-8") as fh:

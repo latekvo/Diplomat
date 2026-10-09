@@ -267,26 +267,27 @@ enum OpenCodeProbe {
         return OpenCodeAPI.openingText(call(service, path))
     }
 
-    // Sessions of runs synthesized from the process table, which have no run directory to
-    // bind one into, by run id. Kept until the run is retired (`forgetAdopted`) so it can
-    // still be stopped once its TUI, and so its sighting, is gone.
+    // Sessions of untracked runs, which have no run directory to bind one into, by run
+    // id. Kept until the run is retired (`forgetAdopted`) so it can still be stopped once
+    // its TUI, and so its sighting, is gone.
     private static let adoptedLock = NSLock()
     private static var adopted: [String: String] = [:]
 
-    /// Give pid-less runs — mesh-placed, or never booked by this applet — the 2.x session
-    /// the process-table scan found, so they are asked of the service, priced and
-    /// interrupted like a spawned run (`serviceSession(of:)`). A spawned run binds its
-    /// session at spawn.
+    /// Give runs this applet did not spawn here — mesh-placed, released, or never booked —
+    /// the 2.x session the process-table scan found, so they are asked of the service,
+    /// priced and interrupted like a spawned run (`serviceSession(of:)`). A spawned run
+    /// binds its session at spawn.
     ///
-    /// A synthesized run has no run directory: it is given the session the scan found on
-    /// its PR, remembered here. A mesh-placed one is bound in its run directory to the
-    /// first `attached` session no run holds whose opening prompt is exactly its staged
-    /// one — `bind`'s exact match — and only while it has no port (a 1.x run) and no
-    /// session yet.
+    /// An untracked run has no run directory: it is given the session remembered here -
+    /// the one the scan found on its PR, or for a released run, which keeps its agent's
+    /// pid, the one at that pid (the PR's sighting prefers any other agent). A mesh-placed
+    /// one is bound in its run directory to the first `attached` session no run holds
+    /// whose opening prompt is exactly its staged one — `bind`'s exact match — and only
+    /// while it has no port (a 1.x run) and no session yet.
     ///
     /// `openingPrompt` is the sweep self-test's seam.
     static func adopt(_ records: [AgentState.RunRecord], sessions: [Int: String],
-                      attached: [String],
+                      byPID: [Int: String], attached: [String],
                       openingPrompt: (String) -> String? = {
                           OpenCodeProbe.openingPrompt(sessionID: $0)
                       }) {
@@ -294,7 +295,9 @@ enum OpenCodeProbe {
             .filter { !$0.isEmpty })
         for r in records {
             if r.untracked {
-                guard let pr = r.prNumber, let session = sessions[pr] else { continue }
+                let session = r.pid == nil ? r.prNumber.flatMap { sessions[$0] }
+                    : r.pid.flatMap { byPID[$0] }
+                guard let session else { continue }
                 adoptedLock.lock()
                 adopted[r.runID] = session
                 adoptedLock.unlock()

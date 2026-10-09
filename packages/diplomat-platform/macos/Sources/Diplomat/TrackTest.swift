@@ -77,6 +77,19 @@ enum TrackTest {
               Set(scan.keys) == [436, 369])
         check("…each on the tty its screen is read from",
               scan[436] == "ttys001" && scan[369] == "ttys002")
+        // A pid-less run beside one the book holds by pid has only this scan to find its
+        // tty by, so the held agent is named only when it is its PR's last.
+        let twice = Observation.present("""
+          100 ttys001    15:00 claude Review PR #844 in software-mansion/argent.
+          200 ttys002    01:00 claude Review PR #844 in software-mansion/argent.
+          300 ttys003    01:00 claude Review PR #845 in software-mansion/argent.
+          """)
+        check("a held agent is named only when it is its PR's last",
+              AgentProbes.liveAgents(twice, owner: "software-mansion", repo: "argent",
+                                     heldPIDs: [100, 300]).value
+                == [844: "ttys002", 845: "ttys003"]
+                && AgentProbes.liveAgents(twice, owner: "software-mansion",
+                                          repo: "argent").value?[844] == "ttys001")
 
         // 2c. The two sources that have to meet on a tty do not spell it the same way:
         //     `ps` reports a bare device name, the terminal apps a full `/dev/…` path. One
@@ -430,7 +443,7 @@ enum TrackTest {
               ApiErrorWatcher.sendContinue(tty: agentTTY))
         var echoed = false
         for _ in 0..<15 where !echoed {
-            echoed = ApiErrorWatcher.dumpSessions()?.contains {
+            echoed = ApiErrorWatcher.dumpSessions().value?.contains {
                 AgentProbes.shortTTY($0.tty) == AgentProbes.shortTTY(agentTTY)
                     && $0.tail.contains(ApiErrorWatcher.continueMessage)
             } ?? false

@@ -92,7 +92,7 @@ public enum AuditCategory: String, CaseIterable, Sendable {
         case "ban", "unban":
             return .bans
         case "mesh-up", "mesh-peer-up", "mesh-peer-down", "mesh-takeover",
-             "mesh-dispatch", "mesh-dispatch-failed", "mesh-spawn":
+             "mesh-dispatch", "mesh-dispatch-failed", "mesh-spawn", "mesh-stop":
             return .mesh
         default:
             return .system

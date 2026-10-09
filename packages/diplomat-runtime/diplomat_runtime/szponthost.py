@@ -255,6 +255,10 @@ def _spawn_macos(prompt: str, done_path: str | None,
     builds. Returns the staged prompt path."""
     from . import review
 
+    try:
+        review.check_token()
+    except review.SpawnError as exc:
+        raise szpont_host.NoRunner(str(exc)) from exc
     prompt_file = review.write_prompt(prompt)
     shell_cmd = review.shell_command(
         prompt_file, done_path, settings_file=settings_file,
