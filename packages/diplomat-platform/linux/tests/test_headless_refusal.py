@@ -32,6 +32,7 @@ _PACKAGES = os.path.dirname(os.path.dirname(os.path.dirname(_HERE)))
         # A known mode, with a value that does not turn it on.
         ({"DIPLOMAT_DUMP": "true"}, ["DIPLOMAT_DUMP=true"]),
         ({"DIPLOMAT_SELF_UPDATE": "0"}, ["DIPLOMAT_SELF_UPDATE=0"]),
+        ({"DIPLOMAT_AGENTS": "true"}, ["DIPLOMAT_AGENTS=true"]),
         ({"DIPLOMAT_LOOKUP": ""}, ["DIPLOMAT_LOOKUP="]),
         # Every offender is named, not just the first.
         ({"DIPLOMAT_B_TEST": "1", "DIPLOMAT_A_TEST": "1", "DIPLOMAT_DUMP": "1"},
@@ -49,6 +50,7 @@ def test_a_mode_this_build_does_not_run_is_refused(env, refused):
         {"DIPLOMAT_DUMP": "1"},
         {"DIPLOMAT_AGENTS": "1"},
         {"DIPLOMAT_LOOKUP": "337"},
+        {"DIPLOMAT_PRINT_PROMPT": "mine"},
         {"DIPLOMAT_RENDER": "panel", "DIPLOMAT_RENDER_OUT": "/tmp/x.png"},
         # The legacy 6AM unit runs the `argent-utils` shim, which adds the current
         # marker and leaves its own in place.

@@ -91,6 +91,18 @@ def test_every_dispatched_mode_is_headless():
     )
 
 
+def test_the_macos_flags_are_the_ones_dispatched_on_1():
+    """A flag set to anything but 1 is refused, so the flags in `Headless.modes` are
+    exactly the modes the ladder compares with "1"."""
+    kinds = dict(re.findall(r'"(DIPLOMAT_[A-Z0-9_]+)"\s*:\s*(true|false)',
+                            _swift_block("static let modes")))
+    assert kinds.keys() == _headless()
+    flags = set(re.findall(_ENV_READ.pattern + r'\s*==\s*"1"',
+                           _source("DiplomatApp.swift")))
+    assert {"DIPLOMAT_SELF_UPDATE", "DIPLOMAT_QUEUE_TEST"} <= flags
+    assert {n for n, takes in kinds.items() if takes == "false"} == flags
+
+
 def test_every_headless_mode_is_dispatched():
     """The other direction. A flag left in the list after its dispatch is gone excuses
     nothing today, and silently excuses whatever the name is next attached to."""
@@ -129,6 +141,15 @@ def test_the_linux_modes_are_the_ladder():
     from diplomat_app import headless
 
     assert set(headless.MODES) == _linux_dispatched()
+
+
+def test_the_linux_flags_are_the_ones_dispatched_on_1():
+    from diplomat_app import headless
+
+    with open(os.path.join(_LINUX_APP, "__main__.py"), encoding="utf-8") as f:
+        flags = set(re.findall(_LINUX_MODE_READ.pattern + r'\s*==\s*"1"', f.read()))
+    assert {"DIPLOMAT_SELF_UPDATE", "DIPLOMAT_DUMP"} <= flags
+    assert {n for n, takes in headless.MODES.items() if not takes} == flags
 
 
 def test_the_singleton_spares_every_linux_mode():
