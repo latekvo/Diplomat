@@ -1518,7 +1518,7 @@ packages/
         Spend.swift                the OpenRouter balance probe — dollars left on the key cap and the credits
         AutoBudget.swift           ledger + probe + knobs -> may another automatic task start here?
         SelfUpdate.swift           fetch/merge upstream, rebuild, relaunch (Update button + the 06:00 run)
-        RepoPaths.swift            locate this app's own checkout (DIPLOMAT_SELF_REPO → the checkout the bundle sits in → ~/dev/diplomat),
+        RepoPaths.swift            locate this app's own checkout (DIPLOMAT_SELF_REPO → the checkout the bundle sits in → the one it recorded → ~/dev/diplomat),
                                    the sibling packages it reaches for, and the agents' repo root
         AppConfig.swift            the cross-process settings file (~/.diplomat/config.json) the mesh node shares
       install/                 ← build-app + the autostart / auto-update (un)installers (launchd)

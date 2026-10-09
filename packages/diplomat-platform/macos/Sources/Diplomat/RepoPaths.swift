@@ -14,10 +14,10 @@ import DiplomatCore
 /// inferred when running unbundled (`swift run`, where the shared assets resolve to
 /// `<repo>/packages/diplomat-core/assets`), the layout `build-app.sh` writes the
 /// bundle into (`<repo>/packages/diplomat-platform/macos/Diplomat.app` - what `szpont`
-/// opens and launchd starts), then the user's conventional checkout path for a copy
-/// of the bundle kept anywhere else. Mirrors the Linux front-end's
-/// `selfupdate.repo_root` (env `DIPLOMAT_SELF_REPO`, else the checkout its own file
-/// sits in).
+/// opens and launchd starts), the checkout `build-app.sh` recorded in the bundle's
+/// Info.plist (for a copy kept anywhere else), then the user's conventional checkout
+/// path. Mirrors the Linux front-end's `selfupdate.repo_root` (env
+/// `DIPLOMAT_SELF_REPO`, else the checkout its own file sits in).
 enum RepoPaths {
     private static var home: URL { FileManager.default.homeDirectoryForCurrentUser }
 
@@ -28,11 +28,14 @@ enum RepoPaths {
     static var root: URL {
         locate(env: ProcessInfo.processInfo.environment["DIPLOMAT_SELF_REPO"],
                assets: try? CoreAssets.assetsDir(),
-               bundle: Bundle.main.bundleURL, home: home)
+               bundle: Bundle.main.bundleURL,
+               recorded: Bundle.main.object(forInfoDictionaryKey: "DiplomatCheckout") as? String,
+               home: home)
     }
 
-    /// `root`, from the four readings it is made of.
-    static func locate(env: String?, assets: URL?, bundle: URL, home: URL) -> URL {
+    /// `root`, from the five readings it is made of.
+    static func locate(env: String?, assets: URL?, bundle: URL, recorded: String?,
+                       home: URL) -> URL {
         if let env, !env.isEmpty {
             return URL(fileURLWithPath: env)
         }
@@ -49,6 +52,9 @@ enum RepoPaths {
         }
         if let checkout = checkoutHolding(bundle: bundle) {
             return checkout
+        }
+        if let recorded, !recorded.isEmpty {
+            return URL(fileURLWithPath: recorded)
         }
         return home.appendingPathComponent("dev/diplomat")
     }

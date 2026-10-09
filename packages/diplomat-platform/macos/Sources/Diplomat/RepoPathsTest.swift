@@ -5,12 +5,12 @@ import Foundation
 /// `szpont` builds and opens `<checkout>/packages/diplomat-platform/macos/Diplomat.app`
 /// with the checkout under `~/.diplomat`, and launchd starts that same bundle: the
 /// Update button, the 06:00 self-update and the mesh spawn all find the checkout by
-/// the bundle's own location, or not at all. A copy kept anywhere else must not claim
-/// one, and a layout without `.git` is not one.
+/// the bundle's own location. A copy kept anywhere else must not claim one by its
+/// path, and a layout without `.git` is not one.
 ///
-/// The bundle is the third reading of four, and the order is what this pins:
-/// `DIPLOMAT_SELF_REPO`, the tree an unbundled run's assets sit in, the checkout around
-/// the bundle, then `~/dev/diplomat`.
+/// The order of the five readings is what this pins: `DIPLOMAT_SELF_REPO`, the tree
+/// an unbundled run's assets sit in, the checkout around the bundle, the checkout
+/// `build-app.sh` recorded in Info.plist, then `~/dev/diplomat`.
 ///
 ///     DIPLOMAT_REPOPATHS_TEST=1 swift run Diplomat
 ///
@@ -50,13 +50,22 @@ enum RepoPathsTest {
         let bundled = bundle.appendingPathComponent("Contents/Resources/assets")
         let unbundled = scratch.appendingPathComponent("unbundled")
         let elsewhere = scratch.appendingPathComponent("elsewhere")
-        func root(env: String? = nil, assets: URL? = bundled, bundle: URL = bundle) -> String {
-            RepoPaths.locate(env: env, assets: assets, bundle: bundle, home: home).path
+        let recorded = scratch.appendingPathComponent("recorded").path
+        func root(env: String? = nil, assets: URL? = bundled, bundle: URL = bundle,
+                  recorded: String? = nil) -> String {
+            RepoPaths.locate(env: env, assets: assets, bundle: bundle, recorded: recorded,
+                             home: home).path
         }
         check("a launchd start finds the checkout around its bundle, not ~/dev/diplomat",
               root() == checkout.path, "got \(root())")
-        check("a copy kept anywhere else falls back to ~/dev/diplomat",
-              root(bundle: copy) == fallback.path, "got \(root(bundle: copy))")
+        check("…ahead of the one it recorded, which a moved checkout leaves stale",
+              root(recorded: recorded) == checkout.path, "got \(root(recorded: recorded))")
+        check("a copy kept anywhere else finds the checkout it recorded",
+              root(bundle: copy, recorded: recorded) == recorded,
+              "got \(root(bundle: copy, recorded: recorded))")
+        check("…and one with no record falls back to ~/dev/diplomat",
+              root(bundle: copy, recorded: "") == fallback.path,
+              "got \(root(bundle: copy, recorded: ""))")
         let devAssets = unbundled.appendingPathComponent("packages/diplomat-core/assets")
         check("swift run's assets name the tree they were read from, ahead of the bundle",
               root(assets: devAssets) == unbundled.path, "got \(root(assets: devAssets))")

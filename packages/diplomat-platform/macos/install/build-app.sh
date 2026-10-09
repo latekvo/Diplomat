@@ -41,6 +41,9 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </dict>
 </plist>
 PLIST
+# A copy of the bundle kept outside the checkout finds it through this record;
+# RepoPaths.root reads it back.
+plutil -insert DiplomatCheckout -string "$(cd "$PKG_DIR/../../.." && pwd)" "$APP/Contents/Info.plist"
 
 echo "Built $PKG_DIR/$APP"
 echo "Launch:  open $PKG_DIR/$APP"
