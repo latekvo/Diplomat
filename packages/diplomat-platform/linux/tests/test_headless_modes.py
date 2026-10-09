@@ -15,6 +15,11 @@ applet every time it was run locally. Nothing was red.
 So: the two sets are the same set. Deliberately a grep and not a build — the drift is
 exactly the shape a grep can see, and this job has the whole checkout but no Swift
 toolchain.
+
+The Linux applet has the same two lists: the ladder in `__main__.main`, and
+`headless.MODES`, which its newest-wins singleton spares. And a mode one build lacks,
+the other platform's included, has to be refused at the entry point rather than
+started as the live app, so the two apps' refusals are held to each other's ladders.
 """
 
 from __future__ import annotations
@@ -46,13 +51,20 @@ def _dispatched() -> set[str]:
     return set(_ENV_READ.findall(_source("DiplomatApp.swift")))
 
 
-def _headless() -> set[str]:
-    """The modes `Headless.active` answers yes for. Scoped to that one property:
-    `isRender` reads the environment again for its own reasons, and counting it would
-    make the comparison pass on a name only IT still spells."""
+def _swift_block(start_at: str) -> str:
+    """The first `= [...]` literal in Headless.swift after `start_at`."""
     text = _source("Headless.swift")
-    start = text.index("static let active")
-    return set(_ENV_READ.findall(text[start:text.index("}()", start)]))
+    start = text.index("= [", text.index(start_at))
+    return text[start:text.index("]", start)]
+
+
+def _headless() -> set[str]:
+    """The modes `Headless.active` answers yes for: the keys of `Headless.modes`.
+    Scoped to that one table: `isRender` reads the environment again for its own
+    reasons, and counting it would make the comparison pass on a name only IT still
+    spells."""
+    return set(re.findall(r'"(DIPLOMAT_[A-Z0-9_]+)"\s*:',
+                          _swift_block("static let modes")))
 
 
 def test_the_grep_finds_both_lists():
@@ -79,6 +91,18 @@ def test_every_dispatched_mode_is_headless():
     )
 
 
+def test_the_macos_flags_are_the_ones_dispatched_on_1():
+    """A flag set to anything but 1 is refused, so the flags in `Headless.modes` are
+    exactly the modes the ladder compares with "1"."""
+    kinds = dict(re.findall(r'"(DIPLOMAT_[A-Z0-9_]+)"\s*:\s*(true|false)',
+                            _swift_block("static let modes")))
+    assert kinds.keys() == _headless()
+    flags = set(re.findall(_ENV_READ.pattern + r'\s*==\s*"1"',
+                           _source("DiplomatApp.swift")))
+    assert {"DIPLOMAT_SELF_UPDATE", "DIPLOMAT_QUEUE_TEST"} <= flags
+    assert {n for n, takes in kinds.items() if takes == "false"} == flags
+
+
 def test_every_headless_mode_is_dispatched():
     """The other direction. A flag left in the list after its dispatch is gone excuses
     nothing today, and silently excuses whatever the name is next attached to."""
@@ -87,3 +111,76 @@ def test_every_headless_mode_is_dispatched():
         "Headless.active names these modes but DiplomatApp dispatches none of them: "
         + ", ".join(orphans)
     )
+
+
+# MARK: - The Linux applet's two lists
+
+_LINUX_APP = os.path.join(_PACKAGES, "diplomat-platform", "linux", "diplomat_app")
+
+# A mode is read bare, `env.get("DIPLOMAT_X")`. The one parameter a mode takes,
+# `DIPLOMAT_RENDER_OUT`, is read with a default, which is what keeps it out.
+_LINUX_MODE_READ = re.compile(r'env\.get\(\s*"(DIPLOMAT_[A-Z0-9_]+)"\s*\)')
+
+
+def _linux_dispatched() -> set[str]:
+    """The modes `__main__.main` dispatches before it launches the GUI."""
+    with open(os.path.join(_LINUX_APP, "__main__.py"), encoding="utf-8") as f:
+        return set(_LINUX_MODE_READ.findall(f.read()))
+
+
+def test_the_linux_grep_finds_the_ladder():
+    dispatched = _linux_dispatched()
+    assert len(dispatched) >= 6, dispatched
+    assert {"DIPLOMAT_RENDER", "DIPLOMAT_SELF_UPDATE"} <= dispatched
+
+
+def test_the_linux_modes_are_the_ladder():
+    """Both directions at once: a dispatched mode missing from `MODES` is refused at
+    the entry point and SIGTERMed by a tray starting beside it, and a listed mode no
+    one dispatches starts the tray."""
+    from diplomat_app import headless
+
+    assert set(headless.MODES) == _linux_dispatched()
+
+
+def test_the_linux_flags_are_the_ones_dispatched_on_1():
+    from diplomat_app import headless
+
+    with open(os.path.join(_LINUX_APP, "__main__.py"), encoding="utf-8") as f:
+        flags = set(re.findall(_LINUX_MODE_READ.pattern + r'\s*==\s*"1"', f.read()))
+    assert {"DIPLOMAT_SELF_UPDATE", "DIPLOMAT_DUMP"} <= flags
+    assert {n for n, takes in headless.MODES.items() if not takes} == flags
+
+
+def test_the_singleton_spares_every_linux_mode():
+    from diplomat_app import headless, singleton
+
+    for name in headless.MODES:
+        assert singleton._environ_is_headless(f"{name}=1\0".encode()), name
+
+
+# MARK: - A mode only the other platform runs is refused, not started as the live app
+
+
+def test_the_macos_app_refuses_every_linux_only_mode():
+    """`Headless.linuxOnlyModes` names exactly the Linux modes macOS has no twin for,
+    which is what makes `DIPLOMAT_AGENTS=1 swift run Diplomat` a refusal."""
+    named = set(re.findall(r'"(DIPLOMAT_[A-Z0-9_]+)"',
+                           _swift_block("static let linuxOnlyModes")))
+    assert named == _linux_dispatched() - _dispatched()
+
+
+def test_the_linux_applet_refuses_every_macos_only_mode():
+    from diplomat_app import headless
+
+    macos_only = _dispatched() - set(headless.MODES)
+    assert "DIPLOMAT_QUEUE_TEST" in macos_only
+    for name in macos_only:
+        assert headless.unrunnable({name: "1"}) == [f"{name}=1"], name
+
+
+def test_both_apps_name_modes_the_same_way():
+    from diplomat_app import headless
+
+    swift = set(re.findall(r'"(_[A-Z]+)"', _swift_block("static let modeSuffixes")))
+    assert swift == set(headless._MODE_SUFFIXES)

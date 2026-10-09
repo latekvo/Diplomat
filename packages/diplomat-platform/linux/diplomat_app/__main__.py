@@ -18,6 +18,13 @@ import sys
 def main() -> int:
     env = os.environ
 
+    from .headless import refusal, unrunnable
+
+    refused = unrunnable(env)
+    if refused:
+        sys.stderr.write(refusal(refused))
+        return 64  # EX_USAGE
+
     if env.get("DIPLOMAT_SELF_UPDATE") == "1":
         from .selfupdate import run_scheduled
 
