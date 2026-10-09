@@ -211,8 +211,14 @@ enum ApiWatchTest {
         _ = fakeTmux("has-session) exit 1 ;;\n*) exit 1 ;;")
         check("…and a machine whose server has shut down reads as nothing to hop across",
               TerminalFocus.walkTables()?.panes.isEmpty == true)
-        _ = fakeTmux("has-session) exit 0 ;;\nlist-panes) printf 'ttys037 %%80 my agents\\n' ;;"
-                     + "\nlist-clients) printf 'ttys036 my agents\\n' ;;")
+        // Both listings render the format they are asked for, as a client outside tmux
+        // under launchd's locale gets it: every control byte comes back as `_`.
+        _ = fakeTmux("has-session) exit 0 ;;\nlist-panes|list-clients)"
+                     + " while [ $# -gt 1 ] && [ \"$1\" != -F ]; do shift; done"
+                     + "\n  printf '%s' \"$2\" | tr '\\001-\\037' _ | sed"
+                     + " -e 's|#{pane_tty}|/dev/ttys037|' -e 's|#{pane_id}|%80|'"
+                     + " -e 's|#{session_name}|my agents|' -e 's|#{client_tty}|/dev/ttys036|'"
+                     + " -e 's|#{client_session}|my agents|' ;;")
         let whole = TerminalFocus.walkTables()
         check("…and a server that answers both is read whole, a session name's space and all",
               whole?.panes == ["ttys037": TerminalFocus.Pane(id: "%80", session: "my agents")]
