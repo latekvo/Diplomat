@@ -11,6 +11,7 @@ resolver refuses to guess from.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 
@@ -97,6 +98,69 @@ def test_a_run_added_to_a_book_load_refuses_starts_a_new_one(body):
     R.runs_path().parent.mkdir(parents=True, exist_ok=True)
     R.runs_path().write_text(body)
     R.add(rec("new"))
+    assert [r.run_id for r in R.load()] == ["new"]
+
+
+def test_a_record_with_unusable_fields_costs_those_fields_not_the_book():
+    """The Swift twin reads a null or non-numeric number as that field's default;
+    this side raised out of the whole load, and every poll after it."""
+    R.runs_path().parent.mkdir(parents=True, exist_ok=True)
+    R.runs_path().write_text(json.dumps({"version": R.SCHEMA_VERSION, "runs": [
+        {"runId": "r1", "dispatchedAt": None, "pid": "x", "prNumber": "7",
+         "claimSeenAt": [], "quietSince": True},
+        rec(run_id="r2").to_json()]}))
+    got = R.load()
+    assert [r.run_id for r in got] == ["r1", "r2"]
+    assert (got[0].dispatched_at, got[0].pid, got[0].pr_number, got[0].claim_seen_at,
+            got[0].quiet_since) == (0.0, None, None, None, None)
+    assert got[1] == rec(run_id="r2")
+
+
+@pytest.mark.parametrize("wide, as_double", [
+    ("1e300", 1e300), ("99999999999999999999", 1e20)])
+def test_a_number_past_int64_is_no_pid(wide, as_double):
+    """The Swift twin's ``intValue`` saturates or wraps past Int64, so both sides keep
+    one rule: an integer field is usable only inside Int64, and a finite double stays
+    what it is. Without it ``int(1e300)`` is a 301-digit pid the next save writes
+    back."""
+    R.runs_path().parent.mkdir(parents=True, exist_ok=True)
+    R.runs_path().write_text(
+        f'{{"version": {R.SCHEMA_VERSION}, "runs": [{{"runId": "r1", '
+        f'"quietSince": {wide}, "pid": {wide}, "prNumber": {wide}}}]}}')
+    got = R.load()
+    assert (got[0].pid, got[0].pr_number, got[0].quiet_since) == (None, None, as_double)
+
+
+def test_a_non_finite_number_is_no_field_value():
+    """A book holding one is refused whole on load; a record decoded any other way
+    still reads the field's default rather than carrying an infinity to the next
+    save."""
+    record = A.RunRecord.from_json({"runId": "r", "dispatchedAt": float("-inf"),
+                                    "quietSince": float("nan"), "pid": float("inf")})
+    assert (record.dispatched_at, record.quiet_since, record.pid) == (0.0, None, None)
+
+
+def test_a_run_registered_during_a_forget_survives(monkeypatch):
+    """forget() reads and writes under one lock, so a spawn registering between its
+    read and its write is not written over - the loss add()'s lock exists for. The
+    add here fires from inside forget's read; a read taken outside the lock lets it
+    land first and be overwritten by the stale copy."""
+    import threading
+    R.create_run(rec(run_id="old"), "p")
+    real = R._read_book
+    spawns: list[threading.Thread] = []
+
+    def read_then_register():
+        data = real()
+        if not spawns:
+            spawns.append(threading.Thread(target=R.add, args=(rec(run_id="new"),)))
+            spawns[0].start()
+            spawns[0].join(timeout=0.5)
+        return data
+
+    monkeypatch.setattr(R, "_read_book", read_then_register)
+    R.forget({"old"})
+    spawns[0].join(timeout=5)
     assert [r.run_id for r in R.load()] == ["new"]
 
 
@@ -555,6 +619,11 @@ def test_a_machine_that_never_ran_a_mesh_node_is_unsupported_not_broken(monkeypa
     fake.read_state = lambda: {"self": {"id": "me"}}
     assert probes.mesh_claims().status == A.UNAVAILABLE
 
+    # Unless the mesh was switched off: the snapshot outlives the node that wrote it,
+    # and a node stopped on purpose is not a probe gone quiet (the macOS twin's
+    # meshClaims(enabled:) answers the same).
+    assert probes.mesh_claims(enabled=False).status == A.UNSUPPORTED
+
 
 def test_the_agent_scan_reads_the_tty_column_of_this_dump(monkeypatch):
     """A column-order regression with no symptom of its own.
@@ -587,7 +656,7 @@ def test_a_pidless_run_beside_a_held_agent_reads_its_own_screen(monkeypatch):
     monkeypatch.setattr(probes.shutil, "which", lambda _: "/usr/bin/tmux")
     monkeypatch.setattr(probes.tmuxwatch, "pane_tails_for_ttys",
                         lambda ttys: {t: "❯" for t in ttys})
-    monkeypatch.setattr(probes, "mesh_claims", lambda: A.Observation.present(set()))
+    monkeypatch.setattr(probes, "mesh_claims", lambda enabled=True: A.Observation.present(set()))
     monkeypatch.setattr(probes.core, "config",
                         lambda: {"owner": "software-mansion", "repo": "argent"})
     monkeypatch.setattr(probes, "_ps_dump", lambda now: A.Observation.present(

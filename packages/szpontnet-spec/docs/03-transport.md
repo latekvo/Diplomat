@@ -25,6 +25,9 @@ accumulates bytes until a newline, parses the line as one message, and continues
 - A message **MUST** be valid UTF-8 JSON encoding an object with a string `t`
   field (the message type). Anything else — non-JSON, a non-object, a missing/
   non-string `t` — **MUST** be dropped (skip the line; do not close the link).
+  A line within the length limit that the receiver's own parser still refuses -
+  nested past its stack, an integer literal past its digit limit - **MUST** be
+  dropped the same way.
 - Implementations **MUST** enforce a maximum line length of `MAX_LINE_BYTES`
   (**512 KiB**, `524288`). A line exceeding it is dropped and the link **MAY** be
   closed. The limit is measured on the encoded line **including** its terminating

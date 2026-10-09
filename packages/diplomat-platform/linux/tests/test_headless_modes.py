@@ -93,19 +93,14 @@ def test_every_dispatched_mode_is_headless():
 
 def test_the_macos_flags_are_the_ones_dispatched_on_1():
     """A flag set to anything but 1 is refused, so the flags in `Headless.modes` are
-    exactly the modes the ladder compares with "1" alone. One it also compares with
-    another literal (`DIPLOMAT_WATCHDOG_TEST=hold`) has to take a value, or that value
-    is refused."""
+    exactly the modes the ladder compares with "1"."""
     kinds = dict(re.findall(r'"(DIPLOMAT_[A-Z0-9_]+)"\s*:\s*(true|false)',
                             _swift_block("static let modes")))
     assert kinds.keys() == _headless()
-    source = _source("DiplomatApp.swift")
-    on_1 = set(re.findall(_ENV_READ.pattern + r'\s*==\s*"1"', source))
-    on_other = set(re.findall(_ENV_READ.pattern + r'\s*==\s*"(?!1")', source))
-    assert {"DIPLOMAT_SELF_UPDATE", "DIPLOMAT_QUEUE_TEST"} <= on_1
-    assert "DIPLOMAT_WATCHDOG_TEST" in on_other
-    assert {n for n, takes in kinds.items() if takes == "false"} == on_1 - on_other
-    assert all(kinds.get(n) == "true" for n in on_other), on_other
+    flags = set(re.findall(_ENV_READ.pattern + r'\s*==\s*"1"',
+                           _source("DiplomatApp.swift")))
+    assert {"DIPLOMAT_SELF_UPDATE", "DIPLOMAT_QUEUE_TEST"} <= flags
+    assert {n for n, takes in kinds.items() if takes == "false"} == flags
 
 
 def test_every_headless_mode_is_dispatched():

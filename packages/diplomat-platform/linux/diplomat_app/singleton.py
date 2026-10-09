@@ -38,6 +38,14 @@ _HEADLESS_SUFFIXES = frozenset(name.removeprefix("DIPLOMAT_") for name in MODES)
 _ENV_PREFIXES = ("DIPLOMAT_", "ARGENT_UTILS_")
 
 
+def headless_markers() -> frozenset[str]:
+    """Every environment variable that marks a process as a headless one-shot -
+    what a relaunch strips, so the tray it starts is one the next newest-wins can
+    end."""
+    return frozenset(prefix + suffix
+                     for prefix in _ENV_PREFIXES for suffix in _HEADLESS_SUFFIXES)
+
+
 def _pidfile() -> Path:
     base = os.environ.get("XDG_RUNTIME_DIR") or os.path.join(
         os.path.expanduser("~"), ".cache"

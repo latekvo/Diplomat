@@ -23,9 +23,9 @@ _PACKAGES = os.path.dirname(os.path.dirname(os.path.dirname(_HERE)))
 @pytest.mark.parametrize(
     "env, refused",
     [
-        # A mode that exists on another branch only: the 2026-09-09 trigger.
+        # A macOS mode, which this applet does not run. The first is the 2026-09-09
+        # trigger.
         ({"DIPLOMAT_REPOPATHS_TEST": "1"}, ["DIPLOMAT_REPOPATHS_TEST=1"]),
-        # A macOS mode, which this applet does not run.
         ({"DIPLOMAT_SETTINGS_DUMP": "1"}, ["DIPLOMAT_SETTINGS_DUMP=1"]),
         ({"DIPLOMAT_APIWATCH_SCAN": "1"}, ["DIPLOMAT_APIWATCH_SCAN=1"]),
         ({"DIPLOMAT_AUTOFIX_POLL": "1"}, ["DIPLOMAT_AUTOFIX_POLL=1"]),

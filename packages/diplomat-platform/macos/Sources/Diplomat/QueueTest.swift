@@ -10,7 +10,9 @@ import DiplomatCore
 /// dropped, that one unit offered twice in a cycle is one task, that the operator's
 /// arrangement survives the poll that rebuilds the list, that work GitHub stops
 /// owing falls out of it, and that a switched-off monitor's work — or, with the
-/// queue's own switch off, anyone's — is held rather than either run or dropped.
+/// queue's own switch off, anyone's — is held rather than either run or dropped. And,
+/// being the harness with a real book on a pinned machine, that two settles of that
+/// book never overlap.
 ///
 /// It reaches the at-capacity branch honestly — a real `dispatchAgent` call against
 /// a real cap — so it never spawns an agent, needs no `gh` auth and no terminal
@@ -616,7 +618,64 @@ enum QueueTest {
         store.issues = []
         store.prs = []
 
-        // 16. The auto-review allowlist, from the line the operator types to the verdict
+        // 16. Settles do not overlap: the tick is a suspension point, and a settle
+        //     arriving across it would retire the same finished run again. The display
+        //     refresh yields to one under way; every other caller waits for it. The
+        //     first settle is held past its tick, so what the refresh meets is under way
+        //     by construction: a yield to the scheduler does not order two tasks.
+        emptyBook()
+        let over = AgentRegistry.createRun(
+            AgentState.RunRecord(
+                runID: AgentRegistry.newRunID(now: Date().timeIntervalSince1970),
+                dispatchedAt: Date().timeIntervalSince1970 - 600, prNumber: 21,
+                prURL: "https://github.com/software-mansion/argent/pull/21",
+                kind: "review", label: "Auto · Review · #21",
+                source: AgentDispatchGate.Source.auto.rawValue, pid: 4242),
+            prompt: "")
+        let reached = Latch(), released = Latch(), raced = Latch()
+        Store.settleGate = {
+            if reached.isOpen { raced.open() } else { reached.open() }
+            await released.wait()
+        }
+        let settle = Task { await store.settleAgents() }
+        await reached.wait()
+        // Through a task with a deadline: a refresh that waits behind the settle instead
+        // of yielding to it is a failure here, not a hang.
+        let refreshed = Latch()
+        Task { await store.refreshAutoTaskCount(); refreshed.open() }
+        let yielded = await refreshed.opened(within: 2)
+        check("a display refresh yields to the settle under way",
+              yielded && AgentRegistry.load().map(\.runID) == [over.runID])
+        // The gate is still up, so a second settle that ticked past the first would
+        // reach it.
+        let second = Task { await store.settleAgents() }
+        let overlapped = await raced.opened(within: 2)
+        check("a settle arriving while one is under way does not tick until it ends", !overlapped)
+        Store.settleGate = nil
+        released.open()
+        _ = await (settle.value, second.value)
+        let retired = AuditLog.read().filter {
+            $0.action == "retire" && $0.detail.hasPrefix("Auto · Review · #21")
+        }
+        check("a settle arriving while one is under way waits, so a finished run is retired once",
+              retired.count == 1 && AgentRegistry.load().isEmpty)
+
+        // 17. The write-back merges into the book on disk rather than replacing it with
+        //     the tick's copy. A spawn that registered while the tick resolved is in the
+        //     book and not in the copy, so the copy written back is an agent nothing
+        //     counts: a bay of the cap the machine can spend twice.
+        bookAgent(21)
+        let ticked = Latch(), written = Latch()
+        Store.settleGate = { ticked.open(); await written.wait() }
+        let across = Task { await store.settleAgents() }
+        await ticked.wait()
+        bookAgent(22)
+        Store.settleGate = nil
+        written.open()
+        await across.value
+        check("a run registered while the tick resolved is in the book after the write-back",
+              AgentRegistry.load().compactMap(\.prNumber) == [21, 22])
+        // 18. The auto-review allowlist, from the line the operator types to the verdict
         //    the gate returns — the setting is blank for every other section here, and
         //    that state is what those sections rest on.
         //
@@ -672,5 +731,34 @@ enum QueueTest {
 
         print(pass ? "\nQUEUE TEST OK" : "\nQUEUE TEST FAILED")
         return pass
+    }
+}
+
+/// A one-shot signal on the main actor: `wait` returns once `open` has been called, at
+/// once if it already was.
+@MainActor
+private final class Latch {
+    private(set) var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func open() {
+        isOpen = true
+        let woken = waiters
+        waiters = []
+        for w in woken { w.resume() }
+    }
+
+    func wait() async {
+        if isOpen { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    /// Whether it opened inside `seconds`, polled while the main actor keeps turning.
+    func opened(within seconds: Double) async -> Bool {
+        let deadline = Date().addingTimeInterval(seconds)
+        while !isOpen, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        return isOpen
     }
 }

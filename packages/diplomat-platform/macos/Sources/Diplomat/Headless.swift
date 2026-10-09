@@ -30,7 +30,9 @@ enum Headless {
         "DIPLOMAT_MESH_STRAY_TEST": false,
         "DIPLOMAT_ALLOCATOR_TEST": false,
         "DIPLOMAT_WATCHDOG": false,
-        "DIPLOMAT_WATCHDOG_TEST": true,
+        "DIPLOMAT_WATCHDOG_TEST": false,
+        "DIPLOMAT_REPOPATHS_TEST": false,
+        "DIPLOMAT_RELAUNCH_TEST": true,
     ]
 
     private static func turnsOn(_ name: String, _ value: String) -> Bool {

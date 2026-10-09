@@ -13,7 +13,7 @@ import DiplomatCore
 ///
 /// Run it via the installed `.app` binary so the live portion inherits the granted
 /// "control <terminal>" automation permission:
-///   DIPLOMAT_TRACK_TEST=1 /Applications/Diplomat.app/Contents/MacOS/Diplomat
+///   DIPLOMAT_TRACK_TEST=1 ./Diplomat.app/Contents/MacOS/Diplomat
 enum TrackTest {
     /// Returns overall pass/fail so the launcher can exit non-zero — a FAIL that
     /// still exits 0 can't gate anything.

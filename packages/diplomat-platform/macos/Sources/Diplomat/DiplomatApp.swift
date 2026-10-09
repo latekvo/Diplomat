@@ -197,14 +197,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if env["DIPLOMAT_ALLOCATOR_TEST"] == "1" {
             exit(AllocatorSetupTest.run() ? 0 : 1)
         }
-        // Revival self-test: who brings a dead app back and who leaves it closed, what
-        // a deliberate quit is, and what the launched GUI inherits. Every job step is a
-        // fixture; it opens only throwaway bundles and an idle copy of this binary under
-        // DIPLOMAT_WATCHDOG_TEST=hold, which exits on its own. Exit code = pass/fail.
+        // Checkout-location self-test: proves the bundle szpont builds and launchd starts
+        // names the checkout around it, a copy kept elsewhere names the one it recorded,
+        // and the order the five readings of `RepoPaths.root` are taken in. Lays the
+        // shapes out in a scratch directory; reads nothing else. Exit code = pass/fail.
+        if env["DIPLOMAT_REPOPATHS_TEST"] == "1" {
+            exit(RepoPathsTest.run() ? 0 : 1)
+        }
+        // Relaunch self-test: proves the relaunch that ends a self-update or revives a
+        // dead app starts a GUI, is judged on the instance `open` started, and that the
+        // singleton spares a headless one.
+        // Opens throwaway bundles it lays out itself and an idle copy of this binary
+        // under DIPLOMAT_RELAUNCH_TEST=hold, which exits on its own should the test die
+        // before ending it. Any other value runs the test. Exit code = pass/fail.
+        if let mode = env["DIPLOMAT_RELAUNCH_TEST"] {
+            if mode == "hold" {
+                Task.detached { sleep(60); exit(0) }
+            } else {
+                Task.detached { exit(RelaunchTest.run() ? 0 : 1) }
+            }
+        }
+        // Revival self-test: who brings a dead app back and who leaves it closed, and
+        // what a deliberate quit is. Every job step is a fixture and the quit mark a
+        // scratch file. Exit code = pass/fail.
         if env["DIPLOMAT_WATCHDOG_TEST"] == "1" {
-            Task.detached { exit(WatchdogTest.run() ? 0 : 1) }
-        } else if env["DIPLOMAT_WATCHDOG_TEST"] == "hold" {
-            Task.detached { sleep(60); exit(0) }
+            exit(WatchdogTest.run() ? 0 : 1)
         }
     }
 

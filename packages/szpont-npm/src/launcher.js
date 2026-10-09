@@ -1,10 +1,11 @@
 // The npm twin of `packages/szpont/szpont_launcher.py`, line for line where it
 // matters: `probe()` reads the machine, `plan()` turns those facts into the steps
 // that will run, and `run()` runs them. Splitting it that way is what lets
-// `test/parity-with-python.mjs` hand both implementations one set of synthetic
-// facts and demand the same plan back — the two are published under the same name
-// to the two indexes, and a `szpont` that meant different things depending on
-// which one you installed from would be the whole failure mode.
+// `test/parity-with-python.mjs` hand both implementations one machine on disk and
+// demand the same facts back, then one set of facts and demand the same plan —
+// the two are published under the same name to the two indexes, and a `szpont`
+// that meant different things depending on which one you installed from would be
+// the whole failure mode.
 //
 // Why a bootstrapper at all, rather than a package holding Diplomat: see the
 // Python module's header. Short version — Diplomat is built out of the checkout it
@@ -25,16 +26,48 @@ export const MIN_PYTHON = [3, 10];
 // already owns, so uninstalling is one `rm -rf ~/.diplomat` rather than a hunt.
 const STATE_DIR = '.diplomat';
 
+// `getconf PATH`, where shutil.which looks when neither the machine nor the
+// process has a PATH (glibc and musl agree on the Linux value). Bound once: the
+// libc's answer does not move with the platform probe() is told it is on.
+const DEFAULT_PATH = process.platform === 'darwin' ? '/usr/bin:/bin:/usr/sbin:/sbin' : '/bin:/usr/bin';
+
+// The executable's path, or null - `shutil.which` in the Python twin: anything
+// executable that is not a directory, and an empty PATH entry is the working
+// directory, as `sh` reads it.
 function which(name, env) {
-  const dirs = (env.PATH || '').split(path.delimiter).filter(Boolean);
-  return dirs.some((dir) => {
+  const searchPath = env.PATH ?? process.env.PATH ?? DEFAULT_PATH;
+  if (!searchPath) return null;
+  for (const dir of searchPath.split(path.delimiter)) {
+    const candidate = path.join(dir, name);
     try {
-      fs.accessSync(path.join(dir, name), fs.constants.X_OK);
-      return true;
+      fs.accessSync(candidate, fs.constants.X_OK);
+      if (!fs.statSync(candidate).isDirectory()) return candidate;
     } catch {
-      return false;
+      // not here
     }
-  });
+  }
+  return null;
+}
+
+// Whether `name` is on PATH and would run. Every Mac has a /usr/bin/git and a
+// /usr/bin/swift: xcrun shims that run the Command Line Tools when those are
+// installed and pop the graphical installer when they are not. Found there, a tool
+// is only as present as the toolchain, which `xcode-select -p` reports without
+// going through a shim.
+function tool(name, env, platform) {
+  const found = which(name, env);
+  if (!found) return false;
+  // realpath: a symlink to it, or a directory symlinked onto /usr/bin - what runs
+  // is still the shim.
+  if (platform === 'darwin' && fs.realpathSync(found) === `/usr/bin/${name}`) return toolchainPresent(env);
+  return true;
+}
+
+function toolchainPresent(env) {
+  const xcodeSelect = which('xcode-select', env);
+  if (!xcodeSelect) return false;
+  const r = spawnSync(xcodeSelect, ['-p'], { encoding: 'utf8', timeout: 30_000 });
+  return r.status === 0 && isDir((r.stdout || '').trim());
 }
 
 // `python3 --version`, or null when there is no python3 to ask. Only ever called
@@ -113,13 +146,16 @@ export function probe(appArgs = [], { update = true, env = process.env } = {}) {
     managed: !explicit,
     repo_url: env.DIPLOMAT_REPO_URL || DEFAULT_REPO_URL,
     update: Boolean(update),
-    git: which('git', env),
-    swift: which('swift', env),
+    git: tool('git', env, platform),
+    swift: tool('swift', env, platform),
     // Linux-only questions, and asked only there — see python3Version.
     python3: platform === 'linux' ? python3Version(env) : null,
     core_bin: platform === 'linux' ? coreBinPresent(home, env) : null,
     venv,
-    venv_python: fs.existsSync(path.join(venv, 'bin', 'python')),
+    // Both, because a venv is only useful with something to install into it:
+    // Debian without python3-venv leaves bin/python behind and stops before pip,
+    // and running `venv` again over that directory is what completes it.
+    venv_python: fs.existsSync(path.join(venv, 'bin', 'python')) && fs.existsSync(path.join(venv, 'bin', 'pip')),
     venv_current: digest !== null && readText(path.join(venv, '.szpont-requirements')) === digest,
     args: [...appArgs],
   };
@@ -225,8 +261,10 @@ export function plan(facts) {
     steps.push(step('build', [path.join(macos, 'install', 'build-app.sh')], { cwd: macos, needs: 'swift' }));
     // build-app.sh rebuilds unconditionally, so the bundle always matches the
     // source it was just cloned or pulled from; `open` then detaches it from this
-    // terminal, which is where a menu-bar app belongs.
-    const launch = ['open', path.join(macos, 'Diplomat.app')];
+    // terminal, which is where a menu-bar app belongs. `-n` starts that bundle
+    // even while an instance is up, and the app's newest-wins singleton retires
+    // the old one - the swap its own updater relies on.
+    const launch = ['open', '-n', path.join(macos, 'Diplomat.app')];
     if (args.length) launch.push('--args', ...args);
     steps.push(step('launch', launch, { cwd: macos }));
   } else if (facts.platform === 'linux') {
@@ -290,7 +328,7 @@ export function run(steps, { checkout, venv }) {
       try {
         fs.writeFileSync(path.join(venv, '.szpont-requirements'), digest || '');
       } catch {
-        // a re-install next time is the whole cost of not recording it
+        // re-installed next time; linux/diplomat passes the venv over until then
       }
     }
   }

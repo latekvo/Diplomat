@@ -1,20 +1,16 @@
-import AppKit
+import Foundation
 
 /// Self-test for who brings a dead app back - `DIPLOMAT_WATCHDOG_TEST=1`.
 ///
 /// The 06:00 updater and the watchdog decide over fixture job steps, so no git, build,
 /// launch or log line reaches the machine: each must launch an app that is not running
 /// unless the operator quit it, and launch nothing while one runs. The quit mark
-/// round-trips through a scratch file. What is real: the environment `open` hands a
-/// launched bundle (a throwaway one that writes it down), and whom the singleton counts
-/// as the app - an idle copy of this binary under `DIPLOMAT_WATCHDOG_TEST=hold` is
-/// headless and must not count, while a bundle whose executable is named like the app
-/// must. Bundles are matched by path and pid, so the live app is neither counted nor
-/// touched.
+/// round-trips through a scratch file. The launch itself - what it hands the GUI and
+/// whom the singleton counts as the app - is `RelaunchTest`'s.
 ///
 ///     DIPLOMAT_WATCHDOG_TEST=1 swift run Diplomat
 ///
-/// Ends every process it started and removes the scratch directory.
+/// Starts no process and removes the scratch directory.
 enum WatchdogTest {
     static func run() -> Bool {
         var failures: [String] = []
@@ -150,89 +146,9 @@ enum WatchdogTest {
         check("a logout's quit is not, cancelled or not",
               !OperatorQuit.isDeliberate(senderIsDiplomat: false, endsSession: true))
 
-        print("the environment a launched GUI gets")
-        func bundle(_ name: String, executable: String, script: String) -> URL {
-            let app = scratch.appendingPathComponent("\(name).app")
-            let macos = app.appendingPathComponent("Contents/MacOS")
-            try? fm.createDirectory(at: macos, withIntermediateDirectories: true)
-            fm.createFile(atPath: macos.appendingPathComponent(executable).path,
-                          contents: Data(script.utf8), attributes: [.posixPermissions: 0o755])
-            let plist = """
-            <?xml version="1.0" encoding="UTF-8"?>
-            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-            <plist version="1.0"><dict>
-            <key>CFBundleName</key><string>\(name)</string>
-            <key>CFBundleIdentifier</key><string>com.ignacy.diplomat.watchdogtest.\(name)</string>
-            <key>CFBundleExecutable</key><string>\(executable)</string>
-            <key>CFBundlePackageType</key><string>APPL</string>
-            <key>LSUIElement</key><true/>
-            </dict></plist>
-            """
-            fm.createFile(atPath: app.appendingPathComponent("Contents/Info.plist").path,
-                          contents: Data(plist.utf8))
-            return app
-        }
-        let dump = scratch.appendingPathComponent("stays.env").path
-        let stays = bundle("Stays", executable: SingleInstance.execName,
-                           script: "#!/bin/sh\nenv > '\(dump).tmp' && mv '\(dump).tmp' '\(dump)'\nexec sleep 60\n")
-        func staying() -> [NSRunningApplication] {
-            let path = stays.resolvingSymlinksInPath().path
-            return NSRunningApplication.runningApplications(
-                withBundleIdentifier: "com.ignacy.diplomat.watchdogtest.Stays"
-            ).filter { $0.bundleURL?.resolvingSymlinksInPath().path == path }
-        }
-        defer { for app in staying() { kill(app.processIdentifier, SIGKILL) } }
-        setenv("DIPLOMAT_WATCHDOG", "1", 1)
-        setenv("WATCHDOG_TEST_CANARY", "\(getpid())", 1)
-        var launchError: String?
-        do { try SelfUpdate.relaunch(stays) } catch {
-            launchError = (error as? LocalizedError)?.errorDescription ?? "\(error)"
-        }
-        unsetenv("DIPLOMAT_WATCHDOG")
-        unsetenv("WATCHDOG_TEST_CANARY")
-        check("the bundle opens", launchError == nil, launchError ?? "")
-        let dumpBy = Date().addingTimeInterval(10)
-        while Date() < dumpBy, !fm.fileExists(atPath: dump) { usleep(50_000) }
-        var handed: [String: String] = [:]
-        for line in ((try? String(contentsOfFile: dump, encoding: .utf8)) ?? "").split(separator: "\n") {
-            guard let eq = line.firstIndex(of: "=") else { continue }
-            handed[String(line[..<eq])] = String(line[line.index(after: eq)...])
-        }
-        check("the rest of this process's environment reaches it",
-              handed["WATCHDOG_TEST_CANARY"] == "\(getpid())", "got \(handed["WATCHDOG_TEST_CANARY"] ?? "nil")")
-        check("no headless marker does: not the watchdog's, not this test's",
-              !handed.isEmpty && !Headless.isActive(in: handed)
-                  && handed["DIPLOMAT_WATCHDOG"] == nil && handed["DIPLOMAT_WATCHDOG_TEST"] == nil,
-              "got \(handed.filter { $0.key.hasPrefix("DIPLOMAT_") })")
-        check("a missing bundle is an error, not a launch",
-              (try? SelfUpdate.relaunch(scratch.appendingPathComponent("Gone.app"))) == nil)
-
-        print("whom the singleton counts as the app")
-        let child = Process()
-        child.executableURL = Bundle.main.executableURL
-        var env = ProcessInfo.processInfo.environment
-        env["DIPLOMAT_WATCHDOG_TEST"] = "hold"
-        child.environment = env
-        child.standardOutput = FileHandle.nullDevice
-        child.standardError = FileHandle.nullDevice
-        do { try child.run() } catch { check("an idle copy of this binary starts", false, "\(error)") }
-        defer { if child.isRunning { child.terminate(); child.waitUntilExit() } }
-        let idle = child.processIdentifier
-        func listed(_ pid: pid_t) -> Bool {
-            NSWorkspace.shared.runningApplications.contains { $0.processIdentifier == pid }
-        }
-        let listedBy = Date().addingTimeInterval(10)
-        while Date() < listedBy, !listed(idle) { usleep(50_000) }
-        check("the idle copy is a running application", listed(idle))
-        check("its environment reads back",
-              SingleInstance.environment(of: idle)["DIPLOMAT_WATCHDOG_TEST"] == "hold")
-        let counted = SingleInstance.otherInstances().map(\.processIdentifier)
-        check("a headless instance is not the app", !counted.contains(idle), "counted \(counted)")
-        let up = staying().map(\.processIdentifier)
-        check("an instance carrying no headless marker is the app",
-              !up.isEmpty && up.allSatisfy { counted.contains($0) }, "counted \(counted), staying \(up)")
+        print("who sent a quit")
         check("a quit sent from this binary reads as Diplomat's",
-              SingleInstance.executableName(idle) == SingleInstance.execName)
+              SingleInstance.executableName(getpid()) == SingleInstance.execName)
         check("a quit sent from anything else does not",
               SingleInstance.executableName(getppid()).map { $0 != SingleInstance.execName } == true)
 

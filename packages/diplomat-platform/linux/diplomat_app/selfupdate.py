@@ -17,9 +17,10 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import time
 from pathlib import Path
 
-from .singleton import _ENV_PREFIXES, _HEADLESS_SUFFIXES, SingleInstance
+from .singleton import SingleInstance, headless_markers
 
 
 class UpdateError(RuntimeError):
@@ -184,12 +185,12 @@ def _state_dir() -> Path:
     )
 
 
-def relaunch(extra_env: dict[str, str] | None = None) -> None:
+def relaunch(extra_env: dict[str, str] | None = None) -> subprocess.Popen:
     """Start the updated launcher detached, logging where autostart logs.
 
     The new instance's newest-wins singleton terminates any GUI tray still
     running, so a caller that is one only reports "restarting…" and waits to be
-    replaced.
+    replaced - after asking :func:`relaunch_failure` whether the child died first.
 
     ``extra_env`` is merged over the current environment for the child — the
     unattended jobs use it to hand the GUI the display env (DISPLAY / Wayland /
@@ -203,15 +204,14 @@ def relaunch(extra_env: dict[str, str] | None = None) -> None:
     # Strip every headless-mode marker: the unattended jobs run with DIPLOMAT_SELF_UPDATE=1
     # or DIPLOMAT_WATCHDOG=1 in their env, and a copied env would make the child re-enter
     # __main__.main's headless mode and exit instead of launching the GUI tray.
-    for _prefix in _ENV_PREFIXES:
-        for _suffix in _HEADLESS_SUFFIXES:
-            env.pop(_prefix + _suffix, None)
+    for marker in headless_markers():
+        env.pop(marker, None)
     if extra_env:
         env.update(extra_env)
     try:
         log_dir.mkdir(parents=True, exist_ok=True)
         with (log_dir / "diplomat.log").open("ab") as log:
-            subprocess.Popen(  # noqa: S603 — relaunch ourselves, detached
+            return subprocess.Popen(  # noqa: S603 - relaunch ourselves, detached
                 ["bash", str(launcher)],
                 cwd=str(root),
                 start_new_session=True,
@@ -222,6 +222,24 @@ def relaunch(extra_env: dict[str, str] | None = None) -> None:
             )
     except OSError as exc:
         raise UpdateError(f"could not relaunch the applet: {exc}") from exc
+
+
+def relaunch_failure(child: subprocess.Popen, window: float = 3.0) -> int | None:
+    """The exit code of a relaunched launcher that ended inside ``window``, else None.
+
+    The launcher execs the applet, so the child's exit is the applet's: any exit
+    inside the window, 0 included, is an applet that ended without taking over
+    the tray (a venv without PySide6, a checkout that no longer imports), and it
+    is reported instead of "restarting…" outliving the button and "relaunched"
+    being logged over the old build. One still running is the applet coming up.
+    """
+    deadline = time.monotonic() + window
+    while time.monotonic() < deadline:
+        code = child.poll()
+        if code is not None:
+            return code
+        time.sleep(0.05)
+    return None
 
 
 # MARK: unattended (6AM timer) path
@@ -346,9 +364,13 @@ def revive(quietly: bool, tag: str = "") -> int:
             _sched_log(f"{tag}tray not running: no tray has recorded a display to launch onto")
         return 0
     try:
-        relaunch(env)
+        child = relaunch(env)
     except (UpdateError, OSError) as exc:
         _sched_log(f"{tag}tray not running: launch failed: {exc}")
+        return 1
+    exited = relaunch_failure(child)
+    if exited is not None:
+        _sched_log(f"{tag}tray not running: launch failed: the applet exited {exited}")
         return 1
     _sched_log(f"{tag}tray not running: launched it")
     return 0
@@ -407,13 +429,23 @@ def run_scheduled() -> int:
     pid = SingleInstance.running_pid()
     if pid:
         try:
-            relaunch(_display_env_of(pid))
+            child = relaunch(_display_env_of(pid))
         except (UpdateError, OSError, subprocess.TimeoutExpired) as exc:
             # relaunch() re-raises OSError (a read-only/full XDG_STATE_HOME on the
             # log open, a missing bash) as UpdateError. The update itself already
             # landed on disk; a relaunch failure must be logged, not raised — same
             # never-raises contract the pull()/build_core() guards above honor.
             _sched_log(f"update built but relaunch failed: {exc}")
+            return 1
+        exited = relaunch_failure(child)
+        if exited is not None:
+            # Asked again rather than assumed: the applet's newest-wins ends the old
+            # tray before it builds anything, so one that died during construction
+            # has already taken the tray it then failed to replace.
+            still = SingleInstance.running_pid()
+            _sched_log(f"update built but the relaunched applet exited {exited}; "
+                       + (f"pid {still} is still the old build" if still
+                          else "no applet is running"))
             return 1
         _sched_log(f"relaunched running tray (was pid {pid}) onto {commit}")
     else:

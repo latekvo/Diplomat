@@ -281,7 +281,8 @@ enum TerminalFocus {
     /// any of them is the right window to raise.
     static func clients() -> [String: String] { readClients() ?? [:] }
 
-    /// The same listing, failure kept apart from emptiness — see `walkTables`.
+    /// The same listing, failure kept apart from emptiness — see `walkTables`. Split as
+    /// `readPanes` is: on spaces, the session name last.
     private static func readClients() -> [String: String]? {
         guard let out = tmux(["list-clients", "-F", "#{client_tty} #{client_session}"])
         else { return nil }

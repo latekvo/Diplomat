@@ -171,6 +171,14 @@ def _text(value: Any, default: str = "") -> str:
     return value if isinstance(value, str) else default
 
 
+def _integer(value: Any) -> int | None:
+    """:func:`_number` for an integer field (``pid``, ``prNumber``): usable only inside
+    ``|v| < 9e18``, the bound ``clampedInt`` draws in Models.swift, and truncated like
+    ``Int(Double)``. Swift twin: ``AgentRegistry.integer``."""
+    n = _number(value)
+    return int(n) if n is not None and abs(n) < 9.0e18 else None
+
+
 def _jsonable(value: Any) -> Any:
     if isinstance(value, (set, frozenset)):
         return sorted(value)
@@ -454,7 +462,7 @@ class RunRecord:
         return RunRecord(
             run_id=_text(obj.get("runId")),
             dispatched_at=_number(obj.get("dispatchedAt")) or 0.0,
-            pr_number=_whole(obj.get("prNumber")),
+            pr_number=_integer(obj.get("prNumber")),
             pr_url=_text(obj.get("prUrl")),
             kind=_text(obj.get("kind")),
             label=_text(obj.get("label")),
@@ -465,7 +473,7 @@ class RunRecord:
             node=_text(obj.get("node")),
             work_key=_text(obj.get("workKey")),
             ledger_key=_text(obj.get("ledgerKey")),
-            pid=_whole(obj.get("pid")),
+            pid=_integer(obj.get("pid")),
             tty=_text(obj.get("tty")),
             claim_seen_at=_number(obj.get("claimSeenAt")),
             quiet_digest=_text(obj.get("quietDigest")),

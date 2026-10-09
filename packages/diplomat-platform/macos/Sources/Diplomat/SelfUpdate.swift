@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 /// Self-update for the macOS app: fast-forward the checkout, rebuild the `.app`
@@ -167,20 +168,33 @@ enum SelfUpdate {
         }
     }
 
-    /// Launch the freshly-built bundle detached; its newest-wins singleton terminates
-    /// any GUI instance still running, so a caller that is one only reports
-    /// "restarting…" and waits to be replaced. Mirrors `selfupdate.relaunch`.
+    /// Launch the freshly-built bundle detached and see it come up. `open` exits 0 once
+    /// LaunchServices has taken the request, whatever becomes of the process, so the
+    /// verdict is the instance itself: one running `app` started after the request must
+    /// appear (a launch takes seconds on a loaded machine) and still be running `window`
+    /// later, else the swap did not happen. It is told apart by its start time, and its
+    /// staying up is asked of the process, because a LaunchServices read can leave out a
+    /// live instance (`running`). The failure says what is up instead: the
+    /// instances from before the launch, still the old build, or nothing, since a new
+    /// instance ends the old ones before anything past its launch can fail.
+    /// Its newest-wins singleton terminates any GUI instance still running, so a caller
+    /// that is one only reports "restarting…" and waits to be replaced. Mirrors
+    /// `selfupdate.relaunch` and `relaunch_failure`.
     ///
     /// `open` passes its environment to the instance, so it gets this one with every
     /// headless marker removed: launched by the 06:00 updater or the watchdog with its
     /// marker intact, the instance would be another headless job, not the GUI.
     ///
     /// The default `app` is beside the macOS package, where `build-app.sh` writes it.
-    static func relaunch(_ app: URL = RepoPaths.macosPackage.appendingPathComponent("Diplomat.app")) throws {
+    /// `lister` is one read of `app`'s instances; `RelaunchTest` swaps in a lossier one.
+    static func relaunch(_ app: URL = RepoPaths.macosPackage.appendingPathComponent("Diplomat.app"),
+                         window: TimeInterval = 3,
+                         lister: (URL) -> [pid_t] = listed) throws {
         let name = app.lastPathComponent
         guard FileManager.default.fileExists(atPath: app.path) else {
             throw UpdateError(message: "\(name) not found at \(app.path)")
         }
+        let requested = Date()
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
         p.arguments = ["-n", app.path]
@@ -192,6 +206,75 @@ enum SelfUpdate {
         if p.terminationStatus != 0 {
             throw UpdateError(message: "open \(name) exited \(p.terminationStatus)")
         }
+        func newInstance() -> pid_t? {
+            lister(app).first { (started($0) ?? .distantPast) >= requested }
+        }
+        /// What is up once the relaunch has failed: the instances from before it that are
+        /// GUI ones by `SingleInstance`'s rule. The 06:00 updater and the watchdog run from
+        /// the bundle they launch and are not the old build standing; the GUI behind the
+        /// Update button is.
+        func standing() -> String {
+            let old = running(app, lister: lister).filter {
+                (started($0) ?? .distantFuture) < requested
+                    && !Headless.isActive(in: SingleInstance.environment(of: $0))
+            }
+            return old.isEmpty ? "no instance of \(name) is running"
+                               : "the running app is still the old build"
+        }
+        let appearBy = Date().addingTimeInterval(10)
+        var launched = newInstance()
+        while launched == nil, Date() < appearBy {
+            usleep(50_000)
+            launched = newInstance()
+        }
+        guard let launched else {
+            throw UpdateError(message: "no new instance of \(name) came up within 10s; \(standing())")
+        }
+        let settled = Date().addingTimeInterval(window)
+        while Date() < settled {
+            usleep(50_000)
+            guard kill(launched, 0) == 0 else {
+                throw UpdateError(message: "the relaunched \(name) exited within \(Int(window))s; "
+                    + standing())
+            }
+        }
+    }
+
+    /// The pids of the bundle at `app` that LaunchServices lists, asked directly, by the
+    /// identifier in the bundle's Info.plist and then by path (a copy kept elsewhere
+    /// shares the identifier). Not `NSWorkspace.runningApplications`, which is refreshed
+    /// only as the main run loop turns while this is polled off it. Both paths are
+    /// resolved because LaunchServices reports one in its own form (`/private/tmp/x`
+    /// comes back as `/tmp/x`).
+    static func listed(_ app: URL) -> [pid_t] {
+        guard let id = Bundle(url: app)?.bundleIdentifier else { return [] }
+        let path = app.resolvingSymlinksInPath().path
+        return NSRunningApplication.runningApplications(withBundleIdentifier: id).filter {
+            $0.bundleURL?.resolvingSymlinksInPath().path == path
+        }.map(\.processIdentifier)
+    }
+
+    /// Every live instance of `app`: the union of `lister` reads over half a second. One
+    /// read is not enough while other apps launch: LaunchServices then lists no instance
+    /// of anything, Finder included, for up to 130ms at a time. An instance on its way
+    /// out can be listed as pid -1, which `kill` takes for every process the user owns.
+    static func running(_ app: URL, lister: (URL) -> [pid_t] = listed) -> [pid_t] {
+        var seen = Set<pid_t>()
+        let until = Date().addingTimeInterval(0.5)
+        repeat {
+            seen.formUnion(lister(app))
+            usleep(10_000)
+        } while Date() < until
+        return seen.filter { $0 > 0 && kill($0, 0) == 0 }.sorted()
+    }
+
+    /// When `pid` started, or nil once it is gone.
+    private static func started(_ pid: pid_t) -> Date? {
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return nil }
+        return Date(timeIntervalSince1970: TimeInterval(info.pbi_start_tvsec)
+            + TimeInterval(info.pbi_start_tvusec) / 1_000_000)
     }
 
     private static func shellQuote(_ s: String) -> String {
