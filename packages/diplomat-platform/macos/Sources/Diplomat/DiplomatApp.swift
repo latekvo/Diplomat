@@ -72,7 +72,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if env["DIPLOMAT_DUMP"] == "1" {
             Task { await Dump.run(); exit(0) }
         }
-        if let lk = env["DIPLOMAT_LOOKUP"], let n = Int(lk) {
+        if let lk = env["DIPLOMAT_LOOKUP"] {
+            guard let n = Int(lk) else {
+                print("DIPLOMAT_LOOKUP must be an integer, got \"\(lk)\""); exit(2)
+            }
             Task { await Dump.lookup(n); exit(0) }
         }
         // Prompt/spawn self-test: print the assembled review prompt plus the exact

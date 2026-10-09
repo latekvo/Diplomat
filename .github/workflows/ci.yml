@@ -121,13 +121,17 @@ jobs:
       - name: A mode this build does not run is refused
         working-directory: packages/diplomat-platform/macos
         run: |
-          for v in DIPLOMAT_NO_SUCH_TEST=1 DIPLOMAT_AGENTS=1 DIPLOMAT_QUEUE_TEST=true; do
+          for v in DIPLOMAT_NO_SUCH_TEST=1 DIPLOMAT_AGENTS=1 DIPLOMAT_QUEUE_TEST=true \
+                   DIPLOMAT_SELF_UPDATE=0; do
             code=0
             env "$v" perl -e 'alarm 60; exec @ARGV' .build/debug/Diplomat 2> refused.txt || code=$?
             cat refused.txt
             test "$code" -eq 64
             grep -F "refusing to start: $v " refused.txt
           done
+          code=0
+          DIPLOMAT_LOOKUP=abc perl -e 'alarm 60; exec @ARGV' .build/debug/Diplomat || code=$?
+          test "$code" -eq 2
 
   # The shared core advertises "compiles on macOS *and* Linux". This guards that
   # invariant by building + running the diplomat-core package on Linux (the SwiftUI
