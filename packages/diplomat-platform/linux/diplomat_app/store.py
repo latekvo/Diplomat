@@ -1292,7 +1292,6 @@ class Store(QObject):
                                      job.ledger_key, job.prompt, node=node,
                                      work_key=job.work_key, here=ran_here,
                                      label=row_label, kind=job.kind)
-                ok = True
             else:
                 # Registered whether or not it is PR-scoped. A sweep or an audit has
                 # nothing to dedup against, but it is still an agent this applet opened
@@ -1300,14 +1299,18 @@ class Store(QObject):
                 # and a directory nothing ever cleans up. What it costs depends on how
                 # it was dispatched, not on having a PR: the cap counts automatic runs
                 # and pricing follows the ledger key.
-                ok = self._spawn_tracked(job.prompt, job.pr_url, job.pr_number,
-                                         source, job.ledger_key,
-                                         label=row_label, kind=job.kind)
-            if not ok:
-                activity.log(source, "spawn-failed", f"{job.label} failed to spawn")
-                self.refresh_activity()
-                return "failed"
-            activity.log(source, job.audit_action, row_label)
+                try:
+                    self._spawn_tracked(job.prompt, job.pr_url, job.pr_number,
+                                        source, job.ledger_key,
+                                        label=row_label, kind=job.kind)
+                except review.SpawnError as exc:
+                    activity.log(source, "spawn-failed",
+                                 f"{job.label} failed to spawn: {exc}")
+                    self.refresh_activity()
+                    return "failed"
+            token = (routed != "spawned" or ran_here) and bool(review.token_export())
+            activity.log(source, job.audit_action,
+                         row_label + (review.TOKEN_AUDIT_NOTE if token else ""))
             # The telemetry ledger tracks the MONITORS, so only an auto dispatch is
             # recorded — a wizard click is the operator's own doing and has no queue
             # instant to be late against. A mesh placement on a PEER spends that
@@ -1420,9 +1423,9 @@ class Store(QObject):
 
     def _spawn_tracked(self, prompt: str, url: str | None, number: int | None,
                        source: str, ledger_key: str = "", label: str = "",
-                       kind: str = "") -> bool:
-        """Register a run, then spawn its agent into it. Returns whether the terminal
-        launched.
+                       kind: str = "") -> None:
+        """Register a run, then spawn its agent into it. Raises
+        :class:`review.SpawnError`, with the run forgotten, when no terminal launched.
 
         The record is written BEFORE the spawn, not after. A terminal takes seconds to
         open and the poll that dispatched it can ask about the same PR again inside
@@ -1470,8 +1473,7 @@ class Store(QObject):
                          session=tmuxwatch.session_name(record.run_id))
         except review.SpawnError:
             agentregistry.forget({record.run_id})
-            return False
-        return True
+            raise
 
     def _track_mesh_run(self, url: str | None, number: int | None, source: str,
                         ledger_key: str, prompt: str, node: str, work_key: str,
@@ -2518,7 +2520,7 @@ class Store(QObject):
         """Does this PR already have an agent? Every state that is not over counts,
         including one waiting at its prompt (that session holds the PR's context) and
         one nothing is known about (releasing a PR on missing evidence is how two
-        agents end up on it)."""
+        agents end up on it). A released agent does not: its run ended."""
         m = re.search(r"/pull/(\d+)", url)
         return m is not None and self._agent_tick().in_flight(int(m.group(1)))
 
@@ -2529,12 +2531,9 @@ class Store(QObject):
         On the slow refresh, not the 8-second tick: it costs a ``gh`` call per PR. The
         answer is carried forward by the fast ticks in between.
 
-        Only the runs this applet dispatched. "Merged" ends a run so it can be priced
-        and its bay handed back, and a synthesized one has nothing to price and is
-        manifestly still in the process table — asked about, a landed PR whose agent is
-        still sitting in its window would retire that record and have the next tick
-        synthesize it straight back, one ``gh`` call and one audit line per tick. What
-        ends one of those is the scan that made it.
+        Only the runs this applet dispatched: the resolver ends no untracked run on a
+        merge, since a landed PR does not make its agent leave. What ends one of those
+        is the scan that made it.
         """
         prs = {r.pr_number for r in agentregistry.load()
                if r.pr_number is not None and not r.untracked}

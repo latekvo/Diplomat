@@ -22,6 +22,7 @@ import os
 from pathlib import Path
 
 from . import procscan
+from .headless import MODES
 from .procscan import alive as _alive
 
 # Every module name this applet's tray has launched under. A rename appends a
@@ -30,13 +31,10 @@ from .procscan import alive as _alive
 _APPLET_MODULES = frozenset({"diplomat_app", "argent_utils"})
 
 # Env-var suffixes that mark a ``python -m <module>`` process as a headless
-# one-shot (self-update / dump / lookup / prompt / render) rather than the GUI
-# tray — see ``__main__.py``. We never terminate these: they exit on their own
-# and are not a wrench in the tray. Matched under both the current and the
-# legacy env prefix.
-_HEADLESS_SUFFIXES = frozenset(
-    {"SELF_UPDATE", "DUMP", "LOOKUP", "PRINT_PROMPT", "RENDER"}
-)
+# one-shot (the modes ``__main__.py`` dispatches) rather than the GUI tray. We
+# never terminate these: they exit on their own and are not a wrench in the tray.
+# Matched under both the current and the legacy env prefix.
+_HEADLESS_SUFFIXES = frozenset(name.removeprefix("DIPLOMAT_") for name in MODES)
 _ENV_PREFIXES = ("DIPLOMAT_", "ARGENT_UTILS_")
 
 
