@@ -41,6 +41,9 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </dict>
 </plist>
 PLIST
+# The bundle may be copied out of the checkout (to /Applications), so it records
+# where it came from; RepoPaths.root reads this back.
+plutil -insert DiplomatCheckout -string "$(cd "$PKG_DIR/../../.." && pwd)" "$APP/Contents/Info.plist"
 
 echo "Built $PKG_DIR/$APP"
 echo "Launch:  open $PKG_DIR/$APP"

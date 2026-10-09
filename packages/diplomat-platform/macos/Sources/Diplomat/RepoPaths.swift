@@ -13,9 +13,10 @@ import DiplomatCore
 /// A packaged `Diplomat.app` is decoupled from its source (it may sit in
 /// /Applications), so the checkout is located by, in order: an explicit env override,
 /// the layout inferred when running unbundled (`swift run`, where the shared assets
-/// resolve to `<repo>/packages/diplomat-core/assets`), then the user's conventional
-/// checkout path. Mirrors the Linux front-end's `selfupdate.repo_root` (env
-/// `DIPLOMAT_SELF_REPO`, else the checkout).
+/// resolve to `<repo>/packages/diplomat-core/assets`), the checkout `build-app.sh`
+/// recorded in the bundle's Info.plist, then the user's conventional checkout path.
+/// Mirrors the Linux front-end's `selfupdate.repo_root` (env `DIPLOMAT_SELF_REPO`,
+/// else the checkout).
 enum RepoPaths {
     private static var home: URL { FileManager.default.homeDirectoryForCurrentUser }
 
@@ -37,6 +38,10 @@ enum RepoPaths {
             return assets.deletingLastPathComponent()   // packages/diplomat-core
                 .deletingLastPathComponent()            // packages
                 .deletingLastPathComponent()            // the checkout
+        }
+        if let built = Bundle.main.object(forInfoDictionaryKey: "DiplomatCheckout") as? String,
+           !built.isEmpty {
+            return URL(fileURLWithPath: built)
         }
         return home.appendingPathComponent("dev/diplomat")
     }

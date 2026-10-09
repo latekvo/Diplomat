@@ -3136,11 +3136,12 @@ final class Store: ObservableObject {
         guard apiWatchEnabled, !apiScanInFlight else { return }
         apiScanInFlight = true
         defer { apiScanInFlight = false }
-        // nil = the dump itself failed (automation permission revoked, AppleEvent
-        // timeout) — skip the whole scan rather than treating it as "no sessions",
-        // which would wrongly clear every backoff and hide the breakage.
+        // Unavailable = a source of the dump failed (automation permission revoked,
+        // AppleEvent timeout, tmux listing nothing) — skip the whole scan rather than
+        // treating it as "no sessions", which would wrongly clear every backoff and hide
+        // the breakage.
         let dump = await Task.detached(priority: .utility) { ApiErrorWatcher.dumpSessionsCached() }.value
-        guard let sessions = dump else { return }
+        guard let sessions = dump.value else { return }
         // The other half of "may this session be written to". Unreadable evidence —
         // the process table, or the tmux listings the walk out of a pane needs — skips
         // the scan for the same reason a failed dump does, and more: the answer decides

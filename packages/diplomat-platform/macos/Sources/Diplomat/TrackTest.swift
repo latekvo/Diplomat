@@ -443,7 +443,7 @@ enum TrackTest {
               ApiErrorWatcher.sendContinue(tty: agentTTY))
         var echoed = false
         for _ in 0..<15 where !echoed {
-            echoed = ApiErrorWatcher.dumpSessions()?.contains {
+            echoed = ApiErrorWatcher.dumpSessions().value?.contains {
                 AgentProbes.shortTTY($0.tty) == AgentProbes.shortTTY(agentTTY)
                     && $0.tail.contains(ApiErrorWatcher.continueMessage)
             } ?? false

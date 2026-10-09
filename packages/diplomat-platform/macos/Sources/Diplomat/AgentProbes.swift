@@ -338,8 +338,9 @@ enum AgentProbes {
     /// `ApiErrorWatcher`'s own cache, so asking costs no extra AppleEvent traffic.
     ///
     /// A dump that FAILED is `.unavailable`, never an empty map: automation permission can
-    /// be revoked and an AppleEvent can time out, and read as "we looked and found no
-    /// sessions" either one would take a bay back from every live agent at once.
+    /// be revoked, an AppleEvent can time out and tmux can stop listing its panes, and
+    /// read as "we looked and found no sessions" any one would take a bay back from every
+    /// live agent at once. The reason names the source that failed.
     ///
     /// The marker tally counts only the screens belonging to a run this applet is
     /// tracking. The dump carries every terminal window on the machine, and the ratio it
@@ -355,7 +356,8 @@ enum AgentProbes {
         }
         lock.unlock()
         let answer: Observation<[String: String]>
-        if let sessions = ApiErrorWatcher.dumpSessionsCached() {
+        let dump = ApiErrorWatcher.dumpSessionsCached()
+        if let sessions = dump.value {
             var tails: [String: String] = [:]
             for s in sessions {
                 let key = shortTTY(s.tty)
@@ -377,7 +379,7 @@ enum AgentProbes {
             lock.unlock()
             answer = .present(tails)
         } else {
-            answer = .unavailable("are unreadable (the terminals would not answer)")
+            answer = .unavailable("are unreadable (\(dump.reason))")
         }
         lock.lock()
         tailsCache = (now, answer)
