@@ -73,7 +73,7 @@ enum AgentRegistryCommand {
             "quietDigest": r.quietDigest,
             "quietSince": r.quietSince.map { $0 as Any } ?? NSNull(),
             "reapRefusedAt": r.reapRefusedAt.map { $0 as Any } ?? NSNull(),
-            "untracked": r.untracked,
+            "untracked": r.untracked, "released": r.released,
         ]
     }
 
@@ -97,6 +97,7 @@ enum AgentRegistryCommand {
             quietDigest: d["quietDigest"] as? String ?? "",
             quietSince: (d["quietSince"] as? NSNumber)?.doubleValue,
             reapRefusedAt: (d["reapRefusedAt"] as? NSNumber)?.doubleValue,
-            untracked: JSONInput.flag(d["untracked"]))
+            untracked: JSONInput.flag(d["untracked"]),
+            released: JSONInput.flag(d["released"]))
     }
 }

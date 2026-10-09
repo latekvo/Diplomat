@@ -548,7 +548,7 @@ enum Render {
             // such with the reason it cannot, rather than guessed at or dropped.
             row(404, "review", "Auto · Review-req · #404 (@hubot)", .unknown,
                 source: .auto,
-                reason: "screens are unreadable (the terminals would not answer)"),
+                reason: "screens are unreadable (tmux listed no panes, though its server is up)"),
         ])
         let starting = queuedFixture(number: 497, kind: "review", auditAction: "review-req",
                                      label: "Review-req · #497 (@hubot)",

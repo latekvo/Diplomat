@@ -58,6 +58,11 @@ def _records() -> list[A.RunRecord]:
         A.RunRecord(run_id="untracked:404", dispatched_at=1786000003.0, pr_number=404,
                     source=A.SOURCE_AUTO, placement=A.PLACEMENT_LOCAL, tty="pts/8",
                     untracked=True),
+        # The agent an ended run left at its prompt. A side that dropped `released` would
+        # read it back as an untracked run holding a bay and its PR.
+        A.RunRecord(run_id="untracked:405", dispatched_at=1786000004.0, pr_number=405,
+                    source=A.SOURCE_AUTO, placement=A.PLACEMENT_LOCAL, pid=4343,
+                    tty="pts/9", untracked=True, released=True),
     ]
 
 
