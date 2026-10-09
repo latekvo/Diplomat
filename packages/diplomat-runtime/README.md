@@ -66,6 +66,8 @@ diplomat_runtime/
   usagescan.py    Claude Code transcript scanner: repo-vs-other tokens, per-task attribution
   quota.py        the OAuth usage probe — what is left of the 5-hour and 7-day windows
   atomicjson.py   write-then-rename, for the files two processes share
+  jsoninput.py    JSON as JSONSerialization reads it, for the run book and the ledger
+                  (JSONInput.swift's twin)
   szponthost.py   Diplomat's answers to the six questions a mesh node asks its host
 ```
 

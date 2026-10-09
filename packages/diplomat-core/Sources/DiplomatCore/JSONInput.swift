@@ -1,16 +1,17 @@
 import Foundation
 
-/// The CLI's stdin payload, with JSON booleans kept apart from JSON numbers.
+/// A JSON object, with JSON booleans kept apart from JSON numbers.
 ///
-/// Every subcommand here is one half of a parity pair: a fixture goes to this binary and
-/// to the Python twin, and the two answers are diffed. That only means anything if the
-/// two read the fixture the same way, and on `JSONSerialization` alone they do not.
-/// A JSON number bridges to `NSNumber`, `NSNumber(1) as? Bool` is `true`, and so is
-/// `NSNumber(1.0) as? Bool` — measured on macOS 15.5. So `"tokensLeft": 1` reached the
-/// resolver as a positive reading, armed the run deadline, and made this side call a run
-/// finished and reapable that the Python side called running. A field that arrived as a
-/// number is a field that did not survive its trip, and answering out of whatever
-/// happened to be truthy is how a hole in the net looks from inside it.
+/// For anything a Python twin also reads: the CLI's stdin payload, which every parity
+/// pair diffs against the Python answer, and the files both front-ends share (the run
+/// book, the telemetry ledger). Those only mean one thing if the two sides read them the
+/// same way, and on `JSONSerialization` alone they do not. A JSON number bridges to
+/// `NSNumber`, `NSNumber(1) as? Bool` is `true`, and so is `NSNumber(1.0) as? Bool` —
+/// measured on macOS 15.5 and on swift-corelibs-foundation 6.0 alike. So `"tokensLeft": 1`
+/// reached the resolver as a positive reading, armed the run deadline, and made this side
+/// call a run finished and reapable that the Python side called running. A field that
+/// arrived as a number is a field that did not survive its trip, and answering out of
+/// whatever happened to be truthy is how a hole in the net looks from inside it.
 ///
 /// `JSONDecoder` is the one parser in the standard library that tells them apart, and it
 /// does so on both platforms — which `CFGetTypeID`/`CFBooleanGetTypeID` does not:
@@ -19,27 +20,35 @@ import Foundation
 ///
 /// It is used for the SHAPE only. The values still come from `JSONSerialization`, so
 /// every other cast in the decoders — `as? Int`, `as? NSNumber`, `as? [String]` — reads
-/// exactly what it always did, and the one thing that changes is that a boolean arrives
+/// what `JSONSerialization` produced, and the one difference is that a boolean arrives
 /// as a `Flag` that no numeric cast can satisfy.
-enum JSONInput {
+public enum JSONInput {
 
     /// A JSON `true`/`false`, and nothing else. Deliberately not `Bool`: the whole point
     /// is that a value which is not a JSON boolean must fail the cast.
-    struct Flag {
-        let on: Bool
+    public struct Flag {
+        public let on: Bool
     }
 
-    /// Decode stdin. `nil` when it is not a JSON object, the same refusal as before.
-    static func parse(_ data: Data) -> [String: Any]? {
-        guard let values = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              let shape = try? JSONDecoder().decode([String: Shape].self, from: data)
+    /// Decode a JSON object; `nil` for anything else.
+    public static func parse(_ data: Data) -> [String: Any]? {
+        // Python reads these files as UTF-8 and refuses a byte-order mark;
+        // `JSONSerialization` also takes UTF-16/32, whose JSON always holds a NUL byte.
+        guard !data.starts(with: [0xEF, 0xBB, 0xBF]), !data.contains(0),
+              let values = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        else { return nil }
+        // The shape pass is the costly half, and a telemetry fold pays it per ledger
+        // line; only text that spells a boolean literal can hold one.
+        guard data.range(of: Data("true".utf8)) != nil
+                || data.range(of: Data("false".utf8)) != nil else { return values }
+        guard let shape = try? JSONDecoder().decode([String: Shape].self, from: data)
         else { return nil }
         return marked(values, .object(shape)) as? [String: Any]
     }
 
     /// A flag out of a decoded payload, or `fallback` when the field is absent or is not
     /// a JSON boolean. `agentstate._flag` is the Python twin, strict for the same reason.
-    static func flag(_ raw: Any?, _ fallback: Bool = false) -> Bool {
+    public static func flag(_ raw: Any?, _ fallback: Bool = false) -> Bool {
         (raw as? Flag)?.on ?? fallback
     }
 

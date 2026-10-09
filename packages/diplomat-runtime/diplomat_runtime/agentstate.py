@@ -52,6 +52,7 @@ the account still has tokens to spend.
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -134,12 +135,40 @@ def _flag(value: Any, default: bool = False) -> bool:
     that writes this format writes real booleans (:meth:`to_json`), so the only payload
     this refuses is a malformed one.
 
-    It is also what keeps the two decoders of this format agreeing. ``JSONInput`` in the
-    parity CLI is strict for the same reason and by the same rule; ``bool(...)`` here
+    It is also what keeps the Swift and Python decoders of this format agreeing.
+    ``JSONInput``, which the parity CLI and ``AgentRegistry.load`` both parse through,
+    is strict for the same reason and by the same rule; ``bool(...)`` here
     would read ``1`` as a flag that ``JSONInput`` refuses, and a string as one that no
     Swift cast can produce at all.
     """
     return value if isinstance(value, bool) else default
+
+
+def _number(value: Any) -> float | None:
+    """A JSON number, or ``None``: the Swift twin's ``as? NSNumber`` over a
+    ``JSONInput`` payload, where a boolean is a ``Flag`` no numeric cast takes. So,
+    like :func:`_flag` in the other direction, ``true`` is not ``1``; nor is ``"5"``
+    a number. Non-finite values are refused too, as ``int()`` would raise on them, and
+    so is an integer past float range, which ``float()`` raises on."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        number = float(value)
+    except OverflowError:
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _whole(value: Any) -> int | None:
+    """:func:`_number` truncated toward zero, as ``NSNumber.intValue`` does."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    number = _number(value)
+    return None if number is None else int(number)
+
+
+def _text(value: Any, default: str = "") -> str:
+    return value if isinstance(value, str) else default
 
 
 def _jsonable(value: Any) -> Any:
@@ -418,24 +447,30 @@ class RunRecord:
 
     @staticmethod
     def from_json(obj: dict) -> "RunRecord":
+        """Every field type-checked the way the Swift twin's casts check it, so a
+        hand-edited book reads as the same runs on both front-ends: a value of the
+        wrong JSON type is the field's default, never a coercion of it."""
+        placement = obj.get("placement")
         return RunRecord(
-            run_id=obj.get("runId", ""),
-            dispatched_at=float(obj.get("dispatchedAt", 0.0)),
-            pr_number=obj.get("prNumber"),
-            pr_url=obj.get("prUrl", ""),
-            kind=obj.get("kind", ""),
-            label=obj.get("label", ""),
-            source=obj.get("source", SOURCE_AUTO),
-            placement=obj.get("placement", PLACEMENT_LOCAL),
-            node=obj.get("node", ""),
-            work_key=obj.get("workKey", ""),
-            ledger_key=obj.get("ledgerKey", ""),
-            pid=obj.get("pid"),
-            tty=obj.get("tty", ""),
-            claim_seen_at=obj.get("claimSeenAt"),
-            quiet_digest=obj.get("quietDigest", ""),
-            quiet_since=obj.get("quietSince"),
-            reap_refused_at=obj.get("reapRefusedAt"),
+            run_id=_text(obj.get("runId")),
+            dispatched_at=_number(obj.get("dispatchedAt")) or 0.0,
+            pr_number=_whole(obj.get("prNumber")),
+            pr_url=_text(obj.get("prUrl")),
+            kind=_text(obj.get("kind")),
+            label=_text(obj.get("label")),
+            source=_text(obj.get("source"), SOURCE_AUTO),
+            placement=placement if placement in (
+                PLACEMENT_LOCAL, PLACEMENT_MESH_HERE, PLACEMENT_MESH_PEER)
+            else PLACEMENT_LOCAL,
+            node=_text(obj.get("node")),
+            work_key=_text(obj.get("workKey")),
+            ledger_key=_text(obj.get("ledgerKey")),
+            pid=_whole(obj.get("pid")),
+            tty=_text(obj.get("tty")),
+            claim_seen_at=_number(obj.get("claimSeenAt")),
+            quiet_digest=_text(obj.get("quietDigest")),
+            quiet_since=_number(obj.get("quietSince")),
+            reap_refused_at=_number(obj.get("reapRefusedAt")),
             untracked=_flag(obj.get("untracked")),
             released=_flag(obj.get("released")),
         )

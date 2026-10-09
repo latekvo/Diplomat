@@ -1663,6 +1663,50 @@ do {
     print("run book sidecar assertions passed")
 }
 
+section("a hand-edited run book and ledger")
+// PARITY: `test_agent_registry_parity.py` and `test_telemetry_parity.py` feed the same
+// spoils to both readers. Here they pin this build's own reading, which is the half that
+// differs between Darwin and corelibs if anything does.
+do {
+    let book = FileManager.default.temporaryDirectory
+        .appendingPathComponent("diplomat-smoke-book-\(UUID().uuidString)", isDirectory: true)
+    setenv("DIPLOMAT_AGENTS_DIR", book.path, 1)
+    defer { try? FileManager.default.removeItem(at: book) }
+    try? FileManager.default.createDirectory(at: book, withIntermediateDirectories: true)
+    func read(_ runs: String, version: String = "1") -> [AgentState.RunRecord] {
+        try? "{\"version\": \(version), \"runs\": [\(runs)]}"
+            .write(to: AgentRegistry.runsPath(), atomically: true, encoding: .utf8)
+        return AgentRegistry.load()
+    }
+    for spoilt in ["1", "1.0", "\"true\""] {
+        check(read("{\"runId\": \"r\", \"untracked\": \(spoilt)}").map(\.untracked) == [false],
+              "`\"untracked\": \(spoilt)` is not a flag")
+    }
+    check(read("{\"runId\": \"r\", \"untracked\": true}").map(\.untracked) == [true],
+          "a real flag still reads as one")
+    let numbers = read("{\"runId\": \"r\", \"pid\": true, \"prNumber\": true, \"dispatchedAt\": true}")
+    check(numbers.count == 1 && numbers[0].pid == nil && numbers[0].prNumber == nil
+            && numbers[0].dispatchedAt == 0, "`true` is not the number 1")
+    check(read("{\"runId\": \"r\"}", version: "true").isEmpty, "`\"version\": true` is no schema")
+    check(read("{\"runId\": \"r\"}, 5").map(\.runID) == ["r"],
+          "one entry that is not a record costs that entry, not the book")
+    let text = "{\"version\": 1, \"runs\": [{\"runId\": \"r\", \"untracked\": true}]}"
+    for (encoding, bytes) in [("UTF-16", text.data(using: .utf16)!),
+                              ("UTF-8 with a byte-order mark", Data([0xEF, 0xBB, 0xBF]) + Data(text.utf8))] {
+        try? bytes.write(to: AgentRegistry.runsPath(), options: .atomic)
+        check(AgentRegistry.load().isEmpty, "a book in \(encoding) is unreadable, as to Python")
+    }
+
+    let ledger = Telemetry.fold(lines: [
+        "{\"at\": 100, \"ev\": \"started\", \"key\": \"k1\", \"remote\": 1}",
+        "{\"at\": 100, \"ev\": \"started\", \"key\": \"k2\", \"remote\": true}",
+        "{\"at\": true, \"ev\": \"queued\", \"key\": \"k3\"}",
+    ])
+    check(ledger.tasks.map(\.key) == ["k1", "k2"] && ledger.tasks.map(\.remote) == [false, true],
+          "the ledger reads `\"remote\": 1` as local and `\"at\": true` as no timestamp")
+    print("hand-edited run book and ledger assertions passed")
+}
+
 section("autofix mesh coordination")
 // PARITY fixtures: diplomat-platform/linux/tests/test_autofix.py asserts these exact strings — two
 // nodes only dedupe origination when their derivations agree byte-for-byte
