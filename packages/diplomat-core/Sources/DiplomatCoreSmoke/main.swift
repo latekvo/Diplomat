@@ -1690,6 +1690,12 @@ do {
     check(read("{\"runId\": \"r\"}", version: "true").isEmpty, "`\"version\": true` is no schema")
     check(read("{\"runId\": \"r\"}, 5").map(\.runID) == ["r"],
           "one entry that is not a record costs that entry, not the book")
+    let text = "{\"version\": 1, \"runs\": [{\"runId\": \"r\", \"untracked\": true}]}"
+    for (encoding, bytes) in [("UTF-16", text.data(using: .utf16)!),
+                              ("UTF-8 with a byte-order mark", Data([0xEF, 0xBB, 0xBF]) + Data(text.utf8))] {
+        try? bytes.write(to: AgentRegistry.runsPath(), options: .atomic)
+        check(AgentRegistry.load().isEmpty, "a book in \(encoding) is unreadable, as to Python")
+    }
 
     let ledger = Telemetry.fold(lines: [
         "{\"at\": 100, \"ev\": \"started\", \"key\": \"k1\", \"remote\": 1}",

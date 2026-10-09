@@ -32,7 +32,10 @@ public enum JSONInput {
 
     /// Decode a JSON object; `nil` for anything else.
     public static func parse(_ data: Data) -> [String: Any]? {
-        guard let values = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        // Python reads these files as UTF-8 and refuses a byte-order mark;
+        // `JSONSerialization` also takes UTF-16/32, whose JSON always holds a NUL byte.
+        guard !data.starts(with: [0xEF, 0xBB, 0xBF]), !data.contains(0),
+              let values = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
         else { return nil }
         // The shape pass is the costly half, and a telemetry fold pays it per ledger
         // line; only text that spells a boolean literal can hold one.
