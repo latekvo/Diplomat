@@ -269,14 +269,18 @@ enum AgentProbes {
     /// The tty rides along because it is the only handle such an agent has: without it
     /// nothing can read its screen, so it would count as working until its window closed
     /// however long ago it finished. First sighting of a PR wins — a set of PR numbers is
-    /// all this scan can honestly produce.
-    static func liveAgents(_ dump: Observation<String>, owner: String,
-                           repo: String) -> Observation<[Int: String]> {
+    /// all this scan can honestly produce — save that an agent in `heldPIDs` is named only
+    /// when no other is up on its PR. Its record reads its tty off the process; the run
+    /// that needs this scan's is one with no pid, and named its neighbour's it has no
+    /// screen at all.
+    static func liveAgents(_ dump: Observation<String>, owner: String, repo: String,
+                           heldPIDs: Set<Int> = []) -> Observation<[Int: String]> {
         guard let text = dump.value else { return .unavailable(dump.reason) }
         guard let re = try? NSRegularExpression(
             pattern: "PR #(\\d+) in \(NSRegularExpression.escapedPattern(for: "\(owner)/\(repo)"))")
         else { return .unavailable("the prompt pattern would not compile") }
         var out: [Int: String] = [:]
+        var held: [Int: String] = [:]
         for line in text.split(separator: "\n") {
             let s = String(line)
             // Only a real agent process carries the phrase: the spawning shell's argv
@@ -286,10 +290,14 @@ enum AgentProbes {
                                                               in: cols.args)) {
                 guard let r = Range(m.range(at: 1), in: cols.args),
                       let pr = Int(cols.args[r]) else { continue }
-                if out[pr] == nil { out[pr] = cols.tty }
+                if Int(cols.pid).map(heldPIDs.contains) == true {
+                    if held[pr] == nil { held[pr] = cols.tty }
+                } else if out[pr] == nil {
+                    out[pr] = cols.tty
+                }
             }
         }
-        return .present(out)
+        return .present(held.merging(out) { _, own in own })
     }
 
     /// One `ps` line as its four columns. The command is whatever is left, so a path with
@@ -559,7 +567,8 @@ enum AgentProbes {
                        tokens: Observation<Bool>) -> AgentState.Evidence {
         let dump = psDump(now: now)
         let table = note("processes", processTable(dump))
-        let scan = note("agent scan", liveAgents(dump, owner: owner, repo: repo))
+        let scan = note("agent scan", liveAgents(dump, owner: owner, repo: repo,
+                                                 heldPIDs: Set(records.compactMap(\.pid))))
         // Whose screens are worth counting is decided from the process table, not from the
         // records as they arrived: a run's tty lives on its agent process, and a run
         // spawned since the last tick has not adopted one yet.
