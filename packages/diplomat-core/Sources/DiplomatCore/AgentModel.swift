@@ -40,7 +40,7 @@ public enum AgentModel {
                openCodeConfig: openCodeConfigURL(), openCodeState: openCodeStateURL(),
                openCodeIsService: {
                    OpenCodeCLI.majorOverride(ProcessInfo.processInfo.environment)
-                       ?? OpenCodeCLI.installedIsService()
+                       ?? OpenCodeCLI.knownIsService() ?? OpenCodeCLI.installedIsService()
                })
     }
 

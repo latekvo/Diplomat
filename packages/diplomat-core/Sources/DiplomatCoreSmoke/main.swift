@@ -1151,6 +1151,38 @@ do {
     versioned("1.4.3")
     check(!OpenCodeCLI.isService(binary: versionedPath) && asked() == 2,
           "a binary rewritten in place is asked again")
+
+    // A prompt is built on the macOS main actor, so the tag's model reads the major an
+    // earlier call found rather than asking the shell again once a resolution has aged.
+    let shellAsked = fx.appendingPathComponent("shell-asked")
+    executable("countshell", "#!/bin/sh\necho x >> '\(shellAsked.path)'\n"
+                             + "export PATH=\"$(cat '\(pick.path)'):$PATH\"\nexec /bin/sh \"$@\"\n")
+    setenv("SHELL", fx.appendingPathComponent("countshell").path, 1)
+    try? FileManager.default.removeItem(at: fx.appendingPathComponent("c"))
+    install("d")
+    let stale = Date().addingTimeInterval(-OpenCodeCLI.resolveTTL - 1)
+    check(OpenCodeCLI.binary(now: stale) == "\(fx.path)/d/opencode"
+            && OpenCodeCLI.isService(binary: "\(fx.path)/d/opencode"),
+          "an aged resolution of a 2.x install")
+    try? FileManager.default.removeItem(at: shellAsked)
+    let tagConfig = fx.appendingPathComponent("tag-config.json")
+    let tagState = fx.appendingPathComponent("tag-state", isDirectory: true)
+    try? FileManager.default.createDirectory(at: tagState, withIntermediateDirectories: true)
+    try? "{\"agentRunner\": \"opencode\"}".write(to: tagConfig, atomically: true, encoding: .utf8)
+    try? "{\"recent\": [{\"providerID\": \"anthropic\", \"modelID\": \"claude-opus-5\"}]}"
+        .write(to: tagState.appendingPathComponent("model.json"), atomically: true, encoding: .utf8)
+    let tagEnv = ["DIPLOMAT_CONFIG": tagConfig.path,
+                  "DIPLOMAT_OPENCODE_CONFIG_DIR": fx.appendingPathComponent("tag-none").path,
+                  "DIPLOMAT_OPENCODE_STATE_DIR": tagState.path]
+    let priorTagEnv = tagEnv.keys.map { ($0, ProcessInfo.processInfo.environment[$0]) }
+    for (key, value) in tagEnv { setenv(key, value, 1) }
+    defer {
+        for (key, value) in priorTagEnv {
+            if let value { setenv(key, value, 1) } else { unsetenv(key) }
+        }
+    }
+    check(AgentModel.detected() == "" && !FileManager.default.fileExists(atPath: shellAsked.path),
+          "the tag reads the major already found, without running the shell")
 }
 print("opencode 2.x service assertions passed")
 

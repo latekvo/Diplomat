@@ -152,6 +152,19 @@ public enum OpenCodeCLI {
         return service
     }
 
+    /// `installedIsService` as an earlier call already answered it, running neither the
+    /// shell nor the binary — nil until one has. The last resolution is trusted past
+    /// `resolveTTL`: this is for the main actor, where asking again is a blocking shell.
+    public static func knownIsService() -> Bool? {
+        resolveLock.lock()
+        let path = cached?.resolution.path
+        resolveLock.unlock()
+        guard let path, let key = VersionKey(path) else { return nil }
+        versionLock.lock()
+        defer { versionLock.unlock() }
+        return versions[key]
+    }
+
     /// What `isService` is remembered under.
     private struct VersionKey: Hashable {
         let path: String, inode: UInt64, size: UInt64, modified: Double

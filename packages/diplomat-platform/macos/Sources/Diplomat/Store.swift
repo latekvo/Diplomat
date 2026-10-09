@@ -96,7 +96,14 @@ final class Store: ObservableObject {
         didSet {
             guard !Headless.active else { return }
             AppConfig.set(AppConfig.agentRunnerKey, agentRunner.rawValue)
+            Store.warmOpenCode(agentRunner)
         }
+    }
+    /// Find the OpenCode major off the main actor, where a prompt build then reads it
+    /// (`OpenCodeCLI.knownIsService`) instead of running a shell and the binary.
+    private static func warmOpenCode(_ runner: AgentRunner) {
+        guard runner == .opencode else { return }
+        Task.detached(priority: .utility) { _ = OpenCodeCLI.installedIsService() }
     }
     /// The model the selected runner is pinned to; empty leaves the choice to that
     /// runner's own picker. A model id, never a credential — those live in the
@@ -584,6 +591,7 @@ final class Store: ObservableObject {
             ?? AgentSpawner.resolved(.ghostty).rawValue
         repoPathOverride = AppConfig.string(AppConfig.repoRootKey)
         agentRunner = AppConfig.agentRunner
+        if !Headless.active { Store.warmOpenCode(AppConfig.agentRunner) }
         agentModel = AppConfig.agentModel
         autoTaskLimit = AppConfig.autoTaskLimit
         autoBudgetGate = AppConfig.autoBudgetGate
