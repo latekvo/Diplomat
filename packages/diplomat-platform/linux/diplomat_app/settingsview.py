@@ -286,6 +286,10 @@ class SettingsView(QWidget):
                  else shutil.which(chosen))
         if found:
             where = f"Spawns run `{chosen}` ({found})."
+        elif chosen == runner.OPENCODE:
+            where = (f"Neither your login shell nor this app's PATH has an `{chosen}` "
+                     f"executable — check it if spawned runs finish instantly without "
+                     f"doing anything.")
         else:
             where = (f"`{chosen}` is not on this app's PATH. Agents run under your "
                      f"login shell, so an rc-only install still works — but check it "
