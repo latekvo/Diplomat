@@ -788,11 +788,8 @@ final class Store: ObservableObject {
     /// On the slow refresh, not the 8-second tick: it costs a `gh` call per PR. The answer
     /// is carried forward by the fast ticks in between.
     ///
-    /// Only the runs this applet dispatched. "Merged" ends a run so it can be priced and
-    /// its bay handed back, and a synthesized one has nothing to price and is manifestly
-    /// still in the process table — asked about, a landed PR whose agent is still sitting
-    /// in its window would retire that record and have the next tick synthesize it
-    /// straight back, one `gh` call and one audit line per tick. What ends one of those is
+    /// Only the runs this applet dispatched: the resolver ends no untracked run on a
+    /// merge, since a landed PR does not make its agent leave. What ends one of those is
     /// the scan that made it.
     func refreshMergedStatuses() async {
         mergedPRs = await AgentProbes.mergedPRs(
@@ -1777,7 +1774,8 @@ final class Store: ObservableObject {
     ///
     /// Every state that is not over counts, including one waiting at its prompt (that
     /// session holds the PR's context) and one nothing is known about — releasing a PR on
-    /// missing evidence is how two agents end up on it.
+    /// missing evidence is how two agents end up on it. A released agent does not: its
+    /// run ended.
     private func inFlight(_ prNumber: Int) async -> Bool {
         await agentTick().tick.inFlight(prNumber: prNumber)
     }

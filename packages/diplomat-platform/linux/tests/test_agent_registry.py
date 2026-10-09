@@ -523,6 +523,37 @@ def test_the_agent_scan_reads_the_tty_column_of_this_dump(monkeypatch):
     assert 712 in found and found[712] != "345772"
 
 
+def test_a_pidless_run_beside_a_held_agent_reads_its_own_screen(monkeypatch):
+    """Two agents on one PR: a released one the book holds by pid, and a mesh-placed
+    run's, which has no pid and only the scan to find its tty by. Named the released
+    one, the run never adopts a tty, reads as working and holds its bay after its turn
+    is over."""
+    monkeypatch.setattr(probes.shutil, "which", lambda _: "/usr/bin/tmux")
+    monkeypatch.setattr(probes.tmuxwatch, "pane_tails_for_ttys",
+                        lambda ttys: {t: "❯" for t in ttys})
+    monkeypatch.setattr(probes, "mesh_claims", lambda: A.Observation.present(set()))
+    monkeypatch.setattr(probes.core, "config",
+                        lambda: {"owner": "software-mansion", "repo": "argent"})
+    monkeypatch.setattr(probes, "_ps_dump", lambda now: A.Observation.present(
+        "  100 pts/1  900 claude Review PR #844 in software-mansion/argent\n"
+        "  200 pts/2  600 claude Review PR #844 in software-mansion/argent\n"
+        "  300 pts/3  600 claude Review PR #845 in software-mansion/argent\n"))
+    now = T0 + 600
+    released = rec("untracked:844:100", dispatched_at=T0 - 300, pr_number=844, pid=100,
+                   tty="pts/1", untracked=True)
+    placed = rec("a2", pr_number=844, placement=A.PLACEMENT_MESH_HERE)
+    book = [released, placed, rec("a3", pr_number=845, pid=300)]
+
+    evidence = probes.gather(book, now)
+    t = A.tick(book, evidence, now, 3)
+
+    assert evidence.live_agents.value == {844: "pts/2", 845: "pts/3"}, \
+        "a held agent is named only when it is its PR's last"
+    a2 = next(r for r in t.records if r.run_id == "a2")
+    assert a2.tty == "pts/2"
+    assert t.states["a2"].state == A.AWAITING_INPUT and "a2" not in t.cap_load
+
+
 def test_the_agent_scan_ignores_a_line_that_is_not_an_agent(monkeypatch):
     """`grep` for a PR number is not an agent on it."""
     monkeypatch.setattr(probes, "_ps_dump", lambda now: A.Observation.present(

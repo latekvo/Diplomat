@@ -192,7 +192,8 @@ def ttys_running_an_agent(now: float) -> Observation:
         {p.tty for p in table.value.values() if p.is_agent and p.tty})
 
 
-def live_agents(dump: Observation) -> Observation:
+def live_agents(dump: Observation,
+                held_pids: frozenset[int] | set[int] = frozenset()) -> Observation:
     """PR number -> the tty of an agent visible in ``ps`` by its prompt text.
 
     The pre-registry identity mechanism, kept for the two questions a pid cannot
@@ -207,7 +208,10 @@ def live_agents(dump: Observation) -> Observation:
     The tty rides along because it is the only handle such an agent has: without it
     nothing can read its screen, so it would count as working until its window closed
     however long ago it finished. First sighting of a PR wins — a set of PR numbers is
-    all this scan can honestly produce.
+    all this scan can honestly produce — save that an agent in ``held_pids`` is named
+    only when no other is up on its PR. Its record reads its tty off the process; the
+    run that needs this scan's is one with no pid, and named its neighbour's it has no
+    screen at all.
     """
     if not dump.ok:
         return Observation.unavailable(dump.reason)
@@ -215,6 +219,7 @@ def live_agents(dump: Observation) -> Observation:
     pattern = re.compile(
         r"PR #(\d+) in " + re.escape(f"{cfg['owner']}/{cfg['repo']}"))
     out: dict[int, str] = {}
+    held: dict[int, str] = {}
     # Parsed here against THIS dump's columns rather than through
     # `autofix.agent_lines`, which reads the tty as the FIRST token of a
     # `tty=,etime=,args=` dump. That is still right for its own caller (the mesh
@@ -228,11 +233,12 @@ def live_agents(dump: Observation) -> Observation:
         parts = line.split(maxsplit=3)
         if len(parts) < 4:
             continue
-        _pid, tty, _elapsed, args = parts
+        pid, tty, _elapsed, args = parts
+        into = held if pid.isdigit() and int(pid) in held_pids else out
         for m in pattern.finditer(args):
-            out.setdefault(int(m.group(1)),
-                           "" if tty == "?" else tty.removeprefix("/dev/"))
-    return Observation.present(out)
+            into.setdefault(int(m.group(1)),
+                            "" if tty == "?" else tty.removeprefix("/dev/"))
+    return Observation.present(held | out)
 
 
 def pane_tails(records: list[RunRecord], now: float = 0.0) -> Observation:
@@ -540,7 +546,8 @@ def gather(records: list[RunRecord], now: float, *,
     # spawned since the last tick has not adopted one yet. Asking the records alone
     # would capture nothing for exactly the run that just started, and it would then
     # read as working for a whole tick longer than it was.
-    scan = _note("agent scan", live_agents(dump), now)
+    scan = _note("agent scan",
+                 live_agents(dump, {r.pid for r in records if r.pid is not None}), now)
     looked_up = agentstate.adopt_ttys(records, table, scan)
     # Synthesized here as well as in `tick`, which adds them only AFTER this bundle is
     # built — so the tick that FIRST sees one would resolve it against a screen nobody
