@@ -115,11 +115,10 @@ def test_a_number_past_int64_is_no_pid_and_past_a_double_is_nothing(wide, as_dou
 
 
 def test_a_run_registered_during_a_forget_survives(monkeypatch):
-    """forget() used to load outside the lock and save inside it, so a spawn that
-    registered between the two was written over - the very loss add()'s lock exists
-    for. The add here is fired from inside forget's read and blocks on the lock
-    until the forget has written; with the old shape it completed first and was
-    then overwritten by the stale copy."""
+    """forget() reads and writes under one lock, so a spawn registering between its
+    read and its write is not written over - the loss add()'s lock exists for. The
+    add here fires from inside forget's read; a read taken outside the lock lets it
+    land first and be overwritten by the stale copy."""
     import threading
     from diplomat_runtime import atomicjson
     R.create_run(rec(run_id="old"), "p")
