@@ -118,15 +118,11 @@ class SingleInstance:
 
     @staticmethod
     def running_pid() -> int:
-        """PID of the live tray instance, or 0 if none is running.
+        """PID of the tray that holds the pidfile, or 0 if it is not running.
 
-        Lets the headless 6AM updater decide whether to relaunch (swap a running
-        tray onto the new build) or just leave the checkout updated in place —
-        it must never spawn a GUI on a session that isn't already showing one.
-
-        Deliberately pidfile-only: the updater itself runs as
-        ``python -m diplomat_app`` (headless), so a ``/proc`` scan would find
-        *itself* and wrongly conclude a tray is up.
+        The headless 6AM updater relaunches this tray onto a new build, on its own
+        display env. It reads only the pidfile, so a tray still reaping its
+        predecessor goes unseen; :meth:`any_running` answers whether any tray is up.
         """
         pf = _pidfile()
         try:
@@ -136,11 +132,9 @@ class SingleInstance:
         # Liveness alone is not enough: a tray that exited uncleanly leaves a stale
         # pidfile, and the OS recycles that pid to an unrelated same-uid process. A
         # bare _alive check would then report a "running tray" that is really a shell
-        # or an editor, and the 6AM updater would relaunch a GUI on a session that
-        # has none. _is_applet_gui verifies the pidfile pid really is a GUI tray of
-        # this applet (the same identity gate acquire_newest_wins uses before it
-        # kills). This stays pidfile-only — it verifies the ONE recorded pid, it does
-        # not /proc-scan — so the headless updater never detects itself as a tray.
+        # or an editor, and the 6AM updater would "relaunch" it from that process's
+        # env. _is_applet_gui verifies the pidfile pid really is a GUI tray of this
+        # applet (the same identity gate acquire_newest_wins uses before it kills).
         return pid if pid and _alive(pid) and _is_applet_gui(pid) else 0
 
     @staticmethod
