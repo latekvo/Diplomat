@@ -14,9 +14,12 @@ way it wraps the device-allocator installer.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from pathlib import Path
+
+from .singleton import _ENV_PREFIXES, _HEADLESS_SUFFIXES, SingleInstance
 
 
 class UpdateError(RuntimeError):
@@ -184,25 +187,25 @@ def _state_dir() -> Path:
 def relaunch(extra_env: dict[str, str] | None = None) -> None:
     """Start the updated launcher detached, logging where autostart logs.
 
-    The new instance's newest-wins singleton terminates this process once it's
-    up, so the caller only reports "restarting…" and waits to be replaced.
+    The new instance's newest-wins singleton terminates any GUI tray still
+    running, so a caller that is one only reports "restarting…" and waits to be
+    replaced.
 
-    ``extra_env`` is merged over the current environment for the child — the 6AM
-    updater uses it to hand the relaunched GUI the display env (DISPLAY / Wayland
-    / D-Bus) of the tray it's replacing, which a bare systemd service env lacks.
+    ``extra_env`` is merged over the current environment for the child — the
+    unattended jobs use it to hand the GUI the display env (DISPLAY / Wayland /
+    D-Bus) of the tray it replaces or revives, which a bare systemd service env
+    lacks.
     """
     root = repo_root()
     launcher = linux_package(root) / "diplomat"
     log_dir = _state_dir()
     env = dict(os.environ)
-    # Strip every headless-mode marker: the 6AM job runs with DIPLOMAT_SELF_UPDATE=1 in
-    # its env, and a copied env would make the relaunched child re-enter __main__.main's
-    # headless updater (find itself up-to-date, log "up to date", exit) instead of
-    # launching the GUI tray — so newest-wins never fires and the applet is never swapped
-    # onto the new code. Clearing them guarantees relaunch() always starts a real GUI.
-    for _marker in ("DIPLOMAT_SELF_UPDATE", "DIPLOMAT_DUMP", "DIPLOMAT_LOOKUP",
-                    "DIPLOMAT_PRINT_PROMPT", "DIPLOMAT_RENDER"):
-        env.pop(_marker, None)
+    # Strip every headless-mode marker: the unattended jobs run with DIPLOMAT_SELF_UPDATE=1
+    # or DIPLOMAT_WATCHDOG=1 in their env, and a copied env would make the child re-enter
+    # __main__.main's headless mode and exit instead of launching the GUI tray.
+    for _prefix in _ENV_PREFIXES:
+        for _suffix in _HEADLESS_SUFFIXES:
+            env.pop(_prefix + _suffix, None)
     if extra_env:
         env.update(extra_env)
     try:
@@ -264,23 +267,117 @@ def _sched_log(message: str) -> None:
         pass
 
 
+# MARK: bringing a dead tray back
+
+
+def _quit_marker() -> Path:
+    return _state_dir() / "operator-quit"
+
+
+def mark_operator_quit() -> None:
+    """Leave the mark that keeps the unattended jobs from bringing the tray back.
+    Set by an operator's quit only; the next tray launch clears it. Mirrors the
+    macOS ``OperatorQuit``."""
+    from datetime import datetime
+
+    try:
+        _state_dir().mkdir(parents=True, exist_ok=True)
+        _quit_marker().write_text(datetime.now().isoformat(timespec="seconds") + "\n")
+    except OSError:
+        pass
+
+
+def clear_operator_quit() -> None:
+    try:
+        _quit_marker().unlink()
+    except OSError:
+        pass
+
+
+def operator_quit() -> bool:
+    return _quit_marker().exists()
+
+
+def _display_env_file() -> Path:
+    return _state_dir() / "display-env.json"
+
+
+def record_display_env() -> None:
+    """Keep this tray's display env for a revival: once the tray is dead there is
+    no process left to lift it off, and a service env usually has none. A start with
+    no display (from SSH, say) keeps the last one that had one."""
+    if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        return
+    try:
+        _state_dir().mkdir(parents=True, exist_ok=True)
+        _display_env_file().write_text(json.dumps(
+            {k: os.environ[k] for k in _DISPLAY_ENV_KEYS if k in os.environ}))
+    except OSError:
+        pass
+
+
+def _recorded_display_env() -> dict[str, str]:
+    try:
+        raw = json.loads(_display_env_file().read_text())
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {k: v for k, v in raw.items() if k in _DISPLAY_ENV_KEYS and isinstance(v, str)}
+
+
+def revive(quietly: bool, tag: str = "") -> int:
+    """Launch the tray if none is running and the operator did not quit it.
+
+    It terminates nothing and acts only on zero trays, so it cannot contend with
+    newest-wins or a relaunch: both start the new tray before the old one goes, so
+    there is always one to see. A launch racing another start ends, through
+    newest-wins, with one tray, and nothing restarts the one it ended.
+    """
+    if SingleInstance.any_running():
+        return 0
+    if operator_quit():
+        if not quietly:
+            _sched_log(f"{tag}tray not running: quit by the operator, left closed")
+        return 0
+    env = _recorded_display_env()
+    if not (env.get("DISPLAY") or env.get("WAYLAND_DISPLAY")):
+        if not quietly:
+            _sched_log(f"{tag}tray not running: no tray has recorded a display to launch onto")
+        return 0
+    try:
+        relaunch(env)
+    except (UpdateError, OSError) as exc:
+        _sched_log(f"{tag}tray not running: launch failed: {exc}")
+        return 1
+    _sched_log(f"{tag}tray not running: launched it")
+    return 0
+
+
+def run_watchdog() -> int:
+    """The systemd liveness check, every few minutes. Logs only what it did, so a
+    healthy or deliberately closed tray adds nothing to the log it shares with the
+    updater."""
+    return revive(quietly=True, tag="watchdog: ")
+
+
 def run_scheduled() -> int:
     """Headless daily update for the 6AM timer. Never raises; returns an exit code.
 
     Fetches, and if the checkout is behind, merges upstream and rebuilds
-    diplomat-core — then relaunches the tray only if one is actually running (so it
-    never pops a GUI on a session that has none). Quiet no-op when already
-    current; a conflict or an unreachable origin is logged and left for a human
-    rather than retried destructively.
+    diplomat-core, then relaunches a running tray onto the new build. On every
+    other path a tray that is not running is launched unless the operator quit it
+    (``revive``). A conflict or an unreachable origin is logged and left for a
+    human rather than retried destructively.
     """
     st = check()
     if st["error"]:
         _sched_log(f"skip: cannot reach origin ({st['error']})")
-        return 0
+        return revive(quietly=False)
     if not st["behind"]:
         extra = f" ({st['ahead']} local ahead)" if st.get("ahead") else ""
         _sched_log(f"up to date at {st['commit']}{extra}")
-        return 0
+        return revive(quietly=False)
 
     _sched_log(f"{st['behind']} behind at {st['commit']} — merging {st['upstream']}")
     try:
@@ -292,7 +389,7 @@ def run_scheduled() -> int:
         # they must be caught explicitly (as check() already does) to honor the
         # "never raises; returns an exit code" contract.
         _sched_log(f"skip: {exc}")
-        return 0
+        return revive(quietly=False)
 
     _sched_log(f"merged to {commit} — rebuilding diplomat-core")
     try:
@@ -302,9 +399,10 @@ def run_scheduled() -> int:
         # or bash is missing (OSError) — neither is an UpdateError; catch them or the
         # traceback aborts the headless job instead of logging a build failure.
         _sched_log(f"build failed: {exc}")
+        # The tray runs from the merged checkout with the last diplomat-core that
+        # built, so a failed build still leaves one to bring back.
+        revive(quietly=False)
         return 1
-
-    from .singleton import SingleInstance
 
     pid = SingleInstance.running_pid()
     if pid:
@@ -319,5 +417,6 @@ def run_scheduled() -> int:
             return 1
         _sched_log(f"relaunched running tray (was pid {pid}) onto {commit}")
     else:
-        _sched_log(f"updated to {commit} in place (tray not running)")
+        _sched_log(f"updated to {commit} in place")
+        return revive(quietly=False)
     return 0

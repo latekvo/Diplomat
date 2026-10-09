@@ -13,6 +13,7 @@ from collections.abc import Mapping
 #: holds it to the ladder.
 MODES = {
     "DIPLOMAT_SELF_UPDATE": False,
+    "DIPLOMAT_WATCHDOG": False,
     "DIPLOMAT_AGENTS": False,
     "DIPLOMAT_DUMP": False,
     "DIPLOMAT_LOOKUP": True,

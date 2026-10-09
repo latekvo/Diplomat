@@ -156,13 +156,14 @@ pip install -r requirements.txt
 ./diplomat                 # tray applet (left-click the wrench)
 ```
 
-Quit from the panel's ⏻ button, the tray right-click menu, or `pkill -f "python -m diplomat_app"`.
+Quit from the panel's ⏻ button or the tray right-click menu. `pkill -f "python -m diplomat_app"`
+stops it too, but reads as a crash: with the watchdog installed (below) it is back within 5 minutes.
 
 ## Autostart on login
 
 ```bash
-./install/install-autostart.sh    # XDG autostart .desktop + the 6AM update timer, starts it now
-./install/uninstall-autostart.sh  # removes both and stops the app
+./install/install-autostart.sh    # XDG autostart .desktop + the update and watchdog timers, starts it now
+./install/uninstall-autostart.sh  # removes all three and stops the app
 ```
 
 Installs `~/.config/autostart/diplomat.desktop` so the wrench reappears every
@@ -170,11 +171,21 @@ login (the cross-desktop analogue of the macOS LaunchAgent).
 
 It also installs a **systemd user timer** (`diplomat-update.timer`) that fires
 daily at **06:00** and runs the launcher headless (`DIPLOMAT_SELF_UPDATE=1`):
-fetch, merge if behind, rebuild `diplomat-core`, and relaunch the tray only if
-one is running. `Persistent=true`, so a 06:00 missed while the machine was off
+fetch, merge if behind, rebuild `diplomat-core`, and relaunch a running tray
+onto it. `Persistent=true`, so a 06:00 missed while the machine was off
 runs at the next boot. Without `systemctl` the install warns and carries on —
 only the schedule is lost, the Settings ▸ UPDATE button still works. Manage it
 alone with `./install/install-autoupdate.sh` / `./install/uninstall-autoupdate.sh`.
+
+A second timer, `diplomat-watchdog.timer`, runs the launcher headless every 5
+minutes (`DIPLOMAT_WATCHDOG=1`) and launches the tray if none is up, onto the
+display the last tray recorded at startup; the 06:00 run does the same. Neither
+brings back a tray you quit yourself (⏻, the tray menu, Ctrl-C): that leaves
+`~/.local/state/diplomat/operator-quit`, which the next launch clears. A
+hand-over to a newer tray leaves no mark, and the watchdog only acts when there
+is no tray at all, so it never contends with newest-wins or an update's
+relaunch. Manage it with `./install/install-watchdog.sh` /
+`./install/uninstall-watchdog.sh`.
 
 ## Settings
 
@@ -281,6 +292,7 @@ DIPLOMAT_PRINT_PROMPT=mine python -m diplomat_app  # assemble a Review prompt (m
                                                        #   issues[-single][-features] → Fix-issues prompt
 
 DIPLOMAT_SELF_UPDATE=1 python -m diplomat_app       # the unattended 06:00 update, run once
+DIPLOMAT_WATCHDOG=1 python -m diplomat_app          # launch the tray if none is up, run once
 
 # Snapshot a panel state to PNG (no real display required):
 DIPLOMAT_RENDER=panel DIPLOMAT_RENDER_OUT=/tmp/p.png \

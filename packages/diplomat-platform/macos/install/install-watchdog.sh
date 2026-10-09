@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
-# Install a launchd agent that self-updates Diplomat daily at 06:00 — the macOS
-# analogue of the Linux systemd user timer. It launches the app binary in headless
-# self-update mode (DIPLOMAT_SELF_UPDATE=1): merge upstream if behind, rebuild
-# the bundle, relaunch the app if it is running, and launch it if it is not, unless
-# the operator quit it. Re-runnable.
+# Install a launchd agent that checks every 5 minutes that Diplomat is up, and
+# launches it if it died (a crash, a force-quit, a kill, a failed update). It runs
+# the app binary in its headless watchdog mode (DIPLOMAT_WATCHDOG=1), which
+# launches nothing while an instance runs or after the operator quit the app.
+# Not KeepAlive on the app itself: the newest-wins singleton and the updater's
+# relaunch both end instances on purpose, and launchd would start those again.
+# Re-runnable.
 #
 # Arg 1 (optional): the Diplomat binary to run. Defaults to the installed app in
 # /Applications (then ~/Applications).
 set -euo pipefail
 
-LABEL="com.ignacy.diplomat.autoupdate"
+LABEL="com.ignacy.diplomat.watchdog"
 APP="Diplomat.app"
 
 BIN="${1:-}"
@@ -36,19 +38,14 @@ cat > "$PLIST" <<PL
   <key>ProgramArguments</key>
   <array><string>$BIN</string></array>
   <key>EnvironmentVariables</key>
-  <dict><key>DIPLOMAT_SELF_UPDATE</key><string>1</string></dict>
-  <key>StartCalendarInterval</key>
-  <dict><key>Hour</key><integer>6</integer><key>Minute</key><integer>0</integer></dict>
-  <key>StandardErrorPath</key><string>$HOME/Library/Logs/diplomat-autoupdate.err.log</string>
+  <dict><key>DIPLOMAT_WATCHDOG</key><string>1</string></dict>
+  <key>StartInterval</key><integer>300</integer>
+  <key>StandardErrorPath</key><string>$HOME/Library/Logs/diplomat-watchdog.err.log</string>
 </dict>
 </plist>
 PL
 echo "Wrote $PLIST"
 
-# Retire the pre-rename (Argent Utils) auto-update agent, if still present.
-launchctl bootout "gui/$(id -u)/com.ignacy.argent-utils.autoupdate" 2>/dev/null || true
-rm -f "$HOME/Library/LaunchAgents/com.ignacy.argent-utils.autoupdate.plist"
-
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
-echo "Loaded auto-update agent — runs daily at 06:00."
+echo "Loaded watchdog agent — checks every 5 minutes that the app is up."

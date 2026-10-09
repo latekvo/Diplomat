@@ -168,23 +168,29 @@ enum SelfUpdate {
     }
 
     /// Launch the freshly-built bundle detached; its newest-wins singleton terminates
-    /// this instance once it's up, so the caller only reports "restarting…" and waits to
-    /// be replaced. Mirrors `selfupdate.relaunch`.
-    static func relaunch() throws {
-        // Beside the macOS package, which is where `build-app.sh` writes it.
-        let app = RepoPaths.macosPackage.appendingPathComponent("Diplomat.app")
+    /// any GUI instance still running, so a caller that is one only reports
+    /// "restarting…" and waits to be replaced. Mirrors `selfupdate.relaunch`.
+    ///
+    /// `open` passes its environment to the instance, so it gets this one with every
+    /// headless marker removed: launched by the 06:00 updater or the watchdog with its
+    /// marker intact, the instance would be another headless job, not the GUI.
+    ///
+    /// The default `app` is beside the macOS package, where `build-app.sh` writes it.
+    static func relaunch(_ app: URL = RepoPaths.macosPackage.appendingPathComponent("Diplomat.app")) throws {
+        let name = app.lastPathComponent
         guard FileManager.default.fileExists(atPath: app.path) else {
-            throw UpdateError(message: "Diplomat.app not found at \(app.path) after rebuild")
+            throw UpdateError(message: "\(name) not found at \(app.path)")
         }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
         p.arguments = ["-n", app.path]
+        p.environment = Headless.stripped(ProcessInfo.processInfo.environment)
         do { try p.run() } catch {
             throw UpdateError(message: "could not relaunch the app: \(error.localizedDescription)")
         }
         p.waitUntilExit()
         if p.terminationStatus != 0 {
-            throw UpdateError(message: "open Diplomat.app exited \(p.terminationStatus)")
+            throw UpdateError(message: "open \(name) exited \(p.terminationStatus)")
         }
     }
 
@@ -192,54 +198,102 @@ enum SelfUpdate {
         "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
-    // MARK: - unattended (6AM launchd) path
+    // MARK: - unattended (launchd) paths
+
+    /// What the unattended paths do to the machine. The real steps by default;
+    /// `WatchdogTest` swaps in fixtures.
+    struct Host {
+        var check: () -> CheckResult = SelfUpdate.check
+        var pull: () throws -> String = SelfUpdate.pull
+        var rebuild: () throws -> Void = SelfUpdate.rebuild
+        var appRunning: () -> Bool = SingleInstance.isRunning
+        var operatorQuit: () -> Bool = { OperatorQuit.isMarked }
+        var launch: () throws -> Void = { try SelfUpdate.relaunch() }
+        var log: (String) -> Void = SelfUpdate.schedLog
+    }
 
     /// Headless daily update for the launchd 6AM job. Never throws; returns an exit code.
     ///
-    /// Fetches, and if behind, merges upstream and rebuilds — then relaunches the app only
-    /// if one is actually running (so it never pops a menu-bar app onto a login session that
-    /// isn't showing one). Quiet no-op when already current; a conflict or unreachable origin
+    /// Fetches, and if behind, merges upstream and rebuilds, then relaunches a running
+    /// app onto the new build. On every other path an app that is not running is
+    /// launched unless the operator quit it (`revive`). A conflict or unreachable origin
     /// is logged and left for a human rather than retried destructively. Mirrors
     /// `selfupdate.run_scheduled`.
-    static func runScheduled() -> Int32 {
-        let st = check()
-        if let e = st.error { schedLog("skip: cannot reach origin (\(e))"); return 0 }
+    static func runScheduled(_ host: Host = Host()) -> Int32 {
+        let st = host.check()
+        if let e = st.error {
+            host.log("skip: cannot reach origin (\(e))")
+            return revive(host, quietly: false)
+        }
         guard let behind = st.behind, behind > 0 else {
             let extra = (st.ahead ?? 0) > 0 ? " (\(st.ahead!) local ahead)" : ""
-            schedLog("up to date at \(st.commit ?? "?")\(extra)")
-            return 0
+            host.log("up to date at \(st.commit ?? "?")\(extra)")
+            return revive(host, quietly: false)
         }
-        schedLog("\(behind) behind at \(st.commit ?? "?") — merging \(st.upstream ?? "origin/main")")
+        host.log("\(behind) behind at \(st.commit ?? "?") — merging \(st.upstream ?? "origin/main")")
         let commit: String
         do {
-            commit = try pull()
+            commit = try host.pull()
         } catch {
-            schedLog("skip: \((error as? LocalizedError)?.errorDescription ?? "\(error)")")
-            return 0
+            host.log("skip: \((error as? LocalizedError)?.errorDescription ?? "\(error)")")
+            return revive(host, quietly: false)
         }
-        schedLog("merged to \(commit) — rebuilding the app")
+        host.log("merged to \(commit) — rebuilding the app")
         do {
-            try rebuild()
+            try host.rebuild()
         } catch {
-            schedLog("build failed: \((error as? LocalizedError)?.errorDescription ?? "\(error)")")
+            host.log("build failed: \((error as? LocalizedError)?.errorDescription ?? "\(error)")")
+            // build-app.sh replaces the bundle only after a clean compile, so the last
+            // good one is still there to bring back.
+            _ = revive(host, quietly: false)
             return 1
         }
-        if SingleInstance.isRunning() {
-            do {
-                try relaunch()
-                schedLog("relaunched running app onto \(commit)")
-            } catch {
-                schedLog("relaunch failed: \((error as? LocalizedError)?.errorDescription ?? "\(error)")")
-                return 1
-            }
-        } else {
-            schedLog("updated to \(commit) in place (app not running)")
+        guard host.appRunning() else {
+            host.log("updated to \(commit) in place")
+            return revive(host, quietly: false)
+        }
+        do {
+            try host.launch()
+            host.log("relaunched running app onto \(commit)")
+        } catch {
+            host.log("relaunch failed: \((error as? LocalizedError)?.errorDescription ?? "\(error)")")
+            return 1
         }
         return 0
     }
 
+    /// The launchd liveness check, every few minutes. Logs only a launch, so a healthy
+    /// or deliberately closed app adds nothing to the log it shares with the updater.
+    static func runWatchdog(_ host: Host = Host()) -> Int32 {
+        var tagged = host
+        tagged.log = { host.log("watchdog: \($0)") }
+        return revive(tagged, quietly: true)
+    }
+
+    /// Launch the app if no GUI instance is running and the operator did not quit it.
+    ///
+    /// It terminates nothing and acts only on zero instances, so it cannot contend with
+    /// the singleton or a relaunch: both start the new instance before the old one goes,
+    /// so there is always one to see. A launch racing another start ends, through the
+    /// singleton, with one instance, and nothing restarts the one it ended.
+    static func revive(_ host: Host, quietly: Bool) -> Int32 {
+        guard !host.appRunning() else { return 0 }
+        guard !host.operatorQuit() else {
+            if !quietly { host.log("app not running: quit by the operator, left closed") }
+            return 0
+        }
+        do {
+            try host.launch()
+            host.log("app not running: launched it")
+            return 0
+        } catch {
+            host.log("app not running: launch failed: \((error as? LocalizedError)?.errorDescription ?? "\(error)")")
+            return 1
+        }
+    }
+
     /// Append a timestamped line to the auto-update log (best-effort).
-    private static func schedLog(_ message: String) {
+    static func schedLog(_ message: String) {
         let dir = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Logs")
         let url = dir.appendingPathComponent("diplomat-autoupdate.log")

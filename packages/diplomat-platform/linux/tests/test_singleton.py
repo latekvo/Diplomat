@@ -60,6 +60,7 @@ def test_cmdline_rejects_non_applet(tokens):
     "raw",
     [
         b"PATH=/usr/bin\0DIPLOMAT_SELF_UPDATE=1\0",
+        b"DIPLOMAT_WATCHDOG=1\0",
         b"DIPLOMAT_DUMP=1\0",
         b"ARGENT_UTILS_SELF_UPDATE=1\0",  # legacy prefix
         b"DIPLOMAT_PRINT_PROMPT=mine\0",
@@ -183,9 +184,9 @@ def test_acquire_escalates_to_sigkill_when_sigterm_ignored(
 
 
 def test_running_pid_is_pidfile_only(isolated_runtime, monkeypatch):
-    """running_pid must not /proc-scan: the 6AM updater runs as the applet
-    module itself and would otherwise detect itself as a live tray. It still
-    verifies the ONE recorded pid is a GUI tray (a targeted check, not a scan)."""
+    """running_pid names the tray that claimed the pidfile, never one a /proc scan
+    turns up (that is any_running's job). It still verifies the ONE recorded pid is
+    a GUI tray (a targeted check, not a scan)."""
     monkeypatch.setattr(singleton, "_alive", lambda pid: pid == 555)
     monkeypatch.setattr(singleton, "_is_applet_gui", lambda pid: pid == 555)
     monkeypatch.setattr(singleton, "_other_instances",
@@ -201,7 +202,7 @@ def test_running_pid_ignores_recycled_non_applet_pid(isolated_runtime, monkeypat
     """The running_pid analogue of test_acquire_spares_recycled_non_applet_pid: a
     stale pidfile whose pid the OS recycled to an unrelated same-uid process is alive
     but is NOT our GUI tray. running_pid must report 0 (no tray) so the 6AM updater
-    updates in place instead of relaunching a wrench onto a session that has none."""
+    does not relaunch from that unrelated process's env."""
     monkeypatch.setattr(singleton, "_alive", lambda pid: True)           # recycled pid is alive
     monkeypatch.setattr(singleton, "_is_applet_gui", lambda pid: False)  # but not our tray
     singleton._pidfile().write_text("424242")

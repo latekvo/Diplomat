@@ -47,7 +47,10 @@ PL
 echo "Wrote $PLIST"
 
 # Kill any running/old instance + old agent, then (re)load. RunAtLoad starts it now.
-# Also retire a pre-rename (Argent Utils) install: its agent, process, and bundle.
+# The watchdog goes first, or it could launch the app again in between; it is
+# reinstalled below. Also retire a pre-rename (Argent Utils) install: its agent,
+# process, and bundle.
+launchctl bootout "gui/$(id -u)/com.ignacy.diplomat.watchdog" 2>/dev/null || true
 launchctl bootout "gui/$(id -u)/com.ignacy.argent-utils" 2>/dev/null || true
 rm -f "$HOME/Library/LaunchAgents/com.ignacy.argent-utils.plist"
 pkill -x ArgentUtils 2>/dev/null || true
@@ -62,4 +65,9 @@ echo "Loaded. Autostarts on login and is running now (look for the wrench in you
 # works without it; only the unattended schedule needs this agent).
 if ! "$HERE/install-autoupdate.sh" "$BIN"; then
   echo "warning: daily auto-update agent not installed — update manually from Settings ▸ UPDATE." >&2
+fi
+
+# And the 5-minute watchdog that brings a dead app back (soft-fail too).
+if ! "$HERE/install-watchdog.sh" "$BIN"; then
+  echo "warning: watchdog agent not installed — an app that dies stays down until the next login." >&2
 fi

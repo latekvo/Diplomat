@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
     QSystemTrayIcon,
 )
 
-from . import glyphs
+from . import glyphs, selfupdate
 from .panel import Panel
 from .store import Store
 from .singleton import SingleInstance
@@ -237,6 +237,9 @@ class DiplomatApp:
         if self._quitting:
             return
         self._quitting = True
+        # Only the operator gets here (the Quit button, Ctrl-C): a newer instance
+        # hands over with SIGTERM, which never runs this.
+        selfupdate.mark_operator_quit()
         SingleInstance.release()
         self.tray.hide()
         # Before the widgets a worker is about to signal go away. The tray is already
@@ -256,6 +259,8 @@ class DiplomatApp:
 
 def run_app() -> int:
     SingleInstance.acquire_newest_wins()
+    selfupdate.clear_operator_quit()
+    selfupdate.record_display_env()
     app = DiplomatApp()
     if not QSystemTrayIcon.isSystemTrayAvailable():
         # No tray host — still usable: just show the panel.

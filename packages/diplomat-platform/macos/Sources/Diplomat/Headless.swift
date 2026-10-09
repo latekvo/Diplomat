@@ -29,14 +29,31 @@ enum Headless {
         "DIPLOMAT_MESH_CMD_TEST": false,
         "DIPLOMAT_MESH_STRAY_TEST": false,
         "DIPLOMAT_ALLOCATOR_TEST": false,
+        "DIPLOMAT_WATCHDOG": false,
+        "DIPLOMAT_WATCHDOG_TEST": true,
     ]
 
     private static func turnsOn(_ name: String, _ value: String) -> Bool {
         modes[name].map { $0 || value == "1" } ?? false
     }
 
-    static let active: Bool = ProcessInfo.processInfo.environment
-        .contains { name, value in turnsOn(name, value) }
+    /// Whether this process runs in one of those modes.
+    static let active: Bool = isActive(in: ProcessInfo.processInfo.environment)
+
+    /// Whether `env` puts an instance in one of those modes: this process's own, or
+    /// another instance's when the singleton picks whom to terminate and the unattended
+    /// jobs ask whether the app is up.
+    static func isActive(in env: [String: String]) -> Bool {
+        env.contains { name, value in turnsOn(name, value) }
+    }
+
+    /// `env` without every entry that puts an instance in one of those modes - what a
+    /// launch from a headless job hands the GUI it starts, since `open` passes its
+    /// environment on. `isActive` is a disjunction over single entries, so it is false
+    /// for the result.
+    static func stripped(_ env: [String: String]) -> [String: String] {
+        env.filter { !turnsOn($0.key, $0.value) }
+    }
 
     /// Specifically the DIPLOMAT_RENDER snapshot mode. Renders seed a real
     /// Store with preview values, and they share the live app's defaults domain —
