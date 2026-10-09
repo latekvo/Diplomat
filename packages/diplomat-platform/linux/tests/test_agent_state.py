@@ -920,6 +920,33 @@ def test_a_released_agent_at_its_prompt_leaves_its_pr_free():
     assert t2.states["untracked:844"].state == A.AWAITING_INPUT
 
 
+def test_a_run_its_cli_reported_over_leaves_the_list():
+    """A run that is over is not on the list. Its agent, still at the prompt, is kept
+    as a released record only for the stillness backstop to close its window; drawn,
+    it read *awaiting input* for those twenty minutes, a finished task that looked
+    like one asking for its operator."""
+    at_prompt = {"ttys021": AT_PROMPT}
+    reported = {RUN_844: (completion.IDLE, RETIRE_AT - 30)}
+    t1 = A.tick([_run_844()], _mac(RETIRE_AT, tails=at_prompt, activity=reported),
+                RETIRE_AT, 1, A.RUN_DEADLINE)
+    t2 = A.tick(_settle(t1), _mac(NEXT_TICK, tails=at_prompt), NEXT_TICK, 1,
+                A.RUN_DEADLINE)
+    assert "untracked:844" in t1.states
+    assert [r.run_id for r, _ in t1.rows] == [RUN_844]
+    assert t2.rows == []
+    assert t2.states["untracked:844"].state == A.AWAITING_INPUT
+
+
+def test_an_untracked_agent_nobody_ended_is_still_drawn():
+    """The filter is on released, not untracked: a session the operator opened by
+    hand at its prompt is a live agent nothing here retired, and keeps its row."""
+    t = A.tick([released(released=False)],
+               ev(processes={4242: proc()}, tails={"pts/3": AT_PROMPT},
+                  live_agents={337: "pts/3"}), T0, 1)
+    assert [(r.run_id, s.state) for r, s in t.rows] == \
+        [("untracked:337", A.AWAITING_INPUT)]
+
+
 def test_a_released_agents_window_is_still_closed_when_its_screen_goes_still():
     """Released is not forgotten: the backstop that closes a finished agent's window
     after twenty still minutes still reaches it, and the clock carries over from the
