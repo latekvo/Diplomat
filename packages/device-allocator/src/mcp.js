@@ -316,7 +316,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     // Allocation may cold-boot a device; keep the client window comfortably above
     // the daemon's worst case so it always responds before we give up (a client
     // timeout mid-boot would orphan the allocation until the reaper/idle sweep).
-    // Worst case iOS: simctl boot 120s + open Simulator 30s + bootstatus 180s ≈ 330s.
+    // Worst case iOS: simctl boot 120s + bootstatus 180s = 300s.
     const BOOT = { timeout: 420000 };
     let r;
     if (name === 'request-device') {

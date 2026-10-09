@@ -207,8 +207,9 @@ export function matchesRequirements(dev, req) {
 
 export async function bootIOS(udid) {
   if (FAKE()) return { ok: true, handle: udid };
+  // No Simulator.app window: agents drive the device through argent, which streams the
+  // screen itself, and `open` exits 0 even when the app then crashes on launch.
   await run('xcrun', ['simctl', 'boot', udid], { timeout: 120000 }); // no-op if already booted
-  await run('open', ['-ga', 'Simulator']);
   const r = await run('xcrun', ['simctl', 'bootstatus', udid], { timeout: 180000 });
   return { ok: r.ok, handle: udid };
 }
