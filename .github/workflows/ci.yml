@@ -79,8 +79,9 @@ jobs:
       # MESH_CMD_TEST is pinned to a scratch state dir and a non-checkout so it can
       # neither read a real mesh node nor start one, and ALLOCATOR_TEST shells no
       # installer and reads no ~/.claude. APIWATCH_TEST composes every session, tail and
-      # process it reasons over, so it reads no terminal and types into none — though it
-      # does provoke a nudge's audit line, so it redirects DIPLOMAT_AUDIT_DIR.
+      # process it reasons over, bar a tmux server on a private socket where tmux is
+      # installed (not on this runner), so it reads no terminal and types into none —
+      # though it does provoke a nudge's audit line, so it redirects DIPLOMAT_AUDIT_DIR.
       # PUBLISH_TEST composes the tick it publishes as a literal, so no probe runs and
       # its verdict does not depend on what else is on the runner. QUOTA_TEST pins both
       # halves of the probe's credential list — a fixture directory and a stand-in for
@@ -114,6 +115,24 @@ jobs:
           # tmux, where Ghostty must be refused rather than offered — a spawn there
           # would open windows whose agents nothing could ever read.
           DIPLOMAT_TMUX=/nonexistent DIPLOMAT_SPAWN_SCRIPT_TEST=1 swift run Diplomat
+      # A mode this build does not run - another branch's, the Linux applet's, or a
+      # known one set to a value that does not turn it on - must stop the binary
+      # before it starts as the live app. A build that started instead would never
+      # exit, hence the alarm.
+      - name: A mode this build does not run is refused
+        working-directory: packages/diplomat-platform/macos
+        run: |
+          for v in DIPLOMAT_NO_SUCH_TEST=1 DIPLOMAT_AGENTS=1 DIPLOMAT_QUEUE_TEST=true \
+                   DIPLOMAT_SELF_UPDATE=0; do
+            code=0
+            env "$v" perl -e 'alarm 60; exec @ARGV' .build/debug/Diplomat 2> refused.txt || code=$?
+            cat refused.txt
+            test "$code" -eq 64
+            grep -F "refusing to start: $v " refused.txt
+          done
+          code=0
+          DIPLOMAT_LOOKUP=abc perl -e 'alarm 60; exec @ARGV' .build/debug/Diplomat || code=$?
+          test "$code" -eq 2
 
   # The shared core advertises "compiles on macOS *and* Linux". This guards that
   # invariant by building + running the diplomat-core package on Linux (the SwiftUI
@@ -183,6 +202,19 @@ jobs:
           QT_QPA_PLATFORM: offscreen
           DIPLOMAT_CORE_BIN: ${{ github.workspace }}/core-bin/diplomat-core
         run: pytest packages/diplomat-platform/linux/tests -q
+      # The real `python -m` entry, which the suite does not launch: on a machine with
+      # a tray running, a build that failed this would terminate it.
+      - name: A mode this build does not run is refused
+        env:
+          QT_QPA_PLATFORM: offscreen
+          DIPLOMAT_NO_SUCH_TEST: '1'
+        run: |
+          code=0
+          cd packages/diplomat-platform/linux
+          timeout 60 python -m diplomat_app 2> refused.txt || code=$?
+          cat refused.txt
+          test "$code" -eq 64
+          grep -F "refusing to start: DIPLOMAT_NO_SUCH_TEST=1 " refused.txt
       # A checkout with no SzpontNet in it at all. `test_addon_optional.py` above
       # already blocks the import, but only this deletes the packages — so it is
       # the one that catches something reading a *file* out of the library's tree

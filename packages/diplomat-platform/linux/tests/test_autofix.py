@@ -3350,6 +3350,35 @@ def test_a_run_that_merely_finished_keeps_its_window(store, monkeypatch):
     assert killed == [], "a finished run's window is not the reaper's to close"
 
 
+def test_a_finished_runs_agent_is_not_rebooked_against_its_pr(store, monkeypatch):
+    """#148 through the store: the run is retired, and the agent it leaves at its
+    prompt is booked as released in the same tick, so the next tick's scan finds the PR
+    covered instead of booking a fresh untracked run that blocks a re-dispatch."""
+    import time as _time
+    from diplomat_runtime import agentregistry
+    from diplomat_runtime import agentstate as A
+
+    now = _time.time()
+    rec = register_run(701, pid=7001, tty="pts/71", dispatched_at=now - 60)
+    fake_probes(monkeypatch, processes=agent_alive(7001, tty="pts/71", elapsed=60),
+                live_prs=A.Observation.present({701: "pts/71"}),
+                tails={"pts/71": AT_PROMPT},
+                activity={rec.run_id: ("idle", now - 5)})
+
+    store._settle_agents()
+    store._settle_agents()
+
+    (heir,) = agentregistry.load()
+    assert (heir.run_id, heir.pid, heir.dispatched_at, heir.released) == \
+        ("untracked:701", 7001, rec.dispatched_at, True)
+    assert not store._in_flight("https://github.com/o/r/pull/701")
+    assert store.free_auto_slots == 2
+
+    fake_probes(monkeypatch, processes={}, live_prs=set())
+    store._settle_agents()
+    assert agentregistry.load() == []
+
+
 def test_a_run_short_of_the_timeout_keeps_its_window(store, monkeypatch):
     import time as _time
     from diplomat_runtime import agentregistry

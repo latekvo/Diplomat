@@ -1340,7 +1340,10 @@ Every mode runs the real pipeline once, prints, and exits - none of them start
 the monitors or touch a terminal (except `TRACK_TEST` and `SPAWN_FOCUS_TEST`, whose
 point is exactly that; and `RENDER=live`, which opens a window and stays up until
 you stop it). `packages/diplomat-platform/macos/Sources/Diplomat/Headless.swift` is the one list that
-decides what counts as headless:
+decides what counts as headless. A variable that asks for a mode the build does not
+run - a `DIPLOMAT_*` name ending `_TEST`, `_DUMP`, `_SCAN` or `_POLL` that is not on
+the list, a Linux-only mode, or a flag set to anything but `1` - stops the binary with
+exit 64 before it can start as the live app:
 
 ```bash
 DIPLOMAT_DUMP=1 swift run Diplomat            # real fetch+filter pipeline, prints all 6 tools, exits
@@ -1519,7 +1522,7 @@ packages/
   diplomat-platform/           ← the platform wrappers: one UI each over that same core
     macos/                     ← macOS SwiftUI menu-bar app — thin UI over the core
       Sources/Diplomat/
-        DiplomatApp.swift          @main app + MenuBarExtra + the headless self-test entry points
+        DiplomatApp.swift          @main entry + app + MenuBarExtra + the headless self-test entry points
         Headless.swift             the single "are we a one-shot self-test?" env-var list
         ContentView.swift          two-column panel (left: monitoring lists, right: grid + wizards/results)
         Components.swift           shared UI atoms (cards, chips, badges)

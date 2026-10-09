@@ -45,7 +45,9 @@ slot**, then the **queue** that has no bay yet.
 
   An agent found only by the `ps` scan — no in-flight record behind it, which is
   what an applet restart leaves — still gets a row, marked *untracked* and drawn by
-  its PR number, because it still holds a bay for as long as it runs.
+  its PR number, because it holds a bay while it works, up to the run deadline when
+  one is set. The agent a finished task leaves at its prompt is drawn the same way,
+  holding no bay.
 - **Starting** is a task between the queue and its agent: the click (or the drain)
   has taken it, and the spawn has not answered yet. Seconds, and a row for all of
   them, so *execute now* never reads as the click deleting the task. It holds a bay
@@ -288,6 +290,11 @@ DIPLOMAT_RENDER=panel DIPLOMAT_RENDER_OUT=/tmp/p.png \
 DIPLOMAT_REFRESH_SECS=30 ./diplomat            # faster auto-refresh, for tuning
 ```
 
+The modes are `diplomat_app/headless.py`'s `MODES`. A variable that asks for one this
+build does not run - a `DIPLOMAT_*` name ending `_TEST`, `_DUMP`, `_SCAN` or `_POLL`
+that is not listed (every macOS self-test), or a flag set to anything but `1` - stops
+the launcher with exit 64 before it can start the tray.
+
 Also overridable: `DIPLOMAT_REPO` (the agents' working dir — outranks Settings ▸
 *Repo root*, whose own default is `~/dev/<repo>`), `DIPLOMAT_CONFIG` (where the
 shared `config.json` lives),
@@ -390,6 +397,7 @@ diplomat_app/
   conflictwizardview.py  Resolve-conflicts wizard
   auditwizardview.py     Full-E2E-test wizard
   selftest.py     headless dump / lookup / prompt self-tests
+  headless.py     the headless modes, and the refusal of one this build does not run
   singleton.py    newest-wins pidfile
   render.py       headless PNG snapshots (UI checks)
   app.py          QSystemTrayIcon + lifecycle
