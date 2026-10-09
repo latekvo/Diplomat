@@ -276,3 +276,29 @@ def test_a_missing_keychain_item_fails_the_mesh_spawn(monkeypatch):
         _real_spawn_macos("p", "/tmp/d")
     assert launched == []
 
+
+
+@pytest.mark.parametrize("secret, spawns", [("", False), (DUMMY, True)],
+                         ids=["empty", "held"])
+def test_a_keychain_item_spawns_only_on_a_secret(secret, spawns, tmp_path, monkeypatch):
+    """An item that exists with an empty secret - what Enter at ``security
+    add-generic-password -w``'s prompt stores - is refused like a missing one: the
+    gate would start nothing in a window already reported as started. A stand-in
+    ``security`` first on PATH, answering as the real one does."""
+    from szpontnet import host as szpont_host
+
+    stubs = tmp_path / "bin"
+    stubs.mkdir()
+    (stubs / "security").write_text(f"#!/bin/sh\nprintf '%s\\n' '{secret}'\n")
+    (stubs / "security").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{stubs}:{os.environ.get('PATH', '/usr/bin:/bin')}")
+    appconfig.set_value(appconfig.AGENT_TOKEN_KEYCHAIN_ITEM, "diplomat-agent-gh")
+    monkeypatch.setattr(review, "check_token", lambda: _check_token("darwin"))
+    launched = []
+    monkeypatch.setattr(review, "popen_detached", lambda *a, **k: launched.append(a))
+    if spawns:
+        _real_spawn_macos("p", "/tmp/d")
+    else:
+        with pytest.raises(szpont_host.NoRunner, match="'diplomat-agent-gh'"):
+            _real_spawn_macos("p", "/tmp/d")
+    assert len(launched) == spawns

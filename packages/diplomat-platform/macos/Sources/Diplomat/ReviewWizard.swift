@@ -143,6 +143,7 @@ enum AgentSpawner {
         case write(String)
         case osascript(code: Int32, stderr: String)
         case neverStarted(terminal: String, waited: TimeInterval, tokenItem: String = "")
+        case noToken(item: String)
 
         var errorDescription: String? {
             switch self {
@@ -157,6 +158,8 @@ enum AgentSpawner {
                     : ", or no agent token could be read from Keychain item '\(tokenItem)'"
                 return "\(terminal) opened a window but never ran the command "
                     + "(no pid file after \(Int(waited))s\(token))"
+            case .noToken(let item):
+                return "no agent token in Keychain item '\(item)'"
             }
         }
     }
@@ -214,6 +217,9 @@ enum AgentSpawner {
     @discardableResult
     static func spawn(_ plan: SpawnPlan, terminal preferred: SpawnTerminal,
                       restoreFocusTo restoreBID: String? = nil) throws -> SpawnResult {
+        if !plan.tokenItem.isEmpty, !tokenReadable(keychainItem: plan.tokenItem) {
+            throw SpawnError.noToken(item: plan.tokenItem)
+        }
         let term = resolved(preferred)
         // Stamped before the window is asked for, so this deadline and the tick's
         // `spawnGrace` measure the same window from the same instant — neither can
@@ -446,13 +452,34 @@ enum AgentSpawner {
     /// any argv `ps` shows, or the config file the mesh copies.
     ///
     /// `shellCommand` runs the whole spawn behind this test, so a token that cannot be
-    /// read starts nothing rather than falling back to the broad login: the pid file
-    /// never lands and the spawn fails as `neverStarted`. The emptiness check is part of
-    /// that - `gh` reads an empty `GH_TOKEN` as unset.
+    /// read starts nothing rather than falling back to the broad login. The emptiness
+    /// check is part of that - `gh` reads an empty `GH_TOKEN` as unset. `spawn` asks
+    /// `tokenReadable` first, so the same failure opens no window.
     static func tokenExport(keychainItem: String) -> String? {
         guard !keychainItem.isEmpty else { return nil }
         return "GH_TOKEN=$(security find-generic-password -s \(shq(keychainItem)) -w) "
             + "&& [ -n \"$GH_TOKEN\" ] && export GH_TOKEN \(gitTokenHelper)"
+    }
+
+    /// Whether `keychainItem` holds a non-empty secret, read as `tokenExport`'s gate reads
+    /// it. Twin of `review.check_token`.
+    static func tokenReadable(keychainItem: String) -> Bool {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        proc.arguments = ["security", "find-generic-password", "-s", keychainItem, "-w"]
+        let out = Pipe()
+        proc.standardOutput = out
+        proc.standardError = FileHandle.nullDevice
+        proc.standardInput = FileHandle.nullDevice
+        guard (try? proc.run()) != nil else { return false }
+        let deadline = Date() + 10
+        while proc.isRunning, Date() < deadline { usleep(50_000) }
+        guard !proc.isRunning else {
+            proc.terminate()
+            return false
+        }
+        let secret = out.fileHandleForReading.readDataToEndOfFile()
+        return proc.terminationStatus == 0 && secret.contains { $0 != UInt8(ascii: "\n") }
     }
 
     /// Points git's credential helper for github.com at `gh`, which hands out

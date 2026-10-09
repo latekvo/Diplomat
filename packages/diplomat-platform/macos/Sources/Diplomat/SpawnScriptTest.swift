@@ -342,6 +342,22 @@ enum SpawnScriptTest {
               FileManager.default.fileExists(atPath: gitSeen.path))
         stub("security", "printf ''")
         check("an empty item starts nothing", runGated(item: "diplomat-agent-gh").seen == nil)
+        // What `spawn` asks before any window: the same answers, from this process.
+        check("an item the Keychain does not hold is unreadable",
+              !AgentSpawner.tokenReadable(keychainItem: "diplomat-selftest-\(UUID().uuidString)"))
+        let path = ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin"
+        setenv("PATH", "\(stubs.path):\(path)", 1)
+        stub("security", "printf '%s\\n' '\(dummy)'")
+        check("an item holding a token is readable",
+              AgentSpawner.tokenReadable(keychainItem: "diplomat-agent-gh"))
+        // What the real `security` prints for an item stored with an empty secret.
+        stub("security", "printf '\\n'")
+        check("an item holding an empty secret is unreadable",
+              !AgentSpawner.tokenReadable(keychainItem: "diplomat-agent-gh"))
+        setenv("PATH", path, 1)
+        check("…and refusing it names the item",
+              AgentSpawner.SpawnError.noToken(item: "diplomat-agent-gh").errorDescription
+                == "no agent token in Keychain item 'diplomat-agent-gh'")
         let plain = AgentSpawner.shellCommand(AgentSpawner.SpawnPlan(
             promptFile: URL(fileURLWithPath: "/tmp/p.txt"), donePath: "/tmp/d",
             pidPath: "/tmp/pid", runner: .claude, port: 0))

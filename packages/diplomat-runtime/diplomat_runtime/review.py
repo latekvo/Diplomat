@@ -520,13 +520,14 @@ def check_token(platform: str = sys.platform) -> None:
 
     The gate in :func:`token_export` starts nothing then, but only after the spawn has
     been reported as started: a mesh executor would hold the work's claim for its
-    whole backstop on an agent that never ran. Reads the Keychain item's attributes,
-    never its secret."""
+    whole backstop on an agent that never ran. Reads the secret the way the gate does,
+    since an item can exist with an empty one."""
     item, path = _token_source(platform)
     if item:
         try:
-            ok = subprocess.run(["security", "find-generic-password", "-s", item],
-                                capture_output=True, timeout=10).returncode == 0
+            read = subprocess.run(["security", "find-generic-password", "-s", item, "-w"],
+                                  capture_output=True, timeout=10)
+            ok = read.returncode == 0 and bool(read.stdout.rstrip(b"\n"))
         except (OSError, subprocess.SubprocessError):
             ok = False
         if not ok:
