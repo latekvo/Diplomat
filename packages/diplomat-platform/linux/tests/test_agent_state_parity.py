@@ -233,9 +233,15 @@ def _mixed():
         # second session on its PR, which a pid-held record does not follow.
         rec(run_id="untracked:315", pid=8, tty="pts/13", untracked=True, released=True,
             dispatched_at=T0 - 1200, pr_number=315),
-        # Reported its turn over on a PR "working" still holds: nothing is released.
+        # Reported its turn over on a PR "working" still holds: released all the same.
         rec(run_id="reported-beside", pid=9, tty="pts/15", dispatched_at=T0 - 1300,
             pr_number=301),
+        # The same with no pid, which only the scan could hold it to: not released.
+        rec(run_id="pidless-beside", pid=None, tty="", dispatched_at=T0 - 1600,
+            pr_number=301),
+        # Reported over beside the released "untracked:315", whose run id is taken.
+        rec(run_id="reported-past-released", pid=12, tty="pts/19",
+            dispatched_at=T0 - 1250, pr_number=315),
         # A peer's run whose PR landed seconds after dispatch, while this box's scan
         # sees a session on it: nothing is released.
         rec(run_id="peer-landed", placement=A.PLACEMENT_MESH_PEER, node="brick",
@@ -262,18 +268,21 @@ def _mixed():
                    8: proc(elapsed=1200, tty="pts/13"),
                    9: proc(elapsed=1300, tty="pts/15"),
                    10: proc(elapsed=1400, tty="pts/17"),
-                   11: proc(elapsed=1500, tty="pts/18")},
+                   11: proc(elapsed=1500, tty="pts/18"),
+                   12: proc(elapsed=1250, tty="pts/19")},
         tails={"pts/3": WORKING, "pts/4": AT_PROMPT, "pts/5": WORKING,
                "pts/6": WORKING, "pts/7": AT_PROMPT, "pts/9": WORKING,
                "pts/10": WORKING, "pts/11": AT_PROMPT, "pts/12": WORKING,
                "pts/13": WORKING, "pts/15": AT_PROMPT, "pts/16": WORKING,
-               "pts/17": AT_PROMPT, "pts/18": AT_PROMPT},
+               "pts/17": AT_PROMPT, "pts/18": AT_PROMPT, "pts/19": AT_PROMPT},
         claims={"review:306:sha", "review:316:sha"},
         merged={305, 316},
         live_agents={404: "pts/8", 311: "pts/9", 313: "pts/11", 314: "pts/12",
                      315: "pts/14", 301: "pts/15", 316: "pts/16", 317: "pts/17",
                      318: "pts/18"},
         activity={"reported": ("idle", T0 - 5), "reported-beside": ("idle", T0 - 5),
+                  "pidless-beside": ("idle", T0 - 5),
+                  "reported-past-released": ("idle", T0 - 5),
                   "reported-still": ("idle", T0 - 5),
                   "reported-refused": ("idle", T0 - 5)},
     )
@@ -313,6 +322,10 @@ def test_the_fixture_exercises_every_projection(mixed_results):
         "no claim sighting was taken — observe_claims is untested"
     assert any(r["runId"] == "untracked:313" and r["released"] and r["pid"] == 7
                for r in python["records"]), "no ended run released its agent"
+    heirs = {r["runId"]: r["pid"] for r in python["records"] if r["released"]}
+    assert (heirs.get("untracked:301"), heirs.get("untracked:315:12")) == (9, 12), \
+        "no run that ended beside another record released its agent"
+    assert None not in heirs.values(), "a pid-less run was released beside another"
     assert any(r["lapsed"] for r in python["rows"]), "no untracked bay lapsed"
     assert python["inFlight"]["315"] is False and "untracked:315" not in python["capLoad"], \
         "a released agent mid-turn must hold neither its PR nor a bay"

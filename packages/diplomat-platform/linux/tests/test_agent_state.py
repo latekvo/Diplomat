@@ -984,15 +984,48 @@ def test_nothing_is_released_for_a_peers_run():
     assert [r.run_id for r in t.records] == ["r1"]
 
 
-def test_nothing_is_released_onto_a_pr_another_record_covers():
-    """The scan would re-book nothing here, and one record per PR is what keeps a
-    released one's run id its own."""
-    t = A.tick([rec(), rec(run_id="r2", pid=5, tty="pts/4")],
-               ev(processes={4242: proc(), 5: proc(tty="pts/4")},
-                  tails={"pts/3": AT_PROMPT, "pts/4": WORKING},
-                  live_agents={337: "pts/3"},
+def test_runs_that_end_beside_another_on_their_pr_are_released_too():
+    """The scan re-books each agent once the PR's other records are gone."""
+    idle = (completion.IDLE, T0 - 5)
+    t = A.tick([rec(), rec(run_id="r2", pid=5, tty="pts/4"),
+                rec(run_id="r3", pid=6, tty="pts/5")],
+               ev(processes={4242: proc(), 5: proc(tty="pts/4"), 6: proc(tty="pts/5")},
+                  tails={"pts/3": AT_PROMPT, "pts/4": AT_PROMPT, "pts/5": WORKING},
+                  live_agents={337: "pts/3"}, activity={"r1": idle, "r2": idle}),
+               T0, 1)
+    assert [(r.run_id, r.pid) for r in t.records if r.released] == \
+        [("untracked:337", 4242), ("untracked:337:5", 5)]
+    assert t.in_flight(337)
+
+
+def test_a_second_run_on_a_released_agents_pr_is_released_beside_it():
+    """The PR a release frees takes a second run, which ends with its agent up beside
+    the first. Forgotten instead, that agent is re-booked as #148's bay holder the
+    moment the first window closes."""
+    def seen(processes):
+        return ev(processes=processes, tails=BLIND,
+                  live_agents={337: "pts/3" if 4242 in processes else "pts/4"},
+                  activity={"r2": (completion.IDLE, T0 - 5)})
+    second = rec(run_id="r2", pid=5, tty="pts/4")
+    t = A.tick([released(), second],
+               seen({4242: proc(), 5: proc(tty="pts/4")}), T0, 1, A.RUN_DEADLINE)
+    assert sorted(r.run_id for r in _settle(t)) == ["untracked:337", "untracked:337:5"]
+    for dt in (8, 16):
+        t = A.tick(_settle(t), seen({5: proc(elapsed=60 + dt, tty="pts/4")}),
+                   T0 + dt, 1, A.RUN_DEADLINE)
+    assert [(r.run_id, r.released) for r in t.records] == [("untracked:337:5", True)]
+    assert t.cap_load == set()
+    assert t.in_flight(337) is False
+
+
+def test_a_run_with_no_pid_is_released_only_alone_on_its_pr():
+    """Held to the scan's sighting alone, it could not be told from the other agent
+    on its PR."""
+    t = A.tick([rec(pid=None, tty=""), rec(run_id="r2", pid=5, tty="pts/4")],
+               ev(processes={5: proc(tty="pts/4")}, tails={"pts/4": WORKING},
+                  live_agents={337: "pts/4"},
                   activity={"r1": (completion.IDLE, T0 - 5)}), T0, 1)
-    assert sorted(r.run_id for r in t.records) == ["r1", "r2"]
+    assert not any(r.released for r in t.records)
 
 
 def test_the_frozen_untracked_records_give_their_bays_back():

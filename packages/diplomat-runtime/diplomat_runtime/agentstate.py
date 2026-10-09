@@ -182,7 +182,7 @@ OCCUPYING = frozenset({RUNNING, STARTING, UNKNOWN})
 #: :data:`ENDED`. Wider than :data:`OCCUPYING` by AWAITING_INPUT, and the difference
 #: is the point: that session still holds the PR's context and is waiting to be typed
 #: at, so it must not get a second agent beside it even though it has given its bay
-#: back.
+#: back. A released agent blocks in none of them (:func:`in_flight`): its run ended.
 BLOCKING = OCCUPYING | {AWAITING_INPUT}
 
 #: The states a run is over in, every one of them positive evidence.
@@ -1197,12 +1197,12 @@ def synthesize_untracked(records: list[RunRecord], live_agents: Observation,
     What produces one is a live agent whose run the book does not hold: one a peer's
     node started on this box, a session the operator opened by hand, a run whose row
     the operator dismissed, every agent when the book could not be read, and one whose
-    run ended beside another record on its PR. Not a run this applet ended alone on its
-    PR, whose agent goes to a released record (:func:`release_ended`), nor a window a
-    backstop failed to close, whose run is kept. They are found the old way — the
-    prompt's ``PR #<n> in <owner>/<repo>`` in the process table — which is why they are
-    a *fallback* and not the identity mechanism: that scan cannot tell two runs on one
-    PR apart, so at most one record per PR is made.
+    run had no pid and ended beside another record on its PR. Not another run this
+    applet ended, whose agent goes to a released record (:func:`release_ended`), nor a
+    window a backstop failed to close, whose run is kept. They are found the old way —
+    the prompt's ``PR #<n> in <owner>/<repo>`` in the process table — which is why they
+    are a *fallback* and not the identity mechanism: that scan cannot tell two runs on
+    one PR apart, so at most one record per PR is made.
 
     One is made once and then kept in the book like any other run, because the
     stillness backstop measures a screen against the last one seen and a record
@@ -1249,24 +1249,31 @@ def release_ended(records: list[RunRecord], states: dict[str, Resolution],
     record carries the run's pid (still the identity), tty and stillness clock, and
     nothing that made it a dispatch.
 
-    Only where the scan would re-book: a run on this machine, on a PR the scan sees and
-    no other record covers. Not a run a backstop ended, whose window is being closed.
-    And only while the released record resolves to a live agent, or to one the
-    stillness backstop ends at once, so that its window is closed.
+    Only where the scan would re-book once the PR's other records are gone: a run on
+    this machine, on a PR the scan sees. One with no pid is held to the scan's
+    sighting, which cannot tell two agents apart, so it is released only alone on its
+    PR; beside another record a released one's run id carries its pid. Not a run a
+    backstop ended, whose window is being closed. And only while the released record
+    resolves to a live agent, or to one the stillness backstop ends at once, so that
+    its window is closed.
     """
     live = evidence.live_agents.value if evidence.live_agents.ok else {}
     count: dict[int, int] = {}
     for r in records:
         if r.pr_number is not None:
             count[r.pr_number] = count.get(r.pr_number, 0) + 1
+    taken = {r.run_id for r in records}
     out = []
     for r in records:
         v = states.get(r.run_id)
         if (v is None or v.state not in ENDED or v.wedged or v.expired
                 or not r.runs_here or r.pr_number not in live
-                or count[r.pr_number] != 1):
+                or (r.pid is None and count[r.pr_number] != 1)):
             continue
-        heir = RunRecord(run_id=f"untracked:{r.pr_number}",
+        run_id = f"untracked:{r.pr_number}"
+        if run_id in taken:
+            run_id = f"{run_id}:{r.pid}"
+        heir = RunRecord(run_id=run_id,
                          dispatched_at=r.dispatched_at, pr_number=r.pr_number,
                          pr_url=r.pr_url, source=r.source, placement=r.placement,
                          pid=r.pid, tty=r.tty, quiet_digest=r.quiet_digest,
@@ -1274,6 +1281,7 @@ def release_ended(records: list[RunRecord], states: dict[str, Resolution],
                          untracked=True, released=True)
         verdict = resolve_one(heir, evidence, now, deadline)
         if verdict.state not in ENDED or verdict.wedged:
+            taken.add(run_id)
             out.append((heir, verdict))
     return out
 

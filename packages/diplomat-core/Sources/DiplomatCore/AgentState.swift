@@ -111,7 +111,7 @@ public enum AgentState {
     /// `ended`. Wider than `occupying` by `.awaitingInput`, and the difference is the
     /// point: that session still holds the PR's context and is waiting to be typed at,
     /// so it must not get a second agent beside it even though it has given its bay
-    /// back.
+    /// back. A released agent blocks in none of them (`inFlight`): its run ended.
     public static let blocking: Set<RunState> = occupying.union([.awaitingInput])
 
     /// The states a run is over in, every one of them positive evidence.
@@ -1113,9 +1113,9 @@ public enum AgentState {
     /// What produces one is a live agent whose run the book does not hold: one a peer's
     /// node started on this box, a session the operator opened by hand, a run whose row
     /// the operator dismissed, every agent when the book could not be read, and one whose
-    /// run ended beside another record on its PR. Not a run this applet ended alone on
-    /// its PR, whose agent goes to a released record (`releaseEnded`), nor a window a
-    /// backstop failed to close, whose run is kept. They are found the old way — the
+    /// run had no pid and ended beside another record on its PR. Not another run this
+    /// applet ended, whose agent goes to a released record (`releaseEnded`), nor a window
+    /// a backstop failed to close, whose run is kept. They are found the old way — the
     /// prompt's `PR #<n> in <owner>/<repo>` in the process table — which is why they
     /// are a *fallback* and not the identity mechanism: that scan cannot tell two runs
     /// on one PR apart, so at most one record per PR is made.
@@ -1169,29 +1169,38 @@ public enum AgentState {
     /// record carries the run's pid (still the identity), tty and stillness clock, and
     /// nothing that made it a dispatch.
     ///
-    /// Only where the scan would re-book: a run on this machine, on a PR the scan sees and
-    /// no other record covers. Not a run a backstop ended, whose window is being closed.
-    /// And only while the released record resolves to a live agent, or to one the
-    /// stillness backstop ends at once, so that its window is closed.
+    /// Only where the scan would re-book once the PR's other records are gone: a run on
+    /// this machine, on a PR the scan sees. One with no pid is held to the scan's
+    /// sighting, which cannot tell two agents apart, so it is released only alone on its
+    /// PR; beside another record a released one's run ID carries its pid. Not a run a
+    /// backstop ended, whose window is being closed. And only while the released record
+    /// resolves to a live agent, or to one the stillness backstop ends at once, so that
+    /// its window is closed.
     public static func releaseEnded(_ records: [RunRecord], states: [String: Resolution],
                                     evidence: Evidence, now: TimeInterval,
                                     deadline: TimeInterval? = nil) -> [(RunRecord, Resolution)] {
         let live = evidence.liveAgents.value ?? [:]
         var count: [Int: Int] = [:]
         for pr in records.compactMap(\.prNumber) { count[pr, default: 0] += 1 }
+        var taken = Set(records.map(\.runID))
         var out: [(RunRecord, Resolution)] = []
         for r in records {
             guard let v = states[r.runID], ended.contains(v.state), !v.wedged, !v.expired,
                   r.runsHere, let pr = r.prNumber, live[pr] != nil,
-                  count[pr] == 1 else { continue }
-            let heir = RunRecord(runID: "untracked:\(pr)", dispatchedAt: r.dispatchedAt,
+                  r.pid != nil || count[pr] == 1 else { continue }
+            var runID = "untracked:\(pr)"
+            if taken.contains(runID), let pid = r.pid { runID += ":\(pid)" }
+            let heir = RunRecord(runID: runID, dispatchedAt: r.dispatchedAt,
                                  prNumber: pr, prURL: r.prURL, source: r.source,
                                  placement: r.placement, pid: r.pid, tty: r.tty,
                                  quietDigest: r.quietDigest, quietSince: r.quietSince,
                                  reapRefusedAt: r.reapRefusedAt,
                                  untracked: true, released: true)
             let verdict = resolveOne(heir, evidence: evidence, now: now, deadline: deadline)
-            if !ended.contains(verdict.state) || verdict.wedged { out.append((heir, verdict)) }
+            if !ended.contains(verdict.state) || verdict.wedged {
+                taken.insert(runID)
+                out.append((heir, verdict))
+            }
         }
         return out
     }

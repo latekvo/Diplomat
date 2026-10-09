@@ -1774,7 +1774,8 @@ final class Store: ObservableObject {
     ///
     /// Every state that is not over counts, including one waiting at its prompt (that
     /// session holds the PR's context) and one nothing is known about — releasing a PR on
-    /// missing evidence is how two agents end up on it.
+    /// missing evidence is how two agents end up on it. A released agent does not: its
+    /// run ended.
     private func inFlight(_ prNumber: Int) async -> Bool {
         await agentTick().tick.inFlight(prNumber: prNumber)
     }

@@ -2518,7 +2518,7 @@ class Store(QObject):
         """Does this PR already have an agent? Every state that is not over counts,
         including one waiting at its prompt (that session holds the PR's context) and
         one nothing is known about (releasing a PR on missing evidence is how two
-        agents end up on it)."""
+        agents end up on it). A released agent does not: its run ended."""
         m = re.search(r"/pull/(\d+)", url)
         return m is not None and self._agent_tick().in_flight(int(m.group(1)))
 
