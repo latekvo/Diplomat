@@ -1169,10 +1169,12 @@ def adopt_ttys(records: list[RunRecord], processes: Observation,
     scan, which is looser but is the same evidence that says it is alive at all.
 
     A tty is adopted once and then left alone: it is a property of the process, and a
-    process does not change ttys.
+    process does not change ttys. The scan names one tty per PR, so one another record
+    already holds is that record's agent and is not taken off it.
     """
     table = processes.value if processes.ok else {}
     scan = live_agents.value if live_agents.ok else {}
+    held = {r.tty for r in records if r.tty}
     out = []
     for r in records:
         if r.tty:
@@ -1180,6 +1182,8 @@ def adopt_ttys(records: list[RunRecord], processes: Observation,
             continue
         proc = table.get(r.pid) if r.pid is not None else None
         found = proc.tty if proc is not None else scan.get(r.pr_number, "")
+        if proc is None and found in held:
+            found = ""
         out.append(replace(r, tty=found) if found else r)
     return out
 
@@ -1216,15 +1220,16 @@ def synthesize_untracked(records: list[RunRecord], live_agents: Observation,
     if not live_agents.ok:
         return records
     live = live_agents.value
+    held = {r.tty for r in records if r.tty}
     out = []
     for r in records:
         # A kept record follows its PR's current sighting: the scan reports one agent
         # per PR, so an operator's second session becomes that sighting the moment the
         # first exits. Its memory of the old screen goes with it, or the new window
         # inherits the old one's stillness. A released run with a pid is held to that
-        # process instead, whose tty never changes.
+        # process instead, whose tty never changes, and no record takes another's tty.
         tty = live.get(r.pr_number) if r.untracked and r.pid is None else None
-        if tty and tty != r.tty:
+        if tty and tty != r.tty and tty not in held:
             r = replace(r, tty=tty, quiet_digest="", quiet_since=None)
         out.append(r)
     known = {r.pr_number for r in out if r.pr_number is not None}
@@ -1252,10 +1257,10 @@ def release_ended(records: list[RunRecord], states: dict[str, Resolution],
     Only where the scan would re-book once the PR's other records are gone: a run on
     this machine, on a PR the scan sees. One with no pid is held to the scan's
     sighting, which cannot tell two agents apart, so it is released only alone on its
-    PR; beside another record a released one's run id carries its pid. Not a run a
-    backstop ended, whose window is being closed. And only while the released record
-    resolves to a live agent, or to one the stillness backstop ends at once, so that
-    its window is closed.
+    PR. Beside a record already named ``untracked:<pr>``, its run id carries its pid.
+    Not a run a backstop ended, whose window is being closed. And only while the
+    released record resolves to a live agent, or to one the stillness backstop ends at
+    once, so that its window is closed.
     """
     live = evidence.live_agents.value if evidence.live_agents.ok else {}
     count: dict[int, int] = {}

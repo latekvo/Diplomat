@@ -1079,19 +1079,21 @@ public enum AgentState {
     /// scan, which is looser but is the same evidence that says it is alive at all.
     ///
     /// A tty is adopted once and then left alone: it is a property of the process, and a
-    /// process does not change ttys.
+    /// process does not change ttys. The scan names one tty per PR, so one another record
+    /// already holds is that record's agent and is not taken off it.
     public static func adoptTTYs(_ records: [RunRecord],
                                  processes: Observation<[Int: ProcInfo]>,
                                  liveAgents: Observation<[Int: String]>) -> [RunRecord] {
         let table = processes.value ?? [:]
         let scan = liveAgents.value ?? [:]
+        let held = Set(records.map(\.tty).filter { !$0.isEmpty })
         return records.map { r in
             guard r.tty.isEmpty else { return r }
             let found: String
             if let pid = r.pid, let proc = table[pid] {
                 found = proc.tty
-            } else if let pr = r.prNumber {
-                found = scan[pr] ?? ""
+            } else if let pr = r.prNumber, let seen = scan[pr], !held.contains(seen) {
+                found = seen
             } else {
                 found = ""
             }
@@ -1132,15 +1134,17 @@ public enum AgentState {
                                            liveAgents: Observation<[Int: String]>,
                                            now: TimeInterval) -> [RunRecord] {
         guard let live = liveAgents.value else { return records }
+        let held = Set(records.map(\.tty).filter { !$0.isEmpty })
         var out: [RunRecord] = []
         for r in records {
             // A kept record follows its PR's current sighting: the scan reports one agent
             // per PR, so an operator's second session becomes that sighting the moment the
             // first exits. Its memory of the old screen goes with it, or the new window
             // inherits the old one's stillness. A released run with a pid is held to
-            // that process instead, whose tty never changes.
+            // that process instead, whose tty never changes, and no record takes
+            // another's tty.
             guard r.untracked, r.pid == nil, let pr = r.prNumber, let tty = live[pr],
-                  !tty.isEmpty, tty != r.tty
+                  !tty.isEmpty, tty != r.tty, !held.contains(tty)
             else { out.append(r); continue }
             var moved = r
             moved.tty = tty
@@ -1172,10 +1176,10 @@ public enum AgentState {
     /// Only where the scan would re-book once the PR's other records are gone: a run on
     /// this machine, on a PR the scan sees. One with no pid is held to the scan's
     /// sighting, which cannot tell two agents apart, so it is released only alone on its
-    /// PR; beside another record a released one's run ID carries its pid. Not a run a
-    /// backstop ended, whose window is being closed. And only while the released record
-    /// resolves to a live agent, or to one the stillness backstop ends at once, so that
-    /// its window is closed.
+    /// PR. Beside a record already named `untracked:<pr>`, its run ID carries its pid.
+    /// Not a run a backstop ended, whose window is being closed. And only while the
+    /// released record resolves to a live agent, or to one the stillness backstop ends
+    /// at once, so that its window is closed.
     public static func releaseEnded(_ records: [RunRecord], states: [String: Resolution],
                                     evidence: Evidence, now: TimeInterval,
                                     deadline: TimeInterval? = nil) -> [(RunRecord, Resolution)] {

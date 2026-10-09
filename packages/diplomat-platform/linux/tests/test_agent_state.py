@@ -1018,6 +1018,32 @@ def test_a_second_run_on_a_released_agents_pr_is_released_beside_it():
     assert t.in_flight(337) is False
 
 
+def test_a_mesh_placed_run_on_a_released_agents_pr_does_not_take_its_tty():
+    """The scan names the released agent's tty for the PR while it lives. Adopted, the
+    new run is judged by that idle screen: wedged twenty minutes in while it works, and
+    its window closed by a tty that is not its own."""
+    placed = rec(run_id="r2", pid=None, tty="", dispatched_at=T0,
+                 placement=A.PLACEMENT_MESH_HERE)
+    busy = {"r2": (completion.BUSY, T0 + 3)}
+    t = A.tick([released(), placed],
+               ev(processes={4242: proc()}, tails={"pts/3": AT_PROMPT, "pts/4": WORKING},
+                  live_agents={337: "pts/3"}, activity=busy), T0 + 8, 1)
+    assert [(r.run_id, r.tty) for r in t.records] == \
+        [("untracked:337", "pts/3"), ("r2", "")]
+    assert t.in_flight(337)
+
+    t = A.tick(_settle(t), ev(processes={}, tails={"pts/4": WORKING},
+                              live_agents={337: "pts/4"}, activity=busy), T0 + 16, 1)
+    assert [(r.run_id, r.tty) for r in _settle(t)] == [("r2", "pts/4")]
+
+
+def test_a_pid_less_record_does_not_follow_the_scan_onto_anothers_tty():
+    (same, other) = A.synthesize_untracked(
+        [released(pid=None), rec(run_id="r2", pid=None, tty="pts/4")],
+        A.Observation.present({337: "pts/4"}), T0 + 8)
+    assert (same.tty, other.tty) == ("pts/3", "pts/4")
+
+
 def test_a_run_with_no_pid_is_released_only_alone_on_its_pr():
     """Held to the scan's sighting alone, it could not be told from the other agent
     on its PR."""

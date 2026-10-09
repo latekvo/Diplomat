@@ -258,6 +258,18 @@ def _mixed():
             dispatched_at=T0 - 1500, pr_number=318,
             quiet_digest=A.pane_digest(AT_PROMPT), quiet_since=T0 - A.QUIET_TIMEOUT,
             reap_refused_at=T0 - 60),
+        # Placed here by the mesh on a released agent's PR, which the scan still names
+        # by the released agent's tty: it adopts none.
+        rec(run_id="untracked:319", pid=13, tty="pts/20", untracked=True, released=True,
+            dispatched_at=T0 - 1700, pr_number=319),
+        rec(run_id="placed-beside-released", pid=None, tty="",
+            placement=A.PLACEMENT_MESH_HERE, dispatched_at=T0 - 30, pr_number=319),
+        # A pid-less untracked record whose PR's sighting is another record's tty: it
+        # stays where it is.
+        rec(run_id="untracked:320", pid=None, tty="pts/21", untracked=True,
+            dispatched_at=T0 - 1800, pr_number=320),
+        rec(run_id="placed-holding", pid=None, tty="pts/22",
+            placement=A.PLACEMENT_MESH_HERE, dispatched_at=T0 - 40, pr_number=320),
     ]
     evidence = ev(
         processes={1: proc(elapsed=300), 2: proc(elapsed=400, tty="pts/4"),
@@ -269,17 +281,19 @@ def _mixed():
                    9: proc(elapsed=1300, tty="pts/15"),
                    10: proc(elapsed=1400, tty="pts/17"),
                    11: proc(elapsed=1500, tty="pts/18"),
-                   12: proc(elapsed=1250, tty="pts/19")},
+                   12: proc(elapsed=1250, tty="pts/19"),
+                   13: proc(elapsed=1700, tty="pts/20")},
         tails={"pts/3": WORKING, "pts/4": AT_PROMPT, "pts/5": WORKING,
                "pts/6": WORKING, "pts/7": AT_PROMPT, "pts/9": WORKING,
                "pts/10": WORKING, "pts/11": AT_PROMPT, "pts/12": WORKING,
                "pts/13": WORKING, "pts/15": AT_PROMPT, "pts/16": WORKING,
-               "pts/17": AT_PROMPT, "pts/18": AT_PROMPT, "pts/19": AT_PROMPT},
+               "pts/17": AT_PROMPT, "pts/18": AT_PROMPT, "pts/19": AT_PROMPT,
+               "pts/20": AT_PROMPT, "pts/21": AT_PROMPT, "pts/22": WORKING},
         claims={"review:306:sha", "review:316:sha"},
         merged={305, 316},
         live_agents={404: "pts/8", 311: "pts/9", 313: "pts/11", 314: "pts/12",
                      315: "pts/14", 301: "pts/15", 316: "pts/16", 317: "pts/17",
-                     318: "pts/18"},
+                     318: "pts/18", 319: "pts/20", 320: "pts/22"},
         activity={"reported": ("idle", T0 - 5), "reported-beside": ("idle", T0 - 5),
                   "pidless-beside": ("idle", T0 - 5),
                   "reported-past-released": ("idle", T0 - 5),
@@ -334,6 +348,9 @@ def test_the_fixture_exercises_every_projection(mixed_results):
     assert (refused["source"], refused["reapRefusedAt"]) == (A.SOURCE_PANEL, T0 - 60)
     assert "untracked:318" not in python["reapable"], \
         "a released agent must wait out its run's refused close"
+    ttys = {r["runId"]: r["tty"] for r in python["records"]}
+    assert (ttys["placed-beside-released"], ttys["untracked:320"]) == ("", "pts/21"), \
+        "a pid-less record took another record's tty off the scan"
 
 
 def test_the_tick_after_a_release_agrees_too():
