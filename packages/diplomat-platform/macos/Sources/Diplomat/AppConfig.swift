@@ -6,7 +6,8 @@ import DiplomatCore
 /// Almost every setting belongs in this app's UserDefaults, and stays there. A few
 /// can't: the repo root every spawn `cd`s into, the cap on how many automatic agents
 /// may run here at once, the three knobs of the rate-limit budget those agents are
-/// started against, and which agent CLI a spawn runs (with the model it is pinned to).
+/// started against, which agent CLI a spawn runs (with the model it is pinned to), and
+/// where that agent's GitHub token is read from.
 /// Each is consumed by whichever process picks the work up, and one of
 /// those is a **mesh node** — a separate, stdlib-only Python process with neither
 /// UserDefaults nor Qt (the README documents joining a mesh with "no Qt needed"), which
@@ -42,6 +43,10 @@ enum AppConfig {
     /// never a credential: those stay in the runner's own provider store.
     /// Same key on the Linux side.
     static let agentModelKey = "agentModel"
+    /// The login-Keychain item a spawned agent's `GH_TOKEN` is read from, by service
+    /// name — never the token. See `AgentSpawner.tokenExport`. Same key in
+    /// `appconfig.py`, which a mesh node on a Mac spawns by.
+    static let agentTokenKeychainItemKey = "agentTokenKeychainItem"
 
     /// The runner every spawn on this machine uses, resolved here rather than at each
     /// call site because there are two, in different processes: this app's spawner and
@@ -50,6 +55,12 @@ enum AppConfig {
 
     /// The model the selected runner is pinned to, or "" for that runner's own choice.
     static var agentModel: String { string(agentModelKey) }
+
+    /// The Keychain item agents take their GitHub token from, or "" to leave them on
+    /// whatever `gh auth login` stored.
+    static var agentTokenKeychainItem: String {
+        string(agentTokenKeychainItemKey).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
     /// Overridable so a self-test can point at a scratch file instead of the real one —
     /// same escape hatch as the mesh's `SZPONTNET_DIR`.

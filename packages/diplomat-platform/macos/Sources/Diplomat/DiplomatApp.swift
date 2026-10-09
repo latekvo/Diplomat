@@ -2,7 +2,21 @@ import SwiftUI
 import AppKit
 import DiplomatCore
 
+/// The process entry point. `Headless.unrunnable` is checked here, before
+/// `DiplomatApp` exists, because the app builds its Store as a state object and
+/// the Store reads the real state and starts its polls as it is built.
 @main
+enum Launch {
+    static func main() {
+        let unrunnable = Headless.unrunnable(in: ProcessInfo.processInfo.environment)
+        guard unrunnable.isEmpty else {
+            FileHandle.standardError.write(Data(Headless.refusal(unrunnable).utf8))
+            exit(64)   // EX_USAGE
+        }
+        DiplomatApp.main()
+    }
+}
+
 struct DiplomatApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @StateObject private var store = Store()
@@ -58,7 +72,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if env["DIPLOMAT_DUMP"] == "1" {
             Task { await Dump.run(); exit(0) }
         }
-        if let lk = env["DIPLOMAT_LOOKUP"], let n = Int(lk) {
+        if let lk = env["DIPLOMAT_LOOKUP"] {
+            guard let n = Int(lk) else {
+                print("DIPLOMAT_LOOKUP must be an integer, got \"\(lk)\""); exit(2)
+            }
             Task { await Dump.lookup(n); exit(0) }
         }
         // Prompt/spawn self-test: print the assembled review prompt plus the exact
@@ -330,7 +347,8 @@ enum Dump {
             AgentSpawner.SpawnPlan(promptFile: file,
                                    donePath: AgentRegistry.donePath(run).path,
                                    pidPath: AgentRegistry.pidPath(run).path,
-                                   runner: AppConfig.agentRunner, port: 0))
+                                   runner: AppConfig.agentRunner, port: 0,
+                                   tokenItem: AppConfig.agentTokenKeychainItem))
         print("\n----- SHELL COMMAND -----")
         print(cmd)
         let term = AgentSpawner.resolved(.ghostty)
@@ -423,8 +441,9 @@ enum Dump {
     /// watcher does not ask: a matching tail on a session no agent is behind is a
     /// session it leaves alone.
     static func apiWatchScan() {
-        guard let sessions = ApiErrorWatcher.dumpSessions() else {
-            print("== api-error scan: DUMP FAILED (automation permission? AppleEvent timeout?) ==")
+        let dump = ApiErrorWatcher.dumpSessions()
+        guard let sessions = dump.value else {
+            print("== api-error scan: DUMP FAILED (\(dump.reason)) ==")
             return
         }
         let onAnAgent = AgentProbes.ttysRunningAnAgent(now: Date().timeIntervalSince1970)

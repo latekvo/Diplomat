@@ -144,7 +144,7 @@ public enum Telemetry {
         for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8),
-                  let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                  let obj = JSONInput.parse(data),
                   let at = number(obj["at"]), let ev = obj["ev"] as? String
             else { continue }
 
@@ -173,7 +173,7 @@ public enum Telemetry {
                 known = true
                 if task.startedAt == nil {
                     task.startedAt = at
-                    task.remote = obj["remote"] as? Bool ?? false
+                    task.remote = JSONInput.flag(obj["remote"])
                 }
             case "done":
                 known = true
@@ -231,9 +231,11 @@ public enum Telemetry {
     }
 
     /// JSON numbers arrive as `NSNumber`; a hand-edited file can hold a numeric
-    /// string. Non-finite values (which `JSONSerialization` will not produce but a
-    /// concatenated file can carry through `Infinity`) are rejected, because one of
-    /// them anywhere downstream turns every mean into `nan`.
+    /// string. A JSON boolean is neither: `JSONInput` hands it over as a `Flag`, so
+    /// `true` reads as absent here as it does in `telemetry._number`. Non-finite values
+    /// (which `JSONSerialization` will not produce but a concatenated file can carry
+    /// through `Infinity`) are rejected, because one of them anywhere downstream turns
+    /// every mean into `nan`.
     private static func number(_ raw: Any?) -> Double? {
         var v: Double
         if let n = raw as? NSNumber { v = n.doubleValue }

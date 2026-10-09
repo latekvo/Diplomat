@@ -46,7 +46,7 @@ enum AgentStateCommand {
             "rows": t.rows.map { r, s in
                 ["runId": r.runID, "state": s.state.rawValue, "reason": s.reason,
                  "wedged": s.wedged, "expired": s.expired,
-                 "unfindable": s.unfindable]
+                 "unfindable": s.unfindable, "lapsed": s.lapsed]
             },
             "capLoad": t.capLoad.sorted(),
             "retirable": t.retirable.map(\.runID).sorted(),
@@ -67,7 +67,10 @@ enum AgentStateCommand {
                           "spawnGrace": AgentState.spawnGrace],
             "records": t.records.map { r -> [String: Any] in
                 ["runId": r.runID, "claimSeenAt": r.claimSeenAt.map { $0 as Any } ?? NSNull(),
-                 "untracked": r.untracked, "placement": r.placement.rawValue,
+                 "untracked": r.untracked, "released": r.released, "source": r.source,
+                 "pid": r.pid.map { $0 as Any } ?? NSNull(), "tty": r.tty,
+                 "dispatchedAt": r.dispatchedAt,
+                 "placement": r.placement.rawValue,
                  "quietDigest": r.quietDigest,
                  "quietSince": r.quietSince.map { $0 as Any } ?? NSNull(),
                  "reapRefusedAt": r.reapRefusedAt.map { $0 as Any } ?? NSNull()]
@@ -175,6 +178,7 @@ enum AgentStateCommand {
             quietDigest: d["quietDigest"] as? String ?? "",
             quietSince: (d["quietSince"] as? NSNumber)?.doubleValue,
             reapRefusedAt: (d["reapRefusedAt"] as? NSNumber)?.doubleValue,
-            untracked: JSONInput.flag(d["untracked"]))
+            untracked: JSONInput.flag(d["untracked"]),
+            released: JSONInput.flag(d["released"]))
     }
 }
