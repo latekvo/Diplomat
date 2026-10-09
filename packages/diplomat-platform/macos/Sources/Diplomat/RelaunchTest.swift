@@ -1,6 +1,7 @@
 import AppKit
 
-/// Self-test for the relaunch that ends a self-update - `DIPLOMAT_RELAUNCH_TEST=1`.
+/// Self-test for the relaunch that ends a self-update and revives a dead app -
+/// `DIPLOMAT_RELAUNCH_TEST=1`.
 ///
 /// `open -n` exits 0 once LaunchServices has taken the request, so a bundle whose
 /// executable dies at once is "opened" all the same; judged on that status, the Update
@@ -10,17 +11,19 @@ import AppKit
 /// relaunch is asked about each, and about the staying one again with its instance up
 /// and an executable that ends: the old instance must not pass for the new one, and the
 /// failure must name it as what runs, where the first failure names nothing. Bundles
-/// are matched by path, so the live app is neither counted nor touched. The staying
-/// one writes down the environment it got:
+/// are matched by path, so the live app is neither counted nor touched, and each
+/// relaunch reads them through a lister that misses every other read, as LaunchServices
+/// does while other apps launch. The staying one writes down the environment it got:
 /// `open` passes its own on, so it must carry no headless marker - the
-/// `DIPLOMAT_SELF_UPDATE=1` the 06:00 job runs under, set on this process for the
-/// relaunch's duration, and this test's own - while everything else reaches it.
+/// `DIPLOMAT_SELF_UPDATE=1` the 06:00 job runs under and the `DIPLOMAT_WATCHDOG=1` the
+/// watchdog does, set on this process for the relaunch's duration, and this test's own -
+/// while everything else reaches it.
 ///
 /// The 06:00 job outlives that verdict only if the instance it launched spares it, so
 /// the singleton's victims are checked too: they must leave out a headless instance (an
 /// idle copy of this binary under `DIPLOMAT_RELAUNCH_TEST=hold`) and keep one carrying
-/// no headless marker (the staying bundle, named like the app) - a marker being a value
-/// the launch ladder dispatches, not any value under the name.
+/// no headless marker (the staying bundle, named like the app) - a marker being a mode
+/// `Headless.modes` turns on, not any value under its name.
 ///
 ///     DIPLOMAT_RELAUNCH_TEST=1 swift run Diplomat
 ///
@@ -60,8 +63,13 @@ enum RelaunchTest {
                           contents: Data(plist.utf8))
             return app
         }
+        var reads = 0
+        func lossy(_ app: URL) -> [pid_t] {
+            reads += 1
+            return reads % 2 == 0 ? [] : SelfUpdate.listed(app)
+        }
         func relaunch(_ app: URL) -> String? {
-            do { try SelfUpdate.relaunch(app) } catch {
+            do { try SelfUpdate.relaunch(app, lister: lossy) } catch {
                 return (error as? LocalizedError)?.errorDescription ?? "\(error)"
             }
             return nil
@@ -69,6 +77,8 @@ enum RelaunchTest {
 
         print("relaunch: the instance open started is the verdict")
         let exits = bundle("Exits", executable: "Exits", script: "#!/bin/sh\nexit 7\n")
+        check("a missing bundle is an error, not a launch",
+              relaunch(scratch.appendingPathComponent("Gone.app"))?.contains("Gone.app not found") == true)
         let refused = relaunch(exits)
         check("a bundle whose executable exits at launch is a failed relaunch", refused != nil)
         check("the failure says nothing is running",
@@ -78,14 +88,16 @@ enum RelaunchTest {
         let dump = scratch.appendingPathComponent("stays.env").path
         let stays = bundle("Stays", executable: SingleInstance.execName,
                            script: "#!/bin/sh\nenv > '\(dump).tmp' && mv '\(dump).tmp' '\(dump)'\nexec sleep 60\n")
-        defer { for app in SelfUpdate.instances(of: stays) { kill(app.processIdentifier, SIGKILL) } }
+        defer { for pid in SelfUpdate.running(stays) { kill(pid, SIGKILL) } }
         setenv("DIPLOMAT_SELF_UPDATE", "1", 1)
+        setenv("DIPLOMAT_WATCHDOG", "1", 1)
         setenv("RELAUNCH_TEST_CANARY", "\(getpid())", 1)
         let accepted = relaunch(stays)
         unsetenv("DIPLOMAT_SELF_UPDATE")
+        unsetenv("DIPLOMAT_WATCHDOG")
         unsetenv("RELAUNCH_TEST_CANARY")
         check("a bundle that stays up is a relaunch", accepted == nil, accepted ?? "")
-        let staying = SelfUpdate.instances(of: stays).map(\.processIdentifier)
+        let staying = SelfUpdate.running(stays)
         check("one instance of it is up", staying.count == 1, "pids \(staying)")
 
         print("relaunch: the environment the instance gets")
@@ -98,9 +110,10 @@ enum RelaunchTest {
         }
         check("the rest of this process's environment reaches it",
               handed["RELAUNCH_TEST_CANARY"] == "\(getpid())", "got \(handed["RELAUNCH_TEST_CANARY"] ?? "nil")")
-        check("no headless marker does: not the updater's, not this test's",
+        check("no headless marker does: not the updater's, the watchdog's or this test's",
               !handed.isEmpty && !Headless.isActive(in: handed)
-                  && handed["DIPLOMAT_SELF_UPDATE"] == nil && handed["DIPLOMAT_RELAUNCH_TEST"] == nil,
+                  && handed["DIPLOMAT_SELF_UPDATE"] == nil && handed["DIPLOMAT_WATCHDOG"] == nil
+                  && handed["DIPLOMAT_RELAUNCH_TEST"] == nil,
               "got \(handed.filter { $0.key.hasPrefix("DIPLOMAT_") })")
 
         print("singleton: whom a fresh instance would terminate")
@@ -129,11 +142,11 @@ enum RelaunchTest {
         check("an instance carrying no headless marker is a victim",
               !staying.isEmpty && staying.allSatisfy { victims.contains($0) },
               "victims \(victims), staying \(staying)")
-        check("a value the launch ladder does not dispatch is no marker",
-              !Headless.isActive(in: ["DIPLOMAT_LOOKUP": "#337"])
-                  && !Headless.isActive(in: ["DIPLOMAT_RELAUNCH_TEST": "0"]))
-        check("one it does dispatch is",
-              Headless.isActive(in: ["DIPLOMAT_LOOKUP": "337"])
+        check("a flag set to anything but 1 is no marker",
+              !Headless.isActive(in: ["DIPLOMAT_SELF_UPDATE": "0"])
+                  && !Headless.isActive(in: ["DIPLOMAT_QUEUE_TEST": "true"]))
+        check("a flag set to 1 is, and a valued mode set to anything",
+              Headless.isActive(in: ["DIPLOMAT_WATCHDOG": "1"])
                   && Headless.isActive(in: ["DIPLOMAT_RELAUNCH_TEST": "hold"]))
 
         print("relaunch: an instance up before the launch is not the new one")
@@ -146,9 +159,16 @@ enum RelaunchTest {
         check("the failure says the old build is what runs",
               ended?.contains("the running app is still the old build") == true,
               "got \(ended ?? "nil")")
-        check("the old instance is what is up",
-              SelfUpdate.instances(of: stays).map(\.processIdentifier) == staying,
-              "up \(SelfUpdate.instances(of: stays).map(\.processIdentifier)), staying \(staying)")
+        let up = SelfUpdate.running(stays)
+        check("the old instance is what is up", up == staying, "up \(up), staying \(staying)")
+
+        print("instances: what a listing names that is not up")
+        let gone = Process()
+        gone.executableURL = URL(fileURLWithPath: "/usr/bin/true")
+        try? gone.run()
+        gone.waitUntilExit()
+        let ghosts = SelfUpdate.running(stays) { _ in [gone.processIdentifier, -1] }
+        check("an exited pid and pid -1 are no instance", ghosts.isEmpty, "got \(ghosts)")
 
         if failures.isEmpty { print("relaunch: all passed") }
         else { print("relaunch: FAILED \(failures.count): \(failures.joined(separator: "; "))") }

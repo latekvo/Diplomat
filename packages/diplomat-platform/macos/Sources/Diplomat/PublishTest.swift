@@ -89,7 +89,7 @@ enum PublishTest {
                 && t.states["idle"]?.state == .awaitingInput)
 
         let store = Store()
-        store.publishForSelfTest(Store.AgentPass(tick: t, windows: [:]))
+        store.publishForSelfTest(Store.AgentPass(tick: t, windows: [:], attached: .present([])))
 
         // The list starts at `.awaitingInput`, so the idle one leads and the working
         // one follows — and neither of the two that ended is on it at all.

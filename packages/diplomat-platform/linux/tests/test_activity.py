@@ -39,6 +39,7 @@ def test_category_of_matches_swift_taxonomy() -> None:
         "mesh-dispatch": "mesh",
         "mesh-dispatch-failed": "mesh",
         "mesh-spawn": "mesh",
+        "mesh-stop": "mesh",
         # everything else falls through to system, so a row never vanishes
         "kill-device": "system",
         "repair-done": "system",

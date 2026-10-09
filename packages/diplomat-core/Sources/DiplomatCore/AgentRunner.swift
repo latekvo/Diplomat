@@ -11,11 +11,12 @@ import Foundation
 ///   configured in OpenCode itself (Anthropic, OpenRouter, a local Ollama, …);
 /// * `hermes` — Hermes Agent, likewise.
 ///
-/// Only the *agent word and its flags* differ. Everything the spawn is built out of —
-/// the prompt staged into a file and handed over as `$(cat …)`, the completion
-/// sentinel, the pid the run is identified by — is identical, deliberately: those are
-/// what `AgentRegistry` and `AgentState` recognise a run by, and a second spawn shape
-/// would be a second set of them to keep true.
+/// Only the *agent command* differs. Everything the spawn is built out of — the prompt
+/// staged into a file and handed over as `$(cat …)`, the completion sentinel, the pid
+/// the run is identified by — is identical, deliberately: those are what
+/// `AgentRegistry` and `AgentState` recognise a run by, and a second spawn shape would
+/// be a second set of them to keep true. OpenCode 2.x reads its prompt from a JSON file
+/// staged beside that one.
 ///
 /// Credentials are the one thing this type refuses to hold. Each foreign runner has its
 /// own provider store and its own login wizard, and that is where a key belongs — not
@@ -44,7 +45,7 @@ public enum AgentRunner: String, CaseIterable, Sendable {
         AgentRunner(rawValue: raw.trimmingCharacters(in: .whitespaces)) ?? .claude
     }
 
-    /// OpenCode's permission gate, opened for a spawned agent.
+    /// OpenCode 1.x's permission gate, opened for a spawned agent.
     ///
     /// Claude Code gets its autonomy from the user's own `claude` alias (that is what
     /// `--dangerously-skip-permissions` in it is for). OpenCode has no alias to carry
@@ -56,6 +57,9 @@ public enum AgentRunner: String, CaseIterable, Sendable {
     /// environment: the macOS spawner has no environment channel at all, typing a line
     /// into a fresh window via AppleScript, and the Linux twin's `tmux new-session`
     /// runs its command with the tmux *server's* environment.
+    ///
+    /// On 2.x the shared service holds permissions, so this variable decides nothing; the
+    /// session is created with the same grant instead (`OpenCodeAPI.allowAll`).
     public static let permissionEnv = "OPENCODE_PERMISSION"
     public static let permissionValue = #"{"edit":"allow","bash":"allow","webfetch":"allow","external_directory":"allow","doom_loop":"allow"}"#
 
@@ -69,18 +73,24 @@ public enum AgentRunner: String, CaseIterable, Sendable {
     /// It must stay a *simple command* with the agent word first: under Claude Code
     /// that word has to be alias-expandable, since the alias is what carries
     /// `--dangerously-skip-permissions`. A leading variable assignment keeps that
-    /// property for OpenCode, which has no alias to expand.
+    /// property for OpenCode, which has no alias to expand. OpenCode 2.x's is a list of
+    /// three, each of them starting with that word (`serviceCommand`).
     ///
     /// `model` is a model id, or empty to let the runner use the one its own picker
     /// already remembers — passing a guess would silently move the user off it. The
     /// Claude runner takes no such flag here and ignores it.
     ///
-    /// `port` puts an OpenCode run's own server on a port the applet already knows, which
-    /// is what lets `OpenCodeAPI` ask the agent what it is doing instead of reading it off
-    /// the agent's screen. It is ignored by the other two, which have no such server —
-    /// Hermes answers the same question from its own session store. Omitting it is a
-    /// supported spawn, not a broken one: the run works exactly as before and is tracked
-    /// by its screen.
+    /// `port` puts an OpenCode 1.x run's own server on a port the applet already knows,
+    /// which is what lets `OpenCodeAPI` ask the agent what it is doing instead of reading
+    /// it off the agent's screen. It is ignored by the other two, which have no such
+    /// server — Hermes answers the same question from its own session store. Omitting it
+    /// is a supported spawn, not a broken one: the run works exactly as before and is
+    /// tracked by its screen.
+    ///
+    /// `serviceSession` makes an OpenCode run a 2.x one: the id `OpenCodeCLI.stageSession`
+    /// returned for `promptFile`. It replaces `model` (pinned in the staged session) and
+    /// `port` (2.x has no per-run port); the other runners ignore it.
+    ///
     /// `settingsFile` is where Claude Code finds the hooks that make it report its own
     /// turn boundaries (`AgentCompletion`). `--settings` MERGES with the user's own
     /// settings rather than replacing them, so a spawned agent keeps whatever hooks its
@@ -89,7 +99,11 @@ public enum AgentRunner: String, CaseIterable, Sendable {
     /// `--dangerously-skip-permissions`. The other two runners take no such flag and
     /// are read from their session stores instead.
     public func agentCommand(promptFile: String, model: String = "", port: Int = 0,
+                             serviceSession: String? = nil,
                              settingsFile: String? = nil) -> String {
+        if self == .opencode, let session = serviceSession, !session.isEmpty {
+            return Self.serviceCommand(promptFile: promptFile, sessionID: session)
+        }
         let prompt = "\"$(cat \(Self.shq(promptFile)))\""
         let trimmed = model.trimmingCharacters(in: .whitespaces)
         let flag = trimmed.isEmpty ? "" : " -m \(Self.shq(trimmed))"
@@ -106,8 +120,8 @@ public enum AgentRunner: String, CaseIterable, Sendable {
             // sibling's in the same checkout.
             return "hermes chat --tui --yolo\(flag) -q \(prompt)"
         case .opencode:
-            // OpenCode's default hostname is loopback, so this exposes the run to other
-            // users of this machine and to nothing else. It cannot also be
+            // OpenCode 1.x. Its default hostname is loopback, so this exposes the run
+            // to other users of this machine and to nothing else. It cannot also be
             // password-protected: the server takes one, but OpenCode's own TUI sends
             // none, so a run started with `OPENCODE_SERVER_PASSWORD` set exits on
             // `Unauthorized` before doing any work.
@@ -121,6 +135,29 @@ public enum AgentRunner: String, CaseIterable, Sendable {
             // same checkout.
             return "\(grant) opencode\(listen)\(flag) --prompt \(prompt)"
         }
+    }
+
+    /// The OpenCode 2.x agent command: create the staged session on the shared service,
+    /// prompt it, then attach a TUI to it.
+    ///
+    ///     opencode api session.create -d "$(cat '<p>.session.json')" && opencode api session.prompt --param sessionID=<id> -d "$(cat '<p>.prompt.json')" || exit; opencode --session <id>
+    ///
+    /// Three commands because 2.x has no single one: `--prompt` fills the composer without
+    /// submitting (anomalyco/opencode#51135, reproduced on 2.0.18), and `--port`, `-m` and
+    /// the permission grant belong to the service, so they travel in the staged session.
+    /// The turn runs in the service; the TUI is only a window onto it.
+    ///
+    /// The TUI comes last after a `;` because bash 5.3 and zsh 5.9 exec that over the inner
+    /// shell, keeping the pid file the agent's own; bash 5.3 does NOT for the last command
+    /// of an `&&` chain (both measured). `|| exit` hands a failed create or prompt's status
+    /// to the exit sentinel and opens no TUI onto a missing session. Every command starts
+    /// with `opencode`, so an alias of it still expands.
+    static func serviceCommand(promptFile: String, sessionID: String) -> String {
+        let session = "\"$(cat \(shq(promptFile + ".session.json")))\""
+        let prompt = "\"$(cat \(shq(promptFile + ".prompt.json")))\""
+        return "opencode api session.create -d \(session)"
+            + " && opencode api session.prompt --param sessionID=\(sessionID) -d \(prompt)"
+            + " || exit; opencode --session \(sessionID)"
     }
 
     /// Whether a `ps` line is an agent of *any* runner.
@@ -148,9 +185,12 @@ public enum AgentRunner: String, CaseIterable, Sendable {
     ///
     /// The listing command runs after, so the window the user is left looking at states
     /// what is now connected rather than making them trust that it worked.
+    ///
+    /// OpenCode's `auth` is 2.x's name and a 1.x alias of `providers` (1.4.3, 1.18.33), so
+    /// one spelling serves both majors.
     public var setupCommand: String {
         self == .hermes ? "hermes setup; hermes status"
-                        : "opencode providers login; opencode providers list"
+                        : "opencode auth login; opencode auth list"
     }
 
     /// Single-quote for the shell, the same way `ReviewWizard.shq` does.

@@ -5,8 +5,10 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DESKTOP="${XDG_CONFIG_HOME:-$HOME/.config}/autostart/diplomat.desktop"
 
-# Tear down the daily auto-update timer too (best-effort).
+# Tear down the daily auto-update timer too (best-effort), and the watchdog before
+# the tray is stopped below, or it would launch it again.
 "${HERE}/uninstall-autoupdate.sh" || true
+"${HERE}/uninstall-watchdog.sh" || true
 
 if [[ -f "$DESKTOP" ]]; then
   rm -f "$DESKTOP"

@@ -6,6 +6,7 @@
     DIPLOMAT_PRINT_PROMPT=mine python -m diplomat_app   # mine|user|single,
                                                         # issues…, conflicts…, audit…
     DIPLOMAT_SELF_UPDATE=1 python -m diplomat_app       # headless 6AM update
+    DIPLOMAT_WATCHDOG=1 python -m diplomat_app          # launch the tray if it died
     DIPLOMAT_AGENTS=1 python -m diplomat_app            # why each agent reads as it does
 """
 
@@ -18,10 +19,22 @@ import sys
 def main() -> int:
     env = os.environ
 
+    from .headless import refusal, unrunnable
+
+    refused = unrunnable(env)
+    if refused:
+        sys.stderr.write(refusal(refused))
+        return 64  # EX_USAGE
+
     if env.get("DIPLOMAT_SELF_UPDATE") == "1":
         from .selfupdate import run_scheduled
 
         return run_scheduled()
+
+    if env.get("DIPLOMAT_WATCHDOG") == "1":
+        from .selfupdate import run_watchdog
+
+        return run_watchdog()
 
     if env.get("DIPLOMAT_AGENTS") == "1":
         from .agentdump import run as run_agents

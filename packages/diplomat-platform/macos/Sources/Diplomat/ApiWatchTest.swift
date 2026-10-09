@@ -19,8 +19,9 @@ import DiplomatCore
 ///     DIPLOMAT_APIWATCH_TEST=1 swift run Diplomat
 ///
 /// Pure: every session, tail and process is a literal, so no terminal is read, nothing
-/// is typed, and the answer does not depend on what else is running. Exit code is
-/// pass/fail.
+/// is typed, and the answer does not depend on what else is running. The one real
+/// process is a tmux server of its own, on a private socket, when tmux is installed.
+/// Exit code is pass/fail.
 enum ApiWatchTest {
     /// A real Claude Code banner, the shape the matcher is written against.
     private static let banner = "⏺ API Error: 529 Overloaded.\n? for shortcuts"
@@ -194,42 +195,89 @@ enum ApiWatchTest {
             if let previousTmux { setenv("DIPLOMAT_TMUX", previousTmux, 1) }
             else { unsetenv("DIPLOMAT_TMUX") }
         }
-        // One pane on session 1 and one client on it. `row` expands `-F` as tmux would,
-        // so a reader naming its fields in the wrong order reads them wrong here too.
         func fakeTmux(_ body: String) -> String {
             let path = fake.appendingPathComponent("tmux-\(UUID().uuidString)").path
-            let script = """
-                #!/bin/sh
-                cmd="$1"; fmt=
-                while [ $# -gt 0 ]; do [ "$1" = -F ] && fmt="$2"; shift; done
-                row() { printf '%s\\n' "$fmt" | /usr/bin/sed -e 's/#{pane_tty}/ttys037/g' \
-                    -e 's/#{pane_id}/%80/g' -e 's/#{session_name}/1/g' \
-                    -e 's/#{client_tty}/ttys036/g' -e 's/#{client_session}/1/g'; }
-                case "$cmd" in
-                \(body)
-                esac
-
-                """
-            try? script.write(toFile: path, atomically: true, encoding: .utf8)
+            try? ("#!/bin/sh\ncase \"$1\" in\n\(body)\nesac\n")
+                .write(toFile: path, atomically: true, encoding: .utf8)
             try? FileManager.default.setAttributes([.posixPermissions: 0o755],
                                                   ofItemAtPath: path)
             setenv("DIPLOMAT_TMUX", path, 1)
             return path
         }
-        _ = fakeTmux("has-session) exit 0 ;;\nlist-panes) row ;;\nlist-clients) exit 1 ;;")
+        _ = fakeTmux("has-session) exit 0 ;;\nlist-panes) printf 'ttys037 %%80 1\\n' ;;"
+                     + "\nlist-clients) exit 1 ;;")
         check("a live server that will not list its clients reads as unwalkable",
               TerminalFocus.walkTables() == nil)
         _ = fakeTmux("has-session) exit 1 ;;\n*) exit 1 ;;")
         check("…and a machine whose server has shut down reads as nothing to hop across",
               TerminalFocus.walkTables()?.panes.isEmpty == true)
-        _ = fakeTmux("has-session) exit 0 ;;\nlist-panes) row ;;\nlist-clients) row ;;")
-        let tables = TerminalFocus.walkTables()
-        check("…and a server that answers both is read whole, each field from where it was asked for",
-              tables?.panes == ["ttys037": TerminalFocus.Pane(id: "%80", session: "1")]
-                && tables?.clients == ["1": "ttys036"])
+        // Both listings render the format they are asked for, as a client outside tmux
+        // under launchd's locale gets it: every control byte comes back as `_`.
+        _ = fakeTmux("has-session) exit 0 ;;\nlist-panes|list-clients)"
+                     + " while [ $# -gt 1 ] && [ \"$1\" != -F ]; do shift; done"
+                     + "\n  printf '%s' \"$2\" | tr '\\001-\\037' _ | sed"
+                     + " -e 's|#{pane_tty}|/dev/ttys037|' -e 's|#{pane_id}|%80|'"
+                     + " -e 's|#{session_name}|my agents|' -e 's|#{client_tty}|/dev/ttys036|'"
+                     + " -e 's|#{client_session}|my agents|' ;;")
+        let whole = TerminalFocus.walkTables()
+        check("…and a server that answers both is read whole, a session name's space and all",
+              whole?.panes == ["ttys037": TerminalFocus.Pane(id: "%80", session: "my agents")]
+                && whole?.clients == ["my agents": "ttys036"])
+
+        // A failed dump names its source: a refused terminal is fixed under Privacy &
+        // Security, a tmux listing is not. The listing below is what launchd's locale
+        // makes of a control-byte-separated one.
+        _ = fakeTmux("has-session) exit 0 ;;\nlist-panes) printf 'ttys037_%%80_1\\n' ;;"
+                     + "\n*) exit 1 ;;")
+        let iterm = (name: "iTerm", dump: { () -> String? in "ttys034\u{1f}\(banner)\u{1e}" })
+        check("a live tmux that lists no pane fails the dump in tmux's name",
+              ApiErrorWatcher.dumpSessions(terminals: [iterm]).reason
+                == "tmux listed no panes, though its server is up")
+        check("…and a terminal that would not answer fails it in that terminal's name",
+              ApiErrorWatcher.dumpSessions(terminals: [iterm, (name: "Terminal", dump: { nil })])
+                .reason.hasPrefix("Terminal would not answer"))
         setenv("DIPLOMAT_TMUX", "/nonexistent-tmux", 1)
         check("a machine with no tmux at all is nothing to hop across, not a failure",
               TerminalFocus.walkTables()?.panes.isEmpty == true)
+        check("…nor a failed dump",
+              ApiErrorWatcher.dumpSessions(terminals: [iterm]).value?.map(\.tty) == ["ttys034"])
+
+        // The stand-ins pin the format; only a real tmux can say it survives launchd's
+        // environment: no `$TMUX` and no UTF-8 locale. The socket dir is private, and
+        // short because a socket path is capped near 104 bytes.
+        if let real = ["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux"]
+            .first(where: FileManager.default.fileExists(atPath:)) {
+            let sockets = "/tmp/diplomat-tmux-\(UUID().uuidString.prefix(8))"
+            try? FileManager.default.createDirectory(atPath: sockets,
+                                                     withIntermediateDirectories: true)
+            let keys = ["TMUX", "TMUX_TMPDIR", "LANG", "LC_ALL", "LC_CTYPE"]
+            let saved = keys.map { ProcessInfo.processInfo.environment[$0] }
+            for key in ["TMUX", "LANG", "LC_CTYPE"] { unsetenv(key) }
+            setenv("LC_ALL", "C", 1)
+            setenv("TMUX_TMPDIR", sockets, 1)
+            setenv("DIPLOMAT_TMUX", real, 1)
+            func tmux(_ args: [String]) {
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: real)
+                p.arguments = args
+                p.standardOutput = FileHandle.nullDevice
+                p.standardError = FileHandle.nullDevice
+                try? p.run()
+                p.waitUntilExit()
+            }
+            let session = "diplomat-apiwatch-\(UUID().uuidString.prefix(8))"
+            tmux(["new-session", "-d", "-s", session, "sleep 60"])
+            let panes = TerminalFocus.panes()
+            tmux(["kill-server"])
+            for (key, value) in zip(keys, saved) {
+                if let value { setenv(key, value, 1) } else { unsetenv(key) }
+            }
+            try? FileManager.default.removeItem(atPath: sockets)
+            check("a real tmux read under launchd's locale still lists its panes",
+                  panes.values.contains { $0.session == session && $0.id.hasPrefix("%") })
+        } else {
+            print("SKIP — no tmux on this machine, so no real server to list")
+        }
 
         // Which panes the dump adds on top of what the terminals reported. The same box
         // as above, plus a Ghostty run — a session on a client no scriptable app can be

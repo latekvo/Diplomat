@@ -825,6 +825,56 @@ def test_panel_spawn_never_routes_to_the_mesh(store, monkeypatch):
     assert len(local) == 1
 
 
+def test_the_audit_says_which_runs_got_the_agent_token(store, monkeypatch):
+    """The operator's only record of whether a run held the narrow token or the broad
+    ``gh auth login`` one."""
+    from diplomat_runtime import activity
+
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    _spawn_recorder(monkeypatch)
+    monkeypatch.setattr(review, "token_export", lambda: "")
+    assert store.dispatch_agent(_job(number=1), autofix.SOURCE_PANEL) == "spawned"
+    monkeypatch.setattr(review, "token_export", lambda: "GH_TOKEN=$(cat -- /t)")
+    assert store.dispatch_agent(_job(number=2), autofix.SOURCE_PANEL) == "spawned"
+
+    lines = [e.detail for e in activity.read() if e.action == "review"]
+    assert sorted(lines) == ["Review · #1", "Review · #2 · agent GH token"]
+
+
+def test_a_spawn_that_fails_says_why_in_the_audit(store, monkeypatch):
+    """The panel's only account of a refused spawn, such as an agent token that
+    cannot be read - and the run it booked is forgotten again."""
+    from diplomat_runtime import activity, agentregistry
+
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+
+    def refuse(*a, **k):
+        raise review.SpawnError("no agent token in /secrets/t")
+
+    monkeypatch.setattr(review, "spawn", refuse)
+    assert store.dispatch_agent(_job(number=1), autofix.SOURCE_PANEL) == "failed"
+
+    lines = [e.detail for e in activity.read() if e.action == "spawn-failed"]
+    assert lines == ["Review · #1 failed to spawn: no agent token in /secrets/t"]
+    assert agentregistry.load() == []
+
+
+@pytest.mark.parametrize("here", [True, False], ids=["here", "peer"])
+def test_a_mesh_run_is_marked_only_when_this_machine_runs_it(store, monkeypatch, here):
+    """A placement back here is spawned by this machine's mesh node, on this
+    machine's config and so on the token; a peer's spawn is on the peer's."""
+    from diplomat_runtime import activity
+
+    _mesh_store(monkeypatch, store, dispatch=_spawned_here() if here else _spawned())
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    _spawn_recorder(monkeypatch)
+    monkeypatch.setattr(review, "token_export", lambda: "GH_TOKEN=$(cat -- /t)")
+    assert store.dispatch_agent(_job(number=1, mesh=True), autofix.SOURCE_AUTO) == "spawned"
+
+    lines = [e.detail for e in activity.read() if e.action == "review"]
+    assert lines == ["Review · #1" + (" · agent GH token" if here else "")]
+
+
 # MARK: - a mesh placement that lands back here is an agent on THIS machine
 
 
@@ -3322,6 +3372,35 @@ def test_a_run_that_merely_finished_keeps_its_window(store, monkeypatch):
     assert killed == [], "a finished run's window is not the reaper's to close"
 
 
+def test_a_finished_runs_agent_is_not_rebooked_against_its_pr(store, monkeypatch):
+    """#148 through the store: the run is retired, and the agent it leaves at its
+    prompt is booked as released in the same tick, so the next tick's scan finds the PR
+    covered instead of booking a fresh untracked run that blocks a re-dispatch."""
+    import time as _time
+    from diplomat_runtime import agentregistry
+    from diplomat_runtime import agentstate as A
+
+    now = _time.time()
+    rec = register_run(701, pid=7001, tty="pts/71", dispatched_at=now - 60)
+    fake_probes(monkeypatch, processes=agent_alive(7001, tty="pts/71", elapsed=60),
+                live_prs=A.Observation.present({701: "pts/71"}),
+                tails={"pts/71": AT_PROMPT},
+                activity={rec.run_id: ("idle", now - 5)})
+
+    store._settle_agents()
+    store._settle_agents()
+
+    (heir,) = agentregistry.load()
+    assert (heir.run_id, heir.pid, heir.dispatched_at, heir.released) == \
+        ("untracked:701", 7001, rec.dispatched_at, True)
+    assert not store._in_flight("https://github.com/o/r/pull/701")
+    assert store.free_auto_slots == 2
+
+    fake_probes(monkeypatch, processes={}, live_prs=set())
+    store._settle_agents()
+    assert agentregistry.load() == []
+
+
 def test_a_run_short_of_the_timeout_keeps_its_window(store, monkeypatch):
     import time as _time
     from diplomat_runtime import agentregistry
@@ -3732,13 +3811,13 @@ def _register_inside_the_next_read(monkeypatch, number):
     spawn's thread, to be joined once the write is done."""
     import threading
 
-    from diplomat_runtime import atomicjson
+    from diplomat_runtime import agentregistry
 
-    real = atomicjson.read_object
+    real = agentregistry._read_book
     spawns: list[threading.Thread] = []
 
-    def read_then_register(path):
-        data = real(path)
+    def read_then_register():
+        data = real()
         if not spawns:
             spawns.append(threading.Thread(
                 target=register_run, args=(number,), kwargs={"pid": 2, "tty": "pts/2"}))
@@ -3746,7 +3825,7 @@ def _register_inside_the_next_read(monkeypatch, number):
             spawns[0].join(timeout=0.5)
         return data
 
-    monkeypatch.setattr(atomicjson, "read_object", read_then_register)
+    monkeypatch.setattr(agentregistry, "_read_book", read_then_register)
     return spawns
 
 

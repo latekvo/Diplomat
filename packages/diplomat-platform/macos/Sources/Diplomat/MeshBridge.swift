@@ -163,6 +163,46 @@ enum MeshBridge {
         return nil
     }
 
+    // MARK: - a node left running
+
+    /// What `stopStrayNode` did.
+    enum StrayNode: Equatable {
+        /// Nothing on this state dir answers as the node `state.json` names.
+        case none
+        case stopped(pid: Int, port: Int)
+        case stopFailed(pid: Int, port: Int, reason: String)
+    }
+
+    /// Stop the node `state.json` names, once it proves over its control port that it
+    /// is that node: the pid and node id it reports live must be the file's. Nothing is
+    /// signalled by pid, so a pid the OS has since handed to another process, or a port
+    /// a node on another state dir has since bound, is left alone. `stopped` means the
+    /// pid is gone, not just that the node accepted the command. Blocking.
+    static func stopStrayNode(exitWait: TimeInterval = 10) -> StrayNode {
+        guard let file = readState(), nodeRunning(file),
+              let pid = file.pid, let port = file.tcpPort, port > 0,
+              let id = file.selfNode?.id, !id.isEmpty,
+              let reply = try? request(["t": "status"], port: port),
+              let state = reply["state"] as? [String: Any],
+              let data = try? JSONSerialization.data(withJSONObject: state),
+              let live = MeshSnapshot.decode(data),
+              live.pid == pid, live.selfNode?.id == id
+        else { return .none }
+        do { try stop(port: port) } catch {
+            let reason = (error as? LocalizedError)?.errorDescription ?? "\(error)"
+            return .stopFailed(pid: pid, port: port, reason: reason)
+        }
+        let deadline = Date().addingTimeInterval(exitWait)
+        while nodeRunning(file) {
+            guard Date() < deadline else {
+                return .stopFailed(pid: pid, port: port,
+                                   reason: "still running \(Int(exitWait))s after it was asked to stop")
+            }
+            usleep(100_000)
+        }
+        return .stopped(pid: pid, port: port)
+    }
+
     /// Find a usable `python3`: env override → Homebrew → /usr/local → the system one.
     static func resolvePython() -> String? {
         if let env = ProcessInfo.processInfo.environment["DIPLOMAT_PYTHON"],

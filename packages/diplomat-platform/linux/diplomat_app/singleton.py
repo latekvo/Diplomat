@@ -22,6 +22,7 @@ import os
 from pathlib import Path
 
 from . import procscan
+from .headless import MODES
 from .procscan import alive as _alive
 
 # Every module name this applet's tray has launched under. A rename appends a
@@ -30,14 +31,11 @@ from .procscan import alive as _alive
 _APPLET_MODULES = frozenset({"diplomat_app", "argent_utils"})
 
 # Env-var suffixes that mark a ``python -m <module>`` process as a headless
-# one-shot rather than the GUI tray: the modes ``__main__.py`` dispatches, which
-# ``test_headless_modes.py`` holds this list to. We never terminate these: they
-# exit on their own and are not a wrench in the tray. Matched under both the
-# current and the legacy env prefix.
-HEADLESS_SUFFIXES = frozenset(
-    {"SELF_UPDATE", "AGENTS", "DUMP", "LOOKUP", "PRINT_PROMPT", "RENDER"}
-)
-ENV_PREFIXES = ("DIPLOMAT_", "ARGENT_UTILS_")
+# one-shot (the modes ``__main__.py`` dispatches) rather than the GUI tray. We
+# never terminate these: they exit on their own and are not a wrench in the tray.
+# Matched under both the current and the legacy env prefix.
+_HEADLESS_SUFFIXES = frozenset(name.removeprefix("DIPLOMAT_") for name in MODES)
+_ENV_PREFIXES = ("DIPLOMAT_", "ARGENT_UTILS_")
 
 
 def headless_markers() -> frozenset[str]:
@@ -45,7 +43,7 @@ def headless_markers() -> frozenset[str]:
     what a relaunch strips, so the tray it starts is one the next newest-wins can
     end."""
     return frozenset(prefix + suffix
-                     for prefix in ENV_PREFIXES for suffix in HEADLESS_SUFFIXES)
+                     for prefix in _ENV_PREFIXES for suffix in _HEADLESS_SUFFIXES)
 
 
 def _pidfile() -> Path:
@@ -72,8 +70,8 @@ def _environ_is_headless(raw: bytes) -> bool:
         if not sep or not val:
             continue
         k = key.decode("utf-8", "replace")
-        for prefix in ENV_PREFIXES:
-            if k.startswith(prefix) and k[len(prefix):] in HEADLESS_SUFFIXES:
+        for prefix in _ENV_PREFIXES:
+            if k.startswith(prefix) and k[len(prefix):] in _HEADLESS_SUFFIXES:
                 return True
     return False
 
@@ -126,15 +124,11 @@ class SingleInstance:
 
     @staticmethod
     def running_pid() -> int:
-        """PID of the live tray instance, or 0 if none is running.
+        """PID of the tray that holds the pidfile, or 0 if it is not running.
 
-        Lets the headless 6AM updater decide whether to relaunch (swap a running
-        tray onto the new build) or just leave the checkout updated in place —
-        it must never spawn a GUI on a session that isn't already showing one.
-
-        Deliberately pidfile-only: the updater itself runs as
-        ``python -m diplomat_app`` (headless), so a ``/proc`` scan would find
-        *itself* and wrongly conclude a tray is up.
+        The headless 6AM updater relaunches this tray onto a new build, on its own
+        display env. It reads only the pidfile, so a tray still reaping its
+        predecessor goes unseen; :meth:`any_running` answers whether any tray is up.
         """
         pf = _pidfile()
         try:
@@ -144,12 +138,17 @@ class SingleInstance:
         # Liveness alone is not enough: a tray that exited uncleanly leaves a stale
         # pidfile, and the OS recycles that pid to an unrelated same-uid process. A
         # bare _alive check would then report a "running tray" that is really a shell
-        # or an editor, and the 6AM updater would relaunch a GUI on a session that
-        # has none. _is_applet_gui verifies the pidfile pid really is a GUI tray of
-        # this applet (the same identity gate acquire_newest_wins uses before it
-        # kills). This stays pidfile-only — it verifies the ONE recorded pid, it does
-        # not /proc-scan — so the headless updater never detects itself as a tray.
+        # or an editor, and the 6AM updater would "relaunch" it from that process's
+        # env. _is_applet_gui verifies the pidfile pid really is a GUI tray of this
+        # applet (the same identity gate acquire_newest_wins uses before it kills).
         return pid if pid and _alive(pid) and _is_applet_gui(pid) else 0
+
+    @staticmethod
+    def any_running() -> bool:
+        """Whether any GUI tray is up. Unlike :meth:`running_pid` it also sees one
+        that is still reaping its predecessor and has not claimed the pidfile yet,
+        so a check made during a hand-over never finds nobody."""
+        return bool(SingleInstance.running_pid() or _other_instances())
 
     @staticmethod
     def release() -> None:

@@ -132,6 +132,51 @@ the same reading of every machine and the same plan on every shape either can me
 Neither installs anything but
 the launcher - one file of standard library on each side.
 
+### A narrow GitHub token for agents
+
+By default a spawned agent uses whatever `gh auth login` stored, which is usually
+`repo, workflow, gist`: push access to every repository you can push to, and
+`workflow` lets a commit add a GitHub Actions workflow that runs with the
+repository's secrets. Review, fix and conflict runs need only `contents` and
+`pull-requests`. To give agents just that (phase 1 of
+[#139](https://github.com/latekvo/Diplomat/issues/139)):
+
+1. **Mint** a fine-grained personal access token at
+   <https://github.com/settings/personal-access-tokens/new>: *Only select
+   repositories* (the ones Diplomat works on), **Contents: Read and write**,
+   **Pull requests: Read and write**, nothing else. An organization may have to
+   approve it before it works on the org's repositories.
+2. **Store** it where only you can read it. On macOS, in the login Keychain
+   (`-w` last makes `security` prompt for it, so it stays out of your shell history):
+   ```bash
+   security add-generic-password -a "$USER" -s diplomat-agent-gh -w
+   ```
+   On Linux, in a file only you can read:
+   ```bash
+   (umask 077; read -rs t; printf '%s\n' "$t" > ~/.diplomat/agent-token)
+   ```
+3. **Name** it in `~/.diplomat/config.json` - the name, never the token, since that
+   file is world-readable and copied around by the mesh. `"agentTokenKeychainItem":
+   "diplomat-agent-gh"` on macOS (`plutil -replace agentTokenKeychainItem -string
+   diplomat-agent-gh ~/.diplomat/config.json`), `"agentTokenFile":
+   "~/.diplomat/agent-token"` on Linux.
+
+Every spawn on the machine then reads it - panel and automatic runs on both
+platforms, and runs a mesh node starts here - inside the spawned shell, and exports
+it as `GH_TOKEN`, which `gh` ranks above its own login. The agent's `git` over HTTPS
+to github.com gets it too, from `gh auth git-credential`, instead of any credential
+helper you configured (macOS git ships `osxkeychain`, which holds your broad login).
+The token itself is never in an AppleScript, an argv `ps` can show, a prompt file or
+the activity feed; the feed marks each run started on it with `· agent GH token`. A
+token that cannot be read (missing item, empty file) starts nothing rather than
+falling back to the broad login: the spawn fails, and the work stays owed. Remove the
+key to go back.
+
+What it does not cover: `git` over SSH still pushes with your SSH keys, and a
+`GH_TOKEN` or `GIT_CONFIG_COUNT` your shell rc exports replaces this one, because the
+agent's shell sources your rc after Diplomat sets it. To check it took, run
+`gh auth status` inside a spawned agent's window: it names `GH_TOKEN` as the source.
+
 ## The library
 
 | Tool | What it lists |
@@ -806,8 +851,9 @@ Two gatherers fill in what GitHub doesn't know:
   rather than reading gigabytes of history it could never attribute anyway.
   `DIPLOMAT_CLAUDE_DIR` moves where it reads from. A [foreign runner](#agent-runner)
   writes no such transcript, so each is priced from its own store instead - OpenCode
-  summed over every message of `opencode export <session>` (it reports a turn's cost
-  per message), Hermes read off the running totals on its session row - both counting
+  summed over every message of its session export (`opencode export <session>` on
+  1.x, `opencode session export <session>` on 2.x; it reports a turn's cost per
+  message), Hermes read off the running totals on its session row - both counting
   the same three fields, so one ledger holds every runner in one unit. Hermes' row
   also carries what the provider **charged**, and the model it charged for, which is
   the unit the [spending budget](#the-spending-budget) holds that machine to.
@@ -934,8 +980,9 @@ dispatched subagents or backgrounded a shell hands control back while they are
 still running, so the hook writes *busy* instead whenever the payload it is given
 still lists background tasks.
 
-A runner with no hooks is asked rather than read: an OpenCode agent serves its own
-session over loopback while it works and a Hermes agent writes its to SQLite, and
+A runner with no hooks is asked rather than read: an OpenCode agent's session is
+served over loopback while it works (by the run's own server on 1.x, by the per-user
+service on 2.x) and a Hermes agent writes its to SQLite, and
 either one reporting the turn over ends the run exactly as a hook does - the same
 fact from the same kind of source. Only a run nothing answers for - a Claude spawn
 whose settings would not stage, a server that never came up - falls back to the
@@ -1032,19 +1079,41 @@ and ⏻) swaps the panel to a settings screen:
   eagerly at launch so it's the default everywhere.
 - <a id="agent-runner"></a>**Agent runner** - which agent CLI a spawn runs:
   **Claude Code** (the default, and what every existing install keeps), **OpenCode**
-  or **Hermes**. Only the agent word and its flags change; the prompt, the staged
-  file, the completion sentinel, the pid a run is identified by and every monitor
-  above it are the same whichever it is, which is the point of having one setting
+  or **Hermes**. Only the agent command changes - the agent word and its flags, or
+  for OpenCode 2.x a short chain of `opencode api` calls ahead of its TUI (below);
+  the prompt, the staged file, the completion sentinel, the pid a run is identified
+  by and every monitor above it are the same whichever it is, which is the point of having one setting
   rather than a second pipeline. All three are windowed, so a run can be watched and
   typed into. Like the repo root the setting lives in the shared
   `~/.diplomat/config.json`, so a running mesh node picks it up on its next spawn -
   and which runner a given run *started* under is written into its run directory, so
   switching mid-flight can't interrogate a live agent through the wrong store.
+  - **OpenCode 1.x and 2.x** are both supported, and are told apart by `opencode
+    --version` (major 2 or later is 2.x; no answer is 1.x), asked of the `opencode`
+    a spawned agent would run: the one the user's login shell, running an
+    interactive one, finds on its `PATH` - so an install only `~/.zprofile` or only
+    an rc names still counts. That path is re-resolved once it is gone or a minute
+    old, and the version re-asked whenever the binary changes on disk. They share
+    almost nothing below the setting. A 1.x run is its own server: the TUI is started
+    as `opencode --port <n> [-m <model>] --prompt "…"`, with the permission grant in
+    `OPENCODE_PERMISSION`. 2.x has one per-user background service that every client
+    talks to, a TUI with no `--port` or `-m`, and a `--prompt` that fills the composer
+    without submitting it (upstream anomalyco/opencode#51135) - so a 2.x run is
+    started through the service instead: Diplomat mints a fresh `ses_diplomat_<hex>`
+    session id, stages its create and prompt bodies beside the prompt file (the
+    checkout, an allow-all permission ruleset, and the pinned model if any), and runs
+    `opencode api session.create … && opencode api session.prompt … || exit; opencode
+    --session <id>` - the turn is already running when the TUI attaches to it, and the
+    TUI is the process the run's pid file names.
   - **Model** (OpenCode, Hermes) - a model id such as
     `openrouter/moonshotai/kimi-k2` or `ollama-cloud/glm-5.2`. Blank leaves the
-    choice to that runner's own picker rather than overriding it with a guess.
+    choice to that runner rather than overriding it with a guess: its own picker, or
+    for an OpenCode 2.x run the service's configured `model` (else its first available
+    one). A 2.x pin is split the way 2.x itself splits one - the provider before the
+    first `/`, the model after it, and a `#variant` suffix from the last `#` on.
   - **Connect a provider…** (OpenCode, Hermes) - opens that runner's own login wizard
-    in a terminal (`opencode providers login`, `hermes setup`). Diplomat deliberately
+    in a terminal (`opencode auth login`, which 1.x also accepts as an alias of
+    `providers login`; `hermes setup`). Diplomat deliberately
     has no API-key field: each runner already knows its whole provider catalog, which
     entries take OAuth rather than a key, and where each one's credentials belong -
     and each writes them to the store its agent reads from anyway. **No provider
@@ -1053,7 +1122,7 @@ and ⏻) swaps the panel to a settings screen:
   - **How a run is watched.** Both foreign runners are *asked* whether their turn is
     over rather than having it read off their status bar - positive evidence, instead
     of whether someone else's `esc interrupt` hint happened to be drawn when the poll
-    looked. They answer from different places. An OpenCode agent is spawned with
+    looked. They answer from different places. An OpenCode 1.x agent is spawned with
     `--port <n>` on a port Diplomat reserved for it, so it serves its own session on
     loopback while it works; the port is unauthenticated (OpenCode's server takes a
     password but its own TUI sends none), so it is reachable by other users of the
@@ -1062,26 +1131,45 @@ and ⏻) swaps the panel to a settings screen:
     a completion stamp. It takes both: OpenCode writes one message per *step* of a
     turn and stamps each as it completes, so the stamp alone calls a turn over in the
     gaps between steps, while the status alone calls a session idle in the moment
-    before its first turn starts. Hermes serves no such port, and needs none: it
+    before its first turn starts. An OpenCode 2.x run is asked of the per-user
+    service, found through `opencode/service.json` under the `$XDG_STATE_HOME` that
+    same shell reports (else `~/.local/state`) and authenticated with the password in
+    it: its session is busy while the service lists it as running - 2.x keeps a
+    session listed from the start of a turn to its end, with no gaps between steps -
+    and idle once it is not listed *and* carries the `time.idle` stamp a finished
+    turn leaves, which a session created but not yet running has not got. Closing a
+    2.x run's window does not stop its turn, which runs on in the service, so
+    Diplomat interrupts the turn whenever it closes one (a backstop reaping a wedged
+    run) and whenever it retires one - booked or found in the process table - with no
+    2.x TUI attached to its session left in the process table (a window closed by
+    hand, a TUI that quit or crashed); one retired with its TUI still open, its PR
+    merged mid-turn, keeps working as a 1.x or Claude Code agent would. An idle
+    session ignores the interrupt. Hermes serves no such port, and needs none: it
     writes every session and message to `~/.hermes/state.db` as it goes, which
     Diplomat opens read-only. A turn is over there when the agent stamps its own
     message `finish_reason` (`tool_calls` is mid-turn, `stop` is the end) *and*
     nothing is still coming back to it - `delegate_task(background=true)` runs its
     subagents on an executor of their own and hands the turn straight back, reporting
     later as a fresh user turn, so a fan-out whose result is still undelivered holds
-    the run open exactly as an unfinished message does. Either way
-    the session is matched to the run by the staged prompt, which both runners store
-    verbatim as the session's opening message - the only exact key, since neither
-    keeps a store per run: Hermes' is the machine's, OpenCode's is the checkout's and
-    every worktree of it, and a busy one holds hundreds of sessions that are not this
-    run's. And either way the answer *ends* the run, exactly as a Claude Code hook's
+    the run open exactly as an unfinished message does. A Hermes or OpenCode 1.x
+    session is matched to the run by the staged prompt, which both store verbatim as
+    the session's opening message - the only exact key, since neither keeps a store
+    per run: Hermes' is the machine's, OpenCode's is the checkout's and every worktree
+    of it, and a busy one holds hundreds of sessions that are not this run's. A 2.x
+    session Diplomat spawned needs no match: it chose the id and bound it to the run
+    before the spawn. One the mesh placed here has no id bound and no prompt in its
+    TUI's argv (`opencode --session <id>`), so its session is taken from the process
+    table and matched by the opening prompt the service holds for it - which is also
+    how the `ps` scans behind the mesh's dedup and pid-less runs see a 2.x agent. And either way the answer *ends* the run, exactly as a Claude Code hook's
     does: it is the same fact from the same kind of source, the agent's own word
-    rather than a screen read for signs of one. A run that cannot be reached - the
-    port was taken, the server has not come up, the store is not there - falls back
-    to the status bar exactly as a Claude Code run does.
+    rather than a screen read for signs of one. The exception is a 2.x agent with no
+    run of its own - one the scan found on a PR, not dispatched - which only leaving
+    the process table ends: idle, it reads as awaiting input. A run that cannot be reached - the
+    port was taken, the server or service has not come up, the store is not there -
+    falls back to the status bar exactly as a Claude Code run does.
   - **How a run is priced.** OpenCode reports a turn's cost per message, so a
-    finished run is summed from `opencode export <session>` when it ends, not from the
-    poll. Hermes keeps running totals on the session row, so it is simply read. Both
+    finished run is summed from its session export when it ends, not from the poll -
+    `opencode export <session>` on 1.x, `opencode session export <session>` on 2.x. Hermes keeps running totals on the session row, so it is simply read. Both
     count input + output + cache *writes*, the same three the Claude Code transcript
     scan sums, so one ledger holds every runner in one unit. What those tokens are
     *not* is a share of a rate-limit window: that window is the Anthropic account's,
@@ -1162,7 +1250,11 @@ and ⏻) swaps the panel to a settings screen:
   ever refreshed.
 - **Mesh (LAN P2P)** - opt into [Diplomat Mesh](#diplomat-mesh-experimental--lan-p2p-duty-coordination):
   a toggle that starts/stops the local node (off by default), with live node/peer
-  status. The mesh itself is managed from the **⬡ Mesh screen**.
+  status. The node outlives the app, so a launch with the toggle off stops one an
+  earlier instance left on this machine's state dir (a `mesh-stop` line in the
+  activity feed); it has to answer its control port with the pid and id
+  `state.json` names, so nothing else is touched. The mesh itself is managed from
+  the **⬡ Mesh screen**.
 - **Update** - pull the checkout, rebuild, and relaunch in place. Shows how many
   commits the checkout is behind *and* ahead of upstream, with a ↻ re-check
   button; the button fetches and **merges** (fast-forward when strictly behind, a
@@ -1273,27 +1365,37 @@ deletes a copy there, and **Update** rebuilds only the bundle in the checkout.
 ### Autostart on login
 
 ```bash
-./install/install-autostart.sh     # rebuilds, installs the app + both LaunchAgents, starts it now
-./install/uninstall-autostart.sh   # removes both LaunchAgents and stops the app
+./install/install-autostart.sh     # rebuilds, installs the app + all three LaunchAgents, starts it now
+./install/uninstall-autostart.sh   # removes all three LaunchAgents and stops the app
 ```
 
 Installs a per-user LaunchAgent at `~/Library/LaunchAgents/com.ignacy.diplomat.plist`
-(`RunAtLoad`), so the wrench reappears on every login. The ⏻ Quit button still works
-within a session (no `KeepAlive`) — it just returns next login. launchd starts the
-bundle where `build-app.sh` writes it, `packages/diplomat-platform/macos/Diplomat.app`,
-so the instance that greets you at login is the one **Update** rebuilds; nothing is
-copied to `/Applications`.
+(`RunAtLoad`), so the wrench reappears on every login. launchd starts the bundle where
+`build-app.sh` writes it, `packages/diplomat-platform/macos/Diplomat.app`, so the
+instance that greets you at login is the one **Update** rebuilds; nothing is copied to
+`/Applications`.
 
 It also installs a **second** agent, `com.ignacy.diplomat.autoupdate`, which fires
 daily at **06:00** and runs the app binary headless (`DIPLOMAT_SELF_UPDATE=1`):
-merge upstream if behind, rebuild the bundle, and relaunch only if an instance is
-running. It's the unattended twin of the Settings **Update** button, and it logs to
-`~/Library/Logs/diplomat-autoupdate.err.log`. Manage it on its own with:
+merge upstream if behind, rebuild the bundle, and relaunch a running instance onto
+it. It's the unattended twin of the Settings **Update** button, and it logs to
+`~/Library/Logs/diplomat-autoupdate.log`. Manage it on its own with:
 
 ```bash
 ./install/install-autoupdate.sh    # (also called by install-autostart.sh)
 ./install/uninstall-autoupdate.sh
 ```
+
+A **third**, `com.ignacy.diplomat.watchdog`, runs the binary headless every 5 minutes
+(`DIPLOMAT_WATCHDOG=1`, `StartInterval`) and launches the app if no instance is up -
+after a crash, a force-quit, a kill or a failed update. The 06:00 run does the same.
+Neither brings back an app you quit yourself (the ⏻ button, `osascript … quit`,
+Activity Monitor's Quit): that leaves `~/.diplomat/operator-quit`, which the next
+launch clears. A hand-over to a newer instance leaves no mark, and the watchdog only
+acts when there is no instance at all, so it never contends with the newest-wins
+singleton or an update's relaunch. It launches the bundle the updater builds, and logs
+what it launched to the same file. Manage it with `./install/install-watchdog.sh` /
+`./install/uninstall-watchdog.sh`.
 
 ### Headless self-test
 
@@ -1301,7 +1403,10 @@ Every mode runs the real pipeline once, prints, and exits - none of them start
 the monitors or touch a terminal (except `TRACK_TEST` and `SPAWN_FOCUS_TEST`, whose
 point is exactly that; and `RENDER=live`, which opens a window and stays up until
 you stop it). `packages/diplomat-platform/macos/Sources/Diplomat/Headless.swift` is the one list that
-decides what counts as headless:
+decides what counts as headless. A variable that asks for a mode the build does not
+run - a `DIPLOMAT_*` name ending `_TEST`, `_DUMP`, `_SCAN` or `_POLL` that is not on
+the list, a Linux-only mode, or a flag set to anything but `1` - stops the binary with
+exit 64 before it can start as the live app:
 
 ```bash
 DIPLOMAT_DUMP=1 swift run Diplomat            # real fetch+filter pipeline, prints all 6 tools, exits
@@ -1351,6 +1456,9 @@ DIPLOMAT_DEVICE_DUMP=1   ...                     # device-allocator paths + daem
 DIPLOMAT_ALLOCATOR_TEST=1 ...                    # the launch-time allocator decision: reinstall a stale copy,
                                                      #   leave an uninstalled one alone. Shells no installer;
                                                      #   exit code = verdict
+DIPLOMAT_MESH_STRAY_TEST=1 ...                   # a launch with the mesh off stops the node state.json names,
+                                                     #   and not a reused pid, another dir's node or identity.
+                                                     #   Scratch state dirs; exit code = verdict
 DIPLOMAT_AUTOFIX_POLL=1  ...                     # one real monitor poll: prints its dispatch decisions and
                                                      #   the exact prompts it would spawn, opens nothing
 DIPLOMAT_APIWATCH_SCAN=1 ...                     # dry-run the API-error watcher over live sessions, sends nothing
@@ -1358,7 +1466,16 @@ DIPLOMAT_APIWATCH_TEST=1 ...                     # self-test: who a scan may typ
                                                      #   including one a terminal only shows through tmux;
                                                      #   never a plain shell). Reads no terminal, sends nothing
 DIPLOMAT_SELF_UPDATE=1   ...                     # the unattended 06:00 update: merge if behind, rebuild,
-                                                     #   relaunch only if an instance is running
+                                                     #   relaunch a running instance, launch a dead one
+DIPLOMAT_WATCHDOG=1      ...                     # the 5-minute check: launch the app if no instance is up
+                                                     #   and the operator did not quit it
+DIPLOMAT_WATCHDOG_TEST=1 ...                     # self-test: who brings a dead app back and who leaves it
+                                                     #   closed, over fixture job steps; exit code = verdict
+DIPLOMAT_RELAUNCH_TEST=1 ...                     # self-test: a relaunch is judged on the instance `open`
+                                                     #   started, which gets no headless marker; opens only
+                                                     #   throwaway bundles; exit code = verdict
+DIPLOMAT_REPOPATHS_TEST=1 ...                    # self-test: which checkout the bundle names, from inside
+                                                     #   it or from a copy; scratch dirs; exit code = verdict
 
 # The shared core itself is independently buildable & testable (also on Linux):
 swift run DiplomatCoreSmoke                    # loads assets/, runs filter + prompt + golden-file assertions
@@ -1480,7 +1597,7 @@ packages/
   diplomat-platform/           ← the platform wrappers: one UI each over that same core
     macos/                     ← macOS SwiftUI menu-bar app — thin UI over the core
       Sources/Diplomat/
-        DiplomatApp.swift          @main app + MenuBarExtra + the headless self-test entry points
+        DiplomatApp.swift          @main entry + app + MenuBarExtra + the headless self-test entry points
         Headless.swift             the single "are we a one-shot self-test?" env-var list
         ContentView.swift          two-column panel (left: monitoring lists, right: grid + wizards/results)
         Components.swift           shared UI atoms (cards, chips, badges)
@@ -1495,7 +1612,7 @@ packages/
         AgentProbes.swift          the outside world, typed: `ps`, screens, sentinels, claims -> Evidence
         AgentWindows.swift         where each run's terminal window is, so a row click can raise it
         AgentSessionProbe.swift    asks each run's own agent what it is doing, through its runner's store
-        OpenCodeProbe.swift        dials an OpenCode run's own server: free port, session list, messages
+        OpenCodeProbe.swift        dials an OpenCode run's own 1.x server (free port, session list, messages) or the 2.x service
         HermesProbe.swift          reads a Hermes run's session out of ~/.hermes/state.db, read-only
         TrackTest.swift            E2E self-test of the run book + this platform's probes (DIPLOMAT_TRACK_TEST)
         QueueTest.swift            self-test of the deferred-task queue (DIPLOMAT_QUEUE_TEST)

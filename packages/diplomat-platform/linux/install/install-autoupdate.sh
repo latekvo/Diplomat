@@ -2,9 +2,9 @@
 # Install a systemd *user* timer that self-updates the applet daily at 06:00 —
 # the Linux analogue of a launchd StartCalendarInterval. The timer runs the
 # launcher in its headless self-update mode (DIPLOMAT_SELF_UPDATE=1): fetch,
-# merge upstream if behind, rebuild diplomat-core, and relaunch the tray only if
-# one is running. Persistent=true so a 6AM missed while the machine was off runs
-# at the next boot. Idempotent; safe to re-run.
+# merge upstream if behind, rebuild diplomat-core, relaunch a running tray, and
+# launch a dead one unless the operator quit it. Persistent=true so a 6AM missed
+# while the machine was off runs at the next boot. Idempotent; safe to re-run.
 set -euo pipefail
 
 LINUX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -30,9 +30,9 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-# When the checkout is behind AND a tray is running, run_scheduled relaunches the GUI
-# (relaunch(): subprocess.Popen(..., start_new_session=True)) so it swaps onto the fresh
-# build via acquire_newest_wins. setsid()/start_new_session creates a new session but does
+# run_scheduled starts the GUI (relaunch(): subprocess.Popen(..., start_new_session=True))
+# to swap a running tray onto the fresh build via acquire_newest_wins, or to bring a dead
+# one back. setsid()/start_new_session creates a new session but does
 # NOT move the child out of THIS unit's cgroup, so under the default KillMode=control-group
 # systemd SIGTERM/SIGKILLs it the instant this oneshot deactivates — killing the relaunched
 # tray mid-startup and silently defeating the update swap. KillMode=process kills only the

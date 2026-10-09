@@ -16,8 +16,8 @@ also how the tests get an isolated one):
     <run-id>/pid         the agent's pid, written by the shell that runs it
     <run-id>/done        its exit code, written when it returns
     <run-id>/runner      which agent CLI was spawned into it
-    <run-id>/port        the loopback port its OpenCode server answers on
-    <run-id>/session     which of that runner's sessions turned out to be this run's
+    <run-id>/port        the loopback port its OpenCode 1.x server answers on
+    <run-id>/session     which of that runner's sessions is this run's
     <run-id>/hooks.json  the settings that make the agent report its own turns
     <run-id>/activity    one line per turn boundary, written by those hooks
 
@@ -45,8 +45,8 @@ import uuid
 from collections.abc import Callable
 from pathlib import Path
 
-from . import atomicjson
-from .agentstate import Observation, RunRecord, deadline_applies
+from . import atomicjson, jsoninput
+from .agentstate import Observation, RunRecord, _whole, deadline_applies
 
 #: Bumped only if the on-disk shape changes incompatibly. A file from the future is
 #: ignored rather than misread — an older applet must not act on records whose fields
@@ -114,19 +114,28 @@ def new_run_id(now: float) -> str:
 # MARK: - The book
 
 
+def _read_book() -> dict:
+    """The book as an object, read by :mod:`.jsoninput` so that one the Swift front-end
+    refuses is refused here too; ``{}`` for anything unusable."""
+    try:
+        data = jsoninput.loads(runs_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def load() -> list[RunRecord]:
     """Every persisted record. Empty on anything unreadable — a corrupt book must
     degrade to "this applet has forgotten", which the ``ps`` fallback still covers,
     rather than taking the applet down on startup."""
-    data = atomicjson.read_object(runs_path()) or {}
-    if data.get("version") != SCHEMA_VERSION:
+    data = _read_book()
+    if _whole(data.get("version")) != SCHEMA_VERSION:
         return []
     raw = data.get("runs")
     if not isinstance(raw, list):
         return []
-    # No id, no record - as the Swift twin reads it - where every other field defaults.
-    decoded = (RunRecord.from_json(r) for r in raw if isinstance(r, dict))
-    return [r for r in decoded if r.run_id]
+    return [RunRecord.from_json(r) for r in raw
+            if isinstance(r, dict) and isinstance(r.get("runId"), str) and r["runId"]]
 
 
 def save(records: list[RunRecord]) -> None:
@@ -165,8 +174,8 @@ def add(record: RunRecord) -> None:
     spend twice.
     """
     with _lock:
-        data = atomicjson.read_object(runs_path()) or {}
-        runs = data.get("runs") if data.get("version") == SCHEMA_VERSION else None
+        data = _read_book()
+        runs = data.get("runs") if _whole(data.get("version")) == SCHEMA_VERSION else None
         runs = list(runs) if isinstance(runs, list) else []
         runs.append(record.to_json())
         atomicjson.write_atomic(runs_path(), {"version": SCHEMA_VERSION, "runs": runs})
@@ -277,7 +286,7 @@ def runners_of(records: list[RunRecord]) -> set[str]:
 
 
 def stage_port(run_id: str) -> int | None:
-    """Reserve the port this run's OpenCode server will answer on, and record it.
+    """Reserve the port this run's OpenCode 1.x server will answer on, and record it.
 
     The applet picks it rather than the agent, because the applet is the one that
     puts it on the agent's command line — a port only discoverable once the server
@@ -302,9 +311,9 @@ def stage_port(run_id: str) -> int | None:
 
 
 def port(run_id: str) -> int | None:
-    """The port this run's OpenCode server answers on, or ``None`` for a run that
-    has none — every Claude Code run, and any OpenCode run whose port could not be
-    reserved."""
+    """The port this run's OpenCode 1.x server answers on, or ``None`` for a run
+    that has none — every Claude Code run, every OpenCode 2.x run, and any 1.x run
+    whose port could not be reserved."""
     try:
         raw = port_path(run_id).read_text(encoding="utf-8").strip()
     except OSError:
@@ -322,7 +331,10 @@ def bound_session(run_id: str) -> str:
     Kept on disk rather than in memory so the search survives the applet restart
     this whole module exists for — and because the search is the expensive half:
     matching a session to a run reads its opening message, while asking a bound one
-    what it is doing reads a single message.
+    what it is doing reads a single message. An OpenCode 2.x run Diplomat spawns never
+    searches: its id is written here before the spawn. One the mesh placed here is
+    matched by opening prompt against the 2.x TUIs in the process table
+    (:func:`probes._OpenCodeBackend.bind`).
 
     Every runner spells an id its own way — ``ses_00d61ec0…`` under OpenCode,
     ``20260812_002140_b0e4d4`` under Hermes — so what is checked is the shape any id
@@ -343,6 +355,21 @@ def bind_session(run_id: str, session_id: str) -> None:
         session_path(run_id).write_text(session_id, encoding="utf-8")
     except OSError:
         pass
+
+
+def service_session(run_id: str) -> str:
+    """The session an OpenCode 2.x run holds in the per-user service, or "" for any
+    other run.
+
+    A 2.x run is an OpenCode run with a bound session and no port: a 1.x run binds
+    only through its port (:func:`probes._OpenCodeBackend.bind`), so one with a
+    session always has the port file too.
+    """
+    from .runner import OPENCODE
+
+    if run_runner(run_id) != OPENCODE or port_path(run_id).exists():
+        return ""
+    return bound_session(run_id)
 
 
 # MARK: - What the agent says it is doing

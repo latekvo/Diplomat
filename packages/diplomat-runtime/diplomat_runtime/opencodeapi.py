@@ -1,11 +1,20 @@
 """What an OpenCode agent is doing, asked of the agent instead of read off its screen.
 
-An OpenCode TUI given ``--port`` serves its own session over HTTP on loopback while
-it works, and that server answers the question the applet has always had to guess at:
-**is this run working, or back at its prompt?** It keeps a status per session —
-``busy``, ``retry`` or idle — the same one its own TUI draws from, and it stamps each
-message it finishes. Neither is an inference from how a status bar happened to be
-drawn.
+OpenCode serves its sessions over HTTP on loopback, and that server answers the
+question the applet has always had to guess at: **is this run working, or back at its
+prompt?** Which server depends on the major version, and so does nearly everything
+about asking it:
+
+* **1.x** — a TUI given ``--port`` serves its own session on that port while it works,
+  unauthenticated. The run is matched to its session by its prompt. Most of this
+  module, and every section below but the last.
+* **2.x** — no server per TUI: every client talks to one per-user service
+  (``opencode serve --service``), found through :func:`service_file` and
+  password-authenticated. See "OpenCode 2.x" below.
+
+A 1.x server keeps a status per session — ``busy``, ``retry`` or idle — the same one
+its own TUI draws from, and it stamps each message it finishes. Neither is an
+inference from how a status bar happened to be drawn.
 
 Both are read, and a turn is over only when they agree: the server is running no turn
 in this session AND the last thing it wrote was a finished message. Each covers the
@@ -18,14 +27,14 @@ gaps between them are short but there are hundreds of them in a long review (1.4
 
 What the run SPENT is not asked here. A turn's price is per-message, so a run's is a
 sum over its whole transcript, and this poll reads one message — :mod:`usagescan`
-prices a finished run from ``opencode export`` instead, once, when it ends.
+prices a finished run from the CLI's session export instead, once, when it ends.
 
-The screen is still read for a run this cannot reach — a Claude Code agent, an
-OpenCode agent spawned before the port was allocated, a server that will not answer.
+The screen is still read for a run this cannot reach — a Claude Code agent, a 1.x
+agent spawned without a port, a server or service that will not answer.
 :mod:`agentstate` takes whichever answer it gets and says which one it used.
 
-Which session is this run's
---------------------------
+Which session is this run's (1.x)
+--------------------------------
 Every run gets its own server, but not its own session store: whichever port it is
 asked on, ``GET /session`` answers out of the store OpenCode keeps per project — every
 agent that has worked in this checkout or a worktree of it — most recently touched
@@ -42,8 +51,8 @@ directory, created no earlier than its dispatch, not already another run's), and
 the prompt file the applet staged. The answer is written into the run directory, so
 the search happens once per run rather than once per tick.
 
-Loopback, and unauthenticated
------------------------------
+Loopback, and unauthenticated (1.x)
+-----------------------------------
 The server binds ``127.0.0.1``. It is NOT password-protected, and that is forced
 rather than chosen: OpenCode's server does support a password, but its own TUI does
 not send one, so a run started with ``OPENCODE_SERVER_PASSWORD`` set dies on
@@ -53,15 +62,39 @@ user. On a shared box that is a real exposure and this seam is where it would be
 closed — by not passing ``--port`` at all, at the cost of going back to reading the
 screen.
 
+OpenCode 2.x
+------------
+One service per user, so a run's session is asked for by id: ``GET
+/api/session/{id}`` for the session and ``GET /api/session/active`` for the map of
+sessions running a turn (:func:`service_state`). A run Diplomat spawned carries the
+id it minted (:func:`review.stage_opencode_session`), so there is no search. Every
+request carries the service's password, and every failure — a 404 for a session the
+service does not know among them — reads as unreachable, as a 1.x port that will not
+answer does.
+
+A 2.x run the mesh placed here has no id bound at spawn. Its TUI's argv is
+``opencode --session <id>`` (:func:`session_arg`), so its session is found from the
+process table and matched by the prompt it was opened on (:func:`opening_prompt`),
+the one exact key, as a 1.x run's is. An agent no run was booked for at all takes the
+session of the TUI it was seen by.
+
+The service outlives the window: a 2.x run's turn goes on after its TUI is gone, so
+whatever closes a run's window calls :func:`interrupt`, and so does retiring a run —
+booked or not — once no TUI attached to its session is left in the process table.
+
 Stdlib-only, like the rest of the spawn path, and nothing here raises: a probe that
 cannot answer says so and the tick continues.
 """
 
 from __future__ import annotations
 
+import base64
 import http.client
 import json
+import os
+import re
 import socket
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -129,9 +162,18 @@ def _get(port: int, path: str):
     daemon between the reservation and the agent's own bind would otherwise raise
     through :func:`probes.gather` and cost every run its tick, not just this one.
     """
-    url = f"http://{HOST}:{port}{path}"
+    return _fetch(urllib.request.Request(f"http://{HOST}:{port}{path}"))
+
+
+def _fetch(request: urllib.request.Request):
+    """One request, its JSON answer decoded — ``None`` on anything at all, for the
+    reasons :func:`_get` gives, and on any status but 200. The 2.x service answers
+    ``text/html`` 200 for a path it does not route outside ``/api``, which fails the
+    decode."""
     try:
-        with urllib.request.urlopen(url, timeout=TIMEOUT) as resp:  # noqa: S310 - loopback
+        with urllib.request.urlopen(request, timeout=TIMEOUT) as resp:  # noqa: S310 - loopback
+            if resp.status != 200:
+                return None
             raw = resp.read(MAX_BYTES + 1)
     except (OSError, urllib.error.URLError, http.client.HTTPException, ValueError):
         return None
@@ -209,6 +251,169 @@ def messages(port: int, session_id: str, limit: int = 0) -> list[dict] | None:
     suffix = f"?limit={int(limit)}" if limit > 0 else ""
     data = _get(port, f"/session/{session_id}/message{suffix}")
     return data if isinstance(data, list) else None
+
+
+# MARK: - The 2.x service
+
+
+def service_file() -> str:
+    """Where OpenCode 2.x says which service is running and how to reach it:
+    ``opencode/service.json`` under the state directory the agent's shell gives it
+    (:func:`usagescan.opencode_state_home`) — the service is started by that shell, so
+    its ``$XDG_STATE_HOME`` counts, not this process's. Written mode 0600 by the
+    service, as ``{"id", "version", "url", "pid", "password"}``; the password may be
+    absent."""
+    from . import usagescan
+
+    return os.path.join(usagescan.opencode_state_home(), "opencode", "service.json")
+
+
+def _service() -> tuple[str, dict[str, str]] | None:
+    """The service's base URL and the headers that authenticate to it, or ``None``
+    when there is no readable discovery file naming a URL.
+
+    Every ``/api`` route answers 401 without the password, sent as HTTP Basic under
+    the user name ``opencode``.
+    """
+    try:
+        with open(service_file(), encoding="utf-8") as fh:
+            info = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    url = info.get("url") if isinstance(info, dict) else None
+    if not isinstance(url, str) or not url:
+        return None
+    headers = {}
+    password = info.get("password")
+    if isinstance(password, str) and password:
+        token = base64.b64encode(f"opencode:{password}".encode()).decode("ascii")
+        headers["Authorization"] = f"Basic {token}"
+    return url.rstrip("/"), headers
+
+
+def _service_call(path: str, method: str = "GET"):
+    """One request to the 2.x service, its JSON answer decoded; ``None`` on anything
+    at all, including there being no service to ask."""
+    service = _service()
+    if service is None:
+        return None
+    base, headers = service
+    body = b"" if method == "POST" else None
+    return _fetch(urllib.request.Request(base + path, data=body, headers=headers,
+                                         method=method))
+
+
+def _session_route(session_id: str) -> str:
+    return "/api/session/" + urllib.parse.quote(session_id, safe="")
+
+
+def active_sessions() -> dict | None:
+    """The service's map of sessions running a turn — ``GET /api/session/active``'s
+    ``data``, idle sessions absent — or ``None`` when it will not say.
+
+    One answer for every run: a probe pass asks this once and reads every 2.x run
+    against it (:func:`service_state`), so a hung service costs a pass one timeout
+    rather than one per run.
+    """
+    active = _service_call("/api/session/active")
+    active = active.get("data") if isinstance(active, dict) else None
+    return active if isinstance(active, dict) else None
+
+
+def service_state(session_id: str, active: dict | None) -> SessionState | None:
+    """What a 2.x run's session is doing, asked of the service; ``None`` — "ask the
+    screen instead" — when either question goes unanswered, a 404 among them.
+    ``active`` is this pass's :func:`active_sessions`, and ``None`` there asks nothing
+    more. The reading is :func:`service_state_of`."""
+    if active is None:
+        return None
+    info = _service_call(_session_route(session_id))
+    info = info.get("data") if isinstance(info, dict) else None
+    if not isinstance(info, dict):
+        return None
+    return service_state_of(info, active, session_id)
+
+
+def interrupt(session_id: str) -> None:
+    """Stop the turn a 2.x session is running, if it is running one.
+
+    Closing a 2.x run's window does not do this: the TUI is only a client, and the
+    turn goes on in the service after it is gone — measured on 2.0.18, a SIGTERM to the
+    TUI mid-turn left its tool call to finish 20 s later. So whatever closes a run's
+    window sends this too, and so does retiring a run whose session no TUI in the
+    process table is attached to, or the agent keeps working headless after Diplomat
+    has let its bay go. A run retired with its TUI still open — its PR merged mid-turn
+    — is left working, as a 1.x or Claude Code agent is. Harmless on an idle session.
+    Best-effort; never raises.
+    """
+    _service_call(_session_route(session_id) + "/interrupt", "POST")
+
+
+#: A 2.x TUI's argv: its binary — ``opencode`` or ``opencode.exe``, by any path — then
+#: ``--session <id>`` and nothing else. Whole-argv, because the terminal, tmux and the
+#: pane's shells all carry the whole spawn command, this included, and none of them is
+#: the TUI.
+SESSION_ARG = re.compile(r"(?:\S*/)?opencode(?:\.exe)?\s+--session\s+(ses[0-9A-Za-z_-]+)")
+
+#: Opening prompts already read, by session id. A prompt never changes once written,
+#: so a hit is kept for the life of the process.
+_opening_prompts: dict[str, str] = {}
+
+#: How long a session that gave no opening prompt goes unasked. Diplomat's own spawns
+#: prompt the session before the TUI's argv exists, so a miss is a session opened
+#: before it was prompted, or a service that is not answering — which, asked again on
+#: every scan, would charge each scan :data:`TIMEOUT` per TUI.
+MISS_TTL = 30.0
+
+#: When each session last gave no opening prompt (:func:`time.monotonic`), by id.
+_prompt_misses: dict[str, float] = {}
+
+
+def session_arg(argv: str) -> str | None:
+    """The session a 2.x TUI's argv attaches to, or ``None`` for any other argv
+    (:data:`SESSION_ARG`)."""
+    found = SESSION_ARG.fullmatch(argv.strip())
+    return found.group(1) if found else None
+
+
+def opening_prompt(session_id: str) -> str | None:
+    """A 2.x session's opening user message — the prompt it was started on — or
+    ``None`` while the service has none to give (not yet prompted, unknown, or not
+    answering).
+
+    ``GET /api/session/{id}/message?limit=1&order=asc`` answers
+    ``{"data": [{"type": "user", "text": …}]}`` (2.0.18). Cached both ways
+    (:data:`_opening_prompts`, :data:`MISS_TTL`).
+    """
+    if session_id in _opening_prompts:
+        return _opening_prompts[session_id]
+    missed = _prompt_misses.get(session_id)
+    if missed is not None and time.monotonic() - missed < MISS_TTL:
+        return None
+    page = _service_call(_session_route(session_id) + "/message?limit=1&order=asc")
+    rows = page.get("data") if isinstance(page, dict) else None
+    first = rows[0] if isinstance(rows, list) and rows else None
+    if not (isinstance(first, dict) and first.get("type") == "user"
+            and isinstance(first.get("text"), str)):
+        _prompt_misses[session_id] = time.monotonic()
+        return None
+    _opening_prompts[session_id] = first["text"]
+    return first["text"]
+
+
+def scan_text(argv: str) -> str:
+    """What a ``ps`` prompt scan should read for one process: its argv, and for a 2.x
+    TUI the prompt its session was opened on.
+
+    Every other agent carries its prompt in its argv. A 2.x TUI carries only
+    ``--session <id>``, so without this a 2.x agent the applet holds no pid for (one
+    the mesh placed here, one it has no record of) reads as no agent at all, and is
+    retired mid-turn.
+    """
+    session_id = session_arg(argv)
+    if session_id is None:
+        return argv
+    return f"{argv}\n{opening_prompt(session_id) or ''}"
 
 
 # MARK: - Reading the answer (pure)
@@ -318,8 +523,29 @@ def state_of(session_messages: list[dict], running: bool | None) -> SessionState
     return SessionState(busy=running or not isinstance(completed, (int, float)))
 
 
+def service_state_of(info: dict, active: dict, session_id: str) -> SessionState:
+    """Whether a 2.x session's turn is in flight, from the session and the service's
+    map of running sessions.
+
+    Busy while the session is in the map. 2.x keeps a session in it from the start of a
+    turn to its end with no gap between steps (polled at 50 ms across a three-tool-call
+    turn on 2.0.18), so the map holds a run open alone — the blind spot the 1.x stamp
+    covers is not there. The other one is: a session created but not yet running its
+    first turn is absent from the map too, and reading that as idle would retire an
+    agent in the moment between ``session.create`` and its turn starting. So absent
+    reads idle only once the session carries ``time.idle``, which the service stamps
+    when a turn ends.
+    """
+    if session_id in active:
+        return SessionState(busy=True)
+    idle = _sub(info, "time").get("idle")
+    return SessionState(busy=not (isinstance(idle, (int, float))
+                                  and not isinstance(idle, bool)))
+
+
 def session_tokens(session_messages: list) -> float:
-    """What a whole session spent, from the messages ``opencode export`` returns.
+    """What a whole session spent, from the messages its export returns — each 1.x
+    message's tokens are under its ``info``, each 2.x one's at its top level.
 
     Every message, because OpenCode reports a turn's price per message: reading only
     the last would price a two-hour review at whatever its closing sentence cost.

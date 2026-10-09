@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -387,71 +388,198 @@ def _file_tokens(path: Path, roots: list[Path]) -> float:
 # MARK: - The other runner's transcript
 
 
-#: How long ``opencode export`` may take. It reads one session out of a local store,
-#: so this is generous — but it runs on the poll that retires a run, and a wedged CLI
-#: must cost that run its price rather than the poll.
+#: How long the session export may take (``opencode export`` on 1.x, ``opencode
+#: session export`` on 2.x). It reads one session out of a local store, so this is
+#: generous — but it runs on the poll that retires a run, and a wedged CLI must cost
+#: that run its price rather than the poll.
 _EXPORT_TIMEOUT = 20.0
 
-#: How long the user's shell may take to say where the CLI is. It sources their rc,
-#: which can be slow — a version manager, a prompt framework — so it gets its own
+#: How long ``opencode --version`` may take. Measured at 0.03 s on 2.0.18 and 0.5-0.8 s
+#: on 1.4.3 and 1.18.33, so this only bites a CLI that is wedged, and a wedged one is
+#: answered as 1.x — the spelling every install had before 2.x existed.
+_VERSION_TIMEOUT = 5.0
+
+#: The first dotted triple in the version output: ``opencode v2.0.18`` on 2.x, a bare
+#: ``1.18.33`` on 1.x.
+_VERSION = re.compile(r"(\d+)\.\d+\.\d+")
+
+#: How long the user's shell may take to say where the CLI is. It sources their profile
+#: and rc, which can be slow — a version manager, a prompt framework — so it gets its own
 #: budget rather than the export's, and the two together bound the pricing path.
 _RESOLVE_TIMEOUT = 10.0
 
-#: Where ``opencode`` turned out to be, once found. Only a hit is remembered: a miss
-#: is a CLI that may still be installed while the applet runs.
-_opencode_path: str | None = None
+#: How long a resolved install is trusted before the shell is asked again. The usual
+#: 1.x → 2.x upgrade MOVES the binary (``~/.opencode/bin`` or Homebrew to npm's
+#: ``@opencode/cli``), so a path remembered for good would keep answering for a CLI
+#: that has since been replaced — and every spawn after it would take the wrong
+#: version's command. A path that no longer exists is asked again at once.
+_RESOLVE_TTL = 60.0
+
+#: What the user's shell is asked, in one pass: where ``opencode`` is, and where its
+#: state lives. The second line is marked so an rc that prints can never be mistaken
+#: for it. Mirrored byte for byte by ``OpenCodeCLI`` in ``diplomat-core``.
+_SHELL_PROBE = ("command -v opencode; "
+                "printf '\\n@@XDG_STATE_HOME=%s\\n' \"$XDG_STATE_HOME\"")
+_STATE_MARKER = "@@XDG_STATE_HOME="
+
+
+@dataclass(frozen=True)
+class OpenCodeInstall:
+    """The ``opencode`` a spawned agent would run, and the state directory its shell
+    gives it — where a 2.x service writes ``opencode/service.json``."""
+
+    binary: str
+    state_home: str
+    resolved_at: float
+
+
+#: The last resolution that found a binary. A miss is never remembered: a CLI
+#: installed while the applet runs is found by the next caller.
+_install: OpenCodeInstall | None = None
+
+#: ``--version`` answers, keyed on the binary's identity on disk — path, inode, size
+#: and mtime — so an upgrade in place is a new key and a steady state costs a stat. A
+#: binary that could not answer — a non-zero exit, a timeout — is not remembered.
+_majors: dict[tuple, int] = {}
 
 
 def _reset_cache() -> None:
-    """Forget where the CLI was. For tests, which stand a different one up per case."""
-    global _opencode_path
+    """Forget where the CLI was and what it said it was. For tests, which stand a
+    different one up per case."""
+    global _install
 
-    _opencode_path = None
+    _install = None
+    _majors.clear()
 
 
-def _opencode_binary() -> str | None:
-    """The ``opencode`` executable, found the way the spawn finds it.
+def opencode_install() -> OpenCodeInstall | None:
+    """The ``opencode`` executable, found the way the spawn finds it, with the state
+    directory the agent's shell gives it.
 
-    An agent is spawned through the user's *interactive* login shell precisely so that
-    a per-user install is on ``PATH`` (:func:`review.shell_command`), and the Settings
-    screen promises as much: an rc-only install still runs. This process's own
-    environment is whatever launched the applet — a desktop entry, a Dock icon — and
-    ordinarily has none of that, so pricing a finished run off it alone would price
-    ``None`` for exactly the installs the spawn was written to support.
+    An agent runs in a terminal whose shell is the user's LOGIN shell, and inside it
+    Diplomat's own interactive one (:func:`review.shell_command`). So that is what is
+    asked: ``<shell> -l -c '<shell> -i -c "<probe>"'`` — the login pass for a PATH set
+    only in a profile (Homebrew's ``~/.zprofile`` on Apple silicon), the interactive
+    one for a PATH set only in an rc (nvm's ``~/.bashrc``). The macOS front-end asks
+    the identical question, so the two platforms cannot resolve different binaries.
 
-    So this ``PATH`` first, and only on a miss the shell. What comes back is a path,
-    exec'd directly rather than run through the shell, because the rc that put it on
-    ``PATH`` is equally free to print a banner and the export's stdout has to stay
-    parseable JSON.
+    The shell first, and this process's ``PATH`` only when the shell names nothing:
+    this process's environment is whatever launched the applet — a desktop entry, a
+    Dock icon — and an rc can put a different install ahead of anything on it (a 1.x
+    under ``~/.opencode/bin`` beside a 2.x on the system ``PATH``).
+
+    The state directory comes from the same shell because the service is started by
+    the agent's shell, under THAT shell's ``$XDG_STATE_HOME``. Empty there is
+    ``~/.local/state``; a shell that did not answer at all leaves this process's.
+
+    What comes back is a path, exec'd directly rather than through the shell, because
+    the rc that put it on ``PATH`` is equally free to print a banner and the export's
+    stdout has to stay parseable JSON.
     """
-    global _opencode_path
+    global _install
 
-    if _opencode_path:
-        return _opencode_path
-    _opencode_path = shutil.which("opencode") or _shell_path_to("opencode")
-    return _opencode_path
+    now = time.time()
+    cached = _install
+    if (cached is not None and now - cached.resolved_at < _RESOLVE_TTL
+            and os.path.exists(cached.binary)):
+        return cached
+    binary, state_home = _shell_probe()
+    binary = binary or shutil.which("opencode")
+    if state_home is None:
+        state_home = os.environ.get("XDG_STATE_HOME", "")
+    if not binary:
+        return None
+    _install = OpenCodeInstall(
+        binary=binary,
+        state_home=state_home or os.path.join(os.path.expanduser("~"), ".local", "state"),
+        resolved_at=now)
+    return _install
 
 
-def _shell_path_to(name: str) -> str | None:
-    """Where the user's interactive shell says ``name`` is, if it names a real file.
+def opencode_binary() -> str | None:
+    """Where the ``opencode`` a spawn would run is (:func:`opencode_install`)."""
+    install = opencode_install()
+    return install.binary if install else None
 
-    The last qualifying line, because an rc is free to print above the answer. An
-    alias or a shell function fails the test — ``command -v`` describes those rather
-    than locating them — and reads the same as not installed.
+
+def opencode_state_home() -> str:
+    """The state directory an OpenCode agent's shell gives it — where a 2.x service
+    keeps ``opencode/service.json``. This process's own when no ``opencode`` resolves."""
+    install = opencode_install()
+    if install is not None:
+        return install.state_home
+    return (os.environ.get("XDG_STATE_HOME")
+            or os.path.join(os.path.expanduser("~"), ".local", "state"))
+
+
+def opencode_major() -> int:
+    """The major version of the ``opencode`` a spawn would run: 2 for 2.x, 1 otherwise.
+
+    The two take different spawns, are asked what they are doing in different places
+    and export a finished session under different commands, so each of those seams
+    asks this first. Asked with ``--version`` (cached in :data:`_majors`), and every
+    failure — no CLI, a timeout, output with no version in it — answers 1, the
+    behaviour every install had before 2.x existed.
+    """
+    binary = opencode_binary()
+    return _major(binary) if binary else 1
+
+
+def opencode_is_v2() -> bool:
+    """Whether the ``opencode`` a spawn would run is 2.x (:func:`opencode_major`)."""
+    return opencode_major() >= 2
+
+
+def _major(binary: str) -> int:
+    try:
+        st = os.stat(binary)
+    except OSError:
+        return 1
+    key = (binary, st.st_ino, st.st_size, st.st_mtime_ns)
+    if key in _majors:
+        return _majors[key]
+    try:
+        out = subprocess.run(  # noqa: S603 - resolved absolute path, no shell
+            [binary, "--version"],
+            capture_output=True, text=True, timeout=_VERSION_TIMEOUT)
+    except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
+        return 1
+    if out.returncode != 0:
+        return 1
+    found = _VERSION.search(out.stdout)
+    major = 2 if found is not None and int(found.group(1)) >= 2 else 1
+    _majors[key] = major
+    return major
+
+
+def _shell_probe() -> tuple[str | None, str | None]:
+    """``(where opencode is, the shell's $XDG_STATE_HOME)`` as the user's shell
+    answers :data:`_SHELL_PROBE` — each ``None`` when it did not say.
+
+    The path is the last executable one before the marker, because an rc is free to
+    print above the answer; an alias or a shell function fails the test — ``command
+    -v`` describes those rather than locating them — and reads the same as not
+    installed. stdin is ``/dev/null``: an interactive shell that inherited a terminal
+    would try to drive it.
     """
     from . import review
 
+    shell = review.user_shell()
+    inner = f"{shlex.quote(shell)} -i -c {shlex.quote(_SHELL_PROBE)}"
     try:
         out = subprocess.run(  # noqa: S603 - the user's own shell, quoted argument
-            [review.user_shell(), "-i", "-c", f"command -v {shlex.quote(name)}"],
+            [shell, "-l", "-c", inner], stdin=subprocess.DEVNULL,
             capture_output=True, text=True, timeout=_RESOLVE_TIMEOUT)
     except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
-        return None
-    for line in reversed(out.stdout.splitlines()):
+        return None, None
+    lines = out.stdout.splitlines()
+    marks = [i for i, line in enumerate(lines) if line.startswith(_STATE_MARKER)]
+    state_home = lines[marks[-1]][len(_STATE_MARKER):].strip() if marks else None
+    for line in reversed(lines[:marks[-1]] if marks else lines):
         path = line.strip()
         if os.path.isfile(path) and os.access(path, os.X_OK):
-            return path
-    return None
+            return path, state_home
+    return None, state_home
 
 
 def opencode_task_tokens(session_id: str) -> float | None:
@@ -459,14 +587,17 @@ def opencode_task_tokens(session_id: str) -> float | None:
 
     An OpenCode run leaves nothing in ``~/.claude``, so :func:`task_run` cannot see
     it and every such run used to land in the ledger unpriced. Its own transcript is
-    reachable through ``opencode export``, which is asked for rather than read off
-    disk: the store behind it is an internal SQLite schema, while the command is part
-    of the CLI's published surface and already knows where the store lives.
+    reachable through the CLI's session export — ``opencode export <id>`` on 1.x,
+    ``opencode session export <id>`` on 2.x, which has no top-level ``export`` (and
+    1.x no ``session export``) — asked for rather than read off disk: the store behind
+    it is an internal SQLite schema, while the command is part of the CLI's published
+    surface and already knows where the store lives. Both print ``{"info": …,
+    "messages": [...]}`` with each message's tokens in the one shape the sum reads.
 
     Read at retirement, not on the poll — a turn's price is per-message, so a run's is
     a sum over every message it produced, and the live probe
-    (:mod:`diplomat_runtime.opencodeapi`) deliberately fetches one. By then the run's own
-    server is gone, which is why this goes through the CLI rather than the port.
+    (:mod:`diplomat_runtime.opencodeapi`) deliberately fetches one. By then a 1.x run's
+    own server is gone, which is why this goes through the CLI rather than the port.
 
     How a session's messages add up is :func:`opencodeapi.session_tokens`, shared with
     the Swift front-end so the two cannot price the same run differently.
@@ -475,12 +606,13 @@ def opencode_task_tokens(session_id: str) -> float | None:
 
     if not session_id:
         return None
-    binary = _opencode_binary()
+    binary = opencode_binary()
     if not binary:
         return None
     try:
         out = subprocess.run(  # noqa: S603 - resolved absolute path, no shell
-            [binary, "export", session_id],
+            [binary, *(("session", "export") if _major(binary) >= 2 else ("export",)),
+             session_id],
             capture_output=True, text=True, timeout=_EXPORT_TIMEOUT)
     except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
         return None

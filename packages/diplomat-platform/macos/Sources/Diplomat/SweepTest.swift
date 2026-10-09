@@ -132,13 +132,21 @@ enum SweepTest {
         //    stub only an rc puts on the path is what proves it: the applet's own
         //    environment is a Dock icon's, and an install of exactly that shape is what
         //    the Settings hint tells the operator will still work.
-        if let rcShell = opencodeFixture() {
+        if let stub = opencodeFixture() {
             let priorPath = ProcessInfo.processInfo.environment["PATH"]
             let priorShell = ProcessInfo.processInfo.environment["SHELL"]
-            setenv("SHELL", rcShell, 1)
-            setenv("PATH", "/usr/bin:/bin", 1)   // what a desktop launcher hands the app
-            check("an rc-only opencode still prices its run",
+            setenv("SHELL", stub.shell, 1)
+            // What a desktop launcher hands the app, plus a broken decoy the shell never runs.
+            setenv("PATH", "\(stub.decoyDir):/usr/bin:/bin", 1)
+            check("the opencode the user's shell runs prices its run, not one on the app's PATH",
                   UsageScan.opencodeTaskTokens(sessionID: "ses_ours") == 248)
+            // Upgraded in place: the major is cached per file, so a rewrite is asked again.
+            check("a 2.x stub could be written",
+                  write(stub.exporter, opencodeStub(version: "opencode v2.0.18",
+                                                    export: "session export",
+                                                    json: serviceExported)))
+            check("a 2.x opencode prices its run through `session export`",
+                  UsageScan.opencodeTaskTokens(sessionID: "ses_ours") == 127)
             // Put the process back: this is the only check that touches the environment,
             // and one left behind would reach whatever is written after it.
             if let priorPath { setenv("PATH", priorPath, 1) } else { unsetenv("PATH") }
@@ -147,16 +155,189 @@ enum SweepTest {
             check("an opencode fixture could be written", false)
         }
 
+        // 6. An OpenCode 2.x run with no pid to name it: its agent's command line carries
+        //    only `--session <id>`, so the scan reads the PR off the session's opening
+        //    prompt, and the run is asked of, and stopped through, that session. The
+        //    terminal, tmux and nested shells carry the whole spawn command too (lines as
+        //    a real tmux spawn left them in `ps`, on 2.0.18).
+        let wrapper = "tmux -L d new-session -s d zsh -i -c 'cd /r; zsh -i -c \"x || exit; "
+            + "opencode --session ses_mesh\"; exec sh'"
+        let dump = Observation.present("""
+          790 ??         00:41 script -q /dev/null \(wrapper)
+          791 ttys030    00:41 \(wrapper)
+          792 ??         00:41 \(wrapper)
+          793 ttys031    00:41 zsh -i -c x || exit; opencode --session ses_mesh
+          801 ttys031    00:40 opencode --session ses_mesh
+          802 ttys032    00:40 /Users/u/.npm/bin/opencode --session ses_later
+          803 ttys033    00:40 opencode --session ses_other
+          804 ttys034    00:40 opencode Review PR #11 in o/r
+        """)
+        var asked: [String] = []
+        let openings = ["ses_mesh": "Review PR #9 in o/r", "ses_other": "Review PR #9 in x/y"]
+        let scanned = AgentProbes.scan(dump, owner: "o", repo: "r") {
+            asked.append($0)
+            return openings[$0]
+        }
+        check("a 2.x agent is found by its session's opening prompt, on its own tty",
+              scanned.agents.value == [9: "ttys031", 11: "ttys034"]
+                && scanned.sessions == [9: "ses_mesh"])
+        check("…only a TUI's own line names a session: no wrapper is asked about or attached",
+              asked == ["ses_mesh", "ses_later", "ses_other"]
+                && scanned.attached.value == ["ses_mesh", "ses_later", "ses_other"])
+        // The row holds the first line's tty, so an idle TUI's session paired with a
+        // working agent's line would free that agent's bay.
+        let claudeFirst = AgentProbes.scan(.present("""
+          780 ttys029    00:50 claude Review PR #9 in o/r
+          801 ttys031    00:40 opencode --session ses_mesh
+        """), owner: "o", repo: "r") { openings[$0] }
+        check("…and a PR first seen on another agent's line is given no session",
+              claudeFirst.agents.value == [9: "ttys029"] && claudeFirst.sessions.isEmpty)
+        // A released run is held by its pid, so the PR's sighting, and with it the PR's
+        // session, is another agent's whenever one is up.
+        let twoTUIs = Observation.present("""
+          780 ttys029    00:50 claude Review PR #9 in o/r
+          801 ttys031    00:40 opencode --session ses_mesh
+          805 ttys035    00:30 opencode --session ses_again
+        """)
+        let again = openings.merging(["ses_again": "Review PR #9 in o/r"]) { own, _ in own }
+        let heldOne = AgentProbes.scan(twoTUIs, owner: "o", repo: "r",
+                                       heldPIDs: [780, 801]) { again[$0] }
+        let heldAll = AgentProbes.scan(.present("""
+          801 ttys031    00:40 opencode --session ses_mesh
+          805 ttys035    00:30 opencode --session ses_again
+        """), owner: "o", repo: "r", heldPIDs: [801, 805]) { again[$0] }
+        check("…a held agent's line is its PR's sighting only when no other is up on it",
+              heldOne.agents.value == [9: "ttys035"] && heldOne.sessions == [9: "ses_again"]
+                && heldAll.agents.value == [9: "ttys031"] && heldAll.sessions == [9: "ses_mesh"]
+                && heldOne.byPID == [801: "ses_mesh", 805: "ses_again"])
+        let releasedTUI = AgentState.RunRecord(runID: "untracked:9:801",
+                                               dispatchedAt: dispatched, prNumber: 9,
+                                               pid: 801, untracked: true, released: true)
+        let releasedClaude = AgentState.RunRecord(runID: "untracked:9:780",
+                                                  dispatchedAt: dispatched, prNumber: 9,
+                                                  pid: 780, untracked: true, released: true)
+        OpenCodeProbe.adopt([releasedTUI, releasedClaude], sessions: heldOne.sessions,
+                            byPID: heldOne.byPID, attached: []) { again[$0] }
+        check("a released run is given the session at its pid, never its PR's sighting's",
+              OpenCodeProbe.serviceSession(of: releasedTUI) == "ses_mesh"
+                && OpenCodeProbe.serviceSession(of: releasedClaude) == nil)
+        OpenCodeProbe.forgetAdopted([releasedTUI.runID, releasedClaude.runID])
+
+        func booked(_ pr: Int, _ placement: AgentState.Placement, port: Int? = nil,
+                    prompt: String? = nil) -> AgentState.RunRecord {
+            dispatched += 1
+            let record = AgentRegistry.createRun(
+                AgentState.RunRecord(runID: AgentRegistry.newRunID(now: dispatched),
+                                     dispatchedAt: dispatched, prNumber: pr,
+                                     placement: placement),
+                prompt: prompt ?? "Review PR #\(pr) in o/r")
+            AgentRegistry.stageRunner(record.runID, AgentRunner.opencode.rawValue)
+            if let port { _ = AgentRegistry.stagePort(record.runID, port) }
+            return record
+        }
+        let meshHere = booked(9, .meshHere)
+        // Same PR, same prompt, booked later: the session is already held.
+        let meshTwin = booked(9, .meshHere)
+        // Same PR, another task: the scan's sighting on PR 9 is not its session.
+        let meshOther = booked(9, .meshHere, prompt: "Resolve the conflicts on PR #9 in o/r")
+        // Staged with `ses_other`'s opening, which no run holds: only the port and the
+        // placement keep these two unbound.
+        let meshOld = booked(9, .meshHere, port: 4096, prompt: "Review PR #9 in x/y")
+        let local = booked(9, .local, prompt: "Review PR #9 in x/y")
+        let untracked = AgentState.RunRecord(runID: "untracked:9", dispatchedAt: dispatched,
+                                             prNumber: 9, untracked: true)
+        let unseen = AgentState.RunRecord(runID: "untracked:12", dispatchedAt: dispatched,
+                                          prNumber: 12, untracked: true)
+        OpenCodeProbe.adopt([meshHere, meshTwin, meshOther, meshOld, local, untracked, unseen],
+                            sessions: scanned.sessions, byPID: scanned.byPID,
+                            attached: scanned.attached.value ?? []) { openings[$0] }
+        check("a run the mesh placed here is bound to the session opened with its prompt",
+              AgentRegistry.boundSession(meshHere.runID) == "ses_mesh"
+                && OpenCodeProbe.serviceSession(of: meshHere) == "ses_mesh")
+        check("…and no other run is bound to it, whatever PR it is on",
+              AgentRegistry.boundSession(meshTwin.runID).isEmpty
+                && AgentRegistry.boundSession(meshOther.runID).isEmpty)
+        check("…nor is a 1.x one, nor one this applet spawned",
+              AgentRegistry.boundSession(meshOld.runID).isEmpty
+                && AgentRegistry.boundSession(local.runID).isEmpty)
+        check("a synthesized run is given the session in memory, and asked of the service",
+              OpenCodeProbe.serviceSession(of: untracked) == "ses_mesh"
+                && AgentSessionProbe.serves(untracked)
+                && !AgentSessionProbe.serves(unseen))
+        // `meshHere` and `untracked` share ses_mesh; `closed` has no TUI left, `merged` has.
+        let closed = booked(13, .local)
+        AgentRegistry.bindSession(closed.runID, "ses_closed")
+        let merged = booked(14, .local)
+        AgentRegistry.bindSession(merged.runID, "ses_merged")
+        let retired = [meshHere, untracked, closed, merged]
+        check("a reaped run is interrupted once, a retired one only when no TUI is attached",
+              OpenCodeProbe.interrupts(reaped: [meshHere], retired: retired,
+                                       attached: .present(["ses_mesh", "ses_merged"]))
+                  == ["ses_mesh", "ses_closed"])
+        check("…and a process table that could not be read shows no TUI",
+              OpenCodeProbe.interrupts(reaped: [], retired: retired,
+                                       attached: .unavailable("could not be read"))
+                  == ["ses_mesh", "ses_closed", "ses_merged"])
+
+        OpenCodeProbe.forgetAdopted([untracked.runID])
+        check("…until it is retired: the next agent on its PR is not that session's",
+              OpenCodeProbe.serviceSession(of: untracked) == nil
+                && !AgentSessionProbe.serves(untracked))
+
+        // Misses are remembered because each ask of a hung service is a timeout, every tick.
+        var fetched = 0
+        let missing = "ses_miss_\(UUID().uuidString.prefix(8))"
+        let at: TimeInterval = 1_000
+        func opening(after seconds: TimeInterval, answer: String?) -> String? {
+            OpenCodeProbe.openingPrompt(sessionID: missing, now: at + seconds) { _ in
+                fetched += 1
+                return answer
+            }
+        }
+        let first = opening(after: 0, answer: nil)
+        let within = opening(after: OpenCodeProbe.missMemory - 1, answer: "Review PR #9 in o/r")
+        check("a missed opening prompt is not asked again within \(Int(OpenCodeProbe.missMemory)) s",
+              first == nil && within == nil && fetched == 1)
+        let after = opening(after: OpenCodeProbe.missMemory, answer: "Review PR #9 in o/r")
+        let later = opening(after: 86_400, answer: nil)
+        check("…is asked again after it, and a hit is kept for good",
+              after == "Review PR #9 in o/r" && later == after && fetched == 2)
+
+        var gets: [String] = []
+        let servicePass = OpenCodeProbe.ServicePass(
+            find: { OpenCodeAPI.serviceEndpoint(Data(#"{"url": "http://127.0.0.1:1"}"#.utf8)) },
+            get: { _, path in
+                gets.append(path)
+                if path == OpenCodeAPI.serviceActivePath { return ["data": ["ses_a": [String: Any]()]] }
+                return ["data": ["time": ["idle": 5]]]
+            })
+        let busy = OpenCodeProbe.serviceState(sessionID: "ses_a", pass: servicePass)
+        let idle = OpenCodeProbe.serviceState(sessionID: "ses_b", pass: servicePass)
+        check("a pass fetches the active map once for every run it asks about",
+              gets.filter { $0 == OpenCodeAPI.serviceActivePath }.count == 1
+                && gets.count == 3 && busy?.busy == true && idle?.busy == false)
+        gets = []
+        let hungPass = OpenCodeProbe.ServicePass(
+            find: { OpenCodeAPI.serviceEndpoint(Data(#"{"url": "http://127.0.0.1:1"}"#.utf8)) },
+            get: { _, path in
+                gets.append(path)
+                return path == OpenCodeAPI.serviceActivePath ? nil : ["data": ["time": ["idle": 5]]]
+            })
+        let unasked = [OpenCodeProbe.serviceState(sessionID: "ses_a", pass: hungPass),
+                       OpenCodeProbe.serviceState(sessionID: "ses_b", pass: hungPass)]
+        check("…and a pass whose active map failed asks for no session",
+              unasked.allSatisfy { $0 == nil } && gets == [OpenCodeAPI.serviceActivePath])
+
         print(pass ? "\nSWEEP TEST OK" : "\nSWEEP TEST FAILED")
         return pass
     }
 
-    /// A throwaway `opencode`, and the shell whose rc is the only thing that finds it.
-    /// Returns that shell.
+    /// A throwaway 1.x `opencode`, the shell whose rc puts it first, and a directory
+    /// holding a broken decoy for the app's own `PATH`.
     ///
     /// The exported numbers are the ones the Linux suite and `DiplomatCoreSmoke` assert
     /// against too — 3 + 84 + 40 + 7 + 8 + 106, never the 59384 cache reads beside them.
-    private static func opencodeFixture() -> String? {
+    private static func opencodeFixture() -> (shell: String, exporter: URL, decoyDir: String)? {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("diplomat-export-test-\(UUID().uuidString)")
         let bin = dir.appendingPathComponent("opt")
@@ -176,20 +357,54 @@ enum SweepTest {
         """
         let exporter = bin.appendingPathComponent("opencode")
         let shell = dir.appendingPathComponent("rcshell")
+        let decoyDir = dir.appendingPathComponent("system")
+        guard (try? FileManager.default.createDirectory(at: decoyDir,
+                                                        withIntermediateDirectories: true)) != nil
+        else { return nil }
         // The rc greets, because one that does is ordinary and its greeting lands on the
         // same stdout as the answer.
         let files = [
-            (exporter, "#!/bin/sh\ncat <<'JSON'\n\(exported)\nJSON\n"),
+            (exporter, opencodeStub(version: "1.4.3", export: "export", json: exported)),
+            (decoyDir.appendingPathComponent("opencode"), "#!/bin/sh\nexit 1\n"),
             (shell, "#!/bin/sh\necho 'welcome back!'\nexport PATH=\(bin.path):$PATH\n"
                     + "exec /bin/sh \"$@\"\n"),
         ]
-        for (url, body) in files {
-            guard FileManager.default.createFile(atPath: url.path,
-                                                 contents: Data(body.utf8),
-                                                 attributes: [.posixPermissions: 0o755])
-            else { return nil }
-        }
-        return shell.path
+        for (url, body) in files where !write(url, body) { return nil }
+        return (shell.path, exporter, decoyDir.path)
+    }
+
+    /// 2.x's export: the same numbers' first message, its tokens at the message's top
+    /// level rather than under `info` — 3 + 84 + 40.
+    private static let serviceExported = """
+    {"info": {"id": "ses_ours"}, "messages": [
+      {"type": "user", "text": "Review PR #7 in o/r"},
+      {"type": "assistant",
+       "tokens": {"input": 3, "output": 84, "reasoning": 9, "cache": {"read": 29000, "write": 40}}},
+      {"type": "idle", "outcome": "succeeded"}
+    ]}
+    """
+
+    /// An `opencode` that prints `version` for `--version` and `json` for `<export> ses_ours`
+    /// — `export` on 1.x, `session export` on 2.x — and exits 1 on anything else.
+    private static func opencodeStub(version: String, export: String, json: String) -> String {
+        """
+        #!/bin/sh
+        if [ "$1" = --version ]; then echo '\(version)'; exit 0; fi
+        if [ "$*" = '\(export) ses_ours' ]; then
+        cat <<'JSON'
+        \(json)
+        JSON
+        exit 0
+        fi
+        exit 1
+
+        """
+    }
+
+    /// An executable file with this body, replacing whatever was there.
+    private static func write(_ url: URL, _ body: String) -> Bool {
+        FileManager.default.createFile(atPath: url.path, contents: Data(body.utf8),
+                                       attributes: [.posixPermissions: 0o755])
     }
 
     /// A throwaway Hermes store: three sessions a second apart in one directory, told

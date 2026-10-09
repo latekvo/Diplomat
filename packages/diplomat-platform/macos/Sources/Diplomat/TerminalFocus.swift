@@ -259,12 +259,10 @@ enum TerminalFocus {
 
     /// The same listing, with "tmux would not answer" kept apart from "tmux has nothing"
     /// — see `walkTables`, the one caller that has to tell them apart.
-    ///
-    /// Space-separated, the session name (the one field that may hold a space) last, and
-    /// split that many times: no control byte survives tmux's output. 3.4 prints one as
-    /// octal, and a client with no `$TMUX` and no UTF-8 locale, which is what launchd
-    /// gives the app, gets `_`.
     private static func readPanes() -> [String: Pane]? {
+        // Space-separated with the session name, the one field that may hold a space,
+        // last: no control byte survives tmux's output. 3.4 prints one as octal, and a
+        // client with no `$TMUX` and no UTF-8 locale (launchd's) gets `_`.
         guard let out = tmux(["list-panes", "-a", "-F",
                               "#{pane_tty} #{pane_id} #{session_name}"])
         else { return nil }
@@ -272,7 +270,8 @@ enum TerminalFocus {
         for line in out.split(separator: "\n") {
             let cols = line.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: false)
             guard cols.count == 3, !cols[1].isEmpty else { continue }
-            found[AgentProbes.shortTTY(String(cols[0]))] = Pane(id: String(cols[1]), session: String(cols[2]))
+            found[AgentProbes.shortTTY(String(cols[0]))] = Pane(id: String(cols[1]),
+                                                               session: String(cols[2]))
         }
         return found
     }

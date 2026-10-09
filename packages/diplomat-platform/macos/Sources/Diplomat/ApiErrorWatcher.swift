@@ -24,38 +24,59 @@ enum ApiErrorWatcher {
     struct Session { let tty: String; let tail: String }
 
     /// The last visible lines of every session/tab/pane, keyed by tty. Only queries an
-    /// app that is ALREADY running — never launches iTerm/Terminal. Returns nil when any
-    /// dump FAILED (automation permission revoked, AppleEvent timeout…) — callers must
-    /// treat that as "unknown", not "no sessions": acting on a silent empty result used
-    /// to make the watcher inert with no signal, and would wrongly reset every
-    /// backoff/liveness decision keyed on the session list.
+    /// app that is ALREADY running — never launches iTerm/Terminal. Unavailable when any
+    /// source FAILED, naming that source — callers must treat it as "unknown", not "no
+    /// sessions": acting on a silent empty result used to make the watcher inert with no
+    /// signal, and would wrongly reset every backoff/liveness decision keyed on the
+    /// session list.
+    ///
+    /// All or nothing, even though the sources are independent: a dump missing one
+    /// source's sessions reads as those sessions having closed. The watcher would prune
+    /// their escalated backoffs, and the screens probe would count as answering, so the
+    /// `probe-silent` audit line would never name the source that stopped.
     ///
     /// tmux is read last and only for the panes no scriptable terminal is showing. It is
     /// what a Ghostty run has instead of a dump script: Ghostty's dictionary exposes no
     /// visible text at all, so `capture-pane` is the only reader its agents have.
-    static func dumpSessions() -> [Session]? {
-        var out: [Session] = []
+    static func dumpSessions() -> Observation<[Session]> {
+        var terminals: [(name: String, dump: () -> String?)] = []
         if isRunning("com.googlecode.iterm2") {
-            guard let dump = run(itermDumpScript) else { return nil }
-            out += parse(dump)
+            terminals.append((name: "iTerm", dump: { run(itermDumpScript) }))
         }
         if isRunning("com.apple.Terminal") {
-            guard let dump = run(terminalDumpScript) else { return nil }
+            terminals.append((name: "Terminal", dump: { run(terminalDumpScript) }))
+        }
+        return dumpSessions(terminals: terminals)
+    }
+
+    /// `dumpSessions` over the scriptable terminals that are running, each a dump that
+    /// answers nil when its script failed — so a self-test can fail one without an
+    /// AppleEvent.
+    static func dumpSessions(terminals: [(name: String, dump: () -> String?)])
+        -> Observation<[Session]> {
+        var out: [Session] = []
+        for terminal in terminals {
+            guard let dump = terminal.dump() else {
+                return .unavailable("\(terminal.name) would not answer: automation "
+                                    + "refused, or an AppleEvent timed out")
+            }
             out += parse(dump)
         }
         let shown = Set(out.map { AgentProbes.shortTTY($0.tty) })
-        guard let panes = TerminalFocus.paneScreens(shownOn: shown) else { return nil }
+        guard let panes = TerminalFocus.paneScreens(shownOn: shown) else {
+            return .unavailable("tmux listed no panes, though its server is up")
+        }
         out += panes.map { Session(tty: $0.tty, tail: lastLines($0.screen, scannedTailLines)) }
-        return out
+        return .present(out)
     }
 
     /// A short-lived cache over `dumpSessions`: the 8s process sweep and the 20s
     /// API-error scan each dumped EVERY session's full visible buffer over AppleEvents;
     /// sharing one dump between near-simultaneous callers halves that traffic.
     private static let cacheLock = NSLock()
-    private static var cachedDump: (at: Date, sessions: [Session]?)?
+    private static var cachedDump: (at: Date, sessions: Observation<[Session]>)?
 
-    static func dumpSessionsCached(maxAge: TimeInterval = 5) -> [Session]? {
+    static func dumpSessionsCached(maxAge: TimeInterval = 5) -> Observation<[Session]> {
         cacheLock.lock()
         if let c = cachedDump, Date().timeIntervalSince(c.at) < maxAge {
             let s = c.sessions

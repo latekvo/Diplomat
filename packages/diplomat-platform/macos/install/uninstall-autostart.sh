@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# Remove both LaunchAgents and stop the app. Leaves the .app bundle in place.
+# Remove the autostart LaunchAgents and stop the app. Leaves the .app bundle in place.
 set -euo pipefail
 LABEL="com.ignacy.diplomat"
 HERE="$(cd "$(dirname "$0")" && pwd)"
-# Tear down the daily auto-update agent too (best-effort).
+# Tear down the daily auto-update agent too (best-effort), and the watchdog before
+# the app is stopped below, or it would launch it again.
 "$HERE/uninstall-autoupdate.sh" 2>/dev/null || true
+"$HERE/uninstall-watchdog.sh" 2>/dev/null || true
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 rm -f "$HOME/Library/LaunchAgents/$LABEL.plist"
 pkill -x Diplomat 2>/dev/null || true

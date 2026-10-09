@@ -2,10 +2,32 @@ import SwiftUI
 import AppKit
 import DiplomatCore
 
+/// The process entry point. `Headless.unrunnable` is checked here, before
+/// `DiplomatApp` exists, because the app builds its Store as a state object and
+/// the Store reads the real state and starts its polls as it is built.
 @main
+enum Launch {
+    static func main() {
+        let unrunnable = Headless.unrunnable(in: ProcessInfo.processInfo.environment)
+        guard unrunnable.isEmpty else {
+            FileHandle.standardError.write(Data(Headless.refusal(unrunnable).utf8))
+            exit(64)   // EX_USAGE
+        }
+        DiplomatApp.main()
+    }
+}
+
 struct DiplomatApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @StateObject private var store = Store()
+
+    init() {
+        // The launchd liveness check: answers and exits before AppKit or the Store
+        // start, so a check every few minutes costs no app launch.
+        if ProcessInfo.processInfo.environment["DIPLOMAT_WATCHDOG"] == "1" {
+            exit(SelfUpdate.runWatchdog())
+        }
+    }
 
     var body: some Scene {
         MenuBarExtra("Diplomat", systemImage: "wrench.and.screwdriver") {
@@ -26,6 +48,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // dump/lookup run can't kill the live menu-bar app.
         if !Headless.active {
             SingleInstance.terminateOthers()
+            OperatorQuit.clear()
 
             // First run from a terminal (`swift run`): offer to install as a login
             // daemon. If accepted, the detached installer builds + launches the
@@ -48,8 +71,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
 
         // Unattended 6AM self-update (launchd StartCalendarInterval): merge upstream if
-        // behind, rebuild, relaunch if the app was running, then exit. Runs off the main
-        // thread — the git/build work is blocking.
+        // behind, rebuild, relaunch the app if it was running and launch it if it was
+        // not (unless the operator quit it), then exit. Runs off the main thread — the
+        // git/build work is blocking.
         if env["DIPLOMAT_SELF_UPDATE"] == "1" {
             Task.detached { exit(SelfUpdate.runScheduled()) }
         }
@@ -58,7 +82,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if env["DIPLOMAT_DUMP"] == "1" {
             Task { await Dump.run(); exit(0) }
         }
-        if let lk = env["DIPLOMAT_LOOKUP"], let n = Int(lk) {
+        if let lk = env["DIPLOMAT_LOOKUP"] {
+            guard let n = Int(lk) else {
+                print("DIPLOMAT_LOOKUP must be an integer, got \"\(lk)\""); exit(2)
+            }
             Task { await Dump.lookup(n); exit(0) }
         }
         // Prompt/spawn self-test: print the assembled review prompt plus the exact
@@ -159,6 +186,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if env["DIPLOMAT_MESH_CMD_TEST"] == "1" {
             Task { @MainActor in exit(await MeshCommandTest.run() ? 0 : 1) }
         }
+        // Stopping a node left running while the mesh is off, on scratch state dirs;
+        // needs python3. Exit code = pass/fail.
+        if env["DIPLOMAT_MESH_STRAY_TEST"] == "1" {
+            Task { @MainActor in exit(await MeshStrayTest.run() ? 0 : 1) }
+        }
         // Allocator-setup self-test: proves a launch reinstalls a stale allocator and
         // leaves a deliberately-uninstalled one alone. Pure decision logic — shells no
         // installer, reads no ~/.claude. Exit code = pass/fail.
@@ -172,17 +204,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if env["DIPLOMAT_REPOPATHS_TEST"] == "1" {
             exit(RepoPathsTest.run() ? 0 : 1)
         }
-        // Relaunch self-test: proves the relaunch that ends a self-update starts a GUI,
-        // is judged on the instance `open` started, and that the singleton spares a
-        // headless one.
+        // Relaunch self-test: proves the relaunch that ends a self-update or revives a
+        // dead app starts a GUI, is judged on the instance `open` started, and that the
+        // singleton spares a headless one.
         // Opens throwaway bundles it lays out itself and an idle copy of this binary
         // under DIPLOMAT_RELAUNCH_TEST=hold, which exits on its own should the test die
-        // before ending it. Exit code = pass/fail.
-        if env["DIPLOMAT_RELAUNCH_TEST"] == "1" {
-            Task.detached { exit(RelaunchTest.run() ? 0 : 1) }
-        } else if env["DIPLOMAT_RELAUNCH_TEST"] == "hold" {
-            Task.detached { sleep(60); exit(0) }
+        // before ending it. Any other value runs the test. Exit code = pass/fail.
+        if let mode = env["DIPLOMAT_RELAUNCH_TEST"] {
+            if mode == "hold" {
+                Task.detached { sleep(60); exit(0) }
+            } else {
+                Task.detached { exit(RelaunchTest.run() ? 0 : 1) }
+            }
         }
+        // Revival self-test: who brings a dead app back and who leaves it closed, and
+        // what a deliberate quit is. Every job step is a fixture and the quit mark a
+        // scratch file. Exit code = pass/fail.
+        if env["DIPLOMAT_WATCHDOG_TEST"] == "1" {
+            exit(WatchdogTest.run() ? 0 : 1)
+        }
+    }
+
+    /// A quit the operator asked for leaves the marker that keeps the unattended jobs
+    /// from bringing the app back; one sent by another Diplomat (the singleton handing
+    /// over) or by a logout does not. Only here is the quit Apple event, and its
+    /// sender, readable.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if !Headless.active {
+            let event = NSAppleEventManager.shared().currentAppleEvent
+            let from = event?.attributeDescriptor(forKeyword: keySenderPIDAttr)?.int32Value
+            let fromName = from.flatMap(SingleInstance.executableName)
+            let endsSession = event?.attributeDescriptor(forKeyword: kAEQuitReason) != nil
+                || event?.paramDescriptor(forKeyword: kAEQuitReason) != nil
+                || fromName == "loginwindow"
+            if OperatorQuit.isDeliberate(senderIsDiplomat: from.map { _ in fromName == SingleInstance.execName },
+                                         endsSession: endsSession) {
+                OperatorQuit.mark()
+            }
+        }
+        return .terminateNow
     }
 }
 
@@ -208,11 +268,11 @@ enum SingleInstance {
     static let bundleID = "com.ignacy.diplomat"
     static let execName = "Diplomat"
 
-    /// Every other live GUI instance of the app. A headless one-shot (the 06:00 updater
-    /// waiting to see the app it relaunched come up, a self-test) runs the same binary
-    /// but exits on its own and puts no wrench in the menu bar, so it is neither
-    /// terminated nor counted as the app being up; its environment tells it apart, and
-    /// one whose environment cannot be read counts as GUI.
+    /// Every other live GUI instance of the app. A headless one-shot (the 06:00 updater,
+    /// the watchdog, a self-test) runs the same binary but exits on its own and puts no
+    /// wrench in the menu bar, so it is neither terminated nor counted as the app being
+    /// up; its environment tells it apart, and one whose environment cannot be read
+    /// counts as GUI.
     static func otherInstances() -> [NSRunningApplication] {
         let myPid = ProcessInfo.processInfo.processIdentifier
         return NSWorkspace.shared.runningApplications.filter { app in
@@ -224,9 +284,16 @@ enum SingleInstance {
         }
     }
 
-    /// Whether another live GUI instance exists — the 6AM updater relaunches only if so,
-    /// never spawning a menu-bar app onto a session that isn't showing one.
+    /// Whether another live GUI instance exists.
     static func isRunning() -> Bool { !otherInstances().isEmpty }
+
+    /// The file name of the binary `pid` runs, or nil once it has exited. By path,
+    /// since a process that never started AppKit has no bundle identifier to ask for.
+    static func executableName(_ pid: pid_t) -> String? {
+        var buf = [CChar](repeating: 0, count: Int(MAXPATHLEN) * 4)
+        guard proc_pidpath(pid, &buf, UInt32(buf.count)) > 0 else { return nil }
+        return URL(fileURLWithPath: String(cString: buf)).lastPathComponent
+    }
 
     static func terminateOthers() {
         let initial = otherInstances()
@@ -365,12 +432,17 @@ enum Dump {
         // The paths a real spawn takes from the run's own directory, stood in for by a
         // throwaway id: what the dump is for is the shape of the command, and a run
         // registered here would be one the applet then had to retire.
+        // A 2.x command's session id is minted but never staged or created.
         let run = AgentRegistry.newRunID(now: Date().timeIntervalSince1970)
+        let runner = AppConfig.agentRunner
+        let service = runner == .opencode && OpenCodeCLI.installedIsService()
         let cmd = AgentSpawner.shellCommand(
             AgentSpawner.SpawnPlan(promptFile: file,
                                    donePath: AgentRegistry.donePath(run).path,
                                    pidPath: AgentRegistry.pidPath(run).path,
-                                   runner: AppConfig.agentRunner, port: 0))
+                                   runner: runner, port: 0,
+                                   serviceSession: service ? OpenCodeAPI.newSessionID() : nil,
+                                   tokenItem: AppConfig.agentTokenKeychainItem))
         print("\n----- SHELL COMMAND -----")
         print(cmd)
         let term = AgentSpawner.resolved(.ghostty)
@@ -463,8 +535,9 @@ enum Dump {
     /// watcher does not ask: a matching tail on a session no agent is behind is a
     /// session it leaves alone.
     static func apiWatchScan() {
-        guard let sessions = ApiErrorWatcher.dumpSessions() else {
-            print("== api-error scan: DUMP FAILED (automation permission? AppleEvent timeout?) ==")
+        let dump = ApiErrorWatcher.dumpSessions()
+        guard let sessions = dump.value else {
+            print("== api-error scan: DUMP FAILED (\(dump.reason)) ==")
             return
         }
         let onAnAgent = AgentProbes.ttysRunningAnAgent(now: Date().timeIntervalSince1970)

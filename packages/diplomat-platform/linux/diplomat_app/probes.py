@@ -15,10 +15,12 @@ bays, never an agent declared finished.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
 import subprocess
+import time
 from collections.abc import Iterable
 from dataclasses import dataclass
 
@@ -132,9 +134,10 @@ def _ps_dump(now: float) -> Observation:
 
 
 def reset_cache() -> None:
-    """Drop every probe cache and every counter — for tests that change the machine
-    between assertions inside one cache window."""
+    """Drop every probe cache, every counter and every adopted session — for tests
+    that change the machine between assertions inside one cache window."""
     global _ps_cache, _tails_cache, _sessions_cache, _tails_read, _marker_seen
+    _adopted.clear()
     _ps_cache = None
     _tails_cache = None
     _sessions_cache = None
@@ -192,7 +195,9 @@ def ttys_running_an_agent(now: float) -> Observation:
         {p.tty for p in table.value.values() if p.is_agent and p.tty})
 
 
-def live_agents(dump: Observation) -> Observation:
+def live_agents(dump: Observation, sessions: dict[int, str] | None = None,
+                held_pids: frozenset[int] | set[int] = frozenset(),
+                by_pid: dict[int, str] | None = None) -> Observation:
     """PR number -> the tty of an agent visible in ``ps`` by its prompt text.
 
     The pre-registry identity mechanism, kept for the two questions a pid cannot
@@ -204,17 +209,32 @@ def live_agents(dump: Observation) -> Observation:
     It cannot tell two runs on one PR apart and it matches any session that merely
     mentions the number, which is why it decides nothing that a pid can decide.
 
+    An OpenCode 2.x TUI carries only ``--session <id>`` in its argv, so its prompt is
+    read from the service (:func:`opencodeapi.scan_text`). ``sessions``, when given, is
+    filled with PR number -> the session of the 2.x TUI that is that PR's sighting, and
+    none for a PR first seen on another agent's line: the row's state is read from that
+    session (:func:`adopt`), so it has to be the agent on the row's tty. ``by_pid``,
+    when given, is filled with pid -> the session of the 2.x TUI at that pid.
+
     The tty rides along because it is the only handle such an agent has: without it
     nothing can read its screen, so it would count as working until its window closed
     however long ago it finished. First sighting of a PR wins — a set of PR numbers is
-    all this scan can honestly produce.
+    all this scan can honestly produce — save that an agent in ``held_pids`` is named
+    only when no other is up on its PR. Its record reads its tty off the process; the
+    run that needs this scan's is one with no pid, and named its neighbour's it has no
+    screen at all.
     """
+    from diplomat_runtime import opencodeapi
+
     if not dump.ok:
         return Observation.unavailable(dump.reason)
     cfg = core.config()
     pattern = re.compile(
         r"PR #(\d+) in " + re.escape(f"{cfg['owner']}/{cfg['repo']}"))
     out: dict[int, str] = {}
+    held: dict[int, str] = {}
+    own_sessions: dict[int, str] = {}
+    held_sessions: dict[int, str] = {}
     # Parsed here against THIS dump's columns rather than through
     # `autofix.agent_lines`, which reads the tty as the FIRST token of a
     # `tty=,etime=,args=` dump. That is still right for its own caller (the mesh
@@ -228,11 +248,62 @@ def live_agents(dump: Observation) -> Observation:
         parts = line.split(maxsplit=3)
         if len(parts) < 4:
             continue
-        _pid, tty, _elapsed, args = parts
-        for m in pattern.finditer(args):
-            out.setdefault(int(m.group(1)),
-                           "" if tty == "?" else tty.removeprefix("/dev/"))
-    return Observation.present(out)
+        pid, tty, _elapsed, args = parts
+        is_held = pid.isdigit() and int(pid) in held_pids
+        into, into_sessions = (held, held_sessions) if is_held else (out, own_sessions)
+        session_id = opencodeapi.session_arg(args)
+        if session_id and by_pid is not None and pid.isdigit():
+            by_pid[int(pid)] = session_id
+        for m in pattern.finditer(opencodeapi.scan_text(args)):
+            pr = int(m.group(1))
+            if pr in into:
+                continue
+            into[pr] = "" if tty == "?" else tty.removeprefix("/dev/")
+            if session_id:
+                into_sessions[pr] = session_id
+    if sessions is not None:
+        sessions.update({pr: sid for pr, sid in held_sessions.items() if pr not in out})
+        sessions.update(own_sessions)
+    return Observation.present(held | out)
+
+
+#: 2.x sessions found for runs with no run directory to bind one into — untracked
+#: runs — by run id. Kept until the run is retired (:func:`forget_adopted`), so it can
+#: still be stopped once its TUI, and with it its sighting, is gone.
+_adopted: dict[str, str] = {}
+
+
+def adopt(records: list[RunRecord], sessions: dict[int, str],
+          by_pid: dict[int, str]) -> None:
+    """Give each untracked run the 2.x session the scan (:func:`live_agents`) found on
+    its PR, so it is asked of the service and interrupted like a run this applet
+    spawned (:func:`service_session`). A released run keeps its agent's pid and is
+    given the session at that pid instead: the PR's sighting prefers any other agent.
+    A run the mesh placed here is bound in its run directory instead
+    (:meth:`_OpenCodeBackend.bind`)."""
+    for r in records:
+        if not r.untracked:
+            continue
+        session = (sessions.get(r.pr_number) if r.pid is None
+                   else by_pid.get(r.pid))
+        if session:
+            _adopted[r.run_id] = session
+
+
+def forget_adopted(run_ids: set[str]) -> None:
+    """Drop what :func:`adopt` remembered for retired runs: an untracked run's id is
+    its PR's, and the next agent seen on that PR is not the one that session was."""
+    for run_id in run_ids:
+        _adopted.pop(run_id, None)
+
+
+def service_session(record: RunRecord) -> str:
+    """The 2.x session a run works in — bound in its run directory
+    (:func:`agentregistry.service_session`), or adopted from the scan for a run that
+    has none (:func:`adopt`) — or "" for every other run."""
+    from diplomat_runtime import agentregistry
+
+    return agentregistry.service_session(record.run_id) or _adopted.get(record.run_id, "")
 
 
 def pane_tails(records: list[RunRecord], now: float = 0.0) -> Observation:
@@ -284,13 +355,16 @@ def agent_sessions(records: list[RunRecord], directory: str,
     marks finished, rather than whether someone else's status bar happened to have its
     interrupt hint drawn when we looked.
 
-    Two runners answer, from different places — OpenCode over the loopback port its
-    spawn reserved (:mod:`opencodeapi`), Hermes out of the SQLite store it keeps every
-    session in (:mod:`hermesstore`) — and both come back as the same typed answer, so
-    nothing downstream learns which runner it is looking at.
+    Two runners answer, from different places — OpenCode over loopback, on the port a
+    1.x spawn reserved or through the per-user 2.x service (:mod:`opencodeapi`), Hermes
+    out of the SQLite store it keeps every session in (:mod:`hermesstore`) — and both
+    come back as the same typed answer, so nothing downstream learns which runner it is
+    looking at. A run synthesized from the process table has no runner recorded; it is
+    asked of the 2.x service when the scan found it attached to a session there
+    (:func:`adopt`).
 
     A run missing from the answer is a run this cannot reach: every Claude Code run,
-    an OpenCode run spawned without a port, one whose server has not come up yet, one
+    a 1.x OpenCode run spawned without a port, one whose server has not come up yet, one
     whose session has not been written to yet. The resolver reads its screen instead,
     so absence here costs the older evidence and never a verdict.
 
@@ -310,7 +384,8 @@ def agent_sessions(records: list[RunRecord], directory: str,
     from diplomat_runtime import agentregistry
 
     global _sessions_cache
-    asking = [(r, agentregistry.run_runner(r.run_id)) for r in records]
+    asking = [(r, runner.OPENCODE if r.run_id in _adopted
+               else agentregistry.run_runner(r.run_id)) for r in records]
     asking = [(r, name) for r, name in asking if name in _BACKENDS]
     if not asking:
         return Observation.unsupported("are unavailable (no run serves a session of "
@@ -322,6 +397,7 @@ def agent_sessions(records: list[RunRecord], directory: str,
             and now - _sessions_cache[0] < _CACHE_SECS):
         return _sessions_cache[2]
     directory = os.path.realpath(directory)
+    _OpenCodeBackend.begin_pass()
     taken = {agentregistry.bound_session(r.run_id) for r, _ in asking}
     taken.discard("")
     out = {}
@@ -330,7 +406,7 @@ def agent_sessions(records: list[RunRecord], directory: str,
     # filled in the order the sessions were created.
     for record, name in sorted(asking, key=lambda pair: pair[0].dispatched_at):
         backend = _BACKENDS[name]
-        session_id = agentregistry.bound_session(record.run_id)
+        session_id = service_session(record) or agentregistry.bound_session(record.run_id)
         if not session_id:
             session_id = backend.bind(record, directory, taken)
             if not session_id:
@@ -345,8 +421,20 @@ def agent_sessions(records: list[RunRecord], directory: str,
     return obs
 
 
+#: Not asked yet this pass — distinct from ``None``, which is an answer.
+_UNASKED = object()
+
+
 class _OpenCodeBackend:
-    """A run's own OpenCode server, on the port its spawn reserved."""
+    """A run's own OpenCode 1.x server, on the port its spawn reserved — or, for a
+    2.x run, the per-user service its session was created in."""
+
+    #: This probe pass's :func:`opencodeapi.active_sessions`, asked at most once per pass.
+    _active: object = _UNASKED
+
+    @classmethod
+    def begin_pass(cls) -> None:
+        cls._active = _UNASKED
 
     @staticmethod
     def bind(record: RunRecord, directory: str, taken: set[str]) -> str:
@@ -359,11 +447,24 @@ class _OpenCodeBackend:
         exact, and exact is worth the fetch: the applet runs several agents in one
         checkout at a time, so two sessions a second apart in the same directory is
         the ordinary case, not the pathological one.
+
+        A run with no port and no session is a 2.x run Diplomat did not spawn itself —
+        one the mesh placed here — or a 1.x one whose port could not be had. The first
+        is found through the process table instead: every 2.x TUI's argv names its
+        session, and the one whose opening prompt is this run's staged prompt is this
+        run's. Bound, it is probed, priced and interrupted as one spawned here is.
         """
         from diplomat_runtime import agentregistry, opencodeapi
 
         port = agentregistry.port(record.run_id)
         if port is None:
+            prompt = _staged_prompt(record.run_id)
+            if prompt is None:
+                return ""
+            for session_id in live_service_sessions():
+                if (session_id not in taken
+                        and opencodeapi.opening_prompt(session_id) == prompt):
+                    return session_id
             return ""
         listing = opencodeapi.sessions(port, directory)
         if listing is None:
@@ -382,9 +483,14 @@ class _OpenCodeBackend:
     @staticmethod
     def state(record: RunRecord, session_id: str):
         """Both halves of the answer — see :func:`opencodeapi.state_of` for which
-        blind spot each of them covers."""
+        blind spot each of them covers, and :func:`opencodeapi.service_state_of` for
+        how a 2.x session reads."""
         from diplomat_runtime import agentregistry, opencodeapi
 
+        if service_session(record):
+            if _OpenCodeBackend._active is _UNASKED:
+                _OpenCodeBackend._active = opencodeapi.active_sessions()
+            return opencodeapi.service_state(session_id, _OpenCodeBackend._active)
         port = agentregistry.port(record.run_id)
         if port is None:
             return None
@@ -419,6 +525,23 @@ class _HermesBackend:
         from diplomat_runtime import hermesstore
 
         return hermesstore.state_of(session_id)
+
+
+def live_service_sessions() -> list[str]:
+    """The sessions the 2.x TUIs in the process table are attached to, in table order;
+    none when the table cannot be read."""
+    from diplomat_runtime import opencodeapi
+
+    dump = _ps_dump(time.time())
+    if not dump.ok:
+        return []
+    found = []
+    for line in dump.value.splitlines():
+        parts = line.split(maxsplit=3)
+        session_id = len(parts) == 4 and opencodeapi.session_arg(parts[3])
+        if session_id and session_id not in found:
+            found.append(session_id)
+    return found
 
 
 def _staged_prompt(run_id: str) -> str | None:
@@ -475,20 +598,23 @@ def merged_prs(pr_numbers: set[int]) -> Observation:
     outranks anything a process is doing.
 
     One ``gh`` call per PR, so this belongs on the slow refresh, not the 8-second
-    tick. A PR whose probe fails is simply absent from the answer; the whole probe is
-    UNAVAILABLE only when there was nothing to ask about, so a partial answer is
-    still positive evidence about the PRs it covers.
+    tick. The reading is always PRESENT: a PR whose probe fails is simply absent from
+    the answer, so a partial answer is still positive evidence about the PRs it
+    covers, and an empty ask is a real "none of them".
     """
     if not pr_numbers:
         return Observation.present(set())
     from diplomat_runtime import gh
+    cfg = core.config()
+    repo = f"{cfg['owner']}/{cfg['repo']}"
     merged = set()
     for n in sorted(pr_numbers):
         try:
-            out = gh.run(["pr", "view", str(n), "--json", "state", "-q", ".state"])
+            out = gh.run(["pr", "view", str(n), "--repo", repo, "--json", "state"])
+            state = json.loads(out).get("state")
         except Exception:  # noqa: BLE001 - a probe never raises into the tick
             continue
-        if (out or "").strip() == "MERGED":
+        if state == "MERGED":
             merged.add(n)
     return Observation.present(merged)
 
@@ -545,7 +671,14 @@ def gather(records: list[RunRecord], now: float, *,
     # spawned since the last tick has not adopted one yet. Asking the records alone
     # would capture nothing for exactly the run that just started, and it would then
     # read as working for a whole tick longer than it was.
-    scan = _note("agent scan", live_agents(dump), now)
+    scan_sessions: dict[int, str] = {}
+    by_pid: dict[int, str] = {}
+    scan = _note("agent scan",
+                 live_agents(dump, scan_sessions,
+                             held_pids={r.pid for r in records if r.pid is not None},
+                             by_pid=by_pid),
+                 now)
+    adopt(records, scan_sessions, by_pid)
     looked_up = agentstate.adopt_ttys(records, table, scan)
     # Synthesized here as well as in `tick`, which adds them only AFTER this bundle is
     # built — so the tick that FIRST sees one would resolve it against a screen nobody

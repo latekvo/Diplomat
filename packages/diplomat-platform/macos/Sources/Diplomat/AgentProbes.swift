@@ -255,7 +255,8 @@ enum AgentProbes {
                                            clients: listings.clients))
     }
 
-    /// PR number → the tty of an agent visible in `ps` by its prompt text.
+    /// PR number → the tty of an agent visible in `ps` by its prompt: the text on its
+    /// command line, or for a 2.x agent its session's opening message (`scan`).
     ///
     /// The pre-registry identity mechanism, kept for the two questions a pid cannot answer:
     /// agents this applet has no record of at all (`AgentState.synthesizeUntracked`), and
@@ -269,27 +270,78 @@ enum AgentProbes {
     /// The tty rides along because it is the only handle such an agent has: without it
     /// nothing can read its screen, so it would count as working until its window closed
     /// however long ago it finished. First sighting of a PR wins — a set of PR numbers is
-    /// all this scan can honestly produce.
-    static func liveAgents(_ dump: Observation<String>, owner: String,
-                           repo: String) -> Observation<[Int: String]> {
-        guard let text = dump.value else { return .unavailable(dump.reason) }
+    /// all this scan can honestly produce — save that an agent in `heldPIDs` is named only
+    /// when no other is up on its PR. Its record reads its tty off the process; the run
+    /// that needs this scan's is one with no pid, and named its neighbour's it has no
+    /// screen at all.
+    static func liveAgents(_ dump: Observation<String>, owner: String, repo: String,
+                           heldPIDs: Set<Int> = []) -> Observation<[Int: String]> {
+        scan(dump, owner: owner, repo: repo, heldPIDs: heldPIDs).agents
+    }
+
+    /// `liveAgents`, plus PR number → the session of the 2.x TUI whose line is that PR's
+    /// sighting, every session a 2.x TUI in the table is attached to, in `ps` order, and
+    /// pid → the session of the 2.x TUI at that pid. A PR first seen on any other agent's
+    /// line gets no session: the row's state is read from its session, so that session has
+    /// to be the agent on the row's tty.
+    ///
+    /// A 2.x agent's command line carries only `--session <id>`, the prompt having gone to
+    /// the service before the TUI started, so the text searched is the session's opening
+    /// prompt (`OpenCodeProbe.openingPrompt`). A session the service cannot answer for is
+    /// not seen, like a line that names no PR.
+    ///
+    /// `openingPrompt` is the sweep self-test's seam.
+    static func scan(_ dump: Observation<String>, owner: String, repo: String,
+                     heldPIDs: Set<Int> = [],
+                     openingPrompt: (String) -> String? = {
+                         OpenCodeProbe.openingPrompt(sessionID: $0)
+                     }) -> (agents: Observation<[Int: String]>, sessions: [Int: String],
+                            attached: Observation<[String]>, byPID: [Int: String]) {
+        guard let text = dump.value else {
+            return (.unavailable(dump.reason), [:], .unavailable(dump.reason), [:])
+        }
         guard let re = try? NSRegularExpression(
             pattern: "PR #(\\d+) in \(NSRegularExpression.escapedPattern(for: "\(owner)/\(repo)"))")
-        else { return .unavailable("the prompt pattern would not compile") }
+        else {
+            let reason = "the prompt pattern would not compile"
+            return (.unavailable(reason), [:], .unavailable(reason), [:])
+        }
         var out: [Int: String] = [:]
+        var held: [Int: String] = [:]
+        var sessions: [Int: String] = [:]
+        var heldSessions: [Int: String] = [:]
+        var attached: [String] = []
+        var byPID: [Int: String] = [:]
         for line in text.split(separator: "\n") {
             let s = String(line)
             // Only a real agent process carries the phrase: the spawning shell's argv
             // holds the unexpanded `$(cat …)`, not the prompt text.
             guard AgentRunner.isAgentLine(s), let cols = columns(s) else { continue }
-            for m in re.matches(in: cols.args, range: NSRange(cols.args.startIndex...,
-                                                              in: cols.args)) {
-                guard let r = Range(m.range(at: 1), in: cols.args),
-                      let pr = Int(cols.args[r]) else { continue }
-                if out[pr] == nil { out[pr] = cols.tty }
+            let session = OpenCodeAPI.attachedSession(cols.args)
+            if let session {
+                attached.append(session)
+                if let pid = Int(cols.pid) { byPID[pid] = session }
+            }
+            let searched = session.map { openingPrompt($0) ?? "" } ?? cols.args
+            let isHeld = Int(cols.pid).map(heldPIDs.contains) == true
+            for m in re.matches(in: searched, range: NSRange(searched.startIndex...,
+                                                             in: searched)) {
+                guard let r = Range(m.range(at: 1), in: searched),
+                      let pr = Int(searched[r]) else { continue }
+                if isHeld {
+                    guard held[pr] == nil else { continue }
+                    held[pr] = cols.tty
+                    if let session { heldSessions[pr] = session }
+                } else {
+                    guard out[pr] == nil else { continue }
+                    out[pr] = cols.tty
+                    if let session { sessions[pr] = session }
+                }
             }
         }
-        return .present(out)
+        for (pr, session) in heldSessions where out[pr] == nil { sessions[pr] = session }
+        return (.present(held.merging(out) { _, own in own }), sessions, .present(attached),
+                byPID)
     }
 
     /// One `ps` line as its four columns. The command is whatever is left, so a path with
@@ -330,8 +382,9 @@ enum AgentProbes {
     /// `ApiErrorWatcher`'s own cache, so asking costs no extra AppleEvent traffic.
     ///
     /// A dump that FAILED is `.unavailable`, never an empty map: automation permission can
-    /// be revoked and an AppleEvent can time out, and read as "we looked and found no
-    /// sessions" either one would take a bay back from every live agent at once.
+    /// be revoked, an AppleEvent can time out and tmux can stop listing its panes, and
+    /// read as "we looked and found no sessions" any one would take a bay back from every
+    /// live agent at once. The reason names the source that failed.
     ///
     /// The marker tally counts only the screens belonging to a run this applet is
     /// tracking. The dump carries every terminal window on the machine, and the ratio it
@@ -347,7 +400,8 @@ enum AgentProbes {
         }
         lock.unlock()
         let answer: Observation<[String: String]>
-        if let sessions = ApiErrorWatcher.dumpSessionsCached() {
+        let dump = ApiErrorWatcher.dumpSessionsCached()
+        if let sessions = dump.value {
             var tails: [String: String] = [:]
             for s in sessions {
                 let key = shortTTY(s.tty)
@@ -369,7 +423,7 @@ enum AgentProbes {
             lock.unlock()
             answer = .present(tails)
         } else {
-            answer = .unavailable("are unreadable (the terminals would not answer)")
+            answer = .unavailable("are unreadable (\(dump.reason))")
         }
         lock.lock()
         tailsCache = (now, answer)
@@ -445,7 +499,7 @@ enum AgentProbes {
     /// interrupt hint drawn when we looked.
     ///
     /// A run missing from the answer is a run this cannot reach: every Claude Code run, an
-    /// OpenCode run spawned without a port, one whose server has not come up yet, one
+    /// OpenCode 1.x run spawned without a port, one whose server has not come up yet, one
     /// whose session has not been written to yet. The resolver reads its screen instead,
     /// so absence here costs the older evidence and never a verdict.
     ///
@@ -458,7 +512,7 @@ enum AgentProbes {
     /// window pays a full per-run timeout each for the same unresponsive port.
     static func agentSessions(_ records: [AgentState.RunRecord], directory: String,
                               now: TimeInterval) -> Observation<[String: AgentState.SessionState]> {
-        let asking = records.filter { AgentSessionProbe.serves(AgentRegistry.runRunner($0.runID)) }
+        let asking = records.filter { AgentSessionProbe.serves($0) }
         guard !asking.isEmpty else {
             return .unsupported("are unavailable (no run serves a session of its own)")
         }
@@ -552,19 +606,27 @@ enum AgentProbes {
     /// runs on the panel's repaint. The store refreshes both on its slow poll and the
     /// ticks in between carry forward whatever that last found (`.unavailable` until the
     /// first).
+    ///
+    /// Beside the evidence, the 2.x sessions a TUI in this pass's process table is
+    /// attached to, for retiring runs (`OpenCodeProbe.interrupts`).
     static func gather(records: [AgentState.RunRecord], now: TimeInterval,
                        owner: String, repo: String, directory: String,
                        meshEnabled: Bool, meshState: MeshSnapshot?,
                        merged: Observation<Set<Int>>,
-                       tokens: Observation<Bool>) -> AgentState.Evidence {
+                       tokens: Observation<Bool>)
+        -> (evidence: AgentState.Evidence, attached: Observation<[String]>) {
         let dump = psDump(now: now)
         let table = note("processes", processTable(dump))
-        let scan = note("agent scan", liveAgents(dump, owner: owner, repo: repo))
+        let scanned = scan(dump, owner: owner, repo: repo,
+                           heldPIDs: Set(records.compactMap(\.pid)))
+        let scan = note("agent scan", scanned.agents)
+        OpenCodeProbe.adopt(records, sessions: scanned.sessions, byPID: scanned.byPID,
+                            attached: scanned.attached.value ?? [])
         // Whose screens are worth counting is decided from the process table, not from the
         // records as they arrived: a run's tty lives on its agent process, and a run
         // spawned since the last tick has not adopted one yet.
         let lookedUp = AgentState.adoptTTYs(records, processes: table, liveAgents: scan)
-        return AgentState.Evidence(
+        let evidence = AgentState.Evidence(
             processes: table,
             sentinels: note("sentinels", AgentRegistry.sentinels(records)),
             tails: note("screens", paneTails(lookedUp, unbooked: unbookedTTYs(lookedUp, scan),
@@ -576,6 +638,7 @@ enum AgentProbes {
                            agentSessions(records, directory: directory, now: now)),
             activity: note("turn reports", AgentRegistry.activity(records)),
             tokensLeft: tokens)
+        return (evidence, scanned.attached)
     }
 
     /// Run a command, returning its stdout — nil on any failure, which every caller reads

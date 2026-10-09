@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
     QSystemTrayIcon,
 )
 
-from . import glyphs
+from . import glyphs, selfupdate
 from .panel import Panel
 from .store import Store
 from .singleton import SingleInstance
@@ -147,9 +147,9 @@ class DiplomatApp:
         # uninstall (see Store.ensure_allocator_installed_async).
         self.store.ensure_allocator_installed_async()
 
-        # Join the LAN mesh if the user opted in (no-ops when disabled). Starts a
-        # background node so duty coordination is live the moment the panel opens.
-        self.store.ensure_mesh_running_async()
+        # Join the LAN mesh if the user opted in, so duty coordination is live the
+        # moment the panel opens; with it off, stop a node left running.
+        self.store.settle_mesh_on_launch()
 
         # Optional prefill (also used for manual UI checks).
         prefill = os.environ.get("DIPLOMAT_PREFILL")
@@ -237,6 +237,9 @@ class DiplomatApp:
         if self._quitting:
             return
         self._quitting = True
+        # Only the operator gets here (the Quit button, Ctrl-C): a newer instance
+        # hands over with SIGTERM, which never runs this.
+        selfupdate.mark_operator_quit()
         SingleInstance.release()
         self.tray.hide()
         # Before the widgets a worker is about to signal go away. The tray is already
@@ -256,6 +259,8 @@ class DiplomatApp:
 
 def run_app() -> int:
     SingleInstance.acquire_newest_wins()
+    selfupdate.clear_operator_quit()
+    selfupdate.record_display_env()
     app = DiplomatApp()
     if not QSystemTrayIcon.isSystemTrayAvailable():
         # No tray host — still usable: just show the panel.

@@ -21,6 +21,7 @@ import time
 import pytest
 
 from diplomat_runtime import quota, telemetry, usagescan
+from test_opencode_v2 import quiet_shell
 
 
 @pytest.fixture
@@ -122,6 +123,21 @@ def test_rotation_keeps_what_the_longest_lookback_can_still_reach(ledger, monkey
     assert {"review:new", "review:newer"} <= keys, "rotation dropped reachable events"
 
 
+def test_rotation_drops_a_line_neither_reader_can_parse(ledger, monkeypatch):
+    """A 400-digit `at` is past float range: `float()` of it raises, from an append."""
+    recent = json.dumps({"at": time.time() - 3600, "ev": "queued",
+                         "key": "review:new", "duty": "review", "pr": 2})
+    with open(ledger, "w", encoding="utf-8") as fh:
+        fh.write('{"at": 1%s, "ev": "queued", "key": "review:huge"}\n' % ("0" * 400))
+        fh.write(recent + "\n")
+    monkeypatch.setattr(telemetry, "MAX_LEDGER_BYTES", 100)
+
+    telemetry.record_queued("review:newer", "review", 3)
+
+    telemetry._reset_cache()
+    assert {t.key for t in telemetry.load().tasks} == {"review:new", "review:newer"}
+
+
 def test_a_partial_tail_line_costs_only_itself(ledger):
     telemetry.record_queued("review:h/o/r#1@aa", "review", 1)
     with open(ledger, "a", encoding="utf-8") as fh:
@@ -130,14 +146,16 @@ def test_a_partial_tail_line_costs_only_itself(ledger):
     assert [t.key for t in telemetry.load().tasks] == ["review:h/o/r#1@aa"]
 
 
-def test_a_number_too_wide_for_a_float_costs_its_field_not_the_fold():
+def test_a_number_too_wide_for_a_float_costs_its_line_not_the_fold():
     """``float(10**400)`` is an ``OverflowError``, not a ``ValueError``, and the
-    screen folds the ledger on every repaint - so a raise here is every repaint."""
+    screen folds the ledger on every repaint - so a raise here is every repaint. The
+    line is refused whole, as ``JSONSerialization`` refuses it."""
     wide = "1" + "0" * 400
     got = telemetry.fold([
         f'{{"at": 1, "ev": "queued", "key": "review:h/o/r#9@zz", "pr": {wide}}}',
-        f'{{"at": {wide}, "ev": "queued", "key": "review:h/o/r#8@yy"}}'])
-    assert [(t.key, t.pr) for t in got.tasks] == [("review:h/o/r#9@zz", 0)]
+        f'{{"at": {wide}, "ev": "queued", "key": "review:h/o/r#8@yy"}}',
+        '{"at": 1, "ev": "queued", "key": "review:h/o/r#7@xx", "pr": 7}'])
+    assert [(t.key, t.pr) for t in got.tasks] == [("review:h/o/r#7@xx", 7)]
 
 
 # MARK: - What a poll records
@@ -287,6 +305,9 @@ def _stub_opencode(tmp_path, monkeypatch, body: str) -> None:
     exe.write_text(body, encoding="utf-8")
     exe.chmod(0o755)
     monkeypatch.setenv("PATH", str(exe.parent) + os.pathsep + os.environ["PATH"])
+    # The resolver asks the user's shell, whose profile and rc name the developer's own
+    # install; one that sources nothing answers from the PATH above.
+    monkeypatch.setenv("DIPLOMAT_SHELL", quiet_shell(tmp_path))
 
 
 EXPORTED = {"info": {"id": "ses_ours"}, "messages": [
@@ -334,13 +355,9 @@ def test_an_rc_only_opencode_still_prices_its_run(tmp_path, monkeypatch):
     exe.write_text("#!/bin/sh\ncat <<'JSON'\n" + json.dumps(EXPORTED) + "\nJSON\n",
                    encoding="utf-8")
     exe.chmod(0o755)
-    shell = tmp_path / "rcshell"
-    shell.write_text("#!/bin/sh\n"
-                     "echo 'welcome back!'\n"
-                     f"export PATH={shlex.quote(str(exe.parent))}:$PATH\n"
-                     'exec /bin/sh "$@"\n', encoding="utf-8")
-    shell.chmod(0o755)
-    monkeypatch.setenv("DIPLOMAT_SHELL", str(shell))
+    monkeypatch.setenv("DIPLOMAT_SHELL", quiet_shell(
+        tmp_path, "echo 'welcome back!'\n"
+                  f"export PATH={shlex.quote(str(exe.parent))}:$PATH\n"))
     # What a desktop launcher hands the applet: the system directories and nothing
     # the user's rc would have added.
     monkeypatch.setenv("PATH", os.pathsep.join(["/usr/bin", "/bin"]))

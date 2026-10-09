@@ -33,6 +33,7 @@ from diplomat_runtime import (
     autobudget,
     autofix,
     core,
+    opencodeapi,
     promptcore,
     review,
     runner,
@@ -153,6 +154,49 @@ def tools() -> list[Tool]:
 
 def tool_by_id(tool_id: str) -> Tool | None:
     return next((t for t in tools() if t.id == tool_id), None)
+
+
+def stop_stray_node(exit_wait: float = 10.0) -> tuple[str, int, int, str]:
+    """Stop the node ``state.json`` names, once it proves over its control port that it
+    is that node: the pid and node id it reports live must be the file's. Nothing is
+    signalled by pid, so a pid the OS has since handed to another process, or a port a
+    node on another state dir has since bound, is left alone. ``stopped`` means the pid
+    is gone, not just that the node accepted the command. Blocking; needs SzpontNet.
+
+    Returns ``(outcome, pid, port, reason)``, ``outcome`` one of ``none`` (nothing
+    here answers as that node), ``stopped`` and ``stop-failed``. Twin of
+    ``MeshBridge.stopStrayNode``."""
+    from szpontnet import ctl, protocol, statefile
+
+    none = ("none", 0, 0, "")
+    file = statefile.read_state()
+    if file is None:
+        return none
+    pid, port, me = file.get("pid"), file.get("tcpPort"), file.get("self")
+    node_id = me.get("id") if isinstance(me, dict) else None
+    if not isinstance(port, int) or port <= 0 or not node_id:
+        return none
+    try:
+        # Refused without dialling when the file's pid is dead.
+        live = ctl.request(protocol.status_request(), timeout=5.0).get("state")
+    except ctl.CtlError:
+        return none
+    if not isinstance(live, dict) or live.get("pid") != pid:
+        return none
+    live_me = live.get("self")
+    if not isinstance(live_me, dict) or live_me.get("id") != node_id:
+        return none
+    try:
+        ctl.stop()
+    except ctl.CtlError as exc:
+        return ("stop-failed", pid, port, str(exc))
+    deadline = time.monotonic() + exit_wait
+    while statefile.node_running(file):
+        if time.monotonic() >= deadline:
+            return ("stop-failed", pid, port,
+                    f"still running {int(exit_wait)}s after it was asked to stop")
+        time.sleep(0.1)
+    return ("stopped", pid, port, "")
 
 
 # MARK: - Store
@@ -1302,7 +1346,6 @@ class Store(QObject):
                                      job.ledger_key, job.prompt, node=node,
                                      work_key=job.work_key, here=ran_here,
                                      label=row_label, kind=job.kind)
-                ok = True
             else:
                 # Registered whether or not it is PR-scoped. A sweep or an audit has
                 # nothing to dedup against, but it is still an agent this applet opened
@@ -1310,14 +1353,18 @@ class Store(QObject):
                 # and a directory nothing ever cleans up. What it costs depends on how
                 # it was dispatched, not on having a PR: the cap counts automatic runs
                 # and pricing follows the ledger key.
-                ok = self._spawn_tracked(job.prompt, job.pr_url, job.pr_number,
-                                         source, job.ledger_key,
-                                         label=row_label, kind=job.kind)
-            if not ok:
-                activity.log(source, "spawn-failed", f"{job.label} failed to spawn")
-                self.refresh_activity()
-                return "failed"
-            activity.log(source, job.audit_action, row_label)
+                try:
+                    self._spawn_tracked(job.prompt, job.pr_url, job.pr_number,
+                                        source, job.ledger_key,
+                                        label=row_label, kind=job.kind)
+                except review.SpawnError as exc:
+                    activity.log(source, "spawn-failed",
+                                 f"{job.label} failed to spawn: {exc}")
+                    self.refresh_activity()
+                    return "failed"
+            token = (routed != "spawned" or ran_here) and bool(review.token_export())
+            activity.log(source, job.audit_action,
+                         row_label + (review.TOKEN_AUDIT_NOTE if token else ""))
             # The telemetry ledger tracks the MONITORS, so only an auto dispatch is
             # recorded — a wizard click is the operator's own doing and has no queue
             # instant to be late against. A mesh placement on a PEER spends that
@@ -1430,9 +1477,9 @@ class Store(QObject):
 
     def _spawn_tracked(self, prompt: str, url: str | None, number: int | None,
                        source: str, ledger_key: str = "", label: str = "",
-                       kind: str = "") -> bool:
-        """Register a run, then spawn its agent into it. Returns whether the terminal
-        launched.
+                       kind: str = "") -> None:
+        """Register a run, then spawn its agent into it. Raises
+        :class:`review.SpawnError`, with the run forgotten, when no terminal launched.
 
         The record is written BEFORE the spawn, not after. A terminal takes seconds to
         open and the poll that dispatched it can ask about the same PR again inside
@@ -1455,9 +1502,12 @@ class Store(QObject):
         Which runner is spawned is written down here rather than re-read later: the
         setting is what the NEXT spawn will use, so a run started under one runner and
         asked about after the operator switched would be interrogated through the
-        wrong store. An OpenCode run also gets a port reserved for its own server. A
-        port that cannot be had is not a failure to spawn — the run goes ahead without
-        one and is read off its screen, exactly as a Claude Code run is.
+        wrong store. An OpenCode 1.x run also gets a port reserved for its own server.
+        A port that cannot be had is not a failure to spawn — the run goes ahead without
+        one and is read off its screen, exactly as a Claude Code run is. An OpenCode 2.x
+        run has no server of its own and gets no port: its session is minted and staged
+        instead (:func:`review.stage_opencode_session`) and bound to the run before the
+        spawn, so the probe asks the per-user service about it from the first tick.
         """
         now = time.time()
         record = agentregistry.create_run(
@@ -1468,20 +1518,27 @@ class Store(QObject):
                 ledger_key=ledger_key),
             prompt)
         chosen = agentregistry.stage_runner(record.run_id)
-        port = (agentregistry.stage_port(record.run_id)
-                if chosen == runner.OPENCODE else None)
+        port = None
+        staged = {}
         try:
+            if chosen == runner.OPENCODE:
+                session_id = review.stage_opencode_session(
+                    str(agentregistry.prompt_path(record.run_id)))
+                if session_id:
+                    agentregistry.bind_session(record.run_id, session_id)
+                    staged = {"opencode_session": session_id}
+                else:
+                    port = agentregistry.stage_port(record.run_id)
             review.spawn(prompt, self.terminal,
                          done_path=str(agentregistry.done_path(record.run_id)),
                          pid_path=str(agentregistry.pid_path(record.run_id)),
                          prompt_file=str(agentregistry.prompt_path(record.run_id)),
                          port=port,
                          settings_file=agentregistry.stage_hooks(record.run_id),
-                         session=tmuxwatch.session_name(record.run_id))
+                         session=tmuxwatch.session_name(record.run_id), **staged)
         except review.SpawnError:
             agentregistry.forget({record.run_id})
-            return False
-        return True
+            raise
 
     def _track_mesh_run(self, url: str | None, number: int | None, source: str,
                         ledger_key: str, prompt: str, node: str, work_key: str,
@@ -2436,6 +2493,15 @@ class Store(QObject):
         gone = [r for r in t.retirable if r.run_id not in refused]
         if not gone:
             return
+        # A 2.x OpenCode turn outlives its TUI (:func:`opencodeapi.interrupt`). Stopped
+        # before pricing, so the export is final, and only with no TUI attached to it;
+        # the reaper has already stopped the ones it closed.
+        reaped = {r.run_id for r in t.reapable}
+        sessions = [probes.service_session(r) for r in gone if r.run_id not in reaped]
+        attached = set(probes.live_service_sessions()) if any(sessions) else set()
+        for session_id in sessions:
+            if session_id and session_id not in attached:
+                opencodeapi.interrupt(session_id)
         # Every pricing input comes out of the run directory, so all of them must be
         # read before `forget` deletes it. A run the mesh placed leaves no sentinel
         # here, and `record_completion` dates that one from its transcript; now() is
@@ -2465,6 +2531,7 @@ class Store(QObject):
                          f"{verdict.reason if verdict else 'no verdict'}")
         self.refresh_activity()
         agentregistry.forget({r.run_id for r in gone})
+        probes.forget_adopted({r.run_id for r in gone})
         for r, exited_at, prompt, session_id, agent_runner in retired:
             telemetry.record_completion(r.ledger_key, prompt, r.dispatched_at,
                                         exited_at, now, session_id=session_id,
@@ -2515,6 +2582,10 @@ class Store(QObject):
         """
         refused: set[str] = set()
         for record in t.reapable:
+            # A 2.x OpenCode turn outlives its window (:func:`opencodeapi.interrupt`).
+            session_id = probes.service_session(record)
+            if session_id:
+                opencodeapi.interrupt(session_id)
             if not (tmuxwatch.kill_session(tmuxwatch.session_name(record.run_id))
                     or tmuxwatch.kill_window_for_tty(record.tty)):
                 refused.add(record.run_id)
@@ -2541,7 +2612,7 @@ class Store(QObject):
         """Does this PR already have an agent? Every state that is not over counts,
         including one waiting at its prompt (that session holds the PR's context) and
         one nothing is known about (releasing a PR on missing evidence is how two
-        agents end up on it)."""
+        agents end up on it). A released agent does not: its run ended."""
         m = re.search(r"/pull/(\d+)", url)
         return m is not None and self._agent_tick().in_flight(int(m.group(1)))
 
@@ -2552,12 +2623,9 @@ class Store(QObject):
         On the slow refresh, not the 8-second tick: it costs a ``gh`` call per PR. The
         answer is carried forward by the fast ticks in between.
 
-        Only the runs this applet dispatched. "Merged" ends a run so it can be priced
-        and its bay handed back, and a synthesized one has nothing to price and is
-        manifestly still in the process table — asked about, a landed PR whose agent is
-        still sitting in its window would retire that record and have the next tick
-        synthesize it straight back, one ``gh`` call and one audit line per tick. What
-        ends one of those is the scan that made it.
+        Only the runs this applet dispatched: the resolver ends no untracked run on a
+        merge, since a landed PR does not make its agent leave. What ends one of those
+        is the scan that made it.
         """
         prs = {r.pr_number for r in agentregistry.load()
                if r.pr_number is not None and not r.untracked}
@@ -3025,9 +3093,8 @@ class Store(QObject):
     def ensure_mesh_running_async(self) -> None:
         """Start a background mesh node iff the user enabled the mesh and none is
         already alive. No-ops when disabled — which includes having no SzpontNet
-        installed — so it's safe to call blindly on app start, as the launcher
-        does. Never runs in a headless render/test (guarded by mesh_enabled,
-        which those paths leave off / stub)."""
+        installed — so it's safe to call blindly. Never runs in a headless
+        render/test (guarded by mesh_enabled, which those paths leave off / stub)."""
         if not self.mesh_enabled:
             self.refresh_mesh_state()
             return
@@ -3089,6 +3156,39 @@ class Store(QObject):
             self.refresh_mesh_state()
 
         self.start_background(work)
+
+    def settle_mesh_on_launch(self) -> None:
+        """Start a node on launch if the user has opted into the mesh; with it off, stop
+        one an earlier instance left running. Twin of ``settleMeshOnLaunch`` in
+        Store.swift."""
+        if self.mesh_enabled:
+            self.ensure_mesh_running_async()
+        else:
+            self.stop_stray_node_async()
+
+    def stop_stray_node_async(self, exit_wait: float = 10.0) -> threading.Thread | None:
+        """Stop a node left running on this machine's mesh state dir while the mesh is
+        off, and say so in the activity feed. The node outlives the applet by design, so
+        one started by an earlier instance otherwise runs on unattended while the setting
+        reads off. Twin of ``stopStrayMeshNode`` in Store.swift."""
+        if not szpont.AVAILABLE:
+            return None
+
+        def work() -> None:
+            outcome, pid, port, reason = stop_stray_node(exit_wait)
+            if outcome == "stopped":
+                activity.log("panel", "mesh-stop",
+                             f"Mesh is off: stopped the node left running here "
+                             f"(pid {pid}, :{port})")
+            elif outcome == "stop-failed":
+                activity.log("panel", "warn",
+                             f"Mesh is off, but the node left running here "
+                             f"(pid {pid}, :{port}) did not stop: {reason}")
+            # The mesh may have been turned on while the node exited: the toggle saw it
+            # still alive and started none.
+            self.ensure_mesh_running_async()
+
+        return self.start_background(work)
 
     def _mesh_command(self, run, what: str) -> None:
         """Run one mesh control round-trip on a daemon thread, then settle the view:

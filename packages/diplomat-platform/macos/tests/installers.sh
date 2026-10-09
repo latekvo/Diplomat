@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# What install-autostart.sh and install-autoupdate.sh write. Runs a copy of install/
-# laid out as a scratch checkout, with HOME in it too: `swift` is a stub, so
+# What install-autostart.sh, install-autoupdate.sh and install-watchdog.sh write. Runs
+# a copy of install/ laid out as a scratch checkout, with HOME in it too: `swift` is a stub, so
 # build-app.sh lays the bundle out without a build; launchctl and pkill are stubs
 # that log their arguments; and `rm` refuses anything outside the scratch dir, which
 # keeps the run off this box's /Applications and is the failure the installer's
@@ -59,7 +59,11 @@ check "the auto-update agent runs that same bundle" \
   grep -qF "<string>$BIN</string>" "$AGENTS/com.ignacy.diplomat.autoupdate.plist"
 check "…in self-update mode" \
   grep -qF "<key>DIPLOMAT_SELF_UPDATE</key><string>1</string>" "$AGENTS/com.ignacy.diplomat.autoupdate.plist"
-for label in com.ignacy.diplomat com.ignacy.diplomat.autoupdate; do
+check "the watchdog agent runs that same bundle" \
+  grep -qF "<string>$BIN</string>" "$AGENTS/com.ignacy.diplomat.watchdog.plist"
+check "…in watchdog mode" \
+  grep -qF "<key>DIPLOMAT_WATCHDOG</key><string>1</string>" "$AGENTS/com.ignacy.diplomat.watchdog.plist"
+for label in com.ignacy.diplomat com.ignacy.diplomat.autoupdate com.ignacy.diplomat.watchdog; do
   check "$label is loaded once written" \
     grep -qF "launchctl bootstrap gui/$(id -u) $AGENTS/$label.plist" "$SCRATCH/calls"
 done
@@ -69,4 +73,10 @@ echo "installers: the auto-update installer on its own"
 check "install-autoupdate.sh runs with no argument" run install-autoupdate.sh
 check "…and defaults to the bundle beside the package" \
   grep -qF "<string>$BIN</string>" "$AGENTS/com.ignacy.diplomat.autoupdate.plist"
+
+echo "installers: the watchdog installer on its own"
+/bin/rm -f "$AGENTS/com.ignacy.diplomat.watchdog.plist"
+check "install-watchdog.sh runs with no argument" run install-watchdog.sh
+check "…and defaults to the bundle beside the package" \
+  grep -qF "<string>$BIN</string>" "$AGENTS/com.ignacy.diplomat.watchdog.plist"
 echo "installers: all passed"

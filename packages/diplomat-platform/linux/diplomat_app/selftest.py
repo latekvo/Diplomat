@@ -13,7 +13,7 @@ None of these need a display; they only touch QtCore (QSettings) + gh.
 
 from __future__ import annotations
 
-from diplomat_runtime import review
+from diplomat_runtime import review, runner, usagescan
 from diplomat_runtime.models import API, Filters, Fmt
 from diplomat_runtime.prtarget import PRTarget
 from diplomat_runtime.review import ReviewConfig
@@ -105,7 +105,12 @@ def _print_prompt_dump(header: str, prompt: str) -> int:
     print("----- PROMPT -----")
     print(prompt)
     print("\n----- SHELL COMMAND -----")
-    print(review.shell_command(review.write_prompt(prompt)))
+    # An OpenCode 2.x spawn's command names a session id, minted here but never staged
+    # or created: what the dump is for is the shape of the command.
+    service = runner.selected() == runner.OPENCODE and usagescan.opencode_is_v2()
+    print(review.shell_command(
+        review.write_prompt(prompt),
+        opencode_session=runner.new_opencode_session() if service else None))
     return 0
 
 

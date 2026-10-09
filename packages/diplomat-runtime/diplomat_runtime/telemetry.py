@@ -57,7 +57,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import core
+from . import core, jsoninput
 
 # MARK: - Shared model (assets/telemetry.json)
 
@@ -157,7 +157,7 @@ def _rotate_if_large(path: Path) -> None:
                 open(tmp, "w", encoding="utf-8") as dst:
             for line in src:
                 try:
-                    at = float(json.loads(line).get("at", 0))
+                    at = float(jsoninput.loads(line).get("at", 0))
                 except (ValueError, TypeError, AttributeError):
                     continue
                 if at >= cutoff:
@@ -466,10 +466,10 @@ def _number(raw: object) -> float | None:
     float. Non-finite values are rejected: one ``Infinity`` anywhere downstream
     turns every mean into ``nan``.
 
-    A JSON ``true`` reads as 1.0, matching the Swift twin — there, a boolean
-    bridges to ``NSNumber`` and the same cast accepts it. Nothing either writer
-    emits puts a boolean in a numeric field; what matters is that a hand-edited
-    file makes both platforms answer the same way.
+    A JSON boolean is not a number, matching the Swift twin — there, ``JSONInput``
+    hands a boolean over as a ``Flag`` that no numeric cast takes. Nothing either
+    writer emits puts a boolean in a numeric field; what matters is that a
+    hand-edited file makes both platforms answer the same way.
 
     A string is read by the rule of the twin's ``Double(String)``, for the same
     reason: strtod's grammar with the whole string consumed. So hex is a number
@@ -484,7 +484,7 @@ def _number(raw: object) -> float | None:
             value = parse(raw)
         except (ValueError, OverflowError):  # fromhex raises on 0x1p99999
             return None
-    elif isinstance(raw, (int, float)):
+    elif isinstance(raw, (int, float)) and not isinstance(raw, bool):
         try:
             value = float(raw)
         except OverflowError:
@@ -514,7 +514,7 @@ def fold(lines: list[str]) -> Ledger:
         if not line:
             continue
         try:
-            obj = json.loads(line)
+            obj = jsoninput.loads(line)
         except ValueError:
             continue
         if not isinstance(obj, dict):

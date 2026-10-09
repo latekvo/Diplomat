@@ -644,6 +644,29 @@ def test_a_run_with_no_name_is_never_killed_by_one(monkeypatch):
     assert tmuxwatch.kill_session("") is False
 
 
+@pytest.mark.skipif(shutil.which("tmux") is None, reason="no tmux on this machine")
+def test_a_client_outside_tmux_under_a_c_locale_still_reads_its_panes(monkeypatch):
+    """Where launchd, an autostart entry and CI put the applet: no ``$TMUX`` and no
+    UTF-8 in the locale, so tmux sanitizes every control byte of a command's output
+    to ``_`` (and 3.4 escapes them as octal for any client)."""
+    monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.setenv("LC_ALL", "C")
+    name = f"diplomat-test-{uuid.uuid4().hex[:8]}"
+    _open_session(name)
+    try:
+        pane_id, tty = subprocess.run(
+            ["tmux", "list-panes", "-t", f"={name}", "-F", "#{pane_id} #{pane_tty}"],
+            capture_output=True, text=True, check=True).stdout.split()
+        short = tty.removeprefix("/dev/")
+        assert (pane_id, tty) in {(p.pane_id, p.tty) for p in tmuxwatch.dump_panes() or []}
+        tails = tmuxwatch.pane_tails_for_ttys({short})
+        assert tails is not None and short in tails
+        assert tmuxwatch.kill_window_for_tty(tty) is True
+        assert name not in _live_sessions()
+    finally:
+        _close_sessions(name)
+
+
 # MARK: - the reap closes a window, not the session around it
 
 
@@ -674,62 +697,23 @@ def test_the_tty_route_kills_the_panes_window_and_no_session(monkeypatch):
     assert panes == {"/dev/pts/3": "@4"}, "the other pane's window is untouched"
 
 
-@pytest.mark.skipif(shutil.which("tmux") is None, reason="needs a real tmux")
-def test_a_one_window_session_ends_with_its_window():
-    """The mesh node opens an auto-named session around its agent; the tty route
-    is the only way that one is reaped, and killing its sole window must end it."""
-    name = f"diplomat-test-{uuid.uuid4().hex[:8]}"
-    subprocess.run(["tmux", "new-session", "-d", "-s", name, "sleep 300"], check=True)
-    try:
-        tty = subprocess.run(
-            ["tmux", "list-panes", "-t", name, "-F", "#{pane_tty}"],
-            capture_output=True, text=True, check=True).stdout.strip()
-        listing = subprocess.run(
-            ["tmux", "list-panes", "-a", "-F", "#{session_name} #{pane_tty} #{window_id}"],
-            capture_output=True, text=True).stdout
-        assert tmuxwatch.kill_window_for_tty(tty) is True, f"tty={tty!r} panes={listing!r}"
-        gone = subprocess.run(["tmux", "has-session", "-t", name],
-                              capture_output=True).returncode != 0
-        assert gone
-    finally:
-        subprocess.run(["tmux", "kill-session", "-t", name], capture_output=True)
-
-
 @pytest.mark.skipif(shutil.which("tmux") is None, reason="no tmux on this machine")
-def test_a_client_outside_tmux_under_a_c_locale_still_reads_its_panes(monkeypatch):
-    """Where launchd and an autostart entry put the applet: no ``$TMUX`` and no
-    UTF-8 in the locale, so tmux sanitizes every control byte of a command's output
-    to ``_`` (and 3.4, CI's, escapes them as octal for any client)."""
-    monkeypatch.delenv("TMUX", raising=False)
-    monkeypatch.setenv("LC_ALL", "C")
+def test_a_window_of_a_two_window_session_goes_alone():
+    """An agent the operator started in a second window of their own session: the
+    reap closes that window and leaves the session and its first window up."""
     name = f"diplomat-test-{uuid.uuid4().hex[:8]}"
-    subprocess.run(["tmux", "new-session", "-d", "-s", name, "sleep 300"], check=True)
+    _open_session(name)
     try:
-        tty = subprocess.run(
-            ["tmux", "list-panes", "-t", name, "-F", "#{pane_tty}"],
-            capture_output=True, text=True, check=True).stdout.strip()
-        short = tty.removeprefix("/dev/")
-        tails = tmuxwatch.pane_tails_for_ttys({short})
-        assert tails is not None and short in tails
-        assert tmuxwatch.kill_window_for_tty(tty) is True
-    finally:
-        subprocess.run(["tmux", "kill-session", "-t", f"={name}"], capture_output=True)
-
-
-@pytest.mark.skipif(shutil.which("tmux") is None, reason="no tmux on this machine")
-def test_the_watcher_dumps_its_panes_from_outside_tmux_under_a_c_locale(monkeypatch):
-    """The same client, on the listing :func:`dump_panes` keys every pane by. A
-    separator tmux sanitizes is a line with none, and a watcher that then sees no
-    panes at all nudges nothing."""
-    monkeypatch.delenv("TMUX", raising=False)
-    monkeypatch.setenv("LC_ALL", "C")
-    name = f"diplomat-test-{uuid.uuid4().hex[:8]}"
-    subprocess.run(["tmux", "new-session", "-d", "-s", name, "sleep 300"], check=True)
-    try:
-        pane_id, tty = subprocess.run(
-            ["tmux", "list-panes", "-t", name, "-F", "#{pane_id} #{pane_tty}"],
+        subprocess.run(["tmux", "new-window", "-d", "-t", f"={name}:", "sleep 120"],
+                       check=True)
+        ttys = subprocess.run(
+            ["tmux", "list-panes", "-s", "-t", f"={name}", "-F", "#{pane_tty}"],
             capture_output=True, text=True, check=True).stdout.split()
-        panes = tmuxwatch.dump_panes()
-        assert panes and (pane_id, tty) in {(p.pane_id, p.tty) for p in panes}
+        assert len(ttys) == 2, ttys
+        assert tmuxwatch.kill_window_for_tty(ttys[1]) is True
+        left = subprocess.run(
+            ["tmux", "list-panes", "-s", "-t", f"={name}", "-F", "#{pane_tty}"],
+            capture_output=True, text=True, check=True).stdout.split()
+        assert left == ttys[:1]
     finally:
-        subprocess.run(["tmux", "kill-session", "-t", f"={name}"], capture_output=True)
+        _close_sessions(name)

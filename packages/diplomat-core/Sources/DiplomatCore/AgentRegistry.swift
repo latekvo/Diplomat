@@ -10,11 +10,13 @@ import Foundation
 ///
 ///     runs.json            the records — the book itself
 ///     <run-id>/prompt.txt  what the agent was asked (also its transcript's first message)
+///     <run-id>/prompt.txt.session.json, <run-id>/prompt.txt.prompt.json
+///                          what an OpenCode 2.x spawn creates and prompts its session with
 ///     <run-id>/pid         the agent's pid, written by the shell that runs it
 ///     <run-id>/done        its exit code, written when it returns
 ///     <run-id>/runner      which agent CLI was spawned into it
-///     <run-id>/port        the loopback port its OpenCode server answers on
-///     <run-id>/session     which of that runner's sessions turned out to be this run's
+///     <run-id>/port        the loopback port its OpenCode 1.x server answers on
+///     <run-id>/session     which of that runner's sessions is this run's
 ///     <run-id>/window      the terminal window handle a macOS spawn can raise again
 ///
 /// The per-run directory is what makes identity exact. The shell that runs the agent
@@ -139,13 +141,18 @@ public enum AgentRegistry {
     /// Every persisted record. Empty on anything unreadable — a corrupt book must
     /// degrade to "this applet has forgotten", which the process scan still covers,
     /// rather than taking the applet down on startup.
+    ///
+    /// Parsed through `JSONInput`, because `agentregistry.load` is strict about types: a
+    /// hand-edited `"untracked": 1` must not be an untracked run to one front-end and a
+    /// tracked one to the other.
     public static func load() -> [AgentState.RunRecord] {
         guard let data = try? Data(contentsOf: runsPath()),
-              let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let obj = JSONInput.parse(data),
               (obj["version"] as? NSNumber)?.intValue == schemaVersion,
-              let raw = obj["runs"] as? [[String: Any]]
+              let raw = obj["runs"] as? [Any]
         else { return [] }
-        return raw.compactMap(decode).filter { !$0.runID.isEmpty }
+        return raw.compactMap { ($0 as? [String: Any]).flatMap(decode) }
+            .filter { !$0.runID.isEmpty }
     }
 
     /// Replace the book with `records`.
@@ -287,7 +294,7 @@ public enum AgentRegistry {
         Set(records.filter(AgentState.deadlineApplies).map { runRunner($0.runID) })
     }
 
-    /// Record the port this run's OpenCode server will answer on.
+    /// Record the port this run's OpenCode 1.x server will answer on.
     ///
     /// The applet picks it rather than the agent, because the applet is the one that puts
     /// it on the agent's command line — a port only discoverable once the server is up is
@@ -299,9 +306,9 @@ public enum AgentRegistry {
         (try? String(port).write(to: portPath(runID), atomically: true, encoding: .utf8)) != nil
     }
 
-    /// The port this run's OpenCode server answers on, or nil for a run that has none —
-    /// every Claude Code and Hermes run, and any OpenCode run whose port could not be
-    /// reserved.
+    /// The port this run's OpenCode 1.x server answers on, or nil for a run that has
+    /// none — every Claude Code, Hermes and OpenCode 2.x run, and any 1.x run whose port
+    /// could not be reserved.
     public static func port(_ runID: String) -> Int? {
         guard let value = Int(read(portPath(runID))), value > 0, value < 65_536 else {
             return nil
@@ -309,12 +316,14 @@ public enum AgentRegistry {
         return value
     }
 
-    /// Which of its runner's sessions was found to be this run's, or "" before one was.
+    /// Which of its runner's sessions is this run's, or "" before one was found.
     ///
     /// Kept on disk rather than in memory so the search survives the applet restart this
     /// whole module exists for — and because the search is the expensive half: matching a
     /// session to a run reads its opening message, while asking a bound one what it is
-    /// doing reads a single message.
+    /// doing reads a single message. An OpenCode 2.x run needs no search: a local spawn
+    /// binds the id it minted before the agent starts, and a mesh-placed one binds the
+    /// session its TUI's command line names.
     ///
     /// Every runner spells an id its own way — `ses_00d61ec0…` under OpenCode,
     /// `20260812_002140_b0e4d4` under Hermes — so what is checked is the shape any id has
@@ -329,6 +338,17 @@ public enum AgentRegistry {
     /// Record which session is this run's.
     public static func bindSession(_ runID: String, _ sessionID: String) {
         try? sessionID.write(to: sessionPath(runID), atomically: true, encoding: .utf8)
+    }
+
+    /// The session an OpenCode 2.x run works in, or nil for every other run.
+    ///
+    /// A 2.x run is an OpenCode run bound to a session and holding NO port: a 1.x run is
+    /// only ever bound through its own server's port, so a portless one is never bound.
+    public static func serviceSession(_ runID: String) -> String? {
+        guard runRunner(runID) == AgentRunner.opencode.rawValue, port(runID) == nil
+        else { return nil }
+        let session = boundSession(runID)
+        return session.isEmpty ? nil : session
     }
 
     private static func read(_ url: URL) -> String {
@@ -382,6 +402,7 @@ public enum AgentRegistry {
             "quietSince": r.quietSince.map { $0 as Any } ?? NSNull(),
             "reapRefusedAt": r.reapRefusedAt.map { $0 as Any } ?? NSNull(),
             "untracked": r.untracked,
+            "released": r.released,
         ]
     }
 
@@ -406,7 +427,8 @@ public enum AgentRegistry {
             quietDigest: d["quietDigest"] as? String ?? "",
             quietSince: number(d["quietSince"]),
             reapRefusedAt: number(d["reapRefusedAt"]),
-            untracked: d["untracked"] as? Bool ?? false)
+            untracked: JSONInput.flag(d["untracked"]),
+            released: JSONInput.flag(d["released"]))
     }
 
     // Python twin: `agentstate._number` / `_integer`. One rule, because the parsers

@@ -57,7 +57,8 @@ diplomat_runtime/
                   format as AgentRegistry.swift, field for field: each side reads back
                   every record the other wrote (the two encoders order and escape keys
                   their own way, so it is the fields that match, not the bytes)
-  opencodeapi.py  reading an OpenCode run's own session: whose it is, mid-turn or not, spend
+  opencodeapi.py  reading an OpenCode run's own session (1.x server or 2.x service):
+                  whose it is, mid-turn or not, spend, and interrupting a 2.x turn
   hermesstore.py  the same, for a Hermes run's session in its SQLite store
   apiwatch.py     "is this a Claude API error?" matcher + nudge bookkeeping
   tmuxwatch.py    tmux capture-pane / send-keys — the Linux stand-in for AppleScript
@@ -66,6 +67,8 @@ diplomat_runtime/
   usagescan.py    Claude Code transcript scanner: repo-vs-other tokens, per-task attribution
   quota.py        the OAuth usage probe — what is left of the 5-hour and 7-day windows
   atomicjson.py   write-then-rename, for the files two processes share
+  jsoninput.py    JSON as JSONSerialization reads it, for the run book and the ledger
+                  (JSONInput.swift's twin)
   szponthost.py   Diplomat's answers to the six questions a mesh node asks its host
 ```
 

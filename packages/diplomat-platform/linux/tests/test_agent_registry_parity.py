@@ -20,7 +20,7 @@ import sys
 import pytest
 
 from diplomat_runtime import agentregistry as R
-from diplomat_runtime import completion
+from diplomat_runtime import atomicjson, completion
 from diplomat_runtime import agentstate as A
 
 CORE_BIN = os.environ.get("DIPLOMAT_CORE_BIN")
@@ -59,6 +59,11 @@ def _records() -> list[A.RunRecord]:
         A.RunRecord(run_id="untracked:404", dispatched_at=1786000003.0, pr_number=404,
                     source=A.SOURCE_AUTO, placement=A.PLACEMENT_LOCAL, tty="pts/8",
                     untracked=True),
+        # The agent an ended run left at its prompt. A side that dropped `released` would
+        # read it back as an untracked run holding a bay and its PR.
+        A.RunRecord(run_id="untracked:405", dispatched_at=1786000004.0, pr_number=405,
+                    source=A.SOURCE_AUTO, placement=A.PLACEMENT_LOCAL, pid=4343,
+                    tty="pts/9", untracked=True, released=True),
     ]
 
 
@@ -131,7 +136,7 @@ def test_a_record_with_unusable_fields_reads_the_same_on_both_sides():
     assert ours == _swift({"mode": "read"})
     assert [r["runId"] for r in ours] == ["r1", "r2", "r3"]
     assert ours[0]["dispatchedAt"] == 0 and ours[0]["pid"] is None
-    assert ours[0]["prNumber"] is None and ours[0]["quietSince"] == 1
+    assert ours[0]["prNumber"] is None and ours[0]["quietSince"] is None
     assert (ours[1]["tty"], ours[1]["workKey"], ours[1]["label"], ours[1]["kind"],
             ours[1]["quietDigest"]) == ("", "", "", "", "")
     assert (ours[1]["placement"], ours[1]["source"]) == ("local", "auto")
@@ -177,22 +182,23 @@ def test_the_write_mode_holds_the_same_bound_as_the_book(wide):
 def test_an_infinity_reaches_no_record_on_either_side():
     """Darwin's ``JSONSerialization`` parses ``-1e999`` to ``-inf`` - bare, a quiet
     clock past every timeout, and an uncatchable exception at the next save - while
-    corelibs refuses the document, so on Linux the Swift side has no book at all.
-    Text, because ``json.dumps`` cannot spell ``-1e999``."""
+    corelibs and :mod:`jsoninput` refuse the document. So on Linux neither side has a
+    book, and on Darwin the Swift side alone keeps the record, every field that held
+    one at its default. Text, because ``json.dumps`` cannot spell ``-1e999``."""
     R.runs_path().parent.mkdir(parents=True, exist_ok=True)
     R.runs_path().write_text(
         f'{{"version": {R.SCHEMA_VERSION}, "runs": [{{"runId": "r1", '
         f'"dispatchedAt": -1e999, "quietSince": -1e999}}]}}')
-    ours = [r.to_json() for r in R.load()]
-    assert ours[0]["dispatchedAt"] == 0 and ours[0]["quietSince"] is None
-    assert _swift({"mode": "read"}) == (ours if sys.platform == "darwin" else [])
+    assert R.load() == []
+    swift = [(r["runId"], r["dispatchedAt"], r["quietSince"])
+             for r in _swift({"mode": "read"})]
+    assert swift == ([("r1", 0, None)] if sys.platform == "darwin" else [])
 
 
 def test_a_schema_the_other_side_does_not_know_is_ignored_by_both():
     """Both must refuse a book from the future rather than misread it — an applet
     acting on records whose fields it does not understand is worse than one that has
     forgotten, because the process scan covers forgetting."""
-    from diplomat_runtime import atomicjson
     atomicjson.write_atomic(R.runs_path(),
                             {"version": R.SCHEMA_VERSION + 99,
                              "runs": [r.to_json() for r in _records()]})
@@ -226,3 +232,118 @@ def test_both_sides_stage_the_same_hook_commands(done):
     """
     activity = "/home/a b/.diplomat/agents/r/activity"
     assert _swift_hooks(activity, done) == completion.hook_settings(activity, done)
+
+
+# MARK: - A hand-edited book
+
+
+#: One whole record as JSON, for the scenarios below to spoil one field of.
+_WHOLE = _records()[0].to_json()
+
+#: (field, value a hand edit or a torn write left there, what both sides must read).
+#: `untracked: 1` is the one that matters: `JSONSerialization` bridges a JSON number to
+#: `NSNumber`, and `NSNumber(1) as? Bool` is `true` on Darwin and corelibs alike, so a
+#: Swift reader on plain `JSONSerialization` takes a dispatched run for an untracked one,
+#: which the run deadline never looks at. The rest is the same rule in every direction:
+#: a value of the wrong JSON type is the field's default, never a coercion of it.
+_HAND_EDITED = [
+    ("untracked", 1, False),
+    ("untracked", 1.0, False),
+    ("untracked", "true", False),
+    ("untracked", True, True),
+    ("dispatchedAt", True, 0.0),
+    ("dispatchedAt", "1786000000", 0.0),
+    ("prNumber", True, None),
+    ("prNumber", "337", None),
+    ("prNumber", 337.9, 337),
+    ("pid", True, None),
+    ("pid", 4242.5, 4242),
+    ("claimSeenAt", False, None),
+    ("quietSince", "1786000020", None),
+    ("reapRefusedAt", True, None),
+    ("label", 7, ""),
+    ("tty", True, ""),
+    ("source", 1, A.SOURCE_AUTO),
+    ("placement", "moon", A.PLACEMENT_LOCAL),
+    ("placement", True, A.PLACEMENT_LOCAL),
+]
+
+
+def _write_book(book: dict) -> None:
+    atomicjson.write_atomic(R.runs_path(), book)
+
+
+@pytest.mark.parametrize("key,value,expected", _HAND_EDITED,
+                         ids=[f"{k}={v!r}" for k, v, _ in _HAND_EDITED])
+def test_a_hand_edited_field_reads_the_same_on_both_sides(key, value, expected):
+    _write_book({"version": R.SCHEMA_VERSION, "runs": [{**_WHOLE, key: value}]})
+    python = [r.to_json() for r in R.load()]
+    swift = [A.RunRecord.from_json(r).to_json() for r in _swift({"mode": "read"})]
+    assert python == swift
+    got = python[0][key]
+    # `type` too: `True == 1`, so equality alone cannot tell a flag from a number.
+    assert (got, type(got)) == (expected, type(expected))
+
+
+def test_the_real_values_survive_the_strict_readers():
+    """Anti-vacuity for the table above: readers that dropped every field would agree
+    with each other just as well."""
+    _write_book({"version": R.SCHEMA_VERSION, "runs": [_WHOLE]})
+    assert R.load() == [_records()[0]]
+    assert [A.RunRecord.from_json(r) for r in _swift({"mode": "read"})] == [_records()[0]]
+
+
+#: Whole-book spoils: (name, book, the run ids both sides must read out of it).
+_HAND_EDITED_BOOKS = [
+    ("a boolean version", {"version": True, "runs": [_WHOLE]}, []),
+    ("a run id that is not a string",
+     {"version": R.SCHEMA_VERSION, "runs": [{**_WHOLE, "runId": 7}]}, []),
+    ("one entry that is not a record",
+     {"version": R.SCHEMA_VERSION, "runs": [_WHOLE, 5]}, [_WHOLE["runId"]]),
+]
+
+
+@pytest.mark.parametrize("book,expected", [(b, e) for _, b, e in _HAND_EDITED_BOOKS],
+                         ids=[n for n, _, _ in _HAND_EDITED_BOOKS])
+def test_a_hand_edited_book_reads_the_same_on_both_sides(book, expected):
+    _write_book(book)
+    assert [r.run_id for r in R.load()] == expected
+    assert [r["runId"] for r in _swift({"mode": "read"})] == expected
+
+
+#: Spoils at the parser: (name, the book's bytes, the run ids both sides must read out
+#: of it). `json` takes every one of the refused ones and `JSONSerialization` none, so
+#: each is a book only one front-end could see runs in, or a raise out of the read.
+_HAND_EDITED_TEXT = [
+    ("Infinity", b'{"version": 1, "runs": [{"runId": "r", "pid": Infinity}]}', []),
+    ("NaN", b'{"version": 1, "runs": [{"runId": "r", "dispatchedAt": NaN}]}', []),
+    ("1e400", b'{"version": 1, "runs": [{"runId": "r", "dispatchedAt": 1e400}]}', []),
+    ("a 400-digit integer",
+     b'{"version": 1, "runs": [{"runId": "r", "claimSeenAt": 1%s}]}' % (b"0" * 400), []),
+    ("a lone surrogate",
+     b'{"version": 1, "runs": [{"runId": "r", "label": "\\ud800"}]}', []),
+    ("UTF-16", '{"version": 1, "runs": [{"runId": "r"}]}'.encode("utf-16"), []),
+    ("a byte-order mark", b'\xef\xbb\xbf{"version": 1, "runs": [{"runId": "r"}]}', []),
+    ("a surrogate pair",
+     b'{"version": 1, "runs": [{"runId": "r", "label": "\\ud83d\\ude00"}]}', ["r"]),
+]
+
+
+@pytest.mark.parametrize("body,expected", [(b, e) for _, b, e in _HAND_EDITED_TEXT],
+                         ids=[n for n, _, _ in _HAND_EDITED_TEXT])
+def test_a_book_one_parser_refuses_is_refused_by_both(body, expected):
+    R.runs_path().parent.mkdir(parents=True, exist_ok=True)
+    R.runs_path().write_bytes(body)
+    assert [r.run_id for r in R.load()] == expected
+    assert [r["runId"] for r in _swift({"mode": "read"})] == expected
+
+
+@pytest.mark.parametrize("first,second", [("true", "1"), ("1", "true")])
+def test_a_duplicated_key_keeps_its_first_value_on_both_sides(first, second):
+    """`json` keeps the last; `JSONSerialization` on Darwin keeps the first."""
+    R.runs_path().parent.mkdir(parents=True, exist_ok=True)
+    R.runs_path().write_text('{"version": 1, "runs": [{"runId": "r", '
+                             f'"untracked": {first}, "untracked": {second}}}]}}')
+    expected = [first == "true"]
+    assert [r.untracked for r in R.load()] == expected
+    assert [r.get("untracked", False) for r in _swift({"mode": "read"})] == expected

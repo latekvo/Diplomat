@@ -80,6 +80,27 @@ def test_an_unusable_book_degrades_to_empty_rather_than_raising(body):
     assert R.load() == []
 
 
+@pytest.mark.parametrize("key", ["dispatchedAt", "claimSeenAt", "quietSince",
+                                 "reapRefusedAt"])
+def test_an_integer_past_float_range_decodes_as_no_number(key):
+    """`float()` of one raises rather than overflowing to infinity."""
+    record = A.RunRecord.from_json({"runId": "r", key: 10 ** 400})
+    assert (record.dispatched_at, record.claim_seen_at, record.quiet_since,
+            record.reap_refused_at) == (0.0, None, None, None)
+
+
+@pytest.mark.parametrize("body", [
+    '{"version": true, "runs": [{"runId": "old"}]}',
+    '{"version": 1, "runs": [{"runId": "old", "pid": Infinity}]}',
+], ids=["a boolean version", "Infinity"])
+def test_a_run_added_to_a_book_load_refuses_starts_a_new_one(body):
+    """Read as `load` reads it, or the new run joins a book that stays unreadable."""
+    R.runs_path().parent.mkdir(parents=True, exist_ok=True)
+    R.runs_path().write_text(body)
+    R.add(rec("new"))
+    assert [r.run_id for r in R.load()] == ["new"]
+
+
 def test_a_record_with_unusable_fields_costs_those_fields_not_the_book():
     """The Swift twin reads a null or non-numeric number as that field's default;
     this side raised out of the whole load, and every poll after it."""
@@ -91,27 +112,32 @@ def test_a_record_with_unusable_fields_costs_those_fields_not_the_book():
     got = R.load()
     assert [r.run_id for r in got] == ["r1", "r2"]
     assert (got[0].dispatched_at, got[0].pid, got[0].pr_number, got[0].claim_seen_at,
-            got[0].quiet_since) == (0.0, None, None, None, 1.0)
+            got[0].quiet_since) == (0.0, None, None, None, None)
     assert got[1] == rec(run_id="r2")
 
 
 @pytest.mark.parametrize("wide, as_double", [
-    ("1e300", 1e300), ("99999999999999999999", 1e20), ("1" + "0" * 400, None)])
-def test_a_number_past_int64_is_no_pid_and_past_a_double_is_nothing(wide, as_double):
-    """The Swift twin reads ``-1e999`` as ``-inf`` on Darwin, and its ``intValue``
-    saturates or wraps past Int64, so both sides keep one rule: a number is usable
-    if finite, and an integer field if it also sits inside Int64. Without it
-    ``int(1e300)`` is a 301-digit pid the next save writes back, and a 400-digit
-    int is an ``OverflowError`` out of the whole load, every poll. Text, because
-    ``json.dumps`` cannot spell ``-1e999``."""
+    ("1e300", 1e300), ("99999999999999999999", 1e20)])
+def test_a_number_past_int64_is_no_pid(wide, as_double):
+    """The Swift twin's ``intValue`` saturates or wraps past Int64, so both sides keep
+    one rule: an integer field is usable only inside Int64, and a finite double stays
+    what it is. Without it ``int(1e300)`` is a 301-digit pid the next save writes
+    back."""
     R.runs_path().parent.mkdir(parents=True, exist_ok=True)
     R.runs_path().write_text(
         f'{{"version": {R.SCHEMA_VERSION}, "runs": [{{"runId": "r1", '
-        f'"dispatchedAt": -1e999, "quietSince": {wide}, "reapRefusedAt": -1e999, '
-        f'"pid": {wide}, "prNumber": {wide}}}]}}')
+        f'"quietSince": {wide}, "pid": {wide}, "prNumber": {wide}}}]}}')
     got = R.load()
-    assert (got[0].dispatched_at, got[0].reap_refused_at, got[0].pid, got[0].pr_number,
-            got[0].quiet_since) == (0.0, None, None, None, as_double)
+    assert (got[0].pid, got[0].pr_number, got[0].quiet_since) == (None, None, as_double)
+
+
+def test_a_non_finite_number_is_no_field_value():
+    """A book holding one is refused whole on load; a record decoded any other way
+    still reads the field's default rather than carrying an infinity to the next
+    save."""
+    record = A.RunRecord.from_json({"runId": "r", "dispatchedAt": float("-inf"),
+                                    "quietSince": float("nan"), "pid": float("inf")})
+    assert (record.dispatched_at, record.quiet_since, record.pid) == (0.0, None, None)
 
 
 def test_a_run_registered_during_a_forget_survives(monkeypatch):
@@ -120,20 +146,19 @@ def test_a_run_registered_during_a_forget_survives(monkeypatch):
     add here fires from inside forget's read; a read taken outside the lock lets it
     land first and be overwritten by the stale copy."""
     import threading
-    from diplomat_runtime import atomicjson
     R.create_run(rec(run_id="old"), "p")
-    real = atomicjson.read_object
+    real = R._read_book
     spawns: list[threading.Thread] = []
 
-    def read_then_register(path):
-        data = real(path)
+    def read_then_register():
+        data = real()
         if not spawns:
             spawns.append(threading.Thread(target=R.add, args=(rec(run_id="new"),)))
             spawns[0].start()
             spawns[0].join(timeout=0.5)
         return data
 
-    monkeypatch.setattr(atomicjson, "read_object", read_then_register)
+    monkeypatch.setattr(R, "_read_book", read_then_register)
     R.forget({"old"})
     spawns[0].join(timeout=5)
     assert [r.run_id for r in R.load()] == ["new"]
@@ -310,6 +335,41 @@ def test_a_tmux_that_answers_with_no_matching_pane_is_present_and_empty(monkeypa
     monkeypatch.setattr(probes.tmuxwatch, "pane_tails_for_ttys", lambda ttys: {})
     obs = probes.pane_tails([rec(tty="pts/3")])
     assert obs.ok and obs.value == {}
+
+
+def test_an_empty_merged_ask_is_a_present_none_without_calling_gh(monkeypatch):
+    """The resolver's merged rung needs a PRESENT reading to fire at all."""
+    from diplomat_runtime import gh
+    monkeypatch.setattr(gh, "run", lambda *a, **k: pytest.fail("gh was called"))
+    obs = probes.merged_prs(set())
+    assert obs.status == A.PRESENT and obs.value == set()
+
+
+def test_a_merged_probe_that_fails_for_one_pr_still_answers_for_the_rest(monkeypatch):
+    from diplomat_runtime import gh
+    def state(args, **_):
+        if args[2] == "7":
+            raise RuntimeError("gh timed out")
+        return b'{"state":"MERGED"}\n'
+
+    monkeypatch.setattr(gh, "run", state)
+    obs = probes.merged_prs({7, 8})
+    assert obs.status == A.PRESENT and obs.value == {8}
+
+
+def test_the_merged_probe_asks_the_configured_repo_not_the_working_directory(monkeypatch):
+    """The same number names a different PR in whatever checkout the app runs from."""
+    from diplomat_runtime import gh
+    asked = []
+    def state(args, **_):
+        asked.append(args)
+        return b'{"state":"CLOSED"}\n'
+
+    monkeypatch.setattr(gh, "run", state)
+    monkeypatch.setattr(probes.core, "config",
+                        lambda: {"owner": "software-mansion", "repo": "argent"})
+    assert probes.merged_prs({166}).value == set()
+    assert asked[0][asked[0].index("--repo") + 1] == "software-mansion/argent"
 
 
 def test_the_pane_probe_asks_only_about_the_ttys_of_tracked_runs(monkeypatch):
@@ -586,6 +646,37 @@ def test_the_agent_scan_reads_the_tty_column_of_this_dump(monkeypatch):
     assert found[712] == "pts/3", "the tty column, not the pid"
     assert found[611] == "", "a process with no controlling tty carries none"
     assert 712 in found and found[712] != "345772"
+
+
+def test_a_pidless_run_beside_a_held_agent_reads_its_own_screen(monkeypatch):
+    """Two agents on one PR: a released one the book holds by pid, and a mesh-placed
+    run's, which has no pid and only the scan to find its tty by. Named the released
+    one, the run never adopts a tty, reads as working and holds its bay after its turn
+    is over."""
+    monkeypatch.setattr(probes.shutil, "which", lambda _: "/usr/bin/tmux")
+    monkeypatch.setattr(probes.tmuxwatch, "pane_tails_for_ttys",
+                        lambda ttys: {t: "❯" for t in ttys})
+    monkeypatch.setattr(probes, "mesh_claims", lambda enabled=True: A.Observation.present(set()))
+    monkeypatch.setattr(probes.core, "config",
+                        lambda: {"owner": "software-mansion", "repo": "argent"})
+    monkeypatch.setattr(probes, "_ps_dump", lambda now: A.Observation.present(
+        "  100 pts/1  900 claude Review PR #844 in software-mansion/argent\n"
+        "  200 pts/2  600 claude Review PR #844 in software-mansion/argent\n"
+        "  300 pts/3  600 claude Review PR #845 in software-mansion/argent\n"))
+    now = T0 + 600
+    released = rec("untracked:844:100", dispatched_at=T0 - 300, pr_number=844, pid=100,
+                   tty="pts/1", untracked=True)
+    placed = rec("a2", pr_number=844, placement=A.PLACEMENT_MESH_HERE)
+    book = [released, placed, rec("a3", pr_number=845, pid=300)]
+
+    evidence = probes.gather(book, now)
+    t = A.tick(book, evidence, now, 3)
+
+    assert evidence.live_agents.value == {844: "pts/2", 845: "pts/3"}, \
+        "a held agent is named only when it is its PR's last"
+    a2 = next(r for r in t.records if r.run_id == "a2")
+    assert a2.tty == "pts/2"
+    assert t.states["a2"].state == A.AWAITING_INPUT and "a2" not in t.cap_load
 
 
 def test_the_agent_scan_ignores_a_line_that_is_not_an_agent(monkeypatch):

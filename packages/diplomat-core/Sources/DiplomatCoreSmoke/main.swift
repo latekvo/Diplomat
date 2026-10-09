@@ -490,6 +490,35 @@ check(!AgentRunner.hermes.agentCommand(promptFile: "/tmp/p.txt", port: 47_910).c
       "Hermes serves no port either; it answers from its own store")
 check(!AgentRunner.opencode.agentCommand(promptFile: "/tmp/p.txt", port: 0).contains("--port"),
       "a run with no port must spawn exactly as it did before, not with --port 0")
+// OpenCode 2.x: create the staged session, prompt it, attach a TUI. Pinned byte for byte:
+// the pid file is only the agent's own for exactly this shape (`;` before the TUI,
+// `|| exit` after the prompt). Linux differs only in quoting: it leaves a plain path bare.
+let serviceCommand = AgentRunner.opencode.agentCommand(
+    promptFile: "/tmp/p.txt", model: "openai/gpt-5-mini", port: 47_910,
+    serviceSession: "ses_diplomat_0123456789abcdef0123456789abcdef")
+check(serviceCommand
+        == "opencode api session.create -d \"$(cat '/tmp/p.txt.session.json')\" "
+         + "&& opencode api session.prompt --param sessionID=ses_diplomat_0123456789abcdef0123456789abcdef "
+         + "-d \"$(cat '/tmp/p.txt.prompt.json')\" "
+         + "|| exit; opencode --session ses_diplomat_0123456789abcdef0123456789abcdef",
+      "the 2.x command: \(serviceCommand)")
+for flag in ["--port", " -m ", AgentRunner.permissionEnv, "--prompt"] {
+    check(!serviceCommand.contains(flag), "2.x takes no \(flag); it belongs to the service")
+}
+check(AgentRunner.opencode.agentCommand(promptFile: "/tmp/it's.txt", serviceSession: "ses_x")
+        .contains("\"$(cat '/tmp/it'\\''s.txt.session.json')\""),
+      "the staged files are quoted the way the prompt file is")
+check(AgentRunner.opencode.agentCommand(promptFile: "/tmp/p.txt", serviceSession: "")
+        == AgentRunner.opencode.agentCommand(promptFile: "/tmp/p.txt"),
+      "no service session is a 1.x spawn, unchanged")
+check(AgentRunner.claude.agentCommand(promptFile: "/tmp/p.txt", serviceSession: "ses_x")
+        == "claude \"$(cat '/tmp/p.txt')\"",
+      "only OpenCode has a service to create a session on")
+check(AgentRunner.hermes.agentCommand(promptFile: "/tmp/p.txt", serviceSession: "ses_x")
+        == "hermes chat --tui --yolo -q \"$(cat '/tmp/p.txt')\"")
+// `auth` is 2.x's name for the provider wizard and an alias of 1.x's `providers`.
+check(AgentRunner.opencode.setupCommand == "opencode auth login; opencode auth list",
+      "one provider-wizard spelling serves both OpenCode majors")
 print("agent runner assertions passed")
 
 section("agent model")
@@ -548,9 +577,12 @@ func writeOpenCode(_ name: String, _ json: String) throws {
 func writeOpenCodeState(_ json: String) throws {
     try json.write(to: openCodeState.appendingPathComponent("model.json"), atomically: true, encoding: .utf8)
 }
-func detectModel() -> String {
+// The fixture names the OpenCode major, or a 2.x install on this machine would change
+// every 1.x check below.
+func detectModel(service: Bool = false) -> String {
     AgentModel.detect(configFile: configFile, claudeHome: claudeHome, hermesConfig: hermesConfig,
-                      openCodeConfig: openCodeConfig, openCodeState: openCodeState)
+                      openCodeConfig: openCodeConfig, openCodeState: openCodeState,
+                      openCodeIsService: { service })
 }
 func writeTranscript(_ name: String, _ body: String, ageSecs: Double) throws {
     let url = sessions.appendingPathComponent(name)
@@ -618,6 +650,40 @@ try writeOpenCodeState("""
 """)
 check(detectModel() == "Opus 5",
       "the head of the recent list is the model OpenCode's picker restores")
+// The 2.x service never reads the picker's recents.
+check(detectModel(service: true) == "",
+      "an unpinned 2.x run with no config model names no model, never the picker's last")
+// DIPLOMAT_OPENCODE_MAJOR is the Linux runtime's answer. Anything but exactly `1` or `2`
+// asks the binary, here through a shell that finds none, so 1.x.
+do {
+    let emptyShell = modelFixture.appendingPathComponent("noshell")
+    FileManager.default.createFile(atPath: emptyShell.path,
+                                   contents: Data("#!/bin/sh\nexit 0\n".utf8),
+                                   attributes: [.posixPermissions: 0o755])
+    let overrides = ["DIPLOMAT_CONFIG": configFile.path, "DIPLOMAT_CLAUDE_DIR": claudeHome.path,
+                     "DIPLOMAT_HERMES_CONFIG": hermesConfig.path,
+                     "DIPLOMAT_OPENCODE_CONFIG_DIR": openCodeConfig.path,
+                     "DIPLOMAT_OPENCODE_STATE_DIR": openCodeState.path,
+                     "SHELL": emptyShell.path, "PATH": "/usr/bin:/bin"]
+    let prior = overrides.keys.map { ($0, ProcessInfo.processInfo.environment[$0]) }
+    for (key, value) in overrides { setenv(key, value, 1) }
+    defer {
+        for (key, value) in prior {
+            if let value { setenv(key, value, 1) } else { unsetenv(key) }
+        }
+        unsetenv("DIPLOMAT_OPENCODE_MAJOR")
+    }
+    func detectedWith(_ major: String?) -> String {
+        if let major { setenv("DIPLOMAT_OPENCODE_MAJOR", major, 1) } else { unsetenv("DIPLOMAT_OPENCODE_MAJOR") }
+        return AgentModel.detected()
+    }
+    check(detectedWith("2") == "", "DIPLOMAT_OPENCODE_MAJOR=2 is a 2.x install")
+    check(detectedWith("1") == "Opus 5", "DIPLOMAT_OPENCODE_MAJOR=1 is a 1.x install")
+    for other in [nil, "", "2.0", " 2"] {
+        check(detectedWith(other) == "Opus 5",
+              "DIPLOMAT_OPENCODE_MAJOR=\(other ?? "(unset)") asks the binary, and there is none")
+    }
+}
 // A head written without its model must fall through to the entry behind it rather than
 // blanking a tag that entry can still fill.
 try writeOpenCodeState("""
@@ -628,6 +694,12 @@ check(detectModel() == "GLM 5.2", "an entry that names no model is walked past, 
 // started with no `-m` is on that one whatever was used last.
 try writeOpenCode("config.json", "{\"model\": \"openai/gpt-5.2\"}")
 check(detectModel() == "GPT 5.2", "the config's model is what OpenCode resolves before its recent list")
+var majorAsked = 0
+check(AgentModel.detect(configFile: configFile, claudeHome: claudeHome, hermesConfig: hermesConfig,
+                        openCodeConfig: openCodeConfig, openCodeState: openCodeState,
+                        openCodeIsService: { majorAsked += 1; return true }) == "GPT 5.2"
+        && majorAsked == 0,
+      "a config model names a 2.x run too, without asking the binary which major it is")
 // …and the three global files merge in OpenCode's own order, later winning.
 try writeOpenCode("opencode.json", "{\"model\": \"qwen/qwen-3.8-max\"}")
 check(detectModel() == "Qwen 3.8 Max", "opencode.json is merged over config.json")
@@ -644,6 +716,9 @@ check(detectModel() == "Kimi K3",
 // settings — so it is what the run is on, and what the tag says.
 try writeConfig("{\"agentRunner\": \"opencode\", \"agentModel\": \"google/gemini-3.1-pro-preview\"}")
 check(detectModel() == "Gemini 3.1 Pro Preview", "`-m` beats everything OpenCode would have picked")
+// A 2.x pin may carry a `#variant`.
+try writeConfig("{\"agentRunner\": \"opencode\", \"agentModel\": \"openai/gpt-5.2#high\"}")
+check(detectModel(service: true) == "GPT 5.2", "a pinned variant is still the model it qualifies")
 try FileManager.default.removeItem(at: openCodeConfig)
 try FileManager.default.createDirectory(at: openCodeConfig, withIntermediateDirectories: true)
 try writeOpenCodeState("{}")
@@ -789,7 +864,327 @@ let exported: [[String: Any]] = [
 ]
 check(OpenCodeAPI.sessionTokens(exported) == 248)
 check(OpenCodeAPI.sessionTokens([]) == 0)
+// 2.x's `session export` carries each message's tokens at its top level, not under `info`.
+check(OpenCodeAPI.sessionTokens([
+    ["type": "user", "text": "hi"],
+    ["type": "assistant", "tokens": ["input": 3.0, "output": 84.0, "reasoning": 9.0,
+                                     "cache": ["read": 29_000.0, "write": 40.0]]],
+    ["type": "idle", "outcome": "succeeded"],
+]) == 127, "a 2.x export is summed by the same rule")
 print("opencode session assertions passed")
+
+section("opencode 2.x service")
+// Anything unreadable is 1.x. Real `--version` outputs, 2.0.18 then 1.x.
+check(OpenCodeAPI.isServiceVersion("opencode v2.0.18\n"))
+check(OpenCodeAPI.isServiceVersion("opencode v10.1.0"), "a major is a number, not a digit")
+check(!OpenCodeAPI.isServiceVersion("1.18.33\n"))
+check(!OpenCodeAPI.isServiceVersion("1.4.3"))
+for garbage in ["", "opencode", "v2.0", "command not found: opencode", "é2"] {
+    check(!OpenCodeAPI.isServiceVersion(garbage), "“\(garbage)” names no version, so it is 1.x")
+}
+check(OpenCodeAPI.exportArguments(sessionID: "ses_a", service: true) == ["session", "export", "ses_a"])
+check(OpenCodeAPI.exportArguments(sessionID: "ses_a", service: false) == ["export", "ses_a"],
+      "1.x has no `session export`, 2.x no top-level `export`")
+// A reused id makes `session.create` answer with somebody else's existing session.
+let minted = OpenCodeAPI.newSessionID()
+check(minted.hasPrefix("ses_diplomat_") && minted.count == 45
+        && minted.dropFirst(13).allSatisfy { "0123456789abcdef".contains($0) },
+      "ses_diplomat_ and 32 lowercase hex digits, not \(minted)")
+check(minted != OpenCodeAPI.newSessionID())
+// A pin splits at the FIRST `/`, and a `#variant` off the LAST `#` of the rest.
+check(OpenCodeAPI.modelRef("") == nil && OpenCodeAPI.modelRef("  ") == nil,
+      "no pin is no model object: the service picks its configured one")
+check(OpenCodeAPI.modelRef("openai/gpt-5-mini") == ["providerID": "openai", "id": "gpt-5-mini"])
+check(OpenCodeAPI.modelRef("openrouter/moonshotai/kimi-k3")
+        == ["providerID": "openrouter", "id": "moonshotai/kimi-k3"],
+      "an OpenRouter id keeps its own path")
+check(OpenCodeAPI.modelRef("openai/gpt-5#high")
+        == ["providerID": "openai", "id": "gpt-5", "variant": "high"])
+check(OpenCodeAPI.modelRef("openrouter/a/b#x#y")
+        == ["providerID": "openrouter", "id": "a/b#x", "variant": "y"])
+check(OpenCodeAPI.modelRef("gpt-5") == ["providerID": "gpt-5", "id": ""],
+      "a pin with no provider is all provider, which the service then fails in plain view")
+let unpinned = OpenCodeAPI.sessionBody(id: "ses_x", directory: "/repo", model: "")
+check(unpinned["model"] == nil, "an unpinned session sends no model")
+check(unpinned["id"] as? String == "ses_x"
+        && (unpinned["location"] as? [String: String]) == ["directory": "/repo"]
+        && (unpinned["permissions"] as? [[String: String]])
+            == [["action": "*", "resource": "*", "effect": "allow"]],
+      "every spawned session is created with the allow-all ruleset")
+check((OpenCodeAPI.sessionBody(id: "ses_x", directory: "/repo", model: "openai/gpt-5#high")["model"]
+        as? [String: String]) == ["providerID": "openai", "id": "gpt-5", "variant": "high"])
+// What the spawn stages, read back as `opencode api` will read it.
+do {
+    let dir = FileManager.default.temporaryDirectory
+        .appendingPathComponent("diplomat-smoke-stage-\(UUID().uuidString)", isDirectory: true)
+    let repo = dir.appendingPathComponent("repo", isDirectory: true)
+    let link = dir.appendingPathComponent("link")
+    try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
+    try FileManager.default.createSymbolicLink(at: link, withDestinationURL: repo)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let promptFile = dir.appendingPathComponent("prompt.txt")
+    let text = "Review PR #7 in o/r\n  it's \"quoted\" — and $(not run)\n"
+    try text.write(to: promptFile, atomically: true, encoding: .utf8)
+    guard let sid = OpenCodeCLI.stageSession(promptFile: promptFile, directory: link.path,
+                                             model: "openrouter/a/b#max") else {
+        check(false, "a writable run directory stages a session")
+        exit(1)
+    }
+    check(sid.hasPrefix("ses_diplomat_"))
+    func staged(_ suffix: String) -> [String: Any] {
+        let data = (try? Data(contentsOf: URL(fileURLWithPath: promptFile.path + suffix))) ?? Data()
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+    }
+    let session = staged(".session.json")
+    let physical = URL(fileURLWithPath: repo.path).resolvingSymlinksInPath().path
+    check(session["id"] as? String == sid, "the staged session is the one the id names")
+    check(((session["location"] as? [String: Any])?["directory"] as? String)
+            .map { $0.hasSuffix(physical) && !$0.hasSuffix("/link") } == true,
+          "the directory is the checkout's physical path, not the link the agent was cd'd through")
+    check((session["model"] as? [String: String])
+            == ["providerID": "openrouter", "id": "a/b", "variant": "max"])
+    check(staged(".prompt.json")["text"] as? String == text, "the prompt is staged verbatim")
+    for suffix in [".session.json", ".prompt.json"] {
+        let mode = (try? FileManager.default.attributesOfItem(atPath: promptFile.path + suffix))?[
+            .posixPermissions] as? NSNumber
+        check(mode?.intValue == 0o600, "\(suffix) carries the prompt, so it is owner-only")
+    }
+    check(OpenCodeCLI.stageSession(promptFile: dir.appendingPathComponent("absent.txt"),
+                                   directory: repo.path, model: "") == nil,
+          "a prompt that cannot be read stages nothing to spawn on")
+}
+// Finding the service: the file every 2.x client writes, under XDG_STATE_HOME when set.
+let home = URL(fileURLWithPath: "/Users/me")
+check(OpenCodeAPI.serviceFile(environment: ["XDG_STATE_HOME": "/x/state"], home: home).path
+        == "/x/state/opencode/service.json")
+check(OpenCodeAPI.serviceFile(environment: ["XDG_STATE_HOME": ""], home: home).path
+        == "/Users/me/.local/state/opencode/service.json",
+      "an empty XDG variable is unset, as the spec has it")
+let endpoint = OpenCodeAPI.serviceEndpoint(Data(
+    #"{"id":"u","version":"2.0.18","url":"http://127.0.0.1:49374/","pid":1,"password":"pw"}"#.utf8))
+check(endpoint?.base == "http://127.0.0.1:49374"
+        && endpoint?.authorization == "Basic b3BlbmNvZGU6cHc=",
+      "HTTP Basic as opencode:<password>, against the URL with no trailing slash")
+check(OpenCodeAPI.serviceEndpoint(Data(#"{"url":"http://127.0.0.1:1"}"#.utf8))?.authorization == nil,
+      "a service that wrote no password is asked with none")
+for bad in ["", "{}", #"{"url":""}"#, #"{"url":7}"#, "[]", "<html>"] {
+    check(OpenCodeAPI.serviceEndpoint(Data(bad.utf8)) == nil, "“\(bad)” names no service")
+}
+check(OpenCodeAPI.servicePath(sessionID: "ses_a") == "/api/session/ses_a")
+check(OpenCodeAPI.servicePath(sessionID: "ses_a", suffix: "/interrupt") == "/api/session/ses_a/interrupt")
+check(OpenCodeAPI.servicePath(sessionID: "a/b?c") == "/api/session/a%2Fb%3Fc",
+      "an id is one path segment, whatever a hand-edited session file says")
+check(OpenCodeAPI.servicePath(sessionID: "") == nil)
+// Busy/idle for a 2.x session: in the active map is busy, out of it with `time.idle`
+// stamped is idle, and out of it unstamped is a first turn not yet ended — busy.
+func info(_ time: [String: Any]) -> [String: Any] { ["data": ["id": "ses_a", "time": time]] }
+let nobody: [String: Any] = ["data": [String: Any]()]
+let runningA: [String: Any] = ["data": ["ses_a": ["type": "running"]]]
+check(OpenCodeAPI.serviceState(session: info(["created": 1.0]), active: runningA,
+                               sessionID: "ses_a")?.busy == true)
+check(OpenCodeAPI.serviceState(session: info(["created": 1.0, "idle": 2.0]), active: nobody,
+                               sessionID: "ses_a")?.busy == false)
+check(OpenCodeAPI.serviceState(session: info(["created": 1.0]), active: nobody,
+                               sessionID: "ses_a")?.busy == true,
+      "a session whose first turn has not ended is not idle")
+check(OpenCodeAPI.serviceState(session: info(["created": 1.0, "idle": 2.0]), active: runningA,
+                               sessionID: "ses_a")?.busy == true,
+      "an earlier turn's idle stamp does not end the one now running")
+check(OpenCodeAPI.serviceState(session: info(["created": 1.0, "idle": 2.0]),
+                               active: ["data": ["ses_b": ["type": "running"]]],
+                               sessionID: "ses_a")?.busy == false,
+      "another session's turn says nothing about this one")
+check(OpenCodeAPI.serviceState(session: info(["idle": "soon"]), active: nobody,
+                               sessionID: "ses_a")?.busy == true,
+      "a stamp that is not a time is not a stamp")
+let serviceGarbage: [Any?] = [nil, [String: Any](), ["data": "x"], "<html>", [["data": [:]]],
+                         ["_tag": "SessionNotFoundError"]]
+for bad in serviceGarbage {
+    check(OpenCodeAPI.serviceState(session: bad, active: nobody, sessionID: "ses_a") == nil,
+          "a session answer of \(String(describing: bad)) is unavailable, not idle")
+    check(OpenCodeAPI.serviceState(session: info(["idle": 2.0]), active: bad,
+                                   sessionID: "ses_a") == nil,
+          "an active answer of \(String(describing: bad)) is unavailable, not idle")
+}
+// A 2.x agent with no pid file: its command line names only its session, so the scan
+// matches on that session's opening message.
+check(OpenCodeAPI.serviceOpeningPath(sessionID: "ses_a")
+        == "/api/session/ses_a/message?limit=1&order=asc",
+      "the opening message alone, oldest first")
+check(OpenCodeAPI.serviceOpeningPath(sessionID: "") == nil)
+check(OpenCodeAPI.openingText(["data": [["type": "user", "text": "Review PR #7 in o/r"]]])
+        == "Review PR #7 in o/r")
+check(OpenCodeAPI.openingText(["data": [[String: Any]]()]) == nil,
+      "a session created and not yet prompted has no opening text")
+for bad in [nil, "<html>", ["data": [["type": "assistant", "text": "x"]]],
+            ["data": [["type": "user"]]], ["data": "x"]] as [Any?] {
+    check(OpenCodeAPI.openingText(bad) == nil, "\(String(describing: bad)) opens with no prompt")
+}
+check(OpenCodeAPI.attachedSession("opencode --session ses_diplomat_0123abcd")
+        == "ses_diplomat_0123abcd")
+check(OpenCodeAPI.attachedSession("/home/u/.npm/bin/opencode --session ses_x") == "ses_x")
+check(OpenCodeAPI.attachedSession("/opt/oc/opencode.exe --session\tses_Ab-9_z") == "ses_Ab-9_z")
+// Every wrapper of a 2.x TUI carries its words too; the tmux lines are what a real spawn
+// put in `ps` (2.0.18), and none is the TUI.
+let wrapped = "ses_diplomat_49b172f752bd4c2f86a4ec0c5f050dc1"
+for line in [
+    "script -q /dev/null tmux -L x new-session -s y zsh -i -c 'cd /tmp; zsh -i -c \"sleep 9; opencode --session \(wrapped)\"; exec sh'",
+    "tmux -L x new-session -s y zsh -i -c 'cd /tmp; zsh -i -c \"sleep 9; opencode --session \(wrapped)\"; exec sh'",
+    "zsh -i -c cd /tmp; zsh -i -c \"sleep 9; opencode --session \(wrapped)\"; exec sh",
+    "zsh -i -c sleep 9; opencode --session \(wrapped)",
+    "xterm -e bash -c 'cd /tmp; opencode --session \(wrapped)'",
+    "opencode --session \(wrapped) --prompt x", "notopencode --session \(wrapped)",
+    "opencode --prompt \"$(cat '/p')\"", "opencode --port 1", "opencode --session x_1",
+    "opencode --session ses", "opencode --session ses_a'", "claude --resume ses_a",
+] {
+    check(OpenCodeAPI.attachedSession(line) == nil, "“\(line)” attaches to no 2.x session")
+}
+
+// Which major `diplomat-core` assumes when its caller already knows.
+check(OpenCodeCLI.majorOverride(["DIPLOMAT_OPENCODE_MAJOR": "2"]) == true)
+check(OpenCodeCLI.majorOverride(["DIPLOMAT_OPENCODE_MAJOR": "1"]) == false)
+for other in ["", "3", " 2", "2.0", "v2", "01"] {
+    check(OpenCodeCLI.majorOverride(["DIPLOMAT_OPENCODE_MAJOR": other]) == nil,
+          "“\(other)” is no major, so the binary is asked")
+}
+check(OpenCodeCLI.majorOverride([:]) == nil)
+
+extension OpenCodeCLI.Resolution { var fields: [String?] { [path, stateHome] } }
+// The resolver: one login shell, an interactive one inside it, and a probe that prints
+// the path and then the shell's state root on a marked line.
+check(OpenCodeCLI.resolverArguments(shell: "/bin/zsh")
+        == ["-l", "-c", "'/bin/zsh' -i -c 'command -v opencode; printf '\\''\\n@@XDG_STATE_HOME=%s\\n'\\'' \"$XDG_STATE_HOME\"'"],
+      "the resolver's shape: \(OpenCodeCLI.resolverArguments(shell: "/bin/zsh"))")
+let executables: Set<String> = ["/opt/a/opencode", "/opt/b/opencode"]
+let found = OpenCodeCLI.parseResolution(
+    "welcome back!\n/opt/a/opencode\n\n@@XDG_STATE_HOME=/x/state\n/opt/b/opencode\n") {
+    executables.contains($0)
+}
+check(found.fields == ["/opt/a/opencode", "/x/state"],
+      "the path is the last executable line above the marker, whatever an rc prints: \(found)")
+check(OpenCodeCLI.parseResolution("/opt/b/opencode\n/opt/a/opencode  \n@@XDG_STATE_HOME=\n") {
+        executables.contains($0)
+      }.fields == ["/opt/a/opencode", ""],
+      "an unset XDG_STATE_HOME is \"\", which is the default root")
+check(OpenCodeCLI.parseResolution("opencode: aliased to oc\n@@XDG_STATE_HOME=/s\n") {
+        executables.contains($0)
+      }.fields == [nil, "/s"],
+      "an alias names no executable")
+check(OpenCodeCLI.parseResolution("/opt/a/opencode\n") { executables.contains($0) }.fields
+        == ["/opt/a/opencode", nil],
+      "a shell that never printed the marker said nothing about its state root")
+check(OpenCodeCLI.parseResolution("@@XDG_STATE_HOME=/rc\n/opt/a/opencode\n@@XDG_STATE_HOME=/s\n") {
+        executables.contains($0)
+      }.fields == ["/opt/a/opencode", "/s"],
+      "the probe's own marker is the last one")
+
+// …against real shells, over a throwaway HOME.
+do {
+    let fx = FileManager.default.temporaryDirectory
+        .appendingPathComponent("diplomat-smoke-resolve-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: fx) }
+    func executable(_ path: String, _ body: String) {
+        let url = fx.appendingPathComponent(path)
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                 withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: url.path, contents: Data(body.utf8),
+                                       attributes: [.posixPermissions: 0o755])
+    }
+    let stub = "#!/bin/sh\necho 'opencode v2.0.18'\n"
+    executable("nvm/opencode", stub)
+    // nvm's shape: `~/.bashrc` alone, which a login bash skips and an interactive one reads.
+    executable(".bashrc", "echo 'welcome back!'\nexport PATH=\(fx.path)/nvm:$PATH\n"
+                          + "export XDG_STATE_HOME=\(fx.path)/state\n")
+    let bash = OpenCodeCLI.resolve(shell: "/bin/bash",
+                                   environment: ["HOME": fx.path, "PATH": "/usr/bin:/bin"])
+    check(bash.fields == ["\(fx.path)/nvm/opencode", "\(fx.path)/state"],
+          "an install only ~/.bashrc puts on PATH resolves, with that rc's state root: \(bash)")
+    // Homebrew's shape on Apple silicon: `~/.zprofile` alone, which only a login zsh reads.
+    if FileManager.default.isExecutableFile(atPath: "/bin/zsh") {
+        executable("brew/opencode", stub)
+        executable("zdot/.zprofile", "export PATH=\(fx.path)/brew:$PATH\n")
+        let zsh = OpenCodeCLI.resolve(shell: "/bin/zsh",
+                                      environment: ["HOME": fx.path, "ZDOTDIR": "\(fx.path)/zdot",
+                                                    "PATH": "/usr/bin:/bin"])
+        check(zsh.fields == ["\(fx.path)/brew/opencode", ""],
+              "an install only ~/.zprofile puts on PATH resolves: \(zsh)")
+    }
+
+    // The process-wide resolution, through a shell whose PATH head a check can move.
+    let pick = fx.appendingPathComponent("pick")
+    func install(_ dir: String) {
+        executable("\(dir)/opencode", stub)
+        try? "\(fx.path)/\(dir)".write(to: pick, atomically: true, encoding: .utf8)
+    }
+    executable("rcshell", "#!/bin/sh\nexport PATH=\"$(cat '\(pick.path)'):$PATH\"\n"
+                          + "export XDG_STATE_HOME=\(fx.path)/shellstate\nexec /bin/sh \"$@\"\n")
+    let priorShell = ProcessInfo.processInfo.environment["SHELL"]
+    setenv("SHELL", fx.appendingPathComponent("rcshell").path, 1)
+    defer { if let priorShell { setenv("SHELL", priorShell, 1) } else { unsetenv("SHELL") } }
+    let t0 = Date().addingTimeInterval(100_000)
+    install("a")
+    check(OpenCodeCLI.binary(now: t0) == "\(fx.path)/a/opencode", "the shell's install is found")
+    check(OpenCodeCLI.serviceFile(now: t0).path == "\(fx.path)/shellstate/opencode/service.json",
+          "the service file is under the shell's state root, not this process's")
+    install("b")
+    check(OpenCodeCLI.binary(now: t0.addingTimeInterval(59)) == "\(fx.path)/a/opencode",
+          "a resolution is trusted for a minute")
+    check(OpenCodeCLI.binary(now: t0.addingTimeInterval(61)) == "\(fx.path)/b/opencode",
+          "…and re-asked after it, so an install the rc now puts first is found")
+    try? FileManager.default.removeItem(at: fx.appendingPathComponent("b"))
+    install("c")
+    check(OpenCodeCLI.binary(now: t0.addingTimeInterval(62)) == "\(fx.path)/c/opencode",
+          "a binary that moved is re-resolved inside the minute")
+
+    let counter = fx.appendingPathComponent("asked")
+    func versioned(_ version: String) {
+        executable("v/opencode", "#!/bin/sh\necho x >> '\(counter.path)'\necho '\(version)'\n")
+    }
+    func asked() -> Int {
+        ((try? String(contentsOf: counter, encoding: .utf8)) ?? "").split(separator: "\n").count
+    }
+    let versionedPath = fx.appendingPathComponent("v/opencode").path
+    versioned("opencode v2.0.18")
+    check(OpenCodeCLI.isService(binary: versionedPath) && OpenCodeCLI.isService(binary: versionedPath)
+            && asked() == 1,
+          "a binary that has not changed is not run again")
+    versioned("1.4.3")
+    check(!OpenCodeCLI.isService(binary: versionedPath) && asked() == 2,
+          "a binary rewritten in place is asked again")
+
+    // A prompt is built on the macOS main actor, so the tag's model reads the major an
+    // earlier call found rather than asking the shell again once a resolution has aged.
+    let shellAsked = fx.appendingPathComponent("shell-asked")
+    executable("countshell", "#!/bin/sh\necho x >> '\(shellAsked.path)'\n"
+                             + "export PATH=\"$(cat '\(pick.path)'):$PATH\"\nexec /bin/sh \"$@\"\n")
+    setenv("SHELL", fx.appendingPathComponent("countshell").path, 1)
+    try? FileManager.default.removeItem(at: fx.appendingPathComponent("c"))
+    install("d")
+    let stale = Date().addingTimeInterval(-OpenCodeCLI.resolveTTL - 1)
+    check(OpenCodeCLI.binary(now: stale) == "\(fx.path)/d/opencode"
+            && OpenCodeCLI.isService(binary: "\(fx.path)/d/opencode"),
+          "an aged resolution of a 2.x install")
+    try? FileManager.default.removeItem(at: shellAsked)
+    let tagConfig = fx.appendingPathComponent("tag-config.json")
+    let tagState = fx.appendingPathComponent("tag-state", isDirectory: true)
+    try? FileManager.default.createDirectory(at: tagState, withIntermediateDirectories: true)
+    try? "{\"agentRunner\": \"opencode\"}".write(to: tagConfig, atomically: true, encoding: .utf8)
+    try? "{\"recent\": [{\"providerID\": \"anthropic\", \"modelID\": \"claude-opus-5\"}]}"
+        .write(to: tagState.appendingPathComponent("model.json"), atomically: true, encoding: .utf8)
+    let tagEnv = ["DIPLOMAT_CONFIG": tagConfig.path,
+                  "DIPLOMAT_OPENCODE_CONFIG_DIR": fx.appendingPathComponent("tag-none").path,
+                  "DIPLOMAT_OPENCODE_STATE_DIR": tagState.path]
+    let priorTagEnv = tagEnv.keys.map { ($0, ProcessInfo.processInfo.environment[$0]) }
+    for (key, value) in tagEnv { setenv(key, value, 1) }
+    defer {
+        for (key, value) in priorTagEnv {
+            if let value { setenv(key, value, 1) } else { unsetenv(key) }
+        }
+    }
+    check(AgentModel.detected() == "" && !FileManager.default.fileExists(atPath: shellAsked.path),
+          "the tag reads the major already found, without running the shell")
+}
+print("opencode 2.x service assertions passed")
 
 section("hermes sessions")
 // The same two questions, answered from Hermes' own SQLite store instead of a port —
@@ -1657,6 +2052,15 @@ do {
     check(AgentRegistry.runRunner(run) == "", "an unstaged runner is unknown, not Claude Code")
     AgentRegistry.stageRunner(run, AgentRunner.opencode.rawValue)
     check(AgentRegistry.runRunner(run) == "opencode", "and reads back the one it staged")
+
+    check(AgentRegistry.serviceSession(run) == nil, "an unbound OpenCode run is on no session")
+    AgentRegistry.bindSession(run, "ses_diplomat_ab")
+    check(AgentRegistry.serviceSession(run) == "ses_diplomat_ab", "bound with no port is 2.x")
+    AgentRegistry.stagePort(run, 47_910)
+    check(AgentRegistry.serviceSession(run) == nil, "a port makes it a 1.x run")
+    try? FileManager.default.removeItem(at: AgentRegistry.portPath(run))
+    AgentRegistry.stageRunner(run, AgentRunner.hermes.rawValue)
+    check(AgentRegistry.serviceSession(run) == nil, "a Hermes session is not OpenCode's")
     AgentRegistry.forget([run])
     check(AgentRegistry.load().isEmpty && AgentRegistry.boundSession(run) == "",
           "forgetting a run takes its sidecars with it")
@@ -1682,6 +2086,50 @@ do {
           "a run registered during an update is in the book it leaves")
     AgentRegistry.forget(["upd-b", "upd-c"])
     print("run book sidecar assertions passed")
+}
+
+section("a hand-edited run book and ledger")
+// PARITY: `test_agent_registry_parity.py` and `test_telemetry_parity.py` feed the same
+// spoils to both readers. Here they pin this build's own reading, which is the half that
+// differs between Darwin and corelibs if anything does.
+do {
+    let book = FileManager.default.temporaryDirectory
+        .appendingPathComponent("diplomat-smoke-book-\(UUID().uuidString)", isDirectory: true)
+    setenv("DIPLOMAT_AGENTS_DIR", book.path, 1)
+    defer { try? FileManager.default.removeItem(at: book) }
+    try? FileManager.default.createDirectory(at: book, withIntermediateDirectories: true)
+    func read(_ runs: String, version: String = "1") -> [AgentState.RunRecord] {
+        try? "{\"version\": \(version), \"runs\": [\(runs)]}"
+            .write(to: AgentRegistry.runsPath(), atomically: true, encoding: .utf8)
+        return AgentRegistry.load()
+    }
+    for spoilt in ["1", "1.0", "\"true\""] {
+        check(read("{\"runId\": \"r\", \"untracked\": \(spoilt)}").map(\.untracked) == [false],
+              "`\"untracked\": \(spoilt)` is not a flag")
+    }
+    check(read("{\"runId\": \"r\", \"untracked\": true}").map(\.untracked) == [true],
+          "a real flag still reads as one")
+    let numbers = read("{\"runId\": \"r\", \"pid\": true, \"prNumber\": true, \"dispatchedAt\": true}")
+    check(numbers.count == 1 && numbers[0].pid == nil && numbers[0].prNumber == nil
+            && numbers[0].dispatchedAt == 0, "`true` is not the number 1")
+    check(read("{\"runId\": \"r\"}", version: "true").isEmpty, "`\"version\": true` is no schema")
+    check(read("{\"runId\": \"r\"}, 5").map(\.runID) == ["r"],
+          "one entry that is not a record costs that entry, not the book")
+    let text = "{\"version\": 1, \"runs\": [{\"runId\": \"r\", \"untracked\": true}]}"
+    for (encoding, bytes) in [("UTF-16", text.data(using: .utf16)!),
+                              ("UTF-8 with a byte-order mark", Data([0xEF, 0xBB, 0xBF]) + Data(text.utf8))] {
+        try? bytes.write(to: AgentRegistry.runsPath(), options: .atomic)
+        check(AgentRegistry.load().isEmpty, "a book in \(encoding) is unreadable, as to Python")
+    }
+
+    let ledger = Telemetry.fold(lines: [
+        "{\"at\": 100, \"ev\": \"started\", \"key\": \"k1\", \"remote\": 1}",
+        "{\"at\": 100, \"ev\": \"started\", \"key\": \"k2\", \"remote\": true}",
+        "{\"at\": true, \"ev\": \"queued\", \"key\": \"k3\"}",
+    ])
+    check(ledger.tasks.map(\.key) == ["k1", "k2"] && ledger.tasks.map(\.remote) == [false, true],
+          "the ledger reads `\"remote\": 1` as local and `\"at\": true` as no timestamp")
+    print("hand-edited run book and ledger assertions passed")
 }
 
 section("the run book under contention")
@@ -2420,6 +2868,7 @@ check(AuditCategory.of(action: "mesh-takeover") == .mesh, "duty takeovers are Me
 check(AuditCategory.of(action: "mesh-dispatch") == .mesh)
 check(AuditCategory.of(action: "mesh-dispatch-failed") == .mesh)
 check(AuditCategory.of(action: "mesh-spawn") == .mesh)
+check(AuditCategory.of(action: "mesh-stop") == .mesh, "stopping a node left running is a Mesh row")
 // Device / health / anything unmapped falls through to System so no row is uncategorized.
 check(AuditCategory.of(action: "kill-device") == .system)
 check(AuditCategory.of(action: "repair-done") == .system)

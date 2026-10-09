@@ -170,28 +170,31 @@ enum SelfUpdate {
 
     /// Launch the freshly-built bundle detached and see it come up. `open` exits 0 once
     /// LaunchServices has taken the request, whatever becomes of the process, so the
-    /// verdict is the instance itself: one running `app` that was not there before must
+    /// verdict is the instance itself: one running `app` started after the request must
     /// appear (a launch takes seconds on a loaded machine) and still be running `window`
-    /// later, else the swap did not happen. The failure says what is up instead: the
+    /// later, else the swap did not happen. It is told apart by its start time, and its
+    /// staying up is asked of the process, because a LaunchServices read can leave out a
+    /// live instance (`running`). The failure says what is up instead: the
     /// instances from before the launch, still the old build, or nothing, since a new
     /// instance ends the old ones before anything past its launch can fail.
-    /// Its newest-wins singleton terminates this instance once it is up, so a caller
-    /// still around afterwards reports "restarting…" and waits to be replaced. Mirrors
+    /// Its newest-wins singleton terminates any GUI instance still running, so a caller
+    /// that is one only reports "restarting…" and waits to be replaced. Mirrors
     /// `selfupdate.relaunch` and `relaunch_failure`.
     ///
     /// `open` passes its environment to the instance, so it gets this one with every
-    /// headless marker removed: relaunched by the 06:00 updater with its
-    /// `DIPLOMAT_SELF_UPDATE=1` intact, the instance would be a second updater that
-    /// finds the checkout current and exits, not the GUI.
+    /// headless marker removed: launched by the 06:00 updater or the watchdog with its
+    /// marker intact, the instance would be another headless job, not the GUI.
     ///
     /// The default `app` is beside the macOS package, where `build-app.sh` writes it.
+    /// `lister` is one read of `app`'s instances; `RelaunchTest` swaps in a lossier one.
     static func relaunch(_ app: URL = RepoPaths.macosPackage.appendingPathComponent("Diplomat.app"),
-                         window: TimeInterval = 3) throws {
+                         window: TimeInterval = 3,
+                         lister: (URL) -> [pid_t] = listed) throws {
         let name = app.lastPathComponent
         guard FileManager.default.fileExists(atPath: app.path) else {
-            throw UpdateError(message: "\(name) not found at \(app.path) after rebuild")
+            throw UpdateError(message: "\(name) not found at \(app.path)")
         }
-        let before = Set(instances(of: app).map(\.processIdentifier))
+        let requested = Date()
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
         p.arguments = ["-n", app.path]
@@ -204,15 +207,16 @@ enum SelfUpdate {
             throw UpdateError(message: "open \(name) exited \(p.terminationStatus)")
         }
         func newInstance() -> pid_t? {
-            instances(of: app).map(\.processIdentifier).first { !before.contains($0) }
+            lister(app).first { (started($0) ?? .distantPast) >= requested }
         }
         /// What is up once the relaunch has failed: the instances from before it that are
-        /// GUI ones by `SingleInstance`'s rule. The 06:00 updater runs from the bundle it
-        /// relaunches and is not the old build standing; the GUI behind the Update button is.
+        /// GUI ones by `SingleInstance`'s rule. The 06:00 updater and the watchdog run from
+        /// the bundle they launch and are not the old build standing; the GUI behind the
+        /// Update button is.
         func standing() -> String {
-            let old = instances(of: app).filter {
-                before.contains($0.processIdentifier)
-                    && !Headless.isActive(in: SingleInstance.environment(of: $0.processIdentifier))
+            let old = running(app, lister: lister).filter {
+                (started($0) ?? .distantFuture) < requested
+                    && !Headless.isActive(in: SingleInstance.environment(of: $0))
             }
             return old.isEmpty ? "no instance of \(name) is running"
                                : "the running app is still the old build"
@@ -229,79 +233,150 @@ enum SelfUpdate {
         let settled = Date().addingTimeInterval(window)
         while Date() < settled {
             usleep(50_000)
-            guard instances(of: app).contains(where: { $0.processIdentifier == launched }) else {
+            guard kill(launched, 0) == 0 else {
                 throw UpdateError(message: "the relaunched \(name) exited within \(Int(window))s; "
                     + standing())
             }
         }
     }
 
-    /// The live instances of the bundle at `app`: LaunchServices asked directly, by the
+    /// The pids of the bundle at `app` that LaunchServices lists, asked directly, by the
     /// identifier in the bundle's Info.plist and then by path (a copy kept elsewhere
     /// shares the identifier). Not `NSWorkspace.runningApplications`, which is refreshed
     /// only as the main run loop turns while this is polled off it. Both paths are
     /// resolved because LaunchServices reports one in its own form (`/private/tmp/x`
     /// comes back as `/tmp/x`).
-    static func instances(of app: URL) -> [NSRunningApplication] {
+    static func listed(_ app: URL) -> [pid_t] {
         guard let id = Bundle(url: app)?.bundleIdentifier else { return [] }
         let path = app.resolvingSymlinksInPath().path
         return NSRunningApplication.runningApplications(withBundleIdentifier: id).filter {
             $0.bundleURL?.resolvingSymlinksInPath().path == path
-        }
+        }.map(\.processIdentifier)
+    }
+
+    /// Every live instance of `app`: the union of `lister` reads over half a second. One
+    /// read is not enough while other apps launch: LaunchServices then lists no instance
+    /// of anything, Finder included, for up to 130ms at a time. An instance on its way
+    /// out can be listed as pid -1, which `kill` takes for every process the user owns.
+    static func running(_ app: URL, lister: (URL) -> [pid_t] = listed) -> [pid_t] {
+        var seen = Set<pid_t>()
+        let until = Date().addingTimeInterval(0.5)
+        repeat {
+            seen.formUnion(lister(app))
+            usleep(10_000)
+        } while Date() < until
+        return seen.filter { $0 > 0 && kill($0, 0) == 0 }.sorted()
+    }
+
+    /// When `pid` started, or nil once it is gone.
+    private static func started(_ pid: pid_t) -> Date? {
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return nil }
+        return Date(timeIntervalSince1970: TimeInterval(info.pbi_start_tvsec)
+            + TimeInterval(info.pbi_start_tvusec) / 1_000_000)
     }
 
     private static func shellQuote(_ s: String) -> String {
         "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
-    // MARK: - unattended (6AM launchd) path
+    // MARK: - unattended (launchd) paths
+
+    /// What the unattended paths do to the machine. The real steps by default;
+    /// `WatchdogTest` swaps in fixtures.
+    struct Host {
+        var check: () -> CheckResult = SelfUpdate.check
+        var pull: () throws -> String = SelfUpdate.pull
+        var rebuild: () throws -> Void = SelfUpdate.rebuild
+        var appRunning: () -> Bool = SingleInstance.isRunning
+        var operatorQuit: () -> Bool = { OperatorQuit.isMarked }
+        var launch: () throws -> Void = { try SelfUpdate.relaunch() }
+        var log: (String) -> Void = SelfUpdate.schedLog
+    }
 
     /// Headless daily update for the launchd 6AM job. Never throws; returns an exit code.
     ///
-    /// Fetches, and if behind, merges upstream and rebuilds — then relaunches the app only
-    /// if one is actually running (so it never pops a menu-bar app onto a login session that
-    /// isn't showing one). Quiet no-op when already current; a conflict or unreachable origin
+    /// Fetches, and if behind, merges upstream and rebuilds, then relaunches a running
+    /// app onto the new build. On every other path an app that is not running is
+    /// launched unless the operator quit it (`revive`). A conflict or unreachable origin
     /// is logged and left for a human rather than retried destructively. Mirrors
     /// `selfupdate.run_scheduled`.
-    static func runScheduled() -> Int32 {
-        let st = check()
-        if let e = st.error { schedLog("skip: cannot reach origin (\(e))"); return 0 }
+    static func runScheduled(_ host: Host = Host()) -> Int32 {
+        let st = host.check()
+        if let e = st.error {
+            host.log("skip: cannot reach origin (\(e))")
+            return revive(host, quietly: false)
+        }
         guard let behind = st.behind, behind > 0 else {
             let extra = (st.ahead ?? 0) > 0 ? " (\(st.ahead!) local ahead)" : ""
-            schedLog("up to date at \(st.commit ?? "?")\(extra)")
-            return 0
+            host.log("up to date at \(st.commit ?? "?")\(extra)")
+            return revive(host, quietly: false)
         }
-        schedLog("\(behind) behind at \(st.commit ?? "?") — merging \(st.upstream ?? "origin/main")")
+        host.log("\(behind) behind at \(st.commit ?? "?") — merging \(st.upstream ?? "origin/main")")
         let commit: String
         do {
-            commit = try pull()
+            commit = try host.pull()
         } catch {
-            schedLog("skip: \((error as? LocalizedError)?.errorDescription ?? "\(error)")")
-            return 0
+            host.log("skip: \((error as? LocalizedError)?.errorDescription ?? "\(error)")")
+            return revive(host, quietly: false)
         }
-        schedLog("merged to \(commit) — rebuilding the app")
+        host.log("merged to \(commit) — rebuilding the app")
         do {
-            try rebuild()
+            try host.rebuild()
         } catch {
-            schedLog("build failed: \((error as? LocalizedError)?.errorDescription ?? "\(error)")")
+            host.log("build failed: \((error as? LocalizedError)?.errorDescription ?? "\(error)")")
+            // build-app.sh replaces the bundle only after a clean compile, so the last
+            // good one is still there to bring back.
+            _ = revive(host, quietly: false)
             return 1
         }
-        if SingleInstance.isRunning() {
-            do {
-                try relaunch()
-                schedLog("relaunched running app onto \(commit)")
-            } catch {
-                schedLog("relaunch failed: \((error as? LocalizedError)?.errorDescription ?? "\(error)")")
-                return 1
-            }
-        } else {
-            schedLog("updated to \(commit) in place (app not running)")
+        guard host.appRunning() else {
+            host.log("updated to \(commit) in place")
+            return revive(host, quietly: false)
+        }
+        do {
+            try host.launch()
+            host.log("relaunched running app onto \(commit)")
+        } catch {
+            host.log("relaunch failed: \((error as? LocalizedError)?.errorDescription ?? "\(error)")")
+            return 1
         }
         return 0
     }
 
+    /// The launchd liveness check, every few minutes. Logs only a launch, so a healthy
+    /// or deliberately closed app adds nothing to the log it shares with the updater.
+    static func runWatchdog(_ host: Host = Host()) -> Int32 {
+        var tagged = host
+        tagged.log = { host.log("watchdog: \($0)") }
+        return revive(tagged, quietly: true)
+    }
+
+    /// Launch the app if no GUI instance is running and the operator did not quit it.
+    ///
+    /// It terminates nothing and acts only on zero instances, so it cannot contend with
+    /// the singleton or a relaunch: both start the new instance before the old one goes,
+    /// so there is always one to see. A launch racing another start ends, through the
+    /// singleton, with one instance, and nothing restarts the one it ended.
+    static func revive(_ host: Host, quietly: Bool) -> Int32 {
+        guard !host.appRunning() else { return 0 }
+        guard !host.operatorQuit() else {
+            if !quietly { host.log("app not running: quit by the operator, left closed") }
+            return 0
+        }
+        do {
+            try host.launch()
+            host.log("app not running: launched it")
+            return 0
+        } catch {
+            host.log("app not running: launch failed: \((error as? LocalizedError)?.errorDescription ?? "\(error)")")
+            return 1
+        }
+    }
+
     /// Append a timestamped line to the auto-update log (best-effort).
-    private static func schedLog(_ message: String) {
+    static func schedLog(_ message: String) {
         let dir = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Logs")
         let url = dir.appendingPathComponent("diplomat-autoupdate.log")

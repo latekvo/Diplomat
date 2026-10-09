@@ -28,10 +28,9 @@ from dataclasses import dataclass
 
 from .apiwatch import last_lines
 
-# A listing's fields are space-separated, none of them free text: a control byte
-# does not survive tmux's output. 3.4 (CI's) escapes it as octal for every client,
-# and a client with no $TMUX and no UTF-8 in LC_ALL/LC_CTYPE/LANG - what launchd and
-# an autostart entry give the applet - has it sanitized to "_".
+# Listings are space-separated: no control byte survives tmux's output. 3.4 prints one
+# as octal, and a client with no $TMUX and no UTF-8 locale (launchd, an autostart
+# entry, CI) gets "_".
 
 
 @dataclass(frozen=True)

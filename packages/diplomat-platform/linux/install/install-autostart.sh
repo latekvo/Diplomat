@@ -50,3 +50,10 @@ LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/diplomat"
 mkdir -p "$LOG_DIR"
 nohup "$LAUNCHER" >"$LOG_DIR/diplomat.log" 2>&1 &
 echo "Started (log: $LOG_DIR/diplomat.log). Quit from the tray ⏻ button."
+
+# Bring the tray back within 5 minutes if it dies (soft-fail, like the update timer).
+# After the start above, so the display a revival launches onto is already recorded.
+if ! "${LINUX_DIR}/install/install-watchdog.sh"; then
+    echo "warning: watchdog timer not installed — a tray that dies stays down until" >&2
+    echo "         the next login." >&2
+fi

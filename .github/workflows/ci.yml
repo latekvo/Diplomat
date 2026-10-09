@@ -79,8 +79,9 @@ jobs:
       # MESH_CMD_TEST is pinned to a scratch state dir and a non-checkout so it can
       # neither read a real mesh node nor start one, and ALLOCATOR_TEST shells no
       # installer and reads no ~/.claude. APIWATCH_TEST composes every session, tail and
-      # process it reasons over, so it reads no terminal and types into none — though it
-      # does provoke a nudge's audit line, so it redirects DIPLOMAT_AUDIT_DIR.
+      # process it reasons over, bar a tmux server on a private socket where tmux is
+      # installed (not on this runner), so it reads no terminal and types into none —
+      # though it does provoke a nudge's audit line, so it redirects DIPLOMAT_AUDIT_DIR.
       # PUBLISH_TEST composes the tick it publishes as a literal, so no probe runs and
       # its verdict does not depend on what else is on the runner. QUOTA_TEST pins both
       # halves of the probe's credential list — a fixture directory and a stand-in for
@@ -88,9 +89,12 @@ jobs:
       # nothing. QUEUE_TEST is the one
       # that touches state at all: reaching the cap's refusal branch means a `ps` scan, a
       # ban-list read and an `at-capacity` audit line, so it points DIPLOMAT_AUDIT_DIR at
-      # a scratch dir of its own. It returns before any spawn or fetch. RELAUNCH_TEST
-      # opens throwaway bundles it lays out itself plus an idle copy of the binary, and
-      # ends every one of them; it terminates nothing else.
+      # a scratch dir of its own. It returns before any spawn or fetch. MESH_STRAY_TEST
+      # starts stand-in nodes and loopback-only real nodes, all on scratch state dirs
+      # it sets itself, and stops them. WATCHDOG_TEST runs the unattended jobs over
+      # fixture steps and a scratch quit mark. RELAUNCH_TEST opens throwaway bundles it
+      # lays out itself plus an idle copy of the binary, and ends every one of them; it
+      # terminates nothing else. REPOPATHS_TEST lays its checkouts out in a scratch dir.
       #
       # DIPLOMAT_TRACK_TEST and DIPLOMAT_SPAWN_FOCUS_TEST are the two that stay out,
       # and not by oversight: both drive real throwaway terminal windows and need a
@@ -98,32 +102,31 @@ jobs:
       # has no way to hold. They are run by hand from the installed .app.
       # DIPLOMAT_SPAWN_SCRIPT_TEST covers the focus half of the second one here, by
       # reading the script those windows would have run.
-      # A mode the delegate dispatches but Headless.active does not list runs the
-      # newest-wins singleton first, and kills the live wrench on any box that has
-      # one up; one listed but dispatched nowhere excuses whatever its name is next
-      # attached to. A mode is an `env[...]` read of a DIPLOMAT_ name - either
-      # spelling of the read, and only a read, so a name in a comment counts for
-      # nothing. The Linux job's test_headless_modes.py compares the same two lists.
+      # A mode the delegate dispatches but Headless.modes does not list is refused at
+      # launch, and one listed but dispatched nowhere excuses whatever its name is
+      # next attached to. A dispatched mode is an `env[...]` read of a DIPLOMAT_ name -
+      # either spelling of the read, and only a read, so a name in a comment counts
+      # for nothing. The Linux job's test_headless_modes.py compares the same two lists.
       - name: Every dispatched mode is a headless one, and the reverse
         working-directory: packages/diplomat-platform/macos/Sources/Diplomat
         run: |
           names() { grep -oE '(env|environment)\[ *"DIPLOMAT_[A-Z0-9_]+" *\]' | grep -oE 'DIPLOMAT_[A-Z0-9_]+' | sort -u || true; }
           dispatched="$(names < DiplomatApp.swift)"
-          block="$(sed -n '/static func isActive(in/,/^    }/p' Headless.swift)"
-          # The slice ends at isActive's own brace. Reshaped so that brace no longer
-          # matches, sed runs on to the next one and takes in the declarations
+          block="$(sed -n '/static let modes/,/^    \]/p' Headless.swift)"
+          # The slice ends at the table's own bracket. Reshaped so that bracket no
+          # longer matches, sed runs on to the next one and takes in the declarations
           # between, so a name nothing dispatches reads as one Headless knows about.
           ! tail -n +2 <<<"$block" | grep -q 'static ' \
-            || { echo "::error::the isActive block ran past its own function"; exit 1; }
-          headless="$(names <<<"$block")"
+            || { echo "::error::the modes block ran past its own table"; exit 1; }
+          headless="$(grep -oE '"DIPLOMAT_[A-Z0-9_]+" *:' <<<"$block" | grep -oE 'DIPLOMAT_[A-Z0-9_]+' | sort -u || true)"
           for name in DIPLOMAT_RENDER DIPLOMAT_QUEUE_TEST; do   # a valued mode and a flag
             grep -qx "$name" <<<"$dispatched" && grep -qx "$name" <<<"$headless" \
               || { echo "::error::the grep no longer sees $name in both lists"; exit 1; }
           done
           missing="$(comm -23 <(echo "$dispatched") <(echo "$headless"))"
           orphans="$(comm -13 <(echo "$dispatched") <(echo "$headless"))"
-          test -z "$missing" || echo "::error::dispatched but not in Headless.active: $missing"
-          test -z "$orphans" || echo "::error::in Headless.active but dispatched nowhere: $orphans"
+          test -z "$missing" || echo "::error::dispatched but not in Headless.modes: $missing"
+          test -z "$orphans" || echo "::error::in Headless.modes but dispatched nowhere: $orphans"
           test -z "$missing$orphans"
       - name: Headless helper self-tests
         working-directory: packages/diplomat-platform/macos
@@ -131,7 +134,9 @@ jobs:
           DIPLOMAT_OSA_TEST=1 swift run Diplomat
           SZPONTNET_DIR="$RUNNER_TEMP/mesh" DIPLOMAT_SELF_REPO=/nonexistent \
             DIPLOMAT_MESH_CMD_TEST=1 swift run Diplomat
+          DIPLOMAT_MESH_STRAY_TEST=1 swift run Diplomat
           DIPLOMAT_ALLOCATOR_TEST=1 swift run Diplomat
+          DIPLOMAT_WATCHDOG_TEST=1 swift run Diplomat
           DIPLOMAT_REPOPATHS_TEST=1 swift run Diplomat
           DIPLOMAT_RELAUNCH_TEST=1 swift run Diplomat
           DIPLOMAT_QUEUE_TEST=1 swift run Diplomat
@@ -145,6 +150,24 @@ jobs:
           # tmux, where Ghostty must be refused rather than offered — a spawn there
           # would open windows whose agents nothing could ever read.
           DIPLOMAT_TMUX=/nonexistent DIPLOMAT_SPAWN_SCRIPT_TEST=1 swift run Diplomat
+      # A mode this build does not run - another branch's, the Linux applet's, or a
+      # known one set to a value that does not turn it on - must stop the binary
+      # before it starts as the live app. A build that started instead would never
+      # exit, hence the alarm.
+      - name: A mode this build does not run is refused
+        working-directory: packages/diplomat-platform/macos
+        run: |
+          for v in DIPLOMAT_NO_SUCH_TEST=1 DIPLOMAT_AGENTS=1 DIPLOMAT_QUEUE_TEST=true \
+                   DIPLOMAT_SELF_UPDATE=0; do
+            code=0
+            env "$v" perl -e 'alarm 60; exec @ARGV' .build/debug/Diplomat 2> refused.txt || code=$?
+            cat refused.txt
+            test "$code" -eq 64
+            grep -F "refusing to start: $v " refused.txt
+          done
+          code=0
+          DIPLOMAT_LOOKUP=abc perl -e 'alarm 60; exec @ARGV' .build/debug/Diplomat || code=$?
+          test "$code" -eq 2
       # What the two installers write, against stubs and a scratch HOME - the Linux
       # job's test_install_autoupdate.py, for launchd.
       - name: Installer self-test
@@ -219,6 +242,19 @@ jobs:
           QT_QPA_PLATFORM: offscreen
           DIPLOMAT_CORE_BIN: ${{ github.workspace }}/core-bin/diplomat-core
         run: pytest packages/diplomat-platform/linux/tests -q
+      # The real `python -m` entry, which the suite does not launch: on a machine with
+      # a tray running, a build that failed this would terminate it.
+      - name: A mode this build does not run is refused
+        env:
+          QT_QPA_PLATFORM: offscreen
+          DIPLOMAT_NO_SUCH_TEST: '1'
+        run: |
+          code=0
+          cd packages/diplomat-platform/linux
+          timeout 60 python -m diplomat_app 2> refused.txt || code=$?
+          cat refused.txt
+          test "$code" -eq 64
+          grep -F "refusing to start: DIPLOMAT_NO_SUCH_TEST=1 " refused.txt
       # A checkout with no SzpontNet in it at all. `test_addon_optional.py` above
       # already blocks the import, but only this deletes the packages — so it is
       # the one that catches something reading a *file* out of the library's tree
