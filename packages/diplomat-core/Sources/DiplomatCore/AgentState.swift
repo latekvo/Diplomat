@@ -1248,10 +1248,14 @@ public enum AgentState {
     /// Every run — both sources, both platforms, tracked and not. The front-ends used to
     /// disagree about this (Linux hid panel spawns and drew untracked agents, macOS did
     /// the reverse), which meant the list and the cap were answering different questions.
+    ///
+    /// Except a released agent: its run is over, and a run that is over is not on the
+    /// list. The record is kept only for the stillness backstop to close its window.
     public static func rows(records: [RunRecord],
                             states: [String: Resolution]) -> [(RunRecord, Resolution)] {
         let rank = Dictionary(uniqueKeysWithValues: stateOrder.enumerated().map { ($1, $0) })
-        return records.compactMap { r in states[r.runID].map { (r, $0) } }
+        return records.filter { !$0.released }
+            .compactMap { r in states[r.runID].map { (r, $0) } }
             .sorted { a, b in
                 let (ra, rb) = (rank[a.1.state] ?? 0, rank[b.1.state] ?? 0)
                 if ra != rb { return ra < rb }

@@ -1375,8 +1375,12 @@ def rows(records: list[RunRecord],
     disagree about this (Linux hid panel spawns and drew untracked agents, macOS did
     the reverse), which meant the list and the cap were answering different
     questions.
+
+    Except a released agent: its run is over, and a run that is over is not on the
+    list. The record is kept only for the stillness backstop to close its window.
     """
-    pairs = [(r, states[r.run_id]) for r in records if r.run_id in states]
+    pairs = [(r, states[r.run_id]) for r in records
+             if r.run_id in states and not r.released]
     return sorted(pairs, key=lambda p: (STATE_ORDER.index(p[1].state),
                                         p[0].dispatched_at, p[0].run_id))
 
