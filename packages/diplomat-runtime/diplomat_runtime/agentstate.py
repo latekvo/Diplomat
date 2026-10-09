@@ -148,10 +148,15 @@ def _number(value: Any) -> float | None:
     """A JSON number, or ``None``: the Swift twin's ``as? NSNumber`` over a
     ``JSONInput`` payload, where a boolean is a ``Flag`` no numeric cast takes. So,
     like :func:`_flag` in the other direction, ``true`` is not ``1``; nor is ``"5"``
-    a number. Non-finite values are refused too, as ``int()`` would raise on them."""
+    a number. Non-finite values are refused too, as ``int()`` would raise on them, and
+    so is an integer past float range, which ``float()`` raises on."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    return float(value) if math.isfinite(value) else None
+    try:
+        number = float(value)
+    except OverflowError:
+        return None
+    return number if math.isfinite(number) else None
 
 
 def _whole(value: Any) -> int | None:

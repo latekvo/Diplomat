@@ -44,7 +44,7 @@ import threading
 import uuid
 from pathlib import Path
 
-from . import atomicjson
+from . import atomicjson, jsoninput
 from .agentstate import Observation, RunRecord, _whole, deadline_applies
 
 #: Bumped only if the on-disk shape changes incompatibly. A file from the future is
@@ -113,11 +113,21 @@ def new_run_id(now: float) -> str:
 # MARK: - The book
 
 
+def _read_book() -> dict:
+    """The book as an object, read by :mod:`.jsoninput` so that one the Swift front-end
+    refuses is refused here too; ``{}`` for anything unusable."""
+    try:
+        data = jsoninput.loads(runs_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def load() -> list[RunRecord]:
     """Every persisted record. Empty on anything unreadable — a corrupt book must
     degrade to "this applet has forgotten", which the ``ps`` fallback still covers,
     rather than taking the applet down on startup."""
-    data = atomicjson.read_object(runs_path()) or {}
+    data = _read_book()
     if _whole(data.get("version")) != SCHEMA_VERSION:
         return []
     raw = data.get("runs")
@@ -144,8 +154,8 @@ def add(record: RunRecord) -> None:
     spend twice.
     """
     with _lock:
-        data = atomicjson.read_object(runs_path()) or {}
-        runs = data.get("runs") if data.get("version") == SCHEMA_VERSION else None
+        data = _read_book()
+        runs = data.get("runs") if _whole(data.get("version")) == SCHEMA_VERSION else None
         runs = list(runs) if isinstance(runs, list) else []
         runs.append(record.to_json())
         atomicjson.write_atomic(runs_path(), {"version": SCHEMA_VERSION, "runs": runs})

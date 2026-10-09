@@ -57,7 +57,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import core
+from . import core, jsoninput
 
 # MARK: - Shared model (assets/telemetry.json)
 
@@ -157,7 +157,7 @@ def _rotate_if_large(path: Path) -> None:
                 open(tmp, "w", encoding="utf-8") as dst:
             for line in src:
                 try:
-                    at = float(json.loads(line).get("at", 0))
+                    at = float(jsoninput.loads(line).get("at", 0))
                 except (ValueError, TypeError, AttributeError):
                     continue
                 if at >= cutoff:
@@ -500,7 +500,7 @@ def fold(lines: list[str]) -> Ledger:
         if not line:
             continue
         try:
-            obj = json.loads(line)
+            obj = jsoninput.loads(line)
         except ValueError:
             continue
         if not isinstance(obj, dict):

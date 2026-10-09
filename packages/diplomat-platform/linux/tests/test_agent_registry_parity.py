@@ -226,3 +226,41 @@ def test_a_hand_edited_book_reads_the_same_on_both_sides(book, expected):
     _write_book(book)
     assert [r.run_id for r in R.load()] == expected
     assert [r["runId"] for r in _swift({"mode": "read"})] == expected
+
+
+#: Spoils at the parser: (name, the book's bytes, the run ids both sides must read out
+#: of it). `json` takes every one of the refused ones and `JSONSerialization` none, so
+#: each is a book only one front-end could see runs in, or a raise out of the read.
+_HAND_EDITED_TEXT = [
+    ("Infinity", b'{"version": 1, "runs": [{"runId": "r", "pid": Infinity}]}', []),
+    ("NaN", b'{"version": 1, "runs": [{"runId": "r", "dispatchedAt": NaN}]}', []),
+    ("1e400", b'{"version": 1, "runs": [{"runId": "r", "dispatchedAt": 1e400}]}', []),
+    ("a 400-digit integer",
+     b'{"version": 1, "runs": [{"runId": "r", "claimSeenAt": 1%s}]}' % (b"0" * 400), []),
+    ("a lone surrogate",
+     b'{"version": 1, "runs": [{"runId": "r", "label": "\\ud800"}]}', []),
+    ("UTF-16", '{"version": 1, "runs": [{"runId": "r"}]}'.encode("utf-16"), []),
+    ("a byte-order mark", b'\xef\xbb\xbf{"version": 1, "runs": [{"runId": "r"}]}', []),
+    ("a surrogate pair",
+     b'{"version": 1, "runs": [{"runId": "r", "label": "\\ud83d\\ude00"}]}', ["r"]),
+]
+
+
+@pytest.mark.parametrize("body,expected", [(b, e) for _, b, e in _HAND_EDITED_TEXT],
+                         ids=[n for n, _, _ in _HAND_EDITED_TEXT])
+def test_a_book_one_parser_refuses_is_refused_by_both(body, expected):
+    R.runs_path().parent.mkdir(parents=True, exist_ok=True)
+    R.runs_path().write_bytes(body)
+    assert [r.run_id for r in R.load()] == expected
+    assert [r["runId"] for r in _swift({"mode": "read"})] == expected
+
+
+@pytest.mark.parametrize("first,second", [("true", "1"), ("1", "true")])
+def test_a_duplicated_key_keeps_its_first_value_on_both_sides(first, second):
+    """`json` keeps the last; `JSONSerialization` on Darwin keeps the first."""
+    R.runs_path().parent.mkdir(parents=True, exist_ok=True)
+    R.runs_path().write_text('{"version": 1, "runs": [{"runId": "r", '
+                             f'"untracked": {first}, "untracked": {second}}}]}}')
+    expected = [first == "true"]
+    assert [r.untracked for r in R.load()] == expected
+    assert [r.get("untracked", False) for r in _swift({"mode": "read"})] == expected

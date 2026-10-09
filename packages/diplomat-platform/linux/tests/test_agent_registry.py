@@ -79,13 +79,25 @@ def test_an_unusable_book_degrades_to_empty_rather_than_raising(body):
     assert R.load() == []
 
 
-def test_a_non_finite_number_in_the_book_is_no_number_rather_than_a_raise():
-    """`json` reads `Infinity`, and `int()` of it raises - from the startup read."""
+@pytest.mark.parametrize("key", ["dispatchedAt", "claimSeenAt", "quietSince",
+                                 "reapRefusedAt"])
+def test_an_integer_past_float_range_decodes_as_no_number(key):
+    """`float()` of one raises rather than overflowing to infinity."""
+    record = A.RunRecord.from_json({"runId": "r", key: 10 ** 400})
+    assert (record.dispatched_at, record.claim_seen_at, record.quiet_since,
+            record.reap_refused_at) == (0.0, None, None, None)
+
+
+@pytest.mark.parametrize("body", [
+    '{"version": true, "runs": [{"runId": "old"}]}',
+    '{"version": 1, "runs": [{"runId": "old", "pid": Infinity}]}',
+], ids=["a boolean version", "Infinity"])
+def test_a_run_added_to_a_book_load_refuses_starts_a_new_one(body):
+    """Read as `load` reads it, or the new run joins a book that stays unreadable."""
     R.runs_path().parent.mkdir(parents=True, exist_ok=True)
-    R.runs_path().write_text(
-        '{"version": 1, "runs": [{"runId": "r", "pid": Infinity, "dispatchedAt": NaN}]}')
-    [record] = R.load()
-    assert (record.pid, record.dispatched_at) == (None, 0.0)
+    R.runs_path().write_text(body)
+    R.add(rec("new"))
+    assert [r.run_id for r in R.load()] == ["new"]
 
 
 def test_two_runs_registered_concurrently_both_survive():
