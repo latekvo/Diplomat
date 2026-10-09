@@ -43,6 +43,20 @@ def test_the_watcher_reclaims_what_was_staged_beside_the_sentinel(node):
     assert other.exists()
 
 
+def test_reclaiming_one_dispatch_leaves_a_later_one_of_the_same_key(node):
+    """Re-dispatches of one key differ only in their trailing sequence number, so
+    the family of `.1.` must not take in `.10.`'s, whose agent may still run."""
+    key = "o/r:review#4@abc"
+    node._claim_seq[key] = 1
+    first = Path(node._agent_done_path(key))
+    node._claim_seq[key] = 10
+    tenth = staged(Path(node._agent_done_path(key)))
+    staged(first)
+    node._reclaim_sentinel(str(first))
+    assert not first.exists()
+    assert [p for p in tenth if p.exists()] == tenth
+
+
 def test_the_startup_sweep_clears_the_whole_agents_dir(node):
     done = Path(node._agent_done_path("o/r:review#2@abc"))
     family = staged(done)
