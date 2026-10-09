@@ -70,7 +70,7 @@ def _python(records, evidence, now=T0, limit=LIMIT,
     return {
         "rows": [{"runId": r.run_id, "state": s.state, "reason": s.reason,
                   "wedged": s.wedged, "expired": s.expired,
-                  "unfindable": s.unfindable}
+                  "unfindable": s.unfindable, "lapsed": s.lapsed}
                  for r, s in t.rows],
         "capLoad": sorted(t.cap_load),
         "retirable": sorted(r.run_id for r in t.retirable),
@@ -89,9 +89,14 @@ def _python(records, evidence, now=T0, limit=LIMIT,
         # either implementation of `pane_digest` fails here. reapRefusedAt is merely
         # carried, and is here because a decode that dropped it would silence nothing
         # and show nothing: the applet that lost it would simply never wait before
-        # retrying a window it cannot close, and would go on retiring the run.
+        # retrying a window it cannot close, and would go on retiring the run. pid, tty,
+        # dispatchedAt and source are what a released record inherits from the run it
+        # replaces, and the pid is its identity from then on.
         "records": [{"runId": r.run_id, "claimSeenAt": r.claim_seen_at,
-                     "untracked": r.untracked, "placement": r.placement,
+                     "untracked": r.untracked, "released": r.released,
+                     "source": r.source,
+                     "pid": r.pid, "tty": r.tty, "dispatchedAt": r.dispatched_at,
+                     "placement": r.placement,
                      "quietDigest": r.quiet_digest, "quietSince": r.quiet_since,
                      "reapRefusedAt": r.reap_refused_at}
                     for r in t.records],
@@ -147,6 +152,20 @@ def test_a_record_flag_that_is_not_a_boolean_is_read_the_same_by_both(value):
                   tails={"pts/3": WORKING}, tokens=True)
     payload = _payload([record], evidence)
     payload["records"][0]["untracked"] = value
+
+    assert _swift(payload) == _python_decoding(payload)
+
+
+@pytest.mark.parametrize("key", ["pid", "dispatchedAt", "prNumber"])
+def test_a_record_number_that_is_a_boolean_is_read_the_same_by_both(key):
+    """The other direction: `true` is not pid 1, nor a run dispatched in 1970. Both
+    decoders see a `Flag`/`bool` there and read the field's default."""
+    record = rec(run_id="r1", pid=1, tty="pts/3", dispatched_at=T0 - PAST_DEADLINE,
+                 pr_number=1)
+    evidence = ev(processes={1: proc(elapsed=PAST_DEADLINE)},
+                  tails={"pts/3": WORKING}, tokens=True)
+    payload = _payload([record], evidence)
+    payload["records"][0][key] = True
 
     assert _swift(payload) == _python_decoding(payload)
 
@@ -217,18 +236,83 @@ def _mixed():
         # agree on the age it quotes as well as on the verdict.
         rec(run_id="over-deadline", pid=6, tty="pts/10",
             dispatched_at=T0 - PAST_DEADLINE, pr_number=312),
+        # Its CLI reported the turn over with its agent still up and seen by the scan,
+        # so this tick also releases that agent.
+        rec(run_id="reported", pid=7, tty="pts/11", dispatched_at=T0 - 1100,
+            pr_number=313),
+        # Untracked, working, and first seen past the deadline: RUNNING without a bay.
+        rec(run_id="untracked:314", pid=None, tty="pts/12", untracked=True,
+            dispatched_at=T0 - PAST_DEADLINE, pr_number=314),
+        # Released on an earlier tick, and somebody typed into it since. The scan names a
+        # second session on its PR, which a pid-held record does not follow.
+        rec(run_id="untracked:315", pid=8, tty="pts/13", untracked=True, released=True,
+            dispatched_at=T0 - 1200, pr_number=315),
+        # Reported its turn over on a PR "working" still holds: released all the same.
+        rec(run_id="reported-beside", pid=9, tty="pts/15", dispatched_at=T0 - 1300,
+            pr_number=301),
+        # The same with no pid, which only the scan could hold it to: not released.
+        rec(run_id="pidless-beside", pid=None, tty="", dispatched_at=T0 - 1600,
+            pr_number=301),
+        # Reported over beside the released "untracked:315", whose run id is taken.
+        rec(run_id="reported-past-released", pid=12, tty="pts/19",
+            dispatched_at=T0 - 1250, pr_number=315),
+        # A peer's run whose PR landed seconds after dispatch, while this box's scan
+        # sees a session on it: nothing is released.
+        rec(run_id="peer-landed", placement=A.PLACEMENT_MESH_PEER, node="brick",
+            work_key="review:316:sha", pid=None, tty="", dispatched_at=T0 - 10,
+            pr_number=316, claim_seen_at=T0 - 1),
+        # Reported over after twenty still minutes: its agent is released and closed on
+        # this tick.
+        rec(run_id="reported-still", pid=10, tty="pts/17", dispatched_at=T0 - 1400,
+            pr_number=317, quiet_digest=A.pane_digest(AT_PROMPT),
+            quiet_since=T0 - A.QUIET_TIMEOUT),
+        # The same, clicked, and its window refused a close a minute ago: the released
+        # agent keeps the click's source and waits out the refusal.
+        rec(run_id="reported-refused", pid=11, tty="pts/18", source=A.SOURCE_PANEL,
+            dispatched_at=T0 - 1500, pr_number=318,
+            quiet_digest=A.pane_digest(AT_PROMPT), quiet_since=T0 - A.QUIET_TIMEOUT,
+            reap_refused_at=T0 - 60),
+        # Placed here by the mesh on a released agent's PR, which the scan still names
+        # by the released agent's tty: it adopts none.
+        rec(run_id="untracked:319", pid=13, tty="pts/20", untracked=True, released=True,
+            dispatched_at=T0 - 1700, pr_number=319),
+        rec(run_id="placed-beside-released", pid=None, tty="",
+            placement=A.PLACEMENT_MESH_HERE, dispatched_at=T0 - 30, pr_number=319),
+        # A pid-less untracked record whose PR's sighting is another record's tty: it
+        # stays where it is.
+        rec(run_id="untracked:320", pid=None, tty="pts/21", untracked=True,
+            dispatched_at=T0 - 1800, pr_number=320),
+        rec(run_id="placed-holding", pid=None, tty="pts/22",
+            placement=A.PLACEMENT_MESH_HERE, dispatched_at=T0 - 40, pr_number=320),
     ]
     evidence = ev(
         processes={1: proc(elapsed=300), 2: proc(elapsed=400, tty="pts/4"),
                    3: proc(elapsed=500, tty="pts/5"), 4: proc(elapsed=700, tty="pts/6"),
                    5: proc(elapsed=1000, tty="pts/7"),
-                   6: proc(elapsed=PAST_DEADLINE, tty="pts/10")},
+                   6: proc(elapsed=PAST_DEADLINE, tty="pts/10"),
+                   7: proc(elapsed=1100, tty="pts/11"),
+                   8: proc(elapsed=1200, tty="pts/13"),
+                   9: proc(elapsed=1300, tty="pts/15"),
+                   10: proc(elapsed=1400, tty="pts/17"),
+                   11: proc(elapsed=1500, tty="pts/18"),
+                   12: proc(elapsed=1250, tty="pts/19"),
+                   13: proc(elapsed=1700, tty="pts/20")},
         tails={"pts/3": WORKING, "pts/4": AT_PROMPT, "pts/5": WORKING,
                "pts/6": WORKING, "pts/7": AT_PROMPT, "pts/9": WORKING,
-               "pts/10": WORKING},
-        claims={"review:306:sha"},
-        merged={305},
-        live_agents={404: "pts/8", 311: "pts/9"},
+               "pts/10": WORKING, "pts/11": AT_PROMPT, "pts/12": WORKING,
+               "pts/13": WORKING, "pts/15": AT_PROMPT, "pts/16": WORKING,
+               "pts/17": AT_PROMPT, "pts/18": AT_PROMPT, "pts/19": AT_PROMPT,
+               "pts/20": AT_PROMPT, "pts/21": AT_PROMPT, "pts/22": WORKING},
+        claims={"review:306:sha", "review:316:sha"},
+        merged={305, 316},
+        live_agents={404: "pts/8", 311: "pts/9", 313: "pts/11", 314: "pts/12",
+                     315: "pts/14", 301: "pts/15", 316: "pts/16", 317: "pts/17",
+                     318: "pts/18", 319: "pts/20", 320: "pts/22"},
+        activity={"reported": ("idle", T0 - 5), "reported-beside": ("idle", T0 - 5),
+                  "pidless-beside": ("idle", T0 - 5),
+                  "reported-past-released": ("idle", T0 - 5),
+                  "reported-still": ("idle", T0 - 5),
+                  "reported-refused": ("idle", T0 - 5)},
     )
     return records, evidence
 
@@ -264,6 +348,39 @@ def test_the_fixture_exercises_every_projection(mixed_results):
         "the untracked synthesis never ran"
     assert any(r["claimSeenAt"] is not None for r in python["records"]), \
         "no claim sighting was taken — observe_claims is untested"
+    assert any(r["runId"] == "untracked:313" and r["released"] and r["pid"] == 7
+               for r in python["records"]), "no ended run released its agent"
+    heirs = {r["runId"]: r["pid"] for r in python["records"] if r["released"]}
+    assert (heirs.get("untracked:301"), heirs.get("untracked:315:12")) == (9, 12), \
+        "no run that ended beside another record released its agent"
+    assert None not in heirs.values(), "a pid-less run was released beside another"
+    assert any(r["lapsed"] for r in python["rows"]), "no untracked bay lapsed"
+    assert python["inFlight"]["315"] is False and "untracked:315" not in python["capLoad"], \
+        "a released agent mid-turn must hold neither its PR nor a bay"
+    assert "untracked:317" in python["reapable"], "no released agent was closed at once"
+    refused = next(r for r in python["records"] if r["runId"] == "untracked:318")
+    assert (refused["source"], refused["reapRefusedAt"]) == (A.SOURCE_PANEL, T0 - 60)
+    assert "untracked:318" not in python["reapable"], \
+        "a released agent must wait out its run's refused close"
+    ttys = {r["runId"]: r["tty"] for r in python["records"]}
+    assert (ttys["placed-beside-released"], ttys["untracked:320"]) == ("", "pts/21"), \
+        "a pid-less record took another record's tty off the scan"
+
+
+def test_the_tick_after_a_release_agrees_too():
+    """The release only pays off on the NEXT tick, when the run is gone from the book
+    and the scan still sees its agent. Fed the book both stores would leave, the two
+    sides must agree that nothing is re-booked and no bay is taken."""
+    records, evidence = _mixed()
+    t = A.tick(records, evidence, T0, LIMIT, A.RUN_DEADLINE)
+    gone = {r.run_id for r in t.retirable}
+    book = [r for r in t.records if r.run_id not in gone]
+    later = T0 + 8
+    swift, again = _swift(_payload(book, evidence, now=later)), \
+        _python(book, evidence, now=later)
+    assert swift == again
+    assert [r["runId"] for r in again["records"]].count("untracked:313") == 1
+    assert "untracked:313" not in again["capLoad"] and again["inFlight"]["313"] is False
 
 
 def test_the_deadline_being_off_agrees_too():

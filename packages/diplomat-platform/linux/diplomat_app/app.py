@@ -147,9 +147,9 @@ class DiplomatApp:
         # uninstall (see Store.ensure_allocator_installed_async).
         self.store.ensure_allocator_installed_async()
 
-        # Join the LAN mesh if the user opted in (no-ops when disabled). Starts a
-        # background node so duty coordination is live the moment the panel opens.
-        self.store.ensure_mesh_running_async()
+        # Join the LAN mesh if the user opted in, so duty coordination is live the
+        # moment the panel opens; with it off, stop a node left running.
+        self.store.settle_mesh_on_launch()
 
         # Optional prefill (also used for manual UI checks).
         prefill = os.environ.get("DIPLOMAT_PREFILL")

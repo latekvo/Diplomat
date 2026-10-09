@@ -57,7 +57,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import core
+from . import core, jsoninput
 
 # MARK: - Shared model (assets/telemetry.json)
 
@@ -157,7 +157,7 @@ def _rotate_if_large(path: Path) -> None:
                 open(tmp, "w", encoding="utf-8") as dst:
             for line in src:
                 try:
-                    at = float(json.loads(line).get("at", 0))
+                    at = float(jsoninput.loads(line).get("at", 0))
                 except (ValueError, TypeError, AttributeError):
                     continue
                 if at >= cutoff:
@@ -466,12 +466,12 @@ def _number(raw: object) -> float | None:
     float. Non-finite values are rejected: one ``Infinity`` anywhere downstream
     turns every mean into ``nan``.
 
-    A JSON ``true`` reads as 1.0, matching the Swift twin — there, a boolean
-    bridges to ``NSNumber`` and the same cast accepts it. Nothing either writer
-    emits puts a boolean in a numeric field; what matters is that a hand-edited
-    file makes both platforms answer the same way.
+    A JSON boolean is not a number, matching the Swift twin — there, ``JSONInput``
+    hands a boolean over as a ``Flag`` that no numeric cast takes. Nothing either
+    writer emits puts a boolean in a numeric field; what matters is that a
+    hand-edited file makes both platforms answer the same way.
     """
-    if raw is None:
+    if raw is None or isinstance(raw, bool):
         return None
     try:
         value = float(raw)  # type: ignore[arg-type]
@@ -500,7 +500,7 @@ def fold(lines: list[str]) -> Ledger:
         if not line:
             continue
         try:
-            obj = json.loads(line)
+            obj = jsoninput.loads(line)
         except ValueError:
             continue
         if not isinstance(obj, dict):

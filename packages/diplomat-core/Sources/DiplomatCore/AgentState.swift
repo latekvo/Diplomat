@@ -111,7 +111,7 @@ public enum AgentState {
     /// `ended`. Wider than `occupying` by `.awaitingInput`, and the difference is the
     /// point: that session still holds the PR's context and is waiting to be typed at,
     /// so it must not get a second agent beside it even though it has given its bay
-    /// back.
+    /// back. A released agent blocks in none of them (`inFlight`): its run ended.
     public static let blocking: Set<RunState> = occupying.union([.awaitingInput])
 
     /// The states a run is over in, every one of them positive evidence.
@@ -308,6 +308,10 @@ public enum AgentState {
         /// with no record behind it. It gets a row and blocks a second dispatch, but
         /// carries no label, no ledger key and no start time.
         public var untracked: Bool
+        /// The live agent of a run that ended (`releaseEnded`), booked so the scan does
+        /// not re-book it as untracked. It holds no bay and blocks no dispatch; it is
+        /// kept for the stillness backstop and until its agent leaves.
+        public var released: Bool
 
         public init(runID: String, dispatchedAt: TimeInterval, prNumber: Int? = nil,
                     prURL: String = "", kind: String = "", label: String = "",
@@ -317,7 +321,7 @@ public enum AgentState {
                     tty: String = "", claimSeenAt: TimeInterval? = nil,
                     quietDigest: String = "", quietSince: TimeInterval? = nil,
                     reapRefusedAt: TimeInterval? = nil,
-                    untracked: Bool = false) {
+                    untracked: Bool = false, released: Bool = false) {
             self.runID = runID
             self.dispatchedAt = dispatchedAt
             self.prNumber = prNumber
@@ -336,6 +340,7 @@ public enum AgentState {
             self.quietSince = quietSince
             self.reapRefusedAt = reapRefusedAt
             self.untracked = untracked
+            self.released = released
         }
 
         /// Does this run's agent execute on THIS machine? What the device's cap counts
@@ -453,8 +458,13 @@ public enum AgentState {
         /// strength of having SEEN the agent sitting in it, and this is the one ending
         /// where nothing ever did.
         public var unfindable: Bool = false
+        /// Whether the deadline took this run's bay without ending it: an untracked run
+        /// still `.running` a deadline after the scan first saw it (`lapsedFor`). Ending
+        /// it would free nothing, since the next scan re-books the same agent, and a
+        /// screen that stays unreadable keeps it `.running` on every pass.
+        public var lapsed: Bool = false
 
-        public var occupying: Bool { AgentState.occupying.contains(state) }
+        public var occupying: Bool { AgentState.occupying.contains(state) && !lapsed }
     }
 
     // MARK: - Claim sightings
@@ -683,15 +693,18 @@ public enum AgentState {
     ///    all — ending a run on that would retire it for being old on the one pass that
     ///    saw nothing. Its one exception is the `.unknown` that is about the record
     ///    rather than a probe (`Resolution.unfindable`), which no later pass can improve
-    ///    on.
+    ///    on. An untracked run is not ended here but lapsed (`Resolution.lapsed`).
+    ///
+    /// The first rung skips an untracked run: a landed PR does not make its agent leave,
+    /// so the next scan would only re-book it.
     public static func resolveOne(_ record: RunRecord, evidence: Evidence,
                                   now: TimeInterval,
                                   deadline: TimeInterval? = nil) -> Resolution {
         func done(_ state: RunState, _ reason: String) -> Resolution {
             Resolution(runID: record.runID, state: state, reason: reason)
         }
-        if let merged = evidence.mergedPRs.value, let pr = record.prNumber,
-           merged.contains(pr) {
+        if !record.untracked, let merged = evidence.mergedPRs.value,
+           let pr = record.prNumber, merged.contains(pr) {
             return done(.merged, "PR #\(pr) is merged")
         }
         if let sentinels = evidence.sentinels.value, sentinels.contains(record.runID) {
@@ -703,11 +716,18 @@ public enum AgentState {
         let out = record.placement == .meshPeer
             ? resolvePeer(record, evidence: evidence, now: now, done: done)
             : resolveLocal(record, evidence: evidence, now: now, done: done)
-        guard out.state == .running || out.unfindable,
-              let expired = pastDeadline(record, tokens: evidence.tokensLeft, now: now,
+        guard out.state == .running || out.unfindable else { return out }
+        let cutoff = ApiErrorMatch.humanInterval(deadline ?? 0)
+        if let seen = lapsedFor(record, now: now, deadline: deadline) {
+            var kept = out
+            kept.reason = "\(out.reason); first seen \(ApiErrorMatch.humanInterval(seen)) "
+                + "ago, so the \(cutoff) deadline releases its bay"
+            kept.lapsed = true
+            return kept
+        }
+        guard let expired = pastDeadline(record, tokens: evidence.tokensLeft, now: now,
                                          deadline: deadline)
         else { return out }
-        let cutoff = ApiErrorMatch.humanInterval(deadline ?? 0)
         // The one rung that stamps `expired`; see `Resolution.expired`. The answer it
         // overruled is kept in the reason: it is what the run looked like right up to
         // the moment a clock ended it, and the only account of that anyone gets.
@@ -757,21 +777,36 @@ public enum AgentState {
     ///   dispatch, so `synthesizeUntracked` rebuilds it on the very next tick with a
     ///   fresh stamp: the bay comes back for one tick and the same agent takes it again.
     ///   Its stamp is when the scan first SAW the agent, so the age here would not even
-    ///   be the run's;
+    ///   be the run's. `lapsedFor` hands its bay back instead;
     /// * **a window this rung already failed to close** — for one deadline, and then it
     ///   tries again; see `reapCooling`.
     ///
     /// Every run this reaches is one `capLoad` is counting — a bay is what there is to
     /// hand back — but not the reverse, and the gap is deliberate on both sides. An
-    /// untracked run holds a bay and is exempt above. So is a run on a tick whose
-    /// evidence could not be read, which the caller keeps out by asking this about a
-    /// `.running` verdict or an unfindable one and no other: a bay held by a run nobody
-    /// could look at this pass is a bay kept.
+    /// untracked run is exempt above. So is a run on a tick whose evidence could not be
+    /// read, which the caller keeps out by asking this about a `.running` verdict or an
+    /// unfindable one and no other: a bay held by a run nobody could look at this pass
+    /// is a bay kept.
     public static func pastDeadline(_ record: RunRecord, tokens: Observation<Bool>,
                                     now: TimeInterval,
                                     deadline: TimeInterval?) -> TimeInterval? {
         guard let cutoff = deadline, deadlineApplies(record),
               tokens.value == true, !reapCooling(record, now, cutoff) else { return nil }
+        let age = now - record.dispatchedAt
+        return age >= cutoff ? age : nil
+    }
+
+    /// How long the scan has seen this untracked run, once that reaches the deadline;
+    /// `nil` otherwise.
+    ///
+    /// A run nobody could look at THIS pass keeps its bay; this bounds the one nobody can
+    /// look at on ANY pass, which would otherwise hold it for as long as its agent lives.
+    /// Its stamp is a real first sighting, since the record persists. Nothing is ended or
+    /// closed, so neither tokens nor window are asked about. A released run holds no bay,
+    /// and its stamp is its run's dispatch.
+    public static func lapsedFor(_ record: RunRecord, now: TimeInterval,
+                                 deadline: TimeInterval?) -> TimeInterval? {
+        guard let cutoff = deadline, record.untracked, !record.released else { return nil }
         let age = now - record.dispatchedAt
         return age >= cutoff ? age : nil
     }
@@ -857,7 +892,12 @@ public enum AgentState {
                         "pid \(pid) is \(secs(proc.elapsed)) old but the run is \(secs(age)) old")
         }
         return classifyActivity(record, evidence: evidence, now: now, done: done,
-                                aliveReason: "pid \(pid) alive")
+                                aliveReason: released(record, "pid \(pid) alive"))
+    }
+
+    /// The alive reason, marked for a released run so its row says why it holds nothing.
+    private static func released(_ record: RunRecord, _ aliveReason: String) -> String {
+        record.released ? "released; \(aliveReason)" : aliveReason
     }
 
     /// A run this applet booked but has no pid for.
@@ -942,7 +982,7 @@ public enum AgentState {
         }
         if let pr = record.prNumber, live[pr] != nil {
             return classifyActivity(record, evidence: evidence, now: now, done: done,
-                                    aliveReason: "found in process table")
+                                    aliveReason: released(record, "found in process table"))
         }
         return done(.finished, "gone from the process table")
     }
@@ -1039,19 +1079,21 @@ public enum AgentState {
     /// scan, which is looser but is the same evidence that says it is alive at all.
     ///
     /// A tty is adopted once and then left alone: it is a property of the process, and a
-    /// process does not change ttys.
+    /// process does not change ttys. The scan names one tty per PR, so one another record
+    /// already holds is that record's agent and is not taken off it.
     public static func adoptTTYs(_ records: [RunRecord],
                                  processes: Observation<[Int: ProcInfo]>,
                                  liveAgents: Observation<[Int: String]>) -> [RunRecord] {
         let table = processes.value ?? [:]
         let scan = liveAgents.value ?? [:]
+        let held = Set(records.map(\.tty).filter { !$0.isEmpty })
         return records.map { r in
             guard r.tty.isEmpty else { return r }
             let found: String
             if let pid = r.pid, let proc = table[pid] {
                 found = proc.tty
-            } else if let pr = r.prNumber {
-                found = scan[pr] ?? ""
+            } else if let pr = r.prNumber, let seen = scan[pr], !held.contains(seen) {
+                found = seen
             } else {
                 found = ""
             }
@@ -1070,11 +1112,15 @@ public enum AgentState {
     /// agent would read as running and hold a bay until its window closed, which is the
     /// state the cap exists to prevent.
     ///
-    /// Three things produce one: an applet upgraded while agents ran, an agent a peer's
-    /// node started on this box, and a session the operator opened by hand. They are
-    /// found the old way — the prompt's `PR #<n> in <owner>/<repo>` in the process table
-    /// — which is why they are a *fallback* and not the identity mechanism: that scan
-    /// cannot tell two runs on one PR apart, so at most one record per PR is made.
+    /// What produces one is a live agent whose run the book does not hold: one a peer's
+    /// node started on this box, a session the operator opened by hand, a run whose row
+    /// the operator dismissed, every agent when the book could not be read, and one whose
+    /// run had no pid and ended beside another record on its PR. Not another run this
+    /// applet ended, whose agent goes to a released record (`releaseEnded`), nor a window
+    /// a backstop failed to close, whose run is kept. They are found the old way — the
+    /// prompt's `PR #<n> in <owner>/<repo>` in the process table — which is why they
+    /// are a *fallback* and not the identity mechanism: that scan cannot tell two runs
+    /// on one PR apart, so at most one record per PR is made.
     ///
     /// One is made once and then kept in the book like any other run, because the
     /// stillness backstop measures a screen against the last one seen and a record
@@ -1088,14 +1134,17 @@ public enum AgentState {
                                            liveAgents: Observation<[Int: String]>,
                                            now: TimeInterval) -> [RunRecord] {
         guard let live = liveAgents.value else { return records }
+        let held = Set(records.map(\.tty).filter { !$0.isEmpty })
         var out: [RunRecord] = []
         for r in records {
             // A kept record follows its PR's current sighting: the scan reports one agent
             // per PR, so an operator's second session becomes that sighting the moment the
             // first exits. Its memory of the old screen goes with it, or the new window
-            // inherits the old one's stillness.
-            guard r.untracked, let pr = r.prNumber, let tty = live[pr],
-                  !tty.isEmpty, tty != r.tty
+            // inherits the old one's stillness. A released run with a pid is held to
+            // that process instead, whose tty never changes, and no record takes
+            // another's tty.
+            guard r.untracked, r.pid == nil, let pr = r.prNumber, let tty = live[pr],
+                  !tty.isEmpty, tty != r.tty, !held.contains(tty)
             else { out.append(r); continue }
             var moved = r
             moved.tty = tty
@@ -1114,17 +1163,65 @@ public enum AgentState {
         return out
     }
 
+    /// Released records, each with its resolution, for the runs this pass ended whose
+    /// agent is still up.
+    ///
+    /// A run whose turn report or merged PR ended it leaves its agent at the prompt, and
+    /// the caller forgets the record. Uncovered, the PR is re-booked by the next tick's
+    /// scan as a fresh untracked run, holding the PR and, while its screen is unreadable,
+    /// a bay. A relaunch does this to every finished window still open. The released
+    /// record carries the run's pid (still the identity), tty and stillness clock, and
+    /// nothing that made it a dispatch.
+    ///
+    /// Only where the scan would re-book once the PR's other records are gone: a run on
+    /// this machine, on a PR the scan sees. One with no pid is held to the scan's
+    /// sighting, which cannot tell two agents apart, so it is released only alone on its
+    /// PR. Beside a record already named `untracked:<pr>`, its run ID carries its pid.
+    /// Not a run a backstop ended, whose window is being closed. And only while the
+    /// released record resolves to a live agent, or to one the stillness backstop ends
+    /// at once, so that its window is closed.
+    public static func releaseEnded(_ records: [RunRecord], states: [String: Resolution],
+                                    evidence: Evidence, now: TimeInterval,
+                                    deadline: TimeInterval? = nil) -> [(RunRecord, Resolution)] {
+        let live = evidence.liveAgents.value ?? [:]
+        var count: [Int: Int] = [:]
+        for pr in records.compactMap(\.prNumber) { count[pr, default: 0] += 1 }
+        var taken = Set(records.map(\.runID))
+        var out: [(RunRecord, Resolution)] = []
+        for r in records {
+            guard let v = states[r.runID], ended.contains(v.state), !v.wedged, !v.expired,
+                  r.runsHere, let pr = r.prNumber, live[pr] != nil,
+                  r.pid != nil || count[pr] == 1 else { continue }
+            var runID = "untracked:\(pr)"
+            if taken.contains(runID), let pid = r.pid { runID += ":\(pid)" }
+            let heir = RunRecord(runID: runID, dispatchedAt: r.dispatchedAt,
+                                 prNumber: pr, prURL: r.prURL, source: r.source,
+                                 placement: r.placement, pid: r.pid, tty: r.tty,
+                                 quietDigest: r.quietDigest, quietSince: r.quietSince,
+                                 reapRefusedAt: r.reapRefusedAt,
+                                 untracked: true, released: true)
+            let verdict = resolveOne(heir, evidence: evidence, now: now, deadline: deadline)
+            if !ended.contains(verdict.state) || verdict.wedged {
+                taken.insert(runID)
+                out.append((heir, verdict))
+            }
+        }
+        return out
+    }
+
     // MARK: - The projections
     //
     // Each is a fold over the resolved map. Nothing below re-reads evidence or
     // re-derives a state, which is the whole point: the answers can disagree with each
     // other only if this file is wrong, not if one call site of five drifted.
 
-    /// Does this PR already have an agent, for the dispatch gate's dedup?
+    /// Does this PR already have an agent, for the dispatch gate's dedup? A released one
+    /// does not count: its work on the PR is done.
     public static func inFlight(records: [RunRecord], states: [String: Resolution],
                                 prNumber: Int) -> Bool {
         records.contains { r in
-            guard r.prNumber == prNumber, let s = states[r.runID] else { return false }
+            guard r.prNumber == prNumber, !r.released, let s = states[r.runID]
+            else { return false }
             return blocking.contains(s.state)
         }
     }
@@ -1133,12 +1230,12 @@ public enum AgentState {
     ///
     /// Counted by where a run EXECUTES and who triggered it: a peer's agent spends the
     /// peer's budget, and a panel click is the operator's own act and spends none of the
-    /// automatic one.
+    /// automatic one. A released agent spends none: its task ended.
     public static func capLoad(records: [RunRecord],
                                states: [String: Resolution]) -> Set<String> {
         Set(records.filter { r in
             guard r.runsHere, r.source == AgentDispatchGate.Source.auto.rawValue,
-                  let s = states[r.runID] else { return false }
+                  !r.released, let s = states[r.runID] else { return false }
             return s.occupying
         }.map(\.runID))
     }
@@ -1222,7 +1319,8 @@ public enum AgentState {
     /// re-deriving any of it.
     public struct Tick {
         /// The records as the pipeline left them — claim sightings refreshed,
-        /// untracked agents synthesized. The caller persists these.
+        /// untracked agents synthesized, ended runs' live agents released. The caller
+        /// persists these.
         public var records: [RunRecord]
         public var states: [String: Resolution]
         public var rows: [(RunRecord, Resolution)]
@@ -1246,9 +1344,10 @@ public enum AgentState {
     /// repeats: claims are observed and ttys adopted BEFORE resolving, so both count this
     /// tick rather than a tick late; and untracked agents are synthesized AFTER, so a live
     /// agent that already has a record is not drawn twice — and so it keeps the tty the
-    /// scan found it on rather than having one adopted for a pid it does not have. Both
-    /// front-ends and the parity CLI go through here, so neither can get the sequence
-    /// subtly different from the other.
+    /// scan found it on rather than having one adopted for a pid it does not have.
+    /// Released records are made LAST, from the verdicts, so the caller persists each
+    /// before it forgets the run that ended. Both front-ends and the parity CLI go through
+    /// here, so neither can get the sequence subtly different from the other.
     public static func tick(records: [RunRecord], evidence: Evidence,
                             now: TimeInterval, limit: Int,
                             deadline: TimeInterval? = nil) -> Tick {
@@ -1257,8 +1356,13 @@ public enum AgentState {
                          liveAgents: evidence.liveAgents)
         recs = observeQuiescence(recs, tails: evidence.tails, now: now)
         recs = synthesizeUntracked(recs, liveAgents: evidence.liveAgents, now: now)
-        let states = resolve(records: recs, evidence: evidence, now: now,
+        var states = resolve(records: recs, evidence: evidence, now: now,
                              deadline: deadline)
+        for (heir, verdict) in releaseEnded(recs, states: states, evidence: evidence,
+                                            now: now, deadline: deadline) {
+            recs.append(heir)
+            states[heir.runID] = verdict
+        }
         let load = capLoad(records: recs, states: states)
         return Tick(records: recs, states: states,
                     rows: rows(records: recs, states: states),

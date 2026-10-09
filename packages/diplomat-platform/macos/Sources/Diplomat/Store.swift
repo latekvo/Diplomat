@@ -638,9 +638,7 @@ final class Store: ObservableObject {
             // afterwards; publishes the status either way, so it stands in for the
             // plain `refreshAllocatorInstall()` this used to do here.
             Task { await ensureAllocatorInstalled() }
-            // Auto-start a node on launch if the user has previously opted into the mesh
-            // (mirrors the Linux applet's ensure-running-on-start).
-            if meshEnabled { ensureMeshRunning() }
+            Task { await settleMeshOnLaunch() }
         }
     }
 
@@ -788,11 +786,8 @@ final class Store: ObservableObject {
     /// On the slow refresh, not the 8-second tick: it costs a `gh` call per PR. The answer
     /// is carried forward by the fast ticks in between.
     ///
-    /// Only the runs this applet dispatched. "Merged" ends a run so it can be priced and
-    /// its bay handed back, and a synthesized one has nothing to price and is manifestly
-    /// still in the process table — asked about, a landed PR whose agent is still sitting
-    /// in its window would retire that record and have the next tick synthesize it
-    /// straight back, one `gh` call and one audit line per tick. What ends one of those is
+    /// Only the runs this applet dispatched: the resolver ends no untracked run on a
+    /// merge, since a landed PR does not make its agent leave. What ends one of those is
     /// the scan that made it.
     func refreshMergedStatuses() async {
         mergedPRs = await AgentProbes.mergedPRs(
@@ -887,7 +882,8 @@ final class Store: ObservableObject {
             donePath: AgentRegistry.donePath(record.runID).path,
             pidPath: AgentRegistry.pidPath(record.runID).path,
             runner: runner, port: port,
-            settingsPath: AgentRegistry.stageHooks(record.runID))
+            settingsPath: AgentRegistry.stageHooks(record.runID),
+            tokenItem: AppConfig.agentTokenKeychainItem)
         do {
             // Detached: the spawn's `osascript` blocks for `inputSettleDelay` seconds,
             // and this actor draws the panel.
@@ -901,7 +897,8 @@ final class Store: ObservableObject {
             var seeded = record
             seeded.tty = result.tty
             Store.persistRunChanges([seeded])
-            AuditLog.log(source, auditAction ?? kind, label)
+            AuditLog.log(source, auditAction ?? kind,
+                         label + (plan.tokenItem.isEmpty ? "" : AgentSpawner.tokenAuditNote))
             return result.terminal
         } catch {
             // Nothing is running, so the record would be a bay held for an agent that
@@ -1777,7 +1774,8 @@ final class Store: ObservableObject {
     ///
     /// Every state that is not over counts, including one waiting at its prompt (that
     /// session holds the PR's context) and one nothing is known about — releasing a PR on
-    /// missing evidence is how two agents end up on it.
+    /// missing evidence is how two agents end up on it. A released agent does not: its
+    /// run ended.
     private func inFlight(_ prNumber: Int) async -> Bool {
         await agentTick().tick.inFlight(prNumber: prNumber)
     }
@@ -2839,7 +2837,9 @@ final class Store: ObservableObject {
                 trackMeshRun(job, node: node, attemptNumber: attemptNumber)
                 return .standDown
             case .spawned(let node, let onThisMachine):
-                AuditLog.log(source.rawValue, job.auditAction, rowLabel)
+                let token = onThisMachine && !AppConfig.agentTokenKeychainItem.isEmpty
+                AuditLog.log(source.rawValue, job.auditAction,
+                             rowLabel + (token ? AgentSpawner.tokenAuditNote : ""))
                 // Booked wherever the mesh put it, before the next job of this poll asks
                 // how many agents are running — left unbooked, every dispatch of a burst
                 // measured the same empty machine and the cap held back nothing at all.
@@ -3138,11 +3138,12 @@ final class Store: ObservableObject {
         guard apiWatchEnabled, !apiScanInFlight else { return }
         apiScanInFlight = true
         defer { apiScanInFlight = false }
-        // nil = the dump itself failed (automation permission revoked, AppleEvent
-        // timeout) — skip the whole scan rather than treating it as "no sessions",
-        // which would wrongly clear every backoff and hide the breakage.
+        // Unavailable = a source of the dump failed (automation permission revoked,
+        // AppleEvent timeout, tmux listing nothing) — skip the whole scan rather than
+        // treating it as "no sessions", which would wrongly clear every backoff and hide
+        // the breakage.
         let dump = await Task.detached(priority: .utility) { ApiErrorWatcher.dumpSessionsCached() }.value
-        guard let sessions = dump else { return }
+        guard let sessions = dump.value else { return }
         // The other half of "may this session be written to". Unreadable evidence —
         // the process table, or the tmux listings the walk out of a pane needs — skips
         // the scan for the same reason a failed dump does, and more: the answer decides
@@ -3352,6 +3353,39 @@ final class Store: ObservableObject {
             if let err { self.meshError = err }
             await self.meshTick()
         }
+    }
+
+    /// Start a node on launch if the user has opted into the mesh; with it off, stop one
+    /// an earlier instance left running. Twin of the Linux applet's launch.
+    func settleMeshOnLaunch() async {
+        if meshEnabled { ensureMeshRunning() } else { await stopStrayMeshNode() }
+    }
+
+    /// Stop a node left running on this app's mesh state dir while the mesh is off, and
+    /// say so in the audit feed. The node outlives the app by design, so one started by
+    /// an earlier instance (a previous run, a stray debug build) otherwise runs on
+    /// unattended while the setting reads off. Twin of the Linux
+    /// `store.stop_stray_node_async`.
+    @discardableResult
+    func stopStrayMeshNode(exitWait: TimeInterval = 10) async -> MeshBridge.StrayNode {
+        let outcome = await Task.detached(priority: .utility) {
+            MeshBridge.stopStrayNode(exitWait: exitWait)
+        }.value
+        switch outcome {
+        case .none:
+            break
+        case .stopped(let pid, let port):
+            AuditLog.log("panel", "mesh-stop",
+                         "Mesh is off: stopped the node left running here (pid \(pid), :\(port))")
+        case .stopFailed(let pid, let port, let reason):
+            AuditLog.log("panel", "warn",
+                         "Mesh is off, but the node left running here (pid \(pid), :\(port)) "
+                         + "did not stop: \(reason)")
+        }
+        // The mesh may have been turned on while the node exited: the toggle saw it still
+        // alive and started none.
+        if meshEnabled { ensureMeshRunning() }
+        return outcome
     }
 
     /// Ask the local node to stop and drop the topology (used when the user disables the
