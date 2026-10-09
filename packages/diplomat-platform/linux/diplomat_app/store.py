@@ -3133,7 +3133,9 @@ class Store(QObject):
                 activity.log("panel", "warn",
                              f"Mesh is off, but the node left running here "
                              f"(pid {pid}, :{port}) did not stop: {reason}")
-            self.refresh_mesh_state()
+            # The mesh may have been turned on while the node exited: the toggle saw it
+            # still alive and started none.
+            self.ensure_mesh_running_async()
 
         return self.start_background(work)
 

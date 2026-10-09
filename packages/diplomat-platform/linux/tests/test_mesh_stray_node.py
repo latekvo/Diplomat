@@ -24,7 +24,7 @@ from diplomat_app import store as store_module
 from diplomat_app.store import Store
 
 STAND_IN = r'''
-import json, os, socket, sys
+import json, os, socket, sys, time
 node_id, mode = sys.argv[1], (sys.argv[2:] or [""])[0]
 srv = socket.socket()
 srv.bind(("127.0.0.1", 0))
@@ -42,7 +42,10 @@ while True:
         f.write(json.dumps({"t": "state", "state": me} if t == "status"
                            else {"t": "error", "reason": "refused"} if mode == "refuse"
                            else {"t": "ok"}).encode() + b"\n")
-    if t == "stop" and not mode:
+    if t == "stop" and mode == "slow":
+        open(path + ".stopping", "w").close()
+        time.sleep(1.5)
+    if t == "stop" and mode in ("", "slow"):
         sys.exit(0)
 '''
 
@@ -141,6 +144,27 @@ def test_a_launch_with_the_mesh_on_leaves_its_node_alone(mesh, monkeypatch):
     _settled(store)
     assert node.running()
     assert mesh.feed == [] and spawned == []
+
+
+def test_turning_the_mesh_on_while_a_stray_node_exits_starts_a_node(mesh, monkeypatch):
+    """The toggle finds the stray node still alive and starts nothing, so the stop is
+    what has to."""
+    node = mesh.launch("n-a", mode="slow")
+    store = Store()
+    store.settle_mesh_on_launch()
+    stopping = mesh.dir / "state.json.stopping"
+    deadline = time.monotonic() + 10
+    while not stopping.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert stopping.exists() and node.running()
+    spawned: list = []
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: spawned.append(a))
+    store.mesh_enabled = True
+    store.ensure_mesh_running_async()
+    _settled(store)
+    _settled(store)  # the stop's own start runs on a worker it started
+    assert not node.running()
+    assert len(spawned) == 1
 
 
 def test_without_szpontnet_a_launch_leaves_the_node_alone(mesh, monkeypatch):

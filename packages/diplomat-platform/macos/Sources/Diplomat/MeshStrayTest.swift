@@ -8,8 +8,9 @@ import Foundation
 /// `state.json` names, so what it must NOT stop matters as much as what it must: a pid
 /// the OS has since handed to another process, a port a node on another state dir has
 /// since bound, a node with another identity. Stand-in nodes that speak just enough of
-/// the control protocol (`status`, `stop`) to be told apart cover those; one real node,
-/// loopback-only with no WAN transport, covers the reply a real one gives.
+/// the control protocol (`status`, `stop`) to be told apart cover those. Real nodes,
+/// loopback-only with no WAN transport, cover the reply a real one gives and a launch
+/// with the mesh on.
 ///
 ///   DIPLOMAT_MESH_STRAY_TEST=1 swift run Diplomat
 ///
@@ -21,9 +22,10 @@ import Foundation
 enum MeshStrayTest {
     /// A node as far as `stopStrayNode` can tell: writes `state.json` into its
     /// `SZPONTNET_DIR` and answers `status` with its own pid and id. `stubborn`
-    /// acknowledges `stop` and keeps running; `refuse` answers it with an error.
+    /// acknowledges `stop` and keeps running; `refuse` answers it with an error; `slow`
+    /// writes `state.json.stopping` and exits 1.5s later.
     private static let standIn = """
-        import json, os, socket, sys
+        import json, os, socket, sys, time
         node_id, mode = sys.argv[1], (sys.argv[2:] or [""])[0]
         srv = socket.socket()
         srv.bind(("127.0.0.1", 0))
@@ -41,7 +43,10 @@ enum MeshStrayTest {
                 f.write(json.dumps({"t": "state", "state": me} if t == "status"
                                    else {"t": "error", "reason": "refused"} if mode == "refuse"
                                    else {"t": "ok"}).encode() + b"\\n")
-            if t == "stop" and not mode:
+            if t == "stop" and mode == "slow":
+                open(path + ".stopping", "w").close()
+                time.sleep(1.5)
+            if t == "stop" and mode in ("", "slow"):
                 sys.exit(0)
         """
 
@@ -150,6 +155,9 @@ enum MeshStrayTest {
         }
 
         let store = Store()
+        // Read from the operator's defaults; left on, a stop below would start a node
+        // before the loopback env is set.
+        store.meshEnabled = false
         print("== Store.stopStrayMeshNode ==")
 
         check("no state.json: nothing to stop",
@@ -159,7 +167,6 @@ enum MeshStrayTest {
             print("  FAIL  the stand-in node never wrote its state.json")
             return false
         }
-        store.meshEnabled = false
         await store.settleMeshOnLaunch()
         check("a launch with the mesh off stops the node state.json names", !a.process.isRunning)
         let stopLines = auditLines().filter { $0.contains("\"mesh-stop\"") }
@@ -250,7 +257,7 @@ enum MeshStrayTest {
               auditLines().count == 4, "\(auditLines().count) lines")
         d.process.terminate()
 
-        // A real node, spawned the way the app spawns one: the stand-ins above only speak
+        // Real nodes, spawned the way the app spawns one: the stand-ins above only speak
         // the two commands, so this is what pins the reply of a real one. Loopback-only
         // on ports of its own, no WAN transport, and a HOME of its own for the activity
         // feed its host writes to.
@@ -261,16 +268,29 @@ enum MeshStrayTest {
                            "SZPONTNET_TCP_BASE": "51812",
                            "HOME": scratch.appendingPathComponent("home").path]
             for (k, v) in nodeEnv { setenv(k, v, 1) }
-            try? fm.removeItem(at: ours.appendingPathComponent("state.json"))
-            let spawnError = MeshBridge.ensureRunning()
-            if let realHome { setenv("HOME", realHome, 1) }
-            var real: MeshSnapshot?
-            let deadline = Date().addingTimeInterval(30)
-            while real == nil, spawnError == nil, Date() < deadline {
-                if let snap = MeshBridge.readState(), MeshBridge.nodeRunning(snap) { real = snap }
-                else { usleep(200_000) }
+            defer { if let realHome { setenv("HOME", realHome, 1) } }
+
+            /// The node live on our state dir, other than `other`, within 30s.
+            func liveNode(other: Int? = nil) async -> MeshSnapshot? {
+                let deadline = Date().addingTimeInterval(30)
+                while Date() < deadline {
+                    if let snap = MeshBridge.readState(), MeshBridge.nodeRunning(snap),
+                       snap.pid != other { return snap }
+                    try? await Task.sleep(nanoseconds: 200_000_000)
+                }
+                return nil
             }
+
+            try? fm.removeItem(at: ours.appendingPathComponent("state.json"))
+            store.meshEnabled = true
+            await store.settleMeshOnLaunch()
+            let real = await liveNode()
+            check("a launch with the mesh on starts a node", real != nil,
+                  store.meshError ?? "no live state.json within 30s")
             if let real, let pid = real.pid, let port = real.tcpPort {
+                await store.settleMeshOnLaunch()
+                check("a launch with the mesh on leaves its node alone",
+                      MeshBridge.nodeRunning(real), "pid \(pid) stopped")
                 store.meshEnabled = false
                 await store.settleMeshOnLaunch()
                 check("a real node left on this state dir is stopped at launch",
@@ -279,12 +299,31 @@ enum MeshStrayTest {
                       auditLines().last?.contains("pid \(pid), :\(port)") == true
                         && auditLines().last?.contains("\"mesh-stop\"") == true)
                 if MeshBridge.nodeRunning(real) { kill(pid_t(clamping: pid), SIGTERM) }
+            }
+
+            // The Settings toggle finds the stray node still alive and starts nothing, so
+            // the stop is what has to.
+            if let e = launch("n-e", in: ours, mode: "slow") {
+                store.meshEnabled = false
+                let settling = Task { await store.settleMeshOnLaunch() }
+                let stopping = ours.appendingPathComponent("state.json.stopping")
+                let deadline = Date().addingTimeInterval(10)
+                while !fm.fileExists(atPath: stopping.path), Date() < deadline {
+                    try? await Task.sleep(nanoseconds: 50_000_000)
+                }
+                store.meshEnabled = true
+                store.ensureMeshRunning()  // the toggle's didSet does nothing headless
+                await settling.value
+                let next = await liveNode(other: e.pid)
+                check("turning the mesh on while a stray node exits leaves a node running",
+                      !e.process.isRunning && next != nil,
+                      "stray running \(e.process.isRunning), \(store.meshError ?? "no new node")")
+                if let pid = next?.pid { kill(pid_t(clamping: pid), SIGTERM) }
             } else {
-                check("a real node started on the scratch state dir", false,
-                      spawnError ?? "no live state.json within 30s")
+                check("the slow stand-in wrote its state.json", false)
             }
         } else {
-            print("  skip  a real node: no checkout to run one from")
+            print("  skip  real nodes: no checkout to run one from")
         }
 
         print(failures.isEmpty ? "MESH STRAY TEST OK" : "MESH STRAY TEST FAILED (\(failures.count))")

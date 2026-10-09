@@ -3379,6 +3379,9 @@ final class Store: ObservableObject {
                          "Mesh is off, but the node left running here (pid \(pid), :\(port)) "
                          + "did not stop: \(reason)")
         }
+        // The mesh may have been turned on while the node exited: the toggle saw it still
+        // alive and started none.
+        if meshEnabled { ensureMeshRunning() }
         return outcome
     }
 
