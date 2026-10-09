@@ -16,7 +16,11 @@ def _install(path, name):
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
 
-def test_a_gh_that_no_longer_launches_is_looked_for_again(tmp_path, monkeypatch):
+@pytest.mark.parametrize("break_it", [
+    lambda p: p.unlink(),
+    lambda p: p.chmod(0o644),
+], ids=["removed", "not-executable"])
+def test_a_gh_that_no_longer_launches_is_looked_for_again(tmp_path, monkeypatch, break_it):
     """The path found is kept for the process, so gh moving or being uninstalled
     would otherwise fail every call until a restart: a launch failure forgets it
     and the next call looks afresh (GH.swift's `forget` is the twin)."""
@@ -25,7 +29,7 @@ def test_a_gh_that_no_longer_launches_is_looked_for_again(tmp_path, monkeypatch)
     monkeypatch.setattr(gh, "_cached_path", None)
     _install(first, "one")
     assert real_run([]) == b"one\n"
-    first.unlink()
+    break_it(first)
     with pytest.raises(gh.GHError, match="could not execute gh"):
         real_run([])
     _install(second, "two")

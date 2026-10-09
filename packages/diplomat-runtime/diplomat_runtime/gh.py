@@ -57,7 +57,7 @@ def run(args: list[str], timeout: float = 60.0) -> bytes:
             timeout=timeout,
             check=False,
         )
-    except FileNotFoundError as exc:
+    except OSError as exc:
         _forget(path)
         raise GHError(f"could not execute gh: {exc}") from exc
     except subprocess.TimeoutExpired as exc:
