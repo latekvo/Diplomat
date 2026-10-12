@@ -498,6 +498,53 @@ def test_relaunch_failure_is_any_exit_inside_the_window():
         running.wait()
 
 
+def test_a_relaunch_from_a_user_service_gets_a_scope_of_its_own(repos, monkeypatch):
+    """From the watchdog's or the updater's unit, the tray is started under
+    ``systemd-run --scope``; from anywhere else, as it always was."""
+    _, clone, _ = repos
+    launcher = str(clone / "packages" / "diplomat-platform" / "linux" / "diplomat")
+    started = []
+    monkeypatch.setattr(selfupdate.subprocess, "Popen", lambda argv, **k: started.append(argv))
+    monkeypatch.setattr(selfupdate.shutil, "which", lambda name: f"/usr/bin/{name}")
+    for in_service in (True, False):
+        monkeypatch.setattr(selfupdate, "_in_service_cgroup", lambda: in_service)
+        selfupdate.relaunch()
+    assert started == [
+        ["systemd-run", "--user", "--scope", "--quiet", "--collect", "--", "bash", launcher],
+        ["bash", launcher],
+    ]
+
+
+def _user_systemd() -> bool:
+    try:
+        return subprocess.run(["systemctl", "--user", "show-environment"],
+                              capture_output=True, timeout=10).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+@pytest.mark.skipif(not _user_systemd(), reason="no systemd user manager to run a unit")
+def test_a_tray_relaunched_inside_a_user_service_leaves_its_cgroup(repos, tmp_path):
+    """Through a real transient unit shaped like the watchdog's (a oneshot-like job,
+    ``KillMode=process``): the launched tray's cgroup is a scope, not the unit's."""
+    probe = tmp_path / "probe.py"
+    probe.write_text(
+        "from diplomat_app import selfupdate\n"
+        "child = selfupdate.relaunch()\n"
+        "assert selfupdate.relaunch_failure(child, window=1.0) is None\n"
+        "print(open(f'/proc/{child.pid}/cgroup').read().strip())\n")
+    # Not XDG_RUNTIME_DIR: the unit's own is how systemd-run reaches the manager.
+    env = {k: os.environ[k] for k in ("DIPLOMAT_SELF_REPO", "MARKER_DIR", "XDG_STATE_HOME")}
+    env["PYTHONPATH"] = os.pathsep.join(p for p in sys.path if p)
+    out = subprocess.run(
+        ["systemd-run", "--user", "--wait", "--pipe", "--quiet", "--collect",
+         "-p", "KillMode=process", *(f"--setenv={k}={v}" for k, v in env.items()),
+         sys.executable, str(probe)],
+        capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip().endswith(".scope"), out.stdout
+
+
 def test_run_scheduled_survives_a_subprocess_timeout(repos, monkeypatch):
     """A black-holed network (git fetch timeout) or a hung swift build raises
     subprocess.TimeoutExpired — NOT an UpdateError — inside pull()/build_core().

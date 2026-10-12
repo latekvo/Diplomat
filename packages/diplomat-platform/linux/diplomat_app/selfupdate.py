@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -208,11 +210,18 @@ def relaunch(extra_env: dict[str, str] | None = None) -> subprocess.Popen:
         env.pop(marker, None)
     if extra_env:
         env.update(extra_env)
+    argv = ["bash", str(launcher)]
+    if _in_service_cgroup() and shutil.which("systemd-run"):
+        # A tray started from a systemd service stays in that unit's cgroup after the
+        # oneshot ends, and systemd warns about it on every later run of the unit -
+        # every 5 minutes for the watchdog. A scope of its own takes it out; systemd-run
+        # execs the launcher in place, so the pid watched below is still the applet's.
+        argv = ["systemd-run", "--user", "--scope", "--quiet", "--collect", "--", *argv]
     try:
         log_dir.mkdir(parents=True, exist_ok=True)
         with (log_dir / "diplomat.log").open("ab") as log:
             return subprocess.Popen(  # noqa: S603 - relaunch ourselves, detached
-                ["bash", str(launcher)],
+                argv,
                 cwd=str(root),
                 start_new_session=True,
                 stdin=subprocess.DEVNULL,
@@ -222,6 +231,17 @@ def relaunch(extra_env: dict[str, str] | None = None) -> subprocess.Popen:
             )
     except OSError as exc:
         raise UpdateError(f"could not relaunch the applet: {exc}") from exc
+
+
+def _in_service_cgroup() -> bool:
+    """Whether this process runs in a service of the user's systemd manager - the
+    unattended jobs' units, which ``systemd-run --user`` can reach. A system service
+    (a CI runner) is not one."""
+    try:
+        cgroup = Path("/proc/self/cgroup").read_text().rstrip()
+    except OSError:
+        return False
+    return re.search(r"/user@\d+\.service/.+\.service$", cgroup) is not None
 
 
 def relaunch_failure(child: subprocess.Popen, window: float = 3.0) -> int | None:
