@@ -538,10 +538,18 @@ def test_only_a_user_managers_service_counts(cgroup, ours, tmp_path, monkeypatch
     assert selfupdate._in_service_cgroup() is ours
 
 
+#: Taken before any fixture: ``repos`` points ``XDG_RUNTIME_DIR`` at a scratch dir,
+#: and it is how ``systemd-run --user`` finds the manager where no session bus is set.
+_RUNTIME_ENV = {k: os.environ[k] for k in ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS")
+                if k in os.environ}
+
+
 def _user_systemd() -> bool:
     try:
-        return subprocess.run(["systemctl", "--user", "show-environment"],
-                              capture_output=True, timeout=10).returncode == 0
+        return subprocess.run(
+            ["systemd-run", "--user", "--wait", "--quiet", "--collect", "true"],
+            env={**os.environ, **_RUNTIME_ENV}, capture_output=True,
+            timeout=30).returncode == 0
     except (OSError, subprocess.SubprocessError):
         return False
 
@@ -563,7 +571,7 @@ def test_a_tray_relaunched_inside_a_user_service_leaves_its_cgroup(repos, tmp_pa
         ["systemd-run", "--user", "--wait", "--pipe", "--quiet", "--collect",
          "-p", "KillMode=process", *(f"--setenv={k}={v}" for k, v in env.items()),
          sys.executable, str(probe)],
-        capture_output=True, text=True, timeout=60)
+        env={**os.environ, **_RUNTIME_ENV}, capture_output=True, text=True, timeout=60)
     assert out.returncode == 0, out.stderr
     assert out.stdout.strip().endswith(".scope"), out.stdout
 
