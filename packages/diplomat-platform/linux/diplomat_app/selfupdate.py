@@ -215,7 +215,7 @@ def relaunch(extra_env: dict[str, str] | None = None) -> subprocess.Popen:
         # A tray started from a systemd service stays in that unit's cgroup after the
         # oneshot ends, and systemd warns about it on every later run of the unit -
         # every 5 minutes for the watchdog. A scope of its own takes it out; systemd-run
-        # execs the launcher in place, so the pid watched below is still the applet's.
+        # execs the launcher in place, so relaunch_failure still watches the applet.
         argv = ["systemd-run", "--user", "--scope", "--quiet", "--collect", "--", *argv]
     try:
         log_dir.mkdir(parents=True, exist_ok=True)

@@ -252,10 +252,9 @@ def isolated_opencode_state(tmp_path, monkeypatch):
     ``DIPLOMAT_SHELL``; anywhere else it names nothing, and the resolver falls back to
     this process's ``PATH`` and the ``XDG_STATE_HOME`` above.
 
-    That fallback hides the developer's own ``opencode`` from ``shutil.which``: a
-    distro package installs it in ``/usr/bin`` (Arch: 2.x), which the tests that build
-    a ``PATH`` keep, so "no opencode" would find theirs and every 1.x case would run
-    2.x. A test sees only the fakes it puts on ``PATH`` itself."""
+    ``shutil.which`` is fenced too: a distro package puts the developer's ``opencode``
+    in ``/usr/bin``, which the tests that build a ``PATH`` keep. A test finds only the
+    fakes it puts there itself."""
     import shutil
 
     from diplomat_runtime import opencodeapi, usagescan
