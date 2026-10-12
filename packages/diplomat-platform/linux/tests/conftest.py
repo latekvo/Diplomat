@@ -250,7 +250,14 @@ def isolated_opencode_state(tmp_path, monkeypatch):
     real, it sources the developer's own profile and rc and names their install and
     their service. It is asked only in a test that picks a shell itself with
     ``DIPLOMAT_SHELL``; anywhere else it names nothing, and the resolver falls back to
-    this process's ``PATH`` and the ``XDG_STATE_HOME`` above."""
+    this process's ``PATH`` and the ``XDG_STATE_HOME`` above.
+
+    That fallback hides the developer's own ``opencode`` from ``shutil.which``: a
+    distro package installs it in ``/usr/bin`` (Arch: 2.x), which the tests that build
+    a ``PATH`` keep, so "no opencode" would find theirs and every 1.x case would run
+    2.x. A test sees only the fakes it puts on ``PATH`` itself."""
+    import shutil
+
     from diplomat_runtime import opencodeapi, usagescan
 
     monkeypatch.setenv("DIPLOMAT_OPENCODE_CONFIG_DIR", str(tmp_path / "opencode" / "config"))
@@ -261,6 +268,21 @@ def isolated_opencode_state(tmp_path, monkeypatch):
     monkeypatch.setattr(usagescan, "_shell_probe",
                         lambda: real_probe() if os.environ.get("DIPLOMAT_SHELL")
                         else (None, None))
+    real_which = shutil.which
+    dirs = [*os.environ.get("PATH", "").split(os.pathsep), "/usr/local/bin", "/usr/bin", "/bin"]
+    host = {os.path.realpath(found) for found in (real_which("opencode", path=d) for d in dirs if d)
+            if found}
+
+    def which(cmd, mode=os.F_OK | os.X_OK, path=None):
+        if cmd != "opencode":
+            return real_which(cmd, mode, path)
+        for d in (os.environ.get("PATH", "") if path is None else path).split(os.pathsep):
+            found = real_which(cmd, mode, d) if d else None
+            if found and os.path.realpath(found) not in host:
+                return found
+        return None
+
+    monkeypatch.setattr(shutil, "which", which)
     opencodeapi._opening_prompts.clear()
     opencodeapi._prompt_misses.clear()
     yield
