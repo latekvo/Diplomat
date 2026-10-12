@@ -134,6 +134,31 @@ def test_a_launch_with_the_mesh_off_stops_the_node_state_json_names(mesh):
                           f"(pid {node.pid}, :{node.port})")]
 
 
+def test_the_applet_itself_stops_the_node_when_it_launches(mesh, monkeypatch):
+    """The tests around this one drive the Store; this one boots the real applet, so the
+    launch is pinned to the call that settles the mesh rather than the one that only
+    starts a node."""
+    from diplomat_app import app as app_module
+
+    node = mesh.launch("n-app")
+    monkeypatch.setattr(Store, "fetch_me", lambda self: None)
+    monkeypatch.setattr(Store, "ensure_allocator_installed_async", lambda self: None)
+    monkeypatch.setattr(app_module.DiplomatApp, "trigger_refresh", lambda self: None)
+    monkeypatch.setattr(app_module.QTimer, "singleShot", staticmethod(lambda *a: None))
+    launched = app_module.DiplomatApp()
+    try:
+        _settled(launched.store)
+        assert not node.running()
+        assert [line for line in mesh.feed if line[1] == "mesh-stop"] == [
+            ("panel", "mesh-stop", f"Mesh is off: stopped the node left running here "
+                                   f"(pid {node.pid}, :{node.port})")]
+    finally:
+        for timer in (launched.timer, launched.autofix_timer, launched.telemetry_timer,
+                      launched.apiwatch_timer):
+            timer.stop()
+        launched.tray.hide()
+
+
 def test_a_launch_with_the_mesh_on_leaves_its_node_alone(mesh, monkeypatch):
     node = mesh.launch("n-a")
     spawned: list = []
