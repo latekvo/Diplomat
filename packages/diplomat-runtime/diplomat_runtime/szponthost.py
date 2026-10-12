@@ -71,6 +71,8 @@ class DiplomatHost(szpont_host.Host):
         if platform.system() == "Darwin":
             return _spawn_macos(prompt, done_path, settings)
         try:
+            # Before anything is staged, as on macOS: a refusal leaves no prompt behind.
+            review.check_token()
             # OpenCode 2.x starts from bodies staged beside the prompt, so the prompt
             # is written here first. No run directory, so the session goes unbound.
             staged = {}

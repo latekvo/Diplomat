@@ -550,7 +550,9 @@ def token_export(platform: str = sys.platform) -> str:
     if item:
         read = f"security find-generic-password -s {shlex.quote(item)} -w"
     elif path:
-        read = f"cat -- {shlex.quote(path)}"
+        # A token holds no whitespace; a file saved with CRLF or a trailing space would
+        # otherwise hand gh a header it rejects.
+        read = f"tr -d '[:space:]' < {shlex.quote(path)}"
     else:
         return ""
     return (f'GH_TOKEN=$({read}) && [ -n "$GH_TOKEN" ] '
@@ -575,9 +577,13 @@ def check_token(platform: str = sys.platform) -> None:
         if not ok:
             raise SpawnError(f"no agent token in Keychain item '{item}'")
     elif path:
+        # The gate reads it after `cd`-ing into the repo, so a relative path would name
+        # a different file there than here.
+        if not os.path.isabs(path):
+            raise SpawnError(f"agentTokenFile is not an absolute path: {path}")
         try:
-            with open(path, encoding="utf-8", errors="replace") as f:
-                ok = bool(f.read().rstrip("\n"))
+            with open(path, "rb") as f:
+                ok = bool(b"".join(f.read().split()))
         except OSError:
             ok = False
         if not ok:
